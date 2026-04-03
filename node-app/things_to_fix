@@ -1,0 +1,16 @@
+ Must-Fix Before Mainnet (3 items):
+
+  1. Remove debug logging — P82/TRACE-82/EVAL@232/epoch 232/slot 97796216 checks in RatificationEngine
+  2. Replace System.exit(1) with exception or configurable flag in EpochBoundaryProcessor
+  3. Fix creditAndRemoveSpendableRewardRest — pre-aggregate reward_rest per credential before writing to batch (same pattern as donation accumulation fix)
+
+  Should-Fix Before Mainnet (2 items):
+
+  4. UPDATE_COMMITTEE threshold — use dvtCommitteeNoConfidence/pvtCommitteeNoConfidence when committee state is NO_CONFIDENCE
+  5. Remove dead code — if (false) block in EpochBoundaryProcessor
+
+  Good-to-Fix (design debt):
+
+  6. Governance delta-journal integration (rollback support)
+  7. Make snapshotExporter volatile
+  8. Hardcoded pool deposit fallback → use EpochParamProvider

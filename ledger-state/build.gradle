@@ -1,0 +1,31 @@
+dependencies {
+    api project(':node-api')
+    api libs.yaci.core
+
+    implementation libs.rocksdb
+    implementation libs.cbor
+    implementation libs.cardano.client.core
+    api(libs.cf.rewards.calculation) {
+        // Exclude transitive google-collections which conflicts with guava in Quarkus
+        exclude group: 'com.google.collections', module: 'google-collections'
+    }
+
+    // Generate @DomainEventListener bindings at build time
+    annotationProcessor libs.yaci.events.processor
+}
+
+java {
+    sourceCompatibility = 25
+    targetCompatibility = 25
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            pom {
+                name = 'Yano Ledger State'
+                description = 'Yano Ledger State - Account and delegation state tracking for Cardano ledger validation'
+            }
+        }
+    }
+}
