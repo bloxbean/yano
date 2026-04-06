@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 #
-# Yano Node start script
+# Yano start script
 # Auto-detects JAR vs native mode and supports Quarkus profiles.
 #
 # Usage:
-#   ./yano-node.sh                      # Default (preprod relay)
-#   ./yano-node.sh --devnet             # Local devnet with block production
-#   ./yano-node.sh --mainnet            # Mainnet relay
-#   ./yano-node.sh --preview            # Preview relay
-#   ./yano-node.sh --profile=<name>     # Custom Quarkus profile
+#   ./yano.sh                      # Default (preprod relay)
+#   ./yano.sh --devnet             # Local devnet with block production
+#   ./yano.sh --mainnet            # Mainnet relay
+#   ./yano.sh --preview            # Preview relay
+#   ./yano.sh --profile=<name>     # Custom Quarkus profile
 #
 
 set -e
@@ -47,18 +47,18 @@ if [ -n "$PROFILE" ]; then
 fi
 
 # Auto-detect mode: native binary or JAR
-if [ -f "$SCRIPT_DIR/yano-node" ]; then
+if [ -f "$SCRIPT_DIR/yano" ]; then
     # Native binary mode
-    echo "Starting Yano Node (native)${PROFILE:+ with profile: $PROFILE}..."
-    exec "$SCRIPT_DIR/yano-node" \
+    echo "Starting Yano (native)${PROFILE:+ with profile: $PROFILE}..."
+    exec "$SCRIPT_DIR/yano" \
         -Dyaci.node.block-producer.script-evaluator=scalus \
         $PROFILE_PROP "${PASSTHROUGH_ARGS[@]}"
-elif [ -f "$SCRIPT_DIR/yano-node.jar" ]; then
+elif [ -f "$SCRIPT_DIR/yano.jar" ]; then
     # Uber-jar mode
-    echo "Starting Yano Node (JVM)${PROFILE:+ with profile: $PROFILE}..."
-    exec java ${JAVA_OPTS:-} $PROFILE_PROP -jar "$SCRIPT_DIR/yano-node.jar" "${PASSTHROUGH_ARGS[@]}"
+    echo "Starting Yano (JVM)${PROFILE:+ with profile: $PROFILE}..."
+    exec java ${JAVA_OPTS:-} $PROFILE_PROP -jar "$SCRIPT_DIR/yano.jar" "${PASSTHROUGH_ARGS[@]}"
 else
-    echo "Error: Neither 'yano-node' binary nor 'yano-node.jar' found in $SCRIPT_DIR"
+    echo "Error: Neither 'yano' binary nor 'yano.jar' found in $SCRIPT_DIR"
     echo "Please ensure the distribution is complete."
     exit 1
 fi

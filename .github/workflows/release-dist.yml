@@ -23,7 +23,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: jar-dist
-          path: node-app/build/distributions/yano-node-*.zip
+          path: node-app/build/distributions/yano-*.zip
 
   native-dist:
     strategy:
@@ -51,7 +51,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: native-dist-${{ matrix.label }}
-          path: node-app/build/distributions/yano-node-native-*.zip
+          path: node-app/build/distributions/yano-native-*.zip
 
   release:
     needs: [jar-dist, native-dist]

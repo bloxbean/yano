@@ -557,6 +557,18 @@
     "allDeclaredConstructors": true
   },
   {
+    "name": "com.bloxbean.cardano.yano.ledgerstate.AccountStateEventHandler_EventBindings",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.ledgerstate.AccountStateEventHandler",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
     "name": "com.bloxbean.cardano.julc.vm.JulcVmProvider",
     "allDeclaredConstructors": true,
     "allDeclaredMethods": true
