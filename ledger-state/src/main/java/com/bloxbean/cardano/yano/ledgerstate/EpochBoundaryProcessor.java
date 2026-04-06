@@ -52,6 +52,11 @@ public class EpochBoundaryProcessor {
     // Optional epoch snapshot exporter for debugging (NOOP when disabled)
     private EpochSnapshotExporter snapshotExporter = EpochSnapshotExporter.NOOP;
 
+    // Auto-checkpoint: creates a RocksDB checkpoint at epoch boundaries for fast rollback.
+    // The callback receives the epoch number and creates the checkpoint externally.
+    private volatile java.util.function.IntConsumer autoCheckpointCallback;
+    private int autoCheckpointInterval = 0; // 0 = disabled, >0 = every N epochs
+
     // If true, System.exit(1) on AdaPot verification failure (development mode).
     // If false, log error and record for REST query (production mode).
     private boolean exitOnEpochCalcError = false;
@@ -88,6 +93,18 @@ public class EpochBoundaryProcessor {
      */
     public void setSnapshotCreator(DefaultAccountStateStore store) {
         this.snapshotCreator = store;
+    }
+
+    /**
+     * Enable automatic RocksDB checkpoint creation at epoch boundaries.
+     * Checkpoints are fast (hard-linked) and enable quick rollback for debugging.
+     *
+     * @param interval create checkpoint every N epochs (0 = disabled)
+     * @param callback receives the epoch number; creates the actual checkpoint externally
+     */
+    public void setAutoCheckpoint(int interval, java.util.function.IntConsumer callback) {
+        this.autoCheckpointInterval = interval;
+        this.autoCheckpointCallback = callback;
     }
 
     /**
@@ -140,12 +157,21 @@ public class EpochBoundaryProcessor {
         // 2. Bootstrap AdaPot at the Shelley start epoch (before any reward calculation)
         bootstrapAdaPotIfNeeded(newEpoch);
 
-        // 3. Calculate rewards FIRST (matches yaci-store: rewards → snapshot → governance)
+        // 2b. Credit spendable MIR reward_rest to account balances BEFORE reward calculation.
+        //     MIR from epoch e has spendable_epoch = e+1 = newEpoch.
+        //     This both: (a) computes deregistration-filtered MIR totals for cf-rewards input,
+        //     and (b) credits MIR to PREFIX_ACCT.reward before epoch e+1 blocks process withdrawals.
+        //     Matches Haskell node (RUPD rule) and Yaci Store.
+        if (snapshotCreator != null) {
+            snapshotCreator.creditMirRewardRest(newEpoch);
+        }
+
+        // 3. Calculate rewards (uses MIR totals computed in step 2b)
         if (rewardCalculator != null && rewardCalculator.isEnabled() && newEpoch >= 2) {
             calculateAndStoreRewards(previousEpoch, newEpoch, null);
         }
 
-        // 4. SNAP: Create delegation snapshot (captures post-reward state).
+        // 4. SNAP: Create delegation snapshot (captures post-reward state + credited MIR).
         //    Returns UTXO balances for reuse in DRep distribution calculation.
         java.util.Map<UtxoBalanceAggregator.CredentialKey, java.math.BigInteger> utxoBalances = null;
         if (snapshotCreator != null) {
@@ -214,6 +240,16 @@ public class EpochBoundaryProcessor {
 
         long elapsed = System.currentTimeMillis() - start;
         log.info("Epoch boundary processing complete ({} → {}) in {}ms", previousEpoch, newEpoch, elapsed);
+
+        // 8. Auto-checkpoint: create RocksDB checkpoint at epoch boundary for fast rollback
+        if (autoCheckpointInterval > 0 && autoCheckpointCallback != null
+                && newEpoch % autoCheckpointInterval == 0) {
+            try {
+                autoCheckpointCallback.accept(newEpoch);
+            } catch (Exception e) {
+                log.warn("Auto-checkpoint failed for epoch {}: {}", newEpoch, e.getMessage());
+            }
+        }
     }
 
     /**
@@ -302,7 +338,8 @@ public class EpochBoundaryProcessor {
         }
 
         // Mismatch detected
-        log.error("AdaPot verification FAILED for epoch {}!", epoch);
+        log.error("AdaPot verification FAILED for epoch {}! treasuryDiff={}, reservesDiff={}",
+                epoch, treasuryDiff, reservesDiff);
         if (treasuryDiff.signum() != 0) {
             log.error("  Treasury: expected={}, actual={}, diff={}", exp.treasury, treasury, treasuryDiff);
         }

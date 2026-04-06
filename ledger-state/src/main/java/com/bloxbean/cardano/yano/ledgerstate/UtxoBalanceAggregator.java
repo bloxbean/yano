@@ -113,51 +113,23 @@ public class UtxoBalanceAggregator {
 
     /**
      * Resolve a pointer address to a credential key using the PointerAddressResolver.
-     * Pointer address format: header(1) + payment_cred(28) + varlen(slot) + varlen(txIdx) + varlen(certIdx)
+     * Uses CCL's PointerAddress class to parse (slot, txIndex, certIndex) from the address,
+     * matching Yaci Store's approach in AccountBalanceProcessor.
      */
     private static CredentialKey resolvePointerAddress(Address address,
                                                        PointerAddressResolver resolver) {
-        byte[] bytes = address.getBytes();
-        if (bytes.length < 30) return null; // need at least header + 28 payment + 1 pointer byte
+        try {
+            var ptrAddr = new com.bloxbean.cardano.client.address.PointerAddress(address.getBytes());
+            var pointer = ptrAddr.getPointer();
+            if (pointer == null) return null;
 
-        // Decode variable-length integers starting after header(1) + payment_cred(28)
-        int offset = 29;
-        long[] result = new long[1];
+            var cred = resolver.resolve(pointer.getSlot(), pointer.getTxIndex(), pointer.getCertIndex());
+            if (cred == null) return null;
 
-        offset = decodeVarLen(bytes, offset, result);
-        if (offset < 0) return null;
-        long slot = result[0];
-
-        offset = decodeVarLen(bytes, offset, result);
-        if (offset < 0) return null;
-        int txIndex = (int) result[0];
-
-        offset = decodeVarLen(bytes, offset, result);
-        if (offset < 0) return null;
-        int certIndex = (int) result[0];
-
-        var cred = resolver.resolve(slot, txIndex, certIndex);
-        if (cred == null) return null;
-
-        return new CredentialKey(cred.credType(), cred.credHash());
-    }
-
-    /**
-     * Decode a variable-length integer (7-bit encoding, high bit = continuation).
-     * Returns new offset, or -1 on error. Result stored in out[0].
-     */
-    private static int decodeVarLen(byte[] data, int offset, long[] out) {
-        long result = 0;
-        while (offset < data.length) {
-            int b = data[offset] & 0xFF;
-            result = (result << 7) | (b & 0x7F);
-            offset++;
-            if ((b & 0x80) == 0) {
-                out[0] = result;
-                return offset;
-            }
+            return new CredentialKey(cred.credType(), cred.credHash());
+        } catch (Exception e) {
+            return null;
         }
-        return -1;
     }
 
     /**

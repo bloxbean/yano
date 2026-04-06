@@ -123,9 +123,9 @@ All values use **CBOR encoding** with integer-keyed maps: `{0: field0, 1: field1
 | `PREFIX_POOL_BLOCK_COUNT` | `0x50` | `epoch(4 BE) + poolHash(28)` | `{0: blockCount}` | Blocks produced per pool per epoch |
 | `PREFIX_EPOCH_FEES` | `0x51` | `epoch(4 BE)` | `{0: totalFees}` | Total tx fees collected in epoch |
 | `PREFIX_ADAPOT` | `0x52` | `epoch(4 BE)` | `{0: treasury, 1: reserves, 2: deposits, 3: fees, 4: distributed, 5: undistributed, 6: rewardsPot, 7: poolRewardsPot}` | Ada pot snapshot |
-| `PREFIX_REWARD_REST` | `0x56` | `spendableEpoch(4 BE) + type(1) + credType(1) + credHash(28)` | `{0: amount, 1: earnedEpoch, 2: slot}` | Deferred rewards (proposal refunds, treasury withdrawals) |
+| `PREFIX_REWARD_REST` | `0x56` | `spendableEpoch(4 BE) + type(1) + credType(1) + credHash(28)` | `{0: amount, 1: earnedEpoch, 2: slot}` | Deferred rewards (MIR, pool refunds, proposal refunds, treasury withdrawals) |
 
-**Reward rest types:** `0` = proposal refund, `1` = treasury withdrawal
+**Reward rest types:** `0` = MIR from reserves, `1` = MIR from treasury, `2` = proposal refund, `3` = treasury withdrawal. Pool deposit refunds go directly to account reward balance (not reward_rest).
 
 ### Governance Prefixes (`0x60`-`0x6D`, in `acct_state`)
 

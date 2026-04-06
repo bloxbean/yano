@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.ledgerstate;
 
 import com.bloxbean.cardano.yaci.core.model.Block;
+import com.bloxbean.cardano.yaci.core.model.Era;
 import com.bloxbean.cardano.yaci.core.model.TransactionBody;
 import com.bloxbean.cardano.yaci.core.model.certs.*;
 import com.bloxbean.cardano.yaci.core.model.governance.Drep;
@@ -45,6 +46,7 @@ public class DefaultAccountStateStore implements AccountStateStore {
     static final byte PREFIX_POOL_PARAMS_HIST = 0x12; // pool params history: poolHash + epoch → PoolRegistrationData
     static final byte PREFIX_POOL_REG_SLOT = 0x13;   // pool registration slot: poolHash → slot (long BE)
     static final byte PREFIX_ACCT_REG_SLOT = 0x14;   // stake account registration slot: credType + credHash → slot (long BE)
+    static final byte PREFIX_POINTER_ADDR = 0x15;    // pointer address: slot(8) + txIdx(4) + certIdx(4) → credType(1) + credHash(28)
 
     // Epoch-scoped prefixes for reward calculation
     static final byte PREFIX_POOL_BLOCK_COUNT = 0x50;
@@ -54,12 +56,19 @@ public class DefaultAccountStateStore implements AccountStateStore {
     static final byte PREFIX_ACCUMULATED_REWARD = 0x54;
     static final byte PREFIX_STAKE_EVENT = 0x55;
     public static final byte PREFIX_REWARD_REST = 0x56;
+    static final byte PREFIX_BLOCK_ISSUER = 0x58;      // per-block issuer: [epoch(4)][slot(8)] → poolHash(28)
+    static final byte PREFIX_BLOCK_FEE = 0x59;          // per-block fee: [epoch(4)][slot(8)] → fee (CBOR BigInteger)
 
-    // Reward rest type constants
-    public static final byte REWARD_REST_PROPOSAL_REFUND = 0;
-    public static final byte REWARD_REST_TREASURY_WITHDRAWAL = 1;
-    public static final byte REWARD_REST_POOL_REFUND = 2;
-    public static final byte REWARD_REST_MIR = 3;
+    /** Epochs to retain per-block data after reward calculation consumes it.
+     *  Data for epoch E is consumed at E+2 boundary. With lag=5, cleared at E+7 boundary. */
+    static final int EPOCH_BLOCK_DATA_RETENTION_LAG = 5;
+
+    // Reward rest type constants (ordered by era of introduction)
+    // Pool deposit refunds are NOT here — they go directly to account reward balance (regular reward)
+    public static final byte REWARD_REST_MIR_RESERVES = 0;        // Shelley era — MIR from reserves pot
+    public static final byte REWARD_REST_MIR_TREASURY = 1;        // Shelley era — MIR from treasury pot
+    public static final byte REWARD_REST_PROPOSAL_REFUND = 2;     // Conway era — governance proposal deposit refunds
+    public static final byte REWARD_REST_TREASURY_WITHDRAWAL = 3; // Conway era — enacted treasury withdrawals
 
     // MIR pot transfer metadata keys
     private static final byte[] META_MIR_TO_RESERVES = "mir.to_reserves".getBytes(StandardCharsets.UTF_8);
@@ -97,7 +106,7 @@ public class DefaultAccountStateStore implements AccountStateStore {
     private volatile EpochBoundaryProcessor epochBoundaryProcessor;
     private volatile com.bloxbean.cardano.yano.api.utxo.UtxoState utxoState;
     private volatile long networkMagic;
-    private final PointerAddressResolver pointerAddressResolver = new PointerAddressResolver();
+    private PointerAddressResolver pointerAddressResolver; // initialized after RocksDB opens
 
     // Optional epoch snapshot exporter for debugging (NOOP when disabled)
     private com.bloxbean.cardano.yano.ledgerstate.export.EpochSnapshotExporter snapshotExporter =
@@ -136,6 +145,7 @@ public class DefaultAccountStateStore implements AccountStateStore {
         this.cfState = supplier.handle(AccountStateCfNames.ACCT_STATE);
         this.cfDelta = supplier.handle(AccountStateCfNames.ACCT_DELTA);
         this.cfEpochSnapshot = supplier.handle(AccountStateCfNames.EPOCH_DELEG_SNAPSHOT);
+        this.pointerAddressResolver = new PointerAddressResolver(db, cfState);
     }
 
     // --- Optional subsystem wiring ---
@@ -246,6 +256,7 @@ public class DefaultAccountStateStore implements AccountStateStore {
         if (cfSupplier.db() != null) {
             this.db = cfSupplier.db();
         }
+        this.pointerAddressResolver = new PointerAddressResolver(db, cfState);
         log.info("DefaultAccountStateStore reinitialized after snapshot restore");
     }
 
@@ -408,6 +419,7 @@ public class DefaultAccountStateStore implements AccountStateStore {
         return key;
     }
 
+
     // --- Key builders for epoch-scoped data ---
 
     static byte[] poolBlockCountKey(int epoch, String poolHash) {
@@ -416,6 +428,22 @@ public class DefaultAccountStateStore implements AccountStateStore {
         key[0] = PREFIX_POOL_BLOCK_COUNT;
         ByteBuffer.wrap(key, 1, 4).order(ByteOrder.BIG_ENDIAN).putInt(epoch);
         System.arraycopy(hash, 0, key, 5, hash.length);
+        return key;
+    }
+
+    static byte[] blockIssuerKey(int epoch, long slot) {
+        byte[] key = new byte[1 + 4 + 8];
+        key[0] = PREFIX_BLOCK_ISSUER;
+        ByteBuffer.wrap(key, 1, 4).order(ByteOrder.BIG_ENDIAN).putInt(epoch);
+        ByteBuffer.wrap(key, 5, 8).order(ByteOrder.BIG_ENDIAN).putLong(slot);
+        return key;
+    }
+
+    static byte[] blockFeeKey(int epoch, long slot) {
+        byte[] key = new byte[1 + 4 + 8];
+        key[0] = PREFIX_BLOCK_FEE;
+        ByteBuffer.wrap(key, 1, 4).order(ByteOrder.BIG_ENDIAN).putInt(epoch);
+        ByteBuffer.wrap(key, 5, 8).order(ByteOrder.BIG_ENDIAN).putLong(slot);
         return key;
     }
 
@@ -763,55 +791,124 @@ public class DefaultAccountStateStore implements AccountStateStore {
         }
     }
 
-    // --- Epoch Block Count and Fee queries ---
+    /**
+     * Key for pre-computed MIR credited total: "mir.total." + earnedEpoch + "." + mirType
+     */
+    private static byte[] mirCreditedTotalKey(int earnedEpoch, byte mirType) {
+        return ("mir.total." + earnedEpoch + "." + mirType).getBytes(StandardCharsets.UTF_8);
+    }
+
+    /**
+     * Get total MIR rewards for a given earned epoch and pot type.
+     * Reads the pre-computed credited total stored by creditMirRewardRest(), which
+     * already excludes deregistered accounts at the epoch boundary.
+     *
+     * @param earnedEpoch the epoch the MIR was earned in
+     * @param mirType     REWARD_REST_MIR_RESERVES (0) or REWARD_REST_MIR_TREASURY (1)
+     * @return total MIR amount for the given epoch and pot type
+     */
+    public BigInteger getMirEpochTotal(int earnedEpoch, byte mirType) {
+        try {
+            byte[] val = db.get(cfState, mirCreditedTotalKey(earnedEpoch, mirType));
+            if (val == null) return BigInteger.ZERO;
+            return AccountStateCborCodec.decodeMirReward(val);
+        } catch (RocksDBException e) {
+            log.error("getMirEpochTotal failed: {}", e.toString());
+            return BigInteger.ZERO;
+        }
+    }
+
+    // --- Epoch Block Count and Fee queries (per-block facts with legacy fallback) ---
 
     @Override
     public long getPoolBlockCount(int epoch, String poolHash) {
-        try {
-            byte[] key = poolBlockCountKey(epoch, poolHash);
-            byte[] val = db.get(cfState, key);
-            if (val == null) return 0;
-            return AccountStateCborCodec.decodePoolBlockCount(val);
-        } catch (RocksDBException e) {
-            log.error("getPoolBlockCount failed: {}", e.toString());
-            return 0;
-        }
+        return getPoolBlockCounts(epoch).getOrDefault(poolHash, 0L);
     }
 
     @Override
     public Map<String, Long> getPoolBlockCounts(int epoch) {
+        return aggregateBlockIssuerEntries(epoch);
+    }
+
+    @Override
+    public BigInteger getEpochFees(int epoch) {
+        return aggregateBlockFeeEntries(epoch);
+    }
+
+    /** Aggregate per-block issuer entries into per-pool block counts for the given epoch. */
+    private Map<String, Long> aggregateBlockIssuerEntries(int epoch) {
         Map<String, Long> counts = new HashMap<>();
-        byte[] epochBytes = ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(epoch).array();
-        byte[] seekKey = new byte[5];
-        seekKey[0] = PREFIX_POOL_BLOCK_COUNT;
-        System.arraycopy(epochBytes, 0, seekKey, 1, 4);
+        byte[] seekKey = new byte[1 + 4];
+        seekKey[0] = PREFIX_BLOCK_ISSUER;
+        ByteBuffer.wrap(seekKey, 1, 4).order(ByteOrder.BIG_ENDIAN).putInt(epoch);
 
         try (RocksIterator it = db.newIterator(cfState)) {
             it.seek(seekKey);
             while (it.isValid()) {
                 byte[] key = it.key();
-                if (key.length < 5 || key[0] != PREFIX_POOL_BLOCK_COUNT) break;
+                if (key.length < 5 || key[0] != PREFIX_BLOCK_ISSUER) break;
                 int keyEpoch = ByteBuffer.wrap(key, 1, 4).order(ByteOrder.BIG_ENDIAN).getInt();
                 if (keyEpoch != epoch) break;
-                String poolHash = HexUtil.encodeHexString(Arrays.copyOfRange(key, 5, key.length));
-                long count = AccountStateCborCodec.decodePoolBlockCount(it.value());
-                counts.put(poolHash, count);
+
+                String poolHash = HexUtil.encodeHexString(it.value());
+                counts.merge(poolHash, 1L, Long::sum);
                 it.next();
             }
         }
         return counts;
     }
 
-    @Override
-    public BigInteger getEpochFees(int epoch) {
-        try {
-            byte[] key = epochFeesKey(epoch);
-            byte[] val = db.get(cfState, key);
-            if (val == null) return BigInteger.ZERO;
-            return AccountStateCborCodec.decodeEpochFees(val);
-        } catch (RocksDBException e) {
-            log.error("getEpochFees failed: {}", e.toString());
-            return BigInteger.ZERO;
+    /** Aggregate per-block fee entries into total epoch fees. */
+    private BigInteger aggregateBlockFeeEntries(int epoch) {
+        BigInteger total = BigInteger.ZERO;
+        byte[] seekKey = new byte[1 + 4];
+        seekKey[0] = PREFIX_BLOCK_FEE;
+        ByteBuffer.wrap(seekKey, 1, 4).order(ByteOrder.BIG_ENDIAN).putInt(epoch);
+
+        try (RocksIterator it = db.newIterator(cfState)) {
+            it.seek(seekKey);
+            while (it.isValid()) {
+                byte[] key = it.key();
+                if (key.length < 5 || key[0] != PREFIX_BLOCK_FEE) break;
+                int keyEpoch = ByteBuffer.wrap(key, 1, 4).order(ByteOrder.BIG_ENDIAN).getInt();
+                if (keyEpoch != epoch) break;
+
+                total = total.add(AccountStateCborCodec.decodeEpochFees(it.value()));
+                it.next();
+            }
+        }
+        return total;
+    }
+
+    /** Clear per-block fact entries for the given epoch (called after reward calculation consumes them). */
+    public void clearEpochBlockData(int epoch) {
+        if (epoch < 0) return;
+        try (WriteBatch batch = new WriteBatch(); WriteOptions wo = new WriteOptions()) {
+            int deleted = 0;
+            for (byte prefix : new byte[]{PREFIX_BLOCK_ISSUER, PREFIX_BLOCK_FEE}) {
+                byte[] seekKey = new byte[1 + 4];
+                seekKey[0] = prefix;
+                ByteBuffer.wrap(seekKey, 1, 4).order(ByteOrder.BIG_ENDIAN).putInt(epoch);
+
+                try (RocksIterator it = db.newIterator(cfState)) {
+                    it.seek(seekKey);
+                    while (it.isValid()) {
+                        byte[] key = it.key();
+                        if (key.length < 5 || key[0] != prefix) break;
+                        int keyEpoch = ByteBuffer.wrap(key, 1, 4).order(ByteOrder.BIG_ENDIAN).getInt();
+                        if (keyEpoch != epoch) break;
+                        batch.delete(cfState, key);
+                        deleted++;
+                        it.next();
+                    }
+                }
+            }
+            if (deleted > 0) {
+                db.write(wo, batch);
+                log.info("Cleared {} per-block fact entries for epoch {}", deleted, epoch);
+            }
+        } catch (Exception e) {
+            log.warn("Failed to clear epoch block data for epoch {}: {}", epoch, e.getMessage());
         }
     }
 
@@ -1047,8 +1144,113 @@ public class DefaultAccountStateStore implements AccountStateStore {
     }
 
     /**
+     * Credit spendable MIR reward_rest entries to PREFIX_ACCT.reward and remove them.
+     * Called BEFORE snapshot creation so that MIR amounts are in the account balance,
+     * allowing on-chain withdrawals to be correctly reflected in the snapshot.
+     * Also records the per-pot credited totals (excluding deregistered accounts) as metadata,
+     * which getMirEpochTotal() reads for the cf-rewards MIR certificate input.
+     */
+    public void creditMirRewardRest(int epoch) {
+        try (WriteBatch batch = new WriteBatch(); WriteOptions wo = new WriteOptions()) {
+            // Track per-credential totals and per-type (pot) raw totals
+            java.util.Map<CredentialKey, BigInteger> perCredentialTotal = new java.util.LinkedHashMap<>();
+            // Track which type each credential belongs to (for per-pot totals after deregistration filter)
+            java.util.Map<CredentialKey, Byte> credentialTypes = new java.util.HashMap<>();
+            java.util.List<byte[]> keysToDelete = new java.util.ArrayList<>();
+
+            try (RocksIterator it = db.newIterator(cfState)) {
+                it.seek(new byte[]{PREFIX_REWARD_REST});
+                while (it.isValid()) {
+                    byte[] key = it.key();
+                    if (key.length < 7 || key[0] != PREFIX_REWARD_REST) break;
+
+                    int spendableEpoch = ByteBuffer.wrap(key, 1, 4).order(ByteOrder.BIG_ENDIAN).getInt();
+                    if (spendableEpoch > epoch) break;
+
+                    byte type = key[5];
+                    // Only credit MIR types, leave other reward_rest for later crediting
+                    if (type != REWARD_REST_MIR_RESERVES && type != REWARD_REST_MIR_TREASURY) {
+                        it.next();
+                        continue;
+                    }
+
+                    var cred = CredentialKey.fromKeyBytes(key, 6);
+
+                    var rest = AccountStateCborCodec.decodeRewardRest(it.value());
+                    if (rest.amount().signum() > 0) {
+                        perCredentialTotal.merge(cred, rest.amount(), BigInteger::add);
+                        credentialTypes.putIfAbsent(cred, type);
+                    }
+                    keysToDelete.add(Arrays.copyOf(key, key.length));
+                    it.next();
+                }
+            }
+
+            if (perCredentialTotal.isEmpty()) {
+                return;
+            }
+
+            int credited = 0;
+            int skipped = 0;
+            BigInteger totalCredited = BigInteger.ZERO;
+            BigInteger creditedReserves = BigInteger.ZERO;
+            BigInteger creditedTreasury = BigInteger.ZERO;
+            for (var entry : perCredentialTotal.entrySet()) {
+                var ck = entry.getKey();
+                BigInteger amount = entry.getValue();
+
+                byte[] acctKey = accountKey(ck.typeInt(), ck.hash());
+                byte[] acctVal = db.get(cfState, acctKey);
+                if (acctVal == null) {
+                    skipped++;
+                    if (log.isDebugEnabled()) {
+                        log.debug("MIR skip deregistered: epoch={}, cred={}:{}, amount={}", epoch, ck.typeInt(), ck.hash(), amount);
+                    }
+                    continue; // deregistered — skip
+                }
+
+                var acct = AccountStateCborCodec.decodeStakeAccount(acctVal);
+                BigInteger newReward = acct.reward().add(amount);
+                batch.put(cfState, acctKey, AccountStateCborCodec.encodeStakeAccount(newReward, acct.deposit()));
+                credited++;
+                totalCredited = totalCredited.add(amount);
+                byte mirType = credentialTypes.getOrDefault(ck, REWARD_REST_MIR_RESERVES);
+                if (mirType == REWARD_REST_MIR_RESERVES) {
+                    creditedReserves = creditedReserves.add(amount);
+                } else {
+                    creditedTreasury = creditedTreasury.add(amount);
+                }
+            }
+            for (byte[] key : keysToDelete) {
+                batch.delete(cfState, key);
+            }
+
+            // Store the credited (deregistration-filtered) MIR totals per pot type as metadata.
+            // These are read by getMirEpochTotal() for cf-rewards MIR certificate input.
+            // earnedEpoch = epoch - 1 (MIR from previous epoch, spendable at current epoch)
+            int earnedEpoch = epoch - 1;
+            if (creditedReserves.signum() > 0) {
+                byte[] metaKey = mirCreditedTotalKey(earnedEpoch, REWARD_REST_MIR_RESERVES);
+                batch.put(cfState, metaKey, AccountStateCborCodec.encodeMirReward(creditedReserves));
+            }
+            if (creditedTreasury.signum() > 0) {
+                byte[] metaKey = mirCreditedTotalKey(earnedEpoch, REWARD_REST_MIR_TREASURY);
+                batch.put(cfState, metaKey, AccountStateCborCodec.encodeMirReward(creditedTreasury));
+            }
+
+            db.write(wo, batch);
+            if (credited > 0 || skipped > 0) {
+                log.info("Credited {} MIR reward_rest entries for epoch {}: total={} (reserves={}, treasury={}), skipped={} deregistered",
+                        credited, epoch, totalCredited, creditedReserves, creditedTreasury, skipped);
+            }
+        } catch (Exception e) {
+            log.error("creditMirRewardRest failed: {}", e.toString());
+        }
+    }
+
+    /**
      * Credit all spendable reward_rest entries to PREFIX_ACCT.reward and remove them.
-     * Called at epoch boundary BEFORE snapshot creation.
+     * Called at epoch boundary AFTER snapshot creation (phase 2).
      * Entries with spendable_epoch ≤ epoch are credited to the account's reward balance.
      */
     private void creditAndRemoveSpendableRewardRest(int epoch, org.rocksdb.WriteBatch batch) {
@@ -1363,6 +1565,7 @@ public class DefaultAccountStateStore implements AccountStateStore {
     @Override
     public void handleEpochTransition(int previousEpoch, int newEpoch) {
         if (!enabled) return;
+
         // Process epoch boundary: rewards, adapot, protocol params, governance
         if (epochBoundaryProcessor != null) {
             try {
@@ -1372,6 +1575,11 @@ public class DefaultAccountStateStore implements AccountStateStore {
                         previousEpoch, newEpoch, e.getMessage());
             }
         }
+
+        // Clean up old per-block fact entries (block issuers + fees) with a configurable lag.
+        // Data for stakeEpoch (newEpoch - 2) was just consumed by reward calculation.
+        int clearEpoch = newEpoch - 2 - EPOCH_BLOCK_DATA_RETENTION_LAG;
+        clearEpochBlockData(clearEpoch);
     }
 
     @Override
@@ -1381,12 +1589,10 @@ public class DefaultAccountStateStore implements AccountStateStore {
             // Snapshot already created in handleEpochTransition (between rewards and governance).
             // Here we only prune old snapshots/events and credit reward_rest.
 
-            // Prune old snapshots and stake events
+            // Prune old delegation snapshots (large, ~20MB each on mainnet).
+            // Stake events are NOT pruned — they're small and needed for accurate
+            // deregistered-account detection in reward calculations (cf-rewards).
             pruneOldSnapshots(newEpoch - SNAPSHOT_RETENTION_EPOCHS, batch);
-            int oldestEventEpoch = newEpoch - SNAPSHOT_RETENTION_EPOCHS;
-            if (oldestEventEpoch > 0) {
-                pruneOldStakeEvents(slotForEpochStart(oldestEventEpoch), batch);
-            }
 
             // Credit spendable reward_rest to PREFIX_ACCT in the SAME batch.
             // This makes the credited amounts available for subsequent snapshots and withdrawals.
@@ -1438,21 +1644,27 @@ public class DefaultAccountStateStore implements AccountStateStore {
                     if (invalidIdx.contains(txIdx)) continue;
                     TransactionBody tx = txs.get(txIdx);
 
-                    // Process certificates
+                    // Per Cardano ledger spec (shelley-ledger.pdf): UTXOW (withdrawals) before DELEGS (certificates).
+                    // Processing withdrawals first ensures that a same-tx deregistration correctly
+                    // removes the account after the withdrawal debits the reward balance.
+                    // Wrong order would cause the withdrawal's batch.put() to overwrite the
+                    // deregistration's batch.delete(), leaving the account alive.
+
+                    // Process withdrawals — debit reward balance (UTXOW phase)
+                    Map<String, BigInteger> withdrawals = tx.getWithdrawals();
+                    if (withdrawals != null) {
+                        for (var entry : withdrawals.entrySet()) {
+                            processWithdrawal(entry.getKey(), entry.getValue(), batch, deltaOps);
+                        }
+                    }
+
+                    // Process certificates (DELEGS phase)
                     List<Certificate> certs = tx.getCertificates();
                     if (certs != null) {
                         for (int certIdx = 0; certIdx < certs.size(); certIdx++) {
                             totalDepositedDelta = totalDepositedDelta.add(
                                     processCertificate(certs.get(certIdx), slot, currentEpoch,
-                                            txIdx, certIdx, batch, deltaOps));
-                        }
-                    }
-
-                    // Process withdrawals — debit reward balance
-                    Map<String, BigInteger> withdrawals = tx.getWithdrawals();
-                    if (withdrawals != null) {
-                        for (var entry : withdrawals.entrySet()) {
-                            processWithdrawal(entry.getKey(), entry.getValue(), batch, deltaOps);
+                                            txIdx, certIdx, event.era(), batch, deltaOps));
                         }
                     }
 
@@ -1473,7 +1685,7 @@ public class DefaultAccountStateStore implements AccountStateStore {
             }
 
             // Track per-pool block count and per-epoch fees
-            trackBlockCountAndFees(block, currentEpoch, txs, invalidIdx, batch, deltaOps);
+            trackBlockCountAndFees(block, currentEpoch, slot, txs, invalidIdx, batch, deltaOps);
 
             // Update total deposited
             if (totalDepositedDelta.signum() != 0) {
@@ -1503,7 +1715,7 @@ public class DefaultAccountStateStore implements AccountStateStore {
     }
 
     private BigInteger processCertificate(Certificate cert, long slot, int currentEpoch,
-                                          int txIdx, int certIdx,
+                                          int txIdx, int certIdx, Era era,
                                           WriteBatch batch, List<DeltaOp> deltaOps) throws RocksDBException {
         BigInteger depositDelta = BigInteger.ZERO;
 
@@ -1704,7 +1916,7 @@ public class DefaultAccountStateStore implements AccountStateStore {
                 }
             }
             case MoveInstataneous mir -> {
-                processMir(mir, batch, deltaOps);
+                processMir(mir, currentEpoch, era, batch, deltaOps);
             }
             default -> {
                 // Unknown certificate type — skip
@@ -1721,6 +1933,25 @@ public class DefaultAccountStateStore implements AccountStateStore {
         key[1] = (byte) credType;
         System.arraycopy(hash, 0, key, 2, hash.length);
         return key;
+    }
+
+    /** Key for pointer address mapping: PREFIX_POINTER_ADDR | slot(8 BE) | txIdx(4 BE) | certIdx(4 BE) */
+    private static byte[] pointerAddrKey(long slot, int txIdx, int certIdx) {
+        byte[] key = new byte[1 + 8 + 4 + 4];
+        key[0] = PREFIX_POINTER_ADDR;
+        ByteBuffer.wrap(key, 1, 8).order(ByteOrder.BIG_ENDIAN).putLong(slot);
+        ByteBuffer.wrap(key, 9, 4).order(ByteOrder.BIG_ENDIAN).putInt(txIdx);
+        ByteBuffer.wrap(key, 13, 4).order(ByteOrder.BIG_ENDIAN).putInt(certIdx);
+        return key;
+    }
+
+    /** Value for pointer address mapping: credType(1) | credHash(28) */
+    private static byte[] pointerAddrValue(int credType, String credHash) {
+        byte[] hash = HexUtil.decodeHexString(credHash);
+        byte[] val = new byte[1 + hash.length];
+        val[0] = (byte) credType;
+        System.arraycopy(hash, 0, val, 1, hash.length);
+        return val;
     }
 
     private BigInteger registerStake(StakeCredential cred, BigInteger deposit,
@@ -1765,8 +1996,15 @@ public class DefaultAccountStateStore implements AccountStateStore {
         batch.put(cfState, eventKey, eventVal);
         deltaOps.add(new DeltaOp(OP_PUT, eventKey, null));
 
-        // Register pointer for pointer address resolution
-        pointerAddressResolver.registerPointer(slot, txIdx, certIdx, ct, cred.getHash());
+        // Persist pointer address mapping in RocksDB (survives restarts).
+        // Pointer addresses are only relevant pre-Conway (removed in Conway era per CIP-0019).
+        // StakeRegistration certs are pre-Conway; RegCert/StakeRegDelegCert etc. are Conway.
+        // We write for all registrations since the storage is tiny and harmless, but the
+        // resolver is only used when era < Conway (see createAndCommitDelegationSnapshot).
+        byte[] ptrKey = pointerAddrKey(slot, txIdx, certIdx);
+        byte[] ptrVal = pointerAddrValue(ct, cred.getHash());
+        batch.put(cfState, ptrKey, ptrVal);
+        deltaOps.add(new DeltaOp(OP_PUT, ptrKey, null));
 
         return deposit;
     }
@@ -1857,41 +2095,43 @@ public class DefaultAccountStateStore implements AccountStateStore {
         byte[] prev = db.get(cfState, key);
         if (prev == null) return;
 
+        // Cardano: withdrawals always withdraw the ENTIRE reward balance (no partial).
+        // Set reward to 0 rather than subtracting, which avoids WriteBatch visibility bugs
+        // when multiple withdrawals for the same or different credentials occur in the same block.
+        // (db.get reads committed state, not pending batch operations — a second withdrawal
+        //  in the same block would read stale balance and overwrite the first withdrawal.)
         var acct = AccountStateCborCodec.decodeStakeAccount(prev);
-        BigInteger newReward = acct.reward().subtract(amount);
-        if (newReward.signum() < 0) newReward = BigInteger.ZERO;
-
-        byte[] val = AccountStateCborCodec.encodeStakeAccount(newReward, acct.deposit());
+        byte[] val = AccountStateCborCodec.encodeStakeAccount(BigInteger.ZERO, acct.deposit());
         batch.put(cfState, key, val);
         deltaOps.add(new DeltaOp(OP_PUT, key, prev));
     }
 
     /**
-     * Track per-pool block production count and per-epoch total fees.
-     * issuerVkey from block header identifies the pool that produced the block.
+     * Track per-block issuer and fees using idempotent per-block fact entries.
+     * <p>
+     * Writes one PREFIX_BLOCK_ISSUER entry and one PREFIX_BLOCK_FEE entry per block,
+     * keyed by [epoch][slot]. Same slot always maps to the same values, so duplicate
+     * application is harmless (idempotent overwrite). Aggregation happens at epoch
+     * boundary via {@link #aggregateBlockCounts} and {@link #aggregateEpochFees}.
      */
-    private void trackBlockCountAndFees(Block block, int epoch,
+    private void trackBlockCountAndFees(Block block, int epoch, long slot,
                                         List<TransactionBody> txs, Set<Integer> invalidIdx,
                                         WriteBatch batch, List<DeltaOp> deltaOps) throws RocksDBException {
-        // Track block producer (issuerVkey = pool cold VKey hash = pool ID)
+        // Per-block issuer entry (idempotent: same slot → same poolHash)
         if (block.getHeader() != null && block.getHeader().getHeaderBody() != null) {
             String issuerVkey = block.getHeader().getHeaderBody().getIssuerVkey();
             if (issuerVkey != null && !issuerVkey.isEmpty()) {
-                // Hash the VKey to get the pool ID (28-byte Blake2b-224)
                 byte[] vkeyBytes = HexUtil.decodeHexString(issuerVkey);
-                String poolHash = HexUtil.encodeHexString(
-                        com.bloxbean.cardano.client.crypto.Blake2bUtil.blake2bHash224(vkeyBytes));
+                byte[] poolHashBytes = com.bloxbean.cardano.client.crypto.Blake2bUtil.blake2bHash224(vkeyBytes);
 
-                byte[] key = poolBlockCountKey(epoch, poolHash);
-                byte[] prev = db.get(cfState, key);
-                long currentCount = (prev != null) ? AccountStateCborCodec.decodePoolBlockCount(prev) : 0;
-                byte[] val = AccountStateCborCodec.encodePoolBlockCount(currentCount + 1);
-                batch.put(cfState, key, val);
-                deltaOps.add(new DeltaOp(OP_PUT, key, prev));
+                byte[] issuerKey = blockIssuerKey(epoch, slot);
+                byte[] issuerPrev = db.get(cfState, issuerKey);
+                batch.put(cfState, issuerKey, poolHashBytes);
+                deltaOps.add(new DeltaOp(OP_PUT, issuerKey, issuerPrev));
             }
         }
 
-        // Track total fees for this epoch (include invalid tx collateral fees)
+        // Per-block fee entry (idempotent: same slot → same fee)
         if (txs != null) {
             var feeResolver = new FeeResolver(utxoState);
             BigInteger blockFees = BigInteger.ZERO;
@@ -1901,13 +2141,9 @@ public class DefaultAccountStateStore implements AccountStateStore {
             }
 
             if (blockFees.signum() > 0) {
-                byte[] feeKey = epochFeesKey(epoch);
+                byte[] feeKey = blockFeeKey(epoch, slot);
                 byte[] feePrev = db.get(cfState, feeKey);
-                BigInteger currentFees = (feePrev != null)
-                        ? AccountStateCborCodec.decodeEpochFees(feePrev)
-                        : BigInteger.ZERO;
-                byte[] feeVal = AccountStateCborCodec.encodeEpochFees(currentFees.add(blockFees));
-                batch.put(cfState, feeKey, feeVal);
+                batch.put(cfState, feeKey, AccountStateCborCodec.encodeEpochFees(blockFees));
                 deltaOps.add(new DeltaOp(OP_PUT, feeKey, feePrev));
             }
         }
@@ -1918,13 +2154,24 @@ public class DefaultAccountStateStore implements AccountStateStore {
      * <p>
      * Two modes:
      * 1. Stake credential distribution: adds instant reward amounts to per-credential MIR state
+     *    AND stores per-epoch per-pot per-credential data for reward calculation
      * 2. Pot transfer: accumulates reserves↔treasury transfer amounts in metadata keys
      */
-    private void processMir(MoveInstataneous mir, WriteBatch batch,
-                            List<DeltaOp> deltaOps) throws RocksDBException {
+    private void processMir(MoveInstataneous mir, int currentEpoch, Era era,
+                            WriteBatch batch, List<DeltaOp> deltaOps) throws RocksDBException {
         Map<StakeCredential, BigInteger> credMap = mir.getStakeCredentialCoinMap();
 
         if (credMap != null && !credMap.isEmpty()) {
+            byte mirType = mir.isTreasury() ? REWARD_REST_MIR_TREASURY : REWARD_REST_MIR_RESERVES;
+            String potName = mir.isTreasury() ? "treasury" : "reserves";
+            BigInteger mirTotal = credMap.values().stream()
+                    .filter(a -> a != null && a.signum() > 0)
+                    .reduce(BigInteger.ZERO, BigInteger::add);
+            log.info("Processing MIR cert in epoch {}: pot={}, credentials={}, total={}",
+                    currentEpoch, potName, credMap.size(), mirTotal);
+
+            int spendableEpoch = currentEpoch + 1;
+
             // Mode 1: distribute rewards to individual stake credentials
             for (var entry : credMap.entrySet()) {
                 StakeCredential cred = entry.getKey();
@@ -1932,18 +2179,41 @@ public class DefaultAccountStateStore implements AccountStateStore {
                 if (amount == null || amount.signum() <= 0) continue;
 
                 int ct = credTypeInt(cred.getType());
+
+                // Legacy per-credential accumulator (PREFIX_MIR_REWARD)
                 byte[] key = mirRewardKey(ct, cred.getHash());
                 byte[] prev = db.get(cfState, key);
-
-                // Accumulate: existing + new
                 BigInteger existing = (prev != null)
                         ? AccountStateCborCodec.decodeMirReward(prev)
                         : BigInteger.ZERO;
                 BigInteger updated = existing.add(amount);
-
                 byte[] val = AccountStateCborCodec.encodeMirReward(updated);
                 batch.put(cfState, key, val);
                 deltaOps.add(new DeltaOp(OP_PUT, key, prev));
+
+                // Store as reward_rest (type=REWARD_REST_MIR) for epoch-scoped tracking.
+                // spendable_epoch = earned_epoch + 1 (matching Yaci Store convention).
+                // Pre-Alonzo: last MIR cert per credential wins (overwrite, don't accumulate).
+                //   Per Haskell ledger spec and Yaci Store InstantRewardSnapshotService.
+                // Alonzo+: all MIR certs for same credential in an epoch are summed.
+                byte[] restKey = rewardRestKey(spendableEpoch, mirType, ct, cred.getHash());
+                byte[] restPrev = db.get(cfState, restKey);
+                BigInteger restAmount;
+                if (era != null && era.getValue() < Era.Alonzo.getValue()) {
+                    // Pre-Alonzo: replace — blocks are processed in slot order,
+                    // so the last write is the latest MIR cert for this credential.
+                    restAmount = amount;
+                } else {
+                    // Alonzo+: accumulate all MIR certs for the same credential
+                    BigInteger restExisting = BigInteger.ZERO;
+                    if (restPrev != null) {
+                        restExisting = AccountStateCborCodec.decodeRewardRest(restPrev).amount();
+                    }
+                    restAmount = restExisting.add(amount);
+                }
+                byte[] restVal = AccountStateCborCodec.encodeRewardRest(restAmount, currentEpoch, 0L);
+                batch.put(cfState, restKey, restVal);
+                deltaOps.add(new DeltaOp(OP_PUT, restKey, restPrev));
             }
         } else if (mir.getAccountingPotCoin() != null && mir.getAccountingPotCoin().signum() > 0) {
             // Mode 2: pot transfer (reserves ↔ treasury)
@@ -2344,25 +2614,9 @@ public class DefaultAccountStateStore implements AccountStateStore {
             }
         }
 
-        // Second: fallback for credentials registered at genesis or before event tracking.
-        // If a pool reward address has an active account (PREFIX_ACCT) but no event was found,
-        // consider it registered.
-        for (String credKey : poolRewardAddresses) {
-            if (registered.contains(credKey)) continue;
-            String[] parts = credKey.split(":", 2);
-            if (parts.length == 2) {
-                int credType = Integer.parseInt(parts[0]);
-                byte[] acctKey = accountKey(credType, parts[1]);
-                try {
-                    byte[] val = db.get(cfState, acctKey);
-                    if (val != null) {
-                        registered.add(credKey);
-                    }
-                } catch (RocksDBException e) {
-                    log.warn("Failed to check account for pool reward addr {}: {}", credKey, e.getMessage());
-                }
-            }
-        }
+        // No fallback: if no registration event was found before cutoff, the address is not registered.
+        // TODO: genesis-era accounts (devnet) may have implicit registration without events.
+        //       Verify with devnet testing and add handling if needed.
 
         return registered;
     }
@@ -2466,8 +2720,23 @@ public class DefaultAccountStateStore implements AccountStateStore {
             return;
         }
 
+        // Skip forward reconciliation if store is empty and tip is Byron era.
+        // Account state only tracks Shelley+ data (staking, rewards, delegations).
+        // Replaying Byron blocks is pure overhead — no relevant state to reconcile.
+        if (lastAppliedBlock == 0) {
+            Era tipEra = chainState.getBlockEra(tipBlock);
+            if (tipEra == Era.Byron) {
+                log.info("Account state reconcile skipped: tip block {} is Byron era, nothing to reconcile", tipBlock);
+                return;
+            }
+        }
+
         // Forward replay
+        log.info("Account state reconcile: replaying blocks {} to {}", lastAppliedBlock + 1, tipBlock);
         for (long bn = lastAppliedBlock + 1; bn <= tipBlock; bn++) {
+            if ((bn - lastAppliedBlock) % 1000 == 0) {
+                log.info("Account state reconcile progress: block {}/{}", bn, tipBlock);
+            }
             byte[] blockBytes = chainState.getBlockByNumber(bn);
             if (blockBytes == null) continue;
 

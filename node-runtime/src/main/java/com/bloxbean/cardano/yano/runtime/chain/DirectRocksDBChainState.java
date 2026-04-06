@@ -1021,7 +1021,23 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
         }
     }
 
-    @Override
+    /**
+     * Find the nearest stored block slot at or before the given target slot.
+     * Uses seekForPrev on the numberBySlot column family.
+     */
+    public Long findNearestSlotAtOrBefore(long targetSlot) {
+        try (RocksIterator it = db.newIterator(numberBySlotHandle)) {
+            it.seekForPrev(longToBytes(targetSlot));
+            if (it.isValid()) {
+                return bytesToLong(it.key());
+            }
+            return null;
+        } catch (Exception e) {
+            log.error("Failed to find nearest slot at or before {}", targetSlot, e);
+            return null;
+        }
+    }
+
     public Long getBlockNumberBySlot(Long slot) {
         try {
             byte[] blockNumberBytes = db.get(numberBySlotHandle, longToBytes(slot));

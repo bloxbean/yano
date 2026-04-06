@@ -99,15 +99,24 @@ public class EpochRewardCalculator {
         long start = System.currentTimeMillis();
 
         // 1. Build protocol parameters for cf-rewards-calculation (from stake epoch N-2)
-        var protocolParams = buildProtocolParameters(paramProvider, stakeEpoch);
+        // Special case for first Shelley epoch: stakeEpoch may be a Byron epoch with no Shelley params.
+        // Matching Yaci Store's logic: if (epoch == nonByronEpoch + 1) use params from nonByronEpoch.
+        var networkConfig = resolveNetworkConfig(networkMagic);
+        int shelleyStartEpoch = networkConfig.getShelleyStartEpoch();
+        int paramEpoch = (stakeEpoch < shelleyStartEpoch) ? shelleyStartEpoch : stakeEpoch;
+        var protocolParams = buildProtocolParameters(paramProvider, paramEpoch);
+        if (paramEpoch != stakeEpoch) {
+            log.info("Using protocol params from epoch {} (shelley start) instead of {} (Byron)",
+                    paramEpoch, stakeEpoch);
+        }
 
-        // 2. Build epoch info from stake epoch N-2
+        // 2. Gather block counts, fees, and snapshot for stake epoch N-2
         var blockCounts = getPoolBlockCounts(stakeEpoch);
         long totalBlocks = blockCounts.values().stream().mapToLong(Long::longValue).sum();
         // Fees collected during epoch N-2 (stored in epoch fees for stakeEpoch)
         var fees = getEpochFees(stakeEpoch);
 
-        // Stake snapshot: key=stakeEpoch captures delegation/stake state at end of stakeEpoch
+        // Stake snapshot: key=snapshotKey captures delegation/stake state at end of that epoch
         var stakeSnapshot = getStakeSnapshot(snapshotKey);
         if (stakeSnapshot.isEmpty()) {
             log.info("No stake snapshot at key {} for epoch {} — proceeding with empty snapshot " +
@@ -116,21 +125,24 @@ public class EpochRewardCalculator {
         var totalActiveStake = stakeSnapshot.values().stream()
                 .map(AccountStateCborCodec.EpochDelegSnapshot::amount)
                 .reduce(BigInteger.ZERO, BigInteger::add);
-        var epochInfo = Epoch.builder()
-                .number(stakeEpoch)
-                .fees(fees)
-                .blockCount((int) totalBlocks)
-                .activeStake(totalActiveStake)
-                .nonOBFTBlockCount((int) totalBlocks) // post-Shelley: all blocks are non-OBFT
-                .build();
 
-        // 3. Build pool states from snapshot
+        // 3. Build pool states from snapshot (before epochInfo, needed for nonOBFTBlockCount)
         var poolStates = buildPoolStates(stakeSnapshot, blockCounts, stakeEpoch);
         // cf-rewards param 9 is "poolsThatProducedBlocksInEpoch" — must only contain
         // pools that actually produced blocks, not ALL pools in the snapshot.
         var poolIds = poolStates.stream()
                 .filter(ps -> ps.getBlockCount() > 0)
                 .map(PoolState::getPoolId).toList();
+
+        long nonOBFTBlocks = computeNonOBFTBlockCount(protocolParams, blockCounts, totalBlocks, stakeEpoch);
+
+        var epochInfo = Epoch.builder()
+                .number(stakeEpoch)
+                .fees(fees)
+                .blockCount((int) totalBlocks)
+                .activeStake(totalActiveStake)
+                .nonOBFTBlockCount((int) nonOBFTBlocks)
+                .build();
 
         // 4. Retired pools — pass real set to cf-rewards library.
         // The library adds unclaimed deposits (unregistered reward address) to treasury.
@@ -163,11 +175,15 @@ public class EpochRewardCalculator {
         var sharedPoolRewardAddresses = SharedPoolRewardAddresses
                 .getSharedAddressesWithoutReward(epoch, networkMagic);
 
-        // 7. MIR certificates (simplified — empty for now, populated from stored MIR state in future)
-        List<MirCertificate> mirCertificates = List.of();
+        // 7. MIR certificates — aggregate per-epoch per-pot totals from stored MIR data
+        List<MirCertificate> mirCertificates = buildMirCertificates(feeEpoch);
+        if (!mirCertificates.isEmpty()) {
+            for (var mir : mirCertificates) {
+                log.info("Epoch {} MIR certificate: pot={}, totalRewards={}", epoch, mir.getPot(), mir.getTotalRewards());
+            }
+        }
 
-        // 8. Network config
-        var networkConfig = resolveNetworkConfig(networkMagic);
+        // 8. Network config (already resolved above for param epoch selection)
 
         // 9. Calculate
         EpochCalculationResult result;
@@ -244,6 +260,35 @@ public class EpochRewardCalculator {
                 .optimalPoolCount(pp.getNOpt(epoch))
                 .poolOwnerInfluence(pp.getA0(epoch))
                 .build();
+    }
+
+    /**
+     * Compute non-OBFT block count matching Yaci Store's EpochInfoService logic:
+     *   d == null or 0: nonOBFT = totalBlocks (no OBFT blocks)
+     *   d == 1: nonOBFT = 0 (all blocks are OBFT)
+     *   0 < d < 1: count blocks whose issuerVkey matches a registered pool
+     */
+    private long computeNonOBFTBlockCount(ProtocolParameters protocolParams,
+                                           Map<String, Long> blockCounts,
+                                           long totalBlocks,
+                                           int stakeEpoch) {
+        BigDecimal d = protocolParams.getDecentralisation();
+        if (d == null || d.compareTo(BigDecimal.ZERO) == 0) {
+            return totalBlocks;
+        } else if (d.compareTo(BigDecimal.ONE) == 0) {
+            return 0;
+        } else {
+            // Count blocks by registered pools only (excludes genesis delegate/OBFT blocks).
+            // blockCounts keys are issuerVkey (= pool cold vkey hash = pool ID).
+            long count = 0;
+            for (var entry : blockCounts.entrySet()) {
+                if (ledgerStateProvider != null
+                        && ledgerStateProvider.getPoolParams(entry.getKey(), stakeEpoch).isPresent()) {
+                    count += entry.getValue();
+                }
+            }
+            return count;
+        }
     }
 
     /**
@@ -555,6 +600,40 @@ public class EpochRewardCalculator {
     ) {}
 
     /**
+     * Build MIR certificates for the cf-rewards library by aggregating per-epoch per-pot totals.
+     * Uses feeEpoch (epoch - 1) matching Yaci Store's convention:
+     * "Block producing epoch is epoch - 1 (Fee + MIR + DeRegistration)"
+     *
+     * @param mirEpoch the epoch from which to aggregate MIR data (feeEpoch = epoch - 1)
+     * @return list of MirCertificate objects (0-2 entries: one per pot type with non-zero total)
+     */
+    private List<MirCertificate> buildMirCertificates(int mirEpoch) {
+        if (accountStateStore == null) return List.of();
+
+        List<MirCertificate> result = new ArrayList<>();
+
+        BigInteger totalFromReserves = accountStateStore.getMirEpochTotal(
+                mirEpoch, DefaultAccountStateStore.REWARD_REST_MIR_RESERVES);
+        if (totalFromReserves.signum() > 0) {
+            result.add(MirCertificate.builder()
+                    .pot(MirPot.RESERVES)
+                    .totalRewards(totalFromReserves)
+                    .build());
+        }
+
+        BigInteger totalFromTreasury = accountStateStore.getMirEpochTotal(
+                mirEpoch, DefaultAccountStateStore.REWARD_REST_MIR_TREASURY);
+        if (totalFromTreasury.signum() > 0) {
+            result.add(MirCertificate.builder()
+                    .pot(MirPot.TREASURY)
+                    .totalRewards(totalFromTreasury)
+                    .build());
+        }
+
+        return result;
+    }
+
+    /**
      * Build the five account sets needed by cf-rewards-calculation using event-based tracking.
      * Falls back to snapshot diff when event queries are not available.
      */
@@ -655,11 +734,15 @@ public class EpochRewardCalculator {
         // Reward addresses that WERE registered and then deregistered are caught by the
         // event-based scan above.
 
-        // registeredSinceLast: pool reward addresses registered up to the fee epoch boundary.
-        // Despite the name, cf-rewards uses this as "accountsRegisteredInThePast" — the full set
-        // of pool reward addresses that have ever been registered up to the last epoch boundary.
+        // registeredSinceLast: pool reward addresses registered up to the fee epoch stability window.
+        // Matches Yaci Store: cutoff = startOfFeeEpoch + stabilityWindow (not epoch end).
+        // Pre-Babbage: stabilityWindow = randomnessStabilisationWindow (172800 slots).
+        // Post-Babbage: stabilityWindow = epochLength (432000 slots) = same as epoch end.
+        long registeredSinceLastCutoff = feeEpochStartSlot + (postBabbage
+                ? paramProvider.getEpochLength()
+                : paramProvider.getRandomnessStabilisationWindow());
         var registeredSinceLast = new HashSet<>(
-                ledgerStateProvider.getRegisteredPoolRewardAddressesBeforeSlot(feeEpochEndSlot, poolRewardAddresses));
+                ledgerStateProvider.getRegisteredPoolRewardAddressesBeforeSlot(registeredSinceLastCutoff, poolRewardAddresses));
 
         // registeredUntilNow: pool reward addresses registered up to the start of current epoch N
         long currentEpochStartSlot = accountStateStore.slotForEpochStart(epoch);
@@ -685,20 +768,20 @@ public class EpochRewardCalculator {
 
     public Map<String, Long> getPoolBlockCounts(int epoch) {
         Map<String, Long> counts = new HashMap<>();
-        byte[] seekKey = new byte[5];
-        seekKey[0] = DefaultAccountStateStore.PREFIX_POOL_BLOCK_COUNT;
+        byte[] seekKey = new byte[1 + 4];
+        seekKey[0] = DefaultAccountStateStore.PREFIX_BLOCK_ISSUER;
         ByteBuffer.wrap(seekKey, 1, 4).order(ByteOrder.BIG_ENDIAN).putInt(epoch);
 
         try (var it = db.newIterator(cfState)) {
             it.seek(seekKey);
             while (it.isValid()) {
                 byte[] key = it.key();
-                if (key.length < 5 || key[0] != DefaultAccountStateStore.PREFIX_POOL_BLOCK_COUNT) break;
+                if (key.length < 5 || key[0] != DefaultAccountStateStore.PREFIX_BLOCK_ISSUER) break;
                 int keyEpoch = ByteBuffer.wrap(key, 1, 4).order(ByteOrder.BIG_ENDIAN).getInt();
                 if (keyEpoch != epoch) break;
 
-                String poolHash = HexUtil.encodeHexString(Arrays.copyOfRange(key, 5, key.length));
-                counts.put(poolHash, AccountStateCborCodec.decodePoolBlockCount(it.value()));
+                String poolHash = HexUtil.encodeHexString(it.value());
+                counts.merge(poolHash, 1L, Long::sum);
                 it.next();
             }
         }
@@ -706,13 +789,24 @@ public class EpochRewardCalculator {
     }
 
     public BigInteger getEpochFees(int epoch) {
-        try {
-            byte[] val = db.get(cfState, DefaultAccountStateStore.epochFeesKey(epoch));
-            return val != null ? AccountStateCborCodec.decodeEpochFees(val) : BigInteger.ZERO;
-        } catch (RocksDBException e) {
-            log.error("Failed to get epoch fees for epoch {}: {}", epoch, e.getMessage());
-            return BigInteger.ZERO;
+        BigInteger total = BigInteger.ZERO;
+        byte[] seekKey = new byte[1 + 4];
+        seekKey[0] = DefaultAccountStateStore.PREFIX_BLOCK_FEE;
+        ByteBuffer.wrap(seekKey, 1, 4).order(ByteOrder.BIG_ENDIAN).putInt(epoch);
+
+        try (var it = db.newIterator(cfState)) {
+            it.seek(seekKey);
+            while (it.isValid()) {
+                byte[] key = it.key();
+                if (key.length < 5 || key[0] != DefaultAccountStateStore.PREFIX_BLOCK_FEE) break;
+                int keyEpoch = ByteBuffer.wrap(key, 1, 4).order(ByteOrder.BIG_ENDIAN).getInt();
+                if (keyEpoch != epoch) break;
+
+                total = total.add(AccountStateCborCodec.decodeEpochFees(it.value()));
+                it.next();
+            }
         }
+        return total;
     }
 
     public Map<String, AccountStateCborCodec.EpochDelegSnapshot> getStakeSnapshot(int epoch) {
@@ -792,7 +886,11 @@ public class EpochRewardCalculator {
         int feeEpoch = epoch - 1;
         int snapshotKey = stakeEpoch - 2; // N-4: mark snapshot from end of epoch N-4
 
-        var protocolParams = buildProtocolParameters(paramProvider, stakeEpoch);
+        // Protocol params: use shelley start epoch if stakeEpoch is Byron
+        var networkConfig = resolveNetworkConfig(networkMagic);
+        int shelleyStartEpoch = networkConfig.getShelleyStartEpoch();
+        int paramEpoch = (stakeEpoch < shelleyStartEpoch) ? shelleyStartEpoch : stakeEpoch;
+        var protocolParams = buildProtocolParameters(paramProvider, paramEpoch);
 
         var blockCounts = getPoolBlockCounts(stakeEpoch);
         long totalBlocks = blockCounts.values().stream().mapToLong(Long::longValue).sum();
@@ -803,15 +901,16 @@ public class EpochRewardCalculator {
                 .map(AccountStateCborCodec.EpochDelegSnapshot::amount)
                 .reduce(BigInteger.ZERO, BigInteger::add);
 
+        var poolStates = buildPoolStates(stakeSnapshot, blockCounts, stakeEpoch);
+        long nonOBFTBlocks = computeNonOBFTBlockCount(protocolParams, blockCounts, totalBlocks, stakeEpoch);
+
         var epochInfo = Epoch.builder()
                 .number(stakeEpoch)
                 .fees(fees)
                 .blockCount((int) totalBlocks)
                 .activeStake(totalActiveStake)
-                .nonOBFTBlockCount((int) totalBlocks)
+                .nonOBFTBlockCount((int) nonOBFTBlocks)
                 .build();
-
-        var poolStates = buildPoolStates(stakeSnapshot, blockCounts, stakeEpoch);
 
         Set<RetiredPool> retiredPools = buildRetiredPools(epoch);
 
@@ -821,7 +920,7 @@ public class EpochRewardCalculator {
         var sharedPoolRewardAddresses = SharedPoolRewardAddresses
                 .getSharedAddressesWithoutReward(epoch, networkMagic);
 
-        List<MirCertificate> mirCertificates = List.of();
+        List<MirCertificate> mirCertificates = buildMirCertificates(feeEpoch);
 
         return Optional.of(new RewardInputs(
                 epoch, stakeEpoch, feeEpoch,

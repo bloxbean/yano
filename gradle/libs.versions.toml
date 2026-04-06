@@ -1,5 +1,5 @@
 [versions]
-yaci = "0.5.0-pre5"
+yaci = "0.5.0-pre6"
 cardano-client-lib = "0.8.0-pre2-vrf-SNAPSHOT"
 julc="0.1.0-pre7"
 

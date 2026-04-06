@@ -960,7 +960,11 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
         }
 
         // Forward replay: apply missing blocks using stored bodies
+        log.info("UTXO reconcile: replaying blocks {} to {}", lastAppliedBlock + 1, tipBlock);
         for (long bn = lastAppliedBlock + 1; bn <= tipBlock; bn++) {
+            if ((bn - lastAppliedBlock) % 1000 == 0) {
+                log.info("UTXO reconcile progress: block {}/{}", bn, tipBlock);
+            }
             byte[] blockBytes = chainState.getBlockByNumber(bn);
             if (blockBytes == null) {
                 // Body missing locally; skip and let live sync catch up

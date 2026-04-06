@@ -18,4 +18,15 @@ public record CredentialKey(StakeCredType type, String hash) {
         return new CredentialKey(
                 credType == 0 ? StakeCredType.ADDR_KEYHASH : StakeCredType.SCRIPTHASH, hash);
     }
+
+    /**
+     * Extract credential from a RocksDB key that has credType(1) + credHash(28) at the given offset.
+     * Common layout: [...][credType(1)][credHash(28)] — used by reward_rest, account, MIR keys etc.
+     */
+    public static CredentialKey fromKeyBytes(byte[] key, int offset) {
+        int credType = key[offset] & 0xFF;
+        String credHash = com.bloxbean.cardano.yaci.core.util.HexUtil.encodeHexString(
+                java.util.Arrays.copyOfRange(key, offset + 1, key.length));
+        return of(credType, credHash);
+    }
 }

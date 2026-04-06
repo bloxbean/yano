@@ -1,5 +1,8 @@
 package com.bloxbean.cardano.yano.ledgerstate;
 
+import com.bloxbean.cardano.client.crypto.Bech32;
+import com.bloxbean.cardano.yaci.core.util.HexUtil;
+
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
@@ -90,14 +93,21 @@ public final class SharedPoolRewardAddresses {
     /**
      * Get the shared pool reward addresses without reward for a given epoch.
      * Returns empty set for non-mainnet or epochs outside the affected range.
+     * Pool IDs are returned as hex hashes (matching Yano's internal format),
+     * converted from the bech32-encoded source data.
      *
      * @param epoch        the epoch number
      * @param networkMagic the network protocol magic
-     * @return set of bech32 pool IDs that should not receive shared rewards
+     * @return set of hex pool hashes that should not receive shared rewards
      */
     public static HashSet<String> getSharedAddressesWithoutReward(int epoch, long networkMagic) {
         if (networkMagic != MAINNET_MAGIC) return new HashSet<>();
-        var addresses = EPOCH_ADDRESSES.get(epoch);
-        return addresses != null ? new HashSet<>(addresses) : new HashSet<>();
+        var bech32Addresses = EPOCH_ADDRESSES.get(epoch);
+        if (bech32Addresses == null) return new HashSet<>();
+        HashSet<String> hexHashes = new HashSet<>();
+        for (String bech32PoolId : bech32Addresses) {
+            hexHashes.add(HexUtil.encodeHexString(Bech32.decode(bech32PoolId).data));
+        }
+        return hexHashes;
     }
 }
