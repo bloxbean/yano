@@ -142,12 +142,12 @@ tasks.register('nodeDistZip', Zip) {
     group = 'distribution'
     description = 'Creates a distributable zip with the uber-jar, config, and start script'
 
-    archiveFileName = "yano-node-${distVersion}.zip"
+    archiveFileName = "yano-${distVersion}.zip"
     destinationDirectory = layout.buildDirectory.dir('distributions')
 
-    into("yano-node-${distVersion}") {
-        from(layout.buildDirectory.file('yano-node.jar'))
-        from('bin/yano-node.sh') {
+    into("yano-${distVersion}") {
+        from(layout.buildDirectory.file('yano.jar'))
+        from('bin/yano.sh') {
             filePermissions { unix('755') }
         }
         from('bin/README.md')
@@ -178,11 +178,11 @@ tasks.register('nodeNativeDistZip', Zip) {
     description = 'Builds the native binary and creates a distributable zip'
 
     def platform = detectPlatform()
-    archiveFileName = "yano-node-native-${distVersion}-${platform}.zip"
+    archiveFileName = "yano-native-${distVersion}-${platform}.zip"
     destinationDirectory = layout.buildDirectory.dir('distributions')
 
     doFirst {
-        def binary = layout.buildDirectory.file('yano-node').get().asFile
+        def binary = layout.buildDirectory.file('yano').get().asFile
         if (!binary.exists()) {
             throw new GradleException(
                 "Native binary not found at ${binary.path}. The native build may have failed."
@@ -190,11 +190,11 @@ tasks.register('nodeNativeDistZip', Zip) {
         }
     }
 
-    into("yano-node-native-${distVersion}-${platform}") {
-        from(layout.buildDirectory.file('yano-node')) {
+    into("yano-native-${distVersion}-${platform}") {
+        from(layout.buildDirectory.file('yano')) {
             filePermissions { unix('755') }
         }
-        from('bin/yano-node.sh') {
+        from('bin/yano.sh') {
             filePermissions { unix('755') }
         }
         from('bin/README.md')
