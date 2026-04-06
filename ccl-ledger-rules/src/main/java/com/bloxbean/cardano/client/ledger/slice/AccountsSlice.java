@@ -50,6 +50,9 @@ public interface AccountsSlice {
 
     /**
      * Get the current reward balance, with credential type awareness.
+     * @param credType the credential type
+     * @param credentialHash the credential hash
+     * @return the reward balance, if available
      */
     default Optional<BigInteger> getRewardBalance(int credType, String credentialHash) {
         return getRewardBalance(credentialHash);
