@@ -112,6 +112,33 @@ public class UtxoBalanceAggregator {
     }
 
     /**
+     * Extract stake credential from a bech32 address string.
+     * Handles regular addresses (delegation credential) and pointer addresses (via resolver).
+     *
+     * @return credential key, or null if address has no stake credential
+     */
+    public CredentialKey extractCredential(String addressStr, PointerAddressResolver pointerResolver) {
+        try {
+            Address address = new Address(addressStr);
+            AddressType addrType = address.getAddressType();
+
+            if (addrType == AddressType.Ptr) {
+                if (pointerResolver == null) return null;
+                return resolvePointerAddress(address, pointerResolver);
+            }
+
+            byte[] delegationHash = address.getDelegationCredentialHash().orElse(null);
+            if (delegationHash == null || delegationHash.length != 28) return null;
+
+            int credType = getStakeCredType(address);
+            String credHash = com.bloxbean.cardano.yaci.core.util.HexUtil.encodeHexString(delegationHash);
+            return new CredentialKey(credType, credHash);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /**
      * Resolve a pointer address to a credential key using the PointerAddressResolver.
      * Uses CCL's PointerAddress class to parse (slot, txIndex, certIndex) from the address,
      * matching Yaci Store's approach in AccountBalanceProcessor.

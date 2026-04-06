@@ -110,6 +110,8 @@ public class YaciNodeProducer {
     // Epoch subsystem config
     @ConfigProperty(name = "yaci.node.epoch-snapshot.amounts-enabled", defaultValue = "false")
     boolean epochSnapshotAmountsEnabled;
+    @ConfigProperty(name = "yaci.node.epoch-snapshot.balance-mode", defaultValue = "full-scan")
+    String balanceMode; // "full-scan" or "incremental"
     @ConfigProperty(name = "yaci.node.adapot.enabled", defaultValue = "false")
     boolean adapotEnabled;
     @ConfigProperty(name = "yaci.node.rewards.enabled", defaultValue = "false")
@@ -362,6 +364,7 @@ public class YaciNodeProducer {
 
         // Epoch subsystems
         globals.put("yaci.node.epoch-snapshot.amounts-enabled", epochSnapshotAmountsEnabled);
+        globals.put("yaci.node.epoch-snapshot.balance-mode", balanceMode);
         globals.put("yaci.node.adapot.enabled", adapotEnabled);
         globals.put("yaci.node.rewards.enabled", rewardsEnabled);
         globals.put("yaci.node.epoch-params.tracking-enabled", epochParamsTrackingEnabled);

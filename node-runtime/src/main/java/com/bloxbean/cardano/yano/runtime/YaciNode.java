@@ -329,7 +329,10 @@ public class YaciNode implements NodeAPI {
                     if (snapshotAmountsEnabled) {
                         defaultStore.setStakeSnapshotService(
                                 new com.bloxbean.cardano.yano.ledgerstate.EpochStakeSnapshotService(true));
-                        log.info("Epoch stake snapshot amounts enabled");
+                        String balMode = String.valueOf(this.runtimeOptions.globals()
+                                .getOrDefault("yaci.node.epoch-snapshot.balance-mode", "full-scan"));
+                        defaultStore.setBalanceMode(balMode);
+                        log.info("Epoch stake snapshot amounts enabled (balance-mode={})", balMode);
                     }
 
                     // Enable AdaPot tracker if configured

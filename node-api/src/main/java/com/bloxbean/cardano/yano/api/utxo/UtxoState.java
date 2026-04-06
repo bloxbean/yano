@@ -88,6 +88,29 @@ public interface UtxoState {
     }
 
     /**
+     * Iterate UTXO delta log entries within a slot range.
+     * Each delta contains the created and spent outpoints for one block.
+     * Used for incremental balance aggregation at epoch boundaries.
+     *
+     * @param startSlot  inclusive start slot
+     * @param endSlot    exclusive end slot
+     * @param consumer   receives (txHash, index, address, lovelace, isCreated) for each UTXO change.
+     *                   isCreated=true means UTXO was created, false means spent.
+     */
+    default void forEachUtxoDeltaInSlotRange(long startSlot, long endSlot,
+                                              UtxoDeltaConsumer consumer) {
+        // Default: no-op (implementations without delta support)
+    }
+
+    /**
+     * Consumer for UTXO delta entries.
+     */
+    @FunctionalInterface
+    interface UtxoDeltaConsumer {
+        void accept(String address, java.math.BigInteger lovelace, boolean isCreated);
+    }
+
+    /**
      * Whether UTXO state is enabled and actively maintained.
      */
     boolean isEnabled();

@@ -166,6 +166,14 @@ public class DefaultAccountStateStore implements AccountStateStore {
     }
 
     /**
+     * Set the balance aggregation mode: "full-scan" (default) or "incremental".
+     */
+    public void setBalanceMode(String mode) {
+        this.balanceMode = mode;
+    }
+    private String balanceMode = "full-scan";
+
+    /**
      * Set the AdaPot tracker for treasury/reserves tracking.
      */
     public void setAdaPotTracker(AdaPotTracker tracker) {
@@ -980,6 +988,29 @@ public class DefaultAccountStateStore implements AccountStateStore {
             log.error("getReserves failed: {}", e.toString());
             return Optional.empty();
         }
+    }
+
+    /**
+     * Read a previous epoch's delegation snapshot for incremental balance aggregation.
+     */
+    private java.util.Map<String, AccountStateCborCodec.EpochDelegSnapshot> readStakeSnapshot(int epoch) {
+        java.util.Map<String, AccountStateCborCodec.EpochDelegSnapshot> snapshot = new java.util.HashMap<>();
+        byte[] epochPrefix = ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(epoch).array();
+        try (RocksIterator it = db.newIterator(cfEpochSnapshot)) {
+            it.seek(epochPrefix);
+            while (it.isValid()) {
+                byte[] key = it.key();
+                if (key.length < 5) break;
+                int keyEpoch = ByteBuffer.wrap(key, 0, 4).order(ByteOrder.BIG_ENDIAN).getInt();
+                if (keyEpoch != epoch) break;
+                int credType = key[4] & 0xFF;
+                String credHash = HexUtil.encodeHexString(java.util.Arrays.copyOfRange(key, 5, key.length));
+                snapshot.put(credType + ":" + credHash,
+                        AccountStateCborCodec.decodeEpochDelegSnapshot(it.value()));
+                it.next();
+            }
+        }
+        return snapshot;
     }
 
     // --- Epoch Delegation Snapshot queries ---
@@ -2350,7 +2381,18 @@ public class DefaultAccountStateStore implements AccountStateStore {
             // This ensures only UTXOs created within or before this epoch are counted,
             // even if blocks from the next epoch have already been processed.
             long epochLastSlot = slotForEpochStart(epoch + 1) - 1;
-            utxoBalances = stakeSnapshotService.aggregateStakeBalances(utxoState, ptrResolver, epochLastSlot);
+
+            if ("incremental".equals(balanceMode)) {
+                // Incremental: use previous epoch's snapshot + UTXO deltas
+                int prevSnapshotEpoch = epoch - 1;
+                var prevSnapshot = readStakeSnapshot(prevSnapshotEpoch);
+                long epochStartSlot = slotForEpochStart(epoch);
+                long epochEndSlot = slotForEpochStart(epoch + 1);
+                utxoBalances = stakeSnapshotService.aggregateStakeBalancesIncremental(
+                        utxoState, ptrResolver, prevSnapshot, epochStartSlot, epochEndSlot, epochLastSlot);
+            } else {
+                utxoBalances = stakeSnapshotService.aggregateStakeBalances(utxoState, ptrResolver, epochLastSlot);
+            }
         }
 
         // Pre-build spendable reward_rest amounts per credential.
