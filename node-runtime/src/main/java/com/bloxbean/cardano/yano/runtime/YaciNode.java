@@ -632,6 +632,11 @@ public class YaciNode implements NodeAPI {
                 // Adhoc rollback: one-shot rollback before sync, if configured via command line
                 performAdhocRollback();
 
+                // Recover any interrupted epoch boundary from a previous run
+                if (epochBoundaryProcessor != null) {
+                    epochBoundaryProcessor.recoverInterruptedBoundary();
+                }
+
                 startClientSync();
             }
 

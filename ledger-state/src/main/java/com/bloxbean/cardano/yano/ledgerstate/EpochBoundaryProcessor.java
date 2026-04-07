@@ -15,6 +15,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Orchestrates epoch boundary processing across the three-phase epoch transition sequence
@@ -63,6 +67,18 @@ public class EpochBoundaryProcessor {
 
     // Last verification error (null = OK). Queryable via REST endpoint.
     private volatile VerificationError lastVerificationError;
+
+    // Executor for parallel UTXO balance scan during epoch boundary processing
+    private final ExecutorService utxoScanExecutor = Executors.newSingleThreadExecutor(
+            r -> { Thread t = new Thread(r, "utxo-balance-scan"); t.setDaemon(true); return t; });
+
+    // Boundary step constants for crash recovery tracking
+    public static final int STEP_STARTED = 0;
+    public static final int STEP_REWARDS = 1;
+    public static final int STEP_SNAPSHOT = 2;
+    public static final int STEP_POOLREAP = 3;
+    public static final int STEP_GOVERNANCE = 4;
+    public static final int STEP_COMPLETE = 5;
 
     public record VerificationError(int epoch, java.math.BigInteger expectedTreasury,
                                      java.math.BigInteger actualTreasury, java.math.BigInteger treasuryDiff,
@@ -134,11 +150,60 @@ public class EpochBoundaryProcessor {
     }
 
     /**
+     * Check for and recover an interrupted epoch boundary from a previous run.
+     * Called at startup before syncing to ensure no incomplete boundaries are left behind.
+     */
+    public void recoverInterruptedBoundary() {
+        if (snapshotCreator == null) return;
+        int[] lastState = snapshotCreator.getLastBoundaryState();
+        if (lastState == null) return;
+        int epoch = lastState[0];
+        int step = lastState[1];
+        if (step >= STEP_STARTED && step < STEP_COMPLETE) {
+            log.info("Recovering interrupted epoch boundary for epoch {} (stopped at step {})", epoch, step);
+            processEpochBoundary(epoch - 1, epoch);
+        }
+    }
+
+    /**
      * Process an epoch boundary transition from {@code previousEpoch} to {@code newEpoch}.
+     * Tracks completion of each step so that a crash mid-boundary can be recovered
+     * by resuming from the last completed step instead of re-applying non-idempotent operations.
      */
     public void processEpochBoundary(int previousEpoch, int newEpoch) {
-        log.info("Processing epoch boundary: {} → {}", previousEpoch, newEpoch);
         long start = System.currentTimeMillis();
+
+        // Check that the previous epoch boundary completed. If not, re-process it first.
+        // This catches the case where a kill happened during boundary N-1→N, and this
+        // call is for boundary N→N+1 (the interrupted boundary was skipped on restart).
+        if (snapshotCreator != null && newEpoch >= 3) {
+            int[] lastState = snapshotCreator.getLastBoundaryState();
+            if (lastState != null && lastState[0] == newEpoch - 1 && lastState[1] < STEP_COMPLETE) {
+                log.warn("Previous boundary for epoch {} was incomplete (step {}), re-processing first",
+                        lastState[0], lastState[1]);
+                processEpochBoundary(newEpoch - 2, newEpoch - 1);
+            }
+        }
+
+        // Check for interrupted boundary for THIS epoch and resume if needed
+        int resumeFromStep = STEP_STARTED;
+        if (snapshotCreator != null) {
+            int lastStep = snapshotCreator.getBoundaryStep(newEpoch);
+            if (lastStep >= STEP_STARTED && lastStep < STEP_COMPLETE) {
+                resumeFromStep = lastStep + 1;
+                log.info("Resuming epoch boundary {} → {} from step {} (previous run interrupted after step {})",
+                        previousEpoch, newEpoch, resumeFromStep, lastStep);
+            }
+        }
+
+        if (resumeFromStep <= STEP_STARTED) {
+            log.info("Processing epoch boundary: {} → {}", previousEpoch, newEpoch);
+        }
+
+        // Mark boundary as started
+        if (snapshotCreator != null && resumeFromStep <= STEP_STARTED) {
+            snapshotCreator.setBoundaryStep(newEpoch, STEP_STARTED);
+        }
 
         // 1. Finalize protocol parameters for the new epoch
         if (paramTracker != null && paramTracker.isEnabled()) {
@@ -158,31 +223,60 @@ public class EpochBoundaryProcessor {
         bootstrapAdaPotIfNeeded(newEpoch);
 
         // 2b. Credit spendable MIR reward_rest to account balances BEFORE reward calculation.
-        //     MIR from epoch e has spendable_epoch = e+1 = newEpoch.
-        //     This both: (a) computes deregistration-filtered MIR totals for cf-rewards input,
-        //     and (b) credits MIR to PREFIX_ACCT.reward before epoch e+1 blocks process withdrawals.
-        //     Matches Haskell node (RUPD rule) and Yaci Store.
-        if (snapshotCreator != null) {
+        if (snapshotCreator != null && resumeFromStep <= STEP_STARTED) {
             snapshotCreator.creditMirRewardRest(newEpoch);
         }
 
-        // 3. Calculate rewards (uses MIR totals computed in step 2b)
-        if (rewardCalculator != null && rewardCalculator.isEnabled() && newEpoch >= 2) {
-            calculateAndStoreRewards(previousEpoch, newEpoch, null);
+        // Start UTXO balance scan in parallel (read-only, independent of reward calc).
+        Future<java.util.Map<UtxoBalanceAggregator.CredentialKey, java.math.BigInteger>> utxoBalancesFuture = null;
+        if (snapshotCreator != null && resumeFromStep <= STEP_SNAPSHOT) {
+            final int snapshotEpoch = previousEpoch;
+            utxoBalancesFuture = utxoScanExecutor.submit(() -> snapshotCreator.aggregateUtxoBalances(snapshotEpoch));
         }
 
-        // 4. SNAP: Create delegation snapshot (captures post-reward state + credited MIR).
-        //    Returns UTXO balances for reuse in DRep distribution calculation.
+        // 3. Calculate rewards (skip if already committed from a previous interrupted run)
+        if (resumeFromStep <= STEP_REWARDS) {
+            if (rewardCalculator != null && rewardCalculator.isEnabled() && newEpoch >= 2) {
+                calculateAndStoreRewards(previousEpoch, newEpoch, null);
+            }
+            if (snapshotCreator != null) {
+                snapshotCreator.setBoundaryStep(newEpoch, STEP_REWARDS);
+            }
+        } else {
+            log.info("Skipping reward calc for epoch {} (already committed in previous run)", newEpoch);
+        }
+
+        // 4. SNAP: Wait for parallel UTXO scan, then create delegation snapshot.
         java.util.Map<UtxoBalanceAggregator.CredentialKey, java.math.BigInteger> utxoBalances = null;
-        if (snapshotCreator != null) {
-            utxoBalances = snapshotCreator.createAndCommitDelegationSnapshot(previousEpoch);
+        if (resumeFromStep <= STEP_SNAPSHOT) {
+            if (snapshotCreator != null) {
+                java.util.Map<UtxoBalanceAggregator.CredentialKey, java.math.BigInteger> precomputedBalances = null;
+                if (utxoBalancesFuture != null) {
+                    try {
+                        precomputedBalances = utxoBalancesFuture.get(300, TimeUnit.SECONDS);
+                    } catch (Exception e) {
+                        log.warn("Parallel UTXO balance scan failed, falling back to inline: {}", e.getMessage());
+                    }
+                }
+                utxoBalances = snapshotCreator.createAndCommitDelegationSnapshot(previousEpoch, precomputedBalances);
+            }
+            if (snapshotCreator != null) {
+                snapshotCreator.setBoundaryStep(newEpoch, STEP_SNAPSHOT);
+            }
+        } else {
+            log.info("Skipping snapshot for epoch {} (already committed in previous run)", previousEpoch);
         }
 
         // 4b. POOLREAP: Pool deposit refunds (after snapshot, before governance).
-        //     Per Amaru (state.rs): Rewards → Snapshot → tick_pools(POOLREAP) → tick_proposals(governance)
-        //     POOLREAP credits go into reward balances, visible to DRep distribution.
-        if (rewardCalculator != null && rewardCalculator.isEnabled()) {
-            rewardCalculator.processPoolDepositRefunds(newEpoch);
+        if (resumeFromStep <= STEP_POOLREAP) {
+            if (rewardCalculator != null && rewardCalculator.isEnabled()) {
+                rewardCalculator.processPoolDepositRefunds(newEpoch);
+            }
+            if (snapshotCreator != null) {
+                snapshotCreator.setBoundaryStep(newEpoch, STEP_POOLREAP);
+            }
+        } else {
+            log.info("Skipping pool refunds for epoch {} (already committed in previous run)", newEpoch);
         }
 
         // Get spendable reward_rest for DRep distribution (matches snapshot's reward_rest inclusion)
@@ -192,16 +286,22 @@ public class EpochBoundaryProcessor {
         }
 
         // 5. Conway governance epoch processing (ratify, enact, expire, refund)
-        //    Passes UTXO balances and reward_rest so DRep distribution matches snapshot composition.
         GovernanceEpochProcessor.GovernanceEpochResult govResult = null;
-        if (governanceEpochProcessor != null) {
-            try {
-                govResult = governanceEpochProcessor.processEpochBoundaryAndCommit(
-                        previousEpoch, newEpoch, utxoBalances, spendableRewardRest);
-            } catch (Exception e) {
-                log.error("Governance epoch processing failed for {} → {}: {}",
-                        previousEpoch, newEpoch, e.getMessage());
+        if (resumeFromStep <= STEP_GOVERNANCE) {
+            if (governanceEpochProcessor != null) {
+                try {
+                    govResult = governanceEpochProcessor.processEpochBoundaryAndCommit(
+                            previousEpoch, newEpoch, utxoBalances, spendableRewardRest);
+                } catch (Exception e) {
+                    log.error("Governance epoch processing failed for {} → {}: {}",
+                            previousEpoch, newEpoch, e.getMessage());
+                }
             }
+            if (snapshotCreator != null) {
+                snapshotCreator.setBoundaryStep(newEpoch, STEP_GOVERNANCE);
+            }
+        } else {
+            log.info("Skipping governance for epoch {} (already committed in previous run)", newEpoch);
         }
 
         // 6. Apply governance treasury delta to AdaPot (post-reward adjustment)
@@ -236,6 +336,11 @@ public class EpochBoundaryProcessor {
                             p.distributed(), p.undistributed(), p.rewardsPot(), p.poolRewardsPot()));
                 }
             }
+        }
+
+        // Mark boundary as fully complete
+        if (snapshotCreator != null) {
+            snapshotCreator.setBoundaryStep(newEpoch, STEP_COMPLETE);
         }
 
         long elapsed = System.currentTimeMillis() - start;

@@ -78,6 +78,9 @@ public class DefaultAccountStateStore implements AccountStateStore {
     private static final byte[] META_TOTAL_DEPOSITED = "total_dep".getBytes(StandardCharsets.UTF_8);
     private static final byte[] META_LAST_APPLIED_BLOCK = "meta.last_block".getBytes(StandardCharsets.UTF_8);
     private static final byte[] META_LAST_SNAPSHOT_EPOCH = "meta.last_snapshot_epoch".getBytes(StandardCharsets.UTF_8);
+    // Epoch boundary completion tracking — stores the last completed step for crash recovery.
+    // Format: 8 bytes (epoch as int, step as int). Steps: 0=started, 1=rewards, 2=snapshot, 3=poolreap, 4=governance, 5=complete
+    private static final byte[] META_BOUNDARY_STEP = "meta.boundary_step".getBytes(StandardCharsets.UTF_8);
     // Retain snapshots for enough epochs so the background epoch boundary processor can read them.
     // During fast sync, the main thread creates snapshots and prunes old ones rapidly while
     // the background thread processes epoch boundaries sequentially. With a queue depth of N,
@@ -2269,14 +2272,41 @@ public class DefaultAccountStateStore implements AccountStateStore {
      * captures post-reward state and is available for DRep distribution calculation.
      */
     /**
+     * Aggregate UTXO balances by stake credential for the given epoch.
+     * This is a read-only operation that can run in parallel with reward calculation.
+     */
+    public java.util.Map<UtxoBalanceAggregator.CredentialKey, java.math.BigInteger> aggregateUtxoBalances(int epoch) {
+        if (stakeSnapshotService == null || !stakeSnapshotService.isEnabled() || utxoState == null) return null;
+        int protocolMajor = (paramTracker != null && paramTracker.isEnabled())
+                ? paramTracker.getProtocolMajor(epoch) : epochParamProvider.getProtocolMajor(epoch);
+        boolean conwayEra = protocolMajor >= 9;
+        PointerAddressResolver ptrResolver = conwayEra ? null : pointerAddressResolver;
+        long epochLastSlot = slotForEpochStart(epoch + 1) - 1;
+
+        if ("incremental".equals(balanceMode)) {
+            int prevSnapshotEpoch = epoch - 1;
+            var prevSnapshot = readStakeSnapshot(prevSnapshotEpoch);
+            long epochStartSlot = slotForEpochStart(epoch);
+            long epochEndSlot = slotForEpochStart(epoch + 1);
+            return stakeSnapshotService.aggregateStakeBalancesIncremental(
+                    utxoState, ptrResolver, prevSnapshot, epochStartSlot, epochEndSlot, epochLastSlot);
+        } else {
+            return stakeSnapshotService.aggregateStakeBalances(utxoState, ptrResolver, epochLastSlot);
+        }
+    }
+
+    /**
      * Create and commit the delegation snapshot. Returns the UTXO balance aggregation
      * so it can be reused for DRep distribution calculation (which needs actual balances
      * for ALL credentials, not just pool-delegated ones).
+     *
+     * @param precomputedUtxoBalances if non-null, skip UTXO scan and use these balances
      */
-    public java.util.Map<UtxoBalanceAggregator.CredentialKey, java.math.BigInteger> createAndCommitDelegationSnapshot(int epoch) {
+    public java.util.Map<UtxoBalanceAggregator.CredentialKey, java.math.BigInteger> createAndCommitDelegationSnapshot(
+            int epoch, java.util.Map<UtxoBalanceAggregator.CredentialKey, java.math.BigInteger> precomputedUtxoBalances) {
         java.util.Map<UtxoBalanceAggregator.CredentialKey, java.math.BigInteger> utxoBalances = null;
         try (WriteBatch batch = new WriteBatch(); WriteOptions wo = new WriteOptions()) {
-            utxoBalances = createDelegationSnapshot(epoch, batch);
+            utxoBalances = createDelegationSnapshot(epoch, batch, precomputedUtxoBalances);
             db.write(wo, batch);
         } catch (Exception ex) {
             log.error("Failed to create delegation snapshot for epoch {}: {}", epoch, ex.toString());
@@ -2284,7 +2314,16 @@ public class DefaultAccountStateStore implements AccountStateStore {
         return utxoBalances;
     }
 
-    private java.util.Map<UtxoBalanceAggregator.CredentialKey, java.math.BigInteger> createDelegationSnapshot(int epoch, WriteBatch batch) throws RocksDBException {
+    /**
+     * Create and commit the delegation snapshot (backward-compatible overload).
+     */
+    public java.util.Map<UtxoBalanceAggregator.CredentialKey, java.math.BigInteger> createAndCommitDelegationSnapshot(int epoch) {
+        return createAndCommitDelegationSnapshot(epoch, null);
+    }
+
+    private java.util.Map<UtxoBalanceAggregator.CredentialKey, java.math.BigInteger> createDelegationSnapshot(
+            int epoch, WriteBatch batch,
+            java.util.Map<UtxoBalanceAggregator.CredentialKey, java.math.BigInteger> precomputedUtxoBalances) throws RocksDBException {
         byte[] epochBytes = ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(epoch).array();
         int count = 0;
         int skippedUnregistered = 0;
@@ -2365,34 +2404,11 @@ public class DefaultAccountStateStore implements AccountStateStore {
         // credential) or reward calculation (cf-rewards handles reserve adjustment internally).
         // Custom networks (devnet) start fresh with no Byron era — no action needed.
 
-        // Optionally aggregate UTXO balances for enhanced snapshots.
-        // Pointer address resolution: enabled pre-Conway, disabled in Conway+ (pointer addresses removed).
-        // In Conway era, any remaining pointer address UTXOs lose their stake credential association.
-        java.util.Map<UtxoBalanceAggregator.CredentialKey, java.math.BigInteger> utxoBalances = null;
-        if (stakeSnapshotService != null && stakeSnapshotService.isEnabled() && utxoState != null) {
-            // Use paramTracker (which has actual on-chain protocol version) if available,
-            // otherwise fall back to base provider. The base provider returns genesis defaults
-            // which don't reflect hardfork updates.
-            int protocolMajor = (paramTracker != null && paramTracker.isEnabled())
-                    ? paramTracker.getProtocolMajor(epoch) : epochParamProvider.getProtocolMajor(epoch);
-            boolean conwayEra = protocolMajor >= 9;
-            PointerAddressResolver ptrResolver = conwayEra ? null : pointerAddressResolver;
-            // Use epoch's last slot as cutoff for UTXO inclusion.
-            // This ensures only UTXOs created within or before this epoch are counted,
-            // even if blocks from the next epoch have already been processed.
-            long epochLastSlot = slotForEpochStart(epoch + 1) - 1;
-
-            if ("incremental".equals(balanceMode)) {
-                // Incremental: use previous epoch's snapshot + UTXO deltas
-                int prevSnapshotEpoch = epoch - 1;
-                var prevSnapshot = readStakeSnapshot(prevSnapshotEpoch);
-                long epochStartSlot = slotForEpochStart(epoch);
-                long epochEndSlot = slotForEpochStart(epoch + 1);
-                utxoBalances = stakeSnapshotService.aggregateStakeBalancesIncremental(
-                        utxoState, ptrResolver, prevSnapshot, epochStartSlot, epochEndSlot, epochLastSlot);
-            } else {
-                utxoBalances = stakeSnapshotService.aggregateStakeBalances(utxoState, ptrResolver, epochLastSlot);
-            }
+        // Use pre-computed UTXO balances if available (from parallel scan), otherwise compute inline.
+        java.util.Map<UtxoBalanceAggregator.CredentialKey, java.math.BigInteger> utxoBalances = precomputedUtxoBalances;
+        if (utxoBalances == null && stakeSnapshotService != null && stakeSnapshotService.isEnabled() && utxoState != null) {
+            // Fallback: compute inline (same logic as aggregateUtxoBalances)
+            utxoBalances = aggregateUtxoBalances(epoch);
         }
 
         // Pre-build spendable reward_rest amounts per credential.
@@ -2736,6 +2752,55 @@ public class DefaultAccountStateStore implements AccountStateStore {
     }
 
     // --- Reconcile ---
+
+    /**
+     * Get the last completed boundary step for the given epoch.
+     * Returns -1 if no boundary processing has been started for this epoch.
+     * Steps: 0=started, 1=rewards, 2=snapshot, 3=poolreap, 4=governance, 5=complete
+     */
+    public int getBoundaryStep(int epoch) {
+        try {
+            byte[] val = db.get(cfState, META_BOUNDARY_STEP);
+            if (val != null && val.length == 8) {
+                ByteBuffer buf = ByteBuffer.wrap(val).order(ByteOrder.BIG_ENDIAN);
+                int storedEpoch = buf.getInt();
+                int step = buf.getInt();
+                return (storedEpoch == epoch) ? step : -1;
+            }
+        } catch (Exception e) {
+            log.warn("Failed to read boundary step: {}", e.getMessage());
+        }
+        return -1;
+    }
+
+    /**
+     * Get the last boundary state (epoch and step), regardless of which epoch.
+     * Returns int[]{epoch, step} or null if no boundary has been tracked.
+     */
+    public int[] getLastBoundaryState() {
+        try {
+            byte[] val = db.get(cfState, META_BOUNDARY_STEP);
+            if (val != null && val.length == 8) {
+                ByteBuffer buf = ByteBuffer.wrap(val).order(ByteOrder.BIG_ENDIAN);
+                return new int[]{buf.getInt(), buf.getInt()};
+            }
+        } catch (Exception e) {
+            log.warn("Failed to read boundary state: {}", e.getMessage());
+        }
+        return null;
+    }
+
+    /**
+     * Record a completed boundary step for the given epoch.
+     */
+    public void setBoundaryStep(int epoch, int step) {
+        try {
+            byte[] val = ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN).putInt(epoch).putInt(step).array();
+            db.put(cfState, META_BOUNDARY_STEP, val);
+        } catch (Exception e) {
+            log.warn("Failed to write boundary step: {}", e.getMessage());
+        }
+    }
 
     @Override
     public void reconcile(ChainState chainState) {
