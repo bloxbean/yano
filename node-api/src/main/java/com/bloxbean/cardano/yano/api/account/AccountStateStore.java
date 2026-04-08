@@ -39,7 +39,6 @@ public interface AccountStateStore extends LedgerStateProvider {
      * Maps to the <b>SNAP</b> rule of the ledger spec's EPOCH rule (shelley-ledger.pdf §17.4).
      * Called AFTER rewards are distributed but BEFORE pool deposit refunds (POOLREAP),
      * ensuring refunds do not inflate the snapshot's active stake.
-     *
      * @see com.bloxbean.cardano.yano.api.events.EpochTransitionEvent
      */
     default void handleEpochTransitionSnapshot(int previousEpoch, int newEpoch) {}

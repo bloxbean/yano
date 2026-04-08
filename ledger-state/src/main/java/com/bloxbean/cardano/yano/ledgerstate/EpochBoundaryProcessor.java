@@ -165,17 +165,10 @@ public class EpochBoundaryProcessor {
         }
     }
 
-    /**
-     * Process an epoch boundary transition from {@code previousEpoch} to {@code newEpoch}.
-     * Tracks completion of each step so that a crash mid-boundary can be recovered
-     * by resuming from the last completed step instead of re-applying non-idempotent operations.
-     */
     public void processEpochBoundary(int previousEpoch, int newEpoch) {
         long start = System.currentTimeMillis();
 
         // Check that the previous epoch boundary completed. If not, re-process it first.
-        // This catches the case where a kill happened during boundary N-1→N, and this
-        // call is for boundary N→N+1 (the interrupted boundary was skipped on restart).
         if (snapshotCreator != null && newEpoch >= 3) {
             int[] lastState = snapshotCreator.getLastBoundaryState();
             if (lastState != null && lastState[0] == newEpoch - 1 && lastState[1] < STEP_COMPLETE) {
@@ -279,19 +272,15 @@ public class EpochBoundaryProcessor {
             log.info("Skipping pool refunds for epoch {} (already committed in previous run)", newEpoch);
         }
 
-        // Get spendable reward_rest for DRep distribution (matches snapshot's reward_rest inclusion)
-        java.util.Map<String, java.math.BigInteger> spendableRewardRest = null;
-        if (snapshotCreator != null) {
-            spendableRewardRest = snapshotCreator.getSpendableRewardRest(previousEpoch);
-        }
-
         // 5. Conway governance epoch processing (ratify, enact, expire, refund)
+        // reward_rest from previous boundaries is already credited to PREFIX_ACCT.reward
+        // in PostEpochTransition, so DRep distribution picks it up from account balances.
         GovernanceEpochProcessor.GovernanceEpochResult govResult = null;
         if (resumeFromStep <= STEP_GOVERNANCE) {
             if (governanceEpochProcessor != null) {
                 try {
                     govResult = governanceEpochProcessor.processEpochBoundaryAndCommit(
-                            previousEpoch, newEpoch, utxoBalances, spendableRewardRest);
+                            previousEpoch, newEpoch, utxoBalances, null);
                 } catch (Exception e) {
                     log.error("Governance epoch processing failed for {} → {}: {}",
                             previousEpoch, newEpoch, e.getMessage());

@@ -1621,19 +1621,15 @@ public class DefaultAccountStateStore implements AccountStateStore {
         if (!enabled) return;
         try (WriteBatch batch = new WriteBatch(); WriteOptions wo = new WriteOptions()) {
             // Snapshot already created in handleEpochTransition (between rewards and governance).
-            // Here we only prune old snapshots/events and credit reward_rest.
+            // Here we only prune old snapshots.
 
             // Prune old delegation snapshots (large, ~20MB each on mainnet).
             // Stake events are NOT pruned — they're small and needed for accurate
             // deregistered-account detection in reward calculations (cf-rewards).
             pruneOldSnapshots(newEpoch - SNAPSHOT_RETENTION_EPOCHS, batch);
 
-            // Credit spendable reward_rest to PREFIX_ACCT in the SAME batch.
-            // This makes the credited amounts available for subsequent snapshots and withdrawals.
-            creditAndRemoveSpendableRewardRest(previousEpoch, batch);
-
             db.write(wo, batch);
-            log.info("Epoch transition {} -> {} completed (prune, reward_rest credit)", previousEpoch, newEpoch);
+            log.info("Epoch transition {} -> {} completed (prune)", previousEpoch, newEpoch);
 
         } catch (Exception ex) {
             log.error("Epoch transition post-snapshot failed for {} -> {}: {}", previousEpoch, newEpoch, ex.toString());
@@ -1642,7 +1638,21 @@ public class DefaultAccountStateStore implements AccountStateStore {
 
     @Override
     public void handlePostEpochTransition(int previousEpoch, int newEpoch) {
-        if (!enabled || epochBoundaryProcessor == null) return;
+        if (!enabled) return;
+
+        // Credit spendable reward_rest (proposal refunds, treasury withdrawals) to PREFIX_ACCT.
+        // Uses newEpoch: spendable_epoch=N means available at the START of epoch N,
+        // so it must be credited at boundary N-1→N. This runs after governance (Phase 1 step 5)
+        // which creates the reward_rest entries with spendable=newEpoch.
+        // MIR types are already credited before the snapshot via creditMirRewardRest(newEpoch).
+        try (WriteBatch batch = new WriteBatch(); WriteOptions wo = new WriteOptions()) {
+            creditAndRemoveSpendableRewardRest(newEpoch, batch);
+            db.write(wo, batch);
+        } catch (Exception ex) {
+            log.error("Post-epoch reward_rest credit failed for {} -> {}: {}", previousEpoch, newEpoch, ex.toString());
+        }
+
+        if (epochBoundaryProcessor == null) return;
         try {
             epochBoundaryProcessor.processPostEpochBoundary(newEpoch);
         } catch (Exception e) {
@@ -2274,11 +2284,17 @@ public class DefaultAccountStateStore implements AccountStateStore {
     /**
      * Aggregate UTXO balances by stake credential for the given epoch.
      * This is a read-only operation that can run in parallel with reward calculation.
+     *
+     * @param epoch the snapshot epoch (previousEpoch) — used for slot range and Conway detection
+     *              (protocolMajor of epoch+1 determines whether pointer addresses are excluded)
      */
     public java.util.Map<UtxoBalanceAggregator.CredentialKey, java.math.BigInteger> aggregateUtxoBalances(int epoch) {
         if (stakeSnapshotService == null || !stakeSnapshotService.isEnabled() || utxoState == null) return null;
+        // Conway detection: use protocol version from newEpoch (= epoch + 1) because the SNAP rule
+        // fires under the new epoch's rules. epoch here is snapshotEpoch = previousEpoch.
+        // In Conway (protocolMajor >= 9), pointer addresses are excluded from stake delegation.
         int protocolMajor = (paramTracker != null && paramTracker.isEnabled())
-                ? paramTracker.getProtocolMajor(epoch) : epochParamProvider.getProtocolMajor(epoch);
+                ? paramTracker.getProtocolMajor(epoch + 1) : epochParamProvider.getProtocolMajor(epoch + 1);
         boolean conwayEra = protocolMajor >= 9;
         PointerAddressResolver ptrResolver = conwayEra ? null : pointerAddressResolver;
         long epochLastSlot = slotForEpochStart(epoch + 1) - 1;
@@ -2407,18 +2423,8 @@ public class DefaultAccountStateStore implements AccountStateStore {
         // Use pre-computed UTXO balances if available (from parallel scan), otherwise compute inline.
         java.util.Map<UtxoBalanceAggregator.CredentialKey, java.math.BigInteger> utxoBalances = precomputedUtxoBalances;
         if (utxoBalances == null && stakeSnapshotService != null && stakeSnapshotService.isEnabled() && utxoState != null) {
-            // Fallback: compute inline (same logic as aggregateUtxoBalances)
+            // Fallback: compute inline. Era not available here — uses protocol version fallback.
             utxoBalances = aggregateUtxoBalances(epoch);
-        }
-
-        // Pre-build spendable reward_rest amounts per credential.
-        // These are added to stakeAmount in the snapshot loop because the credit to PREFIX_ACCT
-        // happens in the same uncommitted WriteBatch — db.get() won't see it yet.
-        java.util.Map<String, BigInteger> spendableRewardRest = getSpendableRewardRest(epoch);
-        if (!spendableRewardRest.isEmpty()) {
-            log.info("Spendable reward_rest for epoch {}: {} credentials, total={}",
-                    epoch, spendableRewardRest.size(),
-                    spendableRewardRest.values().stream().reduce(BigInteger.ZERO, BigInteger::add));
         }
 
         // Collect entries for export (only allocate list when exporter is active)
@@ -2495,17 +2501,15 @@ public class DefaultAccountStateStore implements AccountStateStore {
                 }
 
                 // Compute stake amount = UTXO balance + withdrawable rewards
+                // reward_rest (proposal refunds, treasury withdrawals) is already credited to
+                // PREFIX_ACCT.reward in PostEpochTransition, so it's included in rewardBal.
                 java.math.BigInteger stakeAmount = java.math.BigInteger.ZERO;
                 if (utxoBalances != null) {
                     var credKey = new UtxoBalanceAggregator.CredentialKey(credType, credHash);
                     java.math.BigInteger utxoBal = utxoBalances.getOrDefault(credKey, java.math.BigInteger.ZERO);
-                    // Add reward balance (withdrawable rewards)
                     var acctData = AccountStateCborCodec.decodeStakeAccount(acctVal);
                     java.math.BigInteger rewardBal = acctData.reward();
-                    // Add spendable reward_rest (proposal refunds, treasury withdrawals)
-                    String restKey = credType + ":" + credHash;
-                    java.math.BigInteger rewardRestBal = spendableRewardRest.getOrDefault(restKey, java.math.BigInteger.ZERO);
-                    stakeAmount = utxoBal.add(rewardBal).add(rewardRestBal);
+                    stakeAmount = utxoBal.add(rewardBal);
 
                     // Include zero-balance delegators in the snapshot to match yaci-store's epoch_stake.
                     // Zero-balance delegators may be pool owners, affecting ownerActiveStake in cf-rewards.
@@ -2562,7 +2566,6 @@ public class DefaultAccountStateStore implements AccountStateStore {
             }
         }
     }
-
 
     /**
      * Prune stake events older than the given cutoff slot.
