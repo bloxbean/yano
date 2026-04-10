@@ -1373,6 +1373,34 @@ public class DefaultAccountStateStore implements AccountStateStore {
         }
     }
 
+    /**
+     * Credit any pending (uncredited) non-MIR reward_rest entries.
+     * Called at startup to repair state after restarting from an auto-checkpoint
+     * that was taken between STEP_COMPLETE and PostEpochTransition.
+     * Uses the last completed boundary epoch to determine the spendable cutoff.
+     */
+    public void creditPendingRewardRest() {
+        int[] lastState = getLastBoundaryState();
+        if (lastState == null) return;
+        int lastEpoch = lastState[0];
+        int lastStep = lastState[1];
+        if (lastStep < com.bloxbean.cardano.yano.ledgerstate.EpochBoundaryProcessor.STEP_COMPLETE) return;
+
+        // Check if there are any non-MIR reward_rest entries with spendableEpoch <= lastEpoch
+        var pending = getSpendableRewardRest(lastEpoch);
+        if (pending.isEmpty()) return;
+
+        log.info("Repairing missed PostEpochTransition: found {} pending reward_rest entries for epoch <= {}",
+                pending.size(), lastEpoch);
+        try (org.rocksdb.WriteBatch batch = new org.rocksdb.WriteBatch();
+             org.rocksdb.WriteOptions wo = new org.rocksdb.WriteOptions()) {
+            creditAndRemoveSpendableRewardRest(lastEpoch, batch);
+            db.write(wo, batch);
+        } catch (Exception e) {
+            log.error("Failed to repair pending reward_rest: {}", e.toString());
+        }
+    }
+
     // --- Governance support: RewardCreditor and PoolStakeResolver ---
 
     /**

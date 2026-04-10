@@ -509,7 +509,18 @@ public class RatificationEngine {
 
         BigDecimal threshold = thresholds.getOrDefault(actionType, BigDecimal.ONE);
         var tally = tallyCalculator.computeDRepTally(votes, drepDist, actionType, activeDRepKeys);
-        return VoteTallyCalculator.drepThresholdMet(tally, threshold);
+        boolean result = VoteTallyCalculator.drepThresholdMet(tally, threshold);
+
+        // Diagnostic: log DRep tally for treasury withdrawal proposals (temporary)
+        if (actionType == GovActionType.TREASURY_WITHDRAWALS_ACTION) {
+            BigInteger denom = tally.yesStake().add(tally.noStake());
+            String ratio = denom.signum() == 0 ? "N/A" :
+                    new BigDecimal(tally.yesStake()).divide(new BigDecimal(denom),
+                            java.math.MathContext.DECIMAL128).toPlainString();
+            log.info("  DRep tally: yes={}, no={}, abstain={}, ratio={}, threshold={}, passed={}",
+                    tally.yesStake(), tally.noStake(), tally.abstainStake(), ratio, threshold, result);
+        }
+        return result;
     }
 
     private boolean checkSPO(

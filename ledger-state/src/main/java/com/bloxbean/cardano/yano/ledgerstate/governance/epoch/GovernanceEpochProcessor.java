@@ -220,13 +220,24 @@ public class GovernanceEpochProcessor {
                                                    WriteBatch batch, List<DeltaOp> deltaOps)
             throws RocksDBException {
 
-        // Bootstrap Conway genesis on first Conway epoch (committee, constitution, params)
+        // Bootstrap Conway genesis on first Conway epoch only (committee, constitution, params).
+        // Detect restart: if the previous epoch was already Conway, genesis was already done.
+        // This survives JVM restarts because protocol versions are persisted in EpochParamTracker.
         if (!genesisBootstrapped) {
-            if (conwayFirstEpoch < 0) {
-                conwayFirstEpoch = newEpoch;
+            int prevProtoMajor = resolveProtocolMajor(newEpoch - 1);
+            if (prevProtoMajor >= 9) {
+                // Previous epoch was Conway — genesis already bootstrapped in a prior run
+                log.info("Conway genesis already bootstrapped (previous epoch proto={}, era already Conway), skipping",
+                        prevProtoMajor);
+                genesisBootstrapped = true;
+            } else {
+                // This is the first Conway epoch — bootstrap genesis
+                if (conwayFirstEpoch < 0) {
+                    conwayFirstEpoch = newEpoch;
+                }
+                genesisBootstrap.bootstrap(conwayFirstEpoch, batch, deltaOps);
+                genesisBootstrapped = true;
             }
-            genesisBootstrap.bootstrap(conwayFirstEpoch, batch, deltaOps);
-            genesisBootstrapped = true;
         }
 
         // 1. Enact pending proposals (ratified at previous epoch boundary)

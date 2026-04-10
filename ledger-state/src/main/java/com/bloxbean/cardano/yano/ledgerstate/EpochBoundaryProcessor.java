@@ -152,6 +152,10 @@ public class EpochBoundaryProcessor {
     /**
      * Check for and recover an interrupted epoch boundary from a previous run.
      * Called at startup before syncing to ensure no incomplete boundaries are left behind.
+     * Also repairs missed PostEpochTransition: auto-checkpoints are taken after
+     * processEpochBoundary (STEP_COMPLETE) but before PostEpochTransition credits
+     * reward_rest to accounts. On restart from such a checkpoint, the reward_rest
+     * entries remain uncredited. This method detects and credits them.
      */
     public void recoverInterruptedBoundary() {
         if (snapshotCreator == null) return;
@@ -163,6 +167,11 @@ public class EpochBoundaryProcessor {
             log.info("Recovering interrupted epoch boundary for epoch {} (stopped at step {})", epoch, step);
             processEpochBoundary(epoch - 1, epoch);
         }
+
+        // Repair missed PostEpochTransition: credit any uncredited reward_rest entries
+        // from a completed boundary whose PostEpochTransition was not replayed (e.g.,
+        // restart from an auto-checkpoint taken between STEP_COMPLETE and PostEpochTransition).
+        snapshotCreator.creditPendingRewardRest();
     }
 
     public void processEpochBoundary(int previousEpoch, int newEpoch) {
