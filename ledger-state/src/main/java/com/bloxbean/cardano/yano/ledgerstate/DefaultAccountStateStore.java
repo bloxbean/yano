@@ -1178,6 +1178,27 @@ public class DefaultAccountStateStore implements AccountStateStore {
     }
 
     /**
+     * Create a {@link GovernanceEpochProcessor.RewardRestStore} adapter backed by this store.
+     */
+    public com.bloxbean.cardano.yano.ledgerstate.governance.epoch.GovernanceEpochProcessor.RewardRestStore asRewardRestStore() {
+        return new com.bloxbean.cardano.yano.ledgerstate.governance.epoch.GovernanceEpochProcessor.RewardRestStore() {
+            @Override
+            public boolean storeRewardRest(int spendableEpoch, byte type, String rewardAccountHex,
+                                           BigInteger amount, int earnedEpoch, long slot,
+                                           org.rocksdb.WriteBatch batch, java.util.List<DeltaOp> deltaOps)
+                    throws org.rocksdb.RocksDBException {
+                return DefaultAccountStateStore.this.storeRewardRest(
+                        spendableEpoch, type, rewardAccountHex, amount, earnedEpoch, slot, batch, deltaOps);
+            }
+
+            @Override
+            public java.util.Map<String, BigInteger> getSpendableRewardRest(int epoch) {
+                return DefaultAccountStateStore.this.getSpendableRewardRest(epoch);
+            }
+        };
+    }
+
+    /**
      * Credit spendable MIR reward_rest entries to PREFIX_ACCT.reward and remove them.
      * Called BEFORE snapshot creation so that MIR amounts are in the account balance,
      * allowing on-chain withdrawals to be correctly reflected in the snapshot.

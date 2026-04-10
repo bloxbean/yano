@@ -112,7 +112,13 @@ public class GovernanceEpochProcessor {
         boolean storeRewardRest(int spendableEpoch, byte type, String rewardAccountHex,
                                 BigInteger amount, int earnedEpoch, long slot,
                                 WriteBatch batch, List<DeltaOp> deltaOps) throws RocksDBException;
+
+        /** Get all spendable reward_rest entries with spendableEpoch <= epoch. */
+        java.util.Map<String, BigInteger> getSpendableRewardRest(int epoch);
     }
+
+    /** Result of governance Phase 1 (enactment + treasury withdrawals + deposit refunds). */
+    record EnactmentResult(BigInteger treasuryDelta, BigInteger depositRefunds) {}
 
     public GovernanceEpochProcessor(RocksDB db, ColumnFamilyHandle cfState, ColumnFamilyHandle cfDelta,
                                     GovernanceStateStore governanceStore,
@@ -169,33 +175,49 @@ public class GovernanceEpochProcessor {
         int protocolVersion = resolveProtocolMajor(newEpoch);
         if (protocolVersion < 9) return GovernanceEpochResult.EMPTY;
 
-        // Phase 1: Bootstrap + Enact pending proposals (writes committee, params, lastEnacted)
-        BigInteger enactmentTreasuryDelta;
+        // Phase 1: Bootstrap + Enact pending proposals + treasury withdrawal reward_rest
+        //          + deposit refunds for enacted/dropped proposals.
+        // Committed BEFORE Phase 2 so that:
+        //   1. Ratification reads current committee/params/lastEnacted
+        //   2. DRep distribution includes treasury withdrawal amounts (via spendableRewardRest)
+        // This matches Haskell: ENACT creates reward_rest → committed → DRep dist sees them.
+        EnactmentResult enactment;
         try (WriteBatch batch = new WriteBatch(); WriteOptions wo = new WriteOptions()) {
             List<DeltaOp> deltaOps = new ArrayList<>();
-            enactmentTreasuryDelta = processEnactmentPhase(previousEpoch, newEpoch, batch, deltaOps);
-            db.write(wo, batch); // Commit so ratification can see enactment changes
+            enactment = processEnactmentPhase(previousEpoch, newEpoch, batch, deltaOps);
+            db.write(wo, batch);
         }
 
-        // Phase 2: Ratification + deposit refunds + dormant + expiry + donations
+        // Read spendable reward_rest AFTER Phase 1 commit.
+        // Treasury withdrawal and enacted/dropped proposal refund entries are now in DB.
+        // This is passed to DRep distribution so voting power includes these amounts.
+        if (spendableRewardRest == null && rewardRestStore != null) {
+            spendableRewardRest = rewardRestStore.getSpendableRewardRest(newEpoch);
+        }
+
+        // Phase 2: DRep distribution + Ratification + newly expired proposals + donations
         try (WriteBatch batch = new WriteBatch(); WriteOptions wo = new WriteOptions()) {
             List<DeltaOp> deltaOps = new ArrayList<>();
             GovernanceEpochResult result = processRatificationPhase(previousEpoch, newEpoch,
-                    enactmentTreasuryDelta, batch, deltaOps, utxoBalances, spendableRewardRest);
+                    enactment, batch, deltaOps, utxoBalances, spendableRewardRest);
             db.write(wo, batch);
             return result;
         }
     }
 
     /**
-     * Phase 1: Bootstrap Conway genesis + enact previously ratified proposals.
-     * Writes committee members, protocol params, and lastEnactedActions to RocksDB.
-     * Must be committed before Phase 2 so ratification reads current state.
-     *
-     * @return treasury delta from enactment (e.g., negative for treasury withdrawals)
+     * Phase 1: Bootstrap Conway genesis + enact previously ratified proposals + create reward_rest
+     * for treasury withdrawals and deposit refunds (enacted + dropped proposals).
+     * <p>
+     * Must be committed BEFORE Phase 2 so that:
+     * <ol>
+     *   <li>Ratification reads current committee/params/lastEnacted</li>
+     *   <li>DRep distribution includes treasury withdrawal reward_rest via spendableRewardRest</li>
+     * </ol>
+     * This matches Haskell NEWEPOCH: ENACT creates reward_rest → committed → DRep dist sees them.
      */
-    private BigInteger processEnactmentPhase(int previousEpoch, int newEpoch,
-                                              WriteBatch batch, List<DeltaOp> deltaOps)
+    private EnactmentResult processEnactmentPhase(int previousEpoch, int newEpoch,
+                                                   WriteBatch batch, List<DeltaOp> deltaOps)
             throws RocksDBException {
 
         // Bootstrap Conway genesis on first Conway epoch (committee, constitution, params)
@@ -207,9 +229,10 @@ public class GovernanceEpochProcessor {
             genesisBootstrapped = true;
         }
 
-        // Enact pending proposals (ratified at previous epoch boundary)
+        // 1. Enact pending proposals (ratified at previous epoch boundary)
         BigInteger treasuryDelta = BigInteger.ZERO;
         List<GovActionId> pendingEnactmentIds = governanceStore.getPendingEnactments();
+        List<GovActionId> pendingDropIds = governanceStore.getPendingDrops();
         Map<GovActionId, GovActionRecord> allProposals = governanceStore.getAllActiveProposals();
 
         if (!pendingEnactmentIds.isEmpty()) {
@@ -227,15 +250,104 @@ public class GovernanceEpochProcessor {
             }
         }
 
-        return treasuryDelta;
+        // 2. Store treasury withdrawal amounts as reward_rest (for enacted TreasuryWithdrawalsAction).
+        //    Created here (Phase 1) so DRep distribution in Phase 2 includes them via spendableRewardRest.
+        if (rewardRestStore != null) {
+            Map<String, BigInteger> aggregatedWithdrawals = new java.util.HashMap<>();
+            for (GovActionId id : pendingEnactmentIds) {
+                GovActionRecord enactedProposal = allProposals.get(id);
+                if (enactedProposal != null && enactedProposal.govAction()
+                        instanceof com.bloxbean.cardano.yaci.core.model.governance.actions.TreasuryWithdrawalsAction twa) {
+                    if (twa.getWithdrawals() != null) {
+                        for (var entry : twa.getWithdrawals().entrySet()) {
+                            aggregatedWithdrawals.merge(entry.getKey(), entry.getValue(), BigInteger::add);
+                        }
+                    }
+                }
+            }
+            for (var entry : aggregatedWithdrawals.entrySet()) {
+                boolean stored = rewardRestStore.storeRewardRest(
+                        newEpoch,
+                        com.bloxbean.cardano.yano.ledgerstate.DefaultAccountStateStore.REWARD_REST_TREASURY_WITHDRAWAL,
+                        entry.getKey(), entry.getValue(), previousEpoch, 0,
+                        batch, deltaOps);
+                if (!stored) {
+                    treasuryDelta = treasuryDelta.add(entry.getValue());
+                    log.info("Treasury withdrawal to {} unclaimed, returned to treasury",
+                            entry.getKey().substring(0, Math.min(16, entry.getKey().length())));
+                }
+            }
+        }
+
+        // 3. Deposit refunds for enacted and dropped proposals.
+        //    Created here (Phase 1) so DRep distribution includes proposal deposit refund amounts.
+        BigInteger depositRefunds = BigInteger.ZERO;
+        Map<String, BigInteger> aggregatedRefunds = new java.util.HashMap<>();
+
+        // 3a. Enacted proposals: refund deposit + remove
+        for (GovActionId id : pendingEnactmentIds) {
+            GovActionRecord proposal = allProposals.get(id);
+            if (proposal != null) {
+                BigInteger deposit = proposal.deposit();
+                depositRefunds = depositRefunds.add(deposit);
+                if (deposit.signum() > 0) {
+                    aggregatedRefunds.merge(proposal.returnAddress(), deposit, BigInteger::add);
+                }
+                governanceStore.removeProposal(id, batch, deltaOps);
+                governanceStore.removeVotesForProposal(id.getTransactionId(),
+                        id.getGov_action_index(), batch, deltaOps);
+            }
+        }
+
+        // 3b. Dropped proposals (previously expired → now drop): refund deposit + remove
+        for (GovActionId id : pendingDropIds) {
+            GovActionRecord proposal = allProposals.get(id);
+            if (proposal != null) {
+                BigInteger deposit = proposal.deposit();
+                depositRefunds = depositRefunds.add(deposit);
+                if (deposit.signum() > 0) {
+                    aggregatedRefunds.merge(proposal.returnAddress(), deposit, BigInteger::add);
+                }
+                governanceStore.removeProposal(id, batch, deltaOps);
+                governanceStore.removeVotesForProposal(id.getTransactionId(),
+                        id.getGov_action_index(), batch, deltaOps);
+            }
+        }
+
+        // Clear processed pending enactments/drops
+        governanceStore.clearPending(batch, deltaOps);
+
+        // Store aggregated refunds as reward_rest
+        BigInteger unclaimedRefunds = BigInteger.ZERO;
+        if (rewardRestStore != null) {
+            for (var entry : aggregatedRefunds.entrySet()) {
+                boolean stored = rewardRestStore.storeRewardRest(
+                        newEpoch,
+                        com.bloxbean.cardano.yano.ledgerstate.DefaultAccountStateStore.REWARD_REST_PROPOSAL_REFUND,
+                        entry.getKey(), entry.getValue(), previousEpoch, 0,
+                        batch, deltaOps);
+                if (!stored) {
+                    unclaimedRefunds = unclaimedRefunds.add(entry.getValue());
+                }
+            }
+        }
+
+        if (unclaimedRefunds.signum() > 0) {
+            treasuryDelta = treasuryDelta.add(unclaimedRefunds);
+            log.info("Unclaimed proposal deposit refunds going to treasury: {}", unclaimedRefunds);
+        }
+
+        return new EnactmentResult(treasuryDelta, depositRefunds);
     }
 
     /**
-     * Phase 2: Ratification + deposit refunds + dormant tracking + DRep expiry + donations.
-     * Reads committed state (including Phase 1 enactment writes) for committee/params/lastEnacted.
+     * Phase 2: DRep distribution + Ratification + sibling drops + newly expired proposals + donations.
+     * Reads committed state (including Phase 1 enactment + reward_rest writes).
+     * Treasury withdrawal and enacted/dropped deposit refund reward_rest were already created in Phase 1,
+     * so spendableRewardRest includes them for DRep distribution.
      */
     private GovernanceEpochResult processRatificationPhase(int previousEpoch, int newEpoch,
-                                                            BigInteger enactmentTreasuryDelta,
+                                                            EnactmentResult enactment,
                                                             WriteBatch batch, List<DeltaOp> deltaOps,
                                                             Map<com.bloxbean.cardano.yano.ledgerstate.UtxoBalanceAggregator.CredentialKey,
                                                                     BigInteger> utxoBalances,
@@ -248,16 +360,18 @@ public class GovernanceEpochProcessor {
         log.info("Governance epoch boundary {} → {} (protocolVersion={}, bootstrap={})",
                 previousEpoch, newEpoch, protocolVersion, isBootstrapPhase);
 
-        BigInteger treasuryDelta = enactmentTreasuryDelta;
+        BigInteger treasuryDelta = enactment.treasuryDelta();
+        BigInteger depositRefunds = enactment.depositRefunds();
 
-        // 1. Calculate DRep distribution (using UTXO balances + reward_rest from snapshot step)
+        // 1. Calculate DRep distribution.
+        // spendableRewardRest includes treasury withdrawal + deposit refund amounts from Phase 1.
         Map<DRepDistKey, BigInteger> drepDist =
                 drepDistCalculator.calculate(previousEpoch, utxoBalances, spendableRewardRest);
 
         // Store DRep distribution snapshot (skip virtual DReps — they have synthetic non-hex hashes)
         for (var entry : drepDist.entrySet()) {
             DRepDistKey dk = entry.getKey();
-            if (dk.drepType() <= 1) { // Only regular DReps (0=key, 1=script), not virtual (2=abstain, 3=no_confidence)
+            if (dk.drepType() <= 1) {
                 governanceStore.storeDRepDistEntry(newEpoch, dk.drepType(),
                         dk.drepHash(), entry.getValue(), batch);
             }
@@ -266,7 +380,7 @@ public class GovernanceEpochProcessor {
         // Export DRep distribution snapshot for debugging
         if (snapshotExporter != com.bloxbean.cardano.yano.ledgerstate.export.EpochSnapshotExporter.NOOP) {
             var exportEntries = drepDist.entrySet().stream()
-                    .filter(e -> e.getKey().drepType() <= 1) // skip virtual DReps
+                    .filter(e -> e.getKey().drepType() <= 1)
                     .map(e -> new com.bloxbean.cardano.yano.ledgerstate.export.EpochSnapshotExporter.DRepDistEntry(
                             e.getKey().drepType(), e.getKey().drepHash(), e.getValue()))
                     .toList();
@@ -274,20 +388,10 @@ public class GovernanceEpochProcessor {
         }
 
         // Build set of ACTIVE (non-expired) DRep keys for ratification tally.
-        // Only include DReps that are IN the distribution (have delegated stake).
         Set<DRepDistKey> activeDRepKeys = buildActiveDRepKeys(drepDist, newEpoch);
 
-        // 2. Get active proposals, excluding those pending enactment/drop (already ratified/expired)
+        // 2. Get active proposals (enacted/dropped proposals already removed in Phase 1)
         Map<GovActionId, GovActionRecord> activeProposals = governanceStore.getAllActiveProposals();
-        List<GovActionId> pendingEnactmentIds = governanceStore.getPendingEnactments();
-        List<GovActionId> pendingDropIds = governanceStore.getPendingDrops();
-        for (GovActionId id : pendingEnactmentIds) activeProposals.remove(id);
-        for (GovActionId id : pendingDropIds) activeProposals.remove(id);
-
-        if (!pendingEnactmentIds.isEmpty() || !pendingDropIds.isEmpty()) {
-            log.info("Phase 2: {} pending enactments, {} pending drops at {} → {}",
-                    pendingEnactmentIds.size(), pendingDropIds.size(), previousEpoch, newEpoch);
-        }
 
         // 3. Ratify — reads committed state (committee/params/lastEnacted updated by Phase 1).
         Map<CredentialKey, CommitteeMemberRecord> committeeMembers = governanceStore.getAllCommitteeMembers();
@@ -343,82 +447,17 @@ public class GovernanceEpochProcessor {
             snapshotExporter.exportProposalStatus(newEpoch, statusEntries);
         }
 
-        // 3.5 Store treasury withdrawal amounts as reward_rest.
-        //     Only for PREVIOUSLY ratified proposals that are now being enacted.
-        Map<GovActionId, GovActionRecord> allProposals = governanceStore.getAllActiveProposals();
-        if (rewardRestStore != null) {
-            Map<String, BigInteger> aggregatedWithdrawals = new java.util.HashMap<>();
-            for (GovActionId id : pendingEnactmentIds) {
-                GovActionRecord enactedProposal = allProposals.get(id);
-                if (enactedProposal != null && enactedProposal.govAction()
-                        instanceof com.bloxbean.cardano.yaci.core.model.governance.actions.TreasuryWithdrawalsAction twa) {
-                    if (twa.getWithdrawals() != null) {
-                        for (var entry : twa.getWithdrawals().entrySet()) {
-                            aggregatedWithdrawals.merge(entry.getKey(), entry.getValue(), BigInteger::add);
-                        }
-                    }
-                }
-            }
-            for (var entry : aggregatedWithdrawals.entrySet()) {
-                boolean stored = rewardRestStore.storeRewardRest(
-                        newEpoch,
-                        com.bloxbean.cardano.yano.ledgerstate.DefaultAccountStateStore.REWARD_REST_TREASURY_WITHDRAWAL,
-                        entry.getKey(), entry.getValue(), previousEpoch, 0,
-                        batch, deltaOps);
-                if (!stored) {
-                    treasuryDelta = treasuryDelta.add(entry.getValue());
-                    log.info("Treasury withdrawal to {} unclaimed, returned to treasury",
-                            entry.getKey().substring(0, Math.min(16, entry.getKey().length())));
-                }
-            }
-        }
-
-        // 4. Two-phase deposit refunds and proposal removal.
+        // 4. Drop siblings/descendants of enacted proposals + handle newly expired proposals
         Set<GovActionId> proposalsToDrop = proposalDropService.computeProposalsToDrop(results, activeProposals);
-        BigInteger depositRefunds = BigInteger.ZERO;
-        Map<String, BigInteger> aggregatedRefunds = new java.util.HashMap<>();
+        Map<String, BigInteger> siblingRefunds = new java.util.HashMap<>();
 
-        // 4a. Process ENACTED proposals (previously ratified → now enact): refund + remove
-        for (GovActionId id : pendingEnactmentIds) {
-            GovActionRecord proposal = allProposals.get(id);
-            if (proposal != null) {
-                BigInteger deposit = proposal.deposit();
-                depositRefunds = depositRefunds.add(deposit);
-                if (deposit.signum() > 0) {
-                    aggregatedRefunds.merge(proposal.returnAddress(), deposit, BigInteger::add);
-                }
-                governanceStore.removeProposal(id, batch, deltaOps);
-                governanceStore.removeVotesForProposal(id.getTransactionId(),
-                        id.getGov_action_index(), batch, deltaOps);
-            }
-        }
-
-        // 4b. Process DROPPED proposals (previously expired → now drop): refund + remove
-        for (GovActionId id : pendingDropIds) {
-            GovActionRecord proposal = allProposals.get(id);
-            if (proposal != null) {
-                BigInteger deposit = proposal.deposit();
-                depositRefunds = depositRefunds.add(deposit);
-                if (deposit.signum() > 0) {
-                    aggregatedRefunds.merge(proposal.returnAddress(), deposit, BigInteger::add);
-                }
-                governanceStore.removeProposal(id, batch, deltaOps);
-                governanceStore.removeVotesForProposal(id.getTransactionId(),
-                        id.getGov_action_index(), batch, deltaOps);
-            }
-        }
-
-        // Clear processed pending enactments/drops BEFORE storing new ones
-        governanceStore.clearPending(batch, deltaOps);
-
-        // 4c. Drop siblings/descendants of enacted proposals
         for (GovActionId dropId : proposalsToDrop) {
             GovActionRecord dropped = activeProposals.get(dropId);
             if (dropped != null) {
                 BigInteger deposit = dropped.deposit();
                 depositRefunds = depositRefunds.add(deposit);
                 if (deposit.signum() > 0) {
-                    aggregatedRefunds.merge(dropped.returnAddress(), deposit, BigInteger::add);
+                    siblingRefunds.merge(dropped.returnAddress(), deposit, BigInteger::add);
                 }
                 governanceStore.removeProposal(dropId, batch, deltaOps);
                 governanceStore.removeVotesForProposal(dropId.getTransactionId(),
@@ -426,17 +465,17 @@ public class GovernanceEpochProcessor {
             }
         }
 
-        // 4d. Store NEWLY expired proposals as pending drops for next boundary
+        // Store NEWLY expired proposals as pending drops for next boundary
         for (RatificationResult result : results) {
             if (result.isExpired()) {
                 governanceStore.storePendingDrop(result.govActionId(), batch, deltaOps);
             }
         }
 
-        // Store aggregated refunds as reward_rest
+        // Store sibling drop refunds as reward_rest (these are new in Phase 2)
         BigInteger unclaimedRefunds = BigInteger.ZERO;
-        if (rewardRestStore != null) {
-            for (var entry : aggregatedRefunds.entrySet()) {
+        if (rewardRestStore != null && !siblingRefunds.isEmpty()) {
+            for (var entry : siblingRefunds.entrySet()) {
                 boolean stored = rewardRestStore.storeRewardRest(
                         newEpoch,
                         com.bloxbean.cardano.yano.ledgerstate.DefaultAccountStateStore.REWARD_REST_PROPOSAL_REFUND,
@@ -450,7 +489,7 @@ public class GovernanceEpochProcessor {
 
         if (unclaimedRefunds.signum() > 0) {
             treasuryDelta = treasuryDelta.add(unclaimedRefunds);
-            log.info("Unclaimed proposal deposit refunds going to treasury: {}", unclaimedRefunds);
+            log.info("Unclaimed sibling drop deposit refunds going to treasury: {}", unclaimedRefunds);
         }
 
         // 5. Dormant epoch tracking (needed before DRep expiry calculation)

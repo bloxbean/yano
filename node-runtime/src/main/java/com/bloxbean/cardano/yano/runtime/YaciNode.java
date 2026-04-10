@@ -470,7 +470,7 @@ public class YaciNode implements NodeAPI {
                                         paramTrackerInstance,
                                         defaultStore.getAdaPotTracker(),
                                         defaultStore::resolvePoolStakeForEpoch,
-                                        defaultStore::storeRewardRest,
+                                        defaultStore.asRewardRestStore(),
                                         config.getConwayGenesisFile()
                                 );
                                 boundaryProcessor.setGovernanceEpochProcessor(govEpochProcessor);
