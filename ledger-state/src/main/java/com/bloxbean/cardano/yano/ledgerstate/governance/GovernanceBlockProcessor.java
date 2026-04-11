@@ -176,6 +176,7 @@ public class GovernanceBlockProcessor {
             }
 
             // Track DRep interaction (lastInteractionEpoch) — once per DRep per tx
+            // V10+: also refresh expiry when voting (Haskell VOTE rule)
             VoterType vType = voter.getType();
             if (vType == VoterType.DREP_KEY_HASH || vType == VoterType.DREP_SCRIPT_HASH) {
                 int credType = (vType == VoterType.DREP_KEY_HASH) ? 0 : 1;
@@ -185,7 +186,19 @@ public class GovernanceBlockProcessor {
                     updatedDReps.add(drepKey);
                     Optional<DRepStateRecord> existing = governanceStore.getDRepState(credType, voter.getHash());
                     if (existing.isPresent() && existing.get().active()) {
-                        DRepStateRecord updated = existing.get().withLastInteraction(currentEpoch);
+                        // V10+: refresh expiry when voting
+                        int protocolMajor = paramProvider.getProtocolMajor(currentEpoch);
+                        DRepStateRecord updated;
+                        if (protocolMajor >= 10) {
+                            int drepActivity = paramProvider.getDRepActivity(currentEpoch);
+                            int numDormant = governanceStore.getNumDormantEpochs();
+                            int newExpiry = currentEpoch + drepActivity - numDormant;
+                            updated = existing.get()
+                                    .withLastInteraction(currentEpoch)
+                                    .withExpiry(newExpiry, true);
+                        } else {
+                            updated = existing.get().withLastInteraction(currentEpoch);
+                        }
                         governanceStore.storeDRepState(credType, voter.getHash(), updated, batch, deltaOps);
                     }
                 }
@@ -207,6 +220,10 @@ public class GovernanceBlockProcessor {
 
         int protocolVersion = paramProvider.getProtocolMajor(currentEpoch);
         int drepActivity = paramProvider.getDRepActivity(currentEpoch);
+
+        // V10+: subtract pending dormant epochs from initial expiry
+        int numDormant = (protocolVersion >= 10) ? governanceStore.getNumDormantEpochs() : 0;
+        int initialExpiry = currentEpoch + drepActivity - numDormant;
 
         // Check for previous deregistration (needed for v9 bonus bug)
         Optional<DRepStateRecord> prevState = governanceStore.getDRepState(credType, hash);
@@ -230,7 +247,7 @@ public class GovernanceBlockProcessor {
                 anchorHash,
                 currentEpoch,
                 null, // lastInteractionEpoch — none yet
-                currentEpoch + drepActivity, // initial expiry (updated at epoch boundary by DRepExpiryCalculator)
+                initialExpiry,
                 true,
                 slot,
                 protocolVersion,
@@ -238,8 +255,8 @@ public class GovernanceBlockProcessor {
         );
 
         governanceStore.storeDRepState(credType, hash, record, batch, deltaOps);
-        log.debug("DRep registered: credType={} hash={} epoch={} protocolVer={}",
-                credType, hash.substring(0, Math.min(8, hash.length())), currentEpoch, protocolVersion);
+        log.debug("DRep registered: credType={} hash={} epoch={} protocolVer={} initialExpiry={}",
+                credType, hash.substring(0, Math.min(8, hash.length())), currentEpoch, protocolVersion, initialExpiry);
     }
 
     /**
@@ -275,7 +292,7 @@ public class GovernanceBlockProcessor {
     }
 
     /**
-     * Process DRep update — update anchor and track as interaction.
+     * Process DRep update — update anchor, track as interaction, and refresh expiry in V10+.
      */
     public void processDRepUpdate(UpdateDrepCert cert, int currentEpoch,
                                   WriteBatch batch, List<DeltaOp> deltaOps) throws RocksDBException {
@@ -291,9 +308,22 @@ public class GovernanceBlockProcessor {
                 anchorHash = cert.getAnchor().getAnchor_data_hash();
             }
 
-            DRepStateRecord updated = existing.get()
-                    .withAnchor(anchorUrl, anchorHash)
-                    .withLastInteraction(currentEpoch);
+            // V10+: refresh expiry on update (Haskell CERT rule)
+            int protocolMajor = paramProvider.getProtocolMajor(currentEpoch);
+            DRepStateRecord updated;
+            if (protocolMajor >= 10) {
+                int drepActivity = paramProvider.getDRepActivity(currentEpoch);
+                int numDormant = governanceStore.getNumDormantEpochs();
+                int newExpiry = currentEpoch + drepActivity - numDormant;
+                updated = existing.get()
+                        .withAnchor(anchorUrl, anchorHash)
+                        .withLastInteraction(currentEpoch)
+                        .withExpiry(newExpiry, true);
+            } else {
+                updated = existing.get()
+                        .withAnchor(anchorUrl, anchorHash)
+                        .withLastInteraction(currentEpoch);
+            }
             governanceStore.storeDRepState(credType, hash, updated, batch, deltaOps);
         }
     }

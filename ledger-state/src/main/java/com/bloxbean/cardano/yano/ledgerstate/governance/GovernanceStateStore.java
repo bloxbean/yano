@@ -42,6 +42,8 @@ public class GovernanceStateStore {
     static final byte PREFIX_COMMITTEE_THRESHOLD = 0x6B;
     static final byte PREFIX_EXPIRED_IN_EPOCH = 0x6C;   // Pending drops: expired proposals awaiting removal at next boundary
     static final byte PREFIX_PROPOSAL_SUBMISSION = 0x6D; // Permanent proposal submission metadata: slot → (epoch, govActionLifetime)
+    static final byte PREFIX_NUM_DORMANT_EPOCHS = 0x6E; // Singleton key for cumulative dormant epoch counter (Haskell flush semantics)
+    static final byte PREFIX_ERA_FIRST_EPOCH = 0x6F;    // Per-protocol-version first epoch: key = 0x6F + protoMajor(1 byte)
 
     // Delta op types — same values as DefaultAccountStateStore
     private static final byte OP_PUT = 0x01;
@@ -120,6 +122,16 @@ public class GovernanceStateStore {
     /** Singleton key for constitution */
     static byte[] constitutionKey() {
         return new byte[]{PREFIX_CONSTITUTION};
+    }
+
+    /** Singleton key for numDormantEpochs counter */
+    static byte[] numDormantEpochsKey() {
+        return new byte[]{PREFIX_NUM_DORMANT_EPOCHS};
+    }
+
+    /** Key for era first epoch: 0x6F + protoMajor(1 byte) */
+    static byte[] eraFirstEpochKey(int protoMajor) {
+        return new byte[]{PREFIX_ERA_FIRST_EPOCH, (byte) protoMajor};
     }
 
     /** Singleton key for dormant epochs set */
@@ -455,6 +467,43 @@ public class GovernanceStateStore {
     public Set<Integer> getDormantEpochs() throws RocksDBException {
         byte[] val = db.get(cfState, dormantEpochsKey());
         return val != null ? GovernanceCborCodec.decodeDormantEpochs(val) : new HashSet<>();
+    }
+
+    // ===== Cumulative Dormant Epochs Counter (Haskell flush semantics) =====
+
+    public void storeNumDormantEpochs(int count, WriteBatch batch, List<DeltaOp> deltaOps) throws RocksDBException {
+        byte[] key = numDormantEpochsKey();
+        byte[] prev = db.get(cfState, key);
+        byte[] val = new byte[4];
+        ByteBuffer.wrap(val, 0, 4).order(ByteOrder.BIG_ENDIAN).putInt(count);
+        batch.put(cfState, key, val);
+        deltaOps.add(new DeltaOp(OP_PUT, key, prev));
+    }
+
+    public int getNumDormantEpochs() throws RocksDBException {
+        byte[] val = db.get(cfState, numDormantEpochsKey());
+        return val != null ? ByteBuffer.wrap(val, 0, 4).order(ByteOrder.BIG_ENDIAN).getInt() : 0;
+    }
+
+    // ===== Era First Epoch (per protocol major version) =====
+
+    public void storeEraFirstEpoch(int protoMajor, int epoch, WriteBatch batch, List<DeltaOp> deltaOps) throws RocksDBException {
+        byte[] key = eraFirstEpochKey(protoMajor);
+        byte[] prev = db.get(cfState, key);
+        byte[] val = new byte[4];
+        ByteBuffer.wrap(val, 0, 4).order(ByteOrder.BIG_ENDIAN).putInt(epoch);
+        batch.put(cfState, key, val);
+        deltaOps.add(new DeltaOp(OP_PUT, key, prev));
+    }
+
+    public int getEraFirstEpoch(int protoMajor) throws RocksDBException {
+        byte[] val = db.get(cfState, eraFirstEpochKey(protoMajor));
+        return val != null ? ByteBuffer.wrap(val, 0, 4).order(ByteOrder.BIG_ENDIAN).getInt() : -1;
+    }
+
+    /** Convenience method for Conway (protocol major version 9) */
+    public int getConwayFirstEpoch() throws RocksDBException {
+        return getEraFirstEpoch(9);
     }
 
     // ===== DRep Distribution Snapshot =====

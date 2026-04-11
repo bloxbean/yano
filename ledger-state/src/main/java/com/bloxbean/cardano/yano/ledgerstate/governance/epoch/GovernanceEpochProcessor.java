@@ -236,6 +236,8 @@ public class GovernanceEpochProcessor {
                     conwayFirstEpoch = newEpoch;
                 }
                 genesisBootstrap.bootstrap(conwayFirstEpoch, batch, deltaOps);
+                // Persist conwayFirstEpoch to RocksDB
+                governanceStore.storeEraFirstEpoch(9, conwayFirstEpoch, batch, deltaOps);
                 genesisBootstrapped = true;
             }
         }
@@ -388,12 +390,22 @@ public class GovernanceEpochProcessor {
             }
         }
 
-        // Export DRep distribution snapshot for debugging
+        // Export DRep distribution snapshot with expiry info for debugging
         if (snapshotExporter != com.bloxbean.cardano.yano.ledgerstate.export.EpochSnapshotExporter.NOOP) {
+            int numDormant = governanceStore.getNumDormantEpochs();
+            var allDRepStates = governanceStore.getAllDRepStates();
             var exportEntries = drepDist.entrySet().stream()
                     .filter(e -> e.getKey().drepType() <= 1)
-                    .map(e -> new com.bloxbean.cardano.yano.ledgerstate.export.EpochSnapshotExporter.DRepDistEntry(
-                            e.getKey().drepType(), e.getKey().drepHash(), e.getValue()))
+                    .map(e -> {
+                        DRepDistKey dk = e.getKey();
+                        DRepStateRecord state = allDRepStates.get(new CredentialKey(dk.drepType(), dk.drepHash()));
+                        int storedExpiry = (state != null) ? state.expiryEpoch() : -1;
+                        int effectiveExpiry = storedExpiry + numDormant;
+                        boolean active = effectiveExpiry >= newEpoch;
+                        return new com.bloxbean.cardano.yano.ledgerstate.export.EpochSnapshotExporter.DRepDistEntry(
+                                dk.drepType(), dk.drepHash(), e.getValue(),
+                                storedExpiry, numDormant, effectiveExpiry, active);
+                    })
                     .toList();
             snapshotExporter.exportDRepDistribution(newEpoch, exportEntries);
         }
@@ -523,7 +535,7 @@ public class GovernanceEpochProcessor {
         governanceStore.storeDormantEpochs(dormantEpochs, batch, deltaOps);
 
         // 6. Update DRep expiry (after dormant tracking so dormant set is current)
-        updateDRepExpiry(newEpoch, dormantEpochs, batch, deltaOps);
+        updateDRepExpiry(newEpoch, epochHadActiveProposals, batch, deltaOps);
 
         // 7. Process epoch donations
         BigInteger donations = governanceStore.getEpochDonations(previousEpoch);
@@ -542,28 +554,22 @@ public class GovernanceEpochProcessor {
     // ===== Active DRep Keys =====
 
     /**
-     * Build set of ACTIVE (non-expired) DRep keys from the distribution.
+     * Build set of ACTIVE (non-expired) DRep keys from the distribution using stored expiry + pending counter.
      * Only DReps in the distribution with delegated stake are included.
+     * Effective expiry = stored expiry + numDormantEpochs (pending counter).
      */
     private Set<DRepDistKey> buildActiveDRepKeys(Map<DRepDistKey, BigInteger> drepDist, int newEpoch) {
         Set<DRepDistKey> activeDRepKeys = new java.util.HashSet<>();
         try {
-            Set<Integer> currentDormantEpochs = governanceStore.getDormantEpochs();
-            int drepActivityParam = paramProvider.getDRepActivity(newEpoch);
-            int eraFirst = conwayFirstEpoch >= 0 ? conwayFirstEpoch : newEpoch;
-            int govLifetime = paramProvider.getGovActionLifetime(newEpoch);
-
+            int numDormant = governanceStore.getNumDormantEpochs();
             var allDRepStates = governanceStore.getAllDRepStates();
             for (var distKey : drepDist.keySet()) {
                 if (distKey.drepType() > 1) continue; // Skip virtual DReps (abstain, no_confidence)
                 CredentialKey ck = new CredentialKey(distKey.drepType(), distKey.drepHash());
                 DRepStateRecord rec = allDRepStates.get(ck);
                 if (rec == null) continue;
-                DRepExpiryCalculator.ProposalSubmissionInfo proposalForDRep =
-                        findLatestProposalUpToSlot(rec.registeredAtSlot());
-                int expiry = drepExpiryCalculator.calculateExpiry(rec, currentDormantEpochs,
-                        drepActivityParam, eraFirst, newEpoch, proposalForDRep, govLifetime);
-                if (expiry >= newEpoch) {
+                int effectiveExpiry = rec.expiryEpoch() + numDormant; // Amaru: valid_until + pending
+                if (effectiveExpiry >= newEpoch) {
                     activeDRepKeys.add(distKey);
                 }
             }
@@ -573,35 +579,45 @@ public class GovernanceEpochProcessor {
         return activeDRepKeys;
     }
 
-    // ===== DRep Expiry Update =====
+    // ===== DRep Expiry Update (Haskell Flush Semantics) =====
 
-    private void updateDRepExpiry(int newEpoch, Set<Integer> dormantEpochs,
+    /**
+     * Update DRep expiry using Haskell's incremental counter approach.
+     * At epoch boundaries with active proposals, flush the counter to all stored expiries.
+     * At dormant epochs (no active proposals), increment the counter.
+     */
+    private void updateDRepExpiry(int newEpoch, boolean epochHadActiveProposals,
                                    WriteBatch batch, List<DeltaOp> deltaOps)
             throws RocksDBException {
-        // Per yaci-store DRepExpiryUtil (matches DBSync exactly):
-        // expiry = lastActivityEpoch + drepActivity + dormantCount [+ v9Bonus]
-        int drepActivity = paramProvider.getDRepActivity(newEpoch);
-        int eraFirstEpoch = conwayFirstEpoch >= 0 ? conwayFirstEpoch : newEpoch;
-        int govActionLifetime = paramProvider.getGovActionLifetime(newEpoch);
+        int numDormant = governanceStore.getNumDormantEpochs();
 
-        Map<CredentialKey, DRepStateRecord> allDReps = governanceStore.getActiveDRepStates();
-        for (var entry : allDReps.entrySet()) {
-            CredentialKey ck = entry.getKey();
-            DRepStateRecord state = entry.getValue();
-
-            // Find the latest proposal submitted at or before this DRep's registration slot
-            DRepExpiryCalculator.ProposalSubmissionInfo proposalForDRep =
-                    findLatestProposalUpToSlot(state.registeredAtSlot());
-
-            int expiry = drepExpiryCalculator.calculateExpiry(state, dormantEpochs, drepActivity,
-                    eraFirstEpoch, newEpoch, proposalForDRep, govActionLifetime);
-            boolean active = expiry >= newEpoch;
-
-            if (expiry != state.expiryEpoch() || active != state.active()) {
-                DRepStateRecord updated = state.withExpiry(expiry, active);
-                governanceStore.storeDRepState(ck.credType(), ck.hash(), updated, batch, deltaOps);
+        if (epochHadActiveProposals && numDormant > 0) {
+            // Flush: add numDormant to every active DRep stored expiry
+            // (Haskell: skip if newExpiry < currentEpoch — "don't revive expired DReps")
+            Map<CredentialKey, DRepStateRecord> allDReps = governanceStore.getAllDRepStates();
+            for (var entry : allDReps.entrySet()) {
+                CredentialKey ck = entry.getKey();
+                DRepStateRecord state = entry.getValue();
+                // Skip deregistered tombstone records; flush applies to currently registered DReps.
+                Long prevDeregSlot = state.previousDeregistrationSlot();
+                if (prevDeregSlot != null && state.registeredAtSlot() <= prevDeregSlot) {
+                    continue;
+                }
+                int bumped = state.expiryEpoch() + numDormant;
+                int newExpiry = (bumped < newEpoch) ? state.expiryEpoch() : bumped; // Haskell guard
+                boolean active = newExpiry >= newEpoch;
+                if (newExpiry != state.expiryEpoch() || active != state.active()) {
+                    DRepStateRecord updated = state.withExpiry(newExpiry, active);
+                    governanceStore.storeDRepState(ck.credType(), ck.hash(), updated, batch, deltaOps);
+                }
             }
+            governanceStore.storeNumDormantEpochs(0, batch, deltaOps);
+
+        } else if (!epochHadActiveProposals) {
+            // Dormant epoch: increment counter
+            governanceStore.storeNumDormantEpochs(numDormant + 1, batch, deltaOps);
         }
+        // If epochHadActiveProposals && numDormant == 0: nothing to do (no change)
     }
 
     /**

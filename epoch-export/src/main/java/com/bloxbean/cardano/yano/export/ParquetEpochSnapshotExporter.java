@@ -19,6 +19,7 @@ import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.Statement;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Exports epoch boundary data to Parquet files using DuckDB JDBC.
@@ -30,6 +31,9 @@ import java.util.List;
  * Includes human-readable bech32 addresses (stake_address, pool_id, drep_id) derived from
  * raw credential hashes using CCL AddressProvider.
  * <p>
+ * Per-type export can be controlled via {@link #configure(Map)} with keys:
+ * "stake" (default false), "drep-dist" (default true), "adapot" (default true), "proposals" (default true).
+ * <p>
  * Discovered via {@link java.util.ServiceLoader} when the epoch-export module is on the classpath.
  */
 public class ParquetEpochSnapshotExporter implements EpochSnapshotExporter {
@@ -37,6 +41,10 @@ public class ParquetEpochSnapshotExporter implements EpochSnapshotExporter {
 
     private String outputDir;
     private Network network;
+    private boolean exportStake = false;
+    private boolean exportDrepDist = true;
+    private boolean exportAdaPot = true;
+    private boolean exportProposals = true;
 
     public ParquetEpochSnapshotExporter() {
         this("data");
@@ -60,7 +68,18 @@ public class ParquetEpochSnapshotExporter implements EpochSnapshotExporter {
     }
 
     @Override
+    public void configure(Map<String, String> options) {
+        exportStake = Boolean.parseBoolean(options.getOrDefault("stake", "false"));
+        exportDrepDist = Boolean.parseBoolean(options.getOrDefault("drep-dist", "true"));
+        exportAdaPot = Boolean.parseBoolean(options.getOrDefault("adapot", "true"));
+        exportProposals = Boolean.parseBoolean(options.getOrDefault("proposals", "true"));
+        log.info("Export types configured: stake={}, drep-dist={}, adapot={}, proposals={}",
+                exportStake, exportDrepDist, exportAdaPot, exportProposals);
+    }
+
+    @Override
     public void exportStakeSnapshot(int epoch, List<StakeEntry> entries) {
+        if (!exportStake) return;
         try {
             String dir = epochDir(epoch);
             try (Connection conn = DriverManager.getConnection("jdbc:duckdb:")) {
@@ -89,17 +108,24 @@ public class ParquetEpochSnapshotExporter implements EpochSnapshotExporter {
 
     @Override
     public void exportDRepDistribution(int epoch, List<DRepDistEntry> entries) {
+        if (!exportDrepDist) return;
         try {
             String dir = epochDir(epoch);
             try (Connection conn = DriverManager.getConnection("jdbc:duckdb:")) {
                 Statement stmt = conn.createStatement();
-                stmt.execute("CREATE TABLE t (drep_type INT, drep_hash VARCHAR, drep_id VARCHAR, amount DECIMAL(38,0))");
-                try (PreparedStatement ps = conn.prepareStatement("INSERT INTO t VALUES (?,?,?,?)")) {
+                stmt.execute("CREATE TABLE t (drep_type INT, drep_hash VARCHAR, drep_id VARCHAR, " +
+                        "amount DECIMAL(38,0), stored_expiry INT, num_dormant INT, " +
+                        "effective_expiry INT, active BOOLEAN)");
+                try (PreparedStatement ps = conn.prepareStatement("INSERT INTO t VALUES (?,?,?,?,?,?,?,?)")) {
                     for (var e : entries) {
                         ps.setInt(1, e.drepType());
                         ps.setString(2, e.drepHash());
                         ps.setString(3, toDRepId(e.drepType(), e.drepHash()));
                         ps.setBigDecimal(4, new BigDecimal(e.amount()));
+                        ps.setInt(5, e.storedExpiry());
+                        ps.setInt(6, e.numDormant());
+                        ps.setInt(7, e.effectiveExpiry());
+                        ps.setBoolean(8, e.active());
                         ps.addBatch();
                     }
                     ps.executeBatch();
@@ -114,6 +140,7 @@ public class ParquetEpochSnapshotExporter implements EpochSnapshotExporter {
 
     @Override
     public void exportAdaPot(int epoch, AdaPotEntry entry) {
+        if (!exportAdaPot) return;
         try {
             String dir = epochDir(epoch);
             try (Connection conn = DriverManager.getConnection("jdbc:duckdb:")) {
@@ -143,7 +170,7 @@ public class ParquetEpochSnapshotExporter implements EpochSnapshotExporter {
 
     @Override
     public void exportProposalStatus(int epoch, List<ProposalStatusEntry> entries) {
-        if (entries.isEmpty()) return;
+        if (!exportProposals || entries.isEmpty()) return;
         try {
             String dir = epochDir(epoch);
             try (Connection conn = DriverManager.getConnection("jdbc:duckdb:")) {

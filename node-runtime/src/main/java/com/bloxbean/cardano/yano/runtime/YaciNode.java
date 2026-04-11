@@ -496,6 +496,13 @@ public class YaciNode implements NodeAPI {
                             var exporter = impl.get();
                             exporter.setOutputDir(exportDir);
                             exporter.setNetworkMagic(this.config.getProtocolMagic());
+                            var exportOptions = java.util.Map.of(
+                                    "stake", String.valueOf(runtimeOptions.globals().getOrDefault("yaci.node.snapshot-export.stake", "false")),
+                                    "drep-dist", String.valueOf(runtimeOptions.globals().getOrDefault("yaci.node.snapshot-export.drep-dist", "true")),
+                                    "adapot", String.valueOf(runtimeOptions.globals().getOrDefault("yaci.node.snapshot-export.adapot", "true")),
+                                    "proposals", String.valueOf(runtimeOptions.globals().getOrDefault("yaci.node.snapshot-export.proposals", "true"))
+                            );
+                            exporter.configure(exportOptions);
                             defaultStore.setSnapshotExporter(exporter);
                             if (boundaryProcessor != null) boundaryProcessor.setSnapshotExporter(exporter);
                             log.info("Epoch snapshot export enabled: {} → {}", exporter.getClass().getSimpleName(), exportDir);
