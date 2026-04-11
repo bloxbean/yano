@@ -175,8 +175,9 @@ public class GovernanceBlockProcessor {
                 );
             }
 
-            // Track DRep interaction (lastInteractionEpoch) — once per DRep per tx
-            // V10+: also refresh expiry when voting (Haskell VOTE rule)
+            // Track DRep interaction and refresh expiry when voting.
+            // Haskell updateVotingDRepExpiries (Certs.hs) runs for ALL Conway versions (V9/V10+).
+            // No active() gate — voting revives expired DReps (Haskell Map.adjust on vsDReps).
             VoterType vType = voter.getType();
             if (vType == VoterType.DREP_KEY_HASH || vType == VoterType.DREP_SCRIPT_HASH) {
                 int credType = (vType == VoterType.DREP_KEY_HASH) ? 0 : 1;
@@ -185,21 +186,22 @@ public class GovernanceBlockProcessor {
                 if (!updatedDReps.contains(drepKey)) {
                     updatedDReps.add(drepKey);
                     Optional<DRepStateRecord> existing = governanceStore.getDRepState(credType, voter.getHash());
-                    if (existing.isPresent() && existing.get().active()) {
-                        // V10+: refresh expiry when voting
-                        int protocolMajor = paramProvider.getProtocolMajor(currentEpoch);
-                        DRepStateRecord updated;
-                        if (protocolMajor >= 10) {
+                    if (existing.isPresent()) {
+                        DRepStateRecord rec = existing.get();
+                        // Tombstone guard: skip deregistered DReps.
+                        // Haskell deletes them from vsDReps; Yano keeps tombstone records.
+                        Long prevDeregSlot = rec.previousDeregistrationSlot();
+                        if (prevDeregSlot == null || rec.registeredAtSlot() > prevDeregSlot) {
+                            // Refresh expiry on vote — same formula for V9 and V10+.
+                            // Haskell: computeDRepExpiry (with numDormant) used in all Conway versions.
                             int drepActivity = paramProvider.getDRepActivity(currentEpoch);
                             int numDormant = governanceStore.getNumDormantEpochs();
                             int newExpiry = currentEpoch + drepActivity - numDormant;
-                            updated = existing.get()
+                            DRepStateRecord updated = rec
                                     .withLastInteraction(currentEpoch)
                                     .withExpiry(newExpiry, true);
-                        } else {
-                            updated = existing.get().withLastInteraction(currentEpoch);
+                            governanceStore.storeDRepState(credType, voter.getHash(), updated, batch, deltaOps);
                         }
-                        governanceStore.storeDRepState(credType, voter.getHash(), updated, batch, deltaOps);
                     }
                 }
             }
@@ -292,7 +294,8 @@ public class GovernanceBlockProcessor {
     }
 
     /**
-     * Process DRep update — update anchor, track as interaction, and refresh expiry in V10+.
+     * Process DRep update — update anchor, track as interaction, and refresh expiry.
+     * Haskell GovCert.hs refreshes expiry on ConwayUpdateDRep in all Conway versions.
      */
     public void processDRepUpdate(UpdateDrepCert cert, int currentEpoch,
                                   WriteBatch batch, List<DeltaOp> deltaOps) throws RocksDBException {
@@ -301,6 +304,13 @@ public class GovernanceBlockProcessor {
 
         Optional<DRepStateRecord> existing = governanceStore.getDRepState(credType, hash);
         if (existing.isPresent()) {
+            DRepStateRecord rec = existing.get();
+            // Tombstone guard: skip deregistered DReps
+            Long prevDeregSlot = rec.previousDeregistrationSlot();
+            if (prevDeregSlot != null && rec.registeredAtSlot() <= prevDeregSlot) {
+                return;
+            }
+
             String anchorUrl = null;
             String anchorHash = null;
             if (cert.getAnchor() != null) {
@@ -308,22 +318,14 @@ public class GovernanceBlockProcessor {
                 anchorHash = cert.getAnchor().getAnchor_data_hash();
             }
 
-            // V10+: refresh expiry on update (Haskell CERT rule)
-            int protocolMajor = paramProvider.getProtocolMajor(currentEpoch);
-            DRepStateRecord updated;
-            if (protocolMajor >= 10) {
-                int drepActivity = paramProvider.getDRepActivity(currentEpoch);
-                int numDormant = governanceStore.getNumDormantEpochs();
-                int newExpiry = currentEpoch + drepActivity - numDormant;
-                updated = existing.get()
-                        .withAnchor(anchorUrl, anchorHash)
-                        .withLastInteraction(currentEpoch)
-                        .withExpiry(newExpiry, true);
-            } else {
-                updated = existing.get()
-                        .withAnchor(anchorUrl, anchorHash)
-                        .withLastInteraction(currentEpoch);
-            }
+            // Refresh expiry on update — same formula for V9 and V10+.
+            int drepActivity = paramProvider.getDRepActivity(currentEpoch);
+            int numDormant = governanceStore.getNumDormantEpochs();
+            int newExpiry = currentEpoch + drepActivity - numDormant;
+            DRepStateRecord updated = rec
+                    .withAnchor(anchorUrl, anchorHash)
+                    .withLastInteraction(currentEpoch)
+                    .withExpiry(newExpiry, true);
             governanceStore.storeDRepState(credType, hash, updated, batch, deltaOps);
         }
     }

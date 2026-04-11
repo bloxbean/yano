@@ -401,7 +401,7 @@ public class GovernanceEpochProcessor {
                         DRepStateRecord state = allDRepStates.get(new CredentialKey(dk.drepType(), dk.drepHash()));
                         int storedExpiry = (state != null) ? state.expiryEpoch() : -1;
                         int effectiveExpiry = storedExpiry + numDormant;
-                        boolean active = effectiveExpiry >= newEpoch;
+                        boolean active = effectiveExpiry >= newEpoch - 1; // Haskell: reCurrentEpoch = eNo - 1
                         return new com.bloxbean.cardano.yano.ledgerstate.export.EpochSnapshotExporter.DRepDistEntry(
                                 dk.drepType(), dk.drepHash(), e.getValue(),
                                 storedExpiry, numDormant, effectiveExpiry, active);
@@ -557,6 +557,7 @@ public class GovernanceEpochProcessor {
      * Build set of ACTIVE (non-expired) DRep keys from the distribution using stored expiry + pending counter.
      * Only DReps in the distribution with delegated stake are included.
      * Effective expiry = stored expiry + numDormantEpochs (pending counter).
+     * Haskell: active when {@code drepExpiry >= reCurrentEpoch} where {@code reCurrentEpoch = eNo - 1}.
      */
     private Set<DRepDistKey> buildActiveDRepKeys(Map<DRepDistKey, BigInteger> drepDist, int newEpoch) {
         Set<DRepDistKey> activeDRepKeys = new java.util.HashSet<>();
@@ -568,8 +569,8 @@ public class GovernanceEpochProcessor {
                 CredentialKey ck = new CredentialKey(distKey.drepType(), distKey.drepHash());
                 DRepStateRecord rec = allDRepStates.get(ck);
                 if (rec == null) continue;
-                int effectiveExpiry = rec.expiryEpoch() + numDormant; // Amaru: valid_until + pending
-                if (effectiveExpiry >= newEpoch) {
+                int effectiveExpiry = rec.expiryEpoch() + numDormant;
+                if (effectiveExpiry >= newEpoch - 1) { // Haskell: reCurrentEpoch = eNo - 1
                     activeDRepKeys.add(distKey);
                 }
             }
@@ -592,20 +593,21 @@ public class GovernanceEpochProcessor {
         int numDormant = governanceStore.getNumDormantEpochs();
 
         if (epochHadActiveProposals && numDormant > 0) {
-            // Flush: add numDormant to every active DRep stored expiry
-            // (Haskell: skip if newExpiry < currentEpoch — "don't revive expired DReps")
+            // Flush: add numDormant to every registered DRep stored expiry.
+            // Haskell bumps ALL DReps unconditionally (Certs.hs updateDormantDRepExpiries).
+            // No guard — even expired DReps accumulate dormant bumps.
             Map<CredentialKey, DRepStateRecord> allDReps = governanceStore.getAllDRepStates();
             for (var entry : allDReps.entrySet()) {
                 CredentialKey ck = entry.getKey();
                 DRepStateRecord state = entry.getValue();
                 // Skip deregistered tombstone records; flush applies to currently registered DReps.
+                // (Haskell removes deregistered DReps from vsDReps; Yano keeps tombstones.)
                 Long prevDeregSlot = state.previousDeregistrationSlot();
                 if (prevDeregSlot != null && state.registeredAtSlot() <= prevDeregSlot) {
                     continue;
                 }
-                int bumped = state.expiryEpoch() + numDormant;
-                int newExpiry = (bumped < newEpoch) ? state.expiryEpoch() : bumped; // Haskell guard
-                boolean active = newExpiry >= newEpoch;
+                int newExpiry = state.expiryEpoch() + numDormant;
+                boolean active = newExpiry >= newEpoch - 1; // Haskell: reCurrentEpoch = eNo - 1
                 if (newExpiry != state.expiryEpoch() || active != state.active()) {
                     DRepStateRecord updated = state.withExpiry(newExpiry, active);
                     governanceStore.storeDRepState(ck.credType(), ck.hash(), updated, batch, deltaOps);
