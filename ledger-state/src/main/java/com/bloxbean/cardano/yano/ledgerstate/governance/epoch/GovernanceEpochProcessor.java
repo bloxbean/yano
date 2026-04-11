@@ -395,9 +395,14 @@ public class GovernanceEpochProcessor {
             int numDormant = governanceStore.getNumDormantEpochs();
             var allDRepStates = governanceStore.getAllDRepStates();
             var exportEntries = drepDist.entrySet().stream()
-                    .filter(e -> e.getKey().drepType() <= 1)
                     .map(e -> {
                         DRepDistKey dk = e.getKey();
+                        // Virtual DReps (ABSTAIN/NO_CONFIDENCE): no expiry record, not expiry-gated.
+                        // Use -1 for expiry fields (N/A), active=true (not subject to expiry checks).
+                        if (dk.drepType() > 1) {
+                            return new com.bloxbean.cardano.yano.ledgerstate.export.EpochSnapshotExporter.DRepDistEntry(
+                                    dk.drepType(), dk.drepHash(), e.getValue(), -1, -1, -1, true);
+                        }
                         DRepStateRecord state = allDRepStates.get(new CredentialKey(dk.drepType(), dk.drepHash()));
                         int storedExpiry = (state != null) ? state.expiryEpoch() : -1;
                         int effectiveExpiry = storedExpiry + numDormant;

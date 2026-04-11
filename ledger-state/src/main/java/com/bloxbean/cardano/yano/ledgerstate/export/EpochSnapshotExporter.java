@@ -27,7 +27,7 @@ public interface EpochSnapshotExporter {
      * Called after DRep distribution is calculated (Conway era).
      *
      * @param epoch   The epoch at boundary (newEpoch)
-     * @param entries DRep distribution entries (type 0=key, 1=script; excludes virtual DReps)
+     * @param entries DRep distribution entries (type 0=key, 1=script, 2=abstain, 3=no_confidence)
      */
     void exportDRepDistribution(int epoch, List<DRepDistEntry> entries);
 

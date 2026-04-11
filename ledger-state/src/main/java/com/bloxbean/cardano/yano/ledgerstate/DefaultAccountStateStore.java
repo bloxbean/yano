@@ -36,6 +36,7 @@ public class DefaultAccountStateStore implements AccountStateStore {
     public static final byte PREFIX_ACCT = 0x01;
     public static final byte PREFIX_POOL_DELEG = 0x02;
     public static final byte PREFIX_DREP_DELEG = 0x03;
+    static final byte PREFIX_DREP_DELEG_REVERSE = 0x04; // DRep → delegators reverse index (PV9 bug-compat)
     static final byte PREFIX_POOL_DEPOSIT = 0x10;
     static final byte PREFIX_POOL_RETIRE = 0x11;
     static final byte PREFIX_DREP_REG = 0x20;
@@ -110,6 +111,14 @@ public class DefaultAccountStateStore implements AccountStateStore {
     private volatile com.bloxbean.cardano.yano.api.utxo.UtxoState utxoState;
     private volatile long networkMagic;
     private PointerAddressResolver pointerAddressResolver; // initialized after RocksDB opens
+
+    // Per-block WriteBatch visibility overlay for DRep delegation reverse index.
+    // RocksDB db.get()/newIterator() only see committed state, not pending batch writes.
+    // These maps track in-flight changes so same-block delegation+deregistration is handled correctly.
+    // Initialized in applyBlock(), cleared after db.write(). Single-threaded block processing.
+    private HashMap<String, byte[]> batchForwardDeleg;          // "ct:hash" -> encoded delegation (null=deleted)
+    private HashMap<String, HashSet<String>> batchReverseAdded;    // "drepType:drepHash" -> set of "ct:hash"
+    private HashMap<String, HashSet<String>> batchReverseRemoved;  // "drepType:drepHash" -> set of "ct:hash"
 
     // Optional epoch snapshot exporter for debugging (NOOP when disabled)
     private com.bloxbean.cardano.yano.ledgerstate.export.EpochSnapshotExporter snapshotExporter =
@@ -357,6 +366,39 @@ public class DefaultAccountStateStore implements AccountStateStore {
         return key;
     }
 
+    /**
+     * Reverse index key: DRep credential → delegator credential.
+     * Key: [PREFIX_DREP_DELEG_REVERSE | drepType(1) | drepHash(28) | delegatorCredType(1) | delegatorHash(28)]
+     * Used for PV9 bug-compatible delegation cleanup on DRep deregistration.
+     */
+    static byte[] drepDelegReverseKey(int drepType, String drepHash,
+                                       int delegatorCredType, String delegatorHash) {
+        byte[] dHash = HexUtil.decodeHexString(drepHash);
+        byte[] delHash = HexUtil.decodeHexString(delegatorHash);
+        byte[] key = new byte[1 + 1 + dHash.length + 1 + delHash.length];
+        key[0] = PREFIX_DREP_DELEG_REVERSE;
+        key[1] = (byte) drepType;
+        System.arraycopy(dHash, 0, key, 2, dHash.length);
+        key[2 + dHash.length] = (byte) delegatorCredType;
+        System.arraycopy(delHash, 0, key, 3 + dHash.length, delHash.length);
+        return key;
+    }
+
+    /** Seek prefix for iterating all delegators of a specific DRep in the reverse index. */
+    static byte[] drepDelegReverseSeekPrefix(int drepType, String drepHash) {
+        byte[] dHash = HexUtil.decodeHexString(drepHash);
+        byte[] prefix = new byte[1 + 1 + dHash.length];
+        prefix[0] = PREFIX_DREP_DELEG_REVERSE;
+        prefix[1] = (byte) drepType;
+        System.arraycopy(dHash, 0, prefix, 2, dHash.length);
+        return prefix;
+    }
+
+    /** Returns true for credential DReps (ADDR_KEYHASH=0, SCRIPTHASH=1), false for predefined (ABSTAIN, NO_CONFIDENCE). */
+    private static boolean isCredentialDRep(int drepType) {
+        return drepType == 0 || drepType == 1;
+    }
+
     static byte[] poolDepositKey(String poolHash) {
         byte[] hash = HexUtil.decodeHexString(poolHash);
         byte[] key = new byte[1 + hash.length];
@@ -513,6 +555,13 @@ public class DefaultAccountStateStore implements AccountStateStore {
             case ABSTAIN -> 2;
             case NO_CONFIDENCE -> 3;
         };
+    }
+
+    private int getProtocolMajor(int epoch) {
+        if (paramTracker != null && paramTracker.isEnabled()) {
+            return paramTracker.getProtocolMajor(epoch);
+        }
+        return epochParamProvider.getProtocolMajor(epoch);
     }
 
     private int epochForSlot(long slot) {
@@ -1732,6 +1781,11 @@ public class DefaultAccountStateStore implements AccountStateStore {
             Set<Integer> invalidIdx = (invList != null) ? new HashSet<>(invList) : Collections.emptySet();
             List<TransactionBody> txs = block.getTransactionBodies();
 
+            // Initialize per-block WriteBatch overlay for DRep delegation reverse index
+            batchForwardDeleg = new HashMap<>();
+            batchReverseAdded = new HashMap<>();
+            batchReverseRemoved = new HashMap<>();
+
             if (txs != null) {
                 for (int txIdx = 0; txIdx < txs.size(); txIdx++) {
                     if (invalidIdx.contains(txIdx)) continue;
@@ -1804,6 +1858,10 @@ public class DefaultAccountStateStore implements AccountStateStore {
             db.write(wo, batch);
         } catch (Exception ex) {
             log.error("Account state apply failed for block {}: {}", blockNo, ex.toString());
+        } finally {
+            batchForwardDeleg = null;
+            batchReverseAdded = null;
+            batchReverseRemoved = null;
         }
     }
 
@@ -1836,13 +1894,13 @@ public class DefaultAccountStateStore implements AccountStateStore {
             }
             case VoteDelegCert vd -> {
                 delegateToDRep(vd.getStakeCredential(), vd.getDrep(),
-                        slot, txIdx, certIdx, batch, deltaOps);
+                        slot, txIdx, certIdx, currentEpoch, batch, deltaOps);
             }
             case StakeVoteDelegCert svd -> {
                 delegateToPool(svd.getStakeCredential(), svd.getPoolKeyHash(),
                         slot, txIdx, certIdx, batch, deltaOps);
                 delegateToDRep(svd.getStakeCredential(), svd.getDrep(),
-                        slot, txIdx, certIdx, batch, deltaOps);
+                        slot, txIdx, certIdx, currentEpoch, batch, deltaOps);
             }
             case StakeRegDelegCert srd -> {
                 BigInteger deposit = srd.getCoin() != null ? srd.getCoin() : BigInteger.ZERO;
@@ -1856,7 +1914,7 @@ public class DefaultAccountStateStore implements AccountStateStore {
                 depositDelta = registerStake(vrd.getStakeCredential(), deposit,
                         slot, txIdx, certIdx, batch, deltaOps);
                 delegateToDRep(vrd.getStakeCredential(), vrd.getDrep(),
-                        slot, txIdx, certIdx, batch, deltaOps);
+                        slot, txIdx, certIdx, currentEpoch, batch, deltaOps);
             }
             case StakeVoteRegDelegCert svrd -> {
                 BigInteger deposit = svrd.getCoin() != null ? svrd.getCoin() : BigInteger.ZERO;
@@ -1865,7 +1923,7 @@ public class DefaultAccountStateStore implements AccountStateStore {
                 delegateToPool(svrd.getStakeCredential(), svrd.getPoolKeyHash(),
                         slot, txIdx, certIdx, batch, deltaOps);
                 delegateToDRep(svrd.getStakeCredential(), svrd.getDrep(),
-                        slot, txIdx, certIdx, batch, deltaOps);
+                        slot, txIdx, certIdx, currentEpoch, batch, deltaOps);
             }
             case PoolRegistration pr -> {
                 var params = pr.getPoolParams();
@@ -1959,6 +2017,12 @@ public class DefaultAccountStateStore implements AccountStateStore {
                 // Governance dual-write: track deregistration for v9 bug
                 if (governanceBlockProcessor != null) {
                     governanceBlockProcessor.processDRepDeregistration(ud, slot, batch, deltaOps);
+                }
+                // Clear delegations for credentials in this DRep's reverse index.
+                // Replicates Haskell UMap deregistration cleanup behavior.
+                if (isCredentialDRep(ct)) {
+                    clearDRepDelegationsForDeregisteredDRep(ct, hash,
+                            slot, txIdx, certIdx, batch, deltaOps);
                 }
             }
             case UpdateDrepCert upd -> {
@@ -2118,9 +2182,9 @@ public class DefaultAccountStateStore implements AccountStateStore {
         }
 
         // Per Haskell ledger (Deleg.hs): deregistration completely removes the account entry
-        // from dsAccounts via Map.extract, discarding sasStakePoolDelegation with it.
-        // Re-registration starts fresh with sasStakePoolDelegation = SNothing (no delegation).
-        // Also cleans the reverse index: removes credential from the pool's spsDelegators set.
+        // from dsAccounts via Map.extract, discarding pool and DRep delegations with it.
+        // Re-registration starts fresh with no delegations.
+        // Also cleans the DRep reverse index (PREFIX_DREP_DELEG_REVERSE) below.
         //
         // Always delete unconditionally — the delegation may exist in the uncommitted WriteBatch
         // (e.g., delegation and deregistration in the same block) where db.get() won't find it.
@@ -2132,9 +2196,36 @@ public class DefaultAccountStateStore implements AccountStateStore {
         // Remove DRep delegation (same behavior: Conway unregisterConwayAccount calls
         // unDelegReDelegDRep with Nothing, clearing the DRep delegation)
         byte[] drepKey = drepDelegKey(ct, cred.getHash());
-        byte[] drepPrev = db.get(cfState, drepKey);
+        String credId = ct + ":" + cred.getHash();
+        // Check overlay first for current delegation (handles same-block delegation+deregistration)
+        byte[] drepPrev;
+        if (batchForwardDeleg != null && batchForwardDeleg.containsKey(credId)) {
+            drepPrev = batchForwardDeleg.get(credId);
+        } else {
+            drepPrev = db.get(cfState, drepKey);
+        }
         batch.delete(cfState, drepKey);
         deltaOps.add(new DeltaOp(OP_DELETE, drepKey, drepPrev)); // drepPrev may be null
+        if (batchForwardDeleg != null) batchForwardDeleg.put(credId, null);
+
+        // Also remove this delegator's current reverse index entry (if pointing to a credential DRep).
+        // Do NOT try to delete historical/stale reverse entries — preserving PV9 stale entries is intentional.
+        if (drepPrev != null) {
+            var deleg = AccountStateCborCodec.decodeDRepDelegation(drepPrev);
+            if (isCredentialDRep(deleg.drepType())) {
+                byte[] revKey = drepDelegReverseKey(deleg.drepType(), deleg.drepHash(), ct, cred.getHash());
+                byte[] revPrev = db.get(cfState, revKey);
+                batch.delete(cfState, revKey);
+                deltaOps.add(new DeltaOp(OP_DELETE, revKey, revPrev));
+                // Update overlay
+                if (batchReverseRemoved != null) {
+                    String drepId = deleg.drepType() + ":" + deleg.drepHash();
+                    batchReverseRemoved.computeIfAbsent(drepId, k -> new HashSet<>()).add(credId);
+                    var added = batchReverseAdded.get(drepId);
+                    if (added != null) added.remove(credId);
+                }
+            }
+        }
 
         // Write stake event
         byte[] eventKey = stakeEventKey(slot, txIdx, certIdx, ct, cred.getHash());
@@ -2143,6 +2234,122 @@ public class DefaultAccountStateStore implements AccountStateStore {
         deltaOps.add(new DeltaOp(OP_PUT, eventKey, null));
 
         return depositRefund;
+    }
+
+    /**
+     * Clear DRep delegations for credentials in the deregistered DRep's reverse index.
+     * Replicates Haskell UMap cleanup: on DRep deregistration, delegation entries that
+     * previously pointed to this DRep are cleared — unless the current delegation pointer
+     * is strictly after the deregistration pointer (re-delegation happened after deregistration).
+     * <p>
+     * Cleanup is unconditional (not version-gated). Stale reverse entries are only created
+     * by PV9 behavior; the pointer guard protects PV10 re-delegations.
+     * <p>
+     * Scans both committed RocksDB state AND the per-block WriteBatch overlay
+     * (batchReverseAdded) to handle same-block delegation+deregistration.
+     */
+    private void clearDRepDelegationsForDeregisteredDRep(int drepType, String drepHash,
+                                                          long deregSlot, int deregTxIdx, int deregCertIdx,
+                                                          WriteBatch batch, List<DeltaOp> deltaOps) throws RocksDBException {
+        // Collect delegators already processed (to avoid double-processing from both committed + overlay)
+        Set<String> processed = new HashSet<>();
+
+        // Pass 1: scan committed RocksDB reverse entries
+        byte[] seekPrefix = drepDelegReverseSeekPrefix(drepType, drepHash);
+        try (RocksIterator it = db.newIterator(cfState)) {
+            it.seek(seekPrefix);
+            while (it.isValid()) {
+                byte[] revKey = it.key();
+                if (revKey.length < seekPrefix.length) break;
+                boolean prefixMatch = true;
+                for (int i = 0; i < seekPrefix.length; i++) {
+                    if (revKey[i] != seekPrefix[i]) { prefixMatch = false; break; }
+                }
+                if (!prefixMatch) break;
+
+                int offset = 2 + 28; // skip PREFIX + drepType + drepHash
+                if (revKey.length < offset + 1 + 28) { it.next(); continue; }
+                int delegatorCredType = revKey[offset] & 0xFF;
+                String delegatorHash = HexUtil.encodeHexString(
+                        java.util.Arrays.copyOfRange(revKey, offset + 1, offset + 1 + 28));
+                String delegatorId = delegatorCredType + ":" + delegatorHash;
+
+                // Skip if this reverse entry was deleted in the current batch
+                String drepId = drepType + ":" + drepHash;
+                if (batchReverseRemoved != null) {
+                    var removed = batchReverseRemoved.get(drepId);
+                    if (removed != null && removed.contains(delegatorId)) { it.next(); continue; }
+                }
+
+                clearDelegationIfNotAfter(delegatorCredType, delegatorHash, delegatorId,
+                        deregSlot, deregTxIdx, deregCertIdx, batch, deltaOps);
+                processed.add(delegatorId);
+
+                // Delete the reverse key and mark in overlay so a same-block
+                // re-register/deregister of this DRep won't see the stale committed entry
+                byte[] revPrev = it.value();
+                byte[] revKeyCopy = java.util.Arrays.copyOf(revKey, revKey.length);
+                batch.delete(cfState, revKeyCopy);
+                deltaOps.add(new DeltaOp(OP_DELETE, revKeyCopy, revPrev));
+                if (batchReverseRemoved != null) {
+                    batchReverseRemoved.computeIfAbsent(drepId, k -> new HashSet<>()).add(delegatorId);
+                    var added = batchReverseAdded.get(drepId);
+                    if (added != null) added.remove(delegatorId);
+                }
+
+                it.next();
+            }
+        }
+
+        // Pass 2: scan pending reverse entries from the current block's batch overlay
+        if (batchReverseAdded != null) {
+            String drepId = drepType + ":" + drepHash;
+            Set<String> pending = batchReverseAdded.get(drepId);
+            if (pending != null) {
+                for (String delegatorId : new ArrayList<>(pending)) {
+                    if (processed.contains(delegatorId)) continue;
+                    String[] parts = delegatorId.split(":", 2);
+                    int delegatorCredType = Integer.parseInt(parts[0]);
+                    String delegatorHash = parts[1];
+
+                    clearDelegationIfNotAfter(delegatorCredType, delegatorHash, delegatorId,
+                            deregSlot, deregTxIdx, deregCertIdx, batch, deltaOps);
+
+                    // Delete the reverse key from batch (it may not be committed yet)
+                    byte[] revKey = drepDelegReverseKey(drepType, drepHash, delegatorCredType, delegatorHash);
+                    byte[] revPrev = db.get(cfState, revKey); // may be null (only in batch)
+                    batch.delete(cfState, revKey);
+                    deltaOps.add(new DeltaOp(OP_DELETE, revKey, revPrev));
+                }
+                pending.clear();
+            }
+        }
+    }
+
+    /** Check forward delegation and clear it if its pointer is not strictly after the deregistration pointer. */
+    private void clearDelegationIfNotAfter(int delegatorCredType, String delegatorHash, String delegatorId,
+                                            long deregSlot, int deregTxIdx, int deregCertIdx,
+                                            WriteBatch batch, List<DeltaOp> deltaOps) throws RocksDBException {
+        byte[] fwdKey = drepDelegKey(delegatorCredType, delegatorHash);
+        // Check overlay first, then committed
+        byte[] fwdVal;
+        if (batchForwardDeleg != null && batchForwardDeleg.containsKey(delegatorId)) {
+            fwdVal = batchForwardDeleg.get(delegatorId);
+        } else {
+            fwdVal = db.get(cfState, fwdKey);
+        }
+        if (fwdVal != null) {
+            var deleg = AccountStateCborCodec.decodeDRepDelegation(fwdVal);
+            boolean delegAfterDereg = deleg.slot() > deregSlot
+                    || (deleg.slot() == deregSlot && deleg.txIdx() > deregTxIdx)
+                    || (deleg.slot() == deregSlot && deleg.txIdx() == deregTxIdx
+                        && deleg.certIdx() > deregCertIdx);
+            if (!delegAfterDereg) {
+                batch.delete(cfState, fwdKey);
+                deltaOps.add(new DeltaOp(OP_DELETE, fwdKey, fwdVal));
+                if (batchForwardDeleg != null) batchForwardDeleg.put(delegatorId, null);
+            }
+        }
     }
 
     private void delegateToPool(StakeCredential cred, String poolHash,
@@ -2157,15 +2364,71 @@ public class DefaultAccountStateStore implements AccountStateStore {
     }
 
     private void delegateToDRep(StakeCredential cred, Drep drep,
-                                long slot, int txIdx, int certIdx,
+                                long slot, int txIdx, int certIdx, int currentEpoch,
                                 WriteBatch batch, List<DeltaOp> deltaOps) throws RocksDBException {
         int ct = credTypeInt(cred.getType());
-        byte[] key = drepDelegKey(ct, cred.getHash());
-        byte[] prev = db.get(cfState, key);
-        byte[] val = AccountStateCborCodec.encodeDRepDelegation(
-                drepTypeInt(drep.getType()), drep.getHash(), slot, txIdx, certIdx);
+        String credHash = cred.getHash();
+        byte[] key = drepDelegKey(ct, credHash);
+        String credId = ct + ":" + credHash;
+        int newDrepType = drepTypeInt(drep.getType());
+
+        // Read previous delegation: overlay first (handles same-block re-delegation), then committed
+        byte[] prev;
+        if (batchForwardDeleg != null && batchForwardDeleg.containsKey(credId)) {
+            prev = batchForwardDeleg.get(credId); // may be null (deleted in this batch)
+        } else {
+            prev = db.get(cfState, key);
+        }
+
+        // Maintain reverse index for DRep deregistration delegation cleanup.
+        // PV9 bug-compat: on re-delegation from credential DRep A to credential DRep C,
+        // do NOT remove A's reverse entry. This preserves the Haskell UMap behavior where
+        // A's deregistration can clear the delegation even after re-delegation.
+        // PV10+: correct behavior — remove old reverse entry on re-delegation.
+        if (prev != null) {
+            var oldDeleg = AccountStateCborCodec.decodeDRepDelegation(prev);
+            int oldDrepType = oldDeleg.drepType();
+            if (isCredentialDRep(oldDrepType)) {
+                int protocolMajor = getProtocolMajor(currentEpoch);
+                boolean removeOldReverse = (protocolMajor >= 10) || !isCredentialDRep(newDrepType);
+                if (removeOldReverse) {
+                    byte[] oldRevKey = drepDelegReverseKey(oldDrepType, oldDeleg.drepHash(), ct, credHash);
+                    byte[] oldRevPrev = db.get(cfState, oldRevKey);
+                    batch.delete(cfState, oldRevKey);
+                    deltaOps.add(new DeltaOp(OP_DELETE, oldRevKey, oldRevPrev));
+                    // Update overlay
+                    if (batchReverseRemoved != null) {
+                        String oldDrepId = oldDrepType + ":" + oldDeleg.drepHash();
+                        batchReverseRemoved.computeIfAbsent(oldDrepId, k -> new HashSet<>()).add(credId);
+                        var added = batchReverseAdded.get(oldDrepId);
+                        if (added != null) added.remove(credId);
+                    }
+                }
+                // PV9 + new DRep is credential: do NOT remove old reverse entry (bug compat)
+            }
+        }
+
+        // Add new reverse entry if new DRep is a credential DRep
+        if (isCredentialDRep(newDrepType)) {
+            byte[] newRevKey = drepDelegReverseKey(newDrepType, drep.getHash(), ct, credHash);
+            byte[] newRevPrev = db.get(cfState, newRevKey);
+            batch.put(cfState, newRevKey, new byte[]{1}); // marker value
+            deltaOps.add(new DeltaOp(OP_PUT, newRevKey, newRevPrev));
+            // Update overlay
+            if (batchReverseAdded != null) {
+                String newDrepId = newDrepType + ":" + drep.getHash();
+                batchReverseAdded.computeIfAbsent(newDrepId, k -> new HashSet<>()).add(credId);
+                var removed = batchReverseRemoved.get(newDrepId);
+                if (removed != null) removed.remove(credId);
+            }
+        }
+
+        // Write forward delegation
+        byte[] val = AccountStateCborCodec.encodeDRepDelegation(newDrepType, drep.getHash(), slot, txIdx, certIdx);
         batch.put(cfState, key, val);
         deltaOps.add(new DeltaOp(OP_PUT, key, prev));
+        // Update overlay
+        if (batchForwardDeleg != null) batchForwardDeleg.put(credId, val);
     }
 
     private void processWithdrawal(String rewardAddrHex, BigInteger amount,

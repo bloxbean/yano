@@ -192,8 +192,12 @@ public class GovernanceBlockProcessor {
                         // Haskell deletes them from vsDReps; Yano keeps tombstone records.
                         Long prevDeregSlot = rec.previousDeregistrationSlot();
                         if (prevDeregSlot == null || rec.registeredAtSlot() > prevDeregSlot) {
-                            // Refresh expiry on vote — same formula for V9 and V10+.
-                            // Haskell: computeDRepExpiry (with numDormant) used in all Conway versions.
+                            // Refresh expiry on vote — V9 and V10+ both use computeDRepExpiry.
+                            // Yano defers the Haskell per-tx dormant flush to epoch boundaries,
+                            // so we subtract numDormant here. At buildActiveDRepKeys time,
+                            // numDormant is added back: effective = currentEpoch + drepActivity.
+                            // Haskell sets expiry directly (no subtraction) because its CERTS
+                            // rule already flushed the counter before processing votes.
                             int drepActivity = paramProvider.getDRepActivity(currentEpoch);
                             int numDormant = governanceStore.getNumDormantEpochs();
                             int newExpiry = currentEpoch + drepActivity - numDormant;
@@ -318,7 +322,12 @@ public class GovernanceBlockProcessor {
                 anchorHash = cert.getAnchor().getAnchor_data_hash();
             }
 
-            // Refresh expiry on update — same formula for V9 and V10+.
+            // Refresh expiry on update.
+            // Yano defers the Haskell per-tx dormant flush to epoch boundaries, so we
+            // subtract numDormant here. At buildActiveDRepKeys time, numDormant is added
+            // back: effective = currentEpoch + drepActivity.
+            // Haskell's GovCert.hs sets expiry = currentEpoch + drepActivity directly
+            // (no subtraction) because the CERTS rule already flushed before GovCert runs.
             int drepActivity = paramProvider.getDRepActivity(currentEpoch);
             int numDormant = governanceStore.getNumDormantEpochs();
             int newExpiry = currentEpoch + drepActivity - numDormant;
