@@ -292,39 +292,68 @@ public class GovernanceEpochProcessor {
             }
         }
 
-        // 3. Deposit refunds for enacted and dropped proposals.
+        // 3. Deposit refunds for enacted, expired, and sibling/descendant proposals.
         //    Created here (Phase 1) so DRep distribution includes proposal deposit refund amounts.
+        //    De-dup set prevents double-refund when a proposal appears in multiple categories
+        //    (pending enactment, pending drop, sibling, descendant).
+        //    IMPORTANT: allProposals is an immutable in-memory snapshot — do NOT mutate it.
+        //    removeProposal() writes to the WriteBatch only, so allProposals remains valid
+        //    for sibling/descendant discovery throughout Phase 1.
         BigInteger depositRefunds = BigInteger.ZERO;
         Map<String, BigInteger> aggregatedRefunds = new java.util.HashMap<>();
+        Set<GovActionId> removedIds = new java.util.LinkedHashSet<>();
 
         // 3a. Enacted proposals: refund deposit + remove
         for (GovActionId id : pendingEnactmentIds) {
+            depositRefunds = depositRefunds.add(
+                    refundAndRemove(id, allProposals, removedIds, aggregatedRefunds, batch, deltaOps));
+        }
+
+        // 3b. Expired proposals (pending drops from previous boundary): refund deposit + remove
+        for (GovActionId id : pendingDropIds) {
+            depositRefunds = depositRefunds.add(
+                    refundAndRemove(id, allProposals, removedIds, aggregatedRefunds, batch, deltaOps));
+        }
+
+        // 3c. Siblings and descendants of enacted proposals.
+        //     Haskell's RATIFY rule returns rsRemoved which includes ratified + siblings + descendants.
+        //     In Yano's deferred architecture, sibling/descendant discovery happens here in Phase 1
+        //     against the full active proposal set (which includes fresh-epoch proposals that were
+        //     excluded from ratification in Phase 2 via prevGovSnapshots filtering).
+        int siblingDropCount = 0;
+        for (GovActionId id : pendingEnactmentIds) {
             GovActionRecord proposal = allProposals.get(id);
-            if (proposal != null) {
-                BigInteger deposit = proposal.deposit();
-                depositRefunds = depositRefunds.add(deposit);
-                if (deposit.signum() > 0) {
-                    aggregatedRefunds.merge(proposal.returnAddress(), deposit, BigInteger::add);
+            if (proposal == null) continue;
+            Set<GovActionId> siblings = proposalDropService.findSiblings(id, proposal, allProposals);
+            for (GovActionId sibId : siblings) {
+                BigInteger refunded = refundAndRemove(sibId, allProposals, removedIds, aggregatedRefunds, batch, deltaOps);
+                depositRefunds = depositRefunds.add(refunded);
+                if (refunded.signum() > 0) siblingDropCount++;
+                // Descendants of each dropped sibling
+                GovActionRecord sib = allProposals.get(sibId);
+                if (sib != null) {
+                    for (GovActionId descId : proposalDropService.findDescendants(sibId, sib, allProposals)) {
+                        refunded = refundAndRemove(descId, allProposals, removedIds, aggregatedRefunds, batch, deltaOps);
+                        depositRefunds = depositRefunds.add(refunded);
+                        if (refunded.signum() > 0) siblingDropCount++;
+                    }
                 }
-                governanceStore.removeProposal(id, batch, deltaOps);
-                governanceStore.removeVotesForProposal(id.getTransactionId(),
-                        id.getGov_action_index(), batch, deltaOps);
             }
         }
 
-        // 3b. Dropped proposals (previously expired → now drop): refund deposit + remove
+        // 3d. Descendants of expired proposals
         for (GovActionId id : pendingDropIds) {
             GovActionRecord proposal = allProposals.get(id);
-            if (proposal != null) {
-                BigInteger deposit = proposal.deposit();
-                depositRefunds = depositRefunds.add(deposit);
-                if (deposit.signum() > 0) {
-                    aggregatedRefunds.merge(proposal.returnAddress(), deposit, BigInteger::add);
-                }
-                governanceStore.removeProposal(id, batch, deltaOps);
-                governanceStore.removeVotesForProposal(id.getTransactionId(),
-                        id.getGov_action_index(), batch, deltaOps);
+            if (proposal == null) continue;
+            for (GovActionId descId : proposalDropService.findDescendants(id, proposal, allProposals)) {
+                BigInteger refunded = refundAndRemove(descId, allProposals, removedIds, aggregatedRefunds, batch, deltaOps);
+                depositRefunds = depositRefunds.add(refunded);
+                if (refunded.signum() > 0) siblingDropCount++;
             }
+        }
+
+        if (siblingDropCount > 0) {
+            log.info("Phase 1: dropped {} siblings/descendants of enacted/expired proposals", siblingDropCount);
         }
 
         // Clear processed pending enactments/drops
@@ -354,10 +383,38 @@ public class GovernanceEpochProcessor {
     }
 
     /**
-     * Phase 2: DRep distribution + Ratification + sibling drops + newly expired proposals + donations.
+     * Refund a proposal's deposit and remove it from the active store, with de-dup protection.
+     * Returns the refunded deposit amount (BigInteger.ZERO if the proposal was missing or already processed).
+     * <p>
+     * IMPORTANT: checks proposal existence BEFORE adding to removedIds — a missing/stale pending id
+     * is not marked as removed, so it won't block a later valid occurrence.
+     */
+    private BigInteger refundAndRemove(GovActionId id, Map<GovActionId, GovActionRecord> allProposals,
+                                       Set<GovActionId> removedIds, Map<String, BigInteger> aggregatedRefunds,
+                                       WriteBatch batch, List<DeltaOp> deltaOps) throws RocksDBException {
+        GovActionRecord proposal = allProposals.get(id);
+        if (proposal == null) return BigInteger.ZERO;
+        if (!removedIds.add(id)) return BigInteger.ZERO;
+        BigInteger deposit = proposal.deposit();
+        if (deposit.signum() > 0) {
+            aggregatedRefunds.merge(proposal.returnAddress(), deposit, BigInteger::add);
+        }
+        governanceStore.removeProposal(id, batch, deltaOps);
+        governanceStore.removeVotesForProposal(id.getTransactionId(),
+                id.getGov_action_index(), batch, deltaOps);
+        return deposit;
+    }
+
+    /**
+     * Phase 2: DRep distribution + Ratification + newly expired proposals + donations.
      * Reads committed state (including Phase 1 enactment + reward_rest writes).
      * Treasury withdrawal and enacted/dropped deposit refund reward_rest were already created in Phase 1,
      * so spendableRewardRest includes them for DRep distribution.
+     * <p>
+     * Uses prevGovSnapshots filtering: only proposals with {@code proposedInEpoch < previousEpoch}
+     * are eligible for ratification and expiry. This matches Haskell's {@code prevGovSnapshots}
+     * semantics where proposals submitted in the epoch being left are not yet in the governance snapshot.
+     * Sibling/descendant drops are NOT done here — they are deferred to Phase 1 at the next boundary.
      */
     private GovernanceEpochResult processRatificationPhase(int previousEpoch, int newEpoch,
                                                             EnactmentResult enactment,
@@ -418,8 +475,17 @@ public class GovernanceEpochProcessor {
         // Build set of ACTIVE (non-expired) DRep keys for ratification tally.
         Set<DRepDistKey> activeDRepKeys = buildActiveDRepKeys(drepDist, newEpoch);
 
-        // 2. Get active proposals (enacted/dropped proposals already removed in Phase 1)
+        // 2. Get active proposals and apply prevGovSnapshots filter.
+        //    Haskell's ratification uses prevGovSnapshots which excludes proposals submitted
+        //    in the epoch being left. Only proposals with proposedInEpoch < previousEpoch
+        //    are eligible for ratification and expiry evaluation.
         Map<GovActionId, GovActionRecord> activeProposals = governanceStore.getAllActiveProposals();
+        Map<GovActionId, GovActionRecord> ratifiableProposals = new java.util.LinkedHashMap<>();
+        for (var entry : activeProposals.entrySet()) {
+            if (entry.getValue().proposedInEpoch() < previousEpoch) {
+                ratifiableProposals.put(entry.getKey(), entry.getValue());
+            }
+        }
 
         // 3. Ratify — reads committed state (committee/params/lastEnacted updated by Phase 1).
         Map<CredentialKey, CommitteeMemberRecord> committeeMembers = governanceStore.getAllCommitteeMembers();
@@ -448,7 +514,7 @@ public class GovernanceEpochProcessor {
         }
 
         List<RatificationResult> results = ratificationEngine.evaluateAll(
-                activeProposals, drepDist, activeDRepKeys, poolStakeDist, poolDRepDelegation,
+                ratifiableProposals, drepDist, activeDRepKeys, poolStakeDist, poolDRepDelegation,
                 committeeMembers, committeeThreshold, lastEnactedActions,
                 newEpoch, isBootstrapPhase, committeeMinSize, committeeMaxTermLength,
                 committeeState, treasury, drepThresholds, spoThresholds);
@@ -475,59 +541,21 @@ public class GovernanceEpochProcessor {
             snapshotExporter.exportProposalStatus(newEpoch, statusEntries);
         }
 
-        // 4. Drop siblings/descendants of enacted proposals + handle newly expired proposals
-        Set<GovActionId> proposalsToDrop = proposalDropService.computeProposalsToDrop(results, activeProposals);
-        Map<String, BigInteger> siblingRefunds = new java.util.HashMap<>();
-
-        for (GovActionId dropId : proposalsToDrop) {
-            GovActionRecord dropped = activeProposals.get(dropId);
-            if (dropped != null) {
-                BigInteger deposit = dropped.deposit();
-                depositRefunds = depositRefunds.add(deposit);
-                if (deposit.signum() > 0) {
-                    siblingRefunds.merge(dropped.returnAddress(), deposit, BigInteger::add);
-                }
-                governanceStore.removeProposal(dropId, batch, deltaOps);
-                governanceStore.removeVotesForProposal(dropId.getTransactionId(),
-                        dropId.getGov_action_index(), batch, deltaOps);
-            }
-        }
-
-        // Store NEWLY expired proposals as pending drops for next boundary
+        // 4. Store NEWLY expired proposals as pending drops for next boundary.
+        //    Sibling/descendant drops are NOT done here — they are deferred to Phase 1
+        //    at the next boundary, where the full active proposal set (including fresh-epoch
+        //    proposals excluded by prevGovSnapshots) is available for sibling discovery.
         for (RatificationResult result : results) {
             if (result.isExpired()) {
                 governanceStore.storePendingDrop(result.govActionId(), batch, deltaOps);
             }
         }
 
-        // Store sibling drop refunds as reward_rest (these are new in Phase 2)
-        BigInteger unclaimedRefunds = BigInteger.ZERO;
-        if (rewardRestStore != null && !siblingRefunds.isEmpty()) {
-            for (var entry : siblingRefunds.entrySet()) {
-                boolean stored = rewardRestStore.storeRewardRest(
-                        newEpoch,
-                        com.bloxbean.cardano.yano.ledgerstate.DefaultAccountStateStore.REWARD_REST_PROPOSAL_REFUND,
-                        entry.getKey(), entry.getValue(), previousEpoch, 0,
-                        batch, deltaOps);
-                if (!stored) {
-                    unclaimedRefunds = unclaimedRefunds.add(entry.getValue());
-                }
-            }
-        }
-
-        if (unclaimedRefunds.signum() > 0) {
-            treasuryDelta = treasuryDelta.add(unclaimedRefunds);
-            log.info("Unclaimed sibling drop deposit refunds going to treasury: {}", unclaimedRefunds);
-        }
-
-        // 5. Dormant epoch tracking (needed before DRep expiry calculation)
-        int remainingCount = activeProposals.size();
-        for (RatificationResult result : results) {
-            if (result.isRatified() || result.isExpired()) {
-                if (activeProposals.containsKey(result.govActionId())) remainingCount--;
-            }
-        }
-        boolean epochHadActiveProposals = remainingCount > 0;
+        // 5. Dormant epoch tracking (needed before DRep expiry calculation).
+        //    Haskell: wasPrevEpochDormant = Seq.null prevGovSnapshots
+        //    An epoch that HAD proposals in prevGovSnapshots is non-dormant, regardless of
+        //    whether those proposals all ratified/expired in the same boundary.
+        boolean epochHadActiveProposals = !ratifiableProposals.isEmpty();
         governanceStore.storeEpochHadActiveProposals(newEpoch, epochHadActiveProposals, batch, deltaOps);
 
         Set<Integer> dormantEpochs = governanceStore.getDormantEpochs();
@@ -547,11 +575,11 @@ public class GovernanceEpochProcessor {
 
         long elapsed = System.currentTimeMillis() - start;
         log.info("Governance epoch boundary complete ({} → {}) in {}ms: {} ratified, {} expired, " +
-                        "{} dropped, depositRefunds={}, donations={}, dormant={}",
+                        "depositRefunds={}, donations={}, dormant={}, prevSnapshot={}",
                 previousEpoch, newEpoch, elapsed,
                 results.stream().filter(RatificationResult::isRatified).count(),
                 results.stream().filter(RatificationResult::isExpired).count(),
-                proposalsToDrop.size(), depositRefunds, donations, !epochHadActiveProposals);
+                depositRefunds, donations, !epochHadActiveProposals, ratifiableProposals.size());
 
         return new GovernanceEpochResult(treasuryDelta, depositRefunds, donations);
     }
