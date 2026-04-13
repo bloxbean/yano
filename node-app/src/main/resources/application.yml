@@ -1,8 +1,8 @@
 quarkus:
   application:
-    name: yano-node
+    name: yano
   package:
-    output-name: yano-node
+    output-name: yano
     jar:
       type: uber-jar
       add-runner-suffix: false

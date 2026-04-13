@@ -4,12 +4,12 @@ cd "$SCRIPT_DIR"
 
 if [ "$1" = "--native" ]; then
   shift
-  BINARY="build/yaci-node"
+  BINARY="build/yano"
   [ ! -f "$BINARY" ] && echo "Native binary not found. Build: ./gradlew :node-app:build -Dquarkus.native.enabled=true" && exit 1
   exec "$BINARY" "$@"
 else
-  if [ -f "build/yaci-node.jar" ]; then
-    JAR="build/yaci-node.jar"
+  if [ -f "build/yano.jar" ]; then
+    JAR="build/yano.jar"
   elif [ -f "build/quarkus-app/quarkus-run.jar" ]; then
     JAR="build/quarkus-app/quarkus-run.jar"
   else
