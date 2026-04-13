@@ -135,7 +135,7 @@ public class DRepDistributionCalculator {
                 int drepType = deleg.drepType();
                 String drepHash = deleg.drepHash();
 
-                // Check if delegated-to DRep is valid (must be registered, delegation after deregistration)
+                // Check if delegated-to DRep is currently registered
                 DRepDistKey drepKey = resolveDRepKey(drepType, drepHash, activeDReps, deleg.slot());
                 if (drepKey == null) {
                     skippedDrep++;
@@ -203,8 +203,12 @@ public class DRepDistributionCalculator {
 
     /**
      * Resolve a DRep delegation target to a distribution key.
-     * Returns null if the DRep is not registered, or if the delegation predates
-     * the DRep's previous deregistration (per Amaru stake_distribution.rs).
+     * Returns null if the DRep is not currently registered, or if the delegation predates
+     * the DRep's previous deregistration.
+     * <p>
+     * The main correctness mechanism is the PV10 reverse-index rebuild + unconditional
+     * cleanup on DRep deregistration. The {@code delegSlot <= prevDeregSlot} check is a
+     * defensive safety guard for Yano's tombstone-based DRep state representation.
      */
     private DRepDistKey resolveDRepKey(int drepType, String drepHash,
                                        Map<CredentialKey, DRepStateRecord> activeDReps,
@@ -218,8 +222,10 @@ public class DRepDistributionCalculator {
                     yield null;
                 }
 
-                // Per Amaru (stake_distribution.rs): delegation valid only if made AFTER
-                // the DRep's previous deregistration. This is a per-delegator check.
+                // Defensive safety guard: delegation valid only if made AFTER the DRep's
+                // previous deregistration. This is a per-delegator check that compensates
+                // for Yano's tombstone state model. Normal correctness comes from the PV10
+                // reverse-index rebuild + cleanup on DRep deregistration.
                 Long prevDeregSlot = drepState.previousDeregistrationSlot();
                 if (prevDeregSlot != null && delegSlot <= prevDeregSlot) {
                     yield null;

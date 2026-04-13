@@ -676,6 +676,25 @@ public class GovernanceEpochProcessor {
         return paramProvider.getProtocolMajor(epoch);
     }
 
+    /**
+     * Get the set of currently registered DRep IDs (format: "drepType:drepHash").
+     * Uses the tombstone rule: include if previousDeregistrationSlot == null
+     * OR registeredAtSlot > previousDeregistrationSlot.
+     * Used by EpochBoundaryProcessor for the PV10 hardfork reverse-index rebuild.
+     */
+    public Set<String> getRegisteredDRepIds() throws RocksDBException {
+        var allDRepStates = governanceStore.getAllDRepStates();
+        Set<String> registered = new java.util.HashSet<>();
+        for (var entry : allDRepStates.entrySet()) {
+            var rec = entry.getValue();
+            Long prevDeregSlot = rec.previousDeregistrationSlot();
+            if (prevDeregSlot == null || rec.registeredAtSlot() > prevDeregSlot) {
+                registered.add(entry.getKey().credType() + ":" + entry.getKey().hash());
+            }
+        }
+        return registered;
+    }
+
     private BigDecimal resolveCommitteeThreshold() throws RocksDBException {
         var threshold = governanceStore.getCommitteeThreshold();
         if (threshold.isPresent()) {

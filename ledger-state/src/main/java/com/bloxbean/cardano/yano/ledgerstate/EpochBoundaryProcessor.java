@@ -13,6 +13,7 @@ import org.slf4j.LoggerFactory;
 import java.math.BigInteger;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
@@ -279,6 +280,22 @@ public class EpochBoundaryProcessor {
             }
         } else {
             log.info("Skipping pool refunds for epoch {} (already committed in previous run)", newEpoch);
+        }
+
+        // 4c. PV10 hardfork: rebuild DRep delegation reverse index.
+        // Matches Haskell's updateDRepDelegations (HardFork.hs) which rebuilds drepDelegs
+        // from current forward delegations, removing stale PV9 entries and dangling delegations.
+        // Must run before governance so DRep deregistration cleanup uses the clean reverse index.
+        if (snapshotCreator != null && resumeFromStep <= STEP_GOVERNANCE && governanceEpochProcessor != null) {
+            try {
+                EpochParamProvider ep = (paramTracker != null && paramTracker.isEnabled())
+                        ? paramTracker : paramProvider;
+                Set<String> registeredDRepIds = governanceEpochProcessor.getRegisteredDRepIds();
+                snapshotCreator.rebuildDRepDelegReverseIndexIfNeeded(newEpoch, registeredDRepIds, ep);
+            } catch (Exception e) {
+                // Consensus-critical: if rebuild fails, governance must not run with stale reverse index
+                throw new RuntimeException("PV10 reverse-index rebuild failed at epoch " + newEpoch, e);
+            }
         }
 
         // 5. Conway governance epoch processing (ratify, enact, expire, refund)

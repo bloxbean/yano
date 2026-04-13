@@ -23,4 +23,17 @@ public class TestCborHelper {
     public static byte[] encodeEpochDelegSnapshot(String poolHash, BigInteger amount) {
         return AccountStateCborCodec.encodeEpochDelegSnapshot(poolHash, amount);
     }
+
+    public static byte[] encodeDRepRegistration(BigInteger deposit) {
+        return AccountStateCborCodec.encodeDRepRegistration(deposit);
+    }
+
+    /** PREFIX_DREP_REG is package-private; expose for tests in other packages. */
+    public static byte prefixDRepReg() {
+        return DefaultAccountStateStore.PREFIX_DREP_REG;
+    }
+
+    public static AccountStateCborCodec.DRepDelegationRecord decodeDRepDelegation(byte[] val) {
+        return AccountStateCborCodec.decodeDRepDelegation(val);
+    }
 }
