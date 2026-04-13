@@ -59,7 +59,7 @@ public class ProposalDropService {
     /**
      * Find sibling proposals: same purpose, same prevGovActionId, different proposal.
      */
-    Set<GovActionId> findSiblings(GovActionId proposalId, GovActionRecord proposal,
+    public Set<GovActionId> findSiblings(GovActionId proposalId, GovActionRecord proposal,
                                    Map<GovActionId, GovActionRecord> activeProposals) {
         Set<GovActionId> siblings = new LinkedHashSet<>();
         GovActionType purpose = getPurposeType(proposal.actionType());
@@ -83,7 +83,7 @@ public class ProposalDropService {
     /**
      * Find all descendants of a proposal via BFS through the prevGovActionId chain.
      */
-    Set<GovActionId> findDescendants(GovActionId rootId, GovActionRecord root,
+    public Set<GovActionId> findDescendants(GovActionId rootId, GovActionRecord root,
                                       Map<GovActionId, GovActionRecord> activeProposals) {
         Set<GovActionId> descendants = new LinkedHashSet<>();
         GovActionType purpose = getPurposeType(root.actionType());

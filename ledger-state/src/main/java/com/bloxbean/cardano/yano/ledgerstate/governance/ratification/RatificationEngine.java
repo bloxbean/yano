@@ -218,6 +218,13 @@ public class RatificationEngine {
         long expired = results.stream().filter(RatificationResult::isExpired).count();
         log.info("Ratification results: {} ratified, {} expired, {} active (of {} total)",
                 ratified, expired, results.size() - ratified - expired, results.size());
+        for (var result : results) {
+            log.info("  Proposal {}/{}: type={}, ratified={}, expired={}",
+                    result.govActionId().getTransactionId().substring(0, 8),
+                    result.govActionId().getGov_action_index(),
+                    result.proposal() != null ? result.proposal().actionType() : "?",
+                    result.isRatified(), result.isExpired());
+        }
 
         return results;
     }
@@ -327,12 +334,22 @@ public class RatificationEngine {
             Map<GovActionType, BigDecimal> drepThresholds,
             Map<GovActionType, BigDecimal> spoThresholds) {
 
-        if (!checkCommittee(votes, committeeMembers, committeeThreshold, committeeState,
-                currentEpoch, isBootstrapPhase, committeeMinSize)) return false;
-        if (!checkSPO(votes, poolStakeDist, poolDRepDelegation,
-                GovActionType.HARD_FORK_INITIATION_ACTION, isBootstrapPhase, spoThresholds)) return false;
-        if (!isBootstrapPhase && !checkDRep(votes, drepDist, activeDRepKeys,
-                GovActionType.HARD_FORK_INITIATION_ACTION, drepThresholds)) return false;
+        boolean committeePassed = checkCommittee(votes, committeeMembers, committeeThreshold, committeeState,
+                currentEpoch, isBootstrapPhase, committeeMinSize);
+        log.info("HardFork eval: committee={}, threshold={}, bootstrap={}", committeePassed, committeeThreshold, isBootstrapPhase);
+        if (!committeePassed) return false;
+
+        boolean spoPassed = checkSPO(votes, poolStakeDist, poolDRepDelegation,
+                GovActionType.HARD_FORK_INITIATION_ACTION, isBootstrapPhase, spoThresholds);
+        log.info("HardFork eval: spo={}, spoThreshold={}", spoPassed, spoThresholds.get(GovActionType.HARD_FORK_INITIATION_ACTION));
+        if (!spoPassed) return false;
+
+        if (!isBootstrapPhase) {
+            boolean drepPassed = checkDRep(votes, drepDist, activeDRepKeys,
+                    GovActionType.HARD_FORK_INITIATION_ACTION, drepThresholds);
+            log.info("HardFork eval: drep={}", drepPassed);
+            if (!drepPassed) return false;
+        }
         return true;
     }
 
@@ -492,7 +509,18 @@ public class RatificationEngine {
 
         BigDecimal threshold = thresholds.getOrDefault(actionType, BigDecimal.ONE);
         var tally = tallyCalculator.computeDRepTally(votes, drepDist, actionType, activeDRepKeys);
-        return VoteTallyCalculator.drepThresholdMet(tally, threshold);
+        boolean result = VoteTallyCalculator.drepThresholdMet(tally, threshold);
+
+        // Diagnostic: log DRep tally for treasury withdrawal proposals (temporary)
+        if (actionType == GovActionType.TREASURY_WITHDRAWALS_ACTION) {
+            BigInteger denom = tally.yesStake().add(tally.noStake());
+            String ratio = denom.signum() == 0 ? "N/A" :
+                    new BigDecimal(tally.yesStake()).divide(new BigDecimal(denom),
+                            java.math.MathContext.DECIMAL128).toPlainString();
+            log.info("  DRep tally: yes={}, no={}, abstain={}, ratio={}, threshold={}, passed={}",
+                    tally.yesStake(), tally.noStake(), tally.abstainStake(), ratio, threshold, result);
+        }
+        return result;
     }
 
     private boolean checkSPO(

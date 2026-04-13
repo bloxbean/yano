@@ -27,7 +27,7 @@ public interface EpochSnapshotExporter {
      * Called after DRep distribution is calculated (Conway era).
      *
      * @param epoch   The epoch at boundary (newEpoch)
-     * @param entries DRep distribution entries (type 0=key, 1=script; excludes virtual DReps)
+     * @param entries DRep distribution entries (type 0=key, 1=script, 2=abstain, 3=no_confidence)
      */
     void exportDRepDistribution(int epoch, List<DRepDistEntry> entries);
 
@@ -59,6 +59,12 @@ public interface EpochSnapshotExporter {
      */
     default void setNetworkMagic(long magic) {}
 
+    /**
+     * Configure per-type export enable flags. Called after ServiceLoader instantiation.
+     * Keys: "stake", "drep-dist", "adapot", "proposals". Values: "true"/"false".
+     */
+    default void configure(java.util.Map<String, String> options) {}
+
     /** No-op implementation — zero overhead when export is disabled. */
     EpochSnapshotExporter NOOP = new EpochSnapshotExporter() {
         @Override public void exportStakeSnapshot(int e, List<StakeEntry> s) {}
@@ -71,7 +77,8 @@ public interface EpochSnapshotExporter {
 
     record StakeEntry(int credType, String credHash, String poolHash, BigInteger amount) {}
 
-    record DRepDistEntry(int drepType, String drepHash, BigInteger amount) {}
+    record DRepDistEntry(int drepType, String drepHash, BigInteger amount,
+                         int storedExpiry, int numDormant, int effectiveExpiry, boolean active) {}
 
     record AdaPotEntry(int epoch, BigInteger treasury, BigInteger reserves, BigInteger deposits,
                        BigInteger fees, BigInteger distributed, BigInteger undistributed,

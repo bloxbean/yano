@@ -101,7 +101,9 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
         this.cfScriptRef = supplier.rocks().handle(UtxoCfNames.SCRIPT_REF);
 
         this.pruneDepth = getInt(config, "yaci.node.utxo.pruneDepth", 2160);
-        this.rollbackWindow = getInt(config, "yaci.node.utxo.rollbackWindow", 4320);
+        // Default 2 epochs (864000 slots) to support incremental balance aggregation at epoch boundaries.
+        // The delta log must retain at least one full epoch's worth of entries.
+        this.rollbackWindow = getInt(config, "yaci.node.utxo.rollbackWindow", 864000);
         this.pruneBatchSize = getInt(config, "yaci.node.utxo.pruneBatchSize", 500);
         // Indexing strategy
         boolean addrIdx = getBool(config, "yaci.node.utxo.index.address_hash", true);
@@ -396,6 +398,45 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
             }
         } finally {
             db.releaseSnapshot(snapshot);
+        }
+    }
+
+    @Override
+    public void forEachUtxoDeltaInSlotRange(long startSlot, long endSlot, UtxoDeltaConsumer consumer) {
+        if (!enabled || db == null) return;
+        try (RocksIterator it = db.newIterator(cfDelta)) {
+            it.seekToFirst();
+            while (it.isValid()) {
+                var dec = UtxoDeltaCodec.decode(it.value());
+                if (dec.slot() < startSlot) { it.next(); continue; }
+                if (dec.slot() >= endSlot) break;
+
+                // Created UTXOs: look up in cfUnspent
+                for (var ref : dec.created()) {
+                    byte[] okey = UtxoKeyUtil.outpointKey(ref.txHash(), ref.index());
+                    try {
+                        byte[] val = db.get(cfUnspent, okey);
+                        if (val != null) {
+                            var stored = UtxoCborCodec.decodeUtxoRecord(val);
+                            consumer.accept(stored.address, stored.lovelace, true);
+                        }
+                    } catch (Exception e) { /* skip */ }
+                }
+
+                // Spent UTXOs: look up in cfSpent (contains the original UTXO data)
+                for (var ref : dec.spent()) {
+                    byte[] okey = UtxoKeyUtil.outpointKey(ref.txHash(), ref.index());
+                    try {
+                        byte[] val = db.get(cfSpent, okey);
+                        if (val != null) {
+                            var stored = UtxoCborCodec.decodeSpentUtxoRecord(val);
+                            consumer.accept(stored.address, stored.lovelace, false);
+                        }
+                    } catch (Exception e) { /* skip */ }
+                }
+
+                it.next();
+            }
         }
     }
 
@@ -960,7 +1001,11 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
         }
 
         // Forward replay: apply missing blocks using stored bodies
+        log.info("UTXO reconcile: replaying blocks {} to {}", lastAppliedBlock + 1, tipBlock);
         for (long bn = lastAppliedBlock + 1; bn <= tipBlock; bn++) {
+            if ((bn - lastAppliedBlock) % 1000 == 0) {
+                log.info("UTXO reconcile progress: block {}/{}", bn, tipBlock);
+            }
             byte[] blockBytes = chainState.getBlockByNumber(bn);
             if (blockBytes == null) {
                 // Body missing locally; skip and let live sync catch up

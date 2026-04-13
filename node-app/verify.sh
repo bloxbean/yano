@@ -9,6 +9,9 @@
 #   ./verify.sh --no-store 230 240           # DBSync only
 #   ./verify.sh --no-dbsync                  # Yaci-Store only
 #   ./verify.sh --report verify_report.md    # Write markdown report
+#
+# Mainnet usage (Yaci-Store only):
+#   STORE_SCHEMA=mainnet ./verify.sh --no-dbsync 209 260
 
 set -uo pipefail
 

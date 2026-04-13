@@ -181,6 +181,11 @@ public class YaciNode implements NodeAPI {
     private AccountStateEventHandler accountStateEventHandler;
     private com.bloxbean.cardano.yano.api.EpochParamProvider epochParamProvider;
 
+    // Adhoc rollback — one-shot rollback on startup, before chain sync.
+    // Set via command line, NOT application.yml (to avoid accidental re-rollback).
+    private long adhocRollbackToSlot = -1;
+    private int adhocRollbackToEpoch = -1;
+
     public YaciNode(YaciNodeConfig config) {
         this(config, RuntimeOptions.defaults());
     }
@@ -324,7 +329,10 @@ public class YaciNode implements NodeAPI {
                     if (snapshotAmountsEnabled) {
                         defaultStore.setStakeSnapshotService(
                                 new com.bloxbean.cardano.yano.ledgerstate.EpochStakeSnapshotService(true));
-                        log.info("Epoch stake snapshot amounts enabled");
+                        String balMode = String.valueOf(this.runtimeOptions.globals()
+                                .getOrDefault("yaci.node.epoch-snapshot.balance-mode", "full-scan"));
+                        defaultStore.setBalanceMode(balMode);
+                        log.info("Epoch stake snapshot amounts enabled (balance-mode={})", balMode);
                     }
 
                     // Enable AdaPot tracker if configured
@@ -398,6 +406,29 @@ public class YaciNode implements NodeAPI {
                         boolean exitOnCalcError = Boolean.parseBoolean(
                                 String.valueOf(runtimeOptions.globals().getOrDefault("yaci.node.exit-on-epoch-calc-error", "false")));
                         boundaryProcessor.setExitOnEpochCalcError(exitOnCalcError);
+
+                        // Auto-checkpoint at epoch boundaries for fast rollback during debugging
+                        int checkpointInterval = Integer.parseInt(
+                                String.valueOf(runtimeOptions.globals().getOrDefault("yaci.node.auto-checkpoint-interval", "0")));
+                        if (checkpointInterval > 0 && chainState instanceof DirectRocksDBChainState rocksState) {
+                            java.nio.file.Path snapshotsDir = java.nio.file.Path.of(rocksState.getDbPath()).getParent().resolve("epoch-snapshots");
+                            boundaryProcessor.setAutoCheckpoint(checkpointInterval, epoch -> {
+                                try {
+                                    java.nio.file.Path epochDir = snapshotsDir.resolve("epoch-" + epoch);
+                                    if (java.nio.file.Files.exists(epochDir)) {
+                                        // Already exists, skip
+                                        return;
+                                    }
+                                    java.nio.file.Files.createDirectories(snapshotsDir);
+                                    rocksState.createSnapshot(epochDir.toString());
+                                    log.info("Auto-checkpoint created for epoch {} at {}", epoch, epochDir);
+                                } catch (Exception e) {
+                                    log.warn("Auto-checkpoint failed for epoch {}: {}", epoch, e.getMessage());
+                                }
+                            });
+                            log.info("Auto-checkpoint enabled: every {} epochs → {}", checkpointInterval, snapshotsDir);
+                        }
+
                         log.info("Epoch boundary processor wired (adapot={}, rewards={}, params={}, exitOnCalcError={})",
                                 adaPotEnabled, rewardsEnabled, epochParamsEnabled, exitOnCalcError);
                     }
@@ -439,7 +470,7 @@ public class YaciNode implements NodeAPI {
                                         paramTrackerInstance,
                                         defaultStore.getAdaPotTracker(),
                                         defaultStore::resolvePoolStakeForEpoch,
-                                        defaultStore::storeRewardRest,
+                                        defaultStore.asRewardRestStore(),
                                         config.getConwayGenesisFile()
                                 );
                                 boundaryProcessor.setGovernanceEpochProcessor(govEpochProcessor);
@@ -465,6 +496,13 @@ public class YaciNode implements NodeAPI {
                             var exporter = impl.get();
                             exporter.setOutputDir(exportDir);
                             exporter.setNetworkMagic(this.config.getProtocolMagic());
+                            var exportOptions = java.util.Map.of(
+                                    "stake", String.valueOf(runtimeOptions.globals().getOrDefault("yaci.node.snapshot-export.stake", "false")),
+                                    "drep-dist", String.valueOf(runtimeOptions.globals().getOrDefault("yaci.node.snapshot-export.drep-dist", "true")),
+                                    "adapot", String.valueOf(runtimeOptions.globals().getOrDefault("yaci.node.snapshot-export.adapot", "true")),
+                                    "proposals", String.valueOf(runtimeOptions.globals().getOrDefault("yaci.node.snapshot-export.proposals", "true"))
+                            );
+                            exporter.configure(exportOptions);
                             defaultStore.setSnapshotExporter(exporter);
                             if (boundaryProcessor != null) boundaryProcessor.setSnapshotExporter(exporter);
                             log.info("Epoch snapshot export enabled: {} → {}", exporter.getClass().getSimpleName(), exportDir);
@@ -597,6 +635,15 @@ public class YaciNode implements NodeAPI {
             // Validate chain state before starting sync
             if (config.isEnableClient()) {
                 validateChainState();
+
+                // Adhoc rollback: one-shot rollback before sync, if configured via command line
+                performAdhocRollback();
+
+                // Recover any interrupted epoch boundary from a previous run
+                if (epochBoundaryProcessor != null) {
+                    epochBoundaryProcessor.recoverInterruptedBoundary();
+                }
+
                 startClientSync();
             }
 
@@ -1542,6 +1589,122 @@ public class YaciNode implements NodeAPI {
                 "expectedReserves", err.expectedReserves().toString(),
                 "actualReserves", err.actualReserves().toString(),
                 "reservesDiff", err.reservesDiff().toString());
+    }
+
+    /**
+     * Configure one-shot adhoc rollback on startup. Set via command line args.
+     * Only one of slot or epoch should be set (epoch takes precedence if both set).
+     */
+    public void setAdhocRollback(long rollbackToSlot, int rollbackToEpoch) {
+        this.adhocRollbackToSlot = rollbackToSlot;
+        this.adhocRollbackToEpoch = rollbackToEpoch;
+    }
+
+    /**
+     * Perform adhoc rollback if configured. Called from start() after reconcile/validate
+     * but before chain sync begins. Does NOT require dev mode.
+     */
+    private void performAdhocRollback() {
+        long targetSlot = -1;
+
+        if (adhocRollbackToEpoch >= 0) {
+            // Compute slot from epoch using well-known network constants
+            long epochLength = config.getEpochLength();
+            long shelleyStartSlot;
+            int shelleyStartEpoch;
+
+            if (protocolMagic == Constants.MAINNET_PROTOCOL_MAGIC) {
+                shelleyStartSlot = 4492800;
+                shelleyStartEpoch = 208;
+            } else if (protocolMagic == Constants.PREPROD_PROTOCOL_MAGIC) {
+                shelleyStartSlot = 86400;
+                shelleyStartEpoch = 4;
+            } else {
+                // Preview, Sanchonet, devnets: no Byron era
+                shelleyStartSlot = 0;
+                shelleyStartEpoch = 0;
+            }
+
+            if (adhocRollbackToEpoch < shelleyStartEpoch) {
+                log.error("Adhoc rollback-to-epoch={} is before Shelley start epoch {}. Skipping.",
+                        adhocRollbackToEpoch, shelleyStartEpoch);
+                return;
+            }
+
+            targetSlot = shelleyStartSlot + ((long)(adhocRollbackToEpoch - shelleyStartEpoch)) * epochLength;
+            log.info("Adhoc rollback: epoch {} → slot {} (shelleyStartSlot={}, epochLen={})",
+                    adhocRollbackToEpoch, targetSlot, shelleyStartSlot, epochLength);
+        } else if (adhocRollbackToSlot >= 0) {
+            targetSlot = adhocRollbackToSlot;
+        }
+
+        if (targetSlot < 0) return; // No rollback requested
+
+        ChainTip currentTip = chainState.getTip();
+        if (currentTip == null) {
+            log.warn("Adhoc rollback requested (slot={}) but chain is empty. Skipping.", targetSlot);
+            return;
+        }
+
+        if (targetSlot >= currentTip.getSlot()) {
+            log.info("Adhoc rollback target slot {} >= current tip {}. Nothing to roll back.", targetSlot, currentTip.getSlot());
+            return;
+        }
+
+        // Check if rollback is within UTXO delta retention window
+        long rollbackDistance = currentTip.getSlot() - targetSlot;
+        int utxoRollbackWindow = (utxoStore instanceof DefaultUtxoStore duts) ? duts.getRollbackWindow() : 4320;
+        if (rollbackDistance > utxoRollbackWindow) {
+            log.error("=== Adhoc Rollback ABORTED ===");
+            log.error("Rollback distance ({} slots) exceeds UTXO delta retention window ({} slots).",
+                    rollbackDistance, utxoRollbackWindow);
+            log.error("UTXO deltas beyond the window have been pruned — rollback would leave UTXO state inconsistent.");
+            log.error("Use a RocksDB checkpoint instead: cp -a epoch-snapshots/epoch-XXX chainstate");
+            throw new RuntimeException("Adhoc rollback aborted: distance " + rollbackDistance
+                    + " exceeds UTXO rollback window " + utxoRollbackWindow);
+        }
+
+        // Find the nearest stored block at or before the target slot.
+        // The exact epoch start slot may not have a block — use seekForPrev.
+        Long nearestSlot = null;
+        if (chainState instanceof DirectRocksDBChainState rocks) {
+            nearestSlot = rocks.findNearestSlotAtOrBefore(targetSlot);
+        }
+        if (nearestSlot == null) {
+            log.error("Adhoc rollback: no stored block found at or before slot {}. Skipping.", targetSlot);
+            return;
+        }
+        if (!nearestSlot.equals(targetSlot)) {
+            log.info("Adhoc rollback: exact slot {} not found, using nearest block at slot {}", targetSlot, nearestSlot);
+        }
+
+        log.info("=== Adhoc Rollback ===");
+        log.info("Rolling back from slot {} (block {}) to slot {}", currentTip.getSlot(), currentTip.getBlockNumber(), nearestSlot);
+
+        // Rollback chain state
+        chainState.rollbackTo(nearestSlot);
+
+        // Get new tip and publish RollbackEvent
+        ChainTip newTip = chainState.getTip();
+        Point rollbackPoint;
+        if (newTip != null) {
+            rollbackPoint = new Point(newTip.getSlot(), HexUtil.encodeHexString(newTip.getBlockHash()));
+        } else {
+            rollbackPoint = new Point(targetSlot, "0000000000000000000000000000000000000000000000000000000000000000");
+        }
+
+        try {
+            EventMetadata meta = EventMetadata.builder().origin("adhoc-rollback").build();
+            eventBus.publish(new RollbackEvent(rollbackPoint, true),
+                    meta, PublishOptions.builder().build());
+        } catch (Exception ex) {
+            log.warn("Adhoc rollback event publish failed: {}", ex.toString());
+        }
+
+        ChainTip afterTip = chainState.getTip();
+        log.info("=== Adhoc Rollback Complete ===");
+        log.info("New tip: slot={}, block={}", afterTip != null ? afterTip.getSlot() : "none",
+                afterTip != null ? afterTip.getBlockNumber() : "none");
     }
 
     @Override

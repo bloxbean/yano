@@ -13,8 +13,13 @@ import org.slf4j.LoggerFactory;
 import java.math.BigInteger;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Orchestrates epoch boundary processing across the three-phase epoch transition sequence
@@ -52,12 +57,29 @@ public class EpochBoundaryProcessor {
     // Optional epoch snapshot exporter for debugging (NOOP when disabled)
     private EpochSnapshotExporter snapshotExporter = EpochSnapshotExporter.NOOP;
 
+    // Auto-checkpoint: creates a RocksDB checkpoint at epoch boundaries for fast rollback.
+    // The callback receives the epoch number and creates the checkpoint externally.
+    private volatile java.util.function.IntConsumer autoCheckpointCallback;
+    private int autoCheckpointInterval = 0; // 0 = disabled, >0 = every N epochs
+
     // If true, System.exit(1) on AdaPot verification failure (development mode).
     // If false, log error and record for REST query (production mode).
     private boolean exitOnEpochCalcError = false;
 
     // Last verification error (null = OK). Queryable via REST endpoint.
     private volatile VerificationError lastVerificationError;
+
+    // Executor for parallel UTXO balance scan during epoch boundary processing
+    private final ExecutorService utxoScanExecutor = Executors.newSingleThreadExecutor(
+            r -> { Thread t = new Thread(r, "utxo-balance-scan"); t.setDaemon(true); return t; });
+
+    // Boundary step constants for crash recovery tracking
+    public static final int STEP_STARTED = 0;
+    public static final int STEP_REWARDS = 1;
+    public static final int STEP_SNAPSHOT = 2;
+    public static final int STEP_POOLREAP = 3;
+    public static final int STEP_GOVERNANCE = 4;
+    public static final int STEP_COMPLETE = 5;
 
     public record VerificationError(int epoch, java.math.BigInteger expectedTreasury,
                                      java.math.BigInteger actualTreasury, java.math.BigInteger treasuryDiff,
@@ -91,6 +113,18 @@ public class EpochBoundaryProcessor {
     }
 
     /**
+     * Enable automatic RocksDB checkpoint creation at epoch boundaries.
+     * Checkpoints are fast (hard-linked) and enable quick rollback for debugging.
+     *
+     * @param interval create checkpoint every N epochs (0 = disabled)
+     * @param callback receives the epoch number; creates the actual checkpoint externally
+     */
+    public void setAutoCheckpoint(int interval, java.util.function.IntConsumer callback) {
+        this.autoCheckpointInterval = interval;
+        this.autoCheckpointCallback = callback;
+    }
+
+    /**
      * If true, System.exit(1) on AdaPot verification failure (useful during development).
      * If false (default), log the error and continue syncing.
      */
@@ -117,11 +151,62 @@ public class EpochBoundaryProcessor {
     }
 
     /**
-     * Process an epoch boundary transition from {@code previousEpoch} to {@code newEpoch}.
+     * Check for and recover an interrupted epoch boundary from a previous run.
+     * Called at startup before syncing to ensure no incomplete boundaries are left behind.
+     * Also repairs missed PostEpochTransition: auto-checkpoints are taken after
+     * processEpochBoundary (STEP_COMPLETE) but before PostEpochTransition credits
+     * reward_rest to accounts. On restart from such a checkpoint, the reward_rest
+     * entries remain uncredited. This method detects and credits them.
      */
+    public void recoverInterruptedBoundary() {
+        if (snapshotCreator == null) return;
+        int[] lastState = snapshotCreator.getLastBoundaryState();
+        if (lastState == null) return;
+        int epoch = lastState[0];
+        int step = lastState[1];
+        if (step >= STEP_STARTED && step < STEP_COMPLETE) {
+            log.info("Recovering interrupted epoch boundary for epoch {} (stopped at step {})", epoch, step);
+            processEpochBoundary(epoch - 1, epoch);
+        }
+
+        // Repair missed PostEpochTransition: credit any uncredited reward_rest entries
+        // from a completed boundary whose PostEpochTransition was not replayed (e.g.,
+        // restart from an auto-checkpoint taken between STEP_COMPLETE and PostEpochTransition).
+        snapshotCreator.creditPendingRewardRest();
+    }
+
     public void processEpochBoundary(int previousEpoch, int newEpoch) {
-        log.info("Processing epoch boundary: {} → {}", previousEpoch, newEpoch);
         long start = System.currentTimeMillis();
+
+        // Check that the previous epoch boundary completed. If not, re-process it first.
+        if (snapshotCreator != null && newEpoch >= 3) {
+            int[] lastState = snapshotCreator.getLastBoundaryState();
+            if (lastState != null && lastState[0] == newEpoch - 1 && lastState[1] < STEP_COMPLETE) {
+                log.warn("Previous boundary for epoch {} was incomplete (step {}), re-processing first",
+                        lastState[0], lastState[1]);
+                processEpochBoundary(newEpoch - 2, newEpoch - 1);
+            }
+        }
+
+        // Check for interrupted boundary for THIS epoch and resume if needed
+        int resumeFromStep = STEP_STARTED;
+        if (snapshotCreator != null) {
+            int lastStep = snapshotCreator.getBoundaryStep(newEpoch);
+            if (lastStep >= STEP_STARTED && lastStep < STEP_COMPLETE) {
+                resumeFromStep = lastStep + 1;
+                log.info("Resuming epoch boundary {} → {} from step {} (previous run interrupted after step {})",
+                        previousEpoch, newEpoch, resumeFromStep, lastStep);
+            }
+        }
+
+        if (resumeFromStep <= STEP_STARTED) {
+            log.info("Processing epoch boundary: {} → {}", previousEpoch, newEpoch);
+        }
+
+        // Mark boundary as started
+        if (snapshotCreator != null && resumeFromStep <= STEP_STARTED) {
+            snapshotCreator.setBoundaryStep(newEpoch, STEP_STARTED);
+        }
 
         // 1. Finalize protocol parameters for the new epoch
         if (paramTracker != null && paramTracker.isEnabled()) {
@@ -140,42 +225,98 @@ public class EpochBoundaryProcessor {
         // 2. Bootstrap AdaPot at the Shelley start epoch (before any reward calculation)
         bootstrapAdaPotIfNeeded(newEpoch);
 
-        // 3. Calculate rewards FIRST (matches yaci-store: rewards → snapshot → governance)
-        if (rewardCalculator != null && rewardCalculator.isEnabled() && newEpoch >= 2) {
-            calculateAndStoreRewards(previousEpoch, newEpoch, null);
+        // 2b. Credit spendable MIR reward_rest to account balances BEFORE reward calculation.
+        if (snapshotCreator != null && resumeFromStep <= STEP_STARTED) {
+            snapshotCreator.creditMirRewardRest(newEpoch);
         }
 
-        // 4. SNAP: Create delegation snapshot (captures post-reward state).
-        //    Returns UTXO balances for reuse in DRep distribution calculation.
+        // Start UTXO balance scan in parallel (read-only, independent of reward calc).
+        Future<java.util.Map<UtxoBalanceAggregator.CredentialKey, java.math.BigInteger>> utxoBalancesFuture = null;
+        if (snapshotCreator != null && resumeFromStep <= STEP_SNAPSHOT) {
+            final int snapshotEpoch = previousEpoch;
+            utxoBalancesFuture = utxoScanExecutor.submit(() -> snapshotCreator.aggregateUtxoBalances(snapshotEpoch));
+        }
+
+        // 3. Calculate rewards (skip if already committed from a previous interrupted run)
+        if (resumeFromStep <= STEP_REWARDS) {
+            if (rewardCalculator != null && rewardCalculator.isEnabled() && newEpoch >= 2) {
+                calculateAndStoreRewards(previousEpoch, newEpoch, null);
+            }
+            if (snapshotCreator != null) {
+                snapshotCreator.setBoundaryStep(newEpoch, STEP_REWARDS);
+            }
+        } else {
+            log.info("Skipping reward calc for epoch {} (already committed in previous run)", newEpoch);
+        }
+
+        // 4. SNAP: Wait for parallel UTXO scan, then create delegation snapshot.
         java.util.Map<UtxoBalanceAggregator.CredentialKey, java.math.BigInteger> utxoBalances = null;
-        if (snapshotCreator != null) {
-            utxoBalances = snapshotCreator.createAndCommitDelegationSnapshot(previousEpoch);
+        if (resumeFromStep <= STEP_SNAPSHOT) {
+            if (snapshotCreator != null) {
+                java.util.Map<UtxoBalanceAggregator.CredentialKey, java.math.BigInteger> precomputedBalances = null;
+                if (utxoBalancesFuture != null) {
+                    try {
+                        precomputedBalances = utxoBalancesFuture.get(300, TimeUnit.SECONDS);
+                    } catch (Exception e) {
+                        log.warn("Parallel UTXO balance scan failed, falling back to inline: {}", e.getMessage());
+                    }
+                }
+                utxoBalances = snapshotCreator.createAndCommitDelegationSnapshot(previousEpoch, precomputedBalances);
+            }
+            if (snapshotCreator != null) {
+                snapshotCreator.setBoundaryStep(newEpoch, STEP_SNAPSHOT);
+            }
+        } else {
+            log.info("Skipping snapshot for epoch {} (already committed in previous run)", previousEpoch);
         }
 
         // 4b. POOLREAP: Pool deposit refunds (after snapshot, before governance).
-        //     Per Amaru (state.rs): Rewards → Snapshot → tick_pools(POOLREAP) → tick_proposals(governance)
-        //     POOLREAP credits go into reward balances, visible to DRep distribution.
-        if (rewardCalculator != null && rewardCalculator.isEnabled()) {
-            rewardCalculator.processPoolDepositRefunds(newEpoch);
+        if (resumeFromStep <= STEP_POOLREAP) {
+            if (rewardCalculator != null && rewardCalculator.isEnabled()) {
+                rewardCalculator.processPoolDepositRefunds(newEpoch);
+            }
+            if (snapshotCreator != null) {
+                snapshotCreator.setBoundaryStep(newEpoch, STEP_POOLREAP);
+            }
+        } else {
+            log.info("Skipping pool refunds for epoch {} (already committed in previous run)", newEpoch);
         }
 
-        // Get spendable reward_rest for DRep distribution (matches snapshot's reward_rest inclusion)
-        java.util.Map<String, java.math.BigInteger> spendableRewardRest = null;
-        if (snapshotCreator != null) {
-            spendableRewardRest = snapshotCreator.getSpendableRewardRest(previousEpoch);
+        // 4c. PV10 hardfork: rebuild DRep delegation reverse index.
+        // Matches Haskell's updateDRepDelegations (HardFork.hs) which rebuilds drepDelegs
+        // from current forward delegations, removing stale PV9 entries and dangling delegations.
+        // Must run before governance so DRep deregistration cleanup uses the clean reverse index.
+        if (snapshotCreator != null && resumeFromStep <= STEP_GOVERNANCE && governanceEpochProcessor != null) {
+            try {
+                EpochParamProvider ep = (paramTracker != null && paramTracker.isEnabled())
+                        ? paramTracker : paramProvider;
+                Set<String> registeredDRepIds = governanceEpochProcessor.getRegisteredDRepIds();
+                snapshotCreator.rebuildDRepDelegReverseIndexIfNeeded(newEpoch, registeredDRepIds, ep);
+            } catch (Exception e) {
+                // Consensus-critical: if rebuild fails, governance must not run with stale reverse index
+                throw new RuntimeException("PV10 reverse-index rebuild failed at epoch " + newEpoch, e);
+            }
         }
 
         // 5. Conway governance epoch processing (ratify, enact, expire, refund)
-        //    Passes UTXO balances and reward_rest so DRep distribution matches snapshot composition.
+        // reward_rest from previous boundaries is already credited to PREFIX_ACCT.reward
+        // in PostEpochTransition, so DRep distribution picks it up from account balances.
         GovernanceEpochProcessor.GovernanceEpochResult govResult = null;
-        if (governanceEpochProcessor != null) {
-            try {
-                govResult = governanceEpochProcessor.processEpochBoundaryAndCommit(
-                        previousEpoch, newEpoch, utxoBalances, spendableRewardRest);
-            } catch (Exception e) {
-                log.error("Governance epoch processing failed for {} → {}: {}",
-                        previousEpoch, newEpoch, e.getMessage());
+        if (resumeFromStep <= STEP_GOVERNANCE) {
+            if (governanceEpochProcessor != null) {
+                try {
+                    govResult = governanceEpochProcessor.processEpochBoundaryAndCommit(
+                            previousEpoch, newEpoch, utxoBalances, null);
+                } catch (Exception e) {
+                    log.error("Governance epoch processing failed for {} → {}: {}",
+                            previousEpoch, newEpoch, e.getMessage());
+                }
             }
+            if (snapshotCreator != null) {
+                snapshotCreator.setBoundaryStep(newEpoch, STEP_GOVERNANCE);
+            }
+        } else {
+            log.info("Skipping governance for epoch {} (already committed in previous run)", newEpoch);
         }
 
         // 6. Apply governance treasury delta to AdaPot (post-reward adjustment)
@@ -212,8 +353,23 @@ public class EpochBoundaryProcessor {
             }
         }
 
+        // Mark boundary as fully complete
+        if (snapshotCreator != null) {
+            snapshotCreator.setBoundaryStep(newEpoch, STEP_COMPLETE);
+        }
+
         long elapsed = System.currentTimeMillis() - start;
         log.info("Epoch boundary processing complete ({} → {}) in {}ms", previousEpoch, newEpoch, elapsed);
+
+        // 8. Auto-checkpoint: create RocksDB checkpoint at epoch boundary for fast rollback
+        if (autoCheckpointInterval > 0 && autoCheckpointCallback != null
+                && newEpoch % autoCheckpointInterval == 0) {
+            try {
+                autoCheckpointCallback.accept(newEpoch);
+            } catch (Exception e) {
+                log.warn("Auto-checkpoint failed for epoch {}: {}", newEpoch, e.getMessage());
+            }
+        }
     }
 
     /**
@@ -302,7 +458,8 @@ public class EpochBoundaryProcessor {
         }
 
         // Mismatch detected
-        log.error("AdaPot verification FAILED for epoch {}!", epoch);
+        log.error("AdaPot verification FAILED for epoch {}! treasuryDiff={}, reservesDiff={}",
+                epoch, treasuryDiff, reservesDiff);
         if (treasuryDiff.signum() != 0) {
             log.error("  Treasury: expected={}, actual={}, diff={}", exp.treasury, treasury, treasuryDiff);
         }

@@ -112,52 +112,51 @@ public class UtxoBalanceAggregator {
     }
 
     /**
-     * Resolve a pointer address to a credential key using the PointerAddressResolver.
-     * Pointer address format: header(1) + payment_cred(28) + varlen(slot) + varlen(txIdx) + varlen(certIdx)
+     * Extract stake credential from a bech32 address string.
+     * Handles regular addresses (delegation credential) and pointer addresses (via resolver).
+     *
+     * @return credential key, or null if address has no stake credential
      */
-    private static CredentialKey resolvePointerAddress(Address address,
-                                                       PointerAddressResolver resolver) {
-        byte[] bytes = address.getBytes();
-        if (bytes.length < 30) return null; // need at least header + 28 payment + 1 pointer byte
+    public CredentialKey extractCredential(String addressStr, PointerAddressResolver pointerResolver) {
+        try {
+            Address address = new Address(addressStr);
+            AddressType addrType = address.getAddressType();
 
-        // Decode variable-length integers starting after header(1) + payment_cred(28)
-        int offset = 29;
-        long[] result = new long[1];
+            if (addrType == AddressType.Ptr) {
+                if (pointerResolver == null) return null;
+                return resolvePointerAddress(address, pointerResolver);
+            }
 
-        offset = decodeVarLen(bytes, offset, result);
-        if (offset < 0) return null;
-        long slot = result[0];
+            byte[] delegationHash = address.getDelegationCredentialHash().orElse(null);
+            if (delegationHash == null || delegationHash.length != 28) return null;
 
-        offset = decodeVarLen(bytes, offset, result);
-        if (offset < 0) return null;
-        int txIndex = (int) result[0];
-
-        offset = decodeVarLen(bytes, offset, result);
-        if (offset < 0) return null;
-        int certIndex = (int) result[0];
-
-        var cred = resolver.resolve(slot, txIndex, certIndex);
-        if (cred == null) return null;
-
-        return new CredentialKey(cred.credType(), cred.credHash());
+            int credType = getStakeCredType(address);
+            String credHash = com.bloxbean.cardano.yaci.core.util.HexUtil.encodeHexString(delegationHash);
+            return new CredentialKey(credType, credHash);
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     /**
-     * Decode a variable-length integer (7-bit encoding, high bit = continuation).
-     * Returns new offset, or -1 on error. Result stored in out[0].
+     * Resolve a pointer address to a credential key using the PointerAddressResolver.
+     * Uses CCL's PointerAddress class to parse (slot, txIndex, certIndex) from the address,
+     * matching Yaci Store's approach in AccountBalanceProcessor.
      */
-    private static int decodeVarLen(byte[] data, int offset, long[] out) {
-        long result = 0;
-        while (offset < data.length) {
-            int b = data[offset] & 0xFF;
-            result = (result << 7) | (b & 0x7F);
-            offset++;
-            if ((b & 0x80) == 0) {
-                out[0] = result;
-                return offset;
-            }
+    private static CredentialKey resolvePointerAddress(Address address,
+                                                       PointerAddressResolver resolver) {
+        try {
+            var ptrAddr = new com.bloxbean.cardano.client.address.PointerAddress(address.getBytes());
+            var pointer = ptrAddr.getPointer();
+            if (pointer == null) return null;
+
+            var cred = resolver.resolve(pointer.getSlot(), pointer.getTxIndex(), pointer.getCertIndex());
+            if (cred == null) return null;
+
+            return new CredentialKey(cred.credType(), cred.credHash());
+        } catch (Exception e) {
+            return null;
         }
-        return -1;
     }
 
     /**

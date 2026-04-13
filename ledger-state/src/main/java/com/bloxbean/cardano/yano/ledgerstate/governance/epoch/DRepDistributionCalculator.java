@@ -110,6 +110,15 @@ public class DRepDistributionCalculator {
         // Only includes deposits for credentials that have a DRep delegation
         Map<String, BigInteger> proposalDepositsByCredential = computeProposalDepositsByCredential();
 
+        // Diagnostic: track component totals for DRep dist debugging
+        BigInteger totalUtxo = BigInteger.ZERO;
+        BigInteger totalRewards = BigInteger.ZERO;
+        BigInteger totalRewardRest = BigInteger.ZERO;
+        BigInteger totalPropDeposits = BigInteger.ZERO;
+        int credCount = 0;
+        int skippedDrep = 0;
+        int skippedAcct = 0;
+
         // Iterate all DRep delegations
         byte[] seekKey = new byte[]{DefaultAccountStateStore.PREFIX_DREP_DELEG};
         try (RocksIterator it = db.newIterator(cfState)) {
@@ -126,9 +135,10 @@ public class DRepDistributionCalculator {
                 int drepType = deleg.drepType();
                 String drepHash = deleg.drepHash();
 
-                // Check if delegated-to DRep is valid (must be registered, delegation after deregistration)
+                // Check if delegated-to DRep is currently registered
                 DRepDistKey drepKey = resolveDRepKey(drepType, drepHash, activeDReps, deleg.slot());
                 if (drepKey == null) {
+                    skippedDrep++;
                     it.next();
                     continue;
                 }
@@ -137,9 +147,12 @@ public class DRepDistributionCalculator {
                 byte[] acctKey = accountKey(credType, credHash);
                 byte[] acctVal = db.get(cfState, acctKey);
                 if (acctVal == null) {
+                    skippedAcct++;
                     it.next();
                     continue;
                 }
+
+                credCount++;
 
                 // Get stake amount: UTXO balance + unwithdraw rewards.
                 // Use actual UTXO balances (all credentials) rather than pool delegation snapshot
@@ -164,6 +177,12 @@ public class DRepDistributionCalculator {
                 BigInteger proposalDeposits = proposalDepositsByCredential.getOrDefault(credKey, BigInteger.ZERO);
                 total = total.add(proposalDeposits);
 
+                // Track component totals
+                totalUtxo = totalUtxo.add(stake);
+                totalRewards = totalRewards.add(rewards);
+                totalRewardRest = totalRewardRest.add(rewardRest);
+                totalPropDeposits = totalPropDeposits.add(proposalDeposits);
+
                 // Include zero-amount DReps to match DBSync drep_distr
                 distribution.merge(drepKey, total, BigInteger::add);
 
@@ -171,17 +190,25 @@ public class DRepDistributionCalculator {
             }
         }
 
+        BigInteger totalDist = distribution.values().stream().reduce(BigInteger.ZERO, BigInteger::add);
         log.info("Computed DRep distribution for snapshot epoch {}: {} DReps, {} total delegations",
-                snapshotEpoch, distribution.size(),
-                distribution.values().stream().reduce(BigInteger.ZERO, BigInteger::add));
+                snapshotEpoch, distribution.size(), totalDist);
+        log.info("  DRep dist breakdown: utxo={}, rewards={}, rewardRest={}, proposalDeposits={}",
+                totalUtxo, totalRewards, totalRewardRest, totalPropDeposits);
+        log.info("  DRep dist stats: {} creds processed, {} skipped (drep invalid), {} skipped (no account), {} proposal deposit entries",
+                credCount, skippedDrep, skippedAcct, proposalDepositsByCredential.size());
 
         return distribution;
     }
 
     /**
      * Resolve a DRep delegation target to a distribution key.
-     * Returns null if the DRep is not registered, or if the delegation predates
-     * the DRep's previous deregistration (per Amaru stake_distribution.rs).
+     * Returns null if the DRep is not currently registered, or if the delegation predates
+     * the DRep's previous deregistration.
+     * <p>
+     * The main correctness mechanism is the PV10 reverse-index rebuild + unconditional
+     * cleanup on DRep deregistration. The {@code delegSlot <= prevDeregSlot} check is a
+     * defensive safety guard for Yano's tombstone-based DRep state representation.
      */
     private DRepDistKey resolveDRepKey(int drepType, String drepHash,
                                        Map<CredentialKey, DRepStateRecord> activeDReps,
@@ -195,8 +222,10 @@ public class DRepDistributionCalculator {
                     yield null;
                 }
 
-                // Per Amaru (stake_distribution.rs): delegation valid only if made AFTER
-                // the DRep's previous deregistration. This is a per-delegator check.
+                // Defensive safety guard: delegation valid only if made AFTER the DRep's
+                // previous deregistration. This is a per-delegator check that compensates
+                // for Yano's tombstone state model. Normal correctness comes from the PV10
+                // reverse-index rebuild + cleanup on DRep deregistration.
                 Long prevDeregSlot = drepState.previousDeregistrationSlot();
                 if (prevDeregSlot != null && delegSlot <= prevDeregSlot) {
                     yield null;

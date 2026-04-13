@@ -110,6 +110,8 @@ public class YaciNodeProducer {
     // Epoch subsystem config
     @ConfigProperty(name = "yaci.node.epoch-snapshot.amounts-enabled", defaultValue = "false")
     boolean epochSnapshotAmountsEnabled;
+    @ConfigProperty(name = "yaci.node.epoch-snapshot.balance-mode", defaultValue = "full-scan")
+    String balanceMode; // "full-scan" or "incremental"
     @ConfigProperty(name = "yaci.node.adapot.enabled", defaultValue = "false")
     boolean adapotEnabled;
     @ConfigProperty(name = "yaci.node.rewards.enabled", defaultValue = "false")
@@ -122,6 +124,8 @@ public class YaciNodeProducer {
     boolean snapshotExportEnabled;
     @ConfigProperty(name = "yaci.node.exit-on-epoch-calc-error", defaultValue = "false")
     boolean exitOnEpochCalcError;
+    @ConfigProperty(name = "yaci.node.auto-checkpoint-interval", defaultValue = "0")
+    int autoCheckpointInterval;
     @ConfigProperty(name = "yaci.node.snapshot-export.dir", defaultValue = "data")
     String snapshotExportDir;
 
@@ -144,6 +148,14 @@ public class YaciNodeProducer {
     // Dev mode
     @ConfigProperty(name = "yaci.node.dev-mode", defaultValue = "false")
     boolean devMode;
+
+    // Adhoc rollback — pass via command line, NOT application.yml (to avoid accidental re-rollback)
+    // Usage: -Dyaci.node.debug.rollback-to-slot=54172800 or -Dyaci.node.debug.rollback-to-epoch=320
+    @ConfigProperty(name = "yaci.node.debug.rollback-to-slot", defaultValue = "-1")
+    long debugRollbackToSlot;
+
+    @ConfigProperty(name = "yaci.node.debug.rollback-to-epoch", defaultValue = "-1")
+    int debugRollbackToEpoch;
 
     // Block producer config
     @ConfigProperty(name = "yaci.node.block-producer.enabled", defaultValue = "false")
@@ -352,6 +364,7 @@ public class YaciNodeProducer {
 
         // Epoch subsystems
         globals.put("yaci.node.epoch-snapshot.amounts-enabled", epochSnapshotAmountsEnabled);
+        globals.put("yaci.node.epoch-snapshot.balance-mode", balanceMode);
         globals.put("yaci.node.adapot.enabled", adapotEnabled);
         globals.put("yaci.node.rewards.enabled", rewardsEnabled);
         globals.put("yaci.node.epoch-params.tracking-enabled", epochParamsTrackingEnabled);
@@ -359,6 +372,7 @@ public class YaciNodeProducer {
         globals.put("yaci.node.snapshot-export.enabled", snapshotExportEnabled);
         globals.put("yaci.node.snapshot-export.dir", snapshotExportDir);
         globals.put("yaci.node.exit-on-epoch-calc-error", exitOnEpochCalcError);
+        globals.put("yaci.node.auto-checkpoint-interval", autoCheckpointInterval);
 
         // Block pruning
         globals.put("yaci.node.chain.block-body-prune-depth", blockBodyPruneDepth);
@@ -377,6 +391,12 @@ public class YaciNodeProducer {
 
         nodeAPI = new YaciNode(yaciConfig, runtimeOptions);
         log.info("Yaci Node created successfully");
+
+        // Configure adhoc rollback if requested via command line
+        if (debugRollbackToSlot >= 0 || debugRollbackToEpoch >= 0) {
+            ((YaciNode) nodeAPI).setAdhocRollback(debugRollbackToSlot, debugRollbackToEpoch);
+            log.info("Adhoc rollback configured: slot={}, epoch={}", debugRollbackToSlot, debugRollbackToEpoch);
+        }
 
         // Wire bootstrap data provider if bootstrap is enabled
         if (bootstrapEnabled) {
