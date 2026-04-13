@@ -330,6 +330,7 @@ public class HeaderSyncManager implements ChainSyncAgentListener {
                 .start(() -> {
                     log.info("🔄 Starting backpressure monitor thread for gap monitoring");
 
+                    int waitSeconds = 0;
                     while (isPaused && peerClient != null && peerClient.isRunning()) {
                         try {
                             // Use current header tip for gap checking (it may have advanced)
@@ -346,7 +347,11 @@ public class HeaderSyncManager implements ChainSyncAgentListener {
                             }
 
                             Thread.sleep(1000); // Check every second
-                            log.info("⏸️ Headers paused - waiting for bodies to catch up (gap still too large)...");
+                            waitSeconds++;
+                            // Throttle log: first time, then every 30 seconds
+                            if (waitSeconds == 1 || waitSeconds % 30 == 0) {
+                                log.info("⏸️ Headers paused - waiting for bodies to catch up ({}s elapsed)...", waitSeconds);
+                            }
                         } catch (InterruptedException e) {
                             log.info("Backpressure monitor thread interrupted");
                             Thread.currentThread().interrupt();
