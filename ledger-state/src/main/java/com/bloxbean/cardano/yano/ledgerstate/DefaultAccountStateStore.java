@@ -1822,9 +1822,9 @@ public class DefaultAccountStateStore implements AccountStateStore {
                         }
                     }
 
-                    // Track protocol parameter updates
+                    // Track protocol parameter updates (persisted atomically via batch)
                     if (paramTracker != null && paramTracker.isEnabled()) {
-                        paramTracker.processTransaction(tx);
+                        paramTracker.processTransaction(tx, slot, txIdx, batch);
                     }
                 }
             }
@@ -3165,7 +3165,20 @@ public class DefaultAccountStateStore implements AccountStateStore {
                 batch.put(cfState, META_LAST_SNAPSHOT_EPOCH, epochMeta);
             }
 
+            // Rollback epoch param tracker (pending + finalized keys beyond target)
+            // Must be outside the if-block: even same-epoch rollback can invalidate
+            // a pending protocol update tx.
+            if (paramTracker != null && paramTracker.isEnabled()) {
+                paramTracker.addRollbackOps(targetSlot, targetEpoch, batch);
+            }
+
             db.write(wo, batch);
+
+            // Rebuild tracker in-memory state from rolled-back RocksDB
+            if (paramTracker != null && paramTracker.isEnabled()) {
+                paramTracker.reloadAfterRollback();
+            }
+
             log.info("Account state rolled back to slot {}", targetSlot);
         } catch (Exception ex) {
             log.error("Account state rollback failed: {}", ex.toString());

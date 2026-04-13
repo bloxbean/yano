@@ -12,10 +12,13 @@ import org.rocksdb.RocksIterator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import org.rocksdb.WriteBatch;
+
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.util.Arrays;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -52,6 +55,23 @@ public class EpochParamTracker implements EpochParamProvider {
     // Pending proposals for next epoch (pre-Conway Update mechanism)
     private final ConcurrentHashMap<Integer, ProtocolParamUpdate> pendingUpdates = new ConcurrentHashMap<>();
 
+    // Prefix byte for pending-update keys in cfEpochParams (ASCII 'P')
+    private static final byte KEY_PENDING_UPDATE = 0x50;
+
+    /**
+     * Build a pending-update key: 'P' | effectiveEpoch(4 BE) | sourceSlot(8 BE) | txIdx(4 BE)
+     * Total: 17 bytes. Sorts by effectiveEpoch, then chronologically by source.
+     */
+    static byte[] pendingUpdateKey(int effectiveEpoch, long sourceSlot, int txIdx) {
+        return ByteBuffer.allocate(1 + 4 + 8 + 4)
+                .order(ByteOrder.BIG_ENDIAN)
+                .put(KEY_PENDING_UPDATE)
+                .putInt(effectiveEpoch)
+                .putLong(sourceSlot)
+                .putInt(txIdx)
+                .array();
+    }
+
     /**
      * Create a tracker with RocksDB persistence. On construction, loads all persisted
      * epoch params into the in-memory map so lookups work immediately after restart.
@@ -86,13 +106,26 @@ public class EpochParamTracker implements EpochParamProvider {
      * <p>
      * In pre-Conway eras, the {@code Update} field in the transaction body contains proposed
      * parameter changes with a target epoch. These take effect at epoch + 1.
+     * The pending update is persisted atomically through the caller's {@link WriteBatch}
+     * so it survives restarts.
      * <p>
      * In Conway+, parameter changes come through governance (ParameterChangeAction proposals).
      * These are NOT processed here — they go through ratification in GovernanceEpochProcessor
      * and are applied via {@link #applyEnactedParamChange(int, ProtocolParamUpdate)}.
+     *
+     * @param tx    Transaction body to inspect
+     * @param slot  Slot of the block containing this transaction (for pending key)
+     * @param txIdx Index of the transaction within the block (for pending key)
+     * @param batch WriteBatch for atomic persistence; required when RocksDB is active
+     * @throws IllegalStateException if RocksDB persistence is active but batch is null
      */
-    public void processTransaction(TransactionBody tx) {
+    public void processTransaction(TransactionBody tx, long slot, int txIdx, WriteBatch batch) {
         if (!enabled) return;
+
+        if (db != null && cfEpochParams != null && batch == null) {
+            throw new IllegalStateException(
+                    "WriteBatch is required to durably persist protocol parameter updates");
+        }
 
         // Pre-Conway: Update field
         // The epoch field in the Update CBOR is the proposal epoch (current epoch).
@@ -100,11 +133,32 @@ public class EpochParamTracker implements EpochParamProvider {
         var update = tx.getUpdate();
         if (update != null && update.getProtocolParamUpdates() != null) {
             int effectiveEpoch = (int) update.getEpoch() + 1;
+
+            // Merge all genesis-key proposals into a single update for this tx
+            ProtocolParamUpdate txMerged = null;
             for (var entry : update.getProtocolParamUpdates().values()) {
-                pendingUpdates.merge(effectiveEpoch, entry, this::mergeUpdates);
+                txMerged = (txMerged == null) ? entry : mergeUpdates(txMerged, entry);
             }
-            log.debug("Tracked pre-Conway param update for epoch {} (proposal epoch {})",
-                    effectiveEpoch, update.getEpoch());
+
+            if (txMerged != null) {
+                pendingUpdates.merge(effectiveEpoch, txMerged, this::mergeUpdates);
+
+                // Persist pending update through the caller's WriteBatch.
+                // Failures must propagate — silently losing the pending key is the bug we're fixing.
+                if (db != null && cfEpochParams != null) {
+                    try {
+                        byte[] key = pendingUpdateKey(effectiveEpoch, slot, txIdx);
+                        byte[] val = JSON.writeValueAsBytes(txMerged);
+                        batch.put(cfEpochParams, key, val);
+                    } catch (Exception e) {
+                        throw new IllegalStateException(
+                                "Failed to write pending param update to batch for epoch " + effectiveEpoch, e);
+                    }
+                }
+
+                log.debug("Tracked pre-Conway param update for epoch {} (proposal epoch {}, slot {}, txIdx {})",
+                        effectiveEpoch, update.getEpoch(), slot, txIdx);
+            }
         }
         // Conway ParameterChangeAction proposals are handled by GovernanceEpochProcessor
         // after ratification. They call applyEnactedParamChange() at epoch boundary.
@@ -178,6 +232,70 @@ public class EpochParamTracker implements EpochParamProvider {
      */
     public ProtocolParamUpdate getResolvedParams(int epoch) {
         return epochParams.get(epoch);
+    }
+
+    // --- Rollback support ---
+
+    /**
+     * Enqueue rollback deletes into the caller's {@link WriteBatch} without mutating
+     * in-memory state or committing. Call {@link #reloadAfterRollback()} after the
+     * batch is committed to rebuild in-memory maps from rolled-back RocksDB state.
+     *
+     * @param targetSlot  Rollback target slot — pending keys with sourceSlot &gt; targetSlot are deleted
+     * @param targetEpoch Rollback target epoch — finalized keys with epoch &gt; targetEpoch are deleted
+     * @param batch       The caller's WriteBatch (same batch used for cfState/cfDelta rollback)
+     */
+    public void addRollbackOps(long targetSlot, int targetEpoch, WriteBatch batch) throws RocksDBException {
+        if (db == null || cfEpochParams == null) return;
+
+        int deletedPending = 0;
+        int deletedFinalized = 0;
+
+        try (RocksIterator it = db.newIterator(cfEpochParams)) {
+            it.seekToFirst();
+            while (it.isValid()) {
+                byte[] key = it.key();
+
+                if (key.length == 17 && key[0] == KEY_PENDING_UPDATE) {
+                    // Pending key: 'P' | effectiveEpoch(4) | sourceSlot(8) | txIdx(4)
+                    ByteBuffer buf = ByteBuffer.wrap(key).order(ByteOrder.BIG_ENDIAN);
+                    buf.get(); // skip prefix
+                    buf.getInt(); // skip effectiveEpoch
+                    long sourceSlot = buf.getLong();
+
+                    if (sourceSlot > targetSlot) {
+                        batch.delete(cfEpochParams, Arrays.copyOf(key, key.length));
+                        deletedPending++;
+                    }
+                } else if (key.length == 4) {
+                    // Finalized key: epoch(4 BE)
+                    int epoch = ByteBuffer.wrap(key).order(ByteOrder.BIG_ENDIAN).getInt();
+                    if (epoch > targetEpoch) {
+                        batch.delete(cfEpochParams, Arrays.copyOf(key, key.length));
+                        deletedFinalized++;
+                    }
+                }
+
+                it.next();
+            }
+        }
+
+        if (deletedPending > 0 || deletedFinalized > 0) {
+            log.info("Rollback to slot {}/epoch {}: queued deletion of {} pending + {} finalized epoch param keys",
+                    targetSlot, targetEpoch, deletedPending, deletedFinalized);
+        }
+    }
+
+    /**
+     * Rebuild in-memory maps from RocksDB after a rollback batch has been committed.
+     * Must be called after {@link #addRollbackOps} and {@code db.write(batch)}.
+     */
+    public void reloadAfterRollback() {
+        epochParams.clear();
+        pendingUpdates.clear();
+        if (db != null && cfEpochParams != null) {
+            loadPersistedParams();
+        }
     }
 
     // --- EpochParamProvider delegation ---
@@ -337,32 +455,74 @@ public class EpochParamTracker implements EpochParamProvider {
     }
 
     /**
-     * Load all persisted epoch params from RocksDB into the in-memory map.
-     * Called once at construction to restore state after restart.
+     * Load all persisted epoch params from RocksDB into the in-memory maps.
+     * Called at construction and after rollback to restore state.
+     * <p>
+     * Two passes:
+     * <ol>
+     *   <li>Load 4-byte finalized epoch keys into {@code epochParams}.</li>
+     *   <li>Load 17-byte pending keys where effectiveEpoch &gt; maxFinalizedEpoch
+     *       into {@code pendingUpdates}, merging in RocksDB iteration order.</li>
+     * </ol>
      */
     private void loadPersistedParams() {
-        int count = 0;
+        int finalizedCount = 0;
+        int pendingCount = 0;
+        int maxFinalizedEpoch = -1;
+
+        // Pass 1: load finalized 4-byte epoch keys
         try (RocksIterator it = db.newIterator(cfEpochParams)) {
             it.seekToFirst();
             while (it.isValid()) {
                 byte[] key = it.key();
-                if (key.length != 4) { it.next(); continue; }
-
-                int epoch = ByteBuffer.wrap(key).order(ByteOrder.BIG_ENDIAN).getInt();
-                try {
-                    ProtocolParamUpdate params = JSON.readValue(it.value(), ProtocolParamUpdate.class);
-                    epochParams.put(epoch, params);
-                    count++;
-                } catch (Exception e) {
-                    log.warn("Failed to deserialize epoch params for epoch {}: {}", epoch, e.getMessage());
+                if (key.length == 4) {
+                    int epoch = ByteBuffer.wrap(key).order(ByteOrder.BIG_ENDIAN).getInt();
+                    try {
+                        ProtocolParamUpdate params = JSON.readValue(it.value(), ProtocolParamUpdate.class);
+                        epochParams.put(epoch, params);
+                        finalizedCount++;
+                        if (epoch > maxFinalizedEpoch) maxFinalizedEpoch = epoch;
+                    } catch (Exception e) {
+                        log.warn("Failed to deserialize finalized epoch params for epoch {}: {}", epoch, e.getMessage());
+                    }
                 }
                 it.next();
             }
         }
-        if (count > 0) {
+
+        // Pass 2: load pending keys (17 bytes, prefix 'P') where effectiveEpoch > maxFinalizedEpoch
+        try (RocksIterator it = db.newIterator(cfEpochParams)) {
+            it.seekToFirst();
+            while (it.isValid()) {
+                byte[] key = it.key();
+                if (key.length == 17 && key[0] == KEY_PENDING_UPDATE) {
+                    ByteBuffer buf = ByteBuffer.wrap(key).order(ByteOrder.BIG_ENDIAN);
+                    buf.get(); // skip prefix
+                    int effectiveEpoch = buf.getInt();
+
+                    if (effectiveEpoch > maxFinalizedEpoch) {
+                        try {
+                            ProtocolParamUpdate params = JSON.readValue(it.value(), ProtocolParamUpdate.class);
+                            pendingUpdates.merge(effectiveEpoch, params, this::mergeUpdates);
+                            pendingCount++;
+                        } catch (Exception e) {
+                            log.warn("Failed to deserialize pending param update for effective epoch {}: {}",
+                                    effectiveEpoch, e.getMessage());
+                        }
+                    }
+                }
+                it.next();
+            }
+        }
+
+        if (finalizedCount > 0) {
             int minEpoch = epochParams.keySet().stream().mapToInt(Integer::intValue).min().orElse(-1);
-            int maxEpoch = epochParams.keySet().stream().mapToInt(Integer::intValue).max().orElse(-1);
-            log.info("Loaded {} persisted epoch params from RocksDB (epochs {}-{})", count, minEpoch, maxEpoch);
+            log.info("Loaded {} finalized epoch params from RocksDB (epochs {}-{})",
+                    finalizedCount, minEpoch, maxFinalizedEpoch);
+        }
+        if (pendingCount > 0) {
+            log.info("Loaded {} pending param update entries from RocksDB into {} effective epochs",
+                    pendingCount, pendingUpdates.size());
         }
     }
 
