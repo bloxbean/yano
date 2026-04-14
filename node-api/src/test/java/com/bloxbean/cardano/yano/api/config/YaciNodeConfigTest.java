@@ -215,6 +215,85 @@ class YaciNodeConfigTest {
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
+    // --- Fail-fast epoch/slot tests ---
+
+    @Test
+    void unsetEpochLength_throwsFromGetEpochLength() {
+        YaciNodeConfig config = YaciNodeConfig.builder()
+                .enableClient(false)
+                .enableServer(true)
+                .serverPort(13337)
+                .protocolMagic(1)
+                .build();
+
+        assertThatThrownBy(config::getEpochLength)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("epochLength must be loaded from Shelley genesis");
+        assertThat(config.isEpochParamsInitialized()).isFalse();
+    }
+
+    @Test
+    void unsetByronSlotsPerEpoch_throwsFromGetByronSlotsPerEpoch() {
+        YaciNodeConfig config = YaciNodeConfig.builder()
+                .enableClient(false)
+                .enableServer(true)
+                .serverPort(13337)
+                .protocolMagic(1)
+                .epochLength(432000L)
+                .build();
+
+        assertThatThrownBy(config::getByronSlotsPerEpoch)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("byronSlotsPerEpoch must be loaded");
+        assertThat(config.isEpochParamsInitialized()).isFalse();
+    }
+
+    @Test
+    void unsetFirstNonByronSlot_throwsFromGetFirstNonByronSlot() {
+        YaciNodeConfig config = YaciNodeConfig.builder()
+                .enableClient(false)
+                .enableServer(true)
+                .serverPort(13337)
+                .protocolMagic(1)
+                .epochLength(432000L)
+                .byronSlotsPerEpoch(21600L)
+                .build();
+
+        assertThatThrownBy(config::getFirstNonByronSlot)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("firstNonByronSlot must be resolved");
+        assertThat(config.isEpochParamsInitialized()).isFalse();
+    }
+
+    @Test
+    void firstNonByronSlot_zeroIsValid() {
+        YaciNodeConfig config = YaciNodeConfig.builder()
+                .enableClient(false)
+                .enableServer(true)
+                .serverPort(13337)
+                .protocolMagic(2)
+                .epochLength(86400L)
+                .byronSlotsPerEpoch(4320L)
+                .firstNonByronSlot(0L)
+                .build();
+
+        assertThat(config.getFirstNonByronSlot()).isEqualTo(0);
+        assertThat(config.isEpochParamsInitialized()).isTrue();
+    }
+
+    @Test
+    void preprodDefault_epochFieldsNotSet() {
+        YaciNodeConfig config = YaciNodeConfig.preprodDefault();
+        // Factory methods do NOT set epoch fields — they come from genesis at runtime
+        assertThat(config.isEpochParamsInitialized()).isFalse();
+    }
+
+    @Test
+    void mainnetDefault_epochFieldsNotSet() {
+        YaciNodeConfig config = YaciNodeConfig.mainnetDefault();
+        assertThat(config.isEpochParamsInitialized()).isFalse();
+    }
+
     @Test
     void toString_shouldIncludeKeyConfigurationDetails() {
         YaciNodeConfig config = YaciNodeConfig.preprodDefault();

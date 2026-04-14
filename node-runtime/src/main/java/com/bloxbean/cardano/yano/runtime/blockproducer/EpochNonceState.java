@@ -96,22 +96,22 @@ public class EpochNonceState {
 
     /**
      * Compute the epoch number for a given absolute slot, accounting for Byron era offset.
-     * For networks with no Byron era (shelleyStartSlot == 0), this is simply slot / epochLength.
+     * Uses shared {@link com.bloxbean.cardano.yano.api.util.EpochSlotCalc} logic.
      */
     public int epochForSlot(long slot) {
-        if (shelleyStartSlot <= 0) return (int) (slot / epochLength);
-        long shelleyStartEpoch = shelleyStartSlot / byronSlotsPerEpoch;
-        return (int) (shelleyStartEpoch + (slot - shelleyStartSlot) / epochLength);
+        return buildEpochSlotCalc().slotToEpoch(slot);
     }
 
     /**
      * Compute the first absolute slot of the given epoch, accounting for Byron era offset.
-     * For networks with no Byron era (shelleyStartSlot == 0), this is simply epoch * epochLength.
+     * Uses shared {@link com.bloxbean.cardano.yano.api.util.EpochSlotCalc} logic.
      */
     public long firstSlotOfEpoch(int epoch) {
-        if (shelleyStartSlot <= 0) return (long) epoch * epochLength;
-        long shelleyStartEpoch = shelleyStartSlot / byronSlotsPerEpoch;
-        return shelleyStartSlot + (epoch - shelleyStartEpoch) * epochLength;
+        return buildEpochSlotCalc().epochToStartSlot(epoch);
+    }
+
+    private com.bloxbean.cardano.yano.api.util.EpochSlotCalc buildEpochSlotCalc() {
+        return new com.bloxbean.cardano.yano.api.util.EpochSlotCalc(epochLength, byronSlotsPerEpoch, shelleyStartSlot);
     }
 
     /**

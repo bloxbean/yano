@@ -93,9 +93,11 @@ public class YaciNodeConfig implements NodeConfig {
     @Builder.Default
     private boolean pastTimeTravelMode = false;
 
-    // Genesis-derived configuration
-    @Builder.Default
-    private long epochLength = 432000;     // Slots per epoch (from shelley-genesis.json epochLength)
+    // Epoch/slot config — set from genesis at runtime via propagateGenesisToConfig().
+    // No defaults: fail fast if not initialized from genesis.
+    private Long epochLength;           // From shelley-genesis.json epochLength
+    private Long byronSlotsPerEpoch;    // From Byron k * 10 or Shelley securityParam * 10
+    private Long firstNonByronSlot;     // From known-network table or era metadata (0 is valid for preview/sanchonet)
 
     // Implement NodeConfig interface
     @Override
@@ -108,8 +110,46 @@ public class YaciNodeConfig implements NodeConfig {
         return enableServer;
     }
 
+    @Override
+    public long getEpochLength() {
+        if (epochLength == null || epochLength <= 0) {
+            throw new IllegalStateException(
+                    "epochLength must be loaded from Shelley genesis before use");
+        }
+        return epochLength;
+    }
+
+    @Override
+    public long getByronSlotsPerEpoch() {
+        if (byronSlotsPerEpoch == null || byronSlotsPerEpoch <= 0) {
+            throw new IllegalStateException(
+                    "byronSlotsPerEpoch must be loaded from Byron genesis or derived from Shelley securityParam before use");
+        }
+        return byronSlotsPerEpoch;
+    }
+
+    @Override
+    public long getFirstNonByronSlot() {
+        if (firstNonByronSlot == null || firstNonByronSlot < 0) {
+            throw new IllegalStateException(
+                    "firstNonByronSlot must be resolved from known-network rules, era metadata, or explicit config before use");
+        }
+        return firstNonByronSlot;
+    }
+
     /**
-     * Create a default configuration for preprod
+     * Check whether epoch/slot parameters have been loaded from genesis.
+     * If false, calling getEpochLength(), getByronSlotsPerEpoch(), or getFirstNonByronSlot() will throw.
+     */
+    public boolean isEpochParamsInitialized() {
+        return epochLength != null && epochLength > 0
+                && byronSlotsPerEpoch != null && byronSlotsPerEpoch > 0
+                && firstNonByronSlot != null && firstNonByronSlot >= 0;
+    }
+
+    /**
+     * Create a default configuration for preprod.
+     * Sets known epoch/slot values for the preprod network.
      */
     public static YaciNodeConfig preprodDefault() {
         return YaciNodeConfig.builder()
@@ -122,11 +162,38 @@ public class YaciNodeConfig implements NodeConfig {
                 .useRocksDB(true)
                 .rocksDBPath("./chainstate")
                 .fullSyncThreshold(1800) // 30 minutes worth of slots
-                .enablePipelinedSync(true)  // Changed to false for sequential sync by default
+                .enablePipelinedSync(true)
                 .headerPipelineDepth(200)
                 .bodyBatchSize(200)
                 .maxParallelBodies(50)
-                .enableSelectiveBodyFetch(false)  // Disabled for sequential mode
+                .enableSelectiveBodyFetch(false)
+                .selectiveBodyFetchRatio(0)
+                .enableMonitoring(false)
+                .monitoringPort(8080)
+                // Epoch/slot fields intentionally NOT set — must come from genesis at runtime
+                .build();
+    }
+
+    /**
+     * Create a default configuration for preview.
+     * Epoch/slot values are loaded from genesis at runtime via propagateGenesisToConfig().
+     */
+    public static YaciNodeConfig previewDefault() {
+        return YaciNodeConfig.builder()
+                .remoteHost(Constants.PREVIEW_PUBLIC_RELAY_ADDR)
+                .remotePort(Constants.PREVIEW_PUBLIC_RELAY_PORT)
+                .protocolMagic(Constants.PREVIEW_PROTOCOL_MAGIC)
+                .serverPort(13337)
+                .enableServer(true)
+                .enableClient(true)
+                .useRocksDB(true)
+                .rocksDBPath("./chainstate")
+                .fullSyncThreshold(1800)
+                .enablePipelinedSync(true)
+                .headerPipelineDepth(200)
+                .bodyBatchSize(200)
+                .maxParallelBodies(50)
+                .enableSelectiveBodyFetch(false)
                 .selectiveBodyFetchRatio(0)
                 .enableMonitoring(false)
                 .monitoringPort(8080)
@@ -134,7 +201,34 @@ public class YaciNodeConfig implements NodeConfig {
     }
 
     /**
-     * Create a default configuration for mainnet
+     * Create a default configuration for sanchonet.
+     * Epoch/slot values are loaded from genesis at runtime via propagateGenesisToConfig().
+     */
+    public static YaciNodeConfig sanchonetDefault() {
+        return YaciNodeConfig.builder()
+                .remoteHost(Constants.SANCHONET_PUBLIC_RELAY_ADDR)
+                .remotePort(Constants.SANCHONET_PUBLIC_RELAY_PORT)
+                .protocolMagic(Constants.SANCHONET_PROTOCOL_MAGIC)
+                .serverPort(13337)
+                .enableServer(true)
+                .enableClient(true)
+                .useRocksDB(true)
+                .rocksDBPath("./chainstate")
+                .fullSyncThreshold(1800)
+                .enablePipelinedSync(true)
+                .headerPipelineDepth(200)
+                .bodyBatchSize(200)
+                .maxParallelBodies(50)
+                .enableSelectiveBodyFetch(false)
+                .selectiveBodyFetchRatio(0)
+                .enableMonitoring(false)
+                .monitoringPort(8080)
+                .build();
+    }
+
+    /**
+     * Create a default configuration for mainnet.
+     * Epoch/slot values are loaded from genesis at runtime via propagateGenesisToConfig().
      */
     public static YaciNodeConfig mainnetDefault() {
         return YaciNodeConfig.builder()
@@ -155,6 +249,7 @@ public class YaciNodeConfig implements NodeConfig {
                 .selectiveBodyFetchRatio(5)  // More aggressive for mainnet
                 .enableMonitoring(false)
                 .monitoringPort(8080)
+                // Epoch/slot fields intentionally NOT set — must come from genesis at runtime
                 .build();
     }
 
@@ -237,6 +332,7 @@ public class YaciNodeConfig implements NodeConfig {
                 .selectiveBodyFetchRatio(0)
                 .enableMonitoring(false)
                 .monitoringPort(8080)
+                // Epoch/slot fields intentionally NOT set — must come from genesis at runtime
                 .build();
     }
 

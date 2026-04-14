@@ -15,7 +15,7 @@ import java.util.Map;
 
 /**
  * Lightweight parser for standard Cardano shelley-genesis.json files.
- * Extracts only what yaci-node needs: initialFunds and network metadata.
+ * Extracts network metadata, initial funds, and protocol parameters.
  */
 @Slf4j
 public class ShelleyGenesisParser {
@@ -47,19 +47,31 @@ public class ShelleyGenesisParser {
         long slotsPerKESPeriod = root.path("slotsPerKESPeriod").asLong(0);
         long updateQuorum = root.path("updateQuorum").asLong(0);
 
-        // Parse protocolParams.protocolVersion
+        // Parse protocolParams section
         JsonNode protoParams = root.path("protocolParams");
         JsonNode protoVersion = protoParams.path("protocolVersion");
         long protocolMajor = protoVersion.path("major").asLong(DEFAULT_PROTOCOL_MAJOR_VERSION);
         long protocolMinor = protoVersion.path("minor").asLong(DEFAULT_PROTOCOL_MINOR_VERSION);
 
-        log.info("Parsed shelley genesis: networkMagic={}, initialFunds={} entries, epochLength={}, systemStart={}, activeSlotsCoeff={}, protocolVersion={}.{}",
-                networkMagic, initialFunds.size(), epochLength, systemStart, activeSlotsCoeff, protocolMajor, protocolMinor);
+        double rho = protoParams.path("rho").asDouble(0.003);
+        double tau = protoParams.path("tau").asDouble(0.2);
+        double a0 = protoParams.path("a0").asDouble(0.3);
+        int nOpt = protoParams.path("nOpt").asInt(150);
+        long minPoolCost = protoParams.path("minPoolCost").asLong(340000000);
+        long keyDeposit = protoParams.path("keyDeposit").asLong(2000000);
+        long poolDeposit = protoParams.path("poolDeposit").asLong(500000000);
+        double decentralisationParam = protoParams.path("decentralisationParam").asDouble(1.0);
+
+        log.info("Parsed shelley genesis: networkMagic={}, initialFunds={} entries, epochLength={}, " +
+                        "systemStart={}, activeSlotsCoeff={}, protocolVersion={}.{}, rho={}, tau={}, a0={}, nOpt={}",
+                networkMagic, initialFunds.size(), epochLength, systemStart,
+                activeSlotsCoeff, protocolMajor, protocolMinor, rho, tau, a0, nOpt);
 
         return new ShelleyGenesisData(initialFunds, networkMagic, epochLength, slotLength,
                 systemStart, maxLovelaceSupply, activeSlotsCoeff,
                 securityParam, maxKESEvolutions, slotsPerKESPeriod, updateQuorum,
-                protocolMajor, protocolMinor);
+                protocolMajor, protocolMinor,
+                rho, tau, a0, nOpt, minPoolCost, keyDeposit, poolDeposit, decentralisationParam);
     }
 
     /**

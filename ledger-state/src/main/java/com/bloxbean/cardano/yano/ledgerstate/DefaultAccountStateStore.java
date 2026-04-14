@@ -572,22 +572,11 @@ public class DefaultAccountStateStore implements AccountStateStore {
     }
 
     private int epochForSlot(long slot) {
-        long epochLength = epochParamProvider.getEpochLength();
-        long shelleyStart = epochParamProvider.getShelleyStartSlot();
-        if (shelleyStart <= 0) return (int) (slot / epochLength);
-        long byronEpochLen = epochParamProvider.getByronSlotsPerEpoch();
-        long shelleyStartEpoch = shelleyStart / byronEpochLen;
-        return (int) (shelleyStartEpoch + (slot - shelleyStart) / epochLength);
+        return epochParamProvider.getEpochSlotCalc().slotToEpoch(slot);
     }
 
     public long slotForEpochStart(int epoch) {
-        long epochLength = epochParamProvider.getEpochLength();
-        long shelleyStart = epochParamProvider.getShelleyStartSlot();
-        if (shelleyStart <= 0) return (long) epoch * epochLength;
-        long byronEpochLen = epochParamProvider.getByronSlotsPerEpoch();
-        long shelleyStartEpoch = shelleyStart / byronEpochLen;
-        if (epoch <= shelleyStartEpoch) return (long) epoch * byronEpochLen;
-        return shelleyStart + (epoch - shelleyStartEpoch) * epochLength;
+        return epochParamProvider.getEpochSlotCalc().epochToStartSlot(epoch);
     }
 
     private int getLastSnapshotEpoch() {

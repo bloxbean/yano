@@ -303,8 +303,25 @@ public class YaciNode implements NodeAPI {
             Object acctEnabledOpt = this.runtimeOptions.globals().get("yaci.node.account-state.enabled");
             boolean acctEnabled = acctEnabledOpt instanceof Boolean b ? b : Boolean.parseBoolean(String.valueOf(acctEnabledOpt));
             if (acctEnabled) {
-                this.epochParamProvider = new com.bloxbean.cardano.yano.runtime.config.DefaultEpochParamProvider(
-                        config.getProtocolParametersFile(), config.getShelleyGenesisFile());
+                // Build epoch param provider from genesis config — fail fast if genesis is configured but broken
+                if (config.getShelleyGenesisFile() != null && !config.getShelleyGenesisFile().isBlank()) {
+                    var networkGenesisConfig = com.bloxbean.cardano.yano.runtime.config.NetworkGenesisConfig.load(
+                            config.getShelleyGenesisFile(),
+                            config.getByronGenesisFile(),
+                            null, // alonzo — not needed for epoch params
+                            config.getConwayGenesisFile());
+                    long firstNonByronSlot = com.bloxbean.cardano.yano.runtime.config.DefaultEpochParamProvider
+                            .resolveFirstNonByronSlot(
+                                    networkGenesisConfig.getNetworkMagic(),
+                                    networkGenesisConfig.hasByronGenesis());
+                    this.epochParamProvider = com.bloxbean.cardano.yano.runtime.config.DefaultEpochParamProvider
+                            .fromNetworkGenesisConfig(networkGenesisConfig, firstNonByronSlot);
+                } else {
+                    // No genesis configured — use legacy defaults (test/devnet path only)
+                    log.warn("No shelley genesis file configured — using legacy defaults for epoch params");
+                    this.epochParamProvider = new com.bloxbean.cardano.yano.runtime.config.DefaultEpochParamProvider(
+                            config.getProtocolParametersFile());
+                }
                 var epochParamProvider = this.epochParamProvider;
                 var storeContext = new AccountStateStoreContext(
                         chainState, this.runtimeOptions.globals(), log, epochParamProvider);
@@ -590,11 +607,8 @@ public class YaciNode implements NodeAPI {
                         config.getByronGenesisFile(),
                         config.getProtocolParametersFile());
 
-                // Propagate epoch length from genesis to config
-                if (genesisConfig.getShelleyGenesisData() != null
-                        && genesisConfig.getShelleyGenesisData().epochLength() > 0) {
-                    config.setEpochLength(genesisConfig.getShelleyGenesisData().epochLength());
-                }
+                // Propagate epoch params from genesis to config (for REST layer)
+                propagateGenesisToConfig(genesisConfig);
 
                 log.info("Genesis config loaded (protocolParams={}, shelleyData={})",
                         genesisConfig.hasProtocolParameters() ? "available" : "none",
@@ -1076,10 +1090,7 @@ public class YaciNode implements NodeAPI {
                     config.getByronGenesisFile(),
                     config.getProtocolParametersFile());
 
-            if (genesisConfig.getShelleyGenesisData() != null
-                    && genesisConfig.getShelleyGenesisData().epochLength() > 0) {
-                config.setEpochLength(genesisConfig.getShelleyGenesisData().epochLength());
-            }
+            propagateGenesisToConfig(genesisConfig);
         }
     }
 
@@ -1478,11 +1489,7 @@ public class YaciNode implements NodeAPI {
                 config.getByronGenesisFile(),
                 config.getProtocolParametersFile());
 
-        // Propagate epoch length from genesis to config so REST layer can use it
-        if (genesisConfig.getShelleyGenesisData() != null
-                && genesisConfig.getShelleyGenesisData().epochLength() > 0) {
-            config.setEpochLength(genesisConfig.getShelleyGenesisData().epochLength());
-        }
+        propagateGenesisToConfig(genesisConfig);
 
         boolean hasFunds = genesisConfig.hasInitialFunds() || genesisConfig.hasByronBalances();
 
@@ -1601,6 +1608,33 @@ public class YaciNode implements NodeAPI {
     }
 
     /**
+     * Propagate genesis-derived epoch params to YaciNodeConfig so the REST layer
+     * (EpochUtil) has era-aware values for epoch/slot conversion.
+     */
+    /**
+     * Propagate genesis-derived epoch params to YaciNodeConfig so the REST layer
+     * (EpochUtil) and other consumers have era-aware values for epoch/slot conversion.
+     * <p>
+     * Must set all three fields together: epochLength, byronSlotsPerEpoch, firstNonByronSlot.
+     * Fails fast if firstNonByronSlot cannot be resolved for an unknown Byron network.
+     */
+    private void propagateGenesisToConfig(com.bloxbean.cardano.yano.runtime.blockproducer.GenesisConfig gc) {
+        if (gc.getShelleyGenesisData() != null && gc.getShelleyGenesisData().epochLength() > 0) {
+            config.setEpochLength(gc.getShelleyGenesisData().epochLength());
+        }
+        if (gc.getByronGenesisData() != null && gc.getByronGenesisData().k() > 0) {
+            config.setByronSlotsPerEpoch(gc.getByronGenesisData().epochLength());
+        } else if (gc.getShelleyGenesisData() != null && gc.getShelleyGenesisData().securityParam() > 0) {
+            // Fallback: derive byronSlotsPerEpoch from Shelley securityParam
+            config.setByronSlotsPerEpoch(gc.getShelleyGenesisData().securityParam() * 10);
+        }
+        // Resolve firstNonByronSlot — fail fast for unknown Byron networks
+        long firstNonByron = com.bloxbean.cardano.yano.runtime.config.DefaultEpochParamProvider
+                .resolveFirstNonByronSlot(protocolMagic, gc.getByronGenesisData() != null);
+        config.setFirstNonByronSlot(firstNonByron);
+    }
+
+    /**
      * Perform adhoc rollback if configured. Called from start() after reconcile/validate
      * but before chain sync begins. Does NOT require dev mode.
      */
@@ -1608,32 +1642,22 @@ public class YaciNode implements NodeAPI {
         long targetSlot = -1;
 
         if (adhocRollbackToEpoch >= 0) {
-            // Compute slot from epoch using well-known network constants
-            long epochLength = config.getEpochLength();
-            long shelleyStartSlot;
-            int shelleyStartEpoch;
+            // Compute slot from epoch using EpochSlotCalc (genesis-driven)
+            var epochCalc = epochParamProvider != null
+                    ? epochParamProvider.getEpochSlotCalc()
+                    : new com.bloxbean.cardano.yano.api.util.EpochSlotCalc(
+                            config.getEpochLength(),
+                            com.bloxbean.cardano.yaci.core.common.Constants.BYRON_SLOTS_PER_EPOCH, 0);
 
-            if (protocolMagic == Constants.MAINNET_PROTOCOL_MAGIC) {
-                shelleyStartSlot = 4492800;
-                shelleyStartEpoch = 208;
-            } else if (protocolMagic == Constants.PREPROD_PROTOCOL_MAGIC) {
-                shelleyStartSlot = 86400;
-                shelleyStartEpoch = 4;
-            } else {
-                // Preview, Sanchonet, devnets: no Byron era
-                shelleyStartSlot = 0;
-                shelleyStartEpoch = 0;
-            }
-
-            if (adhocRollbackToEpoch < shelleyStartEpoch) {
-                log.error("Adhoc rollback-to-epoch={} is before Shelley start epoch {}. Skipping.",
-                        adhocRollbackToEpoch, shelleyStartEpoch);
+            int firstNonByronEpoch = epochCalc.firstNonByronEpoch();
+            if (adhocRollbackToEpoch < firstNonByronEpoch) {
+                log.error("Adhoc rollback-to-epoch={} is before first non-Byron epoch {}. Skipping.",
+                        adhocRollbackToEpoch, firstNonByronEpoch);
                 return;
             }
 
-            targetSlot = shelleyStartSlot + ((long)(adhocRollbackToEpoch - shelleyStartEpoch)) * epochLength;
-            log.info("Adhoc rollback: epoch {} → slot {} (shelleyStartSlot={}, epochLen={})",
-                    adhocRollbackToEpoch, targetSlot, shelleyStartSlot, epochLength);
+            targetSlot = epochCalc.epochToStartSlot(adhocRollbackToEpoch);
+            log.info("Adhoc rollback: epoch {} → slot {}", adhocRollbackToEpoch, targetSlot);
         } else if (adhocRollbackToSlot >= 0) {
             targetSlot = adhocRollbackToSlot;
         }

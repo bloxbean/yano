@@ -144,11 +144,6 @@ public final class BlockProducerHelper {
 
     private static int epochForSlot(long slot) {
         if (epochProvider == null) return -1;
-        long epochLength = epochProvider.getEpochLength();
-        long shelleyStart = epochProvider.getShelleyStartSlot();
-        if (shelleyStart <= 0) return (int) (slot / epochLength);
-        long byronEpochLen = epochProvider.getByronSlotsPerEpoch();
-        long shelleyStartEpoch = shelleyStart / byronEpochLen;
-        return (int) (shelleyStartEpoch + (slot - shelleyStart) / epochLength);
+        return epochProvider.getEpochSlotCalc().slotToEpoch(slot);
     }
 }

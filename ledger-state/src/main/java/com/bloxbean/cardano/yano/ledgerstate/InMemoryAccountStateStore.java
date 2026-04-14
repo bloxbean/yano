@@ -91,12 +91,7 @@ public class InMemoryAccountStateStore implements AccountStateStore {
     }
 
     private int epochForSlot(long slot) {
-        long epochLength = epochParamProvider.getEpochLength();
-        long shelleyStart = epochParamProvider.getShelleyStartSlot();
-        if (shelleyStart <= 0) return (int) (slot / epochLength);
-        long byronEpochLen = epochParamProvider.getByronSlotsPerEpoch();
-        long shelleyStartEpoch = shelleyStart / byronEpochLen;
-        return (int) (shelleyStartEpoch + (slot - shelleyStart) / epochLength);
+        return epochParamProvider.getEpochSlotCalc().slotToEpoch(slot);
     }
 
     // --- LedgerStateProvider reads ---

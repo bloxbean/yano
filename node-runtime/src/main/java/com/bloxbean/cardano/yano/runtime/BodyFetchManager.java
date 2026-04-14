@@ -1273,16 +1273,11 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
     }
 
     /**
-     * Compute epoch number for a given slot, mirroring DefaultAccountStateStore.epochForSlot().
+     * Compute epoch number for a given slot using shared EpochSlotCalc.
      */
     private int epochForSlot(long slot) {
         if (epochParamProvider == null) return -1;
-        long epochLength = epochParamProvider.getEpochLength();
-        long shelleyStart = epochParamProvider.getShelleyStartSlot();
-        if (shelleyStart <= 0) return (int) (slot / epochLength);
-        long byronEpochLen = epochParamProvider.getByronSlotsPerEpoch();
-        long shelleyStartEpoch = shelleyStart / byronEpochLen;
-        return (int) (shelleyStartEpoch + (slot - shelleyStart) / epochLength);
+        return epochParamProvider.getEpochSlotCalc().slotToEpoch(slot);
     }
 
     /**

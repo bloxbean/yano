@@ -271,6 +271,12 @@ public class YaciNodeProducer {
             case "mainnet":
                 yaciConfig = YaciNodeConfig.mainnetDefault();
                 break;
+            case "preview":
+                yaciConfig = YaciNodeConfig.previewDefault();
+                break;
+            case "sanchonet":
+                yaciConfig = YaciNodeConfig.sanchonetDefault();
+                break;
             case "preprod":
             default:
                 yaciConfig = YaciNodeConfig.preprodDefault();
@@ -332,6 +338,9 @@ public class YaciNodeProducer {
                 .bootstrapBlockfrostBaseUrl(bootstrapBlockfrostBaseUrl.orElse(null))
                 .bootstrapKoiosBaseUrl(bootstrapKoiosBaseUrl.orElse(null))
                 .network(network)
+                // Epoch/slot values are NOT set here — they must come from genesis
+                // at runtime via propagateGenesisToConfig(). Setting preset values here
+                // would mask misconfiguration for custom/unknown networks.
                 .build();
 
         // Validate configuration
@@ -607,10 +616,13 @@ public class YaciNodeProducer {
         }
     }
 
+    private static final long SANCHONET_PROTOCOL_MAGIC = 4;
+
     private static String networkDirForMagic(long magic) {
         if (magic == Constants.MAINNET_PROTOCOL_MAGIC) return "mainnet";
         if (magic == Constants.PREPROD_PROTOCOL_MAGIC) return "preprod";
         if (magic == Constants.PREVIEW_PROTOCOL_MAGIC) return "preview";
+        if (magic == SANCHONET_PROTOCOL_MAGIC) return "sanchonet";
         return null;
     }
 }

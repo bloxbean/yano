@@ -78,7 +78,7 @@ public class GenesisConfig {
         if (byronGenesisFile != null && !byronGenesisFile.isBlank()) {
             try {
                 byronData = ByronGenesisParser.parse(new File(byronGenesisFile));
-                byronBalances = byronData.nonAvvmBalances();
+                byronBalances = byronData.getAllByronBalances();
             } catch (IOException e) {
                 log.error("Failed to parse byron genesis from {}: {}", byronGenesisFile, e.getMessage());
             }
