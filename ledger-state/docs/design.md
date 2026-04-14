@@ -355,7 +355,7 @@ At each epoch boundary (Conway era, protocol >= 9):
 2. **Phase 2 -- DRep Distribution + Ratify** (reads Phase 1 committed state):
    - Calculate DRep distribution (includes Phase 1 reward_rest via spendableRewardRest)
    - Build active DRep key set (non-expired DReps in distribution)
-   - Apply **prevGovSnapshots filter**: only proposals with `proposedInEpoch < previousEpoch` are eligible for ratification and expiry. Proposals submitted in the epoch being left are excluded from ratification (matching Haskell's `prevGovSnapshots` semantics).
+   - Apply **prevGovSnapshots filter**: only proposals with `proposedInEpoch <= previousEpoch` are eligible for ratification and expiry. Proposals submitted during `previousEpoch` are included (matching Haskell's `prevGovSnapshots` semantics where `curGovSnapshots` accumulates proposals through the epoch being left). Only proposals submitted during `newEpoch` are excluded.
    - Ratify: evaluate filtered proposals against vote thresholds (committee, DRep, SPO)
    - Store newly ratified as `PREFIX_RATIFIED_IN_EPOCH` (pending for next boundary)
    - Store newly expired as `PREFIX_EXPIRED_IN_EPOCH` (pending drops for next boundary)
@@ -393,7 +393,7 @@ Phase 2: RATIFY + REST (processRatificationPhase)
     - Build active DRep key set (non-expired DReps in distribution)
     - Read committee state [sees Phase 1 changes!]
     - Read lastEnactedActions [sees Phase 1 changes!]
-    - Apply prevGovSnapshots filter: proposedInEpoch < previousEpoch
+    - Apply prevGovSnapshots filter: proposedInEpoch <= previousEpoch
     - Evaluate filtered proposals against thresholds
     - Store newly ratified as pending enactment (PREFIX_RATIFIED_IN_EPOCH)
     - Store newly expired as pending drop (PREFIX_EXPIRED_IN_EPOCH)
@@ -405,7 +405,7 @@ Phase 2: RATIFY + REST (processRatificationPhase)
 
 **Why two phases?** Without Phase 1 commit, an `UpdateCommittee` enactment writes new committee members to the WriteBatch, but `getAllCommitteeMembers()` reads from committed RocksDB state and doesn't see them. A subsequent `ParameterChange` proposal that requires committee approval would fail because the new committee is invisible.
 
-**Why sibling drops are in Phase 1 (not Phase 2)?** Phase 2 uses the prevGovSnapshots-filtered proposal set which excludes proposals submitted in the epoch being left. A sibling of an enacted proposal might be in that excluded set and would be missed. Phase 1 operates on the full `getAllActiveProposals()` set, ensuring all siblings are discoverable.
+**Why sibling drops are in Phase 1 (not Phase 2)?** Phase 2 uses the prevGovSnapshots-filtered proposal set which excludes proposals submitted during `newEpoch`. A sibling of an enacted proposal might be in that excluded set and would be missed. Phase 1 operates on the full `getAllActiveProposals()` set, ensuring all siblings are discoverable.
 
 ---
 

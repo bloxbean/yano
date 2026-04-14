@@ -78,11 +78,11 @@ Each implementation tracks whether epochs are dormant and maintains a counter.
 ### When is an epoch dormant?
 
 At each epoch boundary (N -> N+1), after ratification and expiry processing:
-- Count the **remaining active proposals** using `prevGovSnapshots` semantics -- only proposals submitted before the epoch being left (i.e., `proposedInEpoch < previousEpoch`) are considered
+- Count the **remaining active proposals** using `prevGovSnapshots` semantics -- only proposals submitted up to and including the epoch being left (i.e., `proposedInEpoch <= previousEpoch`) are considered
 - If this set is empty -> the epoch is **dormant**
 - If this set is non-empty -> the epoch is **not dormant**
 
-**Important**: Proposals submitted during the epoch being left are excluded from the dormant check. This follows Haskell's `prevGovSnapshots` which captures the proposal state from the previous epoch boundary.
+**Important**: Proposals submitted during the epoch being left are included in the dormant check. This follows Haskell's `prevGovSnapshots` which includes proposals accumulated in `curGovSnapshots` through the end of `previousEpoch`. Only proposals submitted during `newEpoch` are excluded.
 
 **Important**: The Conway first epoch (epoch 507 on mainnet) is always dormant because no proposals can exist before governance bootstraps.
 
@@ -97,7 +97,7 @@ Yano determines dormancy using `ratifiableProposals` -- the same prevGovSnapshot
 boolean epochHadActiveProposals = !ratifiableProposals.isEmpty();
 ```
 
-Where `ratifiableProposals` is built by filtering active proposals to only those with `proposedInEpoch < previousEpoch` (lines 483-488). This was verified against the specific mainnet DBSync version used for comparison. Note: latest Haskell `origin/master` may use the post-enactment proposal set for the dormant check rather than `prevGovSnapshots` directly (see Version Caveat above).
+Where `ratifiableProposals` is built by filtering active proposals to only those with `proposedInEpoch <= previousEpoch` (lines 483-488). This was verified against the specific mainnet DBSync version used for comparison. Note: latest Haskell `origin/master` may use the post-enactment proposal set for the dormant check rather than `prevGovSnapshots` directly (see Version Caveat above).
 
 ### Counter behavior by implementation
 
@@ -306,7 +306,7 @@ For correctness verification, compare:
 
 2. **Flush semantics**: Yano flushes at epoch boundary; Haskell flushes on first proposal-bearing transaction. Both happen before ratification. Yano's flush is unconditional; latest Haskell has a non-revival guard (see Known Divergences). This divergence affects stored values for already-expired DReps but not the active set used for ratification in the common case.
 
-3. **Counter tracking**: Yano increments on dormant epochs, resets on flush — same general pattern as Haskell's `vsNumDormantEpochs`. Dormancy is determined using `prevGovSnapshots`-filtered proposals (`!ratifiableProposals.isEmpty()`). This was verified against the deployed mainnet DBSync. Note: latest Haskell `origin/master` uses the post-enactment proposal set rather than `prevGovSnapshots` directly for the dormant update (see Version Caveat in Section 2).
+3. **Counter tracking**: Yano increments on dormant epochs, resets on flush — same general pattern as Haskell's `vsNumDormantEpochs`. Dormancy is determined using `prevGovSnapshots`-filtered proposals (`proposedInEpoch <= previousEpoch`, checked via `!ratifiableProposals.isEmpty()`). This was verified against the deployed mainnet DBSync. Note: latest Haskell `origin/master` uses the post-enactment proposal set rather than `prevGovSnapshots` directly for the dormant update (see Version Caveat in Section 2).
 
 4. **Active check**: `effectiveExpiry >= newEpoch - 1` produces the same result as Haskell's `drepExpiry >= reCurrentEpoch` where `reCurrentEpoch = eNo - 1`.
 
@@ -331,7 +331,7 @@ At epoch 526 (synced from epoch-525 snapshot), 53 DReps showed `effective_expiry
 
 1. **Non-revival guard divergence**: Yano's dormant flush unconditionally adds `numDormant` to every DRep's stored expiry. Latest Haskell `origin/master` has a non-revival guard: `if actualExpiry < currentEpoch then currentExpiry else actualExpiry`, preventing an expired DRep's stored value from being bumped. The DRep is expired either way so ratification outcomes are identical, but the stored `expiryEpoch` value differs for expired DReps. Decide whether to adopt the Haskell guard for stored-value parity or keep the unconditional bump.
 
-2. **Dormant determination rule may diverge from latest Haskell**: The dormant check was verified against a specific mainnet DBSync version using `prevGovSnapshots`-filtered proposals. Latest Haskell `origin/master` may use the post-enactment proposal set instead. Monitor for DBSync changes that would reveal a divergence.
+2. **Dormant determination rule may diverge from latest Haskell**: The dormant check was verified against a specific mainnet DBSync version using `prevGovSnapshots`-filtered proposals (`proposedInEpoch <= previousEpoch`). Latest Haskell `origin/master` may use the post-enactment proposal set instead. Monitor for DBSync changes that would reveal a divergence.
 
 ---
 

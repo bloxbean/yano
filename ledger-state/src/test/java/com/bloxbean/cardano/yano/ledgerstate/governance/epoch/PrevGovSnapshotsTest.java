@@ -22,6 +22,13 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Tests for prevGovSnapshots filtering (Haskell Epoch.hs:270) and deferred
  * sibling/descendant drops in Phase 1.
  * <p>
+ * Haskell RATIFY uses prevGovSnapshots. At boundary previousEpoch → newEpoch,
+ * prevGovSnapshots contains proposals accumulated in curGovSnapshots through
+ * previousEpoch — including proposals submitted during previousEpoch. Only
+ * proposals submitted during newEpoch are excluded.
+ * <p>
+ * Filter: {@code proposedInEpoch <= previousEpoch}
+ * <p>
  * Uses real RocksDB via {@link TestRocksDBHelper} — no mocks.
  */
 class PrevGovSnapshotsTest {
@@ -86,15 +93,16 @@ class PrevGovSnapshotsTest {
     // ==================== Test 1: Sibling not dropped early ====================
 
     @Test
-    @DisplayName("Test 1: Sibling of same-epoch proposal not dropped at boundary where it was submitted")
-    void siblingFromSameEpoch_notDroppedEarly_droppedAtNextBoundary() throws Exception {
+    @DisplayName("Test 1: Sibling submitted in newEpoch not dropped at boundary where it was submitted")
+    void siblingFromNewEpoch_notDroppedEarly_droppedAtNextBoundary() throws Exception {
         // Proposal A: epoch 606, PARAMETER_CHANGE — will be ratified at 612→613
         GovActionId idA = id("c21b00f900000000000000000000000000000000000000000000000000000000", 0);
         GovActionRecord propA = paramChangeProposal(606, 612, RETURN_ADDR_A);
 
-        // Proposal B: epoch 612, PARAMETER_CHANGE, same prevAction — sibling of A
+        // Proposal B: epoch 613 (newEpoch), PARAMETER_CHANGE, same prevAction — sibling of A
+        // Excluded from ratification at 612→613 boundary because 613 <= 612 is false.
         GovActionId idB = id("dfdac59200000000000000000000000000000000000000000000000000000000", 0);
-        GovActionRecord propB = paramChangeProposal(612, 618, RETURN_ADDR_B);
+        GovActionRecord propB = paramChangeProposal(613, 619, RETURN_ADDR_B);
 
         // Store both proposals
         try (WriteBatch batch = new WriteBatch()) {
@@ -108,15 +116,15 @@ class PrevGovSnapshotsTest {
         Map<GovActionId, GovActionRecord> allActive = store.getAllActiveProposals();
         assertThat(allActive).hasSize(2);
 
-        // prevGovSnapshots filter: proposedInEpoch < previousEpoch (612)
+        // prevGovSnapshots filter: proposedInEpoch <= previousEpoch (612)
         Map<GovActionId, GovActionRecord> ratifiable = new LinkedHashMap<>();
         for (var entry : allActive.entrySet()) {
-            if (entry.getValue().proposedInEpoch() < previousEpoch) {
+            if (entry.getValue().proposedInEpoch() <= previousEpoch) {
                 ratifiable.put(entry.getKey(), entry.getValue());
             }
         }
 
-        // Only A should be ratifiable (epoch 606 < 612). B (epoch 612) excluded.
+        // Only A should be ratifiable (epoch 606 <= 612). B (epoch 613) excluded.
         assertThat(ratifiable).hasSize(1);
         assertThat(ratifiable).containsKey(idA);
         assertThat(ratifiable).doesNotContainKey(idB);
@@ -174,14 +182,14 @@ class PrevGovSnapshotsTest {
         assertThat(refunds).containsEntry(RETURN_ADDR_B, GOV_DEPOSIT);
     }
 
-    // ==================== Test 2: Same-epoch proposal excluded from ratification ====================
+    // ==================== Test 2: newEpoch proposal excluded from ratification ====================
 
     @Test
-    @DisplayName("Test 2: Proposal submitted in previousEpoch is excluded from ratification set")
-    void sameEpochProposal_excludedFromRatification() throws Exception {
-        // Proposal submitted in epoch 612
+    @DisplayName("Test 2: Proposal submitted in newEpoch is excluded from ratification set")
+    void newEpochProposal_excludedFromRatification() throws Exception {
+        // Proposal submitted in epoch 613 (the newEpoch at boundary 612→613)
         GovActionId idC = id("aabb000000000000000000000000000000000000000000000000000000000000", 0);
-        GovActionRecord propC = infoProposal(612, 618, RETURN_ADDR_C);
+        GovActionRecord propC = infoProposal(613, 619, RETURN_ADDR_C);
 
         try (WriteBatch batch = new WriteBatch()) {
             store.storeProposal(idC, propC, batch, new ArrayList<>());
@@ -192,22 +200,48 @@ class PrevGovSnapshotsTest {
         Map<GovActionId, GovActionRecord> allActive = store.getAllActiveProposals();
         Map<GovActionId, GovActionRecord> ratifiable612 = new LinkedHashMap<>();
         for (var entry : allActive.entrySet()) {
-            if (entry.getValue().proposedInEpoch() < 612) {
+            if (entry.getValue().proposedInEpoch() <= 612) {
                 ratifiable612.put(entry.getKey(), entry.getValue());
             }
         }
-        // C (epoch 612) should NOT be in ratification set at 612→613
+        // C (epoch 613) should NOT be in ratification set at 612→613
         assertThat(ratifiable612).isEmpty();
 
         // Boundary 613→614: previousEpoch=613
         Map<GovActionId, GovActionRecord> ratifiable613 = new LinkedHashMap<>();
         for (var entry : allActive.entrySet()) {
-            if (entry.getValue().proposedInEpoch() < 613) {
+            if (entry.getValue().proposedInEpoch() <= 613) {
                 ratifiable613.put(entry.getKey(), entry.getValue());
             }
         }
-        // C (epoch 612) IS in ratification set at 613→614 (612 < 613)
+        // C (epoch 613) IS in ratification set at 613→614 (613 <= 613)
         assertThat(ratifiable613).containsKey(idC);
+    }
+
+    // ==================== Test 2b: previousEpoch proposal included in ratification ====================
+
+    @Test
+    @DisplayName("Test 2b: Proposal submitted in previousEpoch IS ratifiable at that boundary")
+    void previousEpochProposal_isRatifiableAtBoundary() throws Exception {
+        // Proposal submitted in epoch 612 (the previousEpoch at boundary 612→613)
+        GovActionId idP = id("bbcc000000000000000000000000000000000000000000000000000000000000", 0);
+        GovActionRecord propP = infoProposal(612, 618, RETURN_ADDR_A);
+
+        try (WriteBatch batch = new WriteBatch()) {
+            store.storeProposal(idP, propP, batch, new ArrayList<>());
+            commit(batch);
+        }
+
+        // Boundary 612→613: previousEpoch=612
+        Map<GovActionId, GovActionRecord> allActive = store.getAllActiveProposals();
+        Map<GovActionId, GovActionRecord> ratifiable = new LinkedHashMap<>();
+        for (var entry : allActive.entrySet()) {
+            if (entry.getValue().proposedInEpoch() <= 612) {
+                ratifiable.put(entry.getKey(), entry.getValue());
+            }
+        }
+        // P (epoch 612) IS ratifiable at 612→613 (612 <= 612 is true)
+        assertThat(ratifiable).containsKey(idP);
     }
 
     // ==================== Test 3: De-dup prevents double refund ====================
@@ -339,11 +373,11 @@ class PrevGovSnapshotsTest {
     // ==================== Test 5: Dormant epoch uses ratifiableProposals ====================
 
     @Test
-    @DisplayName("Test 5: Epoch with only fresh proposals is dormant")
-    void dormant_onlyFreshProposals_isDormant() throws Exception {
-        // Proposal submitted in epoch N (fresh)
+    @DisplayName("Test 5: Epoch with only newEpoch proposals is dormant")
+    void dormant_onlyNewEpochProposals_isDormant() throws Exception {
+        // Proposal submitted in epoch 613 (the newEpoch at boundary 612→613)
         GovActionId idFresh = id("5555000000000000000000000000000000000000000000000000000000000000", 0);
-        GovActionRecord propFresh = infoProposal(612, 618, RETURN_ADDR_A);
+        GovActionRecord propFresh = infoProposal(613, 619, RETURN_ADDR_A);
 
         try (WriteBatch batch = new WriteBatch()) {
             store.storeProposal(idFresh, propFresh, batch, new ArrayList<>());
@@ -352,16 +386,16 @@ class PrevGovSnapshotsTest {
 
         // Boundary 612→613: previousEpoch=612
         Map<GovActionId, GovActionRecord> allActive = store.getAllActiveProposals();
-        assertThat(allActive).hasSize(1); // fresh proposal exists
+        assertThat(allActive).hasSize(1); // proposal exists
 
         Map<GovActionId, GovActionRecord> ratifiable = new LinkedHashMap<>();
         for (var entry : allActive.entrySet()) {
-            if (entry.getValue().proposedInEpoch() < 612) {
+            if (entry.getValue().proposedInEpoch() <= 612) {
                 ratifiable.put(entry.getKey(), entry.getValue());
             }
         }
 
-        // ratifiable is empty → epoch is dormant
+        // ratifiable is empty (613 <= 612 is false) → epoch is dormant
         boolean epochHadActiveProposals = !ratifiable.isEmpty();
         assertThat(epochHadActiveProposals).isFalse();
     }
@@ -384,7 +418,7 @@ class PrevGovSnapshotsTest {
         Map<GovActionId, GovActionRecord> allActive = store.getAllActiveProposals();
         Map<GovActionId, GovActionRecord> ratifiable = new LinkedHashMap<>();
         for (var entry : allActive.entrySet()) {
-            if (entry.getValue().proposedInEpoch() < 612) {
+            if (entry.getValue().proposedInEpoch() <= 612) {
                 ratifiable.put(entry.getKey(), entry.getValue());
             }
         }
@@ -397,13 +431,43 @@ class PrevGovSnapshotsTest {
         assertThat(epochHadActiveProposals).isTrue();
     }
 
-    // ==================== Test 6: Fresh proposal ratifiable at next boundary ====================
+    // ==================== Test 5c: previousEpoch proposal makes epoch non-dormant ====================
 
     @Test
-    @DisplayName("Test 6: Proposal submitted in epoch N becomes ratifiable at N+1→N+2")
-    void freshProposal_ratifiableAtNextBoundary() throws Exception {
+    @DisplayName("Test 5c: Proposal submitted in previousEpoch makes epoch non-dormant")
+    void dormant_previousEpochProposal_isNotDormant() throws Exception {
+        // Proposal submitted in epoch 612 (the previousEpoch at boundary 612→613)
+        GovActionId idSameEpoch = id("8888000000000000000000000000000000000000000000000000000000000000", 0);
+        GovActionRecord propSameEpoch = infoProposal(612, 618, RETURN_ADDR_A);
+
+        try (WriteBatch batch = new WriteBatch()) {
+            store.storeProposal(idSameEpoch, propSameEpoch, batch, new ArrayList<>());
+            commit(batch);
+        }
+
+        // Boundary 612→613: previousEpoch=612
+        Map<GovActionId, GovActionRecord> allActive = store.getAllActiveProposals();
+        Map<GovActionId, GovActionRecord> ratifiable = new LinkedHashMap<>();
+        for (var entry : allActive.entrySet()) {
+            if (entry.getValue().proposedInEpoch() <= 612) {
+                ratifiable.put(entry.getKey(), entry.getValue());
+            }
+        }
+
+        // 612 <= 612 is true → proposal is ratifiable → epoch is NOT dormant
+        assertThat(ratifiable).hasSize(1);
+        boolean epochHadActiveProposals = !ratifiable.isEmpty();
+        assertThat(epochHadActiveProposals).isTrue();
+    }
+
+    // ==================== Test 6: newEpoch proposal ratifiable at next boundary ====================
+
+    @Test
+    @DisplayName("Test 6: Proposal submitted in newEpoch becomes ratifiable at next boundary")
+    void newEpochProposal_ratifiableAtNextBoundary() throws Exception {
+        // Proposal submitted in epoch 613 (the newEpoch at boundary 612→613)
         GovActionId idFresh = id("7777000000000000000000000000000000000000000000000000000000000000", 0);
-        GovActionRecord propFresh = paramChangeProposalNoPrev(612, 618, RETURN_ADDR_A);
+        GovActionRecord propFresh = paramChangeProposalNoPrev(613, 619, RETURN_ADDR_A);
 
         try (WriteBatch batch = new WriteBatch()) {
             store.storeProposal(idFresh, propFresh, batch, new ArrayList<>());
@@ -412,19 +476,19 @@ class PrevGovSnapshotsTest {
 
         Map<GovActionId, GovActionRecord> allActive = store.getAllActiveProposals();
 
-        // Boundary 612→613: NOT ratifiable (612 < 612 is false)
+        // Boundary 612→613: NOT ratifiable (613 <= 612 is false)
         Map<GovActionId, GovActionRecord> ratifiable612 = new LinkedHashMap<>();
         for (var entry : allActive.entrySet()) {
-            if (entry.getValue().proposedInEpoch() < 612) {
+            if (entry.getValue().proposedInEpoch() <= 612) {
                 ratifiable612.put(entry.getKey(), entry.getValue());
             }
         }
         assertThat(ratifiable612).doesNotContainKey(idFresh);
 
-        // Boundary 613→614: IS ratifiable (612 < 613 is true)
+        // Boundary 613→614: IS ratifiable (613 <= 613 is true)
         Map<GovActionId, GovActionRecord> ratifiable613 = new LinkedHashMap<>();
         for (var entry : allActive.entrySet()) {
-            if (entry.getValue().proposedInEpoch() < 613) {
+            if (entry.getValue().proposedInEpoch() <= 613) {
                 ratifiable613.put(entry.getKey(), entry.getValue());
             }
         }

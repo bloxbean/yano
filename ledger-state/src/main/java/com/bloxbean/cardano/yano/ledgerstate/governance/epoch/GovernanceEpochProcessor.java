@@ -411,9 +411,11 @@ public class GovernanceEpochProcessor {
      * Treasury withdrawal and enacted/dropped deposit refund reward_rest were already created in Phase 1,
      * so spendableRewardRest includes them for DRep distribution.
      * <p>
-     * Uses prevGovSnapshots filtering: only proposals with {@code proposedInEpoch < previousEpoch}
-     * are eligible for ratification and expiry. This matches Haskell's {@code prevGovSnapshots}
-     * semantics where proposals submitted in the epoch being left are not yet in the governance snapshot.
+     * Uses prevGovSnapshots filtering: only proposals with {@code proposedInEpoch <= previousEpoch}
+     * are eligible for ratification and expiry. Haskell RATIFY uses prevGovSnapshots, which at
+     * boundary previousEpoch → newEpoch contains proposals accumulated in curGovSnapshots through
+     * the end of previousEpoch — including proposals submitted during previousEpoch. Proposals
+     * submitted during newEpoch are not processed until the next boundary.
      * Sibling/descendant drops are NOT done here — they are deferred to Phase 1 at the next boundary.
      */
     private GovernanceEpochResult processRatificationPhase(int previousEpoch, int newEpoch,
@@ -476,13 +478,14 @@ public class GovernanceEpochProcessor {
         Set<DRepDistKey> activeDRepKeys = buildActiveDRepKeys(drepDist, newEpoch);
 
         // 2. Get active proposals and apply prevGovSnapshots filter.
-        //    Haskell's ratification uses prevGovSnapshots which excludes proposals submitted
-        //    in the epoch being left. Only proposals with proposedInEpoch < previousEpoch
-        //    are eligible for ratification and expiry evaluation.
+        //    Haskell RATIFY uses prevGovSnapshots. At boundary previousEpoch -> newEpoch,
+        //    prevGovSnapshots contains proposals present in curGovSnapshots at the end of
+        //    previousEpoch, including proposals submitted during previousEpoch. It excludes
+        //    proposals submitted during newEpoch, which are not processed until the next boundary.
         Map<GovActionId, GovActionRecord> activeProposals = governanceStore.getAllActiveProposals();
         Map<GovActionId, GovActionRecord> ratifiableProposals = new java.util.LinkedHashMap<>();
         for (var entry : activeProposals.entrySet()) {
-            if (entry.getValue().proposedInEpoch() < previousEpoch) {
+            if (entry.getValue().proposedInEpoch() <= previousEpoch) {
                 ratifiableProposals.put(entry.getKey(), entry.getValue());
             }
         }
