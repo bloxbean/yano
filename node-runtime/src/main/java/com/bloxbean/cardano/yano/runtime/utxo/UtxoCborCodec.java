@@ -59,6 +59,16 @@ final class UtxoCborCodec {
     }
 
     /**
+     * Wrap a UTXO record as a spent record: CBOR map {1: spentSlot, 2: originalUtxoCbor}.
+     */
+    static byte[] wrapSpent(byte[] utxoRecordBytes, long spentSlot) {
+        Map spentMap = new Map();
+        spentMap.put(new UnsignedInteger(1), new UnsignedInteger(spentSlot));
+        spentMap.put(new UnsignedInteger(2), CborSerializationUtil.deserializeOne(utxoRecordBytes));
+        return CborSerializationUtil.serialize(spentMap, true);
+    }
+
+    /**
      * Unwrap the original UTXO record bytes from a spent record.
      * Spent records are CBOR maps with key 1 = spent slot, key 2 = original UTXO.
      */

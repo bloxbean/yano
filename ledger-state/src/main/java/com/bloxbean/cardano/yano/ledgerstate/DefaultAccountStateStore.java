@@ -2821,11 +2821,10 @@ public class DefaultAccountStateStore implements AccountStateStore {
             log.debug("Pre-built deregistration map: {} credentials with deregistrations", latestDeregistrations.size());
         }
 
-        // TODO (mainnet readiness): At the Allegra hardfork boundary, bootstrap (Byron redeem, base58)
-        // UTXOs should be removed from cfUnspent. They are unspendable after Allegra and bloat the
-        // UTXO store (~318.2M ADA on mainnet). They don't affect stake snapshots (no Shelley stake
-        // credential) or reward calculation (cf-rewards handles reserve adjustment internally).
-        // Custom networks (devnet) start fresh with no Byron era — no action needed.
+        // Allegra bootstrap UTXO removal is self-contained in DefaultUtxoStore.applyBlock().
+        // On the first Allegra-era block, tracked Byron genesis UTXOs are removed from cfUnspent
+        // atomically within the block's WriteBatch + delta pipeline (rollback-safe).
+        // CF reward library handles the reserve adjustment via bootstrapAddressAmount.
 
         // Use pre-computed UTXO balances if available (from parallel scan), otherwise compute inline.
         java.util.Map<UtxoBalanceAggregator.CredentialKey, java.math.BigInteger> utxoBalances = precomputedUtxoBalances;

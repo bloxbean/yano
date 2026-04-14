@@ -66,6 +66,18 @@ final class UtxoKeyUtil {
         return true;
     }
 
+    /** Extract tx hash hex from an outpoint key (32 bytes hash + 2 bytes index). */
+    static String txHashFromOutpointKey(byte[] outpointKey) {
+        byte[] hash = new byte[32];
+        System.arraycopy(outpointKey, 0, hash, 0, 32);
+        return HexUtil.encodeHexString(hash);
+    }
+
+    /** Extract output index from an outpoint key (last 2 bytes). */
+    static int outputIndexFromOutpointKey(byte[] outpointKey) {
+        return ByteBuffer.wrap(outpointKey, 32, 2).order(ByteOrder.BIG_ENDIAN).getShort() & 0xffff;
+    }
+
     static byte[] hex28(String hex) {
         if (hex == null) return null;
         byte[] bytes;

@@ -3,15 +3,11 @@ package com.bloxbean.cardano.yano.runtime.config;
 import com.bloxbean.cardano.yano.api.EpochParamProvider;
 import com.bloxbean.cardano.yano.runtime.genesis.ConwayGenesisData;
 import com.bloxbean.cardano.yano.runtime.genesis.ShelleyGenesisData;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
-import java.nio.file.Files;
-import java.nio.file.Path;
 
 /**
  * Default {@link EpochParamProvider} that reads protocol params from genesis files.
@@ -182,180 +178,6 @@ public class DefaultEpochParamProvider implements EpochParamProvider {
         }
     }
 
-    // --- Legacy constructors (deprecated — use fromNetworkGenesisConfig) ---
-
-    /** @deprecated Use {@link #fromNetworkGenesisConfig(NetworkGenesisConfig, long)} */
-    @Deprecated
-    public DefaultEpochParamProvider() {
-        this(null);
-    }
-
-    /** @deprecated Use {@link #fromNetworkGenesisConfig(NetworkGenesisConfig, long)} */
-    @Deprecated
-    public DefaultEpochParamProvider(String protocolParamJsonPath) {
-        this(protocolParamJsonPath, null, 432000, 21600, 0);
-    }
-
-    /** @deprecated Use {@link #fromNetworkGenesisConfig(NetworkGenesisConfig, long)} */
-    @Deprecated
-    public DefaultEpochParamProvider(String protocolParamJsonPath, String shelleyGenesisJsonPath) {
-        this(protocolParamJsonPath, shelleyGenesisJsonPath, 432000, 21600,
-                deriveShelleyStartSlot(shelleyGenesisJsonPath));
-    }
-
-    /**
-     * Derive shelleyStartSlot from the network magic in the shelley genesis file.
-     * @deprecated Only used by legacy constructors.
-     */
-    @Deprecated
-    private static long deriveShelleyStartSlot(String shelleyGenesisJsonPath) {
-        if (shelleyGenesisJsonPath == null) return 0;
-        try {
-            Path path = Path.of(shelleyGenesisJsonPath);
-            if (!Files.exists(path)) return 0;
-            ObjectMapper mapper = new ObjectMapper();
-            JsonNode root = mapper.readTree(path.toFile());
-            JsonNode magicNode = root.get("networkMagic");
-            if (magicNode == null) return 0;
-            long magic = magicNode.asLong();
-            return switch ((int) magic) {
-                case 764824073 -> 4492800;
-                case 1 -> 86400;
-                case 2, 4 -> 0;
-                default -> 0;
-            };
-        } catch (Exception e) {
-            return 0;
-        }
-    }
-
-    /** @deprecated Use {@link #fromNetworkGenesisConfig(NetworkGenesisConfig, long)} */
-    @Deprecated
-    public DefaultEpochParamProvider(String protocolParamJsonPath,
-                                     long epochLength, long byronSlotsPerEpoch, long shelleyStartSlot) {
-        this(protocolParamJsonPath, null, epochLength, byronSlotsPerEpoch, shelleyStartSlot);
-    }
-
-    /** @deprecated Use {@link #fromNetworkGenesisConfig(NetworkGenesisConfig, long)} */
-    @Deprecated
-    public DefaultEpochParamProvider(String protocolParamJsonPath, String shelleyGenesisJsonPath,
-                                     long epochLength, long byronSlotsPerEpoch, long shelleyStartSlot) {
-        this.epochLength = epochLength;
-        this.byronSlotsPerEpoch = byronSlotsPerEpoch;
-        this.shelleyStartSlot = shelleyStartSlot;
-
-        BigInteger parsedKeyDeposit = null;
-        BigInteger parsedPoolDeposit = null;
-
-        if (protocolParamJsonPath != null) {
-            try {
-                Path path = Path.of(protocolParamJsonPath);
-                if (Files.exists(path)) {
-                    ObjectMapper mapper = new ObjectMapper();
-                    JsonNode root = mapper.readTree(path.toFile());
-                    parsedKeyDeposit = readBigInteger(root,
-                            "key_deposit", "keyDeposit", "stakeAddressDeposit");
-                    parsedPoolDeposit = readBigInteger(root,
-                            "pool_deposit", "poolDeposit", "stakePoolDeposit");
-
-                    if (parsedKeyDeposit != null || parsedPoolDeposit != null) {
-                        log.info("Protocol params loaded from {}: keyDeposit={}, poolDeposit={}",
-                                protocolParamJsonPath,
-                                parsedKeyDeposit != null ? parsedKeyDeposit : "default",
-                                parsedPoolDeposit != null ? parsedPoolDeposit : "default");
-                    }
-                } else {
-                    log.debug("Protocol param file not found: {}", protocolParamJsonPath);
-                }
-            } catch (Exception e) {
-                log.warn("Failed to parse protocol param file {}: {}", protocolParamJsonPath, e.getMessage());
-            }
-        }
-
-        this.keyDeposit = parsedKeyDeposit != null ? parsedKeyDeposit : DEFAULT_KEY_DEPOSIT;
-        this.poolDeposit = parsedPoolDeposit != null ? parsedPoolDeposit : DEFAULT_POOL_DEPOSIT;
-
-        // Parse shelley-genesis.json for infrastructure params AND genesis protocol params
-        long parsedSecurityParam = DEFAULT_SECURITY_PARAM;
-        double parsedActiveSlotsCoeff = DEFAULT_ACTIVE_SLOTS_COEFF;
-        int parsedNOpt = 500;
-        BigDecimal parsedDecentralization = BigDecimal.ZERO;
-        BigDecimal parsedRho = new BigDecimal("0.003");
-        BigDecimal parsedTau = new BigDecimal("0.2");
-        BigDecimal parsedA0 = new BigDecimal("0.3");
-        int parsedProtoMajor = 9;
-        int parsedProtoMinor = 0;
-        BigInteger parsedMinPoolCost = new BigInteger("170000000");
-
-        if (shelleyGenesisJsonPath != null) {
-            try {
-                Path path = Path.of(shelleyGenesisJsonPath);
-                if (Files.exists(path)) {
-                    ObjectMapper mapper = new ObjectMapper();
-                    JsonNode root = mapper.readTree(path.toFile());
-                    JsonNode secNode = root.get("securityParam");
-                    if (secNode != null && !secNode.isNull()) {
-                        parsedSecurityParam = secNode.asLong(DEFAULT_SECURITY_PARAM);
-                    }
-                    JsonNode ascNode = root.get("activeSlotsCoeff");
-                    if (ascNode != null && !ascNode.isNull()) {
-                        parsedActiveSlotsCoeff = ascNode.asDouble(DEFAULT_ACTIVE_SLOTS_COEFF);
-                    }
-
-                    // Genesis protocol params (under "protocolParams" object)
-                    JsonNode pp = root.get("protocolParams");
-                    if (pp != null) {
-                        JsonNode n = pp.get("nOpt");
-                        if (n != null && !n.isNull()) parsedNOpt = n.asInt(500);
-                        JsonNode d = pp.get("decentralisationParam");
-                        if (d != null && !d.isNull()) parsedDecentralization = new BigDecimal(d.asText());
-                        JsonNode r = pp.get("rho");
-                        if (r != null && !r.isNull()) parsedRho = new BigDecimal(r.asText());
-                        JsonNode t = pp.get("tau");
-                        if (t != null && !t.isNull()) parsedTau = new BigDecimal(t.asText());
-                        JsonNode a = pp.get("a0");
-                        if (a != null && !a.isNull()) parsedA0 = new BigDecimal(a.asText());
-                        JsonNode pv = pp.get("protocolVersion");
-                        if (pv != null && !pv.isNull()) {
-                            JsonNode maj = pv.get("major");
-                            JsonNode min = pv.get("minor");
-                            if (maj != null) parsedProtoMajor = maj.asInt(9);
-                            if (min != null) parsedProtoMinor = min.asInt(0);
-                        }
-                        JsonNode mpc = pp.get("minPoolCost");
-                        if (mpc != null && !mpc.isNull()) parsedMinPoolCost = new BigInteger(mpc.asText());
-                    }
-
-                    log.info("Shelley genesis params loaded from {}: securityParam={}, activeSlotsCoeff={}, " +
-                                    "nOpt={}, d={}, rho={}, tau={}, a0={}",
-                            shelleyGenesisJsonPath, parsedSecurityParam, parsedActiveSlotsCoeff,
-                            parsedNOpt, parsedDecentralization, parsedRho, parsedTau, parsedA0);
-                } else {
-                    log.debug("Shelley genesis file not found: {}", shelleyGenesisJsonPath);
-                }
-            } catch (Exception e) {
-                log.warn("Failed to parse shelley genesis file {}: {}", shelleyGenesisJsonPath, e.getMessage());
-            }
-        }
-        this.securityParam = parsedSecurityParam;
-        this.activeSlotsCoeff = parsedActiveSlotsCoeff;
-        this.genesisNOpt = parsedNOpt;
-        this.genesisDecentralization = parsedDecentralization;
-        this.genesisRho = parsedRho;
-        this.genesisTau = parsedTau;
-        this.genesisA0 = parsedA0;
-        this.genesisProtocolMajor = parsedProtoMajor;
-        this.genesisProtocolMinor = parsedProtoMinor;
-        this.genesisMinPoolCost = parsedMinPoolCost;
-
-        // Conway defaults for legacy constructors (overridden by fromNetworkGenesisConfig)
-        this.genesisGovActionLifetime = 6;
-        this.genesisDRepActivity = 20;
-        this.genesisGovActionDeposit = new BigInteger("100000000000");
-        this.genesisDRepDeposit = new BigInteger("500000000");
-        this.genesisCommitteeMinSize = 7;
-        this.genesisCommitteeMaxTermLength = 146;
-    }
 
     @Override
     public BigInteger getKeyDeposit(long epoch) {
@@ -464,22 +286,4 @@ public class DefaultEpochParamProvider implements EpochParamProvider {
         return genesisCommitteeMaxTermLength;
     }
 
-    /**
-     * Try multiple field names; supports both flat format (key_deposit) and Cardano API format (stakeAddressDeposit).
-     */
-    private static BigInteger readBigInteger(JsonNode root, String... fieldNames) {
-        for (String name : fieldNames) {
-            JsonNode node = root.get(name);
-            if (node != null && !node.isNull()) {
-                try {
-                    if (node.isTextual()) {
-                        return new BigInteger(node.asText());
-                    } else if (node.isNumber()) {
-                        return BigInteger.valueOf(node.asLong());
-                    }
-                } catch (NumberFormatException ignored) {}
-            }
-        }
-        return null;
-    }
 }

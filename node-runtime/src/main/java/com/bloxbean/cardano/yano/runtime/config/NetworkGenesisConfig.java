@@ -72,6 +72,34 @@ public class NetworkGenesisConfig {
         return new NetworkGenesisConfig(shelleyData, byronData, conwayData);
     }
 
+    /**
+     * Build from in-memory genesis data (devnet mode — no file I/O).
+     *
+     * @param shelley Shelley genesis data (required)
+     * @param byron   Byron genesis data (nullable)
+     * @param conway  Conway genesis data (nullable)
+     * @return immutable NetworkGenesisConfig
+     */
+    public static NetworkGenesisConfig fromInMemory(ShelleyGenesisData shelley, ByronGenesisData byron,
+                                                     ConwayGenesisData conway) {
+        if (shelley == null) {
+            throw new IllegalArgumentException("ShelleyGenesisData is required");
+        }
+        if (byron != null && shelley.networkMagic() != byron.protocolMagic()) {
+            throw new IllegalArgumentException(
+                    "Protocol magic mismatch: shelley=" + shelley.networkMagic()
+                            + " vs byron=" + byron.protocolMagic());
+        }
+
+        log.info("NetworkGenesisConfig built from in-memory: magic={}, epochLength={}, securityParam={}, " +
+                        "byronK={}, conway={}",
+                shelley.networkMagic(), shelley.epochLength(), shelley.securityParam(),
+                byron != null ? byron.k() : "N/A",
+                conway != null ? "available" : "none");
+
+        return new NetworkGenesisConfig(shelley, byron, conway);
+    }
+
     private static ShelleyGenesisData parseShelleyGenesis(String path) {
         File file = new File(path);
         if (!file.exists() || !file.canRead()) {

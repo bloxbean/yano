@@ -7,8 +7,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.math.BigInteger;
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
 import java.util.Optional;
 
 /**
@@ -22,17 +20,23 @@ import java.util.Optional;
 public class AdaPotTracker {
     private static final Logger log = LoggerFactory.getLogger(AdaPotTracker.class);
 
-    /** Max supply of ADA in lovelace: 45 billion ADA = 45_000_000_000 * 1_000_000 lovelace */
-    public static final BigInteger MAX_SUPPLY_LOVELACE = new BigInteger("45000000000000000");
-
     private final RocksDB db;
     private final ColumnFamilyHandle cfState;
+    private final BigInteger maxLovelaceSupply;
     private volatile boolean enabled;
 
-    public AdaPotTracker(RocksDB db, ColumnFamilyHandle cfState, boolean enabled) {
+    /**
+     * @param maxLovelaceSupply max lovelace supply from shelley genesis (must be non-null and positive)
+     */
+    public AdaPotTracker(RocksDB db, ColumnFamilyHandle cfState, boolean enabled, BigInteger maxLovelaceSupply) {
+        if (maxLovelaceSupply == null || maxLovelaceSupply.signum() <= 0) {
+            throw new IllegalArgumentException(
+                    "maxLovelaceSupply must be non-null and positive, got " + maxLovelaceSupply);
+        }
         this.db = db;
         this.cfState = cfState;
         this.enabled = enabled;
+        this.maxLovelaceSupply = maxLovelaceSupply;
     }
 
     public boolean isEnabled() {
@@ -55,7 +59,7 @@ public class AdaPotTracker {
                 return;
             }
 
-            BigInteger reserves = MAX_SUPPLY_LOVELACE.subtract(genesisUtxoTotal);
+            BigInteger reserves = maxLovelaceSupply.subtract(genesisUtxoTotal);
             var pot = new AccountStateCborCodec.AdaPot(
                     BigInteger.ZERO, // treasury
                     reserves,

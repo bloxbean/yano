@@ -69,6 +69,9 @@ public class EpochBoundaryProcessor {
     // Last verification error (null = OK). Queryable via REST endpoint.
     private volatile VerificationError lastVerificationError;
 
+    // Allegra bootstrap UTXO removal is now self-contained in DefaultUtxoStore.applyBlock().
+    // No callback needed — removal happens automatically on the first Allegra-era block.
+
     // Executor for parallel UTXO balance scan during epoch boundary processing
     private final ExecutorService utxoScanExecutor = Executors.newSingleThreadExecutor(
             r -> { Thread t = new Thread(r, "utxo-balance-scan"); t.setDaemon(true); return t; });
@@ -86,17 +89,30 @@ public class EpochBoundaryProcessor {
                                      java.math.BigInteger expectedReserves, java.math.BigInteger actualReserves,
                                      java.math.BigInteger reservesDiff) {}
 
+    // CF NetworkConfig — injected at construction or lazily after boundary capture for unknown+Byron networks
+    private volatile org.cardanofoundation.rewards.calculation.config.NetworkConfig cfNetworkConfig;
+
     public EpochBoundaryProcessor(AdaPotTracker adaPotTracker,
                                   EpochRewardCalculator rewardCalculator,
                                   EpochParamTracker paramTracker,
                                   EpochParamProvider paramProvider,
-                                  long networkMagic) {
+                                  long networkMagic,
+                                  org.cardanofoundation.rewards.calculation.config.NetworkConfig cfNetworkConfig) {
         this.adaPotTracker = adaPotTracker;
         this.rewardCalculator = rewardCalculator;
         this.paramTracker = paramTracker;
         this.paramProvider = paramProvider;
         this.networkMagic = networkMagic;
+        this.cfNetworkConfig = cfNetworkConfig;
     }
+
+    /**
+     * Update the CF NetworkConfig after lazy construction (for unknown+Byron fresh sync).
+     */
+    public void setCfNetworkConfig(org.cardanofoundation.rewards.calculation.config.NetworkConfig config) {
+        this.cfNetworkConfig = config;
+    }
+
 
     /**
      * Set the governance epoch processor for Conway-era governance state tracking.
@@ -176,6 +192,14 @@ public class EpochBoundaryProcessor {
     }
 
     public void processEpochBoundary(int previousEpoch, int newEpoch) {
+        // Guard: defer ALL boundary work until cfNetworkConfig is available.
+        // For unknown+Byron fresh sync, config is built lazily after boundary UTXO capture.
+        // Byron epochs don't have Shelley rewards/AdaPot, so deferring is safe.
+        if (cfNetworkConfig == null) {
+            log.info("cfNetworkConfig not yet available — deferring epoch boundary for {} → {}", previousEpoch, newEpoch);
+            return;
+        }
+
         long start = System.currentTimeMillis();
 
         // Check that the previous epoch boundary completed. If not, re-process it first.
@@ -224,6 +248,9 @@ public class EpochBoundaryProcessor {
 
         // 2. Bootstrap AdaPot at the Shelley start epoch (before any reward calculation)
         bootstrapAdaPotIfNeeded(newEpoch);
+
+        // 2a. Allegra bootstrap UTXO removal is now self-contained in
+        // DefaultUtxoStore.applyBlock() — triggered automatically when era >= Allegra.
 
         // 2b. Credit spendable MIR reward_rest to account balances BEFORE reward calculation.
         if (snapshotCreator != null && resumeFromStep <= STEP_STARTED) {
@@ -531,8 +558,7 @@ public class EpochBoundaryProcessor {
         var existing = adaPotTracker.getLatestAdaPot(newEpoch);
         if (existing.isPresent()) return;
 
-        // Use cf-rewards NetworkConfig to get initial reserves/treasury for this network
-        var networkConfig = EpochRewardCalculator.resolveNetworkConfig(networkMagic);
+        var networkConfig = cfNetworkConfig;
         int shelleyStartEpoch = networkConfig.getShelleyStartEpoch();
 
         BigInteger initialReserves = networkConfig.getShelleyInitialReserves();

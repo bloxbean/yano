@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.runtime.chain;
 
 import com.bloxbean.cardano.yaci.core.model.Era;
+import java.math.BigInteger;
 import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Point;
 import com.bloxbean.cardano.yaci.core.storage.ChainState;
 import com.bloxbean.cardano.yaci.core.storage.ChainTip;
@@ -30,6 +31,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.OptionalLong;
 
 /**
@@ -1479,6 +1481,123 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
             }
         }
         return found ? OptionalLong.of(minSlot) : OptionalLong.empty();
+    }
+
+    // --- Shelley-start UTXO total (for custom networks with Byron history) ---
+
+    private static final String META_SHELLEY_START_UTXO_TOTAL = "shelley_start_utxo_total";
+    private static final String META_BYRON_GENESIS_UTXO_KEYS = "byron_genesis_utxo_keys";
+    private static final String META_ALLEGRA_BOOTSTRAP_DONE = "allegra_bootstrap_done";
+
+    /**
+     * Persist the total UTXO lovelace at the Shelley-start boundary.
+     * Captured once when sync crosses the first non-Byron slot.
+     */
+    public void setShelleyStartUtxoTotal(BigInteger total) {
+        byte[] key = META_SHELLEY_START_UTXO_TOTAL.getBytes(StandardCharsets.UTF_8);
+        try {
+            byte[] existing = db.get(metadataHandle, key);
+            if (existing != null) return; // already stored
+            db.put(metadataHandle, key, total.toString().getBytes(StandardCharsets.UTF_8));
+            log.info("Persisted Shelley-start UTXO total: {}", total);
+        } catch (Exception e) {
+            log.error("Failed to persist Shelley-start UTXO total: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * Read the persisted Shelley-start UTXO total, or empty if not stored.
+     */
+    public Optional<BigInteger> getShelleyStartUtxoTotal() {
+        byte[] key = META_SHELLEY_START_UTXO_TOTAL.getBytes(StandardCharsets.UTF_8);
+        try {
+            byte[] val = db.get(metadataHandle, key);
+            if (val != null) {
+                return Optional.of(new BigInteger(new String(val, StandardCharsets.UTF_8)));
+            }
+        } catch (Exception e) {
+            log.error("Failed to read Shelley-start UTXO total: {}", e.getMessage());
+        }
+        return Optional.empty();
+    }
+
+    // --- Byron genesis UTXO keys (for Allegra bootstrap removal) ---
+
+    /**
+     * Persist Byron genesis UTXO outpoint keys.
+     * Each key is 34 bytes (32 txHash + 2 outputIndex). Stored as concatenated byte array.
+     */
+    public void setByronGenesisUtxoKeys(java.util.List<byte[]> outpointKeys) {
+        byte[] key = META_BYRON_GENESIS_UTXO_KEYS.getBytes(StandardCharsets.UTF_8);
+        try {
+            byte[] existing = db.get(metadataHandle, key);
+            if (existing != null) return; // already stored
+            // Concatenate all 34-byte keys
+            int totalSize = outpointKeys.stream().mapToInt(k -> k.length).sum();
+            byte[] value = new byte[totalSize];
+            int offset = 0;
+            for (byte[] k : outpointKeys) {
+                System.arraycopy(k, 0, value, offset, k.length);
+                offset += k.length;
+            }
+            db.put(metadataHandle, key, value);
+            log.info("Persisted {} Byron genesis UTXO outpoint keys ({} bytes)", outpointKeys.size(), totalSize);
+        } catch (Exception e) {
+            log.error("Failed to persist Byron genesis UTXO keys: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * Read persisted Byron genesis UTXO outpoint keys.
+     * Returns empty list if not stored.
+     */
+    public java.util.List<byte[]> getByronGenesisUtxoKeys() {
+        byte[] key = META_BYRON_GENESIS_UTXO_KEYS.getBytes(StandardCharsets.UTF_8);
+        try {
+            byte[] value = db.get(metadataHandle, key);
+            if (value == null || value.length == 0) return java.util.Collections.emptyList();
+            // Each outpoint key is 34 bytes
+            int keySize = 34;
+            java.util.List<byte[]> keys = new java.util.ArrayList<>(value.length / keySize);
+            for (int i = 0; i + keySize <= value.length; i += keySize) {
+                byte[] k = new byte[keySize];
+                System.arraycopy(value, i, k, 0, keySize);
+                keys.add(k);
+            }
+            return keys;
+        } catch (Exception e) {
+            log.error("Failed to read Byron genesis UTXO keys: {}", e.getMessage());
+            return java.util.Collections.emptyList();
+        }
+    }
+
+    // --- Allegra bootstrap completion marker ---
+
+    /**
+     * Check if the Allegra bootstrap UTXO removal has been completed.
+     */
+    public boolean isAllegraBootstrapDone() {
+        byte[] key = META_ALLEGRA_BOOTSTRAP_DONE.getBytes(StandardCharsets.UTF_8);
+        try {
+            return db.get(metadataHandle, key) != null;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /**
+     * Get the metadata CF key bytes for the Allegra completion marker.
+     * Used by DefaultUtxoStore to write/clear atomically within a block's WriteBatch.
+     */
+    public byte[] getAllegraBootstrapDoneKey() {
+        return META_ALLEGRA_BOOTSTRAP_DONE.getBytes(StandardCharsets.UTF_8);
+    }
+
+    /**
+     * Get the metadata column family handle for atomic writes from UTXO store.
+     */
+    public ColumnFamilyHandle getMetadataHandle() {
+        return metadataHandle;
     }
 
     /**

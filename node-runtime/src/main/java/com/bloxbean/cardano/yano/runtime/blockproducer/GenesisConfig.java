@@ -91,6 +91,24 @@ public class GenesisConfig {
         return new GenesisConfig(funds, protocolParams, byronBalances, shelleyData, byronData);
     }
 
+    /**
+     * Build from in-memory genesis data (devnet mode — no file I/O).
+     *
+     * @param shelley       Shelley genesis data (required)
+     * @param byron         Byron genesis data (nullable)
+     * @param protocolParams raw protocol params JSON (nullable)
+     * @return GenesisConfig populated from the provided objects
+     */
+    public static GenesisConfig fromInMemory(ShelleyGenesisData shelley, ByronGenesisData byron,
+                                              String protocolParams) {
+        if (shelley == null) throw new IllegalArgumentException("ShelleyGenesisData required");
+        Map<String, BigInteger> funds = shelley.initialFunds() != null
+                ? shelley.initialFunds() : Collections.emptyMap();
+        Map<String, BigInteger> byronBalances = byron != null
+                ? byron.getAllByronBalances() : Collections.emptyMap();
+        return new GenesisConfig(funds, protocolParams, byronBalances, shelley, byron);
+    }
+
     private static String loadProtocolParameters(String path) {
         try {
             String json = Files.readString(Path.of(path));

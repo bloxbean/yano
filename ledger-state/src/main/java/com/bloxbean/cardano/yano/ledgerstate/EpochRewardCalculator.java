@@ -48,12 +48,23 @@ public class EpochRewardCalculator {
     // Optional reference to the account state store for slot/epoch helpers and event queries
     private volatile DefaultAccountStateStore accountStateStore;
 
+    // CF NetworkConfig — built once from genesis at startup, or resolved per-magic (legacy)
+    private volatile NetworkConfig cfNetworkConfig;
+
     public EpochRewardCalculator(RocksDB db, ColumnFamilyHandle cfState,
                                  ColumnFamilyHandle cfEpochSnapshot, boolean enabled) {
         this.db = db;
         this.cfState = cfState;
         this.cfEpochSnapshot = cfEpochSnapshot;
         this.enabled = enabled;
+    }
+
+    /**
+     * Set the CF NetworkConfig (built from genesis via NetworkConfigBuilder).
+     * If set, this is used instead of resolveNetworkConfig(networkMagic).
+     */
+    public void setCfNetworkConfig(NetworkConfig config) {
+        this.cfNetworkConfig = config;
     }
 
     public void setLedgerStateProvider(com.bloxbean.cardano.yano.api.account.LedgerStateProvider provider) {
@@ -101,7 +112,7 @@ public class EpochRewardCalculator {
         // 1. Build protocol parameters for cf-rewards-calculation (from stake epoch N-2)
         // Special case for first Shelley epoch: stakeEpoch may be a Byron epoch with no Shelley params.
         // Matching Yaci Store's logic: if (epoch == nonByronEpoch + 1) use params from nonByronEpoch.
-        var networkConfig = resolveNetworkConfig(networkMagic);
+        var networkConfig = getNetworkConfig(networkMagic);
         int shelleyStartEpoch = networkConfig.getShelleyStartEpoch();
         int paramEpoch = (stakeEpoch < shelleyStartEpoch) ? shelleyStartEpoch : stakeEpoch;
         var protocolParams = buildProtocolParameters(paramProvider, paramEpoch);
@@ -673,7 +684,7 @@ public class EpochRewardCalculator {
         long stabilityWindowSlot = feeEpochStartSlot + paramProvider.getRandomnessStabilisationWindow();
 
         // Determine era: post-Babbage = all dereg treated uniformly
-        var networkConfig = resolveNetworkConfig(networkMagic);
+        var networkConfig = getNetworkConfig(networkMagic);
         boolean postBabbage = isPostBabbage(stakeEpoch, networkConfig);
 
         // Scan deregistration events from the beginning to cover ALL history.
@@ -887,7 +898,7 @@ public class EpochRewardCalculator {
         int snapshotKey = stakeEpoch - 2; // N-4: mark snapshot from end of epoch N-4
 
         // Protocol params: use shelley start epoch if stakeEpoch is Byron
-        var networkConfig = resolveNetworkConfig(networkMagic);
+        var networkConfig = getNetworkConfig(networkMagic);
         int shelleyStartEpoch = networkConfig.getShelleyStartEpoch();
         int paramEpoch = (stakeEpoch < shelleyStartEpoch) ? shelleyStartEpoch : stakeEpoch;
         var protocolParams = buildProtocolParameters(paramProvider, paramEpoch);
@@ -945,7 +956,19 @@ public class EpochRewardCalculator {
     }
 
     /**
-     * Resolve NetworkConfig from network magic (public for debug use).
+     * Get the CF NetworkConfig. Must be set via {@link #setCfNetworkConfig(NetworkConfig)}
+     * before reward calculation runs. Throws if not available.
+     */
+    NetworkConfig getNetworkConfig(long networkMagic) {
+        if (cfNetworkConfig != null) return cfNetworkConfig;
+        throw new IllegalStateException(
+                "CF NetworkConfig not set. Build from genesis via NetworkConfigBuilder or "
+                + "set via setCfNetworkConfig() before reward calculation.");
+    }
+
+    /**
+     * Resolve NetworkConfig from network magic using the CF library's built-in configs.
+     * Only for known public networks. Throws for unknown magic.
      */
     public static NetworkConfig resolveNetworkConfig(long networkMagic) {
         return switch ((int) networkMagic) {
@@ -953,10 +976,8 @@ public class EpochRewardCalculator {
             case 1 -> NetworkConfig.getPreprodConfig();
             case 2 -> NetworkConfig.getPreviewConfig();
             case 4 -> NetworkConfig.getSanchonetConfig();
-            default -> {
-                log.warn("Unknown network magic {}, using mainnet config as fallback", networkMagic);
-                yield NetworkConfig.getMainnetConfig();
-            }
+            default -> throw new IllegalStateException(
+                    "Unknown network magic " + networkMagic + " — provide genesis config to build CF NetworkConfig");
         };
     }
 }
