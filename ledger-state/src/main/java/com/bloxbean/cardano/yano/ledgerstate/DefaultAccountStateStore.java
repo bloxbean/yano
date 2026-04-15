@@ -1,5 +1,6 @@
 package com.bloxbean.cardano.yano.ledgerstate;
 
+import com.bloxbean.cardano.yano.api.era.EraProvider;
 import com.bloxbean.cardano.yaci.core.model.Block;
 import com.bloxbean.cardano.yaci.core.model.Era;
 import com.bloxbean.cardano.yaci.core.model.TransactionBody;
@@ -112,6 +113,9 @@ public class DefaultAccountStateStore implements AccountStateStore {
     private volatile com.bloxbean.cardano.yano.api.utxo.UtxoState utxoState;
     private volatile long networkMagic;
     private PointerAddressResolver pointerAddressResolver; // initialized after RocksDB opens
+
+    // Era provider for Conway detection — uses era metadata instead of protocolMajor >= 9.
+    private volatile EraProvider eraProvider;
 
     // Per-block WriteBatch visibility overlay for DRep delegation reverse index.
     // RocksDB db.get()/newIterator() only see committed state, not pending batch writes.
@@ -246,6 +250,20 @@ public class DefaultAccountStateStore implements AccountStateStore {
 
     public long getNetworkMagic() {
         return networkMagic;
+    }
+
+    /**
+     * Set the era provider for Conway-era detection.
+     */
+    public void setEraProvider(EraProvider eraProvider) {
+        this.eraProvider = eraProvider;
+    }
+
+    /**
+     * Check if the given epoch is in the Conway era or later.
+     */
+    boolean isConwayOrLater(int epoch) {
+        return eraProvider != null && eraProvider.isConwayOrLater(epoch);
     }
 
     public EpochParamProvider getEpochParamProvider() {
@@ -2485,7 +2503,10 @@ public class DefaultAccountStateStore implements AccountStateStore {
             int oldDrepType = oldDeleg.drepType();
             if (isCredentialDRep(oldDrepType)) {
                 int protocolMajor = getProtocolMajor(currentEpoch);
-                boolean removeOldReverse = (protocolMajor >= 10) || !isCredentialDRep(newDrepType);
+                // Conway guard: PV9/PV10 DRep reverse-index logic only applies in Conway-or-later.
+                // PV10+: remove old reverse entry on re-delegation. PV9: keep stale entries.
+                boolean removeOldReverse = isConwayOrLater(currentEpoch)
+                        && ((protocolMajor >= 10) || !isCredentialDRep(newDrepType));
                 if (removeOldReverse) {
                     byte[] oldRevKey = drepDelegReverseKey(oldDrepType, oldDeleg.drepHash(), ct, credHash);
                     byte[] oldRevPrev = db.get(cfState, oldRevKey);
@@ -2693,17 +2714,15 @@ public class DefaultAccountStateStore implements AccountStateStore {
      * This is a read-only operation that can run in parallel with reward calculation.
      *
      * @param epoch the snapshot epoch (previousEpoch) — used for slot range and Conway detection
-     *              (protocolMajor of epoch+1 determines whether pointer addresses are excluded)
+     *              (protocolMajor of the snapshot epoch determines whether pointer addresses are excluded)
      */
     public java.util.Map<UtxoBalanceAggregator.CredentialKey, java.math.BigInteger> aggregateUtxoBalances(int epoch) {
         if (stakeSnapshotService == null || !stakeSnapshotService.isEnabled() || utxoState == null) return null;
-        // Conway detection: use protocol version from newEpoch (= epoch + 1) because the SNAP rule
-        // fires under the new epoch's rules. epoch here is snapshotEpoch = previousEpoch.
-        // In Conway (protocolMajor >= 9), pointer addresses are excluded from stake delegation.
-        int protocolMajor = (paramTracker != null && paramTracker.isEnabled())
-                ? paramTracker.getProtocolMajor(epoch + 1) : epochParamProvider.getProtocolMajor(epoch + 1);
-        boolean conwayEra = protocolMajor >= 9;
-        PointerAddressResolver ptrResolver = conwayEra ? null : pointerAddressResolver;
+        // Conway detection: use era metadata, not protocol version (PV unreliable — preview PV9 before Conway).
+        // In Conway, pointer addresses are excluded from stake delegation.
+        boolean conwayEraAtSnapshotEpoch = isConwayOrLater(epoch);
+
+        PointerAddressResolver ptrResolver = conwayEraAtSnapshotEpoch ? null : pointerAddressResolver;
         long epochLastSlot = slotForEpochStart(epoch + 1) - 1;
 
         if ("incremental".equals(balanceMode)) {

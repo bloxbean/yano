@@ -74,6 +74,7 @@ import com.bloxbean.cardano.yano.runtime.config.NetworkGenesisConfig;
 import com.bloxbean.cardano.yano.runtime.config.NetworkGenesisValuesFactory;
 import com.bloxbean.cardano.yano.runtime.genesis.ShelleyGenesisParser;
 import com.bloxbean.cardano.yano.api.util.EpochSlotCalc;
+import com.bloxbean.cardano.yano.runtime.era.EraProviderImpl;
 import com.bloxbean.cardano.yano.runtime.account.AccountStateStoreDiscovery;
 import com.bloxbean.cardano.yano.runtime.utxo.AddressUtxoFilter;
 import com.bloxbean.cardano.yano.runtime.utxo.DefaultUtxoStore;
@@ -198,6 +199,9 @@ public class YaciNode implements NodeAPI {
 
     // In-memory devnet genesis — set before start() for devnet mode without genesis files
     private InMemoryDevnetGenesis inMemoryDevnetGenesis;
+
+    // Era metadata service — initialized after chainState and epochParamProvider are ready
+    private EraProviderImpl eraService;
 
     // Adhoc rollback — one-shot rollback on startup, before chain sync.
     // Set via command line, NOT application.yml (to avoid accidental re-rollback).
@@ -362,6 +366,12 @@ public class YaciNode implements NodeAPI {
                             "Account-state requires genesis configuration (file-based or in-memory devnet genesis) " +
                             "to initialize epoch parameters");
                 }
+                // Initialize EraService once — reused for Conway resolution and era-transition updates
+                if (chainState instanceof DirectRocksDBChainState rocksChainForEra) {
+                    this.eraService = new EraProviderImpl(
+                            rocksChainForEra, this.epochParamProvider.getEpochSlotCalc());
+                }
+
                 var epochParamProvider = this.epochParamProvider;
                 var storeContext = new AccountStateStoreContext(
                         chainState, this.runtimeOptions.globals(), log, epochParamProvider);
@@ -492,6 +502,14 @@ public class YaciNode implements NodeAPI {
                         rewardCalcInstance.setCfNetworkConfig(cfNetConfig);
                     }
 
+                    // Inject EraProvider into account store for Conway-era detection
+                    if (eraService != null) {
+                        defaultStore.setEraProvider(eraService);
+                    }
+                    Integer firstConwayEpoch = eraService != null
+                            ? eraService.resolveFirstConwayEpochOrNull() : null;
+                    log.info("firstConwayEpoch resolved: {}", firstConwayEpoch);
+
                     // Wire epoch boundary processor if any subsystem is enabled
                     EpochBoundaryProcessor boundaryProcessor = null;
                     if (adaPotEnabled || rewardsEnabled || epochParamsEnabled) {
@@ -588,6 +606,9 @@ public class YaciNode implements NodeAPI {
                                         defaultStore.asRewardRestStore(),
                                         config.getConwayGenesisFile()
                                 );
+                                if (eraService != null) {
+                                    govEpochProcessor.setEraProvider(eraService);
+                                }
                                 boundaryProcessor.setGovernanceEpochProcessor(govEpochProcessor);
                             }
                             log.info("Governance subsystem enabled (block processor + epoch processor)");
@@ -1345,7 +1366,9 @@ public class YaciNode implements NodeAPI {
     }
 
     /**
-     * Set Conway era start at slot 0 for devnet block producer mode on fresh start.
+     * Fresh devnet shortcut: mark Conway era at slot 0 so EraProviderImpl treats the
+     * devnet as Conway-or-later from genesis. This is intentional for devnets that
+     * start post-bootstrap with PV10+ behavior — not generic Conway detection for synced chains.
      */
     private void setConwayEraStartIfFreshStart(boolean freshStart) {
         if (freshStart && chainState instanceof DirectRocksDBChainState rocksState) {
@@ -1490,6 +1513,9 @@ public class YaciNode implements NodeAPI {
                 BlockAppliedEvent event = ctx.event();
                 if (event.era() != null && chainState instanceof DirectRocksDBChainState rocksState) {
                     rocksState.setEraStartSlot(event.era().getValue(), event.slot());
+
+                    // EraProviderImpl reads live from chainState — no manual propagation needed.
+                    // Once setEraStartSlot persists Conway, eraProvider.isConwayOrLater() returns true.
 
                     // Fix 5: Capture Shelley-start UTXO total at first non-Byron era transition
                     // for custom networks with Byron history. This runs once — setShelleyStartUtxoTotal

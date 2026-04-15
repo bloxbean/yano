@@ -3,7 +3,7 @@ package com.bloxbean.cardano.yano.ledgerstate.governance.epoch;
 import com.bloxbean.cardano.yaci.core.model.governance.GovActionId;
 import com.bloxbean.cardano.yaci.core.model.governance.GovActionType;
 import com.bloxbean.cardano.yano.api.EpochParamProvider;
-import com.bloxbean.cardano.yano.ledgerstate.AccountStateCborCodec;
+import com.bloxbean.cardano.yano.api.era.EraProvider;
 import com.bloxbean.cardano.yano.ledgerstate.AdaPotTracker;
 import com.bloxbean.cardano.yano.ledgerstate.DefaultAccountStateStore.DeltaOp;
 import com.bloxbean.cardano.yaci.core.model.ProtocolParamUpdate;
@@ -31,7 +31,6 @@ import org.slf4j.LoggerFactory;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.*;
-import java.util.stream.Collectors;
 
 /**
  * Orchestrates all governance processing at epoch boundaries.
@@ -66,11 +65,14 @@ public class GovernanceEpochProcessor {
     private final PoolStakeResolver poolStakeResolver;
     private final RewardRestStore rewardRestStore;
 
+    // Era provider for Conway detection — uses era metadata instead of protocolMajor.
+    private volatile EraProvider eraProvider;
+
     // Optional epoch snapshot exporter for debugging (NOOP when disabled)
     private com.bloxbean.cardano.yano.ledgerstate.export.EpochSnapshotExporter snapshotExporter =
             com.bloxbean.cardano.yano.ledgerstate.export.EpochSnapshotExporter.NOOP;
 
-    // Conway era first epoch (network-specific, set during bootstrap)
+    // Conway era first epoch — resolved from EraProvider at bootstrap time and cached
     private int conwayFirstEpoch = -1;
     private volatile boolean genesisBootstrapped = false;
     private final com.bloxbean.cardano.yano.ledgerstate.governance.ConwayGenesisBootstrap genesisBootstrap;
@@ -151,8 +153,11 @@ public class GovernanceEpochProcessor {
                 governanceStore, conwayGenesisFilePath);
     }
 
-    public void setConwayFirstEpoch(int epoch) {
-        this.conwayFirstEpoch = epoch;
+    /**
+     * Set the era provider for Conway-era detection.
+     */
+    public void setEraProvider(EraProvider eraProvider) {
+        this.eraProvider = eraProvider;
     }
 
     public void setSnapshotExporter(com.bloxbean.cardano.yano.ledgerstate.export.EpochSnapshotExporter exporter) {
@@ -221,25 +226,27 @@ public class GovernanceEpochProcessor {
             throws RocksDBException {
 
         // Bootstrap Conway genesis on first Conway epoch only (committee, constitution, params).
-        // Detect restart: if the previous epoch was already Conway, genesis was already done.
-        // This survives JVM restarts because protocol versions are persisted in EpochParamTracker.
-        if (!genesisBootstrapped) {
-            int prevProtoMajor = resolveProtocolMajor(newEpoch - 1);
-            if (prevProtoMajor >= 9) {
+        // Uses EraProvider instead of protocolMajor — PV is unreliable.
+        // For fresh devnets starting post-bootstrap in Conway-or-later, resolvedConwayEpoch=0
+        // and the first boundary (epoch 0→1) will see (0-1) < 0 as false, then 1 >= 0 as true,
+        // triggering bootstrap. For synced chains, this detects the actual Conway transition.
+        if (!genesisBootstrapped && eraProvider != null) {
+            Integer resolvedConwayEpoch = eraProvider.resolveFirstConwayEpochOrNull();
+            if (resolvedConwayEpoch != null && (newEpoch - 1) >= resolvedConwayEpoch) {
                 // Previous epoch was Conway — genesis already bootstrapped in a prior run
-                log.info("Conway genesis already bootstrapped (previous epoch proto={}, era already Conway), skipping",
-                        prevProtoMajor);
+                log.info("Conway genesis already bootstrapped (firstConwayEpoch={}, epoch {} is past), skipping",
+                        resolvedConwayEpoch, newEpoch);
                 genesisBootstrapped = true;
-            } else {
+            } else if (resolvedConwayEpoch != null && newEpoch >= resolvedConwayEpoch) {
                 // This is the first Conway epoch — bootstrap genesis
                 if (conwayFirstEpoch < 0) {
-                    conwayFirstEpoch = newEpoch;
+                    conwayFirstEpoch = resolvedConwayEpoch;
                 }
                 genesisBootstrap.bootstrap(conwayFirstEpoch, batch, deltaOps);
-                // Persist conwayFirstEpoch to RocksDB
                 governanceStore.storeEraFirstEpoch(9, conwayFirstEpoch, batch, deltaOps);
                 genesisBootstrapped = true;
             }
+            // If resolvedConwayEpoch is null: Conway not reached yet, no bootstrap
         }
 
         // 1. Enact pending proposals (ratified at previous epoch boundary)

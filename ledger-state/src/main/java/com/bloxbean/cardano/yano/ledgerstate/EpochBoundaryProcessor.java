@@ -312,11 +312,12 @@ public class EpochBoundaryProcessor {
         // 4c. PV10 hardfork: rebuild DRep delegation reverse index.
         // Matches Haskell's updateDRepDelegations (HardFork.hs) which rebuilds drepDelegs
         // from current forward delegations, removing stale PV9 entries and dangling delegations.
-        // Must run before governance so DRep deregistration cleanup uses the clean reverse index.
-        if (snapshotCreator != null && resumeFromStep <= STEP_GOVERNANCE && governanceEpochProcessor != null) {
+        // Only runs when Conway-or-later AND PV10+. No PV10 work in pre-Conway transitions.
+        EpochParamProvider ep = (paramTracker != null && paramTracker.isEnabled())
+                ? paramTracker : paramProvider;
+        if (snapshotCreator != null && resumeFromStep <= STEP_GOVERNANCE && governanceEpochProcessor != null
+                && snapshotCreator.isConwayOrLater(newEpoch) && ep.getProtocolMajor(newEpoch) >= 10) {
             try {
-                EpochParamProvider ep = (paramTracker != null && paramTracker.isEnabled())
-                        ? paramTracker : paramProvider;
                 Set<String> registeredDRepIds = governanceEpochProcessor.getRegisteredDRepIds();
                 snapshotCreator.rebuildDRepDelegReverseIndexIfNeeded(newEpoch, registeredDRepIds, ep);
             } catch (Exception e) {
