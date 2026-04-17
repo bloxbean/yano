@@ -7,6 +7,7 @@ import com.bloxbean.cardano.yaci.core.storage.ChainState;
 import com.bloxbean.cardano.yaci.core.storage.ChainTip;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.db.RocksDbAccess;
+import com.bloxbean.cardano.yano.api.rollback.RollbackCapableStore;
 import com.bloxbean.cardano.yano.runtime.blockproducer.NonceStateStore;
 import com.bloxbean.cardano.yano.ledgerstate.AccountStateCfNames;
 import com.bloxbean.cardano.yano.runtime.db.RocksDbContext;
@@ -40,7 +41,7 @@ import java.util.OptionalLong;
  */
 @Slf4j
 public class DirectRocksDBChainState implements ChainState, AutoCloseable, RocksDbSupplier,
-        NonceStateStore, RocksDbAccess {
+        NonceStateStore, RocksDbAccess, RollbackCapableStore {
 
     private static final byte[] TIP_KEY = "tip".getBytes(StandardCharsets.UTF_8);
     private static final byte[] HEADER_TIP_KEY = "header_tip".getBytes(StandardCharsets.UTF_8);
@@ -149,6 +150,7 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
                     // Account state CFs
                     new ColumnFamilyDescriptor(AccountStateCfNames.ACCT_STATE.getBytes()),
                     new ColumnFamilyDescriptor(AccountStateCfNames.ACCT_DELTA.getBytes()),
+                    new ColumnFamilyDescriptor(AccountStateCfNames.ACCT_BOUNDARY_DELTA.getBytes()),
                     new ColumnFamilyDescriptor(AccountStateCfNames.EPOCH_DELEG_SNAPSHOT.getBytes()),
                     new ColumnFamilyDescriptor(AccountStateCfNames.EPOCH_PARAMS.getBytes())
             );
@@ -1598,6 +1600,29 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
      */
     public ColumnFamilyHandle getMetadataHandle() {
         return metadataHandle;
+    }
+
+    // --- RollbackCapableStore implementation ---
+
+    @Override
+    public String storeName() {
+        return "chainState";
+    }
+
+    @Override
+    public long getLatestAppliedSlot() {
+        ChainTip tip = getTip();
+        return tip != null ? tip.getSlot() : -1;
+    }
+
+    @Override
+    public long getRollbackFloorSlot() {
+        return 0; // all blocks retained, no pruning
+    }
+
+    @Override
+    public void rollbackToSlot(long targetSlot) {
+        rollbackTo(targetSlot);
     }
 
     /**

@@ -240,6 +240,60 @@ class DefaultUtxoStoreTest {
     }
 
 
+    // --- RollbackCapableStore tests ---
+
+    @Test
+    void rollbackCapableStore_storeName() {
+        assertEquals("utxoStore", store.storeName());
+    }
+
+    @Test
+    void rollbackCapableStore_latestAppliedSlot_afterBlock() {
+        Block block = Block.builder().era(Era.Babbage)
+                .transactionBodies(Collections.emptyList())
+                .invalidTransactions(Collections.emptyList()).build();
+        publishBlock(100, 1, "aa".repeat(32), block);
+
+        assertEquals(100, store.getLatestAppliedSlot());
+    }
+
+    @Test
+    void rollbackCapableStore_rollbackFloor_afterBlock() {
+        Block block = Block.builder().era(Era.Babbage)
+                .transactionBodies(Collections.emptyList())
+                .invalidTransactions(Collections.emptyList()).build();
+        publishBlock(100, 1, "aa".repeat(32), block);
+
+        // Floor should be the earliest delta entry slot (= 100, the only block)
+        long floor = store.getRollbackFloorSlot();
+        assertTrue(floor <= 100);
+    }
+
+    @Test
+    void rollbackCapableStore_rollbackToSlot() {
+        String addr = "addr_test1vpxrollback00000000000000000000000000000000000";
+        TransactionBody tx1 = TransactionBody.builder()
+                .txHash("01".repeat(32))
+                .outputs(List.of(TransactionOutput.builder().address(addr)
+                        .amounts(List.of(lovelaceAmount(100))).build()))
+                .build();
+        Block b1 = Block.builder().era(Era.Babbage).transactionBodies(List.of(tx1))
+                .invalidTransactions(Collections.emptyList()).build();
+        publishBlock(100, 1, "a1".repeat(32), b1);
+
+        Block b2 = Block.builder().era(Era.Babbage).transactionBodies(Collections.emptyList())
+                .invalidTransactions(Collections.emptyList()).build();
+        publishBlock(200, 2, "a2".repeat(32), b2);
+
+        assertEquals(200, store.getLatestAppliedSlot());
+
+        // Adhoc rollback to slot 100
+        store.rollbackToSlot(100);
+
+        // After rollback, latestAppliedSlot should be <= 100
+        assertTrue(store.getLatestAppliedSlot() <= 100);
+    }
+
     // --- Allegra bootstrap UTXO removal tests ---
 
     @Test

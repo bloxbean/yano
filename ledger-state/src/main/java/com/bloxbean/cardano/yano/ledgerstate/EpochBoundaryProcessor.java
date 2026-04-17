@@ -119,6 +119,20 @@ public class EpochBoundaryProcessor {
      */
     public void setGovernanceEpochProcessor(GovernanceEpochProcessor processor) {
         this.governanceEpochProcessor = processor;
+        // Wire AdaPot batch adjuster so governance treasury adjustment is atomic with Phase 2
+        if (processor != null && adaPotTracker != null && adaPotTracker.isEnabled() && snapshotCreator != null) {
+            processor.setAdaPotBatchAdjuster((epoch, treasuryDelta, batch, deltaOps) -> {
+                var currentPot = adaPotTracker.getAdaPot(epoch);
+                if (currentPot.isPresent()) {
+                    var pot = currentPot.get();
+                    BigInteger adjustedTreasury = pot.treasury().add(treasuryDelta);
+                    var adjustedPot = new AccountStateCborCodec.AdaPot(adjustedTreasury, pot.reserves(),
+                            pot.deposits(), pot.fees(), pot.distributed(),
+                            pot.undistributed(), pot.rewardsPot(), pot.poolRewardsPot());
+                    adaPotTracker.storeAdaPotBatch(epoch, adjustedPot, batch, deltaOps, snapshotCreator);
+                }
+            });
+        }
     }
 
     /**
@@ -221,6 +235,33 @@ public class EpochBoundaryProcessor {
                 log.info("Resuming epoch boundary {} → {} from step {} (previous run interrupted after step {})",
                         previousEpoch, newEpoch, resumeFromStep, lastStep);
             }
+
+            // Consult boundary delta evidence for committed but unmarkered phases.
+            // If a crash happened between phase commit and step marker write, the boundary
+            // delta journal proves the phase was committed — skip it to avoid double-apply.
+            if (resumeFromStep <= STEP_GOVERNANCE) {
+                long boundarySlot = snapshotCreator.slotForEpochStart(newEpoch);
+                var committedPhases = snapshotCreator.getCommittedBoundaryPhases(boundarySlot);
+                if (!committedPhases.isEmpty()) {
+                    int deltaResumeFrom = resumeFromStep;
+                    if (committedPhases.contains(DefaultAccountStateStore.PHASE_GOV_RATIFY)) {
+                        deltaResumeFrom = Math.max(deltaResumeFrom, STEP_GOVERNANCE + 1);
+                        log.info("Boundary delta evidence: governance committed for epoch {}", newEpoch);
+                    } else if (committedPhases.contains(DefaultAccountStateStore.PHASE_POOLREAP)) {
+                        deltaResumeFrom = Math.max(deltaResumeFrom, STEP_POOLREAP + 1);
+                        log.info("Boundary delta evidence: pool refund committed for epoch {}", newEpoch);
+                    } else if (committedPhases.contains(DefaultAccountStateStore.PHASE_REWARDS)) {
+                        deltaResumeFrom = Math.max(deltaResumeFrom, STEP_REWARDS + 1);
+                        log.info("Boundary delta evidence: rewards committed for epoch {}", newEpoch);
+                    }
+                    // Repair step marker forward to match actual durable state
+                    if (deltaResumeFrom > resumeFromStep) {
+                        int resolvedStep = deltaResumeFrom - 1;
+                        snapshotCreator.setBoundaryStep(newEpoch, resolvedStep);
+                        resumeFromStep = deltaResumeFrom;
+                    }
+                }
+            }
         }
 
         if (resumeFromStep <= STEP_STARTED) {
@@ -269,6 +310,7 @@ public class EpochBoundaryProcessor {
             if (rewardCalculator != null && rewardCalculator.isEnabled() && newEpoch >= 2) {
                 calculateAndStoreRewards(previousEpoch, newEpoch, null);
             }
+            // Step marker AFTER all outputs (reward credits + AdaPot) are durable
             if (snapshotCreator != null) {
                 snapshotCreator.setBoundaryStep(newEpoch, STEP_REWARDS);
             }
@@ -298,10 +340,19 @@ public class EpochBoundaryProcessor {
         }
 
         // 4b. POOLREAP: Pool deposit refunds (after snapshot, before governance).
+        //     Delta-journaled via boundary delta for rollback safety.
         if (resumeFromStep <= STEP_POOLREAP) {
             if (rewardCalculator != null && rewardCalculator.isEnabled()) {
+                long boundarySlot = snapshotCreator != null ? snapshotCreator.slotForEpochStart(newEpoch) : 0;
+                rewardCalculator.beginRewardBatch();
                 rewardCalculator.processPoolDepositRefunds(newEpoch);
+                try {
+                    rewardCalculator.commitRewardBatch(boundarySlot, DefaultAccountStateStore.PHASE_POOLREAP);
+                } catch (org.rocksdb.RocksDBException e) {
+                    throw new RuntimeException("Failed to commit pool refund boundary delta for epoch " + newEpoch, e);
+                }
             }
+            // Step marker AFTER pool refund commits are durable
             if (snapshotCreator != null) {
                 snapshotCreator.setBoundaryStep(newEpoch, STEP_POOLREAP);
             }
@@ -340,29 +391,16 @@ public class EpochBoundaryProcessor {
                             previousEpoch, newEpoch, e.getMessage());
                 }
             }
-            if (snapshotCreator != null) {
-                snapshotCreator.setBoundaryStep(newEpoch, STEP_GOVERNANCE);
-            }
         } else {
             log.info("Skipping governance for epoch {} (already committed in previous run)", newEpoch);
         }
 
-        // 6. Apply governance treasury delta to AdaPot (post-reward adjustment)
-        if (govResult != null && adaPotTracker != null && adaPotTracker.isEnabled()) {
-            BigInteger govTreasuryDelta = govResult.treasuryDelta().add(govResult.donations());
-            if (govTreasuryDelta.signum() != 0) {
-                var currentPot = adaPotTracker.getAdaPot(newEpoch);
-                if (currentPot.isPresent()) {
-                    var pot = currentPot.get();
-                    BigInteger adjustedTreasury = pot.treasury().add(govTreasuryDelta);
-                    adaPotTracker.storeAdaPot(newEpoch,
-                            new AccountStateCborCodec.AdaPot(adjustedTreasury, pot.reserves(),
-                                    pot.deposits(), pot.fees(), pot.distributed(),
-                                    pot.undistributed(), pot.rewardsPot(), pot.poolRewardsPot()));
-                    log.info("Governance adjusted treasury for epoch {}: delta={} (withdrawals={}, donations={})",
-                            newEpoch, govTreasuryDelta, govResult.treasuryDelta(), govResult.donations());
-                }
-            }
+        // 6. Governance treasury delta to AdaPot is now applied atomically inside
+        //    GovernanceEpochProcessor Phase 2 batch (via AdaPotBatchAdjuster).
+
+        // Step marker AFTER governance commits (including AdaPot adjustment) are all durable
+        if (resumeFromStep <= STEP_GOVERNANCE && snapshotCreator != null) {
+            snapshotCreator.setBoundaryStep(newEpoch, STEP_GOVERNANCE);
         }
 
         // 7. Verify final AdaPot (after both reward calculation and governance adjustment)
@@ -439,29 +477,37 @@ public class EpochBoundaryProcessor {
         EpochParamProvider effectiveParams = (paramTracker != null && paramTracker.isEnabled())
                 ? paramTracker : paramProvider;
 
-        // Calculate and distribute rewards
+        // Calculate and distribute rewards (delta-aware batch for rollback safety)
+        rewardCalculator.beginRewardBatch();
         Optional<EpochCalculationResult> resultOpt = rewardCalculator.calculateAndDistribute(
                 newEpoch, prevTreasury, prevReserves, effectiveParams, networkMagic);
-
-        // Store updated AdaPot
-        if (resultOpt.isPresent() && adaPotTracker != null && adaPotTracker.isEnabled()) {
-            var result = resultOpt.get();
-
-            var newPot = new AccountStateCborCodec.AdaPot(
-                    result.getTreasury(),
-                    result.getReserves(),
-                    BigInteger.ZERO, // deposits tracked separately
-                    rewardCalculator.getEpochFees(newEpoch - 1),
-                    result.getTotalDistributedRewards(),
-                    result.getTotalUndistributedRewards() != null
-                            ? result.getTotalUndistributedRewards() : BigInteger.ZERO,
-                    result.getTotalRewardsPot() != null
-                            ? result.getTotalRewardsPot() : BigInteger.ZERO,
-                    result.getTotalPoolRewardsPot() != null
-                            ? result.getTotalPoolRewardsPot() : BigInteger.ZERO
-            );
-            adaPotTracker.storeAdaPot(newEpoch, newPot);
-            // Note: verification moved to processEpochBoundary() after governance adjustment
+        try {
+            // Include AdaPot in the same atomic batch as reward credits + boundary delta.
+            // This ensures crash between commit and step marker doesn't lose AdaPot.
+            if (resultOpt.isPresent() && adaPotTracker != null && adaPotTracker.isEnabled()
+                    && snapshotCreator != null) {
+                var result = resultOpt.get();
+                var newPot = new AccountStateCborCodec.AdaPot(
+                        result.getTreasury(),
+                        result.getReserves(),
+                        BigInteger.ZERO, // deposits tracked separately
+                        rewardCalculator.getEpochFees(newEpoch - 1),
+                        result.getTotalDistributedRewards(),
+                        result.getTotalUndistributedRewards() != null
+                                ? result.getTotalUndistributedRewards() : BigInteger.ZERO,
+                        result.getTotalRewardsPot() != null
+                                ? result.getTotalRewardsPot() : BigInteger.ZERO,
+                        result.getTotalPoolRewardsPot() != null
+                                ? result.getTotalPoolRewardsPot() : BigInteger.ZERO
+                );
+                adaPotTracker.storeAdaPotBatch(newEpoch, newPot,
+                        rewardCalculator.getRewardBatch(), rewardCalculator.getRewardDeltaOps(),
+                        snapshotCreator);
+            }
+            long boundarySlot = snapshotCreator.slotForEpochStart(newEpoch);
+            rewardCalculator.commitRewardBatch(boundarySlot, DefaultAccountStateStore.PHASE_REWARDS);
+        } catch (org.rocksdb.RocksDBException e) {
+            throw new RuntimeException("Failed to commit reward boundary delta for epoch " + newEpoch, e);
         }
     }
 

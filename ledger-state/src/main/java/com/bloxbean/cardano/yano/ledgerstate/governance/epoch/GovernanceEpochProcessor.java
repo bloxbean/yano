@@ -5,6 +5,7 @@ import com.bloxbean.cardano.yaci.core.model.governance.GovActionType;
 import com.bloxbean.cardano.yano.api.EpochParamProvider;
 import com.bloxbean.cardano.yano.api.era.EraProvider;
 import com.bloxbean.cardano.yano.ledgerstate.AdaPotTracker;
+import com.bloxbean.cardano.yano.ledgerstate.DefaultAccountStateStore;
 import com.bloxbean.cardano.yano.ledgerstate.DefaultAccountStateStore.DeltaOp;
 import com.bloxbean.cardano.yaci.core.model.ProtocolParamUpdate;
 import com.bloxbean.cardano.yano.ledgerstate.EpochParamTracker;
@@ -71,6 +72,33 @@ public class GovernanceEpochProcessor {
     // Optional epoch snapshot exporter for debugging (NOOP when disabled)
     private com.bloxbean.cardano.yano.ledgerstate.export.EpochSnapshotExporter snapshotExporter =
             com.bloxbean.cardano.yano.ledgerstate.export.EpochSnapshotExporter.NOOP;
+
+    /**
+     * Commits boundary delta journal entries. Injected from DefaultAccountStateStore.
+     */
+    @FunctionalInterface
+    public interface BoundaryDeltaWriter {
+        void commit(long slot, byte phase, WriteBatch batch, List<DeltaOp> deltaOps) throws RocksDBException;
+    }
+
+    /**
+     * Adjusts AdaPot treasury in a WriteBatch for atomic commit with governance phase.
+     */
+    @FunctionalInterface
+    public interface AdaPotBatchAdjuster {
+        void adjustTreasury(int epoch, BigInteger treasuryDelta, WriteBatch batch, List<DeltaOp> deltaOps) throws RocksDBException;
+    }
+
+    private volatile BoundaryDeltaWriter boundaryDeltaWriter;
+    private volatile AdaPotBatchAdjuster adaPotBatchAdjuster;
+
+    public void setBoundaryDeltaWriter(BoundaryDeltaWriter writer) {
+        this.boundaryDeltaWriter = writer;
+    }
+
+    public void setAdaPotBatchAdjuster(AdaPotBatchAdjuster adjuster) {
+        this.adaPotBatchAdjuster = adjuster;
+    }
 
     // Conway era first epoch — resolved from EraProvider at bootstrap time and cached
     private int conwayFirstEpoch = -1;
@@ -186,10 +214,16 @@ public class GovernanceEpochProcessor {
         //   1. Ratification reads current committee/params/lastEnacted
         //   2. DRep distribution includes treasury withdrawal amounts (via spendableRewardRest)
         // This matches Haskell: ENACT creates reward_rest → committed → DRep dist sees them.
+        // Resolve boundary slot for delta journal — first slot of the new epoch
+        long boundarySlot = paramProvider.getEpochSlotCalc().epochToStartSlot(newEpoch);
+
         EnactmentResult enactment;
         try (WriteBatch batch = new WriteBatch(); WriteOptions wo = new WriteOptions()) {
             List<DeltaOp> deltaOps = new ArrayList<>();
             enactment = processEnactmentPhase(previousEpoch, newEpoch, batch, deltaOps);
+            if (boundaryDeltaWriter != null) {
+                boundaryDeltaWriter.commit(boundarySlot, DefaultAccountStateStore.PHASE_GOV_ENACT, batch, deltaOps);
+            }
             db.write(wo, batch);
         }
 
@@ -205,6 +239,16 @@ public class GovernanceEpochProcessor {
             List<DeltaOp> deltaOps = new ArrayList<>();
             GovernanceEpochResult result = processRatificationPhase(previousEpoch, newEpoch,
                     enactment, batch, deltaOps, utxoBalances, spendableRewardRest);
+            // Include AdaPot treasury adjustment atomically in Phase 2 batch
+            if (adaPotBatchAdjuster != null) {
+                BigInteger govTreasuryDelta = result.treasuryDelta().add(result.donations());
+                if (govTreasuryDelta.signum() != 0) {
+                    adaPotBatchAdjuster.adjustTreasury(newEpoch, govTreasuryDelta, batch, deltaOps);
+                }
+            }
+            if (boundaryDeltaWriter != null) {
+                boundaryDeltaWriter.commit(boundarySlot, DefaultAccountStateStore.PHASE_GOV_RATIFY, batch, deltaOps);
+            }
             db.write(wo, batch);
             return result;
         }

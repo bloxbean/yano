@@ -49,7 +49,8 @@ import java.util.concurrent.atomic.AtomicReference;
  * Default UTXO store backed by RocksDB column families.
  * Listens to BlockAppliedEvent and RollbackEvent, applies compact deltas.
  */
-public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Prunable, UtxoStatusProvider, AutoCloseable {
+public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Prunable, UtxoStatusProvider, AutoCloseable,
+        com.bloxbean.cardano.yano.api.rollback.RollbackCapableStore {
     private RocksDB db;
     private final Logger log;
     private final boolean enabled;
@@ -1205,6 +1206,111 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
     @Override
     public void close() {
         if (metricsScheduler != null) metricsScheduler.shutdownNow();
+    }
+
+    // --- RollbackCapableStore implementation ---
+
+    @Override
+    public String storeName() {
+        return "utxoStore";
+    }
+
+    @Override
+    public long getLatestAppliedSlot() {
+        if (!enabled) return -1;
+        try {
+            byte[] val = db.get(cfMeta, META_LAST_APPLIED_SLOT);
+            if (val != null) return ByteBuffer.wrap(val).order(ByteOrder.BIG_ENDIAN).getLong();
+        } catch (Exception e) {
+            log.warn("Failed to read UTXO latest applied slot: {}", e.getMessage());
+        }
+        return -1;
+    }
+
+    @Override
+    public long getRollbackFloorSlot() {
+        if (!enabled) return 0;
+        // Floor = earliest retained delta entry's slot (actual data, not config estimate)
+        try (RocksIterator it = db.newIterator(cfDelta)) {
+            it.seekToFirst();
+            if (it.isValid()) {
+                var dec = UtxoDeltaCodec.decode(it.value());
+                return dec.slot();
+            }
+        } catch (Exception e) {
+            log.warn("Failed to read UTXO rollback floor: {}", e.getMessage());
+        }
+        return 0;
+    }
+
+    @Override
+    public void rollbackToSlot(long targetSlot) {
+        if (!enabled) return;
+        // Reuse internal rollback logic directly (no RollbackEvent construction)
+        try (WriteBatch batch = new WriteBatch(); WriteOptions wo = new WriteOptions(); RocksIterator it = db.newIterator(cfDelta)) {
+            it.seekToLast();
+            while (it.isValid()) {
+                var dec = UtxoDeltaCodec.decode(it.value());
+                if (dec.slot() <= targetSlot) break;
+                // Delete created
+                for (UtxoDeltaCodec.OutRef r : dec.created()) {
+                    byte[] okey = UtxoKeyUtil.outpointKey(r.txHash(), r.index());
+                    byte[] prev = db.get(cfUnspent, okey);
+                    if (prev != null) {
+                        var stored = UtxoCborCodec.decodeUtxoRecord(prev);
+                        if (indexAddressHash) {
+                            byte[] akey = UtxoKeyUtil.addrHash28(stored.address);
+                            byte[] aIdx = UtxoKeyUtil.addressIndexKey(akey, stored.slot, r.txHash(), r.index());
+                            batch.delete(cfAddr, aIdx);
+                        }
+                        if (indexPaymentCred) {
+                            byte[] pc = UtxoKeyUtil.paymentCred28(stored.address);
+                            if (pc != null) {
+                                byte[] pIdx = UtxoKeyUtil.addressIndexKey(pc, stored.slot, r.txHash(), r.index());
+                                batch.delete(cfAddr, pIdx);
+                            }
+                        }
+                        batch.delete(cfUnspent, okey);
+                    }
+                }
+                // Restore spent
+                for (UtxoDeltaCodec.OutRef r : dec.spent()) {
+                    byte[] okey = UtxoKeyUtil.outpointKey(r.txHash(), r.index());
+                    byte[] sval = db.get(cfSpent, okey);
+                    if (sval != null) {
+                        byte[] unspentVal = UtxoCborCodec.unwrapSpentUtxo(sval);
+                        batch.put(cfUnspent, okey, unspentVal);
+                        var stored = UtxoCborCodec.decodeUtxoRecord(unspentVal);
+                        if (indexAddressHash) {
+                            byte[] akey = UtxoKeyUtil.addrHash28(stored.address);
+                            byte[] aIdx = UtxoKeyUtil.addressIndexKey(akey, stored.slot, r.txHash(), r.index());
+                            batch.put(cfAddr, aIdx, new byte[0]);
+                        }
+                        if (indexPaymentCred) {
+                            byte[] pc = UtxoKeyUtil.paymentCred28(stored.address);
+                            if (pc != null) {
+                                byte[] pIdx = UtxoKeyUtil.addressIndexKey(pc, stored.slot, r.txHash(), r.index());
+                                batch.put(cfAddr, pIdx, new byte[0]);
+                            }
+                        }
+                        batch.delete(cfSpent, okey);
+                    }
+                }
+                batch.delete(cfDelta, it.key());
+                it.prev();
+            }
+            // Clear Allegra completion marker on rollback
+            if (allegraBootstrapDoneKey != null && metadataHandle != null) {
+                batch.delete(metadataHandle, allegraBootstrapDoneKey);
+            }
+            // Update meta slot
+            batch.put(cfMeta, META_LAST_APPLIED_SLOT,
+                    ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN).putLong(targetSlot).array());
+            db.write(wo, batch);
+            log.info("UTXO adhoc rollback to slot {} complete", targetSlot);
+        } catch (Exception ex) {
+            throw new RuntimeException("UTXO adhoc rollback failed", ex);
+        }
     }
 
     @Override

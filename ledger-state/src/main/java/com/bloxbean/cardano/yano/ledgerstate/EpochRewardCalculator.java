@@ -51,6 +51,12 @@ public class EpochRewardCalculator {
     // CF NetworkConfig — built once from genesis at startup, or resolved per-magic (legacy)
     private volatile NetworkConfig cfNetworkConfig;
 
+    // Per-invocation batch for delta-aware reward distribution.
+    // Set by beginRewardBatch(), committed by commitRewardBatch().
+    private org.rocksdb.WriteBatch rewardBatch;
+    private List<DefaultAccountStateStore.DeltaOp> rewardDeltaOps;
+    private DefaultAccountStateStore.BatchStateOverlay rewardStateOverlay;
+
     public EpochRewardCalculator(RocksDB db, ColumnFamilyHandle cfState,
                                  ColumnFamilyHandle cfEpochSnapshot, boolean enabled) {
         this.db = db;
@@ -77,6 +83,50 @@ public class EpochRewardCalculator {
 
     public boolean isEnabled() {
         return enabled;
+    }
+
+    /**
+     * Open a WriteBatch for delta-aware reward distribution.
+     * Must be called before calculateAndDistribute() and paired with commitRewardBatch().
+     */
+    void beginRewardBatch() {
+        this.rewardBatch = new org.rocksdb.WriteBatch();
+        this.rewardDeltaOps = new ArrayList<>();
+        this.rewardStateOverlay = new DefaultAccountStateStore.BatchStateOverlay();
+    }
+
+    /**
+     * Get the active reward batch for adding additional writes (e.g., AdaPot) before commit.
+     * Returns null if no batch is active.
+     */
+    org.rocksdb.WriteBatch getRewardBatch() { return rewardBatch; }
+
+    /**
+     * Get the active reward delta ops list for adding additional delta-aware writes before commit.
+     */
+    List<DefaultAccountStateStore.DeltaOp> getRewardDeltaOps() { return rewardDeltaOps; }
+
+    /**
+     * Commit the reward batch and persist its boundary delta journal entry.
+     * All additional writes (e.g., AdaPot) must be added to the batch before calling this.
+     *
+     * @param boundarySlot the slot of the first block that triggered this epoch boundary
+     * @param phase        the boundary delta phase constant (PHASE_REWARDS or PHASE_POOLREAP)
+     */
+    void commitRewardBatch(long boundarySlot, byte phase) throws RocksDBException {
+        if (rewardBatch == null) return;
+        try (var wo = new org.rocksdb.WriteOptions()) {
+            accountStateStore.commitBoundaryDelta(boundarySlot, phase, rewardBatch, rewardDeltaOps);
+            db.write(wo, rewardBatch);
+        } finally {
+            rewardBatch.close();
+            rewardBatch = null;
+            rewardDeltaOps = null;
+            if (rewardStateOverlay != null) {
+                rewardStateOverlay.clear();
+            }
+            rewardStateOverlay = null;
+        }
     }
 
     /**
@@ -495,23 +545,29 @@ public class EpochRewardCalculator {
 
     /**
      * Credit a reward to a stake credential's reward balance.
+     * Uses delta-aware writes so the credit can be undone on rollback.
      */
     public void creditReward(int credType, String credHash, BigInteger amount,
                              int earnedEpoch, RewardType rewardType, String poolHash) throws RocksDBException {
         if (amount == null || amount.signum() <= 0) return;
+        if (rewardBatch == null) {
+            throw new IllegalStateException("creditReward called without an active reward batch — call beginRewardBatch() first");
+        }
 
         byte[] acctKey = DefaultAccountStateStore.accountKey(credType, credHash);
-        byte[] acctVal = db.get(cfState, acctKey);
+        byte[] acctVal = accountStateStore.getStateWithOverlay(acctKey, rewardStateOverlay);
         if (acctVal != null) {
             var acct = AccountStateCborCodec.decodeStakeAccount(acctVal);
             BigInteger newReward = acct.reward().add(amount);
-            db.put(cfState, acctKey, AccountStateCborCodec.encodeStakeAccount(newReward, acct.deposit()));
+            byte[] newVal = AccountStateCborCodec.encodeStakeAccount(newReward, acct.deposit());
+            accountStateStore.putStateWithDelta(acctKey, newVal, rewardBatch, rewardDeltaOps, rewardStateOverlay);
         }
 
         byte[] rewardKey = DefaultAccountStateStore.accumulatedRewardKey(credType, credHash);
         var reward = new AccountStateCborCodec.AccumulatedReward(
                 earnedEpoch, rewardType.ordinal(), amount, poolHash);
-        db.put(cfState, rewardKey, AccountStateCborCodec.encodeAccumulatedReward(reward));
+        accountStateStore.putStateWithDelta(rewardKey,
+                AccountStateCborCodec.encodeAccumulatedReward(reward), rewardBatch, rewardDeltaOps, rewardStateOverlay);
     }
 
     /**

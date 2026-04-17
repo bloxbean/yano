@@ -609,6 +609,10 @@ public class YaciNode implements NodeAPI {
                                 if (eraService != null) {
                                     govEpochProcessor.setEraProvider(eraService);
                                 }
+                                // Wire boundary delta journal for rollback-safe governance writes
+                                if (accountStateStore instanceof DefaultAccountStateStore das) {
+                                    govEpochProcessor.setBoundaryDeltaWriter(das::commitBoundaryDelta);
+                                }
                                 boundaryProcessor.setGovernanceEpochProcessor(govEpochProcessor);
                             }
                             log.info("Governance subsystem enabled (block processor + epoch processor)");
@@ -1748,6 +1752,42 @@ public class YaciNode implements NodeAPI {
                 overrideUtxo, overrideShelleyEpoch, overrideAllegraEpoch, overrideVasilEpoch);
     }
 
+    /**
+     * Delete parquet epoch directories after the target epoch (derived artifacts from rolled-back state).
+     */
+    private void cleanupParquetExportsAfterRollback(int targetEpoch) {
+        Object exportDirObj = runtimeOptions.globals().get("yaci.node.snapshot-export.dir");
+        if (exportDirObj == null) return;
+        String exportDir = String.valueOf(exportDirObj);
+        if (exportDir.isBlank()) return;
+
+        java.io.File dir = new java.io.File(exportDir);
+        if (!dir.exists() || !dir.isDirectory()) return;
+
+        java.io.File[] epochDirs = dir.listFiles(f -> f.isDirectory() && f.getName().startsWith("epoch="));
+        if (epochDirs == null) return;
+
+        int deleted = 0;
+        for (java.io.File epochDir : epochDirs) {
+            try {
+                int epoch = Integer.parseInt(epochDir.getName().substring("epoch=".length()));
+                if (epoch > targetEpoch) {
+                    java.nio.file.Files.walk(epochDir.toPath())
+                            .sorted(java.util.Comparator.reverseOrder())
+                            .map(java.nio.file.Path::toFile)
+                            .forEach(java.io.File::delete);
+                    deleted++;
+                }
+            } catch (NumberFormatException ignored) {
+            } catch (Exception e) {
+                log.warn("Failed to delete parquet epoch dir {}: {}", epochDir, e.getMessage());
+            }
+        }
+        if (deleted > 0) {
+            log.info("Parquet cleanup: deleted {} epoch directories after epoch {}", deleted, targetEpoch);
+        }
+    }
+
     private boolean hasAnyGenesisConfig() {
         return (config.getShelleyGenesisFile() != null && !config.getShelleyGenesisFile().isBlank())
                 || (config.getByronGenesisFile() != null && !config.getByronGenesisFile().isBlank())
@@ -1888,12 +1928,15 @@ public class YaciNode implements NodeAPI {
     /**
      * Perform adhoc rollback if configured. Called from start() after reconcile/validate
      * but before chain sync begins. Does NOT require dev mode.
+     * <p>
+     * Rolls back ALL authoritative stores synchronously in dependency-safe order
+     * (AccountState → UTXO → ChainState), verifies post-rollback state, then
+     * cleans up derived artifacts (parquet exports) directly.
      */
     private void performAdhocRollback() {
         long targetSlot = -1;
 
         if (adhocRollbackToEpoch >= 0) {
-            // Compute slot from epoch using EpochSlotCalc (genesis-driven)
             var epochCalc = epochParamProvider != null
                     ? epochParamProvider.getEpochSlotCalc()
                     : new EpochSlotCalc(
@@ -1926,21 +1969,7 @@ public class YaciNode implements NodeAPI {
             return;
         }
 
-        // Check if rollback is within UTXO delta retention window
-        long rollbackDistance = currentTip.getSlot() - targetSlot;
-        int utxoRollbackWindow = (utxoStore instanceof DefaultUtxoStore duts) ? duts.getRollbackWindow() : 4320;
-        if (rollbackDistance > utxoRollbackWindow) {
-            log.error("=== Adhoc Rollback ABORTED ===");
-            log.error("Rollback distance ({} slots) exceeds UTXO delta retention window ({} slots).",
-                    rollbackDistance, utxoRollbackWindow);
-            log.error("UTXO deltas beyond the window have been pruned — rollback would leave UTXO state inconsistent.");
-            log.error("Use a RocksDB checkpoint instead: cp -a epoch-snapshots/epoch-XXX chainstate");
-            throw new RuntimeException("Adhoc rollback aborted: distance " + rollbackDistance
-                    + " exceeds UTXO rollback window " + utxoRollbackWindow);
-        }
-
-        // Find the nearest stored block at or before the target slot.
-        // The exact epoch start slot may not have a block — use seekForPrev.
+        // Find the nearest stored block at or before the target slot
         Long nearestSlot = null;
         if (chainState instanceof DirectRocksDBChainState rocks) {
             nearestSlot = rocks.findNearestSlotAtOrBefore(targetSlot);
@@ -1952,34 +1981,85 @@ public class YaciNode implements NodeAPI {
         if (!nearestSlot.equals(targetSlot)) {
             log.info("Adhoc rollback: exact slot {} not found, using nearest block at slot {}", targetSlot, nearestSlot);
         }
+        targetSlot = nearestSlot;
 
+        // Collect all enabled RollbackCapableStores
+        var stores = new java.util.ArrayList<com.bloxbean.cardano.yano.api.rollback.RollbackCapableStore>();
+        if (accountStateStore instanceof com.bloxbean.cardano.yano.api.rollback.RollbackCapableStore rcs) {
+            stores.add(rcs);
+        }
+        if (utxoStore instanceof com.bloxbean.cardano.yano.api.rollback.RollbackCapableStore rcs) {
+            stores.add(rcs);
+        }
+        if (chainState instanceof com.bloxbean.cardano.yano.api.rollback.RollbackCapableStore rcs) {
+            stores.add(rcs);
+        }
+
+        // Compute common rollback floor from ALL stores
+        long commonFloor = 0;
+        for (var store : stores) {
+            long floor = store.getRollbackFloorSlot();
+            if (floor > commonFloor) commonFloor = floor;
+        }
+
+        // Log per-store status
         log.info("=== Adhoc Rollback ===");
-        log.info("Rolling back from slot {} (block {}) to slot {}", currentTip.getSlot(), currentTip.getBlockNumber(), nearestSlot);
+        log.info("Target slot: {}", targetSlot);
+        log.info("Current tip: slot={}, block={}", currentTip.getSlot(), currentTip.getBlockNumber());
+        log.info("Common rollback floor: {}", commonFloor);
+        for (var store : stores) {
+            log.info("  {}: latest={}, floor={}", store.storeName(),
+                    store.getLatestAppliedSlot(), store.getRollbackFloorSlot());
+        }
 
-        // Rollback chain state
-        chainState.rollbackTo(nearestSlot);
+        // Validate target is within admissible range
+        if (targetSlot < commonFloor) {
+            log.error("=== Adhoc Rollback ABORTED ===");
+            log.error("Target slot {} is below common rollback floor {}.", targetSlot, commonFloor);
+            log.error("Historical reward-input facts (block issuers/fees) have been pruned beyond this point.");
+            log.error("Replay of epoch boundaries before this slot would produce incorrect rewards.");
+            log.error("Options: restore from checkpoint, or resync with larger retention:");
+            log.error("  yaci.node.account-state.epoch-block-data-retention-lag (default 5, try 20+)");
+            throw new RuntimeException("Adhoc rollback aborted: target " + targetSlot
+                    + " below floor " + commonFloor);
+        }
 
-        // Get new tip and publish RollbackEvent
+        long previousTipSlot = currentTip.getSlot();
+
+        // Rollback in dependency-safe order: derived state first, chain tip last
+        // Order: AccountState → UTXO → ChainState
+        for (var store : stores) {
+            log.info("Rolling back {}", store.storeName());
+            store.rollbackToSlot(targetSlot);
+        }
+
+        // Post-rollback verification: each store must report latestAppliedSlot <= targetSlot
+        for (var store : stores) {
+            long actual = store.getLatestAppliedSlot();
+            if (actual > targetSlot) {
+                throw new IllegalStateException(
+                        store.storeName() + " reports latestAppliedSlot=" + actual
+                                + " after rollback to " + targetSlot);
+            }
+        }
+
         ChainTip newTip = chainState.getTip();
-        Point rollbackPoint;
-        if (newTip != null) {
-            rollbackPoint = new Point(newTip.getSlot(), HexUtil.encodeHexString(newTip.getBlockHash()));
-        } else {
-            rollbackPoint = new Point(targetSlot, "0000000000000000000000000000000000000000000000000000000000000000");
+        long newTipSlot = newTip != null ? newTip.getSlot() : -1;
+
+        // Resolve target epoch for cleanup
+        Integer targetEpoch = null;
+        if (epochParamProvider != null) {
+            targetEpoch = epochParamProvider.getEpochSlotCalc().slotToEpoch(targetSlot);
         }
 
-        try {
-            EventMetadata meta = EventMetadata.builder().origin("adhoc-rollback").build();
-            eventBus.publish(new RollbackEvent(rollbackPoint, true),
-                    meta, PublishOptions.builder().build());
-        } catch (Exception ex) {
-            log.warn("Adhoc rollback event publish failed: {}", ex.toString());
-        }
-
-        ChainTip afterTip = chainState.getTip();
         log.info("=== Adhoc Rollback Complete ===");
-        log.info("New tip: slot={}, block={}", afterTip != null ? afterTip.getSlot() : "none",
-                afterTip != null ? afterTip.getBlockNumber() : "none");
+        log.info("New tip: slot={}, block={}", newTip != null ? newTip.getSlot() : "none",
+                newTip != null ? newTip.getBlockNumber() : "none");
+
+        // Cleanup derived artifacts (parquet exports)
+        if (targetEpoch != null) {
+            cleanupParquetExportsAfterRollback(targetEpoch);
+        }
     }
 
     @Override
@@ -2041,7 +2121,13 @@ public class YaciNode implements NodeAPI {
                 }
             }
 
-            // 6. Reset block producer to resume from new tip
+            // 6. Reset BodyFetchManager epoch tracker to rolled-back tip epoch
+            if (bodyFetchManager != null && epochParamProvider != null) {
+                int rolledBackEpoch = epochParamProvider.getEpochSlotCalc().slotToEpoch(targetSlot);
+                bodyFetchManager.initializePreviousEpoch(rolledBackEpoch);
+            }
+
+            // 7. Reset block producer to resume from new tip
             blockProducerService.resetToChainTip();
 
             // Update last known tip
@@ -2650,10 +2736,12 @@ public class YaciNode implements NodeAPI {
         // Wire epoch param provider for epoch transition detection
         if (bodyFetchManager != null && this.epochParamProvider != null) {
             bodyFetchManager.setEpochParamProvider(this.epochParamProvider);
-            // Initialize previousEpoch from chain state tip
+            // Initialize previousEpoch from chain state tip so the first epoch
+            // transition after startup (or adhoc rollback) is correctly detected.
             var tip = chainState.getTip();
             if (tip != null && tip.getSlot() > 0) {
-                log.info("BodyFetchManager: initializing epoch tracking from tip slot {}", tip.getSlot());
+                int tipEpoch = epochParamProvider.getEpochSlotCalc().slotToEpoch(tip.getSlot());
+                bodyFetchManager.initializePreviousEpoch(tipEpoch);
             }
         }
 
@@ -2890,6 +2978,13 @@ public class YaciNode implements NodeAPI {
 
         // Post-rollback integrity check and opportunistic recovery
         attemptCorruptionRecovery("post-rollback");
+
+        // Reset BodyFetchManager epoch tracker to rolled-back tip epoch so that
+        // any rolled-back epoch boundary is correctly replayed on the next block.
+        if (bodyFetchManager != null && epochParamProvider != null) {
+            int rolledBackEpoch = epochParamProvider.getEpochSlotCalc().slotToEpoch(rollbackSlot);
+            bodyFetchManager.initializePreviousEpoch(rolledBackEpoch);
+        }
 
         // Always resume BodyFetchManager after rollback - let it handle its own gap detection
         if (isPipelinedMode && bodyFetchManager != null) {

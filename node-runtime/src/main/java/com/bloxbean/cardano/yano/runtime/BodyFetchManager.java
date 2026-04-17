@@ -186,6 +186,19 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
     }
 
     /**
+     * Initialize previousEpoch from the current chain tip so the first epoch
+     * transition after startup is correctly detected. Without this, the first
+     * epoch boundary after restart (or adhoc rollback) is silently skipped
+     * because previousEpoch defaults to -1.
+     *
+     * <p>Must be called before block processing begins.</p>
+     */
+    public void initializePreviousEpoch(int epoch) {
+        this.previousEpoch = epoch;
+        log.info("BodyFetchManager: previousEpoch initialized to {}", epoch);
+    }
+
+    /**
      * Stop the body fetch manager.
      */
     public void stop() {

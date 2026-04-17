@@ -3,6 +3,7 @@ package com.bloxbean.cardano.yano.ledgerstate;
 import org.rocksdb.ColumnFamilyHandle;
 import org.rocksdb.RocksDB;
 import org.rocksdb.RocksDBException;
+import org.rocksdb.WriteBatch;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -91,6 +92,22 @@ public class AdaPotTracker {
         } catch (RocksDBException e) {
             log.error("Failed to store AdaPot for epoch {}: {}", epoch, e.toString());
         }
+    }
+
+    /**
+     * Store AdaPot in a WriteBatch for atomic commit with phase mutations.
+     * Uses delta-aware write so the AdaPot can be undone on rollback.
+     */
+    public void storeAdaPotBatch(int epoch, AccountStateCborCodec.AdaPot pot,
+                                  WriteBatch batch,
+                                  java.util.List<DefaultAccountStateStore.DeltaOp> deltaOps,
+                                  DefaultAccountStateStore store) throws RocksDBException {
+        if (!enabled) return;
+        byte[] key = DefaultAccountStateStore.adaPotKey(epoch);
+        byte[] val = AccountStateCborCodec.encodeAdaPot(pot);
+        store.putStateWithDelta(key, val, batch, deltaOps);
+        log.info("AdaPot stored (batch) for epoch {}: treasury={}, reserves={}",
+                epoch, pot.treasury(), pot.reserves());
     }
 
     /**
