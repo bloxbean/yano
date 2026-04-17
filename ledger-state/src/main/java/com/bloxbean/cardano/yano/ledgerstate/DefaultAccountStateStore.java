@@ -2051,18 +2051,6 @@ public class DefaultAccountStateStore implements AccountStateStore,
                 batch.put(cfState, key, val);
                 deltaOps.add(new DeltaOp(OP_PUT, key, prev));
 
-                // Write pool params history keyed by ACTIVE epoch.
-                // On Cardano, a new pool registration takes effect at epoch + 2.
-                // A re-registration (update of existing pool) takes effect at epoch + 3.
-                // This matches yaci-store's pool table: REGISTRATION → active_epoch = epoch + 2,
-                // UPDATE → active_epoch = epoch + 3.
-                boolean isNewPool = (prev == null); // no existing pool deposit entry = first registration
-                int activeEpoch = isNewPool ? currentEpoch + 2 : currentEpoch + 3;
-                byte[] histKey = poolParamsHistKey(poolHash, activeEpoch);
-                byte[] histPrev = db.get(cfState, histKey);
-                batch.put(cfState, histKey, val);
-                deltaOps.add(new DeltaOp(OP_PUT, histKey, histPrev));
-
                 // Cancel any pending retirement
                 byte[] retKey = poolRetireKey(poolHash);
                 byte[] retPrev = db.get(cfState, retKey);
@@ -2076,9 +2064,22 @@ public class DefaultAccountStateStore implements AccountStateStore,
                     deltaOps.add(new DeltaOp(OP_DELETE, retKey, retPrev));
                 }
 
+                // Write pool params history keyed by ACTIVE epoch.
+                // On Cardano, a new pool registration takes effect at epoch + 2.
+                // A normal pool update takes effect at epoch + 3.
+                // Re-registration after retirement starts a fresh pool lifecycle, so its params
+                // should become active on the same cadence as a fresh registration (+2), not +3.
+                boolean isNewPool = (prev == null); // no existing pool deposit entry = first registration
+                boolean treatAsFreshRegistration = isNewPool || reRegisteredAfterRetirement;
+                int activeEpoch = treatAsFreshRegistration ? currentEpoch + 2 : currentEpoch + 3;
+                byte[] histKey = poolParamsHistKey(poolHash, activeEpoch);
+                byte[] histPrev = db.get(cfState, histKey);
+                batch.put(cfState, histKey, val);
+                deltaOps.add(new DeltaOp(OP_PUT, histKey, histPrev));
+
                 // Track pool registration slot: set on first registration or re-registration after retirement.
                 // Used by snapshot creation to exclude stale delegations (delegated before pool's current lifecycle).
-                if (isNewPool || reRegisteredAfterRetirement) {
+                if (treatAsFreshRegistration) {
                     byte[] regSlotKey = poolRegSlotKey(poolHash);
                     byte[] regSlotPrev = db.get(cfState, regSlotKey);
                     byte[] regSlotVal = ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN).putLong(slot).array();
