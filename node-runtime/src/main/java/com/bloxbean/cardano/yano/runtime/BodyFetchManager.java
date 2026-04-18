@@ -534,6 +534,8 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
                 blockBytes
             );
 
+            persistEraStartSlotIfNeeded(era, slot);
+
             // successful store resets stale counter
             consecutiveStaleBlocks.set(0);
 
@@ -671,6 +673,8 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
                 blockBytes
             );
 
+            persistEraStartSlotIfNeeded(Era.Byron, slot);
+
             // Detect epoch transition and publish PreEpochTransitionEvent BEFORE BlockAppliedEvent
             publishEpochTransitionEventsIfNeeded(slot, blockNumber);
 
@@ -784,6 +788,8 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
                 slot,
                 blockBytes
             );
+
+            persistEraStartSlotIfNeeded(Era.Byron, slot);
 
             // successful store resets stale counter
             consecutiveStaleBlocks.set(0);
@@ -1291,6 +1297,18 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
     private int epochForSlot(long slot) {
         if (epochParamProvider == null) return -1;
         return epochParamProvider.getEpochSlotCalc().slotToEpoch(slot);
+    }
+
+    /**
+     * Persist the current block's era start slot before epoch-boundary processing sees this block.
+     * This closes the one-boundary timing hole where the first block of a new era triggers
+     * boundary processing before the later BlockAppliedEvent subscriber records the era start.
+     */
+    private void persistEraStartSlotIfNeeded(Era era, long slot) {
+        if (era == null) return;
+        if (chainState instanceof DirectRocksDBChainState rocksState) {
+            rocksState.setEraStartSlot(era.getValue(), slot);
+        }
     }
 
     /**
