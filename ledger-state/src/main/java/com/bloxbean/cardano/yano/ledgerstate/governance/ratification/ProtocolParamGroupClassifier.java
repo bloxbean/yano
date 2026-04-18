@@ -68,10 +68,27 @@ public class ProtocolParamGroupClassifier {
      */
     public static BigDecimal computeDRepThreshold(List<ParamGroup> affectedGroups,
                                                   ProtocolParamUpdate protocolParams) {
-        BigDecimal maxThreshold = BigDecimal.ZERO;
-        var drepThresholds = protocolParams.getDrepVotingThresholds();
-        if (drepThresholds == null) return maxThreshold;
+        return computeDRepThreshold(affectedGroups, protocolParams != null ? protocolParams.getDrepVotingThresholds() : null);
+    }
 
+    /**
+     * Overload that takes {@link com.bloxbean.cardano.yaci.core.model.DrepVoteThresholds} directly.
+     * <p>
+     * Fail-safe semantics: when {@code drepThresholds} is null but the affected groups contain
+     * a DRep-voting group (anything other than SECURITY), returns {@link BigDecimal#ONE} so that
+     * ratification fails safely instead of silently using a hardcoded wrong value — prevents the
+     * "0.67 fallback" bug class that surfaced at preview epoch 967 before Conway genesis
+     * thresholds were plumbed through.
+     * <p>
+     * If the only affected group is SECURITY (or the groups list is empty), DReps do not vote at
+     * all on this proposal, so the DRep threshold is 0 (no-op) even when thresholds are missing.
+     */
+    public static BigDecimal computeDRepThreshold(List<ParamGroup> affectedGroups,
+                                                  com.bloxbean.cardano.yaci.core.model.DrepVoteThresholds drepThresholds) {
+        boolean anyDRepVotingGroup = affectedGroups.stream().anyMatch(g -> g != ParamGroup.SECURITY);
+        if (!anyDRepVotingGroup) return BigDecimal.ZERO; // no DRep voting required
+        if (drepThresholds == null) return BigDecimal.ONE; // fail-safe: config-missing → fail
+        BigDecimal maxThreshold = BigDecimal.ZERO;
         for (ParamGroup group : affectedGroups) {
             BigDecimal t = switch (group) {
                 case NETWORK -> ratioToBigDecimal(drepThresholds.getDvtPPNetworkGroup());
@@ -93,44 +110,14 @@ public class ProtocolParamGroupClassifier {
         return affectedGroups.contains(ParamGroup.SECURITY);
     }
 
-    /**
-     * Get the SPO threshold for security-group parameter changes.
-     */
-    public static BigDecimal computeSpoThreshold(ProtocolParamUpdate protocolParams) {
-        var poolThresholds = protocolParams.getPoolVotingThresholds();
-        if (poolThresholds == null) return new BigDecimal("0.51"); // default
-        return ratioToBigDecimal(poolThresholds.getPvtPPSecurityGroup());
-    }
-
-    /**
-     * Get DRep thresholds for non-ParameterChange action types from protocol params.
-     */
-    public static BigDecimal getDRepThresholdForAction(String actionType, ProtocolParamUpdate protocolParams) {
-        var dt = protocolParams.getDrepVotingThresholds();
-        if (dt == null) return new BigDecimal("0.67"); // fallback
-        return switch (actionType) {
-            case "NO_CONFIDENCE" -> ratioToBigDecimal(dt.getDvtMotionNoConfidence());
-            case "UPDATE_COMMITTEE" -> ratioToBigDecimal(dt.getDvtCommitteeNormal());
-            case "NEW_CONSTITUTION" -> ratioToBigDecimal(dt.getDvtUpdateToConstitution());
-            case "HARD_FORK_INITIATION_ACTION" -> ratioToBigDecimal(dt.getDvtHardForkInitiation());
-            case "TREASURY_WITHDRAWALS_ACTION" -> ratioToBigDecimal(dt.getDvtTreasuryWithdrawal());
-            default -> new BigDecimal("0.67");
-        };
-    }
-
-    /**
-     * Get SPO thresholds for non-ParameterChange action types from protocol params.
-     */
-    public static BigDecimal getSpoThresholdForAction(String actionType, ProtocolParamUpdate protocolParams) {
-        var pt = protocolParams.getPoolVotingThresholds();
-        if (pt == null) return new BigDecimal("0.51"); // fallback
-        return switch (actionType) {
-            case "NO_CONFIDENCE" -> ratioToBigDecimal(pt.getPvtMotionNoConfidence());
-            case "UPDATE_COMMITTEE" -> ratioToBigDecimal(pt.getPvtCommitteeNormal());
-            case "HARD_FORK_INITIATION_ACTION" -> ratioToBigDecimal(pt.getPvtHardForkInitiation());
-            default -> BigDecimal.ZERO; // SPO doesn't vote on other types
-        };
-    }
+    // Note: historical helpers `computeSpoThreshold`, `getDRepThresholdForAction`, and
+    // `getSpoThresholdForAction` were removed because they contained hardcoded
+    // 0.67 / 0.51 fallbacks that would silently mask a missing Conway genesis config —
+    // the exact bug-class that caused preview-967. Threshold resolution now goes through
+    // GovernanceEpochProcessor.resolveDRepThresholds / resolveSPOThresholds which read
+    // from EpochParamTracker (on-chain updates) or EpochParamProvider (Conway genesis)
+    // and fail-safe to BigDecimal.ONE when both are missing, so ratification fails loud
+    // rather than silently using a wrong threshold.
 
     public static BigDecimal ratioToBigDecimal(com.bloxbean.cardano.yaci.core.types.UnitInterval ui) {
         if (ui == null) return BigDecimal.ZERO;

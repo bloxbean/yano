@@ -129,6 +129,42 @@ class ProtocolParamGroupClassifierTest {
         assertThat(threshold).isEqualByComparingTo("0");
     }
 
+    // ===== DRepVoteThresholds overload — fail-safe semantics =====
+
+    @Test
+    @DisplayName("Overload: GOVERNANCE with null thresholds → fail-safe = 1.0 (NOT silent 0 or 0.67)")
+    void drepThreshold_overload_nullThresholds_governanceGroup_failSafe() {
+        // Regression guard: this is the exact shape that triggered the preview-967 bug.
+        // With the old code, a PARAMETER_CHANGE for GOVERNANCE group silently picked up
+        // a hardcoded 0.67, letting proposals ratify early. The new fail-safe returns 1.0
+        // so ratification fails safely instead of succeeding with the wrong threshold.
+        BigDecimal threshold = ProtocolParamGroupClassifier.computeDRepThreshold(
+                List.of(ParamGroup.GOVERNANCE),
+                (com.bloxbean.cardano.yaci.core.model.DrepVoteThresholds) null);
+        assertThat(threshold).isEqualByComparingTo("1.0");
+    }
+
+    @Test
+    @DisplayName("Overload: SECURITY-only with null thresholds → 0 (DReps don't vote, no fail-safe needed)")
+    void drepThreshold_overload_nullThresholds_securityOnly_returnsZero() {
+        BigDecimal threshold = ProtocolParamGroupClassifier.computeDRepThreshold(
+                List.of(ParamGroup.SECURITY),
+                (com.bloxbean.cardano.yaci.core.model.DrepVoteThresholds) null);
+        assertThat(threshold).isEqualByComparingTo("0");
+    }
+
+    @Test
+    @DisplayName("Overload: takes MAX across groups with real thresholds")
+    void drepThreshold_overload_realThresholds_takesMax() {
+        var thresholds = com.bloxbean.cardano.yaci.core.model.DrepVoteThresholds.builder()
+                .dvtPPGovGroup(new UnitInterval(BigInteger.valueOf(3), BigInteger.valueOf(4)))       // 0.75
+                .dvtPPNetworkGroup(new UnitInterval(BigInteger.valueOf(67), BigInteger.valueOf(100)))// 0.67
+                .build();
+        BigDecimal threshold = ProtocolParamGroupClassifier.computeDRepThreshold(
+                List.of(ParamGroup.GOVERNANCE, ParamGroup.NETWORK), thresholds);
+        assertThat(threshold).isEqualByComparingTo("0.75");
+    }
+
     // ===== Utility =====
 
     @Test

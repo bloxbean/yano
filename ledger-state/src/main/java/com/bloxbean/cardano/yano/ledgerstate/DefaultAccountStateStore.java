@@ -2389,7 +2389,7 @@ public class DefaultAccountStateStore implements AccountStateStore,
                 }
 
                 clearDelegationIfNotAfter(delegatorCredType, delegatorHash, delegatorId,
-                        deregSlot, deregTxIdx, deregCertIdx, batch, deltaOps);
+                        drepType, drepHash, deregSlot, deregTxIdx, deregCertIdx, batch, deltaOps);
                 processed.add(delegatorId);
 
                 byte[] revPrev = it.value();
@@ -2418,7 +2418,7 @@ public class DefaultAccountStateStore implements AccountStateStore,
                     String delegatorHash = parts[1];
 
                     clearDelegationIfNotAfter(delegatorCredType, delegatorHash, delegatorId,
-                            deregSlot, deregTxIdx, deregCertIdx, batch, deltaOps);
+                            drepType, drepHash, deregSlot, deregTxIdx, deregCertIdx, batch, deltaOps);
 
                     byte[] revKey = drepDelegReverseKey(drepType, drepHash, delegatorCredType, delegatorHash);
                     byte[] revPrev = db.get(cfState, revKey);
@@ -2432,6 +2432,7 @@ public class DefaultAccountStateStore implements AccountStateStore,
 
     /** Check forward delegation and clear it if its pointer is not strictly after the deregistration pointer. */
     private void clearDelegationIfNotAfter(int delegatorCredType, String delegatorHash, String delegatorId,
+                                            int deregDrepType, String deregDrepHash,
                                             long deregSlot, int deregTxIdx, int deregCertIdx,
                                             WriteBatch batch, List<DeltaOp> deltaOps) throws RocksDBException {
         byte[] fwdKey = drepDelegKey(delegatorCredType, delegatorHash);
@@ -2443,6 +2444,9 @@ public class DefaultAccountStateStore implements AccountStateStore,
         }
         if (fwdVal != null) {
             var deleg = AccountStateCborCodec.decodeDRepDelegation(fwdVal);
+            if (deleg.drepType() != deregDrepType || !Objects.equals(deleg.drepHash(), deregDrepHash)) {
+                return;
+            }
             boolean delegAfterDereg = deleg.slot() > deregSlot
                     || (deleg.slot() == deregSlot && deleg.txIdx() > deregTxIdx)
                     || (deleg.slot() == deregSlot && deleg.txIdx() == deregTxIdx

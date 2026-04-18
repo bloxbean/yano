@@ -1,5 +1,6 @@
 package com.bloxbean.cardano.yano.ledgerstate.governance.ratification;
 
+import com.bloxbean.cardano.yaci.core.model.DrepVoteThresholds;
 import com.bloxbean.cardano.yaci.core.model.governance.GovActionId;
 import com.bloxbean.cardano.yaci.core.model.governance.GovActionType;
 import com.bloxbean.cardano.yano.ledgerstate.governance.GovernanceStateStore;
@@ -12,8 +13,6 @@ import com.bloxbean.cardano.yano.ledgerstate.governance.model.RatificationResult
 import org.rocksdb.RocksDBException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import java.util.Set;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
@@ -185,7 +184,9 @@ public class RatificationEngine {
             String committeeState,
             BigInteger treasury,
             Map<GovActionType, BigDecimal> drepThresholds,
-            Map<GovActionType, BigDecimal> spoThresholds) throws RocksDBException {
+            Map<GovActionType, BigDecimal> spoThresholds,
+            DrepVoteThresholds effectiveDrepVotingThresholds)
+            throws RocksDBException {
 
         // Sort proposals by priority (lower = higher priority) then by slot
         List<Map.Entry<GovActionId, GovActionRecord>> sorted = new ArrayList<>(activeProposals.entrySet());
@@ -204,7 +205,8 @@ public class RatificationEngine {
                     poolStakeDist, poolDRepDelegation,
                     committeeMembers, committeeThreshold, lastEnactedActions, currentEpoch,
                     isBootstrapPhase, committeeMinSize, committeeMaxTermLength,
-                    committeeState, treasury, drepThresholds, spoThresholds, delayed);
+                    committeeState, treasury, drepThresholds, spoThresholds,
+                    effectiveDrepVotingThresholds, delayed);
 
             results.add(new RatificationResult(id, proposal, status));
 
@@ -247,6 +249,7 @@ public class RatificationEngine {
             BigInteger treasury,
             Map<GovActionType, BigDecimal> drepThresholds,
             Map<GovActionType, BigDecimal> spoThresholds,
+            DrepVoteThresholds effectiveDrepVotingThresholds,
             boolean delayed) throws RocksDBException {
 
         GovActionType type = proposal.actionType();
@@ -291,7 +294,7 @@ public class RatificationEngine {
                     votes, drepDist, activeDRepKeys, poolStakeDist, poolDRepDelegation,
                     committeeMembers, committeeThreshold, committeeState,
                     currentEpoch, isBootstrapPhase, committeeMinSize,
-                    drepThresholds, spoThresholds, proposal);
+                    drepThresholds, spoThresholds, proposal, effectiveDrepVotingThresholds);
 
             case TREASURY_WITHDRAWALS_ACTION -> evaluateTreasuryWithdrawal(
                     votes, drepDist, activeDRepKeys, committeeMembers, committeeThreshold,
@@ -336,18 +339,18 @@ public class RatificationEngine {
 
         boolean committeePassed = checkCommittee(votes, committeeMembers, committeeThreshold, committeeState,
                 currentEpoch, isBootstrapPhase, committeeMinSize);
-        log.info("HardFork eval: committee={}, threshold={}, bootstrap={}", committeePassed, committeeThreshold, isBootstrapPhase);
+        log.debug("HardFork eval: committee={}, threshold={}, bootstrap={}", committeePassed, committeeThreshold, isBootstrapPhase);
         if (!committeePassed) return false;
 
         boolean spoPassed = checkSPO(votes, poolStakeDist, poolDRepDelegation,
                 GovActionType.HARD_FORK_INITIATION_ACTION, isBootstrapPhase, spoThresholds);
-        log.info("HardFork eval: spo={}, spoThreshold={}", spoPassed, spoThresholds.get(GovActionType.HARD_FORK_INITIATION_ACTION));
+        log.debug("HardFork eval: spo={}, spoThreshold={}", spoPassed, spoThresholds.get(GovActionType.HARD_FORK_INITIATION_ACTION));
         if (!spoPassed) return false;
 
         if (!isBootstrapPhase) {
             boolean drepPassed = checkDRep(votes, drepDist, activeDRepKeys,
                     GovActionType.HARD_FORK_INITIATION_ACTION, drepThresholds);
-            log.info("HardFork eval: drep={}", drepPassed);
+            log.debug("HardFork eval: drep={}", drepPassed);
             if (!drepPassed) return false;
         }
         return true;
@@ -364,21 +367,31 @@ public class RatificationEngine {
             int currentEpoch, boolean isBootstrapPhase, int committeeMinSize,
             Map<GovActionType, BigDecimal> drepThresholds,
             Map<GovActionType, BigDecimal> spoThresholds,
-            GovActionRecord proposal) {
+            GovActionRecord proposal,
+            DrepVoteThresholds effectiveDrepVotingThresholds) {
 
         if (!checkCommittee(votes, committeeMembers, committeeThreshold, committeeState,
                 currentEpoch, isBootstrapPhase, committeeMinSize)) return false;
         if (isBootstrapPhase) return true;
-        if (!checkDRep(votes, drepDist, activeDRepKeys, GovActionType.PARAMETER_CHANGE_ACTION, drepThresholds)) return false;
 
-        // SPO vote required only for security-group parameter changes
+        // DRep threshold for a ParameterChange is the MAX threshold across affected groups
+        // (network / economic / technical / governance). Security group is handled by SPO.
+        // Per Cardano Conway spec; see Haskell `votingDRepThreshold` and Amaru
+        // `governance/ratification/dreps.rs::voting_threshold`.
+        List<ProtocolParamGroupClassifier.ParamGroup> affectedGroups = List.of();
         if (proposal.govAction() instanceof com.bloxbean.cardano.yaci.core.model.governance.actions.ParameterChangeAction pca
                 && pca.getProtocolParamUpdate() != null) {
-            var groups = ProtocolParamGroupClassifier.getAffectedGroups(pca.getProtocolParamUpdate());
-            if (ProtocolParamGroupClassifier.isSpoVotingRequired(groups)) {
-                if (!checkSPO(votes, poolStakeDist, poolDRepDelegation,
-                        GovActionType.PARAMETER_CHANGE_ACTION, isBootstrapPhase, spoThresholds)) return false;
-            }
+            affectedGroups = ProtocolParamGroupClassifier.getAffectedGroups(pca.getProtocolParamUpdate());
+        }
+        BigDecimal perProposalDrepThreshold =
+                ProtocolParamGroupClassifier.computeDRepThreshold(affectedGroups, effectiveDrepVotingThresholds);
+        var tally = tallyCalculator.computeDRepTally(votes, drepDist, GovActionType.PARAMETER_CHANGE_ACTION, activeDRepKeys);
+        if (!VoteTallyCalculator.drepThresholdMet(tally, perProposalDrepThreshold)) return false;
+
+        // SPO vote required only for security-group parameter changes.
+        if (ProtocolParamGroupClassifier.isSpoVotingRequired(affectedGroups)) {
+            if (!checkSPO(votes, poolStakeDist, poolDRepDelegation,
+                    GovActionType.PARAMETER_CHANGE_ACTION, isBootstrapPhase, spoThresholds)) return false;
         }
         return true;
     }
@@ -511,14 +524,14 @@ public class RatificationEngine {
         var tally = tallyCalculator.computeDRepTally(votes, drepDist, actionType, activeDRepKeys);
         boolean result = VoteTallyCalculator.drepThresholdMet(tally, threshold);
 
-        // Diagnostic: log DRep tally for treasury withdrawal proposals (temporary)
-        if (actionType == GovActionType.TREASURY_WITHDRAWALS_ACTION) {
+        if (log.isDebugEnabled()) {
             BigInteger denom = tally.yesStake().add(tally.noStake());
             String ratio = denom.signum() == 0 ? "N/A" :
                     new BigDecimal(tally.yesStake()).divide(new BigDecimal(denom),
                             java.math.MathContext.DECIMAL128).toPlainString();
-            log.info("  DRep tally: yes={}, no={}, abstain={}, ratio={}, threshold={}, passed={}",
-                    tally.yesStake(), tally.noStake(), tally.abstainStake(), ratio, threshold, result);
+            log.debug("  DRep tally [{}]: yes={}, no={}, abstain={}, ratio={}, threshold={}, passed={}",
+                    actionType, tally.yesStake(), tally.noStake(), tally.abstainStake(),
+                    ratio, threshold, result);
         }
         return result;
     }

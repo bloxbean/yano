@@ -595,11 +595,18 @@ public class YaciNode implements NodeAPI {
                                         rocksDb, cfState, cfSnapshot, govStore);
                                 var drepExpiryCalc = new com.bloxbean.cardano.yano.ledgerstate.governance.epoch.DRepExpiryCalculator();
 
+                                // Always pass the DefaultEpochParamProvider (with Conway genesis-loaded
+                                // voting thresholds + minPoolCost + etc) as `paramProvider`. The tracker
+                                // implements EpochParamProvider too, but its default interface methods
+                                // return null for thresholds, which would cause GovernanceEpochProcessor
+                                // to hit the fail-safe `BigDecimal.ONE` branch and block all ratifications.
+                                // paramTracker is passed separately so on-chain ProtocolParamUpdates still
+                                // take precedence when present.
                                 var govEpochProcessor = new com.bloxbean.cardano.yano.ledgerstate.governance.epoch.GovernanceEpochProcessor(
                                         rocksDb, cfState, cfDelta,
                                         govStore, drepDistCalc, drepExpiryCalc,
                                         ratEngine, enactProc, dropService,
-                                        paramTrackerInstance != null ? paramTrackerInstance : epochParamProvider,
+                                        epochParamProvider,
                                         paramTrackerInstance,
                                         defaultStore.getAdaPotTracker(),
                                         defaultStore::resolvePoolStakeForEpoch,

@@ -1,5 +1,7 @@
 package com.bloxbean.cardano.yano.runtime.config;
 
+import com.bloxbean.cardano.yaci.core.model.DrepVoteThresholds;
+import com.bloxbean.cardano.yaci.core.model.PoolVotingThresholds;
 import com.bloxbean.cardano.yano.api.EpochParamProvider;
 import com.bloxbean.cardano.yano.runtime.genesis.ConwayGenesisData;
 import com.bloxbean.cardano.yano.runtime.genesis.ShelleyGenesisData;
@@ -59,6 +61,8 @@ public class DefaultEpochParamProvider implements EpochParamProvider {
     private final BigInteger genesisDRepDeposit;
     private final int genesisCommitteeMinSize;
     private final int genesisCommitteeMaxTermLength;
+    private final DrepVoteThresholds genesisDrepVotingThresholds;
+    private final PoolVotingThresholds genesisPoolVotingThresholds;
 
     // --- Factory method (preferred) ---
 
@@ -167,6 +171,8 @@ public class DefaultEpochParamProvider implements EpochParamProvider {
             this.genesisDRepDeposit = conway.dRepDeposit();
             this.genesisCommitteeMinSize = conway.committeeMinSize();
             this.genesisCommitteeMaxTermLength = conway.committeeMaxTermLength();
+            this.genesisDrepVotingThresholds = conway.drepVotingThresholds();
+            this.genesisPoolVotingThresholds = conway.poolVotingThresholds();
         } else {
             // Interface defaults
             this.genesisGovActionLifetime = 6;
@@ -175,6 +181,8 @@ public class DefaultEpochParamProvider implements EpochParamProvider {
             this.genesisDRepDeposit = new BigInteger("500000000");
             this.genesisCommitteeMinSize = 7;
             this.genesisCommitteeMaxTermLength = 146;
+            this.genesisDrepVotingThresholds = null;
+            this.genesisPoolVotingThresholds = null;
         }
     }
 
@@ -284,6 +292,16 @@ public class DefaultEpochParamProvider implements EpochParamProvider {
     @Override
     public int getCommitteeMaxTermLength(long epoch) {
         return genesisCommitteeMaxTermLength;
+    }
+
+    @Override
+    public DrepVoteThresholds getDrepVotingThresholds(long epoch) {
+        return genesisDrepVotingThresholds;
+    }
+
+    @Override
+    public PoolVotingThresholds getPoolVotingThresholds(long epoch) {
+        return genesisPoolVotingThresholds;
     }
 
 }

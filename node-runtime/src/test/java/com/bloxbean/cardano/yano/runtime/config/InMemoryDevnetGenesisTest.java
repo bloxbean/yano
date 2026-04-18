@@ -33,7 +33,7 @@ class InMemoryDevnetGenesisTest {
 
     private static ConwayGenesisData testConway() {
         return new ConwayGenesisData(30, BigInteger.valueOf(100_000_000_000L),
-                BigInteger.valueOf(500_000_000), 20, 0, 365);
+                BigInteger.valueOf(500_000_000), 20, 0, 365, null, null);
     }
 
     @Test

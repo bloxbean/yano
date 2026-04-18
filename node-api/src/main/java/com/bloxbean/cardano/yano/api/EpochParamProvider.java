@@ -1,5 +1,7 @@
 package com.bloxbean.cardano.yano.api;
 
+import com.bloxbean.cardano.yaci.core.model.DrepVoteThresholds;
+import com.bloxbean.cardano.yaci.core.model.PoolVotingThresholds;
 import com.bloxbean.cardano.yano.api.util.EpochSlotCalc;
 
 import java.math.BigInteger;
@@ -87,6 +89,21 @@ public interface EpochParamProvider {
 
     /** Committee maximum term length in epochs. Default: 146. */
     default int getCommitteeMaxTermLength(long epoch) { return 146; }
+
+    /**
+     * DRep voting thresholds from Conway genesis (or the effective value after on-chain
+     * updates, once that plumbing lands). May be null during tests or in non-Conway eras.
+     * Production implementations MUST return a non-null value once Conway era is active,
+     * otherwise governance ratification will fall back to possibly-wrong hard-coded defaults.
+     */
+    default DrepVoteThresholds getDrepVotingThresholds(long epoch) { return null; }
+
+    /**
+     * Pool voting thresholds from Conway genesis (or the effective value after on-chain
+     * updates, once that plumbing lands). May be null during tests or in non-Conway eras.
+     * Production implementations MUST return a non-null value once Conway era is active.
+     */
+    default PoolVotingThresholds getPoolVotingThresholds(long epoch) { return null; }
 
     /** Security parameter k (finality confirmation depth). Default: 2160 (mainnet). */
     default long getSecurityParam() { return 2160; }

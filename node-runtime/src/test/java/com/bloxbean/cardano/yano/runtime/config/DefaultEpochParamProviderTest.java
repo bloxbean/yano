@@ -76,6 +76,54 @@ class DefaultEpochParamProviderTest {
         }
 
         @Test
+        void preview_drepVotingThresholds_loadedFromConwayGenesis() {
+            // Regression guard for preview epoch-967: ensure that the DefaultEpochParamProvider
+            // actually returns the dRepVotingThresholds loaded from preview's conway-genesis.json.
+            // If this test fails, Yano will fall back to BigDecimal.ONE fail-safe at ratification
+            // time and proposals will never ratify past PV10.
+            var config = NetworkGenesisConfig.load(
+                    genesis("preview", "shelley-genesis.json"),
+                    null, null,
+                    genesis("preview", "conway-genesis.json"));
+
+            var provider = DefaultEpochParamProvider.fromNetworkGenesisConfig(config, 0);
+
+            var dt = provider.getDrepVotingThresholds(0);
+            assertThat(dt)
+                    .as("Conway genesis drep voting thresholds must be populated for preview")
+                    .isNotNull();
+            // ppGovGroup = 0.75 — this is the specific value that exposed the preview-967 bug
+            // when the prior code fell back to 0.67.
+            assertThat(dt.getDvtPPGovGroup().safeRatio())
+                    .as("dvtPPGovGroup must equal 0.75 (preview Conway spec)")
+                    .isEqualByComparingTo("0.75");
+            // Spot-check a couple of other fields to catch wholesale mapping bugs.
+            assertThat(dt.getDvtMotionNoConfidence().safeRatio()).isEqualByComparingTo("0.67");
+            assertThat(dt.getDvtUpdateToConstitution().safeRatio()).isEqualByComparingTo("0.75");
+        }
+
+        @Test
+        void preview_poolVotingThresholds_loadedFromConwayGenesis() {
+            // Mirror of the DRep test: verify SPO thresholds are loaded. Without these,
+            // SPO-required actions (HardFork initiation, security-group param changes)
+            // would never ratify.
+            var config = NetworkGenesisConfig.load(
+                    genesis("preview", "shelley-genesis.json"),
+                    null, null,
+                    genesis("preview", "conway-genesis.json"));
+
+            var provider = DefaultEpochParamProvider.fromNetworkGenesisConfig(config, 0);
+
+            var pt = provider.getPoolVotingThresholds(0);
+            assertThat(pt)
+                    .as("Conway genesis pool voting thresholds must be populated for preview")
+                    .isNotNull();
+            assertThat(pt.getPvtPPSecurityGroup().safeRatio()).isEqualByComparingTo("0.51");
+            assertThat(pt.getPvtHardForkInitiation().safeRatio()).isEqualByComparingTo("0.51");
+            assertThat(pt.getPvtMotionNoConfidence().safeRatio()).isEqualByComparingTo("0.51");
+        }
+
+        @Test
         void preprod_correctEpochLength() {
             var config = NetworkGenesisConfig.load(
                     genesis("preprod", "shelley-genesis.json"),

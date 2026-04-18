@@ -10,6 +10,7 @@ import com.bloxbean.cardano.yano.ledgerstate.DefaultAccountStateStore.DeltaOp;
 import com.bloxbean.cardano.yaci.core.model.ProtocolParamUpdate;
 import com.bloxbean.cardano.yano.ledgerstate.EpochParamTracker;
 import com.bloxbean.cardano.yano.ledgerstate.governance.ratification.ProtocolParamGroupClassifier;
+import com.bloxbean.cardano.yano.ledgerstate.governance.GovernanceCborCodec.CommitteeThreshold;
 import com.bloxbean.cardano.yano.ledgerstate.governance.GovernanceStateStore;
 import com.bloxbean.cardano.yano.ledgerstate.governance.GovernanceStateStore.CredentialKey;
 import com.bloxbean.cardano.yano.ledgerstate.governance.epoch.DRepDistributionCalculator.DRepDistKey;
@@ -516,7 +517,7 @@ public class GovernanceEpochProcessor {
                         DRepStateRecord state = allDRepStates.get(new CredentialKey(dk.drepType(), dk.drepHash()));
                         int storedExpiry = (state != null) ? state.expiryEpoch() : -1;
                         int effectiveExpiry = storedExpiry + numDormant;
-                        boolean active = effectiveExpiry >= newEpoch - 1; // Haskell: reCurrentEpoch = eNo - 1
+                        boolean active = isDRepActiveForExport(effectiveExpiry, newEpoch);
                         return new com.bloxbean.cardano.yano.ledgerstate.export.EpochSnapshotExporter.DRepDistEntry(
                                 dk.drepType(), dk.drepHash(), e.getValue(),
                                 storedExpiry, numDormant, effectiveExpiry, active);
@@ -567,11 +568,12 @@ public class GovernanceEpochProcessor {
             }
         }
 
+        var effectiveDrepThresholds = effectiveDrepVotingThresholds(newEpoch);
         List<RatificationResult> results = ratificationEngine.evaluateAll(
                 ratifiableProposals, drepDist, activeDRepKeys, poolStakeDist, poolDRepDelegation,
                 committeeMembers, committeeThreshold, lastEnactedActions,
                 newEpoch, isBootstrapPhase, committeeMinSize, committeeMaxTermLength,
-                committeeState, treasury, drepThresholds, spoThresholds);
+                committeeState, treasury, drepThresholds, spoThresholds, effectiveDrepThresholds);
 
         // Store NEW ratified proposals as pending for next boundary
         for (RatificationResult result : results) {
@@ -641,10 +643,10 @@ public class GovernanceEpochProcessor {
     // ===== Active DRep Keys =====
 
     /**
-     * Build set of ACTIVE (non-expired) DRep keys from the distribution using stored expiry + pending counter.
-     * Only DReps in the distribution with delegated stake are included.
-     * Effective expiry = stored expiry + numDormantEpochs (pending counter).
-     * Haskell: active when {@code drepExpiry >= reCurrentEpoch} where {@code reCurrentEpoch = eNo - 1}.
+     * Build set of ACTIVE DRep keys for ratification.
+     * Effective expiry = stored expiry + pending dormant counter.
+     * Haskell ratification uses reCurrentEpoch = eNo - 1, so a DRep with expiry E
+     * remains active at boundary previousEpoch -> newEpoch when E >= newEpoch - 1.
      */
     private Set<DRepDistKey> buildActiveDRepKeys(Map<DRepDistKey, BigInteger> drepDist, int newEpoch) {
         Set<DRepDistKey> activeDRepKeys = new java.util.HashSet<>();
@@ -657,7 +659,7 @@ public class GovernanceEpochProcessor {
                 DRepStateRecord rec = allDRepStates.get(ck);
                 if (rec == null) continue;
                 int effectiveExpiry = rec.expiryEpoch() + numDormant;
-                if (effectiveExpiry >= newEpoch - 1) { // Haskell: reCurrentEpoch = eNo - 1
+                if (isDRepActiveForRatification(effectiveExpiry, newEpoch)) {
                     activeDRepKeys.add(distKey);
                 }
             }
@@ -680,9 +682,12 @@ public class GovernanceEpochProcessor {
         int numDormant = governanceStore.getNumDormantEpochs();
 
         if (epochHadActiveProposals && numDormant > 0) {
-            // Flush: add numDormant to every registered DRep stored expiry.
-            // Haskell bumps ALL DReps unconditionally (Certs.hs updateDormantDRepExpiries).
-            // No guard — even expired DReps accumulate dormant bumps.
+            // Flush: add numDormant to every registered DRep stored expiry,
+            // with Haskell's non-revival guard (Certs.hs updateDormantDRepExpiry):
+            // if actualExpiry < currentEpoch, keep currentExpiry so already-expired
+            // DReps don't accumulate stored-value drift. Haskell's currentEpoch at
+            // flush time is the TX's epoch (certsCurrentEpoch); Yano flushes at the
+            // boundary before any TX of newEpoch, so the aligned value is newEpoch.
             Map<CredentialKey, DRepStateRecord> allDReps = governanceStore.getAllDRepStates();
             for (var entry : allDReps.entrySet()) {
                 CredentialKey ck = entry.getKey();
@@ -693,8 +698,8 @@ public class GovernanceEpochProcessor {
                 if (prevDeregSlot != null && state.registeredAtSlot() <= prevDeregSlot) {
                     continue;
                 }
-                int newExpiry = state.expiryEpoch() + numDormant;
-                boolean active = newExpiry >= newEpoch - 1; // Haskell: reCurrentEpoch = eNo - 1
+                int newExpiry = applyDormantFlushNonRevivalGuard(state.expiryEpoch(), numDormant, newEpoch);
+                boolean active = isDRepActiveForRatification(newExpiry, newEpoch);
                 if (newExpiry != state.expiryEpoch() || active != state.active()) {
                     DRepStateRecord updated = state.withExpiry(newExpiry, active);
                     governanceStore.storeDRepState(ck.credType(), ck.hash(), updated, batch, deltaOps);
@@ -719,6 +724,19 @@ public class GovernanceEpochProcessor {
         } catch (Exception e) {
             return null;
         }
+    }
+
+    static int applyDormantFlushNonRevivalGuard(int currentExpiry, int numDormant, int currentEpoch) {
+        int actualExpiry = currentExpiry + numDormant;
+        return actualExpiry < currentEpoch ? currentExpiry : actualExpiry;
+    }
+
+    static boolean isDRepActiveForRatification(int effectiveExpiry, int newEpoch) {
+        return effectiveExpiry >= newEpoch - 1;
+    }
+
+    static boolean isDRepActiveForExport(int effectiveExpiry, int epoch) {
+        return effectiveExpiry >= epoch;
     }
 
     // ===== Resolution Helpers =====
@@ -751,6 +769,23 @@ public class GovernanceEpochProcessor {
 
     private BigDecimal resolveCommitteeThreshold() throws RocksDBException {
         var threshold = governanceStore.getCommitteeThreshold();
+        if (threshold.isEmpty() || threshold.get().denominator().signum() <= 0) {
+            log.warn("No committee threshold available — ConwayGenesisBootstrap may have been " +
+                    "skipped or committee was not updated via UPDATE_COMMITTEE. Committee check " +
+                    "will fail (threshold = 1.0) until threshold is stored.");
+        }
+        return decideCommitteeThreshold(threshold);
+    }
+
+    /**
+     * Pure helper: decide committee quorum threshold from the stored value.
+     * Fail-safe semantics mirror resolveDRepThresholds / resolveSPOThresholds —
+     * when the store is empty or denominator is zero, return {@link BigDecimal#ONE}
+     * so a missing Conway-genesis committee threshold fails ratification loudly
+     * rather than silently using a hardcoded 2/3 default (the bug-class that
+     * surfaced at preview epoch 967 for drep/pool thresholds).
+     */
+    static BigDecimal decideCommitteeThreshold(Optional<CommitteeThreshold> threshold) {
         if (threshold.isPresent()) {
             var t = threshold.get();
             if (t.denominator().signum() > 0) {
@@ -758,7 +793,7 @@ public class GovernanceEpochProcessor {
                         new BigDecimal(t.denominator()), java.math.MathContext.DECIMAL128);
             }
         }
-        return new BigDecimal("0.667"); // default 2/3
+        return BigDecimal.ONE;
     }
 
     private String resolveCommitteeState(Map<CredentialKey, CommitteeMemberRecord> members,
@@ -782,7 +817,79 @@ public class GovernanceEpochProcessor {
         return result;
     }
 
-    private Map<GovActionType, BigDecimal> resolveDRepThresholds(boolean isBootstrapPhase, int epoch) {
+    /**
+     * Effective DRep voting thresholds for an epoch. Priority:
+     * <ol>
+     *   <li>Tracker params (on-chain updates take effect here once plumbed)</li>
+     *   <li>Conway genesis via {@code EpochParamProvider.getDrepVotingThresholds(epoch)}</li>
+     *   <li>{@code null} — no hard-coded defaults; callers must handle this case explicitly</li>
+     * </ol>
+     */
+    // Package-private for testability — behavioral tests exercise the priority chain
+    // (tracker → provider → null).
+    com.bloxbean.cardano.yaci.core.model.DrepVoteThresholds effectiveDrepVotingThresholds(int epoch) {
+        if (paramTracker instanceof EpochParamTracker ept) {
+            ProtocolParamUpdate params = ept.getResolvedParams(epoch);
+            if (params != null && params.getDrepVotingThresholds() != null) {
+                return params.getDrepVotingThresholds();
+            }
+        }
+        return paramProvider.getDrepVotingThresholds(epoch);
+    }
+
+    /**
+     * Effective SPO voting thresholds for an epoch. Priority same as DRep:
+     * tracker → Conway genesis → null.
+     */
+    // Package-private for testability.
+    com.bloxbean.cardano.yaci.core.model.PoolVotingThresholds effectivePoolVotingThresholds(int epoch) {
+        if (paramTracker instanceof EpochParamTracker ept) {
+            ProtocolParamUpdate params = ept.getResolvedParams(epoch);
+            if (params != null && params.getPoolVotingThresholds() != null) {
+                return params.getPoolVotingThresholds();
+            }
+        }
+        return paramProvider.getPoolVotingThresholds(epoch);
+    }
+
+    // Package-private for testability.
+    Map<GovActionType, BigDecimal> resolveDRepThresholds(boolean isBootstrapPhase, int epoch) {
+        var dt = effectiveDrepVotingThresholds(epoch);
+        if (dt == null && !isBootstrapPhase) {
+            // No Conway thresholds available AND not bootstrap — log WARN (only the instance
+            // method does this; the pure static helper stays silent so tests can assert shape
+            // without log-capture plumbing).
+            log.warn("No DRep voting thresholds available for epoch {} and bootstrap=false. " +
+                    "Conway genesis thresholds are likely not loaded. Ratification will fail " +
+                    "unconditionally (threshold = 1.0) for this epoch.", epoch);
+        }
+        return buildDRepThresholdMap(isBootstrapPhase, dt);
+    }
+
+    // Package-private for testability.
+    Map<GovActionType, BigDecimal> resolveSPOThresholds(int epoch) {
+        var pt = effectivePoolVotingThresholds(epoch);
+        if (pt == null) {
+            log.warn("No SPO voting thresholds available for epoch {}. Conway genesis thresholds " +
+                    "likely not loaded. SPO checks will fail unconditionally (threshold = 1.0).", epoch);
+        }
+        return buildSPOThresholdMap(pt);
+    }
+
+    /**
+     * Pure mapping from {@link com.bloxbean.cardano.yaci.core.model.DrepVoteThresholds} to the
+     * per-action threshold map used by the RatificationEngine. Returns all-zero when in
+     * bootstrap (PV9) phase — DReps don't vote in bootstrap. Returns all-1.0 when thresholds
+     * are null in non-bootstrap — fail-safe so ratification cannot silently succeed with a
+     * wrong hardcoded default (regression guard for preview epoch-967 root cause).
+     * <p>
+     * The PARAMETER_CHANGE_ACTION value is a placeholder (ppGovGroup, the highest) — the
+     * real threshold is computed per-proposal in {@link com.bloxbean.cardano.yano.ledgerstate.governance.ratification.RatificationEngine#evaluateParameterChange}
+     * via {@link com.bloxbean.cardano.yano.ledgerstate.governance.ratification.ProtocolParamGroupClassifier#computeDRepThreshold}.
+     */
+    static Map<GovActionType, BigDecimal> buildDRepThresholdMap(
+            boolean isBootstrapPhase,
+            com.bloxbean.cardano.yaci.core.model.DrepVoteThresholds dt) {
         Map<GovActionType, BigDecimal> thresholds = new HashMap<>();
         if (isBootstrapPhase) {
             for (GovActionType type : GovActionType.values()) {
@@ -790,58 +897,49 @@ public class GovernanceEpochProcessor {
             }
             return thresholds;
         }
-
-        // Read from protocol params (paramTracker or genesis defaults)
-        ProtocolParamUpdate params = (paramTracker instanceof EpochParamTracker ept)
-                ? ept.getResolvedParams(epoch) : null;
-        if (params != null && params.getDrepVotingThresholds() != null) {
-            var dt = params.getDrepVotingThresholds();
-            thresholds.put(GovActionType.NO_CONFIDENCE,
-                    ProtocolParamGroupClassifier.ratioToBigDecimal(dt.getDvtMotionNoConfidence()));
-            thresholds.put(GovActionType.UPDATE_COMMITTEE,
-                    ProtocolParamGroupClassifier.ratioToBigDecimal(dt.getDvtCommitteeNormal()));
-            thresholds.put(GovActionType.NEW_CONSTITUTION,
-                    ProtocolParamGroupClassifier.ratioToBigDecimal(dt.getDvtUpdateToConstitution()));
-            thresholds.put(GovActionType.HARD_FORK_INITIATION_ACTION,
-                    ProtocolParamGroupClassifier.ratioToBigDecimal(dt.getDvtHardForkInitiation()));
-            thresholds.put(GovActionType.TREASURY_WITHDRAWALS_ACTION,
-                    ProtocolParamGroupClassifier.ratioToBigDecimal(dt.getDvtTreasuryWithdrawal()));
-            // ParameterChange: per-proposal threshold computed in RatificationEngine
-            // Use max possible (governance group = 0.75) as default; actual is computed per proposal
-            thresholds.put(GovActionType.PARAMETER_CHANGE_ACTION,
-                    ProtocolParamGroupClassifier.ratioToBigDecimal(dt.getDvtPPGovGroup()));
-        } else {
-            // Fallback defaults
-            thresholds.put(GovActionType.NO_CONFIDENCE, new BigDecimal("0.67"));
-            thresholds.put(GovActionType.UPDATE_COMMITTEE, new BigDecimal("0.67"));
-            thresholds.put(GovActionType.NEW_CONSTITUTION, new BigDecimal("0.75"));
-            thresholds.put(GovActionType.HARD_FORK_INITIATION_ACTION, new BigDecimal("0.60"));
-            thresholds.put(GovActionType.PARAMETER_CHANGE_ACTION, new BigDecimal("0.67"));
-            thresholds.put(GovActionType.TREASURY_WITHDRAWALS_ACTION, new BigDecimal("0.67"));
+        if (dt == null) {
+            for (GovActionType type : GovActionType.values()) {
+                thresholds.put(type, BigDecimal.ONE);
+            }
+            return thresholds;
         }
+        thresholds.put(GovActionType.NO_CONFIDENCE,
+                ProtocolParamGroupClassifier.ratioToBigDecimal(dt.getDvtMotionNoConfidence()));
+        thresholds.put(GovActionType.UPDATE_COMMITTEE,
+                ProtocolParamGroupClassifier.ratioToBigDecimal(dt.getDvtCommitteeNormal()));
+        thresholds.put(GovActionType.NEW_CONSTITUTION,
+                ProtocolParamGroupClassifier.ratioToBigDecimal(dt.getDvtUpdateToConstitution()));
+        thresholds.put(GovActionType.HARD_FORK_INITIATION_ACTION,
+                ProtocolParamGroupClassifier.ratioToBigDecimal(dt.getDvtHardForkInitiation()));
+        thresholds.put(GovActionType.TREASURY_WITHDRAWALS_ACTION,
+                ProtocolParamGroupClassifier.ratioToBigDecimal(dt.getDvtTreasuryWithdrawal()));
+        thresholds.put(GovActionType.PARAMETER_CHANGE_ACTION,
+                ProtocolParamGroupClassifier.ratioToBigDecimal(dt.getDvtPPGovGroup()));
         return thresholds;
     }
 
-    private Map<GovActionType, BigDecimal> resolveSPOThresholds(int epoch) {
+    /**
+     * Pure mapping from {@link com.bloxbean.cardano.yaci.core.model.PoolVotingThresholds} to
+     * the per-action SPO threshold map. Fail-safe to all-1.0 when thresholds are null.
+     */
+    static Map<GovActionType, BigDecimal> buildSPOThresholdMap(
+            com.bloxbean.cardano.yaci.core.model.PoolVotingThresholds pt) {
         Map<GovActionType, BigDecimal> thresholds = new HashMap<>();
-        ProtocolParamUpdate params = (paramTracker instanceof EpochParamTracker ept)
-                ? ept.getResolvedParams(epoch) : null;
-        if (params != null && params.getPoolVotingThresholds() != null) {
-            var pt = params.getPoolVotingThresholds();
-            thresholds.put(GovActionType.NO_CONFIDENCE,
-                    ProtocolParamGroupClassifier.ratioToBigDecimal(pt.getPvtMotionNoConfidence()));
-            thresholds.put(GovActionType.UPDATE_COMMITTEE,
-                    ProtocolParamGroupClassifier.ratioToBigDecimal(pt.getPvtCommitteeNormal()));
-            thresholds.put(GovActionType.HARD_FORK_INITIATION_ACTION,
-                    ProtocolParamGroupClassifier.ratioToBigDecimal(pt.getPvtHardForkInitiation()));
-            thresholds.put(GovActionType.PARAMETER_CHANGE_ACTION,
-                    ProtocolParamGroupClassifier.ratioToBigDecimal(pt.getPvtPPSecurityGroup()));
-        } else {
-            thresholds.put(GovActionType.NO_CONFIDENCE, new BigDecimal("0.60"));
-            thresholds.put(GovActionType.UPDATE_COMMITTEE, new BigDecimal("0.51"));
-            thresholds.put(GovActionType.HARD_FORK_INITIATION_ACTION, new BigDecimal("0.51"));
-            thresholds.put(GovActionType.PARAMETER_CHANGE_ACTION, new BigDecimal("0.51"));
+        if (pt == null) {
+            thresholds.put(GovActionType.NO_CONFIDENCE, BigDecimal.ONE);
+            thresholds.put(GovActionType.UPDATE_COMMITTEE, BigDecimal.ONE);
+            thresholds.put(GovActionType.HARD_FORK_INITIATION_ACTION, BigDecimal.ONE);
+            thresholds.put(GovActionType.PARAMETER_CHANGE_ACTION, BigDecimal.ONE);
+            return thresholds;
         }
+        thresholds.put(GovActionType.NO_CONFIDENCE,
+                ProtocolParamGroupClassifier.ratioToBigDecimal(pt.getPvtMotionNoConfidence()));
+        thresholds.put(GovActionType.UPDATE_COMMITTEE,
+                ProtocolParamGroupClassifier.ratioToBigDecimal(pt.getPvtCommitteeNormal()));
+        thresholds.put(GovActionType.HARD_FORK_INITIATION_ACTION,
+                ProtocolParamGroupClassifier.ratioToBigDecimal(pt.getPvtHardForkInitiation()));
+        thresholds.put(GovActionType.PARAMETER_CHANGE_ACTION,
+                ProtocolParamGroupClassifier.ratioToBigDecimal(pt.getPvtPPSecurityGroup()));
         return thresholds;
     }
 
