@@ -69,6 +69,9 @@ public class EpochBoundaryProcessor {
     // Last verification error (null = OK). Queryable via REST endpoint.
     private volatile VerificationError lastVerificationError;
 
+    // Allegra bootstrap UTXO removal is now self-contained in DefaultUtxoStore.applyBlock().
+    // No callback needed — removal happens automatically on the first Allegra-era block.
+
     // Executor for parallel UTXO balance scan during epoch boundary processing
     private final ExecutorService utxoScanExecutor = Executors.newSingleThreadExecutor(
             r -> { Thread t = new Thread(r, "utxo-balance-scan"); t.setDaemon(true); return t; });
@@ -86,23 +89,50 @@ public class EpochBoundaryProcessor {
                                      java.math.BigInteger expectedReserves, java.math.BigInteger actualReserves,
                                      java.math.BigInteger reservesDiff) {}
 
+    // CF NetworkConfig — injected at construction or lazily after boundary capture for unknown+Byron networks
+    private volatile org.cardanofoundation.rewards.calculation.config.NetworkConfig cfNetworkConfig;
+
     public EpochBoundaryProcessor(AdaPotTracker adaPotTracker,
                                   EpochRewardCalculator rewardCalculator,
                                   EpochParamTracker paramTracker,
                                   EpochParamProvider paramProvider,
-                                  long networkMagic) {
+                                  long networkMagic,
+                                  org.cardanofoundation.rewards.calculation.config.NetworkConfig cfNetworkConfig) {
         this.adaPotTracker = adaPotTracker;
         this.rewardCalculator = rewardCalculator;
         this.paramTracker = paramTracker;
         this.paramProvider = paramProvider;
         this.networkMagic = networkMagic;
+        this.cfNetworkConfig = cfNetworkConfig;
     }
+
+    /**
+     * Update the CF NetworkConfig after lazy construction (for unknown+Byron fresh sync).
+     */
+    public void setCfNetworkConfig(org.cardanofoundation.rewards.calculation.config.NetworkConfig config) {
+        this.cfNetworkConfig = config;
+    }
+
 
     /**
      * Set the governance epoch processor for Conway-era governance state tracking.
      */
     public void setGovernanceEpochProcessor(GovernanceEpochProcessor processor) {
         this.governanceEpochProcessor = processor;
+        // Wire AdaPot batch adjuster so governance treasury adjustment is atomic with Phase 2
+        if (processor != null && adaPotTracker != null && adaPotTracker.isEnabled() && snapshotCreator != null) {
+            processor.setAdaPotBatchAdjuster((epoch, treasuryDelta, batch, deltaOps) -> {
+                var currentPot = adaPotTracker.getAdaPot(epoch);
+                if (currentPot.isPresent()) {
+                    var pot = currentPot.get();
+                    BigInteger adjustedTreasury = pot.treasury().add(treasuryDelta);
+                    var adjustedPot = new AccountStateCborCodec.AdaPot(adjustedTreasury, pot.reserves(),
+                            pot.deposits(), pot.fees(), pot.distributed(),
+                            pot.undistributed(), pot.rewardsPot(), pot.poolRewardsPot());
+                    adaPotTracker.storeAdaPotBatch(epoch, adjustedPot, batch, deltaOps, snapshotCreator);
+                }
+            });
+        }
     }
 
     /**
@@ -176,6 +206,14 @@ public class EpochBoundaryProcessor {
     }
 
     public void processEpochBoundary(int previousEpoch, int newEpoch) {
+        // Guard: defer ALL boundary work until cfNetworkConfig is available.
+        // For unknown+Byron fresh sync, config is built lazily after boundary UTXO capture.
+        // Byron epochs don't have Shelley rewards/AdaPot, so deferring is safe.
+        if (cfNetworkConfig == null) {
+            log.info("cfNetworkConfig not yet available — deferring epoch boundary for {} → {}", previousEpoch, newEpoch);
+            return;
+        }
+
         long start = System.currentTimeMillis();
 
         // Check that the previous epoch boundary completed. If not, re-process it first.
@@ -196,6 +234,33 @@ public class EpochBoundaryProcessor {
                 resumeFromStep = lastStep + 1;
                 log.info("Resuming epoch boundary {} → {} from step {} (previous run interrupted after step {})",
                         previousEpoch, newEpoch, resumeFromStep, lastStep);
+            }
+
+            // Consult boundary delta evidence for committed but unmarkered phases.
+            // If a crash happened between phase commit and step marker write, the boundary
+            // delta journal proves the phase was committed — skip it to avoid double-apply.
+            if (resumeFromStep <= STEP_GOVERNANCE) {
+                long boundarySlot = snapshotCreator.slotForEpochStart(newEpoch);
+                var committedPhases = snapshotCreator.getCommittedBoundaryPhases(boundarySlot);
+                if (!committedPhases.isEmpty()) {
+                    int deltaResumeFrom = resumeFromStep;
+                    if (committedPhases.contains(DefaultAccountStateStore.PHASE_GOV_RATIFY)) {
+                        deltaResumeFrom = Math.max(deltaResumeFrom, STEP_GOVERNANCE + 1);
+                        log.info("Boundary delta evidence: governance committed for epoch {}", newEpoch);
+                    } else if (committedPhases.contains(DefaultAccountStateStore.PHASE_POOLREAP)) {
+                        deltaResumeFrom = Math.max(deltaResumeFrom, STEP_POOLREAP + 1);
+                        log.info("Boundary delta evidence: pool refund committed for epoch {}", newEpoch);
+                    } else if (committedPhases.contains(DefaultAccountStateStore.PHASE_REWARDS)) {
+                        deltaResumeFrom = Math.max(deltaResumeFrom, STEP_REWARDS + 1);
+                        log.info("Boundary delta evidence: rewards committed for epoch {}", newEpoch);
+                    }
+                    // Repair step marker forward to match actual durable state
+                    if (deltaResumeFrom > resumeFromStep) {
+                        int resolvedStep = deltaResumeFrom - 1;
+                        snapshotCreator.setBoundaryStep(newEpoch, resolvedStep);
+                        resumeFromStep = deltaResumeFrom;
+                    }
+                }
             }
         }
 
@@ -225,6 +290,9 @@ public class EpochBoundaryProcessor {
         // 2. Bootstrap AdaPot at the Shelley start epoch (before any reward calculation)
         bootstrapAdaPotIfNeeded(newEpoch);
 
+        // 2a. Allegra bootstrap UTXO removal is now self-contained in
+        // DefaultUtxoStore.applyBlock() — triggered automatically when era >= Allegra.
+
         // 2b. Credit spendable MIR reward_rest to account balances BEFORE reward calculation.
         if (snapshotCreator != null && resumeFromStep <= STEP_STARTED) {
             snapshotCreator.creditMirRewardRest(newEpoch);
@@ -242,6 +310,7 @@ public class EpochBoundaryProcessor {
             if (rewardCalculator != null && rewardCalculator.isEnabled() && newEpoch >= 2) {
                 calculateAndStoreRewards(previousEpoch, newEpoch, null);
             }
+            // Step marker AFTER all outputs (reward credits + AdaPot) are durable
             if (snapshotCreator != null) {
                 snapshotCreator.setBoundaryStep(newEpoch, STEP_REWARDS);
             }
@@ -271,10 +340,19 @@ public class EpochBoundaryProcessor {
         }
 
         // 4b. POOLREAP: Pool deposit refunds (after snapshot, before governance).
+        //     Delta-journaled via boundary delta for rollback safety.
         if (resumeFromStep <= STEP_POOLREAP) {
             if (rewardCalculator != null && rewardCalculator.isEnabled()) {
+                long boundarySlot = snapshotCreator != null ? snapshotCreator.slotForEpochStart(newEpoch) : 0;
+                rewardCalculator.beginRewardBatch();
                 rewardCalculator.processPoolDepositRefunds(newEpoch);
+                try {
+                    rewardCalculator.commitRewardBatch(boundarySlot, DefaultAccountStateStore.PHASE_POOLREAP);
+                } catch (org.rocksdb.RocksDBException e) {
+                    throw new RuntimeException("Failed to commit pool refund boundary delta for epoch " + newEpoch, e);
+                }
             }
+            // Step marker AFTER pool refund commits are durable
             if (snapshotCreator != null) {
                 snapshotCreator.setBoundaryStep(newEpoch, STEP_POOLREAP);
             }
@@ -285,11 +363,12 @@ public class EpochBoundaryProcessor {
         // 4c. PV10 hardfork: rebuild DRep delegation reverse index.
         // Matches Haskell's updateDRepDelegations (HardFork.hs) which rebuilds drepDelegs
         // from current forward delegations, removing stale PV9 entries and dangling delegations.
-        // Must run before governance so DRep deregistration cleanup uses the clean reverse index.
-        if (snapshotCreator != null && resumeFromStep <= STEP_GOVERNANCE && governanceEpochProcessor != null) {
+        // Only runs when Conway-or-later AND PV10+. No PV10 work in pre-Conway transitions.
+        EpochParamProvider ep = (paramTracker != null && paramTracker.isEnabled())
+                ? paramTracker : paramProvider;
+        if (snapshotCreator != null && resumeFromStep <= STEP_GOVERNANCE && governanceEpochProcessor != null
+                && snapshotCreator.isConwayOrLater(newEpoch) && ep.getProtocolMajor(newEpoch) >= 10) {
             try {
-                EpochParamProvider ep = (paramTracker != null && paramTracker.isEnabled())
-                        ? paramTracker : paramProvider;
                 Set<String> registeredDRepIds = governanceEpochProcessor.getRegisteredDRepIds();
                 snapshotCreator.rebuildDRepDelegReverseIndexIfNeeded(newEpoch, registeredDRepIds, ep);
             } catch (Exception e) {
@@ -312,29 +391,16 @@ public class EpochBoundaryProcessor {
                             previousEpoch, newEpoch, e.getMessage());
                 }
             }
-            if (snapshotCreator != null) {
-                snapshotCreator.setBoundaryStep(newEpoch, STEP_GOVERNANCE);
-            }
         } else {
             log.info("Skipping governance for epoch {} (already committed in previous run)", newEpoch);
         }
 
-        // 6. Apply governance treasury delta to AdaPot (post-reward adjustment)
-        if (govResult != null && adaPotTracker != null && adaPotTracker.isEnabled()) {
-            BigInteger govTreasuryDelta = govResult.treasuryDelta().add(govResult.donations());
-            if (govTreasuryDelta.signum() != 0) {
-                var currentPot = adaPotTracker.getAdaPot(newEpoch);
-                if (currentPot.isPresent()) {
-                    var pot = currentPot.get();
-                    BigInteger adjustedTreasury = pot.treasury().add(govTreasuryDelta);
-                    adaPotTracker.storeAdaPot(newEpoch,
-                            new AccountStateCborCodec.AdaPot(adjustedTreasury, pot.reserves(),
-                                    pot.deposits(), pot.fees(), pot.distributed(),
-                                    pot.undistributed(), pot.rewardsPot(), pot.poolRewardsPot()));
-                    log.info("Governance adjusted treasury for epoch {}: delta={} (withdrawals={}, donations={})",
-                            newEpoch, govTreasuryDelta, govResult.treasuryDelta(), govResult.donations());
-                }
-            }
+        // 6. Governance treasury delta to AdaPot is now applied atomically inside
+        //    GovernanceEpochProcessor Phase 2 batch (via AdaPotBatchAdjuster).
+
+        // Step marker AFTER governance commits (including AdaPot adjustment) are all durable
+        if (resumeFromStep <= STEP_GOVERNANCE && snapshotCreator != null) {
+            snapshotCreator.setBoundaryStep(newEpoch, STEP_GOVERNANCE);
         }
 
         // 7. Verify final AdaPot (after both reward calculation and governance adjustment)
@@ -411,29 +477,37 @@ public class EpochBoundaryProcessor {
         EpochParamProvider effectiveParams = (paramTracker != null && paramTracker.isEnabled())
                 ? paramTracker : paramProvider;
 
-        // Calculate and distribute rewards
+        // Calculate and distribute rewards (delta-aware batch for rollback safety)
+        rewardCalculator.beginRewardBatch();
         Optional<EpochCalculationResult> resultOpt = rewardCalculator.calculateAndDistribute(
                 newEpoch, prevTreasury, prevReserves, effectiveParams, networkMagic);
-
-        // Store updated AdaPot
-        if (resultOpt.isPresent() && adaPotTracker != null && adaPotTracker.isEnabled()) {
-            var result = resultOpt.get();
-
-            var newPot = new AccountStateCborCodec.AdaPot(
-                    result.getTreasury(),
-                    result.getReserves(),
-                    BigInteger.ZERO, // deposits tracked separately
-                    rewardCalculator.getEpochFees(newEpoch - 1),
-                    result.getTotalDistributedRewards(),
-                    result.getTotalUndistributedRewards() != null
-                            ? result.getTotalUndistributedRewards() : BigInteger.ZERO,
-                    result.getTotalRewardsPot() != null
-                            ? result.getTotalRewardsPot() : BigInteger.ZERO,
-                    result.getTotalPoolRewardsPot() != null
-                            ? result.getTotalPoolRewardsPot() : BigInteger.ZERO
-            );
-            adaPotTracker.storeAdaPot(newEpoch, newPot);
-            // Note: verification moved to processEpochBoundary() after governance adjustment
+        try {
+            // Include AdaPot in the same atomic batch as reward credits + boundary delta.
+            // This ensures crash between commit and step marker doesn't lose AdaPot.
+            if (resultOpt.isPresent() && adaPotTracker != null && adaPotTracker.isEnabled()
+                    && snapshotCreator != null) {
+                var result = resultOpt.get();
+                var newPot = new AccountStateCborCodec.AdaPot(
+                        result.getTreasury(),
+                        result.getReserves(),
+                        BigInteger.ZERO, // deposits tracked separately
+                        rewardCalculator.getEpochFees(newEpoch - 1),
+                        result.getTotalDistributedRewards(),
+                        result.getTotalUndistributedRewards() != null
+                                ? result.getTotalUndistributedRewards() : BigInteger.ZERO,
+                        result.getTotalRewardsPot() != null
+                                ? result.getTotalRewardsPot() : BigInteger.ZERO,
+                        result.getTotalPoolRewardsPot() != null
+                                ? result.getTotalPoolRewardsPot() : BigInteger.ZERO
+                );
+                adaPotTracker.storeAdaPotBatch(newEpoch, newPot,
+                        rewardCalculator.getRewardBatch(), rewardCalculator.getRewardDeltaOps(),
+                        snapshotCreator);
+            }
+            long boundarySlot = snapshotCreator.slotForEpochStart(newEpoch);
+            rewardCalculator.commitRewardBatch(boundarySlot, DefaultAccountStateStore.PHASE_REWARDS);
+        } catch (org.rocksdb.RocksDBException e) {
+            throw new RuntimeException("Failed to commit reward boundary delta for epoch " + newEpoch, e);
         }
     }
 
@@ -531,8 +605,7 @@ public class EpochBoundaryProcessor {
         var existing = adaPotTracker.getLatestAdaPot(newEpoch);
         if (existing.isPresent()) return;
 
-        // Use cf-rewards NetworkConfig to get initial reserves/treasury for this network
-        var networkConfig = EpochRewardCalculator.resolveNetworkConfig(networkMagic);
+        var networkConfig = cfNetworkConfig;
         int shelleyStartEpoch = networkConfig.getShelleyStartEpoch();
 
         BigInteger initialReserves = networkConfig.getShelleyInitialReserves();

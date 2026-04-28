@@ -46,6 +46,6 @@ public class DefaultAccountStateStoreProvider implements AccountStateStoreProvid
                         return (RocksDB) access.getDb();
                     }
                 },
-                context.logger(), true, context.epochParamProvider());
+                context.logger(), true, context.epochParamProvider(), context.config());
     }
 }

@@ -149,6 +149,47 @@ class VoteTallyCalculatorTest {
     }
 
     /**
+     * Preview epoch 967 regression: an expired DRep that cast a YES vote must not
+     * contribute to the tally. Reproduces the bug where Pass 1 counted expired DReps'
+     * explicit votes even though Pass 2 correctly filtered expired DReps from the
+     * non-voting set.
+     *
+     * Stake values chosen so the buggy ratio and the fixed ratio land on opposite
+     * sides of the 0.75 threshold:
+     *   active YES = 3, active NO = 2, expired YES = 5
+     *   buggy ratio (expired counted): (3 + 5) / (3 + 5 + 2) = 0.80 → passes
+     *   fixed ratio (expired excluded): 3 / (3 + 2) = 0.60 → fails
+     */
+    @Test
+    void expiredDRepVote_mustBeExcludedFromTally() {
+        Map<DRepDistKey, BigInteger> drepDist = new HashMap<>();
+        drepDist.put(new DRepDistKey(DREP_KEY, "activeYes"), BigInteger.valueOf(3));
+        drepDist.put(new DRepDistKey(DREP_KEY, "activeNo"), BigInteger.valueOf(2));
+        drepDist.put(new DRepDistKey(DREP_KEY, "expiredYes"), BigInteger.valueOf(5));
+
+        // Only the two non-expired DReps are in activeDRepKeys
+        Set<DRepDistKey> activeDRepKeys = new HashSet<>();
+        activeDRepKeys.add(new DRepDistKey(DREP_KEY, "activeYes"));
+        activeDRepKeys.add(new DRepDistKey(DREP_KEY, "activeNo"));
+
+        Map<GovernanceStateStore.VoterKey, Integer> votes = new HashMap<>();
+        votes.put(new GovernanceStateStore.VoterKey(VoterType.DREP_KEY_HASH.ordinal(), "activeYes"), 1); // YES
+        votes.put(new GovernanceStateStore.VoterKey(VoterType.DREP_KEY_HASH.ordinal(), "activeNo"), 0);  // NO
+        votes.put(new GovernanceStateStore.VoterKey(VoterType.DREP_KEY_HASH.ordinal(), "expiredYes"), 1);// YES
+
+        var tally = calculator.computeDRepTally(votes, drepDist, GovActionType.PARAMETER_CHANGE_ACTION, activeDRepKeys);
+
+        // Expired YES voter must not contribute to YES stake
+        assertThat(tally.yesStake()).isEqualTo(BigInteger.valueOf(3));
+        assertThat(tally.noStake()).isEqualTo(BigInteger.valueOf(2));
+
+        // Fixed ratio 3/5 = 0.60 fails 0.75 threshold
+        assertThat(VoteTallyCalculator.drepThresholdMet(tally, new BigDecimal("0.75"))).isFalse();
+        // Sanity: fixed ratio still passes at 0.50
+        assertThat(VoteTallyCalculator.drepThresholdMet(tally, new BigDecimal("0.50"))).isTrue();
+    }
+
+    /**
      * NoConfidence virtual DRep should vote YES on NoConfidence proposals
      * and NO on everything else.
      */

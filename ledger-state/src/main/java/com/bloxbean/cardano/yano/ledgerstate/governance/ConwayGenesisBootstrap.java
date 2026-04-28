@@ -11,8 +11,8 @@ import org.slf4j.LoggerFactory;
 
 import java.io.File;
 import java.io.InputStream;
+import java.math.BigDecimal;
 import java.math.BigInteger;
-import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -116,10 +116,19 @@ public class ConwayGenesisBootstrap {
                 numerator = thresholdNode.get("numerator").bigIntegerValue();
                 denominator = thresholdNode.get("denominator").bigIntegerValue();
             } else {
-                // Decimal format — convert to fraction
-                double val = thresholdNode.doubleValue();
-                denominator = BigInteger.valueOf(1000);
-                numerator = BigInteger.valueOf(Math.round(val * 1000));
+                // Decimal form: pick the smallest power-of-10 denominator that
+                // captures the decimal exactly, preserving precision (e.g.
+                // 0.75 → 75/100, 0.6666666666666667 → 6666666666666667/10^16).
+                // Mirrors ConwayGenesisParser.decimalToUnitInterval in node-runtime.
+                BigDecimal stripped = thresholdNode.decimalValue().stripTrailingZeros();
+                int scale = stripped.scale();
+                if (scale <= 0) {
+                    numerator = stripped.toBigIntegerExact();
+                    denominator = BigInteger.ONE;
+                } else {
+                    denominator = BigInteger.TEN.pow(scale);
+                    numerator = stripped.movePointRight(scale).toBigInteger();
+                }
             }
             governanceStore.storeCommitteeThreshold(numerator, denominator, batch, deltaOps);
             log.info("Genesis committee threshold: {}/{}", numerator, denominator);

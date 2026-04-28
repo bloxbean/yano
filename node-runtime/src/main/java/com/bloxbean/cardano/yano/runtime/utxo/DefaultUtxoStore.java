@@ -49,7 +49,8 @@ import java.util.concurrent.atomic.AtomicReference;
  * Default UTXO store backed by RocksDB column families.
  * Listens to BlockAppliedEvent and RollbackEvent, applies compact deltas.
  */
-public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Prunable, UtxoStatusProvider, AutoCloseable {
+public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Prunable, UtxoStatusProvider, AutoCloseable,
+        com.bloxbean.cardano.yano.api.rollback.RollbackCapableStore {
     private RocksDB db;
     private final Logger log;
     private final boolean enabled;
@@ -450,6 +451,35 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
         if (!enabled) return;
         if (e.block() == null) return; // header-only or EBB
         long t0 = System.nanoTime();
+
+        // Determine Allegra bootstrap outpoints to remove (before ctx is created).
+        // These are collected here but written into the block's WriteBatch for atomicity.
+        // The set is used to filter ctx results so tx input processing treats them as absent.
+        Set<ByteArrayKey> removedBootstrapOutpoints = Collections.emptySet();
+        boolean doAllegraRemoval = false;
+        if (e.era() != null && e.era().getValue() >= Era.Allegra.getValue()
+                && allegraBootstrapDoneChecker != null && !allegraBootstrapDoneChecker.get()) {
+            if (byronGenesisKeysSupplier != null) {
+                var keys = byronGenesisKeysSupplier.get();
+                if (keys != null && !keys.isEmpty()) {
+                    removedBootstrapOutpoints = new HashSet<>();
+                    for (byte[] outKey : keys) {
+                        try {
+                            if (db.get(cfUnspent, outKey) != null) {
+                                removedBootstrapOutpoints.add(new ByteArrayKey(outKey));
+                            }
+                        } catch (Exception ignored) {}
+                    }
+                    doAllegraRemoval = !removedBootstrapOutpoints.isEmpty();
+                    if (!doAllegraRemoval) {
+                        // All bootstrap UTXOs already absent — will mark done in the batch
+                        doAllegraRemoval = true; // still need to write the completion marker
+                        removedBootstrapOutpoints = Collections.emptySet();
+                    }
+                }
+            }
+        }
+
         try (WriteBatch batch = new WriteBatch(); WriteOptions wo = new WriteOptions(); UtxoProcessor.ApplyContext ctx = processor.prepare(e, cfUnspent)) {
             long slot = e.slot();
             long blockNo = e.blockNumber();
@@ -475,6 +505,18 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
             List<UtxoDeltaCodec.OutRef> spentRefs = new ArrayList<>();
             int filteredOutputs = 0;
 
+            // Write Allegra bootstrap removals into this block's WriteBatch (atomic with delta)
+            if (doAllegraRemoval) {
+                BigInteger bootstrapRemoved = processAllegraRemoval(batch, spentRefs, slot);
+                batch.put(metadataHandle, allegraBootstrapDoneKey, "1".getBytes());
+                if (bootstrapRemoved.signum() > 0) {
+                    log.info("Allegra bootstrap: removed {} lovelace of Byron genesis UTXOs (block {})",
+                            bootstrapRemoved, blockNo);
+                } else {
+                    log.debug("Allegra bootstrap: no UTXOs to remove (already spent/removed)");
+                }
+            }
+
             // Track outputs created within this block for intra-block spend detection.
             // The pre-fetched ctx only sees cfUnspent state BEFORE this block's outputs.
             java.util.HashMap<String, byte[]> intraBlockOutputs = new java.util.HashMap<>();
@@ -486,7 +528,9 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
                     if (tx.getInputs() != null) {
                         for (var in : tx.getInputs()) {
                             byte[] key = UtxoKeyUtil.outpointKey(in.getTransactionId(), in.getIndex());
-                            byte[] prev = ctx.getUnspent(key);
+                            // Filter: bootstrap UTXOs removed by Allegra are unspendable
+                            byte[] prev = removedBootstrapOutpoints.contains(new ByteArrayKey(key))
+                                    ? null : ctx.getUnspent(key);
                             // Also check intra-block outputs (created earlier in this block)
                             String intraKey = in.getTransactionId() + ":" + in.getIndex();
                             if (prev == null) {
@@ -577,7 +621,9 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
                     if (tx.getCollateralInputs() != null) {
                         for (var in : tx.getCollateralInputs()) {
                             byte[] key = UtxoKeyUtil.outpointKey(in.getTransactionId(), in.getIndex());
-                            byte[] prev = ctx.getUnspent(key);
+                            // Filter: bootstrap UTXOs removed by Allegra are unspendable
+                            byte[] prev = removedBootstrapOutpoints.contains(new ByteArrayKey(key))
+                                    ? null : ctx.getUnspent(key);
                             String intraKey = in.getTransactionId() + ":" + in.getIndex();
                             if (prev == null) {
                                 prev = intraBlockOutputs.remove(intraKey);
@@ -749,6 +795,16 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
         }
     }
 
+    // Byron genesis outpoint keys — collected during genesis init, persisted separately.
+    // Only kept in memory briefly during storeByronGenesisUtxos() to return to caller for persistence.
+    private java.util.List<byte[]> byronGenesisOutpointKeys = new java.util.ArrayList<>();
+
+    // Allegra bootstrap removal — self-contained in applyBlock(), no external signal needed
+    private java.util.function.Supplier<java.util.List<byte[]>> byronGenesisKeysSupplier;
+    private java.util.function.Supplier<Boolean> allegraBootstrapDoneChecker;
+    private byte[] allegraBootstrapDoneKey;        // metadata CF key for completion marker
+    private org.rocksdb.ColumnFamilyHandle metadataHandle; // metadata CF handle for atomic write
+
     @Override
     public void storeByronGenesisUtxos(java.util.Map<String, BigInteger> nonAvvmBalances, long slot, long blockNumber, String blockHash) {
         if (!enabled || nonAvvmBalances == null || nonAvvmBalances.isEmpty()) return;
@@ -770,6 +826,9 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
                 byte[] outKey = UtxoKeyUtil.outpointKey(txHash, outputIndex);
                 batch.put(cfUnspent, outKey, val);
 
+                // Track outpoint key for Allegra bootstrap removal
+                byronGenesisOutpointKeys.add(outKey);
+
                 // Address index (address hash only — Byron addresses don't have Shelley-style payment credentials)
                 if (indexAddressHash) {
                     byte[] addrHash = UtxoKeyUtil.addrHash28(byronAddress);
@@ -783,6 +842,172 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
         } catch (Exception ex) {
             log.error("Failed to store Byron genesis UTXOs: {}", ex.toString());
         }
+    }
+
+    /**
+     * Get the outpoint keys of Byron genesis UTXOs collected during initialization.
+     * Only valid immediately after storeByronGenesisUtxos() — caller should persist these
+     * and then this list can be discarded.
+     */
+    public java.util.List<byte[]> getByronGenesisOutpointKeys() {
+        return java.util.Collections.unmodifiableList(byronGenesisOutpointKeys);
+    }
+
+    /**
+     * Clear the in-memory Byron genesis outpoint keys after they've been persisted.
+     */
+    public void clearByronGenesisOutpointKeys() {
+        byronGenesisOutpointKeys.clear();
+    }
+
+    /** Wrapper for byte[] to use in HashSet with proper equals/hashCode. */
+    private record ByteArrayKey(byte[] data) {
+        @Override public boolean equals(Object o) {
+            return o instanceof ByteArrayKey b && java.util.Arrays.equals(data, b.data);
+        }
+        @Override public int hashCode() { return java.util.Arrays.hashCode(data); }
+    }
+
+    /** Access to RocksDB for batch operations. */
+    public RocksDB getDb() {
+        return db;
+    }
+
+    /** Access to cfUnspent handle for direct queries. */
+    public ColumnFamilyHandle getCfUnspent() {
+        return cfUnspent;
+    }
+
+    /**
+     * Wire Allegra bootstrap removal dependencies. Called once during YaciNode wiring.
+     *
+     * @param keysSupplier       loads persisted Byron genesis outpoint keys on-demand
+     * @param doneChecker        checks if META_ALLEGRA_BOOTSTRAP_DONE marker is set
+     * @param doneKey            metadata CF key bytes for the completion marker
+     * @param metadataCfHandle   metadata column family handle for atomic marker write
+     */
+    public void wireAllegraBootstrapRemoval(
+            java.util.function.Supplier<java.util.List<byte[]>> keysSupplier,
+            java.util.function.Supplier<Boolean> doneChecker,
+            byte[] doneKey,
+            org.rocksdb.ColumnFamilyHandle metadataCfHandle) {
+        this.byronGenesisKeysSupplier = keysSupplier;
+        this.allegraBootstrapDoneChecker = doneChecker;
+        this.allegraBootstrapDoneKey = doneKey;
+        this.metadataHandle = metadataCfHandle;
+    }
+
+    /**
+     * Process Allegra bootstrap UTXO removal within a block's WriteBatch.
+     * Adds removed bootstrap UTXOs to spentRefs so they participate in the delta/rollback pipeline.
+     */
+    private BigInteger processAllegraRemoval(WriteBatch batch, java.util.List<UtxoDeltaCodec.OutRef> spentRefs, long slot) {
+        if (byronGenesisKeysSupplier == null) return BigInteger.ZERO;
+        java.util.List<byte[]> keys = byronGenesisKeysSupplier.get();
+        if (keys == null || keys.isEmpty()) return BigInteger.ZERO;
+
+        BigInteger totalRemoved = BigInteger.ZERO;
+        for (byte[] outKey : keys) {
+            try {
+                byte[] val = db.get(cfUnspent, outKey);
+                if (val == null) continue; // already spent or removed
+
+                var utxo = UtxoCborCodec.decodeUtxoRecord(val);
+                if (utxo != null && utxo.lovelace != null) {
+                    totalRemoved = totalRemoved.add(utxo.lovelace);
+                }
+
+                // Move to cfSpent (same as normal spent UTXO) for rollback support
+                byte[] spentWrapper = UtxoCborCodec.wrapSpent(val, slot);
+                batch.put(cfSpent, outKey, spentWrapper);
+                batch.delete(cfUnspent, outKey);
+
+                // Remove address index
+                if (indexAddressHash && utxo != null) {
+                    byte[] addrHash = UtxoKeyUtil.addrHash28(utxo.address);
+                    String txHash = UtxoKeyUtil.txHashFromOutpointKey(outKey);
+                    int outputIdx = UtxoKeyUtil.outputIndexFromOutpointKey(outKey);
+                    byte[] addrIdxKey = UtxoKeyUtil.addressIndexKey(addrHash, utxo.slot, txHash, outputIdx);
+                    batch.delete(cfAddr, addrIdxKey);
+                }
+
+                // Add to spentRefs for delta tracking
+                String txHash = UtxoKeyUtil.txHashFromOutpointKey(outKey);
+                int outputIdx = UtxoKeyUtil.outputIndexFromOutpointKey(outKey);
+                spentRefs.add(new UtxoDeltaCodec.OutRef(txHash, outputIdx));
+
+            } catch (Exception e) {
+                log.warn("Failed to remove bootstrap UTXO: {}", e.getMessage());
+            }
+        }
+        return totalRemoved;
+    }
+
+    /**
+     * Compute the total lovelace across all unspent UTXOs.
+     * Used at era boundaries to capture Shelley-start UTXO total.
+     * Scans all cfUnspent entries — expensive but only called once at boundary.
+     */
+    public BigInteger computeTotalUtxoLovelace() {
+        if (!enabled) return BigInteger.ZERO;
+        BigInteger total = BigInteger.ZERO;
+        try (RocksIterator it = db.newIterator(cfUnspent)) {
+            it.seekToFirst();
+            while (it.isValid()) {
+                try {
+                    var utxo = UtxoCborCodec.decodeUtxoRecord(it.value());
+                    if (utxo != null && utxo.lovelace != null) {
+                        total = total.add(utxo.lovelace);
+                    }
+                } catch (Exception e) {
+                    // Skip malformed entries
+                }
+                it.next();
+            }
+        }
+        return total;
+    }
+
+    /**
+     * Remove specific UTXOs from cfUnspent and cfAddr by their outpoint keys.
+     * Returns the total lovelace removed. Used at Allegra boundary for bootstrap UTXO removal.
+     *
+     * @param outpointKeys list of outpoint keys (txHash + outputIndex encoded)
+     * @param batch        WriteBatch to accumulate deletions (caller commits)
+     * @param deltaOps     delta ops list for rollback safety (nullable)
+     * @return total lovelace of removed UTXOs
+     */
+    public BigInteger removeUtxosByOutpointKeys(
+            java.util.List<byte[]> outpointKeys,
+            WriteBatch batch,
+            java.util.List<byte[]> previousValues) throws RocksDBException {
+        BigInteger removedTotal = BigInteger.ZERO;
+        for (byte[] outKey : outpointKeys) {
+            byte[] val = db.get(cfUnspent, outKey);
+            if (val == null) continue; // already spent/removed
+
+            var utxo = UtxoCborCodec.decodeUtxoRecord(val);
+            if (utxo != null && utxo.lovelace != null) {
+                removedTotal = removedTotal.add(utxo.lovelace);
+            }
+
+            // Record previous value for rollback
+            if (previousValues != null) {
+                previousValues.add(val);
+            }
+
+            batch.delete(cfUnspent, outKey);
+
+            // Remove address index entry if applicable
+            if (indexAddressHash && utxo != null) {
+                byte[] addrHash = UtxoKeyUtil.addrHash28(utxo.address);
+                String txHash = UtxoKeyUtil.txHashFromOutpointKey(outKey);
+                int outputIdx = UtxoKeyUtil.outputIndexFromOutpointKey(outKey);
+                byte[] addrIdxKey = UtxoKeyUtil.addressIndexKey(addrHash, utxo.slot, txHash, outputIdx);
+                batch.delete(cfAddr, addrIdxKey);
+            }
+        }
+        return removedTotal;
     }
 
     private final AtomicLong faucetNonce = new AtomicLong(System.nanoTime());
@@ -966,6 +1191,12 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
                 batch.delete(cfDelta, it.key());
                 it.prev();
             }
+            // Clear Allegra completion marker on any rollback — the self-check in
+            // applyBlock() will re-evaluate and re-set it on forward sync if needed.
+            if (allegraBootstrapDoneKey != null && metadataHandle != null) {
+                batch.delete(metadataHandle, allegraBootstrapDoneKey);
+            }
+
             db.write(wo, batch);
         } catch (Exception ex) {
             log.error("UTXO rollback failed: {}", ex.toString());
@@ -975,6 +1206,111 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
     @Override
     public void close() {
         if (metricsScheduler != null) metricsScheduler.shutdownNow();
+    }
+
+    // --- RollbackCapableStore implementation ---
+
+    @Override
+    public String storeName() {
+        return "utxoStore";
+    }
+
+    @Override
+    public long getLatestAppliedSlot() {
+        if (!enabled) return -1;
+        try {
+            byte[] val = db.get(cfMeta, META_LAST_APPLIED_SLOT);
+            if (val != null) return ByteBuffer.wrap(val).order(ByteOrder.BIG_ENDIAN).getLong();
+        } catch (Exception e) {
+            log.warn("Failed to read UTXO latest applied slot: {}", e.getMessage());
+        }
+        return -1;
+    }
+
+    @Override
+    public long getRollbackFloorSlot() {
+        if (!enabled) return 0;
+        // Floor = earliest retained delta entry's slot (actual data, not config estimate)
+        try (RocksIterator it = db.newIterator(cfDelta)) {
+            it.seekToFirst();
+            if (it.isValid()) {
+                var dec = UtxoDeltaCodec.decode(it.value());
+                return dec.slot();
+            }
+        } catch (Exception e) {
+            log.warn("Failed to read UTXO rollback floor: {}", e.getMessage());
+        }
+        return 0;
+    }
+
+    @Override
+    public void rollbackToSlot(long targetSlot) {
+        if (!enabled) return;
+        // Reuse internal rollback logic directly (no RollbackEvent construction)
+        try (WriteBatch batch = new WriteBatch(); WriteOptions wo = new WriteOptions(); RocksIterator it = db.newIterator(cfDelta)) {
+            it.seekToLast();
+            while (it.isValid()) {
+                var dec = UtxoDeltaCodec.decode(it.value());
+                if (dec.slot() <= targetSlot) break;
+                // Delete created
+                for (UtxoDeltaCodec.OutRef r : dec.created()) {
+                    byte[] okey = UtxoKeyUtil.outpointKey(r.txHash(), r.index());
+                    byte[] prev = db.get(cfUnspent, okey);
+                    if (prev != null) {
+                        var stored = UtxoCborCodec.decodeUtxoRecord(prev);
+                        if (indexAddressHash) {
+                            byte[] akey = UtxoKeyUtil.addrHash28(stored.address);
+                            byte[] aIdx = UtxoKeyUtil.addressIndexKey(akey, stored.slot, r.txHash(), r.index());
+                            batch.delete(cfAddr, aIdx);
+                        }
+                        if (indexPaymentCred) {
+                            byte[] pc = UtxoKeyUtil.paymentCred28(stored.address);
+                            if (pc != null) {
+                                byte[] pIdx = UtxoKeyUtil.addressIndexKey(pc, stored.slot, r.txHash(), r.index());
+                                batch.delete(cfAddr, pIdx);
+                            }
+                        }
+                        batch.delete(cfUnspent, okey);
+                    }
+                }
+                // Restore spent
+                for (UtxoDeltaCodec.OutRef r : dec.spent()) {
+                    byte[] okey = UtxoKeyUtil.outpointKey(r.txHash(), r.index());
+                    byte[] sval = db.get(cfSpent, okey);
+                    if (sval != null) {
+                        byte[] unspentVal = UtxoCborCodec.unwrapSpentUtxo(sval);
+                        batch.put(cfUnspent, okey, unspentVal);
+                        var stored = UtxoCborCodec.decodeUtxoRecord(unspentVal);
+                        if (indexAddressHash) {
+                            byte[] akey = UtxoKeyUtil.addrHash28(stored.address);
+                            byte[] aIdx = UtxoKeyUtil.addressIndexKey(akey, stored.slot, r.txHash(), r.index());
+                            batch.put(cfAddr, aIdx, new byte[0]);
+                        }
+                        if (indexPaymentCred) {
+                            byte[] pc = UtxoKeyUtil.paymentCred28(stored.address);
+                            if (pc != null) {
+                                byte[] pIdx = UtxoKeyUtil.addressIndexKey(pc, stored.slot, r.txHash(), r.index());
+                                batch.put(cfAddr, pIdx, new byte[0]);
+                            }
+                        }
+                        batch.delete(cfSpent, okey);
+                    }
+                }
+                batch.delete(cfDelta, it.key());
+                it.prev();
+            }
+            // Clear Allegra completion marker on rollback
+            if (allegraBootstrapDoneKey != null && metadataHandle != null) {
+                batch.delete(metadataHandle, allegraBootstrapDoneKey);
+            }
+            // Update meta slot
+            batch.put(cfMeta, META_LAST_APPLIED_SLOT,
+                    ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN).putLong(targetSlot).array());
+            db.write(wo, batch);
+            log.info("UTXO adhoc rollback to slot {} complete", targetSlot);
+        } catch (Exception ex) {
+            throw new RuntimeException("UTXO adhoc rollback failed", ex);
+        }
     }
 
     @Override

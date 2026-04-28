@@ -186,6 +186,19 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
     }
 
     /**
+     * Initialize previousEpoch from the current chain tip so the first epoch
+     * transition after startup is correctly detected. Without this, the first
+     * epoch boundary after restart (or adhoc rollback) is silently skipped
+     * because previousEpoch defaults to -1.
+     *
+     * <p>Must be called before block processing begins.</p>
+     */
+    public void initializePreviousEpoch(int epoch) {
+        this.previousEpoch = epoch;
+        log.info("BodyFetchManager: previousEpoch initialized to {}", epoch);
+    }
+
+    /**
      * Stop the body fetch manager.
      */
     public void stop() {
@@ -521,6 +534,8 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
                 blockBytes
             );
 
+            persistEraStartSlotIfNeeded(era, slot);
+
             // successful store resets stale counter
             consecutiveStaleBlocks.set(0);
 
@@ -658,6 +673,8 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
                 blockBytes
             );
 
+            persistEraStartSlotIfNeeded(Era.Byron, slot);
+
             // Detect epoch transition and publish PreEpochTransitionEvent BEFORE BlockAppliedEvent
             publishEpochTransitionEventsIfNeeded(slot, blockNumber);
 
@@ -771,6 +788,8 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
                 slot,
                 blockBytes
             );
+
+            persistEraStartSlotIfNeeded(Era.Byron, slot);
 
             // successful store resets stale counter
             consecutiveStaleBlocks.set(0);
@@ -1273,16 +1292,23 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
     }
 
     /**
-     * Compute epoch number for a given slot, mirroring DefaultAccountStateStore.epochForSlot().
+     * Compute epoch number for a given slot using shared EpochSlotCalc.
      */
     private int epochForSlot(long slot) {
         if (epochParamProvider == null) return -1;
-        long epochLength = epochParamProvider.getEpochLength();
-        long shelleyStart = epochParamProvider.getShelleyStartSlot();
-        if (shelleyStart <= 0) return (int) (slot / epochLength);
-        long byronEpochLen = epochParamProvider.getByronSlotsPerEpoch();
-        long shelleyStartEpoch = shelleyStart / byronEpochLen;
-        return (int) (shelleyStartEpoch + (slot - shelleyStart) / epochLength);
+        return epochParamProvider.getEpochSlotCalc().slotToEpoch(slot);
+    }
+
+    /**
+     * Persist the current block's era start slot before epoch-boundary processing sees this block.
+     * This closes the one-boundary timing hole where the first block of a new era triggers
+     * boundary processing before the later BlockAppliedEvent subscriber records the era start.
+     */
+    private void persistEraStartSlotIfNeeded(Era era, long slot) {
+        if (era == null) return;
+        if (chainState instanceof DirectRocksDBChainState rocksState) {
+            rocksState.setEraStartSlot(era.getValue(), slot);
+        }
     }
 
     /**

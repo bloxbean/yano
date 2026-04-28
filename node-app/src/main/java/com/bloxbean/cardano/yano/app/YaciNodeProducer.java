@@ -106,6 +106,10 @@ public class YaciNodeProducer {
     // Account state config
     @ConfigProperty(name = "yaci.node.account-state.enabled", defaultValue = "false")
     boolean accountStateEnabled;
+    @ConfigProperty(name = "yaci.node.account-state.epoch-block-data-retention-lag", defaultValue = "5")
+    int accountStateEpochBlockDataRetentionLag;
+    @ConfigProperty(name = "yaci.node.account-state.snapshot-retention-epochs", defaultValue = "50")
+    int accountStateSnapshotRetentionEpochs;
 
     // Epoch subsystem config
     @ConfigProperty(name = "yaci.node.epoch-snapshot.amounts-enabled", defaultValue = "false")
@@ -122,6 +126,14 @@ public class YaciNodeProducer {
     boolean governanceEnabled;
     @ConfigProperty(name = "yaci.node.snapshot-export.enabled", defaultValue = "false")
     boolean snapshotExportEnabled;
+    @ConfigProperty(name = "yaci.node.snapshot-export.stake", defaultValue = "false")
+    boolean snapshotExportStake;
+    @ConfigProperty(name = "yaci.node.snapshot-export.drep-dist", defaultValue = "true")
+    boolean snapshotExportDrepDist;
+    @ConfigProperty(name = "yaci.node.snapshot-export.adapot", defaultValue = "true")
+    boolean snapshotExportAdaPot;
+    @ConfigProperty(name = "yaci.node.snapshot-export.proposals", defaultValue = "true")
+    boolean snapshotExportProposals;
     @ConfigProperty(name = "yaci.node.exit-on-epoch-calc-error", defaultValue = "false")
     boolean exitOnEpochCalcError;
     @ConfigProperty(name = "yaci.node.auto-checkpoint-interval", defaultValue = "0")
@@ -271,6 +283,12 @@ public class YaciNodeProducer {
             case "mainnet":
                 yaciConfig = YaciNodeConfig.mainnetDefault();
                 break;
+            case "preview":
+                yaciConfig = YaciNodeConfig.previewDefault();
+                break;
+            case "sanchonet":
+                yaciConfig = YaciNodeConfig.sanchonetDefault();
+                break;
             case "preprod":
             default:
                 yaciConfig = YaciNodeConfig.preprodDefault();
@@ -332,6 +350,9 @@ public class YaciNodeProducer {
                 .bootstrapBlockfrostBaseUrl(bootstrapBlockfrostBaseUrl.orElse(null))
                 .bootstrapKoiosBaseUrl(bootstrapKoiosBaseUrl.orElse(null))
                 .network(network)
+                // Epoch/slot values are NOT set here — they must come from genesis
+                // at runtime via propagateGenesisToConfig(). Setting preset values here
+                // would mask misconfiguration for custom/unknown networks.
                 .build();
 
         // Validate configuration
@@ -361,6 +382,8 @@ public class YaciNodeProducer {
 
         // Account state
         globals.put("yaci.node.account-state.enabled", accountStateEnabled);
+        globals.put("yaci.node.account-state.epoch-block-data-retention-lag", accountStateEpochBlockDataRetentionLag);
+        globals.put("yaci.node.account-state.snapshot-retention-epochs", accountStateSnapshotRetentionEpochs);
 
         // Epoch subsystems
         globals.put("yaci.node.epoch-snapshot.amounts-enabled", epochSnapshotAmountsEnabled);
@@ -371,6 +394,10 @@ public class YaciNodeProducer {
         globals.put("yaci.node.governance.enabled", governanceEnabled);
         globals.put("yaci.node.snapshot-export.enabled", snapshotExportEnabled);
         globals.put("yaci.node.snapshot-export.dir", snapshotExportDir);
+        globals.put("yaci.node.snapshot-export.stake", snapshotExportStake);
+        globals.put("yaci.node.snapshot-export.drep-dist", snapshotExportDrepDist);
+        globals.put("yaci.node.snapshot-export.adapot", snapshotExportAdaPot);
+        globals.put("yaci.node.snapshot-export.proposals", snapshotExportProposals);
         globals.put("yaci.node.exit-on-epoch-calc-error", exitOnEpochCalcError);
         globals.put("yaci.node.auto-checkpoint-interval", autoCheckpointInterval);
 
@@ -607,10 +634,13 @@ public class YaciNodeProducer {
         }
     }
 
+    private static final long SANCHONET_PROTOCOL_MAGIC = 4;
+
     private static String networkDirForMagic(long magic) {
         if (magic == Constants.MAINNET_PROTOCOL_MAGIC) return "mainnet";
         if (magic == Constants.PREPROD_PROTOCOL_MAGIC) return "preprod";
         if (magic == Constants.PREVIEW_PROTOCOL_MAGIC) return "preview";
+        if (magic == SANCHONET_PROTOCOL_MAGIC) return "sanchonet";
         return null;
     }
 }

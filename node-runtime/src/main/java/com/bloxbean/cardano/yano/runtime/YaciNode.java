@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.runtime;
 
 import com.bloxbean.cardano.client.transaction.util.TransactionUtil;
+import java.math.BigInteger;
 import com.bloxbean.cardano.yaci.core.common.Constants;
 import com.bloxbean.cardano.yaci.core.common.TxBodyType;
 import com.bloxbean.cardano.yaci.core.config.YaciConfig;
@@ -59,6 +60,21 @@ import com.bloxbean.cardano.yano.api.account.AccountStateStore;
 import com.bloxbean.cardano.yano.api.account.AccountStateStoreContext;
 import com.bloxbean.cardano.yano.api.account.LedgerStateProvider;
 import com.bloxbean.cardano.yano.ledgerstate.AccountStateEventHandler;
+import com.bloxbean.cardano.yano.ledgerstate.AccountStateCfNames;
+import com.bloxbean.cardano.yano.ledgerstate.AdaPotTracker;
+import com.bloxbean.cardano.yano.ledgerstate.DefaultAccountStateStore;
+import com.bloxbean.cardano.yano.ledgerstate.EpochBoundaryProcessor;
+import com.bloxbean.cardano.yano.ledgerstate.EpochParamTracker;
+import com.bloxbean.cardano.yano.ledgerstate.EpochRewardCalculator;
+import com.bloxbean.cardano.yano.ledgerstate.EpochStakeSnapshotService;
+import com.bloxbean.cardano.yano.ledgerstate.NetworkConfigBuilder;
+import com.bloxbean.cardano.yano.runtime.config.DefaultEpochParamProvider;
+import com.bloxbean.cardano.yano.runtime.config.InMemoryDevnetGenesis;
+import com.bloxbean.cardano.yano.runtime.config.NetworkGenesisConfig;
+import com.bloxbean.cardano.yano.runtime.config.NetworkGenesisValuesFactory;
+import com.bloxbean.cardano.yano.runtime.genesis.ShelleyGenesisParser;
+import com.bloxbean.cardano.yano.api.util.EpochSlotCalc;
+import com.bloxbean.cardano.yano.runtime.era.EraProviderImpl;
 import com.bloxbean.cardano.yano.runtime.account.AccountStateStoreDiscovery;
 import com.bloxbean.cardano.yano.runtime.utxo.AddressUtxoFilter;
 import com.bloxbean.cardano.yano.runtime.utxo.DefaultUtxoStore;
@@ -177,9 +193,15 @@ public class YaciNode implements NodeAPI {
     private UtxoEventHandlerAsync utxoEventHandlerAsync;
     private ScheduledFuture<?> utxoLagTask;
     private AccountStateStore accountStateStore;
-    private com.bloxbean.cardano.yano.ledgerstate.EpochBoundaryProcessor epochBoundaryProcessor;
+    private EpochBoundaryProcessor epochBoundaryProcessor;
     private AccountStateEventHandler accountStateEventHandler;
     private com.bloxbean.cardano.yano.api.EpochParamProvider epochParamProvider;
+
+    // In-memory devnet genesis — set before start() for devnet mode without genesis files
+    private InMemoryDevnetGenesis inMemoryDevnetGenesis;
+
+    // Era metadata service — initialized after chainState and epochParamProvider are ready
+    private EraProviderImpl eraService;
 
     // Adhoc rollback — one-shot rollback on startup, before chain sync.
     // Set via command line, NOT application.yml (to avoid accidental re-rollback).
@@ -187,10 +209,22 @@ public class YaciNode implements NodeAPI {
     private int adhocRollbackToEpoch = -1;
 
     public YaciNode(YaciNodeConfig config) {
-        this(config, RuntimeOptions.defaults());
+        this(config, RuntimeOptions.defaults(), null);
     }
 
     public YaciNode(YaciNodeConfig config, RuntimeOptions options) {
+        this(config, options, null);
+    }
+
+    /**
+     * @param inMemoryGenesis in-memory devnet genesis (nullable — only for devnet block-producer mode)
+     */
+    public YaciNode(YaciNodeConfig config, RuntimeOptions options, InMemoryDevnetGenesis inMemoryGenesis) {
+        if (inMemoryGenesis != null && (!config.isDevMode() || !config.isEnableBlockProducer())) {
+            throw new IllegalStateException(
+                    "In-memory devnet genesis is only valid when devMode=true and enableBlockProducer=true");
+        }
+        this.inMemoryDevnetGenesis = inMemoryGenesis;
         this.config = config;
         this.runtimeOptions = options != null ? options : RuntimeOptions.defaults();
         this.remoteCardanoHost = config.getRemoteHost();
@@ -302,9 +336,42 @@ public class YaciNode implements NodeAPI {
         try {
             Object acctEnabledOpt = this.runtimeOptions.globals().get("yaci.node.account-state.enabled");
             boolean acctEnabled = acctEnabledOpt instanceof Boolean b ? b : Boolean.parseBoolean(String.valueOf(acctEnabledOpt));
+            // Resolve genesis config once — from in-memory (devnet) or files (public networks)
+            NetworkGenesisConfig networkGenesisConfig = null;
+            if (inMemoryDevnetGenesis != null) {
+                networkGenesisConfig = NetworkGenesisConfig.fromInMemory(
+                        inMemoryDevnetGenesis.shelley(),
+                        inMemoryDevnetGenesis.byron(),
+                        inMemoryDevnetGenesis.conway());
+                log.info("Using in-memory devnet genesis");
+            } else if (config.getShelleyGenesisFile() != null && !config.getShelleyGenesisFile().isBlank()) {
+                networkGenesisConfig = NetworkGenesisConfig.load(
+                        config.getShelleyGenesisFile(),
+                        config.getByronGenesisFile(),
+                        null, // alonzo — not needed here
+                        config.getConwayGenesisFile());
+            }
+
             if (acctEnabled) {
-                this.epochParamProvider = new com.bloxbean.cardano.yano.runtime.config.DefaultEpochParamProvider(
-                        config.getProtocolParametersFile(), config.getShelleyGenesisFile());
+                // Build epoch param provider from genesis config — fail fast if genesis is configured but broken
+                if (networkGenesisConfig != null) {
+                    long firstNonByronSlot = DefaultEpochParamProvider
+                            .resolveFirstNonByronSlot(
+                                    networkGenesisConfig.getNetworkMagic(),
+                                    networkGenesisConfig.hasByronGenesis());
+                    this.epochParamProvider = DefaultEpochParamProvider
+                            .fromNetworkGenesisConfig(networkGenesisConfig, firstNonByronSlot);
+                } else {
+                    throw new IllegalStateException(
+                            "Account-state requires genesis configuration (file-based or in-memory devnet genesis) " +
+                            "to initialize epoch parameters");
+                }
+                // Initialize EraService once — reused for Conway resolution and era-transition updates
+                if (chainState instanceof DirectRocksDBChainState rocksChainForEra) {
+                    this.eraService = new EraProviderImpl(
+                            rocksChainForEra, this.epochParamProvider.getEpochSlotCalc());
+                }
+
                 var epochParamProvider = this.epochParamProvider;
                 var storeContext = new AccountStateStoreContext(
                         chainState, this.runtimeOptions.globals(), log, epochParamProvider);
@@ -318,7 +385,7 @@ public class YaciNode implements NodeAPI {
                     log.warn("Account state reconciliation error: {}", t.toString());
                 }
                 // Wire UtxoState and optional epoch subsystems
-                if (this.accountStateStore instanceof com.bloxbean.cardano.yano.ledgerstate.DefaultAccountStateStore defaultStore) {
+                if (this.accountStateStore instanceof DefaultAccountStateStore defaultStore) {
                     if (this.utxoStore instanceof UtxoState utxo) {
                         defaultStore.setUtxoState(utxo);
                     }
@@ -328,7 +395,7 @@ public class YaciNode implements NodeAPI {
                             String.valueOf(this.runtimeOptions.globals().getOrDefault("yaci.node.epoch-snapshot.amounts-enabled", "false")));
                     if (snapshotAmountsEnabled) {
                         defaultStore.setStakeSnapshotService(
-                                new com.bloxbean.cardano.yano.ledgerstate.EpochStakeSnapshotService(true));
+                                new EpochStakeSnapshotService(true));
                         String balMode = String.valueOf(this.runtimeOptions.globals()
                                 .getOrDefault("yaci.node.epoch-snapshot.balance-mode", "full-scan"));
                         defaultStore.setBalanceMode(balMode);
@@ -341,29 +408,35 @@ public class YaciNode implements NodeAPI {
                     if (adaPotEnabled && chainState instanceof DirectRocksDBChainState rocks) {
                         var rocksDb = (org.rocksdb.RocksDB) rocks.getDb();
                         var cfHandle = (org.rocksdb.ColumnFamilyHandle) rocks.getColumnFamilyHandle(
-                                com.bloxbean.cardano.yano.ledgerstate.AccountStateCfNames.ACCT_STATE);
+                                AccountStateCfNames.ACCT_STATE);
                         if (cfHandle != null) {
-                            var adaPotTracker = new com.bloxbean.cardano.yano.ledgerstate.AdaPotTracker(
-                                    rocksDb, cfHandle, true);
+                            if (networkGenesisConfig == null) {
+                                throw new IllegalStateException(
+                                        "AdaPot enabled but no Shelley genesis file configured — cannot resolve maxLovelaceSupply");
+                            }
+                            BigInteger maxLovelaceSupply = BigInteger.valueOf(
+                                    networkGenesisConfig.getShelleyGenesisData().maxLovelaceSupply());
+                            var adaPotTracker = new AdaPotTracker(
+                                    rocksDb, cfHandle, true, maxLovelaceSupply);
                             defaultStore.setAdaPotTracker(adaPotTracker);
-                            log.info("AdaPot tracker enabled");
+                            log.info("AdaPot tracker enabled (maxLovelaceSupply={})", maxLovelaceSupply);
                         }
                     }
 
                     // Enable protocol param tracker if configured
                     boolean epochParamsEnabled = Boolean.parseBoolean(
                             String.valueOf(this.runtimeOptions.globals().getOrDefault("yaci.node.epoch-params.tracking-enabled", "false")));
-                    com.bloxbean.cardano.yano.ledgerstate.EpochParamTracker paramTrackerInstance = null;
+                    EpochParamTracker paramTrackerInstance = null;
                     if (epochParamsEnabled && chainState instanceof DirectRocksDBChainState rocks2) {
                         var rocksDb2 = (org.rocksdb.RocksDB) rocks2.getDb();
                         var cfEpochParams = (org.rocksdb.ColumnFamilyHandle) rocks2.getColumnFamilyHandle(
-                                com.bloxbean.cardano.yano.ledgerstate.AccountStateCfNames.EPOCH_PARAMS);
-                        paramTrackerInstance = new com.bloxbean.cardano.yano.ledgerstate.EpochParamTracker(
+                                AccountStateCfNames.EPOCH_PARAMS);
+                        paramTrackerInstance = new EpochParamTracker(
                                 epochParamProvider, true, rocksDb2, cfEpochParams);
                         defaultStore.setParamTracker(paramTrackerInstance);
                         log.info("Epoch param tracker enabled (with RocksDB persistence)");
                     } else if (epochParamsEnabled) {
-                        paramTrackerInstance = new com.bloxbean.cardano.yano.ledgerstate.EpochParamTracker(
+                        paramTrackerInstance = new EpochParamTracker(
                                 epochParamProvider, true);
                         defaultStore.setParamTracker(paramTrackerInstance);
                         log.info("Epoch param tracker enabled (in-memory only)");
@@ -372,15 +445,15 @@ public class YaciNode implements NodeAPI {
                     // Enable reward calculator if configured
                     boolean rewardsEnabled = Boolean.parseBoolean(
                             String.valueOf(this.runtimeOptions.globals().getOrDefault("yaci.node.rewards.enabled", "false")));
-                    com.bloxbean.cardano.yano.ledgerstate.EpochRewardCalculator rewardCalcInstance = null;
+                    EpochRewardCalculator rewardCalcInstance = null;
                     if (rewardsEnabled && chainState instanceof DirectRocksDBChainState rocks) {
                         var rocksDb = (org.rocksdb.RocksDB) rocks.getDb();
                         var cfState = (org.rocksdb.ColumnFamilyHandle) rocks.getColumnFamilyHandle(
-                                com.bloxbean.cardano.yano.ledgerstate.AccountStateCfNames.ACCT_STATE);
+                                AccountStateCfNames.ACCT_STATE);
                         var cfSnapshot = (org.rocksdb.ColumnFamilyHandle) rocks.getColumnFamilyHandle(
-                                com.bloxbean.cardano.yano.ledgerstate.AccountStateCfNames.EPOCH_DELEG_SNAPSHOT);
+                                AccountStateCfNames.EPOCH_DELEG_SNAPSHOT);
                         if (cfState != null && cfSnapshot != null) {
-                            rewardCalcInstance = new com.bloxbean.cardano.yano.ledgerstate.EpochRewardCalculator(
+                            rewardCalcInstance = new EpochRewardCalculator(
                                     rocksDb, cfState, cfSnapshot, true);
                             rewardCalcInstance.setLedgerStateProvider(defaultStore);
                             rewardCalcInstance.setAccountStateStore(defaultStore);
@@ -389,20 +462,80 @@ public class YaciNode implements NodeAPI {
                         }
                     }
 
+                    // Build CF NetworkConfig from genesis — shared by both reward calc and AdaPot bootstrap
+                    org.cardanofoundation.rewards.calculation.config.NetworkConfig cfNetConfig = null;
+                    long magic = config.getProtocolMagic();
+                    if (networkGenesisConfig != null) {
+                        // Build overrides from persisted state for custom networks
+                        var overrides = buildOverridesFromChainState(networkGenesisConfig);
+
+                        try {
+                            var genesisValues = NetworkGenesisValuesFactory
+                                    .build(networkGenesisConfig, overrides);
+                            cfNetConfig = NetworkConfigBuilder.build(genesisValues);
+                            log.info("CF NetworkConfig built from genesis");
+                        } catch (IllegalStateException e) {
+                            // Unknown+Byron network without persisted boundary value —
+                            // allowed only during fresh genesis sync. cfNetConfig stays null
+                            // and will be built lazily after boundary capture.
+                            if (chainState.getTip() == null) {
+                                log.info("Unknown+Byron network: cfNetConfig deferred until boundary capture (fresh sync)");
+                            } else {
+                                throw e; // Not fresh sync — fail fast
+                            }
+                        }
+                    } else {
+                        // No genesis — fallback only for known public networks
+                        boolean isKnown = (magic == 764824073 || magic == 1 || magic == 2 || magic == 4);
+                        if (isKnown) {
+                            cfNetConfig = EpochRewardCalculator.resolveNetworkConfig(magic);
+                            log.info("CF NetworkConfig resolved from built-in config for known network magic={}", magic);
+                        } else {
+                            throw new IllegalStateException(
+                                    "No genesis files configured for unknown network (magic=" + magic + "). " +
+                                    "Cannot build CF NetworkConfig without genesis.");
+                        }
+                    }
+
+                    // Inject CF NetworkConfig into reward calculator if available
+                    if (rewardCalcInstance != null && cfNetConfig != null) {
+                        rewardCalcInstance.setCfNetworkConfig(cfNetConfig);
+                    }
+
+                    // Inject EraProvider into account store for Conway-era detection
+                    if (eraService != null) {
+                        defaultStore.setEraProvider(eraService);
+                    }
+                    Integer firstConwayEpoch = eraService != null
+                            ? eraService.resolveFirstConwayEpochOrNull() : null;
+                    log.info("firstConwayEpoch resolved: {}", firstConwayEpoch);
+
                     // Wire epoch boundary processor if any subsystem is enabled
-                    com.bloxbean.cardano.yano.ledgerstate.EpochBoundaryProcessor boundaryProcessor = null;
+                    EpochBoundaryProcessor boundaryProcessor = null;
                     if (adaPotEnabled || rewardsEnabled || epochParamsEnabled) {
-                        long magic = config.getProtocolMagic();
                         defaultStore.setNetworkMagic(magic);
-                        boundaryProcessor = new com.bloxbean.cardano.yano.ledgerstate.EpochBoundaryProcessor(
+                        boundaryProcessor = new EpochBoundaryProcessor(
                                 defaultStore.getAdaPotTracker(),
                                 rewardCalcInstance,
                                 paramTrackerInstance,
                                 epochParamProvider,
-                                magic);
+                                magic,
+                                cfNetConfig);
                         this.epochBoundaryProcessor = boundaryProcessor;
                         defaultStore.setEpochBoundaryProcessor(boundaryProcessor);
                         boundaryProcessor.setSnapshotCreator(defaultStore);
+
+                        // Wire Allegra bootstrap UTXO removal callback if UTXO store is available
+                        // Wire Allegra bootstrap UTXO removal — self-contained in DefaultUtxoStore.applyBlock()
+                        if (utxoStore instanceof com.bloxbean.cardano.yano.runtime.utxo.DefaultUtxoStore defaultUtxoStore
+                                && chainState instanceof DirectRocksDBChainState rocksChain) {
+                            defaultUtxoStore.wireAllegraBootstrapRemoval(
+                                    rocksChain::getByronGenesisUtxoKeys,
+                                    rocksChain::isAllegraBootstrapDone,
+                                    rocksChain.getAllegraBootstrapDoneKey(),
+                                    rocksChain.getMetadataHandle());
+                        }
+
                         boolean exitOnCalcError = Boolean.parseBoolean(
                                 String.valueOf(runtimeOptions.globals().getOrDefault("yaci.node.exit-on-epoch-calc-error", "false")));
                         boundaryProcessor.setExitOnEpochCalcError(exitOnCalcError);
@@ -439,11 +572,11 @@ public class YaciNode implements NodeAPI {
                     if (governanceEnabled && chainState instanceof DirectRocksDBChainState rocks) {
                         var rocksDb = (org.rocksdb.RocksDB) rocks.getDb();
                         var cfState = (org.rocksdb.ColumnFamilyHandle) rocks.getColumnFamilyHandle(
-                                com.bloxbean.cardano.yano.ledgerstate.AccountStateCfNames.ACCT_STATE);
+                                AccountStateCfNames.ACCT_STATE);
                         var cfSnapshot = (org.rocksdb.ColumnFamilyHandle) rocks.getColumnFamilyHandle(
-                                com.bloxbean.cardano.yano.ledgerstate.AccountStateCfNames.EPOCH_DELEG_SNAPSHOT);
+                                AccountStateCfNames.EPOCH_DELEG_SNAPSHOT);
                         var cfDelta = (org.rocksdb.ColumnFamilyHandle) rocks.getColumnFamilyHandle(
-                                com.bloxbean.cardano.yano.ledgerstate.AccountStateCfNames.ACCT_DELTA);
+                                AccountStateCfNames.ACCT_DELTA);
 
                         if (cfState != null) {
                             // Create governance subsystem components
@@ -462,17 +595,31 @@ public class YaciNode implements NodeAPI {
                                         rocksDb, cfState, cfSnapshot, govStore);
                                 var drepExpiryCalc = new com.bloxbean.cardano.yano.ledgerstate.governance.epoch.DRepExpiryCalculator();
 
+                                // Always pass the DefaultEpochParamProvider (with Conway genesis-loaded
+                                // voting thresholds + minPoolCost + etc) as `paramProvider`. The tracker
+                                // implements EpochParamProvider too, but its default interface methods
+                                // return null for thresholds, which would cause GovernanceEpochProcessor
+                                // to hit the fail-safe `BigDecimal.ONE` branch and block all ratifications.
+                                // paramTracker is passed separately so on-chain ProtocolParamUpdates still
+                                // take precedence when present.
                                 var govEpochProcessor = new com.bloxbean.cardano.yano.ledgerstate.governance.epoch.GovernanceEpochProcessor(
                                         rocksDb, cfState, cfDelta,
                                         govStore, drepDistCalc, drepExpiryCalc,
                                         ratEngine, enactProc, dropService,
-                                        paramTrackerInstance != null ? paramTrackerInstance : epochParamProvider,
+                                        epochParamProvider,
                                         paramTrackerInstance,
                                         defaultStore.getAdaPotTracker(),
                                         defaultStore::resolvePoolStakeForEpoch,
                                         defaultStore.asRewardRestStore(),
                                         config.getConwayGenesisFile()
                                 );
+                                if (eraService != null) {
+                                    govEpochProcessor.setEraProvider(eraService);
+                                }
+                                // Wire boundary delta journal for rollback-safe governance writes
+                                if (accountStateStore instanceof DefaultAccountStateStore das) {
+                                    govEpochProcessor.setBoundaryDeltaWriter(das::commitBoundaryDelta);
+                                }
                                 boundaryProcessor.setGovernanceEpochProcessor(govEpochProcessor);
                             }
                             log.info("Governance subsystem enabled (block processor + epoch processor)");
@@ -584,17 +731,21 @@ public class YaciNode implements NodeAPI {
             }
 
             // Always load genesis config if any genesis files are configured (for protocol params, epoch length, etc.)
-            if (genesisConfig == null && hasAnyGenesisConfig()) {
-                genesisConfig = GenesisConfig.load(
-                        config.getShelleyGenesisFile(),
-                        config.getByronGenesisFile(),
-                        config.getProtocolParametersFile());
-
-                // Propagate epoch length from genesis to config
-                if (genesisConfig.getShelleyGenesisData() != null
-                        && genesisConfig.getShelleyGenesisData().epochLength() > 0) {
-                    config.setEpochLength(genesisConfig.getShelleyGenesisData().epochLength());
+            if (genesisConfig == null && (hasAnyGenesisConfig() || inMemoryDevnetGenesis != null)) {
+                if (inMemoryDevnetGenesis != null) {
+                    genesisConfig = GenesisConfig.fromInMemory(
+                            inMemoryDevnetGenesis.shelley(),
+                            inMemoryDevnetGenesis.byron(),
+                            inMemoryDevnetGenesis.protocolParametersJson());
+                } else {
+                    genesisConfig = GenesisConfig.load(
+                            config.getShelleyGenesisFile(),
+                            config.getByronGenesisFile(),
+                            config.getProtocolParametersFile());
                 }
+
+                // Propagate epoch params from genesis to config (for REST layer)
+                propagateGenesisToConfig(genesisConfig);
 
                 log.info("Genesis config loaded (protocolParams={}, shelleyData={})",
                         genesisConfig.hasProtocolParameters() ? "available" : "none",
@@ -1071,15 +1222,19 @@ public class YaciNode implements NodeAPI {
 
     private void loadAndPropagateGenesisConfig() {
         if (genesisConfig == null) {
-            genesisConfig = GenesisConfig.load(
-                    config.getShelleyGenesisFile(),
-                    config.getByronGenesisFile(),
-                    config.getProtocolParametersFile());
-
-            if (genesisConfig.getShelleyGenesisData() != null
-                    && genesisConfig.getShelleyGenesisData().epochLength() > 0) {
-                config.setEpochLength(genesisConfig.getShelleyGenesisData().epochLength());
+            if (inMemoryDevnetGenesis != null) {
+                genesisConfig = GenesisConfig.fromInMemory(
+                        inMemoryDevnetGenesis.shelley(),
+                        inMemoryDevnetGenesis.byron(),
+                        inMemoryDevnetGenesis.protocolParametersJson());
+            } else {
+                genesisConfig = GenesisConfig.load(
+                        config.getShelleyGenesisFile(),
+                        config.getByronGenesisFile(),
+                        config.getProtocolParametersFile());
             }
+
+            propagateGenesisToConfig(genesisConfig);
         }
     }
 
@@ -1222,7 +1377,9 @@ public class YaciNode implements NodeAPI {
     }
 
     /**
-     * Set Conway era start at slot 0 for devnet block producer mode on fresh start.
+     * Fresh devnet shortcut: mark Conway era at slot 0 so EraProviderImpl treats the
+     * devnet as Conway-or-later from genesis. This is intentional for devnets that
+     * start post-bootstrap with PV10+ behavior — not generic Conway detection for synced chains.
      */
     private void setConwayEraStartIfFreshStart(boolean freshStart) {
         if (freshStart && chainState instanceof DirectRocksDBChainState rocksState) {
@@ -1367,6 +1524,49 @@ public class YaciNode implements NodeAPI {
                 BlockAppliedEvent event = ctx.event();
                 if (event.era() != null && chainState instanceof DirectRocksDBChainState rocksState) {
                     rocksState.setEraStartSlot(event.era().getValue(), event.slot());
+
+                    // EraProviderImpl reads live from chainState — no manual propagation needed.
+                    // Once setEraStartSlot persists Conway, eraProvider.isConwayOrLater() returns true.
+
+                    // Fix 5: Capture Shelley-start UTXO total at first non-Byron era transition
+                    // for custom networks with Byron history. This runs once — setShelleyStartUtxoTotal
+                    // is idempotent (no-op if already stored).
+                    if (event.era().getValue() > Era.Byron.getValue()
+                            && utxoStore instanceof com.bloxbean.cardano.yano.runtime.utxo.DefaultUtxoStore defaultUtxo
+                            && rocksState.getShelleyStartUtxoTotal().isEmpty()) {
+                        BigInteger total = defaultUtxo.computeTotalUtxoLovelace();
+                        rocksState.setShelleyStartUtxoTotal(total);
+                        log.info("Captured Shelley-start UTXO total at era transition: {} lovelace", total);
+
+                        // Lazily build cfNetConfig now that boundary UTXO is available
+                        if (inMemoryDevnetGenesis != null || (config.getShelleyGenesisFile() != null && !config.getShelleyGenesisFile().isBlank())) {
+                            try {
+                                var ngc = inMemoryDevnetGenesis != null
+                                        ? NetworkGenesisConfig.fromInMemory(
+                                                inMemoryDevnetGenesis.shelley(), inMemoryDevnetGenesis.byron(), inMemoryDevnetGenesis.conway())
+                                        : NetworkGenesisConfig.load(
+                                                config.getShelleyGenesisFile(), config.getByronGenesisFile(),
+                                                null, config.getConwayGenesisFile());
+                                var lazyOverrides = buildOverridesFromChainState(ngc);
+                                var genesisValues = NetworkGenesisValuesFactory
+                                        .build(ngc, lazyOverrides);
+                                var lazyCfConfig = NetworkConfigBuilder
+                                        .build(genesisValues);
+
+                                // Inject into BOTH reward calculator and boundary processor
+                                if (accountStateStore instanceof DefaultAccountStateStore ds) {
+                                    var rc = ds.getRewardCalculator();
+                                    if (rc != null) rc.setCfNetworkConfig(lazyCfConfig);
+                                }
+                                if (epochBoundaryProcessor != null) {
+                                    epochBoundaryProcessor.setCfNetworkConfig(lazyCfConfig);
+                                }
+                                log.info("Lazily built cfNetConfig after boundary capture for unknown+Byron network");
+                            } catch (Exception e) {
+                                log.error("Failed to lazily build cfNetConfig after boundary capture: {}", e.getMessage());
+                            }
+                        }
+                    }
                 }
             }, SubscriptionOptions.builder().build());
         }
@@ -1471,18 +1671,21 @@ public class YaciNode implements NodeAPI {
      * using tx_hash = blake2b(address) convention (matching yaci-store and wallets).
      */
     private void initializeGenesisUtxos() {
-        log.info("Initializing genesis UTXOs from genesis files...");
+        log.info("Initializing genesis UTXOs...");
 
-        genesisConfig = GenesisConfig.load(
-                config.getShelleyGenesisFile(),
-                config.getByronGenesisFile(),
-                config.getProtocolParametersFile());
-
-        // Propagate epoch length from genesis to config so REST layer can use it
-        if (genesisConfig.getShelleyGenesisData() != null
-                && genesisConfig.getShelleyGenesisData().epochLength() > 0) {
-            config.setEpochLength(genesisConfig.getShelleyGenesisData().epochLength());
+        if (inMemoryDevnetGenesis != null) {
+            genesisConfig = GenesisConfig.fromInMemory(
+                    inMemoryDevnetGenesis.shelley(),
+                    inMemoryDevnetGenesis.byron(),
+                    inMemoryDevnetGenesis.protocolParametersJson());
+        } else {
+            genesisConfig = GenesisConfig.load(
+                    config.getShelleyGenesisFile(),
+                    config.getByronGenesisFile(),
+                    config.getProtocolParametersFile());
         }
+
+        propagateGenesisToConfig(genesisConfig);
 
         boolean hasFunds = genesisConfig.hasInitialFunds() || genesisConfig.hasByronBalances();
 
@@ -1498,6 +1701,16 @@ public class YaciNode implements NodeAPI {
                 if (genesisConfig.hasByronBalances()) {
                     utxoStore.storeByronGenesisUtxos(genesisConfig.getByronBalances(),
                             0, 0, blockHash);
+
+                    // Persist Byron genesis UTXO outpoint keys for Allegra removal, then free memory
+                    if (utxoStore instanceof com.bloxbean.cardano.yano.runtime.utxo.DefaultUtxoStore defaultUtxo
+                            && chainState instanceof DirectRocksDBChainState rocksState) {
+                        var keys = defaultUtxo.getByronGenesisOutpointKeys();
+                        if (!keys.isEmpty()) {
+                            rocksState.setByronGenesisUtxoKeys(keys);
+                            defaultUtxo.clearByronGenesisOutpointKeys();
+                        }
+                    }
                 }
             }
 
@@ -1506,6 +1719,79 @@ public class YaciNode implements NodeAPI {
                     genesisConfig.getByronBalances().size());
         } else {
             log.info("No genesis funds found in genesis files");
+        }
+    }
+
+    /**
+     * Build NetworkGenesisValuesFactory.Overrides from persisted chain state.
+     * Reads boundary UTXO total and era start slots (converted to epochs).
+     */
+    private NetworkGenesisValuesFactory.Overrides buildOverridesFromChainState(
+            NetworkGenesisConfig ngc) {
+        BigInteger overrideUtxo = null;
+        Integer overrideShelleyEpoch = null;
+        Integer overrideAllegraEpoch = null;
+        Integer overrideVasilEpoch = null;
+
+        if (chainState instanceof DirectRocksDBChainState rocksState) {
+            overrideUtxo = rocksState.getShelleyStartUtxoTotal().orElse(null);
+
+            // Derive hardfork epochs from persisted era start slots
+            var epochCalc = epochParamProvider != null ? epochParamProvider.getEpochSlotCalc() : null;
+            if (epochCalc != null) {
+                var shelleySlot = rocksState.getEraStartSlot(com.bloxbean.cardano.yaci.core.model.Era.Shelley.getValue());
+                if (shelleySlot.isPresent()) {
+                    overrideShelleyEpoch = epochCalc.slotToEpoch(shelleySlot.getAsLong());
+                }
+                var allegraSlot = rocksState.getEraStartSlot(com.bloxbean.cardano.yaci.core.model.Era.Allegra.getValue());
+                if (allegraSlot.isPresent()) {
+                    overrideAllegraEpoch = epochCalc.slotToEpoch(allegraSlot.getAsLong());
+                }
+                // Vasil = Babbage era start
+                var babbageSlot = rocksState.getEraStartSlot(com.bloxbean.cardano.yaci.core.model.Era.Babbage.getValue());
+                if (babbageSlot.isPresent()) {
+                    overrideVasilEpoch = epochCalc.slotToEpoch(babbageSlot.getAsLong());
+                }
+            }
+        }
+
+        return new NetworkGenesisValuesFactory.Overrides(
+                overrideUtxo, overrideShelleyEpoch, overrideAllegraEpoch, overrideVasilEpoch);
+    }
+
+    /**
+     * Delete parquet epoch directories after the target epoch (derived artifacts from rolled-back state).
+     */
+    private void cleanupParquetExportsAfterRollback(int targetEpoch) {
+        Object exportDirObj = runtimeOptions.globals().get("yaci.node.snapshot-export.dir");
+        if (exportDirObj == null) return;
+        String exportDir = String.valueOf(exportDirObj);
+        if (exportDir.isBlank()) return;
+
+        java.io.File dir = new java.io.File(exportDir);
+        if (!dir.exists() || !dir.isDirectory()) return;
+
+        java.io.File[] epochDirs = dir.listFiles(f -> f.isDirectory() && f.getName().startsWith("epoch="));
+        if (epochDirs == null) return;
+
+        int deleted = 0;
+        for (java.io.File epochDir : epochDirs) {
+            try {
+                int epoch = Integer.parseInt(epochDir.getName().substring("epoch=".length()));
+                if (epoch > targetEpoch) {
+                    java.nio.file.Files.walk(epochDir.toPath())
+                            .sorted(java.util.Comparator.reverseOrder())
+                            .map(java.nio.file.Path::toFile)
+                            .forEach(java.io.File::delete);
+                    deleted++;
+                }
+            } catch (NumberFormatException ignored) {
+            } catch (Exception e) {
+                log.warn("Failed to delete parquet epoch dir {}: {}", epochDir, e.getMessage());
+            }
+        }
+        if (deleted > 0) {
+            log.info("Parquet cleanup: deleted {} epoch directories after epoch {}", deleted, targetEpoch);
         }
     }
 
@@ -1601,39 +1887,78 @@ public class YaciNode implements NodeAPI {
     }
 
     /**
+     * Set in-memory devnet genesis data for startup without genesis files.
+     * Prefer using the 3-arg constructor instead. This setter exists for backward compatibility.
+     * Must be called before {@link #start()}. Only valid in devnet block-producer mode.
+     * Note: account-state initialization happens in the constructor, so this setter only
+     * affects genesis consumers initialized in start() (block producer, genesis UTXOs).
+     * For full in-memory genesis support, use the 3-arg constructor.
+     */
+    public void setInMemoryDevnetGenesis(InMemoryDevnetGenesis genesis) {
+        if (isRunning()) {
+            throw new IllegalStateException("Cannot set in-memory genesis after node has started");
+        }
+        if (!config.isDevMode() || !config.isEnableBlockProducer()) {
+            throw new IllegalStateException(
+                    "In-memory devnet genesis is only valid when devMode=true and enableBlockProducer=true");
+        }
+        this.inMemoryDevnetGenesis = genesis;
+    }
+
+    /**
+     * Propagate genesis-derived epoch params to YaciNodeConfig so the REST layer
+     * (EpochUtil) has era-aware values for epoch/slot conversion.
+     */
+    /**
+     * Propagate genesis-derived epoch params to YaciNodeConfig so the REST layer
+     * (EpochUtil) and other consumers have era-aware values for epoch/slot conversion.
+     * <p>
+     * Must set all three fields together: epochLength, byronSlotsPerEpoch, firstNonByronSlot.
+     * Fails fast if firstNonByronSlot cannot be resolved for an unknown Byron network.
+     */
+    private void propagateGenesisToConfig(com.bloxbean.cardano.yano.runtime.blockproducer.GenesisConfig gc) {
+        if (gc.getShelleyGenesisData() != null && gc.getShelleyGenesisData().epochLength() > 0) {
+            config.setEpochLength(gc.getShelleyGenesisData().epochLength());
+        }
+        if (gc.getByronGenesisData() != null && gc.getByronGenesisData().k() > 0) {
+            config.setByronSlotsPerEpoch(gc.getByronGenesisData().epochLength());
+        } else if (gc.getShelleyGenesisData() != null && gc.getShelleyGenesisData().securityParam() > 0) {
+            // Fallback: derive byronSlotsPerEpoch from Shelley securityParam
+            config.setByronSlotsPerEpoch(gc.getShelleyGenesisData().securityParam() * 10);
+        }
+        // Resolve firstNonByronSlot — fail fast for unknown Byron networks
+        long firstNonByron = DefaultEpochParamProvider
+                .resolveFirstNonByronSlot(protocolMagic, gc.getByronGenesisData() != null);
+        config.setFirstNonByronSlot(firstNonByron);
+    }
+
+    /**
      * Perform adhoc rollback if configured. Called from start() after reconcile/validate
      * but before chain sync begins. Does NOT require dev mode.
+     * <p>
+     * Rolls back ALL authoritative stores synchronously in dependency-safe order
+     * (AccountState → UTXO → ChainState), verifies post-rollback state, then
+     * cleans up derived artifacts (parquet exports) directly.
      */
     private void performAdhocRollback() {
         long targetSlot = -1;
 
         if (adhocRollbackToEpoch >= 0) {
-            // Compute slot from epoch using well-known network constants
-            long epochLength = config.getEpochLength();
-            long shelleyStartSlot;
-            int shelleyStartEpoch;
+            var epochCalc = epochParamProvider != null
+                    ? epochParamProvider.getEpochSlotCalc()
+                    : new EpochSlotCalc(
+                            config.getEpochLength(),
+                            com.bloxbean.cardano.yaci.core.common.Constants.BYRON_SLOTS_PER_EPOCH, 0);
 
-            if (protocolMagic == Constants.MAINNET_PROTOCOL_MAGIC) {
-                shelleyStartSlot = 4492800;
-                shelleyStartEpoch = 208;
-            } else if (protocolMagic == Constants.PREPROD_PROTOCOL_MAGIC) {
-                shelleyStartSlot = 86400;
-                shelleyStartEpoch = 4;
-            } else {
-                // Preview, Sanchonet, devnets: no Byron era
-                shelleyStartSlot = 0;
-                shelleyStartEpoch = 0;
-            }
-
-            if (adhocRollbackToEpoch < shelleyStartEpoch) {
-                log.error("Adhoc rollback-to-epoch={} is before Shelley start epoch {}. Skipping.",
-                        adhocRollbackToEpoch, shelleyStartEpoch);
+            int firstNonByronEpoch = epochCalc.firstNonByronEpoch();
+            if (adhocRollbackToEpoch < firstNonByronEpoch) {
+                log.error("Adhoc rollback-to-epoch={} is before first non-Byron epoch {}. Skipping.",
+                        adhocRollbackToEpoch, firstNonByronEpoch);
                 return;
             }
 
-            targetSlot = shelleyStartSlot + ((long)(adhocRollbackToEpoch - shelleyStartEpoch)) * epochLength;
-            log.info("Adhoc rollback: epoch {} → slot {} (shelleyStartSlot={}, epochLen={})",
-                    adhocRollbackToEpoch, targetSlot, shelleyStartSlot, epochLength);
+            targetSlot = epochCalc.epochToStartSlot(adhocRollbackToEpoch);
+            log.info("Adhoc rollback: epoch {} → slot {}", adhocRollbackToEpoch, targetSlot);
         } else if (adhocRollbackToSlot >= 0) {
             targetSlot = adhocRollbackToSlot;
         }
@@ -1651,21 +1976,7 @@ public class YaciNode implements NodeAPI {
             return;
         }
 
-        // Check if rollback is within UTXO delta retention window
-        long rollbackDistance = currentTip.getSlot() - targetSlot;
-        int utxoRollbackWindow = (utxoStore instanceof DefaultUtxoStore duts) ? duts.getRollbackWindow() : 4320;
-        if (rollbackDistance > utxoRollbackWindow) {
-            log.error("=== Adhoc Rollback ABORTED ===");
-            log.error("Rollback distance ({} slots) exceeds UTXO delta retention window ({} slots).",
-                    rollbackDistance, utxoRollbackWindow);
-            log.error("UTXO deltas beyond the window have been pruned — rollback would leave UTXO state inconsistent.");
-            log.error("Use a RocksDB checkpoint instead: cp -a epoch-snapshots/epoch-XXX chainstate");
-            throw new RuntimeException("Adhoc rollback aborted: distance " + rollbackDistance
-                    + " exceeds UTXO rollback window " + utxoRollbackWindow);
-        }
-
-        // Find the nearest stored block at or before the target slot.
-        // The exact epoch start slot may not have a block — use seekForPrev.
+        // Find the nearest stored block at or before the target slot
         Long nearestSlot = null;
         if (chainState instanceof DirectRocksDBChainState rocks) {
             nearestSlot = rocks.findNearestSlotAtOrBefore(targetSlot);
@@ -1677,34 +1988,85 @@ public class YaciNode implements NodeAPI {
         if (!nearestSlot.equals(targetSlot)) {
             log.info("Adhoc rollback: exact slot {} not found, using nearest block at slot {}", targetSlot, nearestSlot);
         }
+        targetSlot = nearestSlot;
 
+        // Collect all enabled RollbackCapableStores
+        var stores = new java.util.ArrayList<com.bloxbean.cardano.yano.api.rollback.RollbackCapableStore>();
+        if (accountStateStore instanceof com.bloxbean.cardano.yano.api.rollback.RollbackCapableStore rcs) {
+            stores.add(rcs);
+        }
+        if (utxoStore instanceof com.bloxbean.cardano.yano.api.rollback.RollbackCapableStore rcs) {
+            stores.add(rcs);
+        }
+        if (chainState instanceof com.bloxbean.cardano.yano.api.rollback.RollbackCapableStore rcs) {
+            stores.add(rcs);
+        }
+
+        // Compute common rollback floor from ALL stores
+        long commonFloor = 0;
+        for (var store : stores) {
+            long floor = store.getRollbackFloorSlot();
+            if (floor > commonFloor) commonFloor = floor;
+        }
+
+        // Log per-store status
         log.info("=== Adhoc Rollback ===");
-        log.info("Rolling back from slot {} (block {}) to slot {}", currentTip.getSlot(), currentTip.getBlockNumber(), nearestSlot);
+        log.info("Target slot: {}", targetSlot);
+        log.info("Current tip: slot={}, block={}", currentTip.getSlot(), currentTip.getBlockNumber());
+        log.info("Common rollback floor: {}", commonFloor);
+        for (var store : stores) {
+            log.info("  {}: latest={}, floor={}", store.storeName(),
+                    store.getLatestAppliedSlot(), store.getRollbackFloorSlot());
+        }
 
-        // Rollback chain state
-        chainState.rollbackTo(nearestSlot);
+        // Validate target is within admissible range
+        if (targetSlot < commonFloor) {
+            log.error("=== Adhoc Rollback ABORTED ===");
+            log.error("Target slot {} is below common rollback floor {}.", targetSlot, commonFloor);
+            log.error("Historical reward-input facts (block issuers/fees) have been pruned beyond this point.");
+            log.error("Replay of epoch boundaries before this slot would produce incorrect rewards.");
+            log.error("Options: restore from checkpoint, or resync with larger retention:");
+            log.error("  yaci.node.account-state.epoch-block-data-retention-lag (default 5, try 20+)");
+            throw new RuntimeException("Adhoc rollback aborted: target " + targetSlot
+                    + " below floor " + commonFloor);
+        }
 
-        // Get new tip and publish RollbackEvent
+        long previousTipSlot = currentTip.getSlot();
+
+        // Rollback in dependency-safe order: derived state first, chain tip last
+        // Order: AccountState → UTXO → ChainState
+        for (var store : stores) {
+            log.info("Rolling back {}", store.storeName());
+            store.rollbackToSlot(targetSlot);
+        }
+
+        // Post-rollback verification: each store must report latestAppliedSlot <= targetSlot
+        for (var store : stores) {
+            long actual = store.getLatestAppliedSlot();
+            if (actual > targetSlot) {
+                throw new IllegalStateException(
+                        store.storeName() + " reports latestAppliedSlot=" + actual
+                                + " after rollback to " + targetSlot);
+            }
+        }
+
         ChainTip newTip = chainState.getTip();
-        Point rollbackPoint;
-        if (newTip != null) {
-            rollbackPoint = new Point(newTip.getSlot(), HexUtil.encodeHexString(newTip.getBlockHash()));
-        } else {
-            rollbackPoint = new Point(targetSlot, "0000000000000000000000000000000000000000000000000000000000000000");
+        long newTipSlot = newTip != null ? newTip.getSlot() : -1;
+
+        // Resolve target epoch for cleanup
+        Integer targetEpoch = null;
+        if (epochParamProvider != null) {
+            targetEpoch = epochParamProvider.getEpochSlotCalc().slotToEpoch(targetSlot);
         }
 
-        try {
-            EventMetadata meta = EventMetadata.builder().origin("adhoc-rollback").build();
-            eventBus.publish(new RollbackEvent(rollbackPoint, true),
-                    meta, PublishOptions.builder().build());
-        } catch (Exception ex) {
-            log.warn("Adhoc rollback event publish failed: {}", ex.toString());
-        }
-
-        ChainTip afterTip = chainState.getTip();
         log.info("=== Adhoc Rollback Complete ===");
-        log.info("New tip: slot={}, block={}", afterTip != null ? afterTip.getSlot() : "none",
-                afterTip != null ? afterTip.getBlockNumber() : "none");
+        log.info("New tip: slot={}, block={}", newTip != null ? newTip.getSlot() : "none",
+                newTip != null ? newTip.getBlockNumber() : "none");
+
+        // Cleanup derived artifacts (parquet exports)
+        if (targetEpoch != null) {
+            cleanupParquetExportsAfterRollback(targetEpoch);
+        }
     }
 
     @Override
@@ -1766,7 +2128,13 @@ public class YaciNode implements NodeAPI {
                 }
             }
 
-            // 6. Reset block producer to resume from new tip
+            // 6. Reset BodyFetchManager epoch tracker to rolled-back tip epoch
+            if (bodyFetchManager != null && epochParamProvider != null) {
+                int rolledBackEpoch = epochParamProvider.getEpochSlotCalc().slotToEpoch(targetSlot);
+                bodyFetchManager.initializePreviousEpoch(rolledBackEpoch);
+            }
+
+            // 7. Reset block producer to resume from new tip
             blockProducerService.resetToChainTip();
 
             // Update last known tip
@@ -2075,7 +2443,7 @@ public class YaciNode implements NodeAPI {
             try {
                 String isoTimestamp = java.time.Instant.ofEpochMilli(shifted)
                         .truncatedTo(java.time.temporal.ChronoUnit.SECONDS).toString();
-                com.bloxbean.cardano.yano.runtime.genesis.ShelleyGenesisParser
+                ShelleyGenesisParser
                         .updateSystemStart(new java.io.File(config.getShelleyGenesisFile()), isoTimestamp);
                 log.info("Persisted shifted systemStart={} to {}", isoTimestamp, config.getShelleyGenesisFile());
             } catch (java.io.IOException e) {
@@ -2375,10 +2743,12 @@ public class YaciNode implements NodeAPI {
         // Wire epoch param provider for epoch transition detection
         if (bodyFetchManager != null && this.epochParamProvider != null) {
             bodyFetchManager.setEpochParamProvider(this.epochParamProvider);
-            // Initialize previousEpoch from chain state tip
+            // Initialize previousEpoch from chain state tip so the first epoch
+            // transition after startup (or adhoc rollback) is correctly detected.
             var tip = chainState.getTip();
             if (tip != null && tip.getSlot() > 0) {
-                log.info("BodyFetchManager: initializing epoch tracking from tip slot {}", tip.getSlot());
+                int tipEpoch = epochParamProvider.getEpochSlotCalc().slotToEpoch(tip.getSlot());
+                bodyFetchManager.initializePreviousEpoch(tipEpoch);
             }
         }
 
@@ -2615,6 +2985,13 @@ public class YaciNode implements NodeAPI {
 
         // Post-rollback integrity check and opportunistic recovery
         attemptCorruptionRecovery("post-rollback");
+
+        // Reset BodyFetchManager epoch tracker to rolled-back tip epoch so that
+        // any rolled-back epoch boundary is correctly replayed on the next block.
+        if (bodyFetchManager != null && epochParamProvider != null) {
+            int rolledBackEpoch = epochParamProvider.getEpochSlotCalc().slotToEpoch(rollbackSlot);
+            bodyFetchManager.initializePreviousEpoch(rolledBackEpoch);
+        }
 
         // Always resume BodyFetchManager after rollback - let it handle its own gap detection
         if (isPipelinedMode && bodyFetchManager != null) {

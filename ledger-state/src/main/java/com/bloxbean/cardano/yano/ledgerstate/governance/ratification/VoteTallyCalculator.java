@@ -66,6 +66,11 @@ public class VoteTallyCalculator {
 
             int drepType = (voterType == VoterType.DREP_KEY_HASH.ordinal()) ? DREP_KEY : DREP_SCRIPT;
             DRepDistKey drepKey = new DRepDistKey(drepType, voterKey.voterHash());
+            // Exclude votes cast by expired DReps. Haskell (Conway Ratify.hs dRepAcceptedRatio) and
+            // Amaru (governance/ratification/dreps.rs tally) both iterate the DRep distribution and
+            // apply the expiry check before examining the vote, so an expired DRep contributes
+            // nothing regardless of how it voted. Without this filter Yano would over-count.
+            if (activeDRepKeys != null && !activeDRepKeys.contains(drepKey)) continue;
             BigInteger stake = drepDist.getOrDefault(drepKey, BigInteger.ZERO);
 
             switch (vote) {

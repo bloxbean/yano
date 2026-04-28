@@ -58,6 +58,8 @@ yaci:
     dev-mode: false
     account-state:
       enabled: true
+      # epoch-block-data-retention-lag: 5    # epochs to keep per-block issuer/fee data after consumption (controls rollback depth)
+      # snapshot-retention-epochs: 50        # epochs of delegation snapshots to retain
     epoch-snapshot:
       amounts-enabled: true
     adapot:

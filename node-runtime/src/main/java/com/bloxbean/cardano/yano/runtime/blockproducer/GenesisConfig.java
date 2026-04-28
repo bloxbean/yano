@@ -78,7 +78,7 @@ public class GenesisConfig {
         if (byronGenesisFile != null && !byronGenesisFile.isBlank()) {
             try {
                 byronData = ByronGenesisParser.parse(new File(byronGenesisFile));
-                byronBalances = byronData.nonAvvmBalances();
+                byronBalances = byronData.getAllByronBalances();
             } catch (IOException e) {
                 log.error("Failed to parse byron genesis from {}: {}", byronGenesisFile, e.getMessage());
             }
@@ -89,6 +89,24 @@ public class GenesisConfig {
         }
 
         return new GenesisConfig(funds, protocolParams, byronBalances, shelleyData, byronData);
+    }
+
+    /**
+     * Build from in-memory genesis data (devnet mode — no file I/O).
+     *
+     * @param shelley       Shelley genesis data (required)
+     * @param byron         Byron genesis data (nullable)
+     * @param protocolParams raw protocol params JSON (nullable)
+     * @return GenesisConfig populated from the provided objects
+     */
+    public static GenesisConfig fromInMemory(ShelleyGenesisData shelley, ByronGenesisData byron,
+                                              String protocolParams) {
+        if (shelley == null) throw new IllegalArgumentException("ShelleyGenesisData required");
+        Map<String, BigInteger> funds = shelley.initialFunds() != null
+                ? shelley.initialFunds() : Collections.emptyMap();
+        Map<String, BigInteger> byronBalances = byron != null
+                ? byron.getAllByronBalances() : Collections.emptyMap();
+        return new GenesisConfig(funds, protocolParams, byronBalances, shelley, byron);
     }
 
     private static String loadProtocolParameters(String path) {

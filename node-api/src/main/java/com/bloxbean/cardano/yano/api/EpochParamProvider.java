@@ -1,11 +1,17 @@
 package com.bloxbean.cardano.yano.api;
 
+import com.bloxbean.cardano.yaci.core.model.DrepVoteThresholds;
+import com.bloxbean.cardano.yaci.core.model.PoolVotingThresholds;
+import com.bloxbean.cardano.yano.api.util.EpochSlotCalc;
+
 import java.math.BigInteger;
 
 /**
  * Provides epoch-scoped protocol parameters.
- * Initial implementation returns static values; will evolve when parameters
- * become governance-driven.
+ * <p>
+ * Default values are for test stubs and backward compatibility only.
+ * Production code should use {@code DefaultEpochParamProvider.fromNetworkGenesisConfig()}
+ * which reads actual values from genesis files.
  */
 public interface EpochParamProvider {
     BigInteger getKeyDeposit(long epoch);
@@ -17,8 +23,26 @@ public interface EpochParamProvider {
     /** Byron slots per epoch. Only relevant for mainnet/preprod with Byron era. Default: 21600. */
     default long getByronSlotsPerEpoch() { return 21600; }
 
-    /** First slot of the Shelley era. 0 = no Byron era (devnet/preview). Mainnet: 4492800. */
+    /**
+     * Returns the first non-Byron era start slot, used for epoch/slot conversion.
+     * <p>
+     * This is NOT the same as CF NetworkConfig's {@code shelleyStartEpoch} which is used
+     * for reward/AdaPot initial-state semantics. For example, preview has
+     * {@code getShelleyStartSlot() = 0} but CF {@code shelleyStartEpoch = 1}.
+     * <p>
+     * Legacy name preserved for compatibility.
+     *
+     * @return first non-Byron slot (0 = no Byron era, e.g. preview/sanchonet/devnet)
+     */
     default long getShelleyStartSlot() { return 0; }
+
+    /**
+     * Create an {@link EpochSlotCalc} from this provider's values.
+     * Ensures all consumers use the same epoch/slot math.
+     */
+    default EpochSlotCalc getEpochSlotCalc() {
+        return new EpochSlotCalc(getEpochLength(), getByronSlotsPerEpoch(), getShelleyStartSlot());
+    }
 
     // --- Reward calculation parameters (defaults = Shelley mainnet genesis values) ---
 
@@ -65,6 +89,21 @@ public interface EpochParamProvider {
 
     /** Committee maximum term length in epochs. Default: 146. */
     default int getCommitteeMaxTermLength(long epoch) { return 146; }
+
+    /**
+     * DRep voting thresholds from Conway genesis (or the effective value after on-chain
+     * updates, once that plumbing lands). May be null during tests or in non-Conway eras.
+     * Production implementations MUST return a non-null value once Conway era is active,
+     * otherwise governance ratification will fall back to possibly-wrong hard-coded defaults.
+     */
+    default DrepVoteThresholds getDrepVotingThresholds(long epoch) { return null; }
+
+    /**
+     * Pool voting thresholds from Conway genesis (or the effective value after on-chain
+     * updates, once that plumbing lands). May be null during tests or in non-Conway eras.
+     * Production implementations MUST return a non-null value once Conway era is active.
+     */
+    default PoolVotingThresholds getPoolVotingThresholds(long epoch) { return null; }
 
     /** Security parameter k (finality confirmation depth). Default: 2160 (mainnet). */
     default long getSecurityParam() { return 2160; }

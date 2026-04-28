@@ -46,6 +46,7 @@ public class TestRocksDBHelper implements AutoCloseable {
                 new String(RocksDB.DEFAULT_COLUMN_FAMILY),
                 AccountStateCfNames.ACCT_STATE,
                 AccountStateCfNames.ACCT_DELTA,
+                AccountStateCfNames.ACCT_BOUNDARY_DELTA,
                 AccountStateCfNames.EPOCH_DELEG_SNAPSHOT
         );
 

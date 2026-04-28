@@ -1,5 +1,18 @@
 package com.bloxbean.cardano.yano.ledgerstate.governance;
 
+import com.bloxbean.cardano.yaci.core.model.Block;
+import com.bloxbean.cardano.yaci.core.model.Credential;
+import com.bloxbean.cardano.yaci.core.model.Era;
+import com.bloxbean.cardano.yaci.core.model.TransactionBody;
+import com.bloxbean.cardano.yaci.core.model.certs.Certificate;
+import com.bloxbean.cardano.yaci.core.model.certs.RegCert;
+import com.bloxbean.cardano.yaci.core.model.certs.RegDrepCert;
+import com.bloxbean.cardano.yaci.core.model.certs.StakeCredType;
+import com.bloxbean.cardano.yaci.core.model.certs.StakeCredential;
+import com.bloxbean.cardano.yaci.core.model.certs.UnregDrepCert;
+import com.bloxbean.cardano.yaci.core.model.certs.VoteDelegCert;
+import com.bloxbean.cardano.yaci.core.model.governance.Drep;
+import com.bloxbean.cardano.yano.api.events.BlockAppliedEvent;
 import com.bloxbean.cardano.yano.api.EpochParamProvider;
 import com.bloxbean.cardano.yano.ledgerstate.DefaultAccountStateStore;
 import com.bloxbean.cardano.yano.ledgerstate.TestCborHelper;
@@ -47,6 +60,13 @@ class DefaultAccountStateStoreDRepDelegationTest {
     /** EpochParamProvider that returns PV10 for all epochs. */
     private static final EpochParamProvider PV10_PROVIDER = new EpochParamProvider() {
         @Override public int getProtocolMajor(long epoch) { return 10; }
+        @Override public BigInteger getKeyDeposit(long epoch) { return BigInteger.valueOf(2_000_000); }
+        @Override public BigInteger getPoolDeposit(long epoch) { return BigInteger.valueOf(500_000_000); }
+    };
+
+    /** EpochParamProvider that returns PV9 for all epochs. */
+    private static final EpochParamProvider PV9_PROVIDER = new EpochParamProvider() {
+        @Override public int getProtocolMajor(long epoch) { return 9; }
         @Override public BigInteger getKeyDeposit(long epoch) { return BigInteger.valueOf(2_000_000); }
         @Override public BigInteger getPoolDeposit(long epoch) { return BigInteger.valueOf(500_000_000); }
     };
@@ -220,5 +240,120 @@ class DefaultAccountStateStoreDRepDelegationTest {
         byte[] fwd2 = readForwardDelegation(0, CRED_X);
         assertThat(fwd2).isNotNull();
         assertThat(fwd2).isEqualTo(fwd1);
+    }
+
+    @Test
+    @DisplayName("PV9 same-tx redelegation before old DRep unregistration preserves new forward delegation")
+    void pv9SameTxRedelegation_thenOldDRepUnreg_preservesNewDelegation() throws Exception {
+        String oldDRep = CRED_X; // mirror preview case: old DRep credential hash equals delegator hash
+        var store = new DefaultAccountStateStore(rocks.db(), rocks.cfSupplier(),
+                org.slf4j.LoggerFactory.getLogger(DefaultAccountStateStore.class), true, PV9_PROVIDER);
+
+        applyBlockWithCerts(store, 1, epochStartSlot(734),
+                RegCert.builder()
+                        .stakeCredential(stakeCred(CRED_X))
+                        .coin(BigInteger.valueOf(2_000_000))
+                        .build(),
+                RegDrepCert.builder()
+                        .drepCredential(new Credential(StakeCredType.ADDR_KEYHASH, CRED_X))
+                        .coin(BigInteger.valueOf(500_000_000))
+                        .build(),
+                RegDrepCert.builder()
+                        .drepCredential(new Credential(StakeCredType.ADDR_KEYHASH, DREP_B))
+                        .coin(BigInteger.valueOf(500_000_000))
+                        .build(),
+                VoteDelegCert.builder()
+                        .stakeCredential(stakeCred(CRED_X))
+                        .drep(Drep.addrKeyHash(oldDRep))
+                        .build());
+
+        applyBlockWithCerts(store, 2, epochStartSlot(734) + 27,
+                VoteDelegCert.builder()
+                        .stakeCredential(stakeCred(CRED_X))
+                        .drep(Drep.addrKeyHash(DREP_B))
+                        .build(),
+                UnregDrepCert.builder()
+                        .drepCredential(new Credential(StakeCredType.ADDR_KEYHASH, oldDRep))
+                        .coin(BigInteger.valueOf(500_000_000))
+                        .build());
+
+        byte[] fwd = readForwardDelegation(0, CRED_X);
+        assertThat(fwd).isNotNull();
+        var deleg = TestCborHelper.decodeDRepDelegation(fwd);
+        assertThat(deleg.drepType()).isEqualTo(0);
+        assertThat(deleg.drepHash()).isEqualTo(DREP_B);
+
+        assertThat(reverseEntryExists(0, DREP_B, 0, CRED_X)).isTrue();
+    }
+
+    @Test
+    @DisplayName("PV9 stale reverse entry must not clear current delegation on later old-DRep unregistration")
+    void pv9StaleReverse_thenLaterOldDRepUnreg_preservesCurrentDelegation() throws Exception {
+        var store = new DefaultAccountStateStore(rocks.db(), rocks.cfSupplier(),
+                org.slf4j.LoggerFactory.getLogger(DefaultAccountStateStore.class), true, PV9_PROVIDER);
+
+        applyBlockWithCerts(store, 1, epochStartSlot(705),
+                RegCert.builder()
+                        .stakeCredential(stakeCred(CRED_X))
+                        .coin(BigInteger.valueOf(2_000_000))
+                        .build(),
+                RegDrepCert.builder()
+                        .drepCredential(new Credential(StakeCredType.ADDR_KEYHASH, DREP_A))
+                        .coin(BigInteger.valueOf(500_000_000))
+                        .build(),
+                RegDrepCert.builder()
+                        .drepCredential(new Credential(StakeCredType.ADDR_KEYHASH, DREP_B))
+                        .coin(BigInteger.valueOf(500_000_000))
+                        .build(),
+                VoteDelegCert.builder()
+                        .stakeCredential(stakeCred(CRED_X))
+                        .drep(Drep.addrKeyHash(DREP_A))
+                        .build());
+
+        applyBlockWithCerts(store, 2, epochStartSlot(705) + 100,
+                VoteDelegCert.builder()
+                        .stakeCredential(stakeCred(CRED_X))
+                        .drep(Drep.addrKeyHash(DREP_B))
+                        .build());
+
+        applyBlockWithCerts(store, 3, epochStartSlot(724),
+                UnregDrepCert.builder()
+                        .drepCredential(new Credential(StakeCredType.ADDR_KEYHASH, DREP_A))
+                        .coin(BigInteger.valueOf(500_000_000))
+                        .build());
+
+        byte[] fwd = readForwardDelegation(0, CRED_X);
+        assertThat(fwd).isNotNull();
+        var deleg = TestCborHelper.decodeDRepDelegation(fwd);
+        assertThat(deleg.drepType()).isEqualTo(0);
+        assertThat(deleg.drepHash()).isEqualTo(DREP_B);
+
+        assertThat(reverseEntryExists(0, DREP_B, 0, CRED_X)).isTrue();
+    }
+
+    private static StakeCredential stakeCred(String hash) {
+        return StakeCredential.builder()
+                .type(StakeCredType.ADDR_KEYHASH)
+                .hash(hash)
+                .build();
+    }
+
+    private static void applyBlockWithCerts(DefaultAccountStateStore store, long blockNo, long slot,
+                                            Certificate... certs) {
+        var txs = new ArrayList<TransactionBody>();
+        var tx = TransactionBody.builder()
+                .certificates(new ArrayList<>(Arrays.asList(certs)))
+                .build();
+        txs.add(tx);
+
+        Block block = Block.builder()
+                .transactionBodies(txs)
+                .build();
+
+        store.applyBlock(new BlockAppliedEvent(Era.Conway, slot, blockNo, "hash" + blockNo, block));
+    }
+
+    private static long epochStartSlot(int epoch) {
+        return epoch * 432000L;
     }
 }

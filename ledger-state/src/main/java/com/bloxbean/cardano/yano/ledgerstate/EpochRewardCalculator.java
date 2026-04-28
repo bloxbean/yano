@@ -48,12 +48,29 @@ public class EpochRewardCalculator {
     // Optional reference to the account state store for slot/epoch helpers and event queries
     private volatile DefaultAccountStateStore accountStateStore;
 
+    // CF NetworkConfig — built once from genesis at startup, or resolved per-magic (legacy)
+    private volatile NetworkConfig cfNetworkConfig;
+
+    // Per-invocation batch for delta-aware reward distribution.
+    // Set by beginRewardBatch(), committed by commitRewardBatch().
+    private org.rocksdb.WriteBatch rewardBatch;
+    private List<DefaultAccountStateStore.DeltaOp> rewardDeltaOps;
+    private DefaultAccountStateStore.BatchStateOverlay rewardStateOverlay;
+
     public EpochRewardCalculator(RocksDB db, ColumnFamilyHandle cfState,
                                  ColumnFamilyHandle cfEpochSnapshot, boolean enabled) {
         this.db = db;
         this.cfState = cfState;
         this.cfEpochSnapshot = cfEpochSnapshot;
         this.enabled = enabled;
+    }
+
+    /**
+     * Set the CF NetworkConfig (built from genesis via NetworkConfigBuilder).
+     * If set, this is used instead of resolveNetworkConfig(networkMagic).
+     */
+    public void setCfNetworkConfig(NetworkConfig config) {
+        this.cfNetworkConfig = config;
     }
 
     public void setLedgerStateProvider(com.bloxbean.cardano.yano.api.account.LedgerStateProvider provider) {
@@ -66,6 +83,50 @@ public class EpochRewardCalculator {
 
     public boolean isEnabled() {
         return enabled;
+    }
+
+    /**
+     * Open a WriteBatch for delta-aware reward distribution.
+     * Must be called before calculateAndDistribute() and paired with commitRewardBatch().
+     */
+    void beginRewardBatch() {
+        this.rewardBatch = new org.rocksdb.WriteBatch();
+        this.rewardDeltaOps = new ArrayList<>();
+        this.rewardStateOverlay = new DefaultAccountStateStore.BatchStateOverlay();
+    }
+
+    /**
+     * Get the active reward batch for adding additional writes (e.g., AdaPot) before commit.
+     * Returns null if no batch is active.
+     */
+    org.rocksdb.WriteBatch getRewardBatch() { return rewardBatch; }
+
+    /**
+     * Get the active reward delta ops list for adding additional delta-aware writes before commit.
+     */
+    List<DefaultAccountStateStore.DeltaOp> getRewardDeltaOps() { return rewardDeltaOps; }
+
+    /**
+     * Commit the reward batch and persist its boundary delta journal entry.
+     * All additional writes (e.g., AdaPot) must be added to the batch before calling this.
+     *
+     * @param boundarySlot the slot of the first block that triggered this epoch boundary
+     * @param phase        the boundary delta phase constant (PHASE_REWARDS or PHASE_POOLREAP)
+     */
+    void commitRewardBatch(long boundarySlot, byte phase) throws RocksDBException {
+        if (rewardBatch == null) return;
+        try (var wo = new org.rocksdb.WriteOptions()) {
+            accountStateStore.commitBoundaryDelta(boundarySlot, phase, rewardBatch, rewardDeltaOps);
+            db.write(wo, rewardBatch);
+        } finally {
+            rewardBatch.close();
+            rewardBatch = null;
+            rewardDeltaOps = null;
+            if (rewardStateOverlay != null) {
+                rewardStateOverlay.clear();
+            }
+            rewardStateOverlay = null;
+        }
     }
 
     /**
@@ -101,7 +162,7 @@ public class EpochRewardCalculator {
         // 1. Build protocol parameters for cf-rewards-calculation (from stake epoch N-2)
         // Special case for first Shelley epoch: stakeEpoch may be a Byron epoch with no Shelley params.
         // Matching Yaci Store's logic: if (epoch == nonByronEpoch + 1) use params from nonByronEpoch.
-        var networkConfig = resolveNetworkConfig(networkMagic);
+        var networkConfig = getNetworkConfig(networkMagic);
         int shelleyStartEpoch = networkConfig.getShelleyStartEpoch();
         int paramEpoch = (stakeEpoch < shelleyStartEpoch) ? shelleyStartEpoch : stakeEpoch;
         var protocolParams = buildProtocolParameters(paramProvider, paramEpoch);
@@ -484,23 +545,29 @@ public class EpochRewardCalculator {
 
     /**
      * Credit a reward to a stake credential's reward balance.
+     * Uses delta-aware writes so the credit can be undone on rollback.
      */
     public void creditReward(int credType, String credHash, BigInteger amount,
                              int earnedEpoch, RewardType rewardType, String poolHash) throws RocksDBException {
         if (amount == null || amount.signum() <= 0) return;
+        if (rewardBatch == null) {
+            throw new IllegalStateException("creditReward called without an active reward batch — call beginRewardBatch() first");
+        }
 
         byte[] acctKey = DefaultAccountStateStore.accountKey(credType, credHash);
-        byte[] acctVal = db.get(cfState, acctKey);
+        byte[] acctVal = accountStateStore.getStateWithOverlay(acctKey, rewardStateOverlay);
         if (acctVal != null) {
             var acct = AccountStateCborCodec.decodeStakeAccount(acctVal);
             BigInteger newReward = acct.reward().add(amount);
-            db.put(cfState, acctKey, AccountStateCborCodec.encodeStakeAccount(newReward, acct.deposit()));
+            byte[] newVal = AccountStateCborCodec.encodeStakeAccount(newReward, acct.deposit());
+            accountStateStore.putStateWithDelta(acctKey, newVal, rewardBatch, rewardDeltaOps, rewardStateOverlay);
         }
 
         byte[] rewardKey = DefaultAccountStateStore.accumulatedRewardKey(credType, credHash);
         var reward = new AccountStateCborCodec.AccumulatedReward(
                 earnedEpoch, rewardType.ordinal(), amount, poolHash);
-        db.put(cfState, rewardKey, AccountStateCborCodec.encodeAccumulatedReward(reward));
+        accountStateStore.putStateWithDelta(rewardKey,
+                AccountStateCborCodec.encodeAccumulatedReward(reward), rewardBatch, rewardDeltaOps, rewardStateOverlay);
     }
 
     /**
@@ -673,7 +740,7 @@ public class EpochRewardCalculator {
         long stabilityWindowSlot = feeEpochStartSlot + paramProvider.getRandomnessStabilisationWindow();
 
         // Determine era: post-Babbage = all dereg treated uniformly
-        var networkConfig = resolveNetworkConfig(networkMagic);
+        var networkConfig = getNetworkConfig(networkMagic);
         boolean postBabbage = isPostBabbage(stakeEpoch, networkConfig);
 
         // Scan deregistration events from the beginning to cover ALL history.
@@ -887,7 +954,7 @@ public class EpochRewardCalculator {
         int snapshotKey = stakeEpoch - 2; // N-4: mark snapshot from end of epoch N-4
 
         // Protocol params: use shelley start epoch if stakeEpoch is Byron
-        var networkConfig = resolveNetworkConfig(networkMagic);
+        var networkConfig = getNetworkConfig(networkMagic);
         int shelleyStartEpoch = networkConfig.getShelleyStartEpoch();
         int paramEpoch = (stakeEpoch < shelleyStartEpoch) ? shelleyStartEpoch : stakeEpoch;
         var protocolParams = buildProtocolParameters(paramProvider, paramEpoch);
@@ -945,7 +1012,19 @@ public class EpochRewardCalculator {
     }
 
     /**
-     * Resolve NetworkConfig from network magic (public for debug use).
+     * Get the CF NetworkConfig. Must be set via {@link #setCfNetworkConfig(NetworkConfig)}
+     * before reward calculation runs. Throws if not available.
+     */
+    NetworkConfig getNetworkConfig(long networkMagic) {
+        if (cfNetworkConfig != null) return cfNetworkConfig;
+        throw new IllegalStateException(
+                "CF NetworkConfig not set. Build from genesis via NetworkConfigBuilder or "
+                + "set via setCfNetworkConfig() before reward calculation.");
+    }
+
+    /**
+     * Resolve NetworkConfig from network magic using the CF library's built-in configs.
+     * Only for known public networks. Throws for unknown magic.
      */
     public static NetworkConfig resolveNetworkConfig(long networkMagic) {
         return switch ((int) networkMagic) {
@@ -953,10 +1032,8 @@ public class EpochRewardCalculator {
             case 1 -> NetworkConfig.getPreprodConfig();
             case 2 -> NetworkConfig.getPreviewConfig();
             case 4 -> NetworkConfig.getSanchonetConfig();
-            default -> {
-                log.warn("Unknown network magic {}, using mainnet config as fallback", networkMagic);
-                yield NetworkConfig.getMainnetConfig();
-            }
+            default -> throw new IllegalStateException(
+                    "Unknown network magic " + networkMagic + " — provide genesis config to build CF NetworkConfig");
         };
     }
 }

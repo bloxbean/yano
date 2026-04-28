@@ -78,7 +78,27 @@ public class YaciNodeResource {
     @GET
     @Path("/config")
     public Response getConfig() {
-        return Response.ok(nodeAPI.getConfig()).build();
+        var config = nodeAPI.getConfig();
+        // Build a safe response map — epoch fields may throw if not yet initialized from genesis
+        var result = new java.util.LinkedHashMap<String, Object>();
+        result.put("protocolMagic", config.getProtocolMagic());
+        result.put("clientEnabled", config.isClientEnabled());
+        result.put("serverEnabled", config.isServerEnabled());
+        result.put("devMode", config.isDevMode());
+        if (config instanceof com.bloxbean.cardano.yano.api.config.YaciNodeConfig yc) {
+            result.put("remoteHost", yc.getRemoteHost());
+            result.put("remotePort", yc.getRemotePort());
+            result.put("serverPort", yc.getServerPort());
+            result.put("useRocksDB", yc.isUseRocksDB());
+            result.put("enableBlockProducer", yc.isEnableBlockProducer());
+            result.put("enablePipelinedSync", yc.isEnablePipelinedSync());
+            if (yc.isEpochParamsInitialized()) {
+                result.put("epochLength", yc.getEpochLength());
+                result.put("byronSlotsPerEpoch", yc.getByronSlotsPerEpoch());
+                result.put("firstNonByronSlot", yc.getFirstNonByronSlot());
+            }
+        }
+        return Response.ok(result).build();
     }
 
     @POST
