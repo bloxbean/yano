@@ -12,10 +12,13 @@ import com.bloxbean.cardano.yaci.core.common.Constants;
 import com.bloxbean.cardano.yano.ledgerrules.TransactionEvaluator;
 import com.bloxbean.cardano.yano.ledgerrules.TransactionValidator;
 import com.bloxbean.cardano.yano.runtime.YaciNode;
+import com.bloxbean.cardano.yano.api.util.EpochSlotCalc;
 import com.bloxbean.cardano.yano.ledgerrules.impl.AikenTxEvaluator;
 import com.bloxbean.cardano.yano.ledgerrules.impl.JulcTxEvaluator;
+import com.bloxbean.cardano.yano.runtime.blockproducer.EffectiveProtocolParamsSupplier;
 import com.bloxbean.cardano.yano.runtime.blockproducer.GenesisConfig;
 import com.bloxbean.cardano.yano.runtime.blockproducer.ProtocolParamsMapper;
+import com.bloxbean.cardano.yano.runtime.config.DefaultEpochParamProvider;
 import com.bloxbean.cardano.yano.ledgerrules.impl.YaciScriptSupplier;
 import com.bloxbean.cardano.yano.scalusbridge.ScalusTransactionFactory;
 import io.quarkus.runtime.ShutdownEvent;
@@ -35,6 +38,7 @@ import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.LongSupplier;
 
 @ApplicationScoped
 public class YaciNodeProducer {
@@ -519,6 +523,8 @@ public class YaciNodeProducer {
         com.bloxbean.cardano.client.api.model.ProtocolParams pp;
         SlotConfig slotConfig;
         int networkId;
+        EffectiveProtocolParamsSupplier effectiveProtocolParamsSupplier;
+        LongSupplier currentSlotSupplier;
         try {
             genesis = GenesisConfig.load(
                     yaciConfig.getShelleyGenesisFile(),
@@ -531,6 +537,14 @@ public class YaciNodeProducer {
             }
 
             pp = ProtocolParamsMapper.fromNodeProtocolParam(genesis.getProtocolParameters());
+            effectiveProtocolParamsSupplier = new EffectiveProtocolParamsSupplier(
+                    yaciNode.getLedgerStateProvider(),
+                    resolveEpochSlotCalc(yaciNode, yaciConfig, genesis),
+                    pp);
+            currentSlotSupplier = () -> {
+                var tip = yaciNode.getLocalTip();
+                return tip != null ? tip.getSlot() : 0L;
+            };
 
             long magic = yaciConfig.getProtocolMagic();
 
@@ -553,11 +567,12 @@ public class YaciNodeProducer {
         boolean validatorInitialized = false;
         try {
             TransactionValidator evaluator =
-                    ScalusTransactionFactory.createValidator(pp, new YaciScriptSupplier(yaciNode.getUtxoState()), slotConfig, networkId,
-                            yaciNode.getLedgerStateProvider());
+                    ScalusTransactionFactory.createValidator(effectiveProtocolParamsSupplier,
+                            new YaciScriptSupplier(yaciNode.getUtxoState()), slotConfig, networkId,
+                            yaciNode.getLedgerStateProvider(), currentSlotSupplier);
             yaciNode.setTransactionEvaluator(evaluator);
             validatorInitialized = true;
-            log.info("Transaction validator initialized (networkId={})", networkId);
+            log.info("Transaction validator initialized (networkId={}, protocolParams=effective-ledger)", networkId);
         } catch (Exception e) {
             log.error("Failed to initialize transaction validator (Scalus). "
                     + "Transactions will NOT be validated on submission! Error: {}", e.getMessage(), e);
@@ -568,11 +583,16 @@ public class YaciNodeProducer {
         try {
             TransactionEvaluator transactionEvaluator;
             if ("scalus".equalsIgnoreCase(scriptEvaluator)) {
-                transactionEvaluator = ScalusTransactionFactory.createEvaluator(pp, new YaciScriptSupplier(yaciNode.getUtxoState()), slotConfig, networkId);
+                transactionEvaluator = ScalusTransactionFactory.createEvaluator(effectiveProtocolParamsSupplier,
+                        new YaciScriptSupplier(yaciNode.getUtxoState()), slotConfig, networkId, currentSlotSupplier);
             } else if ("julc".equalsIgnoreCase(scriptEvaluator)) {
-                transactionEvaluator = new JulcTxEvaluator(() -> pp, new YaciScriptSupplier(yaciNode.getUtxoState()), slotConfig);
+                transactionEvaluator = new JulcTxEvaluator(
+                        () -> effectiveProtocolParamsSupplier.getProtocolParams(currentSlotSupplier.getAsLong()),
+                        new YaciScriptSupplier(yaciNode.getUtxoState()), slotConfig);
             } else {
-                transactionEvaluator = new AikenTxEvaluator(() -> pp, new YaciScriptSupplier(yaciNode.getUtxoState()), slotConfig);
+                transactionEvaluator = new AikenTxEvaluator(
+                        () -> effectiveProtocolParamsSupplier.getProtocolParams(currentSlotSupplier.getAsLong()),
+                        new YaciScriptSupplier(yaciNode.getUtxoState()), slotConfig);
             }
             yaciNode.setScriptEvaluator(transactionEvaluator);
             evaluatorInitialized = true;
@@ -586,6 +606,32 @@ public class YaciNodeProducer {
             log.error("Neither transaction validator nor script evaluator could be initialized. "
                     + "Plutus script transactions will not be validated!");
         }
+    }
+
+    private EpochSlotCalc resolveEpochSlotCalc(YaciNode yaciNode, YaciNodeConfig yaciConfig, GenesisConfig genesis) {
+        var provider = yaciNode.getEpochParamProvider();
+        if (provider != null) {
+            return provider.getEpochSlotCalc();
+        }
+
+        if (yaciConfig.isEpochParamsInitialized()) {
+            return new EpochSlotCalc(yaciConfig.getEpochLength(),
+                    yaciConfig.getByronSlotsPerEpoch(),
+                    yaciConfig.getFirstNonByronSlot());
+        }
+
+        var shelley = genesis.getShelleyGenesisData();
+        if (shelley == null) {
+            throw new IllegalStateException("Cannot resolve epoch slot math without Shelley genesis");
+        }
+
+        boolean hasByron = genesis.getByronGenesisData() != null;
+        long byronSlotsPerEpoch = hasByron
+                ? genesis.getByronGenesisData().epochLength()
+                : shelley.securityParam() * 10;
+        long firstNonByronSlot = DefaultEpochParamProvider
+                .resolveFirstNonByronSlot(yaciConfig.getProtocolMagic(), hasByron);
+        return new EpochSlotCalc(shelley.epochLength(), byronSlotsPerEpoch, firstNonByronSlot);
     }
 
     /**

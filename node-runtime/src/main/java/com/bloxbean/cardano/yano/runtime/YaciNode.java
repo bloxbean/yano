@@ -22,6 +22,7 @@ import com.bloxbean.cardano.yaci.events.impl.NoopEventBus;
 import com.bloxbean.cardano.yaci.events.impl.SimpleEventBus;
 import com.bloxbean.cardano.yaci.helper.*;
 import com.bloxbean.cardano.yaci.helper.listener.BlockChainDataListener;
+import com.bloxbean.cardano.yano.api.EpochParamProvider;
 import com.bloxbean.cardano.yano.api.NodeAPI;
 import com.bloxbean.cardano.yano.api.SyncPhase;
 import com.bloxbean.cardano.yano.api.config.RuntimeOptions;
@@ -774,6 +775,10 @@ public class YaciNode implements NodeAPI {
 
     public LedgerStateProvider getLedgerStateProvider() {
         return accountStateStore;
+    }
+
+    public EpochParamProvider getEpochParamProvider() {
+        return epochParamProvider;
     }
 
     public AccountStateStore getAccountStateStore() {

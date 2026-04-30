@@ -14,6 +14,7 @@ import com.bloxbean.cardano.client.ledger.slice.yaci.YaciPoolsSlice;
 import com.bloxbean.cardano.client.spec.NetworkId;
 import com.bloxbean.cardano.client.transaction.spec.Transaction;
 import com.bloxbean.cardano.yano.api.account.LedgerStateProvider;
+import com.bloxbean.cardano.yano.ledgerrules.EpochProtocolParamsSupplier;
 import com.bloxbean.cardano.yano.ledgerrules.TransactionValidator;
 import com.bloxbean.cardano.yano.ledgerrules.ValidationError;
 import com.bloxbean.cardano.yano.ledgerrules.ValidationResult;
@@ -23,6 +24,7 @@ import scalus.bloxbean.ScriptSupplier;
 import scalus.cardano.ledger.SlotConfig;
 
 import java.util.*;
+import java.util.function.LongSupplier;
 
 /**
  * {@link TransactionValidator} implementation using Scalus for full Cardano ledger rule validation.
@@ -42,11 +44,12 @@ public class ScalusBasedTransactionValidator implements TransactionValidator {
             new GovernanceValidationRule()
     );
 
-    private final ProtocolParams protocolParams;
+    private final EpochProtocolParamsSupplier protocolParamsSupplier;
     private final ScriptSupplier scriptSupplier;
     private final SlotConfig scalusSlotConfig;
     private final int networkId;
     private final LedgerStateProvider ledgerStateProvider;
+    private final LongSupplier currentSlotSupplier;
 
     public ScalusBasedTransactionValidator(ProtocolParams protocolParams,
                                            com.bloxbean.cardano.client.api.ScriptSupplier scriptSupplier,
@@ -60,13 +63,23 @@ public class ScalusBasedTransactionValidator implements TransactionValidator {
                                            com.bloxbean.cardano.client.common.model.SlotConfig slotConfig,
                                            int networkId,
                                            LedgerStateProvider ledgerStateProvider) {
-        this.protocolParams = protocolParams;
+        this(slot -> protocolParams, scriptSupplier, slotConfig, networkId, ledgerStateProvider, null);
+    }
+
+    public ScalusBasedTransactionValidator(EpochProtocolParamsSupplier protocolParamsSupplier,
+                                           com.bloxbean.cardano.client.api.ScriptSupplier scriptSupplier,
+                                           com.bloxbean.cardano.client.common.model.SlotConfig slotConfig,
+                                           int networkId,
+                                           LedgerStateProvider ledgerStateProvider,
+                                           LongSupplier currentSlotSupplier) {
+        this.protocolParamsSupplier = protocolParamsSupplier;
         if (scriptSupplier != null)
             this.scriptSupplier = new ScalusScriptSupplier(scriptSupplier);
         else
             this.scriptSupplier = null;
         this.networkId = networkId;
         this.ledgerStateProvider = ledgerStateProvider;
+        this.currentSlotSupplier = currentSlotSupplier;
 
         this.scalusSlotConfig = new scalus.cardano.ledger.SlotConfig(
                 slotConfig.getZeroTime(),
@@ -77,18 +90,15 @@ public class ScalusBasedTransactionValidator implements TransactionValidator {
     @Override
     public ValidationResult validate(byte[] txCbor, Set<Utxo> inputUtxos) {
         try {
-            // Extract currentSlot from tx validity interval
-            long currentSlot = 0;
             Transaction tx = null;
             try {
                 tx = Transaction.deserialize(txCbor);
-                if (tx.getBody().getValidityStartInterval() > 0) {
-                    currentSlot = tx.getBody().getValidityStartInterval();
-                }
             } catch (Exception e) {
-                // If we can't deserialize to extract slot, use 0 and let Scalus handle it
+                // If we can't deserialize for supplementary rules, let Scalus handle the tx error.
             }
 
+            long currentSlot = resolveCurrentSlot(tx);
+            ProtocolParams protocolParams = protocolParamsSupplier.getProtocolParams(currentSlot);
             TransitResult result = LedgerBridge.validate(
                     txCbor, protocolParams, inputUtxos, currentSlot,
                     scalusSlotConfig, networkId, scriptSupplier, ledgerStateProvider);
@@ -101,7 +111,7 @@ public class ScalusBasedTransactionValidator implements TransactionValidator {
             // STEP 2: Scalus passed — run CCL supplementary rules for gaps
             // (GOVCERT certs, delegatee existence, governance validation)
             if (tx != null && ledgerStateProvider != null) {
-                ValidationResult cclResult = runSupplementaryRules(tx, currentSlot);
+                ValidationResult cclResult = runSupplementaryRules(tx, currentSlot, protocolParams);
                 if (!cclResult.valid()) {
                     return cclResult;
                 }
@@ -117,11 +127,26 @@ public class ScalusBasedTransactionValidator implements TransactionValidator {
         }
     }
 
+    private long resolveCurrentSlot(Transaction tx) {
+        if (currentSlotSupplier != null) {
+            try {
+                long slot = currentSlotSupplier.getAsLong();
+                if (slot >= 0) return slot;
+            } catch (Exception e) {
+                log.warn("Failed to resolve current slot from runtime; falling back to tx validity start: {}", e.getMessage());
+            }
+        }
+        if (tx != null && tx.getBody().getValidityStartInterval() > 0) {
+            return tx.getBody().getValidityStartInterval();
+        }
+        return 0;
+    }
+
     /**
      * Run CCL supplementary rules for validation gaps not covered by Scalus:
      * GOVCERT certs, delegatee existence checks, governance proposals/voting.
      */
-    private ValidationResult runSupplementaryRules(Transaction tx, long currentSlot) {
+    private ValidationResult runSupplementaryRules(Transaction tx, long currentSlot, ProtocolParams protocolParams) {
         try {
             LedgerContext ctx = LedgerContext.builder()
                     .protocolParams(protocolParams)
