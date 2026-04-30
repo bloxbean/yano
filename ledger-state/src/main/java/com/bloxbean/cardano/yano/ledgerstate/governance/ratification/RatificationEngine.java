@@ -16,6 +16,7 @@ import org.slf4j.LoggerFactory;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.math.MathContext;
 import java.util.*;
 
 /**
@@ -197,6 +198,16 @@ public class RatificationEngine {
         List<RatificationResult> results = new ArrayList<>();
         boolean delayed = false;
 
+        if (log.isInfoEnabled()) {
+            log.info("Ratification context: epoch={}, proposals={}, drepDist={}, activeDReps={}, pools={}, " +
+                            "committeeMembers={}, activeCommittee={}, committeeMinSize={}, committeeMaxTermLength={}, " +
+                            "committeeThreshold={}, committeeState={}, bootstrap={}, treasury={}, drepThresholds={}, spoThresholds={}",
+                    currentEpoch, sorted.size(), drepDist.size(), activeDRepKeys != null ? activeDRepKeys.size() : -1,
+                    poolStakeDist.size(), committeeMembers.size(), activeCommitteeCount(committeeMembers, currentEpoch),
+                    committeeMinSize, committeeMaxTermLength, committeeThreshold, committeeState, isBootstrapPhase,
+                    treasury, drepThresholds, spoThresholds);
+        }
+
         for (var entry : sorted) {
             GovActionId id = entry.getKey();
             GovActionRecord proposal = entry.getValue();
@@ -261,21 +272,23 @@ public class RatificationEngine {
         boolean isExpired = (currentEpoch - proposal.expiresAfterEpoch()) > 1;
         boolean isLastChance = (currentEpoch - proposal.expiresAfterEpoch()) == 1;
 
-        if (isExpired) return Status.EXPIRED;
-
-        // InfoAction can never be ratified
-        if (type == GovActionType.INFO_ACTION) {
-            return isLastChance ? Status.EXPIRED : Status.ACTIVE;
+        Status earlyStatus = null;
+        if (isExpired) {
+            earlyStatus = Status.EXPIRED;
+        } else if (type == GovActionType.INFO_ACTION) {
+            // InfoAction can never be ratified
+            earlyStatus = isLastChance ? Status.EXPIRED : Status.ACTIVE;
+        } else if (delayed) {
+            // If delayed by a prior delaying action this epoch
+            earlyStatus = isLastChance ? Status.EXPIRED : Status.ACTIVE;
+        } else if (!prevActionValid(proposal, lastEnactedActions)) {
+            // Prev action check (for chained action types)
+            earlyStatus = isLastChance ? Status.EXPIRED : Status.ACTIVE;
         }
 
-        // If delayed by a prior delaying action this epoch
-        if (delayed) {
-            return isLastChance ? Status.EXPIRED : Status.ACTIVE;
-        }
-
-        // Prev action check (for chained action types)
-        if (!prevActionValid(proposal, lastEnactedActions)) {
-            return isLastChance ? Status.EXPIRED : Status.ACTIVE;
+        if (earlyStatus != null) {
+            logEarlyRatificationDecision(id, proposal, earlyStatus, lastEnactedActions, currentEpoch, delayed);
+            return earlyStatus;
         }
 
         // Get votes for this proposal
@@ -319,8 +332,13 @@ public class RatificationEngine {
             case INFO_ACTION -> false; // Already handled above
         };
 
-        if (accepted) return Status.RATIFIED;
-        return isLastChance ? Status.EXPIRED : Status.ACTIVE;
+        Status status = accepted ? Status.RATIFIED : (isLastChance ? Status.EXPIRED : Status.ACTIVE);
+        logRatificationDecision(id, proposal, status, votes, drepDist, activeDRepKeys,
+                poolStakeDist, poolDRepDelegation, committeeMembers, committeeThreshold,
+                lastEnactedActions, currentEpoch, isBootstrapPhase, committeeMinSize,
+                committeeMaxTermLength, committeeState, treasury, drepThresholds,
+                spoThresholds, effectiveDrepVotingThresholds, delayed);
+        return status;
     }
 
     // ===== Per-Action-Type Evaluators =====
@@ -547,6 +565,323 @@ public class RatificationEngine {
         var tally = tallyCalculator.computeSPOTally(votes, poolStakeDist, poolDRepDelegation,
                 actionType, isBootstrapPhase);
         return VoteTallyCalculator.spoThresholdMet(tally, threshold);
+    }
+
+    private void logEarlyRatificationDecision(GovActionId id, GovActionRecord proposal, Status status,
+                                              Map<GovActionType, GovActionId> lastEnactedActions,
+                                              int currentEpoch, boolean delayed) {
+        if (!log.isInfoEnabled()) return;
+
+        GovActionType type = proposal.actionType();
+        boolean isExpired = (currentEpoch - proposal.expiresAfterEpoch()) > 1;
+        String reason;
+        if (isExpired) {
+            reason = "expired";
+        } else if (type == GovActionType.INFO_ACTION) {
+            reason = "info_action_not_ratifiable";
+        } else if (delayed) {
+            reason = "delayed_by_prior_action";
+        } else if (!prevActionValid(proposal, lastEnactedActions)) {
+            reason = "prev_action_invalid";
+        } else {
+            reason = "early";
+        }
+
+        log.info("Ratification decision: {}/{} type={} status={} reason={} proposed={} expires={} delayed={}",
+                shortTx(id), id.getGov_action_index(), type, status, reason,
+                proposal.proposedInEpoch(), proposal.expiresAfterEpoch(), delayed);
+    }
+
+    private void logRatificationDecision(
+            GovActionId id, GovActionRecord proposal, Status status,
+            Map<GovernanceStateStore.VoterKey, Integer> votes,
+            Map<DRepDistKey, BigInteger> drepDist,
+            Set<DRepDistKey> activeDRepKeys,
+            Map<String, BigInteger> poolStakeDist,
+            Map<String, Integer> poolDRepDelegation,
+            Map<CredentialKey, CommitteeMemberRecord> committeeMembers,
+            BigDecimal committeeThreshold,
+            Map<GovActionType, GovActionId> lastEnactedActions,
+            int currentEpoch, boolean isBootstrapPhase,
+            int committeeMinSize, int committeeMaxTermLength,
+            String committeeState,
+            BigInteger treasury,
+            Map<GovActionType, BigDecimal> drepThresholds,
+            Map<GovActionType, BigDecimal> spoThresholds,
+            DrepVoteThresholds effectiveDrepVotingThresholds,
+            boolean delayed) {
+
+        if (!log.isInfoEnabled()) return;
+
+        RatificationDiagnostics diagnostics = buildDiagnostics(proposal, votes, drepDist, activeDRepKeys,
+                poolStakeDist, poolDRepDelegation, committeeMembers, committeeThreshold,
+                lastEnactedActions, currentEpoch, isBootstrapPhase, committeeMinSize,
+                committeeMaxTermLength, committeeState, treasury, drepThresholds,
+                spoThresholds, effectiveDrepVotingThresholds, delayed);
+
+        var committee = diagnostics.committeeTally();
+        var drep = diagnostics.drepTally();
+        var spo = diagnostics.spoTally();
+
+        log.info("Ratification decision: {}/{} type={} status={} reason={} proposed={} expires={} votes={} " +
+                        "committee=yes:{},no:{},abstain:{},ratio:{},threshold:{},active:{},min:{} " +
+                        "drep=yes:{},no:{},abstain:{},ratio:{},threshold:{} " +
+                        "spo=yes:{},no:{},abstain:{},total:{},ratio:{},threshold:{} " +
+                        "spoRequired={} groups={} delayed={}",
+                shortTx(id), id.getGov_action_index(), proposal.actionType(), status, diagnostics.reason(),
+                proposal.proposedInEpoch(), proposal.expiresAfterEpoch(), votes.size(),
+                committee != null ? committee.yesCount() : null,
+                committee != null ? committee.noCount() : null,
+                committee != null ? committee.abstainCount() : null,
+                ratioString(diagnostics.committeeRatio()), committeeThreshold,
+                diagnostics.activeCommitteeCount(), committeeMinSize,
+                drep != null ? drep.yesStake() : null,
+                drep != null ? drep.noStake() : null,
+                drep != null ? drep.abstainStake() : null,
+                ratioString(diagnostics.drepRatio()), diagnostics.drepThreshold(),
+                spo != null ? spo.yesStake() : null,
+                spo != null ? spo.noStake() : null,
+                spo != null ? spo.abstainStake() : null,
+                spo != null ? spo.totalStake() : null,
+                ratioString(diagnostics.spoRatio()), diagnostics.spoThreshold(),
+                diagnostics.spoRequired(), diagnostics.affectedGroups(), delayed);
+    }
+
+    private RatificationDiagnostics buildDiagnostics(
+            GovActionRecord proposal,
+            Map<GovernanceStateStore.VoterKey, Integer> votes,
+            Map<DRepDistKey, BigInteger> drepDist,
+            Set<DRepDistKey> activeDRepKeys,
+            Map<String, BigInteger> poolStakeDist,
+            Map<String, Integer> poolDRepDelegation,
+            Map<CredentialKey, CommitteeMemberRecord> committeeMembers,
+            BigDecimal committeeThreshold,
+            Map<GovActionType, GovActionId> lastEnactedActions,
+            int currentEpoch, boolean isBootstrapPhase,
+            int committeeMinSize, int committeeMaxTermLength,
+            String committeeState,
+            BigInteger treasury,
+            Map<GovActionType, BigDecimal> drepThresholds,
+            Map<GovActionType, BigDecimal> spoThresholds,
+            DrepVoteThresholds effectiveDrepVotingThresholds,
+            boolean delayed) {
+
+        GovActionType type = proposal.actionType();
+        var committeeTally = tallyCalculator.computeCommitteeTally(votes, committeeMembers, currentEpoch);
+        long activeCommitteeCount = activeCommitteeCount(committeeMembers, currentEpoch);
+        BigDecimal committeeRatio = committeeRatio(committeeTally);
+        VoteTallyCalculator.DRepTally drepTally = null;
+        VoteTallyCalculator.SPOTally spoTally = null;
+        BigDecimal drepThreshold = null;
+        BigDecimal spoThreshold = null;
+        BigDecimal drepRatio = null;
+        BigDecimal spoRatio = null;
+        List<ProtocolParamGroupClassifier.ParamGroup> affectedGroups = List.of();
+        boolean spoRequired = false;
+
+        boolean isExpired = (currentEpoch - proposal.expiresAfterEpoch()) > 1;
+        String reason;
+        if (isExpired) {
+            reason = "expired";
+        } else if (type == GovActionType.INFO_ACTION) {
+            reason = "info_action_not_ratifiable";
+        } else if (delayed) {
+            reason = "delayed_by_prior_action";
+        } else if (!prevActionValid(proposal, lastEnactedActions)) {
+            reason = "prev_action_invalid";
+        } else {
+            reason = "accepted";
+            if (requiresCommitteeVote(type)) {
+                reason = committeeFailureReason(committeeState, isBootstrapPhase, activeCommitteeCount,
+                        committeeMinSize, committeeTally, committeeThreshold);
+                if (reason == null) reason = "accepted";
+            }
+
+            if ("accepted".equals(reason) && requiresDRepVote(type, isBootstrapPhase)) {
+                drepThreshold = drepThreshold(type, proposal, drepThresholds, effectiveDrepVotingThresholds);
+                if (type == GovActionType.PARAMETER_CHANGE_ACTION) {
+                    affectedGroups = affectedParamGroups(proposal);
+                }
+                drepTally = tallyCalculator.computeDRepTally(votes, drepDist, type, activeDRepKeys);
+                drepRatio = drepRatio(drepTally);
+                if (!VoteTallyCalculator.drepThresholdMet(drepTally, drepThreshold)) {
+                    reason = "drep_threshold";
+                }
+            }
+
+            if ("accepted".equals(reason)) {
+                spoRequired = requiresSpoVote(type, proposal, affectedGroups);
+                if (spoRequired) {
+                    spoThreshold = spoThresholds.getOrDefault(type, BigDecimal.ONE);
+                    spoTally = tallyCalculator.computeSPOTally(votes, poolStakeDist, poolDRepDelegation,
+                            type, isBootstrapPhase);
+                    spoRatio = spoRatio(spoTally);
+                    if (!VoteTallyCalculator.spoThresholdMet(spoTally, spoThreshold)) {
+                        reason = "spo_threshold";
+                    }
+                }
+            }
+
+            if ("accepted".equals(reason) && type == GovActionType.TREASURY_WITHDRAWALS_ACTION
+                    && treasuryWithdrawalTotal(proposal).compareTo(treasury) > 0) {
+                reason = "treasury_balance";
+            }
+
+            if ("accepted".equals(reason) && type == GovActionType.UPDATE_COMMITTEE
+                    && updateCommitteeTermExceedsMax(proposal, currentEpoch, committeeMaxTermLength)) {
+                reason = "committee_term";
+            }
+        }
+
+        if (drepTally == null && requiresDRepVote(type, isBootstrapPhase)) {
+            drepThreshold = drepThreshold(type, proposal, drepThresholds, effectiveDrepVotingThresholds);
+            if (type == GovActionType.PARAMETER_CHANGE_ACTION) {
+                affectedGroups = affectedParamGroups(proposal);
+            }
+            drepTally = tallyCalculator.computeDRepTally(votes, drepDist, type, activeDRepKeys);
+            drepRatio = drepRatio(drepTally);
+        }
+
+        if (spoTally == null) {
+            spoRequired = requiresSpoVote(type, proposal, affectedGroups);
+            if (spoRequired) {
+                spoThreshold = spoThresholds.getOrDefault(type, BigDecimal.ONE);
+                spoTally = tallyCalculator.computeSPOTally(votes, poolStakeDist, poolDRepDelegation,
+                        type, isBootstrapPhase);
+                spoRatio = spoRatio(spoTally);
+            }
+        }
+
+        return new RatificationDiagnostics(reason, committeeTally, activeCommitteeCount, committeeRatio,
+                drepThreshold, drepTally, drepRatio, spoThreshold, spoTally, spoRatio,
+                affectedGroups, spoRequired);
+    }
+
+    private static boolean requiresCommitteeVote(GovActionType type) {
+        return switch (type) {
+            case HARD_FORK_INITIATION_ACTION, PARAMETER_CHANGE_ACTION, TREASURY_WITHDRAWALS_ACTION,
+                 NEW_CONSTITUTION -> true;
+            case NO_CONFIDENCE, UPDATE_COMMITTEE, INFO_ACTION -> false;
+        };
+    }
+
+    private static boolean requiresDRepVote(GovActionType type, boolean isBootstrapPhase) {
+        return !isBootstrapPhase && switch (type) {
+            case HARD_FORK_INITIATION_ACTION, PARAMETER_CHANGE_ACTION, TREASURY_WITHDRAWALS_ACTION,
+                 NO_CONFIDENCE, UPDATE_COMMITTEE, NEW_CONSTITUTION -> true;
+            case INFO_ACTION -> false;
+        };
+    }
+
+    private static boolean requiresSpoVote(GovActionType type, GovActionRecord proposal,
+                                           List<ProtocolParamGroupClassifier.ParamGroup> affectedGroups) {
+        return switch (type) {
+            case HARD_FORK_INITIATION_ACTION, NO_CONFIDENCE, UPDATE_COMMITTEE -> true;
+            case PARAMETER_CHANGE_ACTION -> ProtocolParamGroupClassifier.isSpoVotingRequired(
+                    affectedGroups != null && !affectedGroups.isEmpty() ? affectedGroups : affectedParamGroups(proposal));
+            case TREASURY_WITHDRAWALS_ACTION, NEW_CONSTITUTION, INFO_ACTION -> false;
+        };
+    }
+
+    private static BigDecimal drepThreshold(GovActionType type, GovActionRecord proposal,
+                                            Map<GovActionType, BigDecimal> drepThresholds,
+                                            DrepVoteThresholds effectiveDrepVotingThresholds) {
+        if (type == GovActionType.PARAMETER_CHANGE_ACTION) {
+            return ProtocolParamGroupClassifier.computeDRepThreshold(
+                    affectedParamGroups(proposal), effectiveDrepVotingThresholds);
+        }
+        return drepThresholds.getOrDefault(type, BigDecimal.ONE);
+    }
+
+    private static List<ProtocolParamGroupClassifier.ParamGroup> affectedParamGroups(GovActionRecord proposal) {
+        if (proposal.govAction() instanceof com.bloxbean.cardano.yaci.core.model.governance.actions.ParameterChangeAction pca
+                && pca.getProtocolParamUpdate() != null) {
+            return ProtocolParamGroupClassifier.getAffectedGroups(pca.getProtocolParamUpdate());
+        }
+        return List.of();
+    }
+
+    private static String committeeFailureReason(String committeeState, boolean isBootstrapPhase,
+                                                 long activeCommitteeCount, int committeeMinSize,
+                                                 VoteTallyCalculator.CommitteeTally tally,
+                                                 BigDecimal threshold) {
+        if ("NO_CONFIDENCE".equals(committeeState)) return "committee_no_confidence";
+        if (!isBootstrapPhase && activeCommitteeCount < committeeMinSize) return "committee_min_size";
+        if (!VoteTallyCalculator.committeeThresholdMet(tally, threshold)) return "committee_threshold";
+        return null;
+    }
+
+    private static BigInteger treasuryWithdrawalTotal(GovActionRecord proposal) {
+        BigInteger totalWithdrawal = BigInteger.ZERO;
+        if (proposal.govAction() instanceof com.bloxbean.cardano.yaci.core.model.governance.actions.TreasuryWithdrawalsAction twa
+                && twa.getWithdrawals() != null) {
+            for (BigInteger amount : twa.getWithdrawals().values()) {
+                totalWithdrawal = totalWithdrawal.add(amount);
+            }
+        }
+        return totalWithdrawal;
+    }
+
+    private static boolean updateCommitteeTermExceedsMax(GovActionRecord proposal, int currentEpoch,
+                                                         int committeeMaxTermLength) {
+        if (proposal.govAction() instanceof com.bloxbean.cardano.yaci.core.model.governance.actions.UpdateCommittee uc
+                && uc.getNewMembersAndTerms() != null) {
+            int maxExpiry = currentEpoch + committeeMaxTermLength;
+            for (Integer expiryEpoch : uc.getNewMembersAndTerms().values()) {
+                if (expiryEpoch != null && expiryEpoch > maxExpiry) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private static long activeCommitteeCount(Map<CredentialKey, CommitteeMemberRecord> members, int currentEpoch) {
+        return members.values().stream()
+                .filter(m -> !m.resigned() && m.expiryEpoch() > currentEpoch)
+                .count();
+    }
+
+    private static BigDecimal committeeRatio(VoteTallyCalculator.CommitteeTally tally) {
+        int denominator = tally.yesCount() + tally.noCount();
+        if (denominator == 0) return null;
+        return BigDecimal.valueOf(tally.yesCount()).divide(BigDecimal.valueOf(denominator), MathContext.DECIMAL128);
+    }
+
+    private static BigDecimal drepRatio(VoteTallyCalculator.DRepTally tally) {
+        BigInteger denominator = tally.yesStake().add(tally.noStake());
+        if (denominator.signum() == 0) return null;
+        return new BigDecimal(tally.yesStake()).divide(new BigDecimal(denominator), MathContext.DECIMAL128);
+    }
+
+    private static BigDecimal spoRatio(VoteTallyCalculator.SPOTally tally) {
+        BigInteger denominator = tally.totalStake().subtract(tally.abstainStake());
+        if (denominator.signum() <= 0) return null;
+        return new BigDecimal(tally.yesStake()).divide(new BigDecimal(denominator), MathContext.DECIMAL128);
+    }
+
+    private static String ratioString(BigDecimal ratio) {
+        return ratio == null ? "n/a" : ratio.stripTrailingZeros().toPlainString();
+    }
+
+    private static String shortTx(GovActionId id) {
+        String tx = id.getTransactionId();
+        return tx != null && tx.length() > 8 ? tx.substring(0, 8) : String.valueOf(tx);
+    }
+
+    private record RatificationDiagnostics(
+            String reason,
+            VoteTallyCalculator.CommitteeTally committeeTally,
+            long activeCommitteeCount,
+            BigDecimal committeeRatio,
+            BigDecimal drepThreshold,
+            VoteTallyCalculator.DRepTally drepTally,
+            BigDecimal drepRatio,
+            BigDecimal spoThreshold,
+            VoteTallyCalculator.SPOTally spoTally,
+            BigDecimal spoRatio,
+            List<ProtocolParamGroupClassifier.ParamGroup> affectedGroups,
+            boolean spoRequired) {
     }
 
     // ===== Prev Action Validation =====

@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.ledgerstate.test;
 
 import com.bloxbean.cardano.yano.ledgerstate.AccountStateCfNames;
+import com.bloxbean.cardano.yano.ledgerstate.AccountHistoryCfNames;
 import com.bloxbean.cardano.yano.ledgerstate.DefaultAccountStateStore;
 import com.bloxbean.cardano.yano.ledgerstate.governance.GovernanceStateStore;
 import org.rocksdb.*;
@@ -47,7 +48,10 @@ public class TestRocksDBHelper implements AutoCloseable {
                 AccountStateCfNames.ACCT_STATE,
                 AccountStateCfNames.ACCT_DELTA,
                 AccountStateCfNames.ACCT_BOUNDARY_DELTA,
-                AccountStateCfNames.EPOCH_DELEG_SNAPSHOT
+                AccountStateCfNames.EPOCH_DELEG_SNAPSHOT,
+                AccountStateCfNames.EPOCH_PARAMS,
+                AccountHistoryCfNames.ACCOUNT_HISTORY,
+                AccountHistoryCfNames.ACCOUNT_HISTORY_DELTA
         );
 
         List<ColumnFamilyDescriptor> cfDescriptors = cfNames.stream()

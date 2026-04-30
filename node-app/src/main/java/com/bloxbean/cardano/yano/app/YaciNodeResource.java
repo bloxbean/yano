@@ -12,7 +12,7 @@ import jakarta.ws.rs.core.Response;
 
 import java.util.Map;
 
-@Path("/api/v1/node")
+@Path("node")
 @Produces(MediaType.APPLICATION_JSON)
 public class YaciNodeResource {
 

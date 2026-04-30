@@ -1,0 +1,46 @@
+package com.bloxbean.cardano.yano.ledgerstate;
+
+import com.bloxbean.cardano.yaci.events.api.DomainEventListener;
+import com.bloxbean.cardano.yaci.events.api.EventBus;
+import com.bloxbean.cardano.yaci.events.api.SubscriptionHandle;
+import com.bloxbean.cardano.yaci.events.api.SubscriptionOptions;
+import com.bloxbean.cardano.yaci.events.api.support.AnnotationListenerRegistrar;
+import com.bloxbean.cardano.yano.api.events.BlockAppliedEvent;
+import com.bloxbean.cardano.yano.api.events.PreEpochTransitionEvent;
+import com.bloxbean.cardano.yano.api.events.RollbackEvent;
+
+import java.util.List;
+
+/**
+ * Independent event handler for optional account history indexes.
+ */
+public final class AccountHistoryEventHandler implements AutoCloseable {
+    private final AccountHistoryStore store;
+    private final List<SubscriptionHandle> handles;
+
+    public AccountHistoryEventHandler(EventBus bus, AccountHistoryStore store) {
+        this.store = store;
+        SubscriptionOptions defaults = SubscriptionOptions.builder().build();
+        this.handles = AnnotationListenerRegistrar.register(bus, this, defaults);
+    }
+
+    @DomainEventListener(order = 112)
+    public void onPreEpochTransition(PreEpochTransitionEvent e) {
+        if (store != null && store.isEnabled()) store.handleEpochTransition(e.previousEpoch(), e.newEpoch());
+    }
+
+    @DomainEventListener(order = 112)
+    public void onBlockApplied(BlockAppliedEvent e) {
+        if (store != null && store.isEnabled()) store.applyBlock(e);
+    }
+
+    @DomainEventListener(order = 112)
+    public void onRollback(RollbackEvent e) {
+        if (store != null && store.isEnabled()) store.rollbackTo(e);
+    }
+
+    @Override
+    public void close() {
+        if (handles != null) handles.forEach(h -> { try { h.close(); } catch (Exception ignored) {} });
+    }
+}

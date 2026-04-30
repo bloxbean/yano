@@ -4,6 +4,8 @@ import com.bloxbean.cardano.yaci.core.model.DrepVoteThresholds;
 import com.bloxbean.cardano.yaci.core.model.PoolVotingThresholds;
 import com.bloxbean.cardano.yaci.core.model.governance.GovActionType;
 import com.bloxbean.cardano.yaci.core.types.UnitInterval;
+import com.bloxbean.cardano.yano.api.EpochParamProvider;
+import com.bloxbean.cardano.yano.ledgerstate.EpochParamTracker;
 import com.bloxbean.cardano.yano.ledgerstate.governance.GovernanceCborCodec.CommitteeThreshold;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -47,6 +49,49 @@ class GovernanceEpochProcessorTest {
         assertThat(GovernanceEpochProcessor.applyDormantFlushNonRevivalGuard(960, 1, 962)).isEqualTo(960);
         // Still-active DRep: actualExpiry ≥ currentEpoch → bump proceeds.
         assertThat(GovernanceEpochProcessor.applyDormantFlushNonRevivalGuard(961, 1, 961)).isEqualTo(962);
+    }
+
+    @Test
+    @DisplayName("Committee size params use effective tracker values before genesis fallback")
+    void committeeSizeParams_trackerWins() {
+        EpochParamProvider genesisProvider = new EpochParamProvider() {
+            @Override
+            public BigInteger getKeyDeposit(long epoch) {
+                return BigInteger.ZERO;
+            }
+
+            @Override
+            public BigInteger getPoolDeposit(long epoch) {
+                return BigInteger.ZERO;
+            }
+
+            @Override
+            public int getCommitteeMinSize(long epoch) {
+                return 7;
+            }
+
+            @Override
+            public int getCommitteeMaxTermLength(long epoch) {
+                return 146;
+            }
+        };
+        EpochParamTracker tracker = new EpochParamTracker(genesisProvider, true) {
+            @Override
+            public int getCommitteeMinSize(long epoch) {
+                return 3;
+            }
+
+            @Override
+            public int getCommitteeMaxTermLength(long epoch) {
+                return 90;
+            }
+        };
+        GovernanceEpochProcessor processor = new GovernanceEpochProcessor(
+                null, null, null, null, null, null, null, null, null,
+                genesisProvider, tracker, null, null, null, null);
+
+        assertThat(processor.resolveCommitteeMinSize(251)).isEqualTo(3);
+        assertThat(processor.resolveCommitteeMaxTermLength(251)).isEqualTo(90);
     }
 
     /**

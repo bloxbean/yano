@@ -28,6 +28,7 @@ public class InMemoryChainState implements ChainState, NonceStateStore {
     private ChainTip tip;
     private ChainTip headerTip;
     private volatile byte[] epochNonceState;
+    private final Map<Integer, byte[]> epochNonces = new ConcurrentHashMap<>();
 
     @Override
     public void storeBlock(byte[] blockHash, Long blockNumber, Long slot, byte[] block) {
@@ -299,5 +300,23 @@ public class InMemoryChainState implements ChainState, NonceStateStore {
     @Override
     public byte[] getEpochNonceState() {
         return epochNonceState;
+    }
+
+    @Override
+    public void storeEpochNonce(int epoch, byte[] nonce) {
+        if (nonce != null) {
+            epochNonces.put(epoch, nonce.clone());
+        }
+    }
+
+    @Override
+    public byte[] getEpochNonce(int epoch) {
+        byte[] nonce = epochNonces.get(epoch);
+        return nonce != null ? nonce.clone() : null;
+    }
+
+    @Override
+    public void pruneEpochNoncesAfter(int epoch) {
+        epochNonces.keySet().removeIf(storedEpoch -> storedEpoch > epoch);
     }
 }

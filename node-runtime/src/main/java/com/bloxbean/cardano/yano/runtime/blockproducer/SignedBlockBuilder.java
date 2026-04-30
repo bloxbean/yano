@@ -134,6 +134,7 @@ public class SignedBlockBuilder extends DevnetBlockBuilder {
         // 8. Persist nonce state
         if (nonceStore != null) {
             nonceStore.storeEpochNonceState(epochNonceState.serialize());
+            nonceStore.storeEpochNonce(epochNonceState.getCurrentEpoch(), epochNonceState.getEpochNonce());
         }
 
         return result;

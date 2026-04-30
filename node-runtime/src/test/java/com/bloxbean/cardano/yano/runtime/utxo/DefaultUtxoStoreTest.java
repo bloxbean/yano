@@ -1,7 +1,9 @@
 package com.bloxbean.cardano.yano.runtime.utxo;
 
+import com.bloxbean.cardano.client.address.Address;
 import com.bloxbean.cardano.yaci.core.model.*;
 import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Point;
+import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yaci.events.api.EventBus;
 import com.bloxbean.cardano.yaci.events.impl.SimpleEventBus;
 import com.bloxbean.cardano.yaci.events.api.EventMetadata;
@@ -26,6 +28,9 @@ import static com.bloxbean.cardano.yaci.core.util.Constants.LOVELACE;
 import static org.junit.jupiter.api.Assertions.*;
 
 class DefaultUtxoStoreTest {
+    private static final String BASE_ADDR_WITH_STAKE =
+            "addr_test1qz2fxv2umyhttkxyxp8x0dlpdt3k6cwng5pxj3jhsydzer3jcu5d8ps7zex2k2xt3uqxgjqnnj83ws8lhrn648jjxtwq2ytjqp";
+
     private File tempDir;
     private DirectRocksDBChainState chain;
     private DefaultUtxoStore store;
@@ -168,6 +173,42 @@ class DefaultUtxoStoreTest {
         var list = store.getUtxosByAddress(addr, 1, 10);
         assertEquals(1, list.size());
         assertEquals(new BigInteger("100"), list.get(0).lovelace());
+    }
+
+    @Test
+    void stakeBalanceIndexTracksApplySpendAndRollback() {
+        StakeCred stakeCred = stakeCred(BASE_ADDR_WITH_STAKE);
+        assertTrue(store.isStakeBalanceIndexEnabled());
+        assertTrue(store.isStakeBalanceIndexReady());
+
+        TransactionBody tx1 = TransactionBody.builder()
+                .txHash("31".repeat(32))
+                .outputs(List.of(TransactionOutput.builder().address(BASE_ADDR_WITH_STAKE)
+                        .amounts(List.of(lovelaceAmount(1000))).build()))
+                .build();
+        Block b1 = Block.builder().era(Era.Babbage).transactionBodies(List.of(tx1))
+                .invalidTransactions(Collections.emptyList()).build();
+        publishBlock(100, 1, "b1".repeat(32), b1);
+
+        assertEquals(Optional.of(BigInteger.valueOf(1000)),
+                store.getUtxoBalanceByStakeCredential(stakeCred.credType(), stakeCred.credHash()));
+
+        TransactionBody tx2 = TransactionBody.builder()
+                .txHash("32".repeat(32))
+                .inputs(Set.of(TransactionInput.builder().transactionId(tx1.getTxHash()).index(0).build()))
+                .outputs(List.of())
+                .build();
+        Block b2 = Block.builder().era(Era.Babbage).transactionBodies(List.of(tx2))
+                .invalidTransactions(Collections.emptyList()).build();
+        publishBlock(200, 2, "b2".repeat(32), b2);
+
+        assertEquals(Optional.of(BigInteger.ZERO),
+                store.getUtxoBalanceByStakeCredential(stakeCred.credType(), stakeCred.credHash()));
+
+        publishRollback(150);
+
+        assertEquals(Optional.of(BigInteger.valueOf(1000)),
+                store.getUtxoBalanceByStakeCredential(stakeCred.credType(), stakeCred.credHash()));
     }
 
     @Test
@@ -440,4 +481,18 @@ class DefaultUtxoStoreTest {
                 .quantity(BigInteger.valueOf(lovelace))
                 .build();
     }
+
+    private static StakeCred stakeCred(String address) {
+        Address parsed = new Address(address);
+        byte[] stakeHash = parsed.getDelegationCredentialHash().orElseThrow();
+        int typeNibble = ((parsed.getBytes()[0] & 0xFF) >> 4) & 0x0F;
+        int credType = switch (typeNibble) {
+            case 0, 1 -> 0;
+            case 2, 3 -> 1;
+            default -> throw new IllegalArgumentException("Address does not contain a stake credential: " + address);
+        };
+        return new StakeCred(credType, HexUtil.encodeHexString(stakeHash));
+    }
+
+    private record StakeCred(int credType, String credHash) {}
 }

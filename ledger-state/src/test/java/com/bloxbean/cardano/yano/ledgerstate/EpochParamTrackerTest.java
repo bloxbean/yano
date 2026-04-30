@@ -1,10 +1,12 @@
 package com.bloxbean.cardano.yano.ledgerstate;
 
+import com.bloxbean.cardano.yaci.core.model.Era;
 import com.bloxbean.cardano.yaci.core.model.ProtocolParamUpdate;
 import com.bloxbean.cardano.yaci.core.model.TransactionBody;
 import com.bloxbean.cardano.yaci.core.model.Update;
 import com.bloxbean.cardano.yaci.core.types.UnitInterval;
 import com.bloxbean.cardano.yano.api.EpochParamProvider;
+import com.bloxbean.cardano.yano.api.era.EraProvider;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.io.TempDir;
 import org.rocksdb.*;
@@ -13,6 +15,7 @@ import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -61,6 +64,29 @@ class EpochParamTrackerTest {
 
     private EpochParamTracker createTracker() {
         return new EpochParamTracker(BASE_PROVIDER, true, db, cfEpochParams);
+    }
+
+    private EpochParamTracker createTracker(EpochParamProvider provider, EraProvider eraProvider) {
+        EpochParamTracker tracker = new EpochParamTracker(provider, true, db, cfEpochParams);
+        tracker.setEraProvider(eraProvider);
+        return tracker;
+    }
+
+    private static EraProvider directStartEraProvider(Era startEra) {
+        return new EraProvider() {
+            @Override
+            public Integer resolveFirstEpochOrNull(int eraValue) {
+                return startEra.getValue() >= eraValue ? 0 : null;
+            }
+        };
+    }
+
+    private static Map<String, Object> orderedCostModel(Long... values) {
+        Map<String, Object> model = new LinkedHashMap<>();
+        for (int i = 0; i < values.length; i++) {
+            model.put("cost-" + i, values[i]);
+        }
+        return model;
     }
 
     private void commitBatch(WriteBatch batch) throws RocksDBException {
@@ -146,10 +172,10 @@ class EpochParamTrackerTest {
         // Finalize epoch 6 — the update should be gone
         tracker.finalizeEpoch(6);
 
-        // epoch 6 should NOT have d=0 or protocolMajor=4
+        // epoch 6 should contain the carried base snapshot, not the rolled-back update.
         ProtocolParamUpdate resolved = tracker.getResolvedParams(6);
-        // No update was applied, so resolved is null (no prev epoch either)
-        assertThat(resolved).isNull();
+        assertThat(resolved).isNotNull();
+        assertThat(resolved.getProtocolMajorVer()).isEqualTo(2);
     }
 
     // ===== Test 3: rollback after update but before boundary keeps pending =====
@@ -324,6 +350,35 @@ class EpochParamTrackerTest {
         assertThat(tracker.getResolvedParams(100)).isNull();
     }
 
+    @Test
+    @DisplayName("Governance-enacted params are persisted through the caller batch")
+    void conwayEnactedParamsUseCallerBatch() throws Exception {
+        ProtocolParamUpdate conwayUpdate = ProtocolParamUpdate.builder()
+                .govActionLifetime(8)
+                .nOpt(600)
+                .build();
+
+        EpochParamTracker tracker = createTracker();
+        try (WriteBatch batch = new WriteBatch()) {
+            tracker.applyEnactedParamChange(100, conwayUpdate, batch);
+            // Intentionally do not commit: the update must not be durable outside
+            // the governance boundary batch.
+        }
+
+        EpochParamTracker notCommitted = createTracker();
+        assertThat(notCommitted.getResolvedParams(100)).isNull();
+
+        try (WriteBatch batch = new WriteBatch()) {
+            notCommitted.applyEnactedParamChange(100, conwayUpdate, batch);
+            commitBatch(batch);
+        }
+
+        EpochParamTracker committed = createTracker();
+        assertThat(committed.getResolvedParams(100)).isNotNull();
+        assertThat(committed.getResolvedParams(100).getGovActionLifetime()).isEqualTo(8);
+        assertThat(committed.getResolvedParams(100).getNOpt()).isEqualTo(600);
+    }
+
     // ===== Test 8: applyBlock persists pending via WriteBatch (integration) =====
 
     @Test
@@ -364,5 +419,139 @@ class EpochParamTrackerTest {
         assertThat(resolved).isNotNull();
         assertThat(resolved.getProtocolMajorVer()).isEqualTo(4);
         assertThat(resolved.getDecentralisationParam().safeRatio()).isEqualByComparingTo(BigDecimal.ZERO);
+    }
+
+    @Test
+    @DisplayName("Full snapshots preserve base params and merge cost models by Plutus language")
+    void fullSnapshotsMergeCostModelsByLanguage() throws Exception {
+        EpochParamProvider provider = new EpochParamProvider() {
+            @Override public BigInteger getKeyDeposit(long epoch) { return BigInteger.valueOf(2_000_000); }
+            @Override public BigInteger getPoolDeposit(long epoch) { return BigInteger.valueOf(500_000_000); }
+            @Override public int getProtocolMajor(long epoch) { return 2; }
+            @Override public int getProtocolMinor(long epoch) { return 0; }
+            @Override public Map<String, Object> getCostModels(long epoch) {
+                return Map.of("PlutusV1", orderedCostModel(1L, 2L), "PlutusV3", List.of(5L, 6L));
+            }
+            @Override public Map<String, Object> getAlonzoCostModels(long epoch) {
+                return Map.of("PlutusV1", orderedCostModel(1L, 2L));
+            }
+            @Override public Map<String, Object> getConwayCostModels(long epoch) { return Map.of("PlutusV3", List.of(5L, 6L)); }
+            @Override public BigInteger getCoinsPerUtxoWord(long epoch) { return BigInteger.valueOf(34_482); }
+        };
+        EraProvider eraProvider = new EraProvider() {
+            @Override
+            public Integer resolveFirstEpochOrNull(int eraValue) {
+                return switch (eraValue) {
+                    case 5 -> 10; // Alonzo
+                    case 6 -> 20; // Babbage
+                    case 7 -> 30; // Conway
+                    default -> 0;
+                };
+            }
+        };
+
+        EpochParamTracker tracker = createTracker(provider, eraProvider);
+
+        tracker.finalizeEpoch(5);
+        assertThat(tracker.getCostModels(5)).isNull();
+        assertThat(tracker.getCostModelsRaw(5)).isNull();
+
+        tracker.finalizeEpoch(10);
+        assertThat(tracker.getCostModels(10)).containsOnlyKeys("PlutusV1");
+        assertThat(tracker.getCostModels(10).get("PlutusV1"))
+                .isEqualTo(Map.of("000", 1L, "001", 2L));
+        assertThat(tracker.getCostModelsRaw(10)).containsEntry("PlutusV1", List.of(1L, 2L));
+        assertThat(tracker.getResolvedParams(10).getExpansionRate().getNumerator()).isEqualTo(BigInteger.valueOf(3));
+        assertThat(tracker.getResolvedParams(10).getExpansionRate().getDenominator()).isEqualTo(BigInteger.valueOf(1000));
+
+        ProtocolParamUpdate plutusV2Update = ProtocolParamUpdate.builder()
+                .costModels(Map.of(1, "[3,4]"))
+                .build();
+        try (WriteBatch batch = new WriteBatch()) {
+            tracker.processTransaction(txWithUpdate(24, plutusV2Update), 1234, 0, batch);
+        }
+        tracker.finalizeEpoch(25);
+        assertThat(tracker.getCostModels(25)).containsOnlyKeys("PlutusV1", "PlutusV2");
+        assertThat(tracker.getCostModelsRaw(25)).containsEntry("PlutusV2", List.of(3L, 4L));
+
+        tracker.finalizeEpoch(30);
+        assertThat(tracker.getCostModels(30)).containsOnlyKeys("PlutusV1", "PlutusV2", "PlutusV3");
+        assertThat(tracker.getCostModelsRaw(30)).containsEntry("PlutusV3", List.of(5L, 6L));
+    }
+
+    @Test
+    @DisplayName("Era-cleared fields do not fall back to genesis values")
+    void eraClearedFieldsDoNotFallbackToGenesis() throws Exception {
+        EpochParamProvider provider = new EpochParamProvider() {
+            @Override public BigInteger getKeyDeposit(long epoch) { return BigInteger.valueOf(2_000_000); }
+            @Override public BigInteger getPoolDeposit(long epoch) { return BigInteger.valueOf(500_000_000); }
+            @Override public int getProtocolMajor(long epoch) { return 6; }
+            @Override public int getProtocolMinor(long epoch) { return 0; }
+            @Override public String getExtraEntropy(long epoch) { return "genesis-entropy"; }
+            @Override public BigInteger getMinUtxo(long epoch) { return BigInteger.valueOf(1_000_000); }
+            @Override public BigDecimal getDecentralization(long epoch) { return BigDecimal.ONE; }
+            @Override public UnitInterval getDecentralizationInterval(long epoch) {
+                return new UnitInterval(BigInteger.ONE, BigInteger.ONE);
+            }
+            @Override public BigInteger getCoinsPerUtxoWord(long epoch) { return BigInteger.valueOf(34_482); }
+        };
+        EraProvider eraProvider = new EraProvider() {
+            @Override
+            public Integer resolveFirstEpochOrNull(int eraValue) {
+                return switch (eraValue) {
+                    case 5 -> 10; // Alonzo
+                    case 6 -> 20; // Babbage
+                    default -> null;
+                };
+            }
+        };
+
+        EpochParamTracker tracker = createTracker(provider, eraProvider);
+
+        tracker.finalizeEpoch(10);
+        assertThat(tracker.getMinUtxo(10)).isNull();
+        assertThat(tracker.getExtraEntropy(10)).isEqualTo("genesis-entropy");
+        assertThat(tracker.getDecentralization(10)).isEqualByComparingTo(BigDecimal.ONE);
+
+        tracker.finalizeEpoch(20);
+        assertThat(tracker.getMinUtxo(20)).isNull();
+        assertThat(tracker.getExtraEntropy(20)).isNull();
+        assertThat(tracker.getDecentralization(20)).isNull();
+    }
+
+    @Test
+    @DisplayName("Direct Conway start materializes Alonzo, Babbage, and Conway overlays at genesis")
+    void directConwayStartMaterializesAllRequiredOverlays() throws Exception {
+        EpochParamProvider provider = new EpochParamProvider() {
+            @Override public BigInteger getKeyDeposit(long epoch) { return BigInteger.valueOf(2_000_000); }
+            @Override public BigInteger getPoolDeposit(long epoch) { return BigInteger.valueOf(500_000_000); }
+            @Override public int getProtocolMajor(long epoch) { return 10; }
+            @Override public int getProtocolMinor(long epoch) { return 0; }
+            @Override public String getExtraEntropy(long epoch) { return "genesis-entropy"; }
+            @Override public BigInteger getMinUtxo(long epoch) { return BigInteger.valueOf(1_000_000); }
+            @Override public BigDecimal getDecentralization(long epoch) { return BigDecimal.ONE; }
+            @Override public UnitInterval getDecentralizationInterval(long epoch) {
+                return new UnitInterval(BigInteger.ONE, BigInteger.ONE);
+            }
+            @Override public Map<String, Object> getAlonzoCostModels(long epoch) {
+                return Map.of("PlutusV1", List.of(1L, 2L), "PlutusV2", List.of(3L, 4L));
+            }
+            @Override public Map<String, Object> getConwayCostModels(long epoch) {
+                return Map.of("PlutusV3", List.of(5L, 6L));
+            }
+            @Override public BigInteger getCoinsPerUtxoWord(long epoch) { return BigInteger.valueOf(34_482); }
+            @Override public int getGovActionLifetime(long epoch) { return 6; }
+        };
+
+        EpochParamTracker tracker = createTracker(provider, directStartEraProvider(Era.Conway));
+
+        tracker.finalizeEpoch(0);
+
+        assertThat(tracker.getCostModels(0)).containsOnlyKeys("PlutusV1", "PlutusV2", "PlutusV3");
+        assertThat(tracker.getMinUtxo(0)).isNull();
+        assertThat(tracker.getExtraEntropy(0)).isNull();
+        assertThat(tracker.getDecentralization(0)).isNull();
+        assertThat(tracker.getCoinsPerUtxoSize(0)).isEqualTo(BigInteger.valueOf(4_310));
+        assertThat(tracker.getGovActionLifetime(0)).isEqualTo(6);
     }
 }

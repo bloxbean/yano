@@ -1,5 +1,6 @@
 package com.bloxbean.cardano.yano.runtime.genesis;
 
+import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.Map;
 
@@ -27,6 +28,14 @@ import java.util.Map;
  * @param keyDeposit           stake key deposit in lovelace (protocolParams.keyDeposit)
  * @param poolDeposit          pool registration deposit in lovelace (protocolParams.poolDeposit)
  * @param decentralisationParam initial decentralisation parameter (0.0–1.0)
+ * @param minFeeA              linear fee coefficient
+ * @param minFeeB              constant fee coefficient
+ * @param maxBlockBodySize     max block body size in bytes
+ * @param maxTxSize            max transaction size in bytes
+ * @param maxBlockHeaderSize   max block header size in bytes
+ * @param eMax                 epoch bound on pool retirement
+ * @param extraEntropy         extra entropy seed, or null for neutral nonce
+ * @param minUTxOValue         legacy minimum UTxO value
  */
 public record ShelleyGenesisData(
         Map<String, BigInteger> initialFunds,
@@ -43,12 +52,20 @@ public record ShelleyGenesisData(
         long protocolMajor,
         long protocolMinor,
         // Protocol params from protocolParams section
-        double rho,
-        double tau,
-        double a0,
+        BigDecimal rho,
+        BigDecimal tau,
+        BigDecimal a0,
         int nOpt,
         long minPoolCost,
         long keyDeposit,
         long poolDeposit,
-        double decentralisationParam
+        BigDecimal decentralisationParam,
+        int minFeeA,
+        int minFeeB,
+        int maxBlockBodySize,
+        int maxTxSize,
+        int maxBlockHeaderSize,
+        int eMax,
+        String extraEntropy,
+        long minUTxOValue
 ) {}

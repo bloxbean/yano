@@ -97,8 +97,28 @@ public final class EraProviderImpl implements EraProvider {
 
     @Override
     public boolean isConwayOrLater(int epoch) {
-        Integer first = resolveFirstConwayEpochOrNull();
+        return isEraOrLater(epoch, Era.Conway.getValue());
+    }
+
+    @Override
+    public boolean isEraOrLater(int epoch, int eraValue) {
+        Integer first = resolveFirstEpochOrNull(eraValue);
         return first != null && epoch >= first;
+    }
+
+    @Override
+    public Integer resolveFirstEpochOrNull(int eraValue) {
+        var eraSlot = chainState.getEraStartSlot(eraValue);
+        if (eraSlot.isPresent()) {
+            return epochSlotCalc.slotToEpoch(eraSlot.getAsLong());
+        }
+
+        var earliestValue = getEarliestKnownEraValue();
+        if (earliestValue.isPresent() && earliestValue.getAsLong() >= eraValue) {
+            return 0;
+        }
+
+        return null;
     }
 
     /**
@@ -113,18 +133,6 @@ public final class EraProviderImpl implements EraProvider {
      */
     @Override
     public Integer resolveFirstConwayEpochOrNull() {
-        // Direct Conway start slot
-        var conwaySlot = chainState.getEraStartSlot(Era.Conway.getValue());
-        if (conwaySlot.isPresent()) {
-            return epochSlotCalc.slotToEpoch(conwaySlot.getAsLong());
-        }
-
-        // Chain starts in or after Conway (devnet/Dijkstra)
-        if (startsInOrAfter(Era.Conway)) {
-            return 0;
-        }
-
-        // Conway not reached yet
-        return null;
+        return resolveFirstEpochOrNull(Era.Conway.getValue());
     }
 }

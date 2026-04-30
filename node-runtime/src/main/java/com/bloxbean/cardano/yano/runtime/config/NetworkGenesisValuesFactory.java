@@ -102,10 +102,10 @@ public class NetworkGenesisValuesFactory {
                 vasilHardforkEpoch,
                 bootstrapAmount,
                 BigInteger.valueOf(shelley.poolDeposit()),
-                BigDecimal.valueOf(shelley.decentralisationParam()),
-                BigDecimal.valueOf(shelley.rho()),
-                BigDecimal.valueOf(shelley.tau()),
-                BigDecimal.valueOf(shelley.a0()),
+                shelley.decentralisationParam(),
+                shelley.rho(),
+                shelley.tau(),
+                shelley.a0(),
                 shelley.nOpt(),
                 new BigDecimal("0.03") // CF library convention, NOT genesis a0
         );

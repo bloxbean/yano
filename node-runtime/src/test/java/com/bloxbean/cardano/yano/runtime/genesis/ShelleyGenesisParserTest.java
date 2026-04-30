@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.math.BigDecimal;
 import java.math.BigInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -57,6 +58,28 @@ class ShelleyGenesisParserTest {
             assertThat(data.initialFunds()).isEmpty();
             assertThat(data.networkMagic()).isEqualTo(1);
             assertThat(data.activeSlotsCoeff()).isEqualTo(0.05);
+        }
+    }
+
+    @Test
+    void parse_protocolRationalsUseJsonDecimals() throws IOException {
+        String json = """
+                {
+                  "protocolParams": {
+                    "rho": 0.003,
+                    "tau": 0.20,
+                    "a0": 0.3,
+                    "decentralisationParam": 1
+                  }
+                }
+                """;
+        try (InputStream in = new java.io.ByteArrayInputStream(json.getBytes())) {
+            ShelleyGenesisData data = ShelleyGenesisParser.parse(in);
+
+            assertThat(data.rho()).isEqualByComparingTo(new BigDecimal("0.003"));
+            assertThat(data.tau()).isEqualByComparingTo(new BigDecimal("0.20"));
+            assertThat(data.a0()).isEqualByComparingTo(new BigDecimal("0.3"));
+            assertThat(data.decentralisationParam()).isEqualByComparingTo(BigDecimal.ONE);
         }
     }
 }

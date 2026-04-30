@@ -1,6 +1,8 @@
 package com.bloxbean.cardano.yano.api.account;
 
 import java.math.BigInteger;
+import java.math.BigDecimal;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
@@ -20,9 +22,17 @@ public interface LedgerStateProvider {
 
     Optional<String> getDelegatedPool(int credType, String credentialHash);
 
+    default Optional<PoolDelegation> getPoolDelegation(int credType, String credentialHash) {
+        return Optional.empty();
+    }
+
     Optional<DRepDelegation> getDRepDelegation(int credType, String credentialHash);
 
     boolean isStakeCredentialRegistered(int credType, String credentialHash);
+
+    default Optional<Long> getStakeRegistrationSlot(int credType, String credentialHash) {
+        return Optional.empty();
+    }
 
     BigInteger getTotalDeposited();
 
@@ -56,6 +66,8 @@ public interface LedgerStateProvider {
 
     record PoolParams(BigInteger deposit, double margin, BigInteger cost, BigInteger pledge,
                       String rewardAccount, Set<String> owners) {}
+
+    record PoolDelegation(String poolHash, long slot, int txIdx, int certIdx) {}
 
     // --- DRep State ---
 
@@ -209,6 +221,32 @@ public interface LedgerStateProvider {
 
     // --- AdaPot Queries ---
 
+    record AdaPotSnapshot(int epoch, BigInteger treasury, BigInteger reserves,
+                          BigInteger deposits, BigInteger fees,
+                          BigInteger distributedRewards, BigInteger undistributedRewards,
+                          BigInteger rewardsPot, BigInteger poolRewardsPot) {}
+
+    /**
+     * Whether AdaPot tracking is enabled for this provider.
+     */
+    default boolean isAdaPotTrackingEnabled() { return false; }
+
+    /**
+     * Get the full AdaPot snapshot at a given epoch.
+     */
+    default Optional<AdaPotSnapshot> getAdaPot(int epoch) { return Optional.empty(); }
+
+    /**
+     * Get the latest stored AdaPot snapshot by scanning backwards from the given epoch.
+     */
+    default Optional<AdaPotSnapshot> getLatestAdaPot(int maxEpoch) {
+        for (int epoch = maxEpoch; epoch >= 0; epoch--) {
+            var adaPot = getAdaPot(epoch);
+            if (adaPot.isPresent()) return adaPot;
+        }
+        return Optional.empty();
+    }
+
     /**
      * Get the treasury balance at a given epoch.
      */
@@ -218,6 +256,69 @@ public interface LedgerStateProvider {
      * Get the reserves balance at a given epoch.
      */
     default Optional<BigInteger> getReserves(int epoch) { return Optional.empty(); }
+
+    // --- Protocol Parameters ---
+
+    record ProtocolParamsSnapshot(
+            int epoch,
+            Integer minFeeA,
+            Integer minFeeB,
+            Integer maxBlockSize,
+            Integer maxTxSize,
+            Integer maxBlockHeaderSize,
+            BigInteger keyDeposit,
+            BigInteger poolDeposit,
+            Integer eMax,
+            Integer nOpt,
+            BigDecimal a0,
+            BigDecimal rho,
+            BigDecimal tau,
+            BigDecimal decentralisationParam,
+            String extraEntropy,
+            Integer protocolMajorVer,
+            Integer protocolMinorVer,
+            BigInteger minUtxo,
+            BigInteger minPoolCost,
+            String nonce,
+            Map<String, Object> costModels,
+            Map<String, Object> costModelsRaw,
+            BigDecimal priceMem,
+            BigDecimal priceStep,
+            BigInteger maxTxExMem,
+            BigInteger maxTxExSteps,
+            BigInteger maxBlockExMem,
+            BigInteger maxBlockExSteps,
+            BigInteger maxValSize,
+            Integer collateralPercent,
+            Integer maxCollateralInputs,
+            BigInteger coinsPerUtxoSize,
+            BigInteger coinsPerUtxoWord,
+            BigDecimal pvtMotionNoConfidence,
+            BigDecimal pvtCommitteeNormal,
+            BigDecimal pvtCommitteeNoConfidence,
+            BigDecimal pvtHardForkInitiation,
+            BigDecimal pvtPPSecurityGroup,
+            BigDecimal dvtMotionNoConfidence,
+            BigDecimal dvtCommitteeNormal,
+            BigDecimal dvtCommitteeNoConfidence,
+            BigDecimal dvtUpdateToConstitution,
+            BigDecimal dvtHardForkInitiation,
+            BigDecimal dvtPPNetworkGroup,
+            BigDecimal dvtPPEconomicGroup,
+            BigDecimal dvtPPTechnicalGroup,
+            BigDecimal dvtPPGovGroup,
+            BigDecimal dvtTreasuryWithdrawal,
+            Integer committeeMinSize,
+            Integer committeeMaxTermLength,
+            Integer govActionLifetime,
+            BigInteger govActionDeposit,
+            BigInteger drepDeposit,
+            Integer drepActivity,
+            BigDecimal minFeeRefScriptCostPerByte) {}
+
+    default Optional<ProtocolParamsSnapshot> getProtocolParameters(int epoch) {
+        return Optional.empty();
+    }
 
     // --- Value types ---
 

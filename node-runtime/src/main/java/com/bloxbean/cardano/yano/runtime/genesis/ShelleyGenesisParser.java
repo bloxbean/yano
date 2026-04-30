@@ -8,6 +8,7 @@ import lombok.extern.slf4j.Slf4j;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
+import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -53,14 +54,22 @@ public class ShelleyGenesisParser {
         long protocolMajor = protoVersion.path("major").asLong(DEFAULT_PROTOCOL_MAJOR_VERSION);
         long protocolMinor = protoVersion.path("minor").asLong(DEFAULT_PROTOCOL_MINOR_VERSION);
 
-        double rho = protoParams.path("rho").asDouble(0.003);
-        double tau = protoParams.path("tau").asDouble(0.2);
-        double a0 = protoParams.path("a0").asDouble(0.3);
+        BigDecimal rho = decimal(protoParams, "rho", "0.003");
+        BigDecimal tau = decimal(protoParams, "tau", "0.2");
+        BigDecimal a0 = decimal(protoParams, "a0", "0.3");
         int nOpt = protoParams.path("nOpt").asInt(150);
         long minPoolCost = protoParams.path("minPoolCost").asLong(340000000);
         long keyDeposit = protoParams.path("keyDeposit").asLong(2000000);
         long poolDeposit = protoParams.path("poolDeposit").asLong(500000000);
-        double decentralisationParam = protoParams.path("decentralisationParam").asDouble(1.0);
+        BigDecimal decentralisationParam = decimal(protoParams, "decentralisationParam", "1.0");
+        int minFeeA = protoParams.path("minFeeA").asInt(44);
+        int minFeeB = protoParams.path("minFeeB").asInt(155381);
+        int maxBlockBodySize = protoParams.path("maxBlockBodySize").asInt(65536);
+        int maxTxSize = protoParams.path("maxTxSize").asInt(16384);
+        int maxBlockHeaderSize = protoParams.path("maxBlockHeaderSize").asInt(1100);
+        int eMax = protoParams.path("eMax").asInt(18);
+        String extraEntropy = parseExtraEntropy(protoParams.path("extraEntropy"));
+        long minUTxOValue = protoParams.path("minUTxOValue").asLong(0);
 
         log.info("Parsed shelley genesis: networkMagic={}, initialFunds={} entries, epochLength={}, " +
                         "systemStart={}, activeSlotsCoeff={}, protocolVersion={}.{}, rho={}, tau={}, a0={}, nOpt={}",
@@ -71,7 +80,9 @@ public class ShelleyGenesisParser {
                 systemStart, maxLovelaceSupply, activeSlotsCoeff,
                 securityParam, maxKESEvolutions, slotsPerKESPeriod, updateQuorum,
                 protocolMajor, protocolMinor,
-                rho, tau, a0, nOpt, minPoolCost, keyDeposit, poolDeposit, decentralisationParam);
+                rho, tau, a0, nOpt, minPoolCost, keyDeposit, poolDeposit, decentralisationParam,
+                minFeeA, minFeeB, maxBlockBodySize, maxTxSize, maxBlockHeaderSize, eMax,
+                extraEntropy, minUTxOValue);
     }
 
     /**
@@ -99,5 +110,28 @@ public class ShelleyGenesisParser {
             funds.put(entry.getKey(), new BigInteger(entry.getValue().asText("0")));
         }
         return Collections.unmodifiableMap(funds);
+    }
+
+    private static String parseExtraEntropy(JsonNode extraEntropyNode) {
+        if (extraEntropyNode == null || extraEntropyNode.isMissingNode() || extraEntropyNode.isNull()) {
+            return null;
+        }
+        String tag = extraEntropyNode.path("tag").asText(null);
+        if ("NeutralNonce".equals(tag)) {
+            return null;
+        }
+        JsonNode hash = extraEntropyNode.path("hash");
+        if (!hash.isMissingNode() && !hash.isNull()) {
+            return hash.asText(null);
+        }
+        return extraEntropyNode.isTextual() ? extraEntropyNode.asText() : extraEntropyNode.toString();
+    }
+
+    private static BigDecimal decimal(JsonNode parent, String field, String defaultValue) {
+        JsonNode node = parent.path(field);
+        if (node == null || node.isMissingNode() || node.isNull()) {
+            return new BigDecimal(defaultValue);
+        }
+        return node.decimalValue();
     }
 }

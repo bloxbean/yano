@@ -107,6 +107,12 @@ class InMemoryAccountStateStoreTest {
                         .build());
 
         assertThat(store.getDelegatedPool(0, CRED_HASH_1)).contains(POOL_HASH_1);
+        assertThat(store.getStakeRegistrationSlot(0, CRED_HASH_1)).contains(100L);
+        assertThat(store.getPoolDelegation(0, CRED_HASH_1))
+                .hasValueSatisfying(delegation -> {
+                    assertThat(delegation.poolHash()).isEqualTo(POOL_HASH_1);
+                    assertThat(delegation.slot()).isEqualTo(100);
+                });
     }
 
     @Test

@@ -14,7 +14,7 @@ import jakarta.ws.rs.Produces;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
 
-@Path("/api/v1/scripts")
+@Path("scripts")
 @Produces(MediaType.APPLICATION_JSON)
 public class ScriptResource {
 

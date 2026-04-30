@@ -2,11 +2,14 @@ package com.bloxbean.cardano.yano.ledgerstate;
 
 import com.bloxbean.cardano.yano.api.era.EraProvider;
 import com.bloxbean.cardano.yaci.core.model.Block;
+import com.bloxbean.cardano.yaci.core.model.DrepVoteThresholds;
 import com.bloxbean.cardano.yaci.core.model.Era;
+import com.bloxbean.cardano.yaci.core.model.PoolVotingThresholds;
 import com.bloxbean.cardano.yaci.core.model.TransactionBody;
 import com.bloxbean.cardano.yaci.core.model.certs.*;
 import com.bloxbean.cardano.yaci.core.model.governance.Drep;
 import com.bloxbean.cardano.yaci.core.model.governance.DrepType;
+import com.bloxbean.cardano.yaci.core.types.UnitInterval;
 import com.bloxbean.cardano.yaci.core.storage.ChainState;
 import com.bloxbean.cardano.yaci.core.storage.ChainTip;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
@@ -20,6 +23,7 @@ import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Point;
 import org.rocksdb.*;
 import org.slf4j.Logger;
 
+import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -714,12 +718,20 @@ public class DefaultAccountStateStore implements AccountStateStore,
 
     @Override
     public Optional<String> getDelegatedPool(int credType, String credentialHash) {
+        return getPoolDelegation(credType, credentialHash)
+                .map(LedgerStateProvider.PoolDelegation::poolHash);
+    }
+
+    @Override
+    public Optional<LedgerStateProvider.PoolDelegation> getPoolDelegation(int credType, String credentialHash) {
         try {
             byte[] val = db.get(cfState, poolDelegKey(credType, credentialHash));
             if (val == null) return Optional.empty();
-            return Optional.of(AccountStateCborCodec.decodePoolDelegation(val).poolHash());
+            var rec = AccountStateCborCodec.decodePoolDelegation(val);
+            return Optional.of(new LedgerStateProvider.PoolDelegation(
+                    rec.poolHash(), rec.slot(), rec.txIdx(), rec.certIdx()));
         } catch (RocksDBException e) {
-            log.error("getDelegatedPool failed: {}", e.toString());
+            log.error("getPoolDelegation failed: {}", e.toString());
             return Optional.empty();
         }
     }
@@ -745,6 +757,19 @@ public class DefaultAccountStateStore implements AccountStateStore,
         } catch (RocksDBException e) {
             log.error("isStakeCredentialRegistered failed: {}", e.toString());
             return false;
+        }
+    }
+
+    @Override
+    public Optional<Long> getStakeRegistrationSlot(int credType, String credentialHash) {
+        try {
+            if (db.get(cfState, accountKey(credType, credentialHash)) == null) return Optional.empty();
+            byte[] val = db.get(cfState, acctRegSlotKey(credType, credentialHash));
+            if (val == null || val.length < Long.BYTES) return Optional.empty();
+            return Optional.of(ByteBuffer.wrap(val).order(ByteOrder.BIG_ENDIAN).getLong());
+        } catch (RocksDBException e) {
+            log.error("getStakeRegistrationSlot failed: {}", e.toString());
+            return Optional.empty();
         }
     }
 
@@ -1110,6 +1135,25 @@ public class DefaultAccountStateStore implements AccountStateStore,
     // --- AdaPot queries ---
 
     @Override
+    public boolean isAdaPotTrackingEnabled() {
+        return adaPotTracker != null && adaPotTracker.isEnabled();
+    }
+
+    @Override
+    public Optional<LedgerStateProvider.AdaPotSnapshot> getAdaPot(int epoch) {
+        try {
+            byte[] key = adaPotKey(epoch);
+            byte[] val = db.get(cfState, key);
+            if (val == null) return Optional.empty();
+            var pot = AccountStateCborCodec.decodeAdaPot(val);
+            return Optional.of(toAdaPotSnapshot(epoch, pot));
+        } catch (RocksDBException e) {
+            log.error("getAdaPot failed for epoch {}: {}", epoch, e.toString());
+            return Optional.empty();
+        }
+    }
+
+    @Override
     public Optional<BigInteger> getTreasury(int epoch) {
         try {
             byte[] key = adaPotKey(epoch);
@@ -1133,6 +1177,117 @@ public class DefaultAccountStateStore implements AccountStateStore,
             log.error("getReserves failed: {}", e.toString());
             return Optional.empty();
         }
+    }
+
+    @Override
+    public Optional<LedgerStateProvider.ProtocolParamsSnapshot> getProtocolParameters(int epoch) {
+        if (epoch < 0) return Optional.empty();
+        if (paramTracker != null && paramTracker.isEnabled()
+                && paramTracker.getResolvedParams(epoch) == null) {
+            return Optional.empty();
+        }
+
+        EpochParamProvider provider = effectiveEpochParamProvider();
+        var trackedParams = paramTracker != null && paramTracker.isEnabled()
+                ? paramTracker.getResolvedParams(epoch)
+                : null;
+        Integer committeeMinSize;
+        Integer committeeMaxTermLength;
+        Integer govActionLifetime;
+        Integer drepActivity;
+        if (trackedParams != null) {
+            committeeMinSize = trackedParams.getCommitteeMinSize();
+            committeeMaxTermLength = trackedParams.getCommitteeMaxTermLength();
+            govActionLifetime = trackedParams.getGovActionLifetime();
+            drepActivity = trackedParams.getDrepActivity();
+        } else {
+            committeeMinSize = provider.getCommitteeMinSize(epoch);
+            committeeMaxTermLength = provider.getCommitteeMaxTermLength(epoch);
+            govActionLifetime = provider.getGovActionLifetime(epoch);
+            drepActivity = provider.getDRepActivity(epoch);
+        }
+        PoolVotingThresholds poolThresholds = provider.getPoolVotingThresholds(epoch);
+        DrepVoteThresholds drepThresholds = provider.getDrepVotingThresholds(epoch);
+
+        return Optional.of(new LedgerStateProvider.ProtocolParamsSnapshot(
+                epoch,
+                provider.getMinFeeA(epoch),
+                provider.getMinFeeB(epoch),
+                provider.getMaxBlockSize(epoch),
+                provider.getMaxTxSize(epoch),
+                provider.getMaxBlockHeaderSize(epoch),
+                provider.getKeyDeposit(epoch),
+                provider.getPoolDeposit(epoch),
+                provider.getMaxEpoch(epoch),
+                provider.getNOpt(epoch),
+                provider.getA0(epoch),
+                provider.getRho(epoch),
+                provider.getTau(epoch),
+                provider.getDecentralization(epoch),
+                provider.getExtraEntropy(epoch),
+                provider.getProtocolMajor(epoch),
+                provider.getProtocolMinor(epoch),
+                provider.getMinUtxo(epoch),
+                provider.getMinPoolCost(epoch),
+                null,
+                provider.getCostModels(epoch),
+                provider.getCostModelsRaw(epoch),
+                provider.getPriceMem(epoch),
+                provider.getPriceStep(epoch),
+                provider.getMaxTxExMem(epoch),
+                provider.getMaxTxExSteps(epoch),
+                provider.getMaxBlockExMem(epoch),
+                provider.getMaxBlockExSteps(epoch),
+                provider.getMaxValSize(epoch),
+                provider.getCollateralPercent(epoch),
+                provider.getMaxCollateralInputs(epoch),
+                provider.getCoinsPerUtxoSize(epoch),
+                provider.getCoinsPerUtxoWord(epoch),
+                ratio(poolThresholds != null ? poolThresholds.getPvtMotionNoConfidence() : null),
+                ratio(poolThresholds != null ? poolThresholds.getPvtCommitteeNormal() : null),
+                ratio(poolThresholds != null ? poolThresholds.getPvtCommitteeNoConfidence() : null),
+                ratio(poolThresholds != null ? poolThresholds.getPvtHardForkInitiation() : null),
+                ratio(poolThresholds != null ? poolThresholds.getPvtPPSecurityGroup() : null),
+                ratio(drepThresholds != null ? drepThresholds.getDvtMotionNoConfidence() : null),
+                ratio(drepThresholds != null ? drepThresholds.getDvtCommitteeNormal() : null),
+                ratio(drepThresholds != null ? drepThresholds.getDvtCommitteeNoConfidence() : null),
+                ratio(drepThresholds != null ? drepThresholds.getDvtUpdateToConstitution() : null),
+                ratio(drepThresholds != null ? drepThresholds.getDvtHardForkInitiation() : null),
+                ratio(drepThresholds != null ? drepThresholds.getDvtPPNetworkGroup() : null),
+                ratio(drepThresholds != null ? drepThresholds.getDvtPPEconomicGroup() : null),
+                ratio(drepThresholds != null ? drepThresholds.getDvtPPTechnicalGroup() : null),
+                ratio(drepThresholds != null ? drepThresholds.getDvtPPGovGroup() : null),
+                ratio(drepThresholds != null ? drepThresholds.getDvtTreasuryWithdrawal() : null),
+                committeeMinSize,
+                committeeMaxTermLength,
+                govActionLifetime,
+                provider.getGovActionDeposit(epoch),
+                provider.getDRepDeposit(epoch),
+                drepActivity,
+                provider.getMinFeeRefScriptCostPerByte(epoch)
+        ));
+    }
+
+    private EpochParamProvider effectiveEpochParamProvider() {
+        return paramTracker != null && paramTracker.isEnabled() ? paramTracker : epochParamProvider;
+    }
+
+    private static BigDecimal ratio(UnitInterval interval) {
+        return interval != null ? interval.safeRatio() : null;
+    }
+
+    private static LedgerStateProvider.AdaPotSnapshot toAdaPotSnapshot(int epoch, AccountStateCborCodec.AdaPot pot) {
+        return new LedgerStateProvider.AdaPotSnapshot(
+                epoch,
+                pot.treasury(),
+                pot.reserves(),
+                pot.deposits(),
+                pot.fees(),
+                pot.distributed(),
+                pot.undistributed(),
+                pot.rewardsPot(),
+                pot.poolRewardsPot()
+        );
     }
 
     /**

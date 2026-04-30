@@ -2,8 +2,11 @@ package com.bloxbean.cardano.yano.runtime.genesis;
 
 import com.bloxbean.cardano.yaci.core.model.DrepVoteThresholds;
 import com.bloxbean.cardano.yaci.core.model.PoolVotingThresholds;
+import com.bloxbean.cardano.yaci.core.types.NonNegativeInterval;
 
+import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.util.Map;
 
 /**
  * Data extracted from a conway-genesis.json file.
@@ -17,6 +20,7 @@ import java.math.BigInteger;
  * @param committeeMaxTermLength   maximum committee member term length (epochs)
  * @param drepVotingThresholds     DRep voting thresholds
  * @param poolVotingThresholds     SPO voting thresholds
+ * @param minFeeRefScriptCostPerByte reference script fee coefficient
  */
 public record ConwayGenesisData(
         int govActionLifetime,
@@ -26,5 +30,8 @@ public record ConwayGenesisData(
         int committeeMinSize,
         int committeeMaxTermLength,
         DrepVoteThresholds drepVotingThresholds,
-        PoolVotingThresholds poolVotingThresholds
+        PoolVotingThresholds poolVotingThresholds,
+        BigDecimal minFeeRefScriptCostPerByte,
+        NonNegativeInterval minFeeRefScriptCostPerByteInterval,
+        Map<String, Object> costModels
 ) {}

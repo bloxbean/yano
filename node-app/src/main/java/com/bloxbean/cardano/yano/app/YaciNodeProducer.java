@@ -74,6 +74,9 @@ public class YaciNodeProducer {
     @ConfigProperty(name = "quarkus.http.port", defaultValue = "8080")
     int httpPort;
 
+    @ConfigProperty(name = "yaci.node.api-prefix", defaultValue = "/api/v1")
+    String apiPrefix;
+
     @ConfigProperty(name = "yaci.events.enabled", defaultValue = "true")
     boolean eventsEnabled;
 
@@ -110,6 +113,22 @@ public class YaciNodeProducer {
     int accountStateEpochBlockDataRetentionLag;
     @ConfigProperty(name = "yaci.node.account-state.snapshot-retention-epochs", defaultValue = "50")
     int accountStateSnapshotRetentionEpochs;
+    @ConfigProperty(name = "yaci.node.account.stake-balance-index-enabled", defaultValue = "true")
+    boolean stakeBalanceIndexEnabled;
+    @ConfigProperty(name = "yaci.node.account-history.enabled", defaultValue = "false")
+    boolean accountHistoryEnabled;
+    @ConfigProperty(name = "yaci.node.account-history.tx-events-enabled", defaultValue = "true")
+    boolean accountHistoryTxEventsEnabled;
+    @ConfigProperty(name = "yaci.node.account-history.rewards-enabled", defaultValue = "false")
+    boolean accountHistoryRewardsEnabled;
+    @ConfigProperty(name = "yaci.node.account-history.retention-epochs", defaultValue = "0")
+    int accountHistoryRetentionEpochs;
+    @ConfigProperty(name = "yaci.node.account-history.prune-interval-seconds", defaultValue = "300")
+    long accountHistoryPruneIntervalSeconds;
+    @ConfigProperty(name = "yaci.node.account-history.prune-batch-size", defaultValue = "50000")
+    int accountHistoryPruneBatchSize;
+    @ConfigProperty(name = "yaci.node.account-history.rollback-safety-slots")
+    java.util.Optional<Long> accountHistoryRollbackSafetySlots;
 
     // Epoch subsystem config
     @ConfigProperty(name = "yaci.node.epoch-snapshot.amounts-enabled", defaultValue = "false")
@@ -384,6 +403,15 @@ public class YaciNodeProducer {
         globals.put("yaci.node.account-state.enabled", accountStateEnabled);
         globals.put("yaci.node.account-state.epoch-block-data-retention-lag", accountStateEpochBlockDataRetentionLag);
         globals.put("yaci.node.account-state.snapshot-retention-epochs", accountStateSnapshotRetentionEpochs);
+        globals.put("yaci.node.account.stake-balance-index-enabled", stakeBalanceIndexEnabled);
+        globals.put("yaci.node.account-history.enabled", accountHistoryEnabled);
+        globals.put("yaci.node.account-history.tx-events-enabled", accountHistoryTxEventsEnabled);
+        globals.put("yaci.node.account-history.rewards-enabled", accountHistoryRewardsEnabled);
+        globals.put("yaci.node.account-history.retention-epochs", accountHistoryRetentionEpochs);
+        globals.put("yaci.node.account-history.prune-interval-seconds", accountHistoryPruneIntervalSeconds);
+        globals.put("yaci.node.account-history.prune-batch-size", accountHistoryPruneBatchSize);
+        accountHistoryRollbackSafetySlots.ifPresent(v ->
+                globals.put("yaci.node.account-history.rollback-safety-slots", v));
 
         // Epoch subsystems
         globals.put("yaci.node.epoch-snapshot.amounts-enabled", epochSnapshotAmountsEnabled);
@@ -448,7 +476,7 @@ public class YaciNodeProducer {
                 NodeAPI node = createNodeAPI();
                 node.start();
                 log.info("Yaci Node started automatically and syncing with {} network", network);
-                log.info("REST API available at http://localhost:{}/api/v1/node/ for manual control", httpPort);
+                log.info("REST API available at {}/ for manual control", nodeApiBaseUrl());
             } catch (Exception e) {
                 log.error("Failed to auto-start Yaci Node: {}", e.getMessage(), e);
                 if (bootstrapEnabled) {
@@ -456,12 +484,30 @@ public class YaciNodeProducer {
                             + "The node cannot start without bootstrap state. Shutting down.");
                     throw new RuntimeException("Bootstrap failed, cannot start node", e);
                 }
-                log.info("You can still start manually via: curl -X POST http://localhost:{}/api/v1/node/start", httpPort);
+                log.info("You can still start manually via: curl -X POST {}/start", nodeApiBaseUrl());
             }
         } else {
-            log.info("Auto-sync is disabled. Start manually via: curl -X POST http://localhost:{}/api/v1/node/start", httpPort);
-            log.info("REST API available at http://localhost:{}/api/v1/node/", httpPort);
+            log.info("Auto-sync is disabled. Start manually via: curl -X POST {}/start", nodeApiBaseUrl());
+            log.info("REST API available at {}/", nodeApiBaseUrl());
         }
+    }
+
+    private String nodeApiBaseUrl() {
+        return "http://localhost:" + httpPort + normalizedApiPrefix() + "/node";
+    }
+
+    private String normalizedApiPrefix() {
+        if (apiPrefix == null || apiPrefix.isBlank() || "/".equals(apiPrefix.trim())) {
+            return "";
+        }
+        String prefix = apiPrefix.trim();
+        if (!prefix.startsWith("/")) {
+            prefix = "/" + prefix;
+        }
+        while (prefix.endsWith("/") && prefix.length() > 1) {
+            prefix = prefix.substring(0, prefix.length() - 1);
+        }
+        return prefix;
     }
 
     /**

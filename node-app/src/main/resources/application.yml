@@ -9,6 +9,8 @@ quarkus:
   http:
     port: 7070
     test-port: 0
+  resteasy:
+    path: ${yaci.node.api-prefix:/api/v1}
   log:
     level: INFO
     category:
@@ -34,6 +36,7 @@ yaci:
     logging:
       enabled: false
   node:
+    api-prefix: /api/v1
     network: preprod
     auto-sync-start: true
     client:
@@ -60,6 +63,17 @@ yaci:
       enabled: true
       # epoch-block-data-retention-lag: 5    # epochs to keep per-block issuer/fee data after consumption (controls rollback depth)
       # snapshot-retention-epochs: 50        # epochs of delegation snapshots to retain
+    account:
+      stake-balance-index-enabled: true
+    account-history:
+      enabled: false
+      tx-events-enabled: true
+      rewards-enabled: false
+      retention-epochs: 0
+      # Defaults to yaci.node.utxo.rollbackWindow when omitted.
+      # rollback-safety-slots: 4320
+      prune-interval-seconds: 300
+      prune-batch-size: 50000
     epoch-snapshot:
       amounts-enabled: true
     adapot:
@@ -123,7 +137,7 @@ yaci:
       rewards:
         enabled: false                  # Epoch reward calculation
       epoch-params:
-        tracking-enabled: false         # Protocol param tracking from blocks
+        tracking-enabled: true          # Protocol param tracking from blocks
       block-producer:
         enabled: true
         block-time-millis: 0
@@ -151,6 +165,8 @@ yaci:
         alonzo-genesis-file: config/network/devnet/alonzo-genesis.json
         conway-genesis-file: config/network/devnet/conway-genesis.json
         protocol-parameters-file: config/network/devnet/protocol-param.json
+      epoch-params:
+        tracking-enabled: true          # Protocol param tracking from blocks
       block-producer:
         enabled: true
         slot-leader-mode: true

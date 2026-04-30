@@ -13,7 +13,7 @@ import java.util.Map;
 /**
  * REST endpoint for epoch nonce verification and debugging.
  */
-@Path("/api/v1/node")
+@Path("node")
 @Produces(MediaType.APPLICATION_JSON)
 public class EpochNonceResource {
 

@@ -10,6 +10,10 @@ yaci-events-core = { module = "com.bloxbean.cardano:yaci-events-core", version.r
 yaci-events-processor = { module = "com.bloxbean.cardano:yaci-events-processor", version.ref = "yaci" }
 
 cardano-client-core = { module = "com.bloxbean.cardano:cardano-client-core", version.ref = "cardano-client-lib" }
+cardano-client-address = { module = "com.bloxbean.cardano:cardano-client-address", version.ref = "cardano-client-lib" }
+cardano-client-common = { module = "com.bloxbean.cardano:cardano-client-common", version.ref = "cardano-client-lib" }
+cardano-client-crypto = { module = "com.bloxbean.cardano:cardano-client-crypto", version.ref = "cardano-client-lib" }
+cardano-client-governance = { module = "com.bloxbean.cardano:cardano-client-governance", version.ref = "cardano-client-lib" }
 cardano-client-lib = { module = "com.bloxbean.cardano:cardano-client-lib", version.ref = "cardano-client-lib" }
 cardano-client-crypto-ext = { module = "com.bloxbean.cardano:cardano-client-crypto-ext", version.ref = "cardano-client-lib" }
 cardano-client-backend-blockfrost = { module = "com.bloxbean.cardano:cardano-client-backend-blockfrost", version.ref = "cardano-client-lib" }

@@ -313,9 +313,14 @@ public class EpochRewardCalculator {
     /**
      * Build cf-rewards ProtocolParameters from our EpochParamProvider.
      */
-    private ProtocolParameters buildProtocolParameters(EpochParamProvider pp, int epoch) {
+    ProtocolParameters buildProtocolParameters(EpochParamProvider pp, int epoch) {
+        BigDecimal decentralization = pp.getDecentralization(epoch);
+        if (decentralization == null) {
+            decentralization = BigDecimal.ZERO;
+        }
+
         return ProtocolParameters.builder()
-                .decentralisation(pp.getDecentralization(epoch))
+                .decentralisation(decentralization)
                 .treasuryGrowRate(pp.getTau(epoch))
                 .monetaryExpandRate(pp.getRho(epoch))
                 .optimalPoolCount(pp.getNOpt(epoch))

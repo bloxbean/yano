@@ -21,7 +21,7 @@ import java.util.Map;
  * Blockfrost/Ogmios-compatible Plutus script evaluation endpoint.
  * Returns computed ExUnits per redeemer for a given transaction.
  */
-@Path("/api/v1/utils/txs")
+@Path("utils/txs")
 @Produces(MediaType.APPLICATION_JSON)
 public class EvaluationResource {
 

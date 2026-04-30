@@ -2,7 +2,10 @@ package com.bloxbean.cardano.yano.runtime.config;
 
 import com.bloxbean.cardano.yaci.core.model.DrepVoteThresholds;
 import com.bloxbean.cardano.yaci.core.model.PoolVotingThresholds;
+import com.bloxbean.cardano.yaci.core.types.NonNegativeInterval;
+import com.bloxbean.cardano.yaci.core.types.UnitInterval;
 import com.bloxbean.cardano.yano.api.EpochParamProvider;
+import com.bloxbean.cardano.yano.api.util.CostModelUtil;
 import com.bloxbean.cardano.yano.runtime.genesis.ConwayGenesisData;
 import com.bloxbean.cardano.yano.runtime.genesis.ShelleyGenesisData;
 import org.slf4j.Logger;
@@ -10,6 +13,8 @@ import org.slf4j.LoggerFactory;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 /**
  * Default {@link EpochParamProvider} that reads protocol params from genesis files.
@@ -38,6 +43,14 @@ public class DefaultEpochParamProvider implements EpochParamProvider {
 
     private final BigInteger keyDeposit;
     private final BigInteger poolDeposit;
+    private final Integer minFeeA;
+    private final Integer minFeeB;
+    private final Integer maxBlockSize;
+    private final Integer maxTxSize;
+    private final Integer maxBlockHeaderSize;
+    private final Integer maxEpoch;
+    private final String extraEntropy;
+    private final BigInteger minUtxo;
     private final long epochLength;
     private final long byronSlotsPerEpoch;
     private final long shelleyStartSlot;
@@ -50,9 +63,28 @@ public class DefaultEpochParamProvider implements EpochParamProvider {
     private final BigDecimal genesisRho;
     private final BigDecimal genesisTau;
     private final BigDecimal genesisA0;
+    private final UnitInterval genesisDecentralizationInterval;
+    private final UnitInterval genesisRhoInterval;
+    private final UnitInterval genesisTauInterval;
+    private final NonNegativeInterval genesisA0Interval;
     private final int genesisProtocolMajor;
     private final int genesisProtocolMinor;
     private final BigInteger genesisMinPoolCost;
+    private final Map<String, Object> genesisCostModels;
+    private final Map<String, Object> genesisAlonzoCostModels;
+    private final Map<String, Object> genesisConwayCostModels;
+    private final BigDecimal genesisPriceMem;
+    private final BigDecimal genesisPriceStep;
+    private final NonNegativeInterval genesisPriceMemInterval;
+    private final NonNegativeInterval genesisPriceStepInterval;
+    private final BigInteger genesisMaxTxExMem;
+    private final BigInteger genesisMaxTxExSteps;
+    private final BigInteger genesisMaxBlockExMem;
+    private final BigInteger genesisMaxBlockExSteps;
+    private final BigInteger genesisMaxValSize;
+    private final Integer genesisCollateralPercent;
+    private final Integer genesisMaxCollateralInputs;
+    private final BigInteger genesisCoinsPerUtxoWord;
 
     // Conway governance params
     private final int genesisGovActionLifetime;
@@ -63,6 +95,8 @@ public class DefaultEpochParamProvider implements EpochParamProvider {
     private final int genesisCommitteeMaxTermLength;
     private final DrepVoteThresholds genesisDrepVotingThresholds;
     private final PoolVotingThresholds genesisPoolVotingThresholds;
+    private final BigDecimal genesisMinFeeRefScriptCostPerByte;
+    private final NonNegativeInterval genesisMinFeeRefScriptCostPerByteInterval;
 
     // --- Factory method (preferred) ---
 
@@ -78,6 +112,7 @@ public class DefaultEpochParamProvider implements EpochParamProvider {
     public static DefaultEpochParamProvider fromNetworkGenesisConfig(
             NetworkGenesisConfig config, long firstNonByronSlot) {
         ShelleyGenesisData shelley = config.getShelleyGenesisData();
+        var alonzo = config.getAlonzoGenesisData();
         ConwayGenesisData conway = config.getConwayGenesisData();
 
         var provider = new DefaultEpochParamProvider(
@@ -88,14 +123,42 @@ public class DefaultEpochParamProvider implements EpochParamProvider {
                 shelley.activeSlotsCoeff(),
                 BigInteger.valueOf(shelley.keyDeposit()),
                 BigInteger.valueOf(shelley.poolDeposit()),
+                shelley.minFeeA(),
+                shelley.minFeeB(),
+                shelley.maxBlockBodySize(),
+                shelley.maxTxSize(),
+                shelley.maxBlockHeaderSize(),
+                shelley.eMax(),
+                shelley.extraEntropy(),
+                BigInteger.valueOf(shelley.minUTxOValue()),
                 shelley.nOpt(),
-                BigDecimal.valueOf(shelley.decentralisationParam()),
-                BigDecimal.valueOf(shelley.rho()),
-                BigDecimal.valueOf(shelley.tau()),
-                BigDecimal.valueOf(shelley.a0()),
+                shelley.decentralisationParam(),
+                shelley.rho(),
+                shelley.tau(),
+                shelley.a0(),
+                toUnitInterval(shelley.decentralisationParam()),
+                toUnitInterval(shelley.rho()),
+                toUnitInterval(shelley.tau()),
+                toNonNegativeInterval(shelley.a0()),
                 (int) shelley.protocolMajor(),
                 (int) shelley.protocolMinor(),
                 BigInteger.valueOf(shelley.minPoolCost()),
+                alonzo != null ? alonzo.costModels() : null,
+                conway != null ? conway.costModels() : null,
+                mergeCostModels(alonzo != null ? alonzo.costModels() : null,
+                        conway != null ? conway.costModels() : null),
+                alonzo != null ? alonzo.priceMem() : null,
+                alonzo != null ? alonzo.priceStep() : null,
+                alonzo != null ? alonzo.priceMemInterval() : null,
+                alonzo != null ? alonzo.priceStepInterval() : null,
+                alonzo != null ? alonzo.maxTxExMem() : null,
+                alonzo != null ? alonzo.maxTxExSteps() : null,
+                alonzo != null ? alonzo.maxBlockExMem() : null,
+                alonzo != null ? alonzo.maxBlockExSteps() : null,
+                alonzo != null ? alonzo.maxValSize() : null,
+                alonzo != null ? alonzo.collateralPercent() : null,
+                alonzo != null ? alonzo.maxCollateralInputs() : null,
+                alonzo != null ? alonzo.coinsPerUtxoWord() : null,
                 conway
         );
 
@@ -143,9 +206,25 @@ public class DefaultEpochParamProvider implements EpochParamProvider {
     private DefaultEpochParamProvider(long epochLength, long byronSlotsPerEpoch, long shelleyStartSlot,
                                       long securityParam, double activeSlotsCoeff,
                                       BigInteger keyDeposit, BigInteger poolDeposit,
+                                      Integer minFeeA, Integer minFeeB,
+                                      Integer maxBlockSize, Integer maxTxSize, Integer maxBlockHeaderSize,
+                                      Integer maxEpoch, String extraEntropy, BigInteger minUtxo,
                                       int nOpt, BigDecimal decentralization,
                                       BigDecimal rho, BigDecimal tau, BigDecimal a0,
+                                      UnitInterval decentralizationInterval,
+                                      UnitInterval rhoInterval,
+                                      UnitInterval tauInterval,
+                                      NonNegativeInterval a0Interval,
                                       int protoMajor, int protoMinor, BigInteger minPoolCost,
+                                      Map<String, Object> alonzoCostModels,
+                                      Map<String, Object> conwayCostModels,
+                                      Map<String, Object> costModels,
+                                      BigDecimal priceMem, BigDecimal priceStep,
+                                      NonNegativeInterval priceMemInterval, NonNegativeInterval priceStepInterval,
+                                      BigInteger maxTxExMem, BigInteger maxTxExSteps,
+                                      BigInteger maxBlockExMem, BigInteger maxBlockExSteps,
+                                      BigInteger maxValSize, Integer collateralPercent,
+                                      Integer maxCollateralInputs, BigInteger coinsPerUtxoWord,
                                       ConwayGenesisData conway) {
         this.epochLength = epochLength;
         this.byronSlotsPerEpoch = byronSlotsPerEpoch;
@@ -154,14 +233,41 @@ public class DefaultEpochParamProvider implements EpochParamProvider {
         this.activeSlotsCoeff = activeSlotsCoeff;
         this.keyDeposit = keyDeposit;
         this.poolDeposit = poolDeposit;
+        this.minFeeA = minFeeA;
+        this.minFeeB = minFeeB;
+        this.maxBlockSize = maxBlockSize;
+        this.maxTxSize = maxTxSize;
+        this.maxBlockHeaderSize = maxBlockHeaderSize;
+        this.maxEpoch = maxEpoch;
+        this.extraEntropy = extraEntropy;
+        this.minUtxo = minUtxo;
         this.genesisNOpt = nOpt;
         this.genesisDecentralization = decentralization;
         this.genesisRho = rho;
         this.genesisTau = tau;
         this.genesisA0 = a0;
+        this.genesisDecentralizationInterval = decentralizationInterval;
+        this.genesisRhoInterval = rhoInterval;
+        this.genesisTauInterval = tauInterval;
+        this.genesisA0Interval = a0Interval;
         this.genesisProtocolMajor = protoMajor;
         this.genesisProtocolMinor = protoMinor;
         this.genesisMinPoolCost = minPoolCost;
+        this.genesisCostModels = costModels;
+        this.genesisAlonzoCostModels = alonzoCostModels;
+        this.genesisConwayCostModels = conwayCostModels;
+        this.genesisPriceMem = priceMem;
+        this.genesisPriceStep = priceStep;
+        this.genesisPriceMemInterval = priceMemInterval;
+        this.genesisPriceStepInterval = priceStepInterval;
+        this.genesisMaxTxExMem = maxTxExMem;
+        this.genesisMaxTxExSteps = maxTxExSteps;
+        this.genesisMaxBlockExMem = maxBlockExMem;
+        this.genesisMaxBlockExSteps = maxBlockExSteps;
+        this.genesisMaxValSize = maxValSize;
+        this.genesisCollateralPercent = collateralPercent;
+        this.genesisMaxCollateralInputs = maxCollateralInputs;
+        this.genesisCoinsPerUtxoWord = coinsPerUtxoWord;
 
         // Conway params from genesis or defaults
         if (conway != null) {
@@ -173,6 +279,8 @@ public class DefaultEpochParamProvider implements EpochParamProvider {
             this.genesisCommitteeMaxTermLength = conway.committeeMaxTermLength();
             this.genesisDrepVotingThresholds = conway.drepVotingThresholds();
             this.genesisPoolVotingThresholds = conway.poolVotingThresholds();
+            this.genesisMinFeeRefScriptCostPerByte = conway.minFeeRefScriptCostPerByte();
+            this.genesisMinFeeRefScriptCostPerByteInterval = conway.minFeeRefScriptCostPerByteInterval();
         } else {
             // Interface defaults
             this.genesisGovActionLifetime = 6;
@@ -183,6 +291,8 @@ public class DefaultEpochParamProvider implements EpochParamProvider {
             this.genesisCommitteeMaxTermLength = 146;
             this.genesisDrepVotingThresholds = null;
             this.genesisPoolVotingThresholds = null;
+            this.genesisMinFeeRefScriptCostPerByte = null;
+            this.genesisMinFeeRefScriptCostPerByteInterval = null;
         }
     }
 
@@ -195,6 +305,126 @@ public class DefaultEpochParamProvider implements EpochParamProvider {
     @Override
     public BigInteger getPoolDeposit(long epoch) {
         return poolDeposit;
+    }
+
+    @Override
+    public Integer getMinFeeA(long epoch) {
+        return minFeeA;
+    }
+
+    @Override
+    public Integer getMinFeeB(long epoch) {
+        return minFeeB;
+    }
+
+    @Override
+    public Integer getMaxBlockSize(long epoch) {
+        return maxBlockSize;
+    }
+
+    @Override
+    public Integer getMaxTxSize(long epoch) {
+        return maxTxSize;
+    }
+
+    @Override
+    public Integer getMaxBlockHeaderSize(long epoch) {
+        return maxBlockHeaderSize;
+    }
+
+    @Override
+    public Integer getMaxEpoch(long epoch) {
+        return maxEpoch;
+    }
+
+    @Override
+    public String getExtraEntropy(long epoch) {
+        return extraEntropy;
+    }
+
+    @Override
+    public BigInteger getMinUtxo(long epoch) {
+        return minUtxo;
+    }
+
+    @Override
+    public Map<String, Object> getCostModels(long epoch) {
+        return CostModelUtil.canonicalCostModels(genesisCostModels);
+    }
+
+    @Override
+    public Map<String, Object> getAlonzoCostModels(long epoch) {
+        return genesisAlonzoCostModels;
+    }
+
+    @Override
+    public Map<String, Object> getConwayCostModels(long epoch) {
+        return genesisConwayCostModels;
+    }
+
+    @Override
+    public Map<String, Object> getCostModelsRaw(long epoch) {
+        return CostModelUtil.canonicalRawCostModels(genesisCostModels);
+    }
+
+    @Override
+    public BigDecimal getPriceMem(long epoch) {
+        return genesisPriceMem;
+    }
+
+    @Override
+    public NonNegativeInterval getPriceMemInterval(long epoch) {
+        return genesisPriceMemInterval;
+    }
+
+    @Override
+    public BigDecimal getPriceStep(long epoch) {
+        return genesisPriceStep;
+    }
+
+    @Override
+    public NonNegativeInterval getPriceStepInterval(long epoch) {
+        return genesisPriceStepInterval;
+    }
+
+    @Override
+    public BigInteger getMaxTxExMem(long epoch) {
+        return genesisMaxTxExMem;
+    }
+
+    @Override
+    public BigInteger getMaxTxExSteps(long epoch) {
+        return genesisMaxTxExSteps;
+    }
+
+    @Override
+    public BigInteger getMaxBlockExMem(long epoch) {
+        return genesisMaxBlockExMem;
+    }
+
+    @Override
+    public BigInteger getMaxBlockExSteps(long epoch) {
+        return genesisMaxBlockExSteps;
+    }
+
+    @Override
+    public BigInteger getMaxValSize(long epoch) {
+        return genesisMaxValSize;
+    }
+
+    @Override
+    public Integer getCollateralPercent(long epoch) {
+        return genesisCollateralPercent;
+    }
+
+    @Override
+    public Integer getMaxCollateralInputs(long epoch) {
+        return genesisMaxCollateralInputs;
+    }
+
+    @Override
+    public BigInteger getCoinsPerUtxoWord(long epoch) {
+        return genesisCoinsPerUtxoWord;
     }
 
     @Override
@@ -233,8 +463,18 @@ public class DefaultEpochParamProvider implements EpochParamProvider {
     }
 
     @Override
+    public UnitInterval getDecentralizationInterval(long epoch) {
+        return genesisDecentralizationInterval;
+    }
+
+    @Override
     public BigDecimal getRho(long epoch) {
         return genesisRho;
+    }
+
+    @Override
+    public UnitInterval getRhoInterval(long epoch) {
+        return genesisRhoInterval;
     }
 
     @Override
@@ -243,8 +483,18 @@ public class DefaultEpochParamProvider implements EpochParamProvider {
     }
 
     @Override
+    public UnitInterval getTauInterval(long epoch) {
+        return genesisTauInterval;
+    }
+
+    @Override
     public BigDecimal getA0(long epoch) {
         return genesisA0;
+    }
+
+    @Override
+    public NonNegativeInterval getA0Interval(long epoch) {
+        return genesisA0Interval;
     }
 
     @Override
@@ -302,6 +552,46 @@ public class DefaultEpochParamProvider implements EpochParamProvider {
     @Override
     public PoolVotingThresholds getPoolVotingThresholds(long epoch) {
         return genesisPoolVotingThresholds;
+    }
+
+    @Override
+    public BigDecimal getMinFeeRefScriptCostPerByte(long epoch) {
+        return genesisMinFeeRefScriptCostPerByte;
+    }
+
+    @Override
+    public NonNegativeInterval getMinFeeRefScriptCostPerByteInterval(long epoch) {
+        return genesisMinFeeRefScriptCostPerByteInterval;
+    }
+
+    private static Map<String, Object> mergeCostModels(Map<String, Object> older, Map<String, Object> newer) {
+        if ((older == null || older.isEmpty()) && (newer == null || newer.isEmpty())) {
+            return null;
+        }
+
+        Map<String, Object> merged = new LinkedHashMap<>();
+        if (older != null) merged.putAll(older);
+        if (newer != null) merged.putAll(newer);
+        return merged;
+    }
+
+    private static UnitInterval toUnitInterval(BigDecimal value) {
+        if (value == null) return null;
+        BigDecimal stripped = value.stripTrailingZeros();
+        int scale = stripped.scale();
+        if (scale <= 0) {
+            return new UnitInterval(stripped.toBigIntegerExact(), BigInteger.ONE);
+        }
+        BigInteger denominator = BigInteger.TEN.pow(scale);
+        BigInteger numerator = stripped.movePointRight(scale).toBigIntegerExact();
+        return new UnitInterval(numerator, denominator);
+    }
+
+    private static NonNegativeInterval toNonNegativeInterval(BigDecimal value) {
+        UnitInterval interval = toUnitInterval(value);
+        return interval != null
+                ? new NonNegativeInterval(interval.getNumerator(), interval.getDenominator())
+                : null;
     }
 
 }

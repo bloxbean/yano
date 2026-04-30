@@ -9,6 +9,7 @@ import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.db.RocksDbAccess;
 import com.bloxbean.cardano.yano.api.rollback.RollbackCapableStore;
 import com.bloxbean.cardano.yano.runtime.blockproducer.NonceStateStore;
+import com.bloxbean.cardano.yano.ledgerstate.AccountHistoryCfNames;
 import com.bloxbean.cardano.yano.ledgerstate.AccountStateCfNames;
 import com.bloxbean.cardano.yano.runtime.db.RocksDbContext;
 import com.bloxbean.cardano.yano.runtime.db.RocksDbSupplier;
@@ -46,6 +47,9 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
     private static final byte[] TIP_KEY = "tip".getBytes(StandardCharsets.UTF_8);
     private static final byte[] HEADER_TIP_KEY = "header_tip".getBytes(StandardCharsets.UTF_8);
     private static final byte[] EPOCH_NONCE_STATE_KEY = "epoch_nonce_state".getBytes(StandardCharsets.UTF_8);
+
+    //For read apis
+    private static final byte[] EPOCH_NONCE_KEY_PREFIX = "epoch_nonce_by_epoch_".getBytes(StandardCharsets.UTF_8);
 
     private RocksDB db;
     private final String dbPath;
@@ -109,15 +113,18 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
             ColumnFamilyOptions utxoPointLookup = null;
             ColumnFamilyOptions utxoAddrPrefix = null;
             ColumnFamilyOptions utxoDeltaOpts = null;
+            ColumnFamilyOptions accountHistoryPrefix = null;
             if (tuningEnabled) {
                 utxoPointLookup = buildPointLookupCfOptions(); // utxo_unspent, utxo_spent
                 utxoAddrPrefix = buildPrefixScanCfOptions(28); // utxo_addr
                 utxoDeltaOpts = buildSequentialCfOptions();    // utxo_block_delta
+                accountHistoryPrefix = buildPrefixScanCfOptions(30); // type + stake cred
 
                 // Log effective CF tuning plan for visibility
                 log.info("RocksDB CF tuning: utxo_unspent/utxo_spent => point-lookup (ZSTD, bloom≈10bpk, whole-key, pin L0, partitioned filters)");
                 log.info("RocksDB CF tuning: utxo_addr => prefix-scan (ZSTD, prefixExtractor=28, memtablePrefixBloom≈0.10, bloom≈10bpk, pin L0, partitioned filters)");
                 log.info("RocksDB CF tuning: utxo_block_delta => sequential (ZSTD)");
+                log.info("RocksDB CF tuning: account_history => prefix-scan (ZSTD, prefixExtractor=30)");
             } else {
                 log.info("RocksDB tuning disabled via flag; using defaults for CF options");
             }
@@ -147,12 +154,19 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
                             tuningEnabled ? utxoDeltaOpts : new ColumnFamilyOptions()),
                     new ColumnFamilyDescriptor(UtxoCfNames.UTXO_META.getBytes()),
                     new ColumnFamilyDescriptor(UtxoCfNames.SCRIPT_REF.getBytes()),
+                    new ColumnFamilyDescriptor(
+                            UtxoCfNames.UTXO_STAKE_BALANCE.getBytes(),
+                            tuningEnabled ? utxoPointLookup : new ColumnFamilyOptions()),
                     // Account state CFs
                     new ColumnFamilyDescriptor(AccountStateCfNames.ACCT_STATE.getBytes()),
                     new ColumnFamilyDescriptor(AccountStateCfNames.ACCT_DELTA.getBytes()),
                     new ColumnFamilyDescriptor(AccountStateCfNames.ACCT_BOUNDARY_DELTA.getBytes()),
                     new ColumnFamilyDescriptor(AccountStateCfNames.EPOCH_DELEG_SNAPSHOT.getBytes()),
-                    new ColumnFamilyDescriptor(AccountStateCfNames.EPOCH_PARAMS.getBytes())
+                    new ColumnFamilyDescriptor(AccountStateCfNames.EPOCH_PARAMS.getBytes()),
+                    new ColumnFamilyDescriptor(
+                            AccountHistoryCfNames.ACCOUNT_HISTORY.getBytes(),
+                            tuningEnabled ? accountHistoryPrefix : new ColumnFamilyOptions()),
+                    new ColumnFamilyDescriptor(AccountHistoryCfNames.ACCOUNT_HISTORY_DELTA.getBytes())
             );
 
             // Open database
@@ -1420,6 +1434,56 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
             log.error("Failed to read epoch nonce state", e);
             return null;
         }
+    }
+
+    @Override
+    public void storeEpochNonce(int epoch, byte[] nonce) {
+        if (nonce == null) return;
+        try {
+            db.put(metadataHandle, epochNonceKey(epoch), nonce);
+        } catch (RocksDBException e) {
+            log.error("Failed to store epoch nonce for epoch {}", epoch, e);
+        }
+    }
+
+    @Override
+    public byte[] getEpochNonce(int epoch) {
+        try {
+            return db.get(metadataHandle, epochNonceKey(epoch));
+        } catch (RocksDBException e) {
+            log.error("Failed to read epoch nonce for epoch {}", epoch, e);
+            return null;
+        }
+    }
+
+    @Override
+    public void pruneEpochNoncesAfter(int epoch) {
+        try (RocksIterator iterator = db.newIterator(metadataHandle)) {
+            for (iterator.seek(EPOCH_NONCE_KEY_PREFIX); iterator.isValid(); iterator.next()) {
+                byte[] key = iterator.key();
+                if (!startsWith(key, EPOCH_NONCE_KEY_PREFIX)) break;
+                int storedEpoch = ByteBuffer.wrap(key, EPOCH_NONCE_KEY_PREFIX.length, Integer.BYTES).getInt();
+                if (storedEpoch > epoch) {
+                    db.delete(metadataHandle, key);
+                }
+            }
+        } catch (RocksDBException e) {
+            log.error("Failed to prune epoch nonces after epoch {}", epoch, e);
+        }
+    }
+
+    private static byte[] epochNonceKey(int epoch) {
+        byte[] key = Arrays.copyOf(EPOCH_NONCE_KEY_PREFIX, EPOCH_NONCE_KEY_PREFIX.length + Integer.BYTES);
+        ByteBuffer.wrap(key, EPOCH_NONCE_KEY_PREFIX.length, Integer.BYTES).putInt(epoch);
+        return key;
+    }
+
+    private static boolean startsWith(byte[] value, byte[] prefix) {
+        if (value == null || value.length < prefix.length) return false;
+        for (int i = 0; i < prefix.length; i++) {
+            if (value[i] != prefix[i]) return false;
+        }
+        return true;
     }
 
     private static final String ERA_START_SLOT_PREFIX = "era_";

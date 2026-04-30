@@ -481,6 +481,9 @@ public class EpochBoundaryProcessor {
         rewardCalculator.beginRewardBatch();
         Optional<EpochCalculationResult> resultOpt = rewardCalculator.calculateAndDistribute(
                 newEpoch, prevTreasury, prevReserves, effectiveParams, networkMagic);
+        if (resultOpt.isEmpty()) {
+            handleEpochCalcError(newEpoch, "Reward calculation returned no result for epoch " + newEpoch);
+        }
         try {
             // Include AdaPot in the same atomic batch as reward credits + boundary delta.
             // This ensures crash between commit and step marker doesn't lose AdaPot.
@@ -509,6 +512,18 @@ public class EpochBoundaryProcessor {
         } catch (org.rocksdb.RocksDBException e) {
             throw new RuntimeException("Failed to commit reward boundary delta for epoch " + newEpoch, e);
         }
+    }
+
+    private void handleEpochCalcError(int epoch, String message) {
+        log.error(message);
+        if (exitOnEpochCalcError) {
+            log.error("Exiting (exit-on-epoch-calc-error=true). Debug epoch {} before continuing.", epoch);
+            System.exit(1);
+            throw new IllegalStateException(message);
+        }
+
+        log.error("Continuing despite epoch calculation failure (exit-on-epoch-calc-error=false). " +
+                "Check /api/v1/node/epoch-calc-status for details.");
     }
 
     /**

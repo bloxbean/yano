@@ -2,9 +2,13 @@ package com.bloxbean.cardano.yano.api;
 
 import com.bloxbean.cardano.yaci.core.model.DrepVoteThresholds;
 import com.bloxbean.cardano.yaci.core.model.PoolVotingThresholds;
+import com.bloxbean.cardano.yaci.core.types.NonNegativeInterval;
+import com.bloxbean.cardano.yaci.core.types.UnitInterval;
 import com.bloxbean.cardano.yano.api.util.EpochSlotCalc;
 
+import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.util.Map;
 
 /**
  * Provides epoch-scoped protocol parameters.
@@ -16,6 +20,58 @@ import java.math.BigInteger;
 public interface EpochParamProvider {
     BigInteger getKeyDeposit(long epoch);
     BigInteger getPoolDeposit(long epoch);
+
+    // --- Blockfrost-compatible protocol parameter fields ---
+
+    default Integer getMinFeeA(long epoch) { return null; }
+
+    default Integer getMinFeeB(long epoch) { return null; }
+
+    default Integer getMaxBlockSize(long epoch) { return null; }
+
+    default Integer getMaxTxSize(long epoch) { return null; }
+
+    default Integer getMaxBlockHeaderSize(long epoch) { return null; }
+
+    default Integer getMaxEpoch(long epoch) { return null; }
+
+    default String getExtraEntropy(long epoch) { return null; }
+
+    default BigInteger getMinUtxo(long epoch) { return null; }
+
+    default Map<String, Object> getCostModels(long epoch) { return null; }
+
+    default Map<String, Object> getCostModelsRaw(long epoch) { return null; }
+
+    /** Cost models introduced through Alonzo genesis. */
+    default Map<String, Object> getAlonzoCostModels(long epoch) { return getCostModels(epoch); }
+
+    /** Cost models introduced through Conway genesis. */
+    default Map<String, Object> getConwayCostModels(long epoch) { return null; }
+
+    default BigDecimal getPriceMem(long epoch) { return null; }
+
+    default BigDecimal getPriceStep(long epoch) { return null; }
+
+    default BigInteger getMaxTxExMem(long epoch) { return null; }
+
+    default BigInteger getMaxTxExSteps(long epoch) { return null; }
+
+    default BigInteger getMaxBlockExMem(long epoch) { return null; }
+
+    default BigInteger getMaxBlockExSteps(long epoch) { return null; }
+
+    default BigInteger getMaxValSize(long epoch) { return null; }
+
+    default Integer getCollateralPercent(long epoch) { return null; }
+
+    default Integer getMaxCollateralInputs(long epoch) { return null; }
+
+    default BigInteger getCoinsPerUtxoSize(long epoch) { return null; }
+
+    default BigInteger getCoinsPerUtxoWord(long epoch) { return null; }
+
+    default BigDecimal getMinFeeRefScriptCostPerByte(long epoch) { return null; }
 
     /** Shelley epoch length in slots. Default: 432000 (5 days at 1s slots). */
     default long getEpochLength() { return 432000; }
@@ -47,16 +103,28 @@ public interface EpochParamProvider {
     // --- Reward calculation parameters (defaults = Shelley mainnet genesis values) ---
 
     /** Monetary expansion rate (ρ). Fraction of reserves going to rewards. */
-    default java.math.BigDecimal getRho(long epoch) { return new java.math.BigDecimal("0.003"); }
+    default BigDecimal getRho(long epoch) { return new BigDecimal("0.003"); }
+
+    /** Exact monetary expansion rate, when available. */
+    default UnitInterval getRhoInterval(long epoch) { return toUnitInterval(getRho(epoch)); }
 
     /** Treasury growth rate (τ). Fraction of reward pot going to treasury. */
-    default java.math.BigDecimal getTau(long epoch) { return new java.math.BigDecimal("0.2"); }
+    default BigDecimal getTau(long epoch) { return new BigDecimal("0.2"); }
+
+    /** Exact treasury growth rate, when available. */
+    default UnitInterval getTauInterval(long epoch) { return toUnitInterval(getTau(epoch)); }
 
     /** Pool influence factor (a₀). Higher = more influence of pledge on rewards. */
-    default java.math.BigDecimal getA0(long epoch) { return new java.math.BigDecimal("0.3"); }
+    default BigDecimal getA0(long epoch) { return new BigDecimal("0.3"); }
+
+    /** Exact pool influence factor, when available. */
+    default NonNegativeInterval getA0Interval(long epoch) { return toNonNegativeInterval(getA0(epoch)); }
 
     /** Decentralization parameter (d). 0 = fully decentralized. Pre-Alonzo only. */
-    default java.math.BigDecimal getDecentralization(long epoch) { return java.math.BigDecimal.ZERO; }
+    default BigDecimal getDecentralization(long epoch) { return BigDecimal.ZERO; }
+
+    /** Exact decentralization parameter, when available. */
+    default UnitInterval getDecentralizationInterval(long epoch) { return toUnitInterval(getDecentralization(epoch)); }
 
     /** Target number of pools (k / nOpt). */
     default int getNOpt(long epoch) { return 500; }
@@ -114,5 +182,35 @@ public interface EpochParamProvider {
     /** Randomness stabilisation window = floor(4k/f) slots. */
     default long getRandomnessStabilisationWindow() {
         return Math.round((4.0 * getSecurityParam()) / getActiveSlotsCoeff());
+    }
+
+    /** Exact memory execution price, when available. */
+    default NonNegativeInterval getPriceMemInterval(long epoch) { return toNonNegativeInterval(getPriceMem(epoch)); }
+
+    /** Exact step execution price, when available. */
+    default NonNegativeInterval getPriceStepInterval(long epoch) { return toNonNegativeInterval(getPriceStep(epoch)); }
+
+    /** Exact reference script fee coefficient, when available. */
+    default NonNegativeInterval getMinFeeRefScriptCostPerByteInterval(long epoch) {
+        return toNonNegativeInterval(getMinFeeRefScriptCostPerByte(epoch));
+    }
+
+    private static UnitInterval toUnitInterval(BigDecimal value) {
+        if (value == null) return null;
+        BigDecimal stripped = value.stripTrailingZeros();
+        int scale = stripped.scale();
+        if (scale <= 0) {
+            return new UnitInterval(stripped.toBigIntegerExact(), BigInteger.ONE);
+        }
+        BigInteger denominator = BigInteger.TEN.pow(scale);
+        BigInteger numerator = stripped.movePointRight(scale).toBigIntegerExact();
+        return new UnitInterval(numerator, denominator);
+    }
+
+    private static NonNegativeInterval toNonNegativeInterval(BigDecimal value) {
+        UnitInterval interval = toUnitInterval(value);
+        return interval != null
+                ? new NonNegativeInterval(interval.getNumerator(), interval.getDenominator())
+                : null;
     }
 }

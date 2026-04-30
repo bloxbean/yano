@@ -156,6 +156,12 @@ class ConwayGenesisParserTest {
         // preview's ppGovGroup is 0.75 per Cardano spec — direct regression guard on the
         // preview-epoch-967 root cause (was falling back to hardcoded 0.67).
         assertRatio(data.drepVotingThresholds().getDvtPPGovGroup(), "0.75");
+        assertThat(data.costModels())
+                .as("preview conway-genesis.json must populate PlutusV3 cost model")
+                .containsKey("PlutusV3");
+        assertThat(data.minFeeRefScriptCostPerByteInterval())
+                .as("minFeeRefScriptCostPerByte should be retained as an exact interval")
+                .isNotNull();
     }
 
     private static void assertRatio(UnitInterval ui, String expectedDecimal) {

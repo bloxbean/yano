@@ -15,7 +15,7 @@ import jakarta.ws.rs.core.Response;
 import java.util.HashMap;
 import java.util.Map;
 
-@Path("/api/v1/status")
+@Path("status")
 @Produces(MediaType.APPLICATION_JSON)
 public class StatusResource {
 

@@ -5,7 +5,9 @@ import com.bloxbean.cardano.yaci.core.storage.ChainTip;
 import com.bloxbean.cardano.yaci.events.api.SubscriptionOptions;
 import com.bloxbean.cardano.yaci.helper.listener.BlockChainDataListener;
 import com.bloxbean.cardano.yano.api.config.NodeConfig;
+import com.bloxbean.cardano.yano.api.account.AccountHistoryProvider;
 import com.bloxbean.cardano.yano.api.listener.NodeEventListener;
+import com.bloxbean.cardano.yano.api.account.LedgerStateProvider;
 import com.bloxbean.cardano.yano.api.model.FundResult;
 import com.bloxbean.cardano.yano.api.model.GenesisParameters;
 import com.bloxbean.cardano.yano.api.model.NodeStatus;
@@ -159,6 +161,22 @@ public interface NodeAPI {
     UtxoState getUtxoState();
 
     /**
+     * Access read-only ledger account state if account-state is enabled.
+     * Returns null when the implementation does not expose ledger state.
+     */
+    default LedgerStateProvider getLedgerStateProvider() {
+        return null;
+    }
+
+    /**
+     * Access read-only account history indexes if account history is enabled.
+     * Returns null when the history index is disabled or unavailable.
+     */
+    default AccountHistoryProvider getAccountHistoryProvider() {
+        return null;
+    }
+
+    /**
      * Get the protocol parameters JSON string.
      * Only available when block producer mode is enabled and a protocol parameters file is configured.
      *
@@ -181,6 +199,18 @@ public interface NodeAPI {
      * @return map with keys: epoch, nonce, evolving_nonce, candidate_nonce; or null
      */
     default java.util.Map<String, Object> getEpochNonceInfo() {
+        return null;
+    }
+
+    /**
+     * Get the ledger epoch nonce for a finalized epoch, encoded as hex.
+     * Returns null if nonce tracking is not active or the requested epoch has
+     * not been indexed.
+     *
+     * @param epoch epoch number
+     * @return hex-encoded 32-byte epoch nonce, or null
+     */
+    default String getEpochNonce(int epoch) {
         return null;
     }
 

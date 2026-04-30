@@ -26,12 +26,14 @@ public class NetworkGenesisConfig {
 
     private final ShelleyGenesisData shelleyGenesisData;
     private final ByronGenesisData byronGenesisData;
+    private final AlonzoGenesisData alonzoGenesisData;
     private final ConwayGenesisData conwayGenesisData;
 
     private NetworkGenesisConfig(ShelleyGenesisData shelleyData, ByronGenesisData byronData,
-                                  ConwayGenesisData conwayData) {
+                                  AlonzoGenesisData alonzoData, ConwayGenesisData conwayData) {
         this.shelleyGenesisData = shelleyData;
         this.byronGenesisData = byronData;
+        this.alonzoGenesisData = alonzoData;
         this.conwayGenesisData = conwayData;
     }
 
@@ -54,6 +56,7 @@ public class NetworkGenesisConfig {
 
         ShelleyGenesisData shelleyData = parseShelleyGenesis(shelleyGenesisPath);
         ByronGenesisData byronData = parseByronGenesis(byronGenesisPath);
+        AlonzoGenesisData alonzoData = parseAlonzoGenesis(alonzoGenesisPath);
         ConwayGenesisData conwayData = parseConwayGenesis(conwayGenesisPath);
 
         // Validate protocol magic consistency
@@ -64,12 +67,13 @@ public class NetworkGenesisConfig {
         }
 
         log.info("NetworkGenesisConfig loaded: magic={}, epochLength={}, securityParam={}, " +
-                        "byronK={}, conway={}",
+                        "byronK={}, alonzo={}, conway={}",
                 shelleyData.networkMagic(), shelleyData.epochLength(), shelleyData.securityParam(),
                 byronData != null ? byronData.k() : "N/A",
+                alonzoData != null ? "available" : "none",
                 conwayData != null ? "available" : "none");
 
-        return new NetworkGenesisConfig(shelleyData, byronData, conwayData);
+        return new NetworkGenesisConfig(shelleyData, byronData, alonzoData, conwayData);
     }
 
     /**
@@ -97,7 +101,7 @@ public class NetworkGenesisConfig {
                 byron != null ? byron.k() : "N/A",
                 conway != null ? "available" : "none");
 
-        return new NetworkGenesisConfig(shelley, byron, conway);
+        return new NetworkGenesisConfig(shelley, byron, null, conway);
     }
 
     private static ShelleyGenesisData parseShelleyGenesis(String path) {
@@ -122,6 +126,19 @@ public class NetworkGenesisConfig {
             return ByronGenesisParser.parse(file);
         } catch (Exception e) {
             throw new IllegalArgumentException("Failed to parse byron genesis from " + path, e);
+        }
+    }
+
+    private static AlonzoGenesisData parseAlonzoGenesis(String path) {
+        if (path == null || path.isBlank()) return null;
+        File file = new File(path);
+        if (!file.exists() || !file.canRead()) {
+            throw new IllegalArgumentException("Alonzo genesis file configured but not found or unreadable: " + path);
+        }
+        try {
+            return AlonzoGenesisParser.parse(file);
+        } catch (Exception e) {
+            throw new IllegalArgumentException("Failed to parse alonzo genesis from " + path, e);
         }
     }
 
@@ -185,6 +202,13 @@ public class NetworkGenesisConfig {
      */
     public boolean hasConwayGenesis() {
         return conwayGenesisData != null;
+    }
+
+    /**
+     * @return true if Alonzo genesis is present
+     */
+    public boolean hasAlonzoGenesis() {
+        return alonzoGenesisData != null;
     }
 
     /**

@@ -8,6 +8,7 @@ import com.bloxbean.cardano.yano.runtime.genesis.ConwayGenesisData;
 import com.bloxbean.cardano.yano.runtime.genesis.ShelleyGenesisData;
 import org.junit.jupiter.api.Test;
 
+import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.Collections;
 import java.util.Map;
@@ -22,7 +23,9 @@ class InMemoryDevnetGenesisTest {
                 42, 600, 1.0, "2026-01-01T00:00:00Z",
                 45_000_000_000_000_000L, 1.0, 100,
                 62, 129600, 5, 10, 0,
-                0.003, 0.2, 0.0, 100, 0, 2_000_000, 500_000_000, 0.0);
+                new BigDecimal("0.003"), new BigDecimal("0.2"), BigDecimal.ZERO,
+                100, 0, 2_000_000, 500_000_000, BigDecimal.ZERO,
+                44, 155381, 65536, 16384, 1100, 18, null, 1_000_000);
     }
 
     private static ByronGenesisData testByron() {
@@ -33,7 +36,7 @@ class InMemoryDevnetGenesisTest {
 
     private static ConwayGenesisData testConway() {
         return new ConwayGenesisData(30, BigInteger.valueOf(100_000_000_000L),
-                BigInteger.valueOf(500_000_000), 20, 0, 365, null, null);
+                BigInteger.valueOf(500_000_000), 20, 0, 365, null, null, null, null, null);
     }
 
     @Test

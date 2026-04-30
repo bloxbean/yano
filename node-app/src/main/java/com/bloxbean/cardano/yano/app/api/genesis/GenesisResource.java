@@ -10,7 +10,7 @@ import jakarta.ws.rs.core.Response;
 
 import java.util.Map;
 
-@Path("/api/v1/genesis")
+@Path("genesis")
 @Produces(MediaType.APPLICATION_JSON)
 @Consumes(MediaType.APPLICATION_JSON)
 public class GenesisResource {

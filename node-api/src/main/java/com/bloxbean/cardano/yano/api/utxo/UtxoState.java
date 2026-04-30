@@ -3,6 +3,7 @@ package com.bloxbean.cardano.yano.api.utxo;
 import com.bloxbean.cardano.yano.api.utxo.model.Outpoint;
 import com.bloxbean.cardano.yano.api.utxo.model.Utxo;
 
+import java.math.BigInteger;
 import java.util.List;
 import java.util.Optional;
 
@@ -114,4 +115,28 @@ public interface UtxoState {
      * Whether UTXO state is enabled and actively maintained.
      */
     boolean isEnabled();
+
+    /**
+     * Whether the live stake-credential UTXO balance aggregate is enabled.
+     */
+    default boolean isStakeBalanceIndexEnabled() {
+        return false;
+    }
+
+    /**
+     * Whether the live stake-credential balance aggregate is complete for the
+     * current UTXO store. Existing stores upgraded from a version without the
+     * aggregate may require a rebuild before this returns true.
+     */
+    default boolean isStakeBalanceIndexReady() {
+        return false;
+    }
+
+    /**
+     * Return the current unspent lovelace controlled by a stake credential.
+     * This is UTXO-only and does not include withdrawable rewards.
+     */
+    default Optional<BigInteger> getUtxoBalanceByStakeCredential(int credType, String credentialHash) {
+        return Optional.empty();
+    }
 }

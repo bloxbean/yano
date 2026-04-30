@@ -25,6 +25,7 @@ public class InMemoryAccountStateStore implements AccountStateStore {
 
     // Key format: "prefix:credType:credHash" for accounts/delegations
     private final ConcurrentHashMap<String, StakeAccountEntry> accounts = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Long> accountRegistrationSlots = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, PoolDelegEntry> poolDelegations = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, DRepDelegEntry> drepDelegations = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, BigInteger> poolDeposits = new ConcurrentHashMap<>();
@@ -110,8 +111,17 @@ public class InMemoryAccountStateStore implements AccountStateStore {
 
     @Override
     public Optional<String> getDelegatedPool(int credType, String credentialHash) {
+        return getPoolDelegation(credType, credentialHash)
+                .map(LedgerStateProvider.PoolDelegation::poolHash);
+    }
+
+    @Override
+    public Optional<LedgerStateProvider.PoolDelegation> getPoolDelegation(int credType, String credentialHash) {
         var entry = poolDelegations.get(credKey(credType, credentialHash));
-        return entry != null ? Optional.of(entry.poolHash) : Optional.empty();
+        return entry != null
+                ? Optional.of(new LedgerStateProvider.PoolDelegation(
+                        entry.poolHash, entry.slot, entry.txIdx, entry.certIdx))
+                : Optional.empty();
     }
 
     @Override
@@ -123,6 +133,12 @@ public class InMemoryAccountStateStore implements AccountStateStore {
     @Override
     public boolean isStakeCredentialRegistered(int credType, String credentialHash) {
         return accounts.containsKey(credKey(credType, credentialHash));
+    }
+
+    @Override
+    public Optional<Long> getStakeRegistrationSlot(int credType, String credentialHash) {
+        String key = credKey(credType, credentialHash);
+        return accounts.containsKey(key) ? Optional.ofNullable(accountRegistrationSlots.get(key)) : Optional.empty();
     }
 
     @Override
@@ -270,10 +286,10 @@ public class InMemoryAccountStateStore implements AccountStateStore {
         switch (cert) {
             case StakeRegistration sr ->
                     registerStake(sr.getStakeCredential(),
-                            epochParamProvider.getKeyDeposit(0), delta);
+                            epochParamProvider.getKeyDeposit(0), slot, delta);
             case RegCert rc ->
                     registerStake(rc.getStakeCredential(),
-                            rc.getCoin() != null ? rc.getCoin() : BigInteger.ZERO, delta);
+                            rc.getCoin() != null ? rc.getCoin() : BigInteger.ZERO, slot, delta);
             case StakeDeregistration sd ->
                     deregisterStake(sd.getStakeCredential(), delta);
             case UnregCert uc ->
@@ -292,19 +308,19 @@ public class InMemoryAccountStateStore implements AccountStateStore {
             }
             case StakeRegDelegCert srd -> {
                 registerStake(srd.getStakeCredential(),
-                        srd.getCoin() != null ? srd.getCoin() : BigInteger.ZERO, delta);
+                        srd.getCoin() != null ? srd.getCoin() : BigInteger.ZERO, slot, delta);
                 delegateToPool(srd.getStakeCredential(), srd.getPoolKeyHash(),
                         slot, txIdx, certIdx, delta);
             }
             case VoteRegDelegCert vrd -> {
                 registerStake(vrd.getStakeCredential(),
-                        vrd.getCoin() != null ? vrd.getCoin() : BigInteger.ZERO, delta);
+                        vrd.getCoin() != null ? vrd.getCoin() : BigInteger.ZERO, slot, delta);
                 delegateToDRep(vrd.getStakeCredential(), vrd.getDrep(),
                         slot, txIdx, certIdx, delta);
             }
             case StakeVoteRegDelegCert svrd -> {
                 registerStake(svrd.getStakeCredential(),
-                        svrd.getCoin() != null ? svrd.getCoin() : BigInteger.ZERO, delta);
+                        svrd.getCoin() != null ? svrd.getCoin() : BigInteger.ZERO, slot, delta);
                 delegateToPool(svrd.getStakeCredential(), svrd.getPoolKeyHash(),
                         slot, txIdx, certIdx, delta);
                 delegateToDRep(svrd.getStakeCredential(), svrd.getDrep(),
@@ -367,10 +383,12 @@ public class InMemoryAccountStateStore implements AccountStateStore {
         }
     }
 
-    private void registerStake(StakeCredential cred, BigInteger deposit, BlockDelta delta) {
+    private void registerStake(StakeCredential cred, BigInteger deposit, long slot, BlockDelta delta) {
         String key = credKey(credTypeInt(cred.getType()), cred.getHash());
         delta.prevAccounts.put(key, accounts.get(key));
         accounts.put(key, new StakeAccountEntry(BigInteger.ZERO, deposit));
+        delta.prevAccountRegistrationSlots.put(key, accountRegistrationSlots.get(key));
+        accountRegistrationSlots.put(key, slot);
         if (delta.prevTotalDeposited == null) {
             delta.prevTotalDeposited = totalDeposited;
         }
@@ -389,6 +407,8 @@ public class InMemoryAccountStateStore implements AccountStateStore {
             if (totalDeposited.signum() < 0) totalDeposited = BigInteger.ZERO;
         }
         accounts.remove(key);
+        delta.prevAccountRegistrationSlots.put(key, accountRegistrationSlots.get(key));
+        accountRegistrationSlots.remove(key);
         // Per Haskell ledger: deregistration completely removes the entry from dsAccounts,
         // discarding the pool and DRep delegations. Re-registration starts fresh with no delegation.
         delta.prevPoolDelegations.put(key, poolDelegations.get(key));
@@ -496,6 +516,11 @@ public class InMemoryAccountStateStore implements AccountStateStore {
             for (var e : delta.prevAccounts.entrySet()) {
                 if (e.getValue() != null) accounts.put(e.getKey(), e.getValue());
                 else accounts.remove(e.getKey());
+            }
+            // Restore account registration slots
+            for (var e : delta.prevAccountRegistrationSlots.entrySet()) {
+                if (e.getValue() != null) accountRegistrationSlots.put(e.getKey(), e.getValue());
+                else accountRegistrationSlots.remove(e.getKey());
             }
             // Restore pool delegations
             for (var e : delta.prevPoolDelegations.entrySet()) {
@@ -646,6 +671,7 @@ public class InMemoryAccountStateStore implements AccountStateStore {
         final long blockNumber;
         final long slot;
         final Map<String, StakeAccountEntry> prevAccounts = new HashMap<>();
+        final Map<String, Long> prevAccountRegistrationSlots = new HashMap<>();
         final Map<String, PoolDelegEntry> prevPoolDelegations = new HashMap<>();
         final Map<String, DRepDelegEntry> prevDRepDelegations = new HashMap<>();
         final Map<String, BigInteger> prevPoolDeposits = new HashMap<>();

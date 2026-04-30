@@ -2,6 +2,11 @@ dependencies {
     api libs.yaci.core
     api libs.yaci.helper
     api libs.yaci.events.core
+
+    implementation libs.cardano.client.address
+    implementation libs.cardano.client.common
+    implementation libs.cardano.client.crypto
+    implementation libs.cardano.client.governance
 }
 
 publishing {

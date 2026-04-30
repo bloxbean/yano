@@ -132,14 +132,40 @@ class NetworkGenesisConfigTest {
                     null, null, null);
 
             var shelley = config.getShelleyGenesisData();
-            assertThat(shelley.rho()).isEqualTo(0.003);
-            assertThat(shelley.tau()).isEqualTo(0.2);
-            assertThat(shelley.a0()).isEqualTo(0.3);
+            assertThat(shelley.rho()).isEqualByComparingTo("0.003");
+            assertThat(shelley.tau()).isEqualByComparingTo("0.20");
+            assertThat(shelley.a0()).isEqualByComparingTo("0.3");
             assertThat(shelley.nOpt()).isEqualTo(150);
             assertThat(shelley.minPoolCost()).isEqualTo(340000000);
             assertThat(shelley.keyDeposit()).isEqualTo(2000000);
             assertThat(shelley.poolDeposit()).isEqualTo(500000000);
-            assertThat(shelley.decentralisationParam()).isEqualTo(1.0);
+            assertThat(shelley.decentralisationParam()).isEqualByComparingTo("1");
+            assertThat(shelley.minFeeA()).isEqualTo(44);
+            assertThat(shelley.minFeeB()).isEqualTo(155381);
+            assertThat(shelley.maxTxSize()).isEqualTo(16384);
+            assertThat(shelley.eMax()).isEqualTo(18);
+        }
+
+        @Test
+        void parseAlonzoGenesis_correctValues() {
+            var config = NetworkGenesisConfig.load(
+                    genesisPath("preview", "shelley-genesis.json"),
+                    null,
+                    genesisPath("preview", "alonzo-genesis.json"),
+                    null);
+
+            assertThat(config.hasAlonzoGenesis()).isTrue();
+            var alonzo = config.getAlonzoGenesisData();
+            assertThat(alonzo.priceMem()).isEqualByComparingTo("0.0577");
+            assertThat(alonzo.priceStep()).isEqualByComparingTo("0.0000721");
+            assertThat(alonzo.priceMemInterval().getNumerator()).isEqualTo(BigInteger.valueOf(577));
+            assertThat(alonzo.priceMemInterval().getDenominator()).isEqualTo(BigInteger.valueOf(10000));
+            assertThat(alonzo.priceStepInterval().getNumerator()).isEqualTo(BigInteger.valueOf(721));
+            assertThat(alonzo.priceStepInterval().getDenominator()).isEqualTo(BigInteger.valueOf(10000000));
+            assertThat(alonzo.maxTxExMem()).isEqualTo(BigInteger.valueOf(10000000));
+            assertThat(alonzo.maxBlockExSteps()).isEqualTo(new BigInteger("40000000000"));
+            assertThat(alonzo.coinsPerUtxoWord()).isEqualTo(BigInteger.valueOf(34482));
+            assertThat(alonzo.costModels()).containsKey("PlutusV1");
         }
 
         @Test
@@ -155,6 +181,9 @@ class NetworkGenesisConfigTest {
             assertThat(conway.dRepActivity()).isEqualTo(20);
             assertThat(conway.dRepDeposit()).isEqualTo(BigInteger.valueOf(500000000));
             assertThat(conway.committeeMinSize()).isEqualTo(0);
+            assertThat(conway.costModels()).containsKey("PlutusV3");
+            assertThat(conway.minFeeRefScriptCostPerByteInterval().getNumerator()).isEqualTo(BigInteger.valueOf(15));
+            assertThat(conway.minFeeRefScriptCostPerByteInterval().getDenominator()).isEqualTo(BigInteger.ONE);
         }
     }
 

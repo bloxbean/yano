@@ -54,11 +54,17 @@ import com.bloxbean.cardano.yano.api.events.NodeStartedEvent;
 import com.bloxbean.cardano.yano.api.events.RollbackEvent;
 import com.bloxbean.cardano.yano.api.events.SyncStatusChangedEvent;
 import com.bloxbean.cardano.yano.runtime.handlers.YaciTxSubmissionHandler;
+import com.bloxbean.cardano.yano.runtime.migration.StakeBalanceIndexStartupMigration;
+import com.bloxbean.cardano.yano.runtime.migration.StartupMigrationContext;
+import com.bloxbean.cardano.yano.runtime.migration.StartupMigrationRunner;
 import com.bloxbean.cardano.yano.runtime.plugins.PluginManager;
 import com.bloxbean.cardano.yano.api.plugin.StorageFilter;
 import com.bloxbean.cardano.yano.api.account.AccountStateStore;
 import com.bloxbean.cardano.yano.api.account.AccountStateStoreContext;
+import com.bloxbean.cardano.yano.api.account.AccountHistoryProvider;
 import com.bloxbean.cardano.yano.api.account.LedgerStateProvider;
+import com.bloxbean.cardano.yano.ledgerstate.AccountHistoryEventHandler;
+import com.bloxbean.cardano.yano.ledgerstate.AccountHistoryStore;
 import com.bloxbean.cardano.yano.ledgerstate.AccountStateEventHandler;
 import com.bloxbean.cardano.yano.ledgerstate.AccountStateCfNames;
 import com.bloxbean.cardano.yano.ledgerstate.AdaPotTracker;
@@ -189,12 +195,15 @@ public class YaciNode implements NodeAPI {
     private BootstrapDataProvider bootstrapDataProvider;
     private PruneService utxoPruneService;
     private PruneService blockPruneService;
+    private PruneService accountHistoryPruneService;
     private UtxoEventHandler utxoEventHandler;
     private UtxoEventHandlerAsync utxoEventHandlerAsync;
     private ScheduledFuture<?> utxoLagTask;
     private AccountStateStore accountStateStore;
+    private AccountHistoryStore accountHistoryStore;
     private EpochBoundaryProcessor epochBoundaryProcessor;
     private AccountStateEventHandler accountStateEventHandler;
+    private AccountHistoryEventHandler accountHistoryEventHandler;
     private com.bloxbean.cardano.yano.api.EpochParamProvider epochParamProvider;
 
     // In-memory devnet genesis — set before start() for devnet mode without genesis files
@@ -268,6 +277,8 @@ public class YaciNode implements NodeAPI {
         if (this.runtimeOptions.plugins().enabled()) {
             pluginManager = new PluginManager(eventBus, scheduler, this.runtimeOptions.plugins().config(), Thread.currentThread().getContextClassLoader());
         }
+
+        runStartupMigrations();
 
         // Phase 3: Initialize UTXO store if enabled and RocksDB is used
         try {
@@ -348,7 +359,7 @@ public class YaciNode implements NodeAPI {
                 networkGenesisConfig = NetworkGenesisConfig.load(
                         config.getShelleyGenesisFile(),
                         config.getByronGenesisFile(),
-                        null, // alonzo — not needed here
+                        config.getAlonzoGenesisFile(),
                         config.getConwayGenesisFile());
             }
 
@@ -433,11 +444,17 @@ public class YaciNode implements NodeAPI {
                                 AccountStateCfNames.EPOCH_PARAMS);
                         paramTrackerInstance = new EpochParamTracker(
                                 epochParamProvider, true, rocksDb2, cfEpochParams);
+                        if (eraService != null) {
+                            paramTrackerInstance.setEraProvider(eraService);
+                        }
                         defaultStore.setParamTracker(paramTrackerInstance);
                         log.info("Epoch param tracker enabled (with RocksDB persistence)");
                     } else if (epochParamsEnabled) {
                         paramTrackerInstance = new EpochParamTracker(
                                 epochParamProvider, true);
+                        if (eraService != null) {
+                            paramTrackerInstance.setEraProvider(eraService);
+                        }
                         defaultStore.setParamTracker(paramTrackerInstance);
                         log.info("Epoch param tracker enabled (in-memory only)");
                     }
@@ -660,12 +677,62 @@ public class YaciNode implements NodeAPI {
                     }
                 }
 
+                boolean accountHistoryEnabled = Boolean.parseBoolean(
+                        String.valueOf(this.runtimeOptions.globals().getOrDefault("yaci.node.account-history.enabled", "false")));
+                if (accountHistoryEnabled && chainState instanceof DirectRocksDBChainState rocks) {
+                    try {
+                        var rocksDb = (org.rocksdb.RocksDB) rocks.getDb();
+                        this.accountHistoryStore = new AccountHistoryStore(
+                                rocksDb,
+                                name -> (org.rocksdb.ColumnFamilyHandle) rocks.getColumnFamilyHandle(name),
+                                log,
+                                this.runtimeOptions.globals(),
+                                epochParamProvider);
+                        try {
+                            this.accountHistoryStore.reconcile(chainState);
+                            log.info("Account history reconciliation complete at startup");
+                        } catch (Throwable t) {
+                            log.warn("Account history reconciliation error: {}", t.toString());
+                        }
+                        this.accountHistoryEventHandler = new AccountHistoryEventHandler(eventBus, this.accountHistoryStore);
+
+                        int retentionEpochs = this.accountHistoryStore.getRetentionEpochs();
+                        if (retentionEpochs > 0) {
+                            long pruneIntervalSec = parseLong(
+                                    this.runtimeOptions.globals().get("yaci.node.account-history.prune-interval-seconds"),
+                                    300L);
+                            this.accountHistoryPruneService = new PruneService(
+                                    this.accountHistoryStore::pruneOnce,
+                                    Math.max(1L, pruneIntervalSec) * 1000L);
+                            this.accountHistoryPruneService.start();
+                            log.info("Account history prune service started (retention={} epochs, interval={}s)",
+                                    retentionEpochs, pruneIntervalSec);
+                        }
+
+                        log.info("Account history store initialized (tx-events={}, rewards-history={}, retentionEpochs={})",
+                                this.accountHistoryStore.isTxEventsEnabled(),
+                                this.accountHistoryStore.isRewardsHistoryEnabled(),
+                                retentionEpochs);
+                    } catch (Throwable t) {
+                        this.accountHistoryStore = null;
+                        log.warn("Failed to initialize optional account history store: {}", t.toString());
+                    }
+                } else if (accountHistoryEnabled) {
+                    log.warn("Account history requested but not initialized (rocksdb={})",
+                            chainState instanceof DirectRocksDBChainState);
+                }
+
                 // Register event handler
                 this.accountStateEventHandler = new AccountStateEventHandler(eventBus, this.accountStateStore);
                 log.info("Account state store initialized ({}); event handler registered",
                         this.accountStateStore.getClass().getSimpleName());
             } else {
                 log.info("Account state store not initialized (enabled={})", acctEnabled);
+                boolean accountHistoryEnabled = Boolean.parseBoolean(
+                        String.valueOf(this.runtimeOptions.globals().getOrDefault("yaci.node.account-history.enabled", "false")));
+                if (accountHistoryEnabled) {
+                    log.warn("Account history requested but not initialized because account-state is disabled");
+                }
             }
         } catch (Throwable t) {
             log.warn("Failed to initialize account state store: {}", t.toString());
@@ -690,6 +757,16 @@ public class YaciNode implements NodeAPI {
         }
     }
 
+    private void runStartupMigrations() {
+        if (!(chainState instanceof DirectRocksDBChainState rocks)) return;
+
+        StartupMigrationContext context = new StartupMigrationContext(
+                rocks,
+                this.runtimeOptions.globals(),
+                config.getRocksDBPath());
+        new StartupMigrationRunner().run(context, List.of(new StakeBalanceIndexStartupMigration()));
+    }
+
     @Override
     public UtxoState getUtxoState() {
         return (utxoStore instanceof UtxoState u) ? u : null;
@@ -701,6 +778,15 @@ public class YaciNode implements NodeAPI {
 
     public AccountStateStore getAccountStateStore() {
         return accountStateStore;
+    }
+
+    public AccountHistoryStore getAccountHistoryStore() {
+        return accountHistoryStore;
+    }
+
+    @Override
+    public AccountHistoryProvider getAccountHistoryProvider() {
+        return accountHistoryStore;
     }
 
     /**
@@ -1006,6 +1092,8 @@ public class YaciNode implements NodeAPI {
         // Choose block builder: if all three key files are configured, use SignedBlockBuilder
         DevnetBlockBuilder blockBuilder = createBlockBuilder(freshStart);
 
+        setConwayEraStartIfFreshStart(freshStart);
+
         DevnetBlockProducer producer = createDevnetProducer(blockBuilder);
         producer.start();
 
@@ -1020,7 +1108,6 @@ public class YaciNode implements NodeAPI {
         }
 
         storeGenesisUtxosIfNeeded(freshStart);
-        setConwayEraStartIfFreshStart(freshStart);
 
         log.info("Block producer started (devnet mode)");
     }
@@ -1117,6 +1204,9 @@ public class YaciNode implements NodeAPI {
                     throw new IllegalStateException(
                             "Shelley genesis hash required for nonce initialization in slot-leader mode");
                 }
+            }
+            if (nonceStore != null) {
+                nonceStore.storeEpochNonce(epochNonceState.getCurrentEpoch(), epochNonceState.getEpochNonce());
             }
 
             // 5. Get protocol version from protocol-param.json
@@ -1287,6 +1377,9 @@ public class YaciNode implements NodeAPI {
                     epochNonceState = null;
                     return;
                 }
+            }
+            if (nonceStore != null) {
+                nonceStore.storeEpochNonce(epochNonceState.getCurrentEpoch(), epochNonceState.getEpochNonce());
             }
 
             // Register listener — no own-block skipping (null issuerVkey) since we're not producing
@@ -1665,6 +1758,22 @@ public class YaciNode implements NodeAPI {
         return map;
     }
 
+    @Override
+    public String getEpochNonce(int epoch) {
+        if (epoch < 0) return null;
+        if (chainState instanceof NonceStateStore nonceStore) {
+            byte[] stored = nonceStore.getEpochNonce(epoch);
+            if (stored != null) {
+                return HexUtil.encodeHexString(stored);
+            }
+        }
+        if (epochNonceState != null && epochNonceState.getCurrentEpoch() == epoch) {
+            byte[] current = epochNonceState.getEpochNonce();
+            return current != null ? HexUtil.encodeHexString(current) : null;
+        }
+        return null;
+    }
+
     /**
      * Pre-populate genesis UTXOs for relay mode.
      * Stores an empty genesis block and writes UTXOs directly to the UTXO store
@@ -1992,6 +2101,9 @@ public class YaciNode implements NodeAPI {
 
         // Collect all enabled RollbackCapableStores
         var stores = new java.util.ArrayList<com.bloxbean.cardano.yano.api.rollback.RollbackCapableStore>();
+        if (accountHistoryStore instanceof com.bloxbean.cardano.yano.api.rollback.RollbackCapableStore rcs) {
+            stores.add(rcs);
+        }
         if (accountStateStore instanceof com.bloxbean.cardano.yano.api.rollback.RollbackCapableStore rcs) {
             stores.add(rcs);
         }
@@ -2117,6 +2229,7 @@ public class YaciNode implements NodeAPI {
             } catch (Exception ex) {
                 log.warn("RollbackEvent publish failed: {}", ex.toString());
             }
+            ensureAccountHistoryRolledBack(rollbackPoint);
 
             // 5. Notify server (ChainSyncServerAgent sends Rollbackward to connected clients)
             if (isServerRunning.get() && nodeServer != null) {
@@ -2461,13 +2574,14 @@ public class YaciNode implements NodeAPI {
         // Create block builder and start producer
         DevnetBlockBuilder blockBuilder = createBlockBuilder(freshStart);
 
+        setConwayEraStartIfFreshStart(freshStart);
+
         DevnetBlockProducer producer = createDevnetProducer(blockBuilder);
         // Sequential mode: genesis at slot 0, blocks at 1, 2, 3... (no wall-clock jump)
         producer.setForceSequentialSlots(true);
         producer.start();
 
         storeGenesisUtxosIfNeeded(freshStart);
-        setConwayEraStartIfFreshStart(freshStart);
 
         log.info("Past time travel: block producer started after {}ms genesis shift ({} epochs)", shiftMillis, epochs);
         return shiftMillis;
@@ -2902,6 +3016,7 @@ public class YaciNode implements NodeAPI {
 
             // Stop UTXO prune service
             try { if (utxoPruneService != null) utxoPruneService.close(); } catch (Exception ignored) {}
+            try { if (accountHistoryPruneService != null) accountHistoryPruneService.close(); } catch (Exception ignored) {}
             try { if (blockPruneService != null) blockPruneService.close(); } catch (Exception ignored) {}
             try { if (utxoLagTask != null) utxoLagTask.cancel(true); } catch (Exception ignored) {}
 
@@ -2909,6 +3024,8 @@ public class YaciNode implements NodeAPI {
             try { if (pluginManager != null) pluginManager.close(); } catch (Exception ignored) {}
             try { if (utxoEventHandler != null) utxoEventHandler.close(); } catch (Exception ignored) {}
             try { if (utxoEventHandlerAsync != null) utxoEventHandlerAsync.close(); } catch (Exception ignored) {}
+            try { if (accountStateEventHandler != null) accountStateEventHandler.close(); } catch (Exception ignored) {}
+            try { if (accountHistoryEventHandler != null) accountHistoryEventHandler.close(); } catch (Exception ignored) {}
             try { eventBus.close(); } catch (Exception ignored) {}
 
             log.info("Yaci Node stopped");
@@ -2924,11 +3041,6 @@ public class YaciNode implements NodeAPI {
         if (isPipelinedMode && bodyFetchManager != null) {
             bodyFetchManager.pause();
             log.info("⏸️ BodyFetchManager paused for rollback to slot {}", rollbackSlot);
-        }
-
-        if (rollbackSlot == 0) {
-            log.warn("Rollback requested to genesis (slot 0) - no action taken");
-            return;
         }
 
         // Protection against catastrophic rollbacks
@@ -2948,6 +3060,10 @@ public class YaciNode implements NodeAPI {
             return;
         }
 
+        if (rollbackSlot == 0) {
+            log.warn("Rollback requested to genesis (slot 0)");
+        }
+
         // Classify rollback type
         boolean isReal = isRealRollback(point);
 
@@ -2961,6 +3077,7 @@ public class YaciNode implements NodeAPI {
         } catch (Exception ex) {
             log.debug("RollbackEvent publish failed: {}", ex.toString());
         }
+        ensureAccountHistoryRolledBack(point);
 
         log.info("ROLLBACK_EVENT: slot={}, type={}, phase={}, serverNotified={}",
                 rollbackSlot, isReal ? "REAL_REORG" : "RECONNECTION", syncPhase, isReal && isServerRunning.get());
@@ -2997,6 +3114,21 @@ public class YaciNode implements NodeAPI {
         if (isPipelinedMode && bodyFetchManager != null) {
             bodyFetchManager.resume();
             log.info("▶️ BodyFetchManager resumed after rollback - will detect and handle gaps automatically");
+        }
+    }
+
+    private void ensureAccountHistoryRolledBack(Point rollbackPoint) {
+        if (accountHistoryStore == null || !accountHistoryStore.isEnabled() || rollbackPoint == null) return;
+        long targetSlot = rollbackPoint.getSlot();
+        try {
+            accountHistoryStore.rollbackToSlot(targetSlot);
+            long latest = accountHistoryStore.getLatestAppliedSlot();
+            if (latest > targetSlot) {
+                log.warn("Account history rollback verification failed: latestAppliedSlot={} after rollback to {}",
+                        latest, targetSlot);
+            }
+        } catch (Throwable t) {
+            log.warn("Account history rollback verification failed for slot {}: {}", targetSlot, t.toString());
         }
     }
 

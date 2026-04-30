@@ -92,8 +92,12 @@ public class NonceEvolutionListener {
 
         // Log epoch transition with the new epoch nonce
         if (epochAfter > epochBefore) {
+            byte[] epochNonce = nonceState.getEpochNonce();
+            if (nonceStore != null) {
+                nonceStore.storeEpochNonce(epochAfter, epochNonce);
+            }
             log.info("Epoch nonce for epoch {}: {}",
-                    epochAfter, HexUtil.encodeHexString(nonceState.getEpochNonce()));
+                    epochAfter, epochNonce != null ? HexUtil.encodeHexString(epochNonce) : null);
         }
 
         // Serialize once, reuse for both checkpoint and persistence
@@ -119,6 +123,7 @@ public class NonceEvolutionListener {
             log.info("Nonce state rolled back to slot {}", targetSlot);
             if (nonceStore != null) {
                 nonceStore.storeEpochNonceState(nonceState.serialize());
+                nonceStore.pruneEpochNoncesAfter(nonceState.getCurrentEpoch());
             }
         } else {
             log.warn("No nonce checkpoint found for rollback to slot {}. "

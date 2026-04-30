@@ -549,8 +549,8 @@ public class GovernanceEpochProcessor {
         Map<GovActionType, GovActionId> lastEnactedActions = resolveLastEnactedActions();
         Map<GovActionType, BigDecimal> drepThresholds = resolveDRepThresholds(isBootstrapPhase, newEpoch);
         Map<GovActionType, BigDecimal> spoThresholds = resolveSPOThresholds(newEpoch);
-        int committeeMinSize = paramProvider.getCommitteeMinSize(newEpoch);
-        int committeeMaxTermLength = paramProvider.getCommitteeMaxTermLength(newEpoch);
+        int committeeMinSize = resolveCommitteeMinSize(newEpoch);
+        int committeeMaxTermLength = resolveCommitteeMaxTermLength(newEpoch);
 
         PoolStakeData poolData = PoolStakeData.EMPTY;
         if (poolStakeResolver != null) {
@@ -746,6 +746,20 @@ public class GovernanceEpochProcessor {
             return paramTracker.getProtocolMajor(epoch);
         }
         return paramProvider.getProtocolMajor(epoch);
+    }
+
+    int resolveCommitteeMinSize(int epoch) {
+        if (paramTracker != null && paramTracker.isEnabled()) {
+            return paramTracker.getCommitteeMinSize(epoch);
+        }
+        return paramProvider.getCommitteeMinSize(epoch);
+    }
+
+    int resolveCommitteeMaxTermLength(int epoch) {
+        if (paramTracker != null && paramTracker.isEnabled()) {
+            return paramTracker.getCommitteeMaxTermLength(epoch);
+        }
+        return paramProvider.getCommitteeMaxTermLength(epoch);
     }
 
     /**
