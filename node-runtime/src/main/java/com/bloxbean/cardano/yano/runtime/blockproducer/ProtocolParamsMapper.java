@@ -96,28 +96,53 @@ public class ProtocolParamsMapper {
         setString(root, pp::setCoinsPerUtxoWord, "coinsPerUtxoWord", "coins_per_utxo_word", "utxoCostPerWord");
 
         JsonNode poolVotingThresholds = node(root, "poolVotingThresholds", "pool_voting_thresholds");
-        if (poolVotingThresholds != null) {
-            setBigDecimal(poolVotingThresholds, pp::setPvtMotionNoConfidence, "motionNoConfidence", "motion_no_confidence");
-            setBigDecimal(poolVotingThresholds, pp::setPvtCommitteeNormal, "committeeNormal", "committee_normal");
-            setBigDecimal(poolVotingThresholds, pp::setPvtCommitteeNoConfidence, "committeeNoConfidence", "committee_no_confidence");
-            setBigDecimal(poolVotingThresholds, pp::setPvtHardForkInitiation, "hardForkInitiation", "hard_fork_initiation");
-            setBigDecimal(poolVotingThresholds, pp::setPvtPPSecurityGroup, "ppSecurityGroup", "pp_security_group",
-                    "securityRelevantParamVotingThreshold");
-        }
+        setBigDecimal(poolVotingThresholds, root, pp::setPvtMotionNoConfidence,
+                new String[]{"motionNoConfidence", "motion_no_confidence"},
+                "pvtMotionNoConfidence", "pvt_motion_no_confidence");
+        setBigDecimal(poolVotingThresholds, root, pp::setPvtCommitteeNormal,
+                new String[]{"committeeNormal", "committee_normal"},
+                "pvtCommitteeNormal", "pvt_committee_normal");
+        setBigDecimal(poolVotingThresholds, root, pp::setPvtCommitteeNoConfidence,
+                new String[]{"committeeNoConfidence", "committee_no_confidence"},
+                "pvtCommitteeNoConfidence", "pvt_committee_no_confidence");
+        setBigDecimal(poolVotingThresholds, root, pp::setPvtHardForkInitiation,
+                new String[]{"hardForkInitiation", "hard_fork_initiation"},
+                "pvtHardForkInitiation", "pvt_hard_fork_initiation");
+        setBigDecimal(poolVotingThresholds, root, pp::setPvtPPSecurityGroup,
+                new String[]{"ppSecurityGroup", "pp_security_group", "securityRelevantParamVotingThreshold"},
+                "pvtPPSecurityGroup", "pvt_p_p_security_group");
 
         JsonNode drepVotingThresholds = node(root, "dRepVotingThresholds", "drepVotingThresholds", "drep_voting_thresholds");
-        if (drepVotingThresholds != null) {
-            setBigDecimal(drepVotingThresholds, pp::setDvtMotionNoConfidence, "motionNoConfidence", "motion_no_confidence");
-            setBigDecimal(drepVotingThresholds, pp::setDvtCommitteeNormal, "committeeNormal", "committee_normal");
-            setBigDecimal(drepVotingThresholds, pp::setDvtCommitteeNoConfidence, "committeeNoConfidence", "committee_no_confidence");
-            setBigDecimal(drepVotingThresholds, pp::setDvtUpdateToConstitution, "updateToConstitution", "update_to_constitution");
-            setBigDecimal(drepVotingThresholds, pp::setDvtHardForkInitiation, "hardForkInitiation", "hard_fork_initiation");
-            setBigDecimal(drepVotingThresholds, pp::setDvtPPNetworkGroup, "ppNetworkGroup", "pp_network_group");
-            setBigDecimal(drepVotingThresholds, pp::setDvtPPEconomicGroup, "ppEconomicGroup", "pp_economic_group");
-            setBigDecimal(drepVotingThresholds, pp::setDvtPPTechnicalGroup, "ppTechnicalGroup", "pp_technical_group");
-            setBigDecimal(drepVotingThresholds, pp::setDvtPPGovGroup, "ppGovGroup", "pp_gov_group");
-            setBigDecimal(drepVotingThresholds, pp::setDvtTreasuryWithdrawal, "treasuryWithdrawal", "treasury_withdrawal");
-        }
+        setBigDecimal(drepVotingThresholds, root, pp::setDvtMotionNoConfidence,
+                new String[]{"motionNoConfidence", "motion_no_confidence"},
+                "dvtMotionNoConfidence", "dvt_motion_no_confidence");
+        setBigDecimal(drepVotingThresholds, root, pp::setDvtCommitteeNormal,
+                new String[]{"committeeNormal", "committee_normal"},
+                "dvtCommitteeNormal", "dvt_committee_normal");
+        setBigDecimal(drepVotingThresholds, root, pp::setDvtCommitteeNoConfidence,
+                new String[]{"committeeNoConfidence", "committee_no_confidence"},
+                "dvtCommitteeNoConfidence", "dvt_committee_no_confidence");
+        setBigDecimal(drepVotingThresholds, root, pp::setDvtUpdateToConstitution,
+                new String[]{"updateToConstitution", "update_to_constitution"},
+                "dvtUpdateToConstitution", "dvt_update_to_constitution");
+        setBigDecimal(drepVotingThresholds, root, pp::setDvtHardForkInitiation,
+                new String[]{"hardForkInitiation", "hard_fork_initiation"},
+                "dvtHardForkInitiation", "dvt_hard_fork_initiation");
+        setBigDecimal(drepVotingThresholds, root, pp::setDvtPPNetworkGroup,
+                new String[]{"ppNetworkGroup", "pp_network_group"},
+                "dvtPPNetworkGroup", "dvt_p_p_network_group");
+        setBigDecimal(drepVotingThresholds, root, pp::setDvtPPEconomicGroup,
+                new String[]{"ppEconomicGroup", "pp_economic_group"},
+                "dvtPPEconomicGroup", "dvt_p_p_economic_group");
+        setBigDecimal(drepVotingThresholds, root, pp::setDvtPPTechnicalGroup,
+                new String[]{"ppTechnicalGroup", "pp_technical_group"},
+                "dvtPPTechnicalGroup", "dvt_p_p_technical_group");
+        setBigDecimal(drepVotingThresholds, root, pp::setDvtPPGovGroup,
+                new String[]{"ppGovGroup", "pp_gov_group"},
+                "dvtPPGovGroup", "dvt_p_p_gov_group");
+        setBigDecimal(drepVotingThresholds, root, pp::setDvtTreasuryWithdrawal,
+                new String[]{"treasuryWithdrawal", "treasury_withdrawal"},
+                "dvtTreasuryWithdrawal", "dvt_treasury_withdrawal");
 
         setInt(root, pp::setCommitteeMinSize, "committeeMinSize", "committee_min_size");
         setInt(root, pp::setCommitteeMaxTermLength, "committeeMaxTermLength", "committee_max_term_length");
@@ -245,6 +270,13 @@ public class ProtocolParamsMapper {
 
     private static void setBigDecimal(JsonNode root, Consumer<BigDecimal> setter, String... names) {
         JsonNode value = node(root, names);
+        if (value != null) setter.accept(value.decimalValue());
+    }
+
+    private static void setBigDecimal(JsonNode nested, JsonNode root, Consumer<BigDecimal> setter,
+                                      String[] nestedNames, String... rootNames) {
+        JsonNode value = node(nested, nestedNames);
+        if (value == null) value = node(root, rootNames);
         if (value != null) setter.accept(value.decimalValue());
     }
 

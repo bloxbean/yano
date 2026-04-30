@@ -92,9 +92,11 @@ public class ScalusBasedTransactionEvaluator implements TransactionEvaluator {
     private long resolveCurrentSlot() {
         if (currentSlotSupplier == null) return 0;
         try {
-            return Math.max(0, currentSlotSupplier.getAsLong());
+            long slot = currentSlotSupplier.getAsLong();
+            if (slot >= 0) return slot;
+            throw new IllegalStateException("current slot supplier returned " + slot);
         } catch (Exception e) {
-            return 0;
+            throw new IllegalStateException("Failed to resolve current slot from runtime", e);
         }
     }
 }

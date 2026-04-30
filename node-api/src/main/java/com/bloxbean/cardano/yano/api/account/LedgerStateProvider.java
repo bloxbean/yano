@@ -102,6 +102,34 @@ public interface LedgerStateProvider {
      */
     default boolean hasCommitteeMemberResigned(int credType, String coldCredentialHash) { return false; }
 
+    /**
+     * Check whether a committee hot credential is currently authorized.
+     * Returns empty when the backing provider cannot answer this query efficiently.
+     */
+    default Optional<Boolean> isCommitteeHotCredentialAuthorized(int hotCredType, String hotCredentialHash) {
+        return Optional.empty();
+    }
+
+    default Optional<Boolean> isCommitteeHotCredentialAuthorized(int hotCredType, String hotCredentialHash,
+                                                                 long currentEpoch) {
+        return Optional.empty();
+    }
+
+    // --- Governance Proposal State ---
+
+    /**
+     * Get current or last-enacted governance action metadata for validation.
+     */
+    default Optional<GovernanceActionInfo> getGovernanceAction(String txHash, int govActionIndex) {
+        return Optional.empty();
+    }
+
+    default Optional<GovernanceActionInfo> getGovernanceAction(String txHash, int govActionIndex, long currentEpoch) {
+        return getGovernanceAction(txHash, govActionIndex);
+    }
+
+    record GovernanceActionInfo(String actionType, boolean active, boolean enacted) {}
+
     // --- MIR (Move Instantaneous Rewards) State ---
 
     /**

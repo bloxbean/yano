@@ -42,6 +42,10 @@ public class GovernanceBlockProcessor {
         this.paramProvider = paramProvider;
     }
 
+    public GovernanceStateStore getGovernanceStore() {
+        return governanceStore;
+    }
+
     /**
      * Process a block for governance-relevant data: proposals, votes, donations.
      * DRep certs and committee certs are handled separately via processDRep* and processCommittee* methods,

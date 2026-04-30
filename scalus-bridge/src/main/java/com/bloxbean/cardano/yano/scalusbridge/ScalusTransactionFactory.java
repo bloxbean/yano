@@ -8,6 +8,7 @@ import com.bloxbean.cardano.yano.ledgerrules.EpochProtocolParamsSupplier;
 import com.bloxbean.cardano.yano.ledgerrules.TransactionEvaluator;
 import com.bloxbean.cardano.yano.ledgerrules.TransactionValidator;
 
+import java.util.function.LongFunction;
 import java.util.function.LongSupplier;
 
 /**
@@ -32,8 +33,18 @@ public class ScalusTransactionFactory {
                                                        SlotConfig slotConfig, int networkId,
                                                        LedgerStateProvider ledgerStateProvider,
                                                        LongSupplier currentSlotSupplier) {
+        return createValidator(protocolParamsSupplier, scriptSupplier, slotConfig, networkId,
+                ledgerStateProvider, currentSlotSupplier, null);
+    }
+
+    public static TransactionValidator createValidator(EpochProtocolParamsSupplier protocolParamsSupplier,
+                                                       ScriptSupplier scriptSupplier,
+                                                       SlotConfig slotConfig, int networkId,
+                                                       LedgerStateProvider ledgerStateProvider,
+                                                       LongSupplier currentSlotSupplier,
+                                                       LongFunction<Integer> currentEpochResolver) {
         return new ScalusBasedTransactionValidator(protocolParamsSupplier, scriptSupplier, slotConfig, networkId,
-                ledgerStateProvider, currentSlotSupplier);
+                ledgerStateProvider, currentSlotSupplier, currentEpochResolver);
     }
 
     public static TransactionEvaluator createEvaluator(ProtocolParams pp, ScriptSupplier scriptSupplier,

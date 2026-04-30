@@ -34,4 +34,17 @@ public class YaciCommitteeSlice implements CommitteeSlice {
         return provider.hasCommitteeMemberResigned(0, coldCredentialHash)
                 || provider.hasCommitteeMemberResigned(1, coldCredentialHash);
     }
+
+    @Override
+    public Optional<Boolean> isHotCredentialAuthorized(String hotCredentialHash) {
+        Optional<Boolean> keyResult = provider.isCommitteeHotCredentialAuthorized(0, hotCredentialHash);
+        if (keyResult.orElse(false)) return keyResult;
+        return provider.isCommitteeHotCredentialAuthorized(1, hotCredentialHash);
+    }
+
+    @Override
+    public Optional<Boolean> isHotCredentialAuthorized(int hotCredType, String hotCredentialHash,
+                                                       long currentEpoch) {
+        return provider.isCommitteeHotCredentialAuthorized(hotCredType, hotCredentialHash, currentEpoch);
+    }
 }

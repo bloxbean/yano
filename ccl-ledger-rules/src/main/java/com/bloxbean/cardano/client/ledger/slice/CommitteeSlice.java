@@ -33,4 +33,23 @@ public interface CommitteeSlice {
      * @return true if resigned
      */
     boolean hasResigned(String coldCredentialHash);
+
+    /**
+     * Check if a hot credential is currently authorized for any committee member.
+     * Empty means the provider cannot answer this query, so validation should remain degraded.
+     *
+     * @param hotCredentialHash the hot credential hash (hex-encoded)
+     * @return optional authorization result
+     */
+    default Optional<Boolean> isHotCredentialAuthorized(String hotCredentialHash) {
+        return Optional.empty();
+    }
+
+    /**
+     * Check if a typed hot credential is currently authorized.
+     */
+    default Optional<Boolean> isHotCredentialAuthorized(int hotCredType, String hotCredentialHash,
+                                                       long currentEpoch) {
+        return Optional.empty();
+    }
 }

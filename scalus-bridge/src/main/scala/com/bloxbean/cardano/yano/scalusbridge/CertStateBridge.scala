@@ -5,6 +5,7 @@ import com.bloxbean.cardano.yano.api.account.LedgerStateProvider.DRepDelegation
 import scalus.cardano.ledger.{Transaction as ScalusTx, *}
 import scalus.uplc.builtin.ByteString
 
+import java.math.BigInteger
 import scala.collection.immutable.IndexedSeq
 import scala.collection.mutable
 
@@ -53,14 +54,19 @@ object CertStateBridge:
 
     for (credType, hash) <- creds do
       val scalusCred = toScalusCredential(credType, hash)
+      val registered = provider.isStakeCredentialRegistered(credType, hash)
 
       provider.getRewardBalance(credType, hash).ifPresent { reward =>
-        rewards = rewards.updated(scalusCred, Coin(reward.longValueExact()))
+        rewards = rewards.updated(scalusCred, coinFromBigInteger(reward,
+          s"reward balance for stake credential $credType:$hash"))
       }
 
-      provider.getStakeDeposit(credType, hash).ifPresent { deposit =>
-        deposits = deposits.updated(scalusCred, Coin(deposit.longValueExact()))
-      }
+      val stakeDepositOpt = provider.getStakeDeposit(credType, hash)
+      if stakeDepositOpt.isPresent then
+        deposits = deposits.updated(scalusCred, coinFromBigInteger(stakeDepositOpt.get,
+          s"stake deposit for stake credential $credType:$hash"))
+      else if registered then
+        throw new IllegalStateException(s"Missing stake deposit for registered stake credential $credType:$hash")
 
       provider.getDelegatedPool(credType, hash).ifPresent { poolHash =>
         stakePools = stakePools.updated(scalusCred, PoolKeyHash.fromHex(poolHash))
@@ -102,12 +108,15 @@ object CertStateBridge:
         poolStakePoolsRaw = poolStakePoolsRaw.updated(poolKeyBS,
           dummyReg.asInstanceOf[Certificate.PoolRegistration])
 
-        provider.getPoolDeposit(poolHash).ifPresent { dep =>
-          poolDepositsRaw = poolDepositsRaw.updated(poolKeyBS, Coin(dep.longValueExact()))
-        }
+        val poolDepositOpt = provider.getPoolDeposit(poolHash)
+        if poolDepositOpt.isEmpty then
+          throw new IllegalStateException(s"Missing pool deposit for registered pool $poolHash")
+        poolDepositsRaw = poolDepositsRaw.updated(poolKeyBS, coinFromBigInteger(poolDepositOpt.get,
+          s"pool deposit for pool $poolHash"))
 
         provider.getPoolRetirementEpoch(poolHash).ifPresent { epoch =>
-          poolRetiringRaw = poolRetiringRaw.updated(poolKeyBS, java.lang.Long.valueOf(epoch.longValue()))
+          poolRetiringRaw = poolRetiringRaw.updated(poolKeyBS,
+            java.lang.Long.valueOf(nonNegativeEpoch(epoch, s"pool retirement epoch for pool $poolHash")))
         }
 
     // Cast the maps to the opaque-typed versions expected by PoolsState
@@ -128,9 +137,11 @@ object CertStateBridge:
     for (credType, hash) <- drepCreds do
       if provider.isDRepRegistered(credType, hash) then
         val scalusCred = toScalusCredential(credType, hash)
-        val deposit = provider.getDRepDeposit(credType, hash)
-          .map(d => Coin(d.longValueExact()))
-          .orElse(Coin.zero)
+        val depositOpt = provider.getDRepDeposit(credType, hash)
+        if depositOpt.isEmpty then
+          throw new IllegalStateException(s"Missing DRep deposit for registered DRep $credType:$hash")
+        val deposit = coinFromBigInteger(depositOpt.get,
+          s"DRep deposit for registered DRep $credType:$hash")
         drepStates = drepStates.updated(scalusCred,
           DRepState(0L, None, deposit, scala.collection.immutable.Set.empty))
 
@@ -139,13 +150,28 @@ object CertStateBridge:
     val delegState = DelegationState(rewards, deposits, stakePools, dreps)
     val certState = CertState(votingState, poolsState, delegState)
 
-    val totalDeposited = try
-      val td = provider.getTotalDeposited()
-      if td != null then Coin(td.longValueExact()) else Coin.zero
-    catch
-      case _: ArithmeticException => Coin.zero
+    val totalDeposited = coinFromBigInteger(provider.getTotalDeposited(), "total deposited")
 
     (certState, totalDeposited)
+
+  private def coinFromBigInteger(value: BigInteger, field: String): Coin =
+    if value == null then
+      throw new IllegalStateException(s"$field is null")
+    if value.signum() < 0 then
+      throw new IllegalStateException(s"$field must be non-negative, got $value")
+    try
+      Coin(value.longValueExact())
+    catch
+      case e: ArithmeticException =>
+        throw new IllegalStateException(s"$field does not fit in a ledger coin: $value", e)
+
+  private def nonNegativeEpoch(value: java.lang.Long, field: String): Long =
+    if value == null then
+      throw new IllegalStateException(s"$field is null")
+    val epoch = value.longValue()
+    if epoch < 0 then
+      throw new IllegalStateException(s"$field must be non-negative, got $epoch")
+    epoch
 
   private def extractCredFromRewardAccount(ra: RewardAccount): Option[(Int, String)] =
     val payload = ra.address.payload
@@ -204,4 +230,4 @@ object CertStateBridge:
     case 1 => DRep.ScriptHash(ScriptHash.fromHex(d.hash()))
     case 2 => DRep.AlwaysAbstain
     case 3 => DRep.AlwaysNoConfidence
-    case _ => DRep.AlwaysAbstain // fallback
+    case other => throw new IllegalStateException(s"Unsupported DRep delegation type: $other")

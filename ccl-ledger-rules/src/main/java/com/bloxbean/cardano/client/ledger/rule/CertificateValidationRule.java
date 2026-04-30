@@ -361,7 +361,7 @@ public class CertificateValidationRule implements LedgerRule {
         // F-4: epoch in [currentEpoch+1, currentEpoch+eMax]
         long currentEpoch = context.getCurrentEpoch();
         ProtocolParams pp = context.getProtocolParams();
-        if (currentEpoch > 0 && pp != null && pp.getEMax() != null) {
+        if (currentEpoch >= 0 && pp != null && pp.getEMax() != null) {
             long retireEpoch = cert.getEpoch();
             long minEpoch = currentEpoch + 1;
             long maxEpoch = currentEpoch + pp.getEMax();

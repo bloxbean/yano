@@ -16,7 +16,9 @@ import lombok.Getter;
 public class LedgerContext {
     private ProtocolParams protocolParams;
     private long currentSlot;
-    private long currentEpoch; // 0 = unknown → skip epoch-dependent checks
+    @Builder.Default
+    private long currentEpoch = -1; // -1 = unknown; epoch 0 is valid on devnets
+    private String currentTransactionHash;
     private NetworkId networkId;
 
     // Cost models for scriptDataHash recomputation (needed for witness validation)

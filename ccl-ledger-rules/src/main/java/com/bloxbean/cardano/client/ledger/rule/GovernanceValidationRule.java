@@ -15,6 +15,7 @@ import com.bloxbean.cardano.client.transaction.spec.TransactionBody;
 import com.bloxbean.cardano.client.transaction.spec.Withdrawal;
 import com.bloxbean.cardano.client.transaction.spec.governance.*;
 import com.bloxbean.cardano.client.transaction.spec.governance.actions.*;
+import com.bloxbean.cardano.client.transaction.util.TransactionUtil;
 import com.bloxbean.cardano.client.util.HexUtil;
 
 import com.bloxbean.cardano.client.ledger.slice.AccountsSlice;
@@ -37,19 +38,21 @@ public class GovernanceValidationRule implements LedgerRule {
     public List<ValidationError> validate(LedgerContext context, Transaction transaction) {
         List<ValidationError> errors = new ArrayList<>();
         TransactionBody body = transaction.getBody();
+        ProposalsSlice baseProposalsSlice = context.getProposalsSlice();
+        ProposalsSlice votingProposalsSlice = withTransactionProposals(context, transaction);
 
         // G.A: Validate proposal procedures
         List<ProposalProcedure> proposals = body.getProposalProcedures();
         if (proposals != null && !proposals.isEmpty()) {
             for (int i = 0; i < proposals.size(); i++) {
-                validateProposal(context, proposals.get(i), i, errors);
+                validateProposal(context, baseProposalsSlice, proposals.get(i), i, errors);
             }
         }
 
         // G.B: Validate voting procedures
         VotingProcedures votingProcedures = body.getVotingProcedures();
         if (votingProcedures != null && votingProcedures.getVoting() != null) {
-            validateVoting(context, votingProcedures, errors);
+            validateVoting(context, votingProposalsSlice, votingProcedures, errors);
         }
 
         return errors;
@@ -57,7 +60,7 @@ public class GovernanceValidationRule implements LedgerRule {
 
     // ---- Proposal Validation ----
 
-    private void validateProposal(LedgerContext context, ProposalProcedure proposal,
+    private void validateProposal(LedgerContext context, ProposalsSlice proposalsSlice, ProposalProcedure proposal,
                                   int index, List<ValidationError> errors) {
         ProtocolParams pp = context.getProtocolParams();
 
@@ -95,11 +98,11 @@ public class GovernanceValidationRule implements LedgerRule {
         // Action-specific validation
         GovAction action = proposal.getGovAction();
         if (action != null) {
-            validateGovAction(context, action, index, errors);
+            validateGovAction(context, proposalsSlice, action, index, errors);
         }
     }
 
-    private void validateGovAction(LedgerContext context, GovAction action, int proposalIndex,
+    private void validateGovAction(LedgerContext context, ProposalsSlice proposals, GovAction action, int proposalIndex,
                                    List<ValidationError> errors) {
         // G-3 + G-4: TreasuryWithdrawalsAction
         if (action instanceof TreasuryWithdrawalsAction twa) {
@@ -114,12 +117,21 @@ public class GovernanceValidationRule implements LedgerRule {
         // G-6: prevGovActionId references exist
         GovActionId prevId = getPrevGovActionId(action);
         if (prevId != null) {
-            ProposalsSlice proposals = context.getProposalsSlice();
             if (proposals != null) {
                 if (!proposals.exists(prevId.getTransactionId(), prevId.getGovActionIndex())) {
                     errors.add(error("Proposal[" + proposalIndex + "]: prevGovActionId "
                             + prevId.getTransactionId() + "#" + prevId.getGovActionIndex()
                             + " does not exist"));
+                } else {
+                    String prevActionType = proposals.getActionType(prevId.getTransactionId(), prevId.getGovActionIndex());
+                    String expectedPurpose = purposeType(action);
+                    String actualPurpose = purposeType(prevActionType);
+                    if (expectedPurpose != null && !expectedPurpose.equals(actualPurpose)) {
+                        errors.add(error("Proposal[" + proposalIndex + "]: prevGovActionId "
+                                + prevId.getTransactionId() + "#" + prevId.getGovActionIndex()
+                                + " has action type " + prevActionType
+                                + " but expected same purpose " + expectedPurpose));
+                    }
                 }
             }
         }
@@ -193,7 +205,7 @@ public class GovernanceValidationRule implements LedgerRule {
                                          int proposalIndex, List<ValidationError> errors) {
         // G-5: new member expiration > currentEpoch
         long currentEpoch = context.getCurrentEpoch();
-        if (currentEpoch > 0 && uc.getNewMembersAndTerms() != null) {
+        if (currentEpoch >= 0 && uc.getNewMembersAndTerms() != null) {
             for (Map.Entry<Credential, Integer> entry : uc.getNewMembersAndTerms().entrySet()) {
                 int expiration = entry.getValue();
                 if (expiration <= currentEpoch) {
@@ -233,7 +245,7 @@ public class GovernanceValidationRule implements LedgerRule {
 
     // ---- Voting Validation ----
 
-    private void validateVoting(LedgerContext context, VotingProcedures votingProcedures,
+    private void validateVoting(LedgerContext context, ProposalsSlice proposals, VotingProcedures votingProcedures,
                                 List<ValidationError> errors) {
         Map<Voter, Map<GovActionId, VotingProcedure>> voting = votingProcedures.getVoting();
 
@@ -243,14 +255,14 @@ public class GovernanceValidationRule implements LedgerRule {
             // Validate voter eligibility
             validateVoterEligibility(context, voter, errors);
 
-            // G-7: vote targets (GovActionId) exist
-            ProposalsSlice proposals = context.getProposalsSlice();
+            // G-7: vote targets (GovActionId) must be active/votable
             if (proposals != null && entry.getValue() != null) {
                 for (GovActionId actionId : entry.getValue().keySet()) {
-                    if (!proposals.exists(actionId.getTransactionId(), actionId.getGovActionIndex())) {
+                    if (!proposals.isActive(actionId.getTransactionId(), actionId.getGovActionIndex(),
+                            context.getCurrentEpoch())) {
                         errors.add(error("Vote: target governance action "
                                 + actionId.getTransactionId() + "#" + actionId.getGovActionIndex()
-                                + " does not exist"));
+                                + " is not active"));
                     } else {
                         // DisallowedVoters: voter type must be permitted for this action type
                         validateVoterForActionType(voter, actionId, proposals, errors);
@@ -287,11 +299,77 @@ public class GovernanceValidationRule implements LedgerRule {
             // G-10: Committee hot voter IS authorized
             case CONSTITUTIONAL_COMMITTEE_HOT_KEY_HASH:
             case CONSTITUTIONAL_COMMITTEE_HOT_SCRIPT_HASH: {
-                // CommitteeSlice checks by cold credential, but voter uses hot credential.
-                // Reverse lookup not yet available — skip for now.
+                CommitteeSlice committee = context.getCommitteeSlice();
+                if (committee != null) {
+                    int hotCredType = voter.getType() == VoterType.CONSTITUTIONAL_COMMITTEE_HOT_KEY_HASH ? 0 : 1;
+                    Optional<Boolean> authorized = committee.isHotCredentialAuthorized(hotCredType, hash,
+                            context.getCurrentEpoch());
+                    if (authorized.isPresent() && !authorized.get()) {
+                        errors.add(error("Vote: committee hot voter " + hash + " is not authorized"));
+                    }
+                }
                 break;
             }
         }
+    }
+
+    private ProposalsSlice withTransactionProposals(LedgerContext context, Transaction transaction) {
+        ProposalsSlice base = context.getProposalsSlice();
+        if (transaction == null || transaction.getBody() == null
+                || transaction.getBody().getProposalProcedures() == null
+                || transaction.getBody().getProposalProcedures().isEmpty()) {
+            return base;
+        }
+
+        Map<String, String> local = new HashMap<>();
+        String txHash = context.getCurrentTransactionHash();
+        if (txHash == null || txHash.isBlank()) {
+            try {
+                txHash = TransactionUtil.getTxHash(transaction);
+            } catch (Exception e) {
+                return base;
+            }
+        }
+        if (txHash == null || txHash.isBlank()) {
+            return base;
+        }
+
+        List<ProposalProcedure> procedures = transaction.getBody().getProposalProcedures();
+        for (int i = 0; i < procedures.size(); i++) {
+            GovAction action = procedures.get(i).getGovAction();
+            if (action != null && action.getType() != null) {
+                local.put(key(txHash, i), action.getType().name());
+            }
+        }
+        if (local.isEmpty()) return base;
+
+        return new ProposalsSlice() {
+            @Override
+            public boolean exists(String txHash, int index) {
+                return local.containsKey(key(txHash, index)) || (base != null && base.exists(txHash, index));
+            }
+
+            @Override
+            public boolean isActive(String txHash, int index) {
+                return local.containsKey(key(txHash, index)) || (base != null && base.isActive(txHash, index));
+            }
+
+            @Override
+            public boolean isActive(String txHash, int index, long currentEpoch) {
+                return local.containsKey(key(txHash, index))
+                        || (base != null && base.isActive(txHash, index, currentEpoch));
+            }
+
+            @Override
+            public String getActionType(String txHash, int index) {
+                String localType = local.get(key(txHash, index));
+                return localType != null ? localType : (base != null ? base.getActionType(txHash, index) : null);
+            }
+        };
+    }
+
+    private String key(String txHash, int index) {
+        return txHash + "#" + index;
     }
 
     /**
@@ -348,6 +426,26 @@ public class GovernanceValidationRule implements LedgerRule {
     private String credHash(Credential cred) {
         if (cred == null || cred.getBytes() == null) return null;
         return HexUtil.encodeHexString(cred.getBytes());
+    }
+
+    private String purposeType(GovAction action) {
+        if (action instanceof TreasuryWithdrawalsAction || action instanceof InfoAction) return null;
+        if (action instanceof NoConfidence || action instanceof UpdateCommittee) return "UPDATE_COMMITTEE";
+        if (action instanceof ParameterChangeAction) return "PARAMETER_CHANGE_ACTION";
+        if (action instanceof HardForkInitiationAction) return "HARD_FORK_INITIATION_ACTION";
+        if (action instanceof NewConstitution) return "NEW_CONSTITUTION";
+        return null;
+    }
+
+    private String purposeType(String actionType) {
+        if (actionType == null) return null;
+        return switch (actionType.toUpperCase()) {
+            case "NO_CONFIDENCE", "NOCONFIDENCE", "UPDATE_COMMITTEE", "UPDATECOMMITTEE" -> "UPDATE_COMMITTEE";
+            case "PARAMETER_CHANGE", "PARAMETERCHANGE", "PARAMETER_CHANGE_ACTION" -> "PARAMETER_CHANGE_ACTION";
+            case "HARD_FORK_INITIATION", "HARDFORKINITIATION", "HARD_FORK_INITIATION_ACTION" -> "HARD_FORK_INITIATION_ACTION";
+            case "NEW_CONSTITUTION", "NEWCONSTITUTION" -> "NEW_CONSTITUTION";
+            default -> null;
+        };
     }
 
     private ValidationError error(String message) {

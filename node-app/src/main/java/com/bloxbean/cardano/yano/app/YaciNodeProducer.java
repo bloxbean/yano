@@ -525,6 +525,7 @@ public class YaciNodeProducer {
         int networkId;
         EffectiveProtocolParamsSupplier effectiveProtocolParamsSupplier;
         LongSupplier currentSlotSupplier;
+        EpochSlotCalc epochSlotCalc;
         try {
             genesis = GenesisConfig.load(
                     yaciConfig.getShelleyGenesisFile(),
@@ -537,13 +538,14 @@ public class YaciNodeProducer {
             }
 
             pp = ProtocolParamsMapper.fromNodeProtocolParam(genesis.getProtocolParameters());
+            epochSlotCalc = resolveEpochSlotCalc(yaciNode, yaciConfig, genesis);
             effectiveProtocolParamsSupplier = new EffectiveProtocolParamsSupplier(
                     yaciNode.getLedgerStateProvider(),
-                    resolveEpochSlotCalc(yaciNode, yaciConfig, genesis),
+                    epochSlotCalc,
                     pp);
             currentSlotSupplier = () -> {
                 var tip = yaciNode.getLocalTip();
-                return tip != null ? tip.getSlot() : 0L;
+                return tip != null ? tip.getSlot() : -1L;
             };
 
             long magic = yaciConfig.getProtocolMagic();
@@ -569,7 +571,8 @@ public class YaciNodeProducer {
             TransactionValidator evaluator =
                     ScalusTransactionFactory.createValidator(effectiveProtocolParamsSupplier,
                             new YaciScriptSupplier(yaciNode.getUtxoState()), slotConfig, networkId,
-                            yaciNode.getLedgerStateProvider(), currentSlotSupplier);
+                            yaciNode.getLedgerStateProvider(), currentSlotSupplier,
+                            epochSlotCalc::slotToEpoch);
             yaciNode.setTransactionEvaluator(evaluator);
             validatorInitialized = true;
             log.info("Transaction validator initialized (networkId={}, protocolParams=effective-ledger)", networkId);
@@ -587,11 +590,11 @@ public class YaciNodeProducer {
                         new YaciScriptSupplier(yaciNode.getUtxoState()), slotConfig, networkId, currentSlotSupplier);
             } else if ("julc".equalsIgnoreCase(scriptEvaluator)) {
                 transactionEvaluator = new JulcTxEvaluator(
-                        () -> effectiveProtocolParamsSupplier.getProtocolParams(currentSlotSupplier.getAsLong()),
+                        () -> effectiveProtocolParamsSupplier.getProtocolParams(resolveRuntimeCurrentSlot(currentSlotSupplier)),
                         new YaciScriptSupplier(yaciNode.getUtxoState()), slotConfig);
             } else {
                 transactionEvaluator = new AikenTxEvaluator(
-                        () -> effectiveProtocolParamsSupplier.getProtocolParams(currentSlotSupplier.getAsLong()),
+                        () -> effectiveProtocolParamsSupplier.getProtocolParams(resolveRuntimeCurrentSlot(currentSlotSupplier)),
                         new YaciScriptSupplier(yaciNode.getUtxoState()), slotConfig);
             }
             yaciNode.setScriptEvaluator(transactionEvaluator);
@@ -605,6 +608,20 @@ public class YaciNodeProducer {
         if (!validatorInitialized && !evaluatorInitialized) {
             log.error("Neither transaction validator nor script evaluator could be initialized. "
                     + "Plutus script transactions will not be validated!");
+        }
+    }
+
+    static long resolveRuntimeCurrentSlot(LongSupplier currentSlotSupplier) {
+        if (currentSlotSupplier == null) {
+            throw new IllegalStateException("Failed to resolve current slot from runtime");
+        }
+
+        try {
+            long slot = currentSlotSupplier.getAsLong();
+            if (slot >= 0) return slot;
+            throw new IllegalStateException("current slot supplier returned " + slot);
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to resolve current slot from runtime", e);
         }
     }
 

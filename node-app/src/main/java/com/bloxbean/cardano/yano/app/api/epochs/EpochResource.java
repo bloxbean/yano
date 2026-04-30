@@ -59,12 +59,16 @@ public class EpochResource {
         LedgerStateProvider ledgerStateProvider = ledgerStateProvider();
         if (ledgerStateProvider == null) return adaPotUnavailable();
 
-        return ledgerStateProvider.getLatestAdaPot(currentEpoch())
-                .map(AdaPotDto::from)
-                .map(dto -> Response.ok(dto).build())
-                .orElseGet(() -> Response.status(Response.Status.NOT_FOUND)
-                        .entity(Map.of("error", "No AdaPot data available"))
-                        .build());
+        try {
+            return ledgerStateProvider.getLatestAdaPot(currentEpoch())
+                    .map(AdaPotDto::from)
+                    .map(dto -> Response.ok(dto).build())
+                    .orElseGet(() -> Response.status(Response.Status.NOT_FOUND)
+                            .entity(Map.of("error", "No AdaPot data available"))
+                            .build());
+        } catch (IllegalStateException e) {
+            return ledgerStateReadUnavailable("AdaPot state read failed", e);
+        }
     }
 
     @GET
@@ -75,12 +79,16 @@ public class EpochResource {
         LedgerStateProvider ledgerStateProvider = ledgerStateProvider();
         if (ledgerStateProvider == null) return adaPotUnavailable();
 
-        return ledgerStateProvider.getAdaPot(number)
-                .map(AdaPotDto::from)
-                .map(dto -> Response.ok(dto).build())
-                .orElseGet(() -> Response.status(Response.Status.NOT_FOUND)
-                        .entity(Map.of("error", "No AdaPot data for epoch " + number))
-                        .build());
+        try {
+            return ledgerStateProvider.getAdaPot(number)
+                    .map(AdaPotDto::from)
+                    .map(dto -> Response.ok(dto).build())
+                    .orElseGet(() -> Response.status(Response.Status.NOT_FOUND)
+                            .entity(Map.of("error", "No AdaPot data for epoch " + number))
+                            .build());
+        } catch (IllegalStateException e) {
+            return ledgerStateReadUnavailable("AdaPot state read failed", e);
+        }
     }
 
     @GET
@@ -109,20 +117,24 @@ public class EpochResource {
         LedgerStateProvider ledgerStateProvider = ledgerStateProvider();
         if (ledgerStateProvider == null) return adaPotUnavailable();
 
-        List<AdaPotDto> adaPots = new ArrayList<>();
-        long offset = (long) (page - 1) * count;
-        if (offset > Integer.MAX_VALUE) return Response.ok(adaPots).build();
+        try {
+            List<AdaPotDto> adaPots = new ArrayList<>();
+            long offset = (long) (page - 1) * count;
+            if (offset > Integer.MAX_VALUE) return Response.ok(adaPots).build();
 
-        int firstEpoch = descending ? resolvedTo - (int) offset : from + (int) offset;
-        for (int i = 0; i < count; i++) {
-            int epoch = descending ? firstEpoch - i : firstEpoch + i;
-            if (epoch < from || epoch > resolvedTo) break;
-            ledgerStateProvider.getAdaPot(epoch)
-                    .map(AdaPotDto::from)
-                    .ifPresent(adaPots::add);
+            int firstEpoch = descending ? resolvedTo - (int) offset : from + (int) offset;
+            for (int i = 0; i < count; i++) {
+                int epoch = descending ? firstEpoch - i : firstEpoch + i;
+                if (epoch < from || epoch > resolvedTo) break;
+                ledgerStateProvider.getAdaPot(epoch)
+                        .map(AdaPotDto::from)
+                        .ifPresent(adaPots::add);
+            }
+
+            return Response.ok(adaPots).build();
+        } catch (IllegalStateException e) {
+            return ledgerStateReadUnavailable("AdaPot state read failed", e);
         }
-
-        return Response.ok(adaPots).build();
     }
 
     private Response protocolParamsResponse(int epoch) {
@@ -134,12 +146,16 @@ public class EpochResource {
                     .build();
         }
 
-        return ledgerStateProvider.getProtocolParameters(epoch)
-                .map(snapshot -> ProtocolParamsDto.from(snapshot, nodeAPI.getEpochNonce(epoch)))
-                .map(dto -> Response.ok(dto).build())
-                .orElseGet(() -> Response.status(Response.Status.NOT_FOUND)
-                        .entity(Map.of("error", "Protocol parameters not available for epoch " + epoch))
-                        .build());
+        try {
+            return ledgerStateProvider.getProtocolParameters(epoch)
+                    .map(snapshot -> ProtocolParamsDto.from(snapshot, nodeAPI.getEpochNonce(epoch)))
+                    .map(dto -> Response.ok(dto).build())
+                    .orElseGet(() -> Response.status(Response.Status.NOT_FOUND)
+                            .entity(Map.of("error", "Protocol parameters not available for epoch " + epoch))
+                            .build());
+        } catch (IllegalStateException e) {
+            return ledgerStateReadUnavailable("Protocol parameter state read failed", e);
+        }
     }
 
     private LedgerStateProvider ledgerStateProvider() {
@@ -153,6 +169,14 @@ public class EpochResource {
     private Response adaPotUnavailable() {
         return Response.status(Response.Status.SERVICE_UNAVAILABLE)
                 .entity(Map.of("error", "AdaPot tracking is not enabled"))
+                .build();
+    }
+
+    private Response ledgerStateReadUnavailable(String message, IllegalStateException e) {
+        log.warn("{}: {}", message, e.getMessage());
+        log.debug("{} details", message, e);
+        return Response.status(Response.Status.SERVICE_UNAVAILABLE)
+                .entity(Map.of("error", message))
                 .build();
     }
 

@@ -78,6 +78,48 @@ class ProtocolParamsMapperTest {
     }
 
     @Test
+    void nodeProtocolParamJsonMapsFlatConwayThresholdNames() throws Exception {
+        String json = """
+                {
+                  "protocolVersion": { "major": 10, "minor": 0 },
+                  "pvt_motion_no_confidence": 0.51,
+                  "pvt_committee_normal": 0.52,
+                  "pvt_committee_no_confidence": 0.53,
+                  "pvt_hard_fork_initiation": 0.54,
+                  "pvt_p_p_security_group": 0.55,
+                  "dvt_motion_no_confidence": 0.61,
+                  "dvt_committee_normal": 0.62,
+                  "dvt_committee_no_confidence": 0.63,
+                  "dvt_update_to_constitution": 0.64,
+                  "dvt_hard_fork_initiation": 0.65,
+                  "dvt_p_p_network_group": 0.66,
+                  "dvt_p_p_economic_group": 0.67,
+                  "dvt_p_p_technical_group": 0.68,
+                  "dvt_p_p_gov_group": 0.69,
+                  "dvt_treasury_withdrawal": 0.70
+                }
+                """;
+
+        ProtocolParams pp = ProtocolParamsMapper.fromNodeProtocolParam(json);
+
+        assertEquals(new BigDecimal("0.51"), pp.getPvtMotionNoConfidence());
+        assertEquals(new BigDecimal("0.52"), pp.getPvtCommitteeNormal());
+        assertEquals(new BigDecimal("0.53"), pp.getPvtCommitteeNoConfidence());
+        assertEquals(new BigDecimal("0.54"), pp.getPvtHardForkInitiation());
+        assertEquals(new BigDecimal("0.55"), pp.getPvtPPSecurityGroup());
+        assertEquals(new BigDecimal("0.61"), pp.getDvtMotionNoConfidence());
+        assertEquals(new BigDecimal("0.62"), pp.getDvtCommitteeNormal());
+        assertEquals(new BigDecimal("0.63"), pp.getDvtCommitteeNoConfidence());
+        assertEquals(new BigDecimal("0.64"), pp.getDvtUpdateToConstitution());
+        assertEquals(new BigDecimal("0.65"), pp.getDvtHardForkInitiation());
+        assertEquals(new BigDecimal("0.66"), pp.getDvtPPNetworkGroup());
+        assertEquals(new BigDecimal("0.67"), pp.getDvtPPEconomicGroup());
+        assertEquals(new BigDecimal("0.68"), pp.getDvtPPTechnicalGroup());
+        assertEquals(new BigDecimal("0.69"), pp.getDvtPPGovGroup());
+        assertEquals(new BigDecimal("0.7"), pp.getDvtTreasuryWithdrawal());
+    }
+
+    @Test
     void ledgerSnapshotMapsToCclProtocolParams() {
         ProtocolParams pp = ProtocolParamsMapper.fromSnapshot(snapshot(285, BigInteger.valueOf(5000)));
 

@@ -33,7 +33,11 @@ public class EffectiveProtocolParamsSupplier implements EpochProtocolParamsSuppl
 
     @Override
     public ProtocolParams getProtocolParams(long slot) {
-        int epoch = epochSlotCalc.slotToEpoch(Math.max(0, slot));
+        if (slot < 0) {
+            throw new IllegalStateException("Effective protocol parameters require a non-negative slot; got " + slot);
+        }
+
+        int epoch = epochSlotCalc.slotToEpoch(slot);
         CacheEntry current = cache;
         if (current != null && current.epoch == epoch) {
             return current.protocolParams;

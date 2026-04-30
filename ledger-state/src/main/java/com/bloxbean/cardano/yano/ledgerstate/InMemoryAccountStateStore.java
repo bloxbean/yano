@@ -190,6 +190,11 @@ public class InMemoryAccountStateStore implements AccountStateStore {
         return committeeResignations.containsKey(credKey(credType, coldCredentialHash));
     }
 
+    @Override
+    public Optional<Boolean> isCommitteeHotCredentialAuthorized(int hotCredType, String hotCredentialHash) {
+        return Optional.of(committeeHotKeys.containsValue(hotCredentialHash));
+    }
+
     // --- MIR State reads ---
 
     @Override

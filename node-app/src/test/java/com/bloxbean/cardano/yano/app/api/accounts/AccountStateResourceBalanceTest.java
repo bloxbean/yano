@@ -218,6 +218,18 @@ class AccountStateResourceBalanceTest {
     }
 
     @Test
+    void getAccountShouldReturn503WhenLedgerStateReadFails() {
+        AccountStateResource resource = resourceWith(
+                failingLedgerState(),
+                utxoState(true, true, BigInteger.ZERO));
+
+        Response response = resource.getAccount(STAKE_ADDRESS);
+
+        assertEquals(503, response.getStatus());
+        assertEquals("Ledger state read failed", ((Map<?, ?>) response.getEntity()).get("error"));
+    }
+
+    @Test
     void getAccountShouldReturn400ForInvalidStakeAddress() {
         AccountStateResource resource = resourceWith(
                 ledgerState(true, BigInteger.ZERO, BigInteger.ZERO, null, null),
@@ -360,6 +372,18 @@ class AccountStateResourceBalanceTest {
                     case "getPoolDelegation" -> Optional.ofNullable(poolDelegation);
                     case "getDRepDelegation" -> Optional.ofNullable(drepDelegation);
                     case "toString" -> "TestLedgerStateProvider";
+                    case "hashCode" -> System.identityHashCode(proxy);
+                    case "equals" -> proxy == args[0];
+                    default -> defaultValue(method.getReturnType());
+                });
+    }
+
+    private static LedgerStateProvider failingLedgerState() {
+        return (LedgerStateProvider) Proxy.newProxyInstance(LedgerStateProvider.class.getClassLoader(),
+                new Class<?>[]{LedgerStateProvider.class},
+                (proxy, method, args) -> switch (method.getName()) {
+                    case "getRewardBalance" -> throw new IllegalStateException("getRewardBalance failed");
+                    case "toString" -> "FailingLedgerStateProvider";
                     case "hashCode" -> System.identityHashCode(proxy);
                     case "equals" -> proxy == args[0];
                     default -> defaultValue(method.getReturnType());

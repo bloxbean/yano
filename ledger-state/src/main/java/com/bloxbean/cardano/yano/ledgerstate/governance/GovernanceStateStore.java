@@ -667,6 +667,14 @@ public class GovernanceStateStore {
         return getPendingIds(PREFIX_EXPIRED_IN_EPOCH);
     }
 
+    public boolean isPendingEnactment(GovActionId id) throws RocksDBException {
+        return db.get(cfState, pendingKey(PREFIX_RATIFIED_IN_EPOCH, id)) != null;
+    }
+
+    public boolean isPendingDrop(GovActionId id) throws RocksDBException {
+        return db.get(cfState, pendingKey(PREFIX_EXPIRED_IN_EPOCH, id)) != null;
+    }
+
     /**
      * Clear all pending enactments and drops (after processing them).
      */

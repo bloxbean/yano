@@ -72,6 +72,16 @@ class EpochResourceProtocolParamsTest {
         assertEquals(404, response.getStatus());
     }
 
+    @Test
+    void parametersShouldReturn503WhenLedgerStateReadFails() {
+        EpochResource resource = resourceWith(failingProvider());
+
+        Response response = resource.getParametersByEpoch(42);
+
+        assertEquals(503, response.getStatus());
+        assertEquals("Protocol parameter state read failed", ((Map<?, ?>) response.getEntity()).get("error"));
+    }
+
     private static EpochResource resourceWith(LedgerStateProvider ledgerStateProvider) {
         return resourceWith(ledgerStateProvider, null);
     }
@@ -109,6 +119,18 @@ class EpochResourceProtocolParamsTest {
                 (proxy, method, args) -> switch (method.getName()) {
                     case "getProtocolParameters" -> snapshot;
                     case "toString" -> "TestLedgerStateProvider";
+                    case "hashCode" -> System.identityHashCode(proxy);
+                    case "equals" -> proxy == args[0];
+                    default -> defaultValue(method.getReturnType());
+                });
+    }
+
+    private static LedgerStateProvider failingProvider() {
+        return (LedgerStateProvider) Proxy.newProxyInstance(LedgerStateProvider.class.getClassLoader(),
+                new Class<?>[]{LedgerStateProvider.class},
+                (proxy, method, args) -> switch (method.getName()) {
+                    case "getProtocolParameters" -> throw new IllegalStateException("getProtocolParameters failed");
+                    case "toString" -> "FailingLedgerStateProvider";
                     case "hashCode" -> System.identityHashCode(proxy);
                     case "equals" -> proxy == args[0];
                     default -> defaultValue(method.getReturnType());

@@ -97,10 +97,10 @@ public class EvaluationResource {
 
             return Response.ok(response).build();
         } catch (Exception e) {
-            log.warn("Script evaluation failed: {}", e);
+            log.warn("Script evaluation failed: {}", detailedFailureMessage(e), e);
 
             Map<String, Object> failure = new LinkedHashMap<>();
-            failure.put("message", e.getMessage());
+            failure.put("message", failureMessage(e));
 
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("EvaluationFailure", failure);
@@ -131,5 +131,40 @@ public class EvaluationResource {
         response.put("result", result);
 
         return Response.ok(response).build();
+    }
+
+    static String failureMessage(Throwable error) {
+        if (error == null) return "Script evaluation failed";
+
+        Throwable runtimeSlotFailure = findCause(error, "Failed to resolve current slot from runtime");
+        if (runtimeSlotFailure != null) {
+            return runtimeSlotFailure.getMessage();
+        }
+
+        String message = error.getMessage();
+        return message != null ? message : error.getClass().getSimpleName();
+    }
+
+    private static String detailedFailureMessage(Throwable error) {
+        if (error == null) return "Script evaluation failed";
+
+        String message = failureMessage(error);
+        Throwable cause = error.getCause();
+        if (cause == null || cause.getMessage() == null || cause.getMessage().isBlank()) {
+            return message;
+        }
+
+        return message + ": " + cause.getMessage();
+    }
+
+    private static Throwable findCause(Throwable error, String message) {
+        Throwable current = error;
+        while (current != null) {
+            if (message.equals(current.getMessage())) {
+                return current;
+            }
+            current = current.getCause();
+        }
+        return null;
     }
 }

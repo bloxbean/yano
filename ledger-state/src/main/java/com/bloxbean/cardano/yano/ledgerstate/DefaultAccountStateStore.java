@@ -9,6 +9,8 @@ import com.bloxbean.cardano.yaci.core.model.TransactionBody;
 import com.bloxbean.cardano.yaci.core.model.certs.*;
 import com.bloxbean.cardano.yaci.core.model.governance.Drep;
 import com.bloxbean.cardano.yaci.core.model.governance.DrepType;
+import com.bloxbean.cardano.yaci.core.model.governance.GovActionId;
+import com.bloxbean.cardano.yaci.core.model.governance.GovActionType;
 import com.bloxbean.cardano.yaci.core.types.UnitInterval;
 import com.bloxbean.cardano.yaci.core.storage.ChainState;
 import com.bloxbean.cardano.yaci.core.storage.ChainTip;
@@ -699,8 +701,7 @@ public class DefaultAccountStateStore implements AccountStateStore,
             if (val == null) return Optional.empty();
             return Optional.of(AccountStateCborCodec.decodeStakeAccount(val).reward());
         } catch (RocksDBException e) {
-            log.error("getRewardBalance failed: {}", e.toString());
-            return Optional.empty();
+            throw ledgerStateReadFailure("getRewardBalance", e);
         }
     }
 
@@ -711,8 +712,7 @@ public class DefaultAccountStateStore implements AccountStateStore,
             if (val == null) return Optional.empty();
             return Optional.of(AccountStateCborCodec.decodeStakeAccount(val).deposit());
         } catch (RocksDBException e) {
-            log.error("getStakeDeposit failed: {}", e.toString());
-            return Optional.empty();
+            throw ledgerStateReadFailure("getStakeDeposit", e);
         }
     }
 
@@ -731,8 +731,7 @@ public class DefaultAccountStateStore implements AccountStateStore,
             return Optional.of(new LedgerStateProvider.PoolDelegation(
                     rec.poolHash(), rec.slot(), rec.txIdx(), rec.certIdx()));
         } catch (RocksDBException e) {
-            log.error("getPoolDelegation failed: {}", e.toString());
-            return Optional.empty();
+            throw ledgerStateReadFailure("getPoolDelegation", e);
         }
     }
 
@@ -744,8 +743,7 @@ public class DefaultAccountStateStore implements AccountStateStore,
             var rec = AccountStateCborCodec.decodeDRepDelegation(val);
             return Optional.of(new DRepDelegation(rec.drepType(), rec.drepHash()));
         } catch (RocksDBException e) {
-            log.error("getDRepDelegation failed: {}", e.toString());
-            return Optional.empty();
+            throw ledgerStateReadFailure("getDRepDelegation", e);
         }
     }
 
@@ -755,8 +753,7 @@ public class DefaultAccountStateStore implements AccountStateStore,
             byte[] val = db.get(cfState, accountKey(credType, credentialHash));
             return val != null;
         } catch (RocksDBException e) {
-            log.error("isStakeCredentialRegistered failed: {}", e.toString());
-            return false;
+            throw ledgerStateReadFailure("isStakeCredentialRegistered", e);
         }
     }
 
@@ -768,8 +765,7 @@ public class DefaultAccountStateStore implements AccountStateStore,
             if (val == null || val.length < Long.BYTES) return Optional.empty();
             return Optional.of(ByteBuffer.wrap(val).order(ByteOrder.BIG_ENDIAN).getLong());
         } catch (RocksDBException e) {
-            log.error("getStakeRegistrationSlot failed: {}", e.toString());
-            return Optional.empty();
+            throw ledgerStateReadFailure("getStakeRegistrationSlot", e);
         }
     }
 
@@ -777,11 +773,13 @@ public class DefaultAccountStateStore implements AccountStateStore,
     public BigInteger getTotalDeposited() {
         try {
             byte[] val = db.get(cfState, META_TOTAL_DEPOSITED);
-            if (val == null || val.length < 8) return BigInteger.ZERO;
+            if (val == null) return BigInteger.ZERO;
+            if (val.length < 8) {
+                throw new IllegalStateException("Malformed total deposited metadata: expected at least 8 bytes, got " + val.length);
+            }
             return new BigInteger(1, val);
         } catch (RocksDBException e) {
-            log.error("getTotalDeposited failed: {}", e.toString());
-            return BigInteger.ZERO;
+            throw ledgerStateReadFailure("getTotalDeposited", e);
         }
     }
 
@@ -791,8 +789,7 @@ public class DefaultAccountStateStore implements AccountStateStore,
             byte[] val = db.get(cfState, poolDepositKey(poolHash));
             return val != null;
         } catch (RocksDBException e) {
-            log.error("isPoolRegistered failed: {}", e.toString());
-            return false;
+            throw ledgerStateReadFailure("isPoolRegistered", e);
         }
     }
 
@@ -803,8 +800,7 @@ public class DefaultAccountStateStore implements AccountStateStore,
             if (val == null) return Optional.empty();
             return Optional.of(AccountStateCborCodec.decodePoolDeposit(val));
         } catch (RocksDBException e) {
-            log.error("getPoolDeposit failed: {}", e.toString());
-            return Optional.empty();
+            throw ledgerStateReadFailure("getPoolDeposit", e);
         }
     }
 
@@ -817,8 +813,7 @@ public class DefaultAccountStateStore implements AccountStateStore,
             if (val == null) return Optional.empty();
             return Optional.of(AccountStateCborCodec.decodePoolRegistration(val));
         } catch (RocksDBException e) {
-            log.error("getPoolRegistrationData failed: {}", e.toString());
-            return Optional.empty();
+            throw ledgerStateReadFailure("getPoolRegistrationData", e);
         }
     }
 
@@ -876,8 +871,7 @@ public class DefaultAccountStateStore implements AccountStateStore,
             if (val == null) return Optional.empty();
             return Optional.of(AccountStateCborCodec.decodePoolRetirement(val));
         } catch (RocksDBException e) {
-            log.error("getPoolRetirementEpoch failed: {}", e.toString());
-            return Optional.empty();
+            throw ledgerStateReadFailure("getPoolRetirementEpoch", e);
         }
     }
 
@@ -889,8 +883,7 @@ public class DefaultAccountStateStore implements AccountStateStore,
             byte[] val = db.get(cfState, drepRegKey(credType, credentialHash));
             return val != null;
         } catch (RocksDBException e) {
-            log.error("isDRepRegistered failed: {}", e.toString());
-            return false;
+            throw ledgerStateReadFailure("isDRepRegistered", e);
         }
     }
 
@@ -901,9 +894,13 @@ public class DefaultAccountStateStore implements AccountStateStore,
             if (val == null) return Optional.empty();
             return Optional.of(AccountStateCborCodec.decodeDRepDeposit(val));
         } catch (RocksDBException e) {
-            log.error("getDRepDeposit failed: {}", e.toString());
-            return Optional.empty();
+            throw ledgerStateReadFailure("getDRepDeposit", e);
         }
+    }
+
+    private IllegalStateException ledgerStateReadFailure(String operation, RocksDBException e) {
+        log.error("{} failed", operation, e);
+        return new IllegalStateException(operation + " failed", e);
     }
 
     // --- Committee State reads ---
@@ -914,8 +911,7 @@ public class DefaultAccountStateStore implements AccountStateStore,
             byte[] val = db.get(cfState, committeeHotKey(credType, coldCredentialHash));
             return val != null;
         } catch (RocksDBException e) {
-            log.error("isCommitteeMember failed: {}", e.toString());
-            return false;
+            throw ledgerStateReadFailure("isCommitteeMember", e);
         }
     }
 
@@ -926,8 +922,7 @@ public class DefaultAccountStateStore implements AccountStateStore,
             if (val == null) return Optional.empty();
             return Optional.of(AccountStateCborCodec.decodeCommitteeHotKey(val).hotHash());
         } catch (RocksDBException e) {
-            log.error("getCommitteeHotCredential failed: {}", e.toString());
-            return Optional.empty();
+            throw ledgerStateReadFailure("getCommitteeHotCredential", e);
         }
     }
 
@@ -937,9 +932,81 @@ public class DefaultAccountStateStore implements AccountStateStore,
             byte[] val = db.get(cfState, committeeResignKey(credType, coldCredentialHash));
             return val != null;
         } catch (RocksDBException e) {
-            log.error("hasCommitteeMemberResigned failed: {}", e.toString());
-            return false;
+            throw ledgerStateReadFailure("hasCommitteeMemberResigned", e);
         }
+    }
+
+    @Override
+    public Optional<Boolean> isCommitteeHotCredentialAuthorized(int hotCredType, String hotCredentialHash) {
+        return isCommitteeHotCredentialAuthorized(hotCredType, hotCredentialHash, -1);
+    }
+
+    @Override
+    public Optional<Boolean> isCommitteeHotCredentialAuthorized(int hotCredType, String hotCredentialHash,
+                                                                long currentEpoch) {
+        var processor = governanceBlockProcessor;
+        if (processor == null) return Optional.empty();
+
+        try {
+            boolean matched = false;
+            for (var entry : processor.getGovernanceStore().getAllCommitteeMembers().entrySet()) {
+                var member = entry.getValue();
+                if (!member.hasHotKey()) continue;
+                if (member.resigned()) continue;
+                if (member.hotCredType() != hotCredType) continue;
+                if (!hotCredentialHash.equals(member.hotHash())) continue;
+                matched = true;
+
+                if (currentEpoch < 0) {
+                    // Without the validation epoch, avoid accepting placeholder/future committee state.
+                    continue;
+                }
+                if (member.expiryEpoch() > 0 && member.expiryEpoch() >= currentEpoch) {
+                    return Optional.of(true);
+                }
+            }
+            return matched && currentEpoch < 0 ? Optional.empty() : Optional.of(false);
+        } catch (Exception e) {
+            log.error("isCommitteeHotCredentialAuthorized failed", e);
+            throw new IllegalStateException("isCommitteeHotCredentialAuthorized failed", e);
+        }
+    }
+
+    @Override
+    public Optional<LedgerStateProvider.GovernanceActionInfo> getGovernanceAction(String txHash, int govActionIndex) {
+        return getGovernanceAction(txHash, govActionIndex, -1);
+    }
+
+    @Override
+    public Optional<LedgerStateProvider.GovernanceActionInfo> getGovernanceAction(String txHash, int govActionIndex,
+                                                                                  long currentEpoch) {
+        var processor = governanceBlockProcessor;
+        if (processor == null) return Optional.empty();
+
+        try {
+            var store = processor.getGovernanceStore();
+            var active = store.getProposal(txHash, govActionIndex);
+            if (active.isPresent()) {
+                GovActionId id = new GovActionId(txHash, govActionIndex);
+                boolean pendingResolution = store.isPendingEnactment(id) || store.isPendingDrop(id);
+                boolean notExpired = currentEpoch < 0 || currentEpoch <= active.get().expiresAfterEpoch();
+                return Optional.of(new LedgerStateProvider.GovernanceActionInfo(
+                        active.get().actionType().name(), !pendingResolution && notExpired, false));
+            }
+
+            for (GovActionType type : GovActionType.values()) {
+                var last = store.getLastEnactedAction(type);
+                if (last.isPresent()
+                        && txHash.equals(last.get().txHash())
+                        && govActionIndex == last.get().govActionIndex()) {
+                    return Optional.of(new LedgerStateProvider.GovernanceActionInfo(type.name(), false, true));
+                }
+            }
+        } catch (Exception e) {
+            log.error("getGovernanceAction failed for {}#{}", txHash, govActionIndex, e);
+            throw new IllegalStateException("getGovernanceAction failed for " + txHash + "#" + govActionIndex, e);
+        }
+        return Optional.empty();
     }
 
     // --- MIR State reads ---

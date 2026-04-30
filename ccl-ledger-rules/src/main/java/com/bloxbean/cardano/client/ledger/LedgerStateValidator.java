@@ -42,15 +42,24 @@ public class LedgerStateValidator implements TransactionValidator {
     private final ProposalsSlice proposalsSlice;
     private final List<LedgerRule> rules;
 
-    @Builder
     public LedgerStateValidator(ProtocolParams protocolParams, long currentSlot, long currentEpoch,
+                                NetworkId networkId, CostMdls costMdls,
+                                AccountsSlice accountsSlice, PoolsSlice poolsSlice,
+                                DRepsSlice drepsSlice, CommitteeSlice committeeSlice,
+                                ProposalsSlice proposalsSlice, List<LedgerRule> customRules) {
+        this(protocolParams, currentSlot, Long.valueOf(currentEpoch), networkId, costMdls, accountsSlice,
+                poolsSlice, drepsSlice, committeeSlice, proposalsSlice, customRules);
+    }
+
+    @Builder
+    public LedgerStateValidator(ProtocolParams protocolParams, long currentSlot, Long currentEpoch,
                                 NetworkId networkId, CostMdls costMdls,
                                 AccountsSlice accountsSlice, PoolsSlice poolsSlice,
                                 DRepsSlice drepsSlice, CommitteeSlice committeeSlice,
                                 ProposalsSlice proposalsSlice, List<LedgerRule> customRules) {
         this.protocolParams = protocolParams;
         this.currentSlot = currentSlot;
-        this.currentEpoch = currentEpoch;
+        this.currentEpoch = currentEpoch != null ? currentEpoch : -1;
         this.networkId = networkId;
         this.costMdls = costMdls;
         this.accountsSlice = accountsSlice;
@@ -59,6 +68,13 @@ public class LedgerStateValidator implements TransactionValidator {
         this.committeeSlice = committeeSlice;
         this.proposalsSlice = proposalsSlice;
         this.rules = customRules != null ? customRules : defaultRules();
+    }
+
+    public static class LedgerStateValidatorBuilder {
+        public LedgerStateValidatorBuilder currentEpoch(long currentEpoch) {
+            this.currentEpoch = currentEpoch;
+            return this;
+        }
     }
 
     @Override

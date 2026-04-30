@@ -20,6 +20,14 @@ dependencies {
         exclude group: 'com.bloxbean.cardano'
     }
     implementation libs.scalus.cardano.ledger
+
+    testImplementation libs.junit.jupiter.api
+    testRuntimeOnly libs.junit.jupiter.engine
+    testRuntimeOnly libs.junit.platform.launcher
+}
+
+test {
+    useJUnitPlatform()
 }
 
 // Java factory in src/main/java/ references Scala types from src/main/scala/.

@@ -57,6 +57,16 @@ class EpochResourceAdaPotTest {
     }
 
     @Test
+    void adaPotEndpointsShouldReturn503WhenLedgerStateReadFails() {
+        EpochResource resource = resourceWith(failingProvider());
+
+        Response response = resource.getAdaPot(10);
+
+        assertEquals(503, response.getStatus());
+        assertEquals("AdaPot state read failed", ((Map<?, ?>) response.getEntity()).get("error"));
+    }
+
+    @Test
     void latestAdaPotShouldReturnLatestAvailableAtCurrentEpoch() {
         EpochResource resource = resourceWith(provider(true, Map.of(
                 0, snapshot(0),
@@ -134,6 +144,19 @@ class EpochResourceAdaPotTest {
                     case "getAdaPot" -> Optional.ofNullable(ordered.get((Integer) args[0]));
                     case "getLatestAdaPot" -> latestAtOrBefore(ordered, (Integer) args[0]);
                     case "toString" -> "TestLedgerStateProvider";
+                    case "hashCode" -> System.identityHashCode(proxy);
+                    case "equals" -> proxy == args[0];
+                    default -> defaultValue(method.getReturnType());
+                });
+    }
+
+    private static LedgerStateProvider failingProvider() {
+        return (LedgerStateProvider) Proxy.newProxyInstance(LedgerStateProvider.class.getClassLoader(),
+                new Class<?>[]{LedgerStateProvider.class},
+                (proxy, method, args) -> switch (method.getName()) {
+                    case "isAdaPotTrackingEnabled" -> true;
+                    case "getAdaPot" -> throw new IllegalStateException("getAdaPot failed");
+                    case "toString" -> "FailingLedgerStateProvider";
                     case "hashCode" -> System.identityHashCode(proxy);
                     case "equals" -> proxy == args[0];
                     default -> defaultValue(method.getReturnType());

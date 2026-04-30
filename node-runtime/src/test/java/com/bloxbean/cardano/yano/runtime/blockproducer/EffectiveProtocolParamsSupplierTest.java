@@ -11,6 +11,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertSame;
 
 class EffectiveProtocolParamsSupplierTest {
@@ -57,6 +58,19 @@ class EffectiveProtocolParamsSupplierTest {
         assertEquals("5010", supplier.getProtocolParams(1001).getMaxValSize());
         assertEquals("5010", supplier.getProtocolParams(1002).getMaxValSize());
         assertEquals(2, calls.get());
+    }
+
+    @Test
+    void negativeSlotIsRejectedInsteadOfMappingToEpochZero() {
+        EffectiveProtocolParamsSupplier supplier = new EffectiveProtocolParamsSupplier(
+                null,
+                new EpochSlotCalc(100, 10, 0),
+                fallback("7777"));
+
+        IllegalStateException error = assertThrows(IllegalStateException.class,
+                () -> supplier.getProtocolParams(-1));
+
+        assertEquals("Effective protocol parameters require a non-negative slot; got -1", error.getMessage());
     }
 
     private static ProtocolParams fallback(String maxValSize) {

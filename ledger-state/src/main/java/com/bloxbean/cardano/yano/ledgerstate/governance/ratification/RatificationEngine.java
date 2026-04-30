@@ -522,7 +522,7 @@ public class RatificationEngine {
         // Post-bootstrap: check min committee size
         if (!isBootstrapPhase) {
             long activeCount = members.values().stream()
-                    .filter(m -> !m.resigned() && m.expiryEpoch() > currentEpoch)
+                    .filter(m -> !m.resigned() && m.expiryEpoch() >= currentEpoch)
                     .count();
             if (activeCount < committeeMinSize) return false;
         }
@@ -838,7 +838,7 @@ public class RatificationEngine {
 
     private static long activeCommitteeCount(Map<CredentialKey, CommitteeMemberRecord> members, int currentEpoch) {
         return members.values().stream()
-                .filter(m -> !m.resigned() && m.expiryEpoch() > currentEpoch)
+                .filter(m -> !m.resigned() && m.expiryEpoch() >= currentEpoch)
                 .count();
     }
 

@@ -14,6 +14,8 @@ import jakarta.inject.Inject;
 import jakarta.ws.rs.*;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.math.BigInteger;
 import java.util.Arrays;
@@ -24,6 +26,8 @@ import java.util.Optional;
 @Path("accounts")
 @Produces(MediaType.APPLICATION_JSON)
 public class AccountStateResource {
+
+    private static final Logger log = LoggerFactory.getLogger(AccountStateResource.class);
 
     @Inject
     NodeAPI nodeAPI;
@@ -47,6 +51,12 @@ public class AccountStateResource {
         return Response.status(Response.Status.SERVICE_UNAVAILABLE)
                 .entity(Map.of("error", message))
                 .build();
+    }
+
+    private Response readUnavailable(String message, IllegalStateException e) {
+        log.warn("{}: {}", message, e.getMessage());
+        log.debug("{} details", message, e);
+        return featureUnavailable(message);
     }
 
     private Response badRequest(String message) {
@@ -92,8 +102,13 @@ public class AccountStateResource {
             return badRequest("Invalid stake address");
         }
 
-        AccountLoadResult result = loadAccount(credential);
-        if (result.error() != null) return result.error();
+        AccountLoadResult result;
+        try {
+            result = loadAccount(credential);
+            if (result.error() != null) return result.error();
+        } catch (IllegalStateException e) {
+            return readUnavailable("Ledger state read failed", e);
+        }
 
         AccountState state = result.state();
         LedgerStateProvider.DRepDelegation drep = state.drepDelegation();
@@ -133,12 +148,16 @@ public class AccountStateResource {
 
         page = clampPage(page);
         count = clampCount(count);
-        List<WithdrawalHistoryDto> body = history.getWithdrawals(credential.credType(), credential.credHash(), page, count, resolvedOrder)
-                .stream()
-                .map(r -> new WithdrawalHistoryDto(
-                        r.txHash(), r.amount().toString(), r.slot(), r.blockNo(), r.txIdx()))
-                .toList();
-        return Response.ok(body).build();
+        try {
+            List<WithdrawalHistoryDto> body = history.getWithdrawals(credential.credType(), credential.credHash(), page, count, resolvedOrder)
+                    .stream()
+                    .map(r -> new WithdrawalHistoryDto(
+                            r.txHash(), r.amount().toString(), r.slot(), r.blockNo(), r.txIdx()))
+                    .toList();
+            return Response.ok(body).build();
+        } catch (IllegalStateException e) {
+            return readUnavailable("Account history read failed", e);
+        }
     }
 
     @GET
@@ -157,13 +176,17 @@ public class AccountStateResource {
 
         page = clampPage(page);
         count = clampCount(count);
-        List<DelegationHistoryDto> body = history.getDelegations(credential.credType(), credential.credHash(), page, count, resolvedOrder)
-                .stream()
-                .map(r -> new DelegationHistoryDto(
-                        r.activeEpoch(), r.txHash(), null, CardanoBech32Ids.poolId(r.poolHash()), r.poolHash(),
-                        r.slot(), r.blockNo(), r.txIdx(), r.certIdx()))
-                .toList();
-        return Response.ok(body).build();
+        try {
+            List<DelegationHistoryDto> body = history.getDelegations(credential.credType(), credential.credHash(), page, count, resolvedOrder)
+                    .stream()
+                    .map(r -> new DelegationHistoryDto(
+                            r.activeEpoch(), r.txHash(), null, CardanoBech32Ids.poolId(r.poolHash()), r.poolHash(),
+                            r.slot(), r.blockNo(), r.txIdx(), r.certIdx()))
+                    .toList();
+            return Response.ok(body).build();
+        } catch (IllegalStateException e) {
+            return readUnavailable("Account history read failed", e);
+        }
     }
 
     @GET
@@ -182,13 +205,17 @@ public class AccountStateResource {
 
         page = clampPage(page);
         count = clampCount(count);
-        List<RegistrationHistoryDto> body = history.getRegistrations(credential.credType(), credential.credHash(), page, count, resolvedOrder)
-                .stream()
-                .map(r -> new RegistrationHistoryDto(
-                        r.txHash(), r.action(), r.deposit().toString(),
-                        r.slot(), r.blockNo(), r.txIdx(), r.certIdx()))
-                .toList();
-        return Response.ok(body).build();
+        try {
+            List<RegistrationHistoryDto> body = history.getRegistrations(credential.credType(), credential.credHash(), page, count, resolvedOrder)
+                    .stream()
+                    .map(r -> new RegistrationHistoryDto(
+                            r.txHash(), r.action(), r.deposit().toString(),
+                            r.slot(), r.blockNo(), r.txIdx(), r.certIdx()))
+                    .toList();
+            return Response.ok(body).build();
+        } catch (IllegalStateException e) {
+            return readUnavailable("Account history read failed", e);
+        }
     }
 
     @GET
@@ -207,13 +234,17 @@ public class AccountStateResource {
 
         page = clampPage(page);
         count = clampCount(count);
-        List<MirHistoryDto> body = history.getMirs(credential.credType(), credential.credHash(), page, count, resolvedOrder)
-                .stream()
-                .map(r -> new MirHistoryDto(
-                        r.txHash(), r.pot(), r.amount().toString(), r.earnedEpoch(),
-                        r.slot(), r.blockNo(), r.txIdx(), r.certIdx()))
-                .toList();
-        return Response.ok(body).build();
+        try {
+            List<MirHistoryDto> body = history.getMirs(credential.credType(), credential.credHash(), page, count, resolvedOrder)
+                    .stream()
+                    .map(r -> new MirHistoryDto(
+                            r.txHash(), r.pot(), r.amount().toString(), r.earnedEpoch(),
+                            r.slot(), r.blockNo(), r.txIdx(), r.certIdx()))
+                    .toList();
+            return Response.ok(body).build();
+        } catch (IllegalStateException e) {
+            return readUnavailable("Account history read failed", e);
+        }
     }
 
     private AccountLoadResult loadAccount(StakeCredentialRef credential) {
@@ -290,13 +321,17 @@ public class AccountStateResource {
         count = clampCount(count);
         long protocolMagic = protocolMagic();
 
-        List<StakeRegistrationDto> body = s.listStakeRegistrations(page, count).stream()
-                .map(e -> new StakeRegistrationDto(
-                        CardanoBech32Ids.stakeAddress(e.credType(), e.credentialHash(), protocolMagic),
-                        e.credentialHash(), credTypeLabel(e.credType()),
-                        e.reward().toString(), e.deposit().toString()))
-                .toList();
-        return Response.ok(body).build();
+        try {
+            List<StakeRegistrationDto> body = s.listStakeRegistrations(page, count).stream()
+                    .map(e -> new StakeRegistrationDto(
+                            CardanoBech32Ids.stakeAddress(e.credType(), e.credentialHash(), protocolMagic),
+                            e.credentialHash(), credTypeLabel(e.credType()),
+                            e.reward().toString(), e.deposit().toString()))
+                    .toList();
+            return Response.ok(body).build();
+        } catch (IllegalStateException e) {
+            return readUnavailable("Account state read failed", e);
+        }
     }
 
     private static StakeCredentialRef parseStakeCredential(String value) {
@@ -398,14 +433,18 @@ public class AccountStateResource {
         count = clampCount(count);
         long protocolMagic = protocolMagic();
 
-        List<PoolDelegationDto> body = s.listPoolDelegations(page, count).stream()
-                .map(e -> new PoolDelegationDto(
-                        CardanoBech32Ids.stakeAddress(e.credType(), e.credentialHash(), protocolMagic),
-                        e.credentialHash(), credTypeLabel(e.credType()),
-                        CardanoBech32Ids.poolId(e.poolHash()), e.poolHash(),
-                        e.slot(), e.txIdx(), e.certIdx()))
-                .toList();
-        return Response.ok(body).build();
+        try {
+            List<PoolDelegationDto> body = s.listPoolDelegations(page, count).stream()
+                    .map(e -> new PoolDelegationDto(
+                            CardanoBech32Ids.stakeAddress(e.credType(), e.credentialHash(), protocolMagic),
+                            e.credentialHash(), credTypeLabel(e.credType()),
+                            CardanoBech32Ids.poolId(e.poolHash()), e.poolHash(),
+                            e.slot(), e.txIdx(), e.certIdx()))
+                    .toList();
+            return Response.ok(body).build();
+        } catch (IllegalStateException e) {
+            return readUnavailable("Account state read failed", e);
+        }
     }
 
     @GET
@@ -418,15 +457,19 @@ public class AccountStateResource {
         count = clampCount(count);
         long protocolMagic = protocolMagic();
 
-        List<DRepDelegationDto> body = s.listDRepDelegations(page, count).stream()
-                .map(e -> new DRepDelegationDto(
-                        CardanoBech32Ids.stakeAddress(e.credType(), e.credentialHash(), protocolMagic),
-                        e.credentialHash(), credTypeLabel(e.credType()),
-                        CardanoBech32Ids.drepId(e.drepType(), e.drepHash()),
-                        drepTypeLabel(e.drepType()), e.drepHash(),
-                        e.slot(), e.txIdx(), e.certIdx()))
-                .toList();
-        return Response.ok(body).build();
+        try {
+            List<DRepDelegationDto> body = s.listDRepDelegations(page, count).stream()
+                    .map(e -> new DRepDelegationDto(
+                            CardanoBech32Ids.stakeAddress(e.credType(), e.credentialHash(), protocolMagic),
+                            e.credentialHash(), credTypeLabel(e.credType()),
+                            CardanoBech32Ids.drepId(e.drepType(), e.drepHash()),
+                            drepTypeLabel(e.drepType()), e.drepHash(),
+                            e.slot(), e.txIdx(), e.certIdx()))
+                    .toList();
+            return Response.ok(body).build();
+        } catch (IllegalStateException e) {
+            return readUnavailable("Account state read failed", e);
+        }
     }
 
     @GET
@@ -438,10 +481,14 @@ public class AccountStateResource {
         page = clampPage(page);
         count = clampCount(count);
 
-        List<PoolDto> body = s.listPools(page, count).stream()
-                .map(e -> new PoolDto(CardanoBech32Ids.poolId(e.poolHash()), e.poolHash(), e.deposit().toString()))
-                .toList();
-        return Response.ok(body).build();
+        try {
+            List<PoolDto> body = s.listPools(page, count).stream()
+                    .map(e -> new PoolDto(CardanoBech32Ids.poolId(e.poolHash()), e.poolHash(), e.deposit().toString()))
+                    .toList();
+            return Response.ok(body).build();
+        } catch (IllegalStateException e) {
+            return readUnavailable("Account state read failed", e);
+        }
     }
 
     @GET
@@ -453,9 +500,13 @@ public class AccountStateResource {
         page = clampPage(page);
         count = clampCount(count);
 
-        List<PoolRetirementDto> body = s.listPoolRetirements(page, count).stream()
-                .map(e -> new PoolRetirementDto(CardanoBech32Ids.poolId(e.poolHash()), e.poolHash(), e.retirementEpoch()))
-                .toList();
-        return Response.ok(body).build();
+        try {
+            List<PoolRetirementDto> body = s.listPoolRetirements(page, count).stream()
+                    .map(e -> new PoolRetirementDto(CardanoBech32Ids.poolId(e.poolHash()), e.poolHash(), e.retirementEpoch()))
+                    .toList();
+            return Response.ok(body).build();
+        } catch (IllegalStateException e) {
+            return readUnavailable("Account state read failed", e);
+        }
     }
 }

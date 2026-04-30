@@ -816,7 +816,7 @@ public class GovernanceEpochProcessor {
         if (members.isEmpty()) return "NO_CONFIDENCE";
         // Check if any non-expired, non-resigned members exist
         boolean hasActive = members.values().stream()
-                .anyMatch(m -> !m.resigned() && m.expiryEpoch() > epoch);
+                .anyMatch(m -> !m.resigned() && m.expiryEpoch() >= epoch);
         return hasActive ? "NORMAL" : "NO_CONFIDENCE";
     }
 
