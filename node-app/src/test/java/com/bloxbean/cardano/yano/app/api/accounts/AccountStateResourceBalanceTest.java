@@ -5,6 +5,7 @@ import com.bloxbean.cardano.client.address.AddressProvider;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.NodeAPI;
 import com.bloxbean.cardano.yano.api.account.AccountHistoryProvider;
+import com.bloxbean.cardano.yano.api.account.AccountStateReadStore;
 import com.bloxbean.cardano.yano.api.account.AccountStateStore;
 import com.bloxbean.cardano.yano.api.account.LedgerStateProvider;
 import com.bloxbean.cardano.yano.api.config.NodeConfig;
@@ -178,6 +179,36 @@ class AccountStateResourceBalanceTest {
                 historyProvider(true, true, true));
 
         assertEquals(400, resource.getWithdrawals(STAKE_ADDRESS, 1, 20, "latest").getStatus());
+    }
+
+    @Test
+    void accountStakeEndpointsShouldReturnSnapshotAmount() {
+        String poolHash = "11".repeat(28);
+        AccountStateResource resource = resourceWith(
+                ledgerStateWithStakeSnapshot(42, new AccountStateReadStore.EpochStake(
+                        42, 0, "22".repeat(28), poolHash, BigInteger.valueOf(1234))),
+                null);
+
+        Response currentResponse = resource.getCurrentStake(STAKE_ADDRESS);
+        assertEquals(200, currentResponse.getStatus());
+        AccountStakeDto currentDto = (AccountStakeDto) currentResponse.getEntity();
+        assertEquals(42, currentDto.epoch());
+        assertEquals("1234", currentDto.amount());
+        assertTrue(currentDto.poolId().startsWith("pool1"));
+
+        Response epochResponse = resource.getStakeByEpoch(STAKE_ADDRESS, 42);
+        assertEquals(200, epochResponse.getStatus());
+        AccountStakeDto epochDto = (AccountStakeDto) epochResponse.getEntity();
+        assertEquals("1234", epochDto.amount());
+    }
+
+    @Test
+    void accountStakeEndpointShouldReturn404WhenSnapshotMissing() {
+        AccountStateResource resource = resourceWith(ledgerStateWithStakeSnapshot(42, null), null);
+
+        Response response = resource.getStakeByEpoch(STAKE_ADDRESS, 42);
+
+        assertEquals(404, response.getStatus());
     }
 
     @Test
@@ -384,6 +415,20 @@ class AccountStateResourceBalanceTest {
                 (proxy, method, args) -> switch (method.getName()) {
                     case "getRewardBalance" -> throw new IllegalStateException("getRewardBalance failed");
                     case "toString" -> "FailingLedgerStateProvider";
+                    case "hashCode" -> System.identityHashCode(proxy);
+                    case "equals" -> proxy == args[0];
+                    default -> defaultValue(method.getReturnType());
+                });
+    }
+
+    private static LedgerStateProvider ledgerStateWithStakeSnapshot(int latestSnapshotEpoch,
+                                                                    AccountStateReadStore.EpochStake stake) {
+        return (LedgerStateProvider) Proxy.newProxyInstance(LedgerStateProvider.class.getClassLoader(),
+                new Class<?>[]{LedgerStateProvider.class, AccountStateReadStore.class},
+                (proxy, method, args) -> switch (method.getName()) {
+                    case "getLatestSnapshotEpoch" -> latestSnapshotEpoch;
+                    case "getEpochStake" -> Optional.ofNullable(stake);
+                    case "toString" -> "TestStakeSnapshotProvider";
                     case "hashCode" -> System.identityHashCode(proxy);
                     case "equals" -> proxy == args[0];
                     default -> defaultValue(method.getReturnType());

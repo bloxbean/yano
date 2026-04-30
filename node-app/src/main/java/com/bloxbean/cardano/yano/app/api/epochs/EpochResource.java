@@ -3,11 +3,16 @@ package com.bloxbean.cardano.yano.app.api.epochs;
 import com.bloxbean.cardano.yaci.core.storage.ChainState;
 import com.bloxbean.cardano.yaci.core.storage.ChainTip;
 import com.bloxbean.cardano.yano.api.NodeAPI;
+import com.bloxbean.cardano.yano.api.account.AccountStateReadStore;
 import com.bloxbean.cardano.yano.api.account.LedgerStateProvider;
+import com.bloxbean.cardano.yano.api.util.CardanoBech32Ids;
 import com.bloxbean.cardano.yano.app.api.EpochUtil;
 import com.bloxbean.cardano.yano.app.api.epochs.dto.AdaPotDto;
 import com.bloxbean.cardano.yano.app.api.epochs.dto.EpochDto;
 import com.bloxbean.cardano.yano.app.api.epochs.dto.ProtocolParamsDto;
+import com.bloxbean.cardano.yano.app.api.epochs.dto.StakeDtos.PoolStakeDelegatorDto;
+import com.bloxbean.cardano.yano.app.api.epochs.dto.StakeDtos.PoolStakeDto;
+import com.bloxbean.cardano.yano.app.api.epochs.dto.StakeDtos.TotalStakeDto;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.GET;
 import jakarta.ws.rs.DefaultValue;
@@ -137,6 +142,98 @@ public class EpochResource {
         }
     }
 
+    @GET
+    @Path("/latest/stake/total")
+    public Response getLatestTotalStake() {
+        LedgerStateProvider ledgerStateProvider = nodeAPI.getLedgerStateProvider();
+        if (ledgerStateProvider == null) return stakeReadUnavailable();
+
+        int epoch = ledgerStateProvider.getLatestSnapshotEpoch();
+        if (epoch < 0) {
+            return Response.status(Response.Status.NOT_FOUND)
+                    .entity(Map.of("error", "No active stake snapshot available"))
+                    .build();
+        }
+        return getTotalStake(epoch);
+    }
+
+    @GET
+    @Path("/{number}/stake/total")
+    public Response getTotalStake(@PathParam("number") int number) {
+        if (number < 0) return badRequest("epoch must be greater than or equal to 0");
+
+        AccountStateReadStore readStore = accountStateReadStore();
+        if (readStore == null) return stakeReadUnavailable();
+
+        try {
+            return readStore.getTotalActiveStake(number)
+                    .map(amount -> Response.ok(new TotalStakeDto(number, amount.toString())).build())
+                    .orElseGet(() -> Response.status(Response.Status.NOT_FOUND)
+                            .entity(Map.of("error", "No active stake snapshot for epoch " + number))
+                            .build());
+        } catch (IllegalStateException e) {
+            return ledgerStateReadUnavailable("Active stake state read failed", e);
+        }
+    }
+
+    @GET
+    @Path("/{number}/stakes/{poolId}")
+    public Response getPoolStakeDelegators(@PathParam("number") int number,
+                                           @PathParam("poolId") String poolId,
+                                           @QueryParam("page") @DefaultValue("1") int page,
+                                           @QueryParam("count") @DefaultValue("100") int count,
+                                           @QueryParam("order") @DefaultValue("asc") String order) {
+        if (number < 0) return badRequest("epoch must be greater than or equal to 0");
+        String poolHash = CardanoBech32Ids.poolHash(poolId);
+        if (poolHash == null) return badRequest("Invalid pool id");
+        PageRequest pageRequest = pageRequest(page, count, order);
+        if (pageRequest.error() != null) return badRequest(pageRequest.error());
+
+        AccountStateReadStore readStore = accountStateReadStore();
+        if (readStore == null) return stakeReadUnavailable();
+
+        try {
+            long protocolMagic = protocolMagic();
+            List<PoolStakeDelegatorDto> delegators = readStore
+                    .listPoolStakeDelegators(number, poolHash, pageRequest.page(), pageRequest.count(), order)
+                    .stream()
+                    .map(d -> new PoolStakeDelegatorDto(
+                            CardanoBech32Ids.stakeAddress(d.credType(), d.credentialHash(), protocolMagic),
+                            CardanoBech32Ids.poolId(d.poolHash()),
+                            d.amount().toString()))
+                    .toList();
+            return Response.ok(delegators).build();
+        } catch (IllegalStateException e) {
+            return ledgerStateReadUnavailable("Active stake state read failed", e);
+        }
+    }
+
+    @GET
+    @Path("/{number}/stake/pool/{poolId}")
+    public Response getPoolStake(@PathParam("number") int number,
+                                 @PathParam("poolId") String poolId) {
+        if (number < 0) return badRequest("epoch must be greater than or equal to 0");
+        String poolHash = CardanoBech32Ids.poolHash(poolId);
+        if (poolHash == null) return badRequest("Invalid pool id");
+
+        AccountStateReadStore readStore = accountStateReadStore();
+        if (readStore == null) return stakeReadUnavailable();
+
+        try {
+            return readStore.getPoolActiveStake(number, poolHash)
+                    .map(stake -> Response.ok(new PoolStakeDto(
+                            stake.epoch(),
+                            CardanoBech32Ids.poolId(stake.poolHash()),
+                            stake.poolHash(),
+                            stake.amount().toString())).build())
+                    .orElseGet(() -> Response.status(Response.Status.NOT_FOUND)
+                            .entity(Map.of("error", "No active stake snapshot for pool at epoch " + number))
+                            .build());
+        } catch (IllegalStateException e) {
+            return ledgerStateReadUnavailable("Active stake state read failed", e);
+        }
+    }
+
     private Response protocolParamsResponse(int epoch) {
         LedgerStateProvider ledgerStateProvider = nodeAPI.getLedgerStateProvider();
         if (ledgerStateProvider == null) {
@@ -166,9 +263,22 @@ public class EpochResource {
         return ledgerStateProvider;
     }
 
+    private AccountStateReadStore accountStateReadStore() {
+        LedgerStateProvider ledgerStateProvider = nodeAPI.getLedgerStateProvider();
+        return ledgerStateProvider instanceof AccountStateReadStore accountStateReadStore
+                ? accountStateReadStore
+                : null;
+    }
+
     private Response adaPotUnavailable() {
         return Response.status(Response.Status.SERVICE_UNAVAILABLE)
                 .entity(Map.of("error", "AdaPot tracking is not enabled"))
+                .build();
+    }
+
+    private Response stakeReadUnavailable() {
+        return Response.status(Response.Status.SERVICE_UNAVAILABLE)
+                .entity(Map.of("error", "Account state read store not available"))
                 .build();
     }
 
@@ -186,10 +296,34 @@ public class EpochResource {
                 .build();
     }
 
+    private PageRequest pageRequest(int page, int count, String order) {
+        if (page < 1) return PageRequest.error("page must be greater than or equal to 1");
+        if (count < 1 || count > 100) return PageRequest.error("count must be between 1 and 100");
+        if (!"asc".equalsIgnoreCase(order) && !"desc".equalsIgnoreCase(order)) {
+            return PageRequest.error("order must be asc or desc");
+        }
+        return new PageRequest(page, count, null);
+    }
+
+    private long protocolMagic() {
+        try {
+            var config = nodeAPI != null ? nodeAPI.getConfig() : null;
+            return config != null ? config.getProtocolMagic() : 0;
+        } catch (Exception e) {
+            return 0;
+        }
+    }
+
     private int currentEpoch() {
         ChainState cs = nodeAPI.getChainState();
         ChainTip tip = cs != null ? cs.getTip() : null;
         if (tip == null) return 0;
         return EpochUtil.slotToEpoch(tip.getSlot(), nodeAPI.getConfig());
+    }
+
+    private record PageRequest(int page, int count, String error) {
+        static PageRequest error(String error) {
+            return new PageRequest(1, 100, error);
+        }
     }
 }

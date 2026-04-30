@@ -113,5 +113,16 @@ public class AccountStateDtos {
             @JsonProperty("cert_index") int certIndex
     ) {}
 
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public record AccountStakeDto(
+            @JsonProperty("stake_address") String stakeAddress,
+            @JsonProperty("epoch") int epoch,
+            @JsonProperty("amount") String amount,
+            @JsonProperty("pool_id") String poolId,
+            @JsonProperty("pool_hash") String poolHash,
+            @JsonProperty("credential") String credential,
+            @JsonProperty("credential_type") String credentialType
+    ) {}
+
     private AccountStateDtos() {}
 }

@@ -535,6 +535,28 @@ public class GovernanceStateStore {
         return result;
     }
 
+    public Optional<BigInteger> getDRepDistribution(int epoch, int credType, String drepHash) throws RocksDBException {
+        byte[] val = db.get(cfState, drepDistKey(epoch, credType, drepHash));
+        return val != null ? Optional.of(GovernanceCborCodec.decodeDRepDistStake(val)) : Optional.empty();
+    }
+
+    public Optional<Integer> getLatestDRepDistributionEpoch(int maxEpoch) throws RocksDBException {
+        byte[] seekKey = new byte[1 + 4 + 1 + 28];
+        seekKey[0] = PREFIX_DREP_DIST;
+        ByteBuffer.wrap(seekKey, 1, 4).order(ByteOrder.BIG_ENDIAN).putInt(maxEpoch);
+        Arrays.fill(seekKey, 5, seekKey.length, (byte) 0xFF);
+
+        try (RocksIterator it = db.newIterator(cfState)) {
+            it.seekForPrev(seekKey);
+            if (!it.isValid()) return Optional.empty();
+
+            byte[] key = it.key();
+            if (key.length < 5 || key[0] != PREFIX_DREP_DIST) return Optional.empty();
+            int epoch = ByteBuffer.wrap(key, 1, 4).order(ByteOrder.BIG_ENDIAN).getInt();
+            return epoch <= maxEpoch ? Optional.of(epoch) : Optional.empty();
+        }
+    }
+
     // ===== Epoch Donations =====
 
     public void accumulateDonation(int epoch, BigInteger amount,

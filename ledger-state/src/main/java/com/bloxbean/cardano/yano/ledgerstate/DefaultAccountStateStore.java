@@ -17,6 +17,7 @@ import com.bloxbean.cardano.yaci.core.storage.ChainTip;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.EpochParamProvider;
 import com.bloxbean.cardano.yano.api.model.CredentialKey;
+import com.bloxbean.cardano.yano.api.account.AccountStateReadStore;
 import com.bloxbean.cardano.yano.api.account.AccountStateStore;
 import com.bloxbean.cardano.yano.api.account.LedgerStateProvider;
 import com.bloxbean.cardano.yano.api.events.BlockAppliedEvent;
@@ -37,7 +38,7 @@ import java.util.*;
  * Tracks stake registration, delegation, DRep delegation, pool registration/retirement,
  * and reward balances with delta-journal rollback support.
  */
-public class DefaultAccountStateStore implements AccountStateStore,
+public class DefaultAccountStateStore implements AccountStateStore, AccountStateReadStore,
         com.bloxbean.cardano.yano.api.rollback.RollbackCapableStore {
 
     // Key prefixes
@@ -206,6 +207,7 @@ public class DefaultAccountStateStore implements AccountStateStore,
 
     // Optional governance subsystem
     private volatile com.bloxbean.cardano.yano.ledgerstate.governance.GovernanceBlockProcessor governanceBlockProcessor;
+    private volatile DefaultAccountStateReadStore readStore;
 
 
     // Supplier for re-initialization after snapshot restore
@@ -244,6 +246,7 @@ public class DefaultAccountStateStore implements AccountStateStore,
         this.cfBoundaryDelta = supplier.handle(AccountStateCfNames.ACCT_BOUNDARY_DELTA);
         this.cfEpochSnapshot = supplier.handle(AccountStateCfNames.EPOCH_DELEG_SNAPSHOT);
         this.pointerAddressResolver = new PointerAddressResolver(db, cfState);
+        this.readStore = new DefaultAccountStateReadStore(db, cfEpochSnapshot, () -> governanceBlockProcessor, log);
         this.epochBlockDataRetentionLag = getInt(config,
                 "yaci.node.account-state.epoch-block-data-retention-lag", DEFAULT_EPOCH_BLOCK_DATA_RETENTION_LAG);
         this.snapshotRetentionEpochs = getInt(config,
@@ -381,6 +384,7 @@ public class DefaultAccountStateStore implements AccountStateStore,
             this.db = cfSupplier.db();
         }
         this.pointerAddressResolver = new PointerAddressResolver(db, cfState);
+        this.readStore = new DefaultAccountStateReadStore(db, cfEpochSnapshot, () -> governanceBlockProcessor, log);
         log.info("DefaultAccountStateStore reinitialized after snapshot restore");
     }
 
@@ -1432,6 +1436,63 @@ public class DefaultAccountStateStore implements AccountStateStore,
     @Override
     public int getLatestSnapshotEpoch() {
         return getLastSnapshotEpoch();
+    }
+
+    @Override
+    public Optional<AccountStateReadStore.EpochStake> getEpochStake(int epoch, int credType, String credentialHash) {
+        return readStore.getEpochStake(epoch, credType, credentialHash);
+    }
+
+    @Override
+    public Optional<BigInteger> getTotalActiveStake(int epoch) {
+        return readStore.getTotalActiveStake(epoch);
+    }
+
+    @Override
+    public Optional<AccountStateReadStore.PoolStake> getPoolActiveStake(int epoch, String poolHash) {
+        return readStore.getPoolActiveStake(epoch, poolHash);
+    }
+
+    @Override
+    public List<AccountStateReadStore.PoolStakeDelegator> listPoolStakeDelegators(int epoch, String poolHash,
+                                                                                 int page, int count,
+                                                                                 String order) {
+        return readStore.listPoolStakeDelegators(epoch, poolHash, page, count, order);
+    }
+
+    @Override
+    public List<AccountStateReadStore.GovernanceProposal> listGovernanceProposals() {
+        return readStore.listGovernanceProposals();
+    }
+
+    @Override
+    public Optional<AccountStateReadStore.GovernanceProposal> getGovernanceProposal(String txHash, int certIndex) {
+        return readStore.getGovernanceProposal(txHash, certIndex);
+    }
+
+    @Override
+    public List<AccountStateReadStore.GovernanceVote> getGovernanceProposalVotes(String txHash, int certIndex) {
+        return readStore.getGovernanceProposalVotes(txHash, certIndex);
+    }
+
+    @Override
+    public List<AccountStateReadStore.DRepInfo> listDReps() {
+        return readStore.listDReps();
+    }
+
+    @Override
+    public Optional<AccountStateReadStore.DRepInfo> getDRep(int drepType, String drepHash) {
+        return readStore.getDRep(drepType, drepHash);
+    }
+
+    @Override
+    public Optional<BigInteger> getDRepDistribution(int epoch, int drepType, String drepHash) {
+        return readStore.getDRepDistribution(epoch, drepType, drepHash);
+    }
+
+    @Override
+    public Optional<Integer> getLatestDRepDistributionEpoch(int maxEpoch) {
+        return readStore.getLatestDRepDistributionEpoch(maxEpoch);
     }
 
     // --- Reward Rest (deferred rewards: proposal refunds, treasury withdrawals, etc.) ---

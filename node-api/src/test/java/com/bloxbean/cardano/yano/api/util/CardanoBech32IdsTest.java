@@ -21,6 +21,7 @@ class CardanoBech32IdsTest {
         assertTrue(CardanoBech32Ids.poolId(HASH).startsWith("pool1"));
         assertTrue(CardanoBech32Ids.drepId(0, HASH).startsWith("drep1"));
         assertTrue(CardanoBech32Ids.drepId(1, HASH).startsWith("drep"));
+        assertTrue(CardanoBech32Ids.drepHex(0, HASH).endsWith(HASH));
     }
 
     @Test

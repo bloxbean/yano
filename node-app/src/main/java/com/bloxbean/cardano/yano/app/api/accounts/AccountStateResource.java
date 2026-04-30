@@ -4,8 +4,10 @@ import com.bloxbean.cardano.client.address.Address;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.NodeAPI;
 import com.bloxbean.cardano.yano.api.account.AccountHistoryProvider;
+import com.bloxbean.cardano.yano.api.account.AccountStateReadStore;
 import com.bloxbean.cardano.yano.api.account.AccountStateStore;
 import com.bloxbean.cardano.yano.api.account.LedgerStateProvider;
+import com.bloxbean.cardano.yano.api.util.CardanoHex;
 import com.bloxbean.cardano.yano.api.utxo.UtxoState;
 import com.bloxbean.cardano.yano.api.util.CardanoBech32Ids;
 import com.bloxbean.cardano.yano.app.api.EpochUtil;
@@ -39,6 +41,11 @@ public class AccountStateResource {
 
     private AccountHistoryProvider historyProvider() {
         return nodeAPI.getAccountHistoryProvider();
+    }
+
+    private AccountStateReadStore readStore() {
+        LedgerStateProvider provider = nodeAPI.getLedgerStateProvider();
+        return provider instanceof AccountStateReadStore accountStateReadStore ? accountStateReadStore : null;
     }
 
     private Response unavailable() {
@@ -130,6 +137,51 @@ public class AccountStateResource {
         );
 
         return Response.ok(dto).build();
+    }
+
+    @GET
+    @Path("/{stakeAddress}/stake")
+    public Response getCurrentStake(@PathParam("stakeAddress") String stakeAddress) {
+        LedgerStateProvider ledgerState = nodeAPI.getLedgerStateProvider();
+        if (ledgerState == null) return featureUnavailable("Account state not available");
+
+        int epoch = ledgerState.getLatestSnapshotEpoch();
+        if (epoch < 0) {
+            return Response.status(Response.Status.NOT_FOUND)
+                    .entity(Map.of("error", "No active stake snapshot available"))
+                    .build();
+        }
+        return getStakeByEpoch(stakeAddress, epoch);
+    }
+
+    @GET
+    @Path("/{stakeAddress}/stake/{epoch}")
+    public Response getStakeByEpoch(@PathParam("stakeAddress") String stakeAddress,
+                                    @PathParam("epoch") int epoch) {
+        if (epoch < 0) return badRequest("epoch must be greater than or equal to 0");
+        StakeCredentialRef credential = parseStakeCredential(stakeAddress);
+        if (credential == null) return badRequest("Invalid stake address");
+
+        AccountStateReadStore readStore = readStore();
+        if (readStore == null) return featureUnavailable("Account state read store not available");
+
+        try {
+            return readStore.getEpochStake(epoch, credential.credType(), credential.credHash())
+                    .map(stake -> new AccountStakeDto(
+                            credential.stakeAddress(),
+                            stake.epoch(),
+                            stake.amount().toString(),
+                            CardanoBech32Ids.poolId(stake.poolHash()),
+                            stake.poolHash(),
+                            credential.credHash(),
+                            credTypeLabel(credential.credType())))
+                    .map(dto -> Response.ok(dto).build())
+                    .orElseGet(() -> Response.status(Response.Status.NOT_FOUND)
+                            .entity(Map.of("error", "No active stake snapshot for account at epoch " + epoch))
+                            .build());
+        } catch (IllegalStateException e) {
+            return readUnavailable("Account state read failed", e);
+        }
     }
 
     @GET
@@ -338,7 +390,7 @@ public class AccountStateResource {
         if (value == null || value.isBlank()) return null;
         try {
             Address address;
-            if (looksHex(value)) {
+            if (CardanoHex.isHex(value)) {
                 address = new Address(HexUtil.decodeHexString(value));
             } else {
                 address = new Address(value);
@@ -355,18 +407,6 @@ public class AccountStateResource {
         } catch (Exception e) {
             return null;
         }
-    }
-
-    private static boolean looksHex(String value) {
-        if ((value.length() & 1) != 0) return false;
-        for (int i = 0; i < value.length(); i++) {
-            char c = value.charAt(i);
-            boolean hex = (c >= '0' && c <= '9')
-                    || (c >= 'a' && c <= 'f')
-                    || (c >= 'A' && c <= 'F');
-            if (!hex) return false;
-        }
-        return true;
     }
 
     private static String drepId(LedgerStateProvider.DRepDelegation drep) {
