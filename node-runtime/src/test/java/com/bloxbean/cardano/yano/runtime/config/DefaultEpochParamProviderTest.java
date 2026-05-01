@@ -223,11 +223,9 @@ class DefaultEpochParamProviderTest {
         }
 
         @Test
-        void unknownNetwork_withByronGenesis_throws() {
-            assertThatThrownBy(() ->
-                    DefaultEpochParamProvider.resolveFirstNonByronSlot(99999, true))
-                    .isInstanceOf(IllegalStateException.class)
-                    .hasMessageContaining("Cannot determine first non-Byron slot");
+        void unknownNetwork_withByronGenesis_returns0ForDevnetPolicy() {
+            assertThat(DefaultEpochParamProvider.resolveFirstNonByronSlot(99999, true))
+                    .isEqualTo(0);
         }
     }
 

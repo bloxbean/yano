@@ -166,31 +166,21 @@ public class DefaultEpochParamProvider implements EpochParamProvider {
     /**
      * Resolve the first non-Byron slot for a given network.
      * <p>
-     * Order: known-network constants → no Byron genesis means 0 → unknown + Byron = error.
-     * <p>
-     * TODO (Phase 6): Add persisted era metadata lookup for restart/custom network support.
-     * Currently only uses known-network constants, which covers all production networks.
+     * Public networks with Byron history use explicit constants. Custom/devnet
+     * networks are supported as Shelley-from-genesis only, so their first
+     * non-Byron slot is 0. Custom Byron-history networks are not supported
+     * unless explicit era metadata is added later.
      *
      * @param protocolMagic   network magic
      * @param hasByronGenesis whether a Byron genesis file is configured
      * @return first non-Byron slot
-     * @throws IllegalStateException if unknown network has Byron genesis but no persisted metadata
      */
     public static long resolveFirstNonByronSlot(long protocolMagic, boolean hasByronGenesis) {
-        // Known networks
         return switch ((int) protocolMagic) {
             case 764824073 -> MAINNET_FIRST_NON_BYRON_SLOT;
             case 1 -> PREPROD_FIRST_NON_BYRON_SLOT;
             case 2, 4 -> 0; // preview, sanchonet: no Byron era for epoch math
-            default -> {
-                if (!hasByronGenesis) {
-                    yield 0; // No Byron genesis → assume no Byron era
-                }
-                throw new IllegalStateException(
-                        "Unknown network (magic=" + protocolMagic + ") with Byron genesis configured. "
-                                + "Cannot determine first non-Byron slot. Either sync from genesis "
-                                + "or provide explicit first-non-byron-slot configuration.");
-            }
+            default -> 0;
         };
     }
 
