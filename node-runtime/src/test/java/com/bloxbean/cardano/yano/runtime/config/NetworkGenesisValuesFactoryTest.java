@@ -102,6 +102,38 @@ class NetworkGenesisValuesFactoryTest {
     }
 
     @Test
+    void sanchonet_noBoundaryOverride_throws() {
+        var ngc = NetworkGenesisConfig.load(
+                GENESIS_DIR + "sanchonet/shelley-genesis.json",
+                GENESIS_DIR + "sanchonet/byron-genesis.json",
+                null, GENESIS_DIR + "sanchonet/conway-genesis.json");
+
+        assertThatThrownBy(() -> NetworkGenesisValuesFactory.build(ngc, NetworkGenesisValuesFactory.Overrides.NONE))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Custom network")
+                .hasMessageContaining("Byron history");
+    }
+
+    @Test
+    void sanchonet_withBoundaryOverrides_usesPersistedBoundaryValues() {
+        var ngc = NetworkGenesisConfig.load(
+                GENESIS_DIR + "sanchonet/shelley-genesis.json",
+                GENESIS_DIR + "sanchonet/byron-genesis.json",
+                null, GENESIS_DIR + "sanchonet/conway-genesis.json");
+
+        var overrides = new NetworkGenesisValuesFactory.Overrides(
+                new BigInteger("30000000000000000"), 0, Integer.MAX_VALUE, 2);
+        var values = NetworkGenesisValuesFactory.build(ngc, overrides);
+
+        assertThat(values.networkMagic()).isEqualTo(4);
+        assertThat(values.shelleyStartEpoch()).isZero();
+        assertThat(values.vasilHardforkEpoch()).isEqualTo(2);
+        assertThat(values.shelleyInitialUtxo()).isEqualTo(new BigInteger("30000000000000000"));
+        assertThat(values.shelleyInitialTreasury()).isEqualTo(BigInteger.ZERO);
+        assertThat(values.shelleyInitialReserves()).isEqualTo(new BigInteger("15000000000000000"));
+    }
+
+    @Test
     void unknownByronNetwork_hardforkEpochsDefaultToMaxValue(@TempDir Path tempDir) throws Exception {
         // Unknown+Byron with initial UTXO override but no hardfork epoch overrides
         Path shelley = tempDir.resolve("shelley.json");

@@ -210,6 +210,22 @@ yaci:
         conway-genesis-file: config/network/preview/conway-genesis.json
         protocol-parameters-file: config/network/preview/protocol-param.json
 
+"%sanchonet":
+  yaci:
+    node:
+      network: sanchonet
+      remote:
+        host: sanchonet-node.play.dev.cardano.org
+        port: 3001
+        protocol-magic: 4
+      genesis:
+        shelley-genesis-file: config/network/sanchonet/shelley-genesis.json
+        shelley-genesis-hash: "f94457ec45a0c6773057a529533cf7ccf746cb44dabd56ae970e1dbfb55bfdb2"
+        byron-genesis-file: config/network/sanchonet/byron-genesis.json
+        alonzo-genesis-file: config/network/sanchonet/alonzo-genesis.json
+        conway-genesis-file: config/network/sanchonet/conway-genesis.json
+        protocol-parameters-file: config/network/sanchonet/protocol-param.json
+
 "%test":
   yaci:
     events:

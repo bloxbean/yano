@@ -12,7 +12,7 @@ import java.math.BigInteger;
  * <ul>
  *   <li>Parsed genesis config ({@link NetworkGenesisConfig})</li>
  *   <li>Known-network constants (hardfork epochs, initial treasury for preview)</li>
- *   <li>Era metadata (reserved for future: persisted hardfork boundaries)</li>
+ *   <li>Persisted era metadata for custom-network hardfork boundaries</li>
  * </ul>
  * <p>
  * This is the ONLY place that combines these sources. {@code NetworkGenesisConfig}
@@ -21,12 +21,6 @@ import java.math.BigInteger;
 @Slf4j
 public class NetworkGenesisValuesFactory {
 
-    /**
-     * Build NetworkGenesisValues from parsed genesis and known-network constants.
-     *
-     * @param genesis  parsed genesis config
-     * @return complete NetworkGenesisValues for use by ledger-state
-     */
     /**
      * Optional overrides for custom networks — null fields use known-network constants or defaults.
      */
@@ -78,9 +72,9 @@ public class NetworkGenesisValuesFactory {
             shelleyStartEpoch = ERA_NOT_REACHED;
         }
 
-        // Initial UTXO/reserves/treasury
+        // Initial UTXO/reserves/treasury.
         BigInteger shelleyInitialUtxo = computeInitialUtxo(genesis, magic, overrides.initialUtxo());
-        BigInteger shelleyInitialTreasury = resolveInitialTreasury(magic);
+        BigInteger shelleyInitialTreasury = resolveKnownInitialTreasury(magic);
         BigInteger totalLovelace = BigInteger.valueOf(shelley.maxLovelaceSupply());
         // CF formula: reserves = totalLovelace - initialUtxo (treasury NOT subtracted)
         BigInteger shelleyInitialReserves = totalLovelace.subtract(shelleyInitialUtxo);
@@ -107,7 +101,9 @@ public class NetworkGenesisValuesFactory {
                 shelley.tau(),
                 shelley.a0(),
                 shelley.nOpt(),
-                new BigDecimal("0.03") // CF library convention, NOT genesis a0
+                // CF NetworkConfig compatibility value. Reward calculations use protocol-param a0,
+                // not this field.
+                new BigDecimal("0.03")
         );
 
         log.info("NetworkGenesisValues built: magic={}, epochLength={}, shelleyStartEpoch={}, " +
@@ -122,7 +118,7 @@ public class NetworkGenesisValuesFactory {
 
     // --- Known-network constants ---
 
-    private static final java.util.Set<Integer> KNOWN_MAGICS = java.util.Set.of(764824073, 1, 2, 4);
+    private static final java.util.Set<Integer> KNOWN_MAGICS = java.util.Set.of(764824073, 1, 2);
 
     /**
      * For known networks, always use the constant (override ignored).
@@ -135,10 +131,6 @@ public class NetworkGenesisValuesFactory {
     }
 
     /**
-     * CF shelleyStartEpoch for reward/AdaPot initial state.
-     * NOT the same as firstNonByronSlot (which is for epoch math).
-     */
-    /**
      * For unknown/custom networks, Integer.MAX_VALUE means "era not reached / unknown".
      * Consumers check: epoch >= allegraHardforkEpoch — MAX_VALUE means "never triggers".
      */
@@ -149,7 +141,6 @@ public class NetworkGenesisValuesFactory {
             case 764824073 -> 208;         // mainnet
             case 1 -> 4;                   // preprod
             case 2 -> 1;                   // preview
-            case 4 -> 1;                   // sanchonet
             default -> 0;                  // custom devnet without Byron: Shelley from epoch 0
         };
     }
@@ -159,7 +150,6 @@ public class NetworkGenesisValuesFactory {
             case 764824073 -> 236;         // mainnet
             case 1 -> 5;                   // preprod
             case 2 -> 1;                   // preview
-            case 4 -> 1;                   // sanchonet
             default -> ERA_NOT_REACHED;    // custom: must derive from era metadata
         };
     }
@@ -169,7 +159,6 @@ public class NetworkGenesisValuesFactory {
             case 764824073 -> 365;  // mainnet
             case 1 -> 12;           // preprod
             case 2 -> 3;            // preview
-            case 4 -> 3;            // sanchonet
             default -> ERA_NOT_REACHED; // custom: must derive from era metadata
         };
     }
@@ -188,7 +177,6 @@ public class NetworkGenesisValuesFactory {
             case 764824073 -> new BigInteger("31111977147073356"); // mainnet
             case 1 -> new BigInteger("30000000000000000");          // preprod
             case 2 -> new BigInteger("30009000000000000");          // preview
-            case 4 -> new BigInteger("30009000000000000");          // sanchonet (same as preview)
             default -> {
                 // Custom network
                 if (!genesis.hasByronGenesis() || genesis.getAllByronBalances().isEmpty()) {
@@ -218,10 +206,10 @@ public class NetworkGenesisValuesFactory {
         };
     }
 
-    private static BigInteger resolveInitialTreasury(int magic) {
+    private static BigInteger resolveKnownInitialTreasury(int magic) {
         return switch (magic) {
             case 764824073, 1 -> BigInteger.ZERO;                       // mainnet, preprod
-            case 2, 4 -> new BigInteger("9000000000000");               // preview, sanchonet
+            case 2 -> new BigInteger("9000000000000");                  // preview
             default -> BigInteger.ZERO;                                  // custom devnet
         };
     }

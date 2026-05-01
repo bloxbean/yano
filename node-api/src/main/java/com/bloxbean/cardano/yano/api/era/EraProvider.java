@@ -28,6 +28,17 @@ public interface EraProvider {
     }
 
     /**
+     * Get the first epoch for a given era value only when an exact era-start
+     * boundary is known. Implementations must not infer epoch 0 from a later
+     * earliest-known era here.
+     *
+     * @param eraValue numeric era value from {@code com.bloxbean.cardano.yaci.core.model.Era}
+     */
+    default Integer resolveKnownFirstEpochOrNull(int eraValue) {
+        return null;
+    }
+
+    /**
      * Check if the given epoch is in the Conway era or later.
      *
      * @param epoch the epoch to check

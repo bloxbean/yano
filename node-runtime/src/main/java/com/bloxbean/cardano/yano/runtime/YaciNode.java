@@ -475,6 +475,7 @@ public class YaciNode implements NodeAPI {
                                     rocksDb, cfState, cfSnapshot, true);
                             rewardCalcInstance.setLedgerStateProvider(defaultStore);
                             rewardCalcInstance.setAccountStateStore(defaultStore);
+                            rewardCalcInstance.setEraProvider(eraService);
                             defaultStore.setRewardCalculator(rewardCalcInstance);
                             log.info("Epoch reward calculator enabled");
                         }
@@ -504,7 +505,7 @@ public class YaciNode implements NodeAPI {
                         }
                     } else {
                         // No genesis — fallback only for known public networks
-                        boolean isKnown = (magic == 764824073 || magic == 1 || magic == 2 || magic == 4);
+                        boolean isKnown = (magic == 764824073 || magic == 1 || magic == 2);
                         if (isKnown) {
                             cfNetConfig = EpochRewardCalculator.resolveNetworkConfig(magic);
                             log.info("CF NetworkConfig resolved from built-in config for known network magic={}", magic);
@@ -1853,9 +1854,9 @@ public class YaciNode implements NodeAPI {
             // Derive hardfork epochs from persisted era start slots
             var epochCalc = epochParamProvider != null ? epochParamProvider.getEpochSlotCalc() : null;
             if (epochCalc != null) {
-                var shelleySlot = rocksState.getEraStartSlot(com.bloxbean.cardano.yaci.core.model.Era.Shelley.getValue());
-                if (shelleySlot.isPresent()) {
-                    overrideShelleyEpoch = epochCalc.slotToEpoch(shelleySlot.getAsLong());
+                var firstNonByronSlot = rocksState.getFirstNonByronEraStartSlot();
+                if (firstNonByronSlot.isPresent()) {
+                    overrideShelleyEpoch = epochCalc.slotToEpoch(firstNonByronSlot.getAsLong());
                 }
                 var allegraSlot = rocksState.getEraStartSlot(com.bloxbean.cardano.yaci.core.model.Era.Allegra.getValue());
                 if (allegraSlot.isPresent()) {

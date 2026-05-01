@@ -307,7 +307,7 @@ public class EpochBoundaryProcessor {
 
         // 3. Calculate rewards (skip if already committed from a previous interrupted run)
         if (resumeFromStep <= STEP_REWARDS) {
-            if (rewardCalculator != null && rewardCalculator.isEnabled() && newEpoch >= 2) {
+            if (shouldCalculateRewards(newEpoch)) {
                 calculateAndStoreRewards(previousEpoch, newEpoch, null);
             }
             // Step marker AFTER all outputs (reward credits + AdaPot) are durable
@@ -514,6 +514,13 @@ public class EpochBoundaryProcessor {
         }
     }
 
+    private boolean shouldCalculateRewards(int newEpoch) {
+        if (rewardCalculator == null || !rewardCalculator.isEnabled() || cfNetworkConfig == null) {
+            return false;
+        }
+        return newEpoch > cfNetworkConfig.getShelleyStartEpoch();
+    }
+
     private void handleEpochCalcError(int epoch, String message) {
         log.error(message);
         if (exitOnEpochCalcError) {
@@ -575,6 +582,7 @@ public class EpochBoundaryProcessor {
             case 1 -> "expected_ada_pots_preprod.json";
             case 2 -> "expected_ada_pots_preview.json";
             case 764824073 -> "expected_ada_pots_mainnet.json";
+            case 4 -> "expected_ada_pots_sanchonet.json";
             default -> null;
         };
 

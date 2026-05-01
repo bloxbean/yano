@@ -51,6 +51,7 @@ class EraProviderImplTest {
         assertThat(svc.getStartEpoch(Era.Conway)).isEmpty();
         assertThat(svc.startsInOrAfter(Era.Conway)).isFalse();
         assertThat(svc.resolveFirstConwayEpochOrNull()).isNull();
+        assertThat(svc.resolveKnownFirstEpochOrNull(Era.Conway.getValue())).isNull();
     }
 
     @Test
@@ -75,6 +76,7 @@ class EraProviderImplTest {
 
         assertThat(svc.getStartEpoch(Era.Conway)).hasValue(646);
         assertThat(svc.resolveFirstConwayEpochOrNull()).isEqualTo(646);
+        assertThat(svc.resolveKnownFirstEpochOrNull(Era.Conway.getValue())).isEqualTo(646);
     }
 
     @Test
@@ -87,6 +89,7 @@ class EraProviderImplTest {
         assertThat(svc.getEarliestKnownEra()).hasValue(Era.Conway);
         assertThat(svc.startsInOrAfter(Era.Conway)).isTrue();
         assertThat(svc.resolveFirstConwayEpochOrNull()).isEqualTo(0);
+        assertThat(svc.resolveKnownFirstEpochOrNull(Era.Conway.getValue())).isZero();
     }
 
     @Test
@@ -100,10 +103,31 @@ class EraProviderImplTest {
         // Earliest known era has value 8, which is > Conway(7)
         assertThat(svc.startsInOrAfter(Era.Conway)).isTrue();
         assertThat(svc.resolveFirstConwayEpochOrNull()).isEqualTo(0);
+        assertThat(svc.resolveKnownFirstEpochOrNull(Era.Conway.getValue())).isNull();
         // Era value 8 is not in the Era enum, so getEarliestKnownEra returns empty
         assertThat(svc.getEarliestKnownEra()).isEmpty();
         // But the numeric value is available
         assertThat(svc.getEarliestKnownEraValue()).hasValue(8);
+    }
+
+    @Test
+    void inferredEarlierEraDoesNotHaveKnownStart() {
+        chainState.setEraStartSlot(Era.Conway.getValue(), 0);
+
+        var svc = new EraProviderImpl(chainState, PREVIEW_CALC);
+
+        assertThat(svc.resolveFirstEpochOrNull(Era.Babbage.getValue())).isZero();
+        assertThat(svc.resolveKnownFirstEpochOrNull(Era.Babbage.getValue())).isNull();
+    }
+
+    @Test
+    void sanchonetBabbageStartSlotResolvesToEpochTwo() {
+        chainState.setEraStartSlot(Era.Babbage.getValue(), 172827);
+
+        var svc = new EraProviderImpl(chainState, PREVIEW_CALC);
+
+        assertThat(svc.resolveKnownFirstEpochOrNull(Era.Babbage.getValue())).isEqualTo(2);
+        assertThat(svc.resolveFirstEpochOrNull(Era.Babbage.getValue())).isEqualTo(2);
     }
 
     @Test

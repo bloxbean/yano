@@ -26,13 +26,6 @@ public class DefaultEpochParamProvider implements EpochParamProvider {
 
     private static final Logger log = LoggerFactory.getLogger(DefaultEpochParamProvider.class);
 
-    // Hardcoded defaults (same across mainnet/preprod/preview) — used only by legacy constructors
-    private static final BigInteger DEFAULT_KEY_DEPOSIT = BigInteger.valueOf(2_000_000);
-    private static final BigInteger DEFAULT_POOL_DEPOSIT = BigInteger.valueOf(500_000_000);
-
-    private static final long DEFAULT_SECURITY_PARAM = 2160;
-    private static final double DEFAULT_ACTIVE_SLOTS_COEFF = 0.05;
-
     /**
      * Known first non-Byron slot values per network magic.
      * These are historical facts, not derivable from genesis files alone.

@@ -108,10 +108,8 @@ public final class EraProviderImpl implements EraProvider {
 
     @Override
     public Integer resolveFirstEpochOrNull(int eraValue) {
-        var eraSlot = chainState.getEraStartSlot(eraValue);
-        if (eraSlot.isPresent()) {
-            return epochSlotCalc.slotToEpoch(eraSlot.getAsLong());
-        }
+        Integer knownFirstEpoch = resolveKnownFirstEpochOrNull(eraValue);
+        if (knownFirstEpoch != null) return knownFirstEpoch;
 
         var earliestValue = getEarliestKnownEraValue();
         if (earliestValue.isPresent() && earliestValue.getAsLong() >= eraValue) {
@@ -119,6 +117,13 @@ public final class EraProviderImpl implements EraProvider {
         }
 
         return null;
+    }
+
+    @Override
+    public Integer resolveKnownFirstEpochOrNull(int eraValue) {
+        var eraSlot = chainState.getEraStartSlot(eraValue);
+        if (eraSlot.isEmpty()) return null;
+        return epochSlotCalc.slotToEpoch(eraSlot.getAsLong());
     }
 
     /**
