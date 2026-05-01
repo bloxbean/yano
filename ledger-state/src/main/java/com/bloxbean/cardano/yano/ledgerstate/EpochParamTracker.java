@@ -255,6 +255,30 @@ public class EpochParamTracker implements EpochParamProvider {
     }
 
     /**
+     * Bootstrap protocol parameters for the first non-Byron epoch.
+     * <p>
+     * This uses the same materialization path as epoch-boundary finalization, but
+     * without consuming pending updates. It is intentionally restricted to the
+     * first non-Byron epoch and idempotent, so restarts with already persisted
+     * epoch params are no-ops.
+     *
+     * @return true if a new genesis snapshot was materialized and persisted
+     */
+    public boolean bootstrapEpochIfNeeded(int epoch) {
+        if (!enabled) return false;
+        if (epoch != firstNonByronEpoch()) return false;
+        if (epochParams.containsKey(epoch)) return false;
+
+        ProtocolParamUpdate resolved = materializeEffectiveParams(epoch, null);
+        if (resolved == null) return false;
+
+        epochParams.put(epoch, resolved);
+        persistEpochParams(epoch, resolved);
+        log.info("Bootstrapped genesis protocol params for epoch {}", epoch);
+        return true;
+    }
+
+    /**
      * Get the resolved ProtocolParamUpdate for an epoch, or null if none tracked.
      */
     public ProtocolParamUpdate getResolvedParams(int epoch) {

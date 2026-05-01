@@ -19,6 +19,7 @@ import com.bloxbean.cardano.yaci.events.api.PublishOptions;
 import com.bloxbean.cardano.yano.api.EpochParamProvider;
 import com.bloxbean.cardano.yano.api.events.BlockConsensusEvent;
 import com.bloxbean.cardano.yano.api.events.EpochTransitionEvent;
+import com.bloxbean.cardano.yano.api.events.GenesisBlockEvent;
 import com.bloxbean.cardano.yano.api.events.PostEpochTransitionEvent;
 import com.bloxbean.cardano.yano.api.events.PreEpochTransitionEvent;
 import com.bloxbean.cardano.yano.runtime.chain.DirectRocksDBChainState;
@@ -527,6 +528,7 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
                 return;
             }
 
+            boolean freshChain = chainState.getTip() == null;
             chainState.storeBlock(
                 hashBytes,
                 blockNumber,
@@ -539,17 +541,21 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
             // successful store resets stale counter
             consecutiveStaleBlocks.set(0);
 
-            // Detect epoch transition and publish PreEpochTransitionEvent BEFORE BlockAppliedEvent
-            publishEpochTransitionEventsIfNeeded(slot, blockNumber);
-
-            // Publish BlockApplied after storage
             EventMetadata appMeta = EventMetadata.builder()
                     .origin("node-runtime")
                     .slot(slot)
                     .blockNo(blockNumber)
                     .blockHash(hash)
                     .build();
-            eventBus.publish(new BlockAppliedEvent(era, slot, blockNumber, hash, block), appMeta, PublishOptions.builder().build());
+            PublishOptions appOptions = PublishOptions.builder().build();
+
+            publishGenesisBlockEventIfNeeded(freshChain, era, slot, blockNumber, hash, appMeta, appOptions);
+
+            // Detect epoch transition and publish PreEpochTransitionEvent BEFORE BlockAppliedEvent
+            publishEpochTransitionEventsIfNeeded(slot, blockNumber);
+
+            // Publish BlockApplied after storage
+            eventBus.publish(new BlockAppliedEvent(era, slot, blockNumber, hash, block), appMeta, appOptions);
 
             // Publish TipChanged if tip advanced
             var _newTip = chainState.getTip();
@@ -666,6 +672,7 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
                 return;
             }
 
+            boolean freshChain = chainState.getTip() == null;
             chainState.storeBlock(
                 hashBytes,
                 blockNumber,
@@ -675,17 +682,21 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
 
             persistEraStartSlotIfNeeded(Era.Byron, slot);
 
-            // Detect epoch transition and publish PreEpochTransitionEvent BEFORE BlockAppliedEvent
-            publishEpochTransitionEventsIfNeeded(slot, blockNumber);
-
-            // Publish BlockApplied after storage
             EventMetadata appMeta = EventMetadata.builder()
                     .origin("node-runtime")
                     .slot(slot)
                     .blockNo(blockNumber)
                     .blockHash(hash)
                     .build();
-            eventBus.publish(new BlockAppliedEvent(Era.Byron, slot, blockNumber, hash, null), appMeta, PublishOptions.builder().build());
+            PublishOptions appOptions = PublishOptions.builder().build();
+
+            publishGenesisBlockEventIfNeeded(freshChain, Era.Byron, slot, blockNumber, hash, appMeta, appOptions);
+
+            // Detect epoch transition and publish PreEpochTransitionEvent BEFORE BlockAppliedEvent
+            publishEpochTransitionEventsIfNeeded(slot, blockNumber);
+
+            // Publish BlockApplied after storage
+            eventBus.publish(new BlockAppliedEvent(Era.Byron, slot, blockNumber, hash, null), appMeta, appOptions);
 
             // Publish TipChanged if tip advanced
             var _newTipByron = chainState.getTip();
@@ -782,6 +793,7 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
                 return;
             }
 
+            boolean freshChain = chainState.getTip() == null;
             chainState.storeBlock(
                 hashBytes,
                 blockNumber,
@@ -794,17 +806,21 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
             // successful store resets stale counter
             consecutiveStaleBlocks.set(0);
 
-            // Detect epoch transition and publish PreEpochTransitionEvent BEFORE BlockAppliedEvent
-            publishEpochTransitionEventsIfNeeded(slot, blockNumber);
-
-            // Publish BlockApplied after storage
             EventMetadata appMeta = EventMetadata.builder()
                     .origin("node-runtime")
                     .slot(slot)
                     .blockNo(blockNumber)
                     .blockHash(hash)
                     .build();
-            eventBus.publish(new BlockAppliedEvent(Era.Byron, slot, blockNumber, hash, null), appMeta, PublishOptions.builder().build());
+            PublishOptions appOptions = PublishOptions.builder().build();
+
+            publishGenesisBlockEventIfNeeded(freshChain, Era.Byron, slot, blockNumber, hash, appMeta, appOptions);
+
+            // Detect epoch transition and publish PreEpochTransitionEvent BEFORE BlockAppliedEvent
+            publishEpochTransitionEventsIfNeeded(slot, blockNumber);
+
+            // Publish BlockApplied after storage
+            eventBus.publish(new BlockAppliedEvent(Era.Byron, slot, blockNumber, hash, null), appMeta, appOptions);
 
             // Publish TipChanged if tip advanced
             var _newTipEb = chainState.getTip();
@@ -1297,6 +1313,14 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
     private int epochForSlot(long slot) {
         if (epochParamProvider == null) return -1;
         return epochParamProvider.getEpochSlotCalc().slotToEpoch(slot);
+    }
+
+    private void publishGenesisBlockEventIfNeeded(boolean freshChain, Era era, long slot, long blockNumber,
+                                                  String blockHash, EventMetadata meta, PublishOptions opts) {
+        if (!freshChain) return;
+        int epoch = epochForSlot(slot);
+        if (epoch < 0) return;
+        eventBus.publish(new GenesisBlockEvent(era, epoch, slot, blockNumber, blockHash), meta, opts);
     }
 
     /**

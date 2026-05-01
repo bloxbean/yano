@@ -26,8 +26,7 @@ class EffectiveProtocolParamsSupplierTest {
 
         EffectiveProtocolParamsSupplier supplier = new EffectiveProtocolParamsSupplier(
                 provider,
-                new EpochSlotCalc(100, 10, 0),
-                fallback("9999"));
+                new EpochSlotCalc(100, 10, 0));
 
         ProtocolParams epoch10First = supplier.getProtocolParams(1000);
         ProtocolParams epoch10Second = supplier.getProtocolParams(1099);
@@ -40,21 +39,21 @@ class EffectiveProtocolParamsSupplierTest {
     }
 
     @Test
-    void fallbackIsNotCachedSoLaterLedgerSnapshotCanTakeOver() {
+    void missingLedgerSnapshotIsNotCachedSoLaterSnapshotCanTakeOver() {
         AtomicInteger calls = new AtomicInteger();
         LedgerStateProvider provider = provider(epoch -> {
             int call = calls.incrementAndGet();
             if (call == 1) return Optional.empty();
             return Optional.of(ProtocolParamsMapperTest.snapshot(epoch, java.math.BigInteger.valueOf(5000L + epoch)));
         });
-        ProtocolParams fallback = fallback("7777");
 
         EffectiveProtocolParamsSupplier supplier = new EffectiveProtocolParamsSupplier(
                 provider,
-                new EpochSlotCalc(100, 10, 0),
-                fallback);
+                new EpochSlotCalc(100, 10, 0));
 
-        assertSame(fallback, supplier.getProtocolParams(1000));
+        IllegalStateException error = assertThrows(IllegalStateException.class,
+                () -> supplier.getProtocolParams(1000));
+        assertEquals("Effective protocol parameters are unavailable for epoch 10", error.getMessage());
         assertEquals("5010", supplier.getProtocolParams(1001).getMaxValSize());
         assertEquals("5010", supplier.getProtocolParams(1002).getMaxValSize());
         assertEquals(2, calls.get());
@@ -63,20 +62,13 @@ class EffectiveProtocolParamsSupplierTest {
     @Test
     void negativeSlotIsRejectedInsteadOfMappingToEpochZero() {
         EffectiveProtocolParamsSupplier supplier = new EffectiveProtocolParamsSupplier(
-                null,
-                new EpochSlotCalc(100, 10, 0),
-                fallback("7777"));
+                provider(epoch -> Optional.empty()),
+                new EpochSlotCalc(100, 10, 0));
 
         IllegalStateException error = assertThrows(IllegalStateException.class,
                 () -> supplier.getProtocolParams(-1));
 
         assertEquals("Effective protocol parameters require a non-negative slot; got -1", error.getMessage());
-    }
-
-    private static ProtocolParams fallback(String maxValSize) {
-        ProtocolParams pp = new ProtocolParams();
-        pp.setMaxValSize(maxValSize);
-        return pp;
     }
 
     private static LedgerStateProvider provider(Function<Integer, Optional<LedgerStateProvider.ProtocolParamsSnapshot>> snapshots) {

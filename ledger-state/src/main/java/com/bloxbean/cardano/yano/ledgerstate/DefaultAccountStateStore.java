@@ -21,6 +21,7 @@ import com.bloxbean.cardano.yano.api.account.AccountStateReadStore;
 import com.bloxbean.cardano.yano.api.account.AccountStateStore;
 import com.bloxbean.cardano.yano.api.account.LedgerStateProvider;
 import com.bloxbean.cardano.yano.api.events.BlockAppliedEvent;
+import com.bloxbean.cardano.yano.api.events.GenesisBlockEvent;
 import com.bloxbean.cardano.yano.api.events.RollbackEvent;
 import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Point;
 import org.rocksdb.*;
@@ -2076,6 +2077,12 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
     }
 
     // --- Epoch transition (called BEFORE first block of new epoch) ---
+
+    @Override
+    public void handleGenesisBlock(GenesisBlockEvent event) {
+        if (!enabled || paramTracker == null || !paramTracker.isEnabled() || event == null) return;
+        paramTracker.bootstrapEpochIfNeeded(event.epoch());
+    }
 
     @Override
     public void handleEpochTransition(int previousEpoch, int newEpoch) {

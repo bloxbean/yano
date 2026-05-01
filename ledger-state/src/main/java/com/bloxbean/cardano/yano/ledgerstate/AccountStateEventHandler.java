@@ -8,6 +8,7 @@ import com.bloxbean.cardano.yaci.events.api.support.AnnotationListenerRegistrar;
 import com.bloxbean.cardano.yano.api.account.AccountStateStore;
 import com.bloxbean.cardano.yano.api.events.BlockAppliedEvent;
 import com.bloxbean.cardano.yano.api.events.EpochTransitionEvent;
+import com.bloxbean.cardano.yano.api.events.GenesisBlockEvent;
 import com.bloxbean.cardano.yano.api.events.PostEpochTransitionEvent;
 import com.bloxbean.cardano.yano.api.events.PreEpochTransitionEvent;
 import com.bloxbean.cardano.yano.api.events.RollbackEvent;
@@ -26,6 +27,11 @@ public final class AccountStateEventHandler implements AutoCloseable {
         this.store = store;
         SubscriptionOptions defaults = SubscriptionOptions.builder().build();
         this.handles = AnnotationListenerRegistrar.register(bus, this, defaults);
+    }
+
+    @DomainEventListener(order = 110)
+    public void onGenesisBlock(GenesisBlockEvent e) {
+        if (store != null && store.isEnabled()) store.handleGenesisBlock(e);
     }
 
     @DomainEventListener(order = 110)

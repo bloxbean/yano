@@ -7,8 +7,11 @@ import com.bloxbean.cardano.yano.api.config.PluginsOptions;
 import com.bloxbean.cardano.yano.api.config.RuntimeOptions;
 import com.bloxbean.cardano.yano.api.config.YaciNodeConfig;
 import com.bloxbean.cardano.yano.app.bootstrap.BootstrapConfigParser;
+import com.bloxbean.cardano.client.api.model.ProtocolParams;
 import com.bloxbean.cardano.client.common.model.SlotConfig;
 import com.bloxbean.cardano.yaci.core.common.Constants;
+import com.bloxbean.cardano.yano.api.account.LedgerStateProvider;
+import com.bloxbean.cardano.yano.ledgerrules.EpochProtocolParamsSupplier;
 import com.bloxbean.cardano.yano.ledgerrules.TransactionEvaluator;
 import com.bloxbean.cardano.yano.ledgerrules.TransactionValidator;
 import com.bloxbean.cardano.yano.runtime.YaciNode;
@@ -518,31 +521,43 @@ public class YaciNodeProducer {
      * Initialize the Scalus-based transaction evaluator and inject it into the node.
      */
     private void initTransactionEvaluator(YaciNode yaciNode, YaciNodeConfig yaciConfig) {
-        // Load genesis config and protocol params — shared by both validator and evaluator
+        LedgerStateProvider ledgerStateProvider = yaciNode.getLedgerStateProvider();
+        if (epochParamsTrackingEnabled && ledgerStateProvider == null) {
+            log.info("Transaction validation/evaluation not initialized: ledger-state provider is unavailable");
+            return;
+        }
+
+        // Load genesis config for slot math. Protocol params come from ledger-state when
+        // epoch-param tracking is enabled; otherwise protocol-param.json is an explicit
+        // static source for devnet/custom quick setups.
         GenesisConfig genesis;
-        com.bloxbean.cardano.client.api.model.ProtocolParams pp;
         SlotConfig slotConfig;
         int networkId;
-        EffectiveProtocolParamsSupplier effectiveProtocolParamsSupplier;
+        EpochProtocolParamsSupplier protocolParamsSupplier;
         LongSupplier currentSlotSupplier;
         EpochSlotCalc epochSlotCalc;
+        String protocolParamsSource;
         try {
             genesis = GenesisConfig.load(
                     yaciConfig.getShelleyGenesisFile(),
                     yaciConfig.getByronGenesisFile(),
-                    yaciConfig.getProtocolParametersFile());
+                    epochParamsTrackingEnabled ? null : yaciConfig.getProtocolParametersFile());
 
-            if (genesis == null || !genesis.hasProtocolParameters()) {
-                log.info("Transaction evaluation not available: no protocol parameters");
-                return;
-            }
-
-            pp = ProtocolParamsMapper.fromNodeProtocolParam(genesis.getProtocolParameters());
             epochSlotCalc = resolveEpochSlotCalc(yaciNode, yaciConfig, genesis);
-            effectiveProtocolParamsSupplier = new EffectiveProtocolParamsSupplier(
-                    yaciNode.getLedgerStateProvider(),
-                    epochSlotCalc,
-                    pp);
+            if (epochParamsTrackingEnabled) {
+                protocolParamsSupplier = new EffectiveProtocolParamsSupplier(
+                        ledgerStateProvider,
+                        epochSlotCalc);
+                protocolParamsSource = "effective-ledger";
+            } else {
+                if (genesis == null || !genesis.hasProtocolParameters()) {
+                    log.info("Transaction validation/evaluation not initialized: epoch-param tracking disabled and no protocol-param.json configured");
+                    return;
+                }
+                ProtocolParams staticProtocolParams = ProtocolParamsMapper.fromNodeProtocolParam(genesis.getProtocolParameters());
+                protocolParamsSupplier = slot -> staticProtocolParams;
+                protocolParamsSource = "static-protocol-param-json";
+            }
             currentSlotSupplier = () -> {
                 var tip = yaciNode.getLocalTip();
                 return tip != null ? tip.getSlot() : -1L;
@@ -561,21 +576,27 @@ public class YaciNodeProducer {
 
             networkId = magic == Constants.MAINNET_PROTOCOL_MAGIC ? 1 : 0;
         } catch (Exception e) {
-            throw new RuntimeException("Failed to load genesis config for transaction evaluation. "
-                    + "Cannot start block producer without valid protocol parameters.", e);
+            if (epochParamsTrackingEnabled) {
+                log.error("Transaction validation/evaluation not initialized for ledger-derived protocol params: {}",
+                        e.getMessage(), e);
+            } else {
+                log.warn("Transaction validation/evaluation not initialized for static protocol params: {}",
+                        e.getMessage(), e);
+            }
+            return;
         }
 
         // Initialize TransactionValidator (Scalus) — validates transactions on submission
         boolean validatorInitialized = false;
         try {
             TransactionValidator evaluator =
-                    ScalusTransactionFactory.createValidator(effectiveProtocolParamsSupplier,
+                    ScalusTransactionFactory.createValidator(protocolParamsSupplier,
                             new YaciScriptSupplier(yaciNode.getUtxoState()), slotConfig, networkId,
-                            yaciNode.getLedgerStateProvider(), currentSlotSupplier,
+                            ledgerStateProvider, currentSlotSupplier,
                             epochSlotCalc::slotToEpoch);
             yaciNode.setTransactionEvaluator(evaluator);
             validatorInitialized = true;
-            log.info("Transaction validator initialized (networkId={}, protocolParams=effective-ledger)", networkId);
+            log.info("Transaction validator initialized (networkId={}, protocolParams={})", networkId, protocolParamsSource);
         } catch (Exception e) {
             log.error("Failed to initialize transaction validator (Scalus). "
                     + "Transactions will NOT be validated on submission! Error: {}", e.getMessage(), e);
@@ -586,15 +607,15 @@ public class YaciNodeProducer {
         try {
             TransactionEvaluator transactionEvaluator;
             if ("scalus".equalsIgnoreCase(scriptEvaluator)) {
-                transactionEvaluator = ScalusTransactionFactory.createEvaluator(effectiveProtocolParamsSupplier,
+                transactionEvaluator = ScalusTransactionFactory.createEvaluator(protocolParamsSupplier,
                         new YaciScriptSupplier(yaciNode.getUtxoState()), slotConfig, networkId, currentSlotSupplier);
             } else if ("julc".equalsIgnoreCase(scriptEvaluator)) {
                 transactionEvaluator = new JulcTxEvaluator(
-                        () -> effectiveProtocolParamsSupplier.getProtocolParams(resolveRuntimeCurrentSlot(currentSlotSupplier)),
+                        () -> protocolParamsSupplier.getProtocolParams(resolveRuntimeCurrentSlot(currentSlotSupplier)),
                         new YaciScriptSupplier(yaciNode.getUtxoState()), slotConfig);
             } else {
                 transactionEvaluator = new AikenTxEvaluator(
-                        () -> effectiveProtocolParamsSupplier.getProtocolParams(resolveRuntimeCurrentSlot(currentSlotSupplier)),
+                        () -> protocolParamsSupplier.getProtocolParams(resolveRuntimeCurrentSlot(currentSlotSupplier)),
                         new YaciScriptSupplier(yaciNode.getUtxoState()), slotConfig);
             }
             yaciNode.setScriptEvaluator(transactionEvaluator);

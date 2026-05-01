@@ -2,7 +2,9 @@ package com.bloxbean.cardano.yano.ledgerstate;
 
 import com.bloxbean.cardano.yano.api.EpochParamProvider;
 import com.bloxbean.cardano.yano.api.era.EraProvider;
+import com.bloxbean.cardano.yano.api.events.GenesisBlockEvent;
 import com.bloxbean.cardano.yaci.core.model.DrepVoteThresholds;
+import com.bloxbean.cardano.yaci.core.model.Era;
 import com.bloxbean.cardano.yaci.core.model.PoolVotingThresholds;
 import com.bloxbean.cardano.yaci.core.types.NonNegativeInterval;
 import com.bloxbean.cardano.yaci.core.types.UnitInterval;
@@ -53,6 +55,30 @@ class DefaultAccountStateStoreProtocolParamsTest {
             tracker.finalizeEpoch(42);
 
             assertThat(store.getProtocolParameters(42))
+                    .isPresent()
+                    .get()
+                    .extracting(snapshot -> snapshot.protocolMajorVer())
+                    .isEqualTo(5);
+        }
+    }
+
+    @Test
+    void genesisBlockBootstrapsEpoch0ProtocolParameters() throws Exception {
+        try (var rocks = TestRocksDBHelper.create(tempDir)) {
+            EpochParamProvider provider = provider();
+            var tracker = new EpochParamTracker(provider, true, rocks.db(),
+                    rocks.cf(AccountStateCfNames.EPOCH_PARAMS));
+            var store = new DefaultAccountStateStore(
+                    rocks.db(), rocks.cfSupplier(),
+                    LoggerFactory.getLogger(DefaultAccountStateStoreProtocolParamsTest.class),
+                    true, provider);
+            store.setParamTracker(tracker);
+
+            assertThat(store.getProtocolParameters(0)).isEmpty();
+
+            store.handleGenesisBlock(new GenesisBlockEvent(Era.Conway, 0, 0, 0, "00"));
+
+            assertThat(store.getProtocolParameters(0))
                     .isPresent()
                     .get()
                     .extracting(snapshot -> snapshot.protocolMajorVer())

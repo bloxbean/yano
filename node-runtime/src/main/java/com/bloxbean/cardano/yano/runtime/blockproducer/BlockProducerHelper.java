@@ -13,6 +13,7 @@ import com.bloxbean.cardano.yano.api.EpochParamProvider;
 import com.bloxbean.cardano.yano.api.events.BlockAppliedEvent;
 import com.bloxbean.cardano.yano.api.events.BlockProducedEvent;
 import com.bloxbean.cardano.yano.api.events.EpochTransitionEvent;
+import com.bloxbean.cardano.yano.api.events.GenesisBlockEvent;
 import com.bloxbean.cardano.yano.api.events.PostEpochTransitionEvent;
 import com.bloxbean.cardano.yano.api.events.PreEpochTransitionEvent;
 import com.bloxbean.cardano.yano.api.model.MemPoolTransaction;
@@ -69,6 +70,8 @@ public final class BlockProducerHelper {
                             result.blockHash(), txCount),
                     meta, opts);
 
+            publishGenesisBlockEventIfNeeded(eventBus, result, hashHex, meta, opts);
+
             // Detect epoch transition and publish PreEpochTransitionEvent BEFORE BlockAppliedEvent
             publishEpochTransitionEventsIfNeeded(eventBus, result.slot(), result.blockNumber(), meta, opts);
 
@@ -80,6 +83,14 @@ public final class BlockProducerHelper {
         } catch (Exception e) {
             log.debug("Failed to publish block events: {}", e.getMessage());
         }
+    }
+
+    private static void publishGenesisBlockEventIfNeeded(EventBus eventBus, DevnetBlockBuilder.BlockBuildResult result,
+                                                         String hashHex, EventMetadata meta, PublishOptions opts) {
+        if (result.blockNumber() != 0 || epochProvider == null) return;
+        int epoch = epochProvider.getEpochSlotCalc().slotToEpoch(result.slot());
+        eventBus.publish(new GenesisBlockEvent(Era.Conway, epoch, result.slot(), result.blockNumber(), hashHex),
+                meta, opts);
     }
 
     public static void notifyServer(NodeServer nodeServer) {

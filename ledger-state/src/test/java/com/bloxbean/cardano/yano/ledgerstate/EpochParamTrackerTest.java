@@ -554,4 +554,41 @@ class EpochParamTrackerTest {
         assertThat(tracker.getCoinsPerUtxoSize(0)).isEqualTo(BigInteger.valueOf(4_310));
         assertThat(tracker.getGovActionLifetime(0)).isEqualTo(6);
     }
+
+    @Test
+    void bootstrapEpochIfNeeded_materializesGenesisSnapshotOnce() throws Exception {
+        EpochParamTracker tracker = createTracker();
+
+        assertThat(tracker.bootstrapEpochIfNeeded(0)).isTrue();
+        assertThat(tracker.getResolvedParams(0)).isNotNull();
+        assertThat(tracker.getProtocolMajor(0)).isEqualTo(2);
+        assertThat(tracker.bootstrapEpochIfNeeded(0)).isFalse();
+
+        EpochParamTracker restarted = createTracker();
+        assertThat(restarted.getResolvedParams(0)).isNotNull();
+        assertThat(restarted.bootstrapEpochIfNeeded(0)).isFalse();
+    }
+
+    @Test
+    void bootstrapEpochIfNeeded_beforeFirstNonByronEpochIsNoOp() throws Exception {
+        EpochParamProvider provider = new EpochParamProvider() {
+            @Override public BigInteger getKeyDeposit(long epoch) { return BigInteger.valueOf(2_000_000); }
+            @Override public BigInteger getPoolDeposit(long epoch) { return BigInteger.valueOf(500_000_000); }
+            @Override public long getEpochLength() { return 432000; }
+            @Override public long getByronSlotsPerEpoch() { return 21600; }
+            @Override public long getShelleyStartSlot() { return 86400; }
+        };
+        EpochParamTracker tracker = new EpochParamTracker(provider, true, db, cfEpochParams);
+
+        assertThat(tracker.bootstrapEpochIfNeeded(0)).isFalse();
+        assertThat(tracker.getResolvedParams(0)).isNull();
+    }
+
+    @Test
+    void bootstrapEpochIfNeeded_afterFirstNonByronEpochIsNoOp() throws Exception {
+        EpochParamTracker tracker = createTracker();
+
+        assertThat(tracker.bootstrapEpochIfNeeded(42)).isFalse();
+        assertThat(tracker.getResolvedParams(42)).isNull();
+    }
 }

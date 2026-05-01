@@ -50,6 +50,7 @@ import com.bloxbean.cardano.yano.runtime.chain.InMemoryChainState;
 import com.bloxbean.cardano.yano.runtime.chain.MemPool;
 import com.bloxbean.cardano.yano.runtime.chain.MempoolEvictionPolicy;
 import com.bloxbean.cardano.yano.api.events.BlockAppliedEvent;
+import com.bloxbean.cardano.yano.api.events.GenesisBlockEvent;
 import com.bloxbean.cardano.yano.api.events.MemPoolTransactionReceivedEvent;
 import com.bloxbean.cardano.yano.api.events.NodeStartedEvent;
 import com.bloxbean.cardano.yano.api.events.RollbackEvent;
@@ -728,6 +729,7 @@ public class YaciNode implements NodeAPI {
                 this.accountStateEventHandler = new AccountStateEventHandler(eventBus, this.accountStateStore);
                 log.info("Account state store initialized ({}); event handler registered",
                         this.accountStateStore.getClass().getSimpleName());
+                publishDirectStartGenesisBootstrapIfNeeded();
             } else {
                 log.info("Account state store not initialized (enabled={})", acctEnabled);
                 boolean accountHistoryEnabled = Boolean.parseBoolean(
@@ -788,6 +790,37 @@ public class YaciNode implements NodeAPI {
 
     public AccountHistoryStore getAccountHistoryStore() {
         return accountHistoryStore;
+    }
+
+    private void publishDirectStartGenesisBootstrapIfNeeded() {
+        try {
+            if (accountStateStore == null || epochParamProvider == null || chainState.getTip() == null) return;
+
+            int firstNonByronEpoch = epochParamProvider.getEpochSlotCalc()
+                    .slotToEpoch(epochParamProvider.getShelleyStartSlot());
+            if (firstNonByronEpoch != 0) return;
+            if (accountStateStore.getProtocolParameters(0).isPresent()) return;
+            if (eraService == null) return;
+
+            var startEra = eraService.getEarliestKnownEra();
+            if (startEra.isEmpty()) return;
+
+            Point firstBlock = chainState.getFirstBlock();
+            long slot = firstBlock != null ? firstBlock.getSlot() : epochParamProvider.getShelleyStartSlot();
+            String hash = firstBlock != null && firstBlock.getHash() != null ? firstBlock.getHash() : "";
+            EventMetadata meta = EventMetadata.builder()
+                    .origin("node-runtime-startup")
+                    .slot(slot)
+                    .blockNo(0)
+                    .blockHash(hash)
+                    .build();
+
+            eventBus.publish(new GenesisBlockEvent(startEra.get(), 0, slot, 0, hash),
+                    meta, PublishOptions.builder().build());
+            log.info("Published startup genesis bootstrap event for direct-start chain");
+        } catch (Throwable t) {
+            log.warn("Failed to publish startup genesis bootstrap event: {}", t.toString());
+        }
     }
 
     @Override

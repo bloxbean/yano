@@ -2,6 +2,7 @@ package com.bloxbean.cardano.yano.api.account;
 
 import com.bloxbean.cardano.yaci.core.storage.ChainState;
 import com.bloxbean.cardano.yano.api.events.BlockAppliedEvent;
+import com.bloxbean.cardano.yano.api.events.GenesisBlockEvent;
 import com.bloxbean.cardano.yano.api.events.RollbackEvent;
 
 import java.math.BigInteger;
@@ -51,6 +52,14 @@ public interface AccountStateStore extends LedgerStateProvider {
      * @see com.bloxbean.cardano.yano.api.events.PostEpochTransitionEvent
      */
     default void handlePostEpochTransition(int previousEpoch, int newEpoch) {}
+
+    /**
+     * Handle genesis/bootstrap state initialization for a fresh local chain.
+     * This is intentionally separate from epoch-boundary hooks.
+     *
+     * @see GenesisBlockEvent
+     */
+    default void handleGenesisBlock(GenesisBlockEvent event) {}
 
     /**
      * Reinitialize after snapshot restore (refresh DB handles).
