@@ -295,6 +295,22 @@ public class YaciNodeProducer {
         this.pluginClassLoader = pluginClassLoader;
     }
 
+    private boolean isBootstrapPartialStateMode() {
+        return bootstrapEnabled;
+    }
+
+    private boolean effectiveAccountStateEnabled() {
+        return accountStateEnabled && !isBootstrapPartialStateMode();
+    }
+
+    private boolean effectiveEpochParamsTrackingEnabled() {
+        return epochParamsTrackingEnabled && !isBootstrapPartialStateMode();
+    }
+
+    private boolean effectiveDerivedLedgerStateEnabled(boolean configured) {
+        return configured && !isBootstrapPartialStateMode();
+    }
+
     @Produces
     @ApplicationScoped
     public NodeAPI createNodeAPI() {
@@ -393,6 +409,24 @@ public class YaciNodeProducer {
         PluginsOptions pluginsOptions = new PluginsOptions(
                 pluginsEnabled, false, Set.of(), Set.of(), pluginConfigMap);
 
+        boolean effectiveAccountStateEnabled = effectiveAccountStateEnabled();
+        boolean effectiveEpochParamsTrackingEnabled = effectiveEpochParamsTrackingEnabled();
+        boolean effectiveAccountHistoryEnabled = effectiveDerivedLedgerStateEnabled(accountHistoryEnabled);
+        boolean effectiveAccountHistoryTxEventsEnabled = effectiveDerivedLedgerStateEnabled(accountHistoryTxEventsEnabled);
+        boolean effectiveAccountHistoryRewardsEnabled = effectiveDerivedLedgerStateEnabled(accountHistoryRewardsEnabled);
+        boolean effectiveStakeBalanceIndexEnabled = effectiveDerivedLedgerStateEnabled(stakeBalanceIndexEnabled);
+        boolean effectiveEpochSnapshotAmountsEnabled = effectiveDerivedLedgerStateEnabled(epochSnapshotAmountsEnabled);
+        boolean effectiveAdaPotEnabled = effectiveDerivedLedgerStateEnabled(adapotEnabled);
+        boolean effectiveRewardsEnabled = effectiveDerivedLedgerStateEnabled(rewardsEnabled);
+        boolean effectiveGovernanceEnabled = effectiveDerivedLedgerStateEnabled(governanceEnabled);
+        boolean effectiveSnapshotExportEnabled = effectiveDerivedLedgerStateEnabled(snapshotExportEnabled);
+
+        if (isBootstrapPartialStateMode()) {
+            log.info("Bootstrap mode enabled: disabling derived ledger-state subsystems "
+                    + "(account-state, stake-balance-index, account-history, epoch-params, rewards, adapot, governance, snapshots). "
+                    + "UTXO bootstrap remains enabled; transaction evaluation may use protocol-param.json if configured.");
+        }
+
         // Globals: UTXO options
         Map<String, Object> globals = new HashMap<>();
         globals.put("yaci.node.utxo.enabled", utxoEnabled);
@@ -407,13 +441,13 @@ public class YaciNodeProducer {
         globals.put("yaci.node.tx-evaluation.enabled", txEvaluationEnabled);
 
         // Account state
-        globals.put("yaci.node.account-state.enabled", accountStateEnabled);
+        globals.put("yaci.node.account-state.enabled", effectiveAccountStateEnabled);
         globals.put("yaci.node.account-state.epoch-block-data-retention-lag", accountStateEpochBlockDataRetentionLag);
         globals.put("yaci.node.account-state.snapshot-retention-epochs", accountStateSnapshotRetentionEpochs);
-        globals.put("yaci.node.account.stake-balance-index-enabled", stakeBalanceIndexEnabled);
-        globals.put("yaci.node.account-history.enabled", accountHistoryEnabled);
-        globals.put("yaci.node.account-history.tx-events-enabled", accountHistoryTxEventsEnabled);
-        globals.put("yaci.node.account-history.rewards-enabled", accountHistoryRewardsEnabled);
+        globals.put("yaci.node.account.stake-balance-index-enabled", effectiveStakeBalanceIndexEnabled);
+        globals.put("yaci.node.account-history.enabled", effectiveAccountHistoryEnabled);
+        globals.put("yaci.node.account-history.tx-events-enabled", effectiveAccountHistoryTxEventsEnabled);
+        globals.put("yaci.node.account-history.rewards-enabled", effectiveAccountHistoryRewardsEnabled);
         globals.put("yaci.node.account-history.retention-epochs", accountHistoryRetentionEpochs);
         globals.put("yaci.node.account-history.prune-interval-seconds", accountHistoryPruneIntervalSeconds);
         globals.put("yaci.node.account-history.prune-batch-size", accountHistoryPruneBatchSize);
@@ -421,13 +455,13 @@ public class YaciNodeProducer {
                 globals.put("yaci.node.account-history.rollback-safety-slots", v));
 
         // Epoch subsystems
-        globals.put("yaci.node.epoch-snapshot.amounts-enabled", epochSnapshotAmountsEnabled);
+        globals.put("yaci.node.epoch-snapshot.amounts-enabled", effectiveEpochSnapshotAmountsEnabled);
         globals.put("yaci.node.epoch-snapshot.balance-mode", balanceMode);
-        globals.put("yaci.node.adapot.enabled", adapotEnabled);
-        globals.put("yaci.node.rewards.enabled", rewardsEnabled);
-        globals.put("yaci.node.epoch-params.tracking-enabled", epochParamsTrackingEnabled);
-        globals.put("yaci.node.governance.enabled", governanceEnabled);
-        globals.put("yaci.node.snapshot-export.enabled", snapshotExportEnabled);
+        globals.put("yaci.node.adapot.enabled", effectiveAdaPotEnabled);
+        globals.put("yaci.node.rewards.enabled", effectiveRewardsEnabled);
+        globals.put("yaci.node.epoch-params.tracking-enabled", effectiveEpochParamsTrackingEnabled);
+        globals.put("yaci.node.governance.enabled", effectiveGovernanceEnabled);
+        globals.put("yaci.node.snapshot-export.enabled", effectiveSnapshotExportEnabled);
         globals.put("yaci.node.snapshot-export.dir", snapshotExportDir);
         globals.put("yaci.node.snapshot-export.stake", snapshotExportStake);
         globals.put("yaci.node.snapshot-export.drep-dist", snapshotExportDrepDist);
@@ -521,8 +555,9 @@ public class YaciNodeProducer {
      * Initialize the Scalus-based transaction evaluator and inject it into the node.
      */
     private void initTransactionEvaluator(YaciNode yaciNode, YaciNodeConfig yaciConfig) {
+        boolean effectiveEpochParamsTrackingEnabled = effectiveEpochParamsTrackingEnabled();
         LedgerStateProvider ledgerStateProvider = yaciNode.getLedgerStateProvider();
-        if (epochParamsTrackingEnabled && ledgerStateProvider == null) {
+        if (effectiveEpochParamsTrackingEnabled && ledgerStateProvider == null) {
             log.info("Transaction validation/evaluation not initialized: ledger-state provider is unavailable");
             return;
         }
@@ -537,14 +572,15 @@ public class YaciNodeProducer {
         LongSupplier currentSlotSupplier;
         EpochSlotCalc epochSlotCalc;
         String protocolParamsSource;
+        ProtocolParams staticProtocolParams = null;
         try {
             genesis = GenesisConfig.load(
                     yaciConfig.getShelleyGenesisFile(),
                     yaciConfig.getByronGenesisFile(),
-                    epochParamsTrackingEnabled ? null : yaciConfig.getProtocolParametersFile());
+                    effectiveEpochParamsTrackingEnabled ? null : yaciConfig.getProtocolParametersFile());
 
             epochSlotCalc = resolveEpochSlotCalc(yaciNode, yaciConfig, genesis);
-            if (epochParamsTrackingEnabled) {
+            if (effectiveEpochParamsTrackingEnabled) {
                 protocolParamsSupplier = new EffectiveProtocolParamsSupplier(
                         ledgerStateProvider,
                         epochSlotCalc);
@@ -554,8 +590,9 @@ public class YaciNodeProducer {
                     log.info("Transaction validation/evaluation not initialized: epoch-param tracking disabled and no protocol-param.json configured");
                     return;
                 }
-                ProtocolParams staticProtocolParams = ProtocolParamsMapper.fromNodeProtocolParam(genesis.getProtocolParameters());
-                protocolParamsSupplier = slot -> staticProtocolParams;
+                ProtocolParams staticParams = ProtocolParamsMapper.fromNodeProtocolParam(genesis.getProtocolParameters());
+                staticProtocolParams = staticParams;
+                protocolParamsSupplier = slot -> staticParams;
                 protocolParamsSource = "static-protocol-param-json";
             }
             currentSlotSupplier = () -> {
@@ -576,7 +613,7 @@ public class YaciNodeProducer {
 
             networkId = magic == Constants.MAINNET_PROTOCOL_MAGIC ? 1 : 0;
         } catch (Exception e) {
-            if (epochParamsTrackingEnabled) {
+            if (effectiveEpochParamsTrackingEnabled) {
                 log.error("Transaction validation/evaluation not initialized for ledger-derived protocol params: {}",
                         e.getMessage(), e);
             } else {
@@ -589,8 +626,11 @@ public class YaciNodeProducer {
         // Initialize TransactionValidator (Scalus) — validates transactions on submission
         boolean validatorInitialized = false;
         try {
-            TransactionValidator evaluator =
-                    ScalusTransactionFactory.createValidator(protocolParamsSupplier,
+            TransactionValidator evaluator = staticProtocolParams != null
+                    ? ScalusTransactionFactory.createValidator(staticProtocolParams,
+                            new YaciScriptSupplier(yaciNode.getUtxoState()), slotConfig, networkId,
+                            ledgerStateProvider)
+                    : ScalusTransactionFactory.createValidator(protocolParamsSupplier,
                             new YaciScriptSupplier(yaciNode.getUtxoState()), slotConfig, networkId,
                             ledgerStateProvider, currentSlotSupplier,
                             epochSlotCalc::slotToEpoch);
@@ -607,8 +647,11 @@ public class YaciNodeProducer {
         try {
             TransactionEvaluator transactionEvaluator;
             if ("scalus".equalsIgnoreCase(scriptEvaluator)) {
-                transactionEvaluator = ScalusTransactionFactory.createEvaluator(protocolParamsSupplier,
-                        new YaciScriptSupplier(yaciNode.getUtxoState()), slotConfig, networkId, currentSlotSupplier);
+                transactionEvaluator = staticProtocolParams != null
+                        ? ScalusTransactionFactory.createEvaluator(staticProtocolParams,
+                                new YaciScriptSupplier(yaciNode.getUtxoState()), slotConfig, networkId)
+                        : ScalusTransactionFactory.createEvaluator(protocolParamsSupplier,
+                                new YaciScriptSupplier(yaciNode.getUtxoState()), slotConfig, networkId, currentSlotSupplier);
             } else if ("julc".equalsIgnoreCase(scriptEvaluator)) {
                 transactionEvaluator = new JulcTxEvaluator(
                         () -> protocolParamsSupplier.getProtocolParams(resolveRuntimeCurrentSlot(currentSlotSupplier)),
