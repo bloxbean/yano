@@ -1,0 +1,16 @@
+dependencies {
+    api project(':wallet-core')
+
+    implementation libs.jackson.databind
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            pom {
+                name = 'Yano Wallet Bridge'
+                description = 'Yano Wallet Bridge - local wallet API and CIP-30 bridge domain contracts'
+            }
+        }
+    }
+}

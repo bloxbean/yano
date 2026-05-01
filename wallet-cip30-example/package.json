@@ -1,0 +1,23 @@
+{
+  "name": "yano-wallet-cip30-example",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 5174",
+    "test": "vitest run",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview --host 127.0.0.1 --port 4174"
+  },
+  "dependencies": {
+    "@meshsdk/core-cst": "1.9.0-beta.102",
+    "@meshsdk/transaction": "1.9.0-beta.102",
+    "@meshsdk/wallet": "1.9.0-beta.102",
+    "buffer": "^6.0.3"
+  },
+  "devDependencies": {
+    "typescript": "^6.0.3",
+    "vite": "^8.0.10",
+    "vitest": "^4.0.15"
+  }
+}

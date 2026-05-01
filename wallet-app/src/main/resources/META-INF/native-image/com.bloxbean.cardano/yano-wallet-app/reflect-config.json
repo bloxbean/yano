@@ -1,0 +1,19 @@
+[
+  {
+    "name": "com.bloxbean.cardano.yano.wallet.app.YanoWalletApp",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.wallet.app.YanoWalletAppController",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.wallet.app.ActiveWalletBridgeBackend",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
+  }
+]

@@ -1,0 +1,258 @@
+plugins {
+    id 'application'
+    id 'com.gluonhq.gluonfx-gradle-plugin' version '1.0.28'
+}
+
+dependencies {
+    implementation project(':wallet-core')
+    implementation project(':wallet-yano-adapter')
+    implementation project(':wallet-bridge')
+    implementation project(':wallet-ui')
+    implementation project(':node-runtime')
+
+    implementation libs.slf4j.api
+
+    testImplementation libs.junit.jupiter.api
+    testRuntimeOnly libs.junit.jupiter.engine
+    testRuntimeOnly libs.junit.platform.launcher
+    testImplementation libs.assertj.core
+}
+
+configurations.runtimeClasspath {
+    exclude group: 'org.slf4j', module: 'slf4j-reload4j'
+    exclude group: 'ch.qos.reload4j', module: 'reload4j'
+}
+
+application {
+    mainClass = 'com.bloxbean.cardano.yano.wallet.app.YanoWalletApp'
+    applicationDefaultJvmArgs = ['--enable-native-access=ALL-UNNAMED']
+}
+
+def walletGraalHome = System.getenv('GRAALVM_HOME') ?: System.getenv('JAVA_HOME') ?: "${System.getProperty('user.home')}/.sdkman/candidates/java/25.0.2-graal"
+def walletGluonJavafxStaticSdkVersion = '21-ea+11.3'
+
+gluonfx {
+    target = 'host'
+    appIdentifier = 'com.bloxbean.cardano.yano.wallet'
+    graalvmHome = walletGraalHome
+    javafxStaticSdkVersion = walletGluonJavafxStaticSdkVersion
+    verbose = true
+    resourcesList = [
+            'css',
+            'json',
+            'properties',
+            'frag',
+            'glsl',
+            'metallib',
+            'dylib',
+            'com/bloxbean/cardano/yano/wallet/ui/.*',
+            'com/sun/prism/es2/glsl/.*',
+            'com/sun/prism/mtl/msl/.*',
+            'com/sun/scenario/effect/impl/es2/glsl/.*'
+    ]
+    reflectionList = [
+            'com.bloxbean.cardano.yano.wallet.app.YanoWalletApp',
+            'com.bloxbean.cardano.yano.wallet.ui.YanoWalletApplication',
+            'com.sun.javafx.tk.quantum.QuantumToolkit',
+            'com.sun.glass.ui.mac.MacPlatformFactory',
+            'com.sun.prism.mtl.MTLPipeline',
+            'com.sun.prism.es2.ES2Pipeline',
+            'com.sun.prism.sw.SWPipeline',
+            'com.sun.prism.es2.MacGLFactory'
+    ]
+    linkerArgs = [
+            "-Wl,-force_load,${walletGraalHome}/lib/static/darwin-aarch64/libmanagement.a".toString(),
+            "-Wl,-force_load,${walletGraalHome}/lib/static/darwin-aarch64/libmanagement_ext.a".toString()
+    ]
+}
+
+def patchBytes = { byte[] data, byte[] from, byte[] to ->
+    int matchAt = -1
+    for (int i = 0; i <= data.length - from.length; i++) {
+        boolean matched = true
+        for (int j = 0; j < from.length; j++) {
+            if (data[i + j] != from[j]) {
+                matched = false
+                break
+            }
+        }
+        if (matched) {
+            matchAt = i
+            break
+        }
+    }
+    if (matchAt < 0) {
+        return false
+    }
+    System.arraycopy(to, 0, data, matchAt, to.length)
+    return true
+}
+
+def runBuildCommand = { File workingDirectory, List<String> command ->
+    def process = new ProcessBuilder(command)
+            .directory(workingDirectory)
+            .redirectErrorStream(true)
+            .start()
+    def output = process.inputStream.getText('UTF-8')
+    def exitCode = process.waitFor()
+    if (exitCode != 0) {
+        throw new GradleException("Command failed (${exitCode}): ${command.join(' ')}\n${output}")
+    }
+    if (!output.trim().isEmpty()) {
+        logger.info(output.trim())
+    }
+}
+
+tasks.register('patchGluonJavafxGlassJniVersion') {
+    group = 'build'
+    description = 'Patches Gluon JavaFX static Glass to report a GraalVM 25-compatible JNI version.'
+    mustRunAfter 'nativeCompile'
+
+    doLast {
+        def os = org.gradle.internal.os.OperatingSystem.current()
+        def arch = System.getProperty('os.arch')
+        if (!os.isMacOsX() || !(arch == 'aarch64' || arch == 'arm64')) {
+            logger.lifecycle('Skipping JavaFX Glass JNI patch; host is not macOS aarch64.')
+            return
+        }
+
+        def libGlass = file("${System.getProperty('user.home')}/.gluon/substrate/javafxStaticSdk/${walletGluonJavafxStaticSdkVersion}/darwin-aarch64/sdk/lib/libglass.a")
+        if (!libGlass.exists()) {
+            throw new GradleException("Gluon JavaFX static Glass library not found: ${libGlass}")
+        }
+
+        def backup = new File(libGlass.parentFile, "${libGlass.name}.yano-pre-jni18")
+        if (!backup.exists()) {
+            java.nio.file.Files.copy(libGlass.toPath(), backup.toPath())
+        }
+
+        delete temporaryDir
+        temporaryDir.mkdirs()
+        runBuildCommand(temporaryDir, ['ar', '-x', libGlass.absolutePath, 'GlassApplication.obj'])
+
+        def glassApplication = new File(temporaryDir, 'GlassApplication.obj')
+        if (!glassApplication.exists()) {
+            throw new GradleException("GlassApplication.obj not found in ${libGlass}")
+        }
+
+        byte[] data = glassApplication.bytes
+        byte[] jni14 = [(byte) 0x80, (byte) 0x00, (byte) 0x80, (byte) 0x52, (byte) 0x20, (byte) 0x00, (byte) 0xa0, (byte) 0x72] as byte[]
+        byte[] jni18 = [(byte) 0x00, (byte) 0x01, (byte) 0x80, (byte) 0x52, (byte) 0x20, (byte) 0x00, (byte) 0xa0, (byte) 0x72] as byte[]
+
+        if (patchBytes(data, jni14, jni18)) {
+            glassApplication.bytes = data
+            runBuildCommand(temporaryDir, ['ar', '-r', libGlass.absolutePath, 'GlassApplication.obj'])
+            runBuildCommand(libGlass.parentFile, ['ranlib', libGlass.absolutePath])
+            logger.lifecycle('Patched Gluon JavaFX Glass JNI version from JNI 1.4 to JNI 1.8 for GraalVM 25.')
+        } else if (patchBytes(data, jni18, jni18)) {
+            logger.lifecycle('Gluon JavaFX Glass JNI version is already patched for GraalVM 25.')
+        } else {
+            throw new GradleException('Unable to locate the JavaFX Glass JNI version instruction sequence in GlassApplication.obj.')
+        }
+    }
+}
+
+tasks.named('nativeLink') {
+    dependsOn 'patchGluonJavafxGlassJniVersion'
+}
+
+tasks.register('restoreGluonJavafxGlassJniVersion') {
+    group = 'build'
+    description = 'Restores the original Gluon JavaFX static Glass archive saved before the JNI compatibility patch.'
+
+    doLast {
+        def libGlass = file("${System.getProperty('user.home')}/.gluon/substrate/javafxStaticSdk/${walletGluonJavafxStaticSdkVersion}/darwin-aarch64/sdk/lib/libglass.a")
+        def backup = new File(libGlass.parentFile, "${libGlass.name}.yano-pre-jni18")
+        if (!backup.exists()) {
+            logger.lifecycle("No Gluon JavaFX Glass backup found at ${backup}")
+            return
+        }
+        java.nio.file.Files.copy(backup.toPath(), libGlass.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+        runBuildCommand(libGlass.parentFile, ['ranlib', libGlass.absolutePath])
+        logger.lifecycle('Restored original Gluon JavaFX Glass archive.')
+    }
+}
+
+tasks.register('gluonNativeWalletImage') {
+    group = 'build'
+    description = 'Builds the Yano Wallet native desktop app through GluonFX/Substrate.'
+    dependsOn 'nativeBuild'
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_25
+    targetCompatibility = JavaVersion.VERSION_25
+}
+
+jar {
+    archiveBaseName = 'yano-wallet'
+}
+
+tasks.register('nativeWalletImage', Exec) {
+    group = 'build'
+    description = 'Builds the Yano Wallet GraalVM native image.'
+    dependsOn classes
+    def nativeMetadataProjects = [
+            project,
+            project(':wallet-core'),
+            project(':wallet-bridge'),
+            project(':wallet-ui'),
+            project(':node-runtime')
+    ]
+    dependsOn nativeMetadataProjects.collect { "${it.path}:processResources" }
+
+    def graalHome = providers.environmentVariable('GRAALVM_HOME')
+            .orElse(providers.environmentVariable('JAVA_HOME'))
+            .orElse("${System.getProperty('user.home')}/.sdkman/candidates/java/25.0.2-graal")
+    def nativeImage = graalHome.map { home ->
+        def executable = org.gradle.internal.os.OperatingSystem.current().isWindows()
+                ? 'native-image.cmd'
+                : 'native-image'
+        new File(home, "bin/${executable}").absolutePath
+    }
+    def outputDir = layout.buildDirectory.dir('native')
+
+    doFirst {
+        def executable = file(nativeImage.get())
+        if (!executable.exists()) {
+            throw new GradleException("native-image executable not found: ${executable}")
+        }
+        def nativeClasspath = sourceSets.main.runtimeClasspath.filter { dependency ->
+            !dependency.name.contains('slf4j-reload4j') && !dependency.name.contains('reload4j')
+        }
+        def nativeConfigDirs = nativeMetadataProjects.collectMany { module ->
+            def metadataRoot = module.layout.buildDirectory.dir('resources/main/META-INF/native-image').get().asFile
+            if (!metadataRoot.exists()) {
+                return []
+            }
+            fileTree(metadataRoot) {
+                include '**/*-config.json'
+            }.files.collect { it.parentFile }
+        }.unique { it.absolutePath }.sort { it.absolutePath }
+        def nativeImageArgs = [
+                executable.absolutePath,
+                '-cp', nativeClasspath.asPath,
+                '-o', new File(outputDir.get().asFile, 'yano-wallet').absolutePath,
+                '--no-fallback',
+                '--enable-native-access=ALL-UNNAMED',
+                '--enable-http',
+                '--enable-https',
+                '--enable-url-protocols=http,https',
+                '--enable-all-security-services',
+                '--initialize-at-build-time=com.fasterxml.jackson.annotation',
+                '--initialize-at-build-time=com.fasterxml.jackson.core',
+                '--initialize-at-build-time=com.fasterxml.jackson.databind',
+                '--initialize-at-run-time=org.slf4j',
+                '--initialize-at-run-time=com.bloxbean.cardano.client.transaction.spec.Transaction',
+                '--initialize-at-run-time=javafx.application.Platform',
+                '--initialize-at-run-time=com.sun.glass.ui.Application',
+                '--initialize-at-run-time=com.sun.javafx.tk.Toolkit'
+        ]
+        nativeConfigDirs.each { configDir ->
+            nativeImageArgs.add("-H:ConfigurationFileDirectories=${configDir.absolutePath}")
+        }
+        nativeImageArgs.add(application.mainClass.get())
+        outputDir.get().asFile.mkdirs()
+        commandLine(nativeImageArgs)
+    }
+}

@@ -1,0 +1,21 @@
+dependencies {
+    api project(':wallet-core')
+    api project(':node-api')
+    api libs.cardano.client.core
+    api libs.cardano.client.core.api
+    api libs.cardano.client.quicktx
+
+    implementation project(':node-runtime')
+    implementation libs.jackson.databind
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            pom {
+                name = 'Yano Wallet Yano Adapter'
+                description = 'Yano Wallet Yano Adapter - Cardano Client Lib adapters backed by Yano node state'
+            }
+        }
+    }
+}

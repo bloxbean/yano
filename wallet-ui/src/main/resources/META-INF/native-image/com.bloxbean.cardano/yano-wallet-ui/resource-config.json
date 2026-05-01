@@ -1,0 +1,30 @@
+{
+  "resources": {
+    "includes": [
+      {
+        "pattern": "com/bloxbean/cardano/yano/wallet/ui/yano-wallet\\.css"
+      },
+      {
+        "pattern": "com/sun/javafx/tk/quantum/QuantumMessagesBundle.*\\.properties"
+      },
+      {
+        "pattern": "com/sun/javafx/scene/control/skin/resources/controls.*\\.properties"
+      },
+      {
+        "pattern": "com/sun/javafx/scene/control/skin/modena/.*"
+      },
+      {
+        "pattern": "com/sun/prism/es2/glsl/.*"
+      },
+      {
+        "pattern": "com/sun/prism/mtl/msl/.*"
+      },
+      {
+        "pattern": "com/sun/scenario/effect/impl/es2/glsl/.*"
+      },
+      {
+        "pattern": "lib.*\\.dylib"
+      }
+    ]
+  }
+}

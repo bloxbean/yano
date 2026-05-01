@@ -1,0 +1,36 @@
+{
+  "resources": {
+    "includes": [
+      {
+        "pattern": "META-INF/services/.*"
+      },
+      {
+        "pattern": "org/rocksdb/.*"
+      },
+      {
+        "pattern": "librocksdbjni-.*\\.jnilib"
+      },
+      {
+        "pattern": "librocksdbjni-.*\\.so"
+      },
+      {
+        "pattern": "librocksdbjni-.*\\.dll"
+      },
+      {
+        "pattern": ".*\\.properties"
+      },
+      {
+        "pattern": ".*\\.xml"
+      },
+      {
+        "pattern": ".*\\.yml"
+      },
+      {
+        "pattern": ".*\\.yaml"
+      },
+      {
+        "pattern": "genesis/.*\\.json"
+      }
+    ]
+  }
+}

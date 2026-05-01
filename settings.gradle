@@ -1,3 +1,10 @@
+pluginManagement {
+    repositories {
+        gradlePluginPortal()
+        mavenCentral()
+    }
+}
+
 rootProject.name = 'yano'
 include 'node-api'
 include 'node-runtime'
@@ -8,3 +15,8 @@ include 'ledger-state'
 include 'ccl-ledger-rules'
 include 'scalus-bridge'
 include 'epoch-export'
+include 'wallet-core'
+include 'wallet-yano-adapter'
+include 'wallet-bridge'
+include 'wallet-ui'
+include 'wallet-app'

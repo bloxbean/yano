@@ -2,6 +2,7 @@
 yaci = "0.5.0-pre7"
 cardano-client-lib = "0.8.0-pre3"
 julc="0.1.0-pre7"
+javafx = "25.0.2"
 
 [libraries]
 yaci-core = { module = "com.bloxbean.cardano:yaci-core", version.ref = "yaci" }
@@ -10,15 +11,20 @@ yaci-events-core = { module = "com.bloxbean.cardano:yaci-events-core", version.r
 yaci-events-processor = { module = "com.bloxbean.cardano:yaci-events-processor", version.ref = "yaci" }
 
 cardano-client-core = { module = "com.bloxbean.cardano:cardano-client-core", version.ref = "cardano-client-lib" }
+cardano-client-core-api = { module = "com.bloxbean.cardano:cardano-client-core-api", version.ref = "cardano-client-lib" }
 cardano-client-address = { module = "com.bloxbean.cardano:cardano-client-address", version.ref = "cardano-client-lib" }
 cardano-client-common = { module = "com.bloxbean.cardano:cardano-client-common", version.ref = "cardano-client-lib" }
 cardano-client-crypto = { module = "com.bloxbean.cardano:cardano-client-crypto", version.ref = "cardano-client-lib" }
+cardano-client-transaction-spec = { module = "com.bloxbean.cardano:cardano-client-transaction-spec", version.ref = "cardano-client-lib" }
 cardano-client-governance = { module = "com.bloxbean.cardano:cardano-client-governance", version.ref = "cardano-client-lib" }
 cardano-client-lib = { module = "com.bloxbean.cardano:cardano-client-lib", version.ref = "cardano-client-lib" }
 cardano-client-crypto-ext = { module = "com.bloxbean.cardano:cardano-client-crypto-ext", version.ref = "cardano-client-lib" }
+cardano-client-backend = { module = "com.bloxbean.cardano:cardano-client-backend", version.ref = "cardano-client-lib" }
 cardano-client-backend-blockfrost = { module = "com.bloxbean.cardano:cardano-client-backend-blockfrost", version.ref = "cardano-client-lib" }
+cardano-client-hd-wallet = { module = "com.bloxbean.cardano:cardano-client-hd-wallet", version.ref = "cardano-client-lib" }
 cardano-client-quicktx = { module = "com.bloxbean.cardano:cardano-client-quicktx", version.ref = "cardano-client-lib" }
 cardano-client-cip20 = { module = "com.bloxbean.cardano:cardano-client-cip20", version.ref = "cardano-client-lib" }
+cardano-client-cip30 = { module = "com.bloxbean.cardano:cardano-client-cip30", version.ref = "cardano-client-lib" }
 
 julc-vm-java={ module = "com.bloxbean.cardano:julc-vm-java", version.ref = "julc" }
 julc-cardano-client-lib={ module = "com.bloxbean.cardano:julc-cardano-client-lib", version.ref = "julc" }

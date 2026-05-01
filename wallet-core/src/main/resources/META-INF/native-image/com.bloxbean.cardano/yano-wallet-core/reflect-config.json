@@ -1,0 +1,26 @@
+[
+  {
+    "name": "com.bloxbean.cardano.yano.wallet.core.tx.PendingTransaction",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.wallet.core.vault.FileWalletSecretStore$EncryptedVaultFile",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.wallet.core.vault.FileWalletSecretStore$WalletSecretPayload",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.wallet.core.wallet.FileStoredWalletRepository$StoredWalletIndexEntry",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
+  }
+]

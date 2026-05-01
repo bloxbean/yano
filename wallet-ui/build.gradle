@@ -1,0 +1,38 @@
+dependencies {
+    api project(':wallet-core')
+
+    def javafxVersion = libs.versions.javafx.get()
+    def javafxPlatform = detectJavafxPlatform()
+
+    api "org.openjfx:javafx-base:${javafxVersion}:${javafxPlatform}"
+    api "org.openjfx:javafx-graphics:${javafxVersion}:${javafxPlatform}"
+    api "org.openjfx:javafx-controls:${javafxVersion}:${javafxPlatform}"
+}
+
+def detectJavafxPlatform() {
+    def osName = System.getProperty('os.name').toLowerCase()
+    def osArch = System.getProperty('os.arch').toLowerCase()
+
+    if (osName.contains('mac') || osName.contains('darwin')) {
+        return osArch.contains('aarch64') || osArch.contains('arm64') ? 'mac-aarch64' : 'mac'
+    }
+    if (osName.contains('windows')) {
+        return 'win'
+    }
+    if (osName.contains('linux')) {
+        return osArch.contains('aarch64') || osArch.contains('arm64') ? 'linux-aarch64' : 'linux'
+    }
+
+    throw new GradleException("Unsupported JavaFX platform: ${osName} ${osArch}")
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            pom {
+                name = 'Yano Wallet UI'
+                description = 'Yano Wallet UI - JavaFX views and view models for Yano Wallet'
+            }
+        }
+    }
+}

@@ -1,0 +1,25 @@
+dependencies {
+    api libs.cardano.client.hd.wallet
+    api libs.cardano.client.quicktx
+    api libs.cardano.client.cip30
+    api libs.cardano.client.cip20
+    api libs.cardano.client.core
+    api libs.cardano.client.core.api
+    api libs.cardano.client.address
+    api libs.cardano.client.common
+    api libs.cardano.client.crypto
+    api libs.cardano.client.transaction.spec
+
+    implementation libs.jackson.databind
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            pom {
+                name = 'Yano Wallet Core'
+                description = 'Yano Wallet Core - wallet domain, vault, signing, and transaction workflow contracts'
+            }
+        }
+    }
+}
