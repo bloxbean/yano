@@ -229,6 +229,210 @@
     "allDeclaredConstructors": true
   },
   {
+    "name": "com.bloxbean.cardano.yano.app.api.epochs.dto.AdaPotDto",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.app.api.epochs.dto.StakeDtos$TotalStakeDto",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.app.api.epochs.dto.StakeDtos$PoolStakeDto",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.app.api.epochs.dto.StakeDtos$PoolStakeDelegatorDto",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.app.api.network.dto.NetworkDto",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.app.api.network.dto.NetworkDto$SupplyDto",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.app.api.network.dto.NetworkDto$StakeDto",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.app.api.accounts.dto.AccountStateDtos$StakeRegistrationDto",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.app.api.accounts.dto.AccountStateDtos$PoolDelegationDto",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.app.api.accounts.dto.AccountStateDtos$DRepDelegationDto",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.app.api.accounts.dto.AccountStateDtos$PoolDto",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.app.api.accounts.dto.AccountStateDtos$PoolRetirementDto",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.app.api.accounts.dto.AccountStateDtos$AccountInfoDto",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.app.api.accounts.dto.AccountStateDtos$WithdrawalHistoryDto",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.app.api.accounts.dto.AccountStateDtos$DelegationHistoryDto",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.app.api.accounts.dto.AccountStateDtos$RegistrationHistoryDto",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.app.api.accounts.dto.AccountStateDtos$MirHistoryDto",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.app.api.accounts.dto.AccountStateDtos$AccountStakeDto",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.app.api.accounts.DebugSnapshotResource$EpochSnapshotEntry",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.app.api.accounts.DebugSnapshotResource$PoolBlockCountEntry",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.app.api.accounts.DebugSnapshotResource$EpochSnapshotSummary",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.app.api.accounts.DebugSnapshotResource$PoolBlockCountSummary",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.app.api.accounts.DebugSnapshotResource$ProtocolParamsDto",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.app.api.accounts.DebugSnapshotResource$EpochInfoDto",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.app.api.accounts.DebugSnapshotResource$PoolStateDto",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.app.api.accounts.DebugSnapshotResource$RetiredPoolDto",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.app.api.accounts.DebugSnapshotResource$AdaPotDto",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.app.api.accounts.DebugSnapshotResource$PoolParamsDto",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.app.api.accounts.DebugSnapshotResource$RewardInputsDto",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.app.api.governance.dto.GovernanceDtos$ProposalDto",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.app.api.governance.dto.GovernanceDtos$ProposalVoteDto",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.app.api.governance.dto.GovernanceDtos$DRepListDto",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.app.api.governance.dto.GovernanceDtos$DRepDto",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.app.api.governance.dto.GovernanceDtos$DRepDistributionDto",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
     "name": "com.bloxbean.cardano.yano.app.api.utxos.dto.UtxoDto",
     "allDeclaredFields": true,
     "allDeclaredMethods": true,

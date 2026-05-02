@@ -109,6 +109,49 @@ public class GenesisConfig {
         return new GenesisConfig(funds, protocolParams, byronBalances, shelley, byron);
     }
 
+    /**
+     * Return a copy with an updated Shelley systemStart while preserving all
+     * other parsed genesis values. Used by devnet past-time-travel mode after
+     * /epochs/shift mutates the effective genesis time at runtime.
+     */
+    public GenesisConfig withSystemStart(String systemStart) {
+        if (shelleyGenesisData == null) return this;
+
+        ShelleyGenesisData shelley = new ShelleyGenesisData(
+                shelleyGenesisData.initialFunds(),
+                shelleyGenesisData.networkMagic(),
+                shelleyGenesisData.epochLength(),
+                shelleyGenesisData.slotLength(),
+                systemStart,
+                shelleyGenesisData.maxLovelaceSupply(),
+                shelleyGenesisData.activeSlotsCoeff(),
+                shelleyGenesisData.securityParam(),
+                shelleyGenesisData.maxKESEvolutions(),
+                shelleyGenesisData.slotsPerKESPeriod(),
+                shelleyGenesisData.updateQuorum(),
+                shelleyGenesisData.protocolMajor(),
+                shelleyGenesisData.protocolMinor(),
+                shelleyGenesisData.rho(),
+                shelleyGenesisData.tau(),
+                shelleyGenesisData.a0(),
+                shelleyGenesisData.nOpt(),
+                shelleyGenesisData.minPoolCost(),
+                shelleyGenesisData.keyDeposit(),
+                shelleyGenesisData.poolDeposit(),
+                shelleyGenesisData.decentralisationParam(),
+                shelleyGenesisData.minFeeA(),
+                shelleyGenesisData.minFeeB(),
+                shelleyGenesisData.maxBlockBodySize(),
+                shelleyGenesisData.maxTxSize(),
+                shelleyGenesisData.maxBlockHeaderSize(),
+                shelleyGenesisData.eMax(),
+                shelleyGenesisData.extraEntropy(),
+                shelleyGenesisData.minUTxOValue()
+        );
+
+        return new GenesisConfig(initialFunds, protocolParameters, byronBalances, shelley, byronGenesisData);
+    }
+
     private static String loadProtocolParameters(String path) {
         try {
             String json = Files.readString(Path.of(path));

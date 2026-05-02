@@ -15,6 +15,108 @@
     "name": "com.bloxbean.cardano.yano.app.api.epochs.dto.ProtocolParamsDto"
   },
   {
+    "name": "com.bloxbean.cardano.yano.app.api.epochs.dto.AdaPotDto"
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.app.api.epochs.dto.StakeDtos$TotalStakeDto"
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.app.api.epochs.dto.StakeDtos$PoolStakeDto"
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.app.api.epochs.dto.StakeDtos$PoolStakeDelegatorDto"
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.app.api.network.dto.NetworkDto"
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.app.api.network.dto.NetworkDto$SupplyDto"
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.app.api.network.dto.NetworkDto$StakeDto"
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.app.api.accounts.dto.AccountStateDtos$StakeRegistrationDto"
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.app.api.accounts.dto.AccountStateDtos$PoolDelegationDto"
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.app.api.accounts.dto.AccountStateDtos$DRepDelegationDto"
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.app.api.accounts.dto.AccountStateDtos$PoolDto"
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.app.api.accounts.dto.AccountStateDtos$PoolRetirementDto"
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.app.api.accounts.dto.AccountStateDtos$AccountInfoDto"
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.app.api.accounts.dto.AccountStateDtos$WithdrawalHistoryDto"
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.app.api.accounts.dto.AccountStateDtos$DelegationHistoryDto"
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.app.api.accounts.dto.AccountStateDtos$RegistrationHistoryDto"
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.app.api.accounts.dto.AccountStateDtos$MirHistoryDto"
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.app.api.accounts.dto.AccountStateDtos$AccountStakeDto"
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.app.api.accounts.DebugSnapshotResource$EpochSnapshotEntry"
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.app.api.accounts.DebugSnapshotResource$PoolBlockCountEntry"
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.app.api.accounts.DebugSnapshotResource$EpochSnapshotSummary"
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.app.api.accounts.DebugSnapshotResource$PoolBlockCountSummary"
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.app.api.accounts.DebugSnapshotResource$ProtocolParamsDto"
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.app.api.accounts.DebugSnapshotResource$EpochInfoDto"
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.app.api.accounts.DebugSnapshotResource$PoolStateDto"
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.app.api.accounts.DebugSnapshotResource$RetiredPoolDto"
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.app.api.accounts.DebugSnapshotResource$AdaPotDto"
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.app.api.accounts.DebugSnapshotResource$PoolParamsDto"
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.app.api.accounts.DebugSnapshotResource$RewardInputsDto"
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.app.api.governance.dto.GovernanceDtos$ProposalDto"
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.app.api.governance.dto.GovernanceDtos$ProposalVoteDto"
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.app.api.governance.dto.GovernanceDtos$DRepListDto"
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.app.api.governance.dto.GovernanceDtos$DRepDto"
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.app.api.governance.dto.GovernanceDtos$DRepDistributionDto"
+  },
+  {
     "name": "com.bloxbean.cardano.yano.app.api.utxos.dto.UtxoDto"
   },
   {

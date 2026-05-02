@@ -165,6 +165,7 @@ public class YaciNode implements NodeAPI {
     private GenesisConfig genesisConfig;
     private long resolvedGenesisTimestamp;
     private SlotTimeCalculator slotTimeCalculator;
+    private boolean slotTimeEventSubscriptionRegistered;
     private TransactionValidationService transactionEvaluator;
     private TransactionEvaluationService transactionEvalService;
     private YaciTxSubmissionHandler txSubmissionHandler;
@@ -1651,56 +1652,59 @@ public class YaciNode implements NodeAPI {
             log.info("SlotTimeCalculator initialized: networkStart={}, byronSlotDuration={}s, shelleySlotLength={}s",
                     networkStartTimeSec, byronSlotDurationSec, shelleySlotLengthSec);
 
-            // Subscribe to BlockAppliedEvent to detect era transitions (only when slot-time is active)
-            eventBus.subscribe(BlockAppliedEvent.class, ctx -> {
-                BlockAppliedEvent event = ctx.event();
-                if (event.era() != null && chainState instanceof DirectRocksDBChainState rocksState) {
-                    rocksState.setEraStartSlot(event.era().getValue(), event.slot());
+            if (!slotTimeEventSubscriptionRegistered) {
+                slotTimeEventSubscriptionRegistered = true;
+                // Subscribe to BlockAppliedEvent to detect era transitions (only when slot-time is active)
+                eventBus.subscribe(BlockAppliedEvent.class, ctx -> {
+                    BlockAppliedEvent event = ctx.event();
+                    if (event.era() != null && chainState instanceof DirectRocksDBChainState rocksState) {
+                        rocksState.setEraStartSlot(event.era().getValue(), event.slot());
 
-                    // EraProviderImpl reads live from chainState — no manual propagation needed.
-                    // Once setEraStartSlot persists Conway, eraProvider.isConwayOrLater() returns true.
+                        // EraProviderImpl reads live from chainState — no manual propagation needed.
+                        // Once setEraStartSlot persists Conway, eraProvider.isConwayOrLater() returns true.
 
-                    // Fix 5: Capture Shelley-start UTXO total at first non-Byron era transition
-                    // for custom networks with Byron history. This runs once — setShelleyStartUtxoTotal
-                    // is idempotent (no-op if already stored).
-                    if (event.era().getValue() > Era.Byron.getValue()
-                            && utxoStore instanceof com.bloxbean.cardano.yano.runtime.utxo.DefaultUtxoStore defaultUtxo
-                            && rocksState.getShelleyStartUtxoTotal().isEmpty()) {
-                        BigInteger total = defaultUtxo.computeTotalUtxoLovelace();
-                        rocksState.setShelleyStartUtxoTotal(total);
-                        log.info("Captured Shelley-start UTXO total at era transition: {} lovelace", total);
+                        // Fix 5: Capture Shelley-start UTXO total at first non-Byron era transition
+                        // for custom networks with Byron history. This runs once — setShelleyStartUtxoTotal
+                        // is idempotent (no-op if already stored).
+                        if (event.era().getValue() > Era.Byron.getValue()
+                                && utxoStore instanceof com.bloxbean.cardano.yano.runtime.utxo.DefaultUtxoStore defaultUtxo
+                                && rocksState.getShelleyStartUtxoTotal().isEmpty()) {
+                            BigInteger total = defaultUtxo.computeTotalUtxoLovelace();
+                            rocksState.setShelleyStartUtxoTotal(total);
+                            log.info("Captured Shelley-start UTXO total at era transition: {} lovelace", total);
 
-                        // Lazily build cfNetConfig now that boundary UTXO is available
-                        if (inMemoryDevnetGenesis != null || (config.getShelleyGenesisFile() != null && !config.getShelleyGenesisFile().isBlank())) {
-                            try {
-                                var ngc = inMemoryDevnetGenesis != null
-                                        ? NetworkGenesisConfig.fromInMemory(
-                                                inMemoryDevnetGenesis.shelley(), inMemoryDevnetGenesis.byron(), inMemoryDevnetGenesis.conway())
-                                        : NetworkGenesisConfig.load(
-                                                config.getShelleyGenesisFile(), config.getByronGenesisFile(),
-                                                null, config.getConwayGenesisFile());
-                                var lazyOverrides = buildOverridesFromChainState(ngc);
-                                var genesisValues = NetworkGenesisValuesFactory
-                                        .build(ngc, lazyOverrides);
-                                var lazyCfConfig = NetworkConfigBuilder
-                                        .build(genesisValues);
+                            // Lazily build cfNetConfig now that boundary UTXO is available
+                            if (inMemoryDevnetGenesis != null || (config.getShelleyGenesisFile() != null && !config.getShelleyGenesisFile().isBlank())) {
+                                try {
+                                    var ngc = inMemoryDevnetGenesis != null
+                                            ? NetworkGenesisConfig.fromInMemory(
+                                                    inMemoryDevnetGenesis.shelley(), inMemoryDevnetGenesis.byron(), inMemoryDevnetGenesis.conway())
+                                            : NetworkGenesisConfig.load(
+                                                    config.getShelleyGenesisFile(), config.getByronGenesisFile(),
+                                                    null, config.getConwayGenesisFile());
+                                    var lazyOverrides = buildOverridesFromChainState(ngc);
+                                    var genesisValues = NetworkGenesisValuesFactory
+                                            .build(ngc, lazyOverrides);
+                                    var lazyCfConfig = NetworkConfigBuilder
+                                            .build(genesisValues);
 
-                                // Inject into BOTH reward calculator and boundary processor
-                                if (accountStateStore instanceof DefaultAccountStateStore ds) {
-                                    var rc = ds.getRewardCalculator();
-                                    if (rc != null) rc.setCfNetworkConfig(lazyCfConfig);
+                                    // Inject into BOTH reward calculator and boundary processor
+                                    if (accountStateStore instanceof DefaultAccountStateStore ds) {
+                                        var rc = ds.getRewardCalculator();
+                                        if (rc != null) rc.setCfNetworkConfig(lazyCfConfig);
+                                    }
+                                    if (epochBoundaryProcessor != null) {
+                                        epochBoundaryProcessor.setCfNetworkConfig(lazyCfConfig);
+                                    }
+                                    log.info("Lazily built cfNetConfig after boundary capture for unknown+Byron network");
+                                } catch (Exception e) {
+                                    log.error("Failed to lazily build cfNetConfig after boundary capture: {}", e.getMessage());
                                 }
-                                if (epochBoundaryProcessor != null) {
-                                    epochBoundaryProcessor.setCfNetworkConfig(lazyCfConfig);
-                                }
-                                log.info("Lazily built cfNetConfig after boundary capture for unknown+Byron network");
-                            } catch (Exception e) {
-                                log.error("Failed to lazily build cfNetConfig after boundary capture: {}", e.getMessage());
                             }
                         }
                     }
-                }
-            }, SubscriptionOptions.builder().build());
+                }, SubscriptionOptions.builder().build());
+            }
         }
     }
 
@@ -2587,28 +2591,32 @@ public class YaciNode implements NodeAPI {
 
         long shiftMillis = computeEpochShiftMillis(epochs);
         long shifted = System.currentTimeMillis() - shiftMillis;
-        config.setGenesisTimestamp(shifted);
+        String shiftedSystemStart = java.time.Instant.ofEpochMilli(shifted)
+                .truncatedTo(java.time.temporal.ChronoUnit.SECONDS).toString();
+        long shiftedMillis = java.time.Instant.parse(shiftedSystemStart).toEpochMilli();
+        config.setGenesisTimestamp(shiftedMillis);
         log.info("Past time travel: shifted genesis timestamp back by {}ms for {} epochs", shiftMillis, epochs);
 
         // Persist shifted systemStart to shelley-genesis.json so downstream nodes can use it
         if (config.getShelleyGenesisFile() != null && !config.getShelleyGenesisFile().isBlank()) {
             try {
-                String isoTimestamp = java.time.Instant.ofEpochMilli(shifted)
-                        .truncatedTo(java.time.temporal.ChronoUnit.SECONDS).toString();
                 ShelleyGenesisParser
-                        .updateSystemStart(new java.io.File(config.getShelleyGenesisFile()), isoTimestamp);
-                log.info("Persisted shifted systemStart={} to {}", isoTimestamp, config.getShelleyGenesisFile());
+                        .updateSystemStart(new java.io.File(config.getShelleyGenesisFile()), shiftedSystemStart);
+                log.info("Persisted shifted systemStart={} to {}", shiftedSystemStart, config.getShelleyGenesisFile());
             } catch (java.io.IOException e) {
                 throw new IllegalStateException("Failed to persist shifted genesis timestamp to "
                         + config.getShelleyGenesisFile() + ": " + e.getMessage(), e);
             }
         }
+        genesisConfig = genesisConfig.withSystemStart(shiftedSystemStart);
+        propagateGenesisToConfig(genesisConfig);
 
         boolean freshStart = chainState.getTip() == null;
 
         // resolveAndPersistGenesisTimestamp returns the explicit timestamp directly (configTimestamp > 0)
         resolvedGenesisTimestamp = genesisConfig.resolveAndPersistGenesisTimestamp(
                 config.getGenesisTimestamp(), freshStart, config.getShelleyGenesisFile());
+        initSlotTimeCalculator();
 
         // Create block builder and start producer
         DevnetBlockBuilder blockBuilder = createBlockBuilder(freshStart);

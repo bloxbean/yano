@@ -1,0 +1,44 @@
+[
+  {
+    "name": "com.bloxbean.cardano.yano.runtime.plugins.LoggingPlugin",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.runtime.plugins.LoggingPlugin_EventBindings",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.runtime.utxo.UtxoEventHandler_EventBindings",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.runtime.utxo.UtxoEventHandlerAsync_EventBindings",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.runtime.blockproducer.NonceEvolutionListener_EventBindings",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.runtime.validation.DefaultConsensusListener_EventBindings",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.runtime.validation.DefaultTransactionValidatorListener_EventBindings",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
+  }
+]

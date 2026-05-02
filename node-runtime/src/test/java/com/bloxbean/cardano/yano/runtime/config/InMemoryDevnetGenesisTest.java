@@ -71,6 +71,23 @@ class InMemoryDevnetGenesisTest {
     }
 
     @Test
+    void genesisConfig_withSystemStart_updatesOnlySystemStart() {
+        var shelley = testShelley();
+        var byron = testByron();
+        var gc = GenesisConfig.fromInMemory(shelley, byron, "{\"test\":true}");
+
+        var shifted = gc.withSystemStart("2026-05-01T17:41:47Z");
+
+        assertThat(shifted).isNotSameAs(gc);
+        assertThat(shifted.getSystemStart()).isEqualTo("2026-05-01T17:41:47Z");
+        assertThat(shifted.getInitialFunds()).isEqualTo(gc.getInitialFunds());
+        assertThat(shifted.getByronBalances()).isEqualTo(gc.getByronBalances());
+        assertThat(shifted.getByronGenesisData()).isSameAs(byron);
+        assertThat(shifted.getShelleyGenesisData().epochLength()).isEqualTo(shelley.epochLength());
+        assertThat(shifted.hasProtocolParameters()).isTrue();
+    }
+
+    @Test
     void networkGenesisConfig_fromInMemory_matchesFields() {
         var shelley = testShelley();
         var conway = testConway();
