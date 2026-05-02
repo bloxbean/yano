@@ -10,13 +10,13 @@ Sync from a public Cardano network and re-serve blocks on port 13337.
 
 ```bash
 # Preprod (default)
-./yaci-node.sh
+./yano.sh
 
 # Mainnet
-./yaci-node.sh --mainnet
+./yano.sh --mainnet
 
 # Preview
-./yaci-node.sh --preview
+./yano.sh --preview
 ```
 
 Chain state is stored in `./chainstate/` (RocksDB).
@@ -26,7 +26,7 @@ Chain state is stored in `./chainstate/` (RocksDB).
 Run a standalone local blockchain with automatic block production.
 
 ```bash
-./yaci-node.sh --devnet
+./yano.sh --devnet
 ```
 
 - Protocol magic: 42
@@ -46,7 +46,7 @@ Run a standalone local blockchain with automatic block production.
 - **Health check** — `http://localhost:8080/q/health/ready`
 - **Cardano N2N server** on port 13337
 - **Plugin system** — drop plugin JARs in the `plugins/` directory
-- **Custom profiles** — `./yaci-node.sh --profile=<name>` or `-Dquarkus.profile=<name>`
+- **Custom profiles** — `./yano.sh --profile=<name>` or `-Dquarkus.profile=<name>`
 
 ## Configuration
 
@@ -55,14 +55,14 @@ Run a standalone local blockchain with automatic block production.
 Override any config property via environment variables:
 
 ```bash
-YACI_NODE_SERVER_PORT=3001 ./yaci-node.sh
-YACI_NODE_REMOTE_HOST=localhost YACI_NODE_REMOTE_PORT=3001 ./yaci-node.sh
+YACI_NODE_SERVER_PORT=3001 ./yano.sh
+YACI_NODE_REMOTE_HOST=localhost YACI_NODE_REMOTE_PORT=3001 ./yano.sh
 ```
 
 ### JVM Options (JAR mode only)
 
 ```bash
-JAVA_OPTS="-Xmx4g -Xms2g" ./yaci-node.sh
+JAVA_OPTS="-Xmx4g -Xms2g" ./yano.sh
 ```
 
 ### Config Files
@@ -82,9 +82,9 @@ config/
 ## Directory Structure
 
 ```
-yaci-node.sh           Start script
-yaci-node.jar          Uber-jar (JVM distribution)
-yaci-node              Native binary (native distribution)
+yano.sh                Start script
+yano.jar               Uber-jar (JVM distribution)
+yano                   Native binary (native distribution)
 config/                Genesis and protocol parameter files
 plugins/               Drop plugin JARs here
 ```

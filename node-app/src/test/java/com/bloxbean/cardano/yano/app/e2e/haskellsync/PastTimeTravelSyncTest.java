@@ -20,7 +20,7 @@ public class PastTimeTravelSyncTest extends HaskellSyncTestBase {
     @Test
     void haskellSyncsAfterPastTimeTravel() throws Exception {
         // 1. Start Yano in past-time-travel mode
-        yaci = new YaciNodeManager(tempDir, uberJarPath);
+        yaci = new YanoManager(tempDir, uberJarPath);
         yaci.start(
                 "-Dyaci.node.block-producer.past-time-travel-mode=true",
                 "-Dyaci.node.block-producer.block-time-millis=0"

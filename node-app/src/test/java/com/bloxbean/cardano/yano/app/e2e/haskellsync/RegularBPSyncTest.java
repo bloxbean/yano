@@ -20,7 +20,7 @@ public class RegularBPSyncTest extends HaskellSyncTestBase {
     @Test
     void haskellSyncsInRegularBPMode() throws Exception {
         // 1. Start Yano in regular devnet mode
-        yaci = new YaciNodeManager(tempDir, uberJarPath);
+        yaci = new YanoManager(tempDir, uberJarPath);
         yaci.start();
         yaci.waitForReady(60_000);
 

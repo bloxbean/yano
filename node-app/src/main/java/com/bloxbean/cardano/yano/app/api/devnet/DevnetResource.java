@@ -3,7 +3,7 @@ package com.bloxbean.cardano.yano.app.api.devnet;
 import com.bloxbean.cardano.yaci.core.storage.ChainState;
 import com.bloxbean.cardano.yaci.core.storage.ChainTip;
 import com.bloxbean.cardano.yano.api.NodeAPI;
-import com.bloxbean.cardano.yano.api.config.YaciNodeConfig;
+import com.bloxbean.cardano.yano.api.config.YanoConfig;
 import com.bloxbean.cardano.yano.api.model.FundResult;
 import com.bloxbean.cardano.yano.api.model.SnapshotInfo;
 import com.bloxbean.cardano.yano.api.model.TimeAdvanceResult;
@@ -19,7 +19,6 @@ import org.slf4j.LoggerFactory;
 import java.io.File;
 import java.io.FileInputStream;
 import java.time.Instant;
-import java.nio.file.Files;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -37,7 +36,7 @@ public class DevnetResource {
     NodeAPI nodeAPI;
 
     private void requireDevMode() {
-        if (!(nodeAPI.getConfig() instanceof YaciNodeConfig config) || !config.isDevMode()) {
+        if (!(nodeAPI.getConfig() instanceof YanoConfig config) || !config.isDevMode()) {
             throw new DevnetOnlyException("This endpoint requires dev mode (set yaci.node.dev-mode=true)");
         }
     }
@@ -275,7 +274,7 @@ public class DevnetResource {
                 result = nodeAPI.advanceTimeBySlots(request.slots());
             } else if (request.epochs() != null) {
                 // Convert epochs to slots using configured epoch length
-                YaciNodeConfig config = (YaciNodeConfig) nodeAPI.getConfig();
+                YanoConfig config = (YanoConfig) nodeAPI.getConfig();
                 long epochLength = config.getEpochLength();
                 int slots = (int) (request.epochs() * epochLength);
                 result = nodeAPI.advanceTimeBySlots(slots);
@@ -318,7 +317,7 @@ public class DevnetResource {
         try {
             long shiftMillis = nodeAPI.shiftGenesisAndStartProducer(request.epochs());
 
-            YaciNodeConfig config = (YaciNodeConfig) nodeAPI.getConfig();
+            YanoConfig config = (YanoConfig) nodeAPI.getConfig();
             String systemStart = Instant.ofEpochMilli(config.getGenesisTimestamp()).toString();
 
             return Response.ok(Map.of(
@@ -386,8 +385,8 @@ public class DevnetResource {
                     .build();
         }
 
-        // Safe cast — requireDevMode() already verified config is YaciNodeConfig
-        YaciNodeConfig config = (YaciNodeConfig) nodeAPI.getConfig();
+        // Safe cast — requireDevMode() already verified config is YanoConfig
+        YanoConfig config = (YanoConfig) nodeAPI.getConfig();
 
         // Collect genesis files
         Map<String, File> genesisFiles = new LinkedHashMap<>();

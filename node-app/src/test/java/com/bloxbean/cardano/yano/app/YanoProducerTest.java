@@ -9,17 +9,17 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-class YaciNodeProducerTest {
+class YanoProducerTest {
 
     @Test
     void resolveRuntimeCurrentSlotReturnsNonNegativeSlot() {
-        assertEquals(42L, YaciNodeProducer.resolveRuntimeCurrentSlot(() -> 42L));
+        assertEquals(42L, YanoProducer.resolveRuntimeCurrentSlot(() -> 42L));
     }
 
     @Test
     void resolveRuntimeCurrentSlotRejectsNegativeSlot() {
         IllegalStateException error = assertThrows(IllegalStateException.class,
-                () -> YaciNodeProducer.resolveRuntimeCurrentSlot(() -> -1L));
+                () -> YanoProducer.resolveRuntimeCurrentSlot(() -> -1L));
 
         assertEquals("Failed to resolve current slot from runtime", error.getMessage());
         assertEquals("current slot supplier returned -1", error.getCause().getMessage());
@@ -27,7 +27,7 @@ class YaciNodeProducerTest {
 
     @Test
     void rollbackRetentionAbsentKeepsExistingLeafValues() {
-        var settings = YaciNodeProducer.resolveRollbackRetentionSettings(
+        var settings = YanoProducer.resolveRollbackRetentionSettings(
                 Optional.empty(),
                 0,
                 4320,
@@ -51,7 +51,7 @@ class YaciNodeProducerTest {
 
     @Test
     void rollbackRetentionFillsMissingLeafValuesFromEpochLength() {
-        var settings = YaciNodeProducer.resolveRollbackRetentionSettings(
+        var settings = YanoProducer.resolveRollbackRetentionSettings(
                 Optional.of(20),
                 432000,
                 4320,
@@ -76,7 +76,7 @@ class YaciNodeProducerTest {
 
     @Test
     void rollbackRetentionDoesNotOverrideExplicitLeafValues() {
-        var settings = YaciNodeProducer.resolveRollbackRetentionSettings(
+        var settings = YanoProducer.resolveRollbackRetentionSettings(
                 Optional.of(20),
                 432000,
                 7_776_000,
@@ -101,7 +101,7 @@ class YaciNodeProducerTest {
     @Test
     void rollbackRetentionRejectsNegativeEpochs() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
-                () -> YaciNodeProducer.resolveRollbackRetentionSettings(
+                () -> YanoProducer.resolveRollbackRetentionSettings(
                         Optional.of(-1),
                         432000,
                         4320,

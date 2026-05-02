@@ -24,7 +24,7 @@ public abstract class HaskellSyncTestBase {
 
     private static final Logger log = LoggerFactory.getLogger(HaskellSyncTestBase.class);
 
-    protected YaciNodeManager yaci;
+    protected YanoManager yaci;
     protected CardanoNodeManager haskell;
     protected Path tempDir;
     protected Path uberJarPath;
@@ -35,7 +35,7 @@ public abstract class HaskellSyncTestBase {
         log.info("Test working directory: {}", tempDir);
 
         // Locate the uber-jar relative to node-app module
-        // The jar is at node-app/build/yaci-node.jar
+        // The jar is at node-app/build/yano.jar
         uberJarPath = locateUberJar();
         log.info("Using uber-jar: {}", uberJarPath);
     }
@@ -88,7 +88,11 @@ public abstract class HaskellSyncTestBase {
 
     private Path locateUberJar() {
         // Try from system property first
-        String jarPath = System.getProperty("yaci.uber.jar");
+        String jarPath = System.getProperty("yano.uber.jar");
+        if (jarPath == null || jarPath.isBlank()) {
+            // Backward-compatible alias for existing local commands.
+            jarPath = System.getProperty("yaci.uber.jar");
+        }
         if (jarPath != null && !jarPath.isBlank()) {
             Path p = Path.of(jarPath);
             if (Files.exists(p)) {
@@ -100,19 +104,19 @@ public abstract class HaskellSyncTestBase {
         // When running via Gradle, user.dir is typically the project root
         Path projectRoot = Path.of(System.getProperty("user.dir"));
 
-        // Try node-app/build/yaci-node.jar
-        Path candidate = projectRoot.resolve("node-app").resolve("build").resolve("yaci-node.jar");
+        // Try node-app/build/yano.jar
+        Path candidate = projectRoot.resolve("node-app").resolve("build").resolve("yano.jar");
         if (Files.exists(candidate)) {
             return candidate;
         }
 
         // If running from node-app directory
-        candidate = projectRoot.resolve("build").resolve("yaci-node.jar");
+        candidate = projectRoot.resolve("build").resolve("yano.jar");
         if (Files.exists(candidate)) {
             return candidate;
         }
 
         throw new RuntimeException(
-                "Uber-jar not found. Run './gradlew :node-app:quarkusBuild' first, or set -Dyaci.uber.jar=<path>");
+                "Uber-jar not found. Run './gradlew :node-app:quarkusBuild' first, or set -Dyano.uber.jar=<path>");
     }
 }

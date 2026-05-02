@@ -21,7 +21,7 @@ import java.util.List;
  * and delegates events to the appropriate pipeline managers:
  * - HeaderSyncManager for ChainSync events (headers)
  * - BodyFetchManager for BlockFetch events (bodies)
- * - YaciNode for rollback coordination
+ * - Yano for rollback coordination
  *
  * This allows the pipeline architecture to work with the existing
  * PeerClient.connect() method without modifications.
@@ -31,18 +31,18 @@ public class PipelineDataListener implements BlockChainDataListener {
 
     private final HeaderSyncManager headerSyncManager;
     private final BodyFetchManager bodyFetchManager;
-    private final YaciNode yaciNode;
+    private final Yano yaciNode;
 
     /**
      * Create a new PipelineDataListener
      *
      * @param headerSyncManager Manager for header synchronization
      * @param bodyFetchManager Manager for body fetching
-     * @param yaciNode Reference to YaciNode for rollback coordination
+     * @param yaciNode Reference to Yano for rollback coordination
      */
     public PipelineDataListener(HeaderSyncManager headerSyncManager,
                                BodyFetchManager bodyFetchManager,
-                               YaciNode yaciNode) {
+                               Yano yaciNode) {
         this.headerSyncManager = headerSyncManager;
         this.bodyFetchManager = bodyFetchManager;
         this.yaciNode = yaciNode;
@@ -93,7 +93,7 @@ public class PipelineDataListener implements BlockChainDataListener {
         // Delegate block body processing to BodyFetchManager
         bodyFetchManager.onBlock(era, block, transactions);
 
-        // Update sync progress tracking in YaciNode
+        // Update sync progress tracking in Yano
         yaciNode.updateSyncProgress();
 
         // Notify server about new block availability (only during STEADY_STATE)
@@ -105,7 +105,7 @@ public class PipelineDataListener implements BlockChainDataListener {
         // Delegate Byron block processing to BodyFetchManager
         bodyFetchManager.onByronBlock(byronBlock);
 
-        // Update sync progress tracking in YaciNode
+        // Update sync progress tracking in Yano
         yaciNode.updateSyncProgress();
 
         // Notify server about new block availability (only during STEADY_STATE)
@@ -117,7 +117,7 @@ public class PipelineDataListener implements BlockChainDataListener {
         // Delegate Byron EB block processing to BodyFetchManager
         bodyFetchManager.onByronEbBlock(byronEbBlock);
 
-        // Update sync progress tracking in YaciNode
+        // Update sync progress tracking in Yano
         yaciNode.updateSyncProgress();
 
         // Notify server about new block availability (only during STEADY_STATE)
@@ -151,13 +151,13 @@ public class PipelineDataListener implements BlockChainDataListener {
         // Notify HeaderSyncManager about intersection
         headerSyncManager.intersactFound(tip, point);
 
-        // Update sync phase in YaciNode for rollback classification
+        // Update sync phase in Yano for rollback classification
         yaciNode.onIntersectionFound();
 
         // If we're already near the remote tip, transition to STEADY_STATE immediately
         yaciNode.maybeFastTransitionToSteadyState(tip);
 
-        log.info("Intersection found at point: {} - notified both header manager and YaciNode", point);
+        log.info("Intersection found at point: {} - notified both header manager and Yano", point);
     }
 
     @Override
@@ -170,11 +170,11 @@ public class PipelineDataListener implements BlockChainDataListener {
 
     @Override
     public void onRollback(Point point) {
-        // Delegate rollback handling to YaciNode for classification and coordination
-        // YaciNode will pause/resume BodyFetchManager and handle server notifications
+        // Delegate rollback handling to Yano for classification and coordination
+        // Yano will pause/resume BodyFetchManager and handle server notifications
         yaciNode.handleRollback(point);
 
-        log.info("Rollback to point: {} - delegated to YaciNode for coordination", point);
+        log.info("Rollback to point: {} - delegated to Yano for coordination", point);
     }
 
     @Override

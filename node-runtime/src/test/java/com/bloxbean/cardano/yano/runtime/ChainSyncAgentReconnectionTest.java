@@ -22,7 +22,7 @@ import static org.junit.jupiter.api.Assertions.*;
  * Tests cover:
  * - currentPoint tracking for last confirmed block
  * - FindIntersect behavior on reconnection
- * - No manual point management needed in YaciNode
+ * - No manual point management needed in Yano
  * - Automatic resumption after network disconnection
  */
 class ChainSyncAgentReconnectionTest {
@@ -202,7 +202,7 @@ class ChainSyncAgentReconnectionTest {
     @Test
     @DisplayName("Test automatic resumption without manual intervention")
     void testAutomaticResumption() {
-        // This test validates that YaciNode doesn't need manual point management
+        // This test validates that Yano doesn't need manual point management
         
         // Setup sync state
         Point intersectPoint = new Point(950, "intersect567890124ef1234567890abcdef1234567890abcdef123456789abcd");

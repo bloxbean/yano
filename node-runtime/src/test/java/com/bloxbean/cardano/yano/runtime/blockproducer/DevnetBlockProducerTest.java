@@ -195,7 +195,7 @@ class DevnetBlockProducerTest {
         blockProducer.start();
 
         // Genesis block should exist but be empty (no transactions)
-        // Genesis UTXOs are stored directly in UTXO store by YaciNode, not embedded in block
+        // Genesis UTXOs are stored directly in UTXO store by Yano, not embedded in block
         ChainTip tip = chainState.getTip();
         assertNotNull(tip);
         assertEquals(0, tip.getBlockNumber());

@@ -20,7 +20,7 @@ import java.util.stream.Collectors;
 
 /**
  * Implementation of TxSubmissionListener and TxSubmissionHandler that integrates
- * TxSubmission protocol with YaciNode's MemPool and transaction processing.
+ * TxSubmission protocol with Yano's MemPool and transaction processing.
  * 
  * This implementation uses a blocking-only approach where transactions are
  * processed immediately and removed from the mempool to simulate processing.

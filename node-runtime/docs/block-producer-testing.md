@@ -40,7 +40,7 @@ This returns a ZIP containing 4 genesis JSON files (byron, shelley, alonzo, conw
 
 These genesis files use **protocol magic 42** and contain proper Plutus cost models (PlutusV1/V2) that yaci-store requires. Using incomplete genesis files (e.g., empty `costModels: {}` in alonzo-genesis.json) will cause a NullPointerException in yaci-store's `EraGenesisProtocolParamsUtil`.
 
-**Important**: The protocol magic in genesis files (42) must match the yaci-node's `yaci.node.remote.protocol-magic` config property. Mismatch causes silent handshake failure.
+**Important**: The protocol magic in genesis files (42) must match Yano's `yaci.node.remote.protocol-magic` config property. Mismatch causes silent handshake failure.
 
 ## Step 1: Create Genesis ZIP and Server
 
@@ -106,7 +106,7 @@ java \
   -Dyaci.node.block-producer.genesis-timestamp=0 \
   -Dyaci.node.block-producer.slot-length-millis=1000 \
   -Dyaci.node.storage.rocksdb=false \
-  -jar node-app/build/yaci-node.jar
+  -jar node-app/build/yano.jar
 ```
 
 Verify: `curl http://localhost:9000/api/v1/node/tip`
@@ -131,7 +131,7 @@ server.port=7070
 **Key config notes**:
 - `devkit-node=true` triggers genesis file download from port 10000
 - Do NOT set genesis file paths when `devkit-node=true` (mutually exclusive)
-- Protocol magic must match the yaci-node config (42)
+- Protocol magic must match the Yano config (42)
 
 ```bash
 cd yaci-store-2.0.0
@@ -144,7 +144,7 @@ java -jar yaci-store.jar
 # yaci-store latest block
 curl http://localhost:7070/api/v1/blocks/latest
 
-# yaci-node tip
+# Yano tip
 curl http://localhost:9000/api/v1/node/tip
 
 # Both should show the same block number and slot

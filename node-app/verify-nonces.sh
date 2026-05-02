@@ -1,5 +1,5 @@
 #!/bin/bash
-# Verify epoch nonces against reference data by polling the yaci node's REST API.
+# Verify epoch nonces against reference data by polling Yano's REST API.
 #
 # Usage:
 #   bash verify-nonces.sh <network> <rest-port> <target-epochs>

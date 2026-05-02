@@ -26,7 +26,7 @@ import com.bloxbean.cardano.yano.api.EpochParamProvider;
 import com.bloxbean.cardano.yano.api.NodeAPI;
 import com.bloxbean.cardano.yano.api.SyncPhase;
 import com.bloxbean.cardano.yano.api.config.RuntimeOptions;
-import com.bloxbean.cardano.yano.api.config.YaciNodeConfig;
+import com.bloxbean.cardano.yano.api.config.YanoConfig;
 import com.bloxbean.cardano.yano.api.events.TransactionValidateEvent;
 import com.bloxbean.cardano.yano.api.listener.NodeEventListener;
 import com.bloxbean.cardano.yano.api.model.FundResult;
@@ -126,10 +126,10 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * This enables Yano to act as a bridge/relay node
  */
 @Slf4j
-public class YaciNode implements NodeAPI {
+public class Yano implements NodeAPI {
 
     // Configuration
-    private final YaciNodeConfig config;
+    private final YanoConfig config;
 
     // Client components (for syncing with remote nodes)
     private final String remoteCardanoHost;
@@ -220,18 +220,18 @@ public class YaciNode implements NodeAPI {
     private long adhocRollbackToSlot = -1;
     private int adhocRollbackToEpoch = -1;
 
-    public YaciNode(YaciNodeConfig config) {
+    public Yano(YanoConfig config) {
         this(config, RuntimeOptions.defaults(), null);
     }
 
-    public YaciNode(YaciNodeConfig config, RuntimeOptions options) {
+    public Yano(YanoConfig config, RuntimeOptions options) {
         this(config, options, null);
     }
 
     /**
      * @param inMemoryGenesis in-memory devnet genesis (nullable — only for devnet block-producer mode)
      */
-    public YaciNode(YaciNodeConfig config, RuntimeOptions options, InMemoryDevnetGenesis inMemoryGenesis) {
+    public Yano(YanoConfig config, RuntimeOptions options, InMemoryDevnetGenesis inMemoryGenesis) {
         if (inMemoryGenesis != null && (!config.isDevMode() || !config.isEnableBlockProducer())) {
             throw new IllegalStateException(
                     "In-memory devnet genesis is only valid when devMode=true and enableBlockProducer=true");
@@ -2058,11 +2058,11 @@ public class YaciNode implements NodeAPI {
     }
 
     /**
-     * Propagate genesis-derived epoch params to YaciNodeConfig so the REST layer
+     * Propagate genesis-derived epoch params to YanoConfig so the REST layer
      * (EpochUtil) has era-aware values for epoch/slot conversion.
      */
     /**
-     * Propagate genesis-derived epoch params to YaciNodeConfig so the REST layer
+     * Propagate genesis-derived epoch params to YanoConfig so the REST layer
      * (EpochUtil) and other consumers have era-aware values for epoch/slot conversion.
      * <p>
      * Must set all three fields together: epochLength, byronSlotsPerEpoch, firstNonByronSlot.
@@ -2837,7 +2837,7 @@ public class YaciNode implements NodeAPI {
         PipelineDataListener pipelineListener = new PipelineDataListener(
                 headerSyncManager,
                 bodyFetchManager,
-                this  // Pass YaciNode reference for rollback coordination
+                this  // Pass Yano reference for rollback coordination
         );
 
         // Connect using existing PeerClient.connect() method with pipeline listener
@@ -2931,7 +2931,7 @@ public class YaciNode implements NodeAPI {
         PipelineDataListener pipelineListener = new PipelineDataListener(
                 headerSyncManager,
                 bodyFetchManager,
-                this  // Pass YaciNode reference for rollback coordination
+                this  // Pass Yano reference for rollback coordination
         );
 
         // Connect using existing PeerClient.connect() method with pipeline listener
@@ -3329,7 +3329,7 @@ public class YaciNode implements NodeAPI {
         return chainState;
     }
 
-    public YaciNodeConfig getConfig() {
+    public YanoConfig getConfig() {
         return config;
     }
 

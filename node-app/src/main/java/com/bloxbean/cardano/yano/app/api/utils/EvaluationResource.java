@@ -3,7 +3,7 @@ package com.bloxbean.cardano.yano.app.api.utils;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.NodeAPI;
 import com.bloxbean.cardano.yano.ledgerrules.TransactionEvaluator;
-import com.bloxbean.cardano.yano.runtime.YaciNode;
+import com.bloxbean.cardano.yano.runtime.Yano;
 import com.bloxbean.cardano.yano.runtime.blockproducer.TransactionEvaluationService;
 import io.quarkus.arc.ClientProxy;
 import jakarta.inject.Inject;
@@ -64,7 +64,7 @@ public class EvaluationResource {
             return errorResponse("Transaction CBOR bytes required");
         }
 
-        YaciNode yaciNode = (YaciNode) ClientProxy.unwrap(nodeAPI);
+        Yano yaciNode = (Yano) ClientProxy.unwrap(nodeAPI);
 
         TransactionEvaluationService evalService = yaciNode.getTransactionEvalService();
         if (evalService == null) {

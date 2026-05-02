@@ -1202,7 +1202,7 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
     }
 
     /**
-     * Set the current sync phase. Called by YaciNode to coordinate logging behavior.
+     * Set the current sync phase. Called by Yano to coordinate logging behavior.
      *
      * @param syncPhase The current sync phase
      */

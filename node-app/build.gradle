@@ -90,7 +90,11 @@ tasks.register('haskellSyncTest', Test) {
     if (System.getProperty('cardano.node.version') != null) {
         systemProperty 'cardano.node.version', System.getProperty('cardano.node.version')
     }
+    if (System.getProperty('yano.uber.jar') != null) {
+        systemProperty 'yano.uber.jar', System.getProperty('yano.uber.jar')
+    }
     if (System.getProperty('yaci.uber.jar') != null) {
+        // Backward-compatible alias for existing local commands.
         systemProperty 'yaci.uber.jar', System.getProperty('yaci.uber.jar')
     }
 }

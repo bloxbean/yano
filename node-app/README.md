@@ -129,7 +129,7 @@ The node supports two Plutus script evaluators for the `/utils/txs/evaluate` end
 | `aiken` | JVM (jar) | Uses Aiken's UPLC evaluator via JNA. Does not work with native image. |
 | `scalus` | Native image | Pure JVM evaluator. Works in both JVM and native image modes. |
 
-When using `bin/yaci-node.sh`, the script automatically selects the appropriate evaluator:
+When using `bin/yano.sh`, the script automatically selects the appropriate evaluator:
 - **Native binary** → `scalus`
 - **JVM (jar)** → `aiken`
 

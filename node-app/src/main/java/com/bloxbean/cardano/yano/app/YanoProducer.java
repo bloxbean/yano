@@ -5,7 +5,7 @@ import com.bloxbean.cardano.yaci.events.api.config.EventsOptions;
 import com.bloxbean.cardano.yano.api.NodeAPI;
 import com.bloxbean.cardano.yano.api.config.PluginsOptions;
 import com.bloxbean.cardano.yano.api.config.RuntimeOptions;
-import com.bloxbean.cardano.yano.api.config.YaciNodeConfig;
+import com.bloxbean.cardano.yano.api.config.YanoConfig;
 import com.bloxbean.cardano.yano.app.bootstrap.BootstrapConfigParser;
 import com.bloxbean.cardano.client.api.model.ProtocolParams;
 import com.bloxbean.cardano.client.common.model.SlotConfig;
@@ -14,7 +14,7 @@ import com.bloxbean.cardano.yano.api.account.LedgerStateProvider;
 import com.bloxbean.cardano.yano.ledgerrules.EpochProtocolParamsSupplier;
 import com.bloxbean.cardano.yano.ledgerrules.TransactionEvaluator;
 import com.bloxbean.cardano.yano.ledgerrules.TransactionValidator;
-import com.bloxbean.cardano.yano.runtime.YaciNode;
+import com.bloxbean.cardano.yano.runtime.Yano;
 import com.bloxbean.cardano.yano.api.util.EpochSlotCalc;
 import com.bloxbean.cardano.yano.ledgerrules.impl.AikenTxEvaluator;
 import com.bloxbean.cardano.yano.ledgerrules.impl.JulcTxEvaluator;
@@ -47,9 +47,9 @@ import java.util.Set;
 import java.util.function.LongSupplier;
 
 @ApplicationScoped
-public class YaciNodeProducer {
+public class YanoProducer {
 
-    private static final Logger log = LoggerFactory.getLogger(YaciNodeProducer.class);
+    private static final Logger log = LoggerFactory.getLogger(YanoProducer.class);
     private static final String ROLLBACK_RETENTION_EPOCHS = "yaci.node.rollback-retention-epochs";
     private static final String UTXO_ROLLBACK_WINDOW = "yaci.node.utxo.rollbackWindow";
     private static final String ACCOUNT_STATE_EPOCH_BLOCK_DATA_RETENTION_LAG =
@@ -310,7 +310,7 @@ public class YaciNodeProducer {
     private final ClassLoader pluginClassLoader;
     private NodeAPI nodeAPI;
 
-    public YaciNodeProducer(@Named("pluginClassLoader") ClassLoader pluginClassLoader) {
+    public YanoProducer(@Named("pluginClassLoader") ClassLoader pluginClassLoader) {
         this.pluginClassLoader = pluginClassLoader;
     }
 
@@ -433,20 +433,20 @@ public class YaciNodeProducer {
 
         log.info("Creating Yano with network: {}", network);
 
-        YaciNodeConfig yaciConfig;
+        YanoConfig yaciConfig;
         switch (network.toLowerCase()) {
             case "mainnet":
-                yaciConfig = YaciNodeConfig.mainnetDefault();
+                yaciConfig = YanoConfig.mainnetDefault();
                 break;
             case "preview":
-                yaciConfig = YaciNodeConfig.previewDefault();
+                yaciConfig = YanoConfig.previewDefault();
                 break;
             case "sanchonet":
-                yaciConfig = YaciNodeConfig.sanchonetDefault();
+                yaciConfig = YanoConfig.sanchonetDefault();
                 break;
             case "preprod":
             default:
-                yaciConfig = YaciNodeConfig.preprodDefault();
+                yaciConfig = YanoConfig.preprodDefault();
                 break;
         }
 
@@ -457,7 +457,7 @@ public class YaciNodeProducer {
         String resolvedConwayGenesis = resolveGenesisFile(conwayGenesisFile.orElse(null), protocolMagic, "conway-genesis.json");
 
         // Override with configuration properties
-        yaciConfig = YaciNodeConfig.builder()
+        yaciConfig = YanoConfig.builder()
                 .enableClient(clientEnabled)
                 .enableServer(serverEnabled)
                 .remoteHost(remoteHost)
@@ -632,23 +632,23 @@ public class YaciNodeProducer {
         // Set plugin classloader on thread context so PluginManager picks it up
         Thread.currentThread().setContextClassLoader(pluginClassLoader);
 
-        nodeAPI = new YaciNode(yaciConfig, runtimeOptions);
+        nodeAPI = new Yano(yaciConfig, runtimeOptions);
         log.info("Yano created successfully");
 
         // Configure adhoc rollback if requested via command line
         if (debugRollbackToSlot >= 0 || debugRollbackToEpoch >= 0) {
-            ((YaciNode) nodeAPI).setAdhocRollback(debugRollbackToSlot, debugRollbackToEpoch);
+            ((Yano) nodeAPI).setAdhocRollback(debugRollbackToSlot, debugRollbackToEpoch);
             log.info("Adhoc rollback configured: slot={}, epoch={}", debugRollbackToSlot, debugRollbackToEpoch);
         }
 
         // Wire bootstrap data provider if bootstrap is enabled
         if (bootstrapEnabled) {
-            wireBootstrapProvider((YaciNode) nodeAPI, yaciConfig);
+            wireBootstrapProvider((Yano) nodeAPI, yaciConfig);
         }
 
         // Initialize transaction evaluator if enabled
         if (txEvaluationEnabled) {
-            initTransactionEvaluator((YaciNode) nodeAPI, yaciConfig);
+            initTransactionEvaluator((Yano) nodeAPI, yaciConfig);
         }
 
         return nodeAPI;
@@ -701,7 +701,7 @@ public class YaciNodeProducer {
     /**
      * Initialize the Scalus-based transaction evaluator and inject it into the node.
      */
-    private void initTransactionEvaluator(YaciNode yaciNode, YaciNodeConfig yaciConfig) {
+    private void initTransactionEvaluator(Yano yaciNode, YanoConfig yaciConfig) {
         boolean effectiveEpochParamsTrackingEnabled = effectiveEpochParamsTrackingEnabled();
         LedgerStateProvider ledgerStateProvider = yaciNode.getLedgerStateProvider();
         if (effectiveEpochParamsTrackingEnabled && ledgerStateProvider == null) {
@@ -836,7 +836,7 @@ public class YaciNodeProducer {
         }
     }
 
-    private EpochSlotCalc resolveEpochSlotCalc(YaciNode yaciNode, YaciNodeConfig yaciConfig, GenesisConfig genesis) {
+    private EpochSlotCalc resolveEpochSlotCalc(Yano yaciNode, YanoConfig yaciConfig, GenesisConfig genesis) {
         var provider = yaciNode.getEpochParamProvider();
         if (provider != null) {
             return provider.getEpochSlotCalc();
@@ -863,9 +863,9 @@ public class YaciNodeProducer {
     }
 
     /**
-     * Wire the bootstrap data provider into the YaciNode based on configuration.
+     * Wire the bootstrap data provider into the Yano based on configuration.
      */
-    private void wireBootstrapProvider(YaciNode yaciNode, YaciNodeConfig yaciConfig) {
+    private void wireBootstrapProvider(Yano yaciNode, YanoConfig yaciConfig) {
         try {
             String providerType = yaciConfig.getBootstrapProvider() != null
                     ? yaciConfig.getBootstrapProvider().toLowerCase() : "blockfrost";

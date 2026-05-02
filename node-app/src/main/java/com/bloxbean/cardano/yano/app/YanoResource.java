@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.app;
 
 import com.bloxbean.cardano.yano.api.NodeAPI;
+import com.bloxbean.cardano.yano.api.config.YanoConfig;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.Consumes;
 import jakarta.ws.rs.GET;
@@ -14,7 +15,7 @@ import java.util.Map;
 
 @Path("node")
 @Produces(MediaType.APPLICATION_JSON)
-public class YaciNodeResource {
+public class YanoResource {
 
     @Inject
     NodeAPI nodeAPI;
@@ -85,7 +86,7 @@ public class YaciNodeResource {
         result.put("clientEnabled", config.isClientEnabled());
         result.put("serverEnabled", config.isServerEnabled());
         result.put("devMode", config.isDevMode());
-        if (config instanceof com.bloxbean.cardano.yano.api.config.YaciNodeConfig yc) {
+        if (config instanceof YanoConfig yc) {
             result.put("remoteHost", yc.getRemoteHost());
             result.put("remotePort", yc.getRemotePort());
             result.put("serverPort", yc.getServerPort());

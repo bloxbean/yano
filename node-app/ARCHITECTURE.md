@@ -271,18 +271,18 @@ All modules ship as standalone libraries on Maven Central (`com.bloxbean.cardano
 | **events-core** | Framework-agnostic event bus SPI | `EventBus`, `EventListener`, `@DomainEventListener`, `VetoableEvent` |
 | **events-processor** | Annotation processor for AOT event bindings | `DomainEventBindings` (generated) |
 | **node-api** | Public node interfaces and plugin SPI | `NodePlugin`, `PluginContext`, `StorageFilter`, `UtxoState`, all event types |
-| **node-runtime** | Node implementation with RocksDB | `YaciNode`, `DirectRocksDBChainState`, `DefaultUtxoStore`, `BlockProducer` |
+| **node-runtime** | Node implementation with RocksDB | `Yano`, `DirectRocksDBChainState`, `DefaultUtxoStore`, `BlockProducer` |
 | **node-bootstrap-providers** | Fast startup via external APIs | `BlockfrostBootstrapProvider`, `KoiosBootstrapProvider` |
 | **ledger-rules** | Transaction validation interfaces | `TransactionValidator`, `TransactionEvaluator` |
 | **scalus-bridge** | Plutus script evaluation via Scalus | `ScalusBasedTransactionValidator`, `ScalusBasedTransactionEvaluator` |
 | **node-app** | Quarkus REST application wrapper | JAX-RS resources, health checks, CDI producers |
 
 **Using as libraries** — to build a custom node, depend on `node-api` + `node-runtime`
-and wire `YaciNode` directly:
+and wire `Yano` directly:
 
 ```java
-var config = YaciNodeConfig.preprodDefault();
-var node = new YaciNode(config, runtimeOptions);
+var config = YanoConfig.preprodDefault();
+var node = new Yano(config, runtimeOptions);
 node.start();
 ```
 

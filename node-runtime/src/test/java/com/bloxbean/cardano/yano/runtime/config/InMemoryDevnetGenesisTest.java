@@ -1,7 +1,7 @@
 package com.bloxbean.cardano.yano.runtime.config;
 
-import com.bloxbean.cardano.yano.api.config.YaciNodeConfig;
-import com.bloxbean.cardano.yano.runtime.YaciNode;
+import com.bloxbean.cardano.yano.api.config.YanoConfig;
+import com.bloxbean.cardano.yano.runtime.Yano;
 import com.bloxbean.cardano.yano.runtime.blockproducer.GenesisConfig;
 import com.bloxbean.cardano.yano.runtime.genesis.ByronGenesisData;
 import com.bloxbean.cardano.yano.runtime.genesis.ConwayGenesisData;
@@ -134,36 +134,36 @@ class InMemoryDevnetGenesisTest {
         assertThat(calc.slotToEpoch(1200)).isEqualTo(2);
     }
 
-    // --- YaciNode constructor tests ---
+    // --- Yano constructor tests ---
 
     @Test
     void yaciNode_constructor_rejectsNonDevnetConfig() {
         // preprodDefault has devMode=false, enableBlockProducer=false
-        var config = YaciNodeConfig.preprodDefault();
+        var config = YanoConfig.preprodDefault();
         var genesis = new InMemoryDevnetGenesis(testShelley(), null, null, null);
 
-        assertThatThrownBy(() -> new YaciNode(config, null, genesis))
+        assertThatThrownBy(() -> new Yano(config, null, genesis))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("devMode=true");
     }
 
     @Test
     void yaciNode_constructor_acceptsDevnetConfig() {
-        var config = YaciNodeConfig.devnetDefault(0); // port 0 = OS assigns random available port
+        var config = YanoConfig.devnetDefault(0); // port 0 = OS assigns random available port
         var genesis = new InMemoryDevnetGenesis(testShelley(), null, testConway(), null);
 
         // Should not throw — devMode=true and enableBlockProducer=true
         // Constructor initializes account-state/epoch-params from in-memory genesis
-        assertThatCode(() -> new YaciNode(config, null, genesis))
+        assertThatCode(() -> new Yano(config, null, genesis))
                 .doesNotThrowAnyException();
     }
 
     @Test
     void yaciNode_constructor_nullGenesis_acceptedForDevnet() {
-        var config = YaciNodeConfig.devnetDefault(0); // port 0 = OS assigns random available port
+        var config = YanoConfig.devnetDefault(0); // port 0 = OS assigns random available port
 
         // null in-memory genesis is fine — uses file-based path
-        assertThatCode(() -> new YaciNode(config, null, null))
+        assertThatCode(() -> new Yano(config, null, null))
                 .doesNotThrowAnyException();
     }
 }

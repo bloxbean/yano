@@ -10,7 +10,7 @@ import org.eclipse.microprofile.health.Readiness;
 
 @Readiness
 @ApplicationScoped
-public class YaciNodeHealthCheck implements HealthCheck {
+public class YanoHealthCheck implements HealthCheck {
 
     @Inject
     NodeAPI nodeAPI;
@@ -24,12 +24,12 @@ public class YaciNodeHealthCheck implements HealthCheck {
                     !status.getStatusMessage().toLowerCase().contains("error");
 
             if (isHealthy) {
-                return HealthCheckResponse.up("yaci-node");
+                return HealthCheckResponse.up("yano");
             } else {
-                return HealthCheckResponse.down("yaci-node");
+                return HealthCheckResponse.down("yano");
             }
         } catch (Exception e) {
-            return HealthCheckResponse.down("yaci-node");
+            return HealthCheckResponse.down("yano");
         }
     }
 }

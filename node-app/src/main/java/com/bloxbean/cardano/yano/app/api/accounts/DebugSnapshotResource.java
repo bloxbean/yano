@@ -4,7 +4,7 @@ import com.bloxbean.cardano.yano.api.NodeAPI;
 import com.bloxbean.cardano.yano.ledgerstate.AccountStateCborCodec;
 import com.bloxbean.cardano.yano.ledgerstate.DefaultAccountStateStore;
 import com.bloxbean.cardano.yano.ledgerstate.EpochRewardCalculator;
-import com.bloxbean.cardano.yano.runtime.YaciNode;
+import com.bloxbean.cardano.yano.runtime.Yano;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import io.quarkus.arc.ClientProxy;
 import jakarta.inject.Inject;
@@ -17,7 +17,6 @@ import com.bloxbean.cardano.yano.api.utxo.UtxoState;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.*;
-import java.util.stream.Collectors;
 
 @Path("/api/debug")
 @Produces(MediaType.APPLICATION_JSON)
@@ -138,7 +137,7 @@ public class DebugSnapshotResource {
     // --- Helpers ---
 
     private DefaultAccountStateStore defaultStore() {
-        YaciNode yaciNode = (YaciNode) ClientProxy.unwrap(nodeAPI);
+        Yano yaciNode = (Yano) ClientProxy.unwrap(nodeAPI);
         var store = yaciNode.getAccountStateStore();
         if (store instanceof DefaultAccountStateStore ds) return ds;
         return null;
@@ -228,7 +227,7 @@ public class DebugSnapshotResource {
     @GET
     @Path("/utxo-balance/{credHash}")
     public Response getUtxoBalance(@PathParam("credHash") String credHash) {
-        YaciNode yaciNode = (YaciNode) ClientProxy.unwrap(nodeAPI);
+        Yano yaciNode = (Yano) ClientProxy.unwrap(nodeAPI);
         UtxoState utxoState = yaciNode.getUtxoState();
         if (utxoState == null || !utxoState.isEnabled()) {
             return Response.status(Response.Status.SERVICE_UNAVAILABLE)

@@ -1122,7 +1122,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
     }
 
     /**
-     * Wire Allegra bootstrap removal dependencies. Called once during YaciNode wiring.
+     * Wire Allegra bootstrap removal dependencies. Called once during Yano wiring.
      *
      * @param keysSupplier       loads persisted Byron genesis outpoint keys on-demand
      * @param doneChecker        checks if META_ALLEGRA_BOOTSTRAP_DONE marker is set

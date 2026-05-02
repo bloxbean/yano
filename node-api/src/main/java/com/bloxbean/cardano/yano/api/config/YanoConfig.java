@@ -7,12 +7,12 @@ import lombok.Data;
 import java.util.List;
 
 /**
- * Configuration for YaciNode (renamed from HybridNodeConfig).
+ * Configuration for Yano.
  * Provides comprehensive configuration options for both client and server modes.
  */
 @Data
 @Builder
-public class YaciNodeConfig implements NodeConfig {
+public class YanoConfig implements NodeConfig {
 
     // Remote node configuration (client mode)
     private String remoteHost;
@@ -151,8 +151,8 @@ public class YaciNodeConfig implements NodeConfig {
      * Create a default configuration for preprod.
      * Sets known epoch/slot values for the preprod network.
      */
-    public static YaciNodeConfig preprodDefault() {
-        return YaciNodeConfig.builder()
+    public static YanoConfig preprodDefault() {
+        return YanoConfig.builder()
                 .remoteHost("localhost")
                 .remotePort(32000)
                 .protocolMagic(Constants.PREPROD_PROTOCOL_MAGIC)
@@ -178,8 +178,8 @@ public class YaciNodeConfig implements NodeConfig {
      * Create a default configuration for preview.
      * Epoch/slot values are loaded from genesis at runtime via propagateGenesisToConfig().
      */
-    public static YaciNodeConfig previewDefault() {
-        return YaciNodeConfig.builder()
+    public static YanoConfig previewDefault() {
+        return YanoConfig.builder()
                 .remoteHost(Constants.PREVIEW_PUBLIC_RELAY_ADDR)
                 .remotePort(Constants.PREVIEW_PUBLIC_RELAY_PORT)
                 .protocolMagic(Constants.PREVIEW_PROTOCOL_MAGIC)
@@ -204,8 +204,8 @@ public class YaciNodeConfig implements NodeConfig {
      * Create a default configuration for sanchonet.
      * Epoch/slot values are loaded from genesis at runtime via propagateGenesisToConfig().
      */
-    public static YaciNodeConfig sanchonetDefault() {
-        return YaciNodeConfig.builder()
+    public static YanoConfig sanchonetDefault() {
+        return YanoConfig.builder()
                 .remoteHost(Constants.SANCHONET_PUBLIC_RELAY_ADDR)
                 .remotePort(Constants.SANCHONET_PUBLIC_RELAY_PORT)
                 .protocolMagic(Constants.SANCHONET_PROTOCOL_MAGIC)
@@ -230,8 +230,8 @@ public class YaciNodeConfig implements NodeConfig {
      * Create a default configuration for mainnet.
      * Epoch/slot values are loaded from genesis at runtime via propagateGenesisToConfig().
      */
-    public static YaciNodeConfig mainnetDefault() {
-        return YaciNodeConfig.builder()
+    public static YanoConfig mainnetDefault() {
+        return YanoConfig.builder()
                 .remoteHost(Constants.MAINNET_PUBLIC_RELAY_ADDR)
                 .remotePort(Constants.MAINNET_PUBLIC_RELAY_PORT)
                 .protocolMagic(Constants.MAINNET_PROTOCOL_MAGIC)
@@ -256,8 +256,8 @@ public class YaciNodeConfig implements NodeConfig {
     /**
      * Create a server-only configuration (no client sync)
      */
-    public static YaciNodeConfig serverOnly(int serverPort) {
-        return YaciNodeConfig.builder()
+    public static YanoConfig serverOnly(int serverPort) {
+        return YanoConfig.builder()
                 .remoteHost(null)
                 .remotePort(0)
                 .protocolMagic(Constants.PREPROD_PROTOCOL_MAGIC)
@@ -281,8 +281,8 @@ public class YaciNodeConfig implements NodeConfig {
     /**
      * Create a client-only configuration (no server)
      */
-    public static YaciNodeConfig clientOnly(String remoteHost, int remotePort, long protocolMagic) {
-        return YaciNodeConfig.builder()
+    public static YanoConfig clientOnly(String remoteHost, int remotePort, long protocolMagic) {
+        return YanoConfig.builder()
                 .remoteHost(remoteHost)
                 .remotePort(remotePort)
                 .protocolMagic(protocolMagic)
@@ -307,8 +307,8 @@ public class YaciNodeConfig implements NodeConfig {
      * Create a default configuration for a standalone devnet with block production.
      * No upstream node needed — produces its own blocks.
      */
-    public static YaciNodeConfig devnetDefault(int serverPort) {
-        return YaciNodeConfig.builder()
+    public static YanoConfig devnetDefault(int serverPort) {
+        return YanoConfig.builder()
                 .remoteHost(null)
                 .remotePort(0)
                 .protocolMagic(42) // Custom devnet magic
@@ -339,9 +339,9 @@ public class YaciNodeConfig implements NodeConfig {
     /**
      * Create a configuration for performance testing with pipeline toggle
      */
-    public static YaciNodeConfig performanceTestConfig(String remoteHost, int remotePort, long protocolMagic,
-                                                       int serverPort, boolean useRocksDB, boolean enablePipeline) {
-        return YaciNodeConfig.builder()
+    public static YanoConfig performanceTestConfig(String remoteHost, int remotePort, long protocolMagic,
+                                                   int serverPort, boolean useRocksDB, boolean enablePipeline) {
+        return YanoConfig.builder()
                 .remoteHost(remoteHost)
                 .remotePort(remotePort)
                 .protocolMagic(protocolMagic)
@@ -365,9 +365,9 @@ public class YaciNodeConfig implements NodeConfig {
     /**
      * Create a configuration for testing with custom parameters
      */
-    public static YaciNodeConfig testConfig(String remoteHost, int remotePort, long protocolMagic,
-                                            int serverPort, boolean useRocksDB) {
-        return YaciNodeConfig.builder()
+    public static YanoConfig testConfig(String remoteHost, int remotePort, long protocolMagic,
+                                        int serverPort, boolean useRocksDB) {
+        return YanoConfig.builder()
                 .remoteHost(remoteHost)
                 .remotePort(remotePort)
                 .protocolMagic(protocolMagic)
@@ -419,8 +419,8 @@ public class YaciNodeConfig implements NodeConfig {
             if (!enableServer) {
                 throw new IllegalArgumentException("Block producer mode requires server to be enabled");
             }
-            // blockTimeMillis == 0 is valid: means auto-derive from genesis in YaciNode
-            // slotLengthMillis == 0 is valid: means auto-derive from genesis in YaciNode
+            // blockTimeMillis == 0 is valid: means auto-derive from genesis in Yano.
+            // slotLengthMillis == 0 is valid: means auto-derive from genesis in Yano.
         }
 
         if (slotLeaderMode) {
@@ -485,7 +485,7 @@ public class YaciNodeConfig implements NodeConfig {
     @Override
     public String toString() {
         return String.format(
-                "YaciNodeConfig{client=%s, server=%s, remote=%s:%d, serverPort=%d, storage=%s, magic=%d}",
+                "YanoConfig{client=%s, server=%s, remote=%s:%d, serverPort=%d, storage=%s, magic=%d}",
                 enableClient, enableServer, remoteHost, remotePort, serverPort,
                 useRocksDB ? "RocksDB" : "Memory", protocolMagic
         );

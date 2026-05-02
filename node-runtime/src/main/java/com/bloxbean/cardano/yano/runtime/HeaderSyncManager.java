@@ -264,7 +264,7 @@ public class HeaderSyncManager implements ChainSyncAgentListener {
     public void rollbackward(Tip tip, Point toPoint) {
         log.info("📄 Header rollback requested to: {} (tip: {})", toPoint, tip);
         if (syncTipContext != null) syncTipContext.update(tip);
-        // The actual rollback will be handled by YaciNode.onRollback()
+        // The actual rollback will be handled by Yano.onRollback()
         // which coordinates both header and body rollback
         // ChainSyncAgent automatically adjusts its currentPoint
     }

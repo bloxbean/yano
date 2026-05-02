@@ -15,7 +15,7 @@ import lombok.extern.slf4j.Slf4j;
  * Handles rollbacks by restoring from checkpoint ring buffer.
  * <p>
  * Registered via {@code AnnotationListenerRegistrar.register(eventBus, listener, defaults)}
- * in {@code YaciNode.startSlotLeaderBlockProducer()}.
+ * in {@code Yano.startSlotLeaderBlockProducer()}.
  */
 @Slf4j
 public class NonceEvolutionListener {

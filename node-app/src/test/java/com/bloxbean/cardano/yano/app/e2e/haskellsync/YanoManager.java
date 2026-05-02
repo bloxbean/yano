@@ -20,9 +20,9 @@ import java.util.concurrent.TimeUnit;
 /**
  * Manages a Yano uber-jar process for integration testing.
  */
-public class YaciNodeManager {
+public class YanoManager {
 
-    private static final Logger log = LoggerFactory.getLogger(YaciNodeManager.class);
+    private static final Logger log = LoggerFactory.getLogger(YanoManager.class);
 
     private final Path workDir;
     private final Path uberJarPath;
@@ -32,7 +32,7 @@ public class YaciNodeManager {
     private final ObjectMapper objectMapper = new ObjectMapper();
     private Process process;
 
-    public YaciNodeManager(Path workDir, Path uberJarPath) throws IOException {
+    public YanoManager(Path workDir, Path uberJarPath) throws IOException {
         this.workDir = workDir;
         this.uberJarPath = uberJarPath;
         this.httpPort = findAvailablePort();

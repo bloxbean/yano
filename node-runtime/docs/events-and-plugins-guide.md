@@ -28,7 +28,7 @@ This guide explains how to use the Yano event system and plugin SPI, both for de
                               |                                         |
                               v                                         v
                       +-------+-------------------------------+   +-----+--------------------+
-                      |             YaciNode                  |   |       PluginManager     |
+                      |             Yano                  |   |       PluginManager     |
                       |  - selects EventBus (Simple/Noop)     |   |  - ServiceLoader        |
                       |  - constructs PluginManager           |   |  - init/start/stop/close|
                       +-------+---------------+---------------+   +-----+-----------+-------+
@@ -55,7 +55,7 @@ This guide explains how to use the Yano event system and plugin SPI, both for de
                     +-------------------------------------+
 
 Flow summary:
-- YaciNode takes RuntimeOptions to build/select EventBus and initialize PluginManager.
+- Yano takes RuntimeOptions to build/select EventBus and initialize PluginManager.
 - PluginManager discovers NodePlugin via ServiceLoader and calls init(ctx)/start().
 - Plugins register listeners using AnnotationListenerRegistrar:
   - If build-time bindings exist (events-processor), registrar uses ServiceLoader to find DomainEventBindings and registers without reflection.
@@ -87,19 +87,19 @@ Use explicit options (records) — do not rely on `System.setProperty`.
 import com.bloxbean.cardano.yano.api.config.*;
 import com.bloxbean.cardano.yaci.events.api.SubscriptionOptions;
 import com.bloxbean.cardano.yaci.events.api.config.EventsOptions;
-import com.bloxbean.cardano.yano.runtime.YaciNode;
+import com.bloxbean.cardano.yano.runtime.Yano;
 
 EventsOptions ev = new EventsOptions(true, 8192, SubscriptionOptions.Overflow.BLOCK);
 PluginsOptions pl = new PluginsOptions(true, false, java.util.Set.of(), java.util.Set.of(), java.util.Map.of());
 RuntimeOptions rt = new RuntimeOptions(ev, pl, java.util.Map.of());
 
-YaciNode node = new YaciNode(myNodeConfig, rt);
+Yano node = new Yano(myNodeConfig, rt);
 node.start();
 ```
 
 ### Quarkus app
 
-- `node-app` maps `application.yml` → options in `YaciNodeProducer`, then passes to `YaciNode`:
+- `node-app` maps `application.yml` → options in `YanoProducer`, then passes to `Yano`:
   - `yaci.events.enabled`, `yaci.plugins.enabled`, `yaci.plugins.logging.enabled`, etc.
 
 ## Writing a Plugin (ServiceLoader)
@@ -202,7 +202,7 @@ Notes:
   - `BlockReceivedEvent` (pre-store)
   - `BlockAppliedEvent` (post-store)
   - `TipChangedEvent` (when tip advances)
-- `YaciNode`:
+- `Yano`:
   - `NodeStartedEvent` (startup)
   - `MemPoolTransactionReceivedEvent` (when a transaction is added to mempool)
   - `RollbackEvent` (on rollback)

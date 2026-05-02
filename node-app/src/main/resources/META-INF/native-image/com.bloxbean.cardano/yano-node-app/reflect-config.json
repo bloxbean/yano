@@ -192,7 +192,7 @@
     "allDeclaredFields": true
   },
   {
-    "name": "com.bloxbean.cardano.yano.runtime.YaciNode",
+    "name": "com.bloxbean.cardano.yano.runtime.Yano",
     "allDeclaredFields": true,
     "allDeclaredMethods": true,
     "allDeclaredConstructors": true,
@@ -559,7 +559,7 @@
     "allDeclaredConstructors": true
   },
   {
-    "name": "com.bloxbean.cardano.yano.api.config.YaciNodeConfig",
+    "name": "com.bloxbean.cardano.yano.api.config.YanoConfig",
     "allDeclaredFields": true,
     "allDeclaredMethods": true,
     "allDeclaredConstructors": true

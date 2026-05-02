@@ -4,7 +4,7 @@ import com.bloxbean.cardano.yaci.events.api.config.EventsOptions;
 import com.bloxbean.cardano.yaci.events.api.SubscriptionOptions;
 import com.bloxbean.cardano.yano.api.NodeAPI;
 import com.bloxbean.cardano.yano.api.config.RuntimeOptions;
-import com.bloxbean.cardano.yano.api.config.YaciNodeConfig;
+import com.bloxbean.cardano.yano.api.config.YanoConfig;
 import com.bloxbean.cardano.yano.api.utxo.UtxoState;
 import com.bloxbean.cardano.yano.runtime.utxo.UtxoStatusProvider;
 import org.junit.jupiter.api.Test;
@@ -18,9 +18,9 @@ import static org.junit.jupiter.api.Assertions.*;
 class NodeUtxoFactorySelectionTest {
     @Test
     void factoryCreatesDefaultBackend() throws Exception {
-        File temp = Files.createTempDirectory("yaci-node-factory-test").toFile();
+        File temp = Files.createTempDirectory("yano-factory-test").toFile();
         try {
-            YaciNodeConfig cfg = YaciNodeConfig.builder()
+            YanoConfig cfg = YanoConfig.builder()
                     .enableClient(false)
                     .enableServer(true)
                     .serverPort(18080)
@@ -34,7 +34,7 @@ class NodeUtxoFactorySelectionTest {
             RuntimeOptions rt = new RuntimeOptions(new EventsOptions(true, 1024, SubscriptionOptions.Overflow.BLOCK),
                     com.bloxbean.cardano.yano.api.config.PluginsOptions.defaults(), globals);
 
-            NodeAPI node = new YaciNode(cfg, rt);
+            NodeAPI node = new Yano(cfg, rt);
             UtxoState utxo = node.getUtxoState();
             assertNotNull(utxo);
             assertTrue(utxo.isEnabled());

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Cross-verify yaci-node parquet exports against DBSync and/or Yaci-Store
+# Cross-verify Yano parquet exports against DBSync and/or Yaci-Store
 #
 # Usage:
 #   ./verify.sh                              # All epochs, both sources
@@ -80,7 +80,7 @@ add_result() {
 }
 
 echo "╔══════════════════════════════════════════════════════════════════╗"
-echo "║  Yaci-Node Cross-Verification (epochs ${FROM_EPOCH}-${TO_EPOCH})"
+echo "║  Yano Cross-Verification (epochs ${FROM_EPOCH}-${TO_EPOCH})"
 echo "║  Sources:${SOURCES}"
 $USE_DBSYNC && echo "║  DBSync:     ${DBSYNC_HOST}:${DBSYNC_PORT}/${DBSYNC_DB}"
 $USE_STORE  && echo "║  Yaci-Store: ${STORE_HOST}:${STORE_PORT}/${STORE_DB}.${STORE_SCHEMA}"
@@ -208,7 +208,7 @@ echo "════════════════════════�
 # ═══ Markdown report ═══
 if [ -n "${REPORT_FILE}" ]; then
     {
-        echo "# Yaci-Node Verification Report"
+        echo "# Yano Verification Report"
         echo ""; echo "**Date:** ${TIMESTAMP}"; echo "**Epochs:** ${FROM_EPOCH} — ${TO_EPOCH}"; echo "**Sources:**${SOURCES}"; echo ""
         $USE_DBSYNC && echo "- DBSync: \`${DBSYNC_HOST}:${DBSYNC_PORT}/${DBSYNC_DB}\`"
         $USE_STORE  && echo "- Yaci-Store: \`${STORE_HOST}:${STORE_PORT}/${STORE_DB}.${STORE_SCHEMA}\`"

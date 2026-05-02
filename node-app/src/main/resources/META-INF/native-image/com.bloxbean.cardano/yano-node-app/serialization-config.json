@@ -174,7 +174,7 @@
     "name": "com.bloxbean.cardano.yano.api.model.TimeAdvanceResult"
   },
   {
-    "name": "com.bloxbean.cardano.yano.api.config.YaciNodeConfig"
+    "name": "com.bloxbean.cardano.yano.api.config.YanoConfig"
   },
   {
     "name": "java.util.ArrayList"
