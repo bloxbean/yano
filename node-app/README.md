@@ -1,6 +1,6 @@
-# Yaci Node App
+# Yano App
 
-Quarkus-based wrapper for the Yaci node with two built-in profiles:
+Quarkus-based wrapper for Yano with two built-in profiles:
 
 - **Relay mode** (default) — connects to preprod and serves chain data on port 13337
 - **Devnet mode** — standalone block producer with genesis funds and configurable protocol parameters

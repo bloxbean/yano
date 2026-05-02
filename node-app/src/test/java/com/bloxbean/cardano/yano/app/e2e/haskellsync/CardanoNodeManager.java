@@ -105,7 +105,7 @@ public class CardanoNodeManager {
     }
 
     /**
-     * Starts cardano-node connecting to Yaci on the given n2n port.
+     * Starts cardano-node connecting to Yano on the given n2n port.
      */
     public void start(int yaciN2nPort) throws Exception {
         Path binary = ensureBinary();
@@ -142,7 +142,7 @@ public class CardanoNodeManager {
         pb.directory(workDir.toFile());
         pb.redirectErrorStream(true);
 
-        log.info("Starting cardano-node {} (connecting to Yaci port {})", version, yaciN2nPort);
+        log.info("Starting cardano-node {} (connecting to Yano port {})", version, yaciN2nPort);
         process = pb.start();
 
         // Capture stdout/stderr asynchronously

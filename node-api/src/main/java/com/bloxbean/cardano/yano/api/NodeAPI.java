@@ -18,7 +18,7 @@ import com.bloxbean.cardano.yano.api.utxo.UtxoState;
 import java.util.List;
 
 /**
- * Main interface for Yaci Node operations.
+ * Main interface for Yano node operations.
  * Provides a framework-agnostic API for node lifecycle management,
  * status monitoring, and blockchain data access.
  */

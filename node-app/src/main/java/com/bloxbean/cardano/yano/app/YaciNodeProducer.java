@@ -431,7 +431,7 @@ public class YaciNodeProducer {
             return nodeAPI;
         }
 
-        log.info("Creating Yaci Node with network: {}", network);
+        log.info("Creating Yano with network: {}", network);
 
         YaciNodeConfig yaciConfig;
         switch (network.toLowerCase()) {
@@ -633,7 +633,7 @@ public class YaciNodeProducer {
         Thread.currentThread().setContextClassLoader(pluginClassLoader);
 
         nodeAPI = new YaciNode(yaciConfig, runtimeOptions);
-        log.info("Yaci Node created successfully");
+        log.info("Yano created successfully");
 
         // Configure adhoc rollback if requested via command line
         if (debugRollbackToSlot >= 0 || debugRollbackToEpoch >= 0) {
@@ -655,18 +655,18 @@ public class YaciNodeProducer {
     }
 
     void onStart(@Observes StartupEvent event) {
-        log.info("Yaci Node Application starting up...");
+        log.info("Yano application starting up...");
         log.info("Auto-sync-start enabled: {}", autoSyncStart);
 
         if (autoSyncStart) {
             try {
-                log.info("Auto-starting Yaci Node synchronization...");
+                log.info("Auto-starting Yano synchronization...");
                 NodeAPI node = createNodeAPI();
                 node.start();
-                log.info("Yaci Node started automatically and syncing with {} network", network);
+                log.info("Yano started automatically and syncing with {} network", network);
                 log.info("REST API available at {}/ for manual control", nodeApiBaseUrl());
             } catch (Exception e) {
-                log.error("Failed to auto-start Yaci Node: {}", e.getMessage(), e);
+                log.error("Failed to auto-start Yano: {}", e.getMessage(), e);
                 if (bootstrapEnabled) {
                     log.error("Bootstrap mode is enabled but failed. "
                             + "The node cannot start without bootstrap state. Shutting down.");
@@ -756,7 +756,7 @@ public class YaciNodeProducer {
                     : System.currentTimeMillis();
             slotConfig = new SlotConfig(yaciConfig.getSlotLengthMillis(), 0, genesisTs);
 
-            log.info("Yaci Node slot config: {}", slotConfig);
+            log.info("Yano slot config: {}", slotConfig);
 
             networkId = magic == Constants.MAINNET_PROTOCOL_MAGIC ? 1 : 0;
         } catch (Exception e) {
@@ -908,11 +908,11 @@ public class YaciNodeProducer {
     }
 
     void onStop(@Observes ShutdownEvent event) {
-        log.info("Yaci Node Application shutting down...");
+        log.info("Yano application shutting down...");
         if (nodeAPI != null && nodeAPI.isRunning()) {
-            log.info("Stopping Yaci Node...");
+            log.info("Stopping Yano...");
             nodeAPI.stop();
-            log.info("Yaci Node stopped");
+            log.info("Yano stopped");
         }
     }
 

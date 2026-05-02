@@ -9,7 +9,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * Scenario 2: Past-time-travel mode.
- * Starts Yaci devnet with past-time-travel enabled, shifts epochs back,
+ * Starts Yano devnet with past-time-travel enabled, shifts epochs back,
  * catches up to wall-clock, then starts a Haskell cardano-node and
  * verifies it syncs the entire chain from slot 0.
  */
@@ -19,7 +19,7 @@ public class PastTimeTravelSyncTest extends HaskellSyncTestBase {
 
     @Test
     void haskellSyncsAfterPastTimeTravel() throws Exception {
-        // 1. Start Yaci in past-time-travel mode
+        // 1. Start Yano in past-time-travel mode
         yaci = new YaciNodeManager(tempDir, uberJarPath);
         yaci.start(
                 "-Dyaci.node.block-producer.past-time-travel-mode=true",

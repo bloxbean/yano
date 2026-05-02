@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document describes how to run the Yaci node in block producer (devnet) mode and verify end-to-end sync with yaci-store.
+This document describes how to run Yano in block producer (devnet) mode and verify end-to-end sync with yaci-store.
 
 ## Prerequisites
 
@@ -14,7 +14,7 @@ This document describes how to run the Yaci node in block producer (devnet) mode
 ## Architecture
 
 ```
-Genesis Server (port 10000)       Yaci Node (n2n: 13337, REST: 9000)
+Genesis Server (port 10000)       Yano (n2n: 13337, REST: 9000)
   serves genesis.zip                 block producer (devnet mode)
         |                                    |
         +--- downloaded at startup ---+      |
@@ -88,7 +88,7 @@ if __name__ == "__main__":
 python3 genesis_server.py &
 ```
 
-## Step 2: Build and Start Yaci Node
+## Step 2: Build and Start Yano
 
 ```bash
 # Build uber-jar (add type: uber-jar under quarkus.package.jar in application.yml)

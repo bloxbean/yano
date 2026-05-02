@@ -1,6 +1,6 @@
-# Yaci Node Events & Plugins Guide
+# Yano Events & Plugins Guide
 
-This guide explains how to use the Yaci Node event system and plugin SPI — both for developers embedding Yaci Node in their apps, and for Yaci Node contributors writing default plugins or internal listeners.
+This guide explains how to use the Yano event system and plugin SPI, both for developers embedding Yano in their apps and for contributors writing default plugins or internal listeners.
 
 ## Overview
 

@@ -1,4 +1,4 @@
-# Yaci Node
+# Yano
 
 A Cardano node implementation in Java — relay sync, local devnet, and REST API.
 

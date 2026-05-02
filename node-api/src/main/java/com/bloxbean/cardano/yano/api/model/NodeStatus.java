@@ -4,7 +4,7 @@ import lombok.Builder;
 import lombok.Data;
 
 /**
- * Represents the current status of a Yaci Node.
+ * Represents the current status of a Yano node.
  * Contains information about sync progress, statistics, and operational state.
  */
 @Data

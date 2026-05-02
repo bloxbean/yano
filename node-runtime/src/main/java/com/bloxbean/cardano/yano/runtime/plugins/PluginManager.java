@@ -12,7 +12,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ScheduledExecutorService;
 
 /**
- * Manages the lifecycle of Yaci node plugins.
+ * Manages the lifecycle of Yano plugins.
  * 
  * The PluginManager is responsible for:
  * - Discovering plugins via ServiceLoader
@@ -150,4 +150,3 @@ public final class PluginManager implements AutoCloseable {
         try { return p.id(); } catch (Throwable t) { return p.getClass().getName(); }
     }
 }
-

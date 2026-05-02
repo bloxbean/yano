@@ -118,12 +118,12 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 
 /**
- * Yaci Node - Acts as both client and server
+ * Yano - acts as both client and server
  * <p>
  * CLIENT MODE: Syncs with real Cardano nodes (preprod relay nodes)
- * SERVER MODE: Serves other Yaci clients with blockchain data
+ * SERVER MODE: Serves downstream clients with blockchain data
  * <p>
- * This enables Yaci to act as a bridge/relay node
+ * This enables Yano to act as a bridge/relay node
  */
 @Slf4j
 public class YaciNode implements NodeAPI {
@@ -261,7 +261,7 @@ public class YaciNode implements NodeAPI {
         // Initialize pipeline configuration
         this.pipelineConfig = createPipelineConfig();
 
-        log.info("Yaci Node initialized");
+        log.info("Yano initialized");
         log.info("Remote: {}:{} (magic: {})", remoteCardanoHost, remoteCardanoPort, protocolMagic);
         log.info("Server port: {}", serverPort);
         log.info("Storage: {}", config.isUseRocksDB() ? "RocksDB" : "InMemory");
@@ -849,7 +849,7 @@ public class YaciNode implements NodeAPI {
      */
     public void start() {
         if (isRunning.compareAndSet(false, true)) {
-            log.info("Starting Yaci Node...");
+            log.info("Starting Yano...");
 
             // Start server first
             if (config.isEnableServer()) {
@@ -924,7 +924,7 @@ public class YaciNode implements NodeAPI {
                 startClientSync();
             }
 
-            log.info("Yaci Node started successfully");
+            log.info("Yano started successfully");
 
             // Print startup status
             printStartupStatus();
@@ -1033,7 +1033,7 @@ public class YaciNode implements NodeAPI {
             } else {
                 log.error("CRITICAL: Server starting with empty chain state (no tip)");
                 log.error("Real Cardano nodes will not connect to an empty server");
-                log.error("Yaci Node must sync some blockchain data first before serving");
+                log.error("Yano must sync some blockchain data first before serving");
             }
 
             // Create TxSubmission handler for transaction processing
@@ -1062,7 +1062,7 @@ public class YaciNode implements NodeAPI {
             });
 
             serverThread.setDaemon(false);
-            serverThread.setName("YaciNodeServer");
+            serverThread.setName("YanoServer");
             serverThread.start();
 
             // Give server time to start
@@ -2999,7 +2999,7 @@ public class YaciNode implements NodeAPI {
                 isInitialSyncComplete = true;
                 log.info("🚀 ==> TRANSITION: BlockFetch → ChainSync");
                 log.info("🚀 ==> Initial BlockFetch sync complete! Now in real-time ChainSync mode at slot {}", lastProcessedSlot);
-                log.info("🚀 ==> Yaci Node is now fully synchronized and serving clients");
+                log.info("🚀 ==> Yano is now fully synchronized and serving clients");
                 log.info("🚀 ==> Will now log every block as it arrives in real-time");
                 // Reflect phase change
                 var prev = syncPhase;
@@ -3013,11 +3013,11 @@ public class YaciNode implements NodeAPI {
     }
 
     /**
-     * Stop the Yaci node
+     * Stop Yano.
      */
     public void stop() {
         if (isRunning.compareAndSet(true, false)) {
-            log.info("Stopping Yaci Node...");
+            log.info("Stopping Yano...");
 
             // Stop client sync
             if (isSyncing.get()) {
@@ -3075,7 +3075,7 @@ public class YaciNode implements NodeAPI {
             try { if (accountHistoryEventHandler != null) accountHistoryEventHandler.close(); } catch (Exception ignored) {}
             try { eventBus.close(); } catch (Exception ignored) {}
 
-            log.info("Yaci Node stopped");
+            log.info("Yano stopped");
         }
     }
 

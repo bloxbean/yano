@@ -1,6 +1,6 @@
-# Yaci Devnet Modes
+# Yano Devnet Modes
 
-Yaci node-app can run as a standalone devnet with its own block producer. This document covers the different operating modes and how to start a Haskell cardano-node as a downstream peer.
+Yano can run as a standalone devnet with its own block producer. This document covers the different operating modes and how to start a Haskell cardano-node as a downstream peer.
 
 ## Prerequisites
 
@@ -8,7 +8,7 @@ Yaci node-app can run as a standalone devnet with its own block producer. This d
 # Build the uber-jar
 ./gradlew :node-app:quarkusBuild
 
-# The jar is at: node-app/build/yaci-node.jar
+# The jar is at: node-app/build/yano.jar
 ```
 
 Java 21 is required.
@@ -25,7 +25,7 @@ rm -rf chainstate    # fresh start
 
 java -Dquarkus.profile=devnet \
      -Dquarkus.http.port=7070 \
-     -jar build/yaci-node.jar
+     -jar build/yano.jar
 ```
 
 ### What happens
@@ -85,7 +85,7 @@ rm -rf chainstate
 java -Dquarkus.profile=devnet \
      -Dquarkus.http.port=7070 \
      -Dyaci.node.block-producer.past-time-travel-mode=true \
-     -jar build/yaci-node.jar
+     -jar build/yano.jar
 ```
 
 ### Workflow
@@ -196,12 +196,12 @@ curl -s -X POST http://localhost:7070/api/v1/devnet/epochs/catch-up
 
 ## Connecting a Haskell Cardano Node
 
-A Haskell cardano-node (10.5.x) can sync from a Yaci devnet as a downstream peer.
+A Haskell cardano-node (10.5.x) can sync from a Yano devnet as a downstream peer.
 
 ### Prerequisites
 
 - Haskell cardano-node binary (10.5.x recommended)
-- Matching genesis files (must copy from running Yaci node)
+- Matching genesis files (must copy from running Yano)
 - Configuration file with `Test*HardForkAtEpoch: 0` for all eras (instant Conway)
 
 ### Setup
@@ -211,9 +211,9 @@ The compatibility test environment is at:
 /Users/satya/work/cardano-node/compatibility-node-test/haskell-node/
 ```
 
-**1. Copy genesis files from running Yaci node**
+**1. Copy genesis files from running Yano**
 
-This must be done while Yaci is running, because in past-time-travel mode the `systemStart` is updated dynamically:
+This must be done while Yano is running, because in past-time-travel mode the `systemStart` is updated dynamically:
 
 ```bash
 bash /Users/satya/work/cardano-node/compatibility-node-test/scripts/copy-devnet-genesis.sh
@@ -235,7 +235,7 @@ grep systemStart <haskell-node>/files/shelley-genesis.json
 
 **3. Topology**
 
-The Haskell node topology should point to Yaci's n2n port:
+The Haskell node topology should point to Yano's n2n port:
 
 ```json
 {

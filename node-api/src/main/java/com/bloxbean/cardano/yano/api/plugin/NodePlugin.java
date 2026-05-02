@@ -3,9 +3,9 @@ package com.bloxbean.cardano.yano.api.plugin;
 import java.util.Set;
 
 /**
- * Base interface for Yaci node plugins.
+ * Base interface for Yano plugins.
  * 
- * Plugins extend the functionality of the Yaci node by:
+ * Plugins extend the functionality of Yano by:
  * - Listening to blockchain events (blocks, transactions, rollbacks)
  * - Providing custom storage implementations
  * - Adding notification mechanisms
@@ -100,4 +100,3 @@ public interface NodePlugin extends AutoCloseable {
     @Override
     void close();
 }
-

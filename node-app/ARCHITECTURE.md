@@ -1,6 +1,6 @@
-# Yaci Node App — Architecture & Design
+# Yano App — Architecture & Design
 
-Yaci Node App is a Quarkus-based Cardano relay node built entirely from composable
+Yano is a Quarkus-based Cardano relay node built entirely from composable
 Java libraries. It connects to **one upstream** Cardano node (client mode) and serves
 **many downstream** peers (server mode), synchronizing the chain through a split
 header/body pipeline with RocksDB persistence.
@@ -15,7 +15,7 @@ The node-app is one assembly; you can build your own.
 
 ```
                           ┌─────────────────────────────────────────────────────────────────┐
-                          │                       Yaci Node App                             │
+                          │                           Yano                                  │
                           │                                                                 │
   ┌──────────────┐        │  ┌─────────────────────────────────────────────────────────┐    │
   │   Upstream    │ n2n    │  │                   Client Agents                         │    │

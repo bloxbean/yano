@@ -16,7 +16,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Base class for Haskell sync integration tests.
- * Provides Yaci + cardano-node lifecycle management and common assertions.
+ * Provides Yano + cardano-node lifecycle management and common assertions.
  */
 @Tag("haskell-sync")
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
@@ -55,7 +55,7 @@ public abstract class HaskellSyncTestBase {
                 yaci.stop();
             }
         } catch (Exception e) {
-            log.warn("Error stopping Yaci node", e);
+            log.warn("Error stopping Yano", e);
         }
 
         if (tempDir != null) {
@@ -74,15 +74,15 @@ public abstract class HaskellSyncTestBase {
     }
 
     /**
-     * Asserts that Yaci and Haskell tips are within the given slot tolerance.
+     * Asserts that Yano and Haskell tips are within the given slot tolerance.
      */
     protected void assertTipsSynced(int toleranceSlots) throws Exception {
         JsonNode yaciTip = yaci.getTip();
         long yaciSlot = yaciTip.get("slot").asLong();
         long haskellSlot = haskell.getLatestSyncedSlot();
-        log.info("Tip comparison — Yaci slot: {}, Haskell slot: {}", yaciSlot, haskellSlot);
+        log.info("Tip comparison — Yano slot: {}, Haskell slot: {}", yaciSlot, haskellSlot);
         assertTrue(Math.abs(yaciSlot - haskellSlot) <= toleranceSlots,
-                "Slot difference between Yaci (" + yaciSlot + ") and Haskell (" + haskellSlot
+                "Slot difference between Yano (" + yaciSlot + ") and Haskell (" + haskellSlot
                         + ") exceeds tolerance of " + toleranceSlots);
     }
 

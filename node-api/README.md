@@ -1,6 +1,6 @@
-# Yaci Node API
+# Yano API
 
-This module contains Yaci Node’s public node‑level contracts and plugin SPI:
+This module contains Yano's public node-level contracts and plugin SPI:
 
 - Plugin SPI: `NodePlugin`, `PluginContext`, `PluginCapability`, `Notifier`/`Notification`, `StorageAdapter`, `NodePolicy`.
 - Config records: `RuntimeOptions`, `PluginsOptions` (pair with `events-core` `EventsOptions`).
@@ -8,4 +8,3 @@ This module contains Yaci Node’s public node‑level contracts and plugin SPI:
 For a step‑by‑step developer guide covering events, plugins, build‑time listener binding, and example publication points, see:
 
 - ../node-runtime/docs/events-and-plugins-guide.md
-

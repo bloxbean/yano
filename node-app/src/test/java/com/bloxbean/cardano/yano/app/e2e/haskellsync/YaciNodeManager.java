@@ -18,7 +18,7 @@ import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 /**
- * Manages a Yaci uber-jar process for integration testing.
+ * Manages a Yano uber-jar process for integration testing.
  */
 public class YaciNodeManager {
 
@@ -51,7 +51,7 @@ public class YaciNodeManager {
     }
 
     /**
-     * Starts the Yaci node with the devnet profile and optional extra system properties.
+     * Starts Yano with the devnet profile and optional extra system properties.
      */
     public void start(String... extraProps) throws IOException {
         Path chainstateDir = workDir.resolve("chainstate");
@@ -82,7 +82,7 @@ public class YaciNodeManager {
         cmd.add("-jar");
         cmd.add(uberJarPath.toString());
 
-        log.info("Starting Yaci node: httpPort={}, n2nPort={}", httpPort, n2nPort);
+        log.info("Starting Yano: httpPort={}, n2nPort={}", httpPort, n2nPort);
         log.debug("Command: {}", String.join(" ", cmd));
 
         ProcessBuilder pb = new ProcessBuilder(cmd);
@@ -100,7 +100,7 @@ public class YaciNodeManager {
                 }
             } catch (IOException e) {
                 if (process.isAlive()) {
-                    log.warn("Error reading Yaci output", e);
+                    log.warn("Error reading Yano output", e);
                 }
             }
         }, "yaci-log-reader");
@@ -109,7 +109,7 @@ public class YaciNodeManager {
     }
 
     /**
-     * Waits for the Yaci node to become ready via the health endpoint.
+     * Waits for Yano to become ready via the health endpoint.
      */
     public void waitForReady(long timeoutMillis) throws Exception {
         long deadline = System.currentTimeMillis() + timeoutMillis;
@@ -117,7 +117,7 @@ public class YaciNodeManager {
 
         while (System.currentTimeMillis() < deadline) {
             if (!process.isAlive()) {
-                throw new RuntimeException("Yaci process died during startup (exit: " + process.exitValue() + ")");
+                throw new RuntimeException("Yano process died during startup (exit: " + process.exitValue() + ")");
             }
             try {
                 HttpRequest req = HttpRequest.newBuilder()
@@ -127,7 +127,7 @@ public class YaciNodeManager {
                         .build();
                 HttpResponse<String> resp = httpClient.send(req, HttpResponse.BodyHandlers.ofString());
                 if (resp.statusCode() == 200) {
-                    log.info("Yaci node ready on port {}", httpPort);
+                    log.info("Yano ready on port {}", httpPort);
                     return;
                 }
             } catch (Exception e) {
@@ -135,11 +135,11 @@ public class YaciNodeManager {
             }
             Thread.sleep(500);
         }
-        throw new RuntimeException("Timed out waiting for Yaci node to become ready");
+        throw new RuntimeException("Timed out waiting for Yano to become ready");
     }
 
     /**
-     * Gets the current chain tip from Yaci.
+     * Gets the current chain tip from Yano.
      */
     public JsonNode getTip() throws Exception {
         HttpRequest req = HttpRequest.newBuilder()
@@ -173,7 +173,7 @@ public class YaciNodeManager {
     }
 
     /**
-     * Copies genesis files from Yaci's config directory to the target directory.
+     * Copies genesis files from Yano's config directory to the target directory.
      */
     public void copyGenesisTo(Path targetDir) throws IOException {
         Files.createDirectories(targetDir);
@@ -192,7 +192,7 @@ public class YaciNodeManager {
 
     public void stop() {
         if (process != null && process.isAlive()) {
-            log.info("Stopping Yaci node");
+            log.info("Stopping Yano");
             process.destroy();
             try {
                 process.waitFor(10, TimeUnit.SECONDS);
