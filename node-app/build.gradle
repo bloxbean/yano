@@ -136,6 +136,73 @@ def detectPlatform() {
 }
 
 def distVersion = rootProject.version.toString().replaceAll('-SNAPSHOT', '')
+def nativeBuildArgsProperty = 'quarkus.native.additional-build-args'
+
+def getNativeBuildArgs = {
+    def raw = System.getProperty(nativeBuildArgsProperty)
+    if (raw == null || raw.isBlank()) {
+        return []
+    }
+
+    return raw.split(',')
+            .collect { it.trim() }
+            .findAll { !it.isBlank() }
+}
+
+def addNativeBuildArgs = { List<String> additions ->
+    def args = getNativeBuildArgs()
+    additions.each { arg ->
+        if (!args.contains(arg)) {
+            args.add(arg)
+        }
+    }
+
+    if (!args.isEmpty()) {
+        System.setProperty(nativeBuildArgsProperty, args.join(','))
+    }
+}
+
+def isNativeBuildRequested = {
+    def nativeEnabled = System.getProperty('quarkus.native.enabled', '')
+    if (nativeEnabled.equalsIgnoreCase('true')) {
+        return true
+    }
+
+    return System.getProperty('quarkus.profile', '')
+            .split(',')
+            .collect { it.trim() }
+            .any { it == 'native' }
+}
+
+def configureNativeGc = {
+    if (!isNativeBuildRequested()) {
+        return
+    }
+
+    def args = getNativeBuildArgs()
+    def configuredGc = args.find { it.startsWith('--gc=') }
+    if (configuredGc != null) {
+        println "Native-image GC already configured: ${configuredGc}"
+        return
+    }
+
+    def osName = System.getProperty('os.name', '').toLowerCase(java.util.Locale.ROOT)
+    def osArch = System.getProperty('os.arch', '').toLowerCase(java.util.Locale.ROOT)
+    def vendor = System.getProperty('java.vendor', '')
+    def vmName = System.getProperty('java.vm.name', '')
+
+    if (vendor.contains('Oracle') && !vmName.contains('Community')) {
+        if (osName.contains('linux') && ['amd64', 'x86_64', 'aarch64', 'arm64'].contains(osArch)) {
+            addNativeBuildArgs(['--gc=G1'])
+            println "Oracle GraalVM on Linux detected, setting native-image GC to G1"
+        } else {
+            println "Oracle GraalVM on ${osName ?: 'unknown OS'} detected, using native-image default GC"
+        }
+    } else if (vendor.contains('BellSoft') || vendor.contains('Liberica')) {
+        addNativeBuildArgs(['--gc=parallel'])
+        println "Liberica Native Image Kit detected, setting native-image GC to parallel"
+    }
+}
 
 tasks.register('nodeDistZip', Zip) {
     dependsOn 'quarkusBuild'
@@ -167,9 +234,11 @@ gradle.taskGraph.whenReady { graph ->
     if (graph.hasTask(":${project.name}:nodeNativeDistZip")) {
         System.setProperty('quarkus.profile', 'native')
         if (System.getProperty('os.name').toLowerCase().contains('linux')) {
-            System.setProperty('quarkus.native.additional-build-args', '-H:+StaticExecutableWithDynamicLibC')
+            addNativeBuildArgs(['-H:+StaticExecutableWithDynamicLibC'])
         }
     }
+
+    configureNativeGc()
 }
 
 tasks.register('nodeNativeDistZip', Zip) {
