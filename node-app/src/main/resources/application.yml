@@ -63,6 +63,10 @@ yaci:
       enabled: true
       # epoch-block-data-retention-lag: 5    # epochs to keep per-block issuer/fee data after consumption (controls rollback depth)
       # snapshot-retention-epochs: 50        # epochs of delegation snapshots to retain
+    # Optional umbrella rollback retention. When set, Yano fills missing rollback
+    # retention properties for UTXO/account-state/account-history from genesis epoch length.
+    # Explicit leaf properties still take precedence.
+    # rollback-retention-epochs: 20
     account:
       stake-balance-index-enabled: true
     account-history:

@@ -22,6 +22,7 @@ import com.bloxbean.cardano.yano.runtime.blockproducer.EffectiveProtocolParamsSu
 import com.bloxbean.cardano.yano.runtime.blockproducer.GenesisConfig;
 import com.bloxbean.cardano.yano.runtime.blockproducer.ProtocolParamsMapper;
 import com.bloxbean.cardano.yano.runtime.config.DefaultEpochParamProvider;
+import com.bloxbean.cardano.yano.runtime.config.NetworkGenesisConfig;
 import com.bloxbean.cardano.yano.ledgerrules.impl.YaciScriptSupplier;
 import com.bloxbean.cardano.yano.scalusbridge.ScalusTransactionFactory;
 import io.quarkus.runtime.ShutdownEvent;
@@ -29,7 +30,9 @@ import io.quarkus.runtime.StartupEvent;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
 import jakarta.enterprise.inject.Produces;
+import jakarta.inject.Inject;
 import jakarta.inject.Named;
+import org.eclipse.microprofile.config.Config;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -47,6 +50,19 @@ import java.util.function.LongSupplier;
 public class YaciNodeProducer {
 
     private static final Logger log = LoggerFactory.getLogger(YaciNodeProducer.class);
+    private static final String ROLLBACK_RETENTION_EPOCHS = "yaci.node.rollback-retention-epochs";
+    private static final String UTXO_ROLLBACK_WINDOW = "yaci.node.utxo.rollbackWindow";
+    private static final String ACCOUNT_STATE_EPOCH_BLOCK_DATA_RETENTION_LAG =
+            "yaci.node.account-state.epoch-block-data-retention-lag";
+    private static final String ACCOUNT_STATE_SNAPSHOT_RETENTION_EPOCHS =
+            "yaci.node.account-state.snapshot-retention-epochs";
+    private static final String ACCOUNT_HISTORY_ROLLBACK_SAFETY_SLOTS =
+            "yaci.node.account-history.rollback-safety-slots";
+    private static final String BLOCK_BODY_PRUNE_DEPTH =
+            "yaci.node.chain.block-body-prune-depth";
+
+    @Inject
+    Config appConfig;
 
     @ConfigProperty(name = "yaci.node.network", defaultValue = "mainnet")
     String network;
@@ -112,6 +128,9 @@ public class YaciNodeProducer {
     boolean utxoDeltaSelfContained;
     @ConfigProperty(name = "yaci.node.utxo.applyAsync", defaultValue = "false")
     boolean utxoApplyAsync;
+
+    @ConfigProperty(name = ROLLBACK_RETENTION_EPOCHS)
+    java.util.Optional<Integer> rollbackRetentionEpochs;
 
     // Account state config
     @ConfigProperty(name = "yaci.node.account-state.enabled", defaultValue = "false")
@@ -311,6 +330,100 @@ public class YaciNodeProducer {
         return configured && !isBootstrapPartialStateMode();
     }
 
+    record RollbackRetentionSettings(
+            int utxoRollbackWindow,
+            int accountStateEpochBlockDataRetentionLag,
+            int accountStateSnapshotRetentionEpochs,
+            java.util.Optional<Long> accountHistoryRollbackSafetySlots,
+            int blockBodyPruneDepth,
+            boolean umbrellaEnabled,
+            int retentionEpochs,
+            long slotWindow) {
+    }
+
+    static RollbackRetentionSettings resolveRollbackRetentionSettings(
+            java.util.Optional<Integer> rollbackRetentionEpochs,
+            long epochLength,
+            int utxoRollbackWindow,
+            boolean utxoRollbackWindowConfigured,
+            int accountStateEpochBlockDataRetentionLag,
+            boolean accountStateEpochBlockDataRetentionLagConfigured,
+            int accountStateSnapshotRetentionEpochs,
+            boolean accountStateSnapshotRetentionEpochsConfigured,
+            java.util.Optional<Long> accountHistoryRollbackSafetySlots,
+            boolean accountHistoryRollbackSafetySlotsConfigured,
+            int blockBodyPruneDepth,
+            boolean blockBodyPruneDepthConfigured) {
+
+        var unchanged = new RollbackRetentionSettings(
+                utxoRollbackWindow,
+                accountStateEpochBlockDataRetentionLag,
+                accountStateSnapshotRetentionEpochs,
+                accountHistoryRollbackSafetySlots,
+                blockBodyPruneDepth,
+                false,
+                0,
+                0);
+
+        if (rollbackRetentionEpochs == null || rollbackRetentionEpochs.isEmpty()) {
+            return unchanged;
+        }
+
+        int retentionEpochs = rollbackRetentionEpochs.get();
+        if (retentionEpochs < 0) {
+            throw new IllegalArgumentException(ROLLBACK_RETENTION_EPOCHS + " must be >= 0");
+        }
+        if (retentionEpochs == 0) {
+            return unchanged;
+        }
+        if (epochLength <= 0) {
+            throw new IllegalArgumentException("Cannot apply " + ROLLBACK_RETENTION_EPOCHS
+                    + " without a positive Shelley epoch length");
+        }
+
+        long slotWindow = Math.multiplyExact((long) retentionEpochs, epochLength);
+        int slotWindowInt = requireIntRange(slotWindow, UTXO_ROLLBACK_WINDOW);
+        int rewardInputLag = requireIntRange((long) retentionEpochs + 1,
+                ACCOUNT_STATE_EPOCH_BLOCK_DATA_RETENTION_LAG);
+        int snapshotRetention = requireIntRange((long) retentionEpochs + 4,
+                ACCOUNT_STATE_SNAPSHOT_RETENTION_EPOCHS);
+
+        int resolvedUtxoRollbackWindow = utxoRollbackWindowConfigured
+                ? utxoRollbackWindow
+                : Math.max(utxoRollbackWindow, slotWindowInt);
+        int resolvedAccountStateLag = accountStateEpochBlockDataRetentionLagConfigured
+                ? accountStateEpochBlockDataRetentionLag
+                : Math.max(accountStateEpochBlockDataRetentionLag, rewardInputLag);
+        int resolvedSnapshotRetention = accountStateSnapshotRetentionEpochsConfigured
+                ? accountStateSnapshotRetentionEpochs
+                : Math.max(accountStateSnapshotRetentionEpochs, snapshotRetention);
+        java.util.Optional<Long> resolvedAccountHistorySafety = accountHistoryRollbackSafetySlotsConfigured
+                ? accountHistoryRollbackSafetySlots
+                : java.util.Optional.of(Math.max(accountHistoryRollbackSafetySlots.orElse(0L), slotWindow));
+
+        int resolvedBlockBodyPruneDepth = blockBodyPruneDepth;
+        if (!blockBodyPruneDepthConfigured && blockBodyPruneDepth > 0) {
+            resolvedBlockBodyPruneDepth = Math.max(blockBodyPruneDepth, slotWindowInt);
+        }
+
+        return new RollbackRetentionSettings(
+                resolvedUtxoRollbackWindow,
+                resolvedAccountStateLag,
+                resolvedSnapshotRetention,
+                resolvedAccountHistorySafety,
+                resolvedBlockBodyPruneDepth,
+                true,
+                retentionEpochs,
+                slotWindow);
+    }
+
+    private static int requireIntRange(long value, String propertyName) {
+        if (value > Integer.MAX_VALUE) {
+            throw new IllegalArgumentException(propertyName + " exceeds integer range: " + value);
+        }
+        return (int) value;
+    }
+
     @Produces
     @ApplicationScoped
     public NodeAPI createNodeAPI() {
@@ -427,11 +540,43 @@ public class YaciNodeProducer {
                     + "UTXO bootstrap remains enabled; transaction evaluation may use protocol-param.json if configured.");
         }
 
+        RollbackRetentionSettings rollbackRetentionSettings = resolveRollbackRetentionSettings(
+                rollbackRetentionEpochs,
+                rollbackRetentionEpochs.orElse(0) > 0
+                        ? resolveRollbackRetentionEpochLength(resolvedShelleyGenesis)
+                        : 0,
+                utxoRollbackWindow,
+                isConfigPropertyPresent(UTXO_ROLLBACK_WINDOW),
+                accountStateEpochBlockDataRetentionLag,
+                isConfigPropertyPresent(ACCOUNT_STATE_EPOCH_BLOCK_DATA_RETENTION_LAG),
+                accountStateSnapshotRetentionEpochs,
+                isConfigPropertyPresent(ACCOUNT_STATE_SNAPSHOT_RETENTION_EPOCHS),
+                accountHistoryRollbackSafetySlots,
+                isConfigPropertyPresent(ACCOUNT_HISTORY_ROLLBACK_SAFETY_SLOTS),
+                blockBodyPruneDepth,
+                isConfigPropertyPresent(BLOCK_BODY_PRUNE_DEPTH));
+
+        if (rollbackRetentionSettings.umbrellaEnabled()) {
+            log.info("Rollback retention umbrella configured: epochs={}, slotWindow={}. "
+                            + "Effective retention: utxo.rollbackWindow={}, "
+                            + "account-state.epoch-block-data-retention-lag={}, "
+                            + "account-state.snapshot-retention-epochs={}, "
+                            + "account-history.rollback-safety-slots={}, "
+                            + "chain.block-body-prune-depth={}",
+                    rollbackRetentionSettings.retentionEpochs(),
+                    rollbackRetentionSettings.slotWindow(),
+                    rollbackRetentionSettings.utxoRollbackWindow(),
+                    rollbackRetentionSettings.accountStateEpochBlockDataRetentionLag(),
+                    rollbackRetentionSettings.accountStateSnapshotRetentionEpochs(),
+                    rollbackRetentionSettings.accountHistoryRollbackSafetySlots().orElse(null),
+                    rollbackRetentionSettings.blockBodyPruneDepth());
+        }
+
         // Globals: UTXO options
         Map<String, Object> globals = new HashMap<>();
         globals.put("yaci.node.utxo.enabled", utxoEnabled);
         globals.put("yaci.node.utxo.pruneDepth", utxoPruneDepth);
-        globals.put("yaci.node.utxo.rollbackWindow", utxoRollbackWindow);
+        globals.put(UTXO_ROLLBACK_WINDOW, rollbackRetentionSettings.utxoRollbackWindow());
         globals.put("yaci.node.utxo.pruneBatchSize", utxoPruneBatchSize);
         globals.put("yaci.node.utxo.index.address_hash", utxoIndexAddressHash);
         globals.put("yaci.node.utxo.index.payment_credential", utxoIndexPaymentCred);
@@ -442,8 +587,10 @@ public class YaciNodeProducer {
 
         // Account state
         globals.put("yaci.node.account-state.enabled", effectiveAccountStateEnabled);
-        globals.put("yaci.node.account-state.epoch-block-data-retention-lag", accountStateEpochBlockDataRetentionLag);
-        globals.put("yaci.node.account-state.snapshot-retention-epochs", accountStateSnapshotRetentionEpochs);
+        globals.put(ACCOUNT_STATE_EPOCH_BLOCK_DATA_RETENTION_LAG,
+                rollbackRetentionSettings.accountStateEpochBlockDataRetentionLag());
+        globals.put(ACCOUNT_STATE_SNAPSHOT_RETENTION_EPOCHS,
+                rollbackRetentionSettings.accountStateSnapshotRetentionEpochs());
         globals.put("yaci.node.account.stake-balance-index-enabled", effectiveStakeBalanceIndexEnabled);
         globals.put("yaci.node.account-history.enabled", effectiveAccountHistoryEnabled);
         globals.put("yaci.node.account-history.tx-events-enabled", effectiveAccountHistoryTxEventsEnabled);
@@ -451,8 +598,8 @@ public class YaciNodeProducer {
         globals.put("yaci.node.account-history.retention-epochs", accountHistoryRetentionEpochs);
         globals.put("yaci.node.account-history.prune-interval-seconds", accountHistoryPruneIntervalSeconds);
         globals.put("yaci.node.account-history.prune-batch-size", accountHistoryPruneBatchSize);
-        accountHistoryRollbackSafetySlots.ifPresent(v ->
-                globals.put("yaci.node.account-history.rollback-safety-slots", v));
+        rollbackRetentionSettings.accountHistoryRollbackSafetySlots().ifPresent(v ->
+                globals.put(ACCOUNT_HISTORY_ROLLBACK_SAFETY_SLOTS, v));
 
         // Epoch subsystems
         globals.put("yaci.node.epoch-snapshot.amounts-enabled", effectiveEpochSnapshotAmountsEnabled);
@@ -471,7 +618,7 @@ public class YaciNodeProducer {
         globals.put("yaci.node.auto-checkpoint-interval", autoCheckpointInterval);
 
         // Block pruning
-        globals.put("yaci.node.chain.block-body-prune-depth", blockBodyPruneDepth);
+        globals.put(BLOCK_BODY_PRUNE_DEPTH, rollbackRetentionSettings.blockBodyPruneDepth());
         globals.put("yaci.node.chain.block-prune-batch-size", blockPruneBatchSize);
         globals.put("yaci.node.chain.block-prune-interval-seconds", blockPruneIntervalSeconds);
 
@@ -766,6 +913,27 @@ public class YaciNodeProducer {
             log.info("Stopping Yaci Node...");
             nodeAPI.stop();
             log.info("Yaci Node stopped");
+        }
+    }
+
+    private long resolveRollbackRetentionEpochLength(String resolvedShelleyGenesis) {
+        try {
+            return NetworkGenesisConfig.load(resolvedShelleyGenesis, null, null, null).getEpochLength();
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to resolve Shelley epoch length for "
+                    + ROLLBACK_RETENTION_EPOCHS + " from " + resolvedShelleyGenesis, e);
+        }
+    }
+
+    private boolean isConfigPropertyPresent(String propertyName) {
+        if (appConfig == null) {
+            return false;
+        }
+        try {
+            return appConfig.getOptionalValue(propertyName, String.class).isPresent();
+        } catch (Exception e) {
+            log.debug("Failed to inspect config property {}: {}", propertyName, e.getMessage());
+            return false;
         }
     }
 
