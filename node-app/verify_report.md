@@ -1,4 +1,4 @@
-# Yaci-Node Verification Report
+# Yano Verification Report
 
 **Date:** 2026-04-02 23:21:48
 **Epochs:** 159 — 280

@@ -469,7 +469,7 @@ ledger-state
     |- events-processor (annotation processing for @DomainEventListener)
 
 Dependents:
-    |- node-runtime   (creates and wires DefaultAccountStateStore, YaciNode)
+    |- node-runtime   (creates and wires DefaultAccountStateStore, Yano)
     |- node-app       (REST endpoints, configuration)
     |- epoch-export   (Parquet snapshot exporter)
 ```
