@@ -3122,7 +3122,11 @@ public class YaciNode implements NodeAPI {
             EventMetadata meta = EventMetadata.builder().origin("node-runtime").build();
             eventBus.publish(new RollbackEvent(point, isReal), meta, PublishOptions.builder().build());
         } catch (Exception ex) {
-            log.debug("RollbackEvent publish failed: {}", ex.toString());
+            log.error("RollbackEvent publish failed after chainstate rollback to slot {}. "
+                    + "Refusing to continue with possibly inconsistent ledger state.", rollbackSlot, ex);
+            log.error("EMERGENCY EXIT - rollback listeners did not complete after chainstate rollback");
+            System.exit(1);
+            throw new RuntimeException("Rollback event handling failed after chainstate rollback to slot " + rollbackSlot, ex);
         }
         ensureAccountHistoryRolledBack(point);
 

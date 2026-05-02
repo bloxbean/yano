@@ -69,6 +69,12 @@
     "allDeclaredFields": true
   },
   {
+    "name": "com.bloxbean.cardano.yano.ledgerstate.EpochParamTracker$TupleJsonMixin",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
+  },
+  {
     "name": "com.bloxbean.cardano.yaci.core.model.PoolVotingThresholds",
     "allDeclaredConstructors": true,
     "allDeclaredMethods": true,

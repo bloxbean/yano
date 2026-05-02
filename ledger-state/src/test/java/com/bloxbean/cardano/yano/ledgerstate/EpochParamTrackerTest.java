@@ -81,6 +81,35 @@ class EpochParamTrackerTest {
         };
     }
 
+    private static EpochParamProvider preAlonzoMainnetProviderWithExtraEntropy() {
+        return new EpochParamProvider() {
+            @Override public BigInteger getKeyDeposit(long epoch) { return BigInteger.valueOf(2_000_000); }
+            @Override public BigInteger getPoolDeposit(long epoch) { return BigInteger.valueOf(500_000_000); }
+            @Override public int getProtocolMajor(long epoch) { return 4; }
+            @Override public int getProtocolMinor(long epoch) { return 0; }
+            @Override public String getExtraEntropy(long epoch) { return "mainnet-extra-entropy"; }
+            @Override public int getNOpt(long epoch) { return 500; }
+            @Override public BigDecimal getDecentralization(long epoch) { return BigDecimal.ZERO; }
+            @Override public UnitInterval getDecentralizationInterval(long epoch) {
+                return new UnitInterval(BigInteger.ZERO, BigInteger.ONE);
+            }
+        };
+    }
+
+    private static EraProvider mainnetMaryEraProvider() {
+        return new EraProvider() {
+            @Override
+            public Integer resolveFirstEpochOrNull(int eraValue) {
+                return switch (eraValue) {
+                    case 5 -> 290; // Alonzo
+                    case 6 -> 365; // Babbage/Vasil
+                    case 7 -> 999; // Conway, irrelevant here
+                    default -> 208; // Shelley or earlier non-Byron lookup
+                };
+            }
+        };
+    }
+
     private static Map<String, Object> orderedCostModel(Long... values) {
         Map<String, Object> model = new LinkedHashMap<>();
         for (int i = 0; i < values.length; i++) {
@@ -281,6 +310,45 @@ class EpochParamTrackerTest {
         // Calling finalizeEpoch(6) again should not change anything
         restarted.finalizeEpoch(6);
         assertThat(restarted.getResolvedParams(6).getProtocolMajorVer()).isEqualTo(4);
+    }
+
+    @Test
+    @DisplayName("Finalized params with extraEntropy survive RocksDB reload")
+    void finalizedParamsWithExtraEntropySurviveReload() throws Exception {
+        EpochParamProvider provider = preAlonzoMainnetProviderWithExtraEntropy();
+        EraProvider eraProvider = mainnetMaryEraProvider();
+
+        EpochParamTracker tracker = createTracker(provider, eraProvider);
+        tracker.finalizeEpoch(260);
+        assertThat(tracker.getResolvedParams(260)).isNotNull();
+        assertThat(tracker.getExtraEntropy(260)).isEqualTo("mainnet-extra-entropy");
+
+        EpochParamTracker restarted = createTracker(provider, eraProvider);
+
+        ProtocolParamUpdate reloaded = restarted.getResolvedParams(260);
+        assertThat(reloaded).isNotNull();
+        assertThat(restarted.getExtraEntropy(260)).isEqualTo("mainnet-extra-entropy");
+        assertThat(restarted.getNOpt(260)).isEqualTo(500);
+        assertThat(restarted.getDecentralization(260)).isEqualByComparingTo(BigDecimal.ZERO);
+    }
+
+    @Test
+    @DisplayName("Reloaded params with extraEntropy carry forward to the next epoch")
+    void reloadedParamsWithExtraEntropyCarryForwardToNextEpoch() throws Exception {
+        EpochParamProvider provider = preAlonzoMainnetProviderWithExtraEntropy();
+        EraProvider eraProvider = mainnetMaryEraProvider();
+
+        EpochParamTracker tracker = createTracker(provider, eraProvider);
+        tracker.finalizeEpoch(260);
+
+        EpochParamTracker restarted = createTracker(provider, eraProvider);
+        restarted.finalizeEpoch(261);
+
+        ProtocolParamUpdate carried = restarted.getResolvedParams(261);
+        assertThat(carried).isNotNull();
+        assertThat(restarted.getExtraEntropy(261)).isEqualTo("mainnet-extra-entropy");
+        assertThat(restarted.getNOpt(261)).isEqualTo(500);
+        assertThat(restarted.getDecentralization(261)).isEqualByComparingTo(BigDecimal.ZERO);
     }
 
     // ===== Test 6: multiple tx updates merge deterministically =====

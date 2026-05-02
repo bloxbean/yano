@@ -15,6 +15,8 @@ import com.bloxbean.cardano.yaci.core.util.Tuple;
 import com.bloxbean.cardano.yano.api.EpochParamProvider;
 import com.bloxbean.cardano.yano.api.era.EraProvider;
 import com.bloxbean.cardano.yano.api.util.CostModelUtil;
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.rocksdb.ColumnFamilyHandle;
@@ -55,8 +57,19 @@ import java.util.concurrent.ConcurrentHashMap;
 public class EpochParamTracker implements EpochParamProvider {
     private static final Logger log = LoggerFactory.getLogger(EpochParamTracker.class);
 
-    private static final ObjectMapper JSON = new ObjectMapper()
-            .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
+    private static final ObjectMapper JSON = createObjectMapper();
+
+    private static ObjectMapper createObjectMapper() {
+        return new ObjectMapper()
+                .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
+                .addMixIn(Tuple.class, TupleJsonMixin.class);
+    }
+
+    private abstract static class TupleJsonMixin {
+        @JsonCreator
+        TupleJsonMixin(@JsonProperty("_1") Object first, @JsonProperty("_2") Object second) {
+        }
+    }
 
     private final EpochParamProvider baseProvider;
     private final boolean enabled;
@@ -1024,7 +1037,9 @@ public class EpochParamTracker implements EpochParamProvider {
                         finalizedCount++;
                         if (epoch > maxFinalizedEpoch) maxFinalizedEpoch = epoch;
                     } catch (Exception e) {
-                        log.warn("Failed to deserialize finalized epoch params for epoch {}: {}", epoch, e.getMessage());
+                        throw new IllegalStateException(
+                                "Failed to deserialize finalized epoch params for epoch " + epoch
+                                        + ". Refusing to continue with partial protocol parameter state.", e);
                     }
                 }
                 it.next();
@@ -1047,8 +1062,9 @@ public class EpochParamTracker implements EpochParamProvider {
                             pendingUpdates.merge(effectiveEpoch, params, this::mergeUpdates);
                             pendingCount++;
                         } catch (Exception e) {
-                            log.warn("Failed to deserialize pending param update for effective epoch {}: {}",
-                                    effectiveEpoch, e.getMessage());
+                            throw new IllegalStateException(
+                                    "Failed to deserialize pending param update for effective epoch " + effectiveEpoch
+                                            + ". Refusing to continue with partial protocol parameter state.", e);
                         }
                     }
                 }
