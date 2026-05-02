@@ -1,5 +1,5 @@
 dependencies {
-    api project(':node-api')
+    api project(':core-api')
     api libs.yaci.core
 
     implementation libs.rocksdb

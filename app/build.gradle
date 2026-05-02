@@ -1,0 +1,294 @@
+plugins {
+    id 'application'
+    id 'io.quarkus' version "${quarkusPluginVersion}"
+}
+
+dependencies {
+    implementation enforcedPlatform("${quarkusPlatformGroupId}:${quarkusPlatformArtifactId}:${quarkusPlatformVersion}")
+
+    // Quarkus dependencies
+    implementation 'io.quarkus:quarkus-resteasy'
+    implementation 'io.quarkus:quarkus-resteasy-jackson'
+    implementation 'io.quarkus:quarkus-arc'
+    implementation 'io.quarkus:quarkus-config-yaml'
+    implementation 'io.quarkus:quarkus-smallrye-health'
+    implementation 'io.quarkus:quarkus-smallrye-openapi'
+
+    // Yano module dependencies
+    implementation(project(':core-api')) {
+        exclude group: 'io.netty', module: 'netty-all'
+    }
+    implementation(project(':runtime')) {
+        exclude group: 'io.netty', module: 'netty-all'
+    }
+    implementation(project(':bootstrap-providers')) {
+        exclude group: 'io.netty', module: 'netty-all'
+    }
+    implementation(project(':scalus-bridge')) {
+        exclude group: 'io.netty', module: 'netty-all'
+    }
+    implementation(project(':epoch-export')) {
+        exclude group: 'io.netty', module: 'netty-all'
+    }
+
+    implementation("com.google.auto.service:auto-service:1.1.1")
+
+    annotationProcessor libs.yaci.events.processor
+    annotationProcessor "com.google.auto.service:auto-service:1.1.1"
+
+    compileOnly libs.lombok
+    annotationProcessor libs.lombok
+
+    testImplementation 'io.quarkus:quarkus-junit5'
+    testImplementation 'io.rest-assured:rest-assured'
+
+    testImplementation libs.cardano.client.lib
+    testImplementation libs.cardano.client.backend.blockfrost
+    testImplementation libs.cardano.client.quicktx
+    testImplementation libs.cardano.client.cip20
+}
+
+application {
+    mainClass = 'io.quarkus.runner.GeneratedMain'
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_25
+    targetCompatibility = JavaVersion.VERSION_25
+}
+
+// Disable default application plugin dist tasks (incompatible with Quarkus)
+distZip.enabled = false
+distTar.enabled = false
+startScripts.enabled = false
+
+test {
+    useJUnitPlatform {
+        excludeTags 'integration', 'e2e', 'haskell-sync'
+    }
+}
+
+tasks.register('e2eTest', Test) {
+    useJUnitPlatform {
+        includeTags 'e2e'
+    }
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    if (System.getProperty('yaci.e2e.baseUrl') != null) {
+        systemProperty 'yaci.e2e.baseUrl', System.getProperty('yaci.e2e.baseUrl')
+    }
+}
+
+tasks.register('haskellSyncTest', Test) {
+    useJUnitPlatform {
+        includeTags 'haskell-sync'
+    }
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    // These tests wait for multi-epoch sync — allow up to 10 minutes
+    systemProperty 'junit.jupiter.execution.timeout.default', '10m'
+    if (System.getProperty('cardano.node.version') != null) {
+        systemProperty 'cardano.node.version', System.getProperty('cardano.node.version')
+    }
+    if (System.getProperty('yano.uber.jar') != null) {
+        systemProperty 'yano.uber.jar', System.getProperty('yano.uber.jar')
+    }
+    if (System.getProperty('yaci.uber.jar') != null) {
+        // Backward-compatible alias for existing local commands.
+        systemProperty 'yaci.uber.jar', System.getProperty('yaci.uber.jar')
+    }
+}
+
+tasks.register('integrationTest', Test) {
+    useJUnitPlatform {
+        includeTags 'integration'
+    }
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    if (System.getProperty('yaci.e2e.baseUrl') != null) {
+        systemProperty 'yaci.e2e.baseUrl', System.getProperty('yaci.e2e.baseUrl')
+    }
+}
+
+// --- Distribution packaging tasks ---
+
+def detectPlatform() {
+    def osName = System.getProperty('os.name').toLowerCase()
+    def osArch = System.getProperty('os.arch').toLowerCase()
+
+    def os
+    if (osName.contains('linux')) {
+        os = 'linux'
+    } else if (osName.contains('mac') || osName.contains('darwin')) {
+        os = 'macos'
+    } else if (osName.contains('windows')) {
+        os = 'windows'
+    } else {
+        os = osName.replaceAll('[^a-z0-9]', '')
+    }
+
+    def arch
+    if (osArch == 'amd64' || osArch == 'x86_64') {
+        arch = 'x64'
+    } else if (osArch == 'aarch64' || osArch == 'arm64') {
+        arch = 'arm64'
+    } else {
+        arch = osArch.replaceAll('[^a-z0-9]', '')
+    }
+
+    return "${os}-${arch}"
+}
+
+def distVersion = rootProject.version.toString().replaceAll('-SNAPSHOT', '')
+def nativeBuildArgsProperty = 'quarkus.native.additional-build-args'
+
+def getNativeBuildArgs = {
+    def raw = System.getProperty(nativeBuildArgsProperty)
+    if (raw == null || raw.isBlank()) {
+        return []
+    }
+
+    return raw.split(',')
+            .collect { it.trim() }
+            .findAll { !it.isBlank() }
+}
+
+def addNativeBuildArgs = { List<String> additions ->
+    def args = getNativeBuildArgs()
+    additions.each { arg ->
+        if (!args.contains(arg)) {
+            args.add(arg)
+        }
+    }
+
+    if (!args.isEmpty()) {
+        System.setProperty(nativeBuildArgsProperty, args.join(','))
+    }
+}
+
+def isNativeBuildRequested = {
+    def nativeEnabled = System.getProperty('quarkus.native.enabled', '')
+    if (nativeEnabled.equalsIgnoreCase('true')) {
+        return true
+    }
+
+    return System.getProperty('quarkus.profile', '')
+            .split(',')
+            .collect { it.trim() }
+            .any { it == 'native' }
+}
+
+def configureNativeGc = {
+    if (!isNativeBuildRequested()) {
+        return
+    }
+
+    def args = getNativeBuildArgs()
+    def configuredGc = args.find { it.startsWith('--gc=') }
+    if (configuredGc != null) {
+        println "Native-image GC already configured: ${configuredGc}"
+        return
+    }
+
+    def osName = System.getProperty('os.name', '').toLowerCase(java.util.Locale.ROOT)
+    def osArch = System.getProperty('os.arch', '').toLowerCase(java.util.Locale.ROOT)
+    def vendor = System.getProperty('java.vendor', '')
+    def vmName = System.getProperty('java.vm.name', '')
+
+    if (vendor.contains('Oracle') && !vmName.contains('Community')) {
+        if (osName.contains('linux') && ['amd64', 'x86_64', 'aarch64', 'arm64'].contains(osArch)) {
+            addNativeBuildArgs(['--gc=G1'])
+            println "Oracle GraalVM on Linux detected, setting native-image GC to G1"
+        } else {
+            println "Oracle GraalVM on ${osName ?: 'unknown OS'} detected, using native-image default GC"
+        }
+    } else if (vendor.contains('BellSoft') || vendor.contains('Liberica')) {
+        addNativeBuildArgs(['--gc=parallel'])
+        println "Liberica Native Image Kit detected, setting native-image GC to parallel"
+    }
+}
+
+tasks.register('yanoDistZip', Zip) {
+    dependsOn 'quarkusBuild'
+    group = 'distribution'
+    description = 'Creates a distributable zip with the uber-jar, config, and start script'
+
+    archiveFileName = "yano-${distVersion}.zip"
+    destinationDirectory = layout.buildDirectory.dir('distributions')
+
+    into("yano-${distVersion}") {
+        from(layout.buildDirectory.file('yano.jar'))
+        from('bin/yano.sh') {
+            filePermissions { unix('755') }
+        }
+        from('bin/README.md')
+        from('config') {
+            into 'config'
+        }
+        into('plugins') {
+            from({ [] }) // empty directory
+        }
+    }
+}
+
+// When the native distribution task is requested, activate the 'native' Quarkus profile
+// so quarkusBuild produces a native binary instead of an uber-jar.
+// On Linux, also enable mostly-static linking for cross-distro portability.
+gradle.taskGraph.whenReady { graph ->
+    if (graph.hasTask(":${project.name}:yanoNativeDistZip") ||
+            graph.hasTask(":${project.name}:nodeNativeDistZip")) {
+        System.setProperty('quarkus.profile', 'native')
+        if (System.getProperty('os.name').toLowerCase().contains('linux')) {
+            addNativeBuildArgs(['-H:+StaticExecutableWithDynamicLibC'])
+        }
+    }
+
+    configureNativeGc()
+}
+
+tasks.register('yanoNativeDistZip', Zip) {
+    dependsOn 'quarkusBuild'
+    group = 'distribution'
+    description = 'Builds the native binary and creates a distributable zip'
+
+    def platform = detectPlatform()
+    archiveFileName = "yano-native-${distVersion}-${platform}.zip"
+    destinationDirectory = layout.buildDirectory.dir('distributions')
+
+    doFirst {
+        def binary = layout.buildDirectory.file('yano').get().asFile
+        if (!binary.exists()) {
+            throw new GradleException(
+                "Native binary not found at ${binary.path}. The native build may have failed."
+            )
+        }
+    }
+
+    into("yano-native-${distVersion}-${platform}") {
+        from(layout.buildDirectory.file('yano')) {
+            filePermissions { unix('755') }
+        }
+        from('bin/yano.sh') {
+            filePermissions { unix('755') }
+        }
+        from('bin/README.md')
+        from('config') {
+            into 'config'
+        }
+        into('plugins') {
+            from({ [] }) // empty directory
+        }
+    }
+}
+
+tasks.register('nodeDistZip') {
+    group = 'distribution'
+    description = 'Deprecated alias for yanoDistZip'
+    dependsOn 'yanoDistZip'
+}
+
+tasks.register('nodeNativeDistZip') {
+    group = 'distribution'
+    description = 'Deprecated alias for yanoNativeDistZip'
+    dependsOn 'yanoNativeDistZip'
+}

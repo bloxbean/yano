@@ -24,8 +24,8 @@ compileJava {
 
 
 dependencies {
-    api project(':node-api')
-    api project(':node-runtime')
+    api project(':core-api')
+    api project(':runtime')
 }
 
 test {
@@ -107,7 +107,7 @@ if (commit_id && project.version.endsWith("-SNAPSHOT")) {
     version = "${project.version}".replace("-SNAPSHOT", "-${commit_id}-SNAPSHOT")
 }
 
-def nonLibraryModules = ['node-app', 'scalus-bridge', 'epoch-export'] as Set
+def nonLibraryModules = ['app', 'scalus-bridge', 'epoch-export'] as Set
 
 subprojects {
     // Skip most configuration for application modules (Quarkus/Scala handle their own builds)
