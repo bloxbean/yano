@@ -3,7 +3,7 @@ plugins {
 }
 
 dependencies {
-    implementation project(':ledger-state')
+    api project(':ledger-state')
     implementation libs.duckdb.jdbc
     implementation libs.cardano.client.core  // For AddressProvider, GovId, Bech32
 
@@ -13,4 +13,15 @@ dependencies {
 java {
     sourceCompatibility = 25
     targetCompatibility = 25
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            pom {
+                name = 'Yano Epoch Export'
+                description = 'Yano Epoch Export - Epoch snapshot export plugin and utilities'
+            }
+        }
+    }
 }

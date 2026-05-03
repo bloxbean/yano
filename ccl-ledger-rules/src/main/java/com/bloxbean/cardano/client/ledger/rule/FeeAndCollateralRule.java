@@ -20,12 +20,12 @@ import java.util.List;
  * <ol>
  *   <li>Fee >= minFee (linear + ExUnits + ref-script tiers)</li>
  *   <li>Collateral present when scripts (redeemers) exist</li>
- *   <li>Collateral count <= maxCollateralInputs</li>
+ *   <li>Collateral count &lt;= maxCollateralInputs</li>
  *   <li>Collateral inputs are VKey-only (not script addresses)</li>
  *   <li>Net collateral balance >= fee x collateralPercent / 100</li>
  *   <li>Net collateral is ADA-only (no multi-assets after return)</li>
  *   <li>totalCollateral field matches actual net (if present)</li>
- *   <li>Bootstrap address attributes <= 64 bytes</li>
+ *   <li>Bootstrap address attributes &lt;= 64 bytes</li>
  * </ol>
  * <p>
  * Reference: Scalus FeesOkValidator, Amaru collateral.rs, Haskell Babbage.FeesOK
