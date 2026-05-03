@@ -98,7 +98,7 @@ public class DevnetBlockProducer implements BlockProducerService {
      * Start block production. Checks existing chain state for restart scenario,
      * or produces a genesis block for fresh start.
      */
-    public void start() {
+    public synchronized void start() {
         if (running) {
             log.warn("Block producer is already running");
             return;
@@ -135,7 +135,7 @@ public class DevnetBlockProducer implements BlockProducerService {
     /**
      * Stop block production.
      */
-    public void stop() {
+    public synchronized void stop() {
         running = false;
         if (scheduledTask != null) {
             scheduledTask.cancel(false);
@@ -152,14 +152,17 @@ public class DevnetBlockProducer implements BlockProducerService {
      * Reset block producer state to resume from the current chain tip.
      * Called after an external rollback to sync nextBlockNumber/prevBlockHash.
      */
-    public void resetToChainTip() {
+    public synchronized void resetToChainTip() {
         ChainTip tip = chainState.getTip();
         if (tip != null) {
             this.nextBlockNumber = tip.getBlockNumber() + 1;
             this.prevBlockHash = tip.getBlockHash();
             this.lastUsedSlot = tip.getSlot();
+            BlockProducerHelper.resetEpochTrackingToSlot(tip.getSlot());
             log.info("Block producer reset to chain tip: block={}, slot={}",
                     tip.getBlockNumber(), tip.getSlot());
+        } else {
+            BlockProducerHelper.resetEpochTrackingToSlot(-1);
         }
     }
 
@@ -202,7 +205,7 @@ public class DevnetBlockProducer implements BlockProducerService {
      * Produce a block by draining the mempool.
      * In lazy mode, skips production when mempool is empty.
      */
-    void produceBlock() {
+    synchronized void produceBlock() {
         // Drain mempool
         List<byte[]> txList = drainMempool();
 
@@ -257,7 +260,7 @@ public class DevnetBlockProducer implements BlockProducerService {
      * @param targetSlot the slot to advance to
      * @return number of blocks produced
      */
-    public int produceEmptyBlocksToSlot(long targetSlot) {
+    public synchronized int produceEmptyBlocksToSlot(long targetSlot) {
         if (targetSlot <= lastUsedSlot) {
             log.warn("Target slot {} is not ahead of last used slot {}", targetSlot, lastUsedSlot);
             return 0;

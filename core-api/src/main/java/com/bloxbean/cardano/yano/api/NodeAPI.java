@@ -223,7 +223,7 @@ public interface NodeAPI {
     }
 
     /**
-     * Trigger a controlled rollback. Requires dev mode.
+     * Trigger a controlled devnet rollback.
      * Rolls back chain state to the given slot, publishes RollbackEvent,
      * and notifies connected clients via n2n protocol.
      *
@@ -231,22 +231,22 @@ public interface NodeAPI {
      * @throws IllegalStateException if dev mode is not enabled
      * @throws IllegalArgumentException if target slot is invalid
      */
-    void rollbackTo(long targetSlot);
+    void rollbackDevnetToSlot(long targetSlot);
 
     // --- Devnet developer tools ---
 
     /**
-     * Create a named snapshot of the current chain state.
+     * Create a named devnet snapshot of the current chain state.
      * Requires dev mode with RocksDB storage.
      *
      * @param name the snapshot name
      * @return snapshot metadata
      * @throws IllegalStateException if dev mode is not enabled or storage is not RocksDB
      */
-    SnapshotInfo createSnapshot(String name);
+    SnapshotInfo createDevnetSnapshot(String name);
 
     /**
-     * Restore chain state from a previously created snapshot.
+     * Restore chain state from a previously created devnet snapshot.
      * Requires dev mode. Stops block production, restores state, clears mempool, and resumes.
      * Connected clients will need to reconnect.
      *
@@ -254,22 +254,22 @@ public interface NodeAPI {
      * @throws IllegalStateException if dev mode is not enabled
      * @throws IllegalArgumentException if snapshot does not exist
      */
-    void restoreSnapshot(String name);
+    void restoreDevnetSnapshot(String name);
 
     /**
-     * List all available snapshots.
+     * List all available devnet snapshots.
      *
      * @return list of snapshot metadata, ordered by creation time
      */
-    List<SnapshotInfo> listSnapshots();
+    List<SnapshotInfo> listDevnetSnapshots();
 
     /**
-     * Delete a named snapshot.
+     * Delete a named devnet snapshot.
      *
      * @param name the snapshot name to delete
      * @throws IllegalArgumentException if snapshot does not exist
      */
-    void deleteSnapshot(String name);
+    void deleteDevnetSnapshot(String name);
 
     /**
      * Inject a synthetic UTXO to fund an address (faucet).

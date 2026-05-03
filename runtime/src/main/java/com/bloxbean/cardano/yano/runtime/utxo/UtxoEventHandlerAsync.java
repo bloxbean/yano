@@ -11,6 +11,7 @@ import com.bloxbean.cardano.yano.api.events.RollbackEvent;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Optional async UTXO event handler that preserves ordering using a single-thread executor.
@@ -48,6 +49,10 @@ public final class UtxoEventHandlerAsync implements AutoCloseable {
     public void close() {
         try { if (handles != null) handles.forEach(h -> { try { h.close(); } catch (Exception ignored) {} }); } catch (Exception ignored) {}
         single.shutdownNow();
+        try {
+            single.awaitTermination(5, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 }
-

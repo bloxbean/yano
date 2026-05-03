@@ -163,6 +163,10 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
         this.cfMeta = ctx.handle(UtxoCfNames.UTXO_META);
         this.cfScriptRef = ctx.handle(UtxoCfNames.SCRIPT_REF);
         this.cfStakeBalance = ctx.handle(UtxoCfNames.UTXO_STAKE_BALANCE);
+        if (this.metadataHandle != null) {
+            // Chain metadata CF is passed in for Allegra bootstrap marker writes.
+            this.metadataHandle = ctx.handle("metadata");
+        }
         this.processor = new DefaultUtxoProcessor(this.db);
         refreshStakeBalanceIndexReady();
         log.info("DefaultUtxoStore reinitialized after snapshot restore");

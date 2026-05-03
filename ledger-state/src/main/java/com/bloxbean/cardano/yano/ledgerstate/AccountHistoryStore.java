@@ -32,9 +32,9 @@ public final class AccountHistoryStore implements AccountHistoryProvider, Rollba
     private static final byte[] META_LAST_APPLIED_SLOT = new byte[]{0x00, 'l', 'a', 's', 't', '_', 's', 'l', 'o', 't'};
     private static final byte[] META_LAST_APPLIED_BLOCK = new byte[]{0x00, 'l', 'a', 's', 't', '_', 'b', 'l', 'o', 'c', 'k'};
 
-    private final RocksDB db;
-    private final ColumnFamilyHandle cfHistory;
-    private final ColumnFamilyHandle cfDelta;
+    private RocksDB db;
+    private ColumnFamilyHandle cfHistory;
+    private ColumnFamilyHandle cfDelta;
     private final Logger log;
     private final boolean enabled;
     private final boolean txEventsEnabled;
@@ -70,6 +70,21 @@ public final class AccountHistoryStore implements AccountHistoryProvider, Rollba
             @Override public BigInteger getKeyDeposit(long epoch) { return BigInteger.ZERO; }
             @Override public BigInteger getPoolDeposit(long epoch) { return BigInteger.ZERO; }
         };
+    }
+
+    /**
+     * Refresh RocksDB handles after snapshot restore.
+     */
+    public synchronized void reinitialize(RocksDB db, DefaultAccountStateStore.CfSupplier supplier) {
+        this.db = db;
+        this.cfHistory = supplier.handle(AccountHistoryCfNames.ACCOUNT_HISTORY);
+        this.cfDelta = supplier.handle(AccountHistoryCfNames.ACCOUNT_HISTORY_DELTA);
+        if (this.cfHistory == null || this.cfDelta == null) {
+            healthy = false;
+            throw new IllegalStateException("account history column families are not available after snapshot restore");
+        }
+        this.healthy = true;
+        log.info("AccountHistoryStore reinitialized after snapshot restore");
     }
 
     public boolean isEnabled() {

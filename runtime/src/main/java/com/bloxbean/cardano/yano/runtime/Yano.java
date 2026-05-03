@@ -914,7 +914,7 @@ public class Yano implements NodeAPI {
                 validateChainState();
 
                 // Adhoc rollback: one-shot rollback before sync, if configured via command line
-                performAdhocRollback();
+                performStartupAdhocRollback();
 
                 // Recover any interrupted epoch boundary from a previous run
                 if (epochBoundaryProcessor != null) {
@@ -2092,7 +2092,7 @@ public class Yano implements NodeAPI {
      * (AccountState → UTXO → ChainState), verifies post-rollback state, then
      * cleans up derived artifacts (parquet exports) directly.
      */
-    private void performAdhocRollback() {
+    private void performStartupAdhocRollback() {
         long targetSlot = -1;
 
         if (adhocRollbackToEpoch >= 0) {
@@ -2225,7 +2225,7 @@ public class Yano implements NodeAPI {
     }
 
     @Override
-    public void rollbackTo(long targetSlot) {
+    public void rollbackDevnetToSlot(long targetSlot) {
         requireDevMode("Rollback");
 
         ChainTip currentTip = chainState.getTip();
@@ -2321,7 +2321,7 @@ public class Yano implements NodeAPI {
     }
 
     @Override
-    public SnapshotInfo createSnapshot(String name) {
+    public SnapshotInfo createDevnetSnapshot(String name) {
         requireDevMode("Snapshot");
         if (!(chainState instanceof DirectRocksDBChainState rocksState)) {
             throw new IllegalStateException("Snapshots require RocksDB storage");
@@ -2368,7 +2368,7 @@ public class Yano implements NodeAPI {
     }
 
     @Override
-    public void restoreSnapshot(String name) {
+    public void restoreDevnetSnapshot(String name) {
         requireDevMode("Restore");
         if (!(chainState instanceof DirectRocksDBChainState rocksState)) {
             throw new IllegalStateException("Snapshots require RocksDB storage");
@@ -2390,7 +2390,18 @@ public class Yano implements NodeAPI {
         // 1. Stop block producer
         boolean wasRunning = blockProducerService.isRunning();
         if (wasRunning) blockProducerService.stop();
+        boolean asyncUtxoHandlerPaused = utxoEventHandlerAsync != null;
+        if (asyncUtxoHandlerPaused) {
+            utxoEventHandlerAsync.close();
+            utxoEventHandlerAsync = null;
+        }
+        boolean utxoPrunePaused = pausePruneService("UTXO", () -> utxoPruneService, service -> utxoPruneService = service);
+        boolean accountHistoryPrunePaused = pausePruneService("account-history",
+                () -> accountHistoryPruneService, service -> accountHistoryPruneService = service);
+        boolean blockPrunePaused = pausePruneService("block-body",
+                () -> blockPruneService, service -> blockPruneService = service);
 
+        boolean restored = false;
         try {
             // 2. Restore DB from snapshot
             rocksState.restoreFromSnapshot(checkpointDir.toString());
@@ -2398,11 +2409,41 @@ public class Yano implements NodeAPI {
             // 2b. Reinitialize UTXO store with new DB handles
             if (utxoStore != null) {
                 utxoStore.reinitialize();
+                try {
+                    utxoStore.reconcile(rocksState);
+                } catch (Throwable t) {
+                    log.warn("UTXO reconciliation after snapshot restore failed: {}", t.toString());
+                }
             }
 
             // 2c. Reinitialize account state store with new DB handles
             if (accountStateStore != null) {
                 accountStateStore.reinitialize();
+                try {
+                    accountStateStore.reconcile(chainState);
+                } catch (Throwable t) {
+                    log.warn("Account state reconciliation after snapshot restore failed: {}", t.toString());
+                }
+            }
+
+            if (accountHistoryStore != null) {
+                var cfSupplier = new DefaultAccountStateStore.CfSupplier() {
+                    @Override
+                    public org.rocksdb.ColumnFamilyHandle handle(String cfName) {
+                        return (org.rocksdb.ColumnFamilyHandle) rocksState.getColumnFamilyHandle(cfName);
+                    }
+
+                    @Override
+                    public org.rocksdb.RocksDB db() {
+                        return (org.rocksdb.RocksDB) rocksState.getDb();
+                    }
+                };
+                accountHistoryStore.reinitialize((org.rocksdb.RocksDB) rocksState.getDb(), cfSupplier);
+                try {
+                    accountHistoryStore.reconcile(chainState);
+                } catch (Throwable t) {
+                    log.warn("Account history reconciliation after snapshot restore failed: {}", t.toString());
+                }
             }
 
             // 3. Clear mempool
@@ -2434,14 +2475,57 @@ public class Yano implements NodeAPI {
                     name,
                     newTip != null ? newTip.getSlot() : "null",
                     newTip != null ? newTip.getBlockNumber() : "null");
+            restored = true;
         } finally {
+            if (restored) {
+                if (asyncUtxoHandlerPaused && utxoStore != null) {
+                    utxoEventHandlerAsync = new UtxoEventHandlerAsync(eventBus, utxoStore);
+                }
+                if (utxoPrunePaused && utxoStore instanceof Prunable prunable) {
+                    long intervalSec = parseLong(runtimeOptions.globals().get("yano.utxo.prune.schedule.seconds"), 5L);
+                    utxoPruneService = new PruneService(prunable, Math.max(1L, intervalSec) * 1000L);
+                    utxoPruneService.start();
+                }
+                if (accountHistoryPrunePaused && accountHistoryStore != null && accountHistoryStore.getRetentionEpochs() > 0) {
+                    long intervalSec = parseLong(runtimeOptions.globals().get("yano.account-history.prune-interval-seconds"), 300L);
+                    accountHistoryPruneService = new PruneService(accountHistoryStore::pruneOnce,
+                            Math.max(1L, intervalSec) * 1000L);
+                    accountHistoryPruneService.start();
+                }
+                if (blockPrunePaused && chainState instanceof DirectRocksDBChainState direct) {
+                    int blockPruneDepth = (int) parseLong(runtimeOptions.globals().get("yano.chain.block-body-prune-depth"), 0);
+                    if (blockPruneDepth > 0) {
+                        int pruneBatch = (int) parseLong(runtimeOptions.globals().get("yano.chain.block-prune-batch-size"), 200);
+                        long intervalSec = parseLong(runtimeOptions.globals().get("yano.chain.block-prune-interval-seconds"), 120L);
+                        blockPruneService = new PruneService(new BlockPruner(direct, blockPruneDepth, pruneBatch),
+                                Math.max(1L, intervalSec) * 1000L);
+                        blockPruneService.start();
+                    }
+                }
+            }
             // 6. Resume block producer
-            if (wasRunning) blockProducerService.start();
+            if (wasRunning && restored) blockProducerService.start();
         }
     }
 
+    private boolean pausePruneService(String name,
+                                      java.util.function.Supplier<PruneService> getter,
+                                      java.util.function.Consumer<PruneService> setter) {
+        PruneService service = getter.get();
+        if (service == null) return false;
+        try {
+            service.close();
+            log.info("{} prune service paused for snapshot restore", name);
+        } catch (Exception e) {
+            log.warn("Error pausing {} prune service for snapshot restore: {}", name, e.toString());
+        } finally {
+            setter.accept(null);
+        }
+        return true;
+    }
+
     @Override
-    public List<SnapshotInfo> listSnapshots() {
+    public List<SnapshotInfo> listDevnetSnapshots() {
         if (!(chainState instanceof DirectRocksDBChainState rocksState)) {
             return List.of();
         }
@@ -2474,7 +2558,7 @@ public class Yano implements NodeAPI {
     }
 
     @Override
-    public void deleteSnapshot(String name) {
+    public void deleteDevnetSnapshot(String name) {
         if (!(chainState instanceof DirectRocksDBChainState rocksState)) {
             throw new IllegalStateException("Snapshots require RocksDB storage");
         }
@@ -3080,7 +3164,7 @@ public class Yano implements NodeAPI {
     }
 
     // Rollback handling - coordinates between managers and handles server notifications
-    public void handleRollback(Point point) {
+    public void handleChainSyncRollback(Point point) {
         var localTip = chainState.getTip();
         long rollbackSlot = point.getSlot();
 

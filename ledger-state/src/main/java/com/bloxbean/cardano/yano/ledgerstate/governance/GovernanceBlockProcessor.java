@@ -47,6 +47,13 @@ public class GovernanceBlockProcessor {
     }
 
     /**
+     * Refresh the backing governance store after snapshot restore.
+     */
+    public void reinitialize(org.rocksdb.RocksDB db, org.rocksdb.ColumnFamilyHandle cfState) {
+        governanceStore.reinitialize(db, cfState);
+    }
+
+    /**
      * Process a block for governance-relevant data: proposals, votes, donations.
      * DRep certs and committee certs are handled separately via processDRep* and processCommittee* methods,
      * called from DefaultAccountStateStore.processCertificate() for dual-write.

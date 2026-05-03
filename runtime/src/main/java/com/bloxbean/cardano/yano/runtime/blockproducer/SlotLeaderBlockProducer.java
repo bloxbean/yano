@@ -79,7 +79,7 @@ public class SlotLeaderBlockProducer implements BlockProducerService {
     }
 
     @Override
-    public void start() {
+    public synchronized void start() {
         if (running) {
             log.warn("SlotLeaderBlockProducer is already running");
             return;
@@ -100,7 +100,7 @@ public class SlotLeaderBlockProducer implements BlockProducerService {
     }
 
     @Override
-    public void stop() {
+    public synchronized void stop() {
         running = false;
         if (scheduledTask != null) {
             scheduledTask.cancel(false);
@@ -115,15 +115,18 @@ public class SlotLeaderBlockProducer implements BlockProducerService {
     }
 
     @Override
-    public void resetToChainTip() {
+    public synchronized void resetToChainTip() {
         ChainTip tip = chainState.getTip();
         if (tip != null) {
             lastCheckedSlot = tip.getSlot();
+            BlockProducerHelper.resetEpochTrackingToSlot(tip.getSlot());
             log.info("SlotLeaderBlockProducer reset to chain tip: slot={}", tip.getSlot());
+        } else {
+            BlockProducerHelper.resetEpochTrackingToSlot(-1);
         }
     }
 
-    void checkAndProduceBlock() {
+    synchronized void checkAndProduceBlock() {
         // 1. Calculate current wall-clock slot
         long currentSlot = (System.currentTimeMillis() - genesisTimestamp) / slotLengthMillis;
 

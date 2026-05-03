@@ -30,5 +30,10 @@ public final class PruneService implements AutoCloseable {
     @Override
     public void close() {
         scheduler.shutdownNow();
+        try {
+            scheduler.awaitTermination(5, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 }

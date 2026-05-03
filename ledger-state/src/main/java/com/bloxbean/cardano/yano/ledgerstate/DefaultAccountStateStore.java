@@ -378,12 +378,30 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
 
     @Override
     public void reinitialize() {
-        this.cfState = cfSupplier.handle(AccountStateCfNames.ACCT_STATE);
-        this.cfDelta = cfSupplier.handle(AccountStateCfNames.ACCT_DELTA);
-        this.cfEpochSnapshot = cfSupplier.handle(AccountStateCfNames.EPOCH_DELEG_SNAPSHOT);
         if (cfSupplier.db() != null) {
             this.db = cfSupplier.db();
         }
+        this.cfState = cfSupplier.handle(AccountStateCfNames.ACCT_STATE);
+        this.cfDelta = cfSupplier.handle(AccountStateCfNames.ACCT_DELTA);
+        this.cfBoundaryDelta = cfSupplier.handle(AccountStateCfNames.ACCT_BOUNDARY_DELTA);
+        this.cfEpochSnapshot = cfSupplier.handle(AccountStateCfNames.EPOCH_DELEG_SNAPSHOT);
+
+        if (adaPotTracker != null) {
+            adaPotTracker.reinitialize(db, cfState);
+        }
+        if (paramTracker != null) {
+            paramTracker.reinitialize(db, cfSupplier.handle(AccountStateCfNames.EPOCH_PARAMS));
+        }
+        if (rewardCalculator != null) {
+            rewardCalculator.reinitialize(db, cfState, cfEpochSnapshot);
+        }
+        if (governanceBlockProcessor != null) {
+            governanceBlockProcessor.reinitialize(db, cfState);
+        }
+        if (epochBoundaryProcessor != null) {
+            epochBoundaryProcessor.reinitializeAfterSnapshotRestore(db, cfState, cfDelta, cfEpochSnapshot);
+        }
+
         this.pointerAddressResolver = new PointerAddressResolver(db, cfState);
         this.readStore = new DefaultAccountStateReadStore(db, cfEpochSnapshot, () -> governanceBlockProcessor, log);
         log.info("DefaultAccountStateStore reinitialized after snapshot restore");

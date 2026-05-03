@@ -39,9 +39,9 @@ import java.util.*;
 public class EpochRewardCalculator {
     private static final Logger log = LoggerFactory.getLogger(EpochRewardCalculator.class);
 
-    private final RocksDB db;
-    private final ColumnFamilyHandle cfState;
-    private final ColumnFamilyHandle cfEpochSnapshot;
+    private RocksDB db;
+    private ColumnFamilyHandle cfState;
+    private ColumnFamilyHandle cfEpochSnapshot;
     private volatile boolean enabled;
 
     // Optional reference for querying retired pools and registered credentials
@@ -69,6 +69,26 @@ public class EpochRewardCalculator {
         this.cfState = cfState;
         this.cfEpochSnapshot = cfEpochSnapshot;
         this.enabled = enabled;
+    }
+
+    /**
+     * Refresh RocksDB handles after snapshot restore. Any open reward batch is
+     * discarded because restore is only allowed while block production is paused.
+     */
+    public void reinitialize(RocksDB db, ColumnFamilyHandle cfState, ColumnFamilyHandle cfEpochSnapshot) {
+        this.db = db;
+        this.cfState = cfState;
+        this.cfEpochSnapshot = cfEpochSnapshot;
+        if (rewardBatch != null) {
+            rewardBatch.close();
+            rewardBatch = null;
+        }
+        rewardDeltaOps = null;
+        if (rewardStateOverlay != null) {
+            rewardStateOverlay.clear();
+            rewardStateOverlay = null;
+        }
+        log.info("EpochRewardCalculator reinitialized after snapshot restore");
     }
 
     /**

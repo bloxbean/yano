@@ -46,6 +46,11 @@ public final class BlockProducerHelper {
         epochProvider = provider;
     }
 
+    public static void resetEpochTrackingToSlot(long tipSlot) {
+        previousEpoch = tipSlot >= 0 ? epochForSlot(tipSlot) : -1;
+        log.info("Block producer epoch tracking reset to epoch {} at slot {}", previousEpoch, tipSlot);
+    }
+
     public static void storeBlock(ChainState chainState, DevnetBlockBuilder.BlockBuildResult result) {
         chainState.storeBlock(result.blockHash(), result.blockNumber(), result.slot(), result.blockCbor());
         chainState.storeBlockHeader(result.blockHash(), result.blockNumber(), result.slot(), result.wrappedHeaderCbor());

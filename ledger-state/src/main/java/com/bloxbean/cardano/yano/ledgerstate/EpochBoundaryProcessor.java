@@ -7,6 +7,8 @@ import com.bloxbean.cardano.yano.ledgerstate.governance.epoch.GovernanceEpochPro
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.cardanofoundation.rewards.calculation.domain.EpochCalculationResult;
+import org.rocksdb.ColumnFamilyHandle;
+import org.rocksdb.RocksDB;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -178,6 +180,18 @@ public class EpochBoundaryProcessor {
         if (governanceEpochProcessor != null) {
             governanceEpochProcessor.setSnapshotExporter(this.snapshotExporter);
         }
+    }
+
+    /**
+     * Refresh nested RocksDB-backed processors after snapshot restore.
+     */
+    public void reinitializeAfterSnapshotRestore(RocksDB db, ColumnFamilyHandle cfState,
+                                                 ColumnFamilyHandle cfDelta,
+                                                 ColumnFamilyHandle cfEpochSnapshot) {
+        if (governanceEpochProcessor != null) {
+            governanceEpochProcessor.reinitialize(db, cfState, cfDelta, cfEpochSnapshot);
+        }
+        log.info("EpochBoundaryProcessor reinitialized after snapshot restore");
     }
 
     /**

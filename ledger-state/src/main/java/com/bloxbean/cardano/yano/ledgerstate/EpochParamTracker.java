@@ -75,8 +75,8 @@ public class EpochParamTracker implements EpochParamProvider {
     private final boolean enabled;
 
     // RocksDB persistence — dedicated column family (null = in-memory only, e.g. tests)
-    private final RocksDB db;
-    private final ColumnFamilyHandle cfEpochParams;
+    private RocksDB db;
+    private ColumnFamilyHandle cfEpochParams;
     private volatile EraProvider eraProvider;
 
     // Accumulated per-epoch resolved params (epoch → full effective snapshot stored as ProtocolParamUpdate)
@@ -130,6 +130,22 @@ public class EpochParamTracker implements EpochParamProvider {
 
     public boolean isEnabled() {
         return enabled;
+    }
+
+    /**
+     * Refresh RocksDB handles and reload persisted state after snapshot restore.
+     * The restored database may contain an older param timeline, so in-memory
+     * finalized and pending maps must be rebuilt from disk.
+     */
+    public synchronized void reinitialize(RocksDB db, ColumnFamilyHandle cfEpochParams) {
+        this.db = db;
+        this.cfEpochParams = cfEpochParams;
+        this.epochParams.clear();
+        this.pendingUpdates.clear();
+        if (enabled && db != null && cfEpochParams != null) {
+            loadPersistedParams();
+        }
+        log.info("EpochParamTracker reinitialized after snapshot restore");
     }
 
     public void setEraProvider(EraProvider eraProvider) {

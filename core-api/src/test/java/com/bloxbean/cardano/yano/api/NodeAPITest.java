@@ -134,27 +134,27 @@ class NodeAPITest {
         }
 
         @Override
-        public void rollbackTo(long targetSlot) {
+        public void rollbackDevnetToSlot(long targetSlot) {
             // no-op for test
         }
 
         @Override
-        public SnapshotInfo createSnapshot(String name) {
+        public SnapshotInfo createDevnetSnapshot(String name) {
             return new com.bloxbean.cardano.yano.api.model.SnapshotInfo(name, 0, 0, System.currentTimeMillis());
         }
 
         @Override
-        public void restoreSnapshot(String name) {
+        public void restoreDevnetSnapshot(String name) {
             // no-op for test
         }
 
         @Override
-        public java.util.List<com.bloxbean.cardano.yano.api.model.SnapshotInfo> listSnapshots() {
+        public java.util.List<com.bloxbean.cardano.yano.api.model.SnapshotInfo> listDevnetSnapshots() {
             return java.util.List.of();
         }
 
         @Override
-        public void deleteSnapshot(String name) {
+        public void deleteDevnetSnapshot(String name) {
             // no-op for test
         }
 

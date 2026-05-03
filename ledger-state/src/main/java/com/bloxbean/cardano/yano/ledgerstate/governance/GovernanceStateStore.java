@@ -49,12 +49,21 @@ public class GovernanceStateStore {
     private static final byte OP_PUT = 0x01;
     private static final byte OP_DELETE = 0x02;
 
-    private final RocksDB db;
-    private final ColumnFamilyHandle cfState;
+    private RocksDB db;
+    private ColumnFamilyHandle cfState;
 
     public GovernanceStateStore(RocksDB db, ColumnFamilyHandle cfState) {
         this.db = db;
         this.cfState = cfState;
+    }
+
+    /**
+     * Refresh RocksDB handles after the underlying database has been restored and reopened.
+     */
+    public void reinitialize(RocksDB db, ColumnFamilyHandle cfState) {
+        this.db = db;
+        this.cfState = cfState;
+        log.info("GovernanceStateStore reinitialized after snapshot restore");
     }
 
     // ===== Key builders =====

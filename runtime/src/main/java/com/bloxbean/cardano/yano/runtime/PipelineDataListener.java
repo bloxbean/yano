@@ -172,7 +172,7 @@ public class PipelineDataListener implements BlockChainDataListener {
     public void onRollback(Point point) {
         // Delegate rollback handling to Yano for classification and coordination
         // Yano will pause/resume BodyFetchManager and handle server notifications
-        yaciNode.handleRollback(point);
+        yaciNode.handleChainSyncRollback(point);
 
         log.info("Rollback to point: {} - delegated to Yano for coordination", point);
     }

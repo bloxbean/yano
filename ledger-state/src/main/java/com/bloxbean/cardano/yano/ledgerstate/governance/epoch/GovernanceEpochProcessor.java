@@ -52,9 +52,9 @@ import java.util.*;
 public class GovernanceEpochProcessor {
     private static final Logger log = LoggerFactory.getLogger(GovernanceEpochProcessor.class);
 
-    private final RocksDB db;
-    private final ColumnFamilyHandle cfState;
-    private final ColumnFamilyHandle cfDelta;
+    private RocksDB db;
+    private ColumnFamilyHandle cfState;
+    private ColumnFamilyHandle cfDelta;
     private final GovernanceStateStore governanceStore;
     private final DRepDistributionCalculator drepDistCalculator;
     private final DRepExpiryCalculator drepExpiryCalculator;
@@ -180,6 +180,20 @@ public class GovernanceEpochProcessor {
         this.rewardRestStore = rewardRestStore;
         this.genesisBootstrap = new com.bloxbean.cardano.yano.ledgerstate.governance.ConwayGenesisBootstrap(
                 governanceStore, conwayGenesisFilePath);
+    }
+
+    /**
+     * Refresh RocksDB handles after snapshot restore. Shared governance helpers keep
+     * their object identity, but must point at the reopened database handles.
+     */
+    public void reinitialize(RocksDB db, ColumnFamilyHandle cfState, ColumnFamilyHandle cfDelta,
+                             ColumnFamilyHandle cfEpochSnapshot) {
+        this.db = db;
+        this.cfState = cfState;
+        this.cfDelta = cfDelta;
+        governanceStore.reinitialize(db, cfState);
+        drepDistCalculator.reinitialize(db, cfState, cfEpochSnapshot);
+        log.info("GovernanceEpochProcessor reinitialized after snapshot restore");
     }
 
     /**

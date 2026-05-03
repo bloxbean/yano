@@ -21,8 +21,8 @@ import java.util.Optional;
 public class AdaPotTracker {
     private static final Logger log = LoggerFactory.getLogger(AdaPotTracker.class);
 
-    private final RocksDB db;
-    private final ColumnFamilyHandle cfState;
+    private RocksDB db;
+    private ColumnFamilyHandle cfState;
     private final BigInteger maxLovelaceSupply;
     private volatile boolean enabled;
 
@@ -38,6 +38,15 @@ public class AdaPotTracker {
         this.cfState = cfState;
         this.enabled = enabled;
         this.maxLovelaceSupply = maxLovelaceSupply;
+    }
+
+    /**
+     * Refresh RocksDB handles after the underlying database has been restored and reopened.
+     */
+    public void reinitialize(RocksDB db, ColumnFamilyHandle cfState) {
+        this.db = db;
+        this.cfState = cfState;
+        log.info("AdaPotTracker reinitialized after snapshot restore");
     }
 
     public boolean isEnabled() {

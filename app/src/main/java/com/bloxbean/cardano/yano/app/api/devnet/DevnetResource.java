@@ -64,7 +64,7 @@ public class DevnetResource {
         }
 
         try {
-            nodeAPI.rollbackTo(targetSlot);
+            nodeAPI.rollbackDevnetToSlot(targetSlot);
         } catch (IllegalStateException e) {
             return Response.status(Response.Status.CONFLICT)
                     .entity(Map.of("error", e.getMessage()))
@@ -93,7 +93,7 @@ public class DevnetResource {
 
     @POST
     @Path("/snapshot")
-    public Response createSnapshot(SnapshotRequest request) {
+    public Response createDevnetSnapshot(SnapshotRequest request) {
         try {
             requireDevMode();
         } catch (DevnetOnlyException e) {
@@ -103,7 +103,7 @@ public class DevnetResource {
         }
 
         try {
-            SnapshotInfo info = nodeAPI.createSnapshot(request.name());
+            SnapshotInfo info = nodeAPI.createDevnetSnapshot(request.name());
             return Response.ok(new SnapshotResponse(
                     info.name(), info.slot(), info.blockNumber(), info.createdAt()
             )).build();
@@ -124,7 +124,7 @@ public class DevnetResource {
 
     @POST
     @Path("/restore/{name}")
-    public Response restoreSnapshot(@PathParam("name") String name) {
+    public Response restoreDevnetSnapshot(@PathParam("name") String name) {
         try {
             requireDevMode();
         } catch (DevnetOnlyException e) {
@@ -134,7 +134,7 @@ public class DevnetResource {
         }
 
         try {
-            nodeAPI.restoreSnapshot(name);
+            nodeAPI.restoreDevnetSnapshot(name);
         } catch (IllegalArgumentException e) {
             return Response.status(Response.Status.BAD_REQUEST)
                     .entity(Map.of("error", e.getMessage()))
@@ -162,7 +162,7 @@ public class DevnetResource {
 
     @GET
     @Path("/snapshots")
-    public Response listSnapshots() {
+    public Response listDevnetSnapshots() {
         try {
             requireDevMode();
         } catch (DevnetOnlyException e) {
@@ -171,7 +171,7 @@ public class DevnetResource {
                     .build();
         }
 
-        List<SnapshotInfo> snapshots = nodeAPI.listSnapshots();
+        List<SnapshotInfo> snapshots = nodeAPI.listDevnetSnapshots();
         var response = snapshots.stream()
                 .map(s -> new SnapshotResponse(s.name(), s.slot(), s.blockNumber(), s.createdAt()))
                 .toList();
@@ -180,7 +180,7 @@ public class DevnetResource {
 
     @DELETE
     @Path("/snapshot/{name}")
-    public Response deleteSnapshot(@PathParam("name") String name) {
+    public Response deleteDevnetSnapshot(@PathParam("name") String name) {
         try {
             requireDevMode();
         } catch (DevnetOnlyException e) {
@@ -190,7 +190,7 @@ public class DevnetResource {
         }
 
         try {
-            nodeAPI.deleteSnapshot(name);
+            nodeAPI.deleteDevnetSnapshot(name);
         } catch (IllegalArgumentException e) {
             return Response.status(Response.Status.BAD_REQUEST)
                     .entity(Map.of("error", e.getMessage()))
