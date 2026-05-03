@@ -1403,28 +1403,6 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
             while (it.isValid()) {
                 var dec = UtxoDeltaCodec.decode(it.value());
                 if (dec.slot() <= targetSlot) break;
-                // Delete created
-                for (UtxoDeltaCodec.OutRef r : dec.created()) {
-                    byte[] okey = UtxoKeyUtil.outpointKey(r.txHash(), r.index());
-                    byte[] prev = db.get(cfUnspent, okey);
-                    if (prev != null) {
-                        var stored = UtxoCborCodec.decodeUtxoRecord(prev);
-                        if (indexAddressHash) {
-                            byte[] akey = UtxoKeyUtil.addrHash28(stored.address);
-                            byte[] aIdx = UtxoKeyUtil.addressIndexKey(akey, stored.slot, r.txHash(), r.index());
-                            batch.delete(cfAddr, aIdx);
-                        }
-                        if (indexPaymentCred) {
-                            byte[] pc = UtxoKeyUtil.paymentCred28(stored.address);
-                            if (pc != null) {
-                                byte[] pIdx = UtxoKeyUtil.addressIndexKey(pc, stored.slot, r.txHash(), r.index());
-                                batch.delete(cfAddr, pIdx);
-                            }
-                        }
-                        batch.delete(cfUnspent, okey);
-                        addStakeBalanceDelta(stakeBalanceDeltas, stored.address, stored.lovelace.negate());
-                    }
-                }
                 // Restore spent
                 for (UtxoDeltaCodec.OutRef r : dec.spent()) {
                     byte[] okey = UtxoKeyUtil.outpointKey(r.txHash(), r.index());
@@ -1447,6 +1425,35 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
                         }
                         batch.delete(cfSpent, okey);
                         addStakeBalanceDelta(stakeBalanceDeltas, stored.address, stored.lovelace);
+                    }
+                }
+                // Delete created
+                for (UtxoDeltaCodec.OutRef r : dec.created()) {
+                    byte[] okey = UtxoKeyUtil.outpointKey(r.txHash(), r.index());
+                    byte[] record = db.get(cfUnspent, okey);
+                    if (record == null) {
+                        byte[] spent = db.get(cfSpent, okey);
+                        if (spent != null) {
+                            record = UtxoCborCodec.unwrapSpentUtxo(spent);
+                        }
+                    }
+                    if (record != null) {
+                        var stored = UtxoCborCodec.decodeUtxoRecord(record);
+                        if (indexAddressHash) {
+                            byte[] akey = UtxoKeyUtil.addrHash28(stored.address);
+                            byte[] aIdx = UtxoKeyUtil.addressIndexKey(akey, stored.slot, r.txHash(), r.index());
+                            batch.delete(cfAddr, aIdx);
+                        }
+                        if (indexPaymentCred) {
+                            byte[] pc = UtxoKeyUtil.paymentCred28(stored.address);
+                            if (pc != null) {
+                                byte[] pIdx = UtxoKeyUtil.addressIndexKey(pc, stored.slot, r.txHash(), r.index());
+                                batch.delete(cfAddr, pIdx);
+                            }
+                        }
+                        batch.delete(cfUnspent, okey);
+                        batch.delete(cfSpent, okey);
+                        addStakeBalanceDelta(stakeBalanceDeltas, stored.address, stored.lovelace.negate());
                     }
                 }
                 batch.delete(cfDelta, it.key());
@@ -1510,31 +1517,11 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
         if (!enabled) return;
         // Reuse internal rollback logic directly (no RollbackEvent construction)
         try (WriteBatch batch = new WriteBatch(); WriteOptions wo = new WriteOptions(); RocksIterator it = db.newIterator(cfDelta)) {
+            java.util.Map<StakeCredentialKey, BigInteger> stakeBalanceDeltas = newStakeBalanceDeltaMap();
             it.seekToLast();
             while (it.isValid()) {
                 var dec = UtxoDeltaCodec.decode(it.value());
                 if (dec.slot() <= targetSlot) break;
-                // Delete created
-                for (UtxoDeltaCodec.OutRef r : dec.created()) {
-                    byte[] okey = UtxoKeyUtil.outpointKey(r.txHash(), r.index());
-                    byte[] prev = db.get(cfUnspent, okey);
-                    if (prev != null) {
-                        var stored = UtxoCborCodec.decodeUtxoRecord(prev);
-                        if (indexAddressHash) {
-                            byte[] akey = UtxoKeyUtil.addrHash28(stored.address);
-                            byte[] aIdx = UtxoKeyUtil.addressIndexKey(akey, stored.slot, r.txHash(), r.index());
-                            batch.delete(cfAddr, aIdx);
-                        }
-                        if (indexPaymentCred) {
-                            byte[] pc = UtxoKeyUtil.paymentCred28(stored.address);
-                            if (pc != null) {
-                                byte[] pIdx = UtxoKeyUtil.addressIndexKey(pc, stored.slot, r.txHash(), r.index());
-                                batch.delete(cfAddr, pIdx);
-                            }
-                        }
-                        batch.delete(cfUnspent, okey);
-                    }
-                }
                 // Restore spent
                 for (UtxoDeltaCodec.OutRef r : dec.spent()) {
                     byte[] okey = UtxoKeyUtil.outpointKey(r.txHash(), r.index());
@@ -1556,6 +1543,36 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
                             }
                         }
                         batch.delete(cfSpent, okey);
+                        addStakeBalanceDelta(stakeBalanceDeltas, stored.address, stored.lovelace);
+                    }
+                }
+                // Delete created
+                for (UtxoDeltaCodec.OutRef r : dec.created()) {
+                    byte[] okey = UtxoKeyUtil.outpointKey(r.txHash(), r.index());
+                    byte[] record = db.get(cfUnspent, okey);
+                    if (record == null) {
+                        byte[] spent = db.get(cfSpent, okey);
+                        if (spent != null) {
+                            record = UtxoCborCodec.unwrapSpentUtxo(spent);
+                        }
+                    }
+                    if (record != null) {
+                        var stored = UtxoCborCodec.decodeUtxoRecord(record);
+                        if (indexAddressHash) {
+                            byte[] akey = UtxoKeyUtil.addrHash28(stored.address);
+                            byte[] aIdx = UtxoKeyUtil.addressIndexKey(akey, stored.slot, r.txHash(), r.index());
+                            batch.delete(cfAddr, aIdx);
+                        }
+                        if (indexPaymentCred) {
+                            byte[] pc = UtxoKeyUtil.paymentCred28(stored.address);
+                            if (pc != null) {
+                                byte[] pIdx = UtxoKeyUtil.addressIndexKey(pc, stored.slot, r.txHash(), r.index());
+                                batch.delete(cfAddr, pIdx);
+                            }
+                        }
+                        batch.delete(cfUnspent, okey);
+                        batch.delete(cfSpent, okey);
+                        addStakeBalanceDelta(stakeBalanceDeltas, stored.address, stored.lovelace.negate());
                     }
                 }
                 batch.delete(cfDelta, it.key());
@@ -1568,6 +1585,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
             // Update meta slot
             batch.put(cfMeta, META_LAST_APPLIED_SLOT,
                     ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN).putLong(targetSlot).array());
+            applyStakeBalanceDeltas(batch, stakeBalanceDeltas);
             db.write(wo, batch);
             log.info("UTXO adhoc rollback to slot {} complete", targetSlot);
         } catch (Exception ex) {

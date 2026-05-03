@@ -212,6 +212,139 @@ class DefaultUtxoStoreTest {
     }
 
     @Test
+    void stakeBalanceIndexTracksAdhocRollbackToSlot() {
+        StakeCred stakeCred = stakeCred(BASE_ADDR_WITH_STAKE);
+        assertTrue(store.isStakeBalanceIndexEnabled());
+        assertTrue(store.isStakeBalanceIndexReady());
+
+        TransactionBody tx1 = TransactionBody.builder()
+                .txHash("71".repeat(32))
+                .outputs(List.of(TransactionOutput.builder().address(BASE_ADDR_WITH_STAKE)
+                        .amounts(List.of(lovelaceAmount(1000))).build()))
+                .build();
+        Block b1 = Block.builder().era(Era.Babbage).transactionBodies(List.of(tx1))
+                .invalidTransactions(Collections.emptyList()).build();
+        publishBlock(100, 1, "d1".repeat(32), b1);
+
+        assertEquals(Optional.of(BigInteger.valueOf(1000)),
+                store.getUtxoBalanceByStakeCredential(stakeCred.credType(), stakeCred.credHash()));
+
+        TransactionBody tx2 = TransactionBody.builder()
+                .txHash("72".repeat(32))
+                .inputs(Set.of(TransactionInput.builder().transactionId(tx1.getTxHash()).index(0).build()))
+                .outputs(List.of(TransactionOutput.builder().address(BASE_ADDR_WITH_STAKE)
+                        .amounts(List.of(lovelaceAmount(400))).build()))
+                .build();
+        Block b2 = Block.builder().era(Era.Babbage).transactionBodies(List.of(tx2))
+                .invalidTransactions(Collections.emptyList()).build();
+        publishBlock(200, 2, "d2".repeat(32), b2);
+
+        assertEquals(Optional.of(BigInteger.valueOf(400)),
+                store.getUtxoBalanceByStakeCredential(stakeCred.credType(), stakeCred.credHash()));
+
+        store.rollbackToSlot(150);
+
+        assertEquals(Optional.of(BigInteger.valueOf(1000)),
+                store.getUtxoBalanceByStakeCredential(stakeCred.credType(), stakeCred.credHash()));
+        var list = store.getUtxosByAddress(BASE_ADDR_WITH_STAKE, 1, 10);
+        assertEquals(1, list.size());
+        assertEquals(BigInteger.valueOf(1000), list.get(0).lovelace());
+    }
+
+    @Test
+    void rollbackEventHandlesIntraBlockCreateSpend() {
+        StakeCred stakeCred = stakeCred(BASE_ADDR_WITH_STAKE);
+
+        TransactionBody tx1 = TransactionBody.builder()
+                .txHash("75".repeat(32))
+                .outputs(List.of(TransactionOutput.builder().address(BASE_ADDR_WITH_STAKE)
+                        .amounts(List.of(lovelaceAmount(1000))).build()))
+                .build();
+        TransactionBody tx2 = TransactionBody.builder()
+                .txHash("76".repeat(32))
+                .inputs(Set.of(TransactionInput.builder().transactionId(tx1.getTxHash()).index(0).build()))
+                .outputs(List.of())
+                .build();
+        Block block = Block.builder().era(Era.Babbage).transactionBodies(List.of(tx1, tx2))
+                .invalidTransactions(Collections.emptyList()).build();
+        publishBlock(300, 3, "d5".repeat(32), block);
+
+        assertTrue(store.getUtxosByAddress(BASE_ADDR_WITH_STAKE, 1, 10).isEmpty());
+        assertEquals(Optional.of(BigInteger.ZERO),
+                store.getUtxoBalanceByStakeCredential(stakeCred.credType(), stakeCred.credHash()));
+
+        publishRollback(250);
+
+        assertTrue(store.getUtxosByAddress(BASE_ADDR_WITH_STAKE, 1, 10).isEmpty());
+        assertTrue(store.getUtxo(new Outpoint(tx1.getTxHash(), 0)).isEmpty());
+        assertEquals(Optional.of(BigInteger.ZERO),
+                store.getUtxoBalanceByStakeCredential(stakeCred.credType(), stakeCred.credHash()));
+    }
+
+    @Test
+    void adhocRollbackToSlotHandlesIntraBlockCreateSpend() {
+        StakeCred stakeCred = stakeCred(BASE_ADDR_WITH_STAKE);
+
+        TransactionBody tx1 = TransactionBody.builder()
+                .txHash("77".repeat(32))
+                .outputs(List.of(TransactionOutput.builder().address(BASE_ADDR_WITH_STAKE)
+                        .amounts(List.of(lovelaceAmount(1000))).build()))
+                .build();
+        TransactionBody tx2 = TransactionBody.builder()
+                .txHash("78".repeat(32))
+                .inputs(Set.of(TransactionInput.builder().transactionId(tx1.getTxHash()).index(0).build()))
+                .outputs(List.of())
+                .build();
+        Block block = Block.builder().era(Era.Babbage).transactionBodies(List.of(tx1, tx2))
+                .invalidTransactions(Collections.emptyList()).build();
+        publishBlock(300, 3, "d6".repeat(32), block);
+
+        assertTrue(store.getUtxosByAddress(BASE_ADDR_WITH_STAKE, 1, 10).isEmpty());
+        assertEquals(Optional.of(BigInteger.ZERO),
+                store.getUtxoBalanceByStakeCredential(stakeCred.credType(), stakeCred.credHash()));
+
+        store.rollbackToSlot(250);
+
+        assertTrue(store.getUtxosByAddress(BASE_ADDR_WITH_STAKE, 1, 10).isEmpty());
+        assertTrue(store.getUtxo(new Outpoint(tx1.getTxHash(), 0)).isEmpty());
+        assertEquals(Optional.of(BigInteger.ZERO),
+                store.getUtxoBalanceByStakeCredential(stakeCred.credType(), stakeCred.credHash()));
+    }
+
+    @Test
+    void adhocRollbackToSlotRemovesUtxoCreatedAndSpentInsideRollbackRange() {
+        StakeCred stakeCred = stakeCred(BASE_ADDR_WITH_STAKE);
+
+        TransactionBody tx1 = TransactionBody.builder()
+                .txHash("73".repeat(32))
+                .outputs(List.of(TransactionOutput.builder().address(BASE_ADDR_WITH_STAKE)
+                        .amounts(List.of(lovelaceAmount(1000))).build()))
+                .build();
+        Block b1 = Block.builder().era(Era.Babbage).transactionBodies(List.of(tx1))
+                .invalidTransactions(Collections.emptyList()).build();
+        publishBlock(100, 1, "d3".repeat(32), b1);
+
+        TransactionBody tx2 = TransactionBody.builder()
+                .txHash("74".repeat(32))
+                .inputs(Set.of(TransactionInput.builder().transactionId(tx1.getTxHash()).index(0).build()))
+                .outputs(List.of())
+                .build();
+        Block b2 = Block.builder().era(Era.Babbage).transactionBodies(List.of(tx2))
+                .invalidTransactions(Collections.emptyList()).build();
+        publishBlock(200, 2, "d4".repeat(32), b2);
+
+        assertTrue(store.getUtxosByAddress(BASE_ADDR_WITH_STAKE, 1, 10).isEmpty());
+        assertEquals(Optional.of(BigInteger.ZERO),
+                store.getUtxoBalanceByStakeCredential(stakeCred.credType(), stakeCred.credHash()));
+
+        store.rollbackToSlot(50);
+
+        assertTrue(store.getUtxosByAddress(BASE_ADDR_WITH_STAKE, 1, 10).isEmpty());
+        assertEquals(Optional.of(BigInteger.ZERO),
+                store.getUtxoBalanceByStakeCredential(stakeCred.credType(), stakeCred.credHash()));
+    }
+
+    @Test
     void pruneRespectsRollbackWindowForSpent() {
         String addr = "addr_test1vpxprune00000000000000000000000000000000000000";
         TransactionBody tx1 = TransactionBody.builder()
