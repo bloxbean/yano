@@ -10,7 +10,7 @@ import com.bloxbean.cardano.yaci.events.api.Event;
  * spec's EPOCH rule (shelley-ledger.pdf §17.4). This is where rewards are computed from
  * the previous epoch's data and protocol parameters are finalized.</p>
  *
- * <h3>Epoch boundary event order (mirrors ledger spec EPOCH rule):</h3>
+ * <p><b>Epoch boundary event order (mirrors ledger spec EPOCH rule):</b></p>
  * <ol>
  *   <li>{@code PreEpochTransitionEvent}  — Reward calculation, AdaPot update, param finalization</li>
  *   <li>{@link EpochTransitionEvent}     — <b>SNAP</b>: delegation/stake snapshot (mark snapshot)</li>

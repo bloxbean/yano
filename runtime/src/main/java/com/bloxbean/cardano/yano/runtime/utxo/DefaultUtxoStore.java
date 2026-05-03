@@ -1221,7 +1221,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
      *
      * @param outpointKeys list of outpoint keys (txHash + outputIndex encoded)
      * @param batch        WriteBatch to accumulate deletions (caller commits)
-     * @param deltaOps     delta ops list for rollback safety (nullable)
+     * @param previousValues previous values list for rollback safety
      * @return total lovelace of removed UTXOs
      */
     public BigInteger removeUtxosByOutpointKeys(

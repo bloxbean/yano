@@ -144,7 +144,7 @@ public class GovernanceEpochProcessor {
                                 BigInteger amount, int earnedEpoch, long slot,
                                 WriteBatch batch, List<DeltaOp> deltaOps) throws RocksDBException;
 
-        /** Get all spendable reward_rest entries with spendableEpoch <= epoch. */
+        /** Get all spendable reward_rest entries with spendableEpoch &lt;= epoch. */
         java.util.Map<String, BigInteger> getSpendableRewardRest(int epoch);
     }
 

@@ -14,7 +14,7 @@ import com.bloxbean.cardano.yaci.events.api.Event;
  * that the 500 ADA deposit refunds per retired pool do not inflate the snapshot's
  * active stake calculation.</p>
  *
- * <h3>Epoch boundary event order (mirrors ledger spec EPOCH rule):</h3>
+ * <p><b>Epoch boundary event order (mirrors ledger spec EPOCH rule):</b></p>
  * <ol>
  *   <li>{@link PreEpochTransitionEvent}  — Reward calculation, AdaPot update, param finalization</li>
  *   <li>{@link EpochTransitionEvent}     — <b>SNAP</b>: delegation/stake snapshot (mark snapshot)</li>

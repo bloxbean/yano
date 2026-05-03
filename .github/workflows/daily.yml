@@ -22,7 +22,7 @@ jobs:
       - name: Build with Gradle
         run: ./gradlew clean build -PskipSigning=true --stacktrace
       - name: Publish package to SNAPSHOT repository
-        run: ./gradlew publish -PskipSigning=true --warn --stacktrace
+        run: ./gradlew publishToSonatype -PskipSigning=true --warn --stacktrace
         env:
           MAVEN_USERNAME: ${{ secrets.OSSRH_USERNAME }}
           MAVEN_PASSWORD: ${{ secrets.OSSRH_TOKEN }}

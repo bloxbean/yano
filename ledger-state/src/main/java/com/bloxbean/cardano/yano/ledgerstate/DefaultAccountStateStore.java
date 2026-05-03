@@ -862,7 +862,7 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
 
     /**
      * Get pool registration data that was active at the given epoch.
-     * Uses seekForPrev to find the latest history entry with epoch <= target.
+     * Uses seekForPrev to find the latest history entry with epoch &lt;= target.
      * Falls back to the current (latest) registration if no history found.
      */
     public Optional<AccountStateCborCodec.PoolRegistrationData> getPoolRegistrationDataAtEpoch(
@@ -1622,7 +1622,7 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
     }
 
     /**
-     * Create a {@link GovernanceEpochProcessor.RewardRestStore} adapter backed by this store.
+     * Create a {@code GovernanceEpochProcessor.RewardRestStore} adapter backed by this store.
      */
     public com.bloxbean.cardano.yano.ledgerstate.governance.epoch.GovernanceEpochProcessor.RewardRestStore asRewardRestStore() {
         return new com.bloxbean.cardano.yano.ledgerstate.governance.epoch.GovernanceEpochProcessor.RewardRestStore() {
