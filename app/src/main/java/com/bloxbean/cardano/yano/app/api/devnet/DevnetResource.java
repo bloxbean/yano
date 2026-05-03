@@ -37,7 +37,7 @@ public class DevnetResource {
 
     private void requireDevMode() {
         if (!(nodeAPI.getConfig() instanceof YanoConfig config) || !config.isDevMode()) {
-            throw new DevnetOnlyException("This endpoint requires dev mode (set yaci.node.dev-mode=true)");
+            throw new DevnetOnlyException("This endpoint requires dev mode (set yano.dev-mode=true)");
         }
     }
 

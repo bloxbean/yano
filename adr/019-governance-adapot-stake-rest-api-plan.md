@@ -64,7 +64,7 @@ undistributed rewards. Yano's AdaPot API is therefore a Yano extension.
 | DRep state | `GovernanceStateStore.getDRepState(...)` | point lookup | Internal only today; not exposed through `NodeAPI`. |
 | Active stake snapshot by epoch | `cfEpochSnapshot` in `DefaultAccountStateStore` | point lookup possible, full epoch scan possible | Snapshot amount is UTXO balance plus reward balance at snapshot creation. |
 | Latest stake snapshot epoch | `LedgerStateProvider.getLatestSnapshotEpoch()` | metadata lookup | Already exposed by provider. |
-| Snapshot pruning | `yaci.node.account-state.snapshot-retention-epochs` | configured retention | Old stake snapshots can be deleted. |
+| Snapshot pruning | `yano.account-state.snapshot-retention-epochs` | configured retention | Old stake snapshots can be deleted. |
 
 The existing debug endpoint `GET /api/debug/epoch-snapshot/{epoch}` returns the
 entire stake snapshot and computes total active stake by scanning all entries.
@@ -230,7 +230,7 @@ Expose aggregate and point lookup endpoints first.
 
 ## Proposed Endpoints
 
-All paths below are relative to `yaci.node.api-prefix`, default `/api/v1`.
+All paths below are relative to `yano.api-prefix`, default `/api/v1`.
 
 ### Proposals
 

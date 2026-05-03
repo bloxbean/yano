@@ -285,7 +285,7 @@ public class Yano implements NodeAPI {
 
         // Phase 3: Initialize UTXO store if enabled and RocksDB is used
         try {
-            Object enabledOpt = this.runtimeOptions.globals().get("yaci.node.utxo.enabled");
+            Object enabledOpt = this.runtimeOptions.globals().get("yano.utxo.enabled");
             boolean utxoEnabled = enabledOpt instanceof Boolean b ? b : Boolean.parseBoolean(String.valueOf(enabledOpt));
             if (utxoEnabled && (chainState instanceof DirectRocksDBChainState rocks)) {
                 this.utxoStore = UtxoStoreFactory.create(rocks, log, this.runtimeOptions.globals());
@@ -297,7 +297,7 @@ public class Yano implements NodeAPI {
                     log.warn("UTXO reconciliation error: {}", t.toString());
                 }
                 boolean applyAsync = false;
-                Object asyncOpt = this.runtimeOptions.globals().get("yaci.node.utxo.applyAsync");
+                Object asyncOpt = this.runtimeOptions.globals().get("yano.utxo.applyAsync");
                 if (asyncOpt instanceof Boolean b) applyAsync = b; else if (asyncOpt != null) try { applyAsync = Boolean.parseBoolean(String.valueOf(asyncOpt)); } catch (Exception ignored) {}
                 if (applyAsync) {
                     this.utxoEventHandlerAsync = new UtxoEventHandlerAsync(eventBus, this.utxoStore);
@@ -310,7 +310,7 @@ public class Yano implements NodeAPI {
                 }
                 // Start prune service on virtual-thread scheduler
                 long intervalSec = 5L;
-                Object po = this.runtimeOptions.globals().get("yaci.node.utxo.prune.schedule.seconds");
+                Object po = this.runtimeOptions.globals().get("yano.utxo.prune.schedule.seconds");
                 if (po instanceof Number n) intervalSec = Math.max(1L, n.longValue());
                 else if (po != null) try { intervalSec = Math.max(1L, Long.parseLong(String.valueOf(po))); } catch (Exception ignored) {}
                 this.utxoPruneService = new PruneService((Prunable) this.utxoStore, intervalSec * 1000);
@@ -319,10 +319,10 @@ public class Yano implements NodeAPI {
 
                 // Schedule UTXO lag metric logging
                 long lagLogSec = 10L;
-                Object lagObj = this.runtimeOptions.globals().get("yaci.node.utxo.metrics.lag.logSeconds");
+                Object lagObj = this.runtimeOptions.globals().get("yano.utxo.metrics.lag.logSeconds");
                 if (lagObj instanceof Number n) lagLogSec = Math.max(1L, n.longValue());
                 else if (lagObj != null) try { lagLogSec = Math.max(1L, Long.parseLong(String.valueOf(lagObj))); } catch (Exception ignored) {}
-                final long failIfAbove = parseLong(this.runtimeOptions.globals().get("yaci.node.utxo.lag.failIfAbove"), -1L);
+                final long failIfAbove = parseLong(this.runtimeOptions.globals().get("yano.utxo.lag.failIfAbove"), -1L);
                 this.utxoLagTask = scheduler.scheduleAtFixedRate(() -> {
                     try {
                         long lastApplied = (this.utxoStore instanceof UtxoStatusProvider sp)
@@ -348,7 +348,7 @@ public class Yano implements NodeAPI {
 
         // Phase 3b: Initialize Account State store if enabled (via SPI discovery)
         try {
-            Object acctEnabledOpt = this.runtimeOptions.globals().get("yaci.node.account-state.enabled");
+            Object acctEnabledOpt = this.runtimeOptions.globals().get("yano.account-state.enabled");
             boolean acctEnabled = acctEnabledOpt instanceof Boolean b ? b : Boolean.parseBoolean(String.valueOf(acctEnabledOpt));
             // Resolve genesis config once — from in-memory (devnet) or files (public networks)
             NetworkGenesisConfig networkGenesisConfig = null;
@@ -406,19 +406,19 @@ public class Yano implements NodeAPI {
 
                     // Enable epoch stake snapshot service if configured
                     boolean snapshotAmountsEnabled = Boolean.parseBoolean(
-                            String.valueOf(this.runtimeOptions.globals().getOrDefault("yaci.node.epoch-snapshot.amounts-enabled", "false")));
+                            String.valueOf(this.runtimeOptions.globals().getOrDefault("yano.epoch-snapshot.amounts-enabled", "false")));
                     if (snapshotAmountsEnabled) {
                         defaultStore.setStakeSnapshotService(
                                 new EpochStakeSnapshotService(true));
                         String balMode = String.valueOf(this.runtimeOptions.globals()
-                                .getOrDefault("yaci.node.epoch-snapshot.balance-mode", "full-scan"));
+                                .getOrDefault("yano.epoch-snapshot.balance-mode", "full-scan"));
                         defaultStore.setBalanceMode(balMode);
                         log.info("Epoch stake snapshot amounts enabled (balance-mode={})", balMode);
                     }
 
                     // Enable AdaPot tracker if configured
                     boolean adaPotEnabled = Boolean.parseBoolean(
-                            String.valueOf(this.runtimeOptions.globals().getOrDefault("yaci.node.adapot.enabled", "false")));
+                            String.valueOf(this.runtimeOptions.globals().getOrDefault("yano.adapot.enabled", "false")));
                     if (adaPotEnabled && chainState instanceof DirectRocksDBChainState rocks) {
                         var rocksDb = (org.rocksdb.RocksDB) rocks.getDb();
                         var cfHandle = (org.rocksdb.ColumnFamilyHandle) rocks.getColumnFamilyHandle(
@@ -439,7 +439,7 @@ public class Yano implements NodeAPI {
 
                     // Enable protocol param tracker if configured
                     boolean epochParamsEnabled = Boolean.parseBoolean(
-                            String.valueOf(this.runtimeOptions.globals().getOrDefault("yaci.node.epoch-params.tracking-enabled", "false")));
+                            String.valueOf(this.runtimeOptions.globals().getOrDefault("yano.epoch-params.tracking-enabled", "false")));
                     EpochParamTracker paramTrackerInstance = null;
                     if (epochParamsEnabled && chainState instanceof DirectRocksDBChainState rocks2) {
                         var rocksDb2 = (org.rocksdb.RocksDB) rocks2.getDb();
@@ -464,7 +464,7 @@ public class Yano implements NodeAPI {
 
                     // Enable reward calculator if configured
                     boolean rewardsEnabled = Boolean.parseBoolean(
-                            String.valueOf(this.runtimeOptions.globals().getOrDefault("yaci.node.rewards.enabled", "false")));
+                            String.valueOf(this.runtimeOptions.globals().getOrDefault("yano.rewards.enabled", "false")));
                     EpochRewardCalculator rewardCalcInstance = null;
                     if (rewardsEnabled && chainState instanceof DirectRocksDBChainState rocks) {
                         var rocksDb = (org.rocksdb.RocksDB) rocks.getDb();
@@ -558,12 +558,12 @@ public class Yano implements NodeAPI {
                         }
 
                         boolean exitOnCalcError = Boolean.parseBoolean(
-                                String.valueOf(runtimeOptions.globals().getOrDefault("yaci.node.exit-on-epoch-calc-error", "false")));
+                                String.valueOf(runtimeOptions.globals().getOrDefault("yano.exit-on-epoch-calc-error", "false")));
                         boundaryProcessor.setExitOnEpochCalcError(exitOnCalcError);
 
                         // Auto-checkpoint at epoch boundaries for fast rollback during debugging
                         int checkpointInterval = Integer.parseInt(
-                                String.valueOf(runtimeOptions.globals().getOrDefault("yaci.node.auto-checkpoint-interval", "0")));
+                                String.valueOf(runtimeOptions.globals().getOrDefault("yano.auto-checkpoint-interval", "0")));
                         if (checkpointInterval > 0 && chainState instanceof DirectRocksDBChainState rocksState) {
                             java.nio.file.Path snapshotsDir = java.nio.file.Path.of(rocksState.getDbPath()).getParent().resolve("epoch-snapshots");
                             boundaryProcessor.setAutoCheckpoint(checkpointInterval, epoch -> {
@@ -589,7 +589,7 @@ public class Yano implements NodeAPI {
 
                     // Wire governance subsystem if rewards/adapot are enabled
                     boolean governanceEnabled = Boolean.parseBoolean(
-                            String.valueOf(this.runtimeOptions.globals().getOrDefault("yaci.node.governance.enabled", "false")));
+                            String.valueOf(this.runtimeOptions.globals().getOrDefault("yano.governance.enabled", "false")));
                     if (governanceEnabled && chainState instanceof DirectRocksDBChainState rocks) {
                         var rocksDb = (org.rocksdb.RocksDB) rocks.getDb();
                         var cfState = (org.rocksdb.ColumnFamilyHandle) rocks.getColumnFamilyHandle(
@@ -653,10 +653,10 @@ public class Yano implements NodeAPI {
 
                     // Wire epoch snapshot exporter if enabled (ServiceLoader discovery)
                     boolean exportEnabled = Boolean.parseBoolean(
-                            String.valueOf(runtimeOptions.globals().getOrDefault("yaci.node.snapshot-export.enabled", "false")));
+                            String.valueOf(runtimeOptions.globals().getOrDefault("yano.snapshot-export.enabled", "false")));
                     if (exportEnabled) {
                         String exportDir = String.valueOf(runtimeOptions.globals().getOrDefault(
-                                "yaci.node.snapshot-export.dir", "data"));
+                                "yano.snapshot-export.dir", "data"));
                         var loader = java.util.ServiceLoader.load(
                                 com.bloxbean.cardano.yano.ledgerstate.export.EpochSnapshotExporter.class);
                         var impl = loader.findFirst();
@@ -665,10 +665,10 @@ public class Yano implements NodeAPI {
                             exporter.setOutputDir(exportDir);
                             exporter.setNetworkMagic(this.config.getProtocolMagic());
                             var exportOptions = java.util.Map.of(
-                                    "stake", String.valueOf(runtimeOptions.globals().getOrDefault("yaci.node.snapshot-export.stake", "false")),
-                                    "drep-dist", String.valueOf(runtimeOptions.globals().getOrDefault("yaci.node.snapshot-export.drep-dist", "true")),
-                                    "adapot", String.valueOf(runtimeOptions.globals().getOrDefault("yaci.node.snapshot-export.adapot", "true")),
-                                    "proposals", String.valueOf(runtimeOptions.globals().getOrDefault("yaci.node.snapshot-export.proposals", "true"))
+                                    "stake", String.valueOf(runtimeOptions.globals().getOrDefault("yano.snapshot-export.stake", "false")),
+                                    "drep-dist", String.valueOf(runtimeOptions.globals().getOrDefault("yano.snapshot-export.drep-dist", "true")),
+                                    "adapot", String.valueOf(runtimeOptions.globals().getOrDefault("yano.snapshot-export.adapot", "true")),
+                                    "proposals", String.valueOf(runtimeOptions.globals().getOrDefault("yano.snapshot-export.proposals", "true"))
                             );
                             exporter.configure(exportOptions);
                             defaultStore.setSnapshotExporter(exporter);
@@ -682,7 +682,7 @@ public class Yano implements NodeAPI {
                 }
 
                 boolean accountHistoryEnabled = Boolean.parseBoolean(
-                        String.valueOf(this.runtimeOptions.globals().getOrDefault("yaci.node.account-history.enabled", "false")));
+                        String.valueOf(this.runtimeOptions.globals().getOrDefault("yano.account-history.enabled", "false")));
                 if (accountHistoryEnabled && chainState instanceof DirectRocksDBChainState rocks) {
                     try {
                         var rocksDb = (org.rocksdb.RocksDB) rocks.getDb();
@@ -703,7 +703,7 @@ public class Yano implements NodeAPI {
                         int retentionEpochs = this.accountHistoryStore.getRetentionEpochs();
                         if (retentionEpochs > 0) {
                             long pruneIntervalSec = parseLong(
-                                    this.runtimeOptions.globals().get("yaci.node.account-history.prune-interval-seconds"),
+                                    this.runtimeOptions.globals().get("yano.account-history.prune-interval-seconds"),
                                     300L);
                             this.accountHistoryPruneService = new PruneService(
                                     this.accountHistoryStore::pruneOnce,
@@ -734,7 +734,7 @@ public class Yano implements NodeAPI {
             } else {
                 log.info("Account state store not initialized (enabled={})", acctEnabled);
                 boolean accountHistoryEnabled = Boolean.parseBoolean(
-                        String.valueOf(this.runtimeOptions.globals().getOrDefault("yaci.node.account-history.enabled", "false")));
+                        String.valueOf(this.runtimeOptions.globals().getOrDefault("yano.account-history.enabled", "false")));
                 if (accountHistoryEnabled) {
                     log.warn("Account history requested but not initialized because account-state is disabled");
                 }
@@ -745,10 +745,10 @@ public class Yano implements NodeAPI {
 
         // Phase 4: Initialize block body pruning if configured and RocksDB is used
         try {
-            int blockPruneDepth = (int) parseLong(this.runtimeOptions.globals().get("yaci.node.chain.block-body-prune-depth"), 0);
+            int blockPruneDepth = (int) parseLong(this.runtimeOptions.globals().get("yano.chain.block-body-prune-depth"), 0);
             if (blockPruneDepth > 0 && (chainState instanceof DirectRocksDBChainState rocks)) {
-                int pruneBatch = (int) parseLong(this.runtimeOptions.globals().get("yaci.node.chain.block-prune-batch-size"), 200);
-                long pruneIntervalSec = parseLong(this.runtimeOptions.globals().get("yaci.node.chain.block-prune-interval-seconds"), 120);
+                int pruneBatch = (int) parseLong(this.runtimeOptions.globals().get("yano.chain.block-prune-batch-size"), 200);
+                long pruneIntervalSec = parseLong(this.runtimeOptions.globals().get("yano.chain.block-prune-interval-seconds"), 120);
                 BlockPruner blockPruner = new BlockPruner(rocks, blockPruneDepth, pruneBatch);
                 this.blockPruneService = new PruneService(blockPruner, pruneIntervalSec * 1000);
                 this.blockPruneService.start();
@@ -1756,7 +1756,7 @@ public class Yano implements NodeAPI {
 
         // Register default validator listener via event bus (replaces direct wiring)
         boolean defaultValidatorEnabled = resolveBoolean(
-                runtimeOptions.globals(), "yaci.node.validation.default-validator-enabled", true);
+                runtimeOptions.globals(), "yano.validation.default-validator-enabled", true);
 
         if (defaultValidatorEnabled) {
             var validatorListener = new DefaultTransactionValidatorListener(this.transactionEvaluator);
@@ -1915,7 +1915,7 @@ public class Yano implements NodeAPI {
      * Delete parquet epoch directories after the target epoch (derived artifacts from rolled-back state).
      */
     private void cleanupParquetExportsAfterRollback(int targetEpoch) {
-        Object exportDirObj = runtimeOptions.globals().get("yaci.node.snapshot-export.dir");
+        Object exportDirObj = runtimeOptions.globals().get("yano.snapshot-export.dir");
         if (exportDirObj == null) return;
         String exportDir = String.valueOf(exportDirObj);
         if (exportDir.isBlank()) return;
@@ -2181,7 +2181,7 @@ public class Yano implements NodeAPI {
             log.error("Historical reward-input facts (block issuers/fees) have been pruned beyond this point.");
             log.error("Replay of epoch boundaries before this slot would produce incorrect rewards.");
             log.error("Options: restore from checkpoint, or resync with larger retention:");
-            log.error("  yaci.node.account-state.epoch-block-data-retention-lag (default 5, try 20+)");
+            log.error("  yano.account-state.epoch-block-data-retention-lag (default 5, try 20+)");
             throw new RuntimeException("Adhoc rollback aborted: target " + targetSlot
                     + " below floor " + commonFloor);
         }
@@ -2313,7 +2313,7 @@ public class Yano implements NodeAPI {
 
     private void requireDevMode(String operation) {
         if (!config.isDevMode()) {
-            throw new IllegalStateException(operation + " requires dev mode (yaci.node.dev-mode=true)");
+            throw new IllegalStateException(operation + " requires dev mode (yano.dev-mode=true)");
         }
         if (devnetBlockProducer == null) {
             throw new IllegalStateException(operation + " requires block producer to be running");
@@ -3609,7 +3609,7 @@ public class Yano implements NodeAPI {
     @SuppressWarnings("unchecked")
     private void initUtxoFilterChain(UtxoStoreWriter store, java.util.Map<String, Object> globals) {
         if (!(store instanceof DefaultUtxoStore defaultStore)) return;
-        boolean filterEnabled = resolveBoolean(globals, "yaci.node.filters.utxo.enabled", false);
+        boolean filterEnabled = resolveBoolean(globals, "yano.filters.utxo.enabled", false);
         if (!filterEnabled) {
             log.info("UTXO storage filtering disabled");
             return;
@@ -3618,14 +3618,14 @@ public class Yano implements NodeAPI {
         java.util.Set<String> addresses = new java.util.HashSet<>();
         java.util.Set<String> paymentCreds = new java.util.HashSet<>();
 
-        Object addrObj = globals.get("yaci.node.filters.utxo.addresses");
+        Object addrObj = globals.get("yano.filters.utxo.addresses");
         if (addrObj instanceof java.util.Collection<?> c) {
             for (Object a : c) if (a != null) addresses.add(String.valueOf(a));
         } else if (addrObj instanceof String s && !s.isBlank()) {
             addresses.add(s);
         }
 
-        Object pcObj = globals.get("yaci.node.filters.utxo.payment-credentials");
+        Object pcObj = globals.get("yano.filters.utxo.payment-credentials");
         if (pcObj instanceof java.util.Collection<?> c) {
             for (Object p : c) if (p != null) paymentCreds.add(String.valueOf(p));
         } else if (pcObj instanceof String s && !s.isBlank()) {

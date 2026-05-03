@@ -53,15 +53,14 @@ client sync can process blocks.
 The preferred external shape is epoch-based, matching Cardano node terminology:
 
 ```yaml
-yaci:
-  node:
-    era-starts:
-      shelley-epoch: 0
-      allegra-epoch: 0
-      mary-epoch: 0
-      alonzo-epoch: 0
-      babbage-epoch: 0
-      conway-epoch: 0
+yano:
+  era-starts:
+    shelley-epoch: 0
+    allegra-epoch: 0
+    mary-epoch: 0
+    alonzo-epoch: 0
+    babbage-epoch: 0
+    conway-epoch: 0
 ```
 
 Internally, Yano should continue to persist era starts as slots in chainstate
@@ -90,7 +89,7 @@ slot of that epoch using `EpochSlotCalc`. A later extension can add exact
 
 ## Implementation Plan
 
-1. Add a small config model, for example `yaci.node.era-starts.*-epoch`, in
+1. Add a small config model, for example `yano.era-starts.*-epoch`, in
    node runtime configuration.
 2. Add a startup initializer that runs immediately after genesis and
    `EpochSlotCalc` are available, but before account state, governance,

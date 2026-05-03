@@ -89,10 +89,6 @@ public abstract class HaskellSyncTestBase {
     private Path locateUberJar() {
         // Try from system property first
         String jarPath = System.getProperty("yano.uber.jar");
-        if (jarPath == null || jarPath.isBlank()) {
-            // Backward-compatible alias for existing local commands.
-            jarPath = System.getProperty("yaci.uber.jar");
-        }
         if (jarPath != null && !jarPath.isBlank()) {
             Path p = Path.of(jarPath);
             if (Files.exists(p)) {

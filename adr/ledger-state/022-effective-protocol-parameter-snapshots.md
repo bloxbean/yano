@@ -66,7 +66,7 @@ Updated on 2026-04-29.
   and API projection, but normalized it to `0` only when adapting parameters for
   the reward-calculation library.
 - [x] Made empty reward-calculation results fatal when
-  `yaci.node.exit-on-epoch-calc-error=true`; this prevents a reward exception
+  `yano.exit-on-epoch-calc-error=true`; this prevents a reward exception
   from silently skipping AdaPot storage and therefore skipping later AdaPot
   mismatch verification.
 - [x] Fixed all snapshot-backed nullable protocol-parameter getters so a

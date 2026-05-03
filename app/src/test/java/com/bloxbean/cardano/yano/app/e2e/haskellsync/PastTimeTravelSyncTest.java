@@ -22,8 +22,8 @@ public class PastTimeTravelSyncTest extends HaskellSyncTestBase {
         // 1. Start Yano in past-time-travel mode
         yaci = new YanoManager(tempDir, uberJarPath);
         yaci.start(
-                "-Dyaci.node.block-producer.past-time-travel-mode=true",
-                "-Dyaci.node.block-producer.block-time-millis=0"
+                "-Dyano.block-producer.past-time-travel-mode=true",
+                "-Dyano.block-producer.block-time-millis=0"
         );
         yaci.waitForReady(60_000);
 

@@ -55,8 +55,8 @@ Run a standalone local blockchain with automatic block production.
 Override any config property via environment variables:
 
 ```bash
-YACI_NODE_SERVER_PORT=3001 ./yano.sh
-YACI_NODE_REMOTE_HOST=localhost YACI_NODE_REMOTE_PORT=3001 ./yano.sh
+YANO_SERVER_PORT=3001 ./yano.sh
+YANO_REMOTE_HOST=localhost YANO_REMOTE_PORT=3001 ./yano.sh
 ```
 
 ### JVM Options (JAR mode only)

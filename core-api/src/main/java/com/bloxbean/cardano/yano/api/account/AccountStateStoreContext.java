@@ -10,7 +10,7 @@ import java.util.Map;
  * Context passed to {@link AccountStateStoreProvider#isAvailable} and {@link AccountStateStoreProvider#create}.
  *
  * @param chainState         runtime chain state (may implement {@link com.bloxbean.cardano.yano.api.db.RocksDbAccess})
- * @param config             runtime globals (yaci.node.* properties)
+ * @param config             runtime globals (yano.* properties)
  * @param logger             logger for provider use
  * @param epochParamProvider protocol parameter provider for deposit amounts
  */

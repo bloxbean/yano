@@ -43,10 +43,10 @@ class DefaultUtxoStoreTest {
         bus = new SimpleEventBus();
         Logger log = LoggerFactory.getLogger(DefaultUtxoStoreTest.class);
         Map<String, Object> cfg = new HashMap<>();
-        cfg.put("yaci.node.utxo.enabled", true);
-        cfg.put("yaci.node.utxo.pruneDepth", 3);
-        cfg.put("yaci.node.utxo.rollbackWindow", 4);
-        cfg.put("yaci.node.utxo.pruneBatchSize", 100);
+        cfg.put("yano.utxo.enabled", true);
+        cfg.put("yano.utxo.pruneDepth", 3);
+        cfg.put("yano.utxo.rollbackWindow", 4);
+        cfg.put("yano.utxo.pruneBatchSize", 100);
         store = new DefaultUtxoStore(chain, log, cfg);
         // register handler
         new UtxoEventHandler(bus, store);

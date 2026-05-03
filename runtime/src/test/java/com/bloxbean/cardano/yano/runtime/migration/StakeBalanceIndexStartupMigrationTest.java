@@ -150,13 +150,13 @@ class StakeBalanceIndexStartupMigrationTest {
 
     private Map<String, Object> config(boolean stakeBalanceIndexEnabled, boolean utxoFiltersEnabled) {
         Map<String, Object> cfg = new HashMap<>();
-        cfg.put("yaci.node.utxo.enabled", true);
-        cfg.put("yaci.node.utxo.pruneDepth", 3);
-        cfg.put("yaci.node.utxo.rollbackWindow", 4);
-        cfg.put("yaci.node.utxo.pruneBatchSize", 100);
-        cfg.put("yaci.node.metrics.enabled", false);
-        cfg.put("yaci.node.account.stake-balance-index-enabled", stakeBalanceIndexEnabled);
-        cfg.put("yaci.node.filters.utxo.enabled", utxoFiltersEnabled);
+        cfg.put("yano.utxo.enabled", true);
+        cfg.put("yano.utxo.pruneDepth", 3);
+        cfg.put("yano.utxo.rollbackWindow", 4);
+        cfg.put("yano.utxo.pruneBatchSize", 100);
+        cfg.put("yano.metrics.enabled", false);
+        cfg.put("yano.account.stake-balance-index-enabled", stakeBalanceIndexEnabled);
+        cfg.put("yano.filters.utxo.enabled", utxoFiltersEnabled);
         return cfg;
     }
 

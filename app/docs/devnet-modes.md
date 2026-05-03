@@ -41,14 +41,14 @@ All config is in `application.yml` under the `%devnet` profile. Key properties:
 
 | Property | Default | Description |
 |----------|---------|-------------|
-| `yaci.node.server.port` | 13337 | N2N server port |
-| `yaci.node.remote.protocol-magic` | 42 | Network magic for devnet |
-| `yaci.node.block-producer.enabled` | true | Enable block production |
-| `yaci.node.block-producer.block-time-millis` | 0 (auto) | Block interval; 0 = derive from genesis |
-| `yaci.node.block-producer.lazy` | false | If true, skip empty blocks |
-| `yaci.node.block-producer.genesis-timestamp` | 0 (auto) | Genesis time; 0 = use current time |
-| `yaci.node.block-producer.slot-length-millis` | 0 (auto) | Slot length; 0 = derive from genesis |
-| `yaci.node.dev-mode` | true | Enables devnet REST APIs |
+| `yano.server.port` | 13337 | N2N server port |
+| `yano.remote.protocol-magic` | 42 | Network magic for devnet |
+| `yano.block-producer.enabled` | true | Enable block production |
+| `yano.block-producer.block-time-millis` | 0 (auto) | Block interval; 0 = derive from genesis |
+| `yano.block-producer.lazy` | false | If true, skip empty blocks |
+| `yano.block-producer.genesis-timestamp` | 0 (auto) | Genesis time; 0 = use current time |
+| `yano.block-producer.slot-length-millis` | 0 (auto) | Slot length; 0 = derive from genesis |
+| `yano.dev-mode` | true | Enables devnet REST APIs |
 
 Genesis files are at `config/network/devnet/`.
 
@@ -84,7 +84,7 @@ rm -rf chainstate
 
 java -Dquarkus.profile=devnet \
      -Dquarkus.http.port=7070 \
-     -Dyaci.node.block-producer.past-time-travel-mode=true \
+     -Dyano.block-producer.past-time-travel-mode=true \
      -jar build/yano.jar
 ```
 
@@ -300,7 +300,7 @@ CARDANO_NODE_SOCKET_PATH=db/node.socket ./bin/cardano-cli query tip --testnet-ma
 
 ## Devnet REST API Reference
 
-All endpoints require `yaci.node.dev-mode=true` and are under `/api/v1/devnet/`.
+All endpoints require `yano.dev-mode=true` and are under `/api/v1/devnet/`.
 
 | Method | Path | Description |
 |--------|------|-------------|

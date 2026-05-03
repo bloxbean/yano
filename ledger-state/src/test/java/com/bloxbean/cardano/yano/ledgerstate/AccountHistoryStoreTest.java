@@ -50,7 +50,7 @@ class AccountHistoryStoreTest {
     void disabledFlagDoesNotWriteHistory() throws Exception {
         try (var rocks = TestRocksDBHelper.create(tempDir)) {
             AccountHistoryStore store = store(rocks, Map.of(
-                    "yaci.node.account-history.enabled", false));
+                    "yano.account-history.enabled", false));
 
             store.applyBlock(blockEvent(100, 1, TX_HASH,
                     Map.of(REWARD_ACCOUNT, BigInteger.valueOf(10)),
@@ -65,7 +65,7 @@ class AccountHistoryStoreTest {
     void txEventsDisabledDoesNotWriteHistoryOrMetadata() throws Exception {
         try (var rocks = TestRocksDBHelper.create(tempDir)) {
             AccountHistoryStore store = store(rocks, enabledConfig(0, Map.of(
-                    "yaci.node.account-history.tx-events-enabled", false)));
+                    "yano.account-history.tx-events-enabled", false)));
 
             store.applyBlock(blockEvent(100, 1, TX_HASH,
                     Map.of(REWARD_ACCOUNT, BigInteger.ONE),
@@ -239,7 +239,7 @@ class AccountHistoryStoreTest {
     void pruningUsesUtxoRollbackWindowFallbackForHistoryAndDeltas() throws Exception {
         try (var rocks = TestRocksDBHelper.create(tempDir)) {
             AccountHistoryStore store = store(rocks, enabledConfig(2, Map.of(
-                    "yaci.node.utxo.rollbackWindow", 100)));
+                    "yano.utxo.rollbackWindow", 100)));
 
             store.applyBlock(blockEvent(260, 1, "01".repeat(32),
                     Map.of(REWARD_ACCOUNT, BigInteger.ONE)));
@@ -257,8 +257,8 @@ class AccountHistoryStoreTest {
     void pruningUsesExplicitAccountHistoryRollbackSafetySlots() throws Exception {
         try (var rocks = TestRocksDBHelper.create(tempDir)) {
             AccountHistoryStore store = store(rocks, enabledConfig(2, Map.of(
-                    "yaci.node.utxo.rollbackWindow", 0,
-                    "yaci.node.account-history.rollback-safety-slots", 100)));
+                    "yano.utxo.rollbackWindow", 0,
+                    "yano.account-history.rollback-safety-slots", 100)));
 
             store.applyBlock(blockEvent(260, 1, "01".repeat(32),
                     Map.of(REWARD_ACCOUNT, BigInteger.ONE)));
@@ -380,10 +380,10 @@ class AccountHistoryStoreTest {
 
     private static Map<String, Object> enabledConfig(int retentionEpochs, Map<String, Object> overrides) {
         Map<String, Object> config = new HashMap<>();
-        config.put("yaci.node.account-history.enabled", true);
-        config.put("yaci.node.account-history.tx-events-enabled", true);
-        config.put("yaci.node.account-history.retention-epochs", retentionEpochs);
-        config.put("yaci.node.account-history.prune-batch-size", 100);
+        config.put("yano.account-history.enabled", true);
+        config.put("yano.account-history.tx-events-enabled", true);
+        config.put("yano.account-history.retention-epochs", retentionEpochs);
+        config.put("yano.account-history.prune-batch-size", 100);
         config.putAll(overrides);
         return config;
     }

@@ -86,8 +86,8 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
             // Determine if tuning is enabled (system property or env override)
             final boolean tuningEnabled = isRocksTuningEnabled();
             // Select write behavior (mutually exclusive when enabled)
-            boolean pipelined = getBool("yaci.node.rocksdb.pipelined_write", "YACI_ROCKSDB_PIPELINED_WRITE", true);
-            boolean atomic = getBool("yaci.node.rocksdb.atomic_flush", "YACI_ROCKSDB_ATOMIC_FLUSH", false);
+            boolean pipelined = getBool("yano.rocksdb.pipelined_write", "YANO_ROCKSDB_PIPELINED_WRITE", true);
+            boolean atomic = getBool("yano.rocksdb.atomic_flush", "YANO_ROCKSDB_ATOMIC_FLUSH", false);
             if (pipelined && atomic) {
                 // Prefer pipelined for throughput unless explicitly disabled
                 log.warn("atomic_flush is incompatible with enable_pipelined_write. Preferring pipelined_write; atomic_flush will be disabled.");
@@ -204,9 +204,9 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
 
     private static boolean isRocksTuningEnabled() {
         try {
-            String prop = System.getProperty("yaci.node.rocksdb.tuning.enabled");
+            String prop = System.getProperty("yano.rocksdb.tuning.enabled");
             if (prop != null) return !"false".equalsIgnoreCase(prop);
-            String env = System.getenv("YACI_ROCKSDB_TUNING_ENABLED");
+            String env = System.getenv("YANO_ROCKSDB_TUNING_ENABLED");
             if (env != null) return !"false".equalsIgnoreCase(env);
         } catch (Throwable ignored) {
         }

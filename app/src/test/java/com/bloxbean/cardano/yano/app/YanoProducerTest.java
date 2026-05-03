@@ -115,6 +115,6 @@ class YanoProducerTest {
                         0,
                         false));
 
-        assertEquals("yaci.node.rollback-retention-epochs must be >= 0", error.getMessage());
+        assertEquals("yano.rollback-retention-epochs must be >= 0", error.getMessage());
     }
 }

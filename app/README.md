@@ -112,13 +112,13 @@ java -Dquarkus.profile=devnet -jar build/quarkus-app/quarkus-run.jar
 | Property | Default | Description |
 |----------|---------|-------------|
 | `quarkus.http.port` | 8080 | REST API port |
-| `yaci.node.server.port` | 13337 | N2N server port |
-| `yaci.node.remote.host` | preprod-node.world.dev.cardano.org | Upstream relay host |
-| `yaci.node.remote.port` | 30000 | Upstream relay port |
-| `yaci.node.remote.protocol-magic` | 1 | Network protocol magic |
-| `yaci.node.storage.path` | ./chainstate | RocksDB storage directory |
-| `yaci.node.block-producer.block-time-millis` | 2000 (1000 in devnet) | Block production interval |
-| `yaci.node.block-producer.script-evaluator` | `aiken` | Plutus script evaluator (`aiken` or `scalus`) |
+| `yano.server.port` | 13337 | N2N server port |
+| `yano.remote.host` | preprod-node.world.dev.cardano.org | Upstream relay host |
+| `yano.remote.port` | 30000 | Upstream relay port |
+| `yano.remote.protocol-magic` | 1 | Network protocol magic |
+| `yano.storage.path` | ./chainstate | RocksDB storage directory |
+| `yano.block-producer.block-time-millis` | 2000 (1000 in devnet) | Block production interval |
+| `yano.block-producer.script-evaluator` | `aiken` | Plutus script evaluator (`aiken` or `scalus`) |
 
 ### Script Evaluator
 
@@ -136,16 +136,15 @@ When using `bin/yano.sh`, the script automatically selects the appropriate evalu
 To override, set the property in `config/application.yml`:
 
 ```yaml
-yaci:
-  node:
-    block-producer:
-      script-evaluator: scalus   # or aiken
+yano:
+  block-producer:
+    script-evaluator: scalus   # or aiken
 ```
 
 Or pass it as a system property:
 
 ```bash
--Dyaci.node.block-producer.script-evaluator=scalus
+-Dyano.block-producer.script-evaluator=scalus
 ```
 
 ### Config Files
@@ -189,7 +188,7 @@ End-to-end tests exercise the full app (transaction submission, script evaluatio
 **Run against an external instance:**
 
 ```bash
-./gradlew :app:e2eTest -Dyaci.e2e.baseUrl=http://localhost:8080/api/v1/
+./gradlew :app:e2eTest -Dyano.e2e.baseUrl=http://localhost:8080/api/v1/
 ```
 
 **Test coverage (35 tests across 7 classes):**
@@ -298,7 +297,7 @@ An interactive API explorer is available at `/q/swagger-ui` when the node is run
 To disable Swagger UI in production, set the environment variable:
 
 ```bash
-YACI_SWAGGER_UI_ENABLED=false
+YANO_SWAGGER_UI_ENABLED=false
 ```
 
 Or pass the system property:

@@ -51,7 +51,7 @@ if [ -f "$SCRIPT_DIR/yano" ]; then
     # Native binary mode
     echo "Starting Yano (native)${PROFILE:+ with profile: $PROFILE}..."
     exec "$SCRIPT_DIR/yano" \
-        -Dyaci.node.block-producer.script-evaluator=scalus \
+        -Dyano.block-producer.script-evaluator=scalus \
         $PROFILE_PROP "${PASSTHROUGH_ARGS[@]}"
 elif [ -f "$SCRIPT_DIR/yano.jar" ]; then
     # Uber-jar mode

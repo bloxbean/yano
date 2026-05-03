@@ -59,13 +59,13 @@ public final class AccountHistoryStore implements AccountHistoryProvider, Rollba
             throw new IllegalStateException("account history column families are not available");
         }
         this.log = log;
-        this.enabled = getBool(config, "yaci.node.account-history.enabled", false);
-        this.txEventsEnabled = getBool(config, "yaci.node.account-history.tx-events-enabled", true);
-        this.rewardsHistoryEnabled = getBool(config, "yaci.node.account-history.rewards-enabled", false);
-        this.retentionEpochs = getInt(config, "yaci.node.account-history.retention-epochs", 0);
-        this.pruneBatchSize = getInt(config, "yaci.node.account-history.prune-batch-size", 50_000);
-        this.rollbackSafetySlots = getLong(config, "yaci.node.account-history.rollback-safety-slots",
-                getLong(config, "yaci.node.utxo.rollbackWindow", 0));
+        this.enabled = getBool(config, "yano.account-history.enabled", false);
+        this.txEventsEnabled = getBool(config, "yano.account-history.tx-events-enabled", true);
+        this.rewardsHistoryEnabled = getBool(config, "yano.account-history.rewards-enabled", false);
+        this.retentionEpochs = getInt(config, "yano.account-history.retention-epochs", 0);
+        this.pruneBatchSize = getInt(config, "yano.account-history.prune-batch-size", 50_000);
+        this.rollbackSafetySlots = getLong(config, "yano.account-history.rollback-safety-slots",
+                getLong(config, "yano.utxo.rollbackWindow", 0));
         this.epochParamProvider = epochParamProvider != null ? epochParamProvider : new EpochParamProvider() {
             @Override public BigInteger getKeyDeposit(long epoch) { return BigInteger.ZERO; }
             @Override public BigInteger getPoolDeposit(long epoch) { return BigInteger.ZERO; }

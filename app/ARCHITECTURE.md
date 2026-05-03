@@ -249,13 +249,12 @@ addresses or payment credentials. When no addresses are configured, it passes
 everything through.
 
 ```yaml
-yaci:
-  node:
-    filters:
-      utxo:
-        enabled: true
-        addresses: ["addr1qx..."]
-        payment-credentials: ["abcd1234..."]
+yano:
+  filters:
+    utxo:
+      enabled: true
+      addresses: ["addr1qx..."]
+      payment-credentials: ["abcd1234..."]
 ```
 
 ---
@@ -339,17 +338,16 @@ Base URL: `http://localhost:8080`
 Connects to one upstream peer and serves downstream connections.
 
 ```yaml
-yaci:
-  node:
-    network: preprod          # mainnet | preprod | preview
-    client:
-      enabled: true
-    server:
-      enabled: true
-      port: 13337
-    storage:
-      rocksdb: true
-      path: ./chainstate
+yano:
+  network: preprod          # mainnet | preprod | preview
+  client:
+    enabled: true
+  server:
+    enabled: true
+    port: 13337
+  storage:
+    rocksdb: true
+    path: ./chainstate
 ```
 
 ### Devnet (block producer)
@@ -358,20 +356,19 @@ Self-contained network that produces Conway-era blocks. Used for local developme
 and testing with yaci-store.
 
 ```yaml
-yaci:
-  node:
-    network: devnet
-    dev-mode: true
-    client:
-      enabled: false
-    server:
-      enabled: true
-    block-producer:
-      enabled: true
-      block-time-millis: 1000
-      tx-evaluation: true     # Plutus script evaluation via Scalus
-    storage:
-      rocksdb: true
+yano:
+  network: devnet
+  dev-mode: true
+  client:
+    enabled: false
+  server:
+    enabled: true
+  block-producer:
+    enabled: true
+    block-time-millis: 1000
+    tx-evaluation: true     # Plutus script evaluation via Scalus
+  storage:
+    rocksdb: true
 ```
 
 ### Bootstrap (lightweight startup)
@@ -380,13 +377,12 @@ Skips historical sync by loading recent state from Blockfrost or Koios, then syn
 forward from a recent block.
 
 ```yaml
-yaci:
-  node:
-    bootstrap:
-      enabled: true
-      provider: blockfrost    # blockfrost | koios
-      api-key: ${BLOCKFROST_API_KEY}
-      block-number: 0         # 0 = latest
+yano:
+  bootstrap:
+    enabled: true
+    provider: blockfrost    # blockfrost | koios
+    api-key: ${BLOCKFROST_API_KEY}
+    block-number: 0         # 0 = latest
 ```
 
 ---

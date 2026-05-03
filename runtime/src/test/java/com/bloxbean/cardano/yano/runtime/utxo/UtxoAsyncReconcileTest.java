@@ -37,10 +37,10 @@ class UtxoAsyncReconcileTest {
         chain = new DirectRocksDBChainState(tempDir.getAbsolutePath());
         Logger log = LoggerFactory.getLogger(UtxoAsyncReconcileTest.class);
         java.util.Map<String, Object> cfg = new java.util.HashMap<>();
-        cfg.put("yaci.node.utxo.enabled", true);
-        cfg.put("yaci.node.utxo.pruneDepth", 3);
-        cfg.put("yaci.node.utxo.rollbackWindow", 4);
-        cfg.put("yaci.node.utxo.pruneBatchSize", 100);
+        cfg.put("yano.utxo.enabled", true);
+        cfg.put("yano.utxo.pruneDepth", 3);
+        cfg.put("yano.utxo.rollbackWindow", 4);
+        cfg.put("yano.utxo.pruneBatchSize", 100);
         store = new DefaultUtxoStore(chain, log, cfg);
     }
 

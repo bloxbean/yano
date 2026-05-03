@@ -14,15 +14,14 @@ import java.util.Set;
  * <p>
  * Configured via YAML:
  * <pre>
- * yaci:
- *   node:
- *     filters:
- *       utxo:
- *         enabled: true
- *         addresses:
- *           - "addr1qx..."
- *         payment-credentials:
- *           - "abcd1234..."
+ * yano:
+ *   filters:
+ *     utxo:
+ *       enabled: true
+ *       addresses:
+ *         - "addr1qx..."
+ *       payment-credentials:
+ *         - "abcd1234..."
  * </pre>
  */
 public final class AddressUtxoFilter implements StorageFilter {

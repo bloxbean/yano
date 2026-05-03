@@ -53,7 +53,7 @@ public abstract class BaseE2ETest {
 
     @BeforeAll
     void setUp() {
-        String externalUrl = System.getProperty("yaci.e2e.baseUrl");
+        String externalUrl = System.getProperty("yano.e2e.baseUrl");
         if (externalUrl != null && !externalUrl.isBlank()) {
             baseUrl = externalUrl;
         } else {

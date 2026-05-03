@@ -22,10 +22,10 @@ public final class StakeBalanceIndexStartupMigration implements StartupMigration
 
     @Override
     public boolean shouldRun(StartupMigrationContext context) {
-        if (!context.bool("yaci.node.utxo.enabled", true)) return false;
-        if (!context.bool("yaci.node.account.stake-balance-index-enabled", true)) return false;
+        if (!context.bool("yano.utxo.enabled", true)) return false;
+        if (!context.bool("yano.account.stake-balance-index-enabled", true)) return false;
 
-        boolean filtersEnabled = context.bool("yaci.node.filters.utxo.enabled", false);
+        boolean filtersEnabled = context.bool("yano.filters.utxo.enabled", false);
         if (filtersEnabled) {
             return rebuilder.isReady(context.chainState());
         }
@@ -35,7 +35,7 @@ public final class StakeBalanceIndexStartupMigration implements StartupMigration
 
     @Override
     public StartupMigrationResult run(StartupMigrationContext context) {
-        boolean filtersEnabled = context.bool("yaci.node.filters.utxo.enabled", false);
+        boolean filtersEnabled = context.bool("yano.filters.utxo.enabled", false);
         if (filtersEnabled) {
             rebuilder.clearReadyMarker(context.chainState());
             return StartupMigrationResult.changed(

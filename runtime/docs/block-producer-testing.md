@@ -40,7 +40,7 @@ This returns a ZIP containing 4 genesis JSON files (byron, shelley, alonzo, conw
 
 These genesis files use **protocol magic 42** and contain proper Plutus cost models (PlutusV1/V2) that yaci-store requires. Using incomplete genesis files (e.g., empty `costModels: {}` in alonzo-genesis.json) will cause a NullPointerException in yaci-store's `EraGenesisProtocolParamsUtil`.
 
-**Important**: The protocol magic in genesis files (42) must match Yano's `yaci.node.remote.protocol-magic` config property. Mismatch causes silent handshake failure.
+**Important**: The protocol magic in genesis files (42) must match Yano's `yano.remote.protocol-magic` config property. Mismatch causes silent handshake failure.
 
 ## Step 1: Create Genesis ZIP and Server
 
@@ -96,16 +96,16 @@ python3 genesis_server.py &
 
 # Start in block producer mode
 java \
-  -Dyaci.node.server.port=13337 \
-  -Dyaci.node.server.enabled=true \
-  -Dyaci.node.client.enabled=false \
-  -Dyaci.node.remote.protocol-magic=42 \
-  -Dyaci.node.block-producer.enabled=true \
-  -Dyaci.node.block-producer.block-time-millis=2000 \
-  -Dyaci.node.block-producer.lazy=false \
-  -Dyaci.node.block-producer.genesis-timestamp=0 \
-  -Dyaci.node.block-producer.slot-length-millis=1000 \
-  -Dyaci.node.storage.rocksdb=false \
+  -Dyano.server.port=13337 \
+  -Dyano.server.enabled=true \
+  -Dyano.client.enabled=false \
+  -Dyano.remote.protocol-magic=42 \
+  -Dyano.block-producer.enabled=true \
+  -Dyano.block-producer.block-time-millis=2000 \
+  -Dyano.block-producer.lazy=false \
+  -Dyano.block-producer.genesis-timestamp=0 \
+  -Dyano.block-producer.slot-length-millis=1000 \
+  -Dyano.storage.rocksdb=false \
   -jar app/build/yano.jar
 ```
 

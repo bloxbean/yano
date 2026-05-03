@@ -33,4 +33,4 @@ EXPOSE 8080 13337
 # Chain state is persisted here; mount a named volume to survive restarts
 VOLUME /app/chainstate
 
-CMD ["java", "-Dquarkus.profile=devnet", "-Dyaci.node.tx-evaluation.enabled=true", "-Dyaci.node.block-producer.script-evaluator=scalus", "-jar", "yano.jar"]
+CMD ["java", "-Dquarkus.profile=devnet", "-Dyano.block-producer.tx-evaluation=true", "-Dyano.block-producer.script-evaluator=scalus", "-jar", "yano.jar"]

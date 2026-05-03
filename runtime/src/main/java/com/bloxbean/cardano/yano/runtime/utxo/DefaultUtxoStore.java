@@ -96,7 +96,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
         this.supplier = supplier;
         this.db = supplier.rocks().db();
         this.log = logger;
-        Object ev = config != null ? config.getOrDefault("yaci.node.utxo.enabled", Boolean.TRUE) : Boolean.TRUE;
+        Object ev = config != null ? config.getOrDefault("yano.utxo.enabled", Boolean.TRUE) : Boolean.TRUE;
         this.enabled = (ev instanceof Boolean b) ? b : Boolean.parseBoolean(String.valueOf(ev));
 
         this.cfUnspent = supplier.rocks().handle(UtxoCfNames.UTXO_UNSPENT);
@@ -107,15 +107,15 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
         this.cfScriptRef = supplier.rocks().handle(UtxoCfNames.SCRIPT_REF);
         this.cfStakeBalance = supplier.rocks().handle(UtxoCfNames.UTXO_STAKE_BALANCE);
 
-        this.pruneDepth = getInt(config, "yaci.node.utxo.pruneDepth", 2160);
+        this.pruneDepth = getInt(config, "yano.utxo.pruneDepth", 2160);
         // Default 2 epochs (864000 slots) to support incremental balance aggregation at epoch boundaries.
         // The delta log must retain at least one full epoch's worth of entries.
-        this.rollbackWindow = getInt(config, "yaci.node.utxo.rollbackWindow", 864000);
-        this.pruneBatchSize = getInt(config, "yaci.node.utxo.pruneBatchSize", 500);
+        this.rollbackWindow = getInt(config, "yano.utxo.rollbackWindow", 864000);
+        this.pruneBatchSize = getInt(config, "yano.utxo.pruneBatchSize", 500);
         // Indexing strategy
-        boolean addrIdx = getBool(config, "yaci.node.utxo.index.address_hash", true);
-        boolean payCredIdx = getBool(config, "yaci.node.utxo.index.payment_credential", true);
-        Object strat = config != null ? config.get("yaci.node.utxo.indexingStrategy") : null;
+        boolean addrIdx = getBool(config, "yano.utxo.index.address_hash", true);
+        boolean payCredIdx = getBool(config, "yano.utxo.index.payment_credential", true);
+        Object strat = config != null ? config.get("yano.utxo.indexingStrategy") : null;
         if (strat != null) {
             String s = String.valueOf(strat);
             if ("address_hash".equalsIgnoreCase(s)) {
@@ -128,15 +128,15 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
         }
         this.indexAddressHash = addrIdx;
         this.indexPaymentCred = payCredIdx;
-        this.stakeBalanceIndexEnabled = getBool(config, "yaci.node.account.stake-balance-index-enabled", true);
-        this.configuredUtxoFiltersEnabled = getBool(config, "yaci.node.filters.utxo.enabled", false);
+        this.stakeBalanceIndexEnabled = getBool(config, "yano.account.stake-balance-index-enabled", true);
+        this.configuredUtxoFiltersEnabled = getBool(config, "yano.filters.utxo.enabled", false);
 
         this.processor = new DefaultUtxoProcessor(this.db);
         refreshStakeBalanceIndexReady();
 
         // Metrics setup
-        this.metricsEnabled = getBool(config, "yaci.node.metrics.enabled", true);
-        int sampleSec = getInt(config, "yaci.node.metrics.sample.rocksdb.seconds", 30);
+        this.metricsEnabled = getBool(config, "yano.metrics.enabled", true);
+        int sampleSec = getInt(config, "yano.metrics.sample.rocksdb.seconds", 30);
         this.rocksSampleMillis = Math.max(0, sampleSec) * 1000L;
         if (metricsEnabled && rocksSampleMillis > 0) {
             this.metricsScheduler = Executors.newScheduledThreadPool(1, Thread.ofVirtual().factory());

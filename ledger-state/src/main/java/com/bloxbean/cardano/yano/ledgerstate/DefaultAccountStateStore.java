@@ -249,9 +249,9 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
         this.pointerAddressResolver = new PointerAddressResolver(db, cfState);
         this.readStore = new DefaultAccountStateReadStore(db, cfEpochSnapshot, () -> governanceBlockProcessor, log);
         this.epochBlockDataRetentionLag = getInt(config,
-                "yaci.node.account-state.epoch-block-data-retention-lag", DEFAULT_EPOCH_BLOCK_DATA_RETENTION_LAG);
+                "yano.account-state.epoch-block-data-retention-lag", DEFAULT_EPOCH_BLOCK_DATA_RETENTION_LAG);
         this.snapshotRetentionEpochs = getInt(config,
-                "yaci.node.account-state.snapshot-retention-epochs", DEFAULT_SNAPSHOT_RETENTION_EPOCHS);
+                "yano.account-state.snapshot-retention-epochs", DEFAULT_SNAPSHOT_RETENTION_EPOCHS);
     }
 
     // --- Optional subsystem wiring ---

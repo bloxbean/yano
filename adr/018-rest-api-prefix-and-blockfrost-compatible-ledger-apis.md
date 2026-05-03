@@ -29,7 +29,7 @@ are still too expensive or too diagnostic-focused.
 The next API work should:
 
 - avoid repeating `/api/v1` in every resource class,
-- make the public prefix configurable through `yaci.node.api-prefix`, defaulting
+- make the public prefix configurable through `yano.api-prefix`, defaulting
   to `/api/v1`,
 - preserve existing URLs by default,
 - add production endpoints for AdaPot and account state,
@@ -79,9 +79,8 @@ Blockfrost references used for compatibility:
 Add a new config property:
 
 ```yaml
-yaci:
-  node:
-    api-prefix: /api/v1
+yano:
+  api-prefix: /api/v1
 ```
 
 Use it to configure the REST application root:
@@ -89,7 +88,7 @@ Use it to configure the REST application root:
 ```yaml
 quarkus:
   resteasy:
-    path: ${yaci.node.api-prefix:/api/v1}
+    path: ${yano.api-prefix:/api/v1}
 ```
 
 `node-app` currently uses RESTEasy Classic (`quarkus-resteasy`), so the
@@ -122,7 +121,7 @@ If a future deployment wants debug endpoints under the same prefix, add a
 separate explicit property such as:
 
 ```yaml
-yaci.node.debug-api-prefix: /api/debug
+yano.debug-api-prefix: /api/debug
 ```
 
 Do not couple debug endpoint routing to the public Blockfrost-compatible API
@@ -495,10 +494,9 @@ current reward balance when returning `controlled_amount`.
 Configuration:
 
 ```yaml
-yaci:
-  node:
-    account:
-      stake-balance-index-enabled: true
+yano:
+  account:
+    stake-balance-index-enabled: true
 ```
 
 - Default should be `true` because wallet-backend use cases need
@@ -623,15 +621,15 @@ For Yano extension endpoints:
 
 Status: completed on 2026-04-28.
 
-- Added `yaci.node.api-prefix` default `/api/v1`.
+- Added `yano.api-prefix` default `/api/v1`.
 - Configured RESTEasy Classic root path using
-  `quarkus.resteasy.path: ${yaci.node.api-prefix:/api/v1}`.
+  `quarkus.resteasy.path: ${yano.api-prefix:/api/v1}`.
 - Converted production resource class paths from absolute `/api/v1/...` to
   relative paths.
 - Left debug endpoints unchanged at `/api/debug`.
 - Updated startup log messages to use the configured API prefix.
 - Added tests proving default routes remain unchanged.
-- Added a non-default `/bf` prefix test using only `yaci.node.api-prefix`.
+- Added a non-default `/bf` prefix test using only `yano.api-prefix`.
 
 Verification:
 
@@ -718,7 +716,7 @@ Implemented:
 - Added RocksDB CF `utxo_stake_balance` and maintain it from
   `DefaultUtxoStore` block apply, rollback, genesis UTXO, faucet, bootstrap,
   and direct UTXO-removal paths.
-- Added config `yaci.node.account.stake-balance-index-enabled`, defaulting to
+- Added config `yano.account.stake-balance-index-enabled`, defaulting to
   `true`.
 - Added a readiness marker so upgraded chainstates that already contain UTXOs
   but have never built this aggregate do **not** return incorrect
@@ -823,7 +821,7 @@ deprecated native-property warnings, but both Gradle tasks succeed.
 The live stake-balance aggregate has two independent states:
 
 ```text
-yaci.node.account.stake-balance-index-enabled
+yano.account.stake-balance-index-enabled
 utxo_meta["stake_balance_index_ready"]
 ```
 
@@ -937,7 +935,7 @@ Startup failure policy:
   would apply future deltas to an incomplete index.
 - The error message should state that startup failed during
   `stake-balance-index` migration and that setting
-  `yaci.node.account.stake-balance-index-enabled=false` disables account
+  `yano.account.stake-balance-index-enabled=false` disables account
   controlled-amount support.
 - If the feature is disabled, Yano starts normally and account controlled amount
   remains unavailable.
@@ -959,7 +957,7 @@ Implemented:
   phases.
 - Invoked startup migrations from `YaciNode` after RocksDB opens and before
   UTXO store event handlers, pruning, bootstrap, or sync can run.
-- Passed `yaci.node.account.stake-balance-index-enabled` from `node-app`
+- Passed `yano.account.stake-balance-index-enabled` from `node-app`
   config into runtime globals so jar users get the configured behavior.
 - Kept the readiness marker and disabled-index invalidation behavior.
 - Added filtered-chainstate handling so a filtered UTXO store does not claim a
@@ -991,16 +989,15 @@ current account-state correctness.
 Configuration:
 
 ```yaml
-yaci:
-  node:
-    account-history:
-      enabled: false
-      tx-events-enabled: true
-      rewards-enabled: false
-      retention-epochs: 0        # 0 means retain all
-      rollback-safety-slots: 4320 # optional; defaults to yaci.node.utxo.rollbackWindow
-      prune-interval-seconds: 300
-      prune-batch-size: 50000
+yano:
+  account-history:
+    enabled: false
+    tx-events-enabled: true
+    rewards-enabled: false
+    retention-epochs: 0        # 0 means retain all
+    rollback-safety-slots: 4320 # optional; defaults to yano.utxo.rollbackWindow
+    prune-interval-seconds: 300
+    prune-batch-size: 50000
 ```
 
 Principles:
@@ -1086,8 +1083,8 @@ Pruning:
 - Prune matching rollback-journal entries only after they are outside the
   configured history retention window and, when available, outside the node
   rollback safety window. The first implementation reads
-  `yaci.node.account-history.rollback-safety-slots` when set, otherwise it uses
-  `yaci.node.utxo.rollbackWindow` as the safety slot window.
+  `yano.account-history.rollback-safety-slots` when set, otherwise it uses
+  `yano.utxo.rollbackWindow` as the safety slot window.
 - Apply the rollback safety window to history-row pruning as well as delta
   pruning. This avoids pruning rows that would still be inside retention after a
   rollback across an epoch boundary.
@@ -1268,7 +1265,7 @@ access warnings, SLF4J provider warnings, Gradle deprecation warnings, and
   `quarkus.resteasy.path`. If the app moves to Quarkus REST, the equivalent
   property may be `quarkus.rest.path` and should be re-tested.
 - REST root path configuration is normally resolved at application startup. For
-  native images, confirm whether changing `yaci.node.api-prefix` requires a
+  native images, confirm whether changing `yano.api-prefix` requires a
   rebuild or only a runtime config update before documenting native deployment
   behavior.
 - Blockfrost's account aggregate fields require historical sums. Current Yano

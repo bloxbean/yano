@@ -452,7 +452,7 @@ SELECT epoch, count(*) FROM 'data/epoch=*/adapot.parquet' GROUP BY epoch;
 
 **Cross-verification:** `verify.sh` compares exports against DBSync and Yaci-Store.
 
-Enabled via `yaci.node.snapshot-export.enabled=true`. Zero overhead when disabled (NOOP pattern).
+Enabled via `yano.snapshot-export.enabled=true`. Zero overhead when disabled (NOOP pattern).
 
 ---
 

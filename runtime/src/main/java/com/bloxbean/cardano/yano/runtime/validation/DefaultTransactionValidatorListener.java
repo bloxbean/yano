@@ -13,7 +13,7 @@ import lombok.extern.slf4j.Slf4j;
  * Runs at {@code order = 100}, leaving room for pre-validation (order &lt; 100) and
  * post-validation (order &gt; 100) plugins.
  * <p>
- * Can be disabled via config flag {@code yaci.node.validation.default-validator-enabled=false},
+ * Can be disabled via config flag {@code yano.validation.default-validator-enabled=false},
  * in which case this listener is simply not registered with the event bus.
  */
 @Slf4j

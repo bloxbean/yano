@@ -42,7 +42,7 @@ public class DevnetTestProfile implements QuarkusTestProfile {
 
     @Override
     public String getConfigProfile() {
-        if (System.getProperty("yaci.e2e.baseUrl") != null) {
+        if (System.getProperty("yano.e2e.baseUrl") != null) {
             return "test";   // lightweight — no devnet infrastructure
         }
         return "devnet";
@@ -50,14 +50,14 @@ public class DevnetTestProfile implements QuarkusTestProfile {
 
     @Override
     public Map<String, String> getConfigOverrides() {
-        if (System.getProperty("yaci.e2e.baseUrl") != null) {
+        if (System.getProperty("yano.e2e.baseUrl") != null) {
             return Map.of();  // %test defaults are fine
         }
         return Map.of(
-                "yaci.node.storage.rocksdb", "true",
-                "yaci.node.storage.path", TEMP_STORAGE_DIR.toString(),
+                "yano.storage.rocksdb", "true",
+                "yano.storage.path", TEMP_STORAGE_DIR.toString(),
                 "yaci.plugins.enabled", "false",
-                "yaci.node.server.port", "23337"
+                "yano.server.port", "23337"
         );
     }
 }

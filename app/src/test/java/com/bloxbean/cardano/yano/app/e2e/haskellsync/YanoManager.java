@@ -67,9 +67,9 @@ public class YanoManager {
         cmd.add("java");
         cmd.add("-Dquarkus.profile=devnet");
         cmd.add("-Dquarkus.http.port=" + httpPort);
-        cmd.add("-Dyaci.node.server.port=" + n2nPort);
-        cmd.add("-Dyaci.node.storage.path=" + chainstateDir);
-        cmd.add("-Dyaci.node.block-producer.block-time-millis=200");
+        cmd.add("-Dyano.server.port=" + n2nPort);
+        cmd.add("-Dyano.storage.path=" + chainstateDir);
+        cmd.add("-Dyano.block-producer.block-time-millis=200");
 
         for (String prop : extraProps) {
             if (prop.startsWith("-D") || prop.startsWith("--")) {

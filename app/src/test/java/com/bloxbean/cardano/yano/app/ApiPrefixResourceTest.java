@@ -34,7 +34,7 @@ class ApiPrefixResourceTest {
     public static class CustomApiPrefixProfile implements QuarkusTestProfile {
         @Override
         public Map<String, String> getConfigOverrides() {
-            return Map.of("yaci.node.api-prefix", "/bf");
+            return Map.of("yano.api-prefix", "/bf");
         }
     }
 }

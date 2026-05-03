@@ -30,7 +30,7 @@ class NodeUtxoFactorySelectionTest {
             cfg.validate();
 
             var globals = new HashMap<String, Object>();
-            globals.put("yaci.node.utxo.enabled", true);
+            globals.put("yano.utxo.enabled", true);
             RuntimeOptions rt = new RuntimeOptions(new EventsOptions(true, 1024, SubscriptionOptions.Overflow.BLOCK),
                     com.bloxbean.cardano.yano.api.config.PluginsOptions.defaults(), globals);
 
