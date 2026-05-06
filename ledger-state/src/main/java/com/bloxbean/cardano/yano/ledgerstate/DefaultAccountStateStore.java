@@ -2,24 +2,32 @@ package com.bloxbean.cardano.yano.ledgerstate;
 
 import com.bloxbean.cardano.yano.api.era.EraProvider;
 import com.bloxbean.cardano.yaci.core.model.Block;
+import com.bloxbean.cardano.yaci.core.model.DrepVoteThresholds;
 import com.bloxbean.cardano.yaci.core.model.Era;
+import com.bloxbean.cardano.yaci.core.model.PoolVotingThresholds;
 import com.bloxbean.cardano.yaci.core.model.TransactionBody;
 import com.bloxbean.cardano.yaci.core.model.certs.*;
 import com.bloxbean.cardano.yaci.core.model.governance.Drep;
 import com.bloxbean.cardano.yaci.core.model.governance.DrepType;
+import com.bloxbean.cardano.yaci.core.model.governance.GovActionId;
+import com.bloxbean.cardano.yaci.core.model.governance.GovActionType;
+import com.bloxbean.cardano.yaci.core.types.UnitInterval;
 import com.bloxbean.cardano.yaci.core.storage.ChainState;
 import com.bloxbean.cardano.yaci.core.storage.ChainTip;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.EpochParamProvider;
 import com.bloxbean.cardano.yano.api.model.CredentialKey;
+import com.bloxbean.cardano.yano.api.account.AccountStateReadStore;
 import com.bloxbean.cardano.yano.api.account.AccountStateStore;
 import com.bloxbean.cardano.yano.api.account.LedgerStateProvider;
 import com.bloxbean.cardano.yano.api.events.BlockAppliedEvent;
+import com.bloxbean.cardano.yano.api.events.GenesisBlockEvent;
 import com.bloxbean.cardano.yano.api.events.RollbackEvent;
 import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Point;
 import org.rocksdb.*;
 import org.slf4j.Logger;
 
+import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -31,7 +39,7 @@ import java.util.*;
  * Tracks stake registration, delegation, DRep delegation, pool registration/retirement,
  * and reward balances with delta-journal rollback support.
  */
-public class DefaultAccountStateStore implements AccountStateStore,
+public class DefaultAccountStateStore implements AccountStateStore, AccountStateReadStore,
         com.bloxbean.cardano.yano.api.rollback.RollbackCapableStore {
 
     // Key prefixes
@@ -200,6 +208,7 @@ public class DefaultAccountStateStore implements AccountStateStore,
 
     // Optional governance subsystem
     private volatile com.bloxbean.cardano.yano.ledgerstate.governance.GovernanceBlockProcessor governanceBlockProcessor;
+    private volatile DefaultAccountStateReadStore readStore;
 
 
     // Supplier for re-initialization after snapshot restore
@@ -238,10 +247,11 @@ public class DefaultAccountStateStore implements AccountStateStore,
         this.cfBoundaryDelta = supplier.handle(AccountStateCfNames.ACCT_BOUNDARY_DELTA);
         this.cfEpochSnapshot = supplier.handle(AccountStateCfNames.EPOCH_DELEG_SNAPSHOT);
         this.pointerAddressResolver = new PointerAddressResolver(db, cfState);
+        this.readStore = new DefaultAccountStateReadStore(db, cfEpochSnapshot, () -> governanceBlockProcessor, log);
         this.epochBlockDataRetentionLag = getInt(config,
-                "yaci.node.account-state.epoch-block-data-retention-lag", DEFAULT_EPOCH_BLOCK_DATA_RETENTION_LAG);
+                "yano.account-state.epoch-block-data-retention-lag", DEFAULT_EPOCH_BLOCK_DATA_RETENTION_LAG);
         this.snapshotRetentionEpochs = getInt(config,
-                "yaci.node.account-state.snapshot-retention-epochs", DEFAULT_SNAPSHOT_RETENTION_EPOCHS);
+                "yano.account-state.snapshot-retention-epochs", DEFAULT_SNAPSHOT_RETENTION_EPOCHS);
     }
 
     // --- Optional subsystem wiring ---
@@ -368,13 +378,32 @@ public class DefaultAccountStateStore implements AccountStateStore,
 
     @Override
     public void reinitialize() {
-        this.cfState = cfSupplier.handle(AccountStateCfNames.ACCT_STATE);
-        this.cfDelta = cfSupplier.handle(AccountStateCfNames.ACCT_DELTA);
-        this.cfEpochSnapshot = cfSupplier.handle(AccountStateCfNames.EPOCH_DELEG_SNAPSHOT);
         if (cfSupplier.db() != null) {
             this.db = cfSupplier.db();
         }
+        this.cfState = cfSupplier.handle(AccountStateCfNames.ACCT_STATE);
+        this.cfDelta = cfSupplier.handle(AccountStateCfNames.ACCT_DELTA);
+        this.cfBoundaryDelta = cfSupplier.handle(AccountStateCfNames.ACCT_BOUNDARY_DELTA);
+        this.cfEpochSnapshot = cfSupplier.handle(AccountStateCfNames.EPOCH_DELEG_SNAPSHOT);
+
+        if (adaPotTracker != null) {
+            adaPotTracker.reinitialize(db, cfState);
+        }
+        if (paramTracker != null) {
+            paramTracker.reinitialize(db, cfSupplier.handle(AccountStateCfNames.EPOCH_PARAMS));
+        }
+        if (rewardCalculator != null) {
+            rewardCalculator.reinitialize(db, cfState, cfEpochSnapshot);
+        }
+        if (governanceBlockProcessor != null) {
+            governanceBlockProcessor.reinitialize(db, cfState);
+        }
+        if (epochBoundaryProcessor != null) {
+            epochBoundaryProcessor.reinitializeAfterSnapshotRestore(db, cfState, cfDelta, cfEpochSnapshot);
+        }
+
         this.pointerAddressResolver = new PointerAddressResolver(db, cfState);
+        this.readStore = new DefaultAccountStateReadStore(db, cfEpochSnapshot, () -> governanceBlockProcessor, log);
         log.info("DefaultAccountStateStore reinitialized after snapshot restore");
     }
 
@@ -695,8 +724,7 @@ public class DefaultAccountStateStore implements AccountStateStore,
             if (val == null) return Optional.empty();
             return Optional.of(AccountStateCborCodec.decodeStakeAccount(val).reward());
         } catch (RocksDBException e) {
-            log.error("getRewardBalance failed: {}", e.toString());
-            return Optional.empty();
+            throw ledgerStateReadFailure("getRewardBalance", e);
         }
     }
 
@@ -707,20 +735,26 @@ public class DefaultAccountStateStore implements AccountStateStore,
             if (val == null) return Optional.empty();
             return Optional.of(AccountStateCborCodec.decodeStakeAccount(val).deposit());
         } catch (RocksDBException e) {
-            log.error("getStakeDeposit failed: {}", e.toString());
-            return Optional.empty();
+            throw ledgerStateReadFailure("getStakeDeposit", e);
         }
     }
 
     @Override
     public Optional<String> getDelegatedPool(int credType, String credentialHash) {
+        return getPoolDelegation(credType, credentialHash)
+                .map(LedgerStateProvider.PoolDelegation::poolHash);
+    }
+
+    @Override
+    public Optional<LedgerStateProvider.PoolDelegation> getPoolDelegation(int credType, String credentialHash) {
         try {
             byte[] val = db.get(cfState, poolDelegKey(credType, credentialHash));
             if (val == null) return Optional.empty();
-            return Optional.of(AccountStateCborCodec.decodePoolDelegation(val).poolHash());
+            var rec = AccountStateCborCodec.decodePoolDelegation(val);
+            return Optional.of(new LedgerStateProvider.PoolDelegation(
+                    rec.poolHash(), rec.slot(), rec.txIdx(), rec.certIdx()));
         } catch (RocksDBException e) {
-            log.error("getDelegatedPool failed: {}", e.toString());
-            return Optional.empty();
+            throw ledgerStateReadFailure("getPoolDelegation", e);
         }
     }
 
@@ -732,8 +766,7 @@ public class DefaultAccountStateStore implements AccountStateStore,
             var rec = AccountStateCborCodec.decodeDRepDelegation(val);
             return Optional.of(new DRepDelegation(rec.drepType(), rec.drepHash()));
         } catch (RocksDBException e) {
-            log.error("getDRepDelegation failed: {}", e.toString());
-            return Optional.empty();
+            throw ledgerStateReadFailure("getDRepDelegation", e);
         }
     }
 
@@ -743,8 +776,19 @@ public class DefaultAccountStateStore implements AccountStateStore,
             byte[] val = db.get(cfState, accountKey(credType, credentialHash));
             return val != null;
         } catch (RocksDBException e) {
-            log.error("isStakeCredentialRegistered failed: {}", e.toString());
-            return false;
+            throw ledgerStateReadFailure("isStakeCredentialRegistered", e);
+        }
+    }
+
+    @Override
+    public Optional<Long> getStakeRegistrationSlot(int credType, String credentialHash) {
+        try {
+            if (db.get(cfState, accountKey(credType, credentialHash)) == null) return Optional.empty();
+            byte[] val = db.get(cfState, acctRegSlotKey(credType, credentialHash));
+            if (val == null || val.length < Long.BYTES) return Optional.empty();
+            return Optional.of(ByteBuffer.wrap(val).order(ByteOrder.BIG_ENDIAN).getLong());
+        } catch (RocksDBException e) {
+            throw ledgerStateReadFailure("getStakeRegistrationSlot", e);
         }
     }
 
@@ -752,11 +796,13 @@ public class DefaultAccountStateStore implements AccountStateStore,
     public BigInteger getTotalDeposited() {
         try {
             byte[] val = db.get(cfState, META_TOTAL_DEPOSITED);
-            if (val == null || val.length < 8) return BigInteger.ZERO;
+            if (val == null) return BigInteger.ZERO;
+            if (val.length < 8) {
+                throw new IllegalStateException("Malformed total deposited metadata: expected at least 8 bytes, got " + val.length);
+            }
             return new BigInteger(1, val);
         } catch (RocksDBException e) {
-            log.error("getTotalDeposited failed: {}", e.toString());
-            return BigInteger.ZERO;
+            throw ledgerStateReadFailure("getTotalDeposited", e);
         }
     }
 
@@ -766,8 +812,7 @@ public class DefaultAccountStateStore implements AccountStateStore,
             byte[] val = db.get(cfState, poolDepositKey(poolHash));
             return val != null;
         } catch (RocksDBException e) {
-            log.error("isPoolRegistered failed: {}", e.toString());
-            return false;
+            throw ledgerStateReadFailure("isPoolRegistered", e);
         }
     }
 
@@ -778,8 +823,7 @@ public class DefaultAccountStateStore implements AccountStateStore,
             if (val == null) return Optional.empty();
             return Optional.of(AccountStateCborCodec.decodePoolDeposit(val));
         } catch (RocksDBException e) {
-            log.error("getPoolDeposit failed: {}", e.toString());
-            return Optional.empty();
+            throw ledgerStateReadFailure("getPoolDeposit", e);
         }
     }
 
@@ -792,8 +836,7 @@ public class DefaultAccountStateStore implements AccountStateStore,
             if (val == null) return Optional.empty();
             return Optional.of(AccountStateCborCodec.decodePoolRegistration(val));
         } catch (RocksDBException e) {
-            log.error("getPoolRegistrationData failed: {}", e.toString());
-            return Optional.empty();
+            throw ledgerStateReadFailure("getPoolRegistrationData", e);
         }
     }
 
@@ -819,7 +862,7 @@ public class DefaultAccountStateStore implements AccountStateStore,
 
     /**
      * Get pool registration data that was active at the given epoch.
-     * Uses seekForPrev to find the latest history entry with epoch <= target.
+     * Uses seekForPrev to find the latest history entry with epoch &lt;= target.
      * Falls back to the current (latest) registration if no history found.
      */
     public Optional<AccountStateCborCodec.PoolRegistrationData> getPoolRegistrationDataAtEpoch(
@@ -851,8 +894,7 @@ public class DefaultAccountStateStore implements AccountStateStore,
             if (val == null) return Optional.empty();
             return Optional.of(AccountStateCborCodec.decodePoolRetirement(val));
         } catch (RocksDBException e) {
-            log.error("getPoolRetirementEpoch failed: {}", e.toString());
-            return Optional.empty();
+            throw ledgerStateReadFailure("getPoolRetirementEpoch", e);
         }
     }
 
@@ -864,8 +906,7 @@ public class DefaultAccountStateStore implements AccountStateStore,
             byte[] val = db.get(cfState, drepRegKey(credType, credentialHash));
             return val != null;
         } catch (RocksDBException e) {
-            log.error("isDRepRegistered failed: {}", e.toString());
-            return false;
+            throw ledgerStateReadFailure("isDRepRegistered", e);
         }
     }
 
@@ -876,9 +917,13 @@ public class DefaultAccountStateStore implements AccountStateStore,
             if (val == null) return Optional.empty();
             return Optional.of(AccountStateCborCodec.decodeDRepDeposit(val));
         } catch (RocksDBException e) {
-            log.error("getDRepDeposit failed: {}", e.toString());
-            return Optional.empty();
+            throw ledgerStateReadFailure("getDRepDeposit", e);
         }
+    }
+
+    private IllegalStateException ledgerStateReadFailure(String operation, RocksDBException e) {
+        log.error("{} failed", operation, e);
+        return new IllegalStateException(operation + " failed", e);
     }
 
     // --- Committee State reads ---
@@ -889,8 +934,7 @@ public class DefaultAccountStateStore implements AccountStateStore,
             byte[] val = db.get(cfState, committeeHotKey(credType, coldCredentialHash));
             return val != null;
         } catch (RocksDBException e) {
-            log.error("isCommitteeMember failed: {}", e.toString());
-            return false;
+            throw ledgerStateReadFailure("isCommitteeMember", e);
         }
     }
 
@@ -901,8 +945,7 @@ public class DefaultAccountStateStore implements AccountStateStore,
             if (val == null) return Optional.empty();
             return Optional.of(AccountStateCborCodec.decodeCommitteeHotKey(val).hotHash());
         } catch (RocksDBException e) {
-            log.error("getCommitteeHotCredential failed: {}", e.toString());
-            return Optional.empty();
+            throw ledgerStateReadFailure("getCommitteeHotCredential", e);
         }
     }
 
@@ -912,9 +955,81 @@ public class DefaultAccountStateStore implements AccountStateStore,
             byte[] val = db.get(cfState, committeeResignKey(credType, coldCredentialHash));
             return val != null;
         } catch (RocksDBException e) {
-            log.error("hasCommitteeMemberResigned failed: {}", e.toString());
-            return false;
+            throw ledgerStateReadFailure("hasCommitteeMemberResigned", e);
         }
+    }
+
+    @Override
+    public Optional<Boolean> isCommitteeHotCredentialAuthorized(int hotCredType, String hotCredentialHash) {
+        return isCommitteeHotCredentialAuthorized(hotCredType, hotCredentialHash, -1);
+    }
+
+    @Override
+    public Optional<Boolean> isCommitteeHotCredentialAuthorized(int hotCredType, String hotCredentialHash,
+                                                                long currentEpoch) {
+        var processor = governanceBlockProcessor;
+        if (processor == null) return Optional.empty();
+
+        try {
+            boolean matched = false;
+            for (var entry : processor.getGovernanceStore().getAllCommitteeMembers().entrySet()) {
+                var member = entry.getValue();
+                if (!member.hasHotKey()) continue;
+                if (member.resigned()) continue;
+                if (member.hotCredType() != hotCredType) continue;
+                if (!hotCredentialHash.equals(member.hotHash())) continue;
+                matched = true;
+
+                if (currentEpoch < 0) {
+                    // Without the validation epoch, avoid accepting placeholder/future committee state.
+                    continue;
+                }
+                if (member.expiryEpoch() > 0 && member.expiryEpoch() >= currentEpoch) {
+                    return Optional.of(true);
+                }
+            }
+            return matched && currentEpoch < 0 ? Optional.empty() : Optional.of(false);
+        } catch (Exception e) {
+            log.error("isCommitteeHotCredentialAuthorized failed", e);
+            throw new IllegalStateException("isCommitteeHotCredentialAuthorized failed", e);
+        }
+    }
+
+    @Override
+    public Optional<LedgerStateProvider.GovernanceActionInfo> getGovernanceAction(String txHash, int govActionIndex) {
+        return getGovernanceAction(txHash, govActionIndex, -1);
+    }
+
+    @Override
+    public Optional<LedgerStateProvider.GovernanceActionInfo> getGovernanceAction(String txHash, int govActionIndex,
+                                                                                  long currentEpoch) {
+        var processor = governanceBlockProcessor;
+        if (processor == null) return Optional.empty();
+
+        try {
+            var store = processor.getGovernanceStore();
+            var active = store.getProposal(txHash, govActionIndex);
+            if (active.isPresent()) {
+                GovActionId id = new GovActionId(txHash, govActionIndex);
+                boolean pendingResolution = store.isPendingEnactment(id) || store.isPendingDrop(id);
+                boolean notExpired = currentEpoch < 0 || currentEpoch <= active.get().expiresAfterEpoch();
+                return Optional.of(new LedgerStateProvider.GovernanceActionInfo(
+                        active.get().actionType().name(), !pendingResolution && notExpired, false));
+            }
+
+            for (GovActionType type : GovActionType.values()) {
+                var last = store.getLastEnactedAction(type);
+                if (last.isPresent()
+                        && txHash.equals(last.get().txHash())
+                        && govActionIndex == last.get().govActionIndex()) {
+                    return Optional.of(new LedgerStateProvider.GovernanceActionInfo(type.name(), false, true));
+                }
+            }
+        } catch (Exception e) {
+            log.error("getGovernanceAction failed for {}#{}", txHash, govActionIndex, e);
+            throw new IllegalStateException("getGovernanceAction failed for " + txHash + "#" + govActionIndex, e);
+        }
+        return Optional.empty();
     }
 
     // --- MIR State reads ---
@@ -1110,6 +1225,25 @@ public class DefaultAccountStateStore implements AccountStateStore,
     // --- AdaPot queries ---
 
     @Override
+    public boolean isAdaPotTrackingEnabled() {
+        return adaPotTracker != null && adaPotTracker.isEnabled();
+    }
+
+    @Override
+    public Optional<LedgerStateProvider.AdaPotSnapshot> getAdaPot(int epoch) {
+        try {
+            byte[] key = adaPotKey(epoch);
+            byte[] val = db.get(cfState, key);
+            if (val == null) return Optional.empty();
+            var pot = AccountStateCborCodec.decodeAdaPot(val);
+            return Optional.of(toAdaPotSnapshot(epoch, pot));
+        } catch (RocksDBException e) {
+            log.error("getAdaPot failed for epoch {}: {}", epoch, e.toString());
+            return Optional.empty();
+        }
+    }
+
+    @Override
     public Optional<BigInteger> getTreasury(int epoch) {
         try {
             byte[] key = adaPotKey(epoch);
@@ -1133,6 +1267,117 @@ public class DefaultAccountStateStore implements AccountStateStore,
             log.error("getReserves failed: {}", e.toString());
             return Optional.empty();
         }
+    }
+
+    @Override
+    public Optional<LedgerStateProvider.ProtocolParamsSnapshot> getProtocolParameters(int epoch) {
+        if (epoch < 0) return Optional.empty();
+        if (paramTracker != null && paramTracker.isEnabled()
+                && paramTracker.getResolvedParams(epoch) == null) {
+            return Optional.empty();
+        }
+
+        EpochParamProvider provider = effectiveEpochParamProvider();
+        var trackedParams = paramTracker != null && paramTracker.isEnabled()
+                ? paramTracker.getResolvedParams(epoch)
+                : null;
+        Integer committeeMinSize;
+        Integer committeeMaxTermLength;
+        Integer govActionLifetime;
+        Integer drepActivity;
+        if (trackedParams != null) {
+            committeeMinSize = trackedParams.getCommitteeMinSize();
+            committeeMaxTermLength = trackedParams.getCommitteeMaxTermLength();
+            govActionLifetime = trackedParams.getGovActionLifetime();
+            drepActivity = trackedParams.getDrepActivity();
+        } else {
+            committeeMinSize = provider.getCommitteeMinSize(epoch);
+            committeeMaxTermLength = provider.getCommitteeMaxTermLength(epoch);
+            govActionLifetime = provider.getGovActionLifetime(epoch);
+            drepActivity = provider.getDRepActivity(epoch);
+        }
+        PoolVotingThresholds poolThresholds = provider.getPoolVotingThresholds(epoch);
+        DrepVoteThresholds drepThresholds = provider.getDrepVotingThresholds(epoch);
+
+        return Optional.of(new LedgerStateProvider.ProtocolParamsSnapshot(
+                epoch,
+                provider.getMinFeeA(epoch),
+                provider.getMinFeeB(epoch),
+                provider.getMaxBlockSize(epoch),
+                provider.getMaxTxSize(epoch),
+                provider.getMaxBlockHeaderSize(epoch),
+                provider.getKeyDeposit(epoch),
+                provider.getPoolDeposit(epoch),
+                provider.getMaxEpoch(epoch),
+                provider.getNOpt(epoch),
+                provider.getA0(epoch),
+                provider.getRho(epoch),
+                provider.getTau(epoch),
+                provider.getDecentralization(epoch),
+                provider.getExtraEntropy(epoch),
+                provider.getProtocolMajor(epoch),
+                provider.getProtocolMinor(epoch),
+                provider.getMinUtxo(epoch),
+                provider.getMinPoolCost(epoch),
+                null,
+                provider.getCostModels(epoch),
+                provider.getCostModelsRaw(epoch),
+                provider.getPriceMem(epoch),
+                provider.getPriceStep(epoch),
+                provider.getMaxTxExMem(epoch),
+                provider.getMaxTxExSteps(epoch),
+                provider.getMaxBlockExMem(epoch),
+                provider.getMaxBlockExSteps(epoch),
+                provider.getMaxValSize(epoch),
+                provider.getCollateralPercent(epoch),
+                provider.getMaxCollateralInputs(epoch),
+                provider.getCoinsPerUtxoSize(epoch),
+                provider.getCoinsPerUtxoWord(epoch),
+                ratio(poolThresholds != null ? poolThresholds.getPvtMotionNoConfidence() : null),
+                ratio(poolThresholds != null ? poolThresholds.getPvtCommitteeNormal() : null),
+                ratio(poolThresholds != null ? poolThresholds.getPvtCommitteeNoConfidence() : null),
+                ratio(poolThresholds != null ? poolThresholds.getPvtHardForkInitiation() : null),
+                ratio(poolThresholds != null ? poolThresholds.getPvtPPSecurityGroup() : null),
+                ratio(drepThresholds != null ? drepThresholds.getDvtMotionNoConfidence() : null),
+                ratio(drepThresholds != null ? drepThresholds.getDvtCommitteeNormal() : null),
+                ratio(drepThresholds != null ? drepThresholds.getDvtCommitteeNoConfidence() : null),
+                ratio(drepThresholds != null ? drepThresholds.getDvtUpdateToConstitution() : null),
+                ratio(drepThresholds != null ? drepThresholds.getDvtHardForkInitiation() : null),
+                ratio(drepThresholds != null ? drepThresholds.getDvtPPNetworkGroup() : null),
+                ratio(drepThresholds != null ? drepThresholds.getDvtPPEconomicGroup() : null),
+                ratio(drepThresholds != null ? drepThresholds.getDvtPPTechnicalGroup() : null),
+                ratio(drepThresholds != null ? drepThresholds.getDvtPPGovGroup() : null),
+                ratio(drepThresholds != null ? drepThresholds.getDvtTreasuryWithdrawal() : null),
+                committeeMinSize,
+                committeeMaxTermLength,
+                govActionLifetime,
+                provider.getGovActionDeposit(epoch),
+                provider.getDRepDeposit(epoch),
+                drepActivity,
+                provider.getMinFeeRefScriptCostPerByte(epoch)
+        ));
+    }
+
+    private EpochParamProvider effectiveEpochParamProvider() {
+        return paramTracker != null && paramTracker.isEnabled() ? paramTracker : epochParamProvider;
+    }
+
+    private static BigDecimal ratio(UnitInterval interval) {
+        return interval != null ? interval.safeRatio() : null;
+    }
+
+    private static LedgerStateProvider.AdaPotSnapshot toAdaPotSnapshot(int epoch, AccountStateCborCodec.AdaPot pot) {
+        return new LedgerStateProvider.AdaPotSnapshot(
+                epoch,
+                pot.treasury(),
+                pot.reserves(),
+                pot.deposits(),
+                pot.fees(),
+                pot.distributed(),
+                pot.undistributed(),
+                pot.rewardsPot(),
+                pot.poolRewardsPot()
+        );
     }
 
     /**
@@ -1210,6 +1455,63 @@ public class DefaultAccountStateStore implements AccountStateStore,
     @Override
     public int getLatestSnapshotEpoch() {
         return getLastSnapshotEpoch();
+    }
+
+    @Override
+    public Optional<AccountStateReadStore.EpochStake> getEpochStake(int epoch, int credType, String credentialHash) {
+        return readStore.getEpochStake(epoch, credType, credentialHash);
+    }
+
+    @Override
+    public Optional<BigInteger> getTotalActiveStake(int epoch) {
+        return readStore.getTotalActiveStake(epoch);
+    }
+
+    @Override
+    public Optional<AccountStateReadStore.PoolStake> getPoolActiveStake(int epoch, String poolHash) {
+        return readStore.getPoolActiveStake(epoch, poolHash);
+    }
+
+    @Override
+    public List<AccountStateReadStore.PoolStakeDelegator> listPoolStakeDelegators(int epoch, String poolHash,
+                                                                                 int page, int count,
+                                                                                 String order) {
+        return readStore.listPoolStakeDelegators(epoch, poolHash, page, count, order);
+    }
+
+    @Override
+    public List<AccountStateReadStore.GovernanceProposal> listGovernanceProposals() {
+        return readStore.listGovernanceProposals();
+    }
+
+    @Override
+    public Optional<AccountStateReadStore.GovernanceProposal> getGovernanceProposal(String txHash, int certIndex) {
+        return readStore.getGovernanceProposal(txHash, certIndex);
+    }
+
+    @Override
+    public List<AccountStateReadStore.GovernanceVote> getGovernanceProposalVotes(String txHash, int certIndex) {
+        return readStore.getGovernanceProposalVotes(txHash, certIndex);
+    }
+
+    @Override
+    public List<AccountStateReadStore.DRepInfo> listDReps() {
+        return readStore.listDReps();
+    }
+
+    @Override
+    public Optional<AccountStateReadStore.DRepInfo> getDRep(int drepType, String drepHash) {
+        return readStore.getDRep(drepType, drepHash);
+    }
+
+    @Override
+    public Optional<BigInteger> getDRepDistribution(int epoch, int drepType, String drepHash) {
+        return readStore.getDRepDistribution(epoch, drepType, drepHash);
+    }
+
+    @Override
+    public Optional<Integer> getLatestDRepDistributionEpoch(int maxEpoch) {
+        return readStore.getLatestDRepDistributionEpoch(maxEpoch);
     }
 
     // --- Reward Rest (deferred rewards: proposal refunds, treasury withdrawals, etc.) ---
@@ -1320,7 +1622,7 @@ public class DefaultAccountStateStore implements AccountStateStore,
     }
 
     /**
-     * Create a {@link GovernanceEpochProcessor.RewardRestStore} adapter backed by this store.
+     * Create a {@code GovernanceEpochProcessor.RewardRestStore} adapter backed by this store.
      */
     public com.bloxbean.cardano.yano.ledgerstate.governance.epoch.GovernanceEpochProcessor.RewardRestStore asRewardRestStore() {
         return new com.bloxbean.cardano.yano.ledgerstate.governance.epoch.GovernanceEpochProcessor.RewardRestStore() {
@@ -1793,6 +2095,12 @@ public class DefaultAccountStateStore implements AccountStateStore,
     }
 
     // --- Epoch transition (called BEFORE first block of new epoch) ---
+
+    @Override
+    public void handleGenesisBlock(GenesisBlockEvent event) {
+        if (!enabled || paramTracker == null || !paramTracker.isEnabled() || event == null) return;
+        paramTracker.bootstrapEpochIfNeeded(event.epoch());
+    }
 
     @Override
     public void handleEpochTransition(int previousEpoch, int newEpoch) {

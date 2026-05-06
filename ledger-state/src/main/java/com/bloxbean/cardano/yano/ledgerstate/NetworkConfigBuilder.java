@@ -16,7 +16,7 @@ public class NetworkConfigBuilder {
     /**
      * Build a CF NetworkConfig from NetworkGenesisValues.
      *
-     * @param values genesis-derived values (from node-runtime's NetworkGenesisValuesFactory)
+     * @param values genesis-derived values (from runtime's NetworkGenesisValuesFactory)
      * @return CF NetworkConfig ready for reward calculation
      */
     public static NetworkConfig build(NetworkGenesisValues values) {

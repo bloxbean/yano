@@ -55,7 +55,7 @@ The `ledger-state` module is the RocksDB-backed persistence layer for Cardano le
 Cardano Node (n2n)
     |
     v
-BodyFetchManager (node-runtime)
+BodyFetchManager (runtime)
     |--- Block received, stored in ChainState
     |--- publishEpochTransitionEventsIfNeeded() [at epoch boundary]
     |
@@ -452,7 +452,7 @@ SELECT epoch, count(*) FROM 'data/epoch=*/adapot.parquet' GROUP BY epoch;
 
 **Cross-verification:** `verify.sh` compares exports against DBSync and Yaci-Store.
 
-Enabled via `yaci.node.snapshot-export.enabled=true`. Zero overhead when disabled (NOOP pattern).
+Enabled via `yano.snapshot-export.enabled=true`. Zero overhead when disabled (NOOP pattern).
 
 ---
 
@@ -460,7 +460,7 @@ Enabled via `yaci.node.snapshot-export.enabled=true`. Zero overhead when disable
 
 ```
 ledger-state
-    |- node-api       (AccountStateStore interface, events, EpochParamProvider)
+    |- core-api       (AccountStateStore interface, events, EpochParamProvider)
     |- core           (Block, Transaction, Certificate, Governance models)
     |- rocksdb        (persistence)
     |- cbor           (CBOR serialization)
@@ -469,8 +469,8 @@ ledger-state
     |- events-processor (annotation processing for @DomainEventListener)
 
 Dependents:
-    |- node-runtime   (creates and wires DefaultAccountStateStore, YaciNode)
-    |- node-app       (REST endpoints, configuration)
+    |- runtime   (creates and wires DefaultAccountStateStore, Yano)
+    |- app       (REST endpoints, configuration)
     |- epoch-export   (Parquet snapshot exporter)
 ```
 

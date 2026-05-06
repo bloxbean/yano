@@ -1,0 +1,15 @@
+dependencies {
+    api project(':core-api')
+    implementation libs.jackson.databind
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            pom {
+                name = 'Yano Bootstrap Providers'
+                description = 'Bootstrap data providers (Blockfrost, Koios) for Yano lightweight relay mode'
+            }
+        }
+    }
+}

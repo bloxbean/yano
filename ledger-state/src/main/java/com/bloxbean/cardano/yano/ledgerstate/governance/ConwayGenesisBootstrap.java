@@ -119,7 +119,7 @@ public class ConwayGenesisBootstrap {
                 // Decimal form: pick the smallest power-of-10 denominator that
                 // captures the decimal exactly, preserving precision (e.g.
                 // 0.75 → 75/100, 0.6666666666666667 → 6666666666666667/10^16).
-                // Mirrors ConwayGenesisParser.decimalToUnitInterval in node-runtime.
+                // Mirrors ConwayGenesisParser.decimalToUnitInterval in runtime.
                 BigDecimal stripped = thresholdNode.decimalValue().stripTrailingZeros();
                 int scale = stripped.scale();
                 if (scale <= 0) {

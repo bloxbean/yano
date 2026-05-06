@@ -1,0 +1,12 @@
+{
+  "resources": {
+    "includes": [
+      {
+        "pattern": "\\QMETA-INF/services/com.bloxbean.cardano.yano.api.plugin.NodePlugin\\E"
+      },
+      {
+        "pattern": "\\QMETA-INF/services/com.bloxbean.cardano.yaci.events.api.support.DomainEventBindings\\E"
+      }
+    ]
+  }
+}

@@ -1,0 +1,56 @@
+package com.bloxbean.cardano.yano.runtime;
+
+import com.bloxbean.cardano.yaci.events.api.config.EventsOptions;
+import com.bloxbean.cardano.yaci.events.api.SubscriptionOptions;
+import com.bloxbean.cardano.yano.api.NodeAPI;
+import com.bloxbean.cardano.yano.api.config.RuntimeOptions;
+import com.bloxbean.cardano.yano.api.config.YanoConfig;
+import com.bloxbean.cardano.yano.api.utxo.UtxoState;
+import com.bloxbean.cardano.yano.runtime.utxo.UtxoStatusProvider;
+import org.junit.jupiter.api.Test;
+
+import java.io.File;
+import java.nio.file.Files;
+import java.util.HashMap;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+class NodeUtxoFactorySelectionTest {
+    @Test
+    void factoryCreatesDefaultBackend() throws Exception {
+        File temp = Files.createTempDirectory("yano-factory-test").toFile();
+        try {
+            YanoConfig cfg = YanoConfig.builder()
+                    .enableClient(false)
+                    .enableServer(true)
+                    .serverPort(18080)
+                    .useRocksDB(true)
+                    .rocksDBPath(temp.getAbsolutePath())
+                    .build();
+            cfg.validate();
+
+            var globals = new HashMap<String, Object>();
+            globals.put("yano.utxo.enabled", true);
+            RuntimeOptions rt = new RuntimeOptions(new EventsOptions(true, 1024, SubscriptionOptions.Overflow.BLOCK),
+                    com.bloxbean.cardano.yano.api.config.PluginsOptions.defaults(), globals);
+
+            NodeAPI node = new Yano(cfg, rt);
+            UtxoState utxo = node.getUtxoState();
+            assertNotNull(utxo);
+            assertTrue(utxo.isEnabled());
+            assertTrue(utxo instanceof UtxoStatusProvider);
+            assertEquals("default", ((UtxoStatusProvider) utxo).storeType());
+        } finally {
+            deleteRecursively(temp);
+        }
+    }
+
+    private void deleteRecursively(File f) {
+        if (f == null) return;
+        if (f.isDirectory()) {
+            File[] files = f.listFiles();
+            if (files != null) for (File c : files) deleteRecursively(c);
+        }
+        f.delete();
+    }
+}

@@ -4,15 +4,21 @@ import com.bloxbean.cardano.yaci.core.model.DrepVoteThresholds;
 import com.bloxbean.cardano.yaci.core.model.PoolVotingThresholds;
 import com.bloxbean.cardano.yaci.core.model.governance.GovActionType;
 import com.bloxbean.cardano.yaci.core.types.UnitInterval;
+import com.bloxbean.cardano.yano.api.EpochParamProvider;
+import com.bloxbean.cardano.yano.ledgerstate.EpochParamTracker;
+import com.bloxbean.cardano.yano.ledgerstate.governance.GovernanceStateStore;
 import com.bloxbean.cardano.yano.ledgerstate.governance.GovernanceCborCodec.CommitteeThreshold;
+import com.bloxbean.cardano.yano.ledgerstate.governance.model.CommitteeMemberRecord;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.lang.reflect.Method;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
 import java.util.regex.Matcher;
@@ -47,6 +53,66 @@ class GovernanceEpochProcessorTest {
         assertThat(GovernanceEpochProcessor.applyDormantFlushNonRevivalGuard(960, 1, 962)).isEqualTo(960);
         // Still-active DRep: actualExpiry ≥ currentEpoch → bump proceeds.
         assertThat(GovernanceEpochProcessor.applyDormantFlushNonRevivalGuard(961, 1, 961)).isEqualTo(962);
+    }
+
+    @Test
+    @DisplayName("Committee size params use effective tracker values before genesis fallback")
+    void committeeSizeParams_trackerWins() {
+        EpochParamProvider genesisProvider = new EpochParamProvider() {
+            @Override
+            public BigInteger getKeyDeposit(long epoch) {
+                return BigInteger.ZERO;
+            }
+
+            @Override
+            public BigInteger getPoolDeposit(long epoch) {
+                return BigInteger.ZERO;
+            }
+
+            @Override
+            public int getCommitteeMinSize(long epoch) {
+                return 7;
+            }
+
+            @Override
+            public int getCommitteeMaxTermLength(long epoch) {
+                return 146;
+            }
+        };
+        EpochParamTracker tracker = new EpochParamTracker(genesisProvider, true) {
+            @Override
+            public int getCommitteeMinSize(long epoch) {
+                return 3;
+            }
+
+            @Override
+            public int getCommitteeMaxTermLength(long epoch) {
+                return 90;
+            }
+        };
+        GovernanceEpochProcessor processor = new GovernanceEpochProcessor(
+                null, null, null, null, null, null, null, null, null,
+                genesisProvider, tracker, null, null, null, null);
+
+        assertThat(processor.resolveCommitteeMinSize(251)).isEqualTo(3);
+        assertThat(processor.resolveCommitteeMaxTermLength(251)).isEqualTo(90);
+    }
+
+    @Test
+    @DisplayName("Committee state remains normal through member expiry epoch")
+    void committeeState_expiryEpochInclusive() throws Exception {
+        GovernanceEpochProcessor processor = new GovernanceEpochProcessor(
+                null, null, null, null, null, null, null, null, null,
+                zeroProvider(), null, null, null, null, null);
+        Map<GovernanceStateStore.CredentialKey, CommitteeMemberRecord> members = new HashMap<>();
+        members.put(new GovernanceStateStore.CredentialKey(0, "cold"),
+                new CommitteeMemberRecord(0, "hot", 232, false));
+
+        Method method = GovernanceEpochProcessor.class.getDeclaredMethod("resolveCommitteeState", Map.class, int.class);
+        method.setAccessible(true);
+
+        assertThat(method.invoke(processor, members, 232)).isEqualTo("NORMAL");
+        assertThat(method.invoke(processor, members, 233)).isEqualTo("NO_CONFIDENCE");
     }
 
     /**
@@ -256,5 +322,19 @@ class GovernanceEpochProcessorTest {
 
     private static UnitInterval ratio(long num, long denom) {
         return new UnitInterval(BigInteger.valueOf(num), BigInteger.valueOf(denom));
+    }
+
+    private static EpochParamProvider zeroProvider() {
+        return new EpochParamProvider() {
+            @Override
+            public BigInteger getKeyDeposit(long epoch) {
+                return BigInteger.ZERO;
+            }
+
+            @Override
+            public BigInteger getPoolDeposit(long epoch) {
+                return BigInteger.ZERO;
+            }
+        };
     }
 }

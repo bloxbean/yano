@@ -226,8 +226,8 @@ public class VoteTallyCalculator {
         for (var memberEntry : members.entrySet()) {
             CommitteeMemberRecord member = memberEntry.getValue();
 
-            // Skip expired members
-            if (member.expiryEpoch() <= currentEpoch) continue;
+            // Skip expired members. Committee terms are valid through the expiry epoch.
+            if (member.expiryEpoch() < currentEpoch) continue;
             // Skip resigned members
             if (member.resigned()) continue;
 

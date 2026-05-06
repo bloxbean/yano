@@ -1,5 +1,5 @@
 dependencies {
-    api project(':node-api')
+    api project(':core-api')
     api libs.cardano.client.core  // CCL core types: ProtocolParams, Utxo, Transaction
 }
 

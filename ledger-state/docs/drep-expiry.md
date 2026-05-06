@@ -323,7 +323,7 @@ For correctness verification, compare:
 
 ### Known issue: 53 DRep expiry off-by-one at epoch 526
 
-At epoch 526 (synced from epoch-525 snapshot), 53 DReps showed `effective_expiry` = 528 in Yano but `active_until` = 527 in DBSync. The remaining 523 DReps matched exactly. All 53 mismatches are exactly +1 (Yano higher). This was observed before the `reCurrentEpoch = eNo - 1` fix and may be a snapshot-restart artifact. See `node-app/docs/drep-expiry-off-by-one.md` for investigation details.
+At epoch 526 (synced from epoch-525 snapshot), 53 DReps showed `effective_expiry` = 528 in Yano but `active_until` = 527 in DBSync. The remaining 523 DReps matched exactly. All 53 mismatches are exactly +1 (Yano higher). This was observed before the `reCurrentEpoch = eNo - 1` fix and may be a snapshot-restart artifact. See `app/docs/drep-expiry-off-by-one.md` for investigation details.
 
 **TODO**: Re-verify from a full sync to determine whether this persists or was specific to the snapshot restart.
 

@@ -1,0 +1,30 @@
+{
+  "resources": {
+    "includes": [
+      {
+        "pattern": "\\QMETA-INF/services/com.bloxbean.cardano.yano.api.account.AccountStateStoreProvider\\E"
+      },
+      {
+        "pattern": "\\QMETA-INF/services/com.bloxbean.cardano.yaci.events.api.support.DomainEventBindings\\E"
+      },
+      {
+        "pattern": "\\Qexpected_ada_pots.json\\E"
+      },
+      {
+        "pattern": "\\Qexpected_ada_pots_mainnet.json\\E"
+      },
+      {
+        "pattern": "\\Qexpected_ada_pots_preprod.json\\E"
+      },
+      {
+        "pattern": "\\Qexpected_ada_pots_preview.json\\E"
+      },
+      {
+        "pattern": "\\Qexpected_ada_pots_sanchonet.json\\E"
+      },
+      {
+        "pattern": "\\Qexpected_drep_dist_preprod_280.csv\\E"
+      }
+    ]
+  }
+}

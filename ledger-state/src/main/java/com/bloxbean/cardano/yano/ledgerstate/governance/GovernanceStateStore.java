@@ -49,12 +49,21 @@ public class GovernanceStateStore {
     private static final byte OP_PUT = 0x01;
     private static final byte OP_DELETE = 0x02;
 
-    private final RocksDB db;
-    private final ColumnFamilyHandle cfState;
+    private RocksDB db;
+    private ColumnFamilyHandle cfState;
 
     public GovernanceStateStore(RocksDB db, ColumnFamilyHandle cfState) {
         this.db = db;
         this.cfState = cfState;
+    }
+
+    /**
+     * Refresh RocksDB handles after the underlying database has been restored and reopened.
+     */
+    public void reinitialize(RocksDB db, ColumnFamilyHandle cfState) {
+        this.db = db;
+        this.cfState = cfState;
+        log.info("GovernanceStateStore reinitialized after snapshot restore");
     }
 
     // ===== Key builders =====
@@ -535,6 +544,28 @@ public class GovernanceStateStore {
         return result;
     }
 
+    public Optional<BigInteger> getDRepDistribution(int epoch, int credType, String drepHash) throws RocksDBException {
+        byte[] val = db.get(cfState, drepDistKey(epoch, credType, drepHash));
+        return val != null ? Optional.of(GovernanceCborCodec.decodeDRepDistStake(val)) : Optional.empty();
+    }
+
+    public Optional<Integer> getLatestDRepDistributionEpoch(int maxEpoch) throws RocksDBException {
+        byte[] seekKey = new byte[1 + 4 + 1 + 28];
+        seekKey[0] = PREFIX_DREP_DIST;
+        ByteBuffer.wrap(seekKey, 1, 4).order(ByteOrder.BIG_ENDIAN).putInt(maxEpoch);
+        Arrays.fill(seekKey, 5, seekKey.length, (byte) 0xFF);
+
+        try (RocksIterator it = db.newIterator(cfState)) {
+            it.seekForPrev(seekKey);
+            if (!it.isValid()) return Optional.empty();
+
+            byte[] key = it.key();
+            if (key.length < 5 || key[0] != PREFIX_DREP_DIST) return Optional.empty();
+            int epoch = ByteBuffer.wrap(key, 1, 4).order(ByteOrder.BIG_ENDIAN).getInt();
+            return epoch <= maxEpoch ? Optional.of(epoch) : Optional.empty();
+        }
+    }
+
     // ===== Epoch Donations =====
 
     public void accumulateDonation(int epoch, BigInteger amount,
@@ -665,6 +696,14 @@ public class GovernanceStateStore {
      */
     public List<GovActionId> getPendingDrops() throws RocksDBException {
         return getPendingIds(PREFIX_EXPIRED_IN_EPOCH);
+    }
+
+    public boolean isPendingEnactment(GovActionId id) throws RocksDBException {
+        return db.get(cfState, pendingKey(PREFIX_RATIFIED_IN_EPOCH, id)) != null;
+    }
+
+    public boolean isPendingDrop(GovActionId id) throws RocksDBException {
+        return db.get(cfState, pendingKey(PREFIX_EXPIRED_IN_EPOCH, id)) != null;
     }
 
     /**

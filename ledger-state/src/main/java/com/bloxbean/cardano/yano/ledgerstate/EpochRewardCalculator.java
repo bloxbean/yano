@@ -3,6 +3,8 @@ package com.bloxbean.cardano.yano.ledgerstate;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.EpochParamProvider;
 import com.bloxbean.cardano.yano.api.account.RewardType;
+import com.bloxbean.cardano.yano.api.era.EraProvider;
+import com.bloxbean.cardano.yaci.core.model.Era;
 import org.cardanofoundation.rewards.calculation.EpochCalculation;
 import org.cardanofoundation.rewards.calculation.config.NetworkConfig;
 import org.cardanofoundation.rewards.calculation.domain.*;
@@ -37,9 +39,9 @@ import java.util.*;
 public class EpochRewardCalculator {
     private static final Logger log = LoggerFactory.getLogger(EpochRewardCalculator.class);
 
-    private final RocksDB db;
-    private final ColumnFamilyHandle cfState;
-    private final ColumnFamilyHandle cfEpochSnapshot;
+    private RocksDB db;
+    private ColumnFamilyHandle cfState;
+    private ColumnFamilyHandle cfEpochSnapshot;
     private volatile boolean enabled;
 
     // Optional reference for querying retired pools and registered credentials
@@ -47,6 +49,10 @@ public class EpochRewardCalculator {
 
     // Optional reference to the account state store for slot/epoch helpers and event queries
     private volatile DefaultAccountStateStore accountStateStore;
+
+    // Optional era metadata for reward-rule decisions. NetworkConfig hardfork epochs are fallback only.
+    private volatile EraProvider eraProvider;
+    private volatile Integer loggedEffectiveVasilHardforkEpoch;
 
     // CF NetworkConfig — built once from genesis at startup, or resolved per-magic (legacy)
     private volatile NetworkConfig cfNetworkConfig;
@@ -66,6 +72,26 @@ public class EpochRewardCalculator {
     }
 
     /**
+     * Refresh RocksDB handles after snapshot restore. Any open reward batch is
+     * discarded because restore is only allowed while block production is paused.
+     */
+    public void reinitialize(RocksDB db, ColumnFamilyHandle cfState, ColumnFamilyHandle cfEpochSnapshot) {
+        this.db = db;
+        this.cfState = cfState;
+        this.cfEpochSnapshot = cfEpochSnapshot;
+        if (rewardBatch != null) {
+            rewardBatch.close();
+            rewardBatch = null;
+        }
+        rewardDeltaOps = null;
+        if (rewardStateOverlay != null) {
+            rewardStateOverlay.clear();
+            rewardStateOverlay = null;
+        }
+        log.info("EpochRewardCalculator reinitialized after snapshot restore");
+    }
+
+    /**
      * Set the CF NetworkConfig (built from genesis via NetworkConfigBuilder).
      * If set, this is used instead of resolveNetworkConfig(networkMagic).
      */
@@ -79,6 +105,10 @@ public class EpochRewardCalculator {
 
     public void setAccountStateStore(DefaultAccountStateStore store) {
         this.accountStateStore = store;
+    }
+
+    public void setEraProvider(EraProvider eraProvider) {
+        this.eraProvider = eraProvider;
     }
 
     public boolean isEnabled() {
@@ -146,7 +176,7 @@ public class EpochRewardCalculator {
             EpochParamProvider paramProvider,
             long networkMagic) {
 
-        if (!enabled || epoch < 2) return Optional.empty();
+        if (!enabled) return Optional.empty();
 
         int stakeEpoch = epoch - 2; // snapshot epoch (N-2)
         int feeEpoch = epoch - 1;   // fee collection epoch (N-1), used for deregistration slot ranges
@@ -162,7 +192,8 @@ public class EpochRewardCalculator {
         // 1. Build protocol parameters for cf-rewards-calculation (from stake epoch N-2)
         // Special case for first Shelley epoch: stakeEpoch may be a Byron epoch with no Shelley params.
         // Matching Yaci Store's logic: if (epoch == nonByronEpoch + 1) use params from nonByronEpoch.
-        var networkConfig = getNetworkConfig(networkMagic);
+        var networkConfig = resolveEffectiveRewardNetworkConfig(getNetworkConfig(networkMagic));
+        if (epoch <= networkConfig.getShelleyStartEpoch()) return Optional.empty();
         int shelleyStartEpoch = networkConfig.getShelleyStartEpoch();
         int paramEpoch = (stakeEpoch < shelleyStartEpoch) ? shelleyStartEpoch : stakeEpoch;
         var protocolParams = buildProtocolParameters(paramProvider, paramEpoch);
@@ -195,14 +226,20 @@ public class EpochRewardCalculator {
                 .filter(ps -> ps.getBlockCount() > 0)
                 .map(PoolState::getPoolId).toList();
 
-        long nonOBFTBlocks = computeNonOBFTBlockCount(protocolParams, blockCounts, totalBlocks, stakeEpoch);
+        var rewardRules = resolveRewardRuleContext(epoch, stakeEpoch, protocolParams,
+                blockCounts, totalBlocks, networkConfig);
+        protocolParams = rewardRules.protocolParameters();
+        if (rewardRules.postVasilRewardRules()) {
+            log.info("Epoch {} post-Vasil reward rules: rawBlocks={}, poolBlocks={}, paramEpoch={}",
+                    epoch, totalBlocks, rewardRules.blockCount(), paramEpoch);
+        }
 
         var epochInfo = Epoch.builder()
                 .number(stakeEpoch)
                 .fees(fees)
-                .blockCount((int) totalBlocks)
+                .blockCount((int) rewardRules.blockCount())
                 .activeStake(totalActiveStake)
-                .nonOBFTBlockCount((int) nonOBFTBlocks)
+                .nonOBFTBlockCount((int) rewardRules.nonOBFTBlockCount())
                 .build();
 
         // 4. Retired pools — pass real set to cf-rewards library.
@@ -224,7 +261,7 @@ public class EpochRewardCalculator {
                         "deregistered={}, lateDeregistered={}, registeredSinceLast={}, registeredUntilNow={}, " +
                         "retiredPools={}, d={}, nOpt={}, activeStake={}, rho={}, tau={}, a0={}, " +
                         "prevTreasury={}, prevReserves={}",
-                epoch, stakeSnapshot.size(), poolStates.size(), totalBlocks, fees,
+                epoch, stakeSnapshot.size(), poolStates.size(), rewardRules.blockCount(), fees,
                 deregistered.size(), lateDeregistered.size(), registeredSinceLast.size(),
                 registeredUntilNow.size(), retiredPools.size(),
                 protocolParams.getDecentralisation(), protocolParams.getOptimalPoolCount(),
@@ -313,14 +350,142 @@ public class EpochRewardCalculator {
     /**
      * Build cf-rewards ProtocolParameters from our EpochParamProvider.
      */
-    private ProtocolParameters buildProtocolParameters(EpochParamProvider pp, int epoch) {
+    ProtocolParameters buildProtocolParameters(EpochParamProvider pp, int epoch) {
+        BigDecimal decentralization = pp.getDecentralization(epoch);
+        if (decentralization == null) {
+            decentralization = BigDecimal.ZERO;
+        }
+
         return ProtocolParameters.builder()
-                .decentralisation(pp.getDecentralization(epoch))
+                .decentralisation(decentralization)
                 .treasuryGrowRate(pp.getTau(epoch))
                 .monetaryExpandRate(pp.getRho(epoch))
                 .optimalPoolCount(pp.getNOpt(epoch))
                 .poolOwnerInfluence(pp.getA0(epoch))
                 .build();
+    }
+
+    record RewardRuleContext(ProtocolParameters protocolParameters,
+                             long blockCount,
+                             long nonOBFTBlockCount,
+                             boolean postVasilRewardRules) {}
+
+    NetworkConfig resolveEffectiveRewardNetworkConfig(NetworkConfig networkConfig) {
+        // CF rewards uses vasilHardforkEpoch internally for Babbage-era unspendable rewards,
+        // so prefer the persisted era boundary when it is known.
+        Integer firstBabbageEpoch = eraProvider != null
+                ? eraProvider.resolveKnownFirstEpochOrNull(Era.Babbage.getValue())
+                : null;
+        if (firstBabbageEpoch == null && isCustomNetwork(networkConfig.getNetworkMagic()) && eraProvider != null) {
+            Integer inferredBabbageEpoch = eraProvider.resolveFirstEpochOrNull(Era.Babbage.getValue());
+            if (inferredBabbageEpoch != null && inferredBabbageEpoch == 0) {
+                firstBabbageEpoch = 0;
+            }
+        }
+        if (firstBabbageEpoch == null
+                || firstBabbageEpoch == networkConfig.getVasilHardforkEpoch()) {
+            return networkConfig;
+        }
+
+        if (loggedEffectiveVasilHardforkEpoch == null
+                || !loggedEffectiveVasilHardforkEpoch.equals(firstBabbageEpoch)) {
+            log.info("Using persisted Babbage start epoch {} as reward Vasil hardfork epoch (configured={})",
+                    firstBabbageEpoch, networkConfig.getVasilHardforkEpoch());
+            loggedEffectiveVasilHardforkEpoch = firstBabbageEpoch;
+        }
+        return copyWithVasilHardforkEpoch(networkConfig, firstBabbageEpoch);
+    }
+
+    private NetworkConfig copyWithVasilHardforkEpoch(NetworkConfig original, int vasilHardforkEpoch) {
+        return NetworkConfig.builder()
+                .networkMagic(original.getNetworkMagic())
+                .totalLovelace(original.getTotalLovelace())
+                .poolDepositInLovelace(original.getPoolDepositInLovelace())
+                .expectedSlotsPerEpoch(original.getExpectedSlotsPerEpoch())
+                .shelleyInitialReserves(original.getShelleyInitialReserves())
+                .shelleyInitialTreasury(original.getShelleyInitialTreasury())
+                .shelleyInitialUtxo(original.getShelleyInitialUtxo())
+                .genesisConfigSecurityParameter(original.getGenesisConfigSecurityParameter())
+                .shelleyStartEpoch(original.getShelleyStartEpoch())
+                .allegraHardforkEpoch(original.getAllegraHardforkEpoch())
+                .vasilHardforkEpoch(vasilHardforkEpoch)
+                .bootstrapAddressAmount(original.getBootstrapAddressAmount())
+                .activeSlotCoefficient(original.getActiveSlotCoefficient())
+                .randomnessStabilisationWindow(original.getRandomnessStabilisationWindow())
+                .shelleyStartDecentralisation(original.getShelleyStartDecentralisation())
+                .shelleyStartTreasuryGrowRate(original.getShelleyStartTreasuryGrowRate())
+                .shelleyStartMonetaryExpandRate(original.getShelleyStartMonetaryExpandRate())
+                .shelleyStartOptimalPoolCount(original.getShelleyStartOptimalPoolCount())
+                .shelleyStartPoolOwnerInfluence(original.getShelleyStartPoolOwnerInfluence())
+                .build();
+    }
+
+    private boolean isCustomNetwork(int networkMagic) {
+        return networkMagic != 764824073
+                && networkMagic != 1
+                && networkMagic != 2;
+    }
+
+    RewardRuleContext resolveRewardRuleContext(int rewardEpoch,
+                                               int stakeEpoch,
+                                               ProtocolParameters protocolParameters,
+                                               Map<String, Long> blockCounts,
+                                               long totalBlocks,
+                                               NetworkConfig networkConfig) {
+        if (!usesPostVasilRewardRules(rewardEpoch, networkConfig)) {
+            return new RewardRuleContext(
+                    protocolParameters,
+                    totalBlocks,
+                    computeNonOBFTBlockCount(protocolParameters, blockCounts, totalBlocks, stakeEpoch),
+                    false);
+        }
+
+        long poolBlocks = countBlocksProducedByRegisteredPools(blockCounts, totalBlocks, stakeEpoch);
+        return new RewardRuleContext(
+                withDecentralization(protocolParameters, BigDecimal.ZERO),
+                poolBlocks,
+                poolBlocks,
+                true);
+    }
+
+    boolean usesPostVasilRewardRules(int rewardEpoch, NetworkConfig networkConfig) {
+        Integer firstBabbageEpoch = eraProvider != null
+                ? eraProvider.resolveKnownFirstEpochOrNull(Era.Babbage.getValue())
+                : null;
+        if (firstBabbageEpoch != null) {
+            // The transition epoch itself still uses the old reward update. The next reward
+            // calculation observes Babbage/Vasil reward rules.
+            return rewardEpoch > firstBabbageEpoch;
+        }
+
+        return rewardEpoch > networkConfig.getVasilHardforkEpoch();
+    }
+
+    private ProtocolParameters withDecentralization(ProtocolParameters original, BigDecimal decentralization) {
+        return ProtocolParameters.builder()
+                .decentralisation(decentralization)
+                .treasuryGrowRate(original.getTreasuryGrowRate())
+                .monetaryExpandRate(original.getMonetaryExpandRate())
+                .optimalPoolCount(original.getOptimalPoolCount())
+                .poolOwnerInfluence(original.getPoolOwnerInfluence())
+                .build();
+    }
+
+    private long countBlocksProducedByRegisteredPools(Map<String, Long> blockCounts,
+                                                      long totalBlocks,
+                                                      int stakeEpoch) {
+        if (ledgerStateProvider == null) {
+            log.warn("LedgerStateProvider unavailable for post-Vasil pool block count; using total block count");
+            return totalBlocks;
+        }
+
+        long count = 0;
+        for (var entry : blockCounts.entrySet()) {
+            if (ledgerStateProvider.getPoolParams(entry.getKey(), stakeEpoch).isPresent()) {
+                count += entry.getValue();
+            }
+        }
+        return count;
     }
 
     /**
@@ -947,14 +1112,15 @@ public class EpochRewardCalculator {
             EpochParamProvider paramProvider,
             long networkMagic) {
 
-        if (!enabled || epoch < 2) return Optional.empty();
+        if (!enabled) return Optional.empty();
 
         int stakeEpoch = epoch - 2;
         int feeEpoch = epoch - 1;
         int snapshotKey = stakeEpoch - 2; // N-4: mark snapshot from end of epoch N-4
 
         // Protocol params: use shelley start epoch if stakeEpoch is Byron
-        var networkConfig = getNetworkConfig(networkMagic);
+        var networkConfig = resolveEffectiveRewardNetworkConfig(getNetworkConfig(networkMagic));
+        if (epoch <= networkConfig.getShelleyStartEpoch()) return Optional.empty();
         int shelleyStartEpoch = networkConfig.getShelleyStartEpoch();
         int paramEpoch = (stakeEpoch < shelleyStartEpoch) ? shelleyStartEpoch : stakeEpoch;
         var protocolParams = buildProtocolParameters(paramProvider, paramEpoch);
@@ -969,14 +1135,16 @@ public class EpochRewardCalculator {
                 .reduce(BigInteger.ZERO, BigInteger::add);
 
         var poolStates = buildPoolStates(stakeSnapshot, blockCounts, stakeEpoch);
-        long nonOBFTBlocks = computeNonOBFTBlockCount(protocolParams, blockCounts, totalBlocks, stakeEpoch);
+        var rewardRules = resolveRewardRuleContext(epoch, stakeEpoch, protocolParams,
+                blockCounts, totalBlocks, networkConfig);
+        protocolParams = rewardRules.protocolParameters();
 
         var epochInfo = Epoch.builder()
                 .number(stakeEpoch)
                 .fees(fees)
-                .blockCount((int) totalBlocks)
+                .blockCount((int) rewardRules.blockCount())
                 .activeStake(totalActiveStake)
-                .nonOBFTBlockCount((int) nonOBFTBlocks)
+                .nonOBFTBlockCount((int) rewardRules.nonOBFTBlockCount())
                 .build();
 
         Set<RetiredPool> retiredPools = buildRetiredPools(epoch);
@@ -1031,7 +1199,6 @@ public class EpochRewardCalculator {
             case 764824073 -> NetworkConfig.getMainnetConfig();
             case 1 -> NetworkConfig.getPreprodConfig();
             case 2 -> NetworkConfig.getPreviewConfig();
-            case 4 -> NetworkConfig.getSanchonetConfig();
             default -> throw new IllegalStateException(
                     "Unknown network magic " + networkMagic + " — provide genesis config to build CF NetworkConfig");
         };

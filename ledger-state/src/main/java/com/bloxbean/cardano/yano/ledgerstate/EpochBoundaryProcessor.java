@@ -7,6 +7,8 @@ import com.bloxbean.cardano.yano.ledgerstate.governance.epoch.GovernanceEpochPro
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.cardanofoundation.rewards.calculation.domain.EpochCalculationResult;
+import org.rocksdb.ColumnFamilyHandle;
+import org.rocksdb.RocksDB;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -181,6 +183,18 @@ public class EpochBoundaryProcessor {
     }
 
     /**
+     * Refresh nested RocksDB-backed processors after snapshot restore.
+     */
+    public void reinitializeAfterSnapshotRestore(RocksDB db, ColumnFamilyHandle cfState,
+                                                 ColumnFamilyHandle cfDelta,
+                                                 ColumnFamilyHandle cfEpochSnapshot) {
+        if (governanceEpochProcessor != null) {
+            governanceEpochProcessor.reinitialize(db, cfState, cfDelta, cfEpochSnapshot);
+        }
+        log.info("EpochBoundaryProcessor reinitialized after snapshot restore");
+    }
+
+    /**
      * Check for and recover an interrupted epoch boundary from a previous run.
      * Called at startup before syncing to ensure no incomplete boundaries are left behind.
      * Also repairs missed PostEpochTransition: auto-checkpoints are taken after
@@ -307,7 +321,7 @@ public class EpochBoundaryProcessor {
 
         // 3. Calculate rewards (skip if already committed from a previous interrupted run)
         if (resumeFromStep <= STEP_REWARDS) {
-            if (rewardCalculator != null && rewardCalculator.isEnabled() && newEpoch >= 2) {
+            if (shouldCalculateRewards(newEpoch)) {
                 calculateAndStoreRewards(previousEpoch, newEpoch, null);
             }
             // Step marker AFTER all outputs (reward credits + AdaPot) are durable
@@ -481,6 +495,9 @@ public class EpochBoundaryProcessor {
         rewardCalculator.beginRewardBatch();
         Optional<EpochCalculationResult> resultOpt = rewardCalculator.calculateAndDistribute(
                 newEpoch, prevTreasury, prevReserves, effectiveParams, networkMagic);
+        if (resultOpt.isEmpty()) {
+            handleEpochCalcError(newEpoch, "Reward calculation returned no result for epoch " + newEpoch);
+        }
         try {
             // Include AdaPot in the same atomic batch as reward credits + boundary delta.
             // This ensures crash between commit and step marker doesn't lose AdaPot.
@@ -509,6 +526,25 @@ public class EpochBoundaryProcessor {
         } catch (org.rocksdb.RocksDBException e) {
             throw new RuntimeException("Failed to commit reward boundary delta for epoch " + newEpoch, e);
         }
+    }
+
+    private boolean shouldCalculateRewards(int newEpoch) {
+        if (rewardCalculator == null || !rewardCalculator.isEnabled() || cfNetworkConfig == null) {
+            return false;
+        }
+        return newEpoch > cfNetworkConfig.getShelleyStartEpoch();
+    }
+
+    private void handleEpochCalcError(int epoch, String message) {
+        log.error(message);
+        if (exitOnEpochCalcError) {
+            log.error("Exiting (exit-on-epoch-calc-error=true). Debug epoch {} before continuing.", epoch);
+            System.exit(1);
+            throw new IllegalStateException(message);
+        }
+
+        log.error("Continuing despite epoch calculation failure (exit-on-epoch-calc-error=false). " +
+                "Check /api/v1/node/epoch-calc-status for details.");
     }
 
     /**
@@ -560,6 +596,7 @@ public class EpochBoundaryProcessor {
             case 1 -> "expected_ada_pots_preprod.json";
             case 2 -> "expected_ada_pots_preview.json";
             case 764824073 -> "expected_ada_pots_mainnet.json";
+            case 4 -> "expected_ada_pots_sanchonet.json";
             default -> null;
         };
 

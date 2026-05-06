@@ -256,4 +256,43 @@ class VoteTallyCalculatorTest {
         // Zero denominator → fail
         assertThat(VoteTallyCalculator.committeeThresholdMet(tally, new BigDecimal("0.51"))).isFalse();
     }
+
+    @Test
+    void committeeTally_expiryEpochIsStillEligible() {
+        Map<GovernanceStateStore.VoterKey, Integer> votes = new HashMap<>();
+        votes.put(new GovernanceStateStore.VoterKey(
+                VoterType.CONSTITUTIONAL_COMMITTEE_HOT_KEY_HASH.ordinal(), "hot1"), 1);
+
+        Map<GovernanceStateStore.CredentialKey,
+                com.bloxbean.cardano.yano.ledgerstate.governance.model.CommitteeMemberRecord> members = new HashMap<>();
+        members.put(new GovernanceStateStore.CredentialKey(0, "member1"),
+                new com.bloxbean.cardano.yano.ledgerstate.governance.model.CommitteeMemberRecord(
+                        0, "hot1", 232, false));
+
+        var tally = calculator.computeCommitteeTally(votes, members, 232);
+
+        assertThat(tally.yesCount()).isEqualTo(1);
+        assertThat(tally.noCount()).isZero();
+    }
+
+    @Test
+    void committeeTally_duplicateHotCredentialUsesActiveMember() {
+        Map<GovernanceStateStore.VoterKey, Integer> votes = new HashMap<>();
+        votes.put(new GovernanceStateStore.VoterKey(
+                VoterType.CONSTITUTIONAL_COMMITTEE_HOT_KEY_HASH.ordinal(), "hot1"), 1);
+
+        Map<GovernanceStateStore.CredentialKey,
+                com.bloxbean.cardano.yano.ledgerstate.governance.model.CommitteeMemberRecord> members = new HashMap<>();
+        members.put(new GovernanceStateStore.CredentialKey(0, "expired"),
+                new com.bloxbean.cardano.yano.ledgerstate.governance.model.CommitteeMemberRecord(
+                        0, "hot1", 200, false));
+        members.put(new GovernanceStateStore.CredentialKey(0, "active"),
+                new com.bloxbean.cardano.yano.ledgerstate.governance.model.CommitteeMemberRecord(
+                        0, "hot1", 300, false));
+
+        var tally = calculator.computeCommitteeTally(votes, members, 232);
+
+        assertThat(tally.yesCount()).isEqualTo(1);
+        assertThat(tally.noCount()).isZero();
+    }
 }

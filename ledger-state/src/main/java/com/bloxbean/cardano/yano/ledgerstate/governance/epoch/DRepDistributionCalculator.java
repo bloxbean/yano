@@ -50,9 +50,9 @@ public class DRepDistributionCalculator {
     static final String ABSTAIN_HASH = "abstain";
     static final String NO_CONFIDENCE_HASH = "no_confidence";
 
-    private final RocksDB db;
-    private final ColumnFamilyHandle cfState;
-    private final ColumnFamilyHandle cfEpochSnapshot;
+    private RocksDB db;
+    private ColumnFamilyHandle cfState;
+    private ColumnFamilyHandle cfEpochSnapshot;
     private final GovernanceStateStore governanceStore;
 
     public DRepDistributionCalculator(RocksDB db, ColumnFamilyHandle cfState,
@@ -62,6 +62,16 @@ public class DRepDistributionCalculator {
         this.cfState = cfState;
         this.cfEpochSnapshot = cfEpochSnapshot;
         this.governanceStore = governanceStore;
+    }
+
+    /**
+     * Refresh RocksDB handles after snapshot restore.
+     */
+    public void reinitialize(RocksDB db, ColumnFamilyHandle cfState, ColumnFamilyHandle cfEpochSnapshot) {
+        this.db = db;
+        this.cfState = cfState;
+        this.cfEpochSnapshot = cfEpochSnapshot;
+        log.info("DRepDistributionCalculator reinitialized after snapshot restore");
     }
 
     /**

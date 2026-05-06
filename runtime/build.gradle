@@ -1,0 +1,40 @@
+dependencies {
+    api project(':core-api')
+    api libs.yaci.core
+    api libs.yaci.helper
+    api libs.project.reactor.core
+
+    implementation libs.rocksdb
+
+    // Logging dependencies
+    implementation libs.slf4j.api
+    implementation libs.slf4j.reload4j
+    implementation libs.reload4j
+
+    implementation libs.cardano.client.core
+    implementation libs.cardano.client.crypto.ext
+    api project(':ledger-rules')
+    api project(':ledger-state')
+    implementation libs.jackson.databind
+
+    testImplementation libs.project.reactor.test
+
+    // Generate @DomainEventListener bindings at build time
+    annotationProcessor libs.yaci.events.processor
+}
+
+java {
+    sourceCompatibility = 25
+    targetCompatibility = 25
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            pom {
+                name = 'Yano Runtime'
+                description = 'Runtime implementation for Yano (A Cardano Node implementation in Java)'
+            }
+        }
+    }
+}

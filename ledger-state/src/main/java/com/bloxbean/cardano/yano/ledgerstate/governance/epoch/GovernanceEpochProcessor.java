@@ -52,9 +52,9 @@ import java.util.*;
 public class GovernanceEpochProcessor {
     private static final Logger log = LoggerFactory.getLogger(GovernanceEpochProcessor.class);
 
-    private final RocksDB db;
-    private final ColumnFamilyHandle cfState;
-    private final ColumnFamilyHandle cfDelta;
+    private RocksDB db;
+    private ColumnFamilyHandle cfState;
+    private ColumnFamilyHandle cfDelta;
     private final GovernanceStateStore governanceStore;
     private final DRepDistributionCalculator drepDistCalculator;
     private final DRepExpiryCalculator drepExpiryCalculator;
@@ -144,7 +144,7 @@ public class GovernanceEpochProcessor {
                                 BigInteger amount, int earnedEpoch, long slot,
                                 WriteBatch batch, List<DeltaOp> deltaOps) throws RocksDBException;
 
-        /** Get all spendable reward_rest entries with spendableEpoch <= epoch. */
+        /** Get all spendable reward_rest entries with spendableEpoch &lt;= epoch. */
         java.util.Map<String, BigInteger> getSpendableRewardRest(int epoch);
     }
 
@@ -180,6 +180,20 @@ public class GovernanceEpochProcessor {
         this.rewardRestStore = rewardRestStore;
         this.genesisBootstrap = new com.bloxbean.cardano.yano.ledgerstate.governance.ConwayGenesisBootstrap(
                 governanceStore, conwayGenesisFilePath);
+    }
+
+    /**
+     * Refresh RocksDB handles after snapshot restore. Shared governance helpers keep
+     * their object identity, but must point at the reopened database handles.
+     */
+    public void reinitialize(RocksDB db, ColumnFamilyHandle cfState, ColumnFamilyHandle cfDelta,
+                             ColumnFamilyHandle cfEpochSnapshot) {
+        this.db = db;
+        this.cfState = cfState;
+        this.cfDelta = cfDelta;
+        governanceStore.reinitialize(db, cfState);
+        drepDistCalculator.reinitialize(db, cfState, cfEpochSnapshot);
+        log.info("GovernanceEpochProcessor reinitialized after snapshot restore");
     }
 
     /**
@@ -549,8 +563,8 @@ public class GovernanceEpochProcessor {
         Map<GovActionType, GovActionId> lastEnactedActions = resolveLastEnactedActions();
         Map<GovActionType, BigDecimal> drepThresholds = resolveDRepThresholds(isBootstrapPhase, newEpoch);
         Map<GovActionType, BigDecimal> spoThresholds = resolveSPOThresholds(newEpoch);
-        int committeeMinSize = paramProvider.getCommitteeMinSize(newEpoch);
-        int committeeMaxTermLength = paramProvider.getCommitteeMaxTermLength(newEpoch);
+        int committeeMinSize = resolveCommitteeMinSize(newEpoch);
+        int committeeMaxTermLength = resolveCommitteeMaxTermLength(newEpoch);
 
         PoolStakeData poolData = PoolStakeData.EMPTY;
         if (poolStakeResolver != null) {
@@ -748,6 +762,20 @@ public class GovernanceEpochProcessor {
         return paramProvider.getProtocolMajor(epoch);
     }
 
+    int resolveCommitteeMinSize(int epoch) {
+        if (paramTracker != null && paramTracker.isEnabled()) {
+            return paramTracker.getCommitteeMinSize(epoch);
+        }
+        return paramProvider.getCommitteeMinSize(epoch);
+    }
+
+    int resolveCommitteeMaxTermLength(int epoch) {
+        if (paramTracker != null && paramTracker.isEnabled()) {
+            return paramTracker.getCommitteeMaxTermLength(epoch);
+        }
+        return paramProvider.getCommitteeMaxTermLength(epoch);
+    }
+
     /**
      * Get the set of currently registered DRep IDs (format: "drepType:drepHash").
      * Uses the tombstone rule: include if previousDeregistrationSlot == null
@@ -802,7 +830,7 @@ public class GovernanceEpochProcessor {
         if (members.isEmpty()) return "NO_CONFIDENCE";
         // Check if any non-expired, non-resigned members exist
         boolean hasActive = members.values().stream()
-                .anyMatch(m -> !m.resigned() && m.expiryEpoch() > epoch);
+                .anyMatch(m -> !m.resigned() && m.expiryEpoch() >= epoch);
         return hasActive ? "NORMAL" : "NO_CONFIDENCE";
     }
 

@@ -1,0 +1,321 @@
+package com.bloxbean.cardano.yano.runtime.blockproducer;
+
+import com.bloxbean.cardano.yano.runtime.genesis.ByronGenesisData;
+import com.bloxbean.cardano.yano.runtime.genesis.ByronGenesisParser;
+import com.bloxbean.cardano.yano.runtime.genesis.ShelleyGenesisData;
+import com.bloxbean.cardano.yano.runtime.genesis.ShelleyGenesisParser;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.Getter;
+import lombok.extern.slf4j.Slf4j;
+
+import java.io.File;
+import java.io.IOException;
+import java.math.BigInteger;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
+import java.util.Collections;
+import java.util.Map;
+
+/**
+ * Loads genesis configuration from standard Cardano genesis files.
+ * <p>
+ * Shelley genesis provides initialFunds (hex address → lovelace).
+ * Byron genesis provides nonAvvmBalances (Byron base58 address → lovelace).
+ * Protocol parameters come from a separate static JSON file.
+ */
+@Slf4j
+@Getter
+public class GenesisConfig {
+
+    private static final ObjectMapper MAPPER = new ObjectMapper();
+
+    private final Map<String, BigInteger> initialFunds;
+    private final String protocolParameters;
+    private final Map<String, BigInteger> byronBalances;
+    private final ShelleyGenesisData shelleyGenesisData;
+    private final ByronGenesisData byronGenesisData;
+
+    private transient JsonNode parsedProtocolParameters;
+
+    private GenesisConfig(Map<String, BigInteger> initialFunds, String protocolParameters,
+                          Map<String, BigInteger> byronBalances, ShelleyGenesisData shelleyGenesisData,
+                          ByronGenesisData byronGenesisData) {
+        this.initialFunds = initialFunds;
+        this.protocolParameters = protocolParameters;
+        this.byronBalances = byronBalances;
+        this.shelleyGenesisData = shelleyGenesisData;
+        this.byronGenesisData = byronGenesisData;
+    }
+
+    /**
+     * Load genesis configuration from standard Cardano genesis files.
+     *
+     * @param shelleyGenesisFile     path to shelley-genesis.json (nullable)
+     * @param byronGenesisFile       path to byron-genesis.json (nullable)
+     * @param protocolParametersFile path to protocol parameters JSON (nullable)
+     * @return GenesisConfig (never null; fields may be empty/null)
+     */
+    public static GenesisConfig load(String shelleyGenesisFile, String byronGenesisFile,
+                                     String protocolParametersFile) {
+        Map<String, BigInteger> funds = Collections.emptyMap();
+        Map<String, BigInteger> byronBalances = Collections.emptyMap();
+        ShelleyGenesisData shelleyData = null;
+        ByronGenesisData byronData = null;
+        String protocolParams = null;
+
+        if (shelleyGenesisFile != null && !shelleyGenesisFile.isBlank()) {
+            try {
+                shelleyData = ShelleyGenesisParser.parse(new File(shelleyGenesisFile));
+                funds = shelleyData.initialFunds();
+            } catch (IOException e) {
+                log.error("Failed to parse shelley genesis from {}: {}", shelleyGenesisFile, e.getMessage());
+            }
+        }
+
+        if (byronGenesisFile != null && !byronGenesisFile.isBlank()) {
+            try {
+                byronData = ByronGenesisParser.parse(new File(byronGenesisFile));
+                byronBalances = byronData.getAllByronBalances();
+            } catch (IOException e) {
+                log.error("Failed to parse byron genesis from {}: {}", byronGenesisFile, e.getMessage());
+            }
+        }
+
+        if (protocolParametersFile != null && !protocolParametersFile.isBlank()) {
+            protocolParams = loadProtocolParameters(protocolParametersFile);
+        }
+
+        return new GenesisConfig(funds, protocolParams, byronBalances, shelleyData, byronData);
+    }
+
+    /**
+     * Build from in-memory genesis data (devnet mode — no file I/O).
+     *
+     * @param shelley       Shelley genesis data (required)
+     * @param byron         Byron genesis data (nullable)
+     * @param protocolParams raw protocol params JSON (nullable)
+     * @return GenesisConfig populated from the provided objects
+     */
+    public static GenesisConfig fromInMemory(ShelleyGenesisData shelley, ByronGenesisData byron,
+                                              String protocolParams) {
+        if (shelley == null) throw new IllegalArgumentException("ShelleyGenesisData required");
+        Map<String, BigInteger> funds = shelley.initialFunds() != null
+                ? shelley.initialFunds() : Collections.emptyMap();
+        Map<String, BigInteger> byronBalances = byron != null
+                ? byron.getAllByronBalances() : Collections.emptyMap();
+        return new GenesisConfig(funds, protocolParams, byronBalances, shelley, byron);
+    }
+
+    /**
+     * Return a copy with an updated Shelley systemStart while preserving all
+     * other parsed genesis values. Used by devnet past-time-travel mode after
+     * /epochs/shift mutates the effective genesis time at runtime.
+     */
+    public GenesisConfig withSystemStart(String systemStart) {
+        if (shelleyGenesisData == null) return this;
+
+        ShelleyGenesisData shelley = new ShelleyGenesisData(
+                shelleyGenesisData.initialFunds(),
+                shelleyGenesisData.networkMagic(),
+                shelleyGenesisData.epochLength(),
+                shelleyGenesisData.slotLength(),
+                systemStart,
+                shelleyGenesisData.maxLovelaceSupply(),
+                shelleyGenesisData.activeSlotsCoeff(),
+                shelleyGenesisData.securityParam(),
+                shelleyGenesisData.maxKESEvolutions(),
+                shelleyGenesisData.slotsPerKESPeriod(),
+                shelleyGenesisData.updateQuorum(),
+                shelleyGenesisData.protocolMajor(),
+                shelleyGenesisData.protocolMinor(),
+                shelleyGenesisData.rho(),
+                shelleyGenesisData.tau(),
+                shelleyGenesisData.a0(),
+                shelleyGenesisData.nOpt(),
+                shelleyGenesisData.minPoolCost(),
+                shelleyGenesisData.keyDeposit(),
+                shelleyGenesisData.poolDeposit(),
+                shelleyGenesisData.decentralisationParam(),
+                shelleyGenesisData.minFeeA(),
+                shelleyGenesisData.minFeeB(),
+                shelleyGenesisData.maxBlockBodySize(),
+                shelleyGenesisData.maxTxSize(),
+                shelleyGenesisData.maxBlockHeaderSize(),
+                shelleyGenesisData.eMax(),
+                shelleyGenesisData.extraEntropy(),
+                shelleyGenesisData.minUTxOValue()
+        );
+
+        return new GenesisConfig(initialFunds, protocolParameters, byronBalances, shelley, byronGenesisData);
+    }
+
+    private static String loadProtocolParameters(String path) {
+        try {
+            String json = Files.readString(Path.of(path));
+            MAPPER.readTree(json); // validate JSON
+            log.info("Loaded protocol parameters from {}", path);
+            return json;
+        } catch (IOException e) {
+            log.error("Failed to load protocol parameters from {}: {}", path, e.getMessage());
+            return null;
+        }
+    }
+
+    public boolean hasInitialFunds() {
+        return initialFunds != null && !initialFunds.isEmpty();
+    }
+
+    public boolean hasByronBalances() {
+        return byronBalances != null && !byronBalances.isEmpty();
+    }
+
+    public boolean hasProtocolParameters() {
+        return protocolParameters != null;
+    }
+
+    /**
+     * Parse the protocol version major from protocol parameters JSON.
+     * Supports both nested format (protocolVersion.major) and flat format (protocol_major_ver).
+     *
+     * @return protocol major version, or 0 if not available
+     */
+    public long getProtocolVersionMajor() {
+        return getProtocolVersionField("major", "protocol_major_ver");
+    }
+
+    /**
+     * Parse the protocol version minor from protocol parameters JSON.
+     * Supports both nested format (protocolVersion.minor) and flat format (protocol_minor_ver).
+     *
+     * @return protocol minor version, or 0 if not available
+     */
+    public long getProtocolVersionMinor() {
+        return getProtocolVersionField("minor", "protocol_minor_ver");
+    }
+
+    private long getProtocolVersionField(String nestedField, String flatField) {
+        var root = getParsedProtocolParameters();
+        if (root == null) return 0;
+        var nested = root.path("protocolVersion").path(nestedField);
+        if (!nested.isMissingNode()) return nested.asLong();
+        var flat = root.path(flatField);
+        if (!flat.isMissingNode()) return flat.asLong();
+        return 0;
+    }
+
+    private JsonNode getParsedProtocolParameters() {
+        if (parsedProtocolParameters != null) return parsedProtocolParameters;
+        if (protocolParameters == null) return null;
+        try {
+            parsedProtocolParameters = MAPPER.readTree(protocolParameters);
+        } catch (Exception e) {
+            log.warn("Failed to parse protocol parameters JSON: {}", e.getMessage());
+        }
+        return parsedProtocolParameters;
+    }
+
+    public long getNetworkMagic() {
+        return shelleyGenesisData != null ? shelleyGenesisData.networkMagic() : 0;
+    }
+
+    public double getActiveSlotsCoeff() {
+        return shelleyGenesisData != null ? shelleyGenesisData.activeSlotsCoeff() : 0.0;
+    }
+
+    public String getSystemStart() {
+        return shelleyGenesisData != null ? shelleyGenesisData.systemStart() : null;
+    }
+
+    /**
+     * Parse the ISO-8601 systemStart from shelley genesis data into epoch millis.
+     *
+     * @return epoch millis, or 0 if systemStart is null/unparseable
+     */
+    public long getSystemStartEpochMillis() {
+        String systemStart = getSystemStart();
+        if (systemStart == null || systemStart.isBlank()) {
+            return 0;
+        }
+        try {
+            return Instant.parse(systemStart).toEpochMilli();
+        } catch (Exception e) {
+            log.warn("Failed to parse systemStart '{}': {}", systemStart, e.getMessage());
+            return 0;
+        }
+    }
+
+    /**
+     * Byron slot duration in seconds. Defaults to 20 if no Byron genesis is available.
+     */
+    public long getByronSlotDurationSeconds() {
+        return byronGenesisData != null && byronGenesisData.slotDuration() > 0
+                ? byronGenesisData.slotDuration() : 20;
+    }
+
+    /**
+     * Network start time in Unix epoch seconds.
+     * Uses Byron genesis startTime if available, otherwise parses Shelley systemStart.
+     */
+    public long getNetworkStartTimeSeconds() {
+        if (byronGenesisData != null && byronGenesisData.startTime() > 0) {
+            return byronGenesisData.startTime();
+        }
+        long millis = getSystemStartEpochMillis();
+        return millis > 0 ? millis / 1000 : 0;
+    }
+
+    /**
+     * Shelley slot length in seconds. Defaults to 1.0 if no Shelley genesis is available.
+     */
+    public double getShelleySlotLengthSeconds() {
+        return shelleyGenesisData != null && shelleyGenesisData.slotLength() > 0
+                ? shelleyGenesisData.slotLength() : 1.0;
+    }
+
+    /**
+     * Resolve the genesis timestamp for the block producer, persisting to the shelley genesis
+     * file on fresh start when using auto (configTimestamp == 0).
+     *
+     * @param configTimestamp   configured genesis-timestamp (0 = auto)
+     * @param freshStart        true if no existing chain state (first boot)
+     * @param shelleyGenesisFile path to shelley-genesis.json (nullable)
+     * @return resolved genesis timestamp in epoch millis
+     */
+    public long resolveAndPersistGenesisTimestamp(long configTimestamp, boolean freshStart, String shelleyGenesisFile) {
+        // Explicit override — use it directly, no file write
+        if (configTimestamp > 0) {
+            log.info("Using explicit genesis timestamp: {}", configTimestamp);
+            return configTimestamp;
+        }
+
+        // Fresh start + auto → write current time to genesis file
+        if (freshStart) {
+            long now = System.currentTimeMillis();
+            if (shelleyGenesisFile != null && !shelleyGenesisFile.isBlank()) {
+                try {
+                    String isoTimestamp = Instant.ofEpochMilli(now).truncatedTo(ChronoUnit.SECONDS).toString();
+                    ShelleyGenesisParser.updateSystemStart(new File(shelleyGenesisFile), isoTimestamp);
+                    log.info("Persisted genesis systemStart={} to {}", isoTimestamp, shelleyGenesisFile);
+                } catch (IOException e) {
+                    log.warn("Failed to persist genesis timestamp to {}: {}", shelleyGenesisFile, e.getMessage());
+                }
+            }
+            return now;
+        }
+
+        // Restart + auto → read persisted value from genesis file
+        long persisted = getSystemStartEpochMillis();
+        if (persisted > 0) {
+            log.info("Using persisted genesis timestamp from shelley-genesis.json: {}", persisted);
+            return persisted;
+        }
+
+        // Fallback
+        long fallback = System.currentTimeMillis();
+        log.warn("No persisted genesis timestamp found, falling back to current time: {}", fallback);
+        return fallback;
+    }
+}
