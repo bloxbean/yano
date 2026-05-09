@@ -59,7 +59,7 @@ The app is one assembly; you can build your own.
                           │  └──────────────┘    └──────────────────────────┘    │  2   │  │
                           │                                                      └──────┘  │
                           │  ┌──────────────────┐    ┌─────────────────────┐     ┌──────┐  │
-                          │  │  REST API (:8080) │    │  Block Producer     │◄──►│ ...  │  │
+                          │  │  REST API (:7070) │    │  Block Producer     │◄──►│ ...  │  │
                           │  │  /api/v1/*        │    │  (devnet mode)      │    └──────┘  │
                           │  └──────────────────┘    └─────────────────────┘               │
                           └─────────────────────────────────────────────────────────────────┘
@@ -289,7 +289,7 @@ node.start();
 
 ## REST API
 
-Base URL: `http://localhost:8080`
+Base URL: `http://localhost:7070`
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
@@ -365,7 +365,7 @@ yano:
     enabled: true
   block-producer:
     enabled: true
-    block-time-millis: 1000
+    block-time-millis: 0     # 0 = derive from genesis slot length
     tx-evaluation: true     # Plutus script evaluation via Scalus
   storage:
     rocksdb: true

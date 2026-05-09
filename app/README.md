@@ -7,7 +7,7 @@ Quarkus-based wrapper for Yano with two built-in profiles:
 
 ## Prerequisites
 
-- Java 21
+- Java 25 (Temurin or Oracle GraalVM 25; GraalVM is required only for native image builds)
 
 ## Build
 
@@ -28,19 +28,19 @@ Verify the node is running and producing blocks:
 
 ```bash
 # Chain tip
-curl http://localhost:8080/api/v1/node/tip
+curl http://localhost:7070/api/v1/node/tip
 
 # Latest block
-curl http://localhost:8080/api/v1/blocks/latest
+curl http://localhost:7070/api/v1/blocks/latest
 
 # Protocol parameters
-curl http://localhost:8080/api/v1/epochs/latest/parameters
+curl http://localhost:7070/api/v1/epochs/latest/parameters
 ```
 
 Submit a transaction (hex-encoded CBOR):
 
 ```bash
-curl -X POST http://localhost:8080/api/v1/tx/submit \
+curl -X POST http://localhost:7070/api/v1/tx/submit \
   -H "Content-Type: text/plain" \
   -d '<hex-encoded-tx-cbor>'
 ```
@@ -48,7 +48,7 @@ curl -X POST http://localhost:8080/api/v1/tx/submit \
 Submit a transaction (raw CBOR bytes):
 
 ```bash
-curl -X POST http://localhost:8080/api/v1/tx/submit \
+curl -X POST http://localhost:7070/api/v1/tx/submit \
   -H "Content-Type: application/cbor" \
   --data-binary @tx.cbor
 ```
@@ -56,13 +56,13 @@ curl -X POST http://localhost:8080/api/v1/tx/submit \
 Query UTXOs for an address:
 
 ```bash
-curl http://localhost:8080/api/v1/addresses/<address>/utxos
+curl http://localhost:7070/api/v1/addresses/<address>/utxos
 ```
 
 Query transaction inputs/outputs:
 
 ```bash
-curl http://localhost:8080/api/v1/txs/<txHash>/utxos
+curl http://localhost:7070/api/v1/txs/<txHash>/utxos
 ```
 
 ## Quick Start — Relay Mode
@@ -77,7 +77,7 @@ cd app
 Verify:
 
 ```bash
-curl http://localhost:8080/api/v1/node/tip
+curl http://localhost:7070/api/v1/node/tip
 ```
 
 ## Native Image
@@ -104,20 +104,20 @@ cd app
 Activate the devnet profile:
 
 ```bash
-java -Dquarkus.profile=devnet -jar build/quarkus-app/quarkus-run.jar
+java -Dquarkus.profile=devnet -jar build/yano.jar
 ```
 
 ### Key Properties
 
 | Property | Default | Description |
 |----------|---------|-------------|
-| `quarkus.http.port` | 8080 | REST API port |
+| `quarkus.http.port` | 7070 | REST API port |
 | `yano.server.port` | 13337 | N2N server port |
 | `yano.remote.host` | preprod-node.world.dev.cardano.org | Upstream relay host |
 | `yano.remote.port` | 30000 | Upstream relay port |
 | `yano.remote.protocol-magic` | 1 | Network protocol magic |
 | `yano.storage.path` | ./chainstate | RocksDB storage directory |
-| `yano.block-producer.block-time-millis` | 2000 (1000 in devnet) | Block production interval |
+| `yano.block-producer.block-time-millis` | 0 | Block production interval in ms; `0` means derive from genesis (`shelley-genesis.slotLength`). |
 | `yano.block-producer.script-evaluator` | `aiken` | Plutus script evaluator (`aiken` or `scalus`) |
 
 ### Script Evaluator
@@ -188,7 +188,7 @@ End-to-end tests exercise the full app (transaction submission, script evaluatio
 **Run against an external instance:**
 
 ```bash
-./gradlew :app:e2eTest -Dyano.e2e.baseUrl=http://localhost:8080/api/v1/
+./gradlew :app:e2eTest -Dyano.e2e.baseUrl=http://localhost:7070/api/v1/
 ```
 
 **Test coverage (35 tests across 7 classes):**
@@ -265,17 +265,17 @@ All endpoints are under `/api/v1`. Responses match [yaci-store](https://github.c
 
 ```bash
 # Rollback to a specific slot
-curl -X POST http://localhost:8080/api/v1/devnet/rollback \
+curl -X POST http://localhost:7070/api/v1/devnet/rollback \
   -H "Content-Type: application/json" \
   -d '{"slot": 1234}'
 
 # Rollback to a specific block number
-curl -X POST http://localhost:8080/api/v1/devnet/rollback \
+curl -X POST http://localhost:7070/api/v1/devnet/rollback \
   -H "Content-Type: application/json" \
   -d '{"blockNumber": 10}'
 
 # Rollback N blocks behind current tip
-curl -X POST http://localhost:8080/api/v1/devnet/rollback \
+curl -X POST http://localhost:7070/api/v1/devnet/rollback \
   -H "Content-Type: application/json" \
   -d '{"count": 3}'
 ```
