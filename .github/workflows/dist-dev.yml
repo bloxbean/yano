@@ -19,12 +19,12 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
       - name: Build uber-jar distribution
-        run: ./gradlew :node-app:nodeDistZip -PskipSigning=true
+        run: ./gradlew :app:yanoDistZip -PskipSigning=true
       - name: Upload JAR distribution
         uses: actions/upload-artifact@v4
         with:
           name: jar-dist
-          path: node-app/build/distributions/yano-*.zip
+          path: app/build/distributions/yano-*.zip
           retention-days: 3
 
   native-dist:
@@ -46,12 +46,12 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
       - name: Build native binary
-        run: ./gradlew :node-app:quarkusBuild -Dquarkus.native.enabled=true -Dquarkus.package.jar.enabled=false -PskipSigning=true
+        run: ./gradlew :app:quarkusBuild -Dquarkus.native.enabled=true -Dquarkus.package.jar.enabled=false -PskipSigning=true
       - name: Package native distribution
-        run: ./gradlew :node-app:nodeNativeDistZip -PskipSigning=true
+        run: ./gradlew :app:yanoNativeDistZip -PskipSigning=true
       - name: Upload native distribution
         uses: actions/upload-artifact@v4
         with:
           name: native-dist-${{ matrix.label }}
-          path: node-app/build/distributions/yano-native-*.zip
+          path: app/build/distributions/yano-native-*.zip
           retention-days: 3
