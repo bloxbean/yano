@@ -162,7 +162,8 @@ rust/jniLibs
 /backends/cardano-graphql/build/
 /.vscode/
 /chainstate/
-/.claude/
+/.claude/*
+!/.claude/skills/
 /temp-adr/
 /tasks/
 /node/chainstate/
@@ -181,3 +182,6 @@ __pycache__/
 /node-app/chainstate-preprod/
 **/chainstate*/
 **/data*/
+
+# Compatibility test data (downloaded haskell cardano-node + scratch state)
+/test-data-dir/
