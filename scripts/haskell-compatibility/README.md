@@ -6,8 +6,10 @@ Helpers used by the `test-haskell-sync`, `test-past-time-travel`,
 Yano devnet and an upstream Haskell `cardano-node`.
 
 These scripts intentionally live under `scripts/` (not `.claude/skills/`)
-because `.claude/` is gitignored — keeping them here means a fresh git
-checkout can run the tests without re-creating the skill folder.
+because they are regular project utilities, not Claude-Code-specific
+tooling: any developer can run them directly from a shell to spin up a
+test Haskell node, regardless of whether they use Claude Code. The four
+SKILL.md runbooks under `.claude/skills/` simply call into them.
 
 ## Files
 
