@@ -105,6 +105,10 @@ yano:
         seconds: 30
   validation:
     default-validator-enabled: true
+    # CCL "supplementary rules" (GOVCERT/governance/delegatee gap rules) layered on top of Scalus.
+    # Disabled by default — they don't yet account for intra-tx state changes within a single block.
+    # Set to true to opt in for testing.
+    supplementary-rules-enabled: false
   utxo:
     prune:
       schedule:

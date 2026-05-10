@@ -142,6 +142,11 @@ public class YanoProducer {
     @ConfigProperty(name = "yano.validation.default-validator-enabled", defaultValue = "true")
     boolean defaultValidatorEnabled;
 
+    // CCL "supplementary rules" (GOVCERT/governance/delegatee) layered on top of Scalus validation.
+    // Disabled by default — they don't yet account for intra-tx state changes within a single block.
+    @ConfigProperty(name = "yano.validation.supplementary-rules-enabled", defaultValue = "false")
+    boolean supplementaryRulesEnabled;
+
     @ConfigProperty(name = ROLLBACK_RETENTION_EPOCHS)
     java.util.Optional<Integer> rollbackRetentionEpochs;
 
@@ -602,6 +607,7 @@ public class YanoProducer {
         globals.put("yano.metrics.enabled", metricsEnabled);
         globals.put("yano.metrics.sample.rocksdb.seconds", metricsSampleRocksDbSeconds);
         globals.put("yano.validation.default-validator-enabled", defaultValidatorEnabled);
+        globals.put("yano.validation.supplementary-rules-enabled", supplementaryRulesEnabled);
         globals.put("yano.block-producer.tx-evaluation", txEvaluationEnabled);
 
         // Account state
@@ -795,14 +801,15 @@ public class YanoProducer {
             TransactionValidator evaluator = staticProtocolParams != null
                     ? ScalusTransactionFactory.createValidator(staticProtocolParams,
                             new YaciScriptSupplier(yaciNode.getUtxoState()), slotConfig, networkId,
-                            ledgerStateProvider)
+                            ledgerStateProvider, supplementaryRulesEnabled)
                     : ScalusTransactionFactory.createValidator(protocolParamsSupplier,
                             new YaciScriptSupplier(yaciNode.getUtxoState()), slotConfig, networkId,
                             ledgerStateProvider, currentSlotSupplier,
-                            epochSlotCalc::slotToEpoch);
+                            epochSlotCalc::slotToEpoch, supplementaryRulesEnabled);
             yaciNode.setTransactionEvaluator(evaluator);
             validatorInitialized = true;
-            log.info("Transaction validator initialized (networkId={}, protocolParams={})", networkId, protocolParamsSource);
+            log.info("Transaction validator initialized (networkId={}, protocolParams={}, supplementaryRules={})",
+                    networkId, protocolParamsSource, supplementaryRulesEnabled);
         } catch (Exception e) {
             log.error("Failed to initialize transaction validator (Scalus). "
                     + "Transactions will NOT be validated on submission! Error: {}", e.getMessage(), e);

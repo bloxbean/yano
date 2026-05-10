@@ -55,6 +55,7 @@ public class ScalusBasedTransactionValidator implements TransactionValidator {
     private final LongSupplier currentSlotSupplier;
     private final LongFunction<Integer> currentEpochResolver;
     private final boolean requireLedgerStateProvider;
+    private final boolean supplementaryRulesEnabled;
 
     public ScalusBasedTransactionValidator(ProtocolParams protocolParams,
                                            com.bloxbean.cardano.client.api.ScriptSupplier scriptSupplier,
@@ -68,7 +69,17 @@ public class ScalusBasedTransactionValidator implements TransactionValidator {
                                            com.bloxbean.cardano.client.common.model.SlotConfig slotConfig,
                                            int networkId,
                                            LedgerStateProvider ledgerStateProvider) {
-        this(slot -> protocolParams, scriptSupplier, slotConfig, networkId, ledgerStateProvider, null, null, false);
+        this(slot -> protocolParams, scriptSupplier, slotConfig, networkId, ledgerStateProvider, null, null, false, false);
+    }
+
+    public ScalusBasedTransactionValidator(ProtocolParams protocolParams,
+                                           com.bloxbean.cardano.client.api.ScriptSupplier scriptSupplier,
+                                           com.bloxbean.cardano.client.common.model.SlotConfig slotConfig,
+                                           int networkId,
+                                           LedgerStateProvider ledgerStateProvider,
+                                           boolean supplementaryRulesEnabled) {
+        this(slot -> protocolParams, scriptSupplier, slotConfig, networkId, ledgerStateProvider,
+                null, null, false, supplementaryRulesEnabled);
     }
 
     public ScalusBasedTransactionValidator(EpochProtocolParamsSupplier protocolParamsSupplier,
@@ -89,7 +100,19 @@ public class ScalusBasedTransactionValidator implements TransactionValidator {
                                            LongSupplier currentSlotSupplier,
                                            LongFunction<Integer> currentEpochResolver) {
         this(protocolParamsSupplier, scriptSupplier, slotConfig, networkId, ledgerStateProvider,
-                currentSlotSupplier, currentEpochResolver, true);
+                currentSlotSupplier, currentEpochResolver, true, false);
+    }
+
+    public ScalusBasedTransactionValidator(EpochProtocolParamsSupplier protocolParamsSupplier,
+                                           com.bloxbean.cardano.client.api.ScriptSupplier scriptSupplier,
+                                           com.bloxbean.cardano.client.common.model.SlotConfig slotConfig,
+                                           int networkId,
+                                           LedgerStateProvider ledgerStateProvider,
+                                           LongSupplier currentSlotSupplier,
+                                           LongFunction<Integer> currentEpochResolver,
+                                           boolean supplementaryRulesEnabled) {
+        this(protocolParamsSupplier, scriptSupplier, slotConfig, networkId, ledgerStateProvider,
+                currentSlotSupplier, currentEpochResolver, true, supplementaryRulesEnabled);
     }
 
     private ScalusBasedTransactionValidator(EpochProtocolParamsSupplier protocolParamsSupplier,
@@ -99,7 +122,8 @@ public class ScalusBasedTransactionValidator implements TransactionValidator {
                                             LedgerStateProvider ledgerStateProvider,
                                             LongSupplier currentSlotSupplier,
                                             LongFunction<Integer> currentEpochResolver,
-                                            boolean requireLedgerStateProvider) {
+                                            boolean requireLedgerStateProvider,
+                                            boolean supplementaryRulesEnabled) {
         this.protocolParamsSupplier = protocolParamsSupplier;
         if (scriptSupplier != null)
             this.scriptSupplier = new ScalusScriptSupplier(scriptSupplier);
@@ -110,11 +134,17 @@ public class ScalusBasedTransactionValidator implements TransactionValidator {
         this.currentSlotSupplier = currentSlotSupplier;
         this.currentEpochResolver = currentEpochResolver;
         this.requireLedgerStateProvider = requireLedgerStateProvider;
+        this.supplementaryRulesEnabled = supplementaryRulesEnabled;
 
         this.scalusSlotConfig = new scalus.cardano.ledger.SlotConfig(
                 slotConfig.getZeroTime(),
                 slotConfig.getZeroSlot(),
                 slotConfig.getSlotLength());
+
+        if (!supplementaryRulesEnabled) {
+            log.info("CCL supplementary rules disabled (yano.validation.supplementary-rules-enabled=false). "
+                    + "Scalus validation will run without GOVCERT/governance/delegatee gap rules.");
+        }
     }
 
     @Override
@@ -143,9 +173,11 @@ public class ScalusBasedTransactionValidator implements TransactionValidator {
                 return ValidationResult.failure(error);
             }
 
-            // STEP 2: Scalus passed — run CCL supplementary rules for gaps
-            // (GOVCERT certs, delegatee existence, governance validation)
-            if (tx != null && ledgerStateProvider != null) {
+            // STEP 2: Scalus passed — optionally run CCL supplementary rules for gaps
+            // (GOVCERT certs, delegatee existence, governance validation).
+            // Disabled by default in production until intra-tx state is handled
+            // (see yano.validation.supplementary-rules-enabled).
+            if (supplementaryRulesEnabled && tx != null && ledgerStateProvider != null) {
                 String txHash = resolveTransactionHash(txCbor, tx);
                 ValidationResult cclResult = runSupplementaryRules(tx, currentSlot, protocolParams, txHash);
                 if (!cclResult.valid()) {

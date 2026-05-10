@@ -49,8 +49,17 @@ class ScalusBasedTransactionValidatorTest {
     }
 
     @Test
-    void validateRejectsWhenSupplementaryRulesThrowAfterScalusSuccess() {
+    void validateSkipsSupplementaryRulesByDefaultAfterScalusSuccess() {
         var validator = new ScalusSuccessValidator(new MinimalLedgerStateProvider());
+
+        var result = validator.validate(new byte[]{1, 2, 3}, Set.of());
+
+        assertTrue(result.valid());
+    }
+
+    @Test
+    void validateRejectsWhenSupplementaryRulesEnabledAndRulesThrowAfterScalusSuccess() {
+        var validator = new ScalusSuccessValidator(new MinimalLedgerStateProvider(), true);
 
         var result = validator.validate(new byte[]{1, 2, 3}, Set.of());
 
@@ -337,9 +346,18 @@ class ScalusBasedTransactionValidatorTest {
             this(provider, () -> 0L);
         }
 
+        ScalusSuccessValidator(LedgerStateProvider provider, boolean supplementaryRulesEnabled) {
+            this(provider, () -> 0L, supplementaryRulesEnabled);
+        }
+
         ScalusSuccessValidator(LedgerStateProvider provider, LongSupplier currentSlotSupplier) {
+            this(provider, currentSlotSupplier, false);
+        }
+
+        ScalusSuccessValidator(LedgerStateProvider provider, LongSupplier currentSlotSupplier,
+                               boolean supplementaryRulesEnabled) {
             super(slot -> new ProtocolParams(), null, new SlotConfig(1000, 0, 0), 0,
-                    provider, currentSlotSupplier);
+                    provider, currentSlotSupplier, null, supplementaryRulesEnabled);
         }
 
         @Override
