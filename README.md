@@ -26,7 +26,7 @@ Persistence is RocksDB. The node ships as a runnable Quarkus application **and**
 Yano's initial goal is to fill three roles:
 
 - **A devnet node** that runs inside [Yaci DevKit](https://github.com/bloxbean/yaci-devkit)
-  alongside the Haskell `cardano-node`, so Java-based teams can spin up a complete local
+  alongside the Haskell `cardano-node`, so teams can spin up a complete local
   Cardano network without managing a Haskell toolchain.
 - **An embeddable library** that custom Java applications can depend on to drive a Cardano
   node in-process — for indexers, wallets, validation tooling, or research code.
