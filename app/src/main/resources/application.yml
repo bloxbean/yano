@@ -126,6 +126,7 @@ yano:
     slot-length-millis: 0
     start-epoch: 0
     past-time-travel-mode: false
+    past-time-travel-slot-leader-mode: false
     tx-evaluation: true
 
 "%native":
@@ -171,6 +172,7 @@ yano:
       vrf-skey-file: config/network/devnet/vrf.skey
       kes-skey-file: config/network/devnet/kes.skey
       opcert-file: config/network/devnet/opcert.cert
+      past-time-travel-slot-leader-mode: false
 
 "%devnet-slotleader":
   yano:
@@ -200,6 +202,7 @@ yano:
       vrf-skey-file: config/network/devnet/vrf.skey
       kes-skey-file: config/network/devnet/kes.skey
       opcert-file: config/network/devnet/opcert.cert
+      past-time-travel-slot-leader-mode: false
 
 "%mainnet":
   yano:

@@ -281,6 +281,9 @@ public class YanoProducer {
     @ConfigProperty(name = "yano.block-producer.past-time-travel-mode", defaultValue = "false")
     boolean pastTimeTravelMode;
 
+    @ConfigProperty(name = "yano.block-producer.past-time-travel-slot-leader-mode", defaultValue = "false")
+    boolean pastTimeTravelSlotLeaderMode;
+
     // Bootstrap config
     @ConfigProperty(name = "yano.bootstrap.enabled", defaultValue = "false")
     boolean bootstrapEnabled;
@@ -508,6 +511,7 @@ public class YanoProducer {
                 .initialEpoch(initialEpoch)
                 .startEpoch(startEpoch)
                 .pastTimeTravelMode(pastTimeTravelMode)
+                .pastTimeTravelSlotLeaderMode(pastTimeTravelSlotLeaderMode)
                 .shelleyGenesisHash(shelleyGenesisHash.orElse(null))
                 .shelleyGenesisFile(resolvedShelleyGenesis)
                 .byronGenesisFile(resolvedByronGenesis)

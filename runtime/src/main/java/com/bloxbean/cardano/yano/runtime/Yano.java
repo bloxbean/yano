@@ -161,6 +161,7 @@ public class Yano implements NodeAPI {
     // Block producer (devnet or slot-leader mode)
     private BlockProducerService blockProducerService;
     private DevnetBlockProducer devnetBlockProducer; // kept for devnet-specific methods (produceEmptyBlocksToSlot, etc.)
+    private SlotLeaderTimeTravelBlockProducer slotLeaderTimeTravelBlockProducer;
     private EpochNonceState epochNonceState; // shared nonce state (accessible for REST endpoint)
     private GenesisConfig genesisConfig;
     private long resolvedGenesisTimestamp;
@@ -1552,6 +1553,111 @@ public class Yano implements NodeAPI {
     }
 
     /**
+     * Create a Praos-aware past-time-travel producer for multi-node devnets.
+     * The stake distribution comes from Shelley genesis because no indexer is
+     * available during companion bootstrap.
+     */
+    private SlotLeaderTimeTravelBlockProducer createSlotLeaderTimeTravelProducer(boolean freshStart) {
+        var shelleyData = genesisConfig.getShelleyGenesisData();
+        if (shelleyData == null) {
+            throw new IllegalStateException("Shelley genesis data required for past-time-travel slot-leader mode");
+        }
+        if (config.getShelleyGenesisFile() == null || config.getShelleyGenesisFile().isBlank()) {
+            throw new IllegalStateException("Shelley genesis file required for past-time-travel slot-leader mode");
+        }
+
+        try {
+            var keys = com.bloxbean.cardano.client.crypto.BlockProducerKeys.load(
+                    Path.of(config.getVrfSkeyFile()),
+                    Path.of(config.getKesSkeyFile()),
+                    Path.of(config.getOpCertFile()));
+
+            String poolHash = SlotLeaderBlockProducer.derivePoolHash(keys.getOpCert());
+            log.info("Past-time-travel slot-leader pool hash: {}", poolHash);
+
+            long epochLength = shelleyData.epochLength();
+            long securityParam = shelleyData.securityParam();
+            double activeSlotsCoeff = genesisConfig.getActiveSlotsCoeff();
+            long byronSlotsPerEpoch = genesisConfig.getByronGenesisData() != null
+                    ? genesisConfig.getByronGenesisData().epochLength() : Constants.BYRON_SLOTS_PER_EPOCH;
+
+            epochNonceState = new EpochNonceState(epochLength, securityParam, activeSlotsCoeff, byronSlotsPerEpoch);
+            if (chainState instanceof DirectRocksDBChainState rocksState) {
+                rocksState.getFirstNonByronEraStartSlot()
+                        .ifPresent(epochNonceState::setShelleyStartSlot);
+            }
+
+            NonceStateStore nonceStore = (chainState instanceof NonceStateStore)
+                    ? (NonceStateStore) chainState : null;
+
+            boolean restored = false;
+            if (!freshStart && nonceStore != null) {
+                byte[] persisted = nonceStore.getEpochNonceState();
+                if (persisted != null) {
+                    epochNonceState.restore(persisted);
+                    restored = true;
+                    log.info("Nonce state restored from persistence");
+                }
+            }
+            if (!restored) {
+                byte[] genesisHash = resolveGenesisHash();
+                if (genesisHash == null) {
+                    throw new IllegalStateException(
+                            "Shelley genesis hash required for past-time-travel slot-leader mode");
+                }
+                epochNonceState.initFromGenesisHash(genesisHash);
+            }
+            if (nonceStore != null) {
+                nonceStore.storeEpochNonce(epochNonceState.getCurrentEpoch(), epochNonceState.getEpochNonce());
+            }
+
+            long protoMajor = genesisConfig.getProtocolVersionMajor();
+            long protoMinor = genesisConfig.getProtocolVersionMinor();
+            if (protoMajor <= 0) {
+                throw new IllegalStateException(
+                        "Protocol version not found in protocol-param.json. "
+                        + "Configure 'protocol-parameters-file' with current network protocol parameters.");
+            }
+
+            var signedBlockBuilder = new SignedBlockBuilder(keys,
+                    shelleyData.slotsPerKESPeriod(),
+                    shelleyData.maxKESEvolutions(),
+                    epochNonceState, nonceStore, protoMajor, protoMinor);
+
+            var stakeDataProvider = new GenesisStakeDataProvider(Path.of(config.getShelleyGenesisFile()));
+            BigInteger poolStake = stakeDataProvider.getPoolStake(poolHash, 0);
+            BigInteger totalStake = stakeDataProvider.getTotalStake(0);
+            if (poolStake == null || poolStake.signum() <= 0
+                    || totalStake == null || totalStake.signum() <= 0) {
+                throw new IllegalStateException("Pool " + poolHash
+                        + " has no active genesis stake; check Shelley genesis staking/pool configuration");
+            }
+
+            log.info("Using genesis stake data for past-time-travel slot leader: poolStake={}, totalStake={}",
+                    poolStake, totalStake);
+
+            var slotLeaderCheck = new SlotLeaderCheck(
+                    keys.getVrfSkey(),
+                    java.math.BigDecimal.valueOf(activeSlotsCoeff),
+                    signedBlockBuilder.getBlockSigner());
+
+            long sequentialScanLimitSlots = Math.max(epochLength, 1000L);
+            var producer = new SlotLeaderTimeTravelBlockProducer(
+                    chainState, memPool, nodeServer, eventBus, scheduler,
+                    signedBlockBuilder, epochNonceState, slotLeaderCheck, stakeDataProvider,
+                    poolHash, resolvedGenesisTimestamp, config.getSlotLengthMillis(),
+                    config.getBlockTimeMillis(), sequentialScanLimitSlots,
+                    transactionEvaluator, getUtxoState());
+
+            slotLeaderTimeTravelBlockProducer = producer;
+            blockProducerService = producer;
+            return producer;
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to create past-time-travel slot-leader block producer", e);
+        }
+    }
+
+    /**
      * Create the appropriate block builder based on configuration.
      * If VRF, KES, and OpCert files are all configured, uses SignedBlockBuilder with real crypto.
      * Otherwise falls back to DevnetBlockBuilder with dummy signatures.
@@ -2661,7 +2767,7 @@ public class Yano implements NodeAPI {
         if (!config.isPastTimeTravelMode()) {
             throw new IllegalStateException("shiftGenesisAndStartProducer requires past-time-travel-mode=true");
         }
-        if (devnetBlockProducer != null) {
+        if (devnetBlockProducer != null || slotLeaderTimeTravelBlockProducer != null) {
             throw new IllegalStateException("Block producer already started — shift can only be called once");
         }
         if (epochs <= 0) {
@@ -2702,17 +2808,22 @@ public class Yano implements NodeAPI {
                 config.getGenesisTimestamp(), freshStart, config.getShelleyGenesisFile());
         initSlotTimeCalculator();
 
-        // Create block builder and start producer
-        DevnetBlockBuilder blockBuilder = createBlockBuilder(freshStart);
-
         setConwayEraStartIfFreshStart(freshStart);
 
-        DevnetBlockProducer producer = createDevnetProducer(blockBuilder);
-        // Sequential mode: genesis at slot 0, blocks at 1, 2, 3... (no wall-clock jump)
-        producer.setForceSequentialSlots(true);
-        producer.start();
-
         storeGenesisUtxosIfNeeded(freshStart);
+
+        if (config.isPastTimeTravelSlotLeaderMode()) {
+            SlotLeaderTimeTravelBlockProducer producer = createSlotLeaderTimeTravelProducer(freshStart);
+            producer.setForceSequentialSlots(true);
+            producer.start();
+        } else {
+            // Create block builder and start producer
+            DevnetBlockBuilder blockBuilder = createBlockBuilder(freshStart);
+            DevnetBlockProducer producer = createDevnetProducer(blockBuilder);
+            // Sequential mode: genesis at slot 0, blocks at 1, 2, 3... (no wall-clock jump)
+            producer.setForceSequentialSlots(true);
+            producer.start();
+        }
 
         log.info("Past time travel: block producer started after {}ms genesis shift ({} epochs)", shiftMillis, epochs);
         return shiftMillis;
@@ -2728,6 +2839,9 @@ public class Yano implements NodeAPI {
     public TimeAdvanceResult catchUpToWallClock() {
         if (!config.isDevMode()) {
             throw new IllegalStateException("Catch-up requires dev mode");
+        }
+        if (config.isPastTimeTravelSlotLeaderMode()) {
+            return catchUpSlotLeaderToWallClock();
         }
         if (devnetBlockProducer == null) {
             throw new IllegalStateException("Catch-up requires block producer to be running");
@@ -2765,6 +2879,50 @@ public class Yano implements NodeAPI {
                     blocksProduced);
         } finally {
             if (wasRunning) devnetBlockProducer.start();
+        }
+    }
+
+    private TimeAdvanceResult catchUpSlotLeaderToWallClock() {
+        if (slotLeaderTimeTravelBlockProducer == null) {
+            throw new IllegalStateException("Catch-up requires past-time-travel slot-leader producer to be running");
+        }
+
+        long wallClockSlot = (System.currentTimeMillis() - resolvedGenesisTimestamp) / config.getSlotLengthMillis();
+        long currentSlot = slotLeaderTimeTravelBlockProducer.getLastCheckedSlot();
+        long slotsToAdvance = wallClockSlot - currentSlot;
+        ChainTip currentTip = chainState.getTip();
+
+        if (slotsToAdvance <= 0) {
+            log.info("Already at or past wall-clock slot {} (checked={}), nothing to catch up",
+                    wallClockSlot, currentSlot);
+            return new TimeAdvanceResult(
+                    currentTip != null ? currentTip.getSlot() : Math.max(currentSlot, 0),
+                    currentTip != null ? currentTip.getBlockNumber() : 0,
+                    0);
+        }
+
+        log.info("Catching up to wall-clock with slot-leader checks: {} slots (checked={}, target={})",
+                slotsToAdvance, currentSlot, wallClockSlot);
+
+        boolean wasRunning = slotLeaderTimeTravelBlockProducer.isRunning();
+        if (wasRunning) slotLeaderTimeTravelBlockProducer.stop();
+
+        try {
+            int blocksProduced = slotLeaderTimeTravelBlockProducer.produceToSlot(wallClockSlot);
+            slotLeaderTimeTravelBlockProducer.setForceSequentialSlots(false);
+            ChainTip newTip = chainState.getTip();
+            lastKnownChainTip = newTip;
+
+            log.info("Slot-leader catch-up complete: {} blocks produced, checked slot={}, tip slot={}",
+                    blocksProduced, slotLeaderTimeTravelBlockProducer.getLastCheckedSlot(),
+                    newTip != null ? newTip.getSlot() : 0);
+
+            return new TimeAdvanceResult(
+                    newTip != null ? newTip.getSlot() : slotLeaderTimeTravelBlockProducer.getLastCheckedSlot(),
+                    newTip != null ? newTip.getBlockNumber() : 0,
+                    blocksProduced);
+        } finally {
+            if (wasRunning) slotLeaderTimeTravelBlockProducer.start();
         }
     }
 

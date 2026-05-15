@@ -93,6 +93,11 @@ public class YanoConfig implements NodeConfig {
     @Builder.Default
     private boolean pastTimeTravelMode = false;
 
+    // Past time travel mode with Praos slot-leader checks. Used by companion multi-node
+    // devnets where node-1 should only produce slots it is eligible for.
+    @Builder.Default
+    private boolean pastTimeTravelSlotLeaderMode = false;
+
     // Epoch/slot config — set from genesis at runtime via propagateGenesisToConfig().
     // No defaults: fail fast if not initialized from genesis.
     private Long epochLength;           // From shelley-genesis.json epochLength
@@ -450,6 +455,20 @@ public class YanoConfig implements NodeConfig {
             }
             if (!enableBlockProducer) {
                 throw new IllegalArgumentException("Past time travel mode requires block producer to be enabled");
+            }
+        }
+
+        if (pastTimeTravelSlotLeaderMode) {
+            if (!pastTimeTravelMode) {
+                throw new IllegalArgumentException("Past time travel slot-leader mode requires past-time-travel-mode=true");
+            }
+            if (slotLeaderMode) {
+                throw new IllegalArgumentException("Past time travel slot-leader mode must not be combined with slot-leader-mode=true");
+            }
+            if (vrfSkeyFile == null || vrfSkeyFile.isBlank()
+                    || kesSkeyFile == null || kesSkeyFile.isBlank()
+                    || opCertFile == null || opCertFile.isBlank()) {
+                throw new IllegalArgumentException("Past time travel slot-leader mode requires VRF, KES, and OpCert key files");
             }
         }
 
