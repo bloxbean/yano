@@ -168,15 +168,31 @@ public class EpochNonceState {
     }
 
     /**
-     * Advance epoch if the given slot crosses an epoch boundary.
-     * Must be called BEFORE reading epochNonce so that VRF proofs use the correct nonce.
+     * Advance epoch if the given slot crosses an epoch boundary, without extra entropy.
+     * Used by Conway-only block production paths (devnet/past-time-travel) where entropy never applies.
+     * Callers that need TPraos extra-entropy support must use the overload that accepts {@code extraEntropy}
+     * and {@code newEpochEra}.
      *
      * @param slot the slot about to be produced/observed
      */
     public void advanceEpochIfNeeded(long slot) {
+        advanceEpochIfNeeded(slot, null, null);
+    }
+
+    /**
+     * Advance epoch if the given slot crosses an epoch boundary, with optional TPraos extra entropy.
+     * Must be called BEFORE reading epochNonce so that VRF proofs use the correct nonce.
+     *
+     * @param slot         the slot about to be produced/observed
+     * @param extraEntropy 32-byte extraEntropy from the new epoch's protocol params (null = NeutralNonce).
+     *                     Only applied when {@code newEpochEra} is pre-Babbage (TPraos).
+     * @param newEpochEra  the era of the new epoch — required for TPraos detection. A null era is
+     *                     treated as "unknown" and entropy is NOT applied.
+     */
+    public void advanceEpochIfNeeded(long slot, byte[] extraEntropy, Era newEpochEra) {
         int blockEpoch = epochForSlot(slot);
         if (blockEpoch > currentEpoch) {
-            performTickn();
+            performTickn(extraEntropy, newEpochEra);
             currentEpoch = blockEpoch;
             log.info("Epoch transition to epoch {}, new epochNonce={}",
                     currentEpoch, com.bloxbean.cardano.yaci.core.util.HexUtil.encodeHexString(epochNonce));
@@ -266,19 +282,37 @@ public class EpochNonceState {
     }
 
     /**
-     * TICKN transition: compute new epoch nonce from candidate and ticknPrevHash.
+     * TICKN transition: compute new epoch nonce.
+     * <ul>
+     *   <li>Praos (Babbage+): {@code epochNonce = candidateNonce ⭒ ticknPrevHashNonce}</li>
+     *   <li>TPraos (Shelley–Alonzo): {@code epochNonce = (candidateNonce ⭒ ticknPrevHashNonce) ⭒ extraEntropy}
+     *       when {@code extraEntropy} is non-null.</li>
+     * </ul>
+     * Null {@code newEpochEra} is NOT treated as pre-Babbage — entropy is skipped to avoid
+     * silently applying it on a Babbage-start network where era resolution failed.
      */
-    private void performTickn() {
-        // epochNonce = candidateNonce ⭒ ticknPrevHashNonce
-        byte[] newEpochNonce = combineNonces(candidateNonce, ticknPrevHashNonce);
-        if (newEpochNonce != null) {
-            epochNonce = newEpochNonce;
+    private void performTickn(byte[] extraEntropy, Era newEpochEra) {
+        byte[] combined = combineNonces(candidateNonce, ticknPrevHashNonce);
+        if (extraEntropy != null && usesTPraosExtraEntropy(newEpochEra)) {
+            combined = combineNonces(combined, extraEntropy);
+        }
+        if (combined != null) {
+            epochNonce = combined;
         } else {
-            log.warn("performTickn: combineNonces returned null (both inputs null), keeping previous epochNonce");
+            log.warn("performTickn: combineNonces returned null (all inputs null), keeping previous epochNonce");
         }
 
         // Carry forward: ticknPrevHashNonce = labNonce from this epoch
         ticknPrevHashNonce = labNonce != null ? labNonce.clone() : null;
+    }
+
+    /**
+     * Whether the given era uses the TPraos TICKN variant that incorporates extra entropy.
+     * Returns {@code true} only for Shelley–Alonzo. Null era is explicitly NOT treated as TPraos —
+     * applying entropy to Babbage+ is a consensus bug, so unknown era must skip entropy.
+     */
+    static boolean usesTPraosExtraEntropy(Era era) {
+        return era != null && era.getValue() < Era.Babbage.getValue();
     }
 
     /**

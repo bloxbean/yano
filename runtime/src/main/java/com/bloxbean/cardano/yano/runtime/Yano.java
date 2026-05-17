@@ -786,6 +786,41 @@ public class Yano implements NodeAPI {
         return epochParamProvider;
     }
 
+    /**
+     * Resolve the *effective* {@link EpochParamProvider} for nonce evolution.
+     * Returns the {@link EpochParamTracker} when wired and enabled — it carries on-chain
+     * protocol-param updates (e.g. mainnet epoch 259 extraEntropy). Falls back to the
+     * genesis-backed {@link #epochParamProvider} otherwise.
+     * <p>
+     * Mirrors the pattern at {@code DefaultAccountStateStore.java:1362}.
+     */
+    private EpochParamProvider effectiveEpochParamProvider() {
+        if (accountStateStore instanceof DefaultAccountStateStore store) {
+            EpochParamTracker tracker = store.getParamTracker();
+            if (tracker != null && tracker.isEnabled()) {
+                return tracker;
+            }
+        }
+        return epochParamProvider;
+    }
+
+    /**
+     * Magic-aware startup notice for nonce tracking mode.
+     * WARN only on mainnet (the only public network with a known non-null on-chain entropy update);
+     * INFO elsewhere to keep devnet/preview/preprod logs quiet.
+     */
+    private static void logNonceTrackingMode(boolean trackedParams, long networkMagic) {
+        if (trackedParams) {
+            log.info("Nonce tracking wired with EpochParamTracker");
+        } else if (networkMagic == 764824073L) {
+            log.warn("EpochParamTracker not wired; historical on-chain extraEntropy updates "
+                    + "will be treated as NeutralNonce. Affects mainnet epoch 259 nonce computation.");
+        } else {
+            log.info("Nonce tracking wired without EpochParamTracker; "
+                    + "on-chain extraEntropy updates unavailable");
+        }
+    }
+
     public AccountStateStore getAccountStateStore() {
         return accountStateStore;
     }
@@ -1265,7 +1300,13 @@ public class Yano implements NodeAPI {
 
             // 7. Create & register NonceEvolutionListener
             String issuerVkeyHex = signedBlockBuilder.getIssuerVkeyHex();
-            var nonceListener = new NonceEvolutionListener(epochNonceState, nonceStore, issuerVkeyHex);
+            EpochParamProvider effectiveParamProvider = effectiveEpochParamProvider();
+            boolean trackedParams = effectiveParamProvider instanceof EpochParamTracker tracker
+                    && tracker.isEnabled();
+            long networkMagic = config.getProtocolMagic();
+            logNonceTrackingMode(trackedParams, networkMagic);
+            var nonceListener = new NonceEvolutionListener(epochNonceState, nonceStore, issuerVkeyHex,
+                    effectiveParamProvider, trackedParams, networkMagic);
             AnnotationListenerRegistrar.register(eventBus, nonceListener,
                     com.bloxbean.cardano.yaci.events.api.SubscriptionOptions.builder().build());
             log.info("NonceEvolutionListener registered (skipping own blocks with issuerVkey={})", issuerVkeyHex);
@@ -1424,7 +1465,13 @@ public class Yano implements NodeAPI {
             }
 
             // Register listener — no own-block skipping (null issuerVkey) since we're not producing
-            var nonceListener = new NonceEvolutionListener(epochNonceState, nonceStore, null);
+            EpochParamProvider effectiveParamProvider = effectiveEpochParamProvider();
+            boolean trackedParams = effectiveParamProvider instanceof EpochParamTracker tracker
+                    && tracker.isEnabled();
+            long networkMagic = config.getProtocolMagic();
+            logNonceTrackingMode(trackedParams, networkMagic);
+            var nonceListener = new NonceEvolutionListener(epochNonceState, nonceStore, null,
+                    effectiveParamProvider, trackedParams, networkMagic);
             AnnotationListenerRegistrar.register(eventBus, nonceListener,
                     com.bloxbean.cardano.yaci.events.api.SubscriptionOptions.builder().build());
 
