@@ -267,12 +267,17 @@ Add `PeerSessionSupervisor`:
 - Add focused integration tests where practical.
 - Add manual validation checklist for mainnet overnight sync.
 - Add TCP proxy scenario if feasible in this repo.
+- Validate against a real public test network with induced faults before
+  declaring the recovery work done.
 - Tune defaults only after evidence.
 
 ### Verification
 
 - Mainnet sync through public relay overnight.
 - Forced disconnect/broken pipe recovers.
+- Real test-network sync recovers after induced faults, for example dropped TCP
+  connection, paused proxy, outbound packet rejection, or proxy restart.
+- Fault validation is repeated during bulk catch-up and near tip.
 - Existing runtime tests pass.
 
 ### Review Notes
