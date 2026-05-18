@@ -44,8 +44,8 @@ The first implementation must stay simple and maintainable:
 | 1 | Completed | `3283023` | Add `runtime.peer` skeleton and focused unit tests |
 | 2 | Completed | `5255e84` | Move current single-peer startup/stop lifecycle behind `PeerSession` with no recovery decision yet |
 | 3 | Completed | `446eee5` | Add health tracking from header/body/disconnect/keepalive signals |
-| 4 | Completed | Current commit | Add supervisor stale-session detection and single-flight rebuild |
-| 5 | Pending | TBD | Add rollback guard and body-fetch stuck detection |
+| 4 | Completed | `b36f09f` | Add supervisor stale-session detection and single-flight rebuild |
+| 5 | Completed | Current commit | Add rollback guard and body-fetch stuck detection |
 | 6 | Pending | TBD | Add terminal failure/status/observability |
 | 7 | Pending | TBD | Add focused recovery tests and TCP-proxy/manual validation plan |
 
@@ -282,14 +282,27 @@ Add `PeerSessionSupervisor`:
 - Rollback in progress blocks recovery.
 - Stuck body fetch triggers recovery after policy.
 - Recovery does not leave old batch state blocking new session.
+- Rollback and disconnect clear body-fetch health state.
+- `./gradlew :runtime:compileJava`
+- `./gradlew :runtime:test --tests "com.bloxbean.cardano.yano.runtime.peer.PeerSessionSupervisorTest" --tests "com.bloxbean.cardano.yano.runtime.peer.*" --tests "com.bloxbean.cardano.yano.runtime.PipelineDataListenerHealthTest" --tests "com.bloxbean.cardano.yano.runtime.BodyFetchManagerSimpleTest" --tests "com.bloxbean.cardano.yano.runtime.HeaderSyncManagerSimpleTest"`
 
 ### Review Notes
 
-- Pending.
+- Two reviewer agents completed review.
+- Fixed blocking findings before commit:
+  - rollback handling and peer recovery now share `peerSessionLock`, so they
+    cannot stop/recreate the active peer while rollback is mutating local state;
+  - rollback clears both `PeerHealth` body-fetch state and the real
+    `BodyFetchManager` batch state;
+  - body-fetch stuck detection now uses last body activity while a batch is in
+    progress, so it catches both no-body and partial-progress stalls;
+  - `Policy` keeps an 8-argument compatibility constructor while adding the new
+    body-fetch-stuck timeout to the canonical policy.
+- Final reviewer pass found no unresolved Phase 5 findings.
 
 ### Commit
 
-- Pending.
+- Included in the Phase 5 commit.
 
 ## Phase 6: Terminal Failure and Observability
 

@@ -178,6 +178,7 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
     private final AtomicBoolean isSyncing = new AtomicBoolean(false);
     private final AtomicBoolean isServerRunning = new AtomicBoolean(false);
     private final AtomicBoolean disconnectLogged = new AtomicBoolean(false);
+    private final AtomicBoolean rollbackInProgress = new AtomicBoolean(false);
     private final Object peerSessionLock = new Object();
 
     // Statistics
@@ -3112,14 +3113,24 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
                     scheduler,
                     () -> peerSession,
                     this::recoverPeerSession,
-                    PeerSessionSupervisor.Policy.defaults());
+                    PeerSessionSupervisor.Policy.defaults(),
+                    this::isPeerRecoveryDeferred);
         }
         peerSessionSupervisor.start();
+    }
+
+    private boolean isPeerRecoveryDeferred() {
+        return rollbackInProgress.get();
     }
 
     private void recoverPeerSession(PeerRecoveryReason reason) {
         synchronized (peerSessionLock) {
             if (!isRunning.get() || !config.isEnableClient()) {
+                return;
+            }
+
+            if (rollbackInProgress.get()) {
+                log.info("Deferring upstream peer session recovery while rollback is in progress: reason={}", reason);
                 return;
             }
 
@@ -3385,6 +3396,17 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
 
     // Rollback handling - coordinates between managers and handles server notifications
     public void handleChainSyncRollback(Point point) {
+        synchronized (peerSessionLock) {
+            rollbackInProgress.set(true);
+            try {
+                doHandleChainSyncRollback(point);
+            } finally {
+                rollbackInProgress.set(false);
+            }
+        }
+    }
+
+    private void doHandleChainSyncRollback(Point point) {
         var localTip = chainState.getTip();
         long rollbackSlot = point.getSlot();
         BodyFetchManager bodyFetchManager = currentBodyFetchManager();

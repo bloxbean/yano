@@ -214,6 +214,10 @@ public class PipelineDataListener implements BlockChainDataListener {
 
     @Override
     public void onRollback(Point point) {
+        if (peerHealth != null) {
+            peerHealth.markBodyFetchCompleted();
+        }
+        bodyFetchManager.onRollback(point);
         // Delegate rollback handling to Yano for classification and coordination
         // Yano will pause/resume BodyFetchManager and handle server notifications
         callbacks.handleChainSyncRollback(point);

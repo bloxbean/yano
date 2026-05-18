@@ -9,6 +9,7 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
@@ -25,6 +26,7 @@ public final class PeerSessionSupervisor implements AutoCloseable {
     private final Policy policy;
     private final LongSupplier nowSupplier;
     private final LongSupplier recoveryJitterSupplier;
+    private final BooleanSupplier recoveryDeferredSupplier;
     private final AtomicBoolean recoveryInProgress = new AtomicBoolean(false);
 
     private volatile ScheduledFuture<?> task;
@@ -34,7 +36,15 @@ public final class PeerSessionSupervisor implements AutoCloseable {
                                  Supplier<PeerSession> sessionSupplier,
                                  Consumer<PeerRecoveryReason> recoveryHandler,
                                  Policy policy) {
-        this(scheduler, sessionSupplier, recoveryHandler, policy, System::currentTimeMillis);
+        this(scheduler, sessionSupplier, recoveryHandler, policy, System::currentTimeMillis, () -> false);
+    }
+
+    public PeerSessionSupervisor(ScheduledExecutorService scheduler,
+                                 Supplier<PeerSession> sessionSupplier,
+                                 Consumer<PeerRecoveryReason> recoveryHandler,
+                                 Policy policy,
+                                 BooleanSupplier recoveryDeferredSupplier) {
+        this(scheduler, sessionSupplier, recoveryHandler, policy, System::currentTimeMillis, recoveryDeferredSupplier);
     }
 
     PeerSessionSupervisor(ScheduledExecutorService scheduler,
@@ -42,10 +52,20 @@ public final class PeerSessionSupervisor implements AutoCloseable {
                           Consumer<PeerRecoveryReason> recoveryHandler,
                           Policy policy,
                           LongSupplier nowSupplier) {
+        this(scheduler, sessionSupplier, recoveryHandler, policy, nowSupplier, () -> false);
+    }
+
+    PeerSessionSupervisor(ScheduledExecutorService scheduler,
+                          Supplier<PeerSession> sessionSupplier,
+                          Consumer<PeerRecoveryReason> recoveryHandler,
+                          Policy policy,
+                          LongSupplier nowSupplier,
+                          BooleanSupplier recoveryDeferredSupplier) {
         this(scheduler, sessionSupplier, recoveryHandler, policy, nowSupplier,
                 () -> policy.recoveryJitterMillis() > 0
                         ? ThreadLocalRandom.current().nextLong(policy.recoveryJitterMillis() + 1)
-                        : 0);
+                        : 0,
+                recoveryDeferredSupplier);
     }
 
     PeerSessionSupervisor(ScheduledExecutorService scheduler,
@@ -54,12 +74,23 @@ public final class PeerSessionSupervisor implements AutoCloseable {
                           Policy policy,
                           LongSupplier nowSupplier,
                           LongSupplier recoveryJitterSupplier) {
+        this(scheduler, sessionSupplier, recoveryHandler, policy, nowSupplier, recoveryJitterSupplier, () -> false);
+    }
+
+    PeerSessionSupervisor(ScheduledExecutorService scheduler,
+                          Supplier<PeerSession> sessionSupplier,
+                          Consumer<PeerRecoveryReason> recoveryHandler,
+                          Policy policy,
+                          LongSupplier nowSupplier,
+                          LongSupplier recoveryJitterSupplier,
+                          BooleanSupplier recoveryDeferredSupplier) {
         this.scheduler = Objects.requireNonNull(scheduler, "scheduler");
         this.sessionSupplier = Objects.requireNonNull(sessionSupplier, "sessionSupplier");
         this.recoveryHandler = Objects.requireNonNull(recoveryHandler, "recoveryHandler");
         this.policy = Objects.requireNonNull(policy, "policy");
         this.nowSupplier = Objects.requireNonNull(nowSupplier, "nowSupplier");
         this.recoveryJitterSupplier = Objects.requireNonNull(recoveryJitterSupplier, "recoveryJitterSupplier");
+        this.recoveryDeferredSupplier = Objects.requireNonNull(recoveryDeferredSupplier, "recoveryDeferredSupplier");
         this.policy.validate();
     }
 
@@ -141,6 +172,10 @@ public final class PeerSessionSupervisor implements AutoCloseable {
                     : Optional.empty();
         }
 
+        if (isBodyFetchStuck(status, now)) {
+            return Optional.of(PeerRecoveryReason.BODY_FETCH_STUCK);
+        }
+
         if (appProgressAge < policy.noProgressTimeoutMillis()) {
             return Optional.empty();
         }
@@ -158,6 +193,11 @@ public final class PeerSessionSupervisor implements AutoCloseable {
     }
 
     private void requestRecovery(PeerSession session, PeerRecoveryReason reason, long now) {
+        if (recoveryDeferredSupplier.getAsBoolean()) {
+            log.debug("Peer session recovery deferred: reason={}", reason);
+            return;
+        }
+
         if (nextRecoveryAllowedAtMillis > 0 && now < nextRecoveryAllowedAtMillis) {
             return;
         }
@@ -175,6 +215,20 @@ public final class PeerSessionSupervisor implements AutoCloseable {
         } finally {
             recoveryInProgress.set(false);
         }
+    }
+
+    private boolean isBodyFetchStuck(PeerSessionStatus status, long now) {
+        if (!status.bodyFetchInProgress()) {
+            return false;
+        }
+
+        long bodyFetchStartedAt = status.bodyFetchStartedAtMillis();
+        if (bodyFetchStartedAt <= 0) {
+            return false;
+        }
+
+        long lastBodyActivity = Math.max(bodyFetchStartedAt, status.lastBodyReceivedAtMillis());
+        return ageSince(lastBodyActivity, now) >= policy.bodyFetchStuckTimeoutMillis();
     }
 
     private long applicationProgressAge(PeerSessionStatus status, long now) {
@@ -211,17 +265,38 @@ public final class PeerSessionSupervisor implements AutoCloseable {
             long noProgressTimeoutMillis,
             long keepAliveTimeoutMillis,
             long missingKeepAliveNoProgressTimeoutMillis,
+            long bodyFetchStuckTimeoutMillis,
             long disconnectGraceMillis,
             long startupTimeoutMillis,
             long recoveryCooldownMillis,
             long recoveryJitterMillis
     ) {
+        public Policy(long checkIntervalMillis,
+                      long noProgressTimeoutMillis,
+                      long keepAliveTimeoutMillis,
+                      long missingKeepAliveNoProgressTimeoutMillis,
+                      long disconnectGraceMillis,
+                      long startupTimeoutMillis,
+                      long recoveryCooldownMillis,
+                      long recoveryJitterMillis) {
+            this(checkIntervalMillis,
+                    noProgressTimeoutMillis,
+                    keepAliveTimeoutMillis,
+                    missingKeepAliveNoProgressTimeoutMillis,
+                    TimeUnit.MINUTES.toMillis(5),
+                    disconnectGraceMillis,
+                    startupTimeoutMillis,
+                    recoveryCooldownMillis,
+                    recoveryJitterMillis);
+        }
+
         public static Policy defaults() {
             return new Policy(
                     TimeUnit.SECONDS.toMillis(30),
                     TimeUnit.MINUTES.toMillis(10),
                     TimeUnit.MINUTES.toMillis(2),
                     TimeUnit.MINUTES.toMillis(10),
+                    TimeUnit.MINUTES.toMillis(5),
                     TimeUnit.SECONDS.toMillis(30),
                     TimeUnit.SECONDS.toMillis(60),
                     TimeUnit.SECONDS.toMillis(30),
@@ -233,6 +308,7 @@ public final class PeerSessionSupervisor implements AutoCloseable {
                     || noProgressTimeoutMillis <= 0
                     || keepAliveTimeoutMillis <= 0
                     || missingKeepAliveNoProgressTimeoutMillis <= 0
+                    || bodyFetchStuckTimeoutMillis <= 0
                     || disconnectGraceMillis <= 0
                     || startupTimeoutMillis <= 0
                     || recoveryCooldownMillis <= 0

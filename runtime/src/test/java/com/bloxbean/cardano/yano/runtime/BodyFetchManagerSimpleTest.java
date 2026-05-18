@@ -14,6 +14,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 
+import java.lang.reflect.Field;
 import java.util.Collections;
 import java.util.List;
 
@@ -193,6 +194,17 @@ class BodyFetchManagerSimpleTest {
         assertDoesNotThrow(() -> bodyFetchManager.onDisconnect());
         assertDoesNotThrow(() -> bodyFetchManager.noBlockFound(Point.ORIGIN, rollbackPoint));
     }
+
+    @Test
+    @DisplayName("Rollback clears in-progress batch state")
+    void rollbackClearsInProgressBatchState() throws Exception {
+        forceBatchInProgress();
+        assertTrue(bodyFetchManager.getStatus().batchInProgress);
+
+        bodyFetchManager.onRollback(new Point(1000L, "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abc1"));
+
+        assertFalse(bodyFetchManager.getStatus().batchInProgress);
+    }
     
     @Test
     @DisplayName("Test metrics reset functionality")
@@ -361,6 +373,12 @@ class BodyFetchManagerSimpleTest {
                                  + Character.digit(hex.charAt(i+1), 16));
         }
         return data;
+    }
+
+    private void forceBatchInProgress() throws ReflectiveOperationException {
+        Field field = BodyFetchManager.class.getDeclaredField("batchInProgress");
+        field.setAccessible(true);
+        field.setBoolean(bodyFetchManager, true);
     }
     
     // Simple mock PeerClient for testing

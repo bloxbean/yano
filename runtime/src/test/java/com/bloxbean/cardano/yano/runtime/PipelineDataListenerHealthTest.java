@@ -139,6 +139,11 @@ class PipelineDataListenerHealthTest {
         assertFalse(done.bodyFetchInProgress());
 
         listener.batchStarted();
+        listener.onRollback(new Point(12, "rollback"));
+        PeerSessionStatus rolledBack = peerHealth.snapshot(System.currentTimeMillis());
+        assertFalse(rolledBack.bodyFetchInProgress());
+
+        listener.batchStarted();
         listener.onDisconnect();
         PeerSessionStatus disconnected = peerHealth.snapshot(System.currentTimeMillis());
         assertFalse(disconnected.bodyFetchInProgress());

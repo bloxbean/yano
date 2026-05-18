@@ -14,6 +14,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -108,6 +109,68 @@ class PeerSessionSupervisorTest {
         supervisor(session, recoveries).checkNow();
 
         assertEquals(List.of(PeerRecoveryReason.DISCONNECT_STALE), recoveries);
+    }
+
+    @Test
+    void bodyFetchStuckTriggersRecoveryWhenNoBodyArrives() {
+        PeerHealth health = runningHealth();
+        health.recordHeaderProgress(100, 10, now.get() - 100);
+        health.markBodyFetchStarted(now.get() - 2_000);
+        TestPeerSession session = new TestPeerSession(health, now);
+        List<PeerRecoveryReason> recoveries = new CopyOnWriteArrayList<>();
+
+        supervisor(session, recoveries).checkNow();
+
+        assertEquals(List.of(PeerRecoveryReason.BODY_FETCH_STUCK), recoveries);
+    }
+
+    @Test
+    void bodyFetchWithBodySinceStartDoesNotTriggerStuckRecovery() {
+        PeerHealth health = runningHealth();
+        health.markBodyFetchStarted(now.get() - 2_000);
+        health.recordBodyReceived(101, 11, now.get() - 100);
+        TestPeerSession session = new TestPeerSession(health, now);
+        List<PeerRecoveryReason> recoveries = new CopyOnWriteArrayList<>();
+
+        supervisor(session, recoveries).checkNow();
+
+        assertTrue(recoveries.isEmpty());
+    }
+
+    @Test
+    void bodyFetchPartialProgressThenStallTriggersRecovery() {
+        PeerHealth health = runningHealth();
+        health.markBodyFetchStarted(now.get() - 5_000);
+        health.recordBodyReceived(101, 11, now.get() - 2_000);
+        TestPeerSession session = new TestPeerSession(health, now);
+        List<PeerRecoveryReason> recoveries = new CopyOnWriteArrayList<>();
+
+        supervisor(session, recoveries).checkNow();
+
+        assertEquals(List.of(PeerRecoveryReason.BODY_FETCH_STUCK), recoveries);
+    }
+
+    @Test
+    void rollbackGuardDefersRecoveryWithoutStartingCooldown() {
+        PeerHealth health = runningHealth();
+        health.recordHeaderProgress(100, 10, now.get() - 2_000);
+        health.recordKeepAliveResponse(now.get() - 2_000);
+        TestPeerSession session = new TestPeerSession(health, now);
+        AtomicBoolean rollbackInProgress = new AtomicBoolean(true);
+        List<PeerRecoveryReason> recoveries = new CopyOnWriteArrayList<>();
+        PeerSessionSupervisor supervisor = new PeerSessionSupervisor(
+                scheduler,
+                () -> session,
+                recoveries::add,
+                policy(),
+                now::get,
+                rollbackInProgress::get);
+
+        supervisor.checkNow();
+        rollbackInProgress.set(false);
+        supervisor.checkNow();
+
+        assertEquals(List.of(PeerRecoveryReason.KEEPALIVE_STALE), recoveries);
     }
 
     @Test
@@ -214,6 +277,7 @@ class PeerSessionSupervisorTest {
     private PeerSessionSupervisor.Policy policy() {
         return new PeerSessionSupervisor.Policy(
                 10,
+                1_000,
                 1_000,
                 1_000,
                 1_000,
