@@ -559,6 +559,10 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
             // Check if the exact requested slot exists
             byte[] blockNumberBytes = db.get(numberBySlotHandle, longToBytes(slot));
             if (blockNumberBytes == null) {
+                if (slot == 0 && getTip() == null && getHeaderTip() == null) {
+                    log.info("Rollback to origin requested on empty chain state; treating as no-op");
+                    return;
+                }
                 log.error("Rollback failed: requested slot {} does not exist in storage", slot);
                 throw new RuntimeException("Cannot rollback to slot " + slot + " - slot not found in storage");
             }
