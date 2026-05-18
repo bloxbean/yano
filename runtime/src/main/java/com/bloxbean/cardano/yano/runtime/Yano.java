@@ -153,7 +153,7 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
     private boolean isPipelinedMode = false;
 
     // Remote tip info for sync strategy
-    private Tip remoteTip;
+    private volatile Tip remoteTip;
 
     // Server components (for serving other clients)
     private NodeServer nodeServer;
@@ -3071,9 +3071,10 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
 
             // Find remote tip to understand sync scope
             TipFinder tipFinder = new TipFinder(remoteCardanoHost, remoteCardanoPort, startPoint, protocolMagic);
-            remoteTip = tipFinder.find()
+            Tip discoveredRemoteTip = tipFinder.find()
                     .doFinally(signalType -> tipFinder.shutdown())
                     .block(Duration.ofSeconds(5));
+            remoteTip = usableRemoteTip(discoveredRemoteTip, startPoint, localTip, "client sync startup");
 
             synchronized (peerSessionLock) {
                 if (!isRunning.get() || !config.isEnableClient()) {
@@ -3170,10 +3171,7 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
                 Point startPoint = determineStartPoint(localTip);
                 log.info("Restarting upstream sync from point: {}", startPoint);
 
-                TipFinder tipFinder = new TipFinder(remoteCardanoHost, remoteCardanoPort, startPoint, protocolMagic);
-                remoteTip = tipFinder.find()
-                        .doFinally(signalType -> tipFinder.shutdown())
-                        .block(Duration.ofSeconds(5));
+                remoteTip = usableRemoteTip(remoteTip, startPoint, localTip, "peer recovery");
 
                 if (!isRunning.get() || !config.isEnableClient()) {
                     log.info("Skipping peer session recovery start because Yano is stopping");
@@ -3230,11 +3228,14 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
         syncPhase = SyncPhase.INITIAL_SYNC;
         log.info("ChainSync agent started - reset to INITIAL_SYNC phase");
         // Determine sync strategy based on local vs remote tip
-        boolean shouldUseBulkSync = shouldUseBulkSync(localTip, remoteTip.getPoint());
+        Point remotePoint = remoteTip != null && remoteTip.getPoint() != null
+                ? remoteTip.getPoint()
+                : startPoint;
+        boolean shouldUseBulkSync = shouldUseBulkSync(localTip, remotePoint);
 
         if (shouldUseBulkSync) {
             log.info("🚀 ==> BULK PIPELINED SYNC: {} slots behind, using high-performance pipeline",
-                    remoteTip.getPoint().getSlot() - (localTip != null ? localTip.getSlot() : 0));
+                    remotePoint.getSlot() - (localTip != null ? localTip.getSlot() : 0));
             log.info("🚀 ==> Headers will arrive first, bodies will be fetched in parallel");
             isInitialSyncComplete = false;
 
@@ -3288,6 +3289,16 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
         return new Point(localTip.getSlot(), HexUtil.encodeHexString(localTip.getBlockHash()));
     }
 
+    private Tip usableRemoteTip(Tip candidate, Point startPoint, ChainTip localTip, String context) {
+        if (candidate != null && candidate.getPoint() != null) {
+            return candidate;
+        }
+
+        long blockNumber = localTip != null ? localTip.getBlockNumber() : 0;
+        log.warn("Remote tip unavailable during {}; using local point as temporary sync scope", context);
+        return new Tip(startPoint, blockNumber);
+    }
+
     /**
      * Determine if we should use bulk sync based on local tip age
      */
@@ -3331,8 +3342,9 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
      */
     private void checkSyncProgress() {
         // If we have a remote tip and we're close to it, mark initial sync as complete
-        if (!isInitialSyncComplete && remoteTip != null) {
-            long slotDifference = remoteTip.getPoint().getSlot() - lastProcessedSlot;
+        Point remotePoint = remoteTip != null ? remoteTip.getPoint() : null;
+        if (!isInitialSyncComplete && remotePoint != null) {
+            long slotDifference = remotePoint.getSlot() - lastProcessedSlot;
 
             // If we're within 10 slots of the remote tip, consider initial sync complete
             if (slotDifference <= 10) {
@@ -3811,6 +3823,8 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
                     recoveryStatus.terminal() ? " terminal" : "");
         }
 
+        Point remotePoint = remoteTip != null ? remoteTip.getPoint() : null;
+
         return NodeStatus.builder()
                 .running(isRunning())
                 .syncing(isSyncing())
@@ -3819,8 +3833,8 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
                 .lastProcessedSlot(lastProcessedSlot)
                 .localTipSlot(localTip != null ? localTip.getSlot() : null)
                 .localTipBlockNumber(localTip != null ? localTip.getBlockNumber() : null)
-                .remoteTipSlot(remoteTip != null ? remoteTip.getPoint().getSlot() : null)
-                .remoteTipBlockNumber(remoteTip != null ? remoteTip.getBlock() : null)
+                .remoteTipSlot(remotePoint != null ? remotePoint.getSlot() : null)
+                .remoteTipBlockNumber(remotePoint != null ? remoteTip.getBlock() : null)
                 .initialSyncComplete(isInitialSyncComplete)
                 .syncMode(isPipelinedMode ? "pipelined" : "sequential")
                 .statusMessage(statusMessage)
@@ -3993,10 +4007,11 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
      */
     public void maybeFastTransitionToSteadyState(Tip remoteTip) {
         try {
-            if (!isPipelinedMode) return;
+            if (remoteTip == null || remoteTip.getPoint() == null) return;
+            this.remoteTip = remoteTip;
 
             ChainTip localTip = chainState.getTip();
-            if (localTip == null || remoteTip == null || remoteTip.getPoint() == null) return;
+            if (!isPipelinedMode || localTip == null) return;
 
             long remoteSlot = remoteTip.getPoint().getSlot();
             long distance = Math.max(0, remoteSlot - localTip.getSlot());

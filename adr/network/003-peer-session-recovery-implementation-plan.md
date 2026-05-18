@@ -46,8 +46,8 @@ The first implementation must stay simple and maintainable:
 | 3 | Completed | `446eee5` | Add health tracking from header/body/disconnect/keepalive signals |
 | 4 | Completed | `b36f09f` | Add supervisor stale-session detection and single-flight rebuild |
 | 5 | Completed | `1a0f40c` | Add rollback guard and body-fetch stuck detection |
-| 6 | Completed | Current commit | Add terminal failure/status/observability |
-| 7 | Pending | TBD | Add focused recovery tests and TCP-proxy/manual validation plan |
+| 6 | Completed | `f8cbe6a` | Add terminal failure/status/observability |
+| 7 | In Review | Current commit | Add focused recovery tests and TCP-proxy/manual validation plan |
 
 ## Phase 0: ADR Alignment and Tracker
 
@@ -366,13 +366,97 @@ Add `PeerSessionSupervisor`:
 - Fault validation is repeated during bulk catch-up and near tip.
 - Existing runtime tests pass.
 
+### Real-Network Validation
+
+Preview bulk-catch-up validation was run against a local TCP fault proxy:
+
+```bash
+python3 scripts/network/tcp_fault_proxy.py \
+  --listen-port 33001 \
+  --target-host preview-node.play.dev.cardano.org \
+  --target-port 3001 \
+  --control-port 33002
+```
+
+Yano was started with a disposable chainstate and the proxy as its upstream:
+
+```bash
+java -Dquarkus.profile=preview \
+  -Dquarkus.http.port=7081 \
+  -Dyano.server.port=13381 \
+  -Dyano.remote.host=127.0.0.1 \
+  -Dyano.remote.port=33001 \
+  -Dyano.storage.path=/tmp/yano-peer-recovery-preview-2/chainstate \
+  -Dyano.utxo.enabled=false \
+  -Dyano.account-state.enabled=false \
+  -Dyano.account-history.enabled=false \
+  -Dyano.adapot.enabled=false \
+  -Dyano.rewards.enabled=false \
+  -Dyano.governance.enabled=false \
+  -Dyano.epoch-params.tracking-enabled=false \
+  -Dyaci.plugins.enabled=false \
+  -jar build/yano.jar
+```
+
+Observed results:
+
+- Baseline sync through the proxy reached `peerState=RUNNING`,
+  `peerRecoveryFailures=0`, and local slot `258105`.
+- A forced active-connection drop through `POST /drop` recovered through Yaci's
+  built-in reconnect path. The proxy accepted a new connection, Yano stayed
+  `RUNNING`, recovery failures stayed `0`, and local slot advanced to `675992`
+  within roughly 15 seconds.
+- A full proxy outage reproduced the harder stale-peer condition. The
+  supervisor replaced the stale session and the new session stayed in
+  `STARTING` while Yaci retried connects against the unavailable proxy.
+- Restarting the proxy restored sync without restarting Yano. The peer returned
+  to `RUNNING`, recovery failures stayed `0`, local slot advanced from `764405`
+  at outage to `1384435` roughly 25 seconds after proxy restart, and logs
+  continued through slot `1764034` before the validation process was stopped.
+
+Near-tip validation remains pending. This run intentionally covered the
+historical bulk-catch-up path where the original stuck-sync failure has been
+observed most often.
+
+### Fix From Validation
+
+The first full-outage run found a recovery-path bug: `recoverPeerSession()`
+opened a fresh `TipFinder` connection while the upstream was already unhealthy.
+Because Yaci starts the network connection synchronously inside the reactive
+source, `block(Duration.ofSeconds(5))` did not reliably bound the recovery path.
+
+The fix is to avoid `TipFinder` during recovery. Recovery now reuses the cached
+remote tip when available, or uses the local restart point as a temporary
+recovery scope when no cached remote tip exists. The replacement peer session
+still starts chain sync from the local point, so the cached remote tip is only a
+bulk-vs-realtime/status hint during recovery.
+
+The recovered chain-sync intersection callback refreshes the cached remote tip
+once the replacement session reaches the peer, so status and initial-sync
+completion are not permanently tied to the temporary recovery scope.
+
 ### Review Notes
 
-- Pending.
+- Two reviewer passes were run for Phase 7.
+- Initial review found no high/medium issues, but called out stale remote-tip
+  status as a residual risk.
+- A second review found medium findings around stale/synthetic remote-tip usage,
+  null/no-point tip handling in the shared pipelined start path, and validation
+  wording that overstated near-tip coverage.
+- Fixed before commit:
+  - `remoteTip` is now volatile and refreshed from recovered chain-sync
+    intersection callbacks;
+  - startup and recovery normalize null/no-point tips into a temporary local
+    sync scope;
+  - `startPipelinedClientSync`, `checkSyncProgress`, and `getStatus` guard
+    `remoteTip.getPoint()`;
+  - the validation notes now explicitly say bulk-catch-up preview validation
+    completed and near-tip validation remains pending.
+- Final reviewer pass found no remaining high/medium issues.
 
 ### Commit
 
-- Pending.
+- Pending Phase 7 review.
 
 ## Current Design Decisions
 
@@ -394,4 +478,10 @@ Add `PeerSessionSupervisor`:
 - 2026-05-18: Phase 3 completed and committed as `446eee5`.
 - 2026-05-18: Phase 4 completed and committed as `b36f09f`.
 - 2026-05-18: Phase 5 completed and committed as `1a0f40c`.
-- 2026-05-18: Phase 6 completed and ready to commit after final review.
+- 2026-05-18: Phase 6 completed and committed as `f8cbe6a`.
+- 2026-05-18: Phase 7 preview bulk-catch-up fault validation completed. A
+  forced TCP drop recovered through Yaci reconnect; a full proxy outage
+  recovered after proxy restart through the Yano supervisor replacement path.
+  The recovery path was simplified to reuse cached remote-tip context instead
+  of opening `TipFinder` during recovery. Near-tip fault validation remains
+  pending.
