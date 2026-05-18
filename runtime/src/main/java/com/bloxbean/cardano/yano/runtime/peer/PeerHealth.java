@@ -40,6 +40,10 @@ public final class PeerHealth {
         this.state = Objects.requireNonNull(state, "state");
     }
 
+    public synchronized boolean isTerminalFailure() {
+        return state == PeerSessionState.TERMINAL_FAILURE;
+    }
+
     public synchronized void recordHeaderProgress(long slot, long blockNumber, long nowMillis) {
         lastHeaderReceivedAtMillis = nowMillis;
         lastHeaderSlot = slot;

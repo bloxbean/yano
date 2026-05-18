@@ -12,5 +12,6 @@ public enum PeerRecoveryReason {
     FAILED_WRITE,
     BODY_FETCH_STUCK,
     INTERSECTION_FAILED,
+    STARTUP_FAILED,
     TERMINAL_FAILURE
 }

@@ -32,6 +32,7 @@ public class PeerSession {
     private final EventBus eventBus;
     private final PeerSessionCallbacks callbacks;
     private final EpochParamProvider epochParamProvider;
+    private final PeerHealth peerHealth;
 
     private PeerClient peerClient;
     private HeaderSyncManager headerSyncManager;
@@ -52,41 +53,68 @@ public class PeerSession {
         this.eventBus = Objects.requireNonNull(eventBus, "eventBus");
         this.callbacks = Objects.requireNonNull(callbacks, "callbacks");
         this.epochParamProvider = epochParamProvider;
+        this.peerHealth = new PeerHealth(host + ":" + port, System.currentTimeMillis());
     }
 
     public void startPipelined(Point startPoint, PipelineConfig pipelineConfig) {
         Objects.requireNonNull(startPoint, "startPoint");
         Objects.requireNonNull(pipelineConfig, "pipelineConfig");
 
-        ensurePeerClient(startPoint);
-        initializePipelineManagers(pipelineConfig);
+        peerHealth.markState(PeerSessionState.STARTING);
+        try {
+            ensurePeerClient(startPoint);
+            initializePipelineManagers(pipelineConfig);
 
-        pipelineDataListener = new PipelineDataListener(headerSyncManager, bodyFetchManager, callbacks);
-        peerClient.connect(pipelineDataListener, null);
-        peerClient.enableTxSubmission();
-        peerClient.startHeaderSync(startPoint, true);
-        log.info("🔗 ==> Header sync started with pipelining enabled");
+            pipelineDataListener = new PipelineDataListener(headerSyncManager, bodyFetchManager, callbacks, peerHealth);
+            peerClient.connect(pipelineDataListener, null);
+            peerClient.enableTxSubmission();
+            peerClient.startHeaderSync(startPoint, true);
+            log.info("🔗 ==> Header sync started with pipelining enabled");
 
-        bodyFetchManager.start();
-        log.info("📦 ==> Body fetch manager started for range-based fetching");
-        log.info("🚀 Pipeline startup complete - HeaderSync and BodyFetch active");
+            bodyFetchManager.start();
+            log.info("📦 ==> Body fetch manager started for range-based fetching");
+            peerHealth.markState(PeerSessionState.RUNNING);
+            log.info("🚀 Pipeline startup complete - HeaderSync and BodyFetch active");
+        } catch (RuntimeException e) {
+            markStartupFailed(e);
+            throw e;
+        }
     }
 
     public void startSequential(Point startPoint, PipelineConfig pipelineConfig) {
         Objects.requireNonNull(startPoint, "startPoint");
         Objects.requireNonNull(pipelineConfig, "pipelineConfig");
 
-        ensurePeerClient(startPoint);
-        initializePipelineManagers(pipelineConfig);
+        peerHealth.markState(PeerSessionState.STARTING);
+        try {
+            ensurePeerClient(startPoint);
+            initializePipelineManagers(pipelineConfig);
 
-        pipelineDataListener = new PipelineDataListener(headerSyncManager, bodyFetchManager, callbacks);
-        peerClient.connect(pipelineDataListener, null);
-        peerClient.enableTxSubmission();
-        peerClient.startSync(startPoint);
-        log.info("📦 ==> Sequential sync started from point: {}", startPoint);
+            pipelineDataListener = new PipelineDataListener(headerSyncManager, bodyFetchManager, callbacks, peerHealth);
+            peerClient.connect(pipelineDataListener, null);
+            peerClient.enableTxSubmission();
+            peerClient.startSync(startPoint);
+            peerHealth.markState(PeerSessionState.RUNNING);
+            log.info("📦 ==> Sequential sync started from point: {}", startPoint);
+        } catch (RuntimeException e) {
+            markStartupFailed(e);
+            throw e;
+        }
     }
 
     public void stop() {
+        if (peerHealth.isTerminalFailure()) {
+            stopResources();
+            peerHealth.markBodyFetchCompleted();
+            return;
+        }
+        peerHealth.markState(PeerSessionState.STOPPING);
+        stopResources();
+        peerHealth.markBodyFetchCompleted();
+        peerHealth.markState(PeerSessionState.STOPPED);
+    }
+
+    private void stopResources() {
         if (bodyFetchManager != null && bodyFetchManager.isRunning()) {
             try {
                 bodyFetchManager.stop();
@@ -129,6 +157,15 @@ public class PeerSession {
         return peerClient;
     }
 
+    public PeerHealth getPeerHealth() {
+        return peerHealth;
+    }
+
+    public PeerSessionStatus getStatus() {
+        refreshKeepAliveHealth();
+        return peerHealth.snapshot(System.currentTimeMillis());
+    }
+
     private void ensurePeerClient(Point startPoint) {
         if (peerClient == null) {
             peerClient = new PeerClient(host, port, protocolMagic, startPoint);
@@ -158,6 +195,7 @@ public class PeerSession {
                 1000,
                 syncTipContext
         );
+        bodyFetchManager.setPeerHealth(peerHealth);
         log.info("📦 BodyFetchManager created with gapThreshold={}, maxBatchSize={}",
                 gapThreshold, maxBatchSize);
 
@@ -179,5 +217,23 @@ public class PeerSession {
         if (bodyFetchManager != null && bodyFetchManager.isRunning()) {
             bodyFetchManager.stop();
         }
+    }
+
+    private void refreshKeepAliveHealth() {
+        if (peerClient == null) {
+            return;
+        }
+
+        long lastKeepAliveResponseTime = peerClient.getLastKeepAliveResponseTime();
+        if (lastKeepAliveResponseTime > 0) {
+            peerHealth.recordKeepAliveResponse(lastKeepAliveResponseTime);
+        }
+    }
+
+    private void markStartupFailed(RuntimeException e) {
+        stopResources();
+        peerHealth.markBodyFetchCompleted();
+        String message = e.getMessage() != null ? e.getMessage() : e.getClass().getName();
+        peerHealth.markTerminalFailure(PeerRecoveryReason.STARTUP_FAILED, "Peer session startup failed: " + message);
     }
 }

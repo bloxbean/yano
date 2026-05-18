@@ -40,10 +40,10 @@ The first implementation must stay simple and maintainable:
 
 | Phase | Status | Commit | Scope |
 |---|---|---|---|
-| 0 | Completed | Phase 1 commit | ADRs and implementation tracker |
-| 1 | Completed | Phase 1 commit | Add `runtime.peer` skeleton and focused unit tests |
-| 2 | Completed | Phase 2 commit | Move current single-peer startup/stop lifecycle behind `PeerSession` with no recovery decision yet |
-| 3 | Pending | TBD | Add health tracking from header/body/disconnect/keepalive signals |
+| 0 | Completed | `3283023` | ADRs and implementation tracker |
+| 1 | Completed | `3283023` | Add `runtime.peer` skeleton and focused unit tests |
+| 2 | Completed | `5255e84` | Move current single-peer startup/stop lifecycle behind `PeerSession` with no recovery decision yet |
+| 3 | Completed | `717ef6f` | Add health tracking from header/body/disconnect/keepalive signals |
 | 4 | Pending | TBD | Add supervisor stale-session detection and single-flight rebuild |
 | 5 | Pending | TBD | Add rollback guard and body-fetch stuck detection |
 | 6 | Pending | TBD | Add terminal failure/status/observability |
@@ -184,14 +184,35 @@ Expose health snapshot in a simple status object.
 
 - Unit tests around `PeerHealth`.
 - Focused tests for listener callbacks updating health.
+- `./gradlew :runtime:compileJava`
+- `./gradlew :runtime:test --tests "com.bloxbean.cardano.yano.runtime.peer.*" --tests "com.bloxbean.cardano.yano.runtime.PipelineDataListenerHealthTest" --tests "com.bloxbean.cardano.yano.runtime.HeaderSyncManagerSimpleTest" --tests "com.bloxbean.cardano.yano.runtime.BodyFetchManagerSimpleTest"`
 
 ### Review Notes
 
-- Pending.
+- Two reviewer agents completed an initial review.
+- Fixed blocking findings before commit:
+  - `noBlockFound` now clears the health `bodyFetchInProgress` flag so empty
+    fetch ranges do not look stuck;
+  - body-applied health is recorded from `BodyFetchManager` only after the
+    block has been stored and `BlockAppliedEvent` has been published;
+  - body-received and body-applied progress remain separate so later
+    supervision can distinguish peer delivery from local application.
+- A final reviewer pass was run after the fixes and focused tests.
+- Fixed final lifecycle findings before commit:
+  - `PeerSession.stop()` clears active body-fetch health state;
+  - startup exceptions mark the session as `TERMINAL_FAILURE` with
+    `STARTUP_FAILED` instead of leaving it in `STARTING`;
+  - stopping a terminal session preserves the terminal state and reason;
+  - keepalive refresh and failed body-application health semantics are covered
+    by focused tests.
+- Failed-write health remains a known upstream observability gap because Yaci's
+  current `PeerClient` path logs write failures without exposing a callback.
+  Phase 4/7 will rely on stale progress detection first; a later Yaci-side hook
+  can make this signal immediate.
 
 ### Commit
 
-- Pending.
+- Included in the Phase 3 commit.
 
 ## Phase 4: Supervisor Recovery
 
@@ -286,6 +307,10 @@ Add `PeerSessionSupervisor`:
 - Forced disconnect/broken pipe recovers.
 - Real test-network sync recovers after induced faults, for example dropped TCP
   connection, paused proxy, outbound packet rejection, or proxy restart.
+- Real test-network validation is required after implementation, not only as a
+  manual follow-up. The run must record which network, relay/proxy topology,
+  fault type, last synced slot before fault, recovery time, and final synced
+  slot after recovery.
 - Fault validation is repeated during bulk catch-up and near tip.
 - Existing runtime tests pass.
 
@@ -310,3 +335,7 @@ Add `PeerSessionSupervisor`:
 ## Implementation Log
 
 - 2026-05-18: Created tracker. Phase 0 in progress.
+- 2026-05-18: Phase 1 completed and committed as `3283023`.
+- 2026-05-18: Phase 7 validation scope updated in `6d1f5d0` to require real
+  public test-network fault testing before declaring recovery complete.
+- 2026-05-18: Phase 2 completed and committed as `5255e84`.

@@ -26,6 +26,7 @@ import com.bloxbean.cardano.yano.runtime.chain.DirectRocksDBChainState;
 import com.bloxbean.cardano.yano.api.events.BlockAppliedEvent;
 import com.bloxbean.cardano.yano.api.events.BlockReceivedEvent;
 import com.bloxbean.cardano.yano.api.events.TipChangedEvent;
+import com.bloxbean.cardano.yano.runtime.peer.PeerHealth;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.List;
@@ -81,6 +82,7 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
     private volatile Point currentBatchFrom;
     private volatile Point currentBatchTo;
     private volatile int currentBatchSize;
+    private volatile PeerHealth peerHealth;
 
     // Epoch transition detection
     private volatile EpochParamProvider epochParamProvider;
@@ -184,6 +186,10 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
      */
     public void setEpochParamProvider(EpochParamProvider provider) {
         this.epochParamProvider = provider;
+    }
+
+    public void setPeerHealth(PeerHealth peerHealth) {
+        this.peerHealth = peerHealth;
     }
 
     /**
@@ -556,6 +562,7 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
 
             // Publish BlockApplied after storage
             eventBus.publish(new BlockAppliedEvent(era, slot, blockNumber, hash, block), appMeta, appOptions);
+            recordBodyApplied(slot, blockNumber);
 
             // Publish TipChanged if tip advanced
             var _newTip = chainState.getTip();
@@ -697,6 +704,7 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
 
             // Publish BlockApplied after storage
             eventBus.publish(new BlockAppliedEvent(Era.Byron, slot, blockNumber, hash, null), appMeta, appOptions);
+            recordBodyApplied(slot, blockNumber);
 
             // Publish TipChanged if tip advanced
             var _newTipByron = chainState.getTip();
@@ -821,6 +829,7 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
 
             // Publish BlockApplied after storage
             eventBus.publish(new BlockAppliedEvent(Era.Byron, slot, blockNumber, hash, null), appMeta, appOptions);
+            recordBodyApplied(slot, blockNumber);
 
             // Publish TipChanged if tip advanced
             var _newTipEb = chainState.getTip();
@@ -1321,6 +1330,13 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
         int epoch = epochForSlot(slot);
         if (epoch < 0) return;
         eventBus.publish(new GenesisBlockEvent(era, epoch, slot, blockNumber, blockHash), meta, opts);
+    }
+
+    private void recordBodyApplied(long slot, long blockNumber) {
+        PeerHealth health = peerHealth;
+        if (health != null) {
+            health.recordBodyApplied(slot, blockNumber, System.currentTimeMillis());
+        }
     }
 
     /**
