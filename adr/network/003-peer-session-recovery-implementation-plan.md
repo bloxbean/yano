@@ -43,8 +43,8 @@ The first implementation must stay simple and maintainable:
 | 0 | Completed | `3283023` | ADRs and implementation tracker |
 | 1 | Completed | `3283023` | Add `runtime.peer` skeleton and focused unit tests |
 | 2 | Completed | `5255e84` | Move current single-peer startup/stop lifecycle behind `PeerSession` with no recovery decision yet |
-| 3 | Completed | `717ef6f` | Add health tracking from header/body/disconnect/keepalive signals |
-| 4 | Pending | TBD | Add supervisor stale-session detection and single-flight rebuild |
+| 3 | Completed | `446eee5` | Add health tracking from header/body/disconnect/keepalive signals |
+| 4 | Completed | Current commit | Add supervisor stale-session detection and single-flight rebuild |
 | 5 | Pending | TBD | Add rollback guard and body-fetch stuck detection |
 | 6 | Pending | TBD | Add terminal failure/status/observability |
 | 7 | Pending | TBD | Add focused recovery tests and TCP-proxy/manual validation plan |
@@ -225,7 +225,7 @@ Add `PeerSessionSupervisor`:
 - keepalive/app-progress evaluation,
 - single-flight recovery guard,
 - cooldown with jitter,
-- max-attempt accounting,
+- recovery-attempt accounting,
 - restart by replacing the active `PeerSession`.
 
 ### Verification
@@ -234,14 +234,39 @@ Add `PeerSessionSupervisor`:
 - Supervisor recovers when stale.
 - Concurrent health checks trigger only one recovery.
 - Disconnect alone does not recover immediately.
+- Fresh keepalive does not mask stale application progress.
+- Cooldown and configured jitter prevent repeated recoveries.
+- `./gradlew :runtime:compileJava`
+- `./gradlew :runtime:test --tests "com.bloxbean.cardano.yano.runtime.peer.PeerSessionSupervisorTest" --tests "com.bloxbean.cardano.yano.runtime.peer.*" --tests "com.bloxbean.cardano.yano.runtime.PipelineDataListenerHealthTest" --tests "com.bloxbean.cardano.yano.runtime.HeaderSyncManagerSimpleTest" --tests "com.bloxbean.cardano.yano.runtime.BodyFetchManagerSimpleTest"`
 
 ### Review Notes
 
-- Pending.
+- Two reviewer agents completed an initial review.
+- Fixed blocking lifecycle findings before commit:
+  - recovery startup failures now leave a terminal placeholder session so the
+    supervisor can retry after cooldown instead of going quiet;
+  - recovery and stop now share `peerSessionLock`, and recovery re-checks
+    `isRunning` before starting the replacement session;
+  - initial peer startup now checks `isRunning` under `peerSessionLock` before
+    creating and starting the session, so a concurrent stop cannot leave a new
+    peer running after shutdown;
+  - volatile `peerSession` reads in tx forwarding and manager accessors now use
+    local snapshots to avoid transient NPEs while recovery swaps sessions.
+- Fixed policy findings before commit:
+  - disconnect recovery is evaluated before the no-progress gate, while later
+    header/body/keepalive activity suppresses stale disconnect signals;
+  - stale application progress triggers recovery even when keepalive remains
+    fresh, matching the real failure mode where the socket is alive but sync
+    has stopped;
+  - cooldown jitter is covered by a deterministic unit test.
+- Residual coverage gap: Yano's private recovery method is not directly unit
+  tested yet. Phase 7 real-network fault validation must cover replacement
+  startup, repeated recovery failure, and shutdown during recovery.
+- Final reviewer pass found no unresolved medium/high Phase 4 findings.
 
 ### Commit
 
-- Pending.
+- Included in the Phase 4 commit.
 
 ## Phase 5: Rollback and Body-Fetch Stuck Guards
 

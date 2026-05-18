@@ -59,8 +59,10 @@ import com.bloxbean.cardano.yano.runtime.handlers.YaciTxSubmissionHandler;
 import com.bloxbean.cardano.yano.runtime.migration.StakeBalanceIndexStartupMigration;
 import com.bloxbean.cardano.yano.runtime.migration.StartupMigrationContext;
 import com.bloxbean.cardano.yano.runtime.migration.StartupMigrationRunner;
+import com.bloxbean.cardano.yano.runtime.peer.PeerRecoveryReason;
 import com.bloxbean.cardano.yano.runtime.peer.PeerSession;
 import com.bloxbean.cardano.yano.runtime.peer.PeerSessionCallbacks;
+import com.bloxbean.cardano.yano.runtime.peer.PeerSessionSupervisor;
 import com.bloxbean.cardano.yano.runtime.plugins.PluginManager;
 import com.bloxbean.cardano.yano.api.plugin.StorageFilter;
 import com.bloxbean.cardano.yano.api.account.AccountStateStore;
@@ -140,7 +142,8 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
     private final ChainState chainState;
 
     // Client sync component - now using pipelined sync for parallel ChainSync and BlockFetch
-    private PeerSession peerSession;
+    private volatile PeerSession peerSession;
+    private PeerSessionSupervisor peerSessionSupervisor;
     private boolean isInitialSyncComplete = false;
     // Pipelining state
     private PipelineConfig pipelineConfig;
@@ -175,6 +178,7 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
     private final AtomicBoolean isSyncing = new AtomicBoolean(false);
     private final AtomicBoolean isServerRunning = new AtomicBoolean(false);
     private final AtomicBoolean disconnectLogged = new AtomicBoolean(false);
+    private final Object peerSessionLock = new Object();
 
     // Statistics
     private long blocksProcessed = 0;
@@ -2127,9 +2131,10 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
         }
 
         // Forward to upstream node if connected (relay mode)
-        if (peerSession != null && peerSession.isRunning()) {
+        PeerSession activeSession = peerSession;
+        if (activeSession != null && activeSession.isRunning()) {
             try {
-                peerSession.submitTxBytes(txHash, txCbor, TxBodyType.CONWAY);
+                activeSession.submitTxBytes(txHash, txCbor, TxBodyType.CONWAY);
                 log.debug("Transaction {} forwarded to upstream node", txHash);
             } catch (Exception e) {
                 log.warn("Failed to forward transaction {} to upstream node: {}", txHash, e.getMessage());
@@ -3064,20 +3069,21 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
                     .doFinally(signalType -> tipFinder.shutdown())
                     .block(Duration.ofSeconds(5));
 
-            peerSession = new PeerSession(
-                    remoteCardanoHost,
-                    remoteCardanoPort,
-                    protocolMagic,
-                    chainState,
-                    eventBus,
-                    this,
-                    epochParamProvider
-            );
+            synchronized (peerSessionLock) {
+                if (!isRunning.get() || !config.isEnableClient()) {
+                    log.info("Skipping client sync startup because Yano is stopping");
+                    isSyncing.set(false);
+                    return;
+                }
 
-            if (isPipelinedMode) {
-                startPipelinedClientSync(localTip, remoteTip, startPoint);
-            } else {
-                startSequentialClientSync(startPoint);
+                peerSession = createPeerSession();
+
+                if (isPipelinedMode) {
+                    startPipelinedClientSync(localTip, remoteTip, startPoint);
+                } else {
+                    startSequentialClientSync(startPoint);
+                }
+                startPeerSessionSupervisor();
             }
 
         } catch (Exception e) {
@@ -3086,6 +3092,97 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
             isPipelinedMode = false;
             throw new RuntimeException("Failed to start client sync", e);
         }
+    }
+
+    private PeerSession createPeerSession() {
+        return new PeerSession(
+                remoteCardanoHost,
+                remoteCardanoPort,
+                protocolMagic,
+                chainState,
+                eventBus,
+                this,
+                epochParamProvider
+        );
+    }
+
+    private void startPeerSessionSupervisor() {
+        if (peerSessionSupervisor == null) {
+            peerSessionSupervisor = new PeerSessionSupervisor(
+                    scheduler,
+                    () -> peerSession,
+                    this::recoverPeerSession,
+                    PeerSessionSupervisor.Policy.defaults());
+        }
+        peerSessionSupervisor.start();
+    }
+
+    private void recoverPeerSession(PeerRecoveryReason reason) {
+        synchronized (peerSessionLock) {
+            if (!isRunning.get() || !config.isEnableClient()) {
+                return;
+            }
+
+            log.warn("Recovering upstream peer session: reason={}", reason);
+            PeerSession oldSession = peerSession;
+            if (oldSession != null) {
+                try {
+                    oldSession.stop();
+                } catch (Exception e) {
+                    log.warn("Error stopping stale peer session during recovery", e);
+                }
+            }
+            peerSession = null;
+
+            try {
+                boolean usePipeline = config.isEnablePipelinedSync();
+                isSyncing.set(true);
+                isPipelinedMode = usePipeline;
+
+                ChainTip headerTip = chainState.getHeaderTip();
+                ChainTip bodyTip = chainState.getTip();
+                ChainTip localTip = headerTip != null ? headerTip : bodyTip;
+                lastKnownChainTip = localTip;
+
+                Point startPoint = determineStartPoint(localTip);
+                log.info("Restarting upstream sync from point: {}", startPoint);
+
+                TipFinder tipFinder = new TipFinder(remoteCardanoHost, remoteCardanoPort, startPoint, protocolMagic);
+                remoteTip = tipFinder.find()
+                        .doFinally(signalType -> tipFinder.shutdown())
+                        .block(Duration.ofSeconds(5));
+
+                if (!isRunning.get() || !config.isEnableClient()) {
+                    log.info("Skipping peer session recovery start because Yano is stopping");
+                    return;
+                }
+
+                peerSession = createPeerSession();
+                if (isPipelinedMode) {
+                    startPipelinedClientSync(localTip, remoteTip, startPoint);
+                } else {
+                    startSequentialClientSync(startPoint);
+                }
+                log.info("Upstream peer session recovered successfully: reason={}", reason);
+            } catch (Exception e) {
+                log.warn("Upstream peer session recovery failed; supervisor will retry after cooldown", e);
+                markPeerRecoveryFailure(reason, e);
+                isSyncing.set(true);
+            }
+        }
+    }
+
+    private void markPeerRecoveryFailure(PeerRecoveryReason reason, Exception e) {
+        PeerSession failedSession = peerSession;
+        if (failedSession == null) {
+            failedSession = createPeerSession();
+            peerSession = failedSession;
+        }
+
+        String message = e.getMessage() != null ? e.getMessage() : e.getClass().getName();
+        failedSession.getPeerHealth().markTerminalFailure(
+                reason != null ? reason : PeerRecoveryReason.UNKNOWN,
+                "Peer session recovery failed: " + message);
     }
 
     /**
@@ -3177,11 +3274,13 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
     }
 
     private HeaderSyncManager currentHeaderSyncManager() {
-        return peerSession != null ? peerSession.getHeaderSyncManager() : null;
+        PeerSession activeSession = peerSession;
+        return activeSession != null ? activeSession.getHeaderSyncManager() : null;
     }
 
     private BodyFetchManager currentBodyFetchManager() {
-        return peerSession != null ? peerSession.getBodyFetchManager() : null;
+        PeerSession activeSession = peerSession;
+        return activeSession != null ? activeSession.getBodyFetchManager() : null;
     }
 
 
@@ -3220,13 +3319,19 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
 
             // Stop client sync
             if (isSyncing.get()) {
-                try {
-                    if (peerSession != null) {
-                        peerSession.stop();
-                        peerSession = null;
+                synchronized (peerSessionLock) {
+                    try {
+                        if (peerSessionSupervisor != null) {
+                            peerSessionSupervisor.close();
+                            peerSessionSupervisor = null;
+                        }
+                        if (peerSession != null) {
+                            peerSession.stop();
+                            peerSession = null;
+                        }
+                    } catch (Exception e) {
+                        log.warn("Error stopping peer session", e);
                     }
-                } catch (Exception e) {
-                    log.warn("Error stopping peer session", e);
                 }
                 isSyncing.set(false);
             }
