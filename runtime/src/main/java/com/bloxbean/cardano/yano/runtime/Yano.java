@@ -59,9 +59,11 @@ import com.bloxbean.cardano.yano.runtime.handlers.YaciTxSubmissionHandler;
 import com.bloxbean.cardano.yano.runtime.migration.StakeBalanceIndexStartupMigration;
 import com.bloxbean.cardano.yano.runtime.migration.StartupMigrationContext;
 import com.bloxbean.cardano.yano.runtime.migration.StartupMigrationRunner;
+import com.bloxbean.cardano.yano.runtime.peer.PeerRecoveryFailureTracker;
 import com.bloxbean.cardano.yano.runtime.peer.PeerRecoveryReason;
 import com.bloxbean.cardano.yano.runtime.peer.PeerSession;
 import com.bloxbean.cardano.yano.runtime.peer.PeerSessionCallbacks;
+import com.bloxbean.cardano.yano.runtime.peer.PeerSessionStatus;
 import com.bloxbean.cardano.yano.runtime.peer.PeerSessionSupervisor;
 import com.bloxbean.cardano.yano.runtime.plugins.PluginManager;
 import com.bloxbean.cardano.yano.api.plugin.StorageFilter;
@@ -131,6 +133,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 @Slf4j
 public class Yano implements NodeAPI, PeerSessionCallbacks {
+    private static final int MAX_PEER_RECOVERY_FAILURES = 10;
 
     // Configuration
     private final YanoConfig config;
@@ -180,6 +183,8 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
     private final AtomicBoolean disconnectLogged = new AtomicBoolean(false);
     private final AtomicBoolean rollbackInProgress = new AtomicBoolean(false);
     private final Object peerSessionLock = new Object();
+    private final PeerRecoveryFailureTracker peerRecoveryFailureTracker =
+            new PeerRecoveryFailureTracker(MAX_PEER_RECOVERY_FAILURES);
 
     // Statistics
     private long blocksProcessed = 0;
@@ -3085,6 +3090,7 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
                     startSequentialClientSync(startPoint);
                 }
                 startPeerSessionSupervisor();
+                peerRecoveryFailureTracker.recordSuccess();
             }
 
         } catch (Exception e) {
@@ -3120,12 +3126,18 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
     }
 
     private boolean isPeerRecoveryDeferred() {
-        return rollbackInProgress.get();
+        return rollbackInProgress.get() || peerRecoveryFailureTracker.isTerminal();
     }
 
     private void recoverPeerSession(PeerRecoveryReason reason) {
         synchronized (peerSessionLock) {
             if (!isRunning.get() || !config.isEnableClient()) {
+                return;
+            }
+
+            if (peerRecoveryFailureTracker.isTerminal()) {
+                log.warn("Skipping upstream peer session recovery because recovery is terminal: {}",
+                        peerRecoveryFailureTracker.snapshot().message());
                 return;
             }
 
@@ -3174,26 +3186,40 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
                 } else {
                     startSequentialClientSync(startPoint);
                 }
+                peerRecoveryFailureTracker.recordSuccess();
                 log.info("Upstream peer session recovered successfully: reason={}", reason);
             } catch (Exception e) {
-                log.warn("Upstream peer session recovery failed; supervisor will retry after cooldown", e);
-                markPeerRecoveryFailure(reason, e);
+                PeerRecoveryFailureTracker.Snapshot failure = peerRecoveryFailureTracker.recordFailure(reason, e);
+                if (failure.terminal()) {
+                    log.error("Upstream peer session recovery reached terminal failure; automatic retries paused: {}",
+                            failure.message(), e);
+                } else {
+                    log.warn("Upstream peer session recovery failed; supervisor will retry after cooldown: {}",
+                            failure.message(), e);
+                }
+                markPeerRecoveryFailure(reason, e, failure);
                 isSyncing.set(true);
             }
         }
     }
 
-    private void markPeerRecoveryFailure(PeerRecoveryReason reason, Exception e) {
+    private void markPeerRecoveryFailure(PeerRecoveryReason reason,
+                                         Exception e,
+                                         PeerRecoveryFailureTracker.Snapshot failure) {
         PeerSession failedSession = peerSession;
         if (failedSession == null) {
             failedSession = createPeerSession();
             peerSession = failedSession;
         }
 
-        String message = e.getMessage() != null ? e.getMessage() : e.getClass().getName();
+        failedSession.getPeerHealth().recordRecoveryAttempt(reason);
+        String message = failure.message() != null
+                ? failure.message()
+                : "Peer session recovery failed: "
+                + (e.getMessage() != null ? e.getMessage() : e.getClass().getName());
         failedSession.getPeerHealth().markTerminalFailure(
                 reason != null ? reason : PeerRecoveryReason.UNKNOWN,
-                "Peer session recovery failed: " + message);
+                message);
     }
 
     /**
@@ -3292,6 +3318,11 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
     private BodyFetchManager currentBodyFetchManager() {
         PeerSession activeSession = peerSession;
         return activeSession != null ? activeSession.getBodyFetchManager() : null;
+    }
+
+    private PeerSessionStatus currentPeerSessionStatus() {
+        PeerSession activeSession = peerSession;
+        return activeSession != null ? activeSession.getStatus() : null;
     }
 
 
@@ -3735,6 +3766,8 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
     public NodeStatus getStatus() {
         ChainTip localTip = getLocalTip();
         ChainTip headerTip = chainState.getHeaderTip();
+        PeerSessionStatus peerStatus = currentPeerSessionStatus();
+        PeerRecoveryFailureTracker.Snapshot recoveryStatus = peerRecoveryFailureTracker.snapshot();
 
         String statusMessage = "Node is " + (isRunning() ? "running" : "stopped");
 
@@ -3767,6 +3800,17 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
             }
         }
 
+        if (peerStatus != null) {
+            statusMessage += String.format(" [peer: %s/%s]", peerStatus.peerName(), peerStatus.state());
+        }
+
+        if (recoveryStatus.consecutiveFailures() > 0) {
+            statusMessage += String.format(" [peerRecovery: %d/%d%s]",
+                    recoveryStatus.consecutiveFailures(),
+                    recoveryStatus.maxFailures(),
+                    recoveryStatus.terminal() ? " terminal" : "");
+        }
+
         return NodeStatus.builder()
                 .running(isRunning())
                 .syncing(isSyncing())
@@ -3780,8 +3824,40 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
                 .initialSyncComplete(isInitialSyncComplete)
                 .syncMode(isPipelinedMode ? "pipelined" : "sequential")
                 .statusMessage(statusMessage)
+                .peerName(peerStatus != null ? peerStatus.peerName() : null)
+                .peerState(peerStatus != null ? peerStatus.state().name() : null)
+                .peerRecoveryReason(peerRecoveryReason(peerStatus, recoveryStatus))
+                .peerRecoveryFailures(recoveryStatus.consecutiveFailures())
+                .peerMaxRecoveryFailures(recoveryStatus.maxFailures())
+                .peerRecoveryTerminal(recoveryStatus.terminal())
+                .peerTerminalFailureMessage(peerStatus != null && peerStatus.terminalFailureMessage() != null
+                        ? peerStatus.terminalFailureMessage()
+                        : recoveryStatus.message())
+                .peerApplicationProgressAgeMillis(peerStatus != null ? peerStatus.applicationProgressAgeMillis() : null)
+                .peerKeepAliveAgeMillis(peerStatus != null ? peerStatus.keepAliveAgeMillis() : null)
+                .peerBodyFetchInProgress(peerStatus != null ? peerStatus.bodyFetchInProgress() : null)
+                .peerBodyFetchInProgressAgeMillis(peerStatus != null ? peerStatus.bodyFetchInProgressAgeMillis() : null)
                 .timestamp(System.currentTimeMillis())
                 .build();
+    }
+
+    private static String peerRecoveryReason(PeerSessionStatus peerStatus,
+                                             PeerRecoveryFailureTracker.Snapshot recoveryStatus) {
+        if (peerStatus != null
+                && peerStatus.recoveryAttempts() > 0
+                && peerStatus.lastRecoveryReason() != null
+                && peerStatus.lastRecoveryReason() != PeerRecoveryReason.UNKNOWN) {
+            return peerStatus.lastRecoveryReason().name();
+        }
+
+        if (recoveryStatus != null
+                && recoveryStatus.consecutiveFailures() > 0
+                && recoveryStatus.lastReason() != null
+                && recoveryStatus.lastReason() != PeerRecoveryReason.UNKNOWN) {
+            return recoveryStatus.lastReason().name();
+        }
+
+        return null;
     }
 
     @Override

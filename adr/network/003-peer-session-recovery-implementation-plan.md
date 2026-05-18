@@ -45,8 +45,8 @@ The first implementation must stay simple and maintainable:
 | 2 | Completed | `5255e84` | Move current single-peer startup/stop lifecycle behind `PeerSession` with no recovery decision yet |
 | 3 | Completed | `446eee5` | Add health tracking from header/body/disconnect/keepalive signals |
 | 4 | Completed | `b36f09f` | Add supervisor stale-session detection and single-flight rebuild |
-| 5 | Completed | Current commit | Add rollback guard and body-fetch stuck detection |
-| 6 | Pending | TBD | Add terminal failure/status/observability |
+| 5 | Completed | `1a0f40c` | Add rollback guard and body-fetch stuck detection |
+| 6 | Completed | Current commit | Add terminal failure/status/observability |
 | 7 | Pending | TBD | Add focused recovery tests and TCP-proxy/manual validation plan |
 
 ## Phase 0: ADR Alignment and Tracker
@@ -319,14 +319,28 @@ Add `PeerSessionSupervisor`:
 - Max attempts enter terminal state.
 - Status exposes recovery state.
 - No log spam in normal operation.
+- `./gradlew :core-api:compileJava`
+- `./gradlew :core-api:test --tests "com.bloxbean.cardano.yano.api.model.NodeStatusTest"`
+- `./gradlew :runtime:compileJava`
+- `./gradlew :runtime:test --tests "com.bloxbean.cardano.yano.runtime.peer.*" --tests "com.bloxbean.cardano.yano.runtime.PipelineIntegrationTest" --tests "com.bloxbean.cardano.yano.runtime.PipelineDataListenerHealthTest" --tests "com.bloxbean.cardano.yano.runtime.BodyFetchManagerSimpleTest" --tests "com.bloxbean.cardano.yano.runtime.HeaderSyncManagerSimpleTest"`
 
 ### Review Notes
 
-- Pending.
+- Two reviewer agents completed review.
+- Fixed reviewer findings before commit:
+  - `peerRecoveryReason` is no longer reported as `UNKNOWN` before any
+    recovery attempt or failure;
+  - terminal peer recovery status now keeps the real last trigger reason
+    (`KEEPALIVE_STALE`, `STARTUP_FAILED`, etc.) while
+    `peerRecoveryTerminal=true` carries the terminal state.
+- Residual future cleanup: `MAX_PEER_RECOVERY_FAILURES` is intentionally a
+  simple constant for this phase. Make it configurable only if Phase 7 fault
+  validation shows the default is not suitable.
+- Final reviewer pass found no unresolved Phase 6 findings.
 
 ### Commit
 
-- Pending.
+- Included in the Phase 6 commit.
 
 ## Phase 7: Focused Recovery Validation
 
@@ -377,3 +391,7 @@ Add `PeerSessionSupervisor`:
 - 2026-05-18: Phase 7 validation scope updated in `6d1f5d0` to require real
   public test-network fault testing before declaring recovery complete.
 - 2026-05-18: Phase 2 completed and committed as `5255e84`.
+- 2026-05-18: Phase 3 completed and committed as `446eee5`.
+- 2026-05-18: Phase 4 completed and committed as `b36f09f`.
+- 2026-05-18: Phase 5 completed and committed as `1a0f40c`.
+- 2026-05-18: Phase 6 completed and ready to commit after final review.
