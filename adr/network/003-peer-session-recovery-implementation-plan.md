@@ -42,7 +42,7 @@ The first implementation must stay simple and maintainable:
 |---|---|---|---|
 | 0 | Completed | Phase 1 commit | ADRs and implementation tracker |
 | 1 | Completed | Phase 1 commit | Add `runtime.peer` skeleton and focused unit tests |
-| 2 | Pending | TBD | Move current single-peer startup/stop lifecycle behind `PeerSession` with no recovery decision yet |
+| 2 | Completed | Phase 2 commit | Move current single-peer startup/stop lifecycle behind `PeerSession` with no recovery decision yet |
 | 3 | Pending | TBD | Add health tracking from header/body/disconnect/keepalive signals |
 | 4 | Pending | TBD | Add supervisor stale-session detection and single-flight rebuild |
 | 5 | Pending | TBD | Add rollback guard and body-fetch stuck detection |
@@ -148,14 +148,23 @@ same.
 - Existing runtime tests covering header/body managers.
 - Compile runtime.
 - Manual code review of startup/stop path.
+- `./gradlew :runtime:compileJava`
+- `./gradlew :runtime:test --tests "com.bloxbean.cardano.yano.runtime.peer.*" --tests "com.bloxbean.cardano.yano.runtime.HeaderSyncManagerSimpleTest" --tests "com.bloxbean.cardano.yano.runtime.BodyFetchManagerSimpleTest"`
 
 ### Review Notes
 
-- Pending.
+- Two reviewer agents completed review.
+- No blocking issues found.
+- Accepted maintainability feedback before commit:
+  - `PeerSession` now depends on a narrow `PeerSessionCallbacks` interface
+    instead of concrete `Yano`;
+  - raw manager accessors remain for Phase 2 compatibility and should be
+    narrowed in later phases as status/phase helpers move into `PeerSession`.
 
 ### Commit
 
-- Pending.
+- Pending at the time this document update was written; this section is included
+  in the Phase 2 commit.
 
 ## Phase 3: Health Tracking
 

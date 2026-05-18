@@ -12,6 +12,7 @@ import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Point;
 import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Tip;
 import com.bloxbean.cardano.yaci.helper.listener.BlockChainDataListener;
 import com.bloxbean.cardano.yaci.helper.model.Transaction;
+import com.bloxbean.cardano.yano.runtime.peer.PeerSessionCallbacks;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.List;
@@ -31,21 +32,21 @@ public class PipelineDataListener implements BlockChainDataListener {
 
     private final HeaderSyncManager headerSyncManager;
     private final BodyFetchManager bodyFetchManager;
-    private final Yano yaciNode;
+    private final PeerSessionCallbacks callbacks;
 
     /**
      * Create a new PipelineDataListener
      *
      * @param headerSyncManager Manager for header synchronization
      * @param bodyFetchManager Manager for body fetching
-     * @param yaciNode Reference to Yano for rollback coordination
+     * @param callbacks Runtime callbacks for rollback and sync progress coordination
      */
     public PipelineDataListener(HeaderSyncManager headerSyncManager,
                                BodyFetchManager bodyFetchManager,
-                               Yano yaciNode) {
+                               PeerSessionCallbacks callbacks) {
         this.headerSyncManager = headerSyncManager;
         this.bodyFetchManager = bodyFetchManager;
-        this.yaciNode = yaciNode;
+        this.callbacks = callbacks;
 
         log.info("PipelineDataListener initialized for parallel header/body processing");
     }
@@ -63,7 +64,7 @@ public class PipelineDataListener implements BlockChainDataListener {
 //        log.info("Rollforward to header: {} at slot: {}", blockHeader.getHeaderBody().getBlockNumber(), blockHeader.getHeaderBody().getSlot());
 
         // Resume BodyFetchManager if paused and headers are flowing after intersection
-        yaciNode.resumeBodyFetchOnHeaderFlow();
+        callbacks.resumeBodyFetchOnHeaderFlow();
     }
 
     @Override
@@ -72,7 +73,7 @@ public class PipelineDataListener implements BlockChainDataListener {
         headerSyncManager.rollforwardByronEra(tip, byronBlockHead, originalHeaderBytes);
 
         // Resume BodyFetchManager if paused and headers are flowing after intersection
-        yaciNode.resumeBodyFetchOnHeaderFlow();
+        callbacks.resumeBodyFetchOnHeaderFlow();
     }
 
     @Override
@@ -81,7 +82,7 @@ public class PipelineDataListener implements BlockChainDataListener {
         headerSyncManager.rollforwardByronEra(tip, byronEbHead, originalHeaderBytes);
 
         // Resume BodyFetchManager if paused and headers are flowing after intersection
-        yaciNode.resumeBodyFetchOnHeaderFlow();
+        callbacks.resumeBodyFetchOnHeaderFlow();
     }
 
     // ================================================================
@@ -94,10 +95,10 @@ public class PipelineDataListener implements BlockChainDataListener {
         bodyFetchManager.onBlock(era, block, transactions);
 
         // Update sync progress tracking in Yano
-        yaciNode.updateSyncProgress();
+        callbacks.updateSyncProgress();
 
         // Notify server about new block availability (only during STEADY_STATE)
-        yaciNode.notifyServerNewBlockStored();
+        callbacks.notifyServerNewBlockStored();
     }
 
     @Override
@@ -106,10 +107,10 @@ public class PipelineDataListener implements BlockChainDataListener {
         bodyFetchManager.onByronBlock(byronBlock);
 
         // Update sync progress tracking in Yano
-        yaciNode.updateSyncProgress();
+        callbacks.updateSyncProgress();
 
         // Notify server about new block availability (only during STEADY_STATE)
-        yaciNode.notifyServerNewBlockStored();
+        callbacks.notifyServerNewBlockStored();
     }
 
     @Override
@@ -118,10 +119,10 @@ public class PipelineDataListener implements BlockChainDataListener {
         bodyFetchManager.onByronEbBlock(byronEbBlock);
 
         // Update sync progress tracking in Yano
-        yaciNode.updateSyncProgress();
+        callbacks.updateSyncProgress();
 
         // Notify server about new block availability (only during STEADY_STATE)
-        yaciNode.notifyServerNewBlockStored();
+        callbacks.notifyServerNewBlockStored();
     }
 
     @Override
@@ -152,10 +153,10 @@ public class PipelineDataListener implements BlockChainDataListener {
         headerSyncManager.intersactFound(tip, point);
 
         // Update sync phase in Yano for rollback classification
-        yaciNode.onIntersectionFound();
+        callbacks.onIntersectionFound();
 
         // If we're already near the remote tip, transition to STEADY_STATE immediately
-        yaciNode.maybeFastTransitionToSteadyState(tip);
+        callbacks.maybeFastTransitionToSteadyState(tip);
 
         log.info("Intersection found at point: {} - notified both header manager and Yano", point);
     }
@@ -172,7 +173,7 @@ public class PipelineDataListener implements BlockChainDataListener {
     public void onRollback(Point point) {
         // Delegate rollback handling to Yano for classification and coordination
         // Yano will pause/resume BodyFetchManager and handle server notifications
-        yaciNode.handleChainSyncRollback(point);
+        callbacks.handleChainSyncRollback(point);
 
         log.info("Rollback to point: {} - delegated to Yano for coordination", point);
     }

@@ -59,6 +59,8 @@ import com.bloxbean.cardano.yano.runtime.handlers.YaciTxSubmissionHandler;
 import com.bloxbean.cardano.yano.runtime.migration.StakeBalanceIndexStartupMigration;
 import com.bloxbean.cardano.yano.runtime.migration.StartupMigrationContext;
 import com.bloxbean.cardano.yano.runtime.migration.StartupMigrationRunner;
+import com.bloxbean.cardano.yano.runtime.peer.PeerSession;
+import com.bloxbean.cardano.yano.runtime.peer.PeerSessionCallbacks;
 import com.bloxbean.cardano.yano.runtime.plugins.PluginManager;
 import com.bloxbean.cardano.yano.api.plugin.StorageFilter;
 import com.bloxbean.cardano.yano.api.account.AccountStateStore;
@@ -126,7 +128,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * This enables Yano to act as a bridge/relay node
  */
 @Slf4j
-public class Yano implements NodeAPI {
+public class Yano implements NodeAPI, PeerSessionCallbacks {
 
     // Configuration
     private final YanoConfig config;
@@ -138,15 +140,11 @@ public class Yano implements NodeAPI {
     private final ChainState chainState;
 
     // Client sync component - now using pipelined sync for parallel ChainSync and BlockFetch
-    private PeerClient peerClient;
+    private PeerSession peerSession;
     private boolean isInitialSyncComplete = false;
     // Pipelining state
     private PipelineConfig pipelineConfig;
     private boolean isPipelinedMode = false;
-
-    // Pipeline managers
-    private HeaderSyncManager headerSyncManager;
-    private BodyFetchManager bodyFetchManager;
 
     // Remote tip info for sync strategy
     private Tip remoteTip;
@@ -2129,9 +2127,9 @@ public class Yano implements NodeAPI {
         }
 
         // Forward to upstream node if connected (relay mode)
-        if (peerClient != null && peerClient.isRunning()) {
+        if (peerSession != null && peerSession.isRunning()) {
             try {
-                peerClient.submitTxBytes(txHash, txCbor, TxBodyType.CONWAY);
+                peerSession.submitTxBytes(txHash, txCbor, TxBodyType.CONWAY);
                 log.debug("Transaction {} forwarded to upstream node", txHash);
             } catch (Exception e) {
                 log.warn("Failed to forward transaction {} to upstream node: {}", txHash, e.getMessage());
@@ -2438,6 +2436,7 @@ public class Yano implements NodeAPI {
             }
 
             // 6. Reset BodyFetchManager epoch tracker to rolled-back tip epoch
+            BodyFetchManager bodyFetchManager = currentBodyFetchManager();
             if (bodyFetchManager != null && epochParamProvider != null) {
                 int rolledBackEpoch = epochParamProvider.getEpochSlotCalc().slotToEpoch(targetSlot);
                 bodyFetchManager.initializePreviousEpoch(rolledBackEpoch);
@@ -3065,11 +3064,15 @@ public class Yano implements NodeAPI {
                     .doFinally(signalType -> tipFinder.shutdown())
                     .block(Duration.ofSeconds(5));
 
-            // Create PeerClient
-            if (peerClient == null) {
-                peerClient = new PeerClient(remoteCardanoHost, remoteCardanoPort, protocolMagic, startPoint);
-                // Note: Connection will be established in pipeline or sequential mode below
-            }
+            peerSession = new PeerSession(
+                    remoteCardanoHost,
+                    remoteCardanoPort,
+                    protocolMagic,
+                    chainState,
+                    eventBus,
+                    this,
+                    epochParamProvider
+            );
 
             if (isPipelinedMode) {
                 startPipelinedClientSync(localTip, remoteTip, startPoint);
@@ -3119,94 +3122,7 @@ public class Yano implements NodeAPI {
             pipelineConfig = createPipelineConfig();
         }
 
-        // Initialize pipeline managers
-        initializePipelineManagers();
-
-        // Create composite listener that delegates to both managers
-        PipelineDataListener pipelineListener = new PipelineDataListener(
-                headerSyncManager,
-                bodyFetchManager,
-                this  // Pass Yano reference for rollback coordination
-        );
-
-        // Connect using existing PeerClient.connect() method with pipeline listener
-        peerClient.connect(pipelineListener, null); // TxSubmission handled separately if needed
-        peerClient.enableTxSubmission(); // Initiate TxSubmission N2N protocol (sends Init message)
-
-        // Start header-only sync
-        peerClient.startHeaderSync(startPoint, true); // Enable pipelining for headers
-        log.info("🔗 ==> Header sync started with pipelining enabled");
-
-        // Start body fetch manager monitoring
-        bodyFetchManager.start();
-        log.info("📦 ==> Body fetch manager started for range-based fetching");
-
-        log.info("🚀 Pipeline startup complete - HeaderSync and BodyFetch active");
-    }
-
-    /**
-     * Initialize HeaderSyncManager and BodyFetchManager for pipeline mode.
-     */
-    private void initializePipelineManagers() {
-        // Shared context to propagate latest network tip from headers to bodies
-        SyncTipContext syncTipContext = new SyncTipContext();
-        if (headerSyncManager != null) {
-            // Reset existing managers
-            headerSyncManager.resetMetrics();
-        } else {
-            // Create new HeaderSyncManager
-            headerSyncManager = new HeaderSyncManager(peerClient, chainState, 50000, syncTipContext);
-            log.info("📋 HeaderSyncManager created");
-        }
-
-        if (bodyFetchManager != null) {
-            // Stop and reset existing manager
-            if (bodyFetchManager.isRunning()) {
-                bodyFetchManager.stop();
-            }
-            bodyFetchManager.resetMetrics();
-        } else {
-            // Create new BodyFetchManager with appropriate configuration
-            // Use slot-based threshold since gaps are measured in slots, not blocks
-            // 100 slots ≈ 1.67 minutes at 20s/slot (reasonable for body fetching)
-            long gapThreshold = pipelineConfig != null ?
-                    Math.max(pipelineConfig.getBodyBatchSize() / 10, 100) : 100; // Slot-based threshold
-            int maxBatchSize = pipelineConfig != null ?
-                    pipelineConfig.getBodyBatchSize() : 500;
-
-            maxBatchSize = 5000;
-
-            bodyFetchManager = new BodyFetchManager(
-                    peerClient,
-                    chainState,
-                    eventBus,
-                    gapThreshold,
-                    maxBatchSize,
-                    500, // 500ms monitoring interval
-                    1000,  // tipProximityThreshold - consider "at tip" when within 1000 slots (~16 minutes)
-                    syncTipContext
-            );
-            log.info("📦 BodyFetchManager created with gapThreshold={}, maxBatchSize={}",
-                    gapThreshold, maxBatchSize);
-        }
-
-        // Wire epoch param provider for epoch transition detection
-        if (bodyFetchManager != null && this.epochParamProvider != null) {
-            bodyFetchManager.setEpochParamProvider(this.epochParamProvider);
-            // Initialize previousEpoch from chain state tip so the first epoch
-            // transition after startup (or adhoc rollback) is correctly detected.
-            var tip = chainState.getTip();
-            if (tip != null && tip.getSlot() > 0) {
-                int tipEpoch = epochParamProvider.getEpochSlotCalc().slotToEpoch(tip.getSlot());
-                bodyFetchManager.initializePreviousEpoch(tipEpoch);
-            }
-        }
-
-        log.info("🔗 Pipeline managers initialized and ready");
-        log.info("ℹ️  HeaderSyncManager will receive headers through ChainSync protocol");
-        if (bodyFetchManager != null) {
-            log.info("ℹ️  BodyFetchManager will monitor for gaps and fetch ranges automatically");
-        }
+        peerSession.startPipelined(startPoint, pipelineConfig);
     }
 
     /**
@@ -3216,21 +3132,7 @@ public class Yano implements NodeAPI {
         log.info("📦 ==> SEQUENTIAL SYNC: Using traditional header+body sync");
         isInitialSyncComplete = false;
 
-        // Create composite listener that delegates to both managers
-        PipelineDataListener pipelineListener = new PipelineDataListener(
-                headerSyncManager,
-                bodyFetchManager,
-                this  // Pass Yano reference for rollback coordination
-        );
-
-        // Connect using existing PeerClient.connect() method with pipeline listener
-        peerClient.connect(pipelineListener, null); // TxSubmission handled separately if needed
-        peerClient.enableTxSubmission(); // Initiate TxSubmission N2N protocol (sends Init message)
-
-        // Start traditional sync from tip or point
-        peerClient.startSync(startPoint);
-
-        log.info("📦 ==> Sequential sync started from point: {}", startPoint);
+        peerSession.startSequential(startPoint, pipelineConfig);
     }
 
     /**
@@ -3274,6 +3176,14 @@ public class Yano implements NodeAPI {
         }
     }
 
+    private HeaderSyncManager currentHeaderSyncManager() {
+        return peerSession != null ? peerSession.getHeaderSyncManager() : null;
+    }
+
+    private BodyFetchManager currentBodyFetchManager() {
+        return peerSession != null ? peerSession.getBodyFetchManager() : null;
+    }
+
 
     /**
      * Check sync progress and detect when BlockFetch is complete to transition to ChainSync
@@ -3311,12 +3221,12 @@ public class Yano implements NodeAPI {
             // Stop client sync
             if (isSyncing.get()) {
                 try {
-                    if (peerClient != null && peerClient.isRunning()) {
-                        log.info("Stopping PeerClient...");
-                        peerClient.stop();
+                    if (peerSession != null) {
+                        peerSession.stop();
+                        peerSession = null;
                     }
                 } catch (Exception e) {
-                    log.warn("Error stopping peerClient", e);
+                    log.warn("Error stopping peer session", e);
                 }
                 isSyncing.set(false);
             }
@@ -3372,6 +3282,7 @@ public class Yano implements NodeAPI {
     public void handleChainSyncRollback(Point point) {
         var localTip = chainState.getTip();
         long rollbackSlot = point.getSlot();
+        BodyFetchManager bodyFetchManager = currentBodyFetchManager();
 
         // In pipeline mode, pause BodyFetchManager during rollback
         if (isPipelinedMode && bodyFetchManager != null) {
@@ -3526,6 +3437,7 @@ public class Yano implements NodeAPI {
             log.info("Transitioned to STEADY_STATE sync phase");
 
             // Update BodyFetchManager sync phase and resume if needed
+            BodyFetchManager bodyFetchManager = currentBodyFetchManager();
             if (isPipelinedMode && bodyFetchManager != null) {
                 bodyFetchManager.setSyncPhase(SyncPhase.STEADY_STATE);
                 if (bodyFetchManager.isPaused()) {
@@ -3560,6 +3472,7 @@ public class Yano implements NodeAPI {
      */
     public void resumeBodyFetchOnHeaderFlow() {
         // Only resume during INTERSECT_PHASE when headers are flowing again
+        BodyFetchManager bodyFetchManager = currentBodyFetchManager();
         if (isPipelinedMode && syncPhase == SyncPhase.INTERSECT_PHASE &&
             bodyFetchManager != null && bodyFetchManager.isPaused()) {
 
@@ -3701,6 +3614,8 @@ public class Yano implements NodeAPI {
         // Add pipeline-specific status if in pipeline mode
         if (isPipelinedMode) {
             statusMessage += " (phase: " + syncPhase.name() + ")";
+            HeaderSyncManager headerSyncManager = currentHeaderSyncManager();
+            BodyFetchManager bodyFetchManager = currentBodyFetchManager();
 
             // Add header tip information
             if (headerTip != null) {
@@ -3835,6 +3750,7 @@ public class Yano implements NodeAPI {
         log.info("Transitioned to INTERSECT_PHASE - expect rollback to intersection");
 
         // Update BodyFetchManager sync phase
+        BodyFetchManager bodyFetchManager = currentBodyFetchManager();
         if (isPipelinedMode && bodyFetchManager != null) {
             bodyFetchManager.setSyncPhase(SyncPhase.INTERSECT_PHASE);
         }
@@ -3856,10 +3772,11 @@ public class Yano implements NodeAPI {
                 log.info("Auto-transitioned to {} after intersection phase timeout (distance to tip: {} slots)", nextPhase, distance == Long.MAX_VALUE ? "unknown" : String.valueOf(distance));
 
                 // Update BodyFetchManager sync phase and resume if needed
-                if (isPipelinedMode && bodyFetchManager != null) {
-                    bodyFetchManager.setSyncPhase(nextPhase);
-                    if (bodyFetchManager.isPaused()) {
-                        bodyFetchManager.resume();
+                BodyFetchManager scheduledBodyFetchManager = currentBodyFetchManager();
+                if (isPipelinedMode && scheduledBodyFetchManager != null) {
+                    scheduledBodyFetchManager.setSyncPhase(nextPhase);
+                    if (scheduledBodyFetchManager.isPaused()) {
+                        scheduledBodyFetchManager.resume();
                         log.info("▶️ BodyFetchManager resumed after auto-transition to {}", nextPhase);
                     }
                 }
@@ -3884,6 +3801,7 @@ public class Yano implements NodeAPI {
             long nearTipThreshold = 1000; // slots
             if (distance <= nearTipThreshold) {
                 syncPhase = SyncPhase.STEADY_STATE;
+                BodyFetchManager bodyFetchManager = currentBodyFetchManager();
                 if (bodyFetchManager != null) {
                     bodyFetchManager.setSyncPhase(SyncPhase.STEADY_STATE);
                     if (bodyFetchManager.isPaused()) bodyFetchManager.resume();
