@@ -18,4 +18,7 @@ public interface PeerSessionCallbacks {
     void maybeFastTransitionToSteadyState(Tip remoteTip);
 
     void handleChainSyncRollback(Point point);
+
+    default void onPeerDisconnected() {
+    }
 }

@@ -234,6 +234,11 @@ public class PipelineDataListener implements BlockChainDataListener {
             peerHealth.recordDisconnect(System.currentTimeMillis());
             peerHealth.markBodyFetchCompleted();
         }
+        try {
+            callbacks.onPeerDisconnected();
+        } catch (Exception e) {
+            log.warn("Peer disconnect callback failed", e);
+        }
 
         log.info("Disconnection event - notified both header and body managers");
     }

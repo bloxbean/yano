@@ -59,6 +59,9 @@ import com.bloxbean.cardano.yano.runtime.handlers.YaciTxSubmissionHandler;
 import com.bloxbean.cardano.yano.runtime.migration.StakeBalanceIndexStartupMigration;
 import com.bloxbean.cardano.yano.runtime.migration.StartupMigrationContext;
 import com.bloxbean.cardano.yano.runtime.migration.StartupMigrationRunner;
+import com.bloxbean.cardano.yano.runtime.peer.DefaultPeerClientFactory;
+import com.bloxbean.cardano.yano.runtime.peer.PeerClientFactory;
+import com.bloxbean.cardano.yano.runtime.peer.PeerEndpoint;
 import com.bloxbean.cardano.yano.runtime.peer.PeerRecoveryFailureTracker;
 import com.bloxbean.cardano.yano.runtime.peer.PeerRecoveryReason;
 import com.bloxbean.cardano.yano.runtime.peer.PeerSession;
@@ -116,6 +119,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
@@ -195,6 +199,12 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
     private ChainTip lastKnownChainTip;
     private long rollbackClassificationTimeout = 30000; // 30 seconds
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+    private final ExecutorService peerRecoveryExecutor = Executors.newSingleThreadExecutor(r -> {
+        Thread thread = new Thread(r, "YanoPeerRecovery");
+        thread.setDaemon(true);
+        return thread;
+    });
+    private final PeerClientFactory peerClientFactory = DefaultPeerClientFactory.supervised();
 
     private final CopyOnWriteArrayList<BlockChainDataListener> blockChainDataListeners = new CopyOnWriteArrayList<>();
     private final CopyOnWriteArrayList<NodeEventListener> nodeEventListeners = new CopyOnWriteArrayList<>();
@@ -3104,13 +3114,12 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
 
     private PeerSession createPeerSession() {
         return new PeerSession(
-                remoteCardanoHost,
-                remoteCardanoPort,
-                protocolMagic,
+                new PeerEndpoint(remoteCardanoHost, remoteCardanoPort, protocolMagic),
                 chainState,
                 eventBus,
                 this,
-                epochParamProvider
+                epochParamProvider,
+                peerClientFactory
         );
     }
 
@@ -3121,7 +3130,8 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
                     () -> peerSession,
                     this::recoverPeerSession,
                     PeerSessionSupervisor.Policy.defaults(),
-                    this::isPeerRecoveryDeferred);
+                    this::isPeerRecoveryDeferred,
+                    peerRecoveryExecutor);
         }
         peerSessionSupervisor.start();
     }
@@ -3414,6 +3424,16 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
                 Thread.currentThread().interrupt();
             }
 
+            peerRecoveryExecutor.shutdown();
+            try {
+                if (!peerRecoveryExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
+                    peerRecoveryExecutor.shutdownNow();
+                }
+            } catch (InterruptedException e) {
+                peerRecoveryExecutor.shutdownNow();
+                Thread.currentThread().interrupt();
+            }
+
             // Close ChainState if it's RocksDB
             if (chainState instanceof DirectRocksDBChainState) {
                 ((DirectRocksDBChainState) chainState).close();
@@ -3669,6 +3689,16 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
                 eventBus.publish(new SyncStatusChangedEvent(prev, syncPhase), meta, PublishOptions.builder().build());
             }
         }
+    }
+
+    @Override
+    public void onPeerDisconnected() {
+        PeerSessionSupervisor supervisor = peerSessionSupervisor;
+        if (!isRunning.get() || !config.isEnableClient() || supervisor == null) {
+            return;
+        }
+
+        supervisor.notifyDisconnect();
     }
 
     // Status and monitoring methods

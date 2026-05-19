@@ -66,6 +66,25 @@ class PeerSessionHealthTest {
         assertEquals(PeerRecoveryReason.STARTUP_FAILED, afterStop.lastRecoveryReason());
     }
 
+    @Test
+    void createsPeerClientThroughFactory() {
+        PeerEndpoint endpoint = new PeerEndpoint("relay-2", 3002, 42L);
+        TrackingPeerClientFactory factory = new TrackingPeerClientFactory();
+        PeerSession session = new PeerSession(
+                endpoint,
+                new InMemoryChainState(),
+                new SimpleEventBus(),
+                new NoopCallbacks(),
+                null,
+                factory);
+
+        session.startSequential(Point.ORIGIN, PipelineConfig.defaultClientConfig());
+
+        assertEquals(endpoint, factory.endpoint);
+        assertEquals(Point.ORIGIN, factory.startPoint);
+        assertEquals(PeerSessionState.RUNNING, session.getStatus().state());
+    }
+
     private PeerSession newSession() {
         return new PeerSession(
                 "relay-1",
@@ -126,10 +145,36 @@ class PeerSessionHealthTest {
         }
     }
 
+    private static class NoopStartPeerClient extends MockPeerClient {
+        @Override
+        public void connect(BlockChainDataListener blockChainDataListener, TxSubmissionListener txSubmissionListener) {
+        }
+
+        @Override
+        public void enableTxSubmission() {
+        }
+
+        @Override
+        public void startSync(Point from) {
+        }
+    }
+
     private static class FailingConnectPeerClient extends MockPeerClient {
         @Override
         public void connect(BlockChainDataListener blockChainDataListener, TxSubmissionListener txSubmissionListener) {
             throw new IllegalStateException("connect failed");
+        }
+    }
+
+    private static class TrackingPeerClientFactory implements PeerClientFactory {
+        private PeerEndpoint endpoint;
+        private Point startPoint;
+
+        @Override
+        public PeerClient create(PeerEndpoint endpoint, Point startPoint) {
+            this.endpoint = endpoint;
+            this.startPoint = startPoint;
+            return new NoopStartPeerClient();
         }
     }
 }

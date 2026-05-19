@@ -19,6 +19,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -148,6 +149,38 @@ class PipelineDataListenerHealthTest {
         PeerSessionStatus disconnected = peerHealth.snapshot(System.currentTimeMillis());
         assertFalse(disconnected.bodyFetchInProgress());
         assertTrue(disconnected.lastDisconnectAtMillis() > 0);
+    }
+
+    @Test
+    void disconnectInvokesPeerDisconnectCallback() {
+        AtomicBoolean callbackInvoked = new AtomicBoolean(false);
+        MockPeerClient peerClient = new MockPeerClient();
+        SyncTipContext syncTipContext = new SyncTipContext();
+        HeaderSyncManager headerSyncManager = new HeaderSyncManager(peerClient, chainState, 50000, syncTipContext);
+        BodyFetchManager bodyFetchManager = new BodyFetchManager(
+                peerClient,
+                chainState,
+                new SimpleEventBus(),
+                3,
+                5,
+                100,
+                1000,
+                syncTipContext);
+        bodyFetchManager.setPeerHealth(peerHealth);
+        PipelineDataListener disconnectListener = new PipelineDataListener(
+                headerSyncManager,
+                bodyFetchManager,
+                new NoopCallbacks() {
+                    @Override
+                    public void onPeerDisconnected() {
+                        callbackInvoked.set(true);
+                    }
+                },
+                peerHealth);
+
+        disconnectListener.onDisconnect();
+
+        assertTrue(callbackInvoked.get());
     }
 
     private BlockHeader createSimpleShelleyHeader(long slot, long blockNumber, String hash) {

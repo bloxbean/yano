@@ -25,14 +25,13 @@ import java.util.Objects;
  */
 @Slf4j
 public class PeerSession {
-    private final String host;
-    private final int port;
-    private final long protocolMagic;
     private final ChainState chainState;
     private final EventBus eventBus;
     private final PeerSessionCallbacks callbacks;
     private final EpochParamProvider epochParamProvider;
     private final PeerHealth peerHealth;
+    private final PeerEndpoint endpoint;
+    private final PeerClientFactory peerClientFactory;
 
     private PeerClient peerClient;
     private HeaderSyncManager headerSyncManager;
@@ -46,14 +45,27 @@ public class PeerSession {
                        EventBus eventBus,
                        PeerSessionCallbacks callbacks,
                        EpochParamProvider epochParamProvider) {
-        this.host = Objects.requireNonNull(host, "host");
-        this.port = port;
-        this.protocolMagic = protocolMagic;
+        this(new PeerEndpoint(host, port, protocolMagic),
+                chainState,
+                eventBus,
+                callbacks,
+                epochParamProvider,
+                DefaultPeerClientFactory.supervised());
+    }
+
+    public PeerSession(PeerEndpoint endpoint,
+                       ChainState chainState,
+                       EventBus eventBus,
+                       PeerSessionCallbacks callbacks,
+                       EpochParamProvider epochParamProvider,
+                       PeerClientFactory peerClientFactory) {
+        this.endpoint = Objects.requireNonNull(endpoint, "endpoint");
         this.chainState = Objects.requireNonNull(chainState, "chainState");
         this.eventBus = Objects.requireNonNull(eventBus, "eventBus");
         this.callbacks = Objects.requireNonNull(callbacks, "callbacks");
         this.epochParamProvider = epochParamProvider;
-        this.peerHealth = new PeerHealth(host + ":" + port, System.currentTimeMillis());
+        this.peerClientFactory = Objects.requireNonNull(peerClientFactory, "peerClientFactory");
+        this.peerHealth = new PeerHealth(endpoint.displayName(), System.currentTimeMillis());
     }
 
     public void startPipelined(Point startPoint, PipelineConfig pipelineConfig) {
@@ -168,7 +180,7 @@ public class PeerSession {
 
     private void ensurePeerClient(Point startPoint) {
         if (peerClient == null) {
-            peerClient = new PeerClient(host, port, protocolMagic, startPoint);
+            peerClient = peerClientFactory.create(endpoint, startPoint);
         }
     }
 

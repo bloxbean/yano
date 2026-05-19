@@ -86,6 +86,50 @@ class PeerSessionSupervisorTest {
     }
 
     @Test
+    void explicitDisconnectNotificationRecoversImmediatelyWithoutGrace() {
+        PeerHealth health = runningHealth();
+        health.recordHeaderProgress(100, 10, now.get() - 100);
+        health.recordDisconnect(now.get());
+        TestPeerSession session = new TestPeerSession(health, now);
+        List<PeerRecoveryReason> recoveries = new CopyOnWriteArrayList<>();
+
+        supervisor(session, recoveries).notifyDisconnect();
+
+        assertEquals(List.of(PeerRecoveryReason.DISCONNECT_STALE), recoveries);
+    }
+
+    @Test
+    void explicitDisconnectNotificationUsesFastQuotaBeforeNormalCooldown() {
+        PeerHealth health = runningHealth();
+        TestPeerSession session = new TestPeerSession(health, now);
+        List<PeerRecoveryReason> recoveries = new CopyOnWriteArrayList<>();
+        PeerSessionSupervisor supervisor = new PeerSessionSupervisor(
+                scheduler,
+                () -> session,
+                recoveries::add,
+                fastDisconnectPolicy(),
+                now::get);
+
+        health.recordDisconnect(now.get());
+        supervisor.notifyDisconnect();
+        health.recordDisconnect(now.get());
+        supervisor.notifyDisconnect();
+        health.recordDisconnect(now.get());
+        supervisor.notifyDisconnect();
+
+        assertEquals(List.of(PeerRecoveryReason.DISCONNECT_STALE, PeerRecoveryReason.DISCONNECT_STALE), recoveries);
+
+        now.addAndGet(500);
+        health.recordDisconnect(now.get());
+        supervisor.notifyDisconnect();
+
+        assertEquals(List.of(
+                PeerRecoveryReason.DISCONNECT_STALE,
+                PeerRecoveryReason.DISCONNECT_STALE,
+                PeerRecoveryReason.DISCONNECT_STALE), recoveries);
+    }
+
+    @Test
     void progressAfterDisconnectSuppressesStaleDisconnectRecovery() {
         PeerHealth health = runningHealth();
         health.recordDisconnect(now.get() - 2_000);
@@ -259,6 +303,44 @@ class PeerSessionSupervisorTest {
         assertEquals(List.of(PeerRecoveryReason.KEEPALIVE_STALE), recoveries);
     }
 
+    @Test
+    void asyncRecoveryExecutorDoesNotBlockSupervisorCheck() throws Exception {
+        PeerHealth health = runningHealth();
+        health.recordHeaderProgress(100, 10, now.get() - 2_000);
+        health.recordKeepAliveResponse(now.get() - 2_000);
+        TestPeerSession session = new TestPeerSession(health, now);
+        CountDownLatch enteredRecovery = new CountDownLatch(1);
+        CountDownLatch releaseRecovery = new CountDownLatch(1);
+        List<PeerRecoveryReason> recoveries = new CopyOnWriteArrayList<>();
+        ExecutorService recoveryExecutor = Executors.newSingleThreadExecutor();
+        PeerSessionSupervisor supervisor = new PeerSessionSupervisor(
+                scheduler,
+                () -> session,
+                reason -> {
+                    recoveries.add(reason);
+                    enteredRecovery.countDown();
+                    try {
+                        releaseRecovery.await(2, TimeUnit.SECONDS);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                },
+                policy(),
+                now::get,
+                () -> false,
+                recoveryExecutor);
+
+        try {
+            supervisor.checkNow();
+            assertTrue(enteredRecovery.await(2, TimeUnit.SECONDS));
+            supervisor.checkNow();
+            assertEquals(List.of(PeerRecoveryReason.KEEPALIVE_STALE), recoveries);
+        } finally {
+            releaseRecovery.countDown();
+            recoveryExecutor.shutdownNow();
+        }
+    }
+
     private PeerHealth runningHealth() {
         PeerHealth health = new PeerHealth("relay-1", now.get() - 5_000);
         health.markState(PeerSessionState.RUNNING);
@@ -285,6 +367,22 @@ class PeerSessionSupervisorTest {
                 1_000,
                 500,
                 0);
+    }
+
+    private PeerSessionSupervisor.Policy fastDisconnectPolicy() {
+        return new PeerSessionSupervisor.Policy(
+                10,
+                1_000,
+                1_000,
+                1_000,
+                1_000,
+                1_000,
+                1_000,
+                500,
+                0,
+                2,
+                0,
+                10_000);
     }
 
     private static class TestPeerSession extends PeerSession {

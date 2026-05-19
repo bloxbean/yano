@@ -435,6 +435,29 @@ The recovered chain-sync intersection callback refreshes the cached remote tip
 once the replacement session reaches the peer, so status and initial-sync
 completion are not permanently tied to the temporary recovery scope.
 
+### Fast Explicit-Disconnect Follow-up
+
+Mainnet bulk sync testing showed that waiting for the periodic supervisor tick
+and 30-second disconnect grace can add avoidable delay when the upstream has
+already reported an explicit disconnect. This is different from ambiguous
+no-progress or keepalive-stale cases, where conservative timers still make
+sense.
+
+The follow-up change keeps Yaci auto-reconnect disabled in Yano, but lets
+`PipelineDataListener.onDisconnect()` notify the Yano supervisor immediately.
+The supervisor then requests clean session replacement without waiting for the
+next scheduled tick.
+
+To avoid a tight reconnect loop against unhealthy public relays:
+
+- the first two explicit-disconnect recoveries in a burst bypass the normal
+  cooldown;
+- after the second fast recovery, subsequent disconnect recoveries use the
+  normal recovery cooldown and jitter;
+- the fast quota resets after five minutes without disconnect-driven recovery;
+- silent stalls, body-fetch stalls, startup failures, and keepalive/no-progress
+  recovery keep the existing conservative timers.
+
 ### Review Notes
 
 - Two reviewer passes were run for Phase 7.
@@ -485,3 +508,8 @@ completion are not permanently tied to the temporary recovery scope.
   The recovery path was simplified to reuse cached remote-tip context instead
   of opening `TipFinder` during recovery. Near-tip fault validation remains
   pending.
+- 2026-05-19: Added explicit-disconnect fast recovery. Yano now wakes the
+  supervisor directly from the disconnect callback, allows two immediate clean
+  session replacements per disconnect burst, then falls back to normal
+  cooldown/jitter. Focused supervisor/listener tests, full `:runtime:test`, and
+  `:app:compileJava` passed.
