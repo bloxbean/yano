@@ -36,15 +36,51 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class AccountHistoryStoreTest {
     private static final String CRED_HASH = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef01";
     private static final String REWARD_ACCOUNT = "e1" + CRED_HASH;
     private static final String POOL_HASH = "deadbeef00000000000000000000000000000000000000000000cafe";
     private static final String TX_HASH = "aa".repeat(32);
+    private static final byte[] META_LAST_APPLIED_SLOT = new byte[]{0x00, 'l', 'a', 's', 't', '_', 's', 'l', 'o', 't'};
+    private static final byte[] META_LAST_APPLIED_BLOCK = new byte[]{0x00, 'l', 'a', 's', 't', '_', 'b', 'l', 'o', 'c', 'k'};
 
     @TempDir
     Path tempDir;
+
+    @Test
+    void applyBlockRethrowsStorageFailure() throws Exception {
+        try (var rocks = TestRocksDBHelper.create(tempDir)) {
+            AccountHistoryStore store = new AccountHistoryStore(null, rocks.cfSupplier(),
+                    LoggerFactory.getLogger(AccountHistoryStoreTest.class),
+                    enabledConfig(0), epochProvider());
+
+            RuntimeException ex = assertThrows(RuntimeException.class,
+                    () -> store.applyBlock(blockEvent(100, 1, TX_HASH,
+                            Map.of(REWARD_ACCOUNT, BigInteger.ONE),
+                            StakeRegistration.builder().stakeCredential(credential()).build())));
+
+            assertThat(ex).hasMessageContaining("Account history apply failed for block 1");
+        }
+    }
+
+    @Test
+    void malformedMetadataFailsClosed() throws Exception {
+        try (var rocks = TestRocksDBHelper.create(tempDir)) {
+            AccountHistoryStore store = store(rocks, enabledConfig(0));
+            var cfHistory = rocks.cf(AccountHistoryCfNames.ACCOUNT_HISTORY);
+
+            rocks.db().put(cfHistory, META_LAST_APPLIED_BLOCK, new byte[]{1, 2, 3});
+            RuntimeException blockEx = assertThrows(RuntimeException.class, store::getLastAppliedBlock);
+            assertThat(blockEx).hasMessageContaining("Failed to read account history metadata");
+
+            rocks.db().delete(cfHistory, META_LAST_APPLIED_BLOCK);
+            rocks.db().put(cfHistory, META_LAST_APPLIED_SLOT, new byte[]{1, 2, 3});
+            RuntimeException slotEx = assertThrows(RuntimeException.class, store::getLatestAppliedSlot);
+            assertThat(slotEx).hasMessageContaining("Failed to read account history metadata");
+        }
+    }
 
     @Test
     void disabledFlagDoesNotWriteHistory() throws Exception {

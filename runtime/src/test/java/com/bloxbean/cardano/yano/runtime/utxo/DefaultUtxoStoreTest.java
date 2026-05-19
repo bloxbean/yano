@@ -16,11 +16,15 @@ import com.bloxbean.cardano.yano.api.events.RollbackEvent;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.rocksdb.ColumnFamilyHandle;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.File;
 import java.math.BigInteger;
+import java.lang.reflect.Field;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.file.Files;
 import java.util.*;
 
@@ -76,6 +80,54 @@ class DefaultUtxoStoreTest {
         bus.publish(new RollbackEvent(new Point(targetSlot, null), true),
                 EventMetadata.builder().origin("test").slot(targetSlot).build(),
                 PublishOptions.builder().build());
+    }
+
+    @Test
+    void applyBlockRethrowsProcessorFailure() throws Exception {
+        Field processorField = DefaultUtxoStore.class.getDeclaredField("processor");
+        processorField.setAccessible(true);
+        processorField.set(store, (UtxoProcessor) (event, cfUnspent) -> {
+            throw new IllegalStateException("processor failed");
+        });
+
+        Block block = Block.builder()
+                .era(Era.Babbage)
+                .transactionBodies(Collections.emptyList())
+                .invalidTransactions(Collections.emptyList())
+                .build();
+
+        RuntimeException ex = assertThrows(RuntimeException.class,
+                () -> store.applyBlock(new BlockAppliedEvent(Era.Babbage, 10, 1, "bb".repeat(32), block)));
+
+        assertTrue(ex.getMessage().contains("UTXO apply failed for block 1"));
+        assertTrue(ex.getCause() instanceof IllegalStateException);
+    }
+
+    @Test
+    void malformedMetadataFailsClosed() throws Exception {
+        ColumnFamilyHandle meta = (ColumnFamilyHandle) chain.getColumnFamilyHandle(UtxoCfNames.UTXO_META);
+
+        store.getDb().put(meta,
+                "meta.last_applied_block".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                new byte[]{1, 2, 3});
+
+        RuntimeException blockEx = assertThrows(RuntimeException.class, store::readLastAppliedBlock);
+        assertTrue(blockEx.getMessage().contains("Failed to read UTXO last applied block"));
+
+        store.getDb().put(meta,
+                "meta.last_applied_slot".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                new byte[]{1, 2, 3});
+
+        RuntimeException slotEx = assertThrows(RuntimeException.class, store::getLatestAppliedSlot);
+        assertTrue(slotEx.getMessage().contains("Failed to read UTXO latest applied slot"));
+    }
+
+    @Test
+    void computeTotalUtxoLovelaceFailsClosedOnMalformedRecord() throws Exception {
+        store.getDb().put(store.getCfUnspent(), new byte[]{1, 2, 3}, new byte[]{1});
+
+        RuntimeException ex = assertThrows(RuntimeException.class, store::computeTotalUtxoLovelace);
+        assertTrue(ex.getMessage().contains("Failed to decode UTXO while computing total lovelace"));
     }
 
     @Test
@@ -444,6 +496,27 @@ class DefaultUtxoStoreTest {
     }
 
     @Test
+    void rollbackFloorFailsClosedOnMalformedDelta() throws Exception {
+        ColumnFamilyHandle delta = (ColumnFamilyHandle) chain.getColumnFamilyHandle(UtxoCfNames.UTXO_BLOCK_DELTA);
+        store.getDb().put(delta, new byte[]{0}, new byte[]{1, 2, 3});
+
+        RuntimeException ex = assertThrows(RuntimeException.class, store::getRollbackFloorSlot);
+        assertTrue(ex.getMessage().contains("Failed to read UTXO rollback floor"));
+    }
+
+    @Test
+    void rollbackFloorUsesLatestAppliedSlotWhenNoDeltaIsRetained() throws Exception {
+        ColumnFamilyHandle meta = (ColumnFamilyHandle) chain.getColumnFamilyHandle(UtxoCfNames.UTXO_META);
+        byte[] slot = ByteBuffer.allocate(Long.BYTES)
+                .order(ByteOrder.BIG_ENDIAN)
+                .putLong(250L)
+                .array();
+        store.getDb().put(meta, "meta.last_applied_slot".getBytes(java.nio.charset.StandardCharsets.UTF_8), slot);
+
+        assertEquals(250L, store.getRollbackFloorSlot());
+    }
+
+    @Test
     void rollbackCapableStore_rollbackToSlot() {
         String addr = "addr_test1vpxrollback00000000000000000000000000000000000";
         TransactionBody tx1 = TransactionBody.builder()
@@ -466,6 +539,21 @@ class DefaultUtxoStoreTest {
 
         // After rollback, latestAppliedSlot should be <= 100
         assertTrue(store.getLatestAppliedSlot() <= 100);
+        assertEquals(1, store.getLastAppliedBlock());
+    }
+
+    @Test
+    void rollbackCapableStore_rollbackBeforeFirstBlockClearsBlockCursor() {
+        Block b1 = Block.builder().era(Era.Babbage).transactionBodies(Collections.emptyList())
+                .invalidTransactions(Collections.emptyList()).build();
+        publishBlock(100, 1, "a3".repeat(32), b1);
+
+        assertEquals(1, store.getLastAppliedBlock());
+
+        store.rollbackToSlot(50);
+
+        assertEquals(0, store.getLastAppliedBlock());
+        assertEquals(-1, store.getLatestAppliedSlot());
     }
 
     // --- Allegra bootstrap UTXO removal tests ---

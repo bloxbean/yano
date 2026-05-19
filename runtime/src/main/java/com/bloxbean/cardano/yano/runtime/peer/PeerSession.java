@@ -8,13 +8,16 @@ import com.bloxbean.cardano.yaci.events.api.EventBus;
 import com.bloxbean.cardano.yaci.helper.PeerClient;
 import com.bloxbean.cardano.yaci.helper.PipelineConfig;
 import com.bloxbean.cardano.yano.api.EpochParamProvider;
+import com.bloxbean.cardano.yano.runtime.apply.LedgerApplyProcessor;
 import com.bloxbean.cardano.yano.runtime.BodyFetchManager;
 import com.bloxbean.cardano.yano.runtime.HeaderSyncManager;
 import com.bloxbean.cardano.yano.runtime.PipelineDataListener;
 import com.bloxbean.cardano.yano.runtime.SyncTipContext;
 import lombok.extern.slf4j.Slf4j;
 
+import java.time.Duration;
 import java.util.Objects;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Owns the lifecycle of one active upstream peer session.
@@ -37,6 +40,8 @@ public class PeerSession {
     private HeaderSyncManager headerSyncManager;
     private BodyFetchManager bodyFetchManager;
     private PipelineDataListener pipelineDataListener;
+    private LedgerApplyProcessor ledgerApplyProcessor;
+    private long ledgerGeneration;
 
     public PeerSession(String host,
                        int port,
@@ -77,7 +82,14 @@ public class PeerSession {
             ensurePeerClient(startPoint);
             initializePipelineManagers(pipelineConfig);
 
-            pipelineDataListener = new PipelineDataListener(headerSyncManager, bodyFetchManager, callbacks, peerHealth);
+            initializeLedgerApplyProcessor();
+            pipelineDataListener = new PipelineDataListener(
+                    headerSyncManager,
+                    bodyFetchManager,
+                    callbacks,
+                    peerHealth,
+                    ledgerApplyProcessor,
+                    ledgerGeneration);
             peerClient.connect(pipelineDataListener, null);
             peerClient.enableTxSubmission();
             peerClient.startHeaderSync(startPoint, true);
@@ -102,7 +114,14 @@ public class PeerSession {
             ensurePeerClient(startPoint);
             initializePipelineManagers(pipelineConfig);
 
-            pipelineDataListener = new PipelineDataListener(headerSyncManager, bodyFetchManager, callbacks, peerHealth);
+            initializeLedgerApplyProcessor();
+            pipelineDataListener = new PipelineDataListener(
+                    headerSyncManager,
+                    bodyFetchManager,
+                    callbacks,
+                    peerHealth,
+                    ledgerApplyProcessor,
+                    ledgerGeneration);
             peerClient.connect(pipelineDataListener, null);
             peerClient.enableTxSubmission();
             peerClient.startSync(startPoint);
@@ -114,19 +133,69 @@ public class PeerSession {
         }
     }
 
-    public void stop() {
-        if (peerHealth.isTerminalFailure()) {
-            stopResources();
-            peerHealth.markBodyFetchCompleted();
-            return;
-        }
-        peerHealth.markState(PeerSessionState.STOPPING);
-        stopResources();
-        peerHealth.markBodyFetchCompleted();
-        peerHealth.markState(PeerSessionState.STOPPED);
+    public boolean stop() {
+        return stop(Duration.ofSeconds(5));
     }
 
-    private void stopResources() {
+    public boolean stop(Duration ledgerApplyStopTimeout) {
+        boolean stopped;
+        if (peerHealth.isTerminalFailure()) {
+            stopped = stopResources(ledgerApplyStopTimeout);
+            peerHealth.markBodyFetchCompleted();
+            return stopped;
+        }
+        peerHealth.markState(PeerSessionState.STOPPING);
+        stopped = stopResources(ledgerApplyStopTimeout);
+        peerHealth.markBodyFetchCompleted();
+        if (stopped) {
+            peerHealth.markState(PeerSessionState.STOPPED);
+        }
+        return stopped;
+    }
+
+    public boolean forceStop(Duration ledgerApplyStopTimeout) {
+        peerHealth.markState(PeerSessionState.STOPPING);
+        stopNetworkResources();
+        peerHealth.markBodyFetchCompleted();
+        boolean stopped = forceCloseExistingLedgerApplyProcessor(ledgerApplyStopTimeout);
+        if (stopped) {
+            peerHealth.markState(PeerSessionState.STOPPED);
+        } else {
+            peerHealth.markTerminalFailure(PeerRecoveryReason.TERMINAL_FAILURE,
+                    "LedgerApplyProcessor did not stop after forced shutdown");
+        }
+        return stopped;
+    }
+
+    public boolean quiesceNetworkForRecovery() {
+        return quiesceNetworkForRecovery(Duration.ofSeconds(5));
+    }
+
+    public boolean quiesceNetworkForRecovery(Duration callbackDrainTimeout) {
+        peerHealth.markState(PeerSessionState.STOPPING);
+        stopNetworkResources();
+        peerHealth.markBodyFetchCompleted();
+        if (pipelineDataListener == null) {
+            return true;
+        }
+        try {
+            boolean drained = pipelineDataListener.awaitRollbackCallbackDrain(callbackDrainTimeout);
+            if (!drained) {
+                log.warn("Timed out waiting for rollback callbacks to drain before peer recovery");
+            }
+            return drained;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return false;
+        }
+    }
+
+    private boolean stopResources(Duration ledgerApplyStopTimeout) {
+        stopNetworkResources();
+        return closeExistingLedgerApplyProcessor(ledgerApplyStopTimeout);
+    }
+
+    private void stopNetworkResources() {
         if (bodyFetchManager != null && bodyFetchManager.isRunning()) {
             try {
                 bodyFetchManager.stop();
@@ -171,6 +240,19 @@ public class PeerSession {
 
     public PeerHealth getPeerHealth() {
         return peerHealth;
+    }
+
+    public LedgerApplyProcessor getLedgerApplyProcessor() {
+        return ledgerApplyProcessor;
+    }
+
+    public LedgerApplyProcessor.RecoveryPoint closeGenerationAndReadRecoveryPoint(Duration timeout) throws Exception {
+        if (ledgerApplyProcessor == null || ledgerGeneration <= 0) {
+            return new LedgerApplyProcessor.RecoveryPoint(chainState.getTip(), chainState.getHeaderTip());
+        }
+        Duration effectiveTimeout = timeout != null ? timeout : Duration.ofMinutes(5);
+        return ledgerApplyProcessor.closeGenerationAndReadRecoveryPoint(ledgerGeneration)
+                .get(effectiveTimeout.toMillis(), TimeUnit.MILLISECONDS);
     }
 
     public PeerSessionStatus getStatus() {
@@ -225,10 +307,51 @@ public class PeerSession {
         log.info("ℹ️  BodyFetchManager will monitor for gaps and fetch ranges automatically");
     }
 
+    private void initializeLedgerApplyProcessor() {
+        if (!closeExistingLedgerApplyProcessor(Duration.ofSeconds(5))) {
+            throw new IllegalStateException("Previous LedgerApplyProcessor did not reach a safe stop");
+        }
+        ledgerApplyProcessor = new LedgerApplyProcessor(chainState, callbacks::requestPeerRecovery);
+        ledgerGeneration = ledgerApplyProcessor.openGeneration();
+        ledgerApplyProcessor.start();
+        log.info("🧾 LedgerApplyProcessor started for generation {}", ledgerGeneration);
+    }
+
     private void stopExistingBodyFetchManager() {
         if (bodyFetchManager != null && bodyFetchManager.isRunning()) {
             bodyFetchManager.stop();
         }
+    }
+
+    private boolean closeExistingLedgerApplyProcessor(Duration timeout) {
+        if (ledgerApplyProcessor != null) {
+            boolean stopped = ledgerApplyProcessor.closeAndAwait(timeout);
+            if (stopped) {
+                ledgerApplyProcessor = null;
+                ledgerGeneration = 0;
+            } else {
+                log.error("LedgerApplyProcessor did not stop cleanly for generation {}; "
+                        + "keeping session unavailable for replacement until a safe point is reached",
+                        ledgerGeneration);
+            }
+            return stopped;
+        }
+        return true;
+    }
+
+    private boolean forceCloseExistingLedgerApplyProcessor(Duration timeout) {
+        if (ledgerApplyProcessor != null) {
+            boolean stopped = ledgerApplyProcessor.forceCloseAndAwait(timeout);
+            if (stopped) {
+                ledgerApplyProcessor = null;
+                ledgerGeneration = 0;
+            } else {
+                log.error("LedgerApplyProcessor did not stop after forced shutdown for generation {}",
+                        ledgerGeneration);
+            }
+            return stopped;
+        }
+        return true;
     }
 
     private void refreshKeepAliveHealth() {
@@ -243,7 +366,7 @@ public class PeerSession {
     }
 
     private void markStartupFailed(RuntimeException e) {
-        stopResources();
+        stopResources(Duration.ofSeconds(5));
         peerHealth.markBodyFetchCompleted();
         String message = e.getMessage() != null ? e.getMessage() : e.getClass().getName();
         peerHealth.markTerminalFailure(PeerRecoveryReason.STARTUP_FAILED, "Peer session startup failed: " + message);

@@ -59,42 +59,24 @@ public class UtxoBalanceAggregator {
             count[0]++;
             if (lovelace == null || lovelace.signum() <= 0) return;
 
-            try {
-                Address address = new Address(addressStr);
-                AddressType addrType = address.getAddressType();
-
-                // Pointer addresses: resolve via PointerAddressResolver
-                if (addrType == AddressType.Ptr) {
-                    if (pointerResolver == null) {
-                        skipped[0]++;
-                        return;
-                    }
-                    var resolved = resolvePointerAddress(address, pointerResolver);
-                    if (resolved != null) {
-                        balances.merge(resolved, lovelace, BigInteger::add);
-                        pointerResolved[0]++;
-                    } else {
-                        pointerFailed[0]++;
-                        skipped[0]++;
-                    }
-                    return;
-                }
-
-                byte[] delegationHash = address.getDelegationCredentialHash()
-                        .orElse(null);
-
-                if (delegationHash == null || delegationHash.length != 28) {
-                    skipped[0]++;
-                    return;
-                }
-
-                int credType = getStakeCredType(address);
-                String credHash = com.bloxbean.cardano.yaci.core.util.HexUtil.encodeHexString(delegationHash);
-
-                balances.merge(new CredentialKey(credType, credHash), lovelace, BigInteger::add);
-            } catch (Exception e) {
+            Address address = parseAddress(addressStr);
+            AddressType addrType = address.getAddressType();
+            if (addrType == AddressType.Ptr && pointerResolver == null) {
+                // Conway and later exclude pointer stake from snapshots.
                 skipped[0]++;
+                return;
             }
+
+            CredentialKey credKey = extractCredential(address, addressStr, pointerResolver);
+            if (credKey == null) {
+                skipped[0]++;
+                return;
+            }
+
+            if (addrType == AddressType.Ptr) {
+                pointerResolved[0]++;
+            }
+            balances.merge(credKey, lovelace, BigInteger::add);
         };
 
         if (maxSlot > 0) {
@@ -118,23 +100,33 @@ public class UtxoBalanceAggregator {
      * @return credential key, or null if address has no stake credential
      */
     public CredentialKey extractCredential(String addressStr, PointerAddressResolver pointerResolver) {
-        try {
-            Address address = new Address(addressStr);
-            AddressType addrType = address.getAddressType();
+        return extractCredential(parseAddress(addressStr), addressStr, pointerResolver);
+    }
 
-            if (addrType == AddressType.Ptr) {
-                if (pointerResolver == null) return null;
-                return resolvePointerAddress(address, pointerResolver);
-            }
-
-            byte[] delegationHash = address.getDelegationCredentialHash().orElse(null);
-            if (delegationHash == null || delegationHash.length != 28) return null;
-
-            int credType = getStakeCredType(address);
-            String credHash = com.bloxbean.cardano.yaci.core.util.HexUtil.encodeHexString(delegationHash);
-            return new CredentialKey(credType, credHash);
-        } catch (Exception e) {
+    private CredentialKey extractCredential(Address address, String addressStr, PointerAddressResolver pointerResolver) {
+        AddressType addrType = address.getAddressType();
+        if (addrType == AddressType.Byron) {
             return null;
+        }
+
+        if (addrType == AddressType.Ptr) {
+            if (pointerResolver == null) return null;
+            return resolvePointerAddress(address, addressStr, pointerResolver);
+        }
+
+        byte[] delegationHash = address.getDelegationCredentialHash().orElse(null);
+        if (delegationHash == null || delegationHash.length != 28) return null;
+
+        int credType = getStakeCredType(address);
+        String credHash = com.bloxbean.cardano.yaci.core.util.HexUtil.encodeHexString(delegationHash);
+        return new CredentialKey(credType, credHash);
+    }
+
+    private static Address parseAddress(String addressStr) {
+        try {
+            return new Address(addressStr);
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to parse UTXO address for stake aggregation: " + addressStr, e);
         }
     }
 
@@ -144,18 +136,23 @@ public class UtxoBalanceAggregator {
      * matching Yaci Store's approach in AccountBalanceProcessor.
      */
     private static CredentialKey resolvePointerAddress(Address address,
+                                                       String addressStr,
                                                        PointerAddressResolver resolver) {
         try {
             var ptrAddr = new com.bloxbean.cardano.client.address.PointerAddress(address.getBytes());
             var pointer = ptrAddr.getPointer();
-            if (pointer == null) return null;
+            if (pointer == null) {
+                throw new IllegalStateException("Pointer address has no pointer: " + addressStr);
+            }
 
             var cred = resolver.resolve(pointer.getSlot(), pointer.getTxIndex(), pointer.getCertIndex());
-            if (cred == null) return null;
+            if (cred == null) {
+                throw new IllegalStateException("Could not resolve pointer address credential: " + addressStr);
+            }
 
             return new CredentialKey(cred.credType(), cred.credHash());
         } catch (Exception e) {
-            return null;
+            throw new IllegalStateException("Failed to resolve pointer address credential: " + addressStr, e);
         }
     }
 

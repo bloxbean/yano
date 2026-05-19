@@ -226,11 +226,11 @@ class BodyFetchManagerTest {
         
         assertEquals(0, bodyFetchManager.getStatus().bodiesReceived);
         
-        // Null Byron block should be handled gracefully without incrementing metrics
-        bodyFetchManager.onByronBlock(byronBlock);
+        // Null/incomplete Byron block should fail fast without incrementing metrics
+        assertThrows(RuntimeException.class, () -> bodyFetchManager.onByronBlock(byronBlock));
         
-        assertEquals(0, bodyFetchManager.getStatus().bodiesReceived, "Null Byron block should not increment count");
-        assertEquals(0, bodyFetchManager.getStatus().totalBlocksFetched, "Null Byron block should not increment count");
+        assertEquals(0, bodyFetchManager.getStatus().bodiesReceived, "Failed Byron block should not increment count");
+        assertEquals(0, bodyFetchManager.getStatus().totalBlocksFetched, "Failed Byron block should not increment count");
     }
     
     @Test
@@ -240,11 +240,11 @@ class BodyFetchManagerTest {
         
         assertEquals(0, bodyFetchManager.getStatus().bodiesReceived);
         
-        // Null Byron EB block should be handled gracefully without incrementing metrics
-        bodyFetchManager.onByronEbBlock(byronEbBlock);
+        // Null/incomplete Byron EB block should fail fast without incrementing metrics
+        assertThrows(RuntimeException.class, () -> bodyFetchManager.onByronEbBlock(byronEbBlock));
         
-        assertEquals(0, bodyFetchManager.getStatus().bodiesReceived, "Null Byron EB block should not increment count");
-        assertEquals(0, bodyFetchManager.getStatus().totalBlocksFetched, "Null Byron EB block should not increment count");
+        assertEquals(0, bodyFetchManager.getStatus().bodiesReceived, "Failed Byron EB block should not increment count");
+        assertEquals(0, bodyFetchManager.getStatus().totalBlocksFetched, "Failed Byron EB block should not increment count");
     }
     
     @Test
@@ -337,8 +337,9 @@ class BodyFetchManagerTest {
     @Test
     @DisplayName("Test error handling for malformed blocks")
     void testErrorHandling() {
-        // Test with null block - should not crash
-        assertDoesNotThrow(() -> bodyFetchManager.onBlock(Era.Shelley, null, Collections.emptyList()));
+        // Test with null block - should fail fast for ordered apply recovery
+        assertThrows(RuntimeException.class,
+                () -> bodyFetchManager.onBlock(Era.Shelley, null, Collections.emptyList()));
         
         // Status should remain unchanged
         assertEquals(0, bodyFetchManager.getStatus().bodiesReceived);
@@ -388,12 +389,12 @@ class BodyFetchManagerTest {
     }
     
     private ByronMainBlock createTestByronMainBlock(long absoluteSlot, long blockNumber, String hash) {
-        // For testing, just return null since BodyFetchManager handles null Byron blocks gracefully
+        // For testing, return null to exercise fail-fast invalid Byron handling.
         return null;
     }
     
     private ByronEbBlock createTestByronEbBlock(long absoluteSlot, long blockNumber, String hash) {
-        // For testing, just return null since BodyFetchManager handles null Byron blocks gracefully
+        // For testing, return null to exercise fail-fast invalid Byron EBB handling.
         return null;
     }
     

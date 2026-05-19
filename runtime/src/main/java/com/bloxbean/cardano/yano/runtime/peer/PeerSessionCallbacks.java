@@ -21,4 +21,7 @@ public interface PeerSessionCallbacks {
 
     default void onPeerDisconnected() {
     }
+
+    default void requestPeerRecovery(PeerRecoveryReason reason) {
+    }
 }

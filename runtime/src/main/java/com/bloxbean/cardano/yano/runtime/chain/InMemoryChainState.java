@@ -85,6 +85,37 @@ public class InMemoryChainState implements ChainState, NonceStateStore {
 
         // Remove the entries from blockNumberBySlot where slots are greater than the provided slot
         blockNumberBySlot.tailMap(slot, false).clear();
+
+        var lastEntry = blockNumberBySlot.floorEntry(slot);
+        if (lastEntry == null) {
+            tip = null;
+            headerTip = null;
+            return;
+        }
+
+        Long tipSlot = lastEntry.getKey();
+        Long blockNumber = lastEntry.getValue();
+        byte[] blockHash = blockHashByNumber.get(blockNumber);
+        if (blockHash == null) {
+            tip = null;
+            headerTip = null;
+            return;
+        }
+
+        String key = toHex(blockHash);
+        tip = blockStore.containsKey(key) ? new ChainTip(tipSlot, blockHash, blockNumber) : null;
+        headerTip = blockHeaderStore.containsKey(key) ? new ChainTip(tipSlot, blockHash, blockNumber) : null;
+    }
+
+    public void rollbackToOrigin() {
+        blockStore.clear();
+        blockHeaderStore.clear();
+        blockHashByNumber.clear();
+        blockNumberBySlot.clear();
+        tip = null;
+        headerTip = null;
+        epochNonceState = null;
+        epochNonces.clear();
     }
 
     @Override

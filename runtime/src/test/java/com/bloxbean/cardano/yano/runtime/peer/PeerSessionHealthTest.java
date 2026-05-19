@@ -46,6 +46,22 @@ class PeerSessionHealthTest {
     }
 
     @Test
+    void quiesceNetworkForRecoveryStopsPeerWithoutMarkingStopped() throws Exception {
+        PeerSession session = newSession();
+        MockPeerClient peerClient = new MockPeerClient();
+        setPeerClient(session, peerClient);
+        session.getPeerHealth().markState(PeerSessionState.RUNNING);
+        session.getPeerHealth().markBodyFetchStarted(System.currentTimeMillis());
+
+        session.quiesceNetworkForRecovery();
+
+        assertTrue(peerClient.stopCalled);
+        PeerSessionStatus status = session.getStatus();
+        assertEquals(PeerSessionState.STOPPING, status.state());
+        assertFalse(status.bodyFetchInProgress());
+    }
+
+    @Test
     void startupFailureMarksSessionTerminalAndClearsBodyFetchState() throws Exception {
         PeerSession session = newSession();
         setPeerClient(session, new FailingConnectPeerClient());
@@ -130,6 +146,7 @@ class PeerSessionHealthTest {
 
     private static class MockPeerClient extends PeerClient {
         private long lastKeepAliveResponseTime;
+        private boolean stopCalled;
 
         MockPeerClient() {
             super("mock-host", 3001, 1, Point.ORIGIN);
@@ -142,6 +159,7 @@ class PeerSessionHealthTest {
 
         @Override
         public void stop() {
+            stopCalled = true;
         }
     }
 

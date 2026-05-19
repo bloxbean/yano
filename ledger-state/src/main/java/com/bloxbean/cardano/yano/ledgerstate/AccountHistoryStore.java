@@ -162,6 +162,7 @@ public final class AccountHistoryStore implements AccountHistoryProvider, Rollba
         } catch (Exception e) {
             healthy = false;
             log.error("Account history apply failed for block {}: {}", blockNo, e.toString(), e);
+            throw new RuntimeException("Account history apply failed for block " + blockNo, e);
         }
     }
 
@@ -430,9 +431,8 @@ public final class AccountHistoryStore implements AccountHistoryProvider, Rollba
             }
             byte[] blockBytes = chainState.getBlockByNumber(bn);
             if (blockBytes == null) {
-                failed = true;
-                log.warn("Account history reconcile: missing block body for block {}", bn);
-                continue;
+                healthy = false;
+                throw new IllegalStateException("Account history reconcile missing local block body for block " + bn);
             }
 
             try {
@@ -450,8 +450,7 @@ public final class AccountHistoryStore implements AccountHistoryProvider, Rollba
                 replayed++;
             } catch (Throwable t) {
                 healthy = false;
-                failed = true;
-                log.warn("Account history reconcile: skip block {} due to: {}", bn, t.toString());
+                throw new RuntimeException("Account history reconcile failed for block " + bn, t);
             }
         }
         healthy = !failed;
@@ -738,11 +737,14 @@ public final class AccountHistoryStore implements AccountHistoryProvider, Rollba
     private Long readLongMeta(byte[] key) {
         try {
             byte[] value = db.get(cfHistory, key);
-            if (value != null && value.length == 8) {
+            if (value != null) {
+                if (value.length != 8) {
+                    throw new IllegalStateException("Malformed account history metadata length: " + value.length);
+                }
                 return ByteBuffer.wrap(value).order(ByteOrder.BIG_ENDIAN).getLong();
             }
         } catch (Exception e) {
-            log.warn("Failed to read account history metadata: {}", e.getMessage());
+            throw new RuntimeException("Failed to read account history metadata", e);
         }
         return null;
     }
@@ -758,7 +760,7 @@ public final class AccountHistoryStore implements AccountHistoryProvider, Rollba
                 it.prev();
             }
         } catch (Exception e) {
-            log.warn("Failed to read account history latest delta block: {}", e.getMessage());
+            throw new RuntimeException("Failed to read account history latest delta block", e);
         }
         return 0;
     }

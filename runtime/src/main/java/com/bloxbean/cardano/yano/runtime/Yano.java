@@ -19,7 +19,6 @@ import com.bloxbean.cardano.yaci.events.api.*;
 import com.bloxbean.cardano.yaci.events.api.config.EventsOptions;
 import com.bloxbean.cardano.yaci.events.api.support.AnnotationListenerRegistrar;
 import com.bloxbean.cardano.yaci.events.impl.NoopEventBus;
-import com.bloxbean.cardano.yaci.events.impl.SimpleEventBus;
 import com.bloxbean.cardano.yaci.helper.*;
 import com.bloxbean.cardano.yaci.helper.listener.BlockChainDataListener;
 import com.bloxbean.cardano.yano.api.EpochParamProvider;
@@ -42,6 +41,7 @@ import com.bloxbean.cardano.yano.api.bootstrap.BootstrapOutpoint;
 import com.bloxbean.cardano.yano.runtime.bootstrap.BootstrapResult;
 import com.bloxbean.cardano.yano.runtime.bootstrap.BootstrapService;
 import com.bloxbean.cardano.yano.runtime.blockproducer.*;
+import com.bloxbean.cardano.yano.runtime.apply.LedgerApplyProcessor;
 import com.bloxbean.cardano.yano.runtime.chain.BlockPruner;
 import com.bloxbean.cardano.yano.runtime.chain.DefaultMemPool;
 import com.bloxbean.cardano.yano.runtime.chain.DefaultMempoolEvictionPolicy;
@@ -89,6 +89,7 @@ import com.bloxbean.cardano.yano.runtime.config.DefaultEpochParamProvider;
 import com.bloxbean.cardano.yano.runtime.config.InMemoryDevnetGenesis;
 import com.bloxbean.cardano.yano.runtime.config.NetworkGenesisConfig;
 import com.bloxbean.cardano.yano.runtime.config.NetworkGenesisValuesFactory;
+import com.bloxbean.cardano.yano.runtime.events.PropagatingEventBus;
 import com.bloxbean.cardano.yano.runtime.genesis.ShelleyGenesisParser;
 import com.bloxbean.cardano.yano.api.util.EpochSlotCalc;
 import com.bloxbean.cardano.yano.runtime.era.EraProviderImpl;
@@ -288,7 +289,7 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
 
         // Event bus
         EventsOptions ev = this.runtimeOptions.events();
-        this.eventBus = ev.enabled() ? new SimpleEventBus() : new NoopEventBus();
+        this.eventBus = ev.enabled() ? new PropagatingEventBus() : new NoopEventBus();
 
         // Register default consensus listener (accept-all placeholder)
         var consensusListener = new DefaultConsensusListener();
@@ -313,11 +314,16 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
                     this.utxoStore.reconcile(rocks);
                     log.info("UTXO reconciliation complete at startup");
                 } catch (Throwable t) {
-                    log.warn("UTXO reconciliation error: {}", t.toString());
+                    throw new IllegalStateException("UTXO reconciliation failed at startup", t);
                 }
                 boolean applyAsync = false;
                 Object asyncOpt = this.runtimeOptions.globals().get("yano.utxo.applyAsync");
                 if (asyncOpt instanceof Boolean b) applyAsync = b; else if (asyncOpt != null) try { applyAsync = Boolean.parseBoolean(String.valueOf(asyncOpt)); } catch (Exception ignored) {}
+                if (applyAsync && config.isEnableClient()) {
+                    log.warn("yano.utxo.applyAsync=true is disabled during client sync; ordered apply requires "
+                            + "synchronous UTXO failures to propagate");
+                    applyAsync = false;
+                }
                 if (applyAsync) {
                     this.utxoEventHandlerAsync = new UtxoEventHandlerAsync(eventBus, this.utxoStore);
                     log.info("UTXO store initialized ({}); UtxoEventHandlerAsync registered (applyAsync=true)",
@@ -362,7 +368,7 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
                 log.info("UTXO store not initialized (enabled={}, rocksdb={})", utxoEnabled, (chainState instanceof DirectRocksDBChainState));
             }
         } catch (Throwable t) {
-            log.warn("Failed to initialize UTXO store: {}", t.toString());
+            throw new IllegalStateException("Failed to initialize UTXO store", t);
         }
 
         // Phase 3b: Initialize Account State store if enabled (via SPI discovery)
@@ -415,7 +421,7 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
                     this.accountStateStore.reconcile(chainState);
                     log.info("Account state reconciliation complete at startup");
                 } catch (Throwable t) {
-                    log.warn("Account state reconciliation error: {}", t.toString());
+                    throw new IllegalStateException("Account state reconciliation failed at startup", t);
                 }
                 // Wire UtxoState and optional epoch subsystems
                 if (this.accountStateStore instanceof DefaultAccountStateStore defaultStore) {
@@ -715,7 +721,7 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
                             this.accountHistoryStore.reconcile(chainState);
                             log.info("Account history reconciliation complete at startup");
                         } catch (Throwable t) {
-                            log.warn("Account history reconciliation error: {}", t.toString());
+                            throw new IllegalStateException("Account history reconciliation failed at startup", t);
                         }
                         this.accountHistoryEventHandler = new AccountHistoryEventHandler(eventBus, this.accountHistoryStore);
 
@@ -738,11 +744,11 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
                                 retentionEpochs);
                     } catch (Throwable t) {
                         this.accountHistoryStore = null;
-                        log.warn("Failed to initialize optional account history store: {}", t.toString());
+                        throw new IllegalStateException("Failed to initialize account history store", t);
                     }
                 } else if (accountHistoryEnabled) {
-                    log.warn("Account history requested but not initialized (rocksdb={})",
-                            chainState instanceof DirectRocksDBChainState);
+                    throw new IllegalStateException("Account history requested but not initialized (rocksdb="
+                            + (chainState instanceof DirectRocksDBChainState) + ")");
                 }
 
                 // Register event handler
@@ -755,11 +761,11 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
                 boolean accountHistoryEnabled = Boolean.parseBoolean(
                         String.valueOf(this.runtimeOptions.globals().getOrDefault("yano.account-history.enabled", "false")));
                 if (accountHistoryEnabled) {
-                    log.warn("Account history requested but not initialized because account-state is disabled");
+                    throw new IllegalStateException("Account history requested but not initialized because account-state is disabled");
                 }
             }
         } catch (Throwable t) {
-            log.warn("Failed to initialize account state store: {}", t.toString());
+            throw new IllegalStateException("Failed to initialize account state store", t);
         }
 
         // Phase 4: Initialize block body pruning if configured and RocksDB is used
@@ -1870,6 +1876,7 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
                                     log.info("Lazily built cfNetConfig after boundary capture for unknown+Byron network");
                                 } catch (Exception e) {
                                     log.error("Failed to lazily build cfNetConfig after boundary capture: {}", e.getMessage());
+                                    throw new RuntimeException("Failed to lazily build cfNetConfig after boundary capture", e);
                                 }
                             }
                         }
@@ -2443,6 +2450,7 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
                         meta, PublishOptions.builder().build());
             } catch (Exception ex) {
                 log.warn("RollbackEvent publish failed: {}", ex.toString());
+                throw new RuntimeException("RollbackEvent publish failed during API rollback", ex);
             }
             ensureAccountHistoryRolledBack(rollbackPoint);
 
@@ -2585,7 +2593,7 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
                 try {
                     utxoStore.reconcile(rocksState);
                 } catch (Throwable t) {
-                    log.warn("UTXO reconciliation after snapshot restore failed: {}", t.toString());
+                    throw new IllegalStateException("UTXO reconciliation after snapshot restore failed", t);
                 }
             }
 
@@ -2595,7 +2603,7 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
                 try {
                     accountStateStore.reconcile(chainState);
                 } catch (Throwable t) {
-                    log.warn("Account state reconciliation after snapshot restore failed: {}", t.toString());
+                    throw new IllegalStateException("Account state reconciliation after snapshot restore failed", t);
                 }
             }
 
@@ -2615,7 +2623,7 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
                 try {
                     accountHistoryStore.reconcile(chainState);
                 } catch (Throwable t) {
-                    log.warn("Account history reconciliation after snapshot restore failed: {}", t.toString());
+                    throw new IllegalStateException("Account history reconciliation after snapshot restore failed", t);
                 }
             }
 
@@ -3061,16 +3069,14 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
             isSyncing.set(true);
             isPipelinedMode = usePipeline;
 
-            // Get local tips to determine sync strategy
-            // Use header_tip as primary reference for restart efficiency
+            // Get local tips to determine sync strategy.
             ChainTip headerTip = chainState.getHeaderTip();
             ChainTip bodyTip = chainState.getTip();
+            ChainTip localTip = selectClientSyncStartTip(usePipeline, headerTip, bodyTip);
 
-            // Use header_tip if available, fall back to body_tip
-            ChainTip localTip = headerTip != null ? headerTip : bodyTip;
-
-            log.info("Local header_tip: {}, body_tip: {}, using: {} for sync",
-                     headerTip, bodyTip, localTip != null ? "slot " + localTip.getSlot() : "genesis");
+            log.info("Local header_tip: {}, body_tip: {}, mode={}, using: {} for sync",
+                     headerTip, bodyTip, usePipeline ? "pipelined" : "sequential",
+                     localTip != null ? "slot " + localTip.getSlot() : "genesis");
 
             // Initialize last known tip
             lastKnownChainTip = localTip;
@@ -3141,6 +3147,7 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
     }
 
     private void recoverPeerSession(PeerRecoveryReason reason) {
+        PeerSession oldSession;
         synchronized (peerSessionLock) {
             if (!isRunning.get() || !config.isEnableClient()) {
                 return;
@@ -3157,25 +3164,60 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
                 return;
             }
 
-            log.warn("Recovering upstream peer session: reason={}", reason);
-            PeerSession oldSession = peerSession;
-            if (oldSession != null) {
-                try {
-                    oldSession.stop();
-                } catch (Exception e) {
-                    log.warn("Error stopping stale peer session during recovery", e);
+            oldSession = peerSession;
+        }
+
+        LedgerApplyProcessor.RecoveryPoint recoveryPoint = null;
+        if (oldSession != null) {
+            try {
+                log.warn("Recovering upstream peer session: reason={}", reason);
+                if (!oldSession.quiesceNetworkForRecovery(Duration.ofSeconds(10))) {
+                    throw new IllegalStateException("Timed out waiting for old-session rollback callbacks to drain");
                 }
+                recoveryPoint = oldSession.closeGenerationAndReadRecoveryPoint(Duration.ofMinutes(5));
+            } catch (Exception e) {
+                log.warn("Could not read peer recovery point through ledger apply barrier; "
+                        + "delaying peer replacement until a safe point is available", e);
+                recordPeerRecoveryFailure(reason, e);
+                return;
             }
-            peerSession = null;
+            try {
+                while (!oldSession.stop(Duration.ofMinutes(1))) {
+                    log.error("Stale peer session did not stop after ledger apply safe point; "
+                            + "continuing to wait before starting replacement");
+                }
+            } catch (Exception e) {
+                log.warn("Error stopping stale peer session during recovery", e);
+                recordPeerRecoveryFailure(reason, e);
+                return;
+            }
+        }
+
+        synchronized (peerSessionLock) {
+            if (!isRunning.get() || !config.isEnableClient()) {
+                return;
+            }
+
+            if (peerRecoveryFailureTracker.isTerminal()) {
+                log.warn("Skipping upstream peer session restart because recovery is terminal: {}",
+                        peerRecoveryFailureTracker.snapshot().message());
+                return;
+            }
 
             try {
+                if (oldSession != null && peerSession != oldSession) {
+                    log.info("Skipping peer session recovery start because the active session changed");
+                    return;
+                }
+                peerSession = null;
+
                 boolean usePipeline = config.isEnablePipelinedSync();
                 isSyncing.set(true);
                 isPipelinedMode = usePipeline;
 
-                ChainTip headerTip = chainState.getHeaderTip();
-                ChainTip bodyTip = chainState.getTip();
-                ChainTip localTip = headerTip != null ? headerTip : bodyTip;
+                ChainTip headerTip = recoveryPoint != null ? recoveryPoint.headerTip() : chainState.getHeaderTip();
+                ChainTip bodyTip = recoveryPoint != null ? recoveryPoint.bodyTip() : chainState.getTip();
+                ChainTip localTip = selectClientSyncStartTip(usePipeline, headerTip, bodyTip);
                 lastKnownChainTip = localTip;
 
                 Point startPoint = determineStartPoint(localTip);
@@ -3208,6 +3250,24 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
                 markPeerRecoveryFailure(reason, e, failure);
                 isSyncing.set(true);
             }
+        }
+    }
+
+    private void recordPeerRecoveryFailure(PeerRecoveryReason reason, Exception e) {
+        synchronized (peerSessionLock) {
+            if (!isRunning.get() || !config.isEnableClient()) {
+                return;
+            }
+            PeerRecoveryFailureTracker.Snapshot failure = peerRecoveryFailureTracker.recordFailure(reason, e);
+            if (failure.terminal()) {
+                log.error("Upstream peer session recovery reached terminal failure; automatic retries paused: {}",
+                        failure.message(), e);
+            } else {
+                log.warn("Upstream peer session recovery failed; supervisor will retry after cooldown: {}",
+                        failure.message(), e);
+            }
+            markPeerRecoveryFailure(reason, e, failure);
+            isSyncing.set(true);
         }
     }
 
@@ -3299,6 +3359,20 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
         return new Point(localTip.getSlot(), HexUtil.encodeHexString(localTip.getBlockHash()));
     }
 
+    private ChainTip selectClientSyncStartTip(boolean usePipeline, ChainTip headerTip, ChainTip bodyTip) {
+        if (usePipeline) {
+            return headerTip != null ? headerTip : bodyTip;
+        }
+        if (headerTip != null && bodyTip != null && headerTip.getSlot() > bodyTip.getSlot()) {
+            log.info("Sequential sync ignoring header_tip slot {} ahead of body_tip slot {}; "
+                    + "body cursor is the only durable body-apply restart point",
+                    headerTip.getSlot(), bodyTip.getSlot());
+        } else if (headerTip != null && bodyTip == null) {
+            log.info("Sequential sync ignoring header_tip slot {} because no durable body tip exists", headerTip.getSlot());
+        }
+        return bodyTip;
+    }
+
     private Tip usableRemoteTip(Tip candidate, Point startPoint, ChainTip localTip, String context) {
         if (candidate != null && candidate.getPoint() != null) {
             return candidate;
@@ -3382,19 +3456,42 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
             log.info("Stopping Yano...");
 
             // Stop client sync
+            boolean unsafeLedgerApplyWorker = false;
             if (isSyncing.get()) {
+                PeerSession sessionToStop;
                 synchronized (peerSessionLock) {
+                    if (peerSessionSupervisor != null) {
+                        peerSessionSupervisor.close();
+                        peerSessionSupervisor = null;
+                    }
+                    sessionToStop = peerSession;
+                }
+
+                try {
+                    if (sessionToStop != null) {
+                        unsafeLedgerApplyWorker = !stopPeerSessionForShutdown(sessionToStop, "active");
+                    }
+                } catch (Exception e) {
+                    unsafeLedgerApplyWorker = true;
+                    log.warn("Error stopping peer session", e);
+                }
+
+                PeerSession replacementToStop = null;
+                synchronized (peerSessionLock) {
+                    if (peerSession == sessionToStop) {
+                        peerSession = null;
+                    } else if (peerSession != null) {
+                        log.warn("Peer session changed during shutdown; stopping replacement session before close");
+                        replacementToStop = peerSession;
+                        peerSession = null;
+                    }
+                }
+                if (replacementToStop != null) {
                     try {
-                        if (peerSessionSupervisor != null) {
-                            peerSessionSupervisor.close();
-                            peerSessionSupervisor = null;
-                        }
-                        if (peerSession != null) {
-                            peerSession.stop();
-                            peerSession = null;
-                        }
+                        unsafeLedgerApplyWorker |= !stopPeerSessionForShutdown(replacementToStop, "replacement");
                     } catch (Exception e) {
-                        log.warn("Error stopping peer session", e);
+                        unsafeLedgerApplyWorker = true;
+                        log.warn("Error stopping replacement peer session", e);
                     }
                 }
                 isSyncing.set(false);
@@ -3434,27 +3531,62 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
                 Thread.currentThread().interrupt();
             }
 
-            // Close ChainState if it's RocksDB
-            if (chainState instanceof DirectRocksDBChainState) {
-                ((DirectRocksDBChainState) chainState).close();
+            if (!unsafeLedgerApplyWorker) {
+                try {
+                    if (utxoEventHandlerAsync != null
+                            && !utxoEventHandlerAsync.closeAndAwait(Duration.ofSeconds(30))) {
+                        unsafeLedgerApplyWorker = true;
+                    }
+                } catch (Exception e) {
+                    unsafeLedgerApplyWorker = true;
+                    log.warn("Error draining async UTXO event handler during shutdown", e);
+                }
             }
 
-            // Stop UTXO prune service
+            if (!unsafeLedgerApplyWorker) {
+                // Stop plugins/listeners before closing the bus and ChainState only after all apply
+                // workers are stopped/drained. Closing shared state first can make a queued async
+                // listener fail while applying an accepted block event.
+                try { if (pluginManager != null) pluginManager.close(); } catch (Exception ignored) {}
+                try { if (utxoEventHandler != null) utxoEventHandler.close(); } catch (Exception ignored) {}
+                try { if (accountStateEventHandler != null) accountStateEventHandler.close(); } catch (Exception ignored) {}
+                try { if (accountHistoryEventHandler != null) accountHistoryEventHandler.close(); } catch (Exception ignored) {}
+                try { eventBus.close(); } catch (Exception ignored) {}
+            } else {
+                log.error("Skipping plugin/listener close because an apply worker did not stop or drain");
+                log.error("Skipping EventBus close because an apply worker did not stop or drain");
+            }
+
+            // Stop prune services before closing the underlying store.
             try { if (utxoPruneService != null) utxoPruneService.close(); } catch (Exception ignored) {}
             try { if (accountHistoryPruneService != null) accountHistoryPruneService.close(); } catch (Exception ignored) {}
             try { if (blockPruneService != null) blockPruneService.close(); } catch (Exception ignored) {}
             try { if (utxoLagTask != null) utxoLagTask.cancel(true); } catch (Exception ignored) {}
 
-            // Stop plugins and close event bus
-            try { if (pluginManager != null) pluginManager.close(); } catch (Exception ignored) {}
-            try { if (utxoEventHandler != null) utxoEventHandler.close(); } catch (Exception ignored) {}
-            try { if (utxoEventHandlerAsync != null) utxoEventHandlerAsync.close(); } catch (Exception ignored) {}
-            try { if (accountStateEventHandler != null) accountStateEventHandler.close(); } catch (Exception ignored) {}
-            try { if (accountHistoryEventHandler != null) accountHistoryEventHandler.close(); } catch (Exception ignored) {}
-            try { eventBus.close(); } catch (Exception ignored) {}
+            // Close ChainState if it's RocksDB
+            if (!unsafeLedgerApplyWorker && chainState instanceof DirectRocksDBChainState) {
+                ((DirectRocksDBChainState) chainState).close();
+            } else if (unsafeLedgerApplyWorker) {
+                log.error("Skipping ChainState close because an apply worker did not stop or drain; "
+                        + "process restart will recover from durable state");
+            }
 
             log.info("Yano stopped");
         }
+    }
+
+    private boolean stopPeerSessionForShutdown(PeerSession session, String label) {
+        if (session.stop(Duration.ofMinutes(10))) {
+            return true;
+        }
+        log.error("Yano stop could not stop the {} peer session at a ledger apply safe point after 10 minutes; "
+                + "forcing ledger apply shutdown", label);
+        if (session.forceStop(Duration.ofSeconds(30))) {
+            log.warn("Forced {} peer session shutdown completed after interrupting ledger apply worker", label);
+            return true;
+        }
+        log.error("Forced {} peer session shutdown failed; ledger apply worker may still be running", label);
+        return false;
     }
 
     // Rollback handling - coordinates between managers and handles server notifications
@@ -3699,6 +3831,16 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
         }
 
         supervisor.notifyDisconnect();
+    }
+
+    @Override
+    public void requestPeerRecovery(PeerRecoveryReason reason) {
+        PeerSessionSupervisor supervisor = peerSessionSupervisor;
+        if (!isRunning.get() || !config.isEnableClient() || supervisor == null) {
+            return;
+        }
+
+        supervisor.requestRecovery(reason != null ? reason : PeerRecoveryReason.UNKNOWN);
     }
 
     // Status and monitoring methods

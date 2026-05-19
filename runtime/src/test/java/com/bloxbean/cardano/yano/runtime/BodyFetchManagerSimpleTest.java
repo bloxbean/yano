@@ -268,15 +268,16 @@ class BodyFetchManagerSimpleTest {
     @Test
     @DisplayName("Test error handling for invalid data")
     void testErrorHandling() {
-        // Test with null block - should handle gracefully (early return for null blocks)
-        assertDoesNotThrow(() -> bodyFetchManager.onBlock(Era.Shelley, null, Collections.emptyList()));
+        // Null/incomplete blocks now fail fast so the ordered apply layer can trigger recovery.
+        assertThrows(RuntimeException.class,
+                () -> bodyFetchManager.onBlock(Era.Shelley, null, Collections.emptyList()));
         
         // Status should remain unchanged
         assertEquals(0, bodyFetchManager.getStatus().bodiesReceived);
         
-        // Test with null Byron blocks - should handle gracefully
-        assertDoesNotThrow(() -> bodyFetchManager.onByronBlock(null));
-        assertDoesNotThrow(() -> bodyFetchManager.onByronEbBlock(null));
+        // Test with null Byron blocks - should fail fast
+        assertThrows(RuntimeException.class, () -> bodyFetchManager.onByronBlock(null));
+        assertThrows(RuntimeException.class, () -> bodyFetchManager.onByronEbBlock(null));
         
         // Status should remain unchanged
         assertEquals(0, bodyFetchManager.getStatus().bodiesReceived);

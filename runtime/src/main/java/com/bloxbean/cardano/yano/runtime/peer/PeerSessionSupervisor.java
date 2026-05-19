@@ -178,6 +178,19 @@ public final class PeerSessionSupervisor implements AutoCloseable {
         }
     }
 
+    public void requestRecovery(PeerRecoveryReason reason) {
+        try {
+            PeerSession session = sessionSupplier.get();
+            if (session == null) {
+                return;
+            }
+            requestRecovery(session, reason != null ? reason : PeerRecoveryReason.UNKNOWN, nowSupplier.getAsLong());
+        } catch (Throwable t) {
+            log.warn("Peer session recovery request failed: reason={}, error={}",
+                    reason, t.toString(), t);
+        }
+    }
+
     @Override
     public synchronized void close() {
         if (task != null) {

@@ -32,7 +32,7 @@ public class GovernanceBlockProcessor {
         try {
             return governanceStore.getDormantEpochs().size();
         } catch (Exception e) {
-            return 0;
+            throw new RuntimeException("Failed to read dormant governance epochs", e);
         }
     }
     private final EpochParamProvider paramProvider;

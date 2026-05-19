@@ -314,11 +314,13 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
                 byte[] ebbHashAtSlot0 = db.get(ebbBySlot0Handle, longToBytes(slot));
                 boolean isEbbAtThisSlot = ebbHashAtSlot0 != null && Arrays.equals(ebbHashAtSlot0, blockHash);
                 if (!isEbbAtThisSlot) {
-                    log.warn("🚨 FORK MISMATCH: Block #{} at slot {} has different hash than main header! Expected(main): {}, Got: {} - SKIPPING",
+                    String errorMsg = String.format(
+                            "FORK MISMATCH: Block #%d at slot %d has different hash than main header. Expected(main): %s, Got: %s",
                             blockNumber, slot,
                             HexUtil.encodeHexString(expectedHash),
                             HexUtil.encodeHexString(blockHash));
-                    return; // Skip storing mismatched non-EBB block to prevent index corruption
+                    log.warn("🚨 {}", errorMsg);
+                    throw new IllegalStateException(errorMsg);
                 }
                 // It's an EBB body at the epoch boundary; proceed to store body keyed by hash only.
                 if (log.isDebugEnabled()) {
@@ -594,6 +596,86 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
         } catch (Exception e) {
             log.error("Rollback failed: to slot={}", slot, e);
             throw new RuntimeException("Failed to rollback to slot " + slot, e);
+        }
+    }
+
+    public void rollbackToOrigin() {
+        WriteBatch batch = new WriteBatch();
+        int slotsDeleted = 0;
+        int blocksDeleted = 0;
+        int headersDeleted = 0;
+        int ebbDeleted = 0;
+        int metadataDeleted = 0;
+
+        try {
+            try (RocksIterator iterator = db.newIterator(numberBySlotHandle)) {
+                for (iterator.seekToFirst(); iterator.isValid(); iterator.next()) {
+                    byte[] slotKey = Arrays.copyOf(iterator.key(), iterator.key().length);
+                    byte[] blockNumberValue = Arrays.copyOf(iterator.value(), iterator.value().length);
+                    long blockNumber = bytesToLong(blockNumberValue);
+                    byte[] blockHash = db.get(slotToHashHandle, slotKey);
+
+                    if (blockHash != null) {
+                        if (db.get(blocksHandle, blockHash) != null) {
+                            batch.delete(blocksHandle, blockHash);
+                            blocksDeleted++;
+                        }
+                        if (db.get(headersHandle, blockHash) != null) {
+                            batch.delete(headersHandle, blockHash);
+                            headersDeleted++;
+                        }
+                    }
+
+                    batch.delete(numberBySlotHandle, slotKey);
+                    batch.delete(slotByNumberHandle, longToBytes(blockNumber));
+                    batch.delete(slotToHashHandle, slotKey);
+                    slotsDeleted++;
+                }
+            }
+
+            try (RocksIterator iterator = db.newIterator(ebbBySlot0Handle)) {
+                for (iterator.seekToFirst(); iterator.isValid(); iterator.next()) {
+                    byte[] key = Arrays.copyOf(iterator.key(), iterator.key().length);
+                    batch.delete(ebbBySlot0Handle, key);
+                    ebbDeleted++;
+                }
+            }
+
+            batch.delete(metadataHandle, TIP_KEY);
+            batch.delete(metadataHandle, HEADER_TIP_KEY);
+            batch.delete(metadataHandle, EPOCH_NONCE_STATE_KEY);
+            metadataDeleted += 3;
+
+            try (RocksIterator iterator = db.newIterator(metadataHandle)) {
+                for (iterator.seek(EPOCH_NONCE_KEY_PREFIX); iterator.isValid(); iterator.next()) {
+                    byte[] key = Arrays.copyOf(iterator.key(), iterator.key().length);
+                    if (!startsWith(key, EPOCH_NONCE_KEY_PREFIX)) break;
+                    batch.delete(metadataHandle, key);
+                    metadataDeleted++;
+                }
+            }
+
+            byte[] eraStartPrefix = ERA_START_SLOT_PREFIX.getBytes(StandardCharsets.UTF_8);
+            try (RocksIterator iterator = db.newIterator(metadataHandle)) {
+                for (iterator.seek(eraStartPrefix); iterator.isValid(); iterator.next()) {
+                    byte[] key = Arrays.copyOf(iterator.key(), iterator.key().length);
+                    if (!startsWith(key, eraStartPrefix)) break;
+                    batch.delete(metadataHandle, key);
+                    metadataDeleted++;
+                }
+            }
+
+            try (WriteOptions wo = new WriteOptions()) {
+                db.write(wo, batch);
+            }
+
+            log.warn("Rollback to origin completed: deleted {} slots, {} blocks, {} headers, {} EBBs, {} metadata entries",
+                    slotsDeleted, blocksDeleted, headersDeleted, ebbDeleted, metadataDeleted);
+        } catch (Exception e) {
+            log.error("Rollback to origin failed", e);
+            throw new RuntimeException("Failed to rollback to origin", e);
+        } finally {
+            batch.close();
         }
     }
 
@@ -1510,7 +1592,7 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
             db.put(metadataHandle, key, longToBytes(slot));
             log.info("Stored era {} start slot: {}", eraValue, slot);
         } catch (RocksDBException e) {
-            log.error("Failed to store era {} start slot", eraValue, e);
+            throw new RuntimeException("Failed to store era " + eraValue + " start slot", e);
         }
     }
 
@@ -1525,10 +1607,14 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
         try {
             byte[] val = db.get(metadataHandle, key);
             if (val != null) {
+                if (val.length != Long.BYTES) {
+                    throw new IllegalStateException("Malformed era " + eraValue
+                            + " start slot metadata length: " + val.length);
+                }
                 return OptionalLong.of(bytesToLong(val));
             }
-        } catch (RocksDBException e) {
-            log.error("Failed to get era {} start slot", eraValue, e);
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to read era " + eraValue + " start slot", e);
         }
         return OptionalLong.empty();
     }
