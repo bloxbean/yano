@@ -1,4 +1,4 @@
-# ADR-NET-005: Yaci-to-Yano Data Flow and Ordered Ledger Apply
+# ADR-NET-005: Yaci-Yano Boundary Data Flow and Ordered Block Apply
 
 ## Status
 
@@ -31,6 +31,16 @@ A naive async implementation is not acceptable. If Yano simply enqueues
 in-memory chain-sync cursor before Yano has durably applied the block. That is
 safe only if Yano treats Yaci's cursor as disposable and recovers from its own
 durable cursors.
+
+There is a second failure mode to make explicit. Today `ChainState.storeBlock`
+and `EventBus.publish(BlockAppliedEvent)` happen in one callback path, but
+derived-state listeners keep their own durable cursors and some event-bus
+failures are not propagated to the caller. The ordered apply processor must
+therefore distinguish between:
+
+- the durable network/body cursor (`ChainState` body tip);
+- derived-store cursors that may need reconcile from local block bodies;
+- fatal apply failures that require generation failure and peer recovery.
 
 ## Current End-to-End Flow
 
@@ -187,7 +197,8 @@ The processor must be:
 - integrated with BodyFetchManager batch state, so Yano does not request the
   next body range until the current batch is durably applied;
 - recovery-aware, so peer restart uses durable ChainState after in-flight apply
-  work reaches a safe point.
+  work reaches a defined safe point;
+- explicit about rollback, disconnect, and generation-close ordering.
 
 Do not change chain selection in this ADR. The active architecture remains one
 upstream peer session. Later multi-peer failover can reuse the same durable
@@ -217,6 +228,15 @@ event carries that generation. When a peer session is stopped or replaced, Yano
 closes the generation and drops queued events for that generation that have not
 started yet.
 
+Generation close is authoritative. After a generation is closed:
+
+- not-started block events for that generation are discarded;
+- stale `BatchDone` and `NoBlockFound` markers for that generation are
+  discarded and must not clear `BodyFetchManager.batchInProgress`;
+- `Disconnect` is treated as a fence/close signal, not as normal block work;
+- a terminal control event such as `Rollback` may still be processed only if it
+  was accepted as the generation-closing event.
+
 ### Event Types
 
 The queue should contain explicit typed work items rather than anonymous
@@ -233,12 +253,58 @@ BatchDone(generation)
 NoBlockFound(from, to, generation)
 Rollback(point, generation)
 Disconnect(generation)
+RecoveryBarrier(generation)
 ```
 
 Header storage can remain synchronous for the first version because it is not
-the long-running path. If header writes later become expensive, the same design
-can be extended to header events, but that requires revisiting header-tip
-backpressure.
+the long-running path. However, rollback is not body-only: it can mutate both
+header and body state. If header rollforward remains synchronous, rollback must
+act as a session/generation boundary so post-rollback headers from the old
+session cannot be stored ahead of the queued rollback.
+
+Two safe options are allowed:
+
+1. Queue header rollforward and rollback in the same ordered processor.
+2. Keep header rollforward synchronous, but on rollback immediately close the
+   generation, drop subsequent old-generation header/body callbacks, process
+   the rollback as a terminal apply event, then let `PeerSessionSupervisor`
+   create a fresh peer session from durable ChainState.
+
+The first implementation should prefer option 2 because it is smaller and keeps
+the header fast path unchanged.
+
+Phase one therefore makes a concrete decision: rollback closes the active
+generation and the active peer session is replaced after the rollback is applied
+locally. Same-session rollback continuation is future work and requires either
+queued header events or a Yaci hook that can pause request-next before Yano's
+rollback coordination runs.
+
+### Safe-Point Primitive
+
+The safe point is not a boolean checked from another thread. It is an ordered
+barrier in the apply processor.
+
+The processor exposes a method like:
+
+```text
+CompletableFuture<RecoveryPoint> closeGenerationAndReadRecoveryPoint(generation)
+```
+
+The method must:
+
+```text
+1. Mark the generation closing/closed.
+2. Drop not-started queued work for that generation, except an accepted terminal
+   Rollback event.
+3. Wait for the currently running apply item to finish or fail.
+4. Execute RecoveryBarrier on the worker thread.
+5. Read ChainState body tip and header_tip on the worker thread.
+6. Complete the future with the recovery point, or fail/timeout if the worker is
+   stuck.
+```
+
+Routing the recovery-start read through the worker queue gives ordering for
+free: recovery cannot observe ChainState while the worker is mutating it.
 
 ### Ordered Batch Completion
 
@@ -263,16 +329,31 @@ BodyFetchManager monitor may now request the next range
 This keeps at most one body range in the apply queue under normal operation and
 prevents Yano from fetching ahead of durable apply progress.
 
+`BatchDone` is generation-scoped. If it belongs to a closed or failed
+generation, it is dropped and must not clear current `BodyFetchManager` state.
+
 ### Backpressure
 
-The queue must be bounded. The bound should be at least one configured body
-batch plus a small allowance for control events.
+The queue must be bounded by memory, not only by item count. A decoded mainnet
+block object can be much larger than one queue slot suggests, and current bulk
+body batches can contain thousands of blocks.
 
-Suggested initial sizing:
+The first implementation should use both limits:
 
 ```text
-queueCapacity = max(bodyBatchSize * 2, 1024)
+maxQueuedItems
+maxQueuedDecodedBytes
+reservedControlSlots
 ```
+
+`maxQueuedItems` should be at least one body batch plus control headroom.
+`maxQueuedDecodedBytes` should be configurable and validated under mainnet
+initial sync. The processor can estimate bytes from block CBOR length where
+available, plus a conservative multiplier for decoded object overhead.
+
+Control events must not starve behind data events. `Rollback`, `Disconnect`,
+and `RecoveryBarrier` must use reserved capacity or a separate control lane so a
+full block queue cannot prevent recovery.
 
 If the queue is full:
 
@@ -296,9 +377,9 @@ Required handling:
 2. Pause body fetch.
 3. Drop queued work for the failed generation.
 4. Notify PeerSessionSupervisor.
-5. Stop and replace the active PeerClient.
+5. Request `PeerSessionSupervisor` recovery with an apply-specific reason.
 6. After in-flight apply work is complete, compute the recovery start point
-   from durable ChainState.
+   through the apply-processor safe-point barrier.
 ```
 
 The recovery start point must be read after the current apply task has either
@@ -306,10 +387,41 @@ committed or failed. Reading `chainState.getTip()` while a block is mid-apply
 can race with recovery and cause duplicate work. Duplicate work is recoverable,
 but the design should avoid it.
 
+Yano owns peer lifecycle. The apply processor must not directly stop and replace
+the active `PeerClient`; it reports failure to Yano or the supervisor. Add a
+dedicated `APPLY_FAILED` reason to the recovery reason set and route this
+through the same supervisor path as stale disconnect and startup failure.
+
+Each block apply should produce an explicit outcome:
+
+```text
+APPLIED
+SKIPPED_STALE
+SKIPPED_DUPLICATE
+FAILED
+```
+
+`SKIPPED_STALE` is acceptable only when the block is provably stale relative to
+rollback/generation state. Continuity violations, consensus rejections, parse
+failures, and unexpected no-store paths must fail the generation unless a
+specific recovery rule says otherwise.
+
+`SKIPPED_DUPLICATE` is an idempotent success only when the durable ChainState tip
+or stored body already matches the same block number and hash. It is not a
+generic stale/fork outcome.
+
+Derived-state listener failures need a visible outcome. If the event bus does
+not propagate listener exceptions, the implementation must add a fail-fast path
+for correctness-critical derived stores. Degraded-and-reconcile is acceptable
+only for a derived store whose reconcile path is covered by automated tests and
+known to converge from local ChainState block bodies before the node is reported
+healthy. Network recovery should still start from ChainState, not from Yaci's
+transient cursor.
+
 ### Rollback Ordering
 
 Rollback is an apply-domain event. It must be ordered with block body
-application.
+application and coordinated with synchronous header storage.
 
 Recommended behavior:
 
@@ -327,6 +439,28 @@ For large queued batches this may do extra work before rollback, but it
 preserves causal ordering and relies on existing rollback/stale-block guards.
 If this becomes too expensive, a later optimization can remove queued block
 events beyond the rollback point before they are applied.
+
+Thread ownership:
+
+- Netty/Yaci callback thread performs lightweight coordination only: mark the
+  current generation closing, stop accepting old-generation callbacks, notify
+  peer health, and enqueue the terminal `Rollback` event.
+- Apply worker calls `BodyFetchManager.onRollback(point)` and
+  `Yano.handleChainSyncRollback(point)` in order with prior accepted apply
+  events.
+- Recovery thread waits on the processor safe-point barrier before reading
+  `ChainState`.
+
+`Yano.handleChainSyncRollback(point)` invoked from the apply worker must not
+synchronously wait on `RecoveryBarrier`; that would deadlock the worker against
+itself. Any recovery request caused by rollback handling is scheduled from a
+non-worker thread through `PeerSessionSupervisor`.
+
+Because Yaci's internal `N2NPeerFetcher` may send the next chain-sync message
+before Yano's external rollback listener runs, phase one must not keep using the
+same peer session after a rollback unless Yaci exposes a pause-before-request
+hook. The safe phase-one behavior is: treat rollback as closing the active
+generation, process rollback locally, and recover with a fresh `PeerClient`.
 
 ### Disconnect and Recovery Ordering
 
@@ -347,6 +481,56 @@ new PeerClient starts from that point
 This rule prevents a new peer session from starting based on stale ChainState
 while the old worker is still committing a block.
 
+The actual recovery start read must use `RecoveryBarrier`; it must not be a
+spin loop over an `applyInProgress` flag.
+
+### BodyFetchManager Monitor
+
+`BodyFetchManager` may keep its existing monitor thread. The monitor remains the
+component that decides when to fetch the next body range, but it must observe
+apply-worker-owned batch completion:
+
+- `batchInProgress` remains `volatile`;
+- `BatchDone` clears it only on the apply worker after prior block events have
+  applied;
+- queue backpressure can pause/resume body fetch;
+- monitor reads of `header_tip`, body tip, and batch state must use existing
+  thread-safe/volatile boundaries.
+
+This avoids moving fetch scheduling into the worker while still preventing
+fetch-ahead.
+
+### Header Tip Interaction
+
+Header storage can race ahead of body apply. That is already true in pipelined
+sync and is not itself a bug.
+
+Requirements:
+
+- body range calculation reads both `header_tip` and body tip with normal
+  ChainState visibility;
+- header rollforward does not need to wait for in-flight block apply;
+- rollback/generation close is the exception and must prevent old-generation
+  post-rollback headers from mutating ChainState.
+
+### Server Notification
+
+`callbacks.notifyServerNewBlockStored()` should move to the apply worker after
+successful body application. `NodeServer.notifyNewDataAvailable()` is callable
+from non-Netty threads today, but this must remain true. If server agents later
+gain event-loop affinity, this notification should be marshalled onto the server
+channel's event loop.
+
+### Block Producer Scope
+
+This ADR targets upstream sync through Yaci `PeerClient`.
+
+Block-producer paths currently write directly through `BlockProducerHelper`.
+For phase one, block producer mode is out of scope and must not run concurrently
+with client sync ordered apply unless those writes are routed through the same
+processor or protected by an equivalent ChainState apply lock. A follow-up ADR
+should decide whether locally produced blocks become `ApplyBlock` events.
+
 ## Data Safety Invariants
 
 The implementation must preserve these invariants:
@@ -364,15 +548,18 @@ The implementation must preserve these invariants:
 7. On apply failure, no later queued block from the same generation may apply.
 8. Peer recovery may not compute its start point while an apply item is
    currently mutating ChainState.
+9. A closed generation cannot clear batch state for a newer generation.
+10. Control events cannot be rejected merely because data-event capacity is full.
 
 ## Health and Observability
 
 The processor should expose status:
 
 ```text
-state: RUNNING | PAUSED | FAILED | STOPPING
+state: UNSTARTED | RUNNING | PAUSED | DEGRADED | FAILED | STOPPING | STOPPED
 sessionGeneration
 queueDepth
+queuedDecodedBytes
 currentItem
 currentItemStartedAt
 lastAppliedSlot
@@ -386,6 +573,7 @@ Yano should periodically log:
 - current apply item if it runs longer than a threshold;
 - derived-store lag compared with ChainState tip;
 - generation failures and dropped queued items.
+- safe-point wait time during recovery.
 
 After each block, Yano can optionally compare enabled rollback-capable stores'
 latest applied slot/block against ChainState. A short lag is expected if some
@@ -394,12 +582,25 @@ degraded.
 
 ## Implementation Plan
 
+### Phase 0: Baseline Measurement
+
+- Add timing around the current body callback path, especially
+  `BodyFetchManager.onBlock(...)` and epoch-boundary processing.
+- Log when Netty callback processing exceeds a threshold.
+- Capture a mainnet epoch-boundary baseline so Phase 5 can prove the Netty
+  event-loop blockage was removed.
+
 ### Phase 1: Documentation and Tests First
 
 - Add focused tests that model `B1, B2, B3, B4` delivery where `B2` fails.
 - Assert `B3/B4` do not apply after `B2` failure.
 - Assert recovery start point is read from durable body tip.
 - Add batch tests proving `batchDone` is delayed until queued blocks apply.
+- Add tests for stale `BatchDone` after generation close.
+- Add tests proving control events are accepted when data capacity is full.
+- Add rollback tests for the chosen phase-one strategy: rollback closes the
+  generation, old-generation post-rollback headers are ignored, and fresh peer
+  recovery starts from durable ChainState.
 
 ### Phase 2: Add `LedgerApplyProcessor`
 
@@ -407,7 +608,9 @@ degraded.
 - Use a single worker thread.
 - Use a bounded queue.
 - Add generation close/drop semantics.
+- Add safe-point barrier API.
 - Add status object and simple metrics.
+- Add memory accounting and reserved control capacity.
 
 ### Phase 3: Wrap Body Events
 
@@ -415,6 +618,8 @@ degraded.
   `batchStarted`, `batchDone`, `noBlockFound`, and disconnect/rollback handling
   to enqueue apply events.
 - Keep header rollforward synchronous for the first version.
+- Make header callbacks generation-aware so callbacks from a closed generation
+  cannot write header state.
 - Move `callbacks.updateSyncProgress()` and
   `callbacks.notifyServerNewBlockStored()` into the apply worker after
   successful body application.
@@ -426,6 +631,8 @@ degraded.
   before reading `chainState.getTip()` / `getHeaderTip()`.
 - Ensure terminal startup failure and explicit disconnect recovery use the same
   path.
+- Add `APPLY_FAILED` to `PeerRecoveryReason` and route apply-processor failures
+  through supervisor recovery.
 
 ### Phase 5: Fault Validation
 
@@ -441,6 +648,9 @@ Run real network and injected fault tests:
   verify startup reconcile replays derived state from local ChainState;
 - rollback while queued body events exist: verify no missing block and no
   stale-fork body persists past rollback.
+- queue full during block delivery: verify rollback/disconnect/recovery control
+  events are still accepted.
+- measure queued decoded bytes under mainnet initial sync and tune defaults.
 
 ## Non-Goals
 
@@ -472,10 +682,20 @@ Run real network and injected fault tests:
 
 4. Can the queue hold decoded `Block` objects safely?
 
-   For one batch, yes if bounded by batch size. If memory pressure appears in
-   mainnet testing, the processor can queue compact block descriptors and
-   re-read bodies from ChainState after an earlier raw-body persistence step,
-   but that is a larger split-phase design.
+   Only if bounded by both item count and byte estimate. If memory pressure
+   appears in mainnet testing, the processor can queue compact block descriptors
+   and re-read bodies from ChainState after an earlier raw-body persistence
+   step, but that is a larger split-phase design.
+
+5. Can same-session rollback continuation be restored later?
+
+   Yes, but not in phase one. It needs either queued header events or a Yaci
+   hook that pauses request-next before Yano rollback coordination runs.
+
+6. Should block-producer mode use the same processor?
+
+   Not in phase one. It must remain mutually exclusive with client sync ordered
+   apply or be protected by a follow-up design.
 
 ## Review Checklist
 
