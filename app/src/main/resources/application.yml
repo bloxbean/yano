@@ -46,6 +46,14 @@ yano:
     host: preprod-node.world.dev.cardano.org
     port: 30000
     protocol-magic: 1
+  dns:
+    cache:
+      # Positive DNS cache TTL in seconds. Defaults to 60 when omitted.
+      # Set to 0 to disable positive caching or -1 to cache forever.
+      # ttl: 60
+      # Negative DNS cache TTL in seconds. Defaults to 10 when omitted.
+      # negative:
+      #   ttl: 10
   server:
     enabled: true
     port: 13337

@@ -55,6 +55,21 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 @Slf4j
 public class BodyFetchManager implements BlockChainDataListener, Runnable {
+    /**
+     * Result of attempting to apply one decoded block body to local ledger state.
+     */
+    public enum BlockApplyResult {
+        /**
+         * The block was stored and all block-applied listeners completed.
+         */
+        APPLIED,
+        /**
+         * The block was an expected stale body, usually an in-flight BlockFetch
+         * response from the pre-rollback chain, and was deliberately ignored.
+         */
+        SKIPPED_STALE
+    }
+
     private static final long SLOW_EPOCH_TRANSITION_WARN_MS =
             positiveLongProperty("yano.bodyFetch.slowEpochTransitionWarnMs", 1_000L);
 
@@ -481,6 +496,10 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
 
     @Override
     public void onBlock(Era era, Block block, List<Transaction> transactions) {
+        applyBlock(era, block, transactions);
+    }
+
+    public BlockApplyResult applyBlock(Era era, Block block, List<Transaction> transactions) {
         // Store complete block and update tip
         if (block == null || block.getHeader() == null || block.getHeader().getHeaderBody() == null) {
             throw new RuntimeException("Received null or incomplete Shelley block");
@@ -502,8 +521,7 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
                 log.warn("🗑️ DISCARDED STALE BLOCK: Block #{} at slot {} arrived after rollback - skipping storage",
                         blockNumber, slot);
                 onStaleBlockObserved();
-                throw new RuntimeException("Stale Shelley block skipped after rollback: block="
-                        + blockNumber + ", slot=" + slot + ", hash=" + hash);
+                return BlockApplyResult.SKIPPED_STALE;
             }
 
             // Publish BlockReceived before storage
@@ -609,6 +627,8 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
                          bodiesReceived.get(), slot, blockNumber);
             }
 
+            return BlockApplyResult.APPLIED;
+
         } catch (Exception e) {
             if (blockStored) {
                 compensateFailedPostStoreApply(tipBeforeStore, slot, blockNumber, hash, e);
@@ -641,6 +661,10 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
 
     @Override
     public void onByronBlock(ByronMainBlock byronBlock) {
+        applyByronBlock(byronBlock);
+    }
+
+    public BlockApplyResult applyByronBlock(ByronMainBlock byronBlock) {
         if (byronBlock == null || byronBlock.getHeader() == null) {
             throw new RuntimeException("Received null or incomplete Byron block");
         }
@@ -662,8 +686,7 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
                 log.warn("🗑️ DISCARDED STALE BLOCK: Block #{} at slot {} arrived after rollback - skipping storage",
                         blockNumber, slot);
                 onStaleBlockObserved();
-                throw new RuntimeException("Stale Byron block skipped after rollback: block="
-                        + blockNumber + ", slot=" + slot + ", hash=" + hash);
+                return BlockApplyResult.SKIPPED_STALE;
             }
 
             // Publish BlockReceived before storage
@@ -719,6 +742,9 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
 
             persistEraStartSlotIfNeeded(Era.Byron, slot);
 
+            // successful store resets stale counter
+            consecutiveStaleBlocks.set(0);
+
             EventMetadata appMeta = EventMetadata.builder()
                     .origin("runtime")
                     .slot(slot)
@@ -764,6 +790,8 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
                 log.debug("📦 Byron block received: slot={}, hash={}", slot, hash);
             }
 
+            return BlockApplyResult.APPLIED;
+
         } catch (Exception e) {
             if (blockStored) {
                 compensateFailedPostStoreApply(tipBeforeStore, slot, blockNumber, hash, e);
@@ -777,6 +805,10 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
 
     @Override
     public void onByronEbBlock(ByronEbBlock byronEbBlock) {
+        applyByronEbBlock(byronEbBlock);
+    }
+
+    public BlockApplyResult applyByronEbBlock(ByronEbBlock byronEbBlock) {
         if (byronEbBlock == null || byronEbBlock.getHeader() == null) {
             throw new RuntimeException("Received null or incomplete Byron EB block");
         }
@@ -798,8 +830,7 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
                 log.warn("🗑️ DISCARDED STALE BLOCK: Byron EB Block #{} at slot {} arrived after rollback - skipping storage",
                         blockNumber, slot);
                 onStaleBlockObserved();
-                throw new RuntimeException("Stale Byron EB block skipped after rollback: block="
-                        + blockNumber + ", slot=" + slot + ", hash=" + hash);
+                return BlockApplyResult.SKIPPED_STALE;
             }
 
             // Publish BlockReceived before storage
@@ -896,6 +927,8 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
                 log.debug("📦 Byron EB block received: slot={}, hash={}", slot, hash);
             }
 
+            return BlockApplyResult.APPLIED;
+
         } catch (Exception e) {
             if (blockStored) {
                 compensateFailedPostStoreApply(tipBeforeStore, slot, blockNumber, hash, e);
@@ -952,6 +985,7 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
         currentBatchFrom = null;
         currentBatchTo = null;
         currentBatchSize = 0;
+        consecutiveStaleBlocks.set(0);
     }
 
     @Override
@@ -1215,6 +1249,13 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
                     log.debug("Header lookup failed for block #{}: {}", blockNumber, e.getMessage());
             }
 
+            boolean inRollbackTail = lastRollbackPoint != null && slot > lastRollbackPoint.getSlot();
+            if (inRollbackTail) {
+                log.warn("🚫 Post-rollback block #{} at slot {} has no matching header after rollback to slot {} - treating as stale",
+                        blockNumber, slot, lastRollbackPoint.getSlot());
+                return true;
+            }
+
             // Get current tip to understand the current state
             ChainTip currentTip = chainState.getTip();
 
@@ -1279,13 +1320,6 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
                             blockNumber - 1, blockNumber);
                     return true;
                 }
-            }
-
-            // If we had a rollback and this block is beyond the rollback point,
-            // log additional context but allow it since it passed the sequential check above
-            if (lastRollbackPoint != null && slot > lastRollbackPoint.getSlot()) {
-                log.debug("✅ Block #{} at slot {} passed sequential check despite being beyond rollback point slot {}",
-                         blockNumber, slot, lastRollbackPoint.getSlot());
             }
 
             // Block is accepted

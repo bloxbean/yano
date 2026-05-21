@@ -16,10 +16,13 @@ import com.bloxbean.cardano.yano.runtime.apply.LedgerApplyProcessor;
 import com.bloxbean.cardano.yano.runtime.peer.PeerHealth;
 import com.bloxbean.cardano.yano.runtime.peer.PeerRecoveryReason;
 import com.bloxbean.cardano.yano.runtime.peer.PeerSessionCallbacks;
+import com.bloxbean.cardano.yano.runtime.peer.PeerSessionState;
+import com.bloxbean.cardano.yano.runtime.peer.PeerSessionStatus;
 import lombok.extern.slf4j.Slf4j;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -38,6 +41,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 public class PipelineDataListener implements BlockChainDataListener {
     private static final long SLOW_BODY_CALLBACK_WARN_MS =
             positiveLongProperty("yano.pipeline.slowBodyCallbackWarnMs", 1_000L);
+    private static final long NON_RECOVERING_ROLLBACK_WAIT_MS =
+            positiveLongProperty("yano.pipeline.nonRecoveringRollbackWaitMs", 30_000L);
 
     private final HeaderSyncManager headerSyncManager;
     private final BodyFetchManager bodyFetchManager;
@@ -94,7 +99,12 @@ public class PipelineDataListener implements BlockChainDataListener {
             return;
         }
         // Delegate header processing to HeaderSyncManager
-        headerSyncManager.rollforward(tip, blockHeader, originalHeaderBytes);
+        try {
+            headerSyncManager.rollforward(tip, blockHeader, originalHeaderBytes);
+        } catch (RuntimeException e) {
+            handleHeaderApplyFailure("Shelley header rollforward", e);
+            return;
+        }
         if (peerHealth != null && blockHeader != null && blockHeader.getHeaderBody() != null) {
             peerHealth.recordHeaderProgress(
                     blockHeader.getHeaderBody().getSlot(),
@@ -115,7 +125,12 @@ public class PipelineDataListener implements BlockChainDataListener {
             return;
         }
         // Delegate Byron header processing to HeaderSyncManager
-        headerSyncManager.rollforwardByronEra(tip, byronBlockHead, originalHeaderBytes);
+        try {
+            headerSyncManager.rollforwardByronEra(tip, byronBlockHead, originalHeaderBytes);
+        } catch (RuntimeException e) {
+            handleHeaderApplyFailure("Byron header rollforward", e);
+            return;
+        }
         if (peerHealth != null && byronBlockHead != null && byronBlockHead.getConsensusData() != null) {
             peerHealth.recordHeaderProgress(
                     byronBlockHead.getConsensusData().getAbsoluteSlot(),
@@ -133,7 +148,12 @@ public class PipelineDataListener implements BlockChainDataListener {
             return;
         }
         // Delegate Byron EB header processing to HeaderSyncManager
-        headerSyncManager.rollforwardByronEra(tip, byronEbHead, originalHeaderBytes);
+        try {
+            headerSyncManager.rollforwardByronEra(tip, byronEbHead, originalHeaderBytes);
+        } catch (RuntimeException e) {
+            handleHeaderApplyFailure("Byron EB header rollforward", e);
+            return;
+        }
         if (peerHealth != null && byronEbHead != null && byronEbHead.getConsensusData() != null) {
             peerHealth.recordHeaderProgress(
                     byronEbHead.getConsensusData().getAbsoluteSlot(),
@@ -164,20 +184,24 @@ public class PipelineDataListener implements BlockChainDataListener {
         try {
             recordShelleyBodyReceived(block);
 
-            Runnable apply = () -> {
+            LedgerApplyProcessor.ApplyWork apply = () -> {
                 // Delegate block body processing to BodyFetchManager
-                bodyFetchManager.onBlock(era, block, transactions);
+                BodyFetchManager.BlockApplyResult result = bodyFetchManager.applyBlock(era, block, transactions);
+                if (result == BodyFetchManager.BlockApplyResult.SKIPPED_STALE) {
+                    return LedgerApplyProcessor.Outcome.SKIPPED_STALE;
+                }
 
                 // Update sync progress tracking in Yano
                 callbacks.updateSyncProgress();
 
                 // Notify server about new block availability (only during STEADY_STATE)
                 callbacks.notifyServerNewBlockStored();
+                return LedgerApplyProcessor.Outcome.APPLIED;
             };
             if (hasLedgerApplyProcessor()) {
                 enqueueApply("Shelley block " + blockNumber, estimatedCborBytes(block != null ? block.getCbor() : null), apply);
             } else {
-                apply.run();
+                runImmediateApply(apply);
             }
         } finally {
             logSlowBodyCallback("Shelley", slot, blockNumber, startedNanos);
@@ -201,21 +225,25 @@ public class PipelineDataListener implements BlockChainDataListener {
         try {
             recordByronBodyReceived(byronBlock);
 
-            Runnable apply = () -> {
+            LedgerApplyProcessor.ApplyWork apply = () -> {
                 // Delegate Byron block processing to BodyFetchManager
-                bodyFetchManager.onByronBlock(byronBlock);
+                BodyFetchManager.BlockApplyResult result = bodyFetchManager.applyByronBlock(byronBlock);
+                if (result == BodyFetchManager.BlockApplyResult.SKIPPED_STALE) {
+                    return LedgerApplyProcessor.Outcome.SKIPPED_STALE;
+                }
 
                 // Update sync progress tracking in Yano
                 callbacks.updateSyncProgress();
 
                 // Notify server about new block availability (only during STEADY_STATE)
                 callbacks.notifyServerNewBlockStored();
+                return LedgerApplyProcessor.Outcome.APPLIED;
             };
             if (hasLedgerApplyProcessor()) {
                 enqueueApply("Byron block " + blockNumber,
                         estimatedCborBytes(byronBlock != null ? byronBlock.getCbor() : null), apply);
             } else {
-                apply.run();
+                runImmediateApply(apply);
             }
         } finally {
             logSlowBodyCallback("Byron", slot, blockNumber, startedNanos);
@@ -239,21 +267,25 @@ public class PipelineDataListener implements BlockChainDataListener {
         try {
             recordByronEbBodyReceived(byronEbBlock);
 
-            Runnable apply = () -> {
+            LedgerApplyProcessor.ApplyWork apply = () -> {
                 // Delegate Byron EB block processing to BodyFetchManager
-                bodyFetchManager.onByronEbBlock(byronEbBlock);
+                BodyFetchManager.BlockApplyResult result = bodyFetchManager.applyByronEbBlock(byronEbBlock);
+                if (result == BodyFetchManager.BlockApplyResult.SKIPPED_STALE) {
+                    return LedgerApplyProcessor.Outcome.SKIPPED_STALE;
+                }
 
                 // Update sync progress tracking in Yano
                 callbacks.updateSyncProgress();
 
                 // Notify server about new block availability (only during STEADY_STATE)
                 callbacks.notifyServerNewBlockStored();
+                return LedgerApplyProcessor.Outcome.APPLIED;
             };
             if (hasLedgerApplyProcessor()) {
                 enqueueApply("Byron EB block " + blockNumber,
                         estimatedCborBytes(byronEbBlock != null ? byronEbBlock.getCbor() : null), apply);
             } else {
-                apply.run();
+                runImmediateApply(apply);
             }
         } finally {
             logSlowBodyCallback("ByronEB", slot, blockNumber, startedNanos);
@@ -357,16 +389,8 @@ public class PipelineDataListener implements BlockChainDataListener {
             };
             if (hasLedgerApplyProcessor()) {
                 CompletableFuture<LedgerApplyProcessor.Outcome> rollback =
-                        ledgerApplyProcessor.enqueueRollbackAndClose(ledgerGeneration, "rollback " + point, work);
-                rollback.whenComplete((outcome, error) -> {
-                    if (error != null) {
-                        log.warn("Rollback apply control failed: point={}, error={}", point, error.toString(), error);
-                    } else if (outcome == LedgerApplyProcessor.Outcome.COMPLETED) {
-                        Thread.ofVirtual()
-                                .name("YanoRollbackRecovery")
-                                .start(() -> callbacks.requestPeerRecovery(PeerRecoveryReason.ROLLBACK));
-                    }
-                });
+                        ledgerApplyProcessor.enqueueRollback(ledgerGeneration, "rollback " + point, work);
+                waitForNonRecoveringRollback(point, rollback);
             } else {
                 work.run();
             }
@@ -377,6 +401,11 @@ public class PipelineDataListener implements BlockChainDataListener {
 
     @Override
     public void onDisconnect() {
+        if (isStartupResetDisconnect()) {
+            log.info("Ignoring startup reset disconnect before first sync progress: generation={}", ledgerGeneration);
+            return;
+        }
+
         boolean currentGeneration = !hasLedgerApplyProcessor()
                 || ledgerApplyProcessor.isGenerationOpen(ledgerGeneration);
         // Notify both managers about disconnection
@@ -412,14 +441,15 @@ public class PipelineDataListener implements BlockChainDataListener {
 
     @Override
     public void onParsingError(BlockParseRuntimeException e) {
-        Runnable work = () -> {
+        LedgerApplyProcessor.ApplyWork work = () -> {
             // Delegate parsing errors to BodyFetchManager
             bodyFetchManager.onParsingError(e);
+            return LedgerApplyProcessor.Outcome.APPLIED;
         };
         if (hasLedgerApplyProcessor()) {
             enqueueApply("block parsing error", 0, work);
         } else {
-            work.run();
+            runImmediateApply(work);
         }
     }
 
@@ -447,25 +477,89 @@ public class PipelineDataListener implements BlockChainDataListener {
         return false;
     }
 
-    private void enqueueApply(String description, long estimatedBytes, Runnable work) {
+    private void handleHeaderApplyFailure(String description, RuntimeException failure) {
+        log.warn("Header apply failed; closing ledger generation and requesting peer recovery: "
+                        + "generation={}, description={}, error={}",
+                ledgerGeneration, description, failure.toString(), failure);
+        if (hasLedgerApplyProcessor()) {
+            ledgerApplyProcessor.failGenerationAndRequestRecovery(ledgerGeneration, failure);
+        } else {
+            callbacks.requestPeerRecovery(PeerRecoveryReason.APPLY_FAILED);
+        }
+    }
+
+    private boolean isStartupResetDisconnect() {
+        if (!hasLedgerApplyProcessor() || peerHealth == null
+                || !ledgerApplyProcessor.isGenerationOpen(ledgerGeneration)) {
+            return false;
+        }
+
+        PeerSessionStatus status = peerHealth.snapshot(System.currentTimeMillis());
+        return status.state() == PeerSessionState.STARTING
+                && status.lastHeaderReceivedAtMillis() == 0
+                && status.lastBodyReceivedAtMillis() == 0
+                && status.lastBodyAppliedAtMillis() == 0;
+    }
+
+    private void enqueueApply(String description, long estimatedBytes, LedgerApplyProcessor.ApplyWork work) {
         CompletableFuture<LedgerApplyProcessor.Outcome> future = ledgerApplyProcessor.enqueueApplyBlock(
                 ledgerGeneration,
                 description,
                 estimatedBytes,
-                () -> {
-                    work.run();
-                    return LedgerApplyProcessor.Outcome.APPLIED;
-                });
+                work);
         observeControlFuture(description, future);
     }
 
     private void observeControlFuture(String description, CompletableFuture<LedgerApplyProcessor.Outcome> future) {
         future.whenComplete((outcome, error) -> {
             if (error != null) {
+                if (error instanceof CancellationException) {
+                    log.debug("Ledger apply item cancelled: description={}", description);
+                    return;
+                }
                 log.warn("Ledger apply item failed before execution: description={}, error={}",
                         description, error.toString(), error);
             }
         });
+    }
+
+    private void runImmediateApply(LedgerApplyProcessor.ApplyWork work) {
+        try {
+            work.run();
+        } catch (RuntimeException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    private void waitForNonRecoveringRollback(Point point,
+                                              CompletableFuture<LedgerApplyProcessor.Outcome> rollback) {
+        try {
+            LedgerApplyProcessor.Outcome outcome = rollback.get(NON_RECOVERING_ROLLBACK_WAIT_MS, TimeUnit.MILLISECONDS);
+            if (outcome == LedgerApplyProcessor.Outcome.FAILED) {
+                requestRollbackRecovery(point, new IllegalStateException("rollback apply failed"));
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            requestRollbackRecovery(point, e);
+        } catch (CancellationException e) {
+            log.debug("Rollback apply was cancelled after generation close: generation={}, point={}",
+                    ledgerGeneration, point);
+        } catch (Exception e) {
+            requestRollbackRecovery(point, e);
+        }
+    }
+
+    private void requestRollbackRecovery(Point point, Exception failure) {
+        log.warn("Rollback did not complete cleanly; requesting peer recovery: "
+                        + "generation={}, point={}, error={}",
+                ledgerGeneration, point, failure.toString(), failure);
+        if (hasLedgerApplyProcessor()) {
+            ledgerApplyProcessor.failGenerationAndRequestRecovery(ledgerGeneration, failure);
+        } else {
+            callbacks.requestPeerRecovery(PeerRecoveryReason.ROLLBACK);
+        }
     }
 
     private long estimatedCborBytes(String cborHex) {

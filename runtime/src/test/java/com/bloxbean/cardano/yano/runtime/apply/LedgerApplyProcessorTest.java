@@ -70,6 +70,31 @@ class LedgerApplyProcessorTest {
     }
 
     @Test
+    void returnedFailedOutcomeFailsGenerationAndRequestsApplyFailedRecovery() throws Exception {
+        processor = newProcessor(10, 1024 * 1024, 8);
+        long generation = processor.openGeneration();
+        List<String> applied = new ArrayList<>();
+
+        CompletableFuture<LedgerApplyProcessor.Outcome> b1 = processor.enqueueApplyBlock(generation, "B1", 10, () -> {
+            applied.add("B1");
+            return LedgerApplyProcessor.Outcome.FAILED;
+        });
+        CompletableFuture<LedgerApplyProcessor.Outcome> b2 = processor.enqueueApplyBlock(generation, "B2", 10, () -> {
+            applied.add("B2");
+            return LedgerApplyProcessor.Outcome.APPLIED;
+        });
+
+        processor.start();
+
+        assertEquals(LedgerApplyProcessor.Outcome.FAILED, get(b1));
+        waitUntilDone(b2);
+        assertTrue(b2.isCancelled());
+        assertEquals(List.of("B1"), applied);
+        waitUntilRecoveryReasons(1);
+        assertEquals(List.of(PeerRecoveryReason.APPLY_FAILED), recoveryReasons);
+    }
+
+    @Test
     void batchDoneRunsAfterQueuedBlocks() throws Exception {
         processor = newProcessor(10, 1024 * 1024, 8);
         long generation = processor.openGeneration();
@@ -92,6 +117,90 @@ class LedgerApplyProcessorTest {
         assertEquals(LedgerApplyProcessor.Outcome.APPLIED, get(b2));
         assertEquals(LedgerApplyProcessor.Outcome.COMPLETED, get(batchDone));
         assertEquals(List.of("B1", "B2", "BatchDone"), order);
+    }
+
+    @Test
+    void nonTerminalRollbackRunsInDataQueueOrder() throws Exception {
+        processor = newProcessor(10, 1024 * 1024, 8);
+        long generation = processor.openGeneration();
+        List<String> order = new CopyOnWriteArrayList<>();
+
+        CompletableFuture<LedgerApplyProcessor.Outcome> b1 = processor.enqueueApplyBlock(generation, "B1", 10, () -> {
+            order.add("B1");
+            return LedgerApplyProcessor.Outcome.APPLIED;
+        });
+        CompletableFuture<LedgerApplyProcessor.Outcome> rollback =
+                processor.enqueueRollback(generation, "rollback", () -> order.add("rollback"));
+        CompletableFuture<LedgerApplyProcessor.Outcome> b2 = processor.enqueueApplyBlock(generation, "B2", 10, () -> {
+            order.add("B2");
+            return LedgerApplyProcessor.Outcome.APPLIED;
+        });
+
+        processor.start();
+
+        assertEquals(LedgerApplyProcessor.Outcome.APPLIED, get(b1));
+        assertEquals(LedgerApplyProcessor.Outcome.COMPLETED, get(rollback));
+        assertEquals(LedgerApplyProcessor.Outcome.APPLIED, get(b2));
+        assertEquals(List.of("B1", "rollback", "B2"), order);
+        assertTrue(processor.isGenerationOpen(generation));
+    }
+
+    @Test
+    void successfulNonTerminalRollbackRefreshesFailedGenerationRecoveryCursor() throws Exception {
+        processor = newProcessor(10, 1024 * 1024, 8);
+        chainState.storeBlock(hash(9), 9L, 90L, new byte[]{9});
+        chainState.storeBlock(hash(10), 10L, 100L, new byte[]{10});
+        long generation = processor.openGeneration();
+
+        CompletableFuture<LedgerApplyProcessor.Outcome> rollback =
+                processor.enqueueRollback(generation, "rollback", () -> chainState.rollbackTo(90L));
+        CompletableFuture<LedgerApplyProcessor.Outcome> failed = processor.enqueueApplyBlock(generation, "B10-again", 10, () -> {
+            throw new IllegalStateException("post-rollback apply failure");
+        });
+
+        processor.start();
+
+        assertEquals(LedgerApplyProcessor.Outcome.COMPLETED, get(rollback));
+        assertEquals(LedgerApplyProcessor.Outcome.FAILED, get(failed));
+        CompletableFuture<LedgerApplyProcessor.RecoveryPoint> recoveryPoint =
+                processor.closeGenerationAndReadRecoveryPoint(generation);
+        LedgerApplyProcessor.RecoveryPoint point = recoveryPoint.get(5, TimeUnit.SECONDS);
+        assertTip(point.bodyTip(), 90L, 9L);
+    }
+
+    @Test
+    void acceptedDataRollbackRunsBeforeRecoveryBarrierWhenGenerationCloses() throws Exception {
+        processor = newProcessor(10, 1024 * 1024, 8);
+        chainState.storeBlock(hash(9), 9L, 90L, new byte[]{9});
+        chainState.storeBlock(hash(10), 10L, 100L, new byte[]{10});
+        long generation = processor.openGeneration();
+
+        CompletableFuture<LedgerApplyProcessor.Outcome> rollback =
+                processor.enqueueRollback(generation, "rollback", () -> chainState.rollbackTo(90L));
+        CompletableFuture<LedgerApplyProcessor.RecoveryPoint> recoveryPoint =
+                processor.closeGenerationAndReadRecoveryPoint(generation);
+        processor.start();
+
+        assertEquals(LedgerApplyProcessor.Outcome.COMPLETED, get(rollback));
+        LedgerApplyProcessor.RecoveryPoint point = recoveryPoint.get(5, TimeUnit.SECONDS);
+        assertTip(point.bodyTip(), 90L, 9L);
+    }
+
+    @Test
+    void acceptedDataRollbackRunsBeforeDisconnectWhenGenerationCloses() throws Exception {
+        processor = newProcessor(10, 1024 * 1024, 8);
+        long generation = processor.openGeneration();
+        List<String> order = new CopyOnWriteArrayList<>();
+
+        CompletableFuture<LedgerApplyProcessor.Outcome> rollback =
+                processor.enqueueRollback(generation, "rollback", () -> order.add("rollback"));
+        CompletableFuture<LedgerApplyProcessor.Outcome> disconnect =
+                processor.enqueueDisconnectAndClose(generation, () -> order.add("disconnect"));
+        processor.start();
+
+        assertEquals(LedgerApplyProcessor.Outcome.COMPLETED, get(rollback));
+        assertEquals(LedgerApplyProcessor.Outcome.COMPLETED, get(disconnect));
+        assertEquals(List.of("rollback", "disconnect"), order);
     }
 
     @Test

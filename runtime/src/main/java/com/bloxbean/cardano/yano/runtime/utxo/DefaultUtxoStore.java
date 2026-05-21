@@ -20,6 +20,7 @@ import com.bloxbean.cardano.yano.api.utxo.model.AssetAmount;
 import com.bloxbean.cardano.yano.api.utxo.model.Outpoint;
 import com.bloxbean.cardano.yano.api.utxo.model.Utxo;
 import com.bloxbean.cardano.yano.api.plugin.UtxoFilterContext;
+import com.bloxbean.cardano.yano.api.util.StoredBlockUtil;
 import com.bloxbean.cardano.yano.runtime.db.RocksDbSupplier;
 import com.bloxbean.cardano.yano.runtime.db.UtxoCfNames;
 import com.bloxbean.cardano.yano.api.events.BlockAppliedEvent;
@@ -1405,6 +1406,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
     public void rollbackTo(RollbackEvent e) {
         if (!enabled) return;
         long targetSlot = e.target().getSlot();
+        ensureRollbackTargetIsSafe(targetSlot);
         try (WriteBatch batch = new WriteBatch(); WriteOptions wo = new WriteOptions(); RocksIterator it = db.newIterator(cfDelta)) {
             java.util.Map<StakeCredentialKey, BigInteger> stakeBalanceDeltas = newStakeBalanceDeltaMap();
             Long retainedBlock = null;
@@ -1421,25 +1423,26 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
                 for (UtxoDeltaCodec.OutRef r : dec.spent()) {
                     byte[] okey = UtxoKeyUtil.outpointKey(r.txHash(), r.index());
                     byte[] sval = db.get(cfSpent, okey);
-                    if (sval != null) {
-                        byte[] unspentVal = UtxoCborCodec.unwrapSpentUtxo(sval);
-                        batch.put(cfUnspent, okey, unspentVal);
-                        var stored = UtxoCborCodec.decodeUtxoRecord(unspentVal);
-                        if (indexAddressHash) {
-                            byte[] akey = UtxoKeyUtil.addrHash28(stored.address);
-                            byte[] aIdx = UtxoKeyUtil.addressIndexKey(akey, stored.slot, r.txHash(), r.index());
-                            batch.put(cfAddr, aIdx, new byte[0]);
-                        }
-                        if (indexPaymentCred) {
-                            byte[] pc = UtxoKeyUtil.paymentCred28(stored.address);
-                            if (pc != null) {
-                                byte[] pIdx = UtxoKeyUtil.addressIndexKey(pc, stored.slot, r.txHash(), r.index());
-                                batch.put(cfAddr, pIdx, new byte[0]);
-                            }
-                        }
-                        batch.delete(cfSpent, okey);
-                        addStakeBalanceDelta(stakeBalanceDeltas, stored.address, stored.lovelace);
+                    if (sval == null) {
+                        throw missingSpentRecordForRollback(targetSlot, dec, r);
                     }
+                    byte[] unspentVal = UtxoCborCodec.unwrapSpentUtxo(sval);
+                    batch.put(cfUnspent, okey, unspentVal);
+                    var stored = UtxoCborCodec.decodeUtxoRecord(unspentVal);
+                    if (indexAddressHash) {
+                        byte[] akey = UtxoKeyUtil.addrHash28(stored.address);
+                        byte[] aIdx = UtxoKeyUtil.addressIndexKey(akey, stored.slot, r.txHash(), r.index());
+                        batch.put(cfAddr, aIdx, new byte[0]);
+                    }
+                    if (indexPaymentCred) {
+                        byte[] pc = UtxoKeyUtil.paymentCred28(stored.address);
+                        if (pc != null) {
+                            byte[] pIdx = UtxoKeyUtil.addressIndexKey(pc, stored.slot, r.txHash(), r.index());
+                            batch.put(cfAddr, pIdx, new byte[0]);
+                        }
+                    }
+                    batch.delete(cfSpent, okey);
+                    addStakeBalanceDelta(stakeBalanceDeltas, stored.address, stored.lovelace);
                 }
                 // Delete created
                 for (UtxoDeltaCodec.OutRef r : dec.created()) {
@@ -1520,23 +1523,34 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
     @Override
     public long getRollbackFloorSlot() {
         if (!enabled) return 0;
-        // Floor = earliest retained delta entry's slot (actual data, not config estimate)
+        long latestAppliedSlot = getLatestAppliedSlot();
+
+        // Deltas alone are not enough for a safe rollback. Restoring a spent UTXO also
+        // needs the original record from cfSpent, and cfSpent is pruned by slot using
+        // max(pruneDepth, rollbackWindow). If delta pruning lags behind spent pruning,
+        // the earliest delta can advertise an unsafe rollback point.
+        long spentRetentionWindow = Math.max(pruneDepth, rollbackWindow);
+        long spentRetentionFloor = latestAppliedSlot >= 0
+                ? Math.max(0L, latestAppliedSlot - spentRetentionWindow)
+                : 0L;
+
+        long deltaFloor = latestAppliedSlot >= 0 ? latestAppliedSlot : 0L;
         try (RocksIterator it = db.newIterator(cfDelta)) {
             it.seekToFirst();
             if (it.isValid()) {
                 var dec = UtxoDeltaCodec.decode(it.value());
-                return dec.slot();
+                deltaFloor = dec.slot();
             }
         } catch (Exception e) {
             throw new RuntimeException("Failed to read UTXO rollback floor", e);
         }
-        long latestAppliedSlot = getLatestAppliedSlot();
-        return latestAppliedSlot >= 0 ? latestAppliedSlot : 0;
+        return Math.max(deltaFloor, spentRetentionFloor);
     }
 
     @Override
     public void rollbackToSlot(long targetSlot) {
         if (!enabled) return;
+        ensureRollbackTargetIsSafe(targetSlot);
         // Reuse internal rollback logic directly (no RollbackEvent construction)
         try (WriteBatch batch = new WriteBatch(); WriteOptions wo = new WriteOptions(); RocksIterator it = db.newIterator(cfDelta)) {
             java.util.Map<StakeCredentialKey, BigInteger> stakeBalanceDeltas = newStakeBalanceDeltaMap();
@@ -1554,25 +1568,26 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
                 for (UtxoDeltaCodec.OutRef r : dec.spent()) {
                     byte[] okey = UtxoKeyUtil.outpointKey(r.txHash(), r.index());
                     byte[] sval = db.get(cfSpent, okey);
-                    if (sval != null) {
-                        byte[] unspentVal = UtxoCborCodec.unwrapSpentUtxo(sval);
-                        batch.put(cfUnspent, okey, unspentVal);
-                        var stored = UtxoCborCodec.decodeUtxoRecord(unspentVal);
-                        if (indexAddressHash) {
-                            byte[] akey = UtxoKeyUtil.addrHash28(stored.address);
-                            byte[] aIdx = UtxoKeyUtil.addressIndexKey(akey, stored.slot, r.txHash(), r.index());
-                            batch.put(cfAddr, aIdx, new byte[0]);
-                        }
-                        if (indexPaymentCred) {
-                            byte[] pc = UtxoKeyUtil.paymentCred28(stored.address);
-                            if (pc != null) {
-                                byte[] pIdx = UtxoKeyUtil.addressIndexKey(pc, stored.slot, r.txHash(), r.index());
-                                batch.put(cfAddr, pIdx, new byte[0]);
-                            }
-                        }
-                        batch.delete(cfSpent, okey);
-                        addStakeBalanceDelta(stakeBalanceDeltas, stored.address, stored.lovelace);
+                    if (sval == null) {
+                        throw missingSpentRecordForRollback(targetSlot, dec, r);
                     }
+                    byte[] unspentVal = UtxoCborCodec.unwrapSpentUtxo(sval);
+                    batch.put(cfUnspent, okey, unspentVal);
+                    var stored = UtxoCborCodec.decodeUtxoRecord(unspentVal);
+                    if (indexAddressHash) {
+                        byte[] akey = UtxoKeyUtil.addrHash28(stored.address);
+                        byte[] aIdx = UtxoKeyUtil.addressIndexKey(akey, stored.slot, r.txHash(), r.index());
+                        batch.put(cfAddr, aIdx, new byte[0]);
+                    }
+                    if (indexPaymentCred) {
+                        byte[] pc = UtxoKeyUtil.paymentCred28(stored.address);
+                        if (pc != null) {
+                            byte[] pIdx = UtxoKeyUtil.addressIndexKey(pc, stored.slot, r.txHash(), r.index());
+                            batch.put(cfAddr, pIdx, new byte[0]);
+                        }
+                    }
+                    batch.delete(cfSpent, okey);
+                    addStakeBalanceDelta(stakeBalanceDeltas, stored.address, stored.lovelace);
                 }
                 // Delete created
                 for (UtxoDeltaCodec.OutRef r : dec.created()) {
@@ -1648,6 +1663,14 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
             return;
         }
 
+        byte[] tipBlockBytes = chainState.getBlockByNumber(tipBlock);
+        if (lastAppliedBlock == 0
+                && getLatestAppliedSlot() < 0
+                && StoredBlockUtil.isStoredByronBlock(chainState.getBlockEra(tipBlock), tipBlockBytes)) {
+            log.info("UTXO reconcile skipped: tip block {} is Byron era, nothing to index", tipBlock);
+            return;
+        }
+
         // Forward replay: apply missing blocks using stored bodies
         log.info("UTXO reconcile: replaying blocks {} to {}", lastAppliedBlock + 1, tipBlock);
         for (long bn = lastAppliedBlock + 1; bn <= tipBlock; bn++) {
@@ -1658,6 +1681,10 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
             if (blockBytes == null) {
                 throw new IllegalStateException("UTXO reconcile missing local block body for block " + bn);
             }
+            Era storedEra = chainState.getBlockEra(bn);
+            if (StoredBlockUtil.isStoredByronBlock(storedEra, blockBytes)) {
+                continue;
+            }
             Block block;
             try {
                 block = BlockSerializer.INSTANCE.deserialize(blockBytes);
@@ -1666,7 +1693,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
             }
             long slot = block.getHeader().getHeaderBody().getSlot();
             String blockHash = block.getHeader().getHeaderBody().getBlockHash();
-            Era era = block.getEra();
+            Era era = block.getEra() != null ? block.getEra() : storedEra;
             applyBlock(new BlockAppliedEvent(era, slot, bn, blockHash, block));
         }
     }
@@ -1687,6 +1714,29 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
         } else {
             batch.delete(cfMeta, META_LAST_APPLIED_SLOT);
             batch.delete(cfMeta, META_LAST_APPLIED_BLOCK);
+        }
+    }
+
+    private IllegalStateException missingSpentRecordForRollback(long targetSlot,
+                                                                UtxoDeltaCodec.Decoded delta,
+                                                                UtxoDeltaCodec.OutRef outRef) {
+        return new IllegalStateException("Cannot rollback UTXO store to slot " + targetSlot
+                + ": missing spent record for " + outRef.txHash() + "#" + outRef.index()
+                + " while undoing block " + delta.blockNumber() + " at slot " + delta.slot()
+                + ". The spent UTXO data was likely pruned; choose a newer rollback point "
+                + "or restore from a checkpoint/full resync.");
+    }
+
+    private void ensureRollbackTargetIsSafe(long targetSlot) {
+        if (targetSlot < 0) {
+            return;
+        }
+        long floor = getRollbackFloorSlot();
+        if (targetSlot < floor) {
+            throw new IllegalStateException("Cannot rollback UTXO store to slot " + targetSlot
+                    + ": rollback floor is " + floor
+                    + ". Deltas or spent records required for an older rollback may have been pruned; "
+                    + "choose a newer rollback point or restore from a checkpoint/full resync.");
         }
     }
 

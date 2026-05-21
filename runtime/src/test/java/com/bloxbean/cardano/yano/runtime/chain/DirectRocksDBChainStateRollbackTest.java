@@ -58,6 +58,29 @@ class DirectRocksDBChainStateRollbackTest {
         assertThat(chainState.getEraStartSlot(2)).isEmpty();
     }
 
+    @Test
+    void rollbackToBodyTipDiscardsHeaderOnlyCacheAndAllowsRefetch() {
+        byte[] hash1 = hash(1);
+        byte[] hash2 = hash(2);
+        byte[] hash3 = hash(3);
+
+        chainState.storeBlockHeader(hash1, 1L, 10L, new byte[]{1});
+        chainState.storeBlock(hash1, 1L, 10L, new byte[]{1});
+        chainState.storeBlockHeader(hash2, 2L, 20L, new byte[]{2});
+        chainState.storeBlockHeader(hash3, 3L, 30L, new byte[]{3});
+
+        chainState.rollbackTo(10L);
+
+        assertThat(chainState.getTip().getBlockNumber()).isEqualTo(1L);
+        assertThat(chainState.getHeaderTip().getBlockNumber()).isEqualTo(1L);
+        assertThat(chainState.getBlockHeaderByNumber(2L)).isNull();
+        assertThat(chainState.getBlockHeaderByNumber(3L)).isNull();
+
+        assertThatCode(() -> chainState.storeBlockHeader(hash2, 2L, 20L, new byte[]{2}))
+                .doesNotThrowAnyException();
+        assertThat(chainState.getHeaderTip().getBlockNumber()).isEqualTo(2L);
+    }
+
     private byte[] hash(int suffix) {
         byte[] bytes = new byte[32];
         bytes[31] = (byte) suffix;

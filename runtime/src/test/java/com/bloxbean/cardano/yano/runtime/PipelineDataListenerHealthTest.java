@@ -20,6 +20,7 @@ import com.bloxbean.cardano.yano.runtime.events.PropagatingEventBus;
 import com.bloxbean.cardano.yano.runtime.peer.PeerHealth;
 import com.bloxbean.cardano.yano.runtime.peer.PeerRecoveryReason;
 import com.bloxbean.cardano.yano.runtime.peer.PeerSessionCallbacks;
+import com.bloxbean.cardano.yano.runtime.peer.PeerSessionState;
 import com.bloxbean.cardano.yano.runtime.peer.PeerSessionStatus;
 import com.bloxbean.cardano.yaci.helper.model.Transaction;
 import org.junit.jupiter.api.BeforeEach;
@@ -104,6 +105,44 @@ class PipelineDataListenerHealthTest {
             PeerSessionStatus status = peerHealth.snapshot(System.currentTimeMillis());
             assertEquals(-1L, status.lastHeaderSlot());
             assertEquals(-1L, status.lastHeaderBlockNumber());
+        } finally {
+            processor.close();
+        }
+    }
+
+    @Test
+    void headerApplyFailureFailsGenerationAndRequestsRecovery() {
+        CopyOnWriteArrayList<PeerRecoveryReason> recoveryReasons = new CopyOnWriteArrayList<>();
+        LedgerApplyProcessor processor = new LedgerApplyProcessor(chainState, recoveryReasons::add);
+        long generation = processor.openGeneration();
+        processor.start();
+        try {
+            HeaderSyncManager failingHeaderSyncManager = new HeaderSyncManager(
+                    new MockPeerClient(),
+                    chainState,
+                    50000,
+                    new SyncTipContext()) {
+                @Override
+                public void rollforward(Tip tip, BlockHeader blockHeader, byte[] originalHeaderBytes) {
+                    throw new RuntimeException("header continuity failed");
+                }
+            };
+            PipelineDataListener asyncListener = new PipelineDataListener(
+                    failingHeaderSyncManager,
+                    bodyFetchManager,
+                    new NoopCallbacks(),
+                    peerHealth,
+                    processor,
+                    generation);
+
+            asyncListener.rollforward(
+                    new Tip(new Point(1000, "aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111"), 500L),
+                    createSimpleShelleyHeader(1000L, 500L, "aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111"),
+                    "header".getBytes());
+
+            assertFalse(processor.isGenerationOpen(generation));
+            assertEquals(List.of(PeerRecoveryReason.APPLY_FAILED), recoveryReasons);
+            assertNull(chainState.getHeaderTip());
         } finally {
             processor.close();
         }
@@ -208,6 +247,266 @@ class PipelineDataListenerHealthTest {
             assertEquals(0L, status.lastDisconnectAtMillis());
         } finally {
             processor.close();
+        }
+    }
+
+    @Test
+    void startupResetDisconnectBeforeProgressDoesNotCloseGeneration() throws Exception {
+        LedgerApplyProcessor processor = new LedgerApplyProcessor(chainState, ignored -> {
+        });
+        long generation = processor.openGeneration();
+        processor.start();
+        peerHealth.markState(PeerSessionState.STARTING);
+        AtomicBoolean disconnected = new AtomicBoolean(false);
+        try {
+            PipelineDataListener asyncListener = new PipelineDataListener(
+                    headerSyncManager,
+                    bodyFetchManager,
+                    new NoopCallbacks() {
+                        @Override
+                        public void onPeerDisconnected() {
+                            disconnected.set(true);
+                        }
+                    },
+                    peerHealth,
+                    processor,
+                    generation);
+
+            asyncListener.onDisconnect();
+
+            assertTrue(processor.isGenerationOpen(generation));
+            assertFalse(disconnected.get());
+            PeerSessionStatus status = peerHealth.snapshot(System.currentTimeMillis());
+            assertEquals(0L, status.lastDisconnectAtMillis());
+
+            asyncListener.batchStarted();
+            waitForBodyFetchInProgress(true);
+        } finally {
+            processor.close();
+        }
+    }
+
+    @Test
+    void nonRecoveringRollbackKeepsGenerationOpen() throws Exception {
+        LedgerApplyProcessor processor = new LedgerApplyProcessor(chainState, ignored -> {
+        });
+        long generation = processor.openGeneration();
+        processor.start();
+        AtomicInteger rollbacks = new AtomicInteger();
+        AtomicInteger recoveries = new AtomicInteger();
+        try {
+            PipelineDataListener asyncListener = new PipelineDataListener(
+                    headerSyncManager,
+                    bodyFetchManager,
+                    new NoopCallbacks() {
+                        @Override
+                        public void handleChainSyncRollback(Point point) {
+                            rollbacks.incrementAndGet();
+                        }
+
+                        @Override
+                        public void requestPeerRecovery(PeerRecoveryReason reason) {
+                            recoveries.incrementAndGet();
+                        }
+                    },
+                    peerHealth,
+                    processor,
+                    generation);
+
+            asyncListener.onRollback(new Point(1000, "rollback"));
+
+            assertEquals(1, rollbacks.get());
+            assertTrue(processor.isGenerationOpen(generation));
+            assertEquals(0, recoveries.get());
+
+            asyncListener.rollforward(
+                    new Tip(new Point(1001, "aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111"), 501L),
+                    createSimpleShelleyHeader(1001L, 501L, "aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111"),
+                    "header".getBytes());
+            assertNotNull(chainState.getHeaderTip());
+
+            asyncListener.batchStarted();
+            waitForBodyFetchInProgress(true);
+        } finally {
+            processor.close();
+        }
+    }
+
+    @Test
+    void rollbackRunsBeforeLaterHeaderCallbacksAndKeepsSessionOpen() throws Exception {
+        LedgerApplyProcessor processor = new LedgerApplyProcessor(chainState, ignored -> {
+        });
+        long generation = processor.openGeneration();
+        processor.start();
+        AtomicInteger rollbacks = new AtomicInteger();
+        AtomicInteger recoveries = new AtomicInteger();
+        try {
+            PipelineDataListener asyncListener = new PipelineDataListener(
+                    headerSyncManager,
+                    bodyFetchManager,
+                    new NoopCallbacks() {
+                        @Override
+                        public void handleChainSyncRollback(Point point) {
+                            rollbacks.incrementAndGet();
+                        }
+
+                        @Override
+                        public void requestPeerRecovery(PeerRecoveryReason reason) {
+                            if (reason == PeerRecoveryReason.ROLLBACK) {
+                                recoveries.incrementAndGet();
+                            }
+                        }
+                    },
+                    peerHealth,
+                    processor,
+                    generation);
+
+            asyncListener.onRollback(new Point(1000, "rollback"));
+            asyncListener.rollforward(
+                    new Tip(new Point(1001, "aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111"), 501L),
+                    createSimpleShelleyHeader(1001L, 501L, "aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111"),
+                    "header".getBytes());
+
+            waitForCounter(rollbacks, 1);
+            assertTrue(processor.isGenerationOpen(generation));
+            assertEquals(0, recoveries.get());
+            assertNotNull(chainState.getHeaderTip());
+        } finally {
+            processor.close();
+        }
+    }
+
+    @Test
+    void staleInFlightBlockAfterRollbackIsSkippedAndGenerationContinues() throws Exception {
+        chainState.storeBlock(
+                hexToBytes("0000000000000000000000000000000000000000000000000000000000000500"),
+                500L,
+                1000L,
+                "00".getBytes()
+        );
+        List<PeerRecoveryReason> recoveries = new CopyOnWriteArrayList<>();
+        LedgerApplyProcessor processor = new LedgerApplyProcessor(chainState, recoveries::add);
+        long generation = processor.openGeneration();
+        processor.start();
+        try {
+            PipelineDataListener asyncListener = new PipelineDataListener(
+                    headerSyncManager,
+                    bodyFetchManager,
+                    new NoopCallbacks(),
+                    peerHealth,
+                    processor,
+                    generation);
+
+            asyncListener.onRollback(new Point(1000, "0000000000000000000000000000000000000000000000000000000000000500"));
+            Block staleTailBlock = createTestBlock(
+                    1002L,
+                    502L,
+                    "b5021234567890abcdef1234567890abcdef1234567890abcdef1234567890ab");
+            asyncListener.onBlock(Era.Shelley, staleTailBlock, Collections.emptyList());
+            waitForDataQueueDepth(processor, 0);
+
+            ChainTip unchanged = chainState.getTip();
+            assertNotNull(unchanged);
+            assertEquals(1000L, unchanged.getSlot());
+            assertEquals(500L, unchanged.getBlockNumber());
+            assertTrue(processor.isGenerationOpen(generation));
+            assertTrue(recoveries.isEmpty());
+
+            Block nextBlock = createTestBlock(
+                    1001L,
+                    501L,
+                    "b5011234567890abcdef1234567890abcdef1234567890abcdef1234567890ab");
+            chainState.storeBlockHeader(
+                    hexToBytes("b5011234567890abcdef1234567890abcdef1234567890abcdef1234567890ab"),
+                    501L,
+                    1001L,
+                    "header".getBytes());
+            asyncListener.onBlock(Era.Shelley, nextBlock, Collections.emptyList());
+            waitForTip(1001L, 501L);
+
+            assertTrue(processor.isGenerationOpen(generation));
+            assertTrue(recoveries.isEmpty());
+            PeerSessionStatus status = peerHealth.snapshot(System.currentTimeMillis());
+            assertEquals(1001L, status.lastBodyAppliedSlot());
+            assertEquals(501L, status.lastBodyAppliedBlockNumber());
+        } finally {
+            processor.close();
+        }
+    }
+
+    @Test
+    void immediateStaleTailBlockAfterRollbackRequiresMatchingHeader() throws Exception {
+        String rollbackHash = "0000000000000000000000000000000000000000000000000000000000000500";
+        String staleOldForkHash = "0000000000000000000000000000000000000000000000000000000000001501";
+        String validNewForkHash = "0000000000000000000000000000000000000000000000000000000000002501";
+        chainState.storeBlock(hexToBytes(rollbackHash), 500L, 1000L, "00".getBytes());
+
+        List<PeerRecoveryReason> recoveries = new CopyOnWriteArrayList<>();
+        LedgerApplyProcessor processor = new LedgerApplyProcessor(chainState, recoveries::add);
+        long generation = processor.openGeneration();
+        processor.start();
+        try {
+            PipelineDataListener asyncListener = new PipelineDataListener(
+                    headerSyncManager,
+                    bodyFetchManager,
+                    new NoopCallbacks(),
+                    peerHealth,
+                    processor,
+                    generation);
+
+            asyncListener.onRollback(new Point(1000L, rollbackHash));
+            asyncListener.onBlock(Era.Shelley,
+                    createTestBlock(1001L, 501L, staleOldForkHash),
+                    Collections.emptyList());
+            waitForDataQueueDepth(processor, 0);
+
+            ChainTip unchanged = chainState.getTip();
+            assertNotNull(unchanged);
+            assertEquals(1000L, unchanged.getSlot());
+            assertEquals(500L, unchanged.getBlockNumber());
+            assertTrue(processor.isGenerationOpen(generation));
+            assertTrue(recoveries.isEmpty());
+
+            chainState.storeBlockHeader(hexToBytes(validNewForkHash), 501L, 1001L, "header".getBytes());
+            asyncListener.onBlock(Era.Shelley,
+                    createTestBlock(1001L, 501L, validNewForkHash),
+                    Collections.emptyList());
+
+            waitForTip(1001L, 501L);
+            assertTrue(processor.isGenerationOpen(generation));
+            assertTrue(recoveries.isEmpty());
+        } finally {
+            processor.close();
+        }
+    }
+
+    @Test
+    void nonTerminalRollbackApplyFailureRequestsApplyFailedRecovery() throws Exception {
+        List<PeerRecoveryReason> callbackRecoveries = new CopyOnWriteArrayList<>();
+        LedgerApplyProcessor recoveryProcessor = new LedgerApplyProcessor(chainState, callbackRecoveries::add);
+        long generation = recoveryProcessor.openGeneration();
+        recoveryProcessor.start();
+        try {
+            PipelineDataListener asyncListener = new PipelineDataListener(
+                    headerSyncManager,
+                    bodyFetchManager,
+                    new NoopCallbacks() {
+                        @Override
+                        public void handleChainSyncRollback(Point point) {
+                            throw new IllegalStateException("rollback listener failed");
+                        }
+                    },
+                    peerHealth,
+                    recoveryProcessor,
+                    generation);
+
+            asyncListener.onRollback(new Point(1000L, "rollback"));
+
+            waitForRecoveries(callbackRecoveries, 1);
+            assertEquals(List.of(PeerRecoveryReason.APPLY_FAILED), callbackRecoveries);
+            assertFalse(recoveryProcessor.isGenerationOpen(generation));
+        } finally {
+            recoveryProcessor.close();
         }
     }
 
@@ -854,6 +1153,38 @@ class PipelineDataListenerHealthTest {
             Thread.sleep(10);
         }
         assertEquals(expectedCount, recoveries.size());
+    }
+
+    private void waitForCounter(AtomicInteger counter, int expectedCount) throws Exception {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (counter.get() < expectedCount && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+        assertEquals(expectedCount, counter.get());
+    }
+
+    private void waitForDataQueueDepth(LedgerApplyProcessor processor, int expectedDepth) throws Exception {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (System.nanoTime() < deadline) {
+            if (processor.status().dataQueueDepth() == expectedDepth
+                    && processor.status().currentItem() == null) {
+                return;
+            }
+            Thread.sleep(10);
+        }
+        assertEquals(expectedDepth, processor.status().dataQueueDepth());
+        assertNull(processor.status().currentItem());
+    }
+
+    private void waitForBodyFetchInProgress(boolean expected) throws Exception {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (System.nanoTime() < deadline) {
+            if (peerHealth.snapshot(System.currentTimeMillis()).bodyFetchInProgress() == expected) {
+                return;
+            }
+            Thread.sleep(10);
+        }
+        assertEquals(expected, peerHealth.snapshot(System.currentTimeMillis()).bodyFetchInProgress());
     }
 
     private static class NoopCallbacks implements PeerSessionCallbacks {

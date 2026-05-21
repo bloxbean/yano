@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.ledgerstate;
 
 import com.bloxbean.cardano.yano.api.era.EraProvider;
+import com.bloxbean.cardano.yano.api.util.StoredBlockUtil;
 import com.bloxbean.cardano.yaci.core.model.Block;
 import com.bloxbean.cardano.yaci.core.model.DrepVoteThresholds;
 import com.bloxbean.cardano.yaci.core.model.Era;
@@ -3985,8 +3986,8 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
         // Account state only tracks Shelley+ data (staking, rewards, delegations).
         // Replaying Byron blocks is pure overhead — no relevant state to reconcile.
         if (lastAppliedBlock == 0) {
-            Era tipEra = chainState.getBlockEra(tipBlock);
-            if (tipEra == Era.Byron) {
+            byte[] tipBlockBytes = chainState.getBlockByNumber(tipBlock);
+            if (StoredBlockUtil.isStoredByronBlock(chainState.getBlockEra(tipBlock), tipBlockBytes)) {
                 log.info("Account state reconcile skipped: tip block {} is Byron era, nothing to reconcile", tipBlock);
                 return;
             }
@@ -4002,13 +4003,18 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
             if (blockBytes == null) {
                 throw new IllegalStateException("Account state reconcile missing local block body for block " + bn);
             }
+            Era storedEra = chainState.getBlockEra(bn);
+            if (StoredBlockUtil.isStoredByronBlock(storedEra, blockBytes)) {
+                continue;
+            }
 
             try {
                 Block block = com.bloxbean.cardano.yaci.core.model.serializers.BlockSerializer.INSTANCE
                         .deserialize(blockBytes);
                 long blockSlot = block.getHeader().getHeaderBody().getSlot();
                 String blockHash = block.getHeader().getHeaderBody().getBlockHash();
-                applyBlock(new BlockAppliedEvent(block.getEra(), blockSlot, bn, blockHash, block));
+                Era era = block.getEra() != null ? block.getEra() : storedEra;
+                applyBlock(new BlockAppliedEvent(era, blockSlot, bn, blockHash, block));
             } catch (Throwable t) {
                 throw new RuntimeException("Account state reconcile failed for block " + bn, t);
             }

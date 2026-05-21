@@ -26,8 +26,9 @@ import java.util.function.Consumer;
  * <p>The processor keeps Netty event-loop threads out of expensive ledger work while
  * preserving the same block order that the network delivered. Each upstream peer
  * session is represented by a generation. Data work is accepted only for the active
- * open generation; rollback, disconnect, and recovery barriers close that generation
- * and discard queued stale work before a replacement peer session is started.</p>
+ * open generation. Ordinary ChainSync rollbacks are ledger data events and keep the
+ * generation open; disconnects, apply failures, and recovery barriers close the
+ * generation before a replacement peer session is started.</p>
  *
  * <p>The recovery contract is deliberately conservative. A caller that needs a
  * restart point must use {@link #closeGenerationAndReadRecoveryPoint(long)} so the
@@ -275,6 +276,27 @@ public final class LedgerApplyProcessor implements AutoCloseable {
     }
 
     /**
+     * Marks the generation failed from a non-worker callback and requests peer
+     * recovery through the configured recovery requester.
+     *
+     * <p>This is used for synchronous header-apply failures. Header storage is
+     * intentionally still on the network callback path, so it cannot fail through
+     * an {@link WorkKind#APPLY_BLOCK} item. The failure has the same lifecycle
+     * effect as a body apply failure: queued work for the generation is dropped
+     * and the supervisor is asked to replace the peer from a safe cursor.</p>
+     */
+    public void failGenerationAndRequestRecovery(long generation, Throwable failure) {
+        Objects.requireNonNull(failure, "failure");
+        synchronized (accountingLock) {
+            if (closing.get()) {
+                return;
+            }
+            markGenerationFailedLocked(generation, failure);
+        }
+        requestRecoveryOnce(generation, failure);
+    }
+
+    /**
      * Enqueues decoded block application work, using the decoded byte array length
      * for approximate memory accounting.
      */
@@ -330,6 +352,31 @@ public final class LedgerApplyProcessor implements AutoCloseable {
     }
 
     /**
+     * Enqueues rollback work without closing the generation.
+     *
+     * <p>Rollback is queued on the data lane so it is ordered with block apply
+     * items from the same generation. The caller may still wait for the returned
+     * future if the upstream ChainSync callback must not process later headers
+     * before the local rollback is durable.</p>
+     */
+    public CompletableFuture<Outcome> enqueueRollback(long generation, String description, Runnable work) {
+        Objects.requireNonNull(work, "work");
+        WorkItem item = new WorkItem(
+                WorkKind.ROLLBACK,
+                generation,
+                description != null ? description : "rollback",
+                0,
+                true,
+                false,
+                () -> {
+                    work.run();
+                    return Outcome.COMPLETED;
+                },
+                new CompletableFuture<>());
+        return enqueueData(item);
+    }
+
+    /**
      * Closes the generation, drops queued data for it, and enqueues rollback work
      * on the control lane so it runs after any in-flight apply item.
      */
@@ -363,7 +410,7 @@ public final class LedgerApplyProcessor implements AutoCloseable {
             if (current != GenerationState.FAILED) {
                 generations.put(generation, GenerationState.CLOSING);
             }
-            dropQueuedDataForGenerationLocked(generation);
+            offerPromotedRollbacksLocked(dropQueuedDataForGenerationLocked(generation, true));
             offerControlLocked(item);
         }
         return item.future();
@@ -403,7 +450,7 @@ public final class LedgerApplyProcessor implements AutoCloseable {
             if (current != GenerationState.FAILED) {
                 generations.put(generation, GenerationState.CLOSING);
             }
-            dropQueuedDataForGenerationLocked(generation);
+            offerPromotedRollbacksLocked(dropQueuedDataForGenerationLocked(generation, true));
             offerControlLocked(item);
         }
         return item.future();
@@ -468,7 +515,7 @@ public final class LedgerApplyProcessor implements AutoCloseable {
             GenerationState current = generations.get(generation);
             if (current == GenerationState.OPEN) {
                 generations.put(generation, GenerationState.CLOSING);
-                dropQueuedDataForGenerationLocked(generation);
+                offerPromotedRollbacksLocked(dropQueuedDataForGenerationLocked(generation, true));
             }
             if (!offerControlLocked(item)) {
                 RejectedExecutionException rejection = new RejectedExecutionException(
@@ -654,15 +701,10 @@ public final class LedgerApplyProcessor implements AutoCloseable {
     private void runLoop() {
         try {
             while (running.get() || !controlQueue.isEmpty() || !dataQueue.isEmpty()) {
-                WorkItem item = controlQueue.poll();
+                WorkItem item = pollNextItem();
                 if (item == null) {
-                    item = dataQueue.poll(100, TimeUnit.MILLISECONDS);
-                }
-                if (item == null) {
+                    TimeUnit.MILLISECONDS.sleep(100);
                     continue;
-                }
-                if (item.dataItem()) {
-                    releaseQueuedBytes(item.estimatedBytes());
                 }
                 process(item);
             }
@@ -679,6 +721,22 @@ public final class LedgerApplyProcessor implements AutoCloseable {
         }
     }
 
+    private WorkItem pollNextItem() {
+        synchronized (accountingLock) {
+            WorkItem item = controlQueue.poll();
+            if (item == null) {
+                item = dataQueue.poll();
+            }
+            if (item != null && item.dataItem()) {
+                queuedDecodedBytes -= item.estimatedBytes();
+                if (queuedDecodedBytes < 0) {
+                    queuedDecodedBytes = 0;
+                }
+            }
+            return item;
+        }
+    }
+
     private void process(WorkItem item) {
         if (!shouldProcess(item)) {
             item.future().cancel(false);
@@ -690,6 +748,15 @@ public final class LedgerApplyProcessor implements AutoCloseable {
         try {
             Outcome outcome = item.work().run();
             Outcome effectiveOutcome = outcome != null ? outcome : Outcome.COMPLETED;
+            if (effectiveOutcome == Outcome.FAILED) {
+                IllegalStateException failure = new IllegalStateException(
+                        "Ledger apply work returned FAILED: generation=" + item.generation()
+                                + ", kind=" + item.kind()
+                                + ", description=" + item.description());
+                item.future().complete(Outcome.FAILED);
+                failGeneration(item.generation(), failure);
+                return;
+            }
             recordSuccessfulCursor(item, effectiveOutcome);
             item.future().complete(effectiveOutcome);
             if (item.terminalForGeneration()) {
@@ -713,8 +780,12 @@ public final class LedgerApplyProcessor implements AutoCloseable {
             return true;
         }
         GenerationState generationState = generations.get(item.generation());
-        if ((item.kind() == WorkKind.ROLLBACK || item.kind() == WorkKind.DISCONNECT)
-                && item.terminalForGeneration()) {
+        if (item.kind() == WorkKind.ROLLBACK) {
+            return generationState == GenerationState.CLOSING
+                    || generationState == GenerationState.OPEN
+                    || generationState == GenerationState.FAILED;
+        }
+        if (item.kind() == WorkKind.DISCONNECT && item.terminalForGeneration()) {
             return generationState == GenerationState.CLOSING
                     || generationState == GenerationState.OPEN
                     || generationState == GenerationState.FAILED;
@@ -724,6 +795,10 @@ public final class LedgerApplyProcessor implements AutoCloseable {
 
     private void recordSuccessfulCursor(WorkItem item, Outcome outcome) {
         if (item.kind() == WorkKind.APPLY_BLOCK && outcome == Outcome.APPLIED) {
+            lastSuccessfulBodyTip = chainState.getTip();
+            return;
+        }
+        if (item.kind() == WorkKind.ROLLBACK && outcome == Outcome.COMPLETED) {
             lastSuccessfulBodyTip = chainState.getTip();
             return;
         }
@@ -803,11 +878,22 @@ public final class LedgerApplyProcessor implements AutoCloseable {
             return displaced.isEmpty() && after.isEmpty() ? item : foldControlsAround(item, displaced, after);
         }
 
-        if (item.kind() == WorkKind.DISCONNECT || item.kind() == WorkKind.APPLY_FAILED) {
+        if (item.kind() == WorkKind.DISCONNECT) {
             boolean superseded = controlQueue.stream().anyMatch(existing ->
                     existing.generation() == item.generation()
-                            && (existing.kind() == WorkKind.ROLLBACK
-                            || existing.kind() == WorkKind.DISCONNECT
+                            && (existing.kind() == WorkKind.DISCONNECT
+                            || existing.kind() == WorkKind.RECOVERY_BARRIER
+                            || (existing.kind() == WorkKind.ROLLBACK && controlQueue.remainingCapacity() == 0)));
+            if (superseded) {
+                item.future().complete(Outcome.COMPLETED);
+                return null;
+            }
+        }
+
+        if (item.kind() == WorkKind.APPLY_FAILED) {
+            boolean superseded = controlQueue.stream().anyMatch(existing ->
+                    existing.generation() == item.generation()
+                            && (existing.kind() == WorkKind.DISCONNECT
                             || existing.kind() == WorkKind.RECOVERY_BARRIER));
             if (superseded) {
                 item.future().complete(Outcome.COMPLETED);
@@ -912,7 +998,7 @@ public final class LedgerApplyProcessor implements AutoCloseable {
         }
         lastFailure = failure.toString();
         generations.put(generation, GenerationState.FAILED);
-        dropQueuedDataForGenerationLocked(generation);
+        offerPromotedRollbacksLocked(dropQueuedDataForGenerationLocked(generation, true));
         dropQueuedControlForGenerationLocked(generation);
     }
 
@@ -979,16 +1065,44 @@ public final class LedgerApplyProcessor implements AutoCloseable {
     }
 
     private void dropQueuedDataForGenerationLocked(long generation) {
+        dropQueuedDataForGenerationLocked(generation, false);
+    }
+
+    private List<WorkItem> dropQueuedDataForGenerationLocked(long generation, boolean preserveRollbacks) {
+        List<WorkItem> rollbacks = new ArrayList<>();
         dataQueue.removeIf(item -> {
             if (item.generation() != generation) {
                 return false;
             }
             queuedDecodedBytes -= item.estimatedBytes();
+            if (preserveRollbacks && item.kind() == WorkKind.ROLLBACK) {
+                rollbacks.add(asControlRollback(item));
+                return true;
+            }
             item.future().cancel(false);
             return true;
         });
         if (queuedDecodedBytes < 0) {
             queuedDecodedBytes = 0;
+        }
+        return rollbacks;
+    }
+
+    private WorkItem asControlRollback(WorkItem item) {
+        return new WorkItem(
+                item.kind(),
+                item.generation(),
+                item.description(),
+                0,
+                false,
+                item.terminalForGeneration(),
+                item.work(),
+                item.future());
+    }
+
+    private void offerPromotedRollbacksLocked(List<WorkItem> rollbacks) {
+        for (WorkItem rollback : rollbacks) {
+            offerControlLocked(rollback);
         }
     }
 

@@ -22,6 +22,7 @@ import com.bloxbean.cardano.yano.runtime.blockproducer.EffectiveProtocolParamsSu
 import com.bloxbean.cardano.yano.runtime.blockproducer.GenesisConfig;
 import com.bloxbean.cardano.yano.runtime.blockproducer.ProtocolParamsMapper;
 import com.bloxbean.cardano.yano.runtime.config.DefaultEpochParamProvider;
+import com.bloxbean.cardano.yano.runtime.config.DnsCachePolicy;
 import com.bloxbean.cardano.yano.runtime.config.NetworkGenesisConfig;
 import com.bloxbean.cardano.yano.ledgerrules.impl.YaciScriptSupplier;
 import com.bloxbean.cardano.yano.scalusbridge.ScalusTransactionFactory;
@@ -75,6 +76,12 @@ public class YanoProducer {
 
     @ConfigProperty(name = "yano.remote.protocol-magic", defaultValue = "764824073")
     long protocolMagic;
+
+    @ConfigProperty(name = DnsCachePolicy.DNS_CACHE_TTL_KEY)
+    java.util.Optional<Integer> dnsCacheTtl;
+
+    @ConfigProperty(name = DnsCachePolicy.DNS_CACHE_NEGATIVE_TTL_KEY)
+    java.util.Optional<Integer> dnsCacheNegativeTtl;
 
     @ConfigProperty(name = "yano.server.port", defaultValue = "13337")
     int serverPort;
@@ -613,6 +620,8 @@ public class YanoProducer {
         globals.put("yano.validation.default-validator-enabled", defaultValidatorEnabled);
         globals.put("yano.validation.supplementary-rules-enabled", supplementaryRulesEnabled);
         globals.put("yano.block-producer.tx-evaluation", txEvaluationEnabled);
+        dnsCacheTtl.ifPresent(value -> globals.put(DnsCachePolicy.DNS_CACHE_TTL_KEY, value));
+        dnsCacheNegativeTtl.ifPresent(value -> globals.put(DnsCachePolicy.DNS_CACHE_NEGATIVE_TTL_KEY, value));
 
         // Account state
         globals.put("yano.account-state.enabled", effectiveAccountStateEnabled);

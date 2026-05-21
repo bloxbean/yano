@@ -74,6 +74,7 @@ import com.bloxbean.cardano.yano.api.account.AccountStateStore;
 import com.bloxbean.cardano.yano.api.account.AccountStateStoreContext;
 import com.bloxbean.cardano.yano.api.account.AccountHistoryProvider;
 import com.bloxbean.cardano.yano.api.account.LedgerStateProvider;
+import com.bloxbean.cardano.yano.api.rollback.RollbackCapableStore;
 import com.bloxbean.cardano.yano.ledgerstate.AccountHistoryEventHandler;
 import com.bloxbean.cardano.yano.ledgerstate.AccountHistoryStore;
 import com.bloxbean.cardano.yano.ledgerstate.AccountStateEventHandler;
@@ -86,6 +87,7 @@ import com.bloxbean.cardano.yano.ledgerstate.EpochRewardCalculator;
 import com.bloxbean.cardano.yano.ledgerstate.EpochStakeSnapshotService;
 import com.bloxbean.cardano.yano.ledgerstate.NetworkConfigBuilder;
 import com.bloxbean.cardano.yano.runtime.config.DefaultEpochParamProvider;
+import com.bloxbean.cardano.yano.runtime.config.DnsCachePolicy;
 import com.bloxbean.cardano.yano.runtime.config.InMemoryDevnetGenesis;
 import com.bloxbean.cardano.yano.runtime.config.NetworkGenesisConfig;
 import com.bloxbean.cardano.yano.runtime.config.NetworkGenesisValuesFactory;
@@ -139,6 +141,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 @Slf4j
 public class Yano implements NodeAPI, PeerSessionCallbacks {
     private static final int MAX_PEER_RECOVERY_FAILURES = 10;
+    private static final long HEADER_CONTINUITY_VALIDATION_LIMIT =
+            Long.getLong("yano.pipeline.headerContinuityValidationBlocks", 100_000L);
 
     // Configuration
     private final YanoConfig config;
@@ -228,6 +232,10 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
     private AccountStateEventHandler accountStateEventHandler;
     private AccountHistoryEventHandler accountHistoryEventHandler;
     private com.bloxbean.cardano.yano.api.EpochParamProvider epochParamProvider;
+    private boolean utxoReconcilePending;
+    private boolean accountStateReconcilePending;
+    private boolean accountHistoryReconcilePending;
+    private boolean startupDerivedStateRecovered;
 
     // In-memory devnet genesis — set before start() for devnet mode without genesis files
     private InMemoryDevnetGenesis inMemoryDevnetGenesis;
@@ -259,6 +267,7 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
         this.inMemoryDevnetGenesis = inMemoryGenesis;
         this.config = config;
         this.runtimeOptions = options != null ? options : RuntimeOptions.defaults();
+        DnsCachePolicy.configureForClientMode(this.runtimeOptions.globals(), config.isEnableClient());
         this.remoteCardanoHost = config.getRemoteHost();
         this.remoteCardanoPort = config.getRemotePort();
         this.protocolMagic = config.getProtocolMagic();
@@ -309,12 +318,12 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
             boolean utxoEnabled = enabledOpt instanceof Boolean b ? b : Boolean.parseBoolean(String.valueOf(enabledOpt));
             if (utxoEnabled && (chainState instanceof DirectRocksDBChainState rocks)) {
                 this.utxoStore = UtxoStoreFactory.create(rocks, log, this.runtimeOptions.globals());
-                // Reconcile UTXO with chainstate before subscribing and starting prune
-                try {
-                    this.utxoStore.reconcile(rocks);
-                    log.info("UTXO reconciliation complete at startup");
-                } catch (Throwable t) {
-                    throw new IllegalStateException("UTXO reconciliation failed at startup", t);
+                if (config.isEnableClient()) {
+                    this.utxoReconcilePending = true;
+                    log.info("UTXO store initialized; reconciliation deferred until startup recovery");
+                } else {
+                    reconcileUtxoStore(rocks);
+                    startUtxoBackgroundServices();
                 }
                 boolean applyAsync = false;
                 Object asyncOpt = this.runtimeOptions.globals().get("yano.utxo.applyAsync");
@@ -333,37 +342,6 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
                     log.info("UTXO store initialized ({}); UtxoEventHandler registered",
                             (this.utxoStore instanceof UtxoStatusProvider sp) ? sp.storeType() : "?");
                 }
-                // Start prune service on virtual-thread scheduler
-                long intervalSec = 5L;
-                Object po = this.runtimeOptions.globals().get("yano.utxo.prune.schedule.seconds");
-                if (po instanceof Number n) intervalSec = Math.max(1L, n.longValue());
-                else if (po != null) try { intervalSec = Math.max(1L, Long.parseLong(String.valueOf(po))); } catch (Exception ignored) {}
-                this.utxoPruneService = new PruneService((Prunable) this.utxoStore, intervalSec * 1000);
-                this.utxoPruneService.start();
-                log.info("UTXO prune service started (interval={}s)", intervalSec);
-
-                // Schedule UTXO lag metric logging
-                long lagLogSec = 10L;
-                Object lagObj = this.runtimeOptions.globals().get("yano.utxo.metrics.lag.logSeconds");
-                if (lagObj instanceof Number n) lagLogSec = Math.max(1L, n.longValue());
-                else if (lagObj != null) try { lagLogSec = Math.max(1L, Long.parseLong(String.valueOf(lagObj))); } catch (Exception ignored) {}
-                final long failIfAbove = parseLong(this.runtimeOptions.globals().get("yano.utxo.lag.failIfAbove"), -1L);
-                this.utxoLagTask = scheduler.scheduleAtFixedRate(() -> {
-                    try {
-                        long lastApplied = (this.utxoStore instanceof UtxoStatusProvider sp)
-                                ? sp.getLastAppliedBlock() : 0L;
-                        var tip = chainState.getTip();
-                        long tipBlock = tip != null ? tip.getBlockNumber() : 0L;
-                        long lag = Math.max(0L, tipBlock - lastApplied);
-
-                        if (lag > 0)
-                            log.info("metric utxo.lag.blocks={}", lag);
-
-                        if (failIfAbove > 0 && lag > failIfAbove) {
-                            log.warn("UTXO lag {} blocks exceeds configured threshold {}", lag, failIfAbove);
-                        }
-                    } catch (Throwable ignored) {}
-                }, lagLogSec, lagLogSec, TimeUnit.SECONDS);
             } else {
                 log.info("UTXO store not initialized (enabled={}, rocksdb={})", utxoEnabled, (chainState instanceof DirectRocksDBChainState));
             }
@@ -416,12 +394,11 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
                         chainState, this.runtimeOptions.globals(), log, epochParamProvider);
                 this.accountStateStore = AccountStateStoreDiscovery.discover(
                         storeContext, Thread.currentThread().getContextClassLoader());
-                // Reconcile
-                try {
-                    this.accountStateStore.reconcile(chainState);
-                    log.info("Account state reconciliation complete at startup");
-                } catch (Throwable t) {
-                    throw new IllegalStateException("Account state reconciliation failed at startup", t);
+                if (config.isEnableClient()) {
+                    this.accountStateReconcilePending = true;
+                    log.info("Account state store initialized; reconciliation deferred until startup recovery");
+                } else {
+                    reconcileAccountStateStore();
                 }
                 // Wire UtxoState and optional epoch subsystems
                 if (this.accountStateStore instanceof DefaultAccountStateStore defaultStore) {
@@ -717,11 +694,11 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
                                 log,
                                 this.runtimeOptions.globals(),
                                 epochParamProvider);
-                        try {
-                            this.accountHistoryStore.reconcile(chainState);
-                            log.info("Account history reconciliation complete at startup");
-                        } catch (Throwable t) {
-                            throw new IllegalStateException("Account history reconciliation failed at startup", t);
+                        if (config.isEnableClient()) {
+                            this.accountHistoryReconcilePending = true;
+                            log.info("Account history store initialized; reconciliation deferred until startup recovery");
+                        } else {
+                            reconcileAccountHistoryStore();
                         }
                         this.accountHistoryEventHandler = new AccountHistoryEventHandler(eventBus, this.accountHistoryStore);
 
@@ -755,7 +732,9 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
                 this.accountStateEventHandler = new AccountStateEventHandler(eventBus, this.accountStateStore);
                 log.info("Account state store initialized ({}); event handler registered",
                         this.accountStateStore.getClass().getSimpleName());
-                publishDirectStartGenesisBootstrapIfNeeded();
+                if (!config.isEnableClient()) {
+                    publishDirectStartGenesisBootstrapIfNeeded();
+                }
             } else {
                 log.info("Account state store not initialized (enabled={})", acctEnabled);
                 boolean accountHistoryEnabled = Boolean.parseBoolean(
@@ -853,6 +832,132 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
         return accountHistoryStore;
     }
 
+    private void completeStartupDerivedStateRecovery() {
+        if (startupDerivedStateRecovered) {
+            return;
+        }
+
+        try {
+            // Live block apply stores the boundary block first, then runs epoch-boundary
+            // processing before BlockApplied listeners update UTXO/account state for that
+            // new-epoch block. Keep startup recovery in the same order after a crash.
+            if (epochBoundaryProcessor != null) {
+                epochBoundaryProcessor.recoverInterruptedBoundary();
+            }
+
+            if (utxoReconcilePending) {
+                reconcileUtxoStore(chainState);
+                utxoReconcilePending = false;
+            }
+            if (accountStateReconcilePending) {
+                reconcileAccountStateStore();
+                accountStateReconcilePending = false;
+            }
+            if (accountHistoryReconcilePending) {
+                reconcileAccountHistoryStore();
+                accountHistoryReconcilePending = false;
+            }
+
+            startUtxoBackgroundServices();
+            publishDirectStartGenesisBootstrapIfNeeded();
+            startupDerivedStateRecovered = true;
+        } catch (Throwable t) {
+            throw new IllegalStateException("Startup derived-state recovery failed", t);
+        }
+    }
+
+    private void reconcileUtxoStore(ChainState state) {
+        if (utxoStore == null || state == null) {
+            return;
+        }
+        try {
+            utxoStore.reconcile(state);
+            log.info("UTXO reconciliation complete at startup");
+        } catch (Throwable t) {
+            throw new IllegalStateException("UTXO reconciliation failed at startup", t);
+        }
+    }
+
+    private void reconcileAccountStateStore() {
+        if (accountStateStore == null) {
+            return;
+        }
+        try {
+            accountStateStore.reconcile(chainState);
+            log.info("Account state reconciliation complete at startup");
+        } catch (Throwable t) {
+            throw new IllegalStateException("Account state reconciliation failed at startup", t);
+        }
+    }
+
+    private void reconcileAccountHistoryStore() {
+        if (accountHistoryStore == null) {
+            return;
+        }
+        try {
+            accountHistoryStore.reconcile(chainState);
+            log.info("Account history reconciliation complete at startup");
+        } catch (Throwable t) {
+            throw new IllegalStateException("Account history reconciliation failed at startup", t);
+        }
+    }
+
+    private void startUtxoBackgroundServices() {
+        if (utxoStore == null) {
+            return;
+        }
+        if (utxoPruneService == null && utxoStore instanceof Prunable prunable) {
+            long intervalSec = 5L;
+            Object po = this.runtimeOptions.globals().get("yano.utxo.prune.schedule.seconds");
+            if (po instanceof Number n) {
+                intervalSec = Math.max(1L, n.longValue());
+            } else if (po != null) {
+                try {
+                    intervalSec = Math.max(1L, Long.parseLong(String.valueOf(po)));
+                } catch (Exception ignored) {
+                    // Keep the default interval.
+                }
+            }
+            this.utxoPruneService = new PruneService(prunable, intervalSec * 1000);
+            this.utxoPruneService.start();
+            log.info("UTXO prune service started (interval={}s)", intervalSec);
+        }
+
+        if (utxoLagTask == null) {
+            long lagLogSec = 10L;
+            Object lagObj = this.runtimeOptions.globals().get("yano.utxo.metrics.lag.logSeconds");
+            if (lagObj instanceof Number n) {
+                lagLogSec = Math.max(1L, n.longValue());
+            } else if (lagObj != null) {
+                try {
+                    lagLogSec = Math.max(1L, Long.parseLong(String.valueOf(lagObj)));
+                } catch (Exception ignored) {
+                    // Keep the default interval.
+                }
+            }
+            final long failIfAbove = parseLong(this.runtimeOptions.globals().get("yano.utxo.lag.failIfAbove"), -1L);
+            this.utxoLagTask = scheduler.scheduleAtFixedRate(() -> {
+                try {
+                    long lastApplied = (this.utxoStore instanceof UtxoStatusProvider sp)
+                            ? sp.getLastAppliedBlock() : 0L;
+                    var tip = chainState.getTip();
+                    long tipBlock = tip != null ? tip.getBlockNumber() : 0L;
+                    long lag = Math.max(0L, tipBlock - lastApplied);
+
+                    if (lag > 0) {
+                        log.info("metric utxo.lag.blocks={}", lag);
+                    }
+
+                    if (failIfAbove > 0 && lag > failIfAbove) {
+                        log.warn("UTXO lag {} blocks exceeds configured threshold {}", lag, failIfAbove);
+                    }
+                } catch (Throwable ignored) {
+                    // Best-effort metric only.
+                }
+            }, lagLogSec, lagLogSec, TimeUnit.SECONDS);
+        }
+    }
+
     private void publishDirectStartGenesisBootstrapIfNeeded() {
         try {
             if (accountStateStore == null || epochParamProvider == null || chainState.getTip() == null) return;
@@ -911,9 +1016,16 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
         if (isRunning.compareAndSet(false, true)) {
             log.info("Starting Yano...");
 
-            // Start server first
-            if (config.isEnableServer()) {
+            boolean deferServerStartUntilClientStateReady =
+                    config.isEnableServer() && config.isEnableClient() && !config.isEnableBlockProducer();
+            boolean serverStarted = false;
+
+            // Block production expects the server to be available before local blocks
+            // are produced. Client-only relay mode defers server start until local
+            // state has passed startup rollback/recovery.
+            if (config.isEnableServer() && !deferServerStartUntilClientStateReady) {
                 startServer();
+                serverStarted = true;
             }
 
             // Always load genesis config if any genesis files are configured (for protocol params, epoch length, etc.)
@@ -976,12 +1088,16 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
                 // Adhoc rollback: one-shot rollback before sync, if configured via command line
                 performStartupAdhocRollback();
 
-                // Recover any interrupted epoch boundary from a previous run
-                if (epochBoundaryProcessor != null) {
-                    epochBoundaryProcessor.recoverInterruptedBoundary();
+                completeStartupDerivedStateRecovery();
+
+                if (deferServerStartUntilClientStateReady && !serverStarted) {
+                    startServer();
+                    serverStarted = true;
                 }
 
                 startClientSync();
+            } else {
+                completeStartupDerivedStateRecovery();
             }
 
             log.info("Yano started successfully");
@@ -2264,8 +2380,9 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
     }
 
     /**
-     * Perform adhoc rollback if configured. Called from start() after reconcile/validate
-     * but before chain sync begins. Does NOT require dev mode.
+     * Perform adhoc rollback if configured. Called from start() after chain-state
+     * validation but before derived-state startup recovery and chain sync begin.
+     * Does NOT require dev mode.
      * <p>
      * Rolls back ALL authoritative stores synchronously in dependency-safe order
      * (AccountState → UTXO → ChainState), verifies post-rollback state, then
@@ -2322,17 +2439,17 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
         targetSlot = nearestSlot;
 
         // Collect all enabled RollbackCapableStores
-        var stores = new java.util.ArrayList<com.bloxbean.cardano.yano.api.rollback.RollbackCapableStore>();
-        if (accountHistoryStore instanceof com.bloxbean.cardano.yano.api.rollback.RollbackCapableStore rcs) {
+        var stores = new java.util.ArrayList<RollbackCapableStore>();
+        if (accountHistoryStore instanceof RollbackCapableStore rcs) {
             stores.add(rcs);
         }
-        if (accountStateStore instanceof com.bloxbean.cardano.yano.api.rollback.RollbackCapableStore rcs) {
+        if (accountStateStore instanceof RollbackCapableStore rcs) {
             stores.add(rcs);
         }
-        if (utxoStore instanceof com.bloxbean.cardano.yano.api.rollback.RollbackCapableStore rcs) {
+        if (utxoStore instanceof RollbackCapableStore rcs) {
             stores.add(rcs);
         }
-        if (chainState instanceof com.bloxbean.cardano.yano.api.rollback.RollbackCapableStore rcs) {
+        if (chainState instanceof RollbackCapableStore rcs) {
             stores.add(rcs);
         }
 
@@ -3070,8 +3187,13 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
             isPipelinedMode = usePipeline;
 
             // Get local tips to determine sync strategy.
-            ChainTip headerTip = chainState.getHeaderTip();
-            ChainTip bodyTip = chainState.getTip();
+            ClientSyncTips syncTips = prepareClientSyncTips(
+                    usePipeline,
+                    chainState.getHeaderTip(),
+                    chainState.getTip(),
+                    "client sync startup");
+            ChainTip headerTip = syncTips.headerTip();
+            ChainTip bodyTip = syncTips.bodyTip();
             ChainTip localTip = selectClientSyncStartTip(usePipeline, headerTip, bodyTip);
 
             log.info("Local header_tip: {}, body_tip: {}, mode={}, using: {} for sync",
@@ -3085,12 +3207,12 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
             Point startPoint = determineStartPoint(localTip);
             log.info("Starting pipelined sync from point: {}", startPoint);
 
-            // Find remote tip to understand sync scope
-            TipFinder tipFinder = new TipFinder(remoteCardanoHost, remoteCardanoPort, startPoint, protocolMagic);
-            Tip discoveredRemoteTip = tipFinder.find()
-                    .doFinally(signalType -> tipFinder.shutdown())
-                    .block(Duration.ofSeconds(5));
-            remoteTip = usableRemoteTip(discoveredRemoteTip, startPoint, localTip, "client sync startup");
+            // Do not run a separate blocking TipFinder here. It uses its own TCP client
+            // before the supervised PeerClient exists, so a stale DNS answer can stall
+            // startup outside Yano's recovery loop. The normal ChainSync intersection
+            // carries the remote tip and updates remoteTip through
+            // maybeFastTransitionToSteadyState().
+            remoteTip = null;
 
             synchronized (peerSessionLock) {
                 if (!isRunning.get() || !config.isEnableClient()) {
@@ -3101,13 +3223,22 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
 
                 peerSession = createPeerSession();
 
-                if (isPipelinedMode) {
-                    startPipelinedClientSync(localTip, remoteTip, startPoint);
-                } else {
-                    startSequentialClientSync(startPoint);
-                }
                 startPeerSessionSupervisor();
-                peerRecoveryFailureTracker.recordSuccess();
+                try {
+                    if (isPipelinedMode) {
+                        startPipelinedClientSync(localTip, remoteTip, startPoint);
+                    } else {
+                        startSequentialClientSync(startPoint);
+                    }
+                    peerRecoveryFailureTracker.recordSuccess();
+                } catch (Exception e) {
+                    PeerRecoveryFailureTracker.Snapshot failure =
+                            peerRecoveryFailureTracker.recordFailure(PeerRecoveryReason.STARTUP_FAILED, e);
+                    log.warn("Initial upstream peer session start failed; supervisor will retry: {}",
+                            failure.message(), e);
+                    markPeerRecoveryFailure(PeerRecoveryReason.STARTUP_FAILED, e, failure);
+                    requestPeerRecovery(PeerRecoveryReason.STARTUP_FAILED);
+                }
             }
 
         } catch (Exception e) {
@@ -3215,8 +3346,13 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
                 isSyncing.set(true);
                 isPipelinedMode = usePipeline;
 
-                ChainTip headerTip = recoveryPoint != null ? recoveryPoint.headerTip() : chainState.getHeaderTip();
-                ChainTip bodyTip = recoveryPoint != null ? recoveryPoint.bodyTip() : chainState.getTip();
+                ClientSyncTips syncTips = prepareClientSyncTips(
+                        usePipeline,
+                        recoveryPoint != null ? recoveryPoint.headerTip() : chainState.getHeaderTip(),
+                        recoveryPoint != null ? recoveryPoint.bodyTip() : chainState.getTip(),
+                        "peer recovery");
+                ChainTip headerTip = syncTips.headerTip();
+                ChainTip bodyTip = syncTips.bodyTip();
                 ChainTip localTip = selectClientSyncStartTip(usePipeline, headerTip, bodyTip);
                 lastKnownChainTip = localTip;
 
@@ -3298,14 +3434,18 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
         syncPhase = SyncPhase.INITIAL_SYNC;
         log.info("ChainSync agent started - reset to INITIAL_SYNC phase");
         // Determine sync strategy based on local vs remote tip
-        Point remotePoint = remoteTip != null && remoteTip.getPoint() != null
-                ? remoteTip.getPoint()
-                : startPoint;
-        boolean shouldUseBulkSync = shouldUseBulkSync(localTip, remotePoint);
+        boolean remoteTipAvailable = remoteTip != null && remoteTip.getPoint() != null;
+        Point remotePoint = remoteTipAvailable ? remoteTip.getPoint() : startPoint;
+        boolean shouldUseBulkSync = !remoteTipAvailable || shouldUseBulkSync(localTip, remotePoint);
 
         if (shouldUseBulkSync) {
-            log.info("🚀 ==> BULK PIPELINED SYNC: {} slots behind, using high-performance pipeline",
-                    remotePoint.getSlot() - (localTip != null ? localTip.getSlot() : 0));
+            if (remoteTipAvailable) {
+                log.info("🚀 ==> BULK PIPELINED SYNC: {} slots behind, using high-performance pipeline",
+                        remotePoint.getSlot() - (localTip != null ? localTip.getSlot() : 0));
+            } else {
+                log.info("🚀 ==> BULK PIPELINED SYNC: remote tip unavailable until ChainSync intersection, "
+                        + "using high-performance pipeline");
+            }
             log.info("🚀 ==> Headers will arrive first, bodies will be fetched in parallel");
             isInitialSyncComplete = false;
 
@@ -3359,6 +3499,114 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
         return new Point(localTip.getSlot(), HexUtil.encodeHexString(localTip.getBlockHash()));
     }
 
+    private ClientSyncTips prepareClientSyncTips(boolean usePipeline,
+                                                 ChainTip headerTip,
+                                                 ChainTip bodyTip,
+                                                 String context) {
+        if (!usePipeline || headerTip == null) {
+            return new ClientSyncTips(headerTip, bodyTip);
+        }
+
+        if (isHeaderChainUsableForPipelinedSync(headerTip, bodyTip, context)) {
+            return new ClientSyncTips(headerTip, bodyTip);
+        }
+
+        log.warn("Header cursor is not safe for pipelined sync during {}; "
+                        + "discarding header-only cache back to durable body tip. "
+                        + "header_tip={}, body_tip={}",
+                context, describeTip(headerTip), describeTip(bodyTip));
+
+        discardHeaderOnlyCacheToBodyTip(bodyTip, context);
+        ClientSyncTips repaired = new ClientSyncTips(chainState.getHeaderTip(), chainState.getTip());
+
+        if (repaired.headerTip() != null
+                && !isHeaderChainUsableForPipelinedSync(repaired.headerTip(), repaired.bodyTip(), context + " repair")) {
+            throw new IllegalStateException("Unable to repair unsafe header cursor for pipelined sync during " + context);
+        }
+
+        log.info("Header cursor after repair during {}: header_tip={}, body_tip={}",
+                context, describeTip(repaired.headerTip()), describeTip(repaired.bodyTip()));
+        return repaired;
+    }
+
+    private boolean isHeaderChainUsableForPipelinedSync(ChainTip headerTip, ChainTip bodyTip, String context) {
+        if (headerTip == null) {
+            return true;
+        }
+
+        if (chainState.getBlockHeader(headerTip.getBlockHash()) == null) {
+            log.warn("Header tip points to missing header during {}: {}", context, describeTip(headerTip));
+            return false;
+        }
+
+        long headerBlock = headerTip.getBlockNumber();
+        if (headerBlock <= 0) {
+            return true;
+        }
+
+        if (bodyTip != null && chainState.getBlockHeader(bodyTip.getBlockHash()) == null) {
+            log.warn("Body tip has no matching header during {}: {}", context, describeTip(bodyTip));
+            return false;
+        }
+
+        long lowerExclusiveBlock;
+        if (bodyTip != null) {
+            lowerExclusiveBlock = Math.max(0L, bodyTip.getBlockNumber());
+            long headerOnlyBlocks = headerBlock - lowerExclusiveBlock;
+            if (headerOnlyBlocks > HEADER_CONTINUITY_VALIDATION_LIMIT) {
+                log.warn("Header cursor is {} blocks ahead of body tip during {}, exceeding validation limit {}; "
+                                + "discarding header-only cache for correctness",
+                        headerOnlyBlocks, context, HEADER_CONTINUITY_VALIDATION_LIMIT);
+                return false;
+            }
+        } else {
+            lowerExclusiveBlock = Math.max(0L, headerBlock - HEADER_CONTINUITY_VALIDATION_LIMIT);
+            if (lowerExclusiveBlock > 0) {
+                log.info("Validating the last {} header-only blocks during {} because no durable body tip exists",
+                        HEADER_CONTINUITY_VALIDATION_LIMIT, context);
+            }
+        }
+
+        for (long blockNumber = headerBlock; blockNumber > lowerExclusiveBlock; blockNumber--) {
+            if (chainState.getBlockHeaderByNumber(blockNumber) == null) {
+                log.warn("Header continuity gap detected during {}: missing header #{} while validating {} down to {}",
+                        context, blockNumber, describeTip(headerTip), lowerExclusiveBlock);
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private void discardHeaderOnlyCacheToBodyTip(ChainTip bodyTip, String context) {
+        if (bodyTip != null) {
+            chainState.rollbackTo(bodyTip.getSlot());
+            return;
+        }
+
+        if (chainState instanceof DirectRocksDBChainState rocks) {
+            rocks.rollbackToOrigin();
+            return;
+        }
+
+        if (chainState instanceof InMemoryChainState memory) {
+            memory.rollbackToOrigin();
+            return;
+        }
+
+        throw new IllegalStateException("Cannot discard unsafe header-only cursor without a durable body tip during "
+                + context + " for chain state " + chainState.getClass().getName());
+    }
+
+    private String describeTip(ChainTip tip) {
+        if (tip == null) {
+            return "null";
+        }
+        return "block #" + tip.getBlockNumber()
+                + " slot " + tip.getSlot()
+                + " hash " + HexUtil.encodeHexString(tip.getBlockHash());
+    }
+
     private ChainTip selectClientSyncStartTip(boolean usePipeline, ChainTip headerTip, ChainTip bodyTip) {
         if (usePipeline) {
             return headerTip != null ? headerTip : bodyTip;
@@ -3378,9 +3626,11 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
             return candidate;
         }
 
-        long blockNumber = localTip != null ? localTip.getBlockNumber() : 0;
-        log.warn("Remote tip unavailable during {}; using local point as temporary sync scope", context);
-        return new Tip(startPoint, blockNumber);
+        log.warn("Remote tip unavailable during {}; ChainSync intersection will refresh it", context);
+        return null;
+    }
+
+    private record ClientSyncTips(ChainTip headerTip, ChainTip bodyTip) {
     }
 
     /**
@@ -3683,6 +3933,8 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
             bodyFetchManager.initializePreviousEpoch(rolledBackEpoch);
         }
 
+        reconcileSyncPhaseAfterRollback(bodyFetchManager);
+
         // Always resume BodyFetchManager after rollback - let it handle its own gap detection
         if (isPipelinedMode && bodyFetchManager != null) {
             bodyFetchManager.resume();
@@ -3735,18 +3987,35 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
             return false;
         }
 
-        // Check if chain tip has genuinely moved backwards
-        ChainTip currentTip = chainState.getTip();
-
-        if (lastKnownChainTip != null &&
-                rollbackPoint.getSlot() < lastKnownChainTip.getSlot() &&
-                currentTip.getSlot() <= rollbackPoint.getSlot()) {
+        ChainTip bodyTipBeforeRollback = chainState.getTip();
+        if (bodyTipBeforeRollback != null && rollbackPoint.getSlot() < bodyTipBeforeRollback.getSlot()) {
             log.info("Real chain reorganization detected - rollback from slot {} to slot {}",
-                    lastKnownChainTip.getSlot(), rollbackPoint.getSlot());
+                    bodyTipBeforeRollback.getSlot(), rollbackPoint.getSlot());
             return true;
         }
 
         return false;
+    }
+
+    private void reconcileSyncPhaseAfterRollback(BodyFetchManager bodyFetchManager) {
+        if (!isPipelinedMode || bodyFetchManager == null || remoteTip == null || remoteTip.getPoint() == null) {
+            return;
+        }
+        ChainTip bodyTip = chainState.getTip();
+        if (bodyTip == null) {
+            return;
+        }
+
+        long distance = Math.max(0, remoteTip.getPoint().getSlot() - bodyTip.getSlot());
+        long nearTipThreshold = 1000; // slots
+        if (syncPhase == SyncPhase.STEADY_STATE && distance > nearTipThreshold) {
+            SyncPhase prev = syncPhase;
+            syncPhase = SyncPhase.INITIAL_SYNC;
+            bodyFetchManager.setSyncPhase(SyncPhase.INITIAL_SYNC);
+            log.info("Rollback moved local tip {} slots behind remote tip; transitioned to INITIAL_SYNC", distance);
+            EventMetadata meta = EventMetadata.builder().origin("runtime").build();
+            eventBus.publish(new SyncStatusChangedEvent(prev, syncPhase), meta, PublishOptions.builder().build());
+        }
     }
 
 

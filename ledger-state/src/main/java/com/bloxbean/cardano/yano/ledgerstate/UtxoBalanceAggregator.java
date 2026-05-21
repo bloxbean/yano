@@ -52,6 +52,7 @@ public class UtxoBalanceAggregator {
         long[] skipped = {0};
         long[] pointerResolved = {0};
         long[] pointerFailed = {0};
+        long[] byronSkipped = {0};
         long start = System.currentTimeMillis();
 
         // Use slot-filtered iteration for consistent epoch boundary snapshot
@@ -59,7 +60,13 @@ public class UtxoBalanceAggregator {
             count[0]++;
             if (lovelace == null || lovelace.signum() <= 0) return;
 
-            Address address = parseAddress(addressStr);
+            Address address = parseAddressOrNull(addressStr);
+            if (address == null) {
+                skipped[0]++;
+                byronSkipped[0]++;
+                return;
+            }
+
             AddressType addrType = address.getAddressType();
             if (addrType == AddressType.Ptr && pointerResolver == null) {
                 // Conway and later exclude pointer stake from snapshots.
@@ -70,6 +77,9 @@ public class UtxoBalanceAggregator {
             CredentialKey credKey = extractCredential(address, addressStr, pointerResolver);
             if (credKey == null) {
                 skipped[0]++;
+                if (addrType == AddressType.Ptr) {
+                    pointerFailed[0]++;
+                }
                 return;
             }
 
@@ -87,8 +97,8 @@ public class UtxoBalanceAggregator {
 
         long elapsed = System.currentTimeMillis() - start;
         log.info("UTXO balance aggregation complete: {} UTXOs processed, {} skipped, {} credentials, " +
-                        "{} pointer resolved, {} pointer failed, {}ms",
-                count[0], skipped[0], balances.size(), pointerResolved[0], pointerFailed[0], elapsed);
+                        "{} pointer resolved, {} pointer failed, {} Byron/no-stake skipped, {}ms",
+                count[0], skipped[0], balances.size(), pointerResolved[0], pointerFailed[0], byronSkipped[0], elapsed);
 
         return balances;
     }
@@ -100,7 +110,8 @@ public class UtxoBalanceAggregator {
      * @return credential key, or null if address has no stake credential
      */
     public CredentialKey extractCredential(String addressStr, PointerAddressResolver pointerResolver) {
-        return extractCredential(parseAddress(addressStr), addressStr, pointerResolver);
+        Address address = parseAddressOrNull(addressStr);
+        return address != null ? extractCredential(address, addressStr, pointerResolver) : null;
     }
 
     private CredentialKey extractCredential(Address address, String addressStr, PointerAddressResolver pointerResolver) {
@@ -122,12 +133,23 @@ public class UtxoBalanceAggregator {
         return new CredentialKey(credType, credHash);
     }
 
-    private static Address parseAddress(String addressStr) {
+    private static Address parseAddressOrNull(String addressStr) {
         try {
             return new Address(addressStr);
         } catch (Exception e) {
+            if (!isShelleyPaymentAddress(addressStr)) {
+                // Legacy Byron/bootstrap UTXOs are base58 and never carry stake
+                // credentials. Some of those addresses are not accepted by CCL's
+                // checksum parser, so skip them for stake aggregation.
+                return null;
+            }
             throw new IllegalStateException("Failed to parse UTXO address for stake aggregation: " + addressStr, e);
         }
+    }
+
+    private static boolean isShelleyPaymentAddress(String addressStr) {
+        return addressStr != null
+                && (addressStr.startsWith("addr1") || addressStr.startsWith("addr_test1"));
     }
 
     /**
@@ -147,12 +169,13 @@ public class UtxoBalanceAggregator {
 
             var cred = resolver.resolve(pointer.getSlot(), pointer.getTxIndex(), pointer.getCertIndex());
             if (cred == null) {
-                throw new IllegalStateException("Could not resolve pointer address credential: " + addressStr);
+                return null;
             }
 
             return new CredentialKey(cred.credType(), cred.credHash());
         } catch (Exception e) {
-            throw new IllegalStateException("Failed to resolve pointer address credential: " + addressStr, e);
+            log.debug("Failed to resolve pointer address credential: {}", addressStr, e);
+            return null;
         }
     }
 

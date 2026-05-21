@@ -50,6 +50,8 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
 
     //For read apis
     private static final byte[] EPOCH_NONCE_KEY_PREFIX = "epoch_nonce_by_epoch_".getBytes(StandardCharsets.UTF_8);
+    private static final long RECOVERY_HEADER_SCAN_LIMIT =
+            Long.getLong("yano.chainstate.recoveryHeaderScanBlocks", 100_000L);
 
     private RocksDB db;
     private final String dbPath;
@@ -1275,6 +1277,20 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
                 if (tipBody == null) return true;
             }
 
+            if (headerTip != null) {
+                byte[] headerTipHash = db.get(slotToHashHandle, longToBytes(headerTip.getSlot()));
+                if (headerTipHash == null || !Arrays.equals(headerTipHash, headerTip.getBlockHash())) {
+                    return true;
+                }
+                byte[] tipHeader = db.get(headersHandle, headerTip.getBlockHash());
+                if (tipHeader == null) {
+                    return true;
+                }
+                if (headerTip.getBlockNumber() > 1 && getBlockHeaderByNumber(headerTip.getBlockNumber() - 1) == null) {
+                    return true;
+                }
+            }
+
             long maxSlot = 0;
             if (headerTip != null) maxSlot = Math.max(maxSlot, headerTip.getSlot());
             if (bodyTip != null) maxSlot = Math.max(maxSlot, bodyTip.getSlot());
@@ -1355,24 +1371,33 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
             return null;
         }
 
-        try (RocksIterator it = db.newIterator(slotToHashHandle)) {
-            // Start from header tip slot and walk backward
-            it.seekForPrev(longToBytes(headerTip.getSlot()));
-            while (it.isValid()) {
-                long slot = bytesToLong(it.key());
-                byte[] hash = it.value();
-                byte[] header = db.get(headersHandle, hash);
-                if (header != null) {
-                    Long number = getBlockNumberBySlot(slot);
-                    log.info("📄 Last continuous header determined at slot {} (number {})", slot, number);
-                    return number != null ? number : 0L;
+        long headerBlock = headerTip.getBlockNumber();
+        if (headerBlock <= 0) {
+            return headerBlock;
+        }
+
+        long lowerBound = Math.max(1L, headerBlock - RECOVERY_HEADER_SCAN_LIMIT + 1);
+        for (long blockNumber = headerBlock; blockNumber >= lowerBound; blockNumber--) {
+            byte[] header = getBlockHeaderByNumber(blockNumber);
+            if (header == null) {
+                long candidate = blockNumber - 1;
+                while (candidate >= lowerBound && getBlockHeaderByNumber(candidate) == null) {
+                    candidate--;
                 }
-                it.prev();
+                if (candidate >= lowerBound) {
+                    log.info("📄 Header continuity gap found at block #{}; last available header is #{}",
+                            blockNumber, candidate);
+                    return candidate;
+                }
+                log.warn("📄 Could not find any valid header block before gap at #{} within scan limit {}",
+                        blockNumber, RECOVERY_HEADER_SCAN_LIMIT);
+                return null;
             }
         }
 
-        log.warn("📄 Could not find any valid continuous header block");
-        return null;
+        log.info("📄 Headers are continuous through the last {} blocks at tip #{}",
+                Math.min(RECOVERY_HEADER_SCAN_LIMIT, headerBlock), headerBlock);
+        return headerBlock;
     }
 
     /**
