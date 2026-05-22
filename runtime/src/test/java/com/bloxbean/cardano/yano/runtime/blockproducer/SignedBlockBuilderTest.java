@@ -701,6 +701,24 @@ class SignedBlockBuilderTest {
     }
 
     @Test
+    void buildBlockRejectsSecondBuildWhenPendingNonceCommitIsUnresolved() {
+        SignedBlockBuilder freshBuilder = createFreshBuilder();
+
+        var first = freshBuilder.buildBlock(1, EPOCH_LENGTH, null, List.of());
+
+        IllegalStateException error = assertThrows(IllegalStateException.class,
+                () -> freshBuilder.buildBlock(2, EPOCH_LENGTH + 1, first.blockHash(), List.of()));
+
+        assertThat(error).hasMessage("Previous produced block nonce state has not been committed or rolled back");
+
+        freshBuilder.rollbackPendingNonceState();
+        var second = freshBuilder.buildBlock(1, EPOCH_LENGTH, null, List.of());
+        freshBuilder.commitPendingNonceState();
+
+        assertThat(second).isNotNull();
+    }
+
+    @Test
     void storeProducedBlockStorageFailureRollsBackStagedNonceState() {
         EpochNonceState freshNonce = new EpochNonceState(EPOCH_LENGTH, SECURITY_PARAM, ACTIVE_SLOTS_COEFF);
         try {
