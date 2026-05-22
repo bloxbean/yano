@@ -1051,24 +1051,6 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
 
             }
 
-            // Start block producer if enabled (after server so we can notify)
-            if (config.isEnableBlockProducer()) {
-                startBlockProducer();
-            }
-
-            // Initialize epoch nonce tracking for relay/client mode (lightweight, always useful for verification).
-            // In block-producer mode, nonce tracking is already initialized by startBlockProducer().
-            if (!config.isEnableBlockProducer() && config.isEnableClient()) {
-                initNonceTracking();
-            }
-
-            // Initialize slot-to-time calculator from genesis data.
-            // Done after startBlockProducer() so resolvedGenesisTimestamp is authoritative.
-            initSlotTimeCalculator();
-
-            // Initialize mempool eviction policy — evict on block confirmation, TTL, and size cap
-            initMempoolEvictionPolicy();
-
             // Pre-populate genesis UTXOs for relay mode (when not in block-producer mode)
             if (!config.isEnableBlockProducer() && config.getShelleyGenesisFile() != null
                     && chainState.getTip() == null) {
@@ -1081,14 +1063,34 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
                 performBootstrap();
             }
 
-            // Validate chain state before starting sync
+            // Validate and apply one-shot startup rollback before starting either
+            // client sync or block production. Block producer nonce state is restored
+            // during startBlockProducer(), so rollback must happen first.
+            validateChainState();
+            performStartupAdhocRollback();
+
+            completeStartupDerivedStateRecovery();
+
+            // Start block producer if enabled (after server so we can notify, but
+            // after startup rollback so nonce state aligns with the final body tip).
+            if (config.isEnableBlockProducer()) {
+                startBlockProducer();
+            }
+
+            // Initialize slot-to-time calculator from genesis data.
+            // Done after startBlockProducer() so resolvedGenesisTimestamp is authoritative.
+            initSlotTimeCalculator();
+
+            // Initialize mempool eviction policy — evict on block confirmation, TTL, and size cap
+            initMempoolEvictionPolicy();
+
+            // Start client sync after state recovery has completed.
             if (config.isEnableClient()) {
-                validateChainState();
-
-                // Adhoc rollback: one-shot rollback before sync, if configured via command line
-                performStartupAdhocRollback();
-
-                completeStartupDerivedStateRecovery();
+                // Initialize epoch nonce tracking after any startup rollback so
+                // repair validates against the final pre-sync body tip.
+                if (!config.isEnableBlockProducer()) {
+                    initNonceTracking();
+                }
 
                 if (deferServerStartUntilClientStateReady && !serverStarted) {
                     startServer();
@@ -1097,7 +1099,9 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
 
                 startClientSync();
             } else {
-                completeStartupDerivedStateRecovery();
+                if (!config.isEnableBlockProducer()) {
+                    initNonceTracking();
+                }
             }
 
             log.info("Yano started successfully");
@@ -1384,46 +1388,23 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
             long byronSlotsPerEpoch = genesisConfig.getByronGenesisData() != null
                     ? genesisConfig.getByronGenesisData().epochLength() : Constants.BYRON_SLOTS_PER_EPOCH;
             epochNonceState = new EpochNonceState(epochLength, securityParam, activeSlotsCoeff, byronSlotsPerEpoch);
-            // Read shelley start slot from persisted era data (available after prior sync)
-            if (chainState instanceof DirectRocksDBChainState rocksState) {
-                rocksState.getFirstNonByronEraStartSlot()
-                        .ifPresent(epochNonceState::setShelleyStartSlot);
-            }
+            initializeNonceShelleyStartSlot(epochNonceState);
             NonceStateStore nonceStore = (chainState instanceof NonceStateStore)
                     ? (NonceStateStore) chainState : null;
 
-            // 4. Seed nonce: restore from persistence > config seed > genesis init
-            boolean nonceRestored = false;
-            if (nonceStore != null) {
-                byte[] persisted = nonceStore.getEpochNonceState();
-                if (persisted != null) {
-                    epochNonceState.restore(persisted);
-                    nonceRestored = true;
-                    log.info("Nonce state restored from persistence");
-                }
-            }
+            EpochParamProvider effectiveParamProvider = effectiveEpochParamProvider();
+            boolean trackedParams = effectiveParamProvider instanceof EpochParamTracker tracker
+                    && tracker.isEnabled();
+            long networkMagic = config.getProtocolMagic();
+            NonceReplayService replayService = nonceStore != null
+                    ? new NonceReplayService(chainState, nonceStore,
+                            new EpochNonceEvolver(effectiveParamProvider, trackedParams, networkMagic),
+                            resolveGenesisHash())
+                    : null;
 
-            if (!nonceRestored && config.getInitialEpochNonce() != null
-                    && !config.getInitialEpochNonce().isBlank()
-                    && config.getInitialEpoch() >= 0) {
-                byte[] nonce = HexUtil.decodeHexString(config.getInitialEpochNonce());
-                epochNonceState.seedFromExternal(config.getInitialEpoch(), nonce);
-                nonceRestored = true;
-                log.info("Nonce state seeded from config: epoch={}", config.getInitialEpoch());
-            }
-
-            if (!nonceRestored) {
-                byte[] genesisHash = resolveGenesisHash();
-                if (genesisHash != null) {
-                    epochNonceState.initFromGenesisHash(genesisHash);
-                } else {
-                    throw new IllegalStateException(
-                            "Shelley genesis hash required for nonce initialization in slot-leader mode");
-                }
-            }
-            if (nonceStore != null) {
-                nonceStore.storeEpochNonce(epochNonceState.getCurrentEpoch(), epochNonceState.getEpochNonce());
-            }
+            // 4. Seed nonce: repair durable state to body tip > config seed > genesis init
+            initializeProducerNonceState(epochNonceState, nonceStore, replayService,
+                    "block-producer-startup", "slot-leader mode");
 
             // 5. Get protocol version from protocol-param.json
             long protoMajor = genesisConfig.getProtocolVersionMajor();
@@ -1440,13 +1421,10 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
 
             // 7. Create & register NonceEvolutionListener
             String issuerVkeyHex = signedBlockBuilder.getIssuerVkeyHex();
-            EpochParamProvider effectiveParamProvider = effectiveEpochParamProvider();
-            boolean trackedParams = effectiveParamProvider instanceof EpochParamTracker tracker
-                    && tracker.isEnabled();
-            long networkMagic = config.getProtocolMagic();
             logNonceTrackingMode(trackedParams, networkMagic);
             var nonceListener = new NonceEvolutionListener(epochNonceState, nonceStore, issuerVkeyHex,
-                    effectiveParamProvider, trackedParams, networkMagic);
+                    effectiveParamProvider, trackedParams, networkMagic,
+                    this::resolveNonceSnapshotCursor, replayService);
             AnnotationListenerRegistrar.register(eventBus, nonceListener,
                     com.bloxbean.cardano.yaci.events.api.SubscriptionOptions.builder().build());
             log.info("NonceEvolutionListener registered (skipping own blocks with issuerVkey={})", issuerVkeyHex);
@@ -1469,7 +1447,7 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
             // 10. Devnet genesis block production: seed the chain before starting slot-leader loop
             if (config.isDevMode() && freshStart) {
                 var genesisResult = signedBlockBuilder.buildBlock(0, 0, null, java.util.List.of());
-                BlockProducerHelper.storeBlock(chainState, genesisResult);
+                BlockProducerHelper.storeProducedBlock(chainState, signedBlockBuilder, genesisResult);
                 log.info("Genesis block produced (slot-leader devnet): hash={}",
                         HexUtil.encodeHexString(genesisResult.blockHash()));
 
@@ -1493,14 +1471,13 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
                         long currentWallClockSlot = (System.currentTimeMillis() - resolvedGenesisTimestamp) / config.getSlotLengthMillis();
                         if (slot > currentWallClockSlot) break;
 
-                        epochNonceState.advanceEpochIfNeeded(slot);
-                        byte[] epochNonce = epochNonceState.getEpochNonce();
+                        byte[] epochNonce = epochNonceState.previewEpochNonceForSlot(slot);
                         var vrfResult = slotLeaderCheck.checkAndProve(slot, epochNonce, java.math.BigDecimal.ONE);
                         if (vrfResult != null) {
                             ChainTip tip = chainState.getTip();
                             var result = signedBlockBuilder.buildBlock(
                                     tip.getBlockNumber() + 1, slot, tip.getBlockHash(), java.util.List.of(), vrfResult);
-                            BlockProducerHelper.storeBlock(chainState, result);
+                            BlockProducerHelper.storeProducedBlock(chainState, signedBlockBuilder, result);
                             BlockProducerHelper.publishEvent(eventBus, result, 0, "slot-leader-catch-up");
                             produced++;
                         }
@@ -1552,8 +1529,18 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
 
     /**
      * Initialize epoch nonce tracking for relay/client mode.
-     * Sets up EpochNonceState and NonceEvolutionListener so that the epoch nonce
-     * evolves as synced blocks arrive. Useful for verification even without block production.
+     * <p>
+     * Relay mode does not use the nonce to produce blocks, but the REST/API layer
+     * still exposes it and it is useful for validating synced mainnet/preprod state.
+     * The important startup invariant is that the nonce state must describe the
+     * durable body tip, not the header tip. Header sync may run ahead of body
+     * apply in pipelined mode, while nonce evolution depends on block bodies.
+     * <p>
+     * When {@link NonceStateStore} is available, startup uses
+     * {@link NonceReplayService} to restore a cursor-bearing snapshot or replay
+     * stored block bodies up to the current body tip. This repairs the case where
+     * the process stopped after block bodies were committed but before the latest
+     * nonce snapshot was persisted.
      */
     private void initNonceTracking() {
         if (genesisConfig == null || genesisConfig.getShelleyGenesisData() == null) {
@@ -1571,55 +1558,200 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
             long byronSlotsPerEpoch = genesisConfig.getByronGenesisData() != null
                     ? genesisConfig.getByronGenesisData().epochLength() : Constants.BYRON_SLOTS_PER_EPOCH;
             epochNonceState = new EpochNonceState(epochLength, securityParam, activeSlotsCoeff, byronSlotsPerEpoch);
-            // Read shelley start slot from persisted era data (available after prior sync)
-            if (chainState instanceof DirectRocksDBChainState rocksState) {
-                rocksState.getFirstNonByronEraStartSlot()
-                        .ifPresent(epochNonceState::setShelleyStartSlot);
-            }
+            initializeNonceShelleyStartSlot(epochNonceState);
             NonceStateStore nonceStore = (chainState instanceof NonceStateStore)
                     ? (NonceStateStore) chainState : null;
 
-            // Restore from persistence or seed
-            boolean restored = false;
-            if (nonceStore != null) {
-                byte[] persisted = nonceStore.getEpochNonceState();
-                if (persisted != null) {
-                    epochNonceState.restore(persisted);
-                    restored = true;
-                    log.info("Nonce tracking restored from persistence: epoch={}", epochNonceState.getCurrentEpoch());
-                }
-            }
-
-            if (!restored) {
-                byte[] genesisHash = resolveGenesisHash();
-                if (genesisHash != null) {
-                    epochNonceState.initFromGenesisHash(genesisHash);
-                } else {
-                    log.debug("Nonce tracking not initialized: no shelley genesis hash available");
-                    epochNonceState = null;
-                    return;
-                }
-            }
-            if (nonceStore != null) {
-                nonceStore.storeEpochNonce(epochNonceState.getCurrentEpoch(), epochNonceState.getEpochNonce());
-            }
-
-            // Register listener — no own-block skipping (null issuerVkey) since we're not producing
             EpochParamProvider effectiveParamProvider = effectiveEpochParamProvider();
             boolean trackedParams = effectiveParamProvider instanceof EpochParamTracker tracker
                     && tracker.isEnabled();
             long networkMagic = config.getProtocolMagic();
             logNonceTrackingMode(trackedParams, networkMagic);
+            NonceReplayService replayService = null;
+            byte[] genesisHash = resolveGenesisHash();
+
+            if (nonceStore != null) {
+                replayService = new NonceReplayService(
+                        chainState,
+                        nonceStore,
+                        new EpochNonceEvolver(effectiveParamProvider, trackedParams, networkMagic),
+                        genesisHash);
+                replayService.repairToBodyTip(epochNonceState, genesisHash, "startup");
+            } else if (genesisHash != null) {
+                epochNonceState.initFromGenesisHash(genesisHash);
+            }
+
+            if (epochNonceState.getEpochNonce() == null) {
+                log.debug("Nonce tracking not initialized: no shelley genesis hash or durable nonce state available");
+                epochNonceState = null;
+                return;
+            }
+
+            if (nonceStore != null) {
+                nonceStore.storeEpochNonce(epochNonceState.getCurrentEpoch(), epochNonceState.getEpochNonce());
+            }
+
+            // Register listener — no own-block skipping (null issuerVkey) since we're not producing
             var nonceListener = new NonceEvolutionListener(epochNonceState, nonceStore, null,
-                    effectiveParamProvider, trackedParams, networkMagic);
+                    effectiveParamProvider, trackedParams, networkMagic,
+                    this::resolveNonceSnapshotCursor, replayService);
             AnnotationListenerRegistrar.register(eventBus, nonceListener,
                     com.bloxbean.cardano.yaci.events.api.SubscriptionOptions.builder().build());
 
             log.info("Epoch nonce tracking initialized for relay mode (epochLength={}, k={}, f={})",
                     epochLength, securityParam, activeSlotsCoeff);
         } catch (Exception e) {
-            log.warn("Failed to initialize nonce tracking: {}", e.getMessage());
             epochNonceState = null;
+            throw new IllegalStateException("Failed to initialize nonce tracking", e);
+        }
+    }
+
+    /**
+     * Initialize nonce state before any local block production starts.
+     * <p>
+     * Producer mode is stricter than relay mode: a wrong nonce changes leader
+     * checks and the VRF proof included in produced blocks. For that reason this
+     * method first tries to repair persisted nonce state to the durable body tip.
+     * Only an empty chain may fall back to a configured initial nonce or genesis
+     * hash initialization.
+     * <p>
+     * The resulting state is also persisted as the current epoch nonce so a
+     * subsequent restart can verify or repair from a cursor-bearing snapshot
+     * instead of trusting an in-memory checkpoint that no longer exists.
+     *
+     * @param nonceState mutable nonce state used by the producer and listener
+     * @param nonceStore durable nonce store, or {@code null} for in-memory chain state
+     * @param replayService optional repair service backed by stored block bodies
+     * @param repairReason short reason included in repair logs
+     * @param modeDescription human-readable producer mode for error messages
+     */
+    private void initializeProducerNonceState(EpochNonceState nonceState,
+                                              NonceStateStore nonceStore,
+                                              NonceReplayService replayService,
+                                              String repairReason,
+                                              String modeDescription) {
+        boolean initialized = false;
+        ChainTip bodyTip = chainState.getTip();
+
+        if (replayService != null
+                && !(bodyTip == null && hasConfiguredInitialEpochNonce())) {
+            var repair = replayService.repairToBodyTip(nonceState, repairReason);
+            initialized = nonceState.getEpochNonce() != null;
+            if (initialized) {
+                log.info("Nonce state repaired for {}: source={}, replayedBlocks={}",
+                        modeDescription, repair.source(), repair.replayedBlocks());
+            }
+        }
+
+        if (!initialized && hasConfiguredInitialEpochNonce()) {
+            byte[] nonce = HexUtil.decodeHexString(config.getInitialEpochNonce());
+            nonceState.seedFromExternal(config.getInitialEpoch(), nonce);
+            initialized = true;
+            log.info("Nonce state seeded from config for {}: epoch={}",
+                    modeDescription, config.getInitialEpoch());
+            if (nonceStore != null && bodyTip == null) {
+                nonceStore.storeLatestNonceSnapshot(NonceStateSnapshot.origin(nonceState.serialize()));
+            }
+        }
+
+        if (!initialized) {
+            byte[] genesisHash = resolveGenesisHash();
+            if (genesisHash == null) {
+                throw new IllegalStateException(
+                        "Shelley genesis hash required for nonce initialization in " + modeDescription);
+            }
+            nonceState.initFromGenesisHash(genesisHash);
+            initialized = true;
+            if (nonceStore != null && bodyTip == null) {
+                nonceStore.storeLatestNonceSnapshot(NonceStateSnapshot.origin(nonceState.serialize()));
+            }
+        }
+
+        if (nonceStore != null) {
+            nonceStore.storeEpochNonce(nonceState.getCurrentEpoch(), nonceState.getEpochNonce());
+        }
+    }
+
+    /**
+     * Return true only when the external initial nonce configuration is complete.
+     * A nonce without its epoch is ambiguous, and an epoch without a nonce cannot
+     * seed {@link EpochNonceState}.
+     */
+    private boolean hasConfiguredInitialEpochNonce() {
+        return config.getInitialEpochNonce() != null
+                && !config.getInitialEpochNonce().isBlank()
+                && config.getInitialEpoch() >= 0;
+    }
+
+    /**
+     * Build the durable cursor envelope for a nonce snapshot.
+     * <p>
+     * The callback is used by {@link NonceEvolutionListener} after normal block
+     * apply and after rollback repair. The caller provides the ChainSync point
+     * that triggered the snapshot, but that point is not always the correct
+     * durable cursor for nonce state. In pipelined sync, ChainSync/header state
+     * can be ahead of body apply. Nonce state follows body apply because the
+     * nonce algorithm consumes block headers from stored bodies.
+     * <p>
+     * Therefore the persisted {@link NonceStateSnapshot} is always stamped with
+     * the current ChainState body tip. If the body tip is ahead of the rollback
+     * point, the local state is inconsistent with the requested rollback and the
+     * snapshot is rejected instead of storing a misleading repair cursor.
+     */
+    private NonceStateSnapshot resolveNonceSnapshotCursor(long slot, String hashHex, byte[] serializedNonceState) {
+        ChainTip tip = chainState.getTip();
+        if (tip == null) {
+            return NonceStateSnapshot.origin(serializedNonceState);
+        }
+
+        if (tip.getSlot() > slot) {
+            throw new IllegalStateException("Cannot persist rollback nonce snapshot: body tip slot "
+                    + tip.getSlot() + " is ahead of rollback slot " + slot + ", hash=" + hashHex);
+        }
+
+        // ChainSync may roll back only header state while body apply is behind
+        // the rollback point. Nonce follows body apply, so the durable cursor
+        // must always be the post-rollback body tip, not the ChainSync point.
+        return new NonceStateSnapshot(tip.getSlot(), tip.getBlockNumber(), tip.getBlockHash(), serializedNonceState);
+    }
+
+    /**
+     * Populate the Shelley start slot used by era-aware nonce calculations.
+     * <p>
+     * Mainnet and public test networks have a Byron-to-Shelley boundary, while
+     * many devnets start directly in Shelley/Conway. The value can come from
+     * persisted era metadata after a prior sync, from the active epoch parameter
+     * provider, from already-propagated config, or finally from genesis/network
+     * defaults. Keeping this resolution in one place prevents relay, producer,
+     * and replay paths from deriving different nonce epochs for the same slot.
+     */
+    private void initializeNonceShelleyStartSlot(EpochNonceState nonceState) {
+        if (nonceState == null || nonceState.isShelleyStartSlotSet()) {
+            return;
+        }
+
+        if (chainState instanceof DirectRocksDBChainState rocksState) {
+            var persistedStart = rocksState.getFirstNonByronEraStartSlot();
+            if (persistedStart.isPresent()) {
+                nonceState.setShelleyStartSlot(persistedStart.getAsLong());
+                return;
+            }
+        }
+
+        if (epochParamProvider != null) {
+            nonceState.setShelleyStartSlot(epochParamProvider.getShelleyStartSlot());
+            return;
+        }
+
+        if (config.isEpochParamsInitialized()) {
+            nonceState.setShelleyStartSlot(config.getFirstNonByronSlot());
+            return;
+        }
+
+        if (genesisConfig != null && genesisConfig.getShelleyGenesisData() != null) {
+            long firstNonByronSlot = DefaultEpochParamProvider.resolveFirstNonByronSlot(
+                    protocolMagic, genesisConfig.getByronGenesisData() != null);
+            nonceState.setShelleyStartSlot(firstNonByronSlot);
         }
     }
 
@@ -1769,34 +1901,22 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
                     ? genesisConfig.getByronGenesisData().epochLength() : Constants.BYRON_SLOTS_PER_EPOCH;
 
             epochNonceState = new EpochNonceState(epochLength, securityParam, activeSlotsCoeff, byronSlotsPerEpoch);
-            if (chainState instanceof DirectRocksDBChainState rocksState) {
-                rocksState.getFirstNonByronEraStartSlot()
-                        .ifPresent(epochNonceState::setShelleyStartSlot);
-            }
+            initializeNonceShelleyStartSlot(epochNonceState);
 
             NonceStateStore nonceStore = (chainState instanceof NonceStateStore)
                     ? (NonceStateStore) chainState : null;
 
-            boolean restored = false;
-            if (!freshStart && nonceStore != null) {
-                byte[] persisted = nonceStore.getEpochNonceState();
-                if (persisted != null) {
-                    epochNonceState.restore(persisted);
-                    restored = true;
-                    log.info("Nonce state restored from persistence");
-                }
-            }
-            if (!restored) {
-                byte[] genesisHash = resolveGenesisHash();
-                if (genesisHash == null) {
-                    throw new IllegalStateException(
-                            "Shelley genesis hash required for past-time-travel slot-leader mode");
-                }
-                epochNonceState.initFromGenesisHash(genesisHash);
-            }
-            if (nonceStore != null) {
-                nonceStore.storeEpochNonce(epochNonceState.getCurrentEpoch(), epochNonceState.getEpochNonce());
-            }
+            EpochParamProvider effectiveParamProvider = effectiveEpochParamProvider();
+            boolean trackedParams = effectiveParamProvider instanceof EpochParamTracker tracker
+                    && tracker.isEnabled();
+            long networkMagic = config.getProtocolMagic();
+            NonceReplayService replayService = nonceStore != null && !freshStart
+                    ? new NonceReplayService(chainState, nonceStore,
+                            new EpochNonceEvolver(effectiveParamProvider, trackedParams, networkMagic),
+                            resolveGenesisHash())
+                    : null;
+            initializeProducerNonceState(epochNonceState, nonceStore, replayService,
+                    "past-time-travel-startup", "past-time-travel slot-leader mode");
 
             long protoMajor = genesisConfig.getProtocolVersionMajor();
             long protoMinor = genesisConfig.getProtocolVersionMinor();
@@ -1877,32 +1997,21 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
                 long byronSlotsPerEpoch = genesisConfig.getByronGenesisData() != null
                         ? genesisConfig.getByronGenesisData().epochLength() : Constants.BYRON_SLOTS_PER_EPOCH;
                 EpochNonceState nonceState = new EpochNonceState(epochLength, securityParam, activeSlotsCoeff, byronSlotsPerEpoch);
-                // Read shelley start slot from persisted era data (available after prior sync)
-                if (chainState instanceof DirectRocksDBChainState rocksState) {
-                    rocksState.getFirstNonByronEraStartSlot()
-                            .ifPresent(nonceState::setShelleyStartSlot);
-                }
+                initializeNonceShelleyStartSlot(nonceState);
                 NonceStateStore nonceStore = (chainState instanceof NonceStateStore)
                         ? (NonceStateStore) chainState : null;
 
-                boolean restored = false;
-                if (!freshStart && nonceStore != null) {
-                    byte[] persisted = nonceStore.getEpochNonceState();
-                    if (persisted != null) {
-                        nonceState.restore(persisted);
-                        restored = true;
-                    }
-                }
-
-                if (!restored) {
-                    byte[] genesisHash = resolveGenesisHash();
-                    if (genesisHash != null) {
-                        nonceState.initFromGenesisHash(genesisHash);
-                    } else {
-                        throw new IllegalStateException(
-                                "Shelley genesis hash required for signed block production nonce initialization");
-                    }
-                }
+                EpochParamProvider effectiveParamProvider = effectiveEpochParamProvider();
+                boolean trackedParams = effectiveParamProvider instanceof EpochParamTracker tracker
+                        && tracker.isEnabled();
+                long networkMagic = config.getProtocolMagic();
+                NonceReplayService replayService = nonceStore != null && !freshStart
+                        ? new NonceReplayService(chainState, nonceStore,
+                                new EpochNonceEvolver(effectiveParamProvider, trackedParams, networkMagic),
+                                resolveGenesisHash())
+                        : null;
+                initializeProducerNonceState(nonceState, nonceStore, replayService,
+                        "signed-devnet-startup", "signed block production");
 
                 // Get protocol version from protocol-param.json
                 long protoMajor = genesisConfig.getProtocolVersionMajor();
@@ -1917,8 +2026,7 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
                 return new SignedBlockBuilder(keys, slotsPerKESPeriod, maxKESEvolutions,
                         nonceState, nonceStore, protoMajor, protoMinor);
             } catch (Exception e) {
-                log.warn("Failed to initialize SignedBlockBuilder, falling back to dummy signatures: {}", e.getMessage());
-                return new DevnetBlockBuilder();
+                throw new IllegalStateException("Failed to initialize SignedBlockBuilder with configured producer keys", e);
             }
         }
 
@@ -2387,6 +2495,11 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
      * Rolls back ALL authoritative stores synchronously in dependency-safe order
      * (AccountState → UTXO → ChainState), verifies post-rollback state, then
      * cleans up derived artifacts (parquet exports) directly.
+     * <p>
+     * Both body tip and header tip are considered when deciding whether rollback
+     * is needed. Pipelined sync can persist headers ahead of bodies, so a startup
+     * rollback that only looks at the body tip could leave orphan header state
+     * beyond the requested rollback point.
      */
     private void performStartupAdhocRollback() {
         long targetSlot = -1;
@@ -2414,13 +2527,18 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
         if (targetSlot < 0) return; // No rollback requested
 
         ChainTip currentTip = chainState.getTip();
-        if (currentTip == null) {
+        ChainTip currentHeaderTip = chainState.getHeaderTip();
+        long currentBodySlot = currentTip != null ? currentTip.getSlot() : -1;
+        long currentHeaderSlot = currentHeaderTip != null ? currentHeaderTip.getSlot() : -1;
+        long currentMaxSlot = Math.max(currentBodySlot, currentHeaderSlot);
+        if (currentMaxSlot < 0) {
             log.warn("Adhoc rollback requested (slot={}) but chain is empty. Skipping.", targetSlot);
             return;
         }
 
-        if (targetSlot >= currentTip.getSlot()) {
-            log.info("Adhoc rollback target slot {} >= current tip {}. Nothing to roll back.", targetSlot, currentTip.getSlot());
+        if (targetSlot >= currentMaxSlot) {
+            log.info("Adhoc rollback target slot {} >= current stored tip {}. Nothing to roll back.",
+                    targetSlot, currentMaxSlot);
             return;
         }
 
@@ -2463,7 +2581,12 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
         // Log per-store status
         log.info("=== Adhoc Rollback ===");
         log.info("Target slot: {}", targetSlot);
-        log.info("Current tip: slot={}, block={}", currentTip.getSlot(), currentTip.getBlockNumber());
+        log.info("Current body tip: slot={}, block={}",
+                currentTip != null ? currentTip.getSlot() : "none",
+                currentTip != null ? currentTip.getBlockNumber() : "none");
+        log.info("Current header tip: slot={}, block={}",
+                currentHeaderTip != null ? currentHeaderTip.getSlot() : "none",
+                currentHeaderTip != null ? currentHeaderTip.getBlockNumber() : "none");
         log.info("Common rollback floor: {}", commonFloor);
         for (var store : stores) {
             log.info("  {}: latest={}, floor={}", store.storeName(),
@@ -2481,8 +2604,6 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
             throw new RuntimeException("Adhoc rollback aborted: target " + targetSlot
                     + " below floor " + commonFloor);
         }
-
-        long previousTipSlot = currentTip.getSlot();
 
         // Rollback in dependency-safe order: derived state first, chain tip last
         // Order: AccountState → UTXO → ChainState
@@ -2502,7 +2623,11 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
         }
 
         ChainTip newTip = chainState.getTip();
-        long newTipSlot = newTip != null ? newTip.getSlot() : -1;
+        ChainTip newHeaderTip = chainState.getHeaderTip();
+        if (newHeaderTip != null && newHeaderTip.getSlot() > targetSlot) {
+            throw new IllegalStateException("ChainState header tip reports slot="
+                    + newHeaderTip.getSlot() + " after adhoc rollback to " + targetSlot);
+        }
 
         // Resolve target epoch for cleanup
         Integer targetEpoch = null;
@@ -2513,6 +2638,9 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
         log.info("=== Adhoc Rollback Complete ===");
         log.info("New tip: slot={}, block={}", newTip != null ? newTip.getSlot() : "none",
                 newTip != null ? newTip.getBlockNumber() : "none");
+        log.info("New header tip: slot={}, block={}",
+                newHeaderTip != null ? newHeaderTip.getSlot() : "none",
+                newHeaderTip != null ? newHeaderTip.getBlockNumber() : "none");
 
         // Cleanup derived artifacts (parquet exports)
         if (targetEpoch != null) {

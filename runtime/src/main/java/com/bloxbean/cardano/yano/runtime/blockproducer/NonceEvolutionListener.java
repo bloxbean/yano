@@ -3,7 +3,6 @@ package com.bloxbean.cardano.yano.runtime.blockproducer;
 import com.bloxbean.cardano.yaci.core.model.Block;
 import com.bloxbean.cardano.yaci.core.model.Era;
 import com.bloxbean.cardano.yaci.core.model.HeaderBody;
-import com.bloxbean.cardano.yaci.core.model.VrfCert;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yaci.events.api.DomainEventListener;
 import com.bloxbean.cardano.yano.api.EpochParamProvider;
@@ -26,25 +25,24 @@ import lombok.extern.slf4j.Slf4j;
 @Slf4j
 public class NonceEvolutionListener {
 
-    private static final long MAINNET_PROTOCOL_MAGIC = 764824073L;
-    private static final String MAINNET_EPOCH_259_ENTROPY_HEX =
-            "d982e06fd33e7440b43cefad529b7ecafbaa255e38178ad4189a37e4ce9bf1fa";
-
     private final EpochNonceState nonceState;
     private final NonceStateStore nonceStore;  // nullable
     private final String ownIssuerVkey;        // hex, to skip own produced blocks (nullable)
-    private final EpochParamProvider paramProvider; // nullable
-    private final boolean trackedEpochParamsAvailable;
-    private final long protocolMagic;
+    private final EpochNonceEvolver evolver;
+    private final NonceCursorResolver cursorResolver; // nullable
+    private final NonceReplayService replayService;   // nullable
 
-    private boolean customNetworkWarned;
+    @FunctionalInterface
+    public interface NonceCursorResolver {
+        NonceStateSnapshot resolve(long slot, String hashHex, byte[] serializedNonceState);
+    }
 
     /**
      * Backward-compatible constructor used by tests / paths that do not need TPraos extraEntropy.
      */
     public NonceEvolutionListener(EpochNonceState nonceState, NonceStateStore nonceStore,
                                    String ownIssuerVkey) {
-        this(nonceState, nonceStore, ownIssuerVkey, null, false, 0L);
+        this(nonceState, nonceStore, ownIssuerVkey, null, false, 0L, null, null);
     }
 
     /**
@@ -59,12 +57,21 @@ public class NonceEvolutionListener {
     public NonceEvolutionListener(EpochNonceState nonceState, NonceStateStore nonceStore,
                                    String ownIssuerVkey, EpochParamProvider paramProvider,
                                    boolean trackedEpochParamsAvailable, long protocolMagic) {
+        this(nonceState, nonceStore, ownIssuerVkey, paramProvider, trackedEpochParamsAvailable,
+                protocolMagic, null, null);
+    }
+
+    public NonceEvolutionListener(EpochNonceState nonceState, NonceStateStore nonceStore,
+                                   String ownIssuerVkey, EpochParamProvider paramProvider,
+                                   boolean trackedEpochParamsAvailable, long protocolMagic,
+                                   NonceCursorResolver cursorResolver,
+                                   NonceReplayService replayService) {
         this.nonceState = nonceState;
         this.nonceStore = nonceStore;
         this.ownIssuerVkey = ownIssuerVkey;
-        this.paramProvider = paramProvider;
-        this.trackedEpochParamsAvailable = trackedEpochParamsAvailable;
-        this.protocolMagic = protocolMagic;
+        this.evolver = new EpochNonceEvolver(paramProvider, trackedEpochParamsAvailable, protocolMagic);
+        this.cursorResolver = cursorResolver;
+        this.replayService = replayService;
     }
 
     @DomainEventListener(order = 50)
@@ -81,64 +88,18 @@ public class NonceEvolutionListener {
             return;
         }
 
-        // Extract VRF output: Babbage+ uses vrfResult, pre-Babbage uses nonceVrf
-        VrfCert vrfCert = hb.getVrfResult();
-        if (vrfCert == null) {
-            vrfCert = hb.getNonceVrf();
-        }
-        if (vrfCert == null || vrfCert.get_1() == null) return;
-
-        byte[] vrfOutput = HexUtil.decodeHexString(vrfCert.get_1());
-        byte[] prevHash = hb.getPrevHash() != null
-                ? HexUtil.decodeHexString(hb.getPrevHash()) : null;
         long slot = event.slot();
-
-        // Detect Shelley start slot from first non-Byron era block
-        if (era != Era.Byron && !nonceState.isShelleyStartSlotSet()) {
-            nonceState.setShelleyStartSlot(slot);
-        }
-
-        // Debug logging for first blocks to trace VRF data flow
-        if (log.isDebugEnabled() && slot < 500) {
-            String vrfSource = hb.getVrfResult() != null ? "vrfResult" : "nonceVrf";
-            log.debug("NonceEvolve BEFORE slot={} era={} vrfSource={} vrfOutput={} prevHash={}",
-                    slot, era, vrfSource,
-                    HexUtil.encodeHexString(vrfOutput).substring(0, Math.min(32, vrfOutput.length * 2)),
-                    prevHash != null ? HexUtil.encodeHexString(prevHash).substring(0, 16) : "null");
-        }
-
-        // Resolve TPraos extraEntropy + targeted WARNs if we're about to cross an epoch boundary
-        int epochBefore = nonceState.getCurrentEpoch();
-        int blockEpoch = nonceState.epochForSlot(slot);
-        boolean crossingBoundary = blockEpoch > epochBefore;
-
-        byte[] extraEntropy = resolveExtraEntropyAtBoundary(crossingBoundary, blockEpoch, era);
-
-        // Evolve nonce state (era-aware)
-        if (crossingBoundary) {
-            nonceState.advanceEpochIfNeeded(slot, extraEntropy, era);
-        } else {
-            nonceState.advanceEpochIfNeeded(slot);
-        }
-        int epochAfter = nonceState.getCurrentEpoch();
-        nonceState.onBlockObserved(slot, prevHash, vrfOutput, era);
-
-        // Debug logging after evolution
-        if (log.isDebugEnabled() && slot < 500) {
-            log.debug("NonceEvolve AFTER  slot={} epoch={} evolvingNonce={} candidateNonce={}",
-                    slot, nonceState.getCurrentEpoch(),
-                    HexUtil.encodeHexString(nonceState.getEvolvingNonce()).substring(0, 16),
-                    HexUtil.encodeHexString(nonceState.getCandidateNonce()).substring(0, 16));
-        }
+        var result = evolver.evolve(nonceState, era, slot, hb);
+        if (!result.applied()) return;
 
         // Log epoch transition with the new epoch nonce
-        if (epochAfter > epochBefore) {
+        if (result.epochTransition()) {
             byte[] epochNonce = nonceState.getEpochNonce();
             if (nonceStore != null) {
-                nonceStore.storeEpochNonce(epochAfter, epochNonce);
+                nonceStore.storeEpochNonce(result.epochAfter(), epochNonce);
             }
             log.info("Epoch nonce for epoch {}: {}",
-                    epochAfter, epochNonce != null ? HexUtil.encodeHexString(epochNonce) : null);
+                    result.epochAfter(), epochNonce != null ? HexUtil.encodeHexString(epochNonce) : null);
         }
 
         // Serialize once, reuse for both checkpoint and persistence
@@ -146,7 +107,12 @@ public class NonceEvolutionListener {
         nonceState.saveCheckpoint(slot, serialized);
 
         if (nonceStore != null) {
-            nonceStore.storeEpochNonceState(serialized);
+            NonceStateSnapshot snapshot = NonceStateSnapshot.of(
+                    slot, event.blockNumber(), event.blockHash(), serialized);
+            nonceStore.storeLatestNonceSnapshot(snapshot);
+            if (result.epochTransition()) {
+                nonceStore.storeEpochNonceCheckpoint(result.epochAfter(), snapshot);
+            }
         }
 
         if (log.isTraceEnabled()) {
@@ -157,75 +123,13 @@ public class NonceEvolutionListener {
     }
 
     /**
-     * Resolve extraEntropy for the boundary and emit targeted WARNs.
-     * Single unified TPraos branch — provider is queried/decoded exactly once per boundary.
-     */
-    private byte[] resolveExtraEntropyAtBoundary(boolean crossingBoundary, int blockEpoch, Era era) {
-        if (!crossingBoundary) return null;
-
-        if (era == null) {
-            // Unknown era at a boundary is a data-resolution problem. Do NOT treat null as TPraos.
-            // Fires regardless of paramProvider wiring.
-            log.warn("Epoch boundary crossed at epoch {} with unknown era; "
-                    + "skipping TPraos extraEntropy combine", blockEpoch);
-            return null;
-        }
-
-        if (!EpochNonceState.usesTPraosExtraEntropy(era)) {
-            // Babbage+: no query, no warn — entropy never applies in TICKN.
-            return null;
-        }
-
-        String raw = paramProvider != null ? paramProvider.getExtraEntropy(blockEpoch) : null;
-        byte[] extraEntropy = decodeExtraEntropy(raw, blockEpoch);
-
-        // Targeted hard guard: mainnet's known non-null entropy epoch.
-        // Fires regardless of trackedEpochParamsAvailable — a tracker wired but stale/missing
-        // entry 259 is just as broken as no tracker.
-        if (protocolMagic == MAINNET_PROTOCOL_MAGIC && blockEpoch == 259 && extraEntropy == null) {
-            log.warn("Mainnet epoch 259 extraEntropy is missing; epoch nonce will diverge "
-                    + "from Haskell. Expected entropy: " + MAINNET_EPOCH_259_ENTROPY_HEX);
-        }
-
-        // Custom-network heuristic: one-time-per-process WARN on first TPraos boundary
-        // when no tracker is wired.
-        if (!trackedEpochParamsAvailable && !customNetworkWarned
-                && protocolMagic != MAINNET_PROTOCOL_MAGIC) {
-            log.warn("First TPraos boundary at epoch {} crossed without EpochParamTracker. "
-                    + "If this network has on-chain extraEntropy updates, the epoch nonce "
-                    + "will diverge from Haskell.", blockEpoch);
-            customNetworkWarned = true;
-        }
-
-        return extraEntropy;
-    }
-
-    /**
      * Defensive decoder around {@link HexUtil#decodeHexString(String)}. Trims, strips
      * optional {@code 0x}/{@code \x} prefixes, validates 32-byte length, catches decode
      * failures, and logs WARN. Never throws — returns {@code null} on any decode failure
      * so live sync is not blocked.
      */
     static byte[] decodeExtraEntropy(String raw, int epoch) {
-        if (raw == null) return null;
-        String hex = raw.trim();
-        if (hex.isEmpty()) return null;
-        if (hex.startsWith("0x") || hex.startsWith("0X")) {
-            hex = hex.substring(2);
-        } else if (hex.startsWith("\\x") || hex.startsWith("\\X")) {
-            hex = hex.substring(2);
-        }
-        if (hex.length() != 64) {
-            log.warn("Malformed extraEntropy for epoch {}: expected 64 hex chars, got {}",
-                    epoch, hex.length());
-            return null;
-        }
-        try {
-            return HexUtil.decodeHexString(hex);
-        } catch (Exception e) {
-            log.warn("Failed to decode extraEntropy hex for epoch {}: {}", epoch, e.getMessage());
-            return null;
-        }
+        return EpochNonceEvolver.decodeExtraEntropy(raw, epoch);
     }
 
     @DomainEventListener(order = 50)
@@ -235,12 +139,27 @@ public class NonceEvolutionListener {
         if (restored) {
             log.info("Nonce state rolled back to slot {}", targetSlot);
             if (nonceStore != null) {
-                nonceStore.storeEpochNonceState(nonceState.serialize());
+                byte[] serialized = nonceState.serialize();
+                NonceStateSnapshot snapshot;
+                if (cursorResolver != null) {
+                    snapshot = cursorResolver.resolve(targetSlot, event.target().getHash(), serialized);
+                } else if (targetSlot < 0) {
+                    snapshot = NonceStateSnapshot.origin(serialized);
+                } else {
+                    throw new IllegalStateException("Cannot persist rollback nonce snapshot without a body-tip cursor");
+                }
+                nonceStore.storeLatestNonceSnapshot(snapshot);
                 nonceStore.pruneEpochNoncesAfter(nonceState.getCurrentEpoch());
+                nonceStore.pruneEpochNonceCheckpointsAfter(nonceState.getCurrentEpoch());
             }
         } else {
-            log.warn("No nonce checkpoint found for rollback to slot {}. "
-                    + "Nonce state may be incorrect until next epoch boundary.", targetSlot);
+            if (replayService == null) {
+                throw new IllegalStateException("No nonce checkpoint found for rollback to slot "
+                        + targetSlot + " and no durable nonce replay service is available");
+            }
+            log.warn("No in-memory nonce checkpoint found for rollback to slot {}; repairing from durable state",
+                    targetSlot);
+            replayService.repairToBodyTip(nonceState, "rollback");
         }
     }
 }

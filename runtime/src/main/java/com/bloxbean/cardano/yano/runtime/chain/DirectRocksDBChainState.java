@@ -9,6 +9,7 @@ import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.db.RocksDbAccess;
 import com.bloxbean.cardano.yano.api.rollback.RollbackCapableStore;
 import com.bloxbean.cardano.yano.runtime.blockproducer.NonceStateStore;
+import com.bloxbean.cardano.yano.runtime.blockproducer.NonceStateSnapshot;
 import com.bloxbean.cardano.yano.ledgerstate.AccountHistoryCfNames;
 import com.bloxbean.cardano.yano.ledgerstate.AccountStateCfNames;
 import com.bloxbean.cardano.yano.runtime.db.RocksDbContext;
@@ -50,6 +51,8 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
 
     //For read apis
     private static final byte[] EPOCH_NONCE_KEY_PREFIX = "epoch_nonce_by_epoch_".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] EPOCH_NONCE_CHECKPOINT_KEY_PREFIX =
+            "epoch_nonce_checkpoint_".getBytes(StandardCharsets.UTF_8);
     private static final long RECOVERY_HEADER_SCAN_LIMIT =
             Long.getLong("yano.chainstate.recoveryHeaderScanBlocks", 100_000L);
 
@@ -652,6 +655,15 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
                 for (iterator.seek(EPOCH_NONCE_KEY_PREFIX); iterator.isValid(); iterator.next()) {
                     byte[] key = Arrays.copyOf(iterator.key(), iterator.key().length);
                     if (!startsWith(key, EPOCH_NONCE_KEY_PREFIX)) break;
+                    batch.delete(metadataHandle, key);
+                    metadataDeleted++;
+                }
+            }
+
+            try (RocksIterator iterator = db.newIterator(metadataHandle)) {
+                for (iterator.seek(EPOCH_NONCE_CHECKPOINT_KEY_PREFIX); iterator.isValid(); iterator.next()) {
+                    byte[] key = Arrays.copyOf(iterator.key(), iterator.key().length);
+                    if (!startsWith(key, EPOCH_NONCE_CHECKPOINT_KEY_PREFIX)) break;
                     batch.delete(metadataHandle, key);
                     metadataDeleted++;
                 }
@@ -1583,9 +1595,66 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
         }
     }
 
+    @Override
+    public void storeEpochNonceCheckpoint(int epoch, NonceStateSnapshot snapshot) {
+        if (snapshot == null) return;
+        try {
+            db.put(metadataHandle, epochNonceCheckpointKey(epoch), snapshot.serialize());
+        } catch (RocksDBException e) {
+            log.error("Failed to store epoch nonce checkpoint for epoch {}", epoch, e);
+        }
+    }
+
+    @Override
+    public List<NonceStateSnapshot> getEpochNonceCheckpointsAtOrBeforeSlot(long slot) {
+        List<NonceStateSnapshot> checkpoints = new ArrayList<>();
+        try (RocksIterator iterator = db.newIterator(metadataHandle)) {
+            for (iterator.seek(EPOCH_NONCE_CHECKPOINT_KEY_PREFIX); iterator.isValid(); iterator.next()) {
+                byte[] key = iterator.key();
+                if (!startsWith(key, EPOCH_NONCE_CHECKPOINT_KEY_PREFIX)) break;
+                try {
+                    NonceStateSnapshot snapshot = NonceStateSnapshot.deserialize(iterator.value());
+                    if (snapshot.slot() <= slot) {
+                        checkpoints.add(snapshot);
+                    }
+                } catch (Exception e) {
+                    log.warn("Ignoring malformed epoch nonce checkpoint: {}", e.toString());
+                }
+            }
+        }
+        checkpoints.sort(java.util.Comparator
+                .comparingLong(NonceStateSnapshot::slot)
+                .thenComparingLong(NonceStateSnapshot::blockNumber)
+                .reversed());
+        return checkpoints;
+    }
+
+    @Override
+    public void pruneEpochNonceCheckpointsAfter(int epoch) {
+        try (RocksIterator iterator = db.newIterator(metadataHandle)) {
+            for (iterator.seek(EPOCH_NONCE_CHECKPOINT_KEY_PREFIX); iterator.isValid(); iterator.next()) {
+                byte[] key = iterator.key();
+                if (!startsWith(key, EPOCH_NONCE_CHECKPOINT_KEY_PREFIX)) break;
+                int storedEpoch = ByteBuffer.wrap(key, EPOCH_NONCE_CHECKPOINT_KEY_PREFIX.length, Integer.BYTES).getInt();
+                if (storedEpoch > epoch) {
+                    db.delete(metadataHandle, key);
+                }
+            }
+        } catch (RocksDBException e) {
+            log.error("Failed to prune epoch nonce checkpoints after epoch {}", epoch, e);
+        }
+    }
+
     private static byte[] epochNonceKey(int epoch) {
         byte[] key = Arrays.copyOf(EPOCH_NONCE_KEY_PREFIX, EPOCH_NONCE_KEY_PREFIX.length + Integer.BYTES);
         ByteBuffer.wrap(key, EPOCH_NONCE_KEY_PREFIX.length, Integer.BYTES).putInt(epoch);
+        return key;
+    }
+
+    private static byte[] epochNonceCheckpointKey(int epoch) {
+        byte[] key = Arrays.copyOf(EPOCH_NONCE_CHECKPOINT_KEY_PREFIX,
+                EPOCH_NONCE_CHECKPOINT_KEY_PREFIX.length + Integer.BYTES);
+        ByteBuffer.wrap(key, EPOCH_NONCE_CHECKPOINT_KEY_PREFIX.length, Integer.BYTES).putInt(epoch);
         return key;
     }
 

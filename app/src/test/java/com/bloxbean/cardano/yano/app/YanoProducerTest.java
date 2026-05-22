@@ -30,6 +30,7 @@ class YanoProducerTest {
         var settings = YanoProducer.resolveRollbackRetentionSettings(
                 Optional.empty(),
                 0,
+                0,
                 4320,
                 false,
                 5,
@@ -54,6 +55,7 @@ class YanoProducerTest {
         var settings = YanoProducer.resolveRollbackRetentionSettings(
                 Optional.of(20),
                 432000,
+                0.05,
                 4320,
                 false,
                 5,
@@ -75,10 +77,11 @@ class YanoProducerTest {
     }
 
     @Test
-    void rollbackRetentionDoesNotOverrideExplicitLeafValues() {
+    void rollbackRetentionKeepsExplicitLeafValuesButRaisesUnsafeBlockBodyPruneDepth() {
         var settings = YanoProducer.resolveRollbackRetentionSettings(
                 Optional.of(20),
                 432000,
+                0.05,
                 7_776_000,
                 true,
                 40,
@@ -95,7 +98,7 @@ class YanoProducerTest {
         assertEquals(40, settings.accountStateEpochBlockDataRetentionLag());
         assertEquals(120, settings.accountStateSnapshotRetentionEpochs());
         assertEquals(7_776_000L, settings.accountHistoryRollbackSafetySlots().orElseThrow());
-        assertEquals(2160, settings.blockBodyPruneDepth());
+        assertEquals(864_000, settings.blockBodyPruneDepth());
     }
 
     @Test
@@ -104,6 +107,7 @@ class YanoProducerTest {
                 () -> YanoProducer.resolveRollbackRetentionSettings(
                         Optional.of(-1),
                         432000,
+                        0.05,
                         4320,
                         false,
                         5,
@@ -116,5 +120,17 @@ class YanoProducerTest {
                         false));
 
         assertEquals("yano.rollback-retention-epochs must be >= 0", error.getMessage());
+    }
+
+    @Test
+    void minimumBlockBodyPruneDepthUsesActiveSlotsCoeffAndSafetyMultiplier() {
+        assertEquals(216_000,
+                YanoProducer.computeMinimumBlockBodyPruneDepth(5, 432_000, 0.05));
+    }
+
+    @Test
+    void minimumBlockBodyPruneDepthFallsBackToEpochLengthWhenActiveSlotsCoeffInvalid() {
+        assertEquals(864_000,
+                YanoProducer.computeMinimumBlockBodyPruneDepth(1, 432_000, 0));
     }
 }

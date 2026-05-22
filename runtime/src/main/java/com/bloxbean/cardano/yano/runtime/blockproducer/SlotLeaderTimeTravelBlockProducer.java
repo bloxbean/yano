@@ -167,8 +167,7 @@ public class SlotLeaderTimeTravelBlockProducer implements BlockProducerService {
             refreshStakeData(epoch);
 
             if (sigma.signum() > 0) {
-                epochNonceState.advanceEpochIfNeeded(slot);
-                byte[] epochNonce = epochNonceState.getEpochNonce();
+                byte[] epochNonce = epochNonceState.previewEpochNonceForSlot(slot);
                 if (epochNonce == null) {
                     log.warn("Epoch nonce not available, skipping leader check for slot {}", slot);
                 } else {
@@ -218,7 +217,7 @@ public class SlotLeaderTimeTravelBlockProducer implements BlockProducerService {
                 memPool, transactionValidatorService, utxoState);
 
         var result = blockBuilder.buildBlock(blockNumber, slot, prevHash, txList, vrfResult);
-        BlockProducerHelper.storeBlock(chainState, result);
+        BlockProducerHelper.storeProducedBlock(chainState, blockBuilder, result);
 
         log.info("Slot-leader time-travel block #{} produced: slot={}, txs={}, hash={}",
                 blockNumber, slot, txList.size(), HexUtil.encodeHexString(result.blockHash()));

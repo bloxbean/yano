@@ -369,9 +369,13 @@ public class YanoProducer {
             long slotWindow) {
     }
 
+    record RollbackRetentionGenesisValues(long epochLength, double activeSlotsCoeff) {
+    }
+
     static RollbackRetentionSettings resolveRollbackRetentionSettings(
             java.util.Optional<Integer> rollbackRetentionEpochs,
             long epochLength,
+            double activeSlotsCoeff,
             int utxoRollbackWindow,
             boolean utxoRollbackWindowConfigured,
             int accountStateEpochBlockDataRetentionLag,
@@ -430,8 +434,10 @@ public class YanoProducer {
                 : java.util.Optional.of(Math.max(accountHistoryRollbackSafetySlots.orElse(0L), slotWindow));
 
         int resolvedBlockBodyPruneDepth = blockBodyPruneDepth;
-        if (!blockBodyPruneDepthConfigured && blockBodyPruneDepth > 0) {
-            resolvedBlockBodyPruneDepth = Math.max(blockBodyPruneDepth, slotWindowInt);
+        if (blockBodyPruneDepth > 0) {
+            int minimumPruneDepth = computeMinimumBlockBodyPruneDepth(
+                    retentionEpochs, epochLength, activeSlotsCoeff);
+            resolvedBlockBodyPruneDepth = Math.max(blockBodyPruneDepth, minimumPruneDepth);
         }
 
         return new RollbackRetentionSettings(
@@ -443,6 +449,20 @@ public class YanoProducer {
                 true,
                 retentionEpochs,
                 slotWindow);
+    }
+
+    static int computeMinimumBlockBodyPruneDepth(int retentionEpochs,
+                                                 long epochLength,
+                                                 double activeSlotsCoeff) {
+        if (retentionEpochs <= 0) return 0;
+        if (epochLength <= 0) {
+            throw new IllegalArgumentException("epochLength must be > 0");
+        }
+        double effectiveActiveSlotsCoeff = activeSlotsCoeff > 0 ? activeSlotsCoeff : 1.0;
+        long estimatedBlocksPerEpoch = (long) Math.ceil(epochLength * effectiveActiveSlotsCoeff);
+        long safeBlocksPerEpoch = Math.multiplyExact(estimatedBlocksPerEpoch, 2L);
+        return requireIntRange(Math.multiplyExact((long) retentionEpochs, safeBlocksPerEpoch),
+                BLOCK_BODY_PRUNE_DEPTH);
     }
 
     private static int requireIntRange(long value, String propertyName) {
@@ -569,11 +589,13 @@ public class YanoProducer {
                     + "UTXO bootstrap remains enabled; transaction evaluation may use protocol-param.json if configured.");
         }
 
+        RollbackRetentionGenesisValues rollbackRetentionGenesisValues = rollbackRetentionEpochs.orElse(0) > 0
+                ? resolveRollbackRetentionGenesisValues(resolvedShelleyGenesis)
+                : new RollbackRetentionGenesisValues(0, 0);
         RollbackRetentionSettings rollbackRetentionSettings = resolveRollbackRetentionSettings(
                 rollbackRetentionEpochs,
-                rollbackRetentionEpochs.orElse(0) > 0
-                        ? resolveRollbackRetentionEpochLength(resolvedShelleyGenesis)
-                        : 0,
+                rollbackRetentionGenesisValues.epochLength(),
+                rollbackRetentionGenesisValues.activeSlotsCoeff(),
                 utxoRollbackWindow,
                 isConfigPropertyPresent(UTXO_ROLLBACK_WINDOW),
                 accountStateEpochBlockDataRetentionLag,
@@ -586,6 +608,17 @@ public class YanoProducer {
                 isConfigPropertyPresent(BLOCK_BODY_PRUNE_DEPTH));
 
         if (rollbackRetentionSettings.umbrellaEnabled()) {
+            if (blockBodyPruneDepth > 0
+                    && rollbackRetentionSettings.blockBodyPruneDepth() > blockBodyPruneDepth) {
+                log.warn("Raised chain.block-body-prune-depth from {} to {} to satisfy "
+                                + "{}={} with genesis epochLength={} activeSlotsCoeff={}",
+                        blockBodyPruneDepth,
+                        rollbackRetentionSettings.blockBodyPruneDepth(),
+                        ROLLBACK_RETENTION_EPOCHS,
+                        rollbackRetentionSettings.retentionEpochs(),
+                        rollbackRetentionGenesisValues.epochLength(),
+                        rollbackRetentionGenesisValues.activeSlotsCoeff());
+            }
             log.info("Rollback retention umbrella configured: epochs={}, slotWindow={}. "
                             + "Effective retention: utxo.rollbackWindow={}, "
                             + "account-state.epoch-block-data-retention-lag={}, "
@@ -955,11 +988,12 @@ public class YanoProducer {
         }
     }
 
-    private long resolveRollbackRetentionEpochLength(String resolvedShelleyGenesis) {
+    private RollbackRetentionGenesisValues resolveRollbackRetentionGenesisValues(String resolvedShelleyGenesis) {
         try {
-            return NetworkGenesisConfig.load(resolvedShelleyGenesis, null, null, null).getEpochLength();
+            NetworkGenesisConfig genesis = NetworkGenesisConfig.load(resolvedShelleyGenesis, null, null, null);
+            return new RollbackRetentionGenesisValues(genesis.getEpochLength(), genesis.getActiveSlotsCoeff());
         } catch (Exception e) {
-            throw new IllegalStateException("Failed to resolve Shelley epoch length for "
+            throw new IllegalStateException("Failed to resolve Shelley genesis values for "
                     + ROLLBACK_RETENTION_EPOCHS + " from " + resolvedShelleyGenesis, e);
         }
     }

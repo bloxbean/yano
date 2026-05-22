@@ -93,6 +93,7 @@ class HaskellCompatibilityTest {
         byte[] prevHash = new byte[32]; // zero-filled for first block after genesis
 
         DevnetBlockBuilder.BlockBuildResult result = builder.buildBlock(blockNumber, slot, prevHash, List.of());
+        builder.commitPendingNonceState();
 
         assertNotNull(result, "Block build result must not be null");
         assertNotNull(result.blockCbor(), "Block CBOR must not be null");
@@ -424,6 +425,7 @@ class HaskellCompatibilityTest {
 
         DevnetBlockBuilder.BlockBuildResult result = builder.buildBlock(blockNumber, slot, prevHash,
                 List.of(fakeTxCbor));
+        builder.commitPendingNonceState();
 
         assertNotNull(result);
         System.out.println("Block with 1 transaction built, blockHash=" + HexUtil.encodeHexString(result.blockHash()));
@@ -510,6 +512,7 @@ class HaskellCompatibilityTest {
             long slot = i * 2L;
 
             DevnetBlockBuilder.BlockBuildResult result = builder.buildBlock(blockNum, slot, prevHash, List.of());
+            builder.commitPendingNonceState();
             assertNotNull(result);
 
             // Verify block hash

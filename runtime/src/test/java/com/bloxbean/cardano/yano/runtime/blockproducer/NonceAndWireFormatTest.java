@@ -108,6 +108,7 @@ class NonceAndWireFormatTest {
                 HexUtil.encodeHexString(epochNonceBeforeBlock0));
 
         DevnetBlockBuilder.BlockBuildResult block0 = builder.buildBlock(0, 0, null, List.of());
+        builder.commitPendingNonceState();
 
         byte[] epochNonceAfterBlock0 = nonceState.getEpochNonce();
 
@@ -138,6 +139,7 @@ class NonceAndWireFormatTest {
                 "Block 1 must use the same epoch nonce as block 0 (still epoch 0)");
 
         DevnetBlockBuilder.BlockBuildResult block1 = builder.buildBlock(1, 1, block0.blockHash(), List.of());
+        builder.commitPendingNonceState();
 
         byte[] epochNonceAfterBlock1 = nonceState.getEpochNonce();
 
@@ -237,6 +239,7 @@ class NonceAndWireFormatTest {
                 nonceState, null);
 
         DevnetBlockBuilder.BlockBuildResult block0 = builder.buildBlock(0, 0, null, List.of());
+        builder.commitPendingNonceState();
 
         byte[] blockCbor = block0.blockCbor();
         byte[] blockHash = block0.blockHash();

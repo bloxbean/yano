@@ -51,9 +51,35 @@ public final class BlockProducerHelper {
         log.info("Block producer epoch tracking reset to epoch {} at slot {}", previousEpoch, tipSlot);
     }
 
-    public static void storeBlock(ChainState chainState, DevnetBlockBuilder.BlockBuildResult result) {
-        chainState.storeBlock(result.blockHash(), result.blockNumber(), result.slot(), result.blockCbor());
+    private static void storeBlock(ChainState chainState, DevnetBlockBuilder.BlockBuildResult result) {
         chainState.storeBlockHeader(result.blockHash(), result.blockNumber(), result.slot(), result.wrappedHeaderCbor());
+        chainState.storeBlock(result.blockHash(), result.blockNumber(), result.slot(), result.blockCbor());
+    }
+
+    /**
+     * Store a locally produced block and finalize any nonce state staged while building it.
+     * <p>
+     * {@link SignedBlockBuilder} mutates its in-memory nonce state during block assembly, but
+     * defers durable nonce snapshot writes until after the ChainState header/body cursor has
+     * advanced. Producer code must use this method so nonce state cannot move ahead of the
+     * durable block cursor if header/body storage fails.
+     * <p>
+     * For unsigned devnet builders, this method is equivalent to storing the header and body.
+     */
+    public static void storeProducedBlock(ChainState chainState,
+                                          DevnetBlockBuilder blockBuilder,
+                                          DevnetBlockBuilder.BlockBuildResult result) {
+        if (blockBuilder instanceof SignedBlockBuilder signedBlockBuilder) {
+            try {
+                storeBlock(chainState, result);
+            } catch (RuntimeException | Error e) {
+                signedBlockBuilder.rollbackPendingNonceState();
+                throw e;
+            }
+            signedBlockBuilder.commitPendingNonceState();
+        } else {
+            storeBlock(chainState, result);
+        }
     }
 
     public static void publishEvent(EventBus eventBus, DevnetBlockBuilder.BlockBuildResult result,

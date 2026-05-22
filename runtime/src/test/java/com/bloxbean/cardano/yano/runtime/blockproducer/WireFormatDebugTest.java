@@ -67,6 +67,7 @@ class WireFormatDebugTest {
         // STEP 1: Build a signed block
         // =====================================================================
         var result = builder.buildBlock(1, 10, new byte[32], List.of());
+        builder.commitPendingNonceState();
         byte[] storedBlockCbor = result.blockCbor();
 
         System.out.println("==========================================================");
@@ -278,6 +279,7 @@ class WireFormatDebugTest {
         // and gets the raw block bytes which still contain [era, tag24(content)]
 
         var result = builder.buildBlock(2, 20, new byte[32], List.of());
+        builder.commitPendingNonceState();
         byte[] storedBlock = result.blockCbor();
 
         // Serialize to wire format
@@ -317,6 +319,7 @@ class WireFormatDebugTest {
         // how the block structure looks on the wire.
 
         var result = builder.buildBlock(3, 30, new byte[32], List.of());
+        builder.commitPendingNonceState();
         byte[] storedBlock = result.blockCbor();
 
         System.out.println("==========================================================");

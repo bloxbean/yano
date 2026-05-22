@@ -37,6 +37,7 @@ public class EpochNonceState {
     private byte[] labNonce;           // may be null (no previous block yet)
     private byte[] ticknPrevHashNonce; // may be null (first epoch)
     private int currentEpoch;
+    private boolean epochTransitionPending;
 
     private final long epochLength;
     private final long preConwayStabilityWindow;  // floor(3k/f) for Shelley-Babbage
@@ -127,6 +128,7 @@ public class EpochNonceState {
         this.labNonce = null;
         this.ticknPrevHashNonce = null;
         this.currentEpoch = epochForSlot(shelleyStartSlot);
+        this.epochTransitionPending = false;
         log.info("Epoch nonce initialized from genesis hash, epoch={}, preConwayStabilityWindow={}, conwayStabilityWindow={}",
                 currentEpoch, preConwayStabilityWindow, conwayStabilityWindow);
     }
@@ -144,6 +146,7 @@ public class EpochNonceState {
         this.labNonce = null;
         this.ticknPrevHashNonce = null;
         this.currentEpoch = epochForSlot(shelleyStartSlot);
+        this.epochTransitionPending = false;
         log.info("Epoch nonce initialized from pre-computed genesis hash, epoch={}, preConwayStabilityWindow={}, conwayStabilityWindow={}",
                 currentEpoch, preConwayStabilityWindow, conwayStabilityWindow);
     }
@@ -163,6 +166,7 @@ public class EpochNonceState {
         this.candidateNonce = nonce.clone();
         this.labNonce = null;
         this.ticknPrevHashNonce = null;
+        this.epochTransitionPending = false;
         log.info("Epoch nonce seeded from external source: epoch={}, nonce={}",
                 epoch, com.bloxbean.cardano.yaci.core.util.HexUtil.encodeHexString(nonce));
     }
@@ -194,9 +198,42 @@ public class EpochNonceState {
         if (blockEpoch > currentEpoch) {
             performTickn(extraEntropy, newEpochEra);
             currentEpoch = blockEpoch;
+            epochTransitionPending = true;
             log.info("Epoch transition to epoch {}, new epochNonce={}",
                     currentEpoch, com.bloxbean.cardano.yaci.core.util.HexUtil.encodeHexString(epochNonce));
         }
+    }
+
+    /**
+     * Return the epoch nonce that would be used at {@code slot} without mutating this state.
+     * <p>
+     * Block producer leader checks need the next-epoch nonce before they know whether a block
+     * will be produced. Mutating the shared nonce state during a losing leader check can move
+     * the cursor ahead of body application, so producer code must preview first and let the
+     * block builder apply the transition only when a block is actually built.
+     */
+    public byte[] previewEpochNonceForSlot(long slot) {
+        return previewEpochNonceForSlot(slot, null, null);
+    }
+
+    /**
+     * Return the epoch nonce that would be used at {@code slot} with optional TPraos entropy,
+     * without mutating this state.
+     */
+    public byte[] previewEpochNonceForSlot(long slot, byte[] extraEntropy, Era newEpochEra) {
+        int blockEpoch = epochForSlot(slot);
+        if (blockEpoch <= currentEpoch) {
+            return getEpochNonce();
+        }
+
+        byte[] preview = combineNonces(candidateNonce, ticknPrevHashNonce);
+        if (extraEntropy != null && usesTPraosExtraEntropy(newEpochEra)) {
+            preview = combineNonces(preview, extraEntropy);
+        }
+        if (preview == null) {
+            return getEpochNonce();
+        }
+        return preview.clone();
     }
 
     /**
@@ -395,6 +432,19 @@ public class EpochNonceState {
     }
 
     /**
+     * Consume the marker set when {@link #advanceEpochIfNeeded(long, byte[], Era)}
+     * moved the nonce variables into a new epoch before a block snapshot was
+     * persisted. Block producers may advance nonce during leader checks before
+     * they know whether they will produce a block; the next stored block for
+     * that nonce state must still create the durable epoch checkpoint.
+     */
+    public boolean consumeEpochTransitionPending() {
+        boolean pending = epochTransitionPending;
+        epochTransitionPending = false;
+        return pending;
+    }
+
+    /**
      * Serialize state to compact binary for persistence.
      * Format: version(1) + epoch(4) + 5 nullable nonces (1-byte flag + 32-byte value each)
      */
@@ -429,6 +479,7 @@ public class EpochNonceState {
         candidateNonce = readNullableNonce(buf);
         labNonce = readNullableNonce(buf);
         ticknPrevHashNonce = readNullableNonce(buf);
+        epochTransitionPending = false;
         log.info("Epoch nonce state restored: epoch={}", currentEpoch);
     }
 

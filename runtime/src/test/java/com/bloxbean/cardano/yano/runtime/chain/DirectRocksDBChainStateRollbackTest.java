@@ -1,5 +1,6 @@
 package com.bloxbean.cardano.yano.runtime.chain;
 
+import com.bloxbean.cardano.yano.runtime.blockproducer.NonceStateSnapshot;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -41,6 +42,7 @@ class DirectRocksDBChainStateRollbackTest {
         chainState.storeBlockHeader(hash, 1L, 10L, new byte[]{1});
         chainState.storeEpochNonceState(new byte[]{9});
         chainState.storeEpochNonce(1, new byte[]{8});
+        chainState.storeEpochNonceCheckpoint(1, new NonceStateSnapshot(10L, 1L, hash, new byte[]{7}));
         chainState.setEraStartSlot(2, 10L);
 
         chainState.rollbackToOrigin();
@@ -55,7 +57,41 @@ class DirectRocksDBChainStateRollbackTest {
         assertThat(chainState.getSlotByBlockNumber(1L)).isNull();
         assertThat(chainState.getEpochNonceState()).isNull();
         assertThat(chainState.getEpochNonce(1)).isNull();
+        assertThat(chainState.getEpochNonceCheckpointsAtOrBeforeSlot(10L)).isEmpty();
         assertThat(chainState.getEraStartSlot(2)).isEmpty();
+    }
+
+    @Test
+    void epochNonceCheckpointsRoundTripOrderAndPrune() {
+        NonceStateSnapshot checkpoint1 = new NonceStateSnapshot(10L, 1L, hash(1), new byte[]{1});
+        NonceStateSnapshot checkpoint2 = new NonceStateSnapshot(20L, 2L, hash(2), new byte[]{2});
+        NonceStateSnapshot checkpoint3 = new NonceStateSnapshot(30L, 3L, hash(3), new byte[]{3});
+
+        chainState.storeLatestNonceSnapshot(checkpoint3);
+        chainState.storeEpochNonceCheckpoint(1, checkpoint1);
+        chainState.storeEpochNonceCheckpoint(2, checkpoint2);
+        chainState.storeEpochNonceCheckpoint(3, checkpoint3);
+
+        assertThat(chainState.getLatestNonceSnapshot().orElseThrow().blockNumber()).isEqualTo(3L);
+        assertThat(chainState.getLatestNonceSnapshot().orElseThrow().nonceState()).isEqualTo(new byte[]{3});
+        assertThat(chainState.getEpochNonceCheckpointsAtOrBeforeSlot(25L))
+                .extracting(NonceStateSnapshot::blockNumber)
+                .containsExactly(2L, 1L);
+
+        chainState.close();
+        chainState = new DirectRocksDBChainState(tempDir.resolve("testdb").toString());
+
+        assertThat(chainState.getLatestNonceSnapshot().orElseThrow().blockNumber()).isEqualTo(3L);
+        assertThat(chainState.getLatestNonceSnapshot().orElseThrow().nonceState()).isEqualTo(new byte[]{3});
+        assertThat(chainState.getEpochNonceCheckpointsAtOrBeforeSlot(30L))
+                .extracting(NonceStateSnapshot::blockNumber)
+                .containsExactly(3L, 2L, 1L);
+
+        chainState.pruneEpochNonceCheckpointsAfter(1);
+
+        assertThat(chainState.getEpochNonceCheckpointsAtOrBeforeSlot(30L))
+                .extracting(NonceStateSnapshot::blockNumber)
+                .containsExactly(1L);
     }
 
     @Test

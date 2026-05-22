@@ -28,6 +28,7 @@ public class SignedBlockBuilder extends DevnetBlockBuilder {
 
     private final long slotsPerKESPeriod;
     private final long maxKESEvolutions;
+    private PendingNonceCommit pendingNonceCommit;
 
     // Derived from keys
     private final byte[] issuerVkey;   // 32 bytes — cold verification key from opcert
@@ -68,9 +69,12 @@ public class SignedBlockBuilder extends DevnetBlockBuilder {
     @Override
     public BlockBuildResult buildBlock(long blockNumber, long slot, byte[] prevHash,
                                        List<byte[]> transactions) {
-        // Advance epoch FIRST so VRF uses the correct nonce
-        epochNonceState.advanceEpochIfNeeded(slot);
-        byte[] epochNonce = epochNonceState.getEpochNonce();
+        ensureNoPendingNonceCommit();
+        // Preview without mutating; the mutation is applied only after block assembly succeeds.
+        byte[] epochNonce = epochNonceState.previewEpochNonceForSlot(slot);
+        if (epochNonce == null) {
+            throw new IllegalStateException("Epoch nonce not available for slot " + slot);
+        }
         BlockSigner.VrfSignResult vrfResult = blockSigner.computeVrf(keys.getVrfSkey(), slot, epochNonce);
         return buildBlockInternal(blockNumber, slot, prevHash, transactions, vrfResult);
     }
@@ -89,7 +93,7 @@ public class SignedBlockBuilder extends DevnetBlockBuilder {
     public BlockBuildResult buildBlock(long blockNumber, long slot, byte[] prevHash,
                                        List<byte[]> transactions,
                                        BlockSigner.VrfSignResult precomputedVrf) {
-        epochNonceState.advanceEpochIfNeeded(slot);
+        ensureNoPendingNonceCommit();
         return buildBlockInternal(blockNumber, slot, prevHash, transactions, precomputedVrf);
     }
 
@@ -128,16 +132,85 @@ public class SignedBlockBuilder extends DevnetBlockBuilder {
         BlockBuildResult result = assembleBlock(headerArray, body, blockNumber, slot,
                 transactions != null ? transactions.size() : 0);
 
-        // 7. Evolve nonce state
-        epochNonceState.onBlockProduced(slot, prevHash, vrfResult.output());
+        // 7. Evolve nonce state only after block assembly has succeeded. Persistence is
+        // staged and committed by the producer after header/body storage succeeds, so a
+        // store failure cannot leave durable nonce state ahead of the chain cursor.
+        byte[] stateBeforeMutation = epochNonceState.serialize();
+        try {
+            int epochBefore = epochNonceState.getCurrentEpoch();
+            epochNonceState.advanceEpochIfNeeded(slot);
+            boolean epochTransition = epochNonceState.getCurrentEpoch() > epochBefore;
+            epochNonceState.onBlockProduced(slot, prevHash, vrfResult.output());
+            boolean pendingBoundary = epochNonceState.consumeEpochTransitionPending();
+            boolean checkpointBoundary = epochTransition || pendingBoundary;
 
-        // 8. Persist nonce state
-        if (nonceStore != null) {
-            nonceStore.storeEpochNonceState(epochNonceState.serialize());
-            nonceStore.storeEpochNonce(epochNonceState.getCurrentEpoch(), epochNonceState.getEpochNonce());
+            if (nonceStore != null) {
+                byte[] serialized = epochNonceState.serialize();
+                NonceStateSnapshot snapshot = new NonceStateSnapshot(
+                        slot, blockNumber, result.blockHash(), serialized);
+                pendingNonceCommit = new PendingNonceCommit(
+                        stateBeforeMutation,
+                        epochNonceState.getCurrentEpoch(),
+                        epochNonceState.getEpochNonce(),
+                        snapshot,
+                        checkpointBoundary);
+            } else {
+                pendingNonceCommit = new PendingNonceCommit(
+                        stateBeforeMutation, -1, null, null, false);
+            }
+        } catch (RuntimeException | Error e) {
+            epochNonceState.restore(stateBeforeMutation);
+            pendingNonceCommit = null;
+            throw e;
         }
 
         return result;
+    }
+
+    /**
+     * Commit the nonce state staged by the most recent successful build. This must be called
+     * only after the produced block has been durably stored in ChainState.
+     */
+    public void commitPendingNonceState() {
+        PendingNonceCommit pending = pendingNonceCommit;
+        if (pending == null) {
+            return;
+        }
+        if (nonceStore != null && pending.snapshot() != null) {
+            nonceStore.storeLatestNonceSnapshot(pending.snapshot());
+            nonceStore.storeEpochNonce(pending.epoch(), pending.epochNonce());
+            if (pending.checkpointBoundary()) {
+                nonceStore.storeEpochNonceCheckpoint(pending.epoch(), pending.snapshot());
+            }
+        }
+        pendingNonceCommit = null;
+    }
+
+    /**
+     * Restore nonce state staged by the most recent successful build. Producers call this when
+     * ChainState storage fails after block assembly.
+     */
+    public void rollbackPendingNonceState() {
+        PendingNonceCommit pending = pendingNonceCommit;
+        if (pending == null) {
+            return;
+        }
+        epochNonceState.restore(pending.stateBeforeMutation());
+        pendingNonceCommit = null;
+    }
+
+    private void ensureNoPendingNonceCommit() {
+        if (pendingNonceCommit != null) {
+            throw new IllegalStateException("Previous produced block nonce state has not been committed or rolled back");
+        }
+    }
+
+    private record PendingNonceCommit(
+            byte[] stateBeforeMutation,
+            int epoch,
+            byte[] epochNonce,
+            NonceStateSnapshot snapshot,
+            boolean checkpointBoundary) {
     }
 
     /**
