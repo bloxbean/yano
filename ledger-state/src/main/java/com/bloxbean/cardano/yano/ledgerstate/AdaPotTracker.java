@@ -85,6 +85,7 @@ public class AdaPotTracker {
             log.info("AdaPot bootstrapped for epoch {}: reserves={}", epoch, reserves);
         } catch (RocksDBException e) {
             log.error("Failed to bootstrap AdaPot: {}", e.toString());
+            throw new RuntimeException("Failed to bootstrap AdaPot for epoch " + epoch, e);
         }
     }
 
@@ -100,6 +101,7 @@ public class AdaPotTracker {
                     epoch, pot.treasury(), pot.reserves());
         } catch (RocksDBException e) {
             log.error("Failed to store AdaPot for epoch {}: {}", epoch, e.toString());
+            throw new RuntimeException("Failed to store AdaPot for epoch " + epoch, e);
         }
     }
 
@@ -130,7 +132,7 @@ public class AdaPotTracker {
             return Optional.of(AccountStateCborCodec.decodeAdaPot(val));
         } catch (RocksDBException e) {
             log.error("Failed to get AdaPot for epoch {}: {}", epoch, e.toString());
-            return Optional.empty();
+            throw new RuntimeException("Failed to get AdaPot for epoch " + epoch, e);
         }
     }
 

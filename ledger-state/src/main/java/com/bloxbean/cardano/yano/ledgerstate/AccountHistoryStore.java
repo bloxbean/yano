@@ -12,6 +12,7 @@ import com.bloxbean.cardano.yano.api.EpochParamProvider;
 import com.bloxbean.cardano.yano.api.account.AccountHistoryProvider;
 import com.bloxbean.cardano.yano.api.events.BlockAppliedEvent;
 import com.bloxbean.cardano.yano.api.events.RollbackEvent;
+import com.bloxbean.cardano.yano.api.util.StoredBlockUtil;
 import com.bloxbean.cardano.yano.api.rollback.RollbackCapableStore;
 import org.rocksdb.*;
 import org.slf4j.Logger;
@@ -162,6 +163,7 @@ public final class AccountHistoryStore implements AccountHistoryProvider, Rollba
         } catch (Exception e) {
             healthy = false;
             log.error("Account history apply failed for block {}: {}", blockNo, e.toString(), e);
+            throw new RuntimeException("Account history apply failed for block " + blockNo, e);
         }
     }
 
@@ -415,7 +417,10 @@ public final class AccountHistoryStore implements AccountHistoryProvider, Rollba
             return;
         }
 
-        if (lastAppliedBlock == 0 && getLatestAppliedSlot() < 0 && chainState.getBlockEra(tipBlock) == Era.Byron) {
+        byte[] tipBlockBytes = chainState.getBlockByNumber(tipBlock);
+        if (lastAppliedBlock == 0
+                && getLatestAppliedSlot() < 0
+                && StoredBlockUtil.isStoredByronBlock(chainState.getBlockEra(tipBlock), tipBlockBytes)) {
             log.info("Account history reconcile skipped: tip block {} is Byron era, nothing to index", tipBlock);
             return;
         }
@@ -430,8 +435,11 @@ public final class AccountHistoryStore implements AccountHistoryProvider, Rollba
             }
             byte[] blockBytes = chainState.getBlockByNumber(bn);
             if (blockBytes == null) {
-                failed = true;
-                log.warn("Account history reconcile: missing block body for block {}", bn);
+                healthy = false;
+                throw new IllegalStateException("Account history reconcile missing local block body for block " + bn);
+            }
+            Era storedEra = chainState.getBlockEra(bn);
+            if (StoredBlockUtil.isStoredByronBlock(storedEra, blockBytes)) {
                 continue;
             }
 
@@ -444,14 +452,13 @@ public final class AccountHistoryStore implements AccountHistoryProvider, Rollba
                 String blockHash = block.getHeader() != null && block.getHeader().getHeaderBody() != null
                         ? block.getHeader().getHeaderBody().getBlockHash()
                         : null;
-                Era era = block.getEra() != null ? block.getEra() : chainState.getBlockEra(bn);
+                Era era = block.getEra() != null ? block.getEra() : storedEra;
                 applyBlock(new BlockAppliedEvent(era, slot, bn, blockHash, block));
                 if (!healthy) failed = true;
                 replayed++;
             } catch (Throwable t) {
                 healthy = false;
-                failed = true;
-                log.warn("Account history reconcile: skip block {} due to: {}", bn, t.toString());
+                throw new RuntimeException("Account history reconcile failed for block " + bn, t);
             }
         }
         healthy = !failed;
@@ -738,11 +745,14 @@ public final class AccountHistoryStore implements AccountHistoryProvider, Rollba
     private Long readLongMeta(byte[] key) {
         try {
             byte[] value = db.get(cfHistory, key);
-            if (value != null && value.length == 8) {
+            if (value != null) {
+                if (value.length != 8) {
+                    throw new IllegalStateException("Malformed account history metadata length: " + value.length);
+                }
                 return ByteBuffer.wrap(value).order(ByteOrder.BIG_ENDIAN).getLong();
             }
         } catch (Exception e) {
-            log.warn("Failed to read account history metadata: {}", e.getMessage());
+            throw new RuntimeException("Failed to read account history metadata", e);
         }
         return null;
     }
@@ -758,7 +768,7 @@ public final class AccountHistoryStore implements AccountHistoryProvider, Rollba
                 it.prev();
             }
         } catch (Exception e) {
-            log.warn("Failed to read account history latest delta block: {}", e.getMessage());
+            throw new RuntimeException("Failed to read account history latest delta block", e);
         }
         return 0;
     }

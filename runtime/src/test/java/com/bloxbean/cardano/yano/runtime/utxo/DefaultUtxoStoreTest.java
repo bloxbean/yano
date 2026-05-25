@@ -16,11 +16,15 @@ import com.bloxbean.cardano.yano.api.events.RollbackEvent;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.rocksdb.ColumnFamilyHandle;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.File;
 import java.math.BigInteger;
+import java.lang.reflect.Field;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.file.Files;
 import java.util.*;
 
@@ -76,6 +80,54 @@ class DefaultUtxoStoreTest {
         bus.publish(new RollbackEvent(new Point(targetSlot, null), true),
                 EventMetadata.builder().origin("test").slot(targetSlot).build(),
                 PublishOptions.builder().build());
+    }
+
+    @Test
+    void applyBlockRethrowsProcessorFailure() throws Exception {
+        Field processorField = DefaultUtxoStore.class.getDeclaredField("processor");
+        processorField.setAccessible(true);
+        processorField.set(store, (UtxoProcessor) (event, cfUnspent) -> {
+            throw new IllegalStateException("processor failed");
+        });
+
+        Block block = Block.builder()
+                .era(Era.Babbage)
+                .transactionBodies(Collections.emptyList())
+                .invalidTransactions(Collections.emptyList())
+                .build();
+
+        RuntimeException ex = assertThrows(RuntimeException.class,
+                () -> store.applyBlock(new BlockAppliedEvent(Era.Babbage, 10, 1, "bb".repeat(32), block)));
+
+        assertTrue(ex.getMessage().contains("UTXO apply failed for block 1"));
+        assertTrue(ex.getCause() instanceof IllegalStateException);
+    }
+
+    @Test
+    void malformedMetadataFailsClosed() throws Exception {
+        ColumnFamilyHandle meta = (ColumnFamilyHandle) chain.getColumnFamilyHandle(UtxoCfNames.UTXO_META);
+
+        store.getDb().put(meta,
+                "meta.last_applied_block".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                new byte[]{1, 2, 3});
+
+        RuntimeException blockEx = assertThrows(RuntimeException.class, store::readLastAppliedBlock);
+        assertTrue(blockEx.getMessage().contains("Failed to read UTXO last applied block"));
+
+        store.getDb().put(meta,
+                "meta.last_applied_slot".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                new byte[]{1, 2, 3});
+
+        RuntimeException slotEx = assertThrows(RuntimeException.class, store::getLatestAppliedSlot);
+        assertTrue(slotEx.getMessage().contains("Failed to read UTXO latest applied slot"));
+    }
+
+    @Test
+    void computeTotalUtxoLovelaceFailsClosedOnMalformedRecord() throws Exception {
+        store.getDb().put(store.getCfUnspent(), new byte[]{1, 2, 3}, new byte[]{1});
+
+        RuntimeException ex = assertThrows(RuntimeException.class, store::computeTotalUtxoLovelace);
+        assertTrue(ex.getMessage().contains("Failed to decode UTXO while computing total lovelace"));
     }
 
     @Test
@@ -168,7 +220,7 @@ class DefaultUtxoStoreTest {
         publishBlock(200, 2, "a2".repeat(32), b2);
 
         assertTrue(store.getUtxosByAddress(addr, 1, 10).isEmpty());
-        publishRollback(150);
+        publishRollback(199);
 
         var list = store.getUtxosByAddress(addr, 1, 10);
         assertEquals(1, list.size());
@@ -205,7 +257,7 @@ class DefaultUtxoStoreTest {
         assertEquals(Optional.of(BigInteger.ZERO),
                 store.getUtxoBalanceByStakeCredential(stakeCred.credType(), stakeCred.credHash()));
 
-        publishRollback(150);
+        publishRollback(199);
 
         assertEquals(Optional.of(BigInteger.valueOf(1000)),
                 store.getUtxoBalanceByStakeCredential(stakeCred.credType(), stakeCred.credHash()));
@@ -242,7 +294,7 @@ class DefaultUtxoStoreTest {
         assertEquals(Optional.of(BigInteger.valueOf(400)),
                 store.getUtxoBalanceByStakeCredential(stakeCred.credType(), stakeCred.credHash()));
 
-        store.rollbackToSlot(150);
+        store.rollbackToSlot(199);
 
         assertEquals(Optional.of(BigInteger.valueOf(1000)),
                 store.getUtxoBalanceByStakeCredential(stakeCred.credType(), stakeCred.credHash()));
@@ -273,7 +325,7 @@ class DefaultUtxoStoreTest {
         assertEquals(Optional.of(BigInteger.ZERO),
                 store.getUtxoBalanceByStakeCredential(stakeCred.credType(), stakeCred.credHash()));
 
-        publishRollback(250);
+        publishRollback(-1);
 
         assertTrue(store.getUtxosByAddress(BASE_ADDR_WITH_STAKE, 1, 10).isEmpty());
         assertTrue(store.getUtxo(new Outpoint(tx1.getTxHash(), 0)).isEmpty());
@@ -303,7 +355,7 @@ class DefaultUtxoStoreTest {
         assertEquals(Optional.of(BigInteger.ZERO),
                 store.getUtxoBalanceByStakeCredential(stakeCred.credType(), stakeCred.credHash()));
 
-        store.rollbackToSlot(250);
+        store.rollbackToSlot(-1);
 
         assertTrue(store.getUtxosByAddress(BASE_ADDR_WITH_STAKE, 1, 10).isEmpty());
         assertTrue(store.getUtxo(new Outpoint(tx1.getTxHash(), 0)).isEmpty());
@@ -337,7 +389,7 @@ class DefaultUtxoStoreTest {
         assertEquals(Optional.of(BigInteger.ZERO),
                 store.getUtxoBalanceByStakeCredential(stakeCred.credType(), stakeCred.credHash()));
 
-        store.rollbackToSlot(50);
+        store.rollbackToSlot(-1);
 
         assertTrue(store.getUtxosByAddress(BASE_ADDR_WITH_STAKE, 1, 10).isEmpty());
         assertEquals(Optional.of(BigInteger.ZERO),
@@ -444,6 +496,83 @@ class DefaultUtxoStoreTest {
     }
 
     @Test
+    void rollbackFloorDoesNotAdvertiseDeltaOlderThanSpentRetention() {
+        for (int i = 0; i <= 10; i++) {
+            Block block = Block.builder().era(Era.Babbage)
+                    .transactionBodies(Collections.emptyList())
+                    .invalidTransactions(Collections.emptyList()).build();
+            publishBlock(10 + i, 1 + i, String.format("%064x", i + 1), block);
+        }
+
+        assertEquals(16L, store.getRollbackFloorSlot());
+    }
+
+    @Test
+    void rollbackToSlotBelowFloorFailsClosedBeforeMutatingStore() {
+        for (int i = 0; i <= 10; i++) {
+            Block block = Block.builder().era(Era.Babbage)
+                    .transactionBodies(Collections.emptyList())
+                    .invalidTransactions(Collections.emptyList()).build();
+            publishBlock(10 + i, 1 + i, String.format("%064x", i + 20), block);
+        }
+
+        RuntimeException ex = assertThrows(RuntimeException.class, () -> store.rollbackToSlot(15));
+        assertTrue(ex.getMessage().contains("rollback floor is 16"));
+        assertEquals(20, store.getLatestAppliedSlot());
+        assertEquals(11, store.getLastAppliedBlock());
+    }
+
+    @Test
+    void rollbackFailsClosedWhenSpentRecordWasPruned() throws Exception {
+        TransactionBody tx1 = TransactionBody.builder()
+                .txHash("81".repeat(32))
+                .outputs(List.of(TransactionOutput.builder().address(BASE_ADDR_WITH_STAKE)
+                        .amounts(List.of(lovelaceAmount(1000))).build()))
+                .build();
+        Block b1 = Block.builder().era(Era.Babbage).transactionBodies(List.of(tx1))
+                .invalidTransactions(Collections.emptyList()).build();
+        publishBlock(10, 1, "e1".repeat(32), b1);
+
+        TransactionBody tx2 = TransactionBody.builder()
+                .txHash("82".repeat(32))
+                .inputs(Set.of(TransactionInput.builder().transactionId(tx1.getTxHash()).index(0).build()))
+                .outputs(List.of())
+                .build();
+        Block b2 = Block.builder().era(Era.Babbage).transactionBodies(List.of(tx2))
+                .invalidTransactions(Collections.emptyList()).build();
+        publishBlock(11, 2, "e2".repeat(32), b2);
+
+        ColumnFamilyHandle spent = (ColumnFamilyHandle) chain.getColumnFamilyHandle(UtxoCfNames.UTXO_SPENT);
+        store.getDb().delete(spent, UtxoKeyUtil.outpointKey(tx1.getTxHash(), 0));
+
+        RuntimeException ex = assertThrows(RuntimeException.class, () -> store.rollbackToSlot(10));
+        assertTrue(ex.getMessage().contains("UTXO adhoc rollback failed"));
+        assertNotNull(ex.getCause());
+        assertTrue(ex.getCause().getMessage().contains("missing spent record"));
+    }
+
+    @Test
+    void rollbackFloorFailsClosedOnMalformedDelta() throws Exception {
+        ColumnFamilyHandle delta = (ColumnFamilyHandle) chain.getColumnFamilyHandle(UtxoCfNames.UTXO_BLOCK_DELTA);
+        store.getDb().put(delta, new byte[]{0}, new byte[]{1, 2, 3});
+
+        RuntimeException ex = assertThrows(RuntimeException.class, store::getRollbackFloorSlot);
+        assertTrue(ex.getMessage().contains("Failed to read UTXO rollback floor"));
+    }
+
+    @Test
+    void rollbackFloorUsesLatestAppliedSlotWhenNoDeltaIsRetained() throws Exception {
+        ColumnFamilyHandle meta = (ColumnFamilyHandle) chain.getColumnFamilyHandle(UtxoCfNames.UTXO_META);
+        byte[] slot = ByteBuffer.allocate(Long.BYTES)
+                .order(ByteOrder.BIG_ENDIAN)
+                .putLong(250L)
+                .array();
+        store.getDb().put(meta, "meta.last_applied_slot".getBytes(java.nio.charset.StandardCharsets.UTF_8), slot);
+
+        assertEquals(250L, store.getRollbackFloorSlot());
+    }
+
+    @Test
     void rollbackCapableStore_rollbackToSlot() {
         String addr = "addr_test1vpxrollback00000000000000000000000000000000000";
         TransactionBody tx1 = TransactionBody.builder()
@@ -462,10 +591,25 @@ class DefaultUtxoStoreTest {
         assertEquals(200, store.getLatestAppliedSlot());
 
         // Adhoc rollback to slot 100
-        store.rollbackToSlot(100);
+        store.rollbackToSlot(199);
 
-        // After rollback, latestAppliedSlot should be <= 100
-        assertTrue(store.getLatestAppliedSlot() <= 100);
+        // After rollback, block 2 should be undone while block 1 remains.
+        assertTrue(store.getLatestAppliedSlot() <= 199);
+        assertEquals(1, store.getLastAppliedBlock());
+    }
+
+    @Test
+    void rollbackCapableStore_rollbackBeforeFirstBlockClearsBlockCursor() {
+        Block b1 = Block.builder().era(Era.Babbage).transactionBodies(Collections.emptyList())
+                .invalidTransactions(Collections.emptyList()).build();
+        publishBlock(100, 1, "a3".repeat(32), b1);
+
+        assertEquals(1, store.getLastAppliedBlock());
+
+        store.rollbackToSlot(-1);
+
+        assertEquals(0, store.getLastAppliedBlock());
+        assertEquals(-1, store.getLatestAppliedSlot());
     }
 
     // --- Allegra bootstrap UTXO removal tests ---
@@ -541,7 +685,7 @@ class DefaultUtxoStoreTest {
         assertTrue(chain.isAllegraBootstrapDone());
 
         // Rollback past the Allegra block
-        publishRollback(50);
+        publishRollback(-1);
 
         // Bootstrap UTXOs should be restored
         assertNotNull(getUnspent(keys.get(0)));
@@ -600,6 +744,42 @@ class DefaultUtxoStoreTest {
         assertTrue(chain.isAllegraBootstrapDone());
     }
 
+    @Test
+    void reconcileSkipsStoredByronBlocks() {
+        byte[] hash1 = HexUtil.decodeHexString("11".repeat(32));
+        byte[] hash2 = HexUtil.decodeHexString("22".repeat(32));
+
+        chain.forceStoreBlockHeader(hash1, 1L, 1L, new byte[]{1});
+        chain.storeBlock(hash1, 1L, 1L, byronTaggedBlockBytes());
+        chain.forceStoreBlockHeader(hash2, 2L, 2L, new byte[]{2});
+        chain.storeBlock(hash2, 2L, 2L, byronTaggedBlockBytes());
+
+        assertDoesNotThrow(() -> store.reconcile(chain));
+        assertEquals(0L, store.readLastAppliedBlock());
+    }
+
+    @Test
+    void reconcileFailsClosedOnMalformedNonByronBlock() {
+        byte[] hash = HexUtil.decodeHexString("33".repeat(32));
+        chain.forceStoreBlockHeader(hash, 1L, 1L, new byte[]{1});
+        chain.storeBlock(hash, 1L, 1L, malformedNonByronBlockBytes());
+
+        RuntimeException ex = assertThrows(RuntimeException.class, () -> store.reconcile(chain));
+        assertTrue(ex.getMessage().contains("UTXO reconcile failed to deserialize block 1"));
+    }
+
+    @Test
+    void reconcileFailsClosedOnHugeEraTagThatWouldWrapToByron() {
+        byte[] hash = HexUtil.decodeHexString("44".repeat(32));
+        chain.forceStoreBlockHeader(hash, 1L, 1L, new byte[]{1});
+        chain.storeBlock(hash, 1L, 1L, hugeEraTagBlockBytes());
+
+        assertEquals(Era.Byron, chain.getBlockEra(1L),
+                "ChainState's legacy era reader uses intValue and can misclassify this malformed tag");
+        RuntimeException ex = assertThrows(RuntimeException.class, () -> store.reconcile(chain));
+        assertTrue(ex.getMessage().contains("UTXO reconcile failed to deserialize block 1"));
+    }
+
     private byte[] getUnspent(byte[] outpointKey) {
         try {
             return store.getDb().get(store.getCfUnspent(), outpointKey);
@@ -625,6 +805,24 @@ class DefaultUtxoStoreTest {
             default -> throw new IllegalArgumentException("Address does not contain a stake credential: " + address);
         };
         return new StakeCred(credType, HexUtil.encodeHexString(stakeHash));
+    }
+
+    private static byte[] byronTaggedBlockBytes() {
+        return new byte[]{(byte) 0x82, (byte) 0x01, (byte) 0x80};
+    }
+
+    private static byte[] malformedNonByronBlockBytes() {
+        return new byte[]{(byte) 0x82, (byte) 0x80, (byte) 0x80};
+    }
+
+    private static byte[] hugeEraTagBlockBytes() {
+        return new byte[]{
+                (byte) 0x82,
+                (byte) 0x1b,
+                0x00, 0x00, 0x00, 0x01,
+                0x00, 0x00, 0x00, 0x00,
+                (byte) 0x80
+        };
     }
 
     private record StakeCred(int credType, String credHash) {}

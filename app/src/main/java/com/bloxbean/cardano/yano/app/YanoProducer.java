@@ -22,6 +22,7 @@ import com.bloxbean.cardano.yano.runtime.blockproducer.EffectiveProtocolParamsSu
 import com.bloxbean.cardano.yano.runtime.blockproducer.GenesisConfig;
 import com.bloxbean.cardano.yano.runtime.blockproducer.ProtocolParamsMapper;
 import com.bloxbean.cardano.yano.runtime.config.DefaultEpochParamProvider;
+import com.bloxbean.cardano.yano.runtime.config.DnsCachePolicy;
 import com.bloxbean.cardano.yano.runtime.config.NetworkGenesisConfig;
 import com.bloxbean.cardano.yano.ledgerrules.impl.YaciScriptSupplier;
 import com.bloxbean.cardano.yano.scalusbridge.ScalusTransactionFactory;
@@ -75,6 +76,12 @@ public class YanoProducer {
 
     @ConfigProperty(name = "yano.remote.protocol-magic", defaultValue = "764824073")
     long protocolMagic;
+
+    @ConfigProperty(name = DnsCachePolicy.DNS_CACHE_TTL_KEY)
+    java.util.Optional<Integer> dnsCacheTtl;
+
+    @ConfigProperty(name = DnsCachePolicy.DNS_CACHE_NEGATIVE_TTL_KEY)
+    java.util.Optional<Integer> dnsCacheNegativeTtl;
 
     @ConfigProperty(name = "yano.server.port", defaultValue = "13337")
     int serverPort;
@@ -141,6 +148,11 @@ public class YanoProducer {
     int metricsSampleRocksDbSeconds;
     @ConfigProperty(name = "yano.validation.default-validator-enabled", defaultValue = "true")
     boolean defaultValidatorEnabled;
+
+    // CCL "supplementary rules" (GOVCERT/governance/delegatee) layered on top of Scalus validation.
+    // Disabled by default — they don't yet account for intra-tx state changes within a single block.
+    @ConfigProperty(name = "yano.validation.supplementary-rules-enabled", defaultValue = "false")
+    boolean supplementaryRulesEnabled;
 
     @ConfigProperty(name = ROLLBACK_RETENTION_EPOCHS)
     java.util.Optional<Integer> rollbackRetentionEpochs;
@@ -276,6 +288,9 @@ public class YanoProducer {
     @ConfigProperty(name = "yano.block-producer.past-time-travel-mode", defaultValue = "false")
     boolean pastTimeTravelMode;
 
+    @ConfigProperty(name = "yano.block-producer.past-time-travel-slot-leader-mode", defaultValue = "false")
+    boolean pastTimeTravelSlotLeaderMode;
+
     // Bootstrap config
     @ConfigProperty(name = "yano.bootstrap.enabled", defaultValue = "false")
     boolean bootstrapEnabled;
@@ -354,9 +369,13 @@ public class YanoProducer {
             long slotWindow) {
     }
 
+    record RollbackRetentionGenesisValues(long epochLength, double activeSlotsCoeff) {
+    }
+
     static RollbackRetentionSettings resolveRollbackRetentionSettings(
             java.util.Optional<Integer> rollbackRetentionEpochs,
             long epochLength,
+            double activeSlotsCoeff,
             int utxoRollbackWindow,
             boolean utxoRollbackWindowConfigured,
             int accountStateEpochBlockDataRetentionLag,
@@ -415,8 +434,10 @@ public class YanoProducer {
                 : java.util.Optional.of(Math.max(accountHistoryRollbackSafetySlots.orElse(0L), slotWindow));
 
         int resolvedBlockBodyPruneDepth = blockBodyPruneDepth;
-        if (!blockBodyPruneDepthConfigured && blockBodyPruneDepth > 0) {
-            resolvedBlockBodyPruneDepth = Math.max(blockBodyPruneDepth, slotWindowInt);
+        if (blockBodyPruneDepth > 0) {
+            int minimumPruneDepth = computeMinimumBlockBodyPruneDepth(
+                    retentionEpochs, epochLength, activeSlotsCoeff);
+            resolvedBlockBodyPruneDepth = Math.max(blockBodyPruneDepth, minimumPruneDepth);
         }
 
         return new RollbackRetentionSettings(
@@ -428,6 +449,20 @@ public class YanoProducer {
                 true,
                 retentionEpochs,
                 slotWindow);
+    }
+
+    static int computeMinimumBlockBodyPruneDepth(int retentionEpochs,
+                                                 long epochLength,
+                                                 double activeSlotsCoeff) {
+        if (retentionEpochs <= 0) return 0;
+        if (epochLength <= 0) {
+            throw new IllegalArgumentException("epochLength must be > 0");
+        }
+        double effectiveActiveSlotsCoeff = activeSlotsCoeff > 0 ? activeSlotsCoeff : 1.0;
+        long estimatedBlocksPerEpoch = (long) Math.ceil(epochLength * effectiveActiveSlotsCoeff);
+        long safeBlocksPerEpoch = Math.multiplyExact(estimatedBlocksPerEpoch, 2L);
+        return requireIntRange(Math.multiplyExact((long) retentionEpochs, safeBlocksPerEpoch),
+                BLOCK_BODY_PRUNE_DEPTH);
     }
 
     private static int requireIntRange(long value, String propertyName) {
@@ -503,6 +538,7 @@ public class YanoProducer {
                 .initialEpoch(initialEpoch)
                 .startEpoch(startEpoch)
                 .pastTimeTravelMode(pastTimeTravelMode)
+                .pastTimeTravelSlotLeaderMode(pastTimeTravelSlotLeaderMode)
                 .shelleyGenesisHash(shelleyGenesisHash.orElse(null))
                 .shelleyGenesisFile(resolvedShelleyGenesis)
                 .byronGenesisFile(resolvedByronGenesis)
@@ -553,11 +589,13 @@ public class YanoProducer {
                     + "UTXO bootstrap remains enabled; transaction evaluation may use protocol-param.json if configured.");
         }
 
+        RollbackRetentionGenesisValues rollbackRetentionGenesisValues = rollbackRetentionEpochs.orElse(0) > 0
+                ? resolveRollbackRetentionGenesisValues(resolvedShelleyGenesis)
+                : new RollbackRetentionGenesisValues(0, 0);
         RollbackRetentionSettings rollbackRetentionSettings = resolveRollbackRetentionSettings(
                 rollbackRetentionEpochs,
-                rollbackRetentionEpochs.orElse(0) > 0
-                        ? resolveRollbackRetentionEpochLength(resolvedShelleyGenesis)
-                        : 0,
+                rollbackRetentionGenesisValues.epochLength(),
+                rollbackRetentionGenesisValues.activeSlotsCoeff(),
                 utxoRollbackWindow,
                 isConfigPropertyPresent(UTXO_ROLLBACK_WINDOW),
                 accountStateEpochBlockDataRetentionLag,
@@ -570,6 +608,17 @@ public class YanoProducer {
                 isConfigPropertyPresent(BLOCK_BODY_PRUNE_DEPTH));
 
         if (rollbackRetentionSettings.umbrellaEnabled()) {
+            if (blockBodyPruneDepth > 0
+                    && rollbackRetentionSettings.blockBodyPruneDepth() > blockBodyPruneDepth) {
+                log.warn("Raised chain.block-body-prune-depth from {} to {} to satisfy "
+                                + "{}={} with genesis epochLength={} activeSlotsCoeff={}",
+                        blockBodyPruneDepth,
+                        rollbackRetentionSettings.blockBodyPruneDepth(),
+                        ROLLBACK_RETENTION_EPOCHS,
+                        rollbackRetentionSettings.retentionEpochs(),
+                        rollbackRetentionGenesisValues.epochLength(),
+                        rollbackRetentionGenesisValues.activeSlotsCoeff());
+            }
             log.info("Rollback retention umbrella configured: epochs={}, slotWindow={}. "
                             + "Effective retention: utxo.rollbackWindow={}, "
                             + "account-state.epoch-block-data-retention-lag={}, "
@@ -602,7 +651,10 @@ public class YanoProducer {
         globals.put("yano.metrics.enabled", metricsEnabled);
         globals.put("yano.metrics.sample.rocksdb.seconds", metricsSampleRocksDbSeconds);
         globals.put("yano.validation.default-validator-enabled", defaultValidatorEnabled);
+        globals.put("yano.validation.supplementary-rules-enabled", supplementaryRulesEnabled);
         globals.put("yano.block-producer.tx-evaluation", txEvaluationEnabled);
+        dnsCacheTtl.ifPresent(value -> globals.put(DnsCachePolicy.DNS_CACHE_TTL_KEY, value));
+        dnsCacheNegativeTtl.ifPresent(value -> globals.put(DnsCachePolicy.DNS_CACHE_NEGATIVE_TTL_KEY, value));
 
         // Account state
         globals.put("yano.account-state.enabled", effectiveAccountStateEnabled);
@@ -795,14 +847,15 @@ public class YanoProducer {
             TransactionValidator evaluator = staticProtocolParams != null
                     ? ScalusTransactionFactory.createValidator(staticProtocolParams,
                             new YaciScriptSupplier(yaciNode.getUtxoState()), slotConfig, networkId,
-                            ledgerStateProvider)
+                            ledgerStateProvider, supplementaryRulesEnabled)
                     : ScalusTransactionFactory.createValidator(protocolParamsSupplier,
                             new YaciScriptSupplier(yaciNode.getUtxoState()), slotConfig, networkId,
                             ledgerStateProvider, currentSlotSupplier,
-                            epochSlotCalc::slotToEpoch);
+                            epochSlotCalc::slotToEpoch, supplementaryRulesEnabled);
             yaciNode.setTransactionEvaluator(evaluator);
             validatorInitialized = true;
-            log.info("Transaction validator initialized (networkId={}, protocolParams={})", networkId, protocolParamsSource);
+            log.info("Transaction validator initialized (networkId={}, protocolParams={}, supplementaryRules={})",
+                    networkId, protocolParamsSource, supplementaryRulesEnabled);
         } catch (Exception e) {
             log.error("Failed to initialize transaction validator (Scalus). "
                     + "Transactions will NOT be validated on submission! Error: {}", e.getMessage(), e);
@@ -935,11 +988,12 @@ public class YanoProducer {
         }
     }
 
-    private long resolveRollbackRetentionEpochLength(String resolvedShelleyGenesis) {
+    private RollbackRetentionGenesisValues resolveRollbackRetentionGenesisValues(String resolvedShelleyGenesis) {
         try {
-            return NetworkGenesisConfig.load(resolvedShelleyGenesis, null, null, null).getEpochLength();
+            NetworkGenesisConfig genesis = NetworkGenesisConfig.load(resolvedShelleyGenesis, null, null, null);
+            return new RollbackRetentionGenesisValues(genesis.getEpochLength(), genesis.getActiveSlotsCoeff());
         } catch (Exception e) {
-            throw new IllegalStateException("Failed to resolve Shelley epoch length for "
+            throw new IllegalStateException("Failed to resolve Shelley genesis values for "
                     + ROLLBACK_RETENTION_EPOCHS + " from " + resolvedShelleyGenesis, e);
         }
     }

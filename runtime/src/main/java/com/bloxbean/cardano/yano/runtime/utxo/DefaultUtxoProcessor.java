@@ -55,11 +55,12 @@ final class DefaultUtxoProcessor implements UtxoProcessor {
                 for (int i = 0; i < keys.size(); i++) {
                     cache.put(new ByteArrayWrapper(keys.get(i)), vals.get(i));
                 }
-            } catch (Throwable t) {
+            } catch (Exception t) {
                 for (byte[] k : keys) {
                     try {
                         cache.put(new ByteArrayWrapper(k), db.get(cfUnspent, k));
-                    } catch (Exception ignored) {
+                    } catch (Exception e) {
+                        throw new RuntimeException("Failed to read UTXO input during apply fallback", e);
                     }
                 }
             }

@@ -2,10 +2,15 @@ package com.bloxbean.cardano.yano.ledgerstate;
 
 import com.bloxbean.cardano.yano.api.EpochParamProvider;
 import com.bloxbean.cardano.yano.api.era.EraProvider;
+import com.bloxbean.cardano.yano.api.events.BlockAppliedEvent;
 import com.bloxbean.cardano.yano.api.events.GenesisBlockEvent;
+import com.bloxbean.cardano.yaci.core.model.Block;
 import com.bloxbean.cardano.yaci.core.model.DrepVoteThresholds;
 import com.bloxbean.cardano.yaci.core.model.Era;
 import com.bloxbean.cardano.yaci.core.model.PoolVotingThresholds;
+import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Point;
+import com.bloxbean.cardano.yaci.core.storage.ChainState;
+import com.bloxbean.cardano.yaci.core.storage.ChainTip;
 import com.bloxbean.cardano.yaci.core.types.NonNegativeInterval;
 import com.bloxbean.cardano.yaci.core.types.UnitInterval;
 import com.bloxbean.cardano.yano.ledgerstate.test.TestRocksDBHelper;
@@ -15,15 +20,105 @@ import org.slf4j.LoggerFactory;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.file.Path;
+import java.util.Collections;
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class DefaultAccountStateStoreProtocolParamsTest {
+    private static final byte[] META_LAST_APPLIED_BLOCK = "meta.last_block".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    private static final byte[] META_LAST_APPLIED_SLOT = "meta.last_applied_slot".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    private static final byte[] META_LAST_SNAPSHOT_EPOCH = "meta.last_snapshot_epoch".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    private static final byte[] META_BOUNDARY_STEP = "meta.boundary_step".getBytes(java.nio.charset.StandardCharsets.UTF_8);
 
     @TempDir
     Path tempDir;
+
+    @Test
+    void applyBlockRethrowsStorageFailure() throws Exception {
+        try (var rocks = TestRocksDBHelper.create(tempDir)) {
+            var store = new DefaultAccountStateStore(
+                    null, rocks.cfSupplier(),
+                    LoggerFactory.getLogger(DefaultAccountStateStoreProtocolParamsTest.class),
+                    true, provider());
+
+            Block block = Block.builder()
+                    .era(Era.Babbage)
+                    .transactionBodies(Collections.emptyList())
+                    .invalidTransactions(Collections.emptyList())
+                    .build();
+
+            RuntimeException ex = assertThrows(RuntimeException.class,
+                    () -> store.applyBlock(new BlockAppliedEvent(Era.Babbage, 10, 1, "bb".repeat(32), block)));
+
+            assertThat(ex).hasMessageContaining("Account state apply failed for block 1");
+        }
+    }
+
+    @Test
+    void malformedMetadataFailsClosed() throws Exception {
+        try (var rocks = TestRocksDBHelper.create(tempDir)) {
+            var store = new DefaultAccountStateStore(
+                    rocks.db(), rocks.cfSupplier(),
+                    LoggerFactory.getLogger(DefaultAccountStateStoreProtocolParamsTest.class),
+                    true, provider());
+
+            rocks.db().put(rocks.cfState(), META_LAST_APPLIED_SLOT, new byte[]{1, 2, 3});
+            RuntimeException slotEx = assertThrows(RuntimeException.class, store::getLatestAppliedSlot);
+            assertThat(slotEx).hasMessageContaining("Failed to read account state latest applied slot");
+
+            rocks.db().delete(rocks.cfState(), META_LAST_APPLIED_SLOT);
+            rocks.db().put(rocks.cfState(), META_BOUNDARY_STEP, new byte[]{1, 2, 3});
+            RuntimeException stepEx = assertThrows(RuntimeException.class, () -> store.getBoundaryStep(1));
+            assertThat(stepEx).hasMessageContaining("Failed to read boundary step");
+            RuntimeException stateEx = assertThrows(RuntimeException.class, store::getLastBoundaryState);
+            assertThat(stateEx).hasMessageContaining("Failed to read boundary state");
+
+            rocks.db().delete(rocks.cfState(), META_BOUNDARY_STEP);
+            rocks.db().put(rocks.cfState(), META_LAST_APPLIED_BLOCK, new byte[]{1, 2, 3});
+            RuntimeException blockEx = assertThrows(RuntimeException.class, () -> store.reconcile(chainStateWithTip()));
+            assertThat(blockEx).hasMessageContaining("Failed to read account state last applied block");
+
+            rocks.db().delete(rocks.cfState(), META_LAST_APPLIED_BLOCK);
+            rocks.db().put(rocks.cfState(), META_LAST_SNAPSHOT_EPOCH, new byte[]{1, 2, 3});
+            RuntimeException snapshotEx = assertThrows(RuntimeException.class, () -> store.rollbackToSlot(50));
+            assertThat(snapshotEx).hasMessageContaining("Account state rollback to slot 50 failed");
+            assertThat(snapshotEx.getCause()).hasMessageContaining("Failed to read last snapshot epoch metadata");
+        }
+    }
+
+    @Test
+    void rollbackUpdatesLastAppliedBlockMetadataToRetainedBlock() throws Exception {
+        try (var rocks = TestRocksDBHelper.create(tempDir)) {
+            var store = new DefaultAccountStateStore(
+                    rocks.db(), rocks.cfSupplier(),
+                    LoggerFactory.getLogger(DefaultAccountStateStoreProtocolParamsTest.class),
+                    true, provider());
+
+            Block block = Block.builder()
+                    .era(Era.Babbage)
+                    .transactionBodies(Collections.emptyList())
+                    .invalidTransactions(Collections.emptyList())
+                    .build();
+            store.applyBlock(new BlockAppliedEvent(Era.Babbage, 100, 1, "b1".repeat(32), block));
+            store.applyBlock(new BlockAppliedEvent(Era.Babbage, 200, 2, "b2".repeat(32), block));
+
+            store.rollbackToSlot(100);
+
+            assertThat(readLongMeta(rocks, META_LAST_APPLIED_SLOT)).isEqualTo(100L);
+            assertThat(readLongMeta(rocks, META_LAST_APPLIED_BLOCK)).isEqualTo(1L);
+
+            store.rollbackToSlot(50);
+
+            assertThat(rocks.db().get(rocks.cfState(), META_LAST_APPLIED_SLOT)).isNull();
+            assertThat(rocks.db().get(rocks.cfState(), META_LAST_APPLIED_BLOCK)).isNull();
+        }
+    }
 
     @Test
     void protocolParametersReturnEmptyWhenTrackerHasNoFinalizedSnapshot() throws Exception {
@@ -257,6 +352,36 @@ class DefaultAccountStateStoreProtocolParamsTest {
                     default -> 0;
                 };
             }
+        };
+    }
+
+    private static long readLongMeta(TestRocksDBHelper rocks, byte[] key) throws Exception {
+        byte[] value = rocks.db().get(rocks.cfState(), key);
+        return ByteBuffer.wrap(value).order(ByteOrder.BIG_ENDIAN).getLong();
+    }
+
+    private static ChainState chainStateWithTip() {
+        return new ChainState() {
+            private final ChainTip tip = new ChainTip(100, new byte[32], 1);
+
+            @Override public void storeBlock(byte[] blockHash, Long blockNumber, Long slot, byte[] block) {}
+            @Override public byte[] getBlock(byte[] blockHash) { return null; }
+            @Override public boolean hasBlock(byte[] blockHash) { return false; }
+            @Override public void storeBlockHeader(byte[] blockHash, Long blockNumber, Long slot, byte[] blockHeader) {}
+            @Override public byte[] getBlockHeader(byte[] blockHash) { return null; }
+            @Override public byte[] getBlockByNumber(Long number) { return null; }
+            @Override public byte[] getBlockHeaderByNumber(Long blockNumber) { return null; }
+            @Override public Point findNextBlock(Point currentPoint) { return null; }
+            @Override public Point findNextBlockHeader(Point currentPoint) { return null; }
+            @Override public List<Point> findBlocksInRange(Point from, Point to) { return List.of(); }
+            @Override public Point findLastPointAfterNBlocks(Point from, long batchSize) { return null; }
+            @Override public boolean hasPoint(Point point) { return false; }
+            @Override public Point getFirstBlock() { return null; }
+            @Override public Long getBlockNumberBySlot(Long slot) { return null; }
+            @Override public Long getSlotByBlockNumber(Long blockNumber) { return null; }
+            @Override public void rollbackTo(Long slot) {}
+            @Override public ChainTip getTip() { return tip; }
+            @Override public ChainTip getHeaderTip() { return tip; }
         };
     }
 }

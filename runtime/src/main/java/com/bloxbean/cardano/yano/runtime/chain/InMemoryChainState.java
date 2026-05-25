@@ -5,6 +5,7 @@ import com.bloxbean.cardano.yaci.core.storage.ChainTip;
 import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Point;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.runtime.blockproducer.NonceStateStore;
+import com.bloxbean.cardano.yano.runtime.blockproducer.NonceStateSnapshot;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.ArrayList;
@@ -29,6 +30,7 @@ public class InMemoryChainState implements ChainState, NonceStateStore {
     private ChainTip headerTip;
     private volatile byte[] epochNonceState;
     private final Map<Integer, byte[]> epochNonces = new ConcurrentHashMap<>();
+    private final Map<Integer, NonceStateSnapshot> epochNonceCheckpoints = new ConcurrentHashMap<>();
 
     @Override
     public void storeBlock(byte[] blockHash, Long blockNumber, Long slot, byte[] block) {
@@ -85,6 +87,38 @@ public class InMemoryChainState implements ChainState, NonceStateStore {
 
         // Remove the entries from blockNumberBySlot where slots are greater than the provided slot
         blockNumberBySlot.tailMap(slot, false).clear();
+
+        var lastEntry = blockNumberBySlot.floorEntry(slot);
+        if (lastEntry == null) {
+            tip = null;
+            headerTip = null;
+            return;
+        }
+
+        Long tipSlot = lastEntry.getKey();
+        Long blockNumber = lastEntry.getValue();
+        byte[] blockHash = blockHashByNumber.get(blockNumber);
+        if (blockHash == null) {
+            tip = null;
+            headerTip = null;
+            return;
+        }
+
+        String key = toHex(blockHash);
+        tip = blockStore.containsKey(key) ? new ChainTip(tipSlot, blockHash, blockNumber) : null;
+        headerTip = blockHeaderStore.containsKey(key) ? new ChainTip(tipSlot, blockHash, blockNumber) : null;
+    }
+
+    public void rollbackToOrigin() {
+        blockStore.clear();
+        blockHeaderStore.clear();
+        blockHashByNumber.clear();
+        blockNumberBySlot.clear();
+        tip = null;
+        headerTip = null;
+        epochNonceState = null;
+        epochNonces.clear();
+        epochNonceCheckpoints.clear();
     }
 
     @Override
@@ -318,5 +352,28 @@ public class InMemoryChainState implements ChainState, NonceStateStore {
     @Override
     public void pruneEpochNoncesAfter(int epoch) {
         epochNonces.keySet().removeIf(storedEpoch -> storedEpoch > epoch);
+    }
+
+    @Override
+    public void storeEpochNonceCheckpoint(int epoch, NonceStateSnapshot snapshot) {
+        if (snapshot != null) {
+            epochNonceCheckpoints.put(epoch, snapshot);
+        }
+    }
+
+    @Override
+    public List<NonceStateSnapshot> getEpochNonceCheckpointsAtOrBeforeSlot(long slot) {
+        return epochNonceCheckpoints.values().stream()
+                .filter(snapshot -> snapshot.slot() <= slot)
+                .sorted(java.util.Comparator
+                        .comparingLong(NonceStateSnapshot::slot)
+                        .thenComparingLong(NonceStateSnapshot::blockNumber)
+                        .reversed())
+                .toList();
+    }
+
+    @Override
+    public void pruneEpochNonceCheckpointsAfter(int epoch) {
+        epochNonceCheckpoints.keySet().removeIf(storedEpoch -> storedEpoch > epoch);
     }
 }

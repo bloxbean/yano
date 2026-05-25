@@ -1,14 +1,19 @@
 package com.bloxbean.cardano.yano.runtime.chain;
 
+import org.rocksdb.ColumnFamilyHandle;
+import org.rocksdb.RocksDB;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.OptionalLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
  * Tests for era start slot tracking in DirectRocksDBChainState.
@@ -44,6 +49,16 @@ class DirectRocksDBChainStateEraTest {
     void getEraStartSlot_nonExistent_returnsEmpty() {
         OptionalLong result = chainState.getEraStartSlot(99);
         assertThat(result).isEmpty();
+    }
+
+    @Test
+    void malformedEraStartSlotMetadataFailsClosed() throws Exception {
+        RocksDB db = (RocksDB) chainState.getDb();
+        ColumnFamilyHandle metadata = (ColumnFamilyHandle) chainState.getColumnFamilyHandle("metadata");
+        db.put(metadata, "era_2_start_slot".getBytes(StandardCharsets.UTF_8), new byte[]{1, 2, 3});
+
+        RuntimeException ex = assertThrows(RuntimeException.class, () -> chainState.getEraStartSlot(2));
+        assertThat(ex).hasMessageContaining("Failed to read era 2 start slot");
     }
 
     @Test

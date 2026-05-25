@@ -224,8 +224,14 @@ public class EpochBoundaryProcessor {
         // For unknown+Byron fresh sync, config is built lazily after boundary UTXO capture.
         // Byron epochs don't have Shelley rewards/AdaPot, so deferring is safe.
         if (cfNetworkConfig == null) {
-            log.info("cfNetworkConfig not yet available — deferring epoch boundary for {} → {}", previousEpoch, newEpoch);
-            return;
+            int shelleyStartEpoch = shelleyStartEpochFromParams();
+            if (newEpoch <= shelleyStartEpoch) {
+                log.info("cfNetworkConfig not yet available — deferring pre-Shelley epoch boundary for {} → {}",
+                        previousEpoch, newEpoch);
+                return;
+            }
+            throw new IllegalStateException("cfNetworkConfig not available at Shelley+ epoch boundary "
+                    + previousEpoch + " -> " + newEpoch);
         }
 
         long start = System.currentTimeMillis();
@@ -402,7 +408,9 @@ public class EpochBoundaryProcessor {
                             previousEpoch, newEpoch, utxoBalances, null);
                 } catch (Exception e) {
                     log.error("Governance epoch processing failed for {} → {}: {}",
-                            previousEpoch, newEpoch, e.getMessage());
+                            previousEpoch, newEpoch, e.getMessage(), e);
+                    throw new RuntimeException("Governance epoch processing failed for "
+                            + previousEpoch + " -> " + newEpoch, e);
                 }
             }
         } else {
@@ -483,7 +491,8 @@ public class EpochBoundaryProcessor {
                 prevTreasury = prevPot.get().treasury();
                 prevReserves = prevPot.get().reserves();
             } else {
-                log.warn("No AdaPot found for previous epoch {}, using zeros", previousEpoch);
+                throw new IllegalStateException("No AdaPot found for previous epoch " + previousEpoch
+                        + "; reward calculation cannot proceed with zero treasury/reserves");
             }
         }
 
@@ -535,6 +544,11 @@ public class EpochBoundaryProcessor {
         return newEpoch > cfNetworkConfig.getShelleyStartEpoch();
     }
 
+    private int shelleyStartEpochFromParams() {
+        if (paramProvider == null) return -1;
+        return paramProvider.getEpochSlotCalc().slotToEpoch(paramProvider.getShelleyStartSlot());
+    }
+
     private void handleEpochCalcError(int epoch, String message) {
         log.error(message);
         if (exitOnEpochCalcError) {
@@ -543,8 +557,7 @@ public class EpochBoundaryProcessor {
             throw new IllegalStateException(message);
         }
 
-        log.error("Continuing despite epoch calculation failure (exit-on-epoch-calc-error=false). " +
-                "Check /api/v1/node/epoch-calc-status for details.");
+        throw new IllegalStateException(message);
     }
 
     /**
@@ -638,12 +651,17 @@ public class EpochBoundaryProcessor {
     private void bootstrapAdaPotIfNeeded(int newEpoch) {
         if (adaPotTracker == null || !adaPotTracker.isEnabled()) return;
 
+        var networkConfig = cfNetworkConfig;
+        if (networkConfig == null) {
+            throw new IllegalStateException("cfNetworkConfig not available for AdaPot bootstrap at epoch " + newEpoch);
+        }
+        int shelleyStartEpoch = networkConfig.getShelleyStartEpoch();
+        boolean firstBoundaryAfterGenesisStart = shelleyStartEpoch == 0 && newEpoch == 1;
+        if (newEpoch != shelleyStartEpoch && !firstBoundaryAfterGenesisStart) return;
+
         // Only bootstrap if no AdaPot exists yet for any epoch
         var existing = adaPotTracker.getLatestAdaPot(newEpoch);
         if (existing.isPresent()) return;
-
-        var networkConfig = cfNetworkConfig;
-        int shelleyStartEpoch = networkConfig.getShelleyStartEpoch();
 
         BigInteger initialReserves = networkConfig.getShelleyInitialReserves();
         BigInteger initialTreasury = networkConfig.getShelleyInitialTreasury();

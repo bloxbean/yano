@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.ledgerstate;
 
 import com.bloxbean.cardano.yano.api.era.EraProvider;
+import com.bloxbean.cardano.yano.api.util.StoredBlockUtil;
 import com.bloxbean.cardano.yaci.core.model.Block;
 import com.bloxbean.cardano.yaci.core.model.DrepVoteThresholds;
 import com.bloxbean.cardano.yaci.core.model.Era;
@@ -708,10 +709,15 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
     private int getLastSnapshotEpoch() {
         try {
             byte[] val = db.get(cfState, META_LAST_SNAPSHOT_EPOCH);
-            if (val != null && val.length == 4) {
+            if (val != null) {
+                if (val.length != 4) {
+                    throw new IllegalStateException("Malformed last snapshot epoch metadata length: " + val.length);
+                }
                 return java.nio.ByteBuffer.wrap(val).order(java.nio.ByteOrder.BIG_ENDIAN).getInt();
             }
-        } catch (RocksDBException ignored) {}
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to read last snapshot epoch metadata", e);
+        }
         return -1;
     }
 
@@ -1082,7 +1088,7 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
             return AccountStateCborCodec.decodeMirReward(val);
         } catch (RocksDBException e) {
             log.error("getMirEpochTotal failed: {}", e.toString());
-            return BigInteger.ZERO;
+            throw new RuntimeException("Failed to read MIR total for earned epoch " + earnedEpoch, e);
         }
     }
 
@@ -1617,6 +1623,7 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
             }
         } catch (Exception e) {
             log.error("getSpendableRewardRest failed: {}", e.toString());
+            throw new RuntimeException("Failed to read spendable reward_rest for epoch " + epoch, e);
         }
         return result;
     }
@@ -1747,7 +1754,8 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                         credited, epoch, totalCredited, creditedReserves, creditedTreasury, skipped);
             }
         } catch (Exception e) {
-            log.error("creditMirRewardRest failed: {}", e.toString());
+            log.error("creditMirRewardRest failed: {}", e.toString(), e);
+            throw new RuntimeException("creditMirRewardRest failed for epoch " + epoch, e);
         }
     }
 
@@ -1784,8 +1792,8 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                 it.next();
             }
         } catch (Exception e) {
-            log.error("creditAndRemoveSpendableRewardRest failed during iteration: {}", e.toString());
-            return;
+            log.error("creditAndRemoveSpendableRewardRest failed during iteration: {}", e.toString(), e);
+            throw new RuntimeException("creditAndRemoveSpendableRewardRest failed during iteration for epoch " + epoch, e);
         }
 
         // Phase 2: Credit each credential once (single db.get + batch.put per credential)
@@ -1812,7 +1820,8 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                 deleteStateWithDelta(key, batch, deltaOps);
             }
         } catch (Exception e) {
-            log.error("creditAndRemoveSpendableRewardRest failed during crediting: {}", e.toString());
+            log.error("creditAndRemoveSpendableRewardRest failed during crediting: {}", e.toString(), e);
+            throw new RuntimeException("creditAndRemoveSpendableRewardRest failed during crediting for epoch " + epoch, e);
         }
 
         if (credited > 0) {
@@ -1849,6 +1858,7 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
             db.write(wo, batch);
         } catch (Exception e) {
             log.error("Failed to repair pending reward_rest: {}", e.toString());
+            throw new RuntimeException("Failed to repair pending reward_rest", e);
         }
     }
 
@@ -2112,7 +2122,9 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                 epochBoundaryProcessor.processEpochBoundary(previousEpoch, newEpoch);
             } catch (Exception e) {
                 log.warn("Epoch boundary processing failed for {} -> {}: {}",
-                        previousEpoch, newEpoch, e.getMessage());
+                        previousEpoch, newEpoch, e.getMessage(), e);
+                throw new RuntimeException("Epoch boundary processing failed for "
+                        + previousEpoch + " -> " + newEpoch, e);
             }
         }
 
@@ -2138,7 +2150,9 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
             log.info("Epoch transition {} -> {} completed (prune)", previousEpoch, newEpoch);
 
         } catch (Exception ex) {
-            log.error("Epoch transition post-snapshot failed for {} -> {}: {}", previousEpoch, newEpoch, ex.toString());
+            log.error("Epoch transition post-snapshot failed for {} -> {}: {}", previousEpoch, newEpoch, ex.toString(), ex);
+            throw new RuntimeException("Epoch transition post-snapshot failed for "
+                    + previousEpoch + " -> " + newEpoch, ex);
         }
     }
 
@@ -2158,7 +2172,9 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
             commitBoundaryDelta(boundarySlot, PHASE_SPENDABLE_REST, batch, deltaOps);
             db.write(wo, batch);
         } catch (Exception ex) {
-            log.error("Post-epoch reward_rest credit failed for {} -> {}: {}", previousEpoch, newEpoch, ex.toString());
+            log.error("Post-epoch reward_rest credit failed for {} -> {}: {}", previousEpoch, newEpoch, ex.toString(), ex);
+            throw new RuntimeException("Post-epoch reward_rest credit failed for "
+                    + previousEpoch + " -> " + newEpoch, ex);
         }
 
         if (epochBoundaryProcessor == null) return;
@@ -2166,7 +2182,9 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
             epochBoundaryProcessor.processPostEpochBoundary(newEpoch);
         } catch (Exception e) {
             log.warn("Post-epoch boundary processing failed for {} -> {}: {}",
-                    previousEpoch, newEpoch, e.getMessage());
+                    previousEpoch, newEpoch, e.getMessage(), e);
+            throw new RuntimeException("Post-epoch boundary processing failed for "
+                    + previousEpoch + " -> " + newEpoch, e);
         }
     }
 
@@ -2238,7 +2256,8 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                 try {
                     governanceBlockProcessor.processBlock(block, slot, currentEpoch, batch, deltaOps);
                 } catch (Exception e) {
-                    log.warn("Governance block processing failed for block {}: {}", blockNo, e.getMessage());
+                    log.warn("Governance block processing failed for block {}: {}", blockNo, e.getMessage(), e);
+                    throw new RuntimeException("Governance block processing failed for block " + blockNo, e);
                 }
             }
 
@@ -2270,7 +2289,8 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
 
             db.write(wo, batch);
         } catch (Exception ex) {
-            log.error("Account state apply failed for block {}: {}", blockNo, ex.toString());
+            log.error("Account state apply failed for block {}: {}", blockNo, ex.toString(), ex);
+            throw new RuntimeException("Account state apply failed for block " + blockNo, ex);
         } finally {
             batchForwardDeleg = null;
             batchReverseAdded = null;
@@ -3134,15 +3154,10 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
         long epochLastSlot = slotForEpochStart(epoch + 1) - 1;
 
         if ("incremental".equals(balanceMode)) {
-            int prevSnapshotEpoch = epoch - 1;
-            var prevSnapshot = readStakeSnapshot(prevSnapshotEpoch);
-            long epochStartSlot = slotForEpochStart(epoch);
-            long epochEndSlot = slotForEpochStart(epoch + 1);
-            return stakeSnapshotService.aggregateStakeBalancesIncremental(
-                    utxoState, ptrResolver, prevSnapshot, epochStartSlot, epochEndSlot, epochLastSlot);
-        } else {
-            return stakeSnapshotService.aggregateStakeBalances(utxoState, ptrResolver, epochLastSlot);
+            log.warn("Incremental stake balance aggregation is disabled for correctness; "
+                    + "falling back to full UTXO snapshot scan for epoch {}", epoch);
         }
+        return stakeSnapshotService.aggregateStakeBalances(utxoState, ptrResolver, epochLastSlot);
     }
 
     /**
@@ -3160,6 +3175,7 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
             db.write(wo, batch);
         } catch (Exception ex) {
             log.error("Failed to create delegation snapshot for epoch {}: {}", epoch, ex.toString());
+            throw new RuntimeException("Failed to create delegation snapshot for epoch " + epoch, ex);
         }
         return utxoBalances;
     }
@@ -3534,9 +3550,14 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
     public long getLatestAppliedSlot() {
         try {
             byte[] val = db.get(cfState, META_LAST_APPLIED_SLOT);
-            if (val != null) return ByteBuffer.wrap(val).order(ByteOrder.BIG_ENDIAN).getLong();
+            if (val != null) {
+                if (val.length != 8) {
+                    throw new IllegalStateException("Malformed account state last applied slot metadata length: " + val.length);
+                }
+                return ByteBuffer.wrap(val).order(ByteOrder.BIG_ENDIAN).getLong();
+            }
         } catch (Exception e) {
-            log.warn("Failed to read account state latest applied slot: {}", e.getMessage());
+            throw new RuntimeException("Failed to read account state latest applied slot", e);
         }
         return -1;
     }
@@ -3681,6 +3702,22 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
         it.prev();
     }
 
+    private long currentBlockDeltaNumber(RocksIterator it) {
+        return ByteBuffer.wrap(it.key()).order(ByteOrder.BIG_ENDIAN).getLong();
+    }
+
+    private void updateRollbackMetadata(WriteBatch batch, Long retainedBlock, Long retainedSlot) throws RocksDBException {
+        if (retainedBlock != null && retainedSlot != null) {
+            batch.put(cfState, META_LAST_APPLIED_BLOCK,
+                    ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN).putLong(retainedBlock).array());
+            batch.put(cfState, META_LAST_APPLIED_SLOT,
+                    ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN).putLong(retainedSlot).array());
+        } else {
+            batch.delete(cfState, META_LAST_APPLIED_BLOCK);
+            batch.delete(cfState, META_LAST_APPLIED_SLOT);
+        }
+    }
+
     private void undoBoundaryDeltaSlot(RocksIterator it, WriteBatch batch) throws RocksDBException {
         long slot = currentBoundaryDeltaSlot(it);
         Map<Byte, byte[]> phaseEntries = new HashMap<>();
@@ -3708,6 +3745,8 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
 
             it.seekToLast();
             bdIt.seekToLast();
+            Long retainedBlock = null;
+            Long retainedSlot = null;
 
             // Undo block deltas and boundary deltas in one reverse-chronological timeline.
             // The old two-pass order ("all blocks first, then all boundaries") could cross
@@ -3727,6 +3766,10 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                 long nextSlot = Math.max(blockSlot, boundarySlot);
 
                 if (nextSlot <= targetSlot) {
+                    if (blockValid && blockSlot <= targetSlot) {
+                        retainedBlock = currentBlockDeltaNumber(it);
+                        retainedSlot = blockSlot;
+                    }
                     break;
                 }
 
@@ -3742,7 +3785,7 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
             // Snapshots have stale reward balances from rolled-back epoch boundary processing.
             // AdaPot entries bypass delta tracking (written via db.put, not WriteBatch).
             // Pending epoch boundary jobs for rolled-back epochs must be cancelled.
-            int targetEpoch = epochForSlot(targetSlot);
+            int targetEpoch = targetSlot < 0 ? 0 : epochForSlot(targetSlot);
             int lastSnapshot = getLastSnapshotEpoch();
 
             if (targetEpoch <= lastSnapshot) {
@@ -3807,7 +3850,10 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
             // Without this, recoverInterruptedBoundary() would attempt to resume a future epoch's
             // boundary processing that was already rolled back.
             byte[] boundaryVal = db.get(cfState, META_BOUNDARY_STEP);
-            if (boundaryVal != null && boundaryVal.length == 8) {
+            if (boundaryVal != null) {
+                if (boundaryVal.length != 8) {
+                    throw new IllegalStateException("Malformed boundary step metadata length: " + boundaryVal.length);
+                }
                 int boundaryEpoch = ByteBuffer.wrap(boundaryVal).order(ByteOrder.BIG_ENDIAN).getInt();
                 if (boundaryEpoch > targetEpoch) {
                     batch.delete(cfState, META_BOUNDARY_STEP);
@@ -3823,9 +3869,7 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                 paramTracker.addRollbackOps(targetSlot, targetEpoch, batch);
             }
 
-            // Update last applied slot
-            batch.put(cfState, META_LAST_APPLIED_SLOT,
-                    ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN).putLong(targetSlot).array());
+            updateRollbackMetadata(batch, retainedBlock, retainedSlot);
 
             db.write(wo, batch);
 
@@ -3850,14 +3894,17 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
     public int getBoundaryStep(int epoch) {
         try {
             byte[] val = db.get(cfState, META_BOUNDARY_STEP);
-            if (val != null && val.length == 8) {
+            if (val != null) {
+                if (val.length != 8) {
+                    throw new IllegalStateException("Malformed boundary step metadata length: " + val.length);
+                }
                 ByteBuffer buf = ByteBuffer.wrap(val).order(ByteOrder.BIG_ENDIAN);
                 int storedEpoch = buf.getInt();
                 int step = buf.getInt();
                 return (storedEpoch == epoch) ? step : -1;
             }
         } catch (Exception e) {
-            log.warn("Failed to read boundary step: {}", e.getMessage());
+            throw new RuntimeException("Failed to read boundary step", e);
         }
         return -1;
     }
@@ -3869,12 +3916,15 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
     public int[] getLastBoundaryState() {
         try {
             byte[] val = db.get(cfState, META_BOUNDARY_STEP);
-            if (val != null && val.length == 8) {
+            if (val != null) {
+                if (val.length != 8) {
+                    throw new IllegalStateException("Malformed boundary step metadata length: " + val.length);
+                }
                 ByteBuffer buf = ByteBuffer.wrap(val).order(ByteOrder.BIG_ENDIAN);
                 return new int[]{buf.getInt(), buf.getInt()};
             }
         } catch (Exception e) {
-            log.warn("Failed to read boundary state: {}", e.getMessage());
+            throw new RuntimeException("Failed to read boundary state", e);
         }
         return null;
     }
@@ -3888,7 +3938,7 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
             byte[] val = ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN).putInt(epoch).putInt(step).array();
             db.put(cfState, META_BOUNDARY_STEP, val);
         } catch (Exception e) {
-            log.warn("Failed to write boundary step: {}", e.getMessage());
+            throw new RuntimeException("Failed to write boundary step for epoch " + epoch + ", step " + step, e);
         }
     }
 
@@ -3909,10 +3959,15 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
         long lastAppliedBlock = 0L;
         try {
             byte[] b = db.get(cfState, META_LAST_APPLIED_BLOCK);
-            if (b != null && b.length == 8) {
+            if (b != null) {
+                if (b.length != 8) {
+                    throw new IllegalStateException("Malformed account state last applied block metadata length: " + b.length);
+                }
                 lastAppliedBlock = ByteBuffer.wrap(b).order(ByteOrder.BIG_ENDIAN).getLong();
             }
-        } catch (Exception ignored) {}
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to read account state last applied block", e);
+        }
 
         ChainTip tip = chainState.getTip();
         if (tip == null) return;
@@ -3931,8 +3986,8 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
         // Account state only tracks Shelley+ data (staking, rewards, delegations).
         // Replaying Byron blocks is pure overhead — no relevant state to reconcile.
         if (lastAppliedBlock == 0) {
-            Era tipEra = chainState.getBlockEra(tipBlock);
-            if (tipEra == Era.Byron) {
+            byte[] tipBlockBytes = chainState.getBlockByNumber(tipBlock);
+            if (StoredBlockUtil.isStoredByronBlock(chainState.getBlockEra(tipBlock), tipBlockBytes)) {
                 log.info("Account state reconcile skipped: tip block {} is Byron era, nothing to reconcile", tipBlock);
                 return;
             }
@@ -3945,16 +4000,23 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                 log.info("Account state reconcile progress: block {}/{}", bn, tipBlock);
             }
             byte[] blockBytes = chainState.getBlockByNumber(bn);
-            if (blockBytes == null) continue;
+            if (blockBytes == null) {
+                throw new IllegalStateException("Account state reconcile missing local block body for block " + bn);
+            }
+            Era storedEra = chainState.getBlockEra(bn);
+            if (StoredBlockUtil.isStoredByronBlock(storedEra, blockBytes)) {
+                continue;
+            }
 
             try {
                 Block block = com.bloxbean.cardano.yaci.core.model.serializers.BlockSerializer.INSTANCE
                         .deserialize(blockBytes);
                 long blockSlot = block.getHeader().getHeaderBody().getSlot();
                 String blockHash = block.getHeader().getHeaderBody().getBlockHash();
-                applyBlock(new BlockAppliedEvent(block.getEra(), blockSlot, bn, blockHash, block));
+                Era era = block.getEra() != null ? block.getEra() : storedEra;
+                applyBlock(new BlockAppliedEvent(era, blockSlot, bn, blockHash, block));
             } catch (Throwable t) {
-                log.warn("Account state reconcile: skip block {} due to: {}", bn, t.toString());
+                throw new RuntimeException("Account state reconcile failed for block " + bn, t);
             }
         }
         log.info("Account state reconciled: replayed from {} to tip {}", lastAppliedBlock, tipBlock);

@@ -678,7 +678,7 @@ public class GovernanceEpochProcessor {
                 }
             }
         } catch (Exception e) {
-            log.warn("Failed to build active DRep set: {}", e.getMessage());
+            throw new RuntimeException("Failed to build active DRep set", e);
         }
         return activeDRepKeys;
     }
@@ -736,7 +736,7 @@ public class GovernanceEpochProcessor {
         try {
             return governanceStore.findLatestProposalUpToSlot(maxSlot);
         } catch (Exception e) {
-            return null;
+            throw new RuntimeException("Failed to find latest governance proposal up to slot " + maxSlot, e);
         }
     }
 

@@ -108,19 +108,18 @@ public class EpochStakeSnapshotService {
         long[] skipped = {0};
 
         utxoState.forEachUtxoDeltaInSlotRange(epochStartSlot, epochEndSlot, (address, lovelace, isCreated) -> {
-            try {
-                var credKey = aggregator.extractCredential(address, pointerResolver);
-                if (credKey == null) { skipped[0]++; return; }
-
-                if (isCreated) {
-                    balances.merge(credKey, lovelace, BigInteger::add);
-                    created[0]++;
-                } else {
-                    balances.merge(credKey, lovelace.negate(), BigInteger::add);
-                    spent[0]++;
-                }
-            } catch (Exception e) {
+            var credKey = aggregator.extractCredential(address, pointerResolver);
+            if (credKey == null) {
                 skipped[0]++;
+                return;
+            }
+
+            if (isCreated) {
+                balances.merge(credKey, lovelace, BigInteger::add);
+                created[0]++;
+            } else {
+                balances.merge(credKey, lovelace.negate(), BigInteger::add);
+                spent[0]++;
             }
         });
 

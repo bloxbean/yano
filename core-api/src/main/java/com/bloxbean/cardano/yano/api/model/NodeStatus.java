@@ -75,6 +75,61 @@ public class NodeStatus {
      * Additional status information as free text
      */
     private final String statusMessage;
+
+    /**
+     * Current upstream peer name, if client sync is active.
+     */
+    private final String peerName;
+
+    /**
+     * Current upstream peer session state.
+     */
+    private final String peerState;
+
+    /**
+     * Last peer recovery reason, if any.
+     */
+    private final String peerRecoveryReason;
+
+    /**
+     * Consecutive peer recovery failures since the last successful recovery.
+     */
+    private final Integer peerRecoveryFailures;
+
+    /**
+     * Maximum consecutive peer recovery failures before automatic retries pause.
+     */
+    private final Integer peerMaxRecoveryFailures;
+
+    /**
+     * Whether peer recovery retries are paused after repeated failures.
+     */
+    private final boolean peerRecoveryTerminal;
+
+    /**
+     * Terminal or latest peer recovery failure message, if any.
+     */
+    private final String peerTerminalFailureMessage;
+
+    /**
+     * Age in milliseconds since header/body application progress.
+     */
+    private final Long peerApplicationProgressAgeMillis;
+
+    /**
+     * Age in milliseconds since the last upstream keepalive response.
+     */
+    private final Long peerKeepAliveAgeMillis;
+
+    /**
+     * Whether a body fetch batch is currently in progress.
+     */
+    private final Boolean peerBodyFetchInProgress;
+
+    /**
+     * Age in milliseconds of the in-progress body fetch batch.
+     */
+    private final Long peerBodyFetchInProgressAgeMillis;
     
     /**
      * Timestamp when this status was created (System.currentTimeMillis())

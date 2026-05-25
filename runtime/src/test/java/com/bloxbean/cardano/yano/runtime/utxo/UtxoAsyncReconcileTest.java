@@ -8,6 +8,8 @@ import com.bloxbean.cardano.yaci.events.api.PublishOptions;
 import com.bloxbean.cardano.yaci.events.api.EventBus;
 import com.bloxbean.cardano.yaci.events.impl.SimpleEventBus;
 import com.bloxbean.cardano.yano.runtime.chain.DirectRocksDBChainState;
+import com.bloxbean.cardano.yano.runtime.events.PropagatingEventBus;
+import com.bloxbean.cardano.yaci.core.storage.ChainState;
 import com.bloxbean.cardano.yano.api.events.BlockAppliedEvent;
 import com.bloxbean.cardano.yano.api.events.RollbackEvent;
 import org.junit.jupiter.api.AfterEach;
@@ -20,8 +22,11 @@ import java.io.File;
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.time.Duration;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import static com.bloxbean.cardano.yaci.core.util.Constants.LOVELACE;
 import static org.junit.jupiter.api.Assertions.*;
@@ -102,6 +107,64 @@ class UtxoAsyncReconcileTest {
     }
 
     @Test
+    void asyncFailureIsRememberedAndPropagatedOnNextEvent() throws Exception {
+        PropagatingEventBus bus = new PropagatingEventBus();
+        FailingWriter writer = new FailingWriter();
+        try (UtxoEventHandlerAsync handler = new UtxoEventHandlerAsync(bus, writer)) {
+            Block block = Block.builder()
+                    .era(Era.Babbage)
+                    .transactionBodies(Collections.emptyList())
+                    .invalidTransactions(Collections.emptyList())
+                    .build();
+
+            bus.publish(new BlockAppliedEvent(Era.Babbage, 10, 1, "aa".repeat(32), block),
+                    EventMetadata.builder().origin("test").slot(10).blockNo(1).blockHash("aa".repeat(32)).build(),
+                    PublishOptions.builder().build());
+
+            long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+            while (!handler.hasFailure() && System.nanoTime() < deadline) {
+                Thread.sleep(10);
+            }
+            assertTrue(handler.hasFailure());
+            assertTrue(bus.hasAsyncFailure());
+
+            assertThrows(PropagatingEventBus.EventDeliveryException.class,
+                    () -> bus.publish(new BlockAppliedEvent(Era.Babbage, 11, 2, "bb".repeat(32), block),
+                            EventMetadata.builder().origin("test").slot(11).blockNo(2).blockHash("bb".repeat(32)).build(),
+                            PublishOptions.builder().build()));
+        } finally {
+            bus.close();
+        }
+    }
+
+    @Test
+    void asyncCloseTimeoutMarksPropagatingBusFailed() throws Exception {
+        PropagatingEventBus bus = new PropagatingEventBus();
+        BlockingWriter writer = new BlockingWriter();
+        UtxoEventHandlerAsync handler = new UtxoEventHandlerAsync(bus, writer);
+        try {
+            Block block = Block.builder()
+                    .era(Era.Babbage)
+                    .transactionBodies(Collections.emptyList())
+                    .invalidTransactions(Collections.emptyList())
+                    .build();
+
+            bus.publish(new BlockAppliedEvent(Era.Babbage, 10, 1, "cc".repeat(32), block),
+                    EventMetadata.builder().origin("test").slot(10).blockNo(1).blockHash("cc".repeat(32)).build(),
+                    PublishOptions.builder().build());
+            assertTrue(writer.started.await(5, TimeUnit.SECONDS));
+
+            assertFalse(handler.closeAndAwait(Duration.ofMillis(50)));
+            assertTrue(handler.hasFailure());
+            assertTrue(bus.hasAsyncFailure());
+        } finally {
+            writer.release.countDown();
+            handler.close();
+            bus.close();
+        }
+    }
+
+    @Test
     void reconcile_forward_then_rollback_handles_crash_scenarios() throws Exception {
         // Build two blocks (b1 creates, b2 spends)
         String addr = "addr_test1vpxrecon000000000000000000000000000000000000";
@@ -146,5 +209,53 @@ class UtxoAsyncReconcileTest {
         var list = store.getUtxosByAddress(addr, 1, 10);
         assertEquals(1, list.size());
         assertEquals(new BigInteger("50"), list.get(0).lovelace());
+    }
+
+    private static final class FailingWriter implements UtxoStoreWriter {
+        @Override
+        public void applyBlock(BlockAppliedEvent e) {
+            throw new IllegalStateException("apply failed");
+        }
+
+        @Override
+        public void rollbackTo(RollbackEvent e) {
+        }
+
+        @Override
+        public void reconcile(ChainState chainState) {
+        }
+
+        @Override
+        public boolean isEnabled() {
+            return true;
+        }
+    }
+
+    private static final class BlockingWriter implements UtxoStoreWriter {
+        private final CountDownLatch started = new CountDownLatch(1);
+        private final CountDownLatch release = new CountDownLatch(1);
+
+        @Override
+        public void applyBlock(BlockAppliedEvent e) {
+            started.countDown();
+            try {
+                release.await();
+            } catch (InterruptedException ex) {
+                Thread.currentThread().interrupt();
+            }
+        }
+
+        @Override
+        public void rollbackTo(RollbackEvent e) {
+        }
+
+        @Override
+        public void reconcile(ChainState chainState) {
+        }
+
+        @Override
+        public boolean isEnabled() {
+            return true;
+        }
     }
 }

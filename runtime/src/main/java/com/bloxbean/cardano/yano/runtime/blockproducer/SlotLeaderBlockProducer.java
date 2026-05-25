@@ -160,17 +160,15 @@ public class SlotLeaderBlockProducer implements BlockProducerService {
             return;
         }
 
-        // 5. Advance epoch nonce if we crossed an epoch boundary (must happen BEFORE reading nonce)
-        epochNonceState.advanceEpochIfNeeded(currentSlot);
-
-        // 6. Get epoch nonce
-        byte[] epochNonce = epochNonceState.getEpochNonce();
+        // 5. Preview epoch nonce without mutating shared nonce state. The block builder applies
+        // the epoch transition only if this slot actually produces a block.
+        byte[] epochNonce = epochNonceState.previewEpochNonceForSlot(currentSlot);
         if (epochNonce == null) {
             log.warn("Epoch nonce not available, skipping leader check for slot {}", currentSlot);
             return;
         }
 
-        // 7. Check leader eligibility
+        // 6. Check leader eligibility
         BlockSigner.VrfSignResult vrfResult = slotLeaderCheck.checkAndProve(currentSlot, epochNonce, sigma);
         if (vrfResult == null) {
             return; // Not a leader for this slot
@@ -178,7 +176,7 @@ public class SlotLeaderBlockProducer implements BlockProducerService {
 
         log.info("SLOT LEADER! Elected for slot {} (epoch {})", currentSlot, currentEpoch);
 
-        // 8. Produce block
+        // 7. Produce block
         try {
             produceBlock(currentSlot, vrfResult, tip);
         } catch (Exception e) {
@@ -224,7 +222,7 @@ public class SlotLeaderBlockProducer implements BlockProducerService {
 
         var result = blockBuilder.buildBlock(blockNumber, slot, prevHash, txList, vrfResult);
 
-        BlockProducerHelper.storeBlock(chainState, result);
+        BlockProducerHelper.storeProducedBlock(chainState, blockBuilder, result);
 
         log.info("Block #{} produced: slot={}, txs={}, hash={}",
                 blockNumber, slot, txList.size(), HexUtil.encodeHexString(result.blockHash()));

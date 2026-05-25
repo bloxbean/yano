@@ -22,10 +22,14 @@ import com.bloxbean.cardano.yano.api.events.EpochTransitionEvent;
 import com.bloxbean.cardano.yano.api.events.GenesisBlockEvent;
 import com.bloxbean.cardano.yano.api.events.PostEpochTransitionEvent;
 import com.bloxbean.cardano.yano.api.events.PreEpochTransitionEvent;
-import com.bloxbean.cardano.yano.runtime.chain.DirectRocksDBChainState;
 import com.bloxbean.cardano.yano.api.events.BlockAppliedEvent;
 import com.bloxbean.cardano.yano.api.events.BlockReceivedEvent;
+import com.bloxbean.cardano.yano.api.events.RollbackEvent;
 import com.bloxbean.cardano.yano.api.events.TipChangedEvent;
+import com.bloxbean.cardano.yano.runtime.apply.UnrecoverableApplyException;
+import com.bloxbean.cardano.yano.runtime.chain.DirectRocksDBChainState;
+import com.bloxbean.cardano.yano.runtime.chain.InMemoryChainState;
+import com.bloxbean.cardano.yano.runtime.peer.PeerHealth;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.List;
@@ -51,6 +55,23 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 @Slf4j
 public class BodyFetchManager implements BlockChainDataListener, Runnable {
+    /**
+     * Result of attempting to apply one decoded block body to local ledger state.
+     */
+    public enum BlockApplyResult {
+        /**
+         * The block was stored and all block-applied listeners completed.
+         */
+        APPLIED,
+        /**
+         * The block was an expected stale body, usually an in-flight BlockFetch
+         * response from the pre-rollback chain, and was deliberately ignored.
+         */
+        SKIPPED_STALE
+    }
+
+    private static final long SLOW_EPOCH_TRANSITION_WARN_MS =
+            positiveLongProperty("yano.bodyFetch.slowEpochTransitionWarnMs", 1_000L);
 
     private final PeerClient peerClient;
     private final ChainState chainState;
@@ -81,6 +102,7 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
     private volatile Point currentBatchFrom;
     private volatile Point currentBatchTo;
     private volatile int currentBatchSize;
+    private volatile PeerHealth peerHealth;
 
     // Epoch transition detection
     private volatile EpochParamProvider epochParamProvider;
@@ -184,6 +206,10 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
      */
     public void setEpochParamProvider(EpochParamProvider provider) {
         this.epochParamProvider = provider;
+    }
+
+    public void setPeerHealth(PeerHealth peerHealth) {
+        this.peerHealth = peerHealth;
     }
 
     /**
@@ -470,23 +496,32 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
 
     @Override
     public void onBlock(Era era, Block block, List<Transaction> transactions) {
+        applyBlock(era, block, transactions);
+    }
+
+    public BlockApplyResult applyBlock(Era era, Block block, List<Transaction> transactions) {
         // Store complete block and update tip
         if (block == null || block.getHeader() == null || block.getHeader().getHeaderBody() == null) {
-            log.warn("Received null or incomplete block, skipping storage");
-            return;
+            throw new RuntimeException("Received null or incomplete Shelley block");
         }
 
+        long slot = -1;
+        long blockNumber = -1;
+        String hash = null;
+        ChainTip tipBeforeStore = null;
+        boolean blockStored = false;
+
         try {
-            long slot = block.getHeader().getHeaderBody().getSlot();
-            long blockNumber = block.getHeader().getHeaderBody().getBlockNumber();
-            String hash = block.getHeader().getHeaderBody().getBlockHash();
+            slot = block.getHeader().getHeaderBody().getSlot();
+            blockNumber = block.getHeader().getHeaderBody().getBlockNumber();
+            hash = block.getHeader().getHeaderBody().getBlockHash();
 
             // Check for stale blocks that arrived after rollback
             if (isStaleBlock(blockNumber, slot, hash, false)) {
                 log.warn("🗑️ DISCARDED STALE BLOCK: Block #{} at slot {} arrived after rollback - skipping storage",
                         blockNumber, slot);
                 onStaleBlockObserved();
-                return;
+                return BlockApplyResult.SKIPPED_STALE;
             }
 
             // Publish BlockReceived before storage
@@ -522,19 +557,23 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
             var consensusEvent = new BlockConsensusEvent(slot, blockNumber, hash, blockBytes);
             eventBus.publish(consensusEvent, recvMeta, PublishOptions.builder().build());
             if (consensusEvent.isRejected()) {
-                log.warn("Block #{} at slot {} rejected by consensus: {}", blockNumber, slot,
-                        consensusEvent.rejections().stream().map(r -> r.source() + ": " + r.reason())
-                                .collect(Collectors.joining("; ")));
-                return;
+                String rejectionReason = consensusEvent.rejections().stream()
+                        .map(r -> r.source() + ": " + r.reason())
+                        .collect(Collectors.joining("; "));
+                log.warn("Block #{} at slot {} rejected by consensus: {}", blockNumber, slot, rejectionReason);
+                throw new RuntimeException("Block rejected by consensus: block=" + blockNumber
+                        + ", slot=" + slot + ", reason=" + rejectionReason);
             }
 
-            boolean freshChain = chainState.getTip() == null;
+            tipBeforeStore = chainState.getTip();
+            boolean freshChain = tipBeforeStore == null;
             chainState.storeBlock(
                 hashBytes,
                 blockNumber,
                 slot,
                 blockBytes
             );
+            blockStored = true;
 
             persistEraStartSlotIfNeeded(era, slot);
 
@@ -556,6 +595,7 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
 
             // Publish BlockApplied after storage
             eventBus.publish(new BlockAppliedEvent(era, slot, blockNumber, hash, block), appMeta, appOptions);
+            recordBodyApplied(slot, blockNumber);
 
             // Publish TipChanged if tip advanced
             var _newTip = chainState.getTip();
@@ -587,7 +627,13 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
                          bodiesReceived.get(), slot, blockNumber);
             }
 
+            return BlockApplyResult.APPLIED;
+
         } catch (Exception e) {
+            if (blockStored) {
+                compensateFailedPostStoreApply(tipBeforeStore, slot, blockNumber, hash, e);
+            }
+
             // Check for continuity violation — indicates fork-induced index/body mismatch.
             // Instead of cascading failure, treat as stale and let recovery handle it.
             boolean isContinuityViolation = false;
@@ -603,7 +649,7 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
                 if (consecutiveStaleBlocks.incrementAndGet() >= STALE_RECOVERY_THRESHOLD) {
                     onStaleBlockObserved();
                 }
-                return; // Don't re-throw — let stale recovery handle it
+                throw e;
             }
 
             log.error("Failed to store complete block: {}",
@@ -615,22 +661,32 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
 
     @Override
     public void onByronBlock(ByronMainBlock byronBlock) {
+        applyByronBlock(byronBlock);
+    }
+
+    public BlockApplyResult applyByronBlock(ByronMainBlock byronBlock) {
         if (byronBlock == null || byronBlock.getHeader() == null) {
-            log.warn("Received null or incomplete Byron block, skipping storage");
-            return;
+            throw new RuntimeException("Received null or incomplete Byron block");
         }
+
+        long slot = -1;
+        long blockNumber = -1;
+        String hash = null;
+        ChainTip tipBeforeStore = null;
+        boolean blockStored = false;
 
         try {
             // Handle Byron main block storage
-            long slot = byronBlock.getHeader().getConsensusData().getAbsoluteSlot();
-            long blockNumber = byronBlock.getHeader().getConsensusData().getDifficulty().longValue();
-            String hash = byronBlock.getHeader().getBlockHash();
+            slot = byronBlock.getHeader().getConsensusData().getAbsoluteSlot();
+            blockNumber = byronBlock.getHeader().getConsensusData().getDifficulty().longValue();
+            hash = byronBlock.getHeader().getBlockHash();
 
             // Check for stale blocks that arrived after rollback
             if (isStaleBlock(blockNumber, slot, hash, false)) {
                 log.warn("🗑️ DISCARDED STALE BLOCK: Block #{} at slot {} arrived after rollback - skipping storage",
                         blockNumber, slot);
-                return;
+                onStaleBlockObserved();
+                return BlockApplyResult.SKIPPED_STALE;
             }
 
             // Publish BlockReceived before storage
@@ -666,21 +722,28 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
             var consensusEvent = new BlockConsensusEvent(slot, blockNumber, hash, blockBytes);
             eventBus.publish(consensusEvent, recvMeta, PublishOptions.builder().build());
             if (consensusEvent.isRejected()) {
-                log.warn("Byron block #{} at slot {} rejected by consensus: {}", blockNumber, slot,
-                        consensusEvent.rejections().stream().map(r -> r.source() + ": " + r.reason())
-                                .collect(Collectors.joining("; ")));
-                return;
+                String rejectionReason = consensusEvent.rejections().stream()
+                        .map(r -> r.source() + ": " + r.reason())
+                        .collect(Collectors.joining("; "));
+                log.warn("Byron block #{} at slot {} rejected by consensus: {}", blockNumber, slot, rejectionReason);
+                throw new RuntimeException("Byron block rejected by consensus: block=" + blockNumber
+                        + ", slot=" + slot + ", reason=" + rejectionReason);
             }
 
-            boolean freshChain = chainState.getTip() == null;
+            tipBeforeStore = chainState.getTip();
+            boolean freshChain = tipBeforeStore == null;
             chainState.storeBlock(
                 hashBytes,
                 blockNumber,
                 slot,
                 blockBytes
             );
+            blockStored = true;
 
             persistEraStartSlotIfNeeded(Era.Byron, slot);
+
+            // successful store resets stale counter
+            consecutiveStaleBlocks.set(0);
 
             EventMetadata appMeta = EventMetadata.builder()
                     .origin("runtime")
@@ -697,6 +760,7 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
 
             // Publish BlockApplied after storage
             eventBus.publish(new BlockAppliedEvent(Era.Byron, slot, blockNumber, hash, null), appMeta, appOptions);
+            recordBodyApplied(slot, blockNumber);
 
             // Publish TipChanged if tip advanced
             var _newTipByron = chainState.getTip();
@@ -726,7 +790,12 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
                 log.debug("📦 Byron block received: slot={}, hash={}", slot, hash);
             }
 
+            return BlockApplyResult.APPLIED;
+
         } catch (Exception e) {
+            if (blockStored) {
+                compensateFailedPostStoreApply(tipBeforeStore, slot, blockNumber, hash, e);
+            }
             log.error("Failed to store Byron block: {}",
                      byronBlock != null && byronBlock.getHeader() != null ?
                      byronBlock.getHeader().getBlockHash() : "unknown", e);
@@ -736,23 +805,32 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
 
     @Override
     public void onByronEbBlock(ByronEbBlock byronEbBlock) {
+        applyByronEbBlock(byronEbBlock);
+    }
+
+    public BlockApplyResult applyByronEbBlock(ByronEbBlock byronEbBlock) {
         if (byronEbBlock == null || byronEbBlock.getHeader() == null) {
-            log.warn("Received null or incomplete Byron EB block, skipping storage");
-            return;
+            throw new RuntimeException("Received null or incomplete Byron EB block");
         }
+
+        long slot = -1;
+        long blockNumber = -1;
+        String hash = null;
+        ChainTip tipBeforeStore = null;
+        boolean blockStored = false;
 
         try {
             // Handle Byron epoch boundary block storage
-            long slot = byronEbBlock.getHeader().getConsensusData().getAbsoluteSlot();
-            long blockNumber = byronEbBlock.getHeader().getConsensusData().getDifficulty().longValue();
-            String hash = byronEbBlock.getHeader().getBlockHash();
+            slot = byronEbBlock.getHeader().getConsensusData().getAbsoluteSlot();
+            blockNumber = byronEbBlock.getHeader().getConsensusData().getDifficulty().longValue();
+            hash = byronEbBlock.getHeader().getBlockHash();
 
             // Check for stale blocks that arrived after rollback
             if (isStaleBlock(blockNumber, slot, hash, true)) {
                 log.warn("🗑️ DISCARDED STALE BLOCK: Byron EB Block #{} at slot {} arrived after rollback - skipping storage",
                         blockNumber, slot);
                 onStaleBlockObserved();
-                return;
+                return BlockApplyResult.SKIPPED_STALE;
             }
 
             // Publish BlockReceived before storage
@@ -787,19 +865,23 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
             var consensusEvent = new BlockConsensusEvent(slot, blockNumber, hash, blockBytes);
             eventBus.publish(consensusEvent, recvMeta, PublishOptions.builder().build());
             if (consensusEvent.isRejected()) {
-                log.warn("Byron EB block #{} at slot {} rejected by consensus: {}", blockNumber, slot,
-                        consensusEvent.rejections().stream().map(r -> r.source() + ": " + r.reason())
-                                .collect(Collectors.joining("; ")));
-                return;
+                String rejectionReason = consensusEvent.rejections().stream()
+                        .map(r -> r.source() + ": " + r.reason())
+                        .collect(Collectors.joining("; "));
+                log.warn("Byron EB block #{} at slot {} rejected by consensus: {}", blockNumber, slot, rejectionReason);
+                throw new RuntimeException("Byron EB block rejected by consensus: block=" + blockNumber
+                        + ", slot=" + slot + ", reason=" + rejectionReason);
             }
 
-            boolean freshChain = chainState.getTip() == null;
+            tipBeforeStore = chainState.getTip();
+            boolean freshChain = tipBeforeStore == null;
             chainState.storeBlock(
                 hashBytes,
                 blockNumber,
                 slot,
                 blockBytes
             );
+            blockStored = true;
 
             persistEraStartSlotIfNeeded(Era.Byron, slot);
 
@@ -821,6 +903,7 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
 
             // Publish BlockApplied after storage
             eventBus.publish(new BlockAppliedEvent(Era.Byron, slot, blockNumber, hash, null), appMeta, appOptions);
+            recordBodyApplied(slot, blockNumber);
 
             // Publish TipChanged if tip advanced
             var _newTipEb = chainState.getTip();
@@ -844,7 +927,12 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
                 log.debug("📦 Byron EB block received: slot={}, hash={}", slot, hash);
             }
 
+            return BlockApplyResult.APPLIED;
+
         } catch (Exception e) {
+            if (blockStored) {
+                compensateFailedPostStoreApply(tipBeforeStore, slot, blockNumber, hash, e);
+            }
             log.error("Failed to store Byron EB block: {}",
                      byronEbBlock != null && byronEbBlock.getHeader() != null ?
                      byronEbBlock.getHeader().getBlockHash() : "unknown", e);
@@ -897,6 +985,7 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
         currentBatchFrom = null;
         currentBatchTo = null;
         currentBatchSize = 0;
+        consecutiveStaleBlocks.set(0);
     }
 
     @Override
@@ -908,7 +997,100 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
     @Override
     public void onParsingError(BlockParseRuntimeException e) {
         log.error("🚨 Block parsing error in BodyFetchManager", e);
-        // Continue operation despite parsing errors
+        throw e;
+    }
+
+    private void compensateFailedPostStoreApply(ChainTip tipBeforeStore,
+                                                long failedSlot,
+                                                long failedBlockNumber,
+                                                String failedHash,
+                                                Throwable failure) {
+        long rollbackSlot = tipBeforeStore != null ? tipBeforeStore.getSlot() : -1L;
+        String rollbackHash = tipBeforeStore != null && tipBeforeStore.getBlockHash() != null
+                ? HexUtil.encodeHexString(tipBeforeStore.getBlockHash())
+                : null;
+        log.error("Block apply failed after ChainState store; rolling back local state to slot {} before recovery "
+                        + "(failed block={}, slot={}, hash={})",
+                rollbackSlot, failedBlockNumber, failedSlot, failedHash, failure);
+        try {
+            rollbackChainStateAfterPostStoreFailure(tipBeforeStore, rollbackSlot);
+        } catch (Throwable rollbackFailure) {
+            throw unrecoverableCompensationFailure(
+                    "Failed to roll back ChainState after post-store apply failure; automatic recovery cannot safely continue",
+                    failure,
+                    rollbackFailure);
+        }
+
+        try {
+            EventMetadata rollbackMeta = EventMetadata.builder()
+                    .origin("runtime")
+                    .slot(rollbackSlot)
+                    .blockHash(rollbackHash)
+                    .build();
+            eventBus.publish(new RollbackEvent(new Point(rollbackSlot, rollbackHash), true),
+                    rollbackMeta, PublishOptions.builder().build());
+        } catch (Throwable rollbackEventFailure) {
+            throw unrecoverableCompensationFailure(
+                    "Failed to publish compensating RollbackEvent after post-store apply failure; automatic recovery cannot safely continue",
+                    failure,
+                    rollbackEventFailure);
+        }
+    }
+
+    private void rollbackChainStateAfterPostStoreFailure(ChainTip tipBeforeStore, long rollbackSlot) {
+        if (tipBeforeStore == null) {
+            rollbackChainStateToOrigin();
+            if (chainState.getTip() != null || chainState.getHeaderTip() != null) {
+                throw new IllegalStateException("ChainState rollback to origin left a non-empty tip");
+            }
+            return;
+        }
+
+        chainState.rollbackTo(rollbackSlot);
+        ChainTip currentTip = chainState.getTip();
+        if (!sameTip(currentTip, tipBeforeStore)) {
+            throw new IllegalStateException("ChainState rollback ended at "
+                    + describeTip(currentTip) + " instead of " + describeTip(tipBeforeStore));
+        }
+    }
+
+    private void rollbackChainStateToOrigin() {
+        if (chainState instanceof DirectRocksDBChainState rocks) {
+            rocks.rollbackToOrigin();
+            return;
+        }
+        if (chainState instanceof InMemoryChainState memory) {
+            memory.rollbackToOrigin();
+            return;
+        }
+        chainState.rollbackTo(0L);
+    }
+
+    private static boolean sameTip(ChainTip left, ChainTip right) {
+        if (left == right) return true;
+        if (left == null || right == null) return false;
+        return left.getSlot() == right.getSlot()
+                && left.getBlockNumber() == right.getBlockNumber()
+                && java.util.Arrays.equals(left.getBlockHash(), right.getBlockHash());
+    }
+
+    private static String describeTip(ChainTip tip) {
+        if (tip == null) {
+            return "origin";
+        }
+        return "slot=" + tip.getSlot()
+                + ", block=" + tip.getBlockNumber()
+                + ", hash=" + HexUtil.encodeHexString(tip.getBlockHash());
+    }
+
+    private static UnrecoverableApplyException unrecoverableCompensationFailure(String message,
+                                                                               Throwable originalFailure,
+                                                                               Throwable compensationFailure) {
+        log.error(message, compensationFailure);
+        UnrecoverableApplyException unrecoverable =
+                new UnrecoverableApplyException(message, originalFailure);
+        unrecoverable.addSuppressed(compensationFailure);
+        return unrecoverable;
     }
 
     // ================================================================
@@ -1067,6 +1249,13 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
                     log.debug("Header lookup failed for block #{}: {}", blockNumber, e.getMessage());
             }
 
+            boolean inRollbackTail = lastRollbackPoint != null && slot > lastRollbackPoint.getSlot();
+            if (inRollbackTail) {
+                log.warn("🚫 Post-rollback block #{} at slot {} has no matching header after rollback to slot {} - treating as stale",
+                        blockNumber, slot, lastRollbackPoint.getSlot());
+                return true;
+            }
+
             // Get current tip to understand the current state
             ChainTip currentTip = chainState.getTip();
 
@@ -1131,13 +1320,6 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
                             blockNumber - 1, blockNumber);
                     return true;
                 }
-            }
-
-            // If we had a rollback and this block is beyond the rollback point,
-            // log additional context but allow it since it passed the sequential check above
-            if (lastRollbackPoint != null && slot > lastRollbackPoint.getSlot()) {
-                log.debug("✅ Block #{} at slot {} passed sequential check despite being beyond rollback point slot {}",
-                         blockNumber, slot, lastRollbackPoint.getSlot());
             }
 
             // Block is accepted
@@ -1323,6 +1505,13 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
         eventBus.publish(new GenesisBlockEvent(era, epoch, slot, blockNumber, blockHash), meta, opts);
     }
 
+    private void recordBodyApplied(long slot, long blockNumber) {
+        PeerHealth health = peerHealth;
+        if (health != null) {
+            health.recordBodyApplied(slot, blockNumber, System.currentTimeMillis());
+        }
+    }
+
     /**
      * Persist the current block's era start slot before epoch-boundary processing sees this block.
      * This closes the one-boundary timing hole where the first block of a new era triggers
@@ -1352,6 +1541,7 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
         if (currentEpoch < 0) return;
 
         if (previousEpoch >= 0 && currentEpoch > previousEpoch) {
+            long startedNanos = System.nanoTime();
             log.info("Epoch transition detected: {} -> {} at slot {}, block {}",
                     previousEpoch, currentEpoch, slot, blockNumber);
             EventMetadata meta = EventMetadata.builder()
@@ -1366,7 +1556,17 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
                     meta, opts);
             eventBus.publish(new PostEpochTransitionEvent(previousEpoch, currentEpoch, slot, blockNumber),
                     meta, opts);
+            long elapsedMs = (System.nanoTime() - startedNanos) / 1_000_000L;
+            if (elapsedMs >= SLOW_EPOCH_TRANSITION_WARN_MS) {
+                log.warn("Slow epoch transition processing: {} -> {}, slot={}, block={}, elapsedMs={}, thread={}",
+                        previousEpoch, currentEpoch, slot, blockNumber, elapsedMs, Thread.currentThread().getName());
+            }
         }
         previousEpoch = currentEpoch;
+    }
+
+    private static long positiveLongProperty(String propertyName, long defaultValue) {
+        long value = Long.getLong(propertyName, defaultValue);
+        return value > 0 ? value : defaultValue;
     }
 }

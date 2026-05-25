@@ -234,7 +234,7 @@ public class DevnetBlockProducer implements BlockProducerService {
     }
 
     private void storeBlock(DevnetBlockBuilder.BlockBuildResult result) {
-        BlockProducerHelper.storeBlock(chainState, result);
+        BlockProducerHelper.storeProducedBlock(chainState, blockBuilder, result);
     }
 
     private long calculateCurrentSlot() {

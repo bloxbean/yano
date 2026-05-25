@@ -305,7 +305,7 @@ public class EpochRewardCalculator {
                     networkConfig);
         } catch (Exception e) {
             log.error("Reward calculation failed for epoch {}: {}", epoch, e.getMessage(), e);
-            return Optional.empty();
+            throw new RuntimeException("Reward calculation failed for epoch " + epoch, e);
         }
 
         long elapsed = System.currentTimeMillis() - start;
@@ -666,6 +666,7 @@ public class EpochRewardCalculator {
                         leaderCount++;
                     } catch (RocksDBException e) {
                         log.warn("Failed to credit leader reward for pool {}: {}", poolId, e.getMessage());
+                        throw new RuntimeException("Failed to credit leader reward for pool " + poolId, e);
                     }
                 }
             }
@@ -681,6 +682,7 @@ public class EpochRewardCalculator {
                         memberCount++;
                     } catch (RocksDBException e) {
                         log.warn("Failed to credit member reward: {}", e.getMessage());
+                        throw new RuntimeException("Failed to credit member reward", e);
                     }
                 }
             }
@@ -815,6 +817,7 @@ public class EpochRewardCalculator {
                         pool.poolHash(), deposit, credKey, epoch);
             } catch (RocksDBException e) {
                 log.warn("Failed to credit pool deposit refund for {}: {}", pool.poolHash(), e.getMessage());
+                throw new RuntimeException("Failed to credit pool deposit refund for " + pool.poolHash(), e);
             }
         }
 

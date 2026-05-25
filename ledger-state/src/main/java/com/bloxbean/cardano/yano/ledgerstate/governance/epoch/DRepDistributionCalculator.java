@@ -312,7 +312,8 @@ public class DRepDistributionCalculator {
             var snapshot = AccountStateCborCodec.decodeEpochDelegSnapshot(val);
             return snapshot.amount();
         } catch (Exception e) {
-            return BigInteger.ZERO;
+            throw new RuntimeException("Failed to read DRep snapshot stake for epoch "
+                    + epoch + ", credType=" + credType + ", credHash=" + credHash, e);
         }
     }
 

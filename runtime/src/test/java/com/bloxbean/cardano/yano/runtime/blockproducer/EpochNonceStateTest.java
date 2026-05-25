@@ -74,6 +74,28 @@ class EpochNonceStateTest {
     }
 
     @Test
+    void previewEpochNonceForSlot_returnsBoundaryNonceWithoutMutating() {
+        state.initFromGenesis("genesis-preview".getBytes());
+
+        byte[] vrfOutput = new byte[64];
+        vrfOutput[0] = 0x31;
+        state.onBlockProduced(0, Blake2bUtil.blake2bHash256("prev".getBytes()), vrfOutput);
+
+        byte[] serializedBeforePreview = state.serialize();
+        byte[] preview = state.previewEpochNonceForSlot(EPOCH_LENGTH);
+
+        assertThat(preview).isNotNull();
+        assertThat(state.getCurrentEpoch()).isEqualTo(0);
+        assertThat(state.serialize()).isEqualTo(serializedBeforePreview);
+
+        EpochNonceState advanced = new EpochNonceState(EPOCH_LENGTH, SECURITY_PARAM, ACTIVE_SLOTS_COEFF);
+        advanced.restore(serializedBeforePreview);
+        advanced.advanceEpochIfNeeded(EPOCH_LENGTH);
+
+        assertArrayEquals(advanced.getEpochNonce(), preview);
+    }
+
+    @Test
     void serializeDeserialize_roundtrip() {
         state.initFromGenesis("genesis-roundtrip".getBytes());
 
@@ -259,6 +281,19 @@ class EpochNonceStateTest {
         byte[] hash = Blake2bUtil.blake2bHash256("genesis".getBytes());
         s.initFromGenesisHash(hash);
         assertEquals(4, s.getCurrentEpoch());
+    }
+
+    @Test
+    void firstShelleyBlockDoesNotTickFromEpochZeroWhenByronOffsetIsKnown() {
+        var s = new EpochNonceState(432000, 2160, 0.05);
+        s.setShelleyStartSlot(4492800); // mainnet first Shelley slot
+        s.initFromGenesisHash(Blake2bUtil.blake2bHash256("genesis".getBytes()));
+        byte[] nonceBeforeFirstShelleyBlock = s.getEpochNonce().clone();
+
+        s.advanceEpochIfNeeded(4492800);
+
+        assertEquals(208, s.getCurrentEpoch());
+        assertThat(s.getEpochNonce()).isEqualTo(nonceBeforeFirstShelleyBlock);
     }
 
     @Test

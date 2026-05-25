@@ -16,6 +16,7 @@ import com.bloxbean.cardano.client.crypto.vrf.VrfVerifier;
 import com.bloxbean.cardano.client.crypto.vrf.cardano.CardanoVrfInput;
 import com.bloxbean.cardano.yaci.core.util.CborSerializationUtil;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
+import com.bloxbean.cardano.yano.runtime.chain.InMemoryChainState;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
@@ -88,6 +89,7 @@ class SignedBlockBuilderTest {
     @Test
     void buildBlock_producesParseableBlock() {
         var result = builder.buildBlock(0, 0, null, List.of());
+        builder.commitPendingNonceState();
 
         assertThat(result).isNotNull();
         assertThat(result.blockCbor()).isNotNull();
@@ -109,6 +111,7 @@ class SignedBlockBuilderTest {
         long slot = 42;
 
         var result = builder.buildBlock(1, slot, new byte[32], List.of());
+        builder.commitPendingNonceState();
 
         // Parse the header to extract VRF proof — unwrap tag-24
         DataItem blockDI = CborSerializationUtil.deserializeOne(result.blockCbor());
@@ -142,6 +145,7 @@ class SignedBlockBuilderTest {
         SignedBlockBuilder freshBuilder = createFreshBuilder();
 
         var result = freshBuilder.buildBlock(0, 0, null, List.of());
+        freshBuilder.commitPendingNonceState();
 
         // Parse block to extract header — unwrap tag-24
         DataItem blockDI = CborSerializationUtil.deserializeOne(result.blockCbor());
@@ -176,6 +180,7 @@ class SignedBlockBuilderTest {
         SignedBlockBuilder freshBuilder = createFreshBuilder();
 
         var result = freshBuilder.buildBlock(0, 0, null, List.of());
+        freshBuilder.commitPendingNonceState();
 
         // Parse header body — unwrap tag-24
         DataItem blockDI = CborSerializationUtil.deserializeOne(result.blockCbor());
@@ -203,12 +208,14 @@ class SignedBlockBuilderTest {
 
         // Build genesis block
         var genesis = freshBuilder.buildBlock(0, 0, null, List.of());
+        freshBuilder.commitPendingNonceState();
         assertThat(genesis.blockHash()).hasSize(32);
 
         // Build several more blocks
         byte[] prevHash = genesis.blockHash();
         for (int i = 1; i <= 5; i++) {
             var block = freshBuilder.buildBlock(i, i * 2L, prevHash, List.of());
+            freshBuilder.commitPendingNonceState();
             assertThat(block.blockHash()).hasSize(32);
             assertThat(block.blockHash()).isNotEqualTo(prevHash);
             prevHash = block.blockHash();
@@ -245,6 +252,7 @@ class SignedBlockBuilderTest {
         // STEP 1: Build a signed block
         // =====================================================================
         var result = freshBuilder.buildBlock(blockNumber, slot, prevHash, List.of());
+        freshBuilder.commitPendingNonceState();
         assertNotNull(result, "Block build result should not be null");
         assertNotNull(result.blockCbor(), "Block CBOR should not be null");
         System.out.println("STEP 1 PASSED: Block built successfully");
@@ -510,17 +518,231 @@ class SignedBlockBuilderTest {
         SignedBlockBuilder freshBuilder = createFreshBuilder(store);
 
         // Build a block — should persist nonce state
-        freshBuilder.buildBlock(0, 0, null, List.of());
+        var result = freshBuilder.buildBlock(0, 0, null, List.of());
+        freshBuilder.commitPendingNonceState();
         assertThat(storeHolder[0]).isNotNull();
 
         // Restore into new state and verify
+        NonceStateSnapshot snapshot = NonceStateSnapshot.deserialize(storeHolder[0]);
+        assertEquals(0, snapshot.blockNumber());
+        assertEquals(0, snapshot.slot());
+        assertArrayEquals(result.blockHash(), snapshot.blockHash());
+
         EpochNonceState restored = new EpochNonceState(EPOCH_LENGTH, SECURITY_PARAM, ACTIVE_SLOTS_COEFF);
-        restored.restore(storeHolder[0]);
+        restored.restore(snapshot.nonceState());
 
         // After one block at slot 0, the nonce state should have evolved;
         // verify the restored state matches by comparing epoch and nonce
         assertEquals(0, restored.getCurrentEpoch());
         assertThat(restored.getEpochNonce()).isNotNull();
+    }
+
+    @Test
+    void buildBlock_persistsEpochNonceCheckpointAtBoundary() {
+        byte[][] latestHolder = {null};
+        NonceStateSnapshot[] checkpointHolder = {null};
+        int[] checkpointEpoch = {-1};
+        NonceStateStore store = new NonceStateStore() {
+            @Override
+            public void storeEpochNonceState(byte[] serialized) {
+                latestHolder[0] = serialized;
+            }
+
+            @Override
+            public byte[] getEpochNonceState() {
+                return latestHolder[0];
+            }
+
+            @Override
+            public void storeEpochNonceCheckpoint(int epoch, NonceStateSnapshot snapshot) {
+                checkpointEpoch[0] = epoch;
+                checkpointHolder[0] = snapshot;
+            }
+        };
+
+        SignedBlockBuilder freshBuilder = createFreshBuilder(store);
+        var result = freshBuilder.buildBlock(1, EPOCH_LENGTH, null, List.of());
+        freshBuilder.commitPendingNonceState();
+
+        assertEquals(1, checkpointEpoch[0]);
+        assertThat(checkpointHolder[0]).isNotNull();
+        assertEquals(1, checkpointHolder[0].blockNumber());
+        assertEquals(EPOCH_LENGTH, checkpointHolder[0].slot());
+        assertArrayEquals(result.blockHash(), checkpointHolder[0].blockHash());
+    }
+
+    @Test
+    void buildBlock_withPrecomputedVrfPersistsPendingEpochNonceCheckpoint() {
+        byte[][] latestHolder = {null};
+        NonceStateSnapshot[] checkpointHolder = {null};
+        int[] checkpointEpoch = {-1};
+        NonceStateStore store = new NonceStateStore() {
+            @Override
+            public void storeEpochNonceState(byte[] serialized) {
+                latestHolder[0] = serialized;
+            }
+
+            @Override
+            public byte[] getEpochNonceState() {
+                return latestHolder[0];
+            }
+
+            @Override
+            public void storeEpochNonceCheckpoint(int epoch, NonceStateSnapshot snapshot) {
+                checkpointEpoch[0] = epoch;
+                checkpointHolder[0] = snapshot;
+            }
+        };
+
+        EpochNonceState freshNonce = new EpochNonceState(EPOCH_LENGTH, SECURITY_PARAM, ACTIVE_SLOTS_COEFF);
+        try {
+            Path base = Paths.get("src/test/resources/devnet");
+            byte[] genesisBytes = java.nio.file.Files.readAllBytes(base.resolve("shelley-genesis.json"));
+            freshNonce.initFromGenesis(genesisBytes);
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+
+        long slot = EPOCH_LENGTH + 5;
+        freshNonce.advanceEpochIfNeeded(EPOCH_LENGTH);
+        var vrfResult = new BlockSigner().computeVrf(keys.getVrfSkey(), slot, freshNonce.getEpochNonce());
+        SignedBlockBuilder freshBuilder = new SignedBlockBuilder(keys, SLOTS_PER_KES_PERIOD, MAX_KES_EVOLUTIONS,
+                freshNonce, store);
+
+        var result = freshBuilder.buildBlock(1, slot, null, List.of(), vrfResult);
+        freshBuilder.commitPendingNonceState();
+
+        assertEquals(1, checkpointEpoch[0]);
+        assertThat(checkpointHolder[0]).isNotNull();
+        assertEquals(1, checkpointHolder[0].blockNumber());
+        assertEquals(slot, checkpointHolder[0].slot());
+        assertArrayEquals(result.blockHash(), checkpointHolder[0].blockHash());
+    }
+
+    @Test
+    void buildBlock_boundaryCheckpointIsNotOverwrittenByNextSameEpochBlock() {
+        byte[][] latestHolder = {null};
+        NonceStateSnapshot[] checkpointHolder = {null};
+        int[] checkpointWrites = {0};
+        NonceStateStore store = new NonceStateStore() {
+            @Override
+            public void storeEpochNonceState(byte[] serialized) {
+                latestHolder[0] = serialized;
+            }
+
+            @Override
+            public byte[] getEpochNonceState() {
+                return latestHolder[0];
+            }
+
+            @Override
+            public void storeEpochNonceCheckpoint(int epoch, NonceStateSnapshot snapshot) {
+                checkpointWrites[0]++;
+                checkpointHolder[0] = snapshot;
+            }
+        };
+
+        SignedBlockBuilder freshBuilder = createFreshBuilder(store);
+        var boundary = freshBuilder.buildBlock(1, EPOCH_LENGTH, null, List.of());
+        freshBuilder.commitPendingNonceState();
+        var next = freshBuilder.buildBlock(2, EPOCH_LENGTH + 1, boundary.blockHash(), List.of());
+        freshBuilder.commitPendingNonceState();
+
+        assertThat(next).isNotNull();
+        assertEquals(1, checkpointWrites[0]);
+        assertThat(checkpointHolder[0]).isNotNull();
+        assertEquals(1, checkpointHolder[0].blockNumber());
+        assertEquals(EPOCH_LENGTH, checkpointHolder[0].slot());
+        assertArrayEquals(boundary.blockHash(), checkpointHolder[0].blockHash());
+    }
+
+    @Test
+    void buildBlock_failureBeforePersistenceDoesNotAdvanceNonceState() {
+        EpochNonceState freshNonce = new EpochNonceState(EPOCH_LENGTH, SECURITY_PARAM, ACTIVE_SLOTS_COEFF);
+        try {
+            Path base = Paths.get("src/test/resources/devnet");
+            byte[] genesisBytes = java.nio.file.Files.readAllBytes(base.resolve("shelley-genesis.json"));
+            freshNonce.initFromGenesis(genesisBytes);
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+
+        byte[] before = freshNonce.serialize();
+        SignedBlockBuilder badBuilder = new SignedBlockBuilder(keys, SLOTS_PER_KES_PERIOD, 0,
+                freshNonce, null);
+
+        assertThrows(IllegalStateException.class,
+                () -> badBuilder.buildBlock(1, EPOCH_LENGTH, null, List.of()));
+
+        assertThat(freshNonce.serialize()).isEqualTo(before);
+    }
+
+    @Test
+    void buildBlock_withPrecomputedVrfFailureDoesNotAdvanceNonceState() {
+        EpochNonceState freshNonce = new EpochNonceState(EPOCH_LENGTH, SECURITY_PARAM, ACTIVE_SLOTS_COEFF);
+        try {
+            Path base = Paths.get("src/test/resources/devnet");
+            byte[] genesisBytes = java.nio.file.Files.readAllBytes(base.resolve("shelley-genesis.json"));
+            freshNonce.initFromGenesis(genesisBytes);
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+
+        byte[] before = freshNonce.serialize();
+        byte[] preview = freshNonce.previewEpochNonceForSlot(EPOCH_LENGTH);
+        var vrfResult = new BlockSigner().computeVrf(keys.getVrfSkey(), EPOCH_LENGTH, preview);
+        SignedBlockBuilder badBuilder = new SignedBlockBuilder(keys, SLOTS_PER_KES_PERIOD, 0,
+                freshNonce, null);
+
+        assertThrows(IllegalStateException.class,
+                () -> badBuilder.buildBlock(1, EPOCH_LENGTH, null, List.of(), vrfResult));
+
+        assertThat(freshNonce.serialize()).isEqualTo(before);
+    }
+
+    @Test
+    void buildBlockRejectsSecondBuildWhenPendingNonceCommitIsUnresolved() {
+        SignedBlockBuilder freshBuilder = createFreshBuilder();
+
+        var first = freshBuilder.buildBlock(1, EPOCH_LENGTH, null, List.of());
+
+        IllegalStateException error = assertThrows(IllegalStateException.class,
+                () -> freshBuilder.buildBlock(2, EPOCH_LENGTH + 1, first.blockHash(), List.of()));
+
+        assertThat(error).hasMessage("Previous produced block nonce state has not been committed or rolled back");
+
+        freshBuilder.rollbackPendingNonceState();
+        var second = freshBuilder.buildBlock(1, EPOCH_LENGTH, null, List.of());
+        freshBuilder.commitPendingNonceState();
+
+        assertThat(second).isNotNull();
+    }
+
+    @Test
+    void storeProducedBlockStorageFailureRollsBackStagedNonceState() {
+        EpochNonceState freshNonce = new EpochNonceState(EPOCH_LENGTH, SECURITY_PARAM, ACTIVE_SLOTS_COEFF);
+        try {
+            Path base = Paths.get("src/test/resources/devnet");
+            byte[] genesisBytes = java.nio.file.Files.readAllBytes(base.resolve("shelley-genesis.json"));
+            freshNonce.initFromGenesis(genesisBytes);
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+
+        byte[] before = freshNonce.serialize();
+        SignedBlockBuilder freshBuilder = new SignedBlockBuilder(keys, SLOTS_PER_KES_PERIOD, MAX_KES_EVOLUTIONS,
+                freshNonce, null);
+        var result = freshBuilder.buildBlock(1, EPOCH_LENGTH, null, List.of());
+
+        assertThrows(IllegalStateException.class,
+                () -> BlockProducerHelper.storeProducedBlock(new InMemoryChainState() {
+                    @Override
+                    public void storeBlock(byte[] blockHash, Long blockNumber, Long slot, byte[] block) {
+                        throw new IllegalStateException("block store failed");
+                    }
+                }, freshBuilder, result));
+
+        assertThat(freshNonce.serialize()).isEqualTo(before);
     }
 
 }

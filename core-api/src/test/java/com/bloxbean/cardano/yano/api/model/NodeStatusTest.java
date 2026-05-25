@@ -199,6 +199,17 @@ class NodeStatusTest {
                 .initialSyncComplete(false)
                 .syncMode("pipelined")
                 .statusMessage("All good")
+                .peerName("mainnet-1")
+                .peerState("HEALTHY")
+                .peerRecoveryReason("KEEPALIVE_STALE")
+                .peerRecoveryFailures(2)
+                .peerMaxRecoveryFailures(10)
+                .peerRecoveryTerminal(false)
+                .peerTerminalFailureMessage("last recovery failed")
+                .peerApplicationProgressAgeMillis(1000L)
+                .peerKeepAliveAgeMillis(2000L)
+                .peerBodyFetchInProgress(true)
+                .peerBodyFetchInProgressAgeMillis(3000L)
                 .timestamp(now)
                 .build();
         
@@ -215,6 +226,28 @@ class NodeStatusTest {
         assertThat(status.isInitialSyncComplete()).isFalse();
         assertThat(status.getSyncMode()).isEqualTo("pipelined");
         assertThat(status.getStatusMessage()).isEqualTo("All good");
+        assertThat(status.getPeerName()).isEqualTo("mainnet-1");
+        assertThat(status.getPeerState()).isEqualTo("HEALTHY");
+        assertThat(status.getPeerRecoveryReason()).isEqualTo("KEEPALIVE_STALE");
+        assertThat(status.getPeerRecoveryFailures()).isEqualTo(2);
+        assertThat(status.getPeerMaxRecoveryFailures()).isEqualTo(10);
+        assertThat(status.isPeerRecoveryTerminal()).isFalse();
+        assertThat(status.getPeerTerminalFailureMessage()).isEqualTo("last recovery failed");
+        assertThat(status.getPeerApplicationProgressAgeMillis()).isEqualTo(1000L);
+        assertThat(status.getPeerKeepAliveAgeMillis()).isEqualTo(2000L);
+        assertThat(status.getPeerBodyFetchInProgress()).isTrue();
+        assertThat(status.getPeerBodyFetchInProgressAgeMillis()).isEqualTo(3000L);
         assertThat(status.getTimestamp()).isEqualTo(now);
+    }
+
+    @Test
+    void builder_shouldLeavePeerRecoveryReasonUnsetByDefault() {
+        NodeStatus status = NodeStatus.builder()
+                .running(true)
+                .syncing(true)
+                .build();
+
+        assertThat(status.getPeerRecoveryReason()).isNull();
+        assertThat(status.isPeerRecoveryTerminal()).isFalse();
     }
 }

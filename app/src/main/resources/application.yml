@@ -46,6 +46,14 @@ yano:
     host: preprod-node.world.dev.cardano.org
     port: 30000
     protocol-magic: 1
+  dns:
+    cache:
+      # Positive DNS cache TTL in seconds. Defaults to 60 when omitted.
+      # Set to 0 to disable positive caching or -1 to cache forever.
+      # ttl: 60
+      # Negative DNS cache TTL in seconds. Defaults to 10 when omitted.
+      # negative:
+      #   ttl: 10
   server:
     enabled: true
     port: 13337
@@ -105,6 +113,10 @@ yano:
         seconds: 30
   validation:
     default-validator-enabled: true
+    # CCL "supplementary rules" (GOVCERT/governance/delegatee gap rules) layered on top of Scalus.
+    # Disabled by default — they don't yet account for intra-tx state changes within a single block.
+    # Set to true to opt in for testing.
+    supplementary-rules-enabled: false
   utxo:
     prune:
       schedule:
@@ -122,6 +134,7 @@ yano:
     slot-length-millis: 0
     start-epoch: 0
     past-time-travel-mode: false
+    past-time-travel-slot-leader-mode: false
     tx-evaluation: true
 
 "%native":
@@ -167,6 +180,7 @@ yano:
       vrf-skey-file: config/network/devnet/vrf.skey
       kes-skey-file: config/network/devnet/kes.skey
       opcert-file: config/network/devnet/opcert.cert
+      past-time-travel-slot-leader-mode: false
 
 "%devnet-slotleader":
   yano:
@@ -196,6 +210,7 @@ yano:
       vrf-skey-file: config/network/devnet/vrf.skey
       kes-skey-file: config/network/devnet/kes.skey
       opcert-file: config/network/devnet/opcert.cert
+      past-time-travel-slot-leader-mode: false
 
 "%mainnet":
   yano:

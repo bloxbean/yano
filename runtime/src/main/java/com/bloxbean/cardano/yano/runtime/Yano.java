@@ -19,7 +19,6 @@ import com.bloxbean.cardano.yaci.events.api.*;
 import com.bloxbean.cardano.yaci.events.api.config.EventsOptions;
 import com.bloxbean.cardano.yaci.events.api.support.AnnotationListenerRegistrar;
 import com.bloxbean.cardano.yaci.events.impl.NoopEventBus;
-import com.bloxbean.cardano.yaci.events.impl.SimpleEventBus;
 import com.bloxbean.cardano.yaci.helper.*;
 import com.bloxbean.cardano.yaci.helper.listener.BlockChainDataListener;
 import com.bloxbean.cardano.yano.api.EpochParamProvider;
@@ -42,6 +41,7 @@ import com.bloxbean.cardano.yano.api.bootstrap.BootstrapOutpoint;
 import com.bloxbean.cardano.yano.runtime.bootstrap.BootstrapResult;
 import com.bloxbean.cardano.yano.runtime.bootstrap.BootstrapService;
 import com.bloxbean.cardano.yano.runtime.blockproducer.*;
+import com.bloxbean.cardano.yano.runtime.apply.LedgerApplyProcessor;
 import com.bloxbean.cardano.yano.runtime.chain.BlockPruner;
 import com.bloxbean.cardano.yano.runtime.chain.DefaultMemPool;
 import com.bloxbean.cardano.yano.runtime.chain.DefaultMempoolEvictionPolicy;
@@ -59,12 +59,22 @@ import com.bloxbean.cardano.yano.runtime.handlers.YaciTxSubmissionHandler;
 import com.bloxbean.cardano.yano.runtime.migration.StakeBalanceIndexStartupMigration;
 import com.bloxbean.cardano.yano.runtime.migration.StartupMigrationContext;
 import com.bloxbean.cardano.yano.runtime.migration.StartupMigrationRunner;
+import com.bloxbean.cardano.yano.runtime.peer.DefaultPeerClientFactory;
+import com.bloxbean.cardano.yano.runtime.peer.PeerClientFactory;
+import com.bloxbean.cardano.yano.runtime.peer.PeerEndpoint;
+import com.bloxbean.cardano.yano.runtime.peer.PeerRecoveryFailureTracker;
+import com.bloxbean.cardano.yano.runtime.peer.PeerRecoveryReason;
+import com.bloxbean.cardano.yano.runtime.peer.PeerSession;
+import com.bloxbean.cardano.yano.runtime.peer.PeerSessionCallbacks;
+import com.bloxbean.cardano.yano.runtime.peer.PeerSessionStatus;
+import com.bloxbean.cardano.yano.runtime.peer.PeerSessionSupervisor;
 import com.bloxbean.cardano.yano.runtime.plugins.PluginManager;
 import com.bloxbean.cardano.yano.api.plugin.StorageFilter;
 import com.bloxbean.cardano.yano.api.account.AccountStateStore;
 import com.bloxbean.cardano.yano.api.account.AccountStateStoreContext;
 import com.bloxbean.cardano.yano.api.account.AccountHistoryProvider;
 import com.bloxbean.cardano.yano.api.account.LedgerStateProvider;
+import com.bloxbean.cardano.yano.api.rollback.RollbackCapableStore;
 import com.bloxbean.cardano.yano.ledgerstate.AccountHistoryEventHandler;
 import com.bloxbean.cardano.yano.ledgerstate.AccountHistoryStore;
 import com.bloxbean.cardano.yano.ledgerstate.AccountStateEventHandler;
@@ -77,9 +87,11 @@ import com.bloxbean.cardano.yano.ledgerstate.EpochRewardCalculator;
 import com.bloxbean.cardano.yano.ledgerstate.EpochStakeSnapshotService;
 import com.bloxbean.cardano.yano.ledgerstate.NetworkConfigBuilder;
 import com.bloxbean.cardano.yano.runtime.config.DefaultEpochParamProvider;
+import com.bloxbean.cardano.yano.runtime.config.DnsCachePolicy;
 import com.bloxbean.cardano.yano.runtime.config.InMemoryDevnetGenesis;
 import com.bloxbean.cardano.yano.runtime.config.NetworkGenesisConfig;
 import com.bloxbean.cardano.yano.runtime.config.NetworkGenesisValuesFactory;
+import com.bloxbean.cardano.yano.runtime.events.PropagatingEventBus;
 import com.bloxbean.cardano.yano.runtime.genesis.ShelleyGenesisParser;
 import com.bloxbean.cardano.yano.api.util.EpochSlotCalc;
 import com.bloxbean.cardano.yano.runtime.era.EraProviderImpl;
@@ -110,6 +122,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
@@ -126,7 +139,10 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * This enables Yano to act as a bridge/relay node
  */
 @Slf4j
-public class Yano implements NodeAPI {
+public class Yano implements NodeAPI, PeerSessionCallbacks {
+    private static final int MAX_PEER_RECOVERY_FAILURES = 10;
+    private static final long HEADER_CONTINUITY_VALIDATION_LIMIT =
+            Long.getLong("yano.pipeline.headerContinuityValidationBlocks", 100_000L);
 
     // Configuration
     private final YanoConfig config;
@@ -138,18 +154,15 @@ public class Yano implements NodeAPI {
     private final ChainState chainState;
 
     // Client sync component - now using pipelined sync for parallel ChainSync and BlockFetch
-    private PeerClient peerClient;
+    private volatile PeerSession peerSession;
+    private PeerSessionSupervisor peerSessionSupervisor;
     private boolean isInitialSyncComplete = false;
     // Pipelining state
     private PipelineConfig pipelineConfig;
     private boolean isPipelinedMode = false;
 
-    // Pipeline managers
-    private HeaderSyncManager headerSyncManager;
-    private BodyFetchManager bodyFetchManager;
-
     // Remote tip info for sync strategy
-    private Tip remoteTip;
+    private volatile Tip remoteTip;
 
     // Server components (for serving other clients)
     private NodeServer nodeServer;
@@ -161,6 +174,7 @@ public class Yano implements NodeAPI {
     // Block producer (devnet or slot-leader mode)
     private BlockProducerService blockProducerService;
     private DevnetBlockProducer devnetBlockProducer; // kept for devnet-specific methods (produceEmptyBlocksToSlot, etc.)
+    private SlotLeaderTimeTravelBlockProducer slotLeaderTimeTravelBlockProducer;
     private EpochNonceState epochNonceState; // shared nonce state (accessible for REST endpoint)
     private GenesisConfig genesisConfig;
     private long resolvedGenesisTimestamp;
@@ -176,6 +190,10 @@ public class Yano implements NodeAPI {
     private final AtomicBoolean isSyncing = new AtomicBoolean(false);
     private final AtomicBoolean isServerRunning = new AtomicBoolean(false);
     private final AtomicBoolean disconnectLogged = new AtomicBoolean(false);
+    private final AtomicBoolean rollbackInProgress = new AtomicBoolean(false);
+    private final Object peerSessionLock = new Object();
+    private final PeerRecoveryFailureTracker peerRecoveryFailureTracker =
+            new PeerRecoveryFailureTracker(MAX_PEER_RECOVERY_FAILURES);
 
     // Statistics
     private long blocksProcessed = 0;
@@ -186,6 +204,12 @@ public class Yano implements NodeAPI {
     private ChainTip lastKnownChainTip;
     private long rollbackClassificationTimeout = 30000; // 30 seconds
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+    private final ExecutorService peerRecoveryExecutor = Executors.newSingleThreadExecutor(r -> {
+        Thread thread = new Thread(r, "YanoPeerRecovery");
+        thread.setDaemon(true);
+        return thread;
+    });
+    private final PeerClientFactory peerClientFactory = DefaultPeerClientFactory.supervised();
 
     private final CopyOnWriteArrayList<BlockChainDataListener> blockChainDataListeners = new CopyOnWriteArrayList<>();
     private final CopyOnWriteArrayList<NodeEventListener> nodeEventListeners = new CopyOnWriteArrayList<>();
@@ -208,6 +232,10 @@ public class Yano implements NodeAPI {
     private AccountStateEventHandler accountStateEventHandler;
     private AccountHistoryEventHandler accountHistoryEventHandler;
     private com.bloxbean.cardano.yano.api.EpochParamProvider epochParamProvider;
+    private boolean utxoReconcilePending;
+    private boolean accountStateReconcilePending;
+    private boolean accountHistoryReconcilePending;
+    private boolean startupDerivedStateRecovered;
 
     // In-memory devnet genesis — set before start() for devnet mode without genesis files
     private InMemoryDevnetGenesis inMemoryDevnetGenesis;
@@ -239,6 +267,7 @@ public class Yano implements NodeAPI {
         this.inMemoryDevnetGenesis = inMemoryGenesis;
         this.config = config;
         this.runtimeOptions = options != null ? options : RuntimeOptions.defaults();
+        DnsCachePolicy.configureForClientMode(this.runtimeOptions.globals(), config.isEnableClient());
         this.remoteCardanoHost = config.getRemoteHost();
         this.remoteCardanoPort = config.getRemotePort();
         this.protocolMagic = config.getProtocolMagic();
@@ -269,7 +298,7 @@ public class Yano implements NodeAPI {
 
         // Event bus
         EventsOptions ev = this.runtimeOptions.events();
-        this.eventBus = ev.enabled() ? new SimpleEventBus() : new NoopEventBus();
+        this.eventBus = ev.enabled() ? new PropagatingEventBus() : new NoopEventBus();
 
         // Register default consensus listener (accept-all placeholder)
         var consensusListener = new DefaultConsensusListener();
@@ -289,16 +318,21 @@ public class Yano implements NodeAPI {
             boolean utxoEnabled = enabledOpt instanceof Boolean b ? b : Boolean.parseBoolean(String.valueOf(enabledOpt));
             if (utxoEnabled && (chainState instanceof DirectRocksDBChainState rocks)) {
                 this.utxoStore = UtxoStoreFactory.create(rocks, log, this.runtimeOptions.globals());
-                // Reconcile UTXO with chainstate before subscribing and starting prune
-                try {
-                    this.utxoStore.reconcile(rocks);
-                    log.info("UTXO reconciliation complete at startup");
-                } catch (Throwable t) {
-                    log.warn("UTXO reconciliation error: {}", t.toString());
+                if (config.isEnableClient()) {
+                    this.utxoReconcilePending = true;
+                    log.info("UTXO store initialized; reconciliation deferred until startup recovery");
+                } else {
+                    reconcileUtxoStore(rocks);
+                    startUtxoBackgroundServices();
                 }
                 boolean applyAsync = false;
                 Object asyncOpt = this.runtimeOptions.globals().get("yano.utxo.applyAsync");
                 if (asyncOpt instanceof Boolean b) applyAsync = b; else if (asyncOpt != null) try { applyAsync = Boolean.parseBoolean(String.valueOf(asyncOpt)); } catch (Exception ignored) {}
+                if (applyAsync && config.isEnableClient()) {
+                    log.warn("yano.utxo.applyAsync=true is disabled during client sync; ordered apply requires "
+                            + "synchronous UTXO failures to propagate");
+                    applyAsync = false;
+                }
                 if (applyAsync) {
                     this.utxoEventHandlerAsync = new UtxoEventHandlerAsync(eventBus, this.utxoStore);
                     log.info("UTXO store initialized ({}); UtxoEventHandlerAsync registered (applyAsync=true)",
@@ -308,42 +342,11 @@ public class Yano implements NodeAPI {
                     log.info("UTXO store initialized ({}); UtxoEventHandler registered",
                             (this.utxoStore instanceof UtxoStatusProvider sp) ? sp.storeType() : "?");
                 }
-                // Start prune service on virtual-thread scheduler
-                long intervalSec = 5L;
-                Object po = this.runtimeOptions.globals().get("yano.utxo.prune.schedule.seconds");
-                if (po instanceof Number n) intervalSec = Math.max(1L, n.longValue());
-                else if (po != null) try { intervalSec = Math.max(1L, Long.parseLong(String.valueOf(po))); } catch (Exception ignored) {}
-                this.utxoPruneService = new PruneService((Prunable) this.utxoStore, intervalSec * 1000);
-                this.utxoPruneService.start();
-                log.info("UTXO prune service started (interval={}s)", intervalSec);
-
-                // Schedule UTXO lag metric logging
-                long lagLogSec = 10L;
-                Object lagObj = this.runtimeOptions.globals().get("yano.utxo.metrics.lag.logSeconds");
-                if (lagObj instanceof Number n) lagLogSec = Math.max(1L, n.longValue());
-                else if (lagObj != null) try { lagLogSec = Math.max(1L, Long.parseLong(String.valueOf(lagObj))); } catch (Exception ignored) {}
-                final long failIfAbove = parseLong(this.runtimeOptions.globals().get("yano.utxo.lag.failIfAbove"), -1L);
-                this.utxoLagTask = scheduler.scheduleAtFixedRate(() -> {
-                    try {
-                        long lastApplied = (this.utxoStore instanceof UtxoStatusProvider sp)
-                                ? sp.getLastAppliedBlock() : 0L;
-                        var tip = chainState.getTip();
-                        long tipBlock = tip != null ? tip.getBlockNumber() : 0L;
-                        long lag = Math.max(0L, tipBlock - lastApplied);
-
-                        if (lag > 0)
-                            log.info("metric utxo.lag.blocks={}", lag);
-
-                        if (failIfAbove > 0 && lag > failIfAbove) {
-                            log.warn("UTXO lag {} blocks exceeds configured threshold {}", lag, failIfAbove);
-                        }
-                    } catch (Throwable ignored) {}
-                }, lagLogSec, lagLogSec, TimeUnit.SECONDS);
             } else {
                 log.info("UTXO store not initialized (enabled={}, rocksdb={})", utxoEnabled, (chainState instanceof DirectRocksDBChainState));
             }
         } catch (Throwable t) {
-            log.warn("Failed to initialize UTXO store: {}", t.toString());
+            throw new IllegalStateException("Failed to initialize UTXO store", t);
         }
 
         // Phase 3b: Initialize Account State store if enabled (via SPI discovery)
@@ -391,12 +394,11 @@ public class Yano implements NodeAPI {
                         chainState, this.runtimeOptions.globals(), log, epochParamProvider);
                 this.accountStateStore = AccountStateStoreDiscovery.discover(
                         storeContext, Thread.currentThread().getContextClassLoader());
-                // Reconcile
-                try {
-                    this.accountStateStore.reconcile(chainState);
-                    log.info("Account state reconciliation complete at startup");
-                } catch (Throwable t) {
-                    log.warn("Account state reconciliation error: {}", t.toString());
+                if (config.isEnableClient()) {
+                    this.accountStateReconcilePending = true;
+                    log.info("Account state store initialized; reconciliation deferred until startup recovery");
+                } else {
+                    reconcileAccountStateStore();
                 }
                 // Wire UtxoState and optional epoch subsystems
                 if (this.accountStateStore instanceof DefaultAccountStateStore defaultStore) {
@@ -692,11 +694,11 @@ public class Yano implements NodeAPI {
                                 log,
                                 this.runtimeOptions.globals(),
                                 epochParamProvider);
-                        try {
-                            this.accountHistoryStore.reconcile(chainState);
-                            log.info("Account history reconciliation complete at startup");
-                        } catch (Throwable t) {
-                            log.warn("Account history reconciliation error: {}", t.toString());
+                        if (config.isEnableClient()) {
+                            this.accountHistoryReconcilePending = true;
+                            log.info("Account history store initialized; reconciliation deferred until startup recovery");
+                        } else {
+                            reconcileAccountHistoryStore();
                         }
                         this.accountHistoryEventHandler = new AccountHistoryEventHandler(eventBus, this.accountHistoryStore);
 
@@ -719,28 +721,30 @@ public class Yano implements NodeAPI {
                                 retentionEpochs);
                     } catch (Throwable t) {
                         this.accountHistoryStore = null;
-                        log.warn("Failed to initialize optional account history store: {}", t.toString());
+                        throw new IllegalStateException("Failed to initialize account history store", t);
                     }
                 } else if (accountHistoryEnabled) {
-                    log.warn("Account history requested but not initialized (rocksdb={})",
-                            chainState instanceof DirectRocksDBChainState);
+                    throw new IllegalStateException("Account history requested but not initialized (rocksdb="
+                            + (chainState instanceof DirectRocksDBChainState) + ")");
                 }
 
                 // Register event handler
                 this.accountStateEventHandler = new AccountStateEventHandler(eventBus, this.accountStateStore);
                 log.info("Account state store initialized ({}); event handler registered",
                         this.accountStateStore.getClass().getSimpleName());
-                publishDirectStartGenesisBootstrapIfNeeded();
+                if (!config.isEnableClient()) {
+                    publishDirectStartGenesisBootstrapIfNeeded();
+                }
             } else {
                 log.info("Account state store not initialized (enabled={})", acctEnabled);
                 boolean accountHistoryEnabled = Boolean.parseBoolean(
                         String.valueOf(this.runtimeOptions.globals().getOrDefault("yano.account-history.enabled", "false")));
                 if (accountHistoryEnabled) {
-                    log.warn("Account history requested but not initialized because account-state is disabled");
+                    throw new IllegalStateException("Account history requested but not initialized because account-state is disabled");
                 }
             }
         } catch (Throwable t) {
-            log.warn("Failed to initialize account state store: {}", t.toString());
+            throw new IllegalStateException("Failed to initialize account state store", t);
         }
 
         // Phase 4: Initialize block body pruning if configured and RocksDB is used
@@ -785,12 +789,173 @@ public class Yano implements NodeAPI {
         return epochParamProvider;
     }
 
+    /**
+     * Resolve the *effective* {@link EpochParamProvider} for nonce evolution.
+     * Returns the {@link EpochParamTracker} when wired and enabled — it carries on-chain
+     * protocol-param updates (e.g. mainnet epoch 259 extraEntropy). Falls back to the
+     * genesis-backed {@link #epochParamProvider} otherwise.
+     * <p>
+     * Mirrors the pattern at {@code DefaultAccountStateStore.java:1362}.
+     */
+    private EpochParamProvider effectiveEpochParamProvider() {
+        if (accountStateStore instanceof DefaultAccountStateStore store) {
+            EpochParamTracker tracker = store.getParamTracker();
+            if (tracker != null && tracker.isEnabled()) {
+                return tracker;
+            }
+        }
+        return epochParamProvider;
+    }
+
+    /**
+     * Magic-aware startup notice for nonce tracking mode.
+     * WARN only on mainnet (the only public network with a known non-null on-chain entropy update);
+     * INFO elsewhere to keep devnet/preview/preprod logs quiet.
+     */
+    private static void logNonceTrackingMode(boolean trackedParams, long networkMagic) {
+        if (trackedParams) {
+            log.info("Nonce tracking wired with EpochParamTracker");
+        } else if (networkMagic == 764824073L) {
+            log.warn("EpochParamTracker not wired; historical on-chain extraEntropy updates "
+                    + "will be treated as NeutralNonce. Affects mainnet epoch 259 nonce computation.");
+        } else {
+            log.info("Nonce tracking wired without EpochParamTracker; "
+                    + "on-chain extraEntropy updates unavailable");
+        }
+    }
+
     public AccountStateStore getAccountStateStore() {
         return accountStateStore;
     }
 
     public AccountHistoryStore getAccountHistoryStore() {
         return accountHistoryStore;
+    }
+
+    private void completeStartupDerivedStateRecovery() {
+        if (startupDerivedStateRecovered) {
+            return;
+        }
+
+        try {
+            // Live block apply stores the boundary block first, then runs epoch-boundary
+            // processing before BlockApplied listeners update UTXO/account state for that
+            // new-epoch block. Keep startup recovery in the same order after a crash.
+            if (epochBoundaryProcessor != null) {
+                epochBoundaryProcessor.recoverInterruptedBoundary();
+            }
+
+            if (utxoReconcilePending) {
+                reconcileUtxoStore(chainState);
+                utxoReconcilePending = false;
+            }
+            if (accountStateReconcilePending) {
+                reconcileAccountStateStore();
+                accountStateReconcilePending = false;
+            }
+            if (accountHistoryReconcilePending) {
+                reconcileAccountHistoryStore();
+                accountHistoryReconcilePending = false;
+            }
+
+            startUtxoBackgroundServices();
+            publishDirectStartGenesisBootstrapIfNeeded();
+            startupDerivedStateRecovered = true;
+        } catch (Throwable t) {
+            throw new IllegalStateException("Startup derived-state recovery failed", t);
+        }
+    }
+
+    private void reconcileUtxoStore(ChainState state) {
+        if (utxoStore == null || state == null) {
+            return;
+        }
+        try {
+            utxoStore.reconcile(state);
+            log.info("UTXO reconciliation complete at startup");
+        } catch (Throwable t) {
+            throw new IllegalStateException("UTXO reconciliation failed at startup", t);
+        }
+    }
+
+    private void reconcileAccountStateStore() {
+        if (accountStateStore == null) {
+            return;
+        }
+        try {
+            accountStateStore.reconcile(chainState);
+            log.info("Account state reconciliation complete at startup");
+        } catch (Throwable t) {
+            throw new IllegalStateException("Account state reconciliation failed at startup", t);
+        }
+    }
+
+    private void reconcileAccountHistoryStore() {
+        if (accountHistoryStore == null) {
+            return;
+        }
+        try {
+            accountHistoryStore.reconcile(chainState);
+            log.info("Account history reconciliation complete at startup");
+        } catch (Throwable t) {
+            throw new IllegalStateException("Account history reconciliation failed at startup", t);
+        }
+    }
+
+    private void startUtxoBackgroundServices() {
+        if (utxoStore == null) {
+            return;
+        }
+        if (utxoPruneService == null && utxoStore instanceof Prunable prunable) {
+            long intervalSec = 5L;
+            Object po = this.runtimeOptions.globals().get("yano.utxo.prune.schedule.seconds");
+            if (po instanceof Number n) {
+                intervalSec = Math.max(1L, n.longValue());
+            } else if (po != null) {
+                try {
+                    intervalSec = Math.max(1L, Long.parseLong(String.valueOf(po)));
+                } catch (Exception ignored) {
+                    // Keep the default interval.
+                }
+            }
+            this.utxoPruneService = new PruneService(prunable, intervalSec * 1000);
+            this.utxoPruneService.start();
+            log.info("UTXO prune service started (interval={}s)", intervalSec);
+        }
+
+        if (utxoLagTask == null) {
+            long lagLogSec = 10L;
+            Object lagObj = this.runtimeOptions.globals().get("yano.utxo.metrics.lag.logSeconds");
+            if (lagObj instanceof Number n) {
+                lagLogSec = Math.max(1L, n.longValue());
+            } else if (lagObj != null) {
+                try {
+                    lagLogSec = Math.max(1L, Long.parseLong(String.valueOf(lagObj)));
+                } catch (Exception ignored) {
+                    // Keep the default interval.
+                }
+            }
+            final long failIfAbove = parseLong(this.runtimeOptions.globals().get("yano.utxo.lag.failIfAbove"), -1L);
+            this.utxoLagTask = scheduler.scheduleAtFixedRate(() -> {
+                try {
+                    long lastApplied = (this.utxoStore instanceof UtxoStatusProvider sp)
+                            ? sp.getLastAppliedBlock() : 0L;
+                    var tip = chainState.getTip();
+                    long tipBlock = tip != null ? tip.getBlockNumber() : 0L;
+                    long lag = Math.max(0L, tipBlock - lastApplied);
+
+                    if (lag > 0) {
+                        log.info("metric utxo.lag.blocks={}", lag);
+                    }
+
+                    if (failIfAbove > 0 && lag > failIfAbove) {
+                        log.warn("UTXO lag {} blocks exceeds configured threshold {}", lag, failIfAbove);
+                    }
+                } catch (Throwable ignored) {
+                    // Best-effort metric only.
+                }
+            }, lagLogSec, lagLogSec, TimeUnit.SECONDS);
+        }
     }
 
     private void publishDirectStartGenesisBootstrapIfNeeded() {
@@ -851,9 +1016,16 @@ public class Yano implements NodeAPI {
         if (isRunning.compareAndSet(false, true)) {
             log.info("Starting Yano...");
 
-            // Start server first
-            if (config.isEnableServer()) {
+            boolean deferServerStartUntilClientStateReady =
+                    config.isEnableServer() && config.isEnableClient() && !config.isEnableBlockProducer();
+            boolean serverStarted = false;
+
+            // Block production expects the server to be available before local blocks
+            // are produced. Client-only relay mode defers server start until local
+            // state has passed startup rollback/recovery.
+            if (config.isEnableServer() && !deferServerStartUntilClientStateReady) {
                 startServer();
+                serverStarted = true;
             }
 
             // Always load genesis config if any genesis files are configured (for protocol params, epoch length, etc.)
@@ -879,24 +1051,6 @@ public class Yano implements NodeAPI {
 
             }
 
-            // Start block producer if enabled (after server so we can notify)
-            if (config.isEnableBlockProducer()) {
-                startBlockProducer();
-            }
-
-            // Initialize epoch nonce tracking for relay/client mode (lightweight, always useful for verification).
-            // In block-producer mode, nonce tracking is already initialized by startBlockProducer().
-            if (!config.isEnableBlockProducer() && config.isEnableClient()) {
-                initNonceTracking();
-            }
-
-            // Initialize slot-to-time calculator from genesis data.
-            // Done after startBlockProducer() so resolvedGenesisTimestamp is authoritative.
-            initSlotTimeCalculator();
-
-            // Initialize mempool eviction policy — evict on block confirmation, TTL, and size cap
-            initMempoolEvictionPolicy();
-
             // Pre-populate genesis UTXOs for relay mode (when not in block-producer mode)
             if (!config.isEnableBlockProducer() && config.getShelleyGenesisFile() != null
                     && chainState.getTip() == null) {
@@ -909,19 +1063,45 @@ public class Yano implements NodeAPI {
                 performBootstrap();
             }
 
-            // Validate chain state before starting sync
+            // Validate and apply one-shot startup rollback before starting either
+            // client sync or block production. Block producer nonce state is restored
+            // during startBlockProducer(), so rollback must happen first.
+            validateChainState();
+            performStartupAdhocRollback();
+
+            completeStartupDerivedStateRecovery();
+
+            // Start block producer if enabled (after server so we can notify, but
+            // after startup rollback so nonce state aligns with the final body tip).
+            if (config.isEnableBlockProducer()) {
+                startBlockProducer();
+            }
+
+            // Initialize slot-to-time calculator from genesis data.
+            // Done after startBlockProducer() so resolvedGenesisTimestamp is authoritative.
+            initSlotTimeCalculator();
+
+            // Initialize mempool eviction policy — evict on block confirmation, TTL, and size cap
+            initMempoolEvictionPolicy();
+
+            // Start client sync after state recovery has completed.
             if (config.isEnableClient()) {
-                validateChainState();
+                // Initialize epoch nonce tracking after any startup rollback so
+                // repair validates against the final pre-sync body tip.
+                if (!config.isEnableBlockProducer()) {
+                    initNonceTracking();
+                }
 
-                // Adhoc rollback: one-shot rollback before sync, if configured via command line
-                performStartupAdhocRollback();
-
-                // Recover any interrupted epoch boundary from a previous run
-                if (epochBoundaryProcessor != null) {
-                    epochBoundaryProcessor.recoverInterruptedBoundary();
+                if (deferServerStartUntilClientStateReady && !serverStarted) {
+                    startServer();
+                    serverStarted = true;
                 }
 
                 startClientSync();
+            } else {
+                if (!config.isEnableBlockProducer()) {
+                    initNonceTracking();
+                }
             }
 
             log.info("Yano started successfully");
@@ -1208,46 +1388,23 @@ public class Yano implements NodeAPI {
             long byronSlotsPerEpoch = genesisConfig.getByronGenesisData() != null
                     ? genesisConfig.getByronGenesisData().epochLength() : Constants.BYRON_SLOTS_PER_EPOCH;
             epochNonceState = new EpochNonceState(epochLength, securityParam, activeSlotsCoeff, byronSlotsPerEpoch);
-            // Read shelley start slot from persisted era data (available after prior sync)
-            if (chainState instanceof DirectRocksDBChainState rocksState) {
-                rocksState.getFirstNonByronEraStartSlot()
-                        .ifPresent(epochNonceState::setShelleyStartSlot);
-            }
+            initializeNonceShelleyStartSlot(epochNonceState);
             NonceStateStore nonceStore = (chainState instanceof NonceStateStore)
                     ? (NonceStateStore) chainState : null;
 
-            // 4. Seed nonce: restore from persistence > config seed > genesis init
-            boolean nonceRestored = false;
-            if (nonceStore != null) {
-                byte[] persisted = nonceStore.getEpochNonceState();
-                if (persisted != null) {
-                    epochNonceState.restore(persisted);
-                    nonceRestored = true;
-                    log.info("Nonce state restored from persistence");
-                }
-            }
+            EpochParamProvider effectiveParamProvider = effectiveEpochParamProvider();
+            boolean trackedParams = effectiveParamProvider instanceof EpochParamTracker tracker
+                    && tracker.isEnabled();
+            long networkMagic = config.getProtocolMagic();
+            NonceReplayService replayService = nonceStore != null
+                    ? new NonceReplayService(chainState, nonceStore,
+                            new EpochNonceEvolver(effectiveParamProvider, trackedParams, networkMagic),
+                            resolveGenesisHash())
+                    : null;
 
-            if (!nonceRestored && config.getInitialEpochNonce() != null
-                    && !config.getInitialEpochNonce().isBlank()
-                    && config.getInitialEpoch() >= 0) {
-                byte[] nonce = HexUtil.decodeHexString(config.getInitialEpochNonce());
-                epochNonceState.seedFromExternal(config.getInitialEpoch(), nonce);
-                nonceRestored = true;
-                log.info("Nonce state seeded from config: epoch={}", config.getInitialEpoch());
-            }
-
-            if (!nonceRestored) {
-                byte[] genesisHash = resolveGenesisHash();
-                if (genesisHash != null) {
-                    epochNonceState.initFromGenesisHash(genesisHash);
-                } else {
-                    throw new IllegalStateException(
-                            "Shelley genesis hash required for nonce initialization in slot-leader mode");
-                }
-            }
-            if (nonceStore != null) {
-                nonceStore.storeEpochNonce(epochNonceState.getCurrentEpoch(), epochNonceState.getEpochNonce());
-            }
+            // 4. Seed nonce: repair durable state to body tip > config seed > genesis init
+            initializeProducerNonceState(epochNonceState, nonceStore, replayService,
+                    "block-producer-startup", "slot-leader mode");
 
             // 5. Get protocol version from protocol-param.json
             long protoMajor = genesisConfig.getProtocolVersionMajor();
@@ -1264,7 +1421,10 @@ public class Yano implements NodeAPI {
 
             // 7. Create & register NonceEvolutionListener
             String issuerVkeyHex = signedBlockBuilder.getIssuerVkeyHex();
-            var nonceListener = new NonceEvolutionListener(epochNonceState, nonceStore, issuerVkeyHex);
+            logNonceTrackingMode(trackedParams, networkMagic);
+            var nonceListener = new NonceEvolutionListener(epochNonceState, nonceStore, issuerVkeyHex,
+                    effectiveParamProvider, trackedParams, networkMagic,
+                    this::resolveNonceSnapshotCursor, replayService);
             AnnotationListenerRegistrar.register(eventBus, nonceListener,
                     com.bloxbean.cardano.yaci.events.api.SubscriptionOptions.builder().build());
             log.info("NonceEvolutionListener registered (skipping own blocks with issuerVkey={})", issuerVkeyHex);
@@ -1287,7 +1447,7 @@ public class Yano implements NodeAPI {
             // 10. Devnet genesis block production: seed the chain before starting slot-leader loop
             if (config.isDevMode() && freshStart) {
                 var genesisResult = signedBlockBuilder.buildBlock(0, 0, null, java.util.List.of());
-                BlockProducerHelper.storeBlock(chainState, genesisResult);
+                BlockProducerHelper.storeProducedBlock(chainState, signedBlockBuilder, genesisResult);
                 log.info("Genesis block produced (slot-leader devnet): hash={}",
                         HexUtil.encodeHexString(genesisResult.blockHash()));
 
@@ -1311,14 +1471,13 @@ public class Yano implements NodeAPI {
                         long currentWallClockSlot = (System.currentTimeMillis() - resolvedGenesisTimestamp) / config.getSlotLengthMillis();
                         if (slot > currentWallClockSlot) break;
 
-                        epochNonceState.advanceEpochIfNeeded(slot);
-                        byte[] epochNonce = epochNonceState.getEpochNonce();
+                        byte[] epochNonce = epochNonceState.previewEpochNonceForSlot(slot);
                         var vrfResult = slotLeaderCheck.checkAndProve(slot, epochNonce, java.math.BigDecimal.ONE);
                         if (vrfResult != null) {
                             ChainTip tip = chainState.getTip();
                             var result = signedBlockBuilder.buildBlock(
                                     tip.getBlockNumber() + 1, slot, tip.getBlockHash(), java.util.List.of(), vrfResult);
-                            BlockProducerHelper.storeBlock(chainState, result);
+                            BlockProducerHelper.storeProducedBlock(chainState, signedBlockBuilder, result);
                             BlockProducerHelper.publishEvent(eventBus, result, 0, "slot-leader-catch-up");
                             produced++;
                         }
@@ -1370,8 +1529,18 @@ public class Yano implements NodeAPI {
 
     /**
      * Initialize epoch nonce tracking for relay/client mode.
-     * Sets up EpochNonceState and NonceEvolutionListener so that the epoch nonce
-     * evolves as synced blocks arrive. Useful for verification even without block production.
+     * <p>
+     * Relay mode does not use the nonce to produce blocks, but the REST/API layer
+     * still exposes it and it is useful for validating synced mainnet/preprod state.
+     * The important startup invariant is that the nonce state must describe the
+     * durable body tip, not the header tip. Header sync may run ahead of body
+     * apply in pipelined mode, while nonce evolution depends on block bodies.
+     * <p>
+     * When {@link NonceStateStore} is available, startup uses
+     * {@link NonceReplayService} to restore a cursor-bearing snapshot or replay
+     * stored block bodies up to the current body tip. This repairs the case where
+     * the process stopped after block bodies were committed but before the latest
+     * nonce snapshot was persisted.
      */
     private void initNonceTracking() {
         if (genesisConfig == null || genesisConfig.getShelleyGenesisData() == null) {
@@ -1389,49 +1558,200 @@ public class Yano implements NodeAPI {
             long byronSlotsPerEpoch = genesisConfig.getByronGenesisData() != null
                     ? genesisConfig.getByronGenesisData().epochLength() : Constants.BYRON_SLOTS_PER_EPOCH;
             epochNonceState = new EpochNonceState(epochLength, securityParam, activeSlotsCoeff, byronSlotsPerEpoch);
-            // Read shelley start slot from persisted era data (available after prior sync)
-            if (chainState instanceof DirectRocksDBChainState rocksState) {
-                rocksState.getFirstNonByronEraStartSlot()
-                        .ifPresent(epochNonceState::setShelleyStartSlot);
-            }
+            initializeNonceShelleyStartSlot(epochNonceState);
             NonceStateStore nonceStore = (chainState instanceof NonceStateStore)
                     ? (NonceStateStore) chainState : null;
 
-            // Restore from persistence or seed
-            boolean restored = false;
+            EpochParamProvider effectiveParamProvider = effectiveEpochParamProvider();
+            boolean trackedParams = effectiveParamProvider instanceof EpochParamTracker tracker
+                    && tracker.isEnabled();
+            long networkMagic = config.getProtocolMagic();
+            logNonceTrackingMode(trackedParams, networkMagic);
+            NonceReplayService replayService = null;
+            byte[] genesisHash = resolveGenesisHash();
+
             if (nonceStore != null) {
-                byte[] persisted = nonceStore.getEpochNonceState();
-                if (persisted != null) {
-                    epochNonceState.restore(persisted);
-                    restored = true;
-                    log.info("Nonce tracking restored from persistence: epoch={}", epochNonceState.getCurrentEpoch());
-                }
+                replayService = new NonceReplayService(
+                        chainState,
+                        nonceStore,
+                        new EpochNonceEvolver(effectiveParamProvider, trackedParams, networkMagic),
+                        genesisHash);
+                replayService.repairToBodyTip(epochNonceState, genesisHash, "startup");
+            } else if (genesisHash != null) {
+                epochNonceState.initFromGenesisHash(genesisHash);
             }
 
-            if (!restored) {
-                byte[] genesisHash = resolveGenesisHash();
-                if (genesisHash != null) {
-                    epochNonceState.initFromGenesisHash(genesisHash);
-                } else {
-                    log.debug("Nonce tracking not initialized: no shelley genesis hash available");
-                    epochNonceState = null;
-                    return;
-                }
+            if (epochNonceState.getEpochNonce() == null) {
+                log.debug("Nonce tracking not initialized: no shelley genesis hash or durable nonce state available");
+                epochNonceState = null;
+                return;
             }
+
             if (nonceStore != null) {
                 nonceStore.storeEpochNonce(epochNonceState.getCurrentEpoch(), epochNonceState.getEpochNonce());
             }
 
             // Register listener — no own-block skipping (null issuerVkey) since we're not producing
-            var nonceListener = new NonceEvolutionListener(epochNonceState, nonceStore, null);
+            var nonceListener = new NonceEvolutionListener(epochNonceState, nonceStore, null,
+                    effectiveParamProvider, trackedParams, networkMagic,
+                    this::resolveNonceSnapshotCursor, replayService);
             AnnotationListenerRegistrar.register(eventBus, nonceListener,
                     com.bloxbean.cardano.yaci.events.api.SubscriptionOptions.builder().build());
 
             log.info("Epoch nonce tracking initialized for relay mode (epochLength={}, k={}, f={})",
                     epochLength, securityParam, activeSlotsCoeff);
         } catch (Exception e) {
-            log.warn("Failed to initialize nonce tracking: {}", e.getMessage());
             epochNonceState = null;
+            throw new IllegalStateException("Failed to initialize nonce tracking", e);
+        }
+    }
+
+    /**
+     * Initialize nonce state before any local block production starts.
+     * <p>
+     * Producer mode is stricter than relay mode: a wrong nonce changes leader
+     * checks and the VRF proof included in produced blocks. For that reason this
+     * method first tries to repair persisted nonce state to the durable body tip.
+     * Only an empty chain may fall back to a configured initial nonce or genesis
+     * hash initialization.
+     * <p>
+     * The resulting state is also persisted as the current epoch nonce so a
+     * subsequent restart can verify or repair from a cursor-bearing snapshot
+     * instead of trusting an in-memory checkpoint that no longer exists.
+     *
+     * @param nonceState mutable nonce state used by the producer and listener
+     * @param nonceStore durable nonce store, or {@code null} for in-memory chain state
+     * @param replayService optional repair service backed by stored block bodies
+     * @param repairReason short reason included in repair logs
+     * @param modeDescription human-readable producer mode for error messages
+     */
+    private void initializeProducerNonceState(EpochNonceState nonceState,
+                                              NonceStateStore nonceStore,
+                                              NonceReplayService replayService,
+                                              String repairReason,
+                                              String modeDescription) {
+        boolean initialized = false;
+        ChainTip bodyTip = chainState.getTip();
+
+        if (replayService != null
+                && !(bodyTip == null && hasConfiguredInitialEpochNonce())) {
+            var repair = replayService.repairToBodyTip(nonceState, repairReason);
+            initialized = nonceState.getEpochNonce() != null;
+            if (initialized) {
+                log.info("Nonce state repaired for {}: source={}, replayedBlocks={}",
+                        modeDescription, repair.source(), repair.replayedBlocks());
+            }
+        }
+
+        if (!initialized && hasConfiguredInitialEpochNonce()) {
+            byte[] nonce = HexUtil.decodeHexString(config.getInitialEpochNonce());
+            nonceState.seedFromExternal(config.getInitialEpoch(), nonce);
+            initialized = true;
+            log.info("Nonce state seeded from config for {}: epoch={}",
+                    modeDescription, config.getInitialEpoch());
+            if (nonceStore != null && bodyTip == null) {
+                nonceStore.storeLatestNonceSnapshot(NonceStateSnapshot.origin(nonceState.serialize()));
+            }
+        }
+
+        if (!initialized) {
+            byte[] genesisHash = resolveGenesisHash();
+            if (genesisHash == null) {
+                throw new IllegalStateException(
+                        "Shelley genesis hash required for nonce initialization in " + modeDescription);
+            }
+            nonceState.initFromGenesisHash(genesisHash);
+            initialized = true;
+            if (nonceStore != null && bodyTip == null) {
+                nonceStore.storeLatestNonceSnapshot(NonceStateSnapshot.origin(nonceState.serialize()));
+            }
+        }
+
+        if (nonceStore != null) {
+            nonceStore.storeEpochNonce(nonceState.getCurrentEpoch(), nonceState.getEpochNonce());
+        }
+    }
+
+    /**
+     * Return true only when the external initial nonce configuration is complete.
+     * A nonce without its epoch is ambiguous, and an epoch without a nonce cannot
+     * seed {@link EpochNonceState}.
+     */
+    private boolean hasConfiguredInitialEpochNonce() {
+        return config.getInitialEpochNonce() != null
+                && !config.getInitialEpochNonce().isBlank()
+                && config.getInitialEpoch() >= 0;
+    }
+
+    /**
+     * Build the durable cursor envelope for a nonce snapshot.
+     * <p>
+     * The callback is used by {@link NonceEvolutionListener} after normal block
+     * apply and after rollback repair. The caller provides the ChainSync point
+     * that triggered the snapshot, but that point is not always the correct
+     * durable cursor for nonce state. In pipelined sync, ChainSync/header state
+     * can be ahead of body apply. Nonce state follows body apply because the
+     * nonce algorithm consumes block headers from stored bodies.
+     * <p>
+     * Therefore the persisted {@link NonceStateSnapshot} is always stamped with
+     * the current ChainState body tip. If the body tip is ahead of the rollback
+     * point, the local state is inconsistent with the requested rollback and the
+     * snapshot is rejected instead of storing a misleading repair cursor.
+     */
+    private NonceStateSnapshot resolveNonceSnapshotCursor(long slot, String hashHex, byte[] serializedNonceState) {
+        ChainTip tip = chainState.getTip();
+        if (tip == null) {
+            return NonceStateSnapshot.origin(serializedNonceState);
+        }
+
+        if (tip.getSlot() > slot) {
+            throw new IllegalStateException("Cannot persist rollback nonce snapshot: body tip slot "
+                    + tip.getSlot() + " is ahead of rollback slot " + slot + ", hash=" + hashHex);
+        }
+
+        // ChainSync may roll back only header state while body apply is behind
+        // the rollback point. Nonce follows body apply, so the durable cursor
+        // must always be the post-rollback body tip, not the ChainSync point.
+        return new NonceStateSnapshot(tip.getSlot(), tip.getBlockNumber(), tip.getBlockHash(), serializedNonceState);
+    }
+
+    /**
+     * Populate the Shelley start slot used by era-aware nonce calculations.
+     * <p>
+     * Mainnet and public test networks have a Byron-to-Shelley boundary, while
+     * many devnets start directly in Shelley/Conway. The value can come from
+     * persisted era metadata after a prior sync, from the active epoch parameter
+     * provider, from already-propagated config, or finally from genesis/network
+     * defaults. Keeping this resolution in one place prevents relay, producer,
+     * and replay paths from deriving different nonce epochs for the same slot.
+     */
+    private void initializeNonceShelleyStartSlot(EpochNonceState nonceState) {
+        if (nonceState == null || nonceState.isShelleyStartSlotSet()) {
+            return;
+        }
+
+        if (chainState instanceof DirectRocksDBChainState rocksState) {
+            var persistedStart = rocksState.getFirstNonByronEraStartSlot();
+            if (persistedStart.isPresent()) {
+                nonceState.setShelleyStartSlot(persistedStart.getAsLong());
+                return;
+            }
+        }
+
+        if (epochParamProvider != null) {
+            nonceState.setShelleyStartSlot(epochParamProvider.getShelleyStartSlot());
+            return;
+        }
+
+        if (config.isEpochParamsInitialized()) {
+            nonceState.setShelleyStartSlot(config.getFirstNonByronSlot());
+            return;
+        }
+
+        if (genesisConfig != null && genesisConfig.getShelleyGenesisData() != null) {
+            long firstNonByronSlot = DefaultEpochParamProvider.resolveFirstNonByronSlot(
+                    protocolMagic, genesisConfig.getByronGenesisData() != null);
+            nonceState.setShelleyStartSlot(firstNonByronSlot);
         }
     }
 
@@ -1552,6 +1872,99 @@ public class Yano implements NodeAPI {
     }
 
     /**
+     * Create a Praos-aware past-time-travel producer for multi-node devnets.
+     * The stake distribution comes from Shelley genesis because no indexer is
+     * available during companion bootstrap.
+     */
+    private SlotLeaderTimeTravelBlockProducer createSlotLeaderTimeTravelProducer(boolean freshStart) {
+        var shelleyData = genesisConfig.getShelleyGenesisData();
+        if (shelleyData == null) {
+            throw new IllegalStateException("Shelley genesis data required for past-time-travel slot-leader mode");
+        }
+        if (config.getShelleyGenesisFile() == null || config.getShelleyGenesisFile().isBlank()) {
+            throw new IllegalStateException("Shelley genesis file required for past-time-travel slot-leader mode");
+        }
+
+        try {
+            var keys = com.bloxbean.cardano.client.crypto.BlockProducerKeys.load(
+                    Path.of(config.getVrfSkeyFile()),
+                    Path.of(config.getKesSkeyFile()),
+                    Path.of(config.getOpCertFile()));
+
+            String poolHash = SlotLeaderBlockProducer.derivePoolHash(keys.getOpCert());
+            log.info("Past-time-travel slot-leader pool hash: {}", poolHash);
+
+            long epochLength = shelleyData.epochLength();
+            long securityParam = shelleyData.securityParam();
+            double activeSlotsCoeff = genesisConfig.getActiveSlotsCoeff();
+            long byronSlotsPerEpoch = genesisConfig.getByronGenesisData() != null
+                    ? genesisConfig.getByronGenesisData().epochLength() : Constants.BYRON_SLOTS_PER_EPOCH;
+
+            epochNonceState = new EpochNonceState(epochLength, securityParam, activeSlotsCoeff, byronSlotsPerEpoch);
+            initializeNonceShelleyStartSlot(epochNonceState);
+
+            NonceStateStore nonceStore = (chainState instanceof NonceStateStore)
+                    ? (NonceStateStore) chainState : null;
+
+            EpochParamProvider effectiveParamProvider = effectiveEpochParamProvider();
+            boolean trackedParams = effectiveParamProvider instanceof EpochParamTracker tracker
+                    && tracker.isEnabled();
+            long networkMagic = config.getProtocolMagic();
+            NonceReplayService replayService = nonceStore != null && !freshStart
+                    ? new NonceReplayService(chainState, nonceStore,
+                            new EpochNonceEvolver(effectiveParamProvider, trackedParams, networkMagic),
+                            resolveGenesisHash())
+                    : null;
+            initializeProducerNonceState(epochNonceState, nonceStore, replayService,
+                    "past-time-travel-startup", "past-time-travel slot-leader mode");
+
+            long protoMajor = genesisConfig.getProtocolVersionMajor();
+            long protoMinor = genesisConfig.getProtocolVersionMinor();
+            if (protoMajor <= 0) {
+                throw new IllegalStateException(
+                        "Protocol version not found in protocol-param.json. "
+                        + "Configure 'protocol-parameters-file' with current network protocol parameters.");
+            }
+
+            var signedBlockBuilder = new SignedBlockBuilder(keys,
+                    shelleyData.slotsPerKESPeriod(),
+                    shelleyData.maxKESEvolutions(),
+                    epochNonceState, nonceStore, protoMajor, protoMinor);
+
+            var stakeDataProvider = new GenesisStakeDataProvider(Path.of(config.getShelleyGenesisFile()));
+            BigInteger poolStake = stakeDataProvider.getPoolStake(poolHash, 0);
+            BigInteger totalStake = stakeDataProvider.getTotalStake(0);
+            if (poolStake == null || poolStake.signum() <= 0
+                    || totalStake == null || totalStake.signum() <= 0) {
+                throw new IllegalStateException("Pool " + poolHash
+                        + " has no active genesis stake; check Shelley genesis staking/pool configuration");
+            }
+
+            log.info("Using genesis stake data for past-time-travel slot leader: poolStake={}, totalStake={}",
+                    poolStake, totalStake);
+
+            var slotLeaderCheck = new SlotLeaderCheck(
+                    keys.getVrfSkey(),
+                    java.math.BigDecimal.valueOf(activeSlotsCoeff),
+                    signedBlockBuilder.getBlockSigner());
+
+            long sequentialScanLimitSlots = Math.max(epochLength, 1000L);
+            var producer = new SlotLeaderTimeTravelBlockProducer(
+                    chainState, memPool, nodeServer, eventBus, scheduler,
+                    signedBlockBuilder, epochNonceState, slotLeaderCheck, stakeDataProvider,
+                    poolHash, resolvedGenesisTimestamp, config.getSlotLengthMillis(),
+                    config.getBlockTimeMillis(), sequentialScanLimitSlots,
+                    transactionEvaluator, getUtxoState());
+
+            slotLeaderTimeTravelBlockProducer = producer;
+            blockProducerService = producer;
+            return producer;
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to create past-time-travel slot-leader block producer", e);
+        }
+    }
+
+    /**
      * Create the appropriate block builder based on configuration.
      * If VRF, KES, and OpCert files are all configured, uses SignedBlockBuilder with real crypto.
      * Otherwise falls back to DevnetBlockBuilder with dummy signatures.
@@ -1584,32 +1997,21 @@ public class Yano implements NodeAPI {
                 long byronSlotsPerEpoch = genesisConfig.getByronGenesisData() != null
                         ? genesisConfig.getByronGenesisData().epochLength() : Constants.BYRON_SLOTS_PER_EPOCH;
                 EpochNonceState nonceState = new EpochNonceState(epochLength, securityParam, activeSlotsCoeff, byronSlotsPerEpoch);
-                // Read shelley start slot from persisted era data (available after prior sync)
-                if (chainState instanceof DirectRocksDBChainState rocksState) {
-                    rocksState.getFirstNonByronEraStartSlot()
-                            .ifPresent(nonceState::setShelleyStartSlot);
-                }
+                initializeNonceShelleyStartSlot(nonceState);
                 NonceStateStore nonceStore = (chainState instanceof NonceStateStore)
                         ? (NonceStateStore) chainState : null;
 
-                boolean restored = false;
-                if (!freshStart && nonceStore != null) {
-                    byte[] persisted = nonceStore.getEpochNonceState();
-                    if (persisted != null) {
-                        nonceState.restore(persisted);
-                        restored = true;
-                    }
-                }
-
-                if (!restored) {
-                    byte[] genesisHash = resolveGenesisHash();
-                    if (genesisHash != null) {
-                        nonceState.initFromGenesisHash(genesisHash);
-                    } else {
-                        throw new IllegalStateException(
-                                "Shelley genesis hash required for signed block production nonce initialization");
-                    }
-                }
+                EpochParamProvider effectiveParamProvider = effectiveEpochParamProvider();
+                boolean trackedParams = effectiveParamProvider instanceof EpochParamTracker tracker
+                        && tracker.isEnabled();
+                long networkMagic = config.getProtocolMagic();
+                NonceReplayService replayService = nonceStore != null && !freshStart
+                        ? new NonceReplayService(chainState, nonceStore,
+                                new EpochNonceEvolver(effectiveParamProvider, trackedParams, networkMagic),
+                                resolveGenesisHash())
+                        : null;
+                initializeProducerNonceState(nonceState, nonceStore, replayService,
+                        "signed-devnet-startup", "signed block production");
 
                 // Get protocol version from protocol-param.json
                 long protoMajor = genesisConfig.getProtocolVersionMajor();
@@ -1624,8 +2026,7 @@ public class Yano implements NodeAPI {
                 return new SignedBlockBuilder(keys, slotsPerKESPeriod, maxKESEvolutions,
                         nonceState, nonceStore, protoMajor, protoMinor);
             } catch (Exception e) {
-                log.warn("Failed to initialize SignedBlockBuilder, falling back to dummy signatures: {}", e.getMessage());
-                return new DevnetBlockBuilder();
+                throw new IllegalStateException("Failed to initialize SignedBlockBuilder with configured producer keys", e);
             }
         }
 
@@ -1699,6 +2100,7 @@ public class Yano implements NodeAPI {
                                     log.info("Lazily built cfNetConfig after boundary capture for unknown+Byron network");
                                 } catch (Exception e) {
                                     log.error("Failed to lazily build cfNetConfig after boundary capture: {}", e.getMessage());
+                                    throw new RuntimeException("Failed to lazily build cfNetConfig after boundary capture", e);
                                 }
                             }
                         }
@@ -1976,9 +2378,10 @@ public class Yano implements NodeAPI {
         }
 
         // Forward to upstream node if connected (relay mode)
-        if (peerClient != null && peerClient.isRunning()) {
+        PeerSession activeSession = peerSession;
+        if (activeSession != null && activeSession.isRunning()) {
             try {
-                peerClient.submitTxBytes(txHash, txCbor, TxBodyType.CONWAY);
+                activeSession.submitTxBytes(txHash, txCbor, TxBodyType.CONWAY);
                 log.debug("Transaction {} forwarded to upstream node", txHash);
             } catch (Exception e) {
                 log.warn("Failed to forward transaction {} to upstream node: {}", txHash, e.getMessage());
@@ -2085,12 +2488,18 @@ public class Yano implements NodeAPI {
     }
 
     /**
-     * Perform adhoc rollback if configured. Called from start() after reconcile/validate
-     * but before chain sync begins. Does NOT require dev mode.
+     * Perform adhoc rollback if configured. Called from start() after chain-state
+     * validation but before derived-state startup recovery and chain sync begin.
+     * Does NOT require dev mode.
      * <p>
      * Rolls back ALL authoritative stores synchronously in dependency-safe order
      * (AccountState → UTXO → ChainState), verifies post-rollback state, then
      * cleans up derived artifacts (parquet exports) directly.
+     * <p>
+     * Both body tip and header tip are considered when deciding whether rollback
+     * is needed. Pipelined sync can persist headers ahead of bodies, so a startup
+     * rollback that only looks at the body tip could leave orphan header state
+     * beyond the requested rollback point.
      */
     private void performStartupAdhocRollback() {
         long targetSlot = -1;
@@ -2118,13 +2527,18 @@ public class Yano implements NodeAPI {
         if (targetSlot < 0) return; // No rollback requested
 
         ChainTip currentTip = chainState.getTip();
-        if (currentTip == null) {
+        ChainTip currentHeaderTip = chainState.getHeaderTip();
+        long currentBodySlot = currentTip != null ? currentTip.getSlot() : -1;
+        long currentHeaderSlot = currentHeaderTip != null ? currentHeaderTip.getSlot() : -1;
+        long currentMaxSlot = Math.max(currentBodySlot, currentHeaderSlot);
+        if (currentMaxSlot < 0) {
             log.warn("Adhoc rollback requested (slot={}) but chain is empty. Skipping.", targetSlot);
             return;
         }
 
-        if (targetSlot >= currentTip.getSlot()) {
-            log.info("Adhoc rollback target slot {} >= current tip {}. Nothing to roll back.", targetSlot, currentTip.getSlot());
+        if (targetSlot >= currentMaxSlot) {
+            log.info("Adhoc rollback target slot {} >= current stored tip {}. Nothing to roll back.",
+                    targetSlot, currentMaxSlot);
             return;
         }
 
@@ -2143,17 +2557,17 @@ public class Yano implements NodeAPI {
         targetSlot = nearestSlot;
 
         // Collect all enabled RollbackCapableStores
-        var stores = new java.util.ArrayList<com.bloxbean.cardano.yano.api.rollback.RollbackCapableStore>();
-        if (accountHistoryStore instanceof com.bloxbean.cardano.yano.api.rollback.RollbackCapableStore rcs) {
+        var stores = new java.util.ArrayList<RollbackCapableStore>();
+        if (accountHistoryStore instanceof RollbackCapableStore rcs) {
             stores.add(rcs);
         }
-        if (accountStateStore instanceof com.bloxbean.cardano.yano.api.rollback.RollbackCapableStore rcs) {
+        if (accountStateStore instanceof RollbackCapableStore rcs) {
             stores.add(rcs);
         }
-        if (utxoStore instanceof com.bloxbean.cardano.yano.api.rollback.RollbackCapableStore rcs) {
+        if (utxoStore instanceof RollbackCapableStore rcs) {
             stores.add(rcs);
         }
-        if (chainState instanceof com.bloxbean.cardano.yano.api.rollback.RollbackCapableStore rcs) {
+        if (chainState instanceof RollbackCapableStore rcs) {
             stores.add(rcs);
         }
 
@@ -2167,7 +2581,12 @@ public class Yano implements NodeAPI {
         // Log per-store status
         log.info("=== Adhoc Rollback ===");
         log.info("Target slot: {}", targetSlot);
-        log.info("Current tip: slot={}, block={}", currentTip.getSlot(), currentTip.getBlockNumber());
+        log.info("Current body tip: slot={}, block={}",
+                currentTip != null ? currentTip.getSlot() : "none",
+                currentTip != null ? currentTip.getBlockNumber() : "none");
+        log.info("Current header tip: slot={}, block={}",
+                currentHeaderTip != null ? currentHeaderTip.getSlot() : "none",
+                currentHeaderTip != null ? currentHeaderTip.getBlockNumber() : "none");
         log.info("Common rollback floor: {}", commonFloor);
         for (var store : stores) {
             log.info("  {}: latest={}, floor={}", store.storeName(),
@@ -2185,8 +2604,6 @@ public class Yano implements NodeAPI {
             throw new RuntimeException("Adhoc rollback aborted: target " + targetSlot
                     + " below floor " + commonFloor);
         }
-
-        long previousTipSlot = currentTip.getSlot();
 
         // Rollback in dependency-safe order: derived state first, chain tip last
         // Order: AccountState → UTXO → ChainState
@@ -2206,7 +2623,11 @@ public class Yano implements NodeAPI {
         }
 
         ChainTip newTip = chainState.getTip();
-        long newTipSlot = newTip != null ? newTip.getSlot() : -1;
+        ChainTip newHeaderTip = chainState.getHeaderTip();
+        if (newHeaderTip != null && newHeaderTip.getSlot() > targetSlot) {
+            throw new IllegalStateException("ChainState header tip reports slot="
+                    + newHeaderTip.getSlot() + " after adhoc rollback to " + targetSlot);
+        }
 
         // Resolve target epoch for cleanup
         Integer targetEpoch = null;
@@ -2217,6 +2638,9 @@ public class Yano implements NodeAPI {
         log.info("=== Adhoc Rollback Complete ===");
         log.info("New tip: slot={}, block={}", newTip != null ? newTip.getSlot() : "none",
                 newTip != null ? newTip.getBlockNumber() : "none");
+        log.info("New header tip: slot={}, block={}",
+                newHeaderTip != null ? newHeaderTip.getSlot() : "none",
+                newHeaderTip != null ? newHeaderTip.getBlockNumber() : "none");
 
         // Cleanup derived artifacts (parquet exports)
         if (targetEpoch != null) {
@@ -2271,6 +2695,7 @@ public class Yano implements NodeAPI {
                         meta, PublishOptions.builder().build());
             } catch (Exception ex) {
                 log.warn("RollbackEvent publish failed: {}", ex.toString());
+                throw new RuntimeException("RollbackEvent publish failed during API rollback", ex);
             }
             ensureAccountHistoryRolledBack(rollbackPoint);
 
@@ -2285,6 +2710,7 @@ public class Yano implements NodeAPI {
             }
 
             // 6. Reset BodyFetchManager epoch tracker to rolled-back tip epoch
+            BodyFetchManager bodyFetchManager = currentBodyFetchManager();
             if (bodyFetchManager != null && epochParamProvider != null) {
                 int rolledBackEpoch = epochParamProvider.getEpochSlotCalc().slotToEpoch(targetSlot);
                 bodyFetchManager.initializePreviousEpoch(rolledBackEpoch);
@@ -2412,7 +2838,7 @@ public class Yano implements NodeAPI {
                 try {
                     utxoStore.reconcile(rocksState);
                 } catch (Throwable t) {
-                    log.warn("UTXO reconciliation after snapshot restore failed: {}", t.toString());
+                    throw new IllegalStateException("UTXO reconciliation after snapshot restore failed", t);
                 }
             }
 
@@ -2422,7 +2848,7 @@ public class Yano implements NodeAPI {
                 try {
                     accountStateStore.reconcile(chainState);
                 } catch (Throwable t) {
-                    log.warn("Account state reconciliation after snapshot restore failed: {}", t.toString());
+                    throw new IllegalStateException("Account state reconciliation after snapshot restore failed", t);
                 }
             }
 
@@ -2442,7 +2868,7 @@ public class Yano implements NodeAPI {
                 try {
                     accountHistoryStore.reconcile(chainState);
                 } catch (Throwable t) {
-                    log.warn("Account history reconciliation after snapshot restore failed: {}", t.toString());
+                    throw new IllegalStateException("Account history reconciliation after snapshot restore failed", t);
                 }
             }
 
@@ -2661,7 +3087,7 @@ public class Yano implements NodeAPI {
         if (!config.isPastTimeTravelMode()) {
             throw new IllegalStateException("shiftGenesisAndStartProducer requires past-time-travel-mode=true");
         }
-        if (devnetBlockProducer != null) {
+        if (devnetBlockProducer != null || slotLeaderTimeTravelBlockProducer != null) {
             throw new IllegalStateException("Block producer already started — shift can only be called once");
         }
         if (epochs <= 0) {
@@ -2702,17 +3128,22 @@ public class Yano implements NodeAPI {
                 config.getGenesisTimestamp(), freshStart, config.getShelleyGenesisFile());
         initSlotTimeCalculator();
 
-        // Create block builder and start producer
-        DevnetBlockBuilder blockBuilder = createBlockBuilder(freshStart);
-
         setConwayEraStartIfFreshStart(freshStart);
 
-        DevnetBlockProducer producer = createDevnetProducer(blockBuilder);
-        // Sequential mode: genesis at slot 0, blocks at 1, 2, 3... (no wall-clock jump)
-        producer.setForceSequentialSlots(true);
-        producer.start();
-
         storeGenesisUtxosIfNeeded(freshStart);
+
+        if (config.isPastTimeTravelSlotLeaderMode()) {
+            SlotLeaderTimeTravelBlockProducer producer = createSlotLeaderTimeTravelProducer(freshStart);
+            producer.setForceSequentialSlots(true);
+            producer.start();
+        } else {
+            // Create block builder and start producer
+            DevnetBlockBuilder blockBuilder = createBlockBuilder(freshStart);
+            DevnetBlockProducer producer = createDevnetProducer(blockBuilder);
+            // Sequential mode: genesis at slot 0, blocks at 1, 2, 3... (no wall-clock jump)
+            producer.setForceSequentialSlots(true);
+            producer.start();
+        }
 
         log.info("Past time travel: block producer started after {}ms genesis shift ({} epochs)", shiftMillis, epochs);
         return shiftMillis;
@@ -2728,6 +3159,9 @@ public class Yano implements NodeAPI {
     public TimeAdvanceResult catchUpToWallClock() {
         if (!config.isDevMode()) {
             throw new IllegalStateException("Catch-up requires dev mode");
+        }
+        if (config.isPastTimeTravelSlotLeaderMode()) {
+            return catchUpSlotLeaderToWallClock();
         }
         if (devnetBlockProducer == null) {
             throw new IllegalStateException("Catch-up requires block producer to be running");
@@ -2765,6 +3199,50 @@ public class Yano implements NodeAPI {
                     blocksProduced);
         } finally {
             if (wasRunning) devnetBlockProducer.start();
+        }
+    }
+
+    private TimeAdvanceResult catchUpSlotLeaderToWallClock() {
+        if (slotLeaderTimeTravelBlockProducer == null) {
+            throw new IllegalStateException("Catch-up requires past-time-travel slot-leader producer to be running");
+        }
+
+        long wallClockSlot = (System.currentTimeMillis() - resolvedGenesisTimestamp) / config.getSlotLengthMillis();
+        long currentSlot = slotLeaderTimeTravelBlockProducer.getLastCheckedSlot();
+        long slotsToAdvance = wallClockSlot - currentSlot;
+        ChainTip currentTip = chainState.getTip();
+
+        if (slotsToAdvance <= 0) {
+            log.info("Already at or past wall-clock slot {} (checked={}), nothing to catch up",
+                    wallClockSlot, currentSlot);
+            return new TimeAdvanceResult(
+                    currentTip != null ? currentTip.getSlot() : Math.max(currentSlot, 0),
+                    currentTip != null ? currentTip.getBlockNumber() : 0,
+                    0);
+        }
+
+        log.info("Catching up to wall-clock with slot-leader checks: {} slots (checked={}, target={})",
+                slotsToAdvance, currentSlot, wallClockSlot);
+
+        boolean wasRunning = slotLeaderTimeTravelBlockProducer.isRunning();
+        if (wasRunning) slotLeaderTimeTravelBlockProducer.stop();
+
+        try {
+            int blocksProduced = slotLeaderTimeTravelBlockProducer.produceToSlot(wallClockSlot);
+            slotLeaderTimeTravelBlockProducer.setForceSequentialSlots(false);
+            ChainTip newTip = chainState.getTip();
+            lastKnownChainTip = newTip;
+
+            log.info("Slot-leader catch-up complete: {} blocks produced, checked slot={}, tip slot={}",
+                    blocksProduced, slotLeaderTimeTravelBlockProducer.getLastCheckedSlot(),
+                    newTip != null ? newTip.getSlot() : 0);
+
+            return new TimeAdvanceResult(
+                    newTip != null ? newTip.getSlot() : slotLeaderTimeTravelBlockProducer.getLastCheckedSlot(),
+                    newTip != null ? newTip.getBlockNumber() : 0,
+                    blocksProduced);
+        } finally {
+            if (wasRunning) slotLeaderTimeTravelBlockProducer.start();
         }
     }
 
@@ -2836,16 +3314,19 @@ public class Yano implements NodeAPI {
             isSyncing.set(true);
             isPipelinedMode = usePipeline;
 
-            // Get local tips to determine sync strategy
-            // Use header_tip as primary reference for restart efficiency
-            ChainTip headerTip = chainState.getHeaderTip();
-            ChainTip bodyTip = chainState.getTip();
+            // Get local tips to determine sync strategy.
+            ClientSyncTips syncTips = prepareClientSyncTips(
+                    usePipeline,
+                    chainState.getHeaderTip(),
+                    chainState.getTip(),
+                    "client sync startup");
+            ChainTip headerTip = syncTips.headerTip();
+            ChainTip bodyTip = syncTips.bodyTip();
+            ChainTip localTip = selectClientSyncStartTip(usePipeline, headerTip, bodyTip);
 
-            // Use header_tip if available, fall back to body_tip
-            ChainTip localTip = headerTip != null ? headerTip : bodyTip;
-
-            log.info("Local header_tip: {}, body_tip: {}, using: {} for sync",
-                     headerTip, bodyTip, localTip != null ? "slot " + localTip.getSlot() : "genesis");
+            log.info("Local header_tip: {}, body_tip: {}, mode={}, using: {} for sync",
+                     headerTip, bodyTip, usePipeline ? "pipelined" : "sequential",
+                     localTip != null ? "slot " + localTip.getSlot() : "genesis");
 
             // Initialize last known tip
             lastKnownChainTip = localTip;
@@ -2854,22 +3335,38 @@ public class Yano implements NodeAPI {
             Point startPoint = determineStartPoint(localTip);
             log.info("Starting pipelined sync from point: {}", startPoint);
 
-            // Find remote tip to understand sync scope
-            TipFinder tipFinder = new TipFinder(remoteCardanoHost, remoteCardanoPort, startPoint, protocolMagic);
-            remoteTip = tipFinder.find()
-                    .doFinally(signalType -> tipFinder.shutdown())
-                    .block(Duration.ofSeconds(5));
+            // Do not run a separate blocking TipFinder here. It uses its own TCP client
+            // before the supervised PeerClient exists, so a stale DNS answer can stall
+            // startup outside Yano's recovery loop. The normal ChainSync intersection
+            // carries the remote tip and updates remoteTip through
+            // maybeFastTransitionToSteadyState().
+            remoteTip = null;
 
-            // Create PeerClient
-            if (peerClient == null) {
-                peerClient = new PeerClient(remoteCardanoHost, remoteCardanoPort, protocolMagic, startPoint);
-                // Note: Connection will be established in pipeline or sequential mode below
-            }
+            synchronized (peerSessionLock) {
+                if (!isRunning.get() || !config.isEnableClient()) {
+                    log.info("Skipping client sync startup because Yano is stopping");
+                    isSyncing.set(false);
+                    return;
+                }
 
-            if (isPipelinedMode) {
-                startPipelinedClientSync(localTip, remoteTip, startPoint);
-            } else {
-                startSequentialClientSync(startPoint);
+                peerSession = createPeerSession();
+
+                startPeerSessionSupervisor();
+                try {
+                    if (isPipelinedMode) {
+                        startPipelinedClientSync(localTip, remoteTip, startPoint);
+                    } else {
+                        startSequentialClientSync(startPoint);
+                    }
+                    peerRecoveryFailureTracker.recordSuccess();
+                } catch (Exception e) {
+                    PeerRecoveryFailureTracker.Snapshot failure =
+                            peerRecoveryFailureTracker.recordFailure(PeerRecoveryReason.STARTUP_FAILED, e);
+                    log.warn("Initial upstream peer session start failed; supervisor will retry: {}",
+                            failure.message(), e);
+                    markPeerRecoveryFailure(PeerRecoveryReason.STARTUP_FAILED, e, failure);
+                    requestPeerRecovery(PeerRecoveryReason.STARTUP_FAILED);
+                }
             }
 
         } catch (Exception e) {
@@ -2880,6 +3377,183 @@ public class Yano implements NodeAPI {
         }
     }
 
+    private PeerSession createPeerSession() {
+        return new PeerSession(
+                new PeerEndpoint(remoteCardanoHost, remoteCardanoPort, protocolMagic),
+                chainState,
+                eventBus,
+                this,
+                epochParamProvider,
+                peerClientFactory
+        );
+    }
+
+    private void startPeerSessionSupervisor() {
+        if (peerSessionSupervisor == null) {
+            peerSessionSupervisor = new PeerSessionSupervisor(
+                    scheduler,
+                    () -> peerSession,
+                    this::recoverPeerSession,
+                    PeerSessionSupervisor.Policy.defaults(),
+                    this::isPeerRecoveryDeferred,
+                    peerRecoveryExecutor);
+        }
+        peerSessionSupervisor.start();
+    }
+
+    private boolean isPeerRecoveryDeferred() {
+        return rollbackInProgress.get() || peerRecoveryFailureTracker.isTerminal();
+    }
+
+    private void recoverPeerSession(PeerRecoveryReason reason) {
+        PeerSession oldSession;
+        synchronized (peerSessionLock) {
+            if (!isRunning.get() || !config.isEnableClient()) {
+                return;
+            }
+
+            if (peerRecoveryFailureTracker.isTerminal()) {
+                log.warn("Skipping upstream peer session recovery because recovery is terminal: {}",
+                        peerRecoveryFailureTracker.snapshot().message());
+                return;
+            }
+
+            if (rollbackInProgress.get()) {
+                log.info("Deferring upstream peer session recovery while rollback is in progress: reason={}", reason);
+                return;
+            }
+
+            oldSession = peerSession;
+        }
+
+        LedgerApplyProcessor.RecoveryPoint recoveryPoint = null;
+        if (oldSession != null) {
+            try {
+                log.warn("Recovering upstream peer session: reason={}", reason);
+                if (!oldSession.quiesceNetworkForRecovery(Duration.ofSeconds(10))) {
+                    throw new IllegalStateException("Timed out waiting for old-session rollback callbacks to drain");
+                }
+                recoveryPoint = oldSession.closeGenerationAndReadRecoveryPoint(Duration.ofMinutes(5));
+            } catch (Exception e) {
+                log.warn("Could not read peer recovery point through ledger apply barrier; "
+                        + "delaying peer replacement until a safe point is available", e);
+                recordPeerRecoveryFailure(reason, e);
+                return;
+            }
+            try {
+                while (!oldSession.stop(Duration.ofMinutes(1))) {
+                    log.error("Stale peer session did not stop after ledger apply safe point; "
+                            + "continuing to wait before starting replacement");
+                }
+            } catch (Exception e) {
+                log.warn("Error stopping stale peer session during recovery", e);
+                recordPeerRecoveryFailure(reason, e);
+                return;
+            }
+        }
+
+        synchronized (peerSessionLock) {
+            if (!isRunning.get() || !config.isEnableClient()) {
+                return;
+            }
+
+            if (peerRecoveryFailureTracker.isTerminal()) {
+                log.warn("Skipping upstream peer session restart because recovery is terminal: {}",
+                        peerRecoveryFailureTracker.snapshot().message());
+                return;
+            }
+
+            try {
+                if (oldSession != null && peerSession != oldSession) {
+                    log.info("Skipping peer session recovery start because the active session changed");
+                    return;
+                }
+                peerSession = null;
+
+                boolean usePipeline = config.isEnablePipelinedSync();
+                isSyncing.set(true);
+                isPipelinedMode = usePipeline;
+
+                ClientSyncTips syncTips = prepareClientSyncTips(
+                        usePipeline,
+                        recoveryPoint != null ? recoveryPoint.headerTip() : chainState.getHeaderTip(),
+                        recoveryPoint != null ? recoveryPoint.bodyTip() : chainState.getTip(),
+                        "peer recovery");
+                ChainTip headerTip = syncTips.headerTip();
+                ChainTip bodyTip = syncTips.bodyTip();
+                ChainTip localTip = selectClientSyncStartTip(usePipeline, headerTip, bodyTip);
+                lastKnownChainTip = localTip;
+
+                Point startPoint = determineStartPoint(localTip);
+                log.info("Restarting upstream sync from point: {}", startPoint);
+
+                remoteTip = usableRemoteTip(remoteTip, startPoint, localTip, "peer recovery");
+
+                if (!isRunning.get() || !config.isEnableClient()) {
+                    log.info("Skipping peer session recovery start because Yano is stopping");
+                    return;
+                }
+
+                peerSession = createPeerSession();
+                if (isPipelinedMode) {
+                    startPipelinedClientSync(localTip, remoteTip, startPoint);
+                } else {
+                    startSequentialClientSync(startPoint);
+                }
+                peerRecoveryFailureTracker.recordSuccess();
+                log.info("Upstream peer session recovered successfully: reason={}", reason);
+            } catch (Exception e) {
+                PeerRecoveryFailureTracker.Snapshot failure = peerRecoveryFailureTracker.recordFailure(reason, e);
+                if (failure.terminal()) {
+                    log.error("Upstream peer session recovery reached terminal failure; automatic retries paused: {}",
+                            failure.message(), e);
+                } else {
+                    log.warn("Upstream peer session recovery failed; supervisor will retry after cooldown: {}",
+                            failure.message(), e);
+                }
+                markPeerRecoveryFailure(reason, e, failure);
+                isSyncing.set(true);
+            }
+        }
+    }
+
+    private void recordPeerRecoveryFailure(PeerRecoveryReason reason, Exception e) {
+        synchronized (peerSessionLock) {
+            if (!isRunning.get() || !config.isEnableClient()) {
+                return;
+            }
+            PeerRecoveryFailureTracker.Snapshot failure = peerRecoveryFailureTracker.recordFailure(reason, e);
+            if (failure.terminal()) {
+                log.error("Upstream peer session recovery reached terminal failure; automatic retries paused: {}",
+                        failure.message(), e);
+            } else {
+                log.warn("Upstream peer session recovery failed; supervisor will retry after cooldown: {}",
+                        failure.message(), e);
+            }
+            markPeerRecoveryFailure(reason, e, failure);
+            isSyncing.set(true);
+        }
+    }
+
+    private void markPeerRecoveryFailure(PeerRecoveryReason reason,
+                                         Exception e,
+                                         PeerRecoveryFailureTracker.Snapshot failure) {
+        PeerSession failedSession = peerSession;
+        if (failedSession == null) {
+            failedSession = createPeerSession();
+            peerSession = failedSession;
+        }
+
+        failedSession.getPeerHealth().recordRecoveryAttempt(reason);
+        String message = failure.message() != null
+                ? failure.message()
+                : "Peer session recovery failed: "
+                + (e.getMessage() != null ? e.getMessage() : e.getClass().getName());
+        failedSession.getPeerHealth().markTerminalFailure(
+                reason != null ? reason : PeerRecoveryReason.UNKNOWN,
+                message);
+    }
+
     /**
      * Start pipelined client sync with parallel ChainSync and BlockFetch
      */
@@ -2888,11 +3562,18 @@ public class Yano implements NodeAPI {
         syncPhase = SyncPhase.INITIAL_SYNC;
         log.info("ChainSync agent started - reset to INITIAL_SYNC phase");
         // Determine sync strategy based on local vs remote tip
-        boolean shouldUseBulkSync = shouldUseBulkSync(localTip, remoteTip.getPoint());
+        boolean remoteTipAvailable = remoteTip != null && remoteTip.getPoint() != null;
+        Point remotePoint = remoteTipAvailable ? remoteTip.getPoint() : startPoint;
+        boolean shouldUseBulkSync = !remoteTipAvailable || shouldUseBulkSync(localTip, remotePoint);
 
         if (shouldUseBulkSync) {
-            log.info("🚀 ==> BULK PIPELINED SYNC: {} slots behind, using high-performance pipeline",
-                    remoteTip.getPoint().getSlot() - (localTip != null ? localTip.getSlot() : 0));
+            if (remoteTipAvailable) {
+                log.info("🚀 ==> BULK PIPELINED SYNC: {} slots behind, using high-performance pipeline",
+                        remotePoint.getSlot() - (localTip != null ? localTip.getSlot() : 0));
+            } else {
+                log.info("🚀 ==> BULK PIPELINED SYNC: remote tip unavailable until ChainSync intersection, "
+                        + "using high-performance pipeline");
+            }
             log.info("🚀 ==> Headers will arrive first, bodies will be fetched in parallel");
             isInitialSyncComplete = false;
 
@@ -2914,94 +3595,7 @@ public class Yano implements NodeAPI {
             pipelineConfig = createPipelineConfig();
         }
 
-        // Initialize pipeline managers
-        initializePipelineManagers();
-
-        // Create composite listener that delegates to both managers
-        PipelineDataListener pipelineListener = new PipelineDataListener(
-                headerSyncManager,
-                bodyFetchManager,
-                this  // Pass Yano reference for rollback coordination
-        );
-
-        // Connect using existing PeerClient.connect() method with pipeline listener
-        peerClient.connect(pipelineListener, null); // TxSubmission handled separately if needed
-        peerClient.enableTxSubmission(); // Initiate TxSubmission N2N protocol (sends Init message)
-
-        // Start header-only sync
-        peerClient.startHeaderSync(startPoint, true); // Enable pipelining for headers
-        log.info("🔗 ==> Header sync started with pipelining enabled");
-
-        // Start body fetch manager monitoring
-        bodyFetchManager.start();
-        log.info("📦 ==> Body fetch manager started for range-based fetching");
-
-        log.info("🚀 Pipeline startup complete - HeaderSync and BodyFetch active");
-    }
-
-    /**
-     * Initialize HeaderSyncManager and BodyFetchManager for pipeline mode.
-     */
-    private void initializePipelineManagers() {
-        // Shared context to propagate latest network tip from headers to bodies
-        SyncTipContext syncTipContext = new SyncTipContext();
-        if (headerSyncManager != null) {
-            // Reset existing managers
-            headerSyncManager.resetMetrics();
-        } else {
-            // Create new HeaderSyncManager
-            headerSyncManager = new HeaderSyncManager(peerClient, chainState, 50000, syncTipContext);
-            log.info("📋 HeaderSyncManager created");
-        }
-
-        if (bodyFetchManager != null) {
-            // Stop and reset existing manager
-            if (bodyFetchManager.isRunning()) {
-                bodyFetchManager.stop();
-            }
-            bodyFetchManager.resetMetrics();
-        } else {
-            // Create new BodyFetchManager with appropriate configuration
-            // Use slot-based threshold since gaps are measured in slots, not blocks
-            // 100 slots ≈ 1.67 minutes at 20s/slot (reasonable for body fetching)
-            long gapThreshold = pipelineConfig != null ?
-                    Math.max(pipelineConfig.getBodyBatchSize() / 10, 100) : 100; // Slot-based threshold
-            int maxBatchSize = pipelineConfig != null ?
-                    pipelineConfig.getBodyBatchSize() : 500;
-
-            maxBatchSize = 5000;
-
-            bodyFetchManager = new BodyFetchManager(
-                    peerClient,
-                    chainState,
-                    eventBus,
-                    gapThreshold,
-                    maxBatchSize,
-                    500, // 500ms monitoring interval
-                    1000,  // tipProximityThreshold - consider "at tip" when within 1000 slots (~16 minutes)
-                    syncTipContext
-            );
-            log.info("📦 BodyFetchManager created with gapThreshold={}, maxBatchSize={}",
-                    gapThreshold, maxBatchSize);
-        }
-
-        // Wire epoch param provider for epoch transition detection
-        if (bodyFetchManager != null && this.epochParamProvider != null) {
-            bodyFetchManager.setEpochParamProvider(this.epochParamProvider);
-            // Initialize previousEpoch from chain state tip so the first epoch
-            // transition after startup (or adhoc rollback) is correctly detected.
-            var tip = chainState.getTip();
-            if (tip != null && tip.getSlot() > 0) {
-                int tipEpoch = epochParamProvider.getEpochSlotCalc().slotToEpoch(tip.getSlot());
-                bodyFetchManager.initializePreviousEpoch(tipEpoch);
-            }
-        }
-
-        log.info("🔗 Pipeline managers initialized and ready");
-        log.info("ℹ️  HeaderSyncManager will receive headers through ChainSync protocol");
-        if (bodyFetchManager != null) {
-            log.info("ℹ️  BodyFetchManager will monitor for gaps and fetch ranges automatically");
-        }
+        peerSession.startPipelined(startPoint, pipelineConfig);
     }
 
     /**
@@ -3011,21 +3605,7 @@ public class Yano implements NodeAPI {
         log.info("📦 ==> SEQUENTIAL SYNC: Using traditional header+body sync");
         isInitialSyncComplete = false;
 
-        // Create composite listener that delegates to both managers
-        PipelineDataListener pipelineListener = new PipelineDataListener(
-                headerSyncManager,
-                bodyFetchManager,
-                this  // Pass Yano reference for rollback coordination
-        );
-
-        // Connect using existing PeerClient.connect() method with pipeline listener
-        peerClient.connect(pipelineListener, null); // TxSubmission handled separately if needed
-        peerClient.enableTxSubmission(); // Initiate TxSubmission N2N protocol (sends Init message)
-
-        // Start traditional sync from tip or point
-        peerClient.startSync(startPoint);
-
-        log.info("📦 ==> Sequential sync started from point: {}", startPoint);
+        peerSession.startSequential(startPoint, pipelineConfig);
     }
 
     /**
@@ -3045,6 +3625,140 @@ public class Yano implements NodeAPI {
 
         log.info("Local tip found at slot {}, starting sync from there", localTip.getSlot());
         return new Point(localTip.getSlot(), HexUtil.encodeHexString(localTip.getBlockHash()));
+    }
+
+    private ClientSyncTips prepareClientSyncTips(boolean usePipeline,
+                                                 ChainTip headerTip,
+                                                 ChainTip bodyTip,
+                                                 String context) {
+        if (!usePipeline || headerTip == null) {
+            return new ClientSyncTips(headerTip, bodyTip);
+        }
+
+        if (isHeaderChainUsableForPipelinedSync(headerTip, bodyTip, context)) {
+            return new ClientSyncTips(headerTip, bodyTip);
+        }
+
+        log.warn("Header cursor is not safe for pipelined sync during {}; "
+                        + "discarding header-only cache back to durable body tip. "
+                        + "header_tip={}, body_tip={}",
+                context, describeTip(headerTip), describeTip(bodyTip));
+
+        discardHeaderOnlyCacheToBodyTip(bodyTip, context);
+        ClientSyncTips repaired = new ClientSyncTips(chainState.getHeaderTip(), chainState.getTip());
+
+        if (repaired.headerTip() != null
+                && !isHeaderChainUsableForPipelinedSync(repaired.headerTip(), repaired.bodyTip(), context + " repair")) {
+            throw new IllegalStateException("Unable to repair unsafe header cursor for pipelined sync during " + context);
+        }
+
+        log.info("Header cursor after repair during {}: header_tip={}, body_tip={}",
+                context, describeTip(repaired.headerTip()), describeTip(repaired.bodyTip()));
+        return repaired;
+    }
+
+    private boolean isHeaderChainUsableForPipelinedSync(ChainTip headerTip, ChainTip bodyTip, String context) {
+        if (headerTip == null) {
+            return true;
+        }
+
+        if (chainState.getBlockHeader(headerTip.getBlockHash()) == null) {
+            log.warn("Header tip points to missing header during {}: {}", context, describeTip(headerTip));
+            return false;
+        }
+
+        long headerBlock = headerTip.getBlockNumber();
+        if (headerBlock <= 0) {
+            return true;
+        }
+
+        if (bodyTip != null && chainState.getBlockHeader(bodyTip.getBlockHash()) == null) {
+            log.warn("Body tip has no matching header during {}: {}", context, describeTip(bodyTip));
+            return false;
+        }
+
+        long lowerExclusiveBlock;
+        if (bodyTip != null) {
+            lowerExclusiveBlock = Math.max(0L, bodyTip.getBlockNumber());
+            long headerOnlyBlocks = headerBlock - lowerExclusiveBlock;
+            if (headerOnlyBlocks > HEADER_CONTINUITY_VALIDATION_LIMIT) {
+                log.warn("Header cursor is {} blocks ahead of body tip during {}, exceeding validation limit {}; "
+                                + "discarding header-only cache for correctness",
+                        headerOnlyBlocks, context, HEADER_CONTINUITY_VALIDATION_LIMIT);
+                return false;
+            }
+        } else {
+            lowerExclusiveBlock = Math.max(0L, headerBlock - HEADER_CONTINUITY_VALIDATION_LIMIT);
+            if (lowerExclusiveBlock > 0) {
+                log.info("Validating the last {} header-only blocks during {} because no durable body tip exists",
+                        HEADER_CONTINUITY_VALIDATION_LIMIT, context);
+            }
+        }
+
+        for (long blockNumber = headerBlock; blockNumber > lowerExclusiveBlock; blockNumber--) {
+            if (chainState.getBlockHeaderByNumber(blockNumber) == null) {
+                log.warn("Header continuity gap detected during {}: missing header #{} while validating {} down to {}",
+                        context, blockNumber, describeTip(headerTip), lowerExclusiveBlock);
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private void discardHeaderOnlyCacheToBodyTip(ChainTip bodyTip, String context) {
+        if (bodyTip != null) {
+            chainState.rollbackTo(bodyTip.getSlot());
+            return;
+        }
+
+        if (chainState instanceof DirectRocksDBChainState rocks) {
+            rocks.rollbackToOrigin();
+            return;
+        }
+
+        if (chainState instanceof InMemoryChainState memory) {
+            memory.rollbackToOrigin();
+            return;
+        }
+
+        throw new IllegalStateException("Cannot discard unsafe header-only cursor without a durable body tip during "
+                + context + " for chain state " + chainState.getClass().getName());
+    }
+
+    private String describeTip(ChainTip tip) {
+        if (tip == null) {
+            return "null";
+        }
+        return "block #" + tip.getBlockNumber()
+                + " slot " + tip.getSlot()
+                + " hash " + HexUtil.encodeHexString(tip.getBlockHash());
+    }
+
+    private ChainTip selectClientSyncStartTip(boolean usePipeline, ChainTip headerTip, ChainTip bodyTip) {
+        if (usePipeline) {
+            return headerTip != null ? headerTip : bodyTip;
+        }
+        if (headerTip != null && bodyTip != null && headerTip.getSlot() > bodyTip.getSlot()) {
+            log.info("Sequential sync ignoring header_tip slot {} ahead of body_tip slot {}; "
+                    + "body cursor is the only durable body-apply restart point",
+                    headerTip.getSlot(), bodyTip.getSlot());
+        } else if (headerTip != null && bodyTip == null) {
+            log.info("Sequential sync ignoring header_tip slot {} because no durable body tip exists", headerTip.getSlot());
+        }
+        return bodyTip;
+    }
+
+    private Tip usableRemoteTip(Tip candidate, Point startPoint, ChainTip localTip, String context) {
+        if (candidate != null && candidate.getPoint() != null) {
+            return candidate;
+        }
+
+        log.warn("Remote tip unavailable during {}; ChainSync intersection will refresh it", context);
+        return null;
+    }
+
+    private record ClientSyncTips(ChainTip headerTip, ChainTip bodyTip) {
     }
 
     /**
@@ -3069,14 +3783,30 @@ public class Yano implements NodeAPI {
         }
     }
 
+    private HeaderSyncManager currentHeaderSyncManager() {
+        PeerSession activeSession = peerSession;
+        return activeSession != null ? activeSession.getHeaderSyncManager() : null;
+    }
+
+    private BodyFetchManager currentBodyFetchManager() {
+        PeerSession activeSession = peerSession;
+        return activeSession != null ? activeSession.getBodyFetchManager() : null;
+    }
+
+    private PeerSessionStatus currentPeerSessionStatus() {
+        PeerSession activeSession = peerSession;
+        return activeSession != null ? activeSession.getStatus() : null;
+    }
+
 
     /**
      * Check sync progress and detect when BlockFetch is complete to transition to ChainSync
      */
     private void checkSyncProgress() {
         // If we have a remote tip and we're close to it, mark initial sync as complete
-        if (!isInitialSyncComplete && remoteTip != null) {
-            long slotDifference = remoteTip.getPoint().getSlot() - lastProcessedSlot;
+        Point remotePoint = remoteTip != null ? remoteTip.getPoint() : null;
+        if (!isInitialSyncComplete && remotePoint != null) {
+            long slotDifference = remotePoint.getSlot() - lastProcessedSlot;
 
             // If we're within 10 slots of the remote tip, consider initial sync complete
             if (slotDifference <= 10) {
@@ -3104,14 +3834,43 @@ public class Yano implements NodeAPI {
             log.info("Stopping Yano...");
 
             // Stop client sync
+            boolean unsafeLedgerApplyWorker = false;
             if (isSyncing.get()) {
+                PeerSession sessionToStop;
+                synchronized (peerSessionLock) {
+                    if (peerSessionSupervisor != null) {
+                        peerSessionSupervisor.close();
+                        peerSessionSupervisor = null;
+                    }
+                    sessionToStop = peerSession;
+                }
+
                 try {
-                    if (peerClient != null && peerClient.isRunning()) {
-                        log.info("Stopping PeerClient...");
-                        peerClient.stop();
+                    if (sessionToStop != null) {
+                        unsafeLedgerApplyWorker = !stopPeerSessionForShutdown(sessionToStop, "active");
                     }
                 } catch (Exception e) {
-                    log.warn("Error stopping peerClient", e);
+                    unsafeLedgerApplyWorker = true;
+                    log.warn("Error stopping peer session", e);
+                }
+
+                PeerSession replacementToStop = null;
+                synchronized (peerSessionLock) {
+                    if (peerSession == sessionToStop) {
+                        peerSession = null;
+                    } else if (peerSession != null) {
+                        log.warn("Peer session changed during shutdown; stopping replacement session before close");
+                        replacementToStop = peerSession;
+                        peerSession = null;
+                    }
+                }
+                if (replacementToStop != null) {
+                    try {
+                        unsafeLedgerApplyWorker |= !stopPeerSessionForShutdown(replacementToStop, "replacement");
+                    } catch (Exception e) {
+                        unsafeLedgerApplyWorker = true;
+                        log.warn("Error stopping replacement peer session", e);
+                    }
                 }
                 isSyncing.set(false);
             }
@@ -3140,33 +3899,90 @@ public class Yano implements NodeAPI {
                 Thread.currentThread().interrupt();
             }
 
-            // Close ChainState if it's RocksDB
-            if (chainState instanceof DirectRocksDBChainState) {
-                ((DirectRocksDBChainState) chainState).close();
+            peerRecoveryExecutor.shutdown();
+            try {
+                if (!peerRecoveryExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
+                    peerRecoveryExecutor.shutdownNow();
+                }
+            } catch (InterruptedException e) {
+                peerRecoveryExecutor.shutdownNow();
+                Thread.currentThread().interrupt();
             }
 
-            // Stop UTXO prune service
+            if (!unsafeLedgerApplyWorker) {
+                try {
+                    if (utxoEventHandlerAsync != null
+                            && !utxoEventHandlerAsync.closeAndAwait(Duration.ofSeconds(30))) {
+                        unsafeLedgerApplyWorker = true;
+                    }
+                } catch (Exception e) {
+                    unsafeLedgerApplyWorker = true;
+                    log.warn("Error draining async UTXO event handler during shutdown", e);
+                }
+            }
+
+            if (!unsafeLedgerApplyWorker) {
+                // Stop plugins/listeners before closing the bus and ChainState only after all apply
+                // workers are stopped/drained. Closing shared state first can make a queued async
+                // listener fail while applying an accepted block event.
+                try { if (pluginManager != null) pluginManager.close(); } catch (Exception ignored) {}
+                try { if (utxoEventHandler != null) utxoEventHandler.close(); } catch (Exception ignored) {}
+                try { if (accountStateEventHandler != null) accountStateEventHandler.close(); } catch (Exception ignored) {}
+                try { if (accountHistoryEventHandler != null) accountHistoryEventHandler.close(); } catch (Exception ignored) {}
+                try { eventBus.close(); } catch (Exception ignored) {}
+            } else {
+                log.error("Skipping plugin/listener close because an apply worker did not stop or drain");
+                log.error("Skipping EventBus close because an apply worker did not stop or drain");
+            }
+
+            // Stop prune services before closing the underlying store.
             try { if (utxoPruneService != null) utxoPruneService.close(); } catch (Exception ignored) {}
             try { if (accountHistoryPruneService != null) accountHistoryPruneService.close(); } catch (Exception ignored) {}
             try { if (blockPruneService != null) blockPruneService.close(); } catch (Exception ignored) {}
             try { if (utxoLagTask != null) utxoLagTask.cancel(true); } catch (Exception ignored) {}
 
-            // Stop plugins and close event bus
-            try { if (pluginManager != null) pluginManager.close(); } catch (Exception ignored) {}
-            try { if (utxoEventHandler != null) utxoEventHandler.close(); } catch (Exception ignored) {}
-            try { if (utxoEventHandlerAsync != null) utxoEventHandlerAsync.close(); } catch (Exception ignored) {}
-            try { if (accountStateEventHandler != null) accountStateEventHandler.close(); } catch (Exception ignored) {}
-            try { if (accountHistoryEventHandler != null) accountHistoryEventHandler.close(); } catch (Exception ignored) {}
-            try { eventBus.close(); } catch (Exception ignored) {}
+            // Close ChainState if it's RocksDB
+            if (!unsafeLedgerApplyWorker && chainState instanceof DirectRocksDBChainState) {
+                ((DirectRocksDBChainState) chainState).close();
+            } else if (unsafeLedgerApplyWorker) {
+                log.error("Skipping ChainState close because an apply worker did not stop or drain; "
+                        + "process restart will recover from durable state");
+            }
 
             log.info("Yano stopped");
         }
     }
 
+    private boolean stopPeerSessionForShutdown(PeerSession session, String label) {
+        if (session.stop(Duration.ofMinutes(10))) {
+            return true;
+        }
+        log.error("Yano stop could not stop the {} peer session at a ledger apply safe point after 10 minutes; "
+                + "forcing ledger apply shutdown", label);
+        if (session.forceStop(Duration.ofSeconds(30))) {
+            log.warn("Forced {} peer session shutdown completed after interrupting ledger apply worker", label);
+            return true;
+        }
+        log.error("Forced {} peer session shutdown failed; ledger apply worker may still be running", label);
+        return false;
+    }
+
     // Rollback handling - coordinates between managers and handles server notifications
     public void handleChainSyncRollback(Point point) {
+        synchronized (peerSessionLock) {
+            rollbackInProgress.set(true);
+            try {
+                doHandleChainSyncRollback(point);
+            } finally {
+                rollbackInProgress.set(false);
+            }
+        }
+    }
+
+    private void doHandleChainSyncRollback(Point point) {
         var localTip = chainState.getTip();
         long rollbackSlot = point.getSlot();
+        BodyFetchManager bodyFetchManager = currentBodyFetchManager();
 
         // In pipeline mode, pause BodyFetchManager during rollback
         if (isPipelinedMode && bodyFetchManager != null) {
@@ -3245,6 +4061,8 @@ public class Yano implements NodeAPI {
             bodyFetchManager.initializePreviousEpoch(rolledBackEpoch);
         }
 
+        reconcileSyncPhaseAfterRollback(bodyFetchManager);
+
         // Always resume BodyFetchManager after rollback - let it handle its own gap detection
         if (isPipelinedMode && bodyFetchManager != null) {
             bodyFetchManager.resume();
@@ -3297,18 +4115,35 @@ public class Yano implements NodeAPI {
             return false;
         }
 
-        // Check if chain tip has genuinely moved backwards
-        ChainTip currentTip = chainState.getTip();
-
-        if (lastKnownChainTip != null &&
-                rollbackPoint.getSlot() < lastKnownChainTip.getSlot() &&
-                currentTip.getSlot() <= rollbackPoint.getSlot()) {
+        ChainTip bodyTipBeforeRollback = chainState.getTip();
+        if (bodyTipBeforeRollback != null && rollbackPoint.getSlot() < bodyTipBeforeRollback.getSlot()) {
             log.info("Real chain reorganization detected - rollback from slot {} to slot {}",
-                    lastKnownChainTip.getSlot(), rollbackPoint.getSlot());
+                    bodyTipBeforeRollback.getSlot(), rollbackPoint.getSlot());
             return true;
         }
 
         return false;
+    }
+
+    private void reconcileSyncPhaseAfterRollback(BodyFetchManager bodyFetchManager) {
+        if (!isPipelinedMode || bodyFetchManager == null || remoteTip == null || remoteTip.getPoint() == null) {
+            return;
+        }
+        ChainTip bodyTip = chainState.getTip();
+        if (bodyTip == null) {
+            return;
+        }
+
+        long distance = Math.max(0, remoteTip.getPoint().getSlot() - bodyTip.getSlot());
+        long nearTipThreshold = 1000; // slots
+        if (syncPhase == SyncPhase.STEADY_STATE && distance > nearTipThreshold) {
+            SyncPhase prev = syncPhase;
+            syncPhase = SyncPhase.INITIAL_SYNC;
+            bodyFetchManager.setSyncPhase(SyncPhase.INITIAL_SYNC);
+            log.info("Rollback moved local tip {} slots behind remote tip; transitioned to INITIAL_SYNC", distance);
+            EventMetadata meta = EventMetadata.builder().origin("runtime").build();
+            eventBus.publish(new SyncStatusChangedEvent(prev, syncPhase), meta, PublishOptions.builder().build());
+        }
     }
 
 
@@ -3321,6 +4156,7 @@ public class Yano implements NodeAPI {
             log.info("Transitioned to STEADY_STATE sync phase");
 
             // Update BodyFetchManager sync phase and resume if needed
+            BodyFetchManager bodyFetchManager = currentBodyFetchManager();
             if (isPipelinedMode && bodyFetchManager != null) {
                 bodyFetchManager.setSyncPhase(SyncPhase.STEADY_STATE);
                 if (bodyFetchManager.isPaused()) {
@@ -3355,6 +4191,7 @@ public class Yano implements NodeAPI {
      */
     public void resumeBodyFetchOnHeaderFlow() {
         // Only resume during INTERSECT_PHASE when headers are flowing again
+        BodyFetchManager bodyFetchManager = currentBodyFetchManager();
         if (isPipelinedMode && syncPhase == SyncPhase.INTERSECT_PHASE &&
             bodyFetchManager != null && bodyFetchManager.isPaused()) {
 
@@ -3381,6 +4218,26 @@ public class Yano implements NodeAPI {
                 eventBus.publish(new SyncStatusChangedEvent(prev, syncPhase), meta, PublishOptions.builder().build());
             }
         }
+    }
+
+    @Override
+    public void onPeerDisconnected() {
+        PeerSessionSupervisor supervisor = peerSessionSupervisor;
+        if (!isRunning.get() || !config.isEnableClient() || supervisor == null) {
+            return;
+        }
+
+        supervisor.notifyDisconnect();
+    }
+
+    @Override
+    public void requestPeerRecovery(PeerRecoveryReason reason) {
+        PeerSessionSupervisor supervisor = peerSessionSupervisor;
+        if (!isRunning.get() || !config.isEnableClient() || supervisor == null) {
+            return;
+        }
+
+        supervisor.requestRecovery(reason != null ? reason : PeerRecoveryReason.UNKNOWN);
     }
 
     // Status and monitoring methods
@@ -3490,12 +4347,16 @@ public class Yano implements NodeAPI {
     public NodeStatus getStatus() {
         ChainTip localTip = getLocalTip();
         ChainTip headerTip = chainState.getHeaderTip();
+        PeerSessionStatus peerStatus = currentPeerSessionStatus();
+        PeerRecoveryFailureTracker.Snapshot recoveryStatus = peerRecoveryFailureTracker.snapshot();
 
         String statusMessage = "Node is " + (isRunning() ? "running" : "stopped");
 
         // Add pipeline-specific status if in pipeline mode
         if (isPipelinedMode) {
             statusMessage += " (phase: " + syncPhase.name() + ")";
+            HeaderSyncManager headerSyncManager = currentHeaderSyncManager();
+            BodyFetchManager bodyFetchManager = currentBodyFetchManager();
 
             // Add header tip information
             if (headerTip != null) {
@@ -3520,6 +4381,19 @@ public class Yano implements NodeAPI {
             }
         }
 
+        if (peerStatus != null) {
+            statusMessage += String.format(" [peer: %s/%s]", peerStatus.peerName(), peerStatus.state());
+        }
+
+        if (recoveryStatus.consecutiveFailures() > 0) {
+            statusMessage += String.format(" [peerRecovery: %d/%d%s]",
+                    recoveryStatus.consecutiveFailures(),
+                    recoveryStatus.maxFailures(),
+                    recoveryStatus.terminal() ? " terminal" : "");
+        }
+
+        Point remotePoint = remoteTip != null ? remoteTip.getPoint() : null;
+
         return NodeStatus.builder()
                 .running(isRunning())
                 .syncing(isSyncing())
@@ -3528,13 +4402,45 @@ public class Yano implements NodeAPI {
                 .lastProcessedSlot(lastProcessedSlot)
                 .localTipSlot(localTip != null ? localTip.getSlot() : null)
                 .localTipBlockNumber(localTip != null ? localTip.getBlockNumber() : null)
-                .remoteTipSlot(remoteTip != null ? remoteTip.getPoint().getSlot() : null)
-                .remoteTipBlockNumber(remoteTip != null ? remoteTip.getBlock() : null)
+                .remoteTipSlot(remotePoint != null ? remotePoint.getSlot() : null)
+                .remoteTipBlockNumber(remotePoint != null ? remoteTip.getBlock() : null)
                 .initialSyncComplete(isInitialSyncComplete)
                 .syncMode(isPipelinedMode ? "pipelined" : "sequential")
                 .statusMessage(statusMessage)
+                .peerName(peerStatus != null ? peerStatus.peerName() : null)
+                .peerState(peerStatus != null ? peerStatus.state().name() : null)
+                .peerRecoveryReason(peerRecoveryReason(peerStatus, recoveryStatus))
+                .peerRecoveryFailures(recoveryStatus.consecutiveFailures())
+                .peerMaxRecoveryFailures(recoveryStatus.maxFailures())
+                .peerRecoveryTerminal(recoveryStatus.terminal())
+                .peerTerminalFailureMessage(peerStatus != null && peerStatus.terminalFailureMessage() != null
+                        ? peerStatus.terminalFailureMessage()
+                        : recoveryStatus.message())
+                .peerApplicationProgressAgeMillis(peerStatus != null ? peerStatus.applicationProgressAgeMillis() : null)
+                .peerKeepAliveAgeMillis(peerStatus != null ? peerStatus.keepAliveAgeMillis() : null)
+                .peerBodyFetchInProgress(peerStatus != null ? peerStatus.bodyFetchInProgress() : null)
+                .peerBodyFetchInProgressAgeMillis(peerStatus != null ? peerStatus.bodyFetchInProgressAgeMillis() : null)
                 .timestamp(System.currentTimeMillis())
                 .build();
+    }
+
+    private static String peerRecoveryReason(PeerSessionStatus peerStatus,
+                                             PeerRecoveryFailureTracker.Snapshot recoveryStatus) {
+        if (peerStatus != null
+                && peerStatus.recoveryAttempts() > 0
+                && peerStatus.lastRecoveryReason() != null
+                && peerStatus.lastRecoveryReason() != PeerRecoveryReason.UNKNOWN) {
+            return peerStatus.lastRecoveryReason().name();
+        }
+
+        if (recoveryStatus != null
+                && recoveryStatus.consecutiveFailures() > 0
+                && recoveryStatus.lastReason() != null
+                && recoveryStatus.lastReason() != PeerRecoveryReason.UNKNOWN) {
+            return recoveryStatus.lastReason().name();
+        }
+
+        return null;
     }
 
     @Override
@@ -3630,6 +4536,7 @@ public class Yano implements NodeAPI {
         log.info("Transitioned to INTERSECT_PHASE - expect rollback to intersection");
 
         // Update BodyFetchManager sync phase
+        BodyFetchManager bodyFetchManager = currentBodyFetchManager();
         if (isPipelinedMode && bodyFetchManager != null) {
             bodyFetchManager.setSyncPhase(SyncPhase.INTERSECT_PHASE);
         }
@@ -3651,10 +4558,11 @@ public class Yano implements NodeAPI {
                 log.info("Auto-transitioned to {} after intersection phase timeout (distance to tip: {} slots)", nextPhase, distance == Long.MAX_VALUE ? "unknown" : String.valueOf(distance));
 
                 // Update BodyFetchManager sync phase and resume if needed
-                if (isPipelinedMode && bodyFetchManager != null) {
-                    bodyFetchManager.setSyncPhase(nextPhase);
-                    if (bodyFetchManager.isPaused()) {
-                        bodyFetchManager.resume();
+                BodyFetchManager scheduledBodyFetchManager = currentBodyFetchManager();
+                if (isPipelinedMode && scheduledBodyFetchManager != null) {
+                    scheduledBodyFetchManager.setSyncPhase(nextPhase);
+                    if (scheduledBodyFetchManager.isPaused()) {
+                        scheduledBodyFetchManager.resume();
                         log.info("▶️ BodyFetchManager resumed after auto-transition to {}", nextPhase);
                     }
                 }
@@ -3668,10 +4576,11 @@ public class Yano implements NodeAPI {
      */
     public void maybeFastTransitionToSteadyState(Tip remoteTip) {
         try {
-            if (!isPipelinedMode) return;
+            if (remoteTip == null || remoteTip.getPoint() == null) return;
+            this.remoteTip = remoteTip;
 
             ChainTip localTip = chainState.getTip();
-            if (localTip == null || remoteTip == null || remoteTip.getPoint() == null) return;
+            if (!isPipelinedMode || localTip == null) return;
 
             long remoteSlot = remoteTip.getPoint().getSlot();
             long distance = Math.max(0, remoteSlot - localTip.getSlot());
@@ -3679,6 +4588,7 @@ public class Yano implements NodeAPI {
             long nearTipThreshold = 1000; // slots
             if (distance <= nearTipThreshold) {
                 syncPhase = SyncPhase.STEADY_STATE;
+                BodyFetchManager bodyFetchManager = currentBodyFetchManager();
                 if (bodyFetchManager != null) {
                     bodyFetchManager.setSyncPhase(SyncPhase.STEADY_STATE);
                     if (bodyFetchManager.isPaused()) bodyFetchManager.resume();
