@@ -10,16 +10,26 @@ import com.bloxbean.cardano.yaci.core.model.Epoch;
 import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Point;
 import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Tip;
 import com.bloxbean.cardano.yaci.core.storage.ChainState;
+import com.bloxbean.cardano.yaci.events.api.Event;
+import com.bloxbean.cardano.yaci.events.api.EventBus;
+import com.bloxbean.cardano.yaci.events.api.EventListener;
+import com.bloxbean.cardano.yaci.events.api.EventMetadata;
+import com.bloxbean.cardano.yaci.events.api.PublishOptions;
+import com.bloxbean.cardano.yaci.events.api.SubscriptionHandle;
+import com.bloxbean.cardano.yaci.events.api.SubscriptionOptions;
 import com.bloxbean.cardano.yano.runtime.chain.InMemoryChainState;
+import com.bloxbean.cardano.yano.api.events.HeaderAppliedEvent;
 import com.bloxbean.cardano.yaci.core.storage.ChainTip;
 import com.bloxbean.cardano.yaci.helper.PeerClient;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigInteger;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.*;
 
 /**
  * Unit tests for HeaderSyncManager
@@ -67,6 +77,83 @@ class HeaderSyncManagerTest {
         assertEquals(500L, headerTip.getBlockNumber());
         assertEquals(1, headerSyncManager.getHeadersReceived());
         assertEquals(1, headerSyncManager.getHeaderMetrics().shelleyHeaders);
+    }
+
+    @Test
+    void rollforwardSignalsAfterHeaderStored() {
+        long[] signaled = {-1L, -1L};
+        HeaderSyncManager signaledManager = new HeaderSyncManager(
+                peerClient,
+                chainState,
+                50000,
+                new SyncTipContext(),
+                (slot, blockNumber, blockHash) -> {
+                    signaled[0] = slot;
+                    signaled[1] = blockNumber;
+                });
+        Tip tip = new Tip(new Point(1000, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), 500L);
+        BlockHeader blockHeader = createMockShelleyHeader(1000L, 500L, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+
+        signaledManager.rollforward(tip, blockHeader, new byte[]{1, 2, 3});
+
+        assertEquals(1000L, signaled[0]);
+        assertEquals(500L, signaled[1]);
+        assertNotNull(chainState.getHeaderTip());
+    }
+
+    @Test
+    void rollforwardPublishesHeaderAppliedEventAsynchronously() throws Exception {
+        RecordingEventBus eventBus = new RecordingEventBus();
+        HeaderAppliedEventPublisher publisher = new HeaderAppliedEventPublisher(eventBus, 8);
+        try {
+            HeaderSyncManager manager = new HeaderSyncManager(
+                    peerClient,
+                    chainState,
+                    50000,
+                    new SyncTipContext(),
+                    null,
+                    publisher);
+            Tip tip = new Tip(new Point(1000, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), 500L);
+            BlockHeader blockHeader = createMockShelleyHeader(1000L, 500L,
+                    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+
+            manager.rollforward(tip, blockHeader, new byte[]{1, 2, 3});
+
+            assertTrue(eventBus.awaitHeaderAppliedEvent(1, TimeUnit.SECONDS));
+            HeaderAppliedEvent event = eventBus.headerAppliedEvent;
+            assertEquals(1000L, event.slot());
+            assertEquals(500L, event.blockNumber());
+            assertEquals("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", event.blockHash());
+        } finally {
+            publisher.close();
+        }
+    }
+
+    private static final class RecordingEventBus implements EventBus {
+        private final CountDownLatch headerAppliedLatch = new CountDownLatch(1);
+        private volatile HeaderAppliedEvent headerAppliedEvent;
+
+        @Override
+        public <E extends Event> SubscriptionHandle subscribe(Class<E> eventType, EventListener<E> listener,
+                                                              SubscriptionOptions options) {
+            throw new UnsupportedOperationException("subscribe is not used in this test");
+        }
+
+        @Override
+        public <E extends Event> void publish(E event, EventMetadata metadata, PublishOptions options) {
+            if (event instanceof HeaderAppliedEvent headerApplied) {
+                headerAppliedEvent = headerApplied;
+                headerAppliedLatch.countDown();
+            }
+        }
+
+        boolean awaitHeaderAppliedEvent(long timeout, TimeUnit unit) throws InterruptedException {
+            return headerAppliedLatch.await(timeout, unit);
+        }
+
+        @Override
+        public void close() {
+        }
     }
 
     @Test

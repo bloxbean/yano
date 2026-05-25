@@ -12,7 +12,10 @@ import com.bloxbean.cardano.yaci.core.storage.ChainState;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yaci.helper.PeerClient;
 import com.bloxbean.cardano.yano.runtime.chain.DirectRocksDBChainState;
+import com.bloxbean.cardano.yano.runtime.chain.InMemoryChainState;
 import lombok.extern.slf4j.Slf4j;
+
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * HeaderSyncManager handles header-only synchronization using ChainSyncAgent with intelligent backpressure.
@@ -40,6 +43,9 @@ public class HeaderSyncManager implements ChainSyncAgentListener {
     private final ChainState chainState;
     private final PeerClient peerClient;
     private final SyncTipContext syncTipContext;
+    private final HeaderAppliedSignal headerAppliedSignal;
+    private final HeaderAppliedEventPublisher headerAppliedEventPublisher;
+    private final AtomicLong headerSignalFailures = new AtomicLong(0);
 
     // Metrics tracking
     private volatile long headersReceived = 0;
@@ -55,18 +61,31 @@ public class HeaderSyncManager implements ChainSyncAgentListener {
     private static final int PROGRESS_LOG_INTERVAL = 1000;
 
     public HeaderSyncManager(PeerClient peerClient, ChainState chainState) {
-        this(peerClient, chainState, 50000, null); // Default gap threshold of 50,000 blocks
+        this(peerClient, chainState, 50000, null, null); // Default gap threshold of 50,000 blocks
     }
 
     public HeaderSyncManager(PeerClient peerClient, ChainState chainState, long maxGapThreshold) {
-        this(peerClient, chainState, maxGapThreshold, null);
+        this(peerClient, chainState, maxGapThreshold, null, null);
     }
 
     public HeaderSyncManager(PeerClient peerClient, ChainState chainState, long maxGapThreshold, SyncTipContext syncTipContext) {
+        this(peerClient, chainState, maxGapThreshold, syncTipContext, null);
+    }
+
+    public HeaderSyncManager(PeerClient peerClient, ChainState chainState, long maxGapThreshold,
+                             SyncTipContext syncTipContext, HeaderAppliedSignal headerAppliedSignal) {
+        this(peerClient, chainState, maxGapThreshold, syncTipContext, headerAppliedSignal, null);
+    }
+
+    public HeaderSyncManager(PeerClient peerClient, ChainState chainState, long maxGapThreshold,
+                             SyncTipContext syncTipContext, HeaderAppliedSignal headerAppliedSignal,
+                             HeaderAppliedEventPublisher headerAppliedEventPublisher) {
         this.peerClient = peerClient;
         this.chainState = chainState;
         this.maxGapThreshold = maxGapThreshold;
         this.syncTipContext = syncTipContext;
+        this.headerAppliedSignal = headerAppliedSignal;
+        this.headerAppliedEventPublisher = headerAppliedEventPublisher;
 
         log.info("HeaderSyncManager initialized - ready for header-only synchronization (gap threshold: {} blocks)", maxGapThreshold);
     }
@@ -98,6 +117,7 @@ public class HeaderSyncManager implements ChainSyncAgentListener {
                 slot,
                 originalHeaderBytes
             );
+            afterHeaderStored(slot, blockNumber, blockHash);
 
             // Update metrics
             headersReceived++;
@@ -118,7 +138,7 @@ public class HeaderSyncManager implements ChainSyncAgentListener {
                         slot, blockNumber, blockHash);
             }
 
-} catch (Exception e) {
+        } catch (Exception e) {
             log.error("Failed to store Shelley+ header: slot={}, blockNumber={}",
                     blockHeader.getHeaderBody().getSlot(),
                     blockHeader.getHeaderBody().getBlockNumber(), e);
@@ -156,6 +176,7 @@ public class HeaderSyncManager implements ChainSyncAgentListener {
                 absoluteSlot,
                 originalHeaderBytes
             );
+            afterHeaderStored(absoluteSlot, blockNumber, blockHash);
 
             // Update metrics
             headersReceived++;
@@ -209,9 +230,12 @@ public class HeaderSyncManager implements ChainSyncAgentListener {
             var hashBytes = HexUtil.decodeHexString(blockHash);
             if (chainState instanceof DirectRocksDBChainState rocks) {
                 rocks.storeByronEbHeader(hashBytes, blockNumber, absoluteSlot, originalHeaderBytes);
+            } else if (chainState instanceof InMemoryChainState inMemory) {
+                inMemory.storeByronEbHeader(hashBytes, blockNumber, absoluteSlot, originalHeaderBytes);
             } else {
                 chainState.storeBlockHeader(hashBytes, blockNumber, absoluteSlot, originalHeaderBytes);
             }
+            afterHeaderStored(absoluteSlot, blockNumber, blockHash);
 
             // Update metrics
             headersReceived++;
@@ -276,6 +300,24 @@ public class HeaderSyncManager implements ChainSyncAgentListener {
         // No action needed here - ChainSyncAgent handles reconnection automatically
         // using its internal currentPoint tracking for robust resumption
         log.debug("📄 ChainSyncAgent will automatically resume headers from last confirmed point");
+    }
+
+    private void afterHeaderStored(long slot, long blockNumber, String blockHash) {
+        HeaderAppliedEventPublisher publisher = headerAppliedEventPublisher;
+        if (publisher != null) {
+            publisher.publishLater(slot, blockNumber, blockHash);
+        }
+
+        HeaderAppliedSignal signal = headerAppliedSignal;
+        if (signal != null) {
+            try {
+                signal.onHeaderApplied(slot, blockNumber, blockHash);
+            } catch (Exception e) {
+                long failures = headerSignalFailures.incrementAndGet();
+                log.warn("Header applied signal failed (total failures={}): slot={}, block={}",
+                        failures, slot, blockNumber, e);
+            }
+        }
     }
 
     // =================================================================
