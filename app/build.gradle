@@ -174,6 +174,43 @@ def isNativeBuildRequested = {
             .any { it == 'native' }
 }
 
+def isNativeContainerBuildRequested = {
+    System.getProperty('quarkus.native.container-build', '').equalsIgnoreCase('true') ||
+            System.getProperty('quarkus.native.remote-container-build', '').equalsIgnoreCase('true')
+}
+
+def isLinuxHost = {
+    System.getProperty('os.name', '').toLowerCase(java.util.Locale.ROOT).contains('linux')
+}
+
+def getNativeBuilderImage = {
+    def raw = System.getProperty('quarkus.native.builder-image')
+    if (raw == null || raw.isBlank()) {
+        raw = System.getenv('QUARKUS_NATIVE_BUILDER_IMAGE')
+    }
+
+    return raw == null ? '' : raw.trim()
+}
+
+def configureNativeContainerBuildGc = {
+    def builderImage = getNativeBuilderImage()
+    if (builderImage.isBlank()) {
+        println "Container native-image build detected with default builder image, using builder image default GC"
+        return
+    }
+
+    def normalizedBuilderImage = builderImage.toLowerCase(java.util.Locale.ROOT)
+    if (normalizedBuilderImage.contains('container-registry.oracle.com/graalvm/native-image')) {
+        addNativeBuildArgs(['--gc=G1'])
+        println "Oracle GraalVM native-image builder detected (${builderImage}), setting native-image GC to G1"
+    } else if (normalizedBuilderImage.contains('liberica-native-image-kit')) {
+        addNativeBuildArgs(['--gc=parallel'])
+        println "Liberica Native Image Kit builder detected (${builderImage}), setting native-image GC to parallel"
+    } else {
+        println "Container native-image build detected with builder image ${builderImage}, using builder image default GC"
+    }
+}
+
 def configureNativeGc = {
     if (!isNativeBuildRequested()) {
         return
@@ -183,6 +220,11 @@ def configureNativeGc = {
     def configuredGc = args.find { it.startsWith('--gc=') }
     if (configuredGc != null) {
         println "Native-image GC already configured: ${configuredGc}"
+        return
+    }
+
+    if (isNativeContainerBuildRequested()) {
+        configureNativeContainerBuildGc()
         return
     }
 
@@ -234,9 +276,24 @@ gradle.taskGraph.whenReady { graph ->
     if (graph.hasTask(":${project.name}:yanoNativeDistZip") ||
             graph.hasTask(":${project.name}:nodeNativeDistZip")) {
         System.setProperty('quarkus.profile', 'native')
-        if (System.getProperty('os.name').toLowerCase().contains('linux')) {
+        if (isLinuxHost()) {
             addNativeBuildArgs(['-H:+StaticExecutableWithDynamicLibC'])
         }
+    }
+
+    if (graph.hasTask(":${project.name}:prepareYanoDockerNativeContext") &&
+            !isLinuxHost() &&
+            !isNativeContainerBuildRequested()) {
+        throw new GradleException(
+                "prepareYanoDockerNativeContext requires a Linux native binary for the Docker image. " +
+                        "This host is ${System.getProperty('os.name')}, so run with " +
+                        "-Dquarkus.native.container-build=true or build on Linux. Example: " +
+                        "./gradlew :app:prepareYanoDockerNativeContext " +
+                        "-Dquarkus.native.enabled=true -Dquarkus.package.jar.enabled=false " +
+                        "-Dquarkus.native.container-build=true " +
+                        "-Dquarkus.native.builder-image=container-registry.oracle.com/graalvm/native-image:25 " +
+                        "-PskipSigning=true"
+        )
     }
 
     configureNativeGc()
@@ -273,6 +330,132 @@ tasks.register('yanoNativeDistZip', Zip) {
         }
         into('plugins') {
             from({ [] }) // empty directory
+        }
+    }
+}
+
+def stripTopLevelDirectory = { details ->
+    def segments = details.relativePath.segments.toList()
+    if (segments.size() <= 1) {
+        details.exclude()
+        return
+    }
+
+    def dockerSegments = ['yano'] + segments.drop(1)
+    details.relativePath = org.gradle.api.file.RelativePath.parse(
+            details.relativePath.file,
+            dockerSegments.join('/')
+    )
+}
+
+tasks.register('prepareYanoDockerJvmContext', Sync) {
+    dependsOn 'yanoDistZip'
+    group = 'docker'
+    description = 'Prepares the artifact-based JVM Docker build context'
+
+    into layout.buildDirectory.dir('docker/jvm/context')
+
+    from({ zipTree(tasks.named('yanoDistZip', Zip).get().archiveFile.get().asFile) }) {
+        eachFile stripTopLevelDirectory
+        exclude '**/*.working'
+        includeEmptyDirs = false
+    }
+    from(rootProject.file('docker/jvm/Dockerfile')) {
+        rename { 'Dockerfile' }
+    }
+    from(rootProject.file('docker/jvm/entrypoint.sh')) {
+        rename { 'entrypoint.sh' }
+        filePermissions { unix('755') }
+    }
+}
+
+tasks.register('prepareYanoDockerNativeContext', Sync) {
+    dependsOn 'yanoNativeDistZip'
+    group = 'docker'
+    description = 'Prepares the artifact-based native Docker build context'
+
+    into layout.buildDirectory.dir('docker/native/context')
+
+    doFirst {
+        def binary = layout.buildDirectory.file('yano').get().asFile
+        if (!binary.exists()) {
+            throw new GradleException("Native binary not found at ${binary.path}.")
+        }
+
+        byte[] header = new byte[4]
+        binary.withInputStream { stream ->
+            if (stream.read(header) != header.length) {
+                throw new GradleException("Native binary at ${binary.path} is too small to validate.")
+            }
+        }
+
+        if (!(header[0] == 0x7F && header[1] == 0x45 && header[2] == 0x4C && header[3] == 0x46)) {
+            throw new GradleException(
+                    "Native Docker image requires a Linux ELF binary at ${binary.path}. " +
+                            "On macOS, rebuild with -Dquarkus.native.container-build=true."
+            )
+        }
+    }
+
+    from({ zipTree(tasks.named('yanoNativeDistZip', Zip).get().archiveFile.get().asFile) }) {
+        eachFile stripTopLevelDirectory
+        exclude '**/*.working'
+        includeEmptyDirs = false
+    }
+    from(rootProject.file('docker/native/Dockerfile')) {
+        rename { 'Dockerfile' }
+    }
+    from(rootProject.file('docker/native/entrypoint.sh')) {
+        rename { 'entrypoint.sh' }
+        filePermissions { unix('755') }
+    }
+}
+
+tasks.register('yanoDockerDistZip', Zip) {
+    group = 'distribution'
+    description = 'Creates a Docker Compose distribution zip for Yano'
+
+    def dockerReleaseVersion = providers.gradleProperty('yanoDockerReleaseVersion').getOrElse(distVersion)
+    def dockerImageTag = providers.gradleProperty('yanoDockerImageTag').getOrElse('latest')
+    def dockerRuntimeDirsRoot = layout.buildDirectory.dir('docker/runtime-empty-dirs')
+    def dockerRuntimeDirs = ['chainstate', 'chainstate-devnet', 'logs', 'plugins']
+
+    inputs.property('yanoDockerReleaseVersion', dockerReleaseVersion)
+    inputs.property('yanoDockerImageTag', dockerImageTag)
+
+    archiveFileName = "yano-docker-${dockerReleaseVersion}.zip"
+    destinationDirectory = layout.buildDirectory.dir('distributions')
+
+    doFirst {
+        delete(dockerRuntimeDirsRoot)
+        dockerRuntimeDirs.each {
+            mkdir(dockerRuntimeDirsRoot.get().dir(it).asFile)
+        }
+    }
+
+    into("yano-docker-${dockerReleaseVersion}") {
+        from(rootProject.file('docker/yano.sh')) {
+            filePermissions { unix('755') }
+        }
+        from(rootProject.file('docker/yano.bat'))
+        from(rootProject.file('docker/compose')) {
+            into 'compose'
+            include '.env', 'README.md', 'yano.yml', 'yano-devnet.yml'
+            filesMatching(['.env', 'README.md']) {
+                filter { line ->
+                    line.replace('YANO_IMAGE_TAG=latest', "YANO_IMAGE_TAG=${dockerImageTag}")
+                            .replace('@YANO_VERSION@', dockerReleaseVersion)
+                            .replace('@YANO_IMAGE_TAG@', dockerImageTag)
+                }
+            }
+        }
+        from(rootProject.file('docker/config')) {
+            into 'config'
+            include 'application.yml', 'env'
+        }
+        from(dockerRuntimeDirsRoot) {
+            include dockerRuntimeDirs.collect { "${it}/**" }
+            includeEmptyDirs = true
         }
     }
 }

@@ -1,0 +1,30 @@
+services:
+  yano:
+    image: ${YANO_IMAGE:-bloxbean/yano}:${YANO_IMAGE_TAG:-latest}-${YANO_IMAGE_FLAVOR:-jvm}
+    container_name: yano-${INSTANCE_NAME:-default}
+    user: "${YANO_UID:-1000}:${YANO_GID:-1000}"
+    env_file:
+      - ../config/env
+    environment:
+      YANO_PROFILE: ${YANO_PROFILE:-preprod}
+      JAVA_OPTS: ${JAVA_OPTS:-}
+      YANO_EXTRA_ARGS: ${YANO_EXTRA_ARGS:-}
+    ports:
+      - "${YANO_HTTP_PORT:-7070}:7070"
+      - "${YANO_N2N_PORT:-13337}:13337"
+    volumes:
+      - ../chainstate:/app/chainstate
+      - ../logs:/app/logs
+      - ../config/application.yml:/app/config/application.yml:ro
+      - ../plugins:/app/plugins
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:7070/q/health/ready || exit 1"]
+      interval: 20s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "20"

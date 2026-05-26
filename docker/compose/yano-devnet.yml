@@ -1,0 +1,7 @@
+services:
+  yano:
+    environment:
+      YANO_PROFILE: devnet
+      YANO_NETWORK: devnet
+    volumes:
+      - ../chainstate-devnet:/app/chainstate
