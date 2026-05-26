@@ -137,6 +137,7 @@ def detectPlatform() {
 
 def distVersion = rootProject.version.toString().replaceAll('-SNAPSHOT', '')
 def nativeBuildArgsProperty = 'quarkus.native.additional-build-args'
+def nativeContainerRuntimeOptionsProperty = 'quarkus.native.container-runtime-options'
 
 def getNativeBuildArgs = {
     def raw = System.getProperty(nativeBuildArgsProperty)
@@ -160,6 +161,42 @@ def addNativeBuildArgs = { List<String> additions ->
     if (!args.isEmpty()) {
         System.setProperty(nativeBuildArgsProperty, args.join(','))
     }
+}
+
+def getNativeContainerRuntimeOptions = {
+    def raw = System.getProperty(nativeContainerRuntimeOptionsProperty)
+    if (raw == null || raw.isBlank()) {
+        return []
+    }
+
+    return raw.split(',')
+            .collect { it.trim() }
+            .findAll { !it.isBlank() }
+}
+
+def addNativeContainerRuntimeOptions = { List<String> additions ->
+    def options = getNativeContainerRuntimeOptions()
+    additions.each { option ->
+        if (!options.contains(option)) {
+            options.add(option)
+        }
+    }
+
+    if (!options.isEmpty()) {
+        System.setProperty(nativeContainerRuntimeOptionsProperty, options.join(','))
+    }
+}
+
+def hasNativeContainerWorkdir = {
+    def options = getNativeContainerRuntimeOptions()
+    for (int i = 0; i < options.size(); i++) {
+        def option = options[i]
+        if (option == '-w' || option == '--workdir' || option.startsWith('-w=') || option.startsWith('--workdir=')) {
+            return true
+        }
+    }
+
+    return false
 }
 
 def isNativeBuildRequested = {
@@ -203,6 +240,10 @@ def configureNativeContainerBuildGc = {
     if (normalizedBuilderImage.contains('container-registry.oracle.com/graalvm/native-image')) {
         addNativeBuildArgs(['--gc=G1'])
         println "Oracle GraalVM native-image builder detected (${builderImage}), setting native-image GC to G1"
+        if (!hasNativeContainerWorkdir()) {
+            addNativeContainerRuntimeOptions(['--workdir', '/project'])
+            println "Oracle GraalVM native-image builder detected (${builderImage}), setting container workdir to /project"
+        }
     } else if (normalizedBuilderImage.contains('liberica-native-image-kit')) {
         addNativeBuildArgs(['--gc=parallel'])
         println "Liberica Native Image Kit builder detected (${builderImage}), setting native-image GC to parallel"
@@ -292,6 +333,7 @@ gradle.taskGraph.whenReady { graph ->
                         "-Dquarkus.native.enabled=true -Dquarkus.package.jar.enabled=false " +
                         "-Dquarkus.native.container-build=true " +
                         "-Dquarkus.native.builder-image=container-registry.oracle.com/graalvm/native-image:25 " +
+                        "-Dquarkus.native.container-runtime-options=--workdir,/project " +
                         "-PskipSigning=true"
         )
     }

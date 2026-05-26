@@ -71,6 +71,8 @@ For release-parity local testing with Oracle GraalVM and G1 GC:
   -PskipSigning=true
 ```
 
+The Gradle build adds `--gc=G1` and sets the container workdir to `/project` for this Oracle image. The workdir is required because Oracle's `native-image` container defaults to `/app`, while Quarkus mounts the native-image source tree at `/project`.
+
 For a Mandrel build, use the Quarkus Mandrel builder image. This uses the builder image default GC, which is normally Serial GC:
 
 ```bash
