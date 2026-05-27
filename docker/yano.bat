@@ -8,6 +8,7 @@ set "MAINNET_COMPOSE_FILE=%SCRIPT_DIR%compose\yano-mainnet.yml"
 set "PREVIEW_COMPOSE_FILE=%SCRIPT_DIR%compose\yano-preview.yml"
 set "SANCHONET_COMPOSE_FILE=%SCRIPT_DIR%compose\yano-sanchonet.yml"
 set "ENV_FILE=%SCRIPT_DIR%compose\.env"
+set "COMPOSE_DIR=%SCRIPT_DIR%compose"
 set "ACTION=%~1"
 
 if "%ACTION%"=="" goto usage
@@ -84,56 +85,78 @@ echo Invalid action: %ACTION%
 goto usage
 
 :start_preprod
+call :prepare_chainstate preprod
+if errorlevel 1 exit /b !ERRORLEVEL!
 docker compose -f "%COMPOSE_FILE%" --env-file "%ENV_FILE%" up -d
 exit /b !ERRORLEVEL!
 
 :start_mainnet
+call :prepare_chainstate mainnet
+if errorlevel 1 exit /b !ERRORLEVEL!
 docker compose -f "%COMPOSE_FILE%" -f "%MAINNET_COMPOSE_FILE%" --env-file "%ENV_FILE%" up -d
 exit /b !ERRORLEVEL!
 
 :start_preview
+call :prepare_chainstate preview
+if errorlevel 1 exit /b !ERRORLEVEL!
 docker compose -f "%COMPOSE_FILE%" -f "%PREVIEW_COMPOSE_FILE%" --env-file "%ENV_FILE%" up -d
 exit /b !ERRORLEVEL!
 
 :start_sanchonet
+call :prepare_chainstate sanchonet
+if errorlevel 1 exit /b !ERRORLEVEL!
 docker compose -f "%COMPOSE_FILE%" -f "%SANCHONET_COMPOSE_FILE%" --env-file "%ENV_FILE%" up -d
 exit /b !ERRORLEVEL!
 
 :start_devnet
+call :prepare_chainstate devnet
+if errorlevel 1 exit /b !ERRORLEVEL!
 docker compose -f "%COMPOSE_FILE%" -f "%DEVNET_COMPOSE_FILE%" --env-file "%ENV_FILE%" up -d
 exit /b !ERRORLEVEL!
 
 :start_custom
 call :prepare_custom_profile
 if errorlevel 1 exit /b !ERRORLEVEL!
+call :prepare_chainstate "%CUSTOM_PROFILE%"
+if errorlevel 1 exit /b !ERRORLEVEL!
 docker compose -f "%COMPOSE_FILE%" --env-file "%ENV_FILE%" up -d
 exit /b !ERRORLEVEL!
 
 :restart_preprod
+call :prepare_chainstate preprod
+if errorlevel 1 exit /b !ERRORLEVEL!
 docker compose -f "%COMPOSE_FILE%" --env-file "%ENV_FILE%" down
 if errorlevel 1 exit /b !ERRORLEVEL!
 docker compose -f "%COMPOSE_FILE%" --env-file "%ENV_FILE%" up -d
 exit /b !ERRORLEVEL!
 
 :restart_mainnet
+call :prepare_chainstate mainnet
+if errorlevel 1 exit /b !ERRORLEVEL!
 docker compose -f "%COMPOSE_FILE%" -f "%MAINNET_COMPOSE_FILE%" --env-file "%ENV_FILE%" down
 if errorlevel 1 exit /b !ERRORLEVEL!
 docker compose -f "%COMPOSE_FILE%" -f "%MAINNET_COMPOSE_FILE%" --env-file "%ENV_FILE%" up -d
 exit /b !ERRORLEVEL!
 
 :restart_preview
+call :prepare_chainstate preview
+if errorlevel 1 exit /b !ERRORLEVEL!
 docker compose -f "%COMPOSE_FILE%" -f "%PREVIEW_COMPOSE_FILE%" --env-file "%ENV_FILE%" down
 if errorlevel 1 exit /b !ERRORLEVEL!
 docker compose -f "%COMPOSE_FILE%" -f "%PREVIEW_COMPOSE_FILE%" --env-file "%ENV_FILE%" up -d
 exit /b !ERRORLEVEL!
 
 :restart_sanchonet
+call :prepare_chainstate sanchonet
+if errorlevel 1 exit /b !ERRORLEVEL!
 docker compose -f "%COMPOSE_FILE%" -f "%SANCHONET_COMPOSE_FILE%" --env-file "%ENV_FILE%" down
 if errorlevel 1 exit /b !ERRORLEVEL!
 docker compose -f "%COMPOSE_FILE%" -f "%SANCHONET_COMPOSE_FILE%" --env-file "%ENV_FILE%" up -d
 exit /b !ERRORLEVEL!
 
 :restart_devnet
+call :prepare_chainstate devnet
+if errorlevel 1 exit /b !ERRORLEVEL!
 docker compose -f "%COMPOSE_FILE%" -f "%DEVNET_COMPOSE_FILE%" --env-file "%ENV_FILE%" down
 if errorlevel 1 exit /b !ERRORLEVEL!
 docker compose -f "%COMPOSE_FILE%" -f "%DEVNET_COMPOSE_FILE%" --env-file "%ENV_FILE%" up -d
@@ -141,6 +164,8 @@ exit /b !ERRORLEVEL!
 
 :restart_custom
 call :prepare_custom_profile
+if errorlevel 1 exit /b !ERRORLEVEL!
+call :prepare_chainstate "%CUSTOM_PROFILE%"
 if errorlevel 1 exit /b !ERRORLEVEL!
 docker compose -f "%COMPOSE_FILE%" --env-file "%ENV_FILE%" down
 if errorlevel 1 exit /b !ERRORLEVEL!
@@ -206,6 +231,33 @@ if "%YANO_CHAINSTATE_PATH%"=="" set "YANO_CHAINSTATE_PATH=../chainstate-%CUSTOM_
 set "YANO_PROFILE=%CUSTOM_PROFILE%"
 set "YANO_NETWORK=%CUSTOM_PROFILE%"
 exit /b 0
+
+:prepare_chainstate
+set "CHAINSTATE_PROFILE=%~1"
+if "%YANO_CHAINSTATE_PATH%"=="" call :read_env_value YANO_CHAINSTATE_PATH YANO_CHAINSTATE_PATH
+if "%YANO_CHAINSTATE_PATH%"=="" set "YANO_CHAINSTATE_PATH=../chainstate-%CHAINSTATE_PROFILE%"
+call :host_chainstate_path
+call :ensure_chainstate_dir
+exit /b !ERRORLEVEL!
+
+:host_chainstate_path
+set "HOST_CHAINSTATE_PATH=%YANO_CHAINSTATE_PATH%"
+if "%HOST_CHAINSTATE_PATH:~1,2%"==":\" exit /b 0
+if "%HOST_CHAINSTATE_PATH:~1,2%"==":/" exit /b 0
+if "%HOST_CHAINSTATE_PATH:~0,2%"=="\\" exit /b 0
+if "%HOST_CHAINSTATE_PATH:~0,1%"=="\" exit /b 0
+if "%HOST_CHAINSTATE_PATH:~0,1%"=="/" exit /b 0
+set "HOST_CHAINSTATE_PATH=%COMPOSE_DIR%\%HOST_CHAINSTATE_PATH%"
+exit /b 0
+
+:ensure_chainstate_dir
+if exist "%HOST_CHAINSTATE_PATH%\" exit /b 0
+if exist "%HOST_CHAINSTATE_PATH%" (
+  echo Chainstate path exists but is not a directory: %HOST_CHAINSTATE_PATH%
+  exit /b 1
+)
+mkdir "%HOST_CHAINSTATE_PATH%"
+exit /b !ERRORLEVEL!
 
 :read_env_value
 for /f "usebackq tokens=1,* delims==" %%A in ("%ENV_FILE%") do (

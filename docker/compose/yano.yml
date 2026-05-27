@@ -7,6 +7,7 @@ services:
       - ../config/env
     environment:
       YANO_PROFILE: ${YANO_PROFILE:-preprod}
+      YANO_NETWORK: ${YANO_NETWORK:-preprod}
       JAVA_OPTS: ${JAVA_OPTS:-}
       YANO_EXTRA_ARGS: ${YANO_EXTRA_ARGS:-}
     ports:

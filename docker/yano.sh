@@ -8,6 +8,7 @@ MAINNET_COMPOSE_FILE="$SCRIPT_DIR/compose/yano-mainnet.yml"
 PREVIEW_COMPOSE_FILE="$SCRIPT_DIR/compose/yano-preview.yml"
 SANCHONET_COMPOSE_FILE="$SCRIPT_DIR/compose/yano-sanchonet.yml"
 ENV_FILE="$SCRIPT_DIR/compose/.env"
+COMPOSE_DIR="$SCRIPT_DIR/compose"
 
 usage() {
   echo "Usage: $0 [start|start:<profile>|stop|restart|restart:<profile>|logs|logs:yano|status|config|config:<profile>|pull]"
@@ -45,15 +46,30 @@ env_file_value() {
   sed -n "s/^${key}=//p" "$ENV_FILE" | tail -n 1
 }
 
+strip_optional_quotes() {
+  value="$1"
+  case "$value" in
+    \"*\")
+      value="${value#\"}"
+      value="${value%\"}"
+      ;;
+    \'*\')
+      value="${value#\'}"
+      value="${value%\'}"
+      ;;
+  esac
+  printf '%s\n' "$value"
+}
+
 chainstate_path_for_profile() {
   profile="$1"
 
-  if [ "${YANO_CHAINSTATE_PATH+x}" ]; then
+  if [ -n "${YANO_CHAINSTATE_PATH:-}" ]; then
     printf '%s\n' "$YANO_CHAINSTATE_PATH"
     return
   fi
 
-  configured_path="$(env_file_value YANO_CHAINSTATE_PATH)"
+  configured_path="$(strip_optional_quotes "$(env_file_value YANO_CHAINSTATE_PATH)")"
   if [ -n "$configured_path" ]; then
     printf '%s\n' "$configured_path"
     return
@@ -62,10 +78,36 @@ chainstate_path_for_profile() {
   printf '../chainstate-%s\n' "$profile"
 }
 
+ensure_chainstate_dir() {
+  profile="$1"
+  chainstate_path="$(chainstate_path_for_profile "$profile")"
+
+  case "$chainstate_path" in
+    /*)
+      chainstate_dir="$chainstate_path"
+      ;;
+    *)
+      chainstate_dir="$COMPOSE_DIR/$chainstate_path"
+      ;;
+  esac
+
+  mkdir -p "$chainstate_dir"
+}
+
+prepare_chainstate_for_network() {
+  network="$1"
+  validate_profile_name "$network"
+  ensure_chainstate_dir "$network"
+}
+
 compose_network() {
   network="$1"
   shift
   validate_profile_name "$network"
+
+  if [ "${1:-}" = "up" ]; then
+    ensure_chainstate_dir "$network"
+  fi
 
   case "$network" in
     preprod)
@@ -129,27 +171,33 @@ case "$ACTION" in
     compose down
     ;;
   restart|restart:preprod)
+    prepare_chainstate_for_network preprod
     compose_network preprod down
     compose_network preprod up -d
     ;;
   restart:mainnet)
+    prepare_chainstate_for_network mainnet
     compose_network mainnet down
     compose_network mainnet up -d
     ;;
   restart:preview)
+    prepare_chainstate_for_network preview
     compose_network preview down
     compose_network preview up -d
     ;;
   restart:sanchonet)
+    prepare_chainstate_for_network sanchonet
     compose_network sanchonet down
     compose_network sanchonet up -d
     ;;
   restart:devnet)
+    prepare_chainstate_for_network devnet
     compose_network devnet down
     compose_network devnet up -d
     ;;
   restart:*)
     profile="${ACTION#restart:}"
+    prepare_chainstate_for_network "$profile"
     compose_network "$profile" down
     compose_network "$profile" up -d
     ;;
