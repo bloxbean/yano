@@ -430,26 +430,9 @@ jobs:
 
       - name: Upload compose zip to GitHub release
         if: needs.validate.outputs.dry_run != 'true'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          INPUT_GIT_TAG: ${{ inputs.git_tag }}
-          IS_FINAL: ${{ needs.validate.outputs.is_final }}
-        run: |
-          set -euo pipefail
-
-          GIT_TAG="$INPUT_GIT_TAG"
-          if ! gh release view "$GIT_TAG" >/dev/null 2>&1; then
-            PRERELEASE_ARGS=()
-            if [[ "$IS_FINAL" != "true" ]]; then
-              PRERELEASE_ARGS+=(--prerelease)
-            fi
-
-            gh release create "$GIT_TAG" \
-              --title "$GIT_TAG" \
-              --notes "" \
-              "${PRERELEASE_ARGS[@]}" \
-              || gh release view "$GIT_TAG" >/dev/null
-          fi
-
-          gh release upload "$GIT_TAG" app/build/distributions/yano-docker-*.zip --clobber
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.git_tag }}
+          files: app/build/distributions/yano-docker-*.zip
+          prerelease: ${{ needs.validate.outputs.is_final != 'true' }}
+          overwrite_files: true
