@@ -81,8 +81,8 @@ jobs:
         id: validate
         shell: bash
         env:
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          HAS_DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME != '' }}
+          HAS_DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN != '' }}
           INPUT_VERSION: ${{ inputs.version }}
           INPUT_GIT_TAG: ${{ inputs.git_tag }}
           INPUT_PROMOTE_LATEST: ${{ inputs.promote_latest || false }}
@@ -98,7 +98,7 @@ jobs:
             exit 1
           fi
 
-          if [[ "$DRY_RUN" != "true" && (-z "${DOCKERHUB_USERNAME}" || -z "${DOCKERHUB_TOKEN}") ]]; then
+          if [[ "$DRY_RUN" != "true" && ("$HAS_DOCKERHUB_USERNAME" != "true" || "$HAS_DOCKERHUB_TOKEN" != "true") ]]; then
             echo "DOCKERHUB_USERNAME and DOCKERHUB_TOKEN secrets are required" >&2
             exit 1
           fi
