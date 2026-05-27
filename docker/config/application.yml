@@ -1,0 +1,16 @@
+quarkus:
+  http:
+    host: 0.0.0.0
+    port: 7070
+  log:
+    file:
+      enable: true
+      path: /app/logs/yano.log
+
+yano:
+  storage:
+    path: /app/chainstate
+
+yaci:
+  plugins:
+    directory: /app/plugins

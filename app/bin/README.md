@@ -10,14 +10,22 @@ Sync from a public Cardano network and re-serve blocks on port 13337.
 
 ```bash
 # Preprod (default)
-./yano.sh
+./yano.sh start
 
 # Mainnet
-./yano.sh --mainnet
+./yano.sh start:mainnet
 
 # Preview
-./yano.sh --preview
+./yano.sh start:preview
+
+# SanchoNet
+./yano.sh start:sanchonet
+
+# Custom profile
+./yano.sh start:mydevnet
 ```
+
+Running `./yano.sh` without an action prints usage.
 
 Chain state is stored in `./chainstate/` (RocksDB).
 
@@ -26,7 +34,7 @@ Chain state is stored in `./chainstate/` (RocksDB).
 Run a standalone local blockchain with automatic block production.
 
 ```bash
-./yano.sh --devnet
+./yano.sh start:devnet
 ```
 
 - Protocol magic: 42
@@ -46,7 +54,7 @@ Run a standalone local blockchain with automatic block production.
 - **Health check** — `http://localhost:8080/q/health/ready`
 - **Cardano N2N server** on port 13337
 - **Plugin system** — drop plugin JARs in the `plugins/` directory
-- **Custom profiles** — `./yano.sh --profile=<name>` or `-Dquarkus.profile=<name>`
+- **Custom profiles** — `./yano.sh start:<name>`, `./yano.sh --profile=<name>`, or `-Dquarkus.profile=<name>`
 
 ## Configuration
 
@@ -55,15 +63,25 @@ Run a standalone local blockchain with automatic block production.
 Override any config property via environment variables:
 
 ```bash
-YANO_SERVER_PORT=3001 ./yano.sh
-YANO_REMOTE_HOST=localhost YANO_REMOTE_PORT=3001 ./yano.sh
+YANO_SERVER_PORT=3001 ./yano.sh start
+YANO_REMOTE_HOST=localhost YANO_REMOTE_PORT=3001 ./yano.sh start
 ```
 
 ### JVM Options (JAR mode only)
 
 ```bash
-JAVA_OPTS="-Xmx4g -Xms2g" ./yano.sh
+JAVA_OPTS="-Xmx4g -Xms2g" ./yano.sh start
 ```
+
+### Extra Runtime Arguments
+
+`YANO_EXTRA_ARGS` is passed to both jar and native distributions. For native-image runtime memory settings:
+
+```bash
+YANO_EXTRA_ARGS="-Xmx4g" ./yano.sh start
+```
+
+The startup script prints the effective `JAVA_OPTS` and `YANO_EXTRA_ARGS` values before launching Yano.
 
 ### Config Files
 
@@ -77,6 +95,7 @@ config/
     mainnet/
     preprod/
     preview/
+    sanchonet/
 ```
 
 ## Directory Structure
@@ -91,5 +110,7 @@ plugins/               Drop plugin JARs here
 
 ## More Information
 
+- Custom profiles: `CUSTOM_PROFILE.md`
+- Build distributions: `docs/BUILD_DISTRIBUTIONS.md` in the source repository
 - GitHub: https://github.com/bloxbean/yaci
 - License: MIT

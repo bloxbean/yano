@@ -6,6 +6,8 @@ on:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
       - name: Set up JDK 25
@@ -15,6 +17,19 @@ jobs:
           distribution: 'temurin'
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
+      - name: Read project version
+        id: version
+        run: |
+          VERSION=$(./gradlew -q properties | awk '/^version:/ { print $2; exit }')
+          if [ "${GITHUB_REF_NAME}" != "v${VERSION}" ]; then
+            echo "Git tag ${GITHUB_REF_NAME} does not match Gradle version ${VERSION}" >&2
+            exit 1
+          fi
+          if [[ "$VERSION" == *-SNAPSHOT* ]]; then
+            echo "Release tags require a non-SNAPSHOT version. Got: $VERSION" >&2
+            exit 1
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
       - name: Build with Gradle
         run: ./gradlew clean build
       - name: Decode GPG Key
@@ -27,3 +42,12 @@ jobs:
         env:
           MAVEN_USERNAME: ${{ secrets.OSSRH_USERNAME }}
           MAVEN_PASSWORD: ${{ secrets.OSSRH_TOKEN }}
+  docker-release:
+    needs: publish
+    permissions:
+      contents: write
+    uses: ./.github/workflows/release-docker.yml
+    with:
+      version: ${{ needs.publish.outputs.version }}
+      git_tag: ${{ github.ref_name }}
+    secrets: inherit

@@ -1,0 +1,7 @@
+services:
+  yano:
+    environment:
+      YANO_PROFILE: sanchonet
+      YANO_NETWORK: sanchonet
+    volumes:
+      - ${YANO_CHAINSTATE_PATH:-../chainstate-sanchonet}:/app/chainstate

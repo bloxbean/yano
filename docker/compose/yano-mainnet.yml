@@ -1,0 +1,7 @@
+services:
+  yano:
+    environment:
+      YANO_PROFILE: mainnet
+      YANO_NETWORK: mainnet
+    volumes:
+      - ${YANO_CHAINSTATE_PATH:-../chainstate-mainnet}:/app/chainstate
