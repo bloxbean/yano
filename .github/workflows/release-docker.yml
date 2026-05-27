@@ -139,10 +139,6 @@ jobs:
             fi
           fi
 
-          if [[ "$EVENT_NAME" == "workflow_dispatch" && "$DRY_RUN" != "true" ]]; then
-            gh release view "$GIT_TAG" >/dev/null
-          fi
-
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "is_final=$IS_FINAL" >> "$GITHUB_OUTPUT"
           echo "promote_latest=$PROMOTE_LATEST" >> "$GITHUB_OUTPUT"
@@ -432,32 +428,28 @@ jobs:
             --env-file "$TMP_DIR/yano-docker-${YANO_VERSION}/compose/.env" \
             config >/dev/null
 
-      - name: Wait for GitHub release
-        if: needs.validate.outputs.dry_run != 'true'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          INPUT_GIT_TAG: ${{ inputs.git_tag }}
-        run: |
-          set -euo pipefail
-
-          # The standard distribution workflow creates the GitHub release for the same tag.
-          # Docker release only waits for it, then uploads the compose zip.
-          GIT_TAG="$INPUT_GIT_TAG"
-          for attempt in {1..60}; do
-            if gh release view "$GIT_TAG" >/dev/null 2>&1; then
-              exit 0
-            fi
-            sleep 10
-          done
-
-          echo "GitHub release ${GIT_TAG} was not created in time" >&2
-          exit 1
-
       - name: Upload compose zip to GitHub release
         if: needs.validate.outputs.dry_run != 'true'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           INPUT_GIT_TAG: ${{ inputs.git_tag }}
-        run: gh release upload "$INPUT_GIT_TAG" app/build/distributions/yano-docker-*.zip --clobber
+          IS_FINAL: ${{ needs.validate.outputs.is_final }}
+        run: |
+          set -euo pipefail
+
+          GIT_TAG="$INPUT_GIT_TAG"
+          if ! gh release view "$GIT_TAG" >/dev/null 2>&1; then
+            PRERELEASE_ARGS=()
+            if [[ "$IS_FINAL" != "true" ]]; then
+              PRERELEASE_ARGS+=(--prerelease)
+            fi
+
+            gh release create "$GIT_TAG" \
+              --title "$GIT_TAG" \
+              --notes "" \
+              "${PRERELEASE_ARGS[@]}" \
+              || gh release view "$GIT_TAG" >/dev/null
+          fi
+
+          gh release upload "$GIT_TAG" app/build/distributions/yano-docker-*.zip --clobber
