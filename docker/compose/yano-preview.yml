@@ -1,0 +1,7 @@
+services:
+  yano:
+    environment:
+      YANO_PROFILE: preview
+      YANO_NETWORK: preview
+    volumes:
+      - ${YANO_CHAINSTATE_PATH:-../chainstate-preview}:/app/chainstate

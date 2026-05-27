@@ -12,6 +12,24 @@ From the extracted distribution root:
 ./yano.sh start
 ```
 
+Build instructions for jar, native, and Docker compose zip distributions are in `docs/BUILD_DISTRIBUTIONS.md` in the source repository.
+
+Network-specific start commands are available:
+
+```bash
+./yano.sh start:preprod
+./yano.sh start:mainnet
+./yano.sh start:preview
+./yano.sh start:sanchonet
+./yano.sh start:devnet
+```
+
+Custom profiles use the same command shape:
+
+```bash
+./yano.sh start:mydevnet
+```
+
 The configured image is:
 
 ```text
@@ -38,17 +56,10 @@ Then restart the service:
 
 `JAVA_OPTS` applies only to the JVM image. For native-image runtime flags, use `YANO_EXTRA_ARGS`.
 
-## Devnet
-
-Devnet mode is explicit:
+To inspect the resolved compose file for a network:
 
 ```bash
-./yano.sh start:devnet
-```
-
-To inspect the devnet overlay:
-
-```bash
+./yano.sh config:mainnet
 ./yano.sh config:devnet
 ```
 
@@ -56,15 +67,34 @@ To inspect the devnet overlay:
 
 Runtime environment is in `config/env`.
 
-The image contains immutable network files under `/app/config/network`. The compose file mounts only `config/application.yml` over `/app/config/application.yml`, so bundled network configs remain available.
+Network genesis and protocol parameter files are in `config/network`. The compose file mounts this directory to `/app/config/network`, so edits on the host are visible in the container.
+
+The Docker image also contains an immutable copy of the default network files. On startup, Yano seeds any missing files from that default copy. If you accidentally edit or remove a file, delete the host copy and restart Yano to restore the bundled default.
 
 `YANO_PROFILE` selects the bundled profile. The default `config/env` does not set `YANO_NETWORK`, so the selected profile controls the network unless you explicitly override it.
 
-The container runs as UID/GID from `YANO_UID` and `YANO_GID`, defaulting to `1000:1000`. On Linux hosts with a different user ID, set these values in `compose/.env` to match the user that owns `chainstate/`, `logs/`, and `plugins/`.
+Each network uses its own chainstate directory by default:
 
-For a custom network, add an explicit mount for that network directory:
-
-```yaml
-volumes:
-  - ../config/network/custom:/app/config/network/custom:ro
+```text
+chainstate-preprod/
+chainstate-mainnet/
+chainstate-preview/
+chainstate-sanchonet/
+chainstate-devnet/
 ```
+
+To use a custom host chainstate path, set `YANO_CHAINSTATE_PATH` in `compose/.env` or for one command:
+
+```bash
+YANO_CHAINSTATE_PATH=/data/yano-mainnet ./yano.sh start:mainnet
+```
+
+The container runs as UID/GID from `YANO_UID` and `YANO_GID`, defaulting to `1000:1000`. On Linux hosts with a different user ID, set these values in `compose/.env` to match the user that owns `chainstate-*`, `logs/`, `plugins/`, and `config/network`.
+
+For a custom network, add its files under `config/network/<name>` and run with a matching custom Quarkus profile:
+
+```bash
+./yano.sh start:<name>
+```
+
+See `CUSTOM_PROFILE.md` for the full setup.

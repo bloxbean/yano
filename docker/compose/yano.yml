@@ -13,9 +13,10 @@ services:
       - "${YANO_HTTP_PORT:-7070}:7070"
       - "${YANO_N2N_PORT:-13337}:13337"
     volumes:
-      - ../chainstate:/app/chainstate
+      - ${YANO_CHAINSTATE_PATH:-../chainstate-preprod}:/app/chainstate
       - ../logs:/app/logs
       - ../config/application.yml:/app/config/application.yml:ro
+      - ../config/network:/app/config/network
       - ../plugins:/app/plugins
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:7070/q/health/ready || exit 1"]

@@ -4,4 +4,4 @@ services:
       YANO_PROFILE: devnet
       YANO_NETWORK: devnet
     volumes:
-      - ../chainstate-devnet:/app/chainstate
+      - ${YANO_CHAINSTATE_PATH:-../chainstate-devnet}:/app/chainstate

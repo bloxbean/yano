@@ -2,6 +2,8 @@
 
 This guide builds Yano Docker images from the checked-out source tree. The release Dockerfiles are artifact-first: Gradle creates a Yano distribution, then Docker copies that distribution into a runtime image.
 
+For jar, native, and Docker compose zip distributions, see `docs/BUILD_DISTRIBUTIONS.md`.
+
 The legacy `app/Dockerfile` is not used by these commands.
 
 ## Prerequisites
@@ -188,11 +190,14 @@ Check the resolved compose image before starting:
 ./yano.sh config | grep 'image:'
 ```
 
-For devnet, include the devnet overlay:
+For another network, use the matching command:
 
 ```bash
+./yano.sh config:mainnet | grep 'image:'
 ./yano.sh config:devnet | grep 'image:'
 ```
+
+Each network uses its own chainstate directory by default, such as `chainstate-preprod`, `chainstate-mainnet`, and `chainstate-devnet`. Set `YANO_CHAINSTATE_PATH` in `compose/.env` when you want a custom host path.
 
 Switch to the native image by editing `compose/.env`:
 

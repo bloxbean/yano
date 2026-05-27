@@ -15,6 +15,8 @@ COPY yano/ /app/
 COPY entrypoint.sh /entrypoint.sh
 
 RUN chmod 0755 /entrypoint.sh \
+    && mkdir -p /app/default-config \
+    && cp -a /app/config/network /app/default-config/network \
     && chown -R "${YANO_UID}:${YANO_GID}" /app /entrypoint.sh
 
 USER ${YANO_UID}:${YANO_GID}

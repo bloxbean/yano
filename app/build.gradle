@@ -300,7 +300,9 @@ tasks.register('yanoDistZip', Zip) {
         from('bin/yano.sh') {
             filePermissions { unix('755') }
         }
-        from('bin/README.md')
+        from('bin') {
+            include '*.md'
+        }
         from('config') {
             into 'config'
         }
@@ -366,7 +368,9 @@ tasks.register('yanoNativeDistZip', Zip) {
         from('bin/yano.sh') {
             filePermissions { unix('755') }
         }
-        from('bin/README.md')
+        from('bin') {
+            include '*.md'
+        }
         from('config') {
             into 'config'
         }
@@ -460,7 +464,15 @@ tasks.register('yanoDockerDistZip', Zip) {
     def dockerReleaseVersion = providers.gradleProperty('yanoDockerReleaseVersion').getOrElse(distVersion)
     def dockerImageTag = providers.gradleProperty('yanoDockerImageTag').getOrElse('latest')
     def dockerRuntimeDirsRoot = layout.buildDirectory.dir('docker/runtime-empty-dirs')
-    def dockerRuntimeDirs = ['chainstate', 'chainstate-devnet', 'logs', 'plugins']
+    def dockerRuntimeDirs = [
+            'chainstate-preprod',
+            'chainstate-mainnet',
+            'chainstate-preview',
+            'chainstate-sanchonet',
+            'chainstate-devnet',
+            'logs',
+            'plugins'
+    ]
 
     inputs.property('yanoDockerReleaseVersion', dockerReleaseVersion)
     inputs.property('yanoDockerImageTag', dockerImageTag)
@@ -482,8 +494,8 @@ tasks.register('yanoDockerDistZip', Zip) {
         from(rootProject.file('docker/yano.bat'))
         from(rootProject.file('docker/compose')) {
             into 'compose'
-            include '.env', 'README.md', 'yano.yml', 'yano-devnet.yml'
-            filesMatching(['.env', 'README.md']) {
+            include '.env', '*.md', 'yano*.yml'
+            filesMatching(['.env', '*.md']) {
                 filter { line ->
                     line.replace('YANO_IMAGE_TAG=latest', "YANO_IMAGE_TAG=${dockerImageTag}")
                             .replace('@YANO_VERSION@', dockerReleaseVersion)
@@ -494,6 +506,10 @@ tasks.register('yanoDockerDistZip', Zip) {
         from(rootProject.file('docker/config')) {
             into 'config'
             include 'application.yml', 'env'
+        }
+        from('config/network') {
+            into 'config/network'
+            exclude '**/*.working'
         }
         from(dockerRuntimeDirsRoot) {
             include dockerRuntimeDirs.collect { "${it}/**" }
