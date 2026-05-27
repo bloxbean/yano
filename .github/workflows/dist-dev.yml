@@ -29,10 +29,13 @@ jobs:
 
   native-dist:
     strategy:
+      fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-22.04
             label: linux-x64
+          - os: ubuntu-22.04-arm
+            label: linux-arm64
           - os: macos-14
             label: macos-arm64
     runs-on: ${{ matrix.os }}
