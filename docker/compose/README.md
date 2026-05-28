@@ -71,23 +71,26 @@ Network genesis and protocol parameter files are in `config/network`. The compos
 
 The Docker image also contains an immutable copy of the default network files. On startup, Yano seeds any missing files from that default copy. If you accidentally edit or remove a file, delete the host copy and restart Yano to restore the bundled default.
 
-`YANO_PROFILE` selects the bundled profile. The default `config/env` does not set `YANO_NETWORK`, so the selected profile controls the network unless you explicitly override it.
+`YANO_PROFILE` and `YANO_NETWORK` select the bundled profile and network. The launcher sets both when you use `start:<profile>`.
 
-Each network uses its own chainstate directory by default:
+Each network uses its own chainstate directory by default. The launcher creates the selected directory before Docker Compose starts, so it is owned by the user running `yano.sh`:
 
 ```text
 chainstate-preprod/
 chainstate-mainnet/
 chainstate-preview/
-chainstate-sanchonet/
 chainstate-devnet/
 ```
+
+`start:sanchonet` and custom profiles use the same `chainstate-<profile>/` convention.
 
 To use a custom host chainstate path, set `YANO_CHAINSTATE_PATH` in `compose/.env` or for one command:
 
 ```bash
 YANO_CHAINSTATE_PATH=/data/yano-mainnet ./yano.sh start:mainnet
 ```
+
+If you want to run multiple networks or multiple Yano instances at the same time, use separate extracted distribution directories or set a different `YANO_CHAINSTATE_PATH`, `INSTANCE_NAME`, `YANO_HTTP_PORT`, and `YANO_N2N_PORT`.
 
 The container runs as UID/GID from `YANO_UID` and `YANO_GID`, defaulting to `1000:1000`. On Linux hosts with a different user ID, set these values in `compose/.env` to match the user that owns `chainstate-*`, `logs/`, `plugins/`, and `config/network`.
 

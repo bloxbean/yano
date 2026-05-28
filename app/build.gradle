@@ -465,11 +465,6 @@ tasks.register('yanoDockerDistZip', Zip) {
     def dockerImageTag = providers.gradleProperty('yanoDockerImageTag').getOrElse('latest')
     def dockerRuntimeDirsRoot = layout.buildDirectory.dir('docker/runtime-empty-dirs')
     def dockerRuntimeDirs = [
-            'chainstate-preprod',
-            'chainstate-mainnet',
-            'chainstate-preview',
-            'chainstate-sanchonet',
-            'chainstate-devnet',
             'logs',
             'plugins'
     ]

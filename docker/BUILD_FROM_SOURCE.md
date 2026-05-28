@@ -197,7 +197,7 @@ For another network, use the matching command:
 ./yano.sh config:devnet | grep 'image:'
 ```
 
-Each network uses its own chainstate directory by default, such as `chainstate-preprod`, `chainstate-mainnet`, and `chainstate-devnet`. Set `YANO_CHAINSTATE_PATH` in `compose/.env` when you want a custom host path.
+Each network uses its own chainstate directory by default, such as `chainstate-preprod`, `chainstate-mainnet`, and `chainstate-devnet`. The launcher creates the selected directory on `start` or `restart`. Set `YANO_CHAINSTATE_PATH` in `compose/.env` when you want a custom host path.
 
 Switch to the native image by editing `compose/.env`:
 

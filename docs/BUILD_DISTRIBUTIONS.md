@@ -96,7 +96,7 @@ For local Docker image testing, use a local image tag:
   -PskipSigning=true
 ```
 
-The compose zip contains `yano.sh`, `yano.bat`, compose files, editable `config/application.yml`, editable `config/network`, network-specific chainstate directories, `logs`, and `plugins`.
+The compose zip contains `yano.sh`, `yano.bat`, compose files, editable `config/application.yml`, editable `config/network`, `logs`, and `plugins`. Network-specific chainstate directories are created by the launcher on `start` or `restart`.
 
 ## Docker Images
 

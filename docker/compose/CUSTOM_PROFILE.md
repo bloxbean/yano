@@ -86,6 +86,8 @@ For a custom profile, Docker uses this default host chainstate path:
 chainstate-mydevnet/
 ```
 
+The launcher creates this directory on `start:mydevnet` or `restart:mydevnet`.
+
 To use a different path, set `YANO_CHAINSTATE_PATH`:
 
 ```bash
