@@ -52,6 +52,7 @@ public class ConwayGenesisBootstrap {
                 return false;
             }
 
+            governanceStore.storeCommitteePresent(true, batch, deltaOps);
             int committeeCount = bootstrapCommittee(genesis, conwayFirstEpoch, batch, deltaOps);
             boolean constitutionSet = bootstrapConstitution(genesis, batch, deltaOps);
             bootstrapGovParams(genesis);

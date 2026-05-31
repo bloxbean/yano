@@ -101,12 +101,14 @@ public class EnactmentProcessor {
             }
             case NO_CONFIDENCE -> {
                 governanceStore.clearAllCommitteeMembers(batch, deltaOps);
+                governanceStore.storeCommitteePresent(false, batch, deltaOps);
                 log.info("Enacted NoConfidence — committee cleared");
             }
             case UPDATE_COMMITTEE -> {
                 if (proposal.govAction() instanceof UpdateCommittee uc) {
                     enactUpdateCommittee(uc, batch, deltaOps);
                 }
+                governanceStore.storeCommitteePresent(true, batch, deltaOps);
                 log.info("Enacted UpdateCommittee from {}/{}", id.getTransactionId().substring(0, 8),
                         id.getGov_action_index());
             }

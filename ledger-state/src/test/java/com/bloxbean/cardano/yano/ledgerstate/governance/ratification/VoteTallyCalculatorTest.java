@@ -258,6 +258,13 @@ class VoteTallyCalculatorTest {
     }
 
     @Test
+    void committeeThresholdZero_passesWithZeroEligibleMembers() {
+        var tally = new VoteTallyCalculator.CommitteeTally(0, 0, 0);
+
+        assertThat(VoteTallyCalculator.committeeThresholdMet(tally, BigDecimal.ZERO)).isTrue();
+    }
+
+    @Test
     void committeeTally_expiryEpochIsStillEligible() {
         Map<GovernanceStateStore.VoterKey, Integer> votes = new HashMap<>();
         votes.put(new GovernanceStateStore.VoterKey(

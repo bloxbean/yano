@@ -284,26 +284,22 @@ public class GovernanceEpochProcessor {
                                                    WriteBatch batch, List<DeltaOp> deltaOps)
             throws RocksDBException {
 
-        // Bootstrap Conway genesis on first Conway epoch only (committee, constitution, params).
-        // Uses EraProvider instead of protocolMajor — PV is unreliable.
-        // For fresh devnets starting post-bootstrap in Conway-or-later, resolvedConwayEpoch=0
-        // and the first boundary (epoch 0→1) will see (0-1) < 0 as false, then 1 >= 0 as true,
-        // triggering bootstrap. For synced chains, this detects the actual Conway transition.
+        // Bootstrap Conway genesis once when Conway is reachable. Fresh devnets can start
+        // directly in Conway at epoch 0, so there is no Byron/Babbage -> Conway boundary.
         if (!genesisBootstrapped && eraProvider != null) {
             Integer resolvedConwayEpoch = eraProvider.resolveFirstConwayEpochOrNull();
-            if (resolvedConwayEpoch != null && (newEpoch - 1) >= resolvedConwayEpoch) {
-                // Previous epoch was Conway — genesis already bootstrapped in a prior run
-                log.info("Conway genesis already bootstrapped (firstConwayEpoch={}, epoch {} is past), skipping",
-                        resolvedConwayEpoch, newEpoch);
-                genesisBootstrapped = true;
-            } else if (resolvedConwayEpoch != null && newEpoch >= resolvedConwayEpoch) {
-                // This is the first Conway epoch — bootstrap genesis
+            if (resolvedConwayEpoch != null && newEpoch >= resolvedConwayEpoch) {
                 if (conwayFirstEpoch < 0) {
                     conwayFirstEpoch = resolvedConwayEpoch;
                 }
-                genesisBootstrap.bootstrap(conwayFirstEpoch, batch, deltaOps);
-                governanceStore.storeEraFirstEpoch(9, conwayFirstEpoch, batch, deltaOps);
-                genesisBootstrapped = true;
+                if (isConwayGenesisBootstrapPersisted(resolvedConwayEpoch)) {
+                    log.info("Conway genesis already bootstrapped (firstConwayEpoch={}, epoch {}), skipping",
+                            resolvedConwayEpoch, newEpoch);
+                    genesisBootstrapped = true;
+                } else if (genesisBootstrap.bootstrap(conwayFirstEpoch, batch, deltaOps)) {
+                    governanceStore.storeEraFirstEpoch(9, conwayFirstEpoch, batch, deltaOps);
+                    genesisBootstrapped = true;
+                }
             }
             // If resolvedConwayEpoch is null: Conway not reached yet, no bootstrap
         }
@@ -561,8 +557,9 @@ public class GovernanceEpochProcessor {
         BigDecimal committeeThreshold = resolveCommitteeThreshold();
         String committeeState = resolveCommitteeState(committeeMembers, newEpoch);
         Map<GovActionType, GovActionId> lastEnactedActions = resolveLastEnactedActions();
-        Map<GovActionType, BigDecimal> drepThresholds = resolveDRepThresholds(isBootstrapPhase, newEpoch);
-        Map<GovActionType, BigDecimal> spoThresholds = resolveSPOThresholds(newEpoch);
+        Map<GovActionType, BigDecimal> drepThresholds =
+                resolveDRepThresholds(isBootstrapPhase, newEpoch, committeeState);
+        Map<GovActionType, BigDecimal> spoThresholds = resolveSPOThresholds(newEpoch, committeeState);
         int committeeMinSize = resolveCommitteeMinSize(newEpoch);
         int committeeMaxTermLength = resolveCommitteeMaxTermLength(newEpoch);
 
@@ -824,14 +821,16 @@ public class GovernanceEpochProcessor {
         return BigDecimal.ONE;
     }
 
+    private boolean isConwayGenesisBootstrapPersisted(int resolvedConwayEpoch) throws RocksDBException {
+        int storedConwayEpoch = governanceStore.getConwayFirstEpoch();
+        return storedConwayEpoch == resolvedConwayEpoch && governanceStore.getCommitteeThreshold().isPresent();
+    }
+
     private String resolveCommitteeState(Map<CredentialKey, CommitteeMemberRecord> members,
-                                         int epoch) {
-        // If no members exist at all, treat as NO_CONFIDENCE
-        if (members.isEmpty()) return "NO_CONFIDENCE";
-        // Check if any non-expired, non-resigned members exist
-        boolean hasActive = members.values().stream()
-                .anyMatch(m -> !m.resigned() && m.expiryEpoch() >= epoch);
-        return hasActive ? "NORMAL" : "NO_CONFIDENCE";
+                                         int epoch) throws RocksDBException {
+        boolean committeePresent = governanceStore == null || governanceStore.isCommitteePresent();
+        if (!committeePresent) return "NO_CONFIDENCE";
+        return "NORMAL";
     }
 
     private Map<GovActionType, GovActionId> resolveLastEnactedActions() throws RocksDBException {
@@ -882,6 +881,11 @@ public class GovernanceEpochProcessor {
 
     // Package-private for testability.
     Map<GovActionType, BigDecimal> resolveDRepThresholds(boolean isBootstrapPhase, int epoch) {
+        return resolveDRepThresholds(isBootstrapPhase, epoch, "NORMAL");
+    }
+
+    // Package-private for testability.
+    Map<GovActionType, BigDecimal> resolveDRepThresholds(boolean isBootstrapPhase, int epoch, String committeeState) {
         var dt = effectiveDrepVotingThresholds(epoch);
         if (dt == null && !isBootstrapPhase) {
             // No Conway thresholds available AND not bootstrap — log WARN (only the instance
@@ -891,17 +895,22 @@ public class GovernanceEpochProcessor {
                     "Conway genesis thresholds are likely not loaded. Ratification will fail " +
                     "unconditionally (threshold = 1.0) for this epoch.", epoch);
         }
-        return buildDRepThresholdMap(isBootstrapPhase, dt);
+        return buildDRepThresholdMap(isBootstrapPhase, dt, !"NO_CONFIDENCE".equals(committeeState));
     }
 
     // Package-private for testability.
     Map<GovActionType, BigDecimal> resolveSPOThresholds(int epoch) {
+        return resolveSPOThresholds(epoch, "NORMAL");
+    }
+
+    // Package-private for testability.
+    Map<GovActionType, BigDecimal> resolveSPOThresholds(int epoch, String committeeState) {
         var pt = effectivePoolVotingThresholds(epoch);
         if (pt == null) {
             log.warn("No SPO voting thresholds available for epoch {}. Conway genesis thresholds " +
                     "likely not loaded. SPO checks will fail unconditionally (threshold = 1.0).", epoch);
         }
-        return buildSPOThresholdMap(pt);
+        return buildSPOThresholdMap(pt, !"NO_CONFIDENCE".equals(committeeState));
     }
 
     /**
@@ -918,6 +927,13 @@ public class GovernanceEpochProcessor {
     static Map<GovActionType, BigDecimal> buildDRepThresholdMap(
             boolean isBootstrapPhase,
             com.bloxbean.cardano.yaci.core.model.DrepVoteThresholds dt) {
+        return buildDRepThresholdMap(isBootstrapPhase, dt, true);
+    }
+
+    static Map<GovActionType, BigDecimal> buildDRepThresholdMap(
+            boolean isBootstrapPhase,
+            com.bloxbean.cardano.yaci.core.model.DrepVoteThresholds dt,
+            boolean committeePresent) {
         Map<GovActionType, BigDecimal> thresholds = new HashMap<>();
         if (isBootstrapPhase) {
             for (GovActionType type : GovActionType.values()) {
@@ -934,7 +950,9 @@ public class GovernanceEpochProcessor {
         thresholds.put(GovActionType.NO_CONFIDENCE,
                 ProtocolParamGroupClassifier.ratioToBigDecimal(dt.getDvtMotionNoConfidence()));
         thresholds.put(GovActionType.UPDATE_COMMITTEE,
-                ProtocolParamGroupClassifier.ratioToBigDecimal(dt.getDvtCommitteeNormal()));
+                ProtocolParamGroupClassifier.ratioToBigDecimal(committeePresent
+                        ? dt.getDvtCommitteeNormal()
+                        : dt.getDvtCommitteeNoConfidence()));
         thresholds.put(GovActionType.NEW_CONSTITUTION,
                 ProtocolParamGroupClassifier.ratioToBigDecimal(dt.getDvtUpdateToConstitution()));
         thresholds.put(GovActionType.HARD_FORK_INITIATION_ACTION,
@@ -952,6 +970,12 @@ public class GovernanceEpochProcessor {
      */
     static Map<GovActionType, BigDecimal> buildSPOThresholdMap(
             com.bloxbean.cardano.yaci.core.model.PoolVotingThresholds pt) {
+        return buildSPOThresholdMap(pt, true);
+    }
+
+    static Map<GovActionType, BigDecimal> buildSPOThresholdMap(
+            com.bloxbean.cardano.yaci.core.model.PoolVotingThresholds pt,
+            boolean committeePresent) {
         Map<GovActionType, BigDecimal> thresholds = new HashMap<>();
         if (pt == null) {
             thresholds.put(GovActionType.NO_CONFIDENCE, BigDecimal.ONE);
@@ -963,7 +987,9 @@ public class GovernanceEpochProcessor {
         thresholds.put(GovActionType.NO_CONFIDENCE,
                 ProtocolParamGroupClassifier.ratioToBigDecimal(pt.getPvtMotionNoConfidence()));
         thresholds.put(GovActionType.UPDATE_COMMITTEE,
-                ProtocolParamGroupClassifier.ratioToBigDecimal(pt.getPvtCommitteeNormal()));
+                ProtocolParamGroupClassifier.ratioToBigDecimal(committeePresent
+                        ? pt.getPvtCommitteeNormal()
+                        : pt.getPvtCommitteeNoConfidence()));
         thresholds.put(GovActionType.HARD_FORK_INITIATION_ACTION,
                 ProtocolParamGroupClassifier.ratioToBigDecimal(pt.getPvtHardForkInitiation()));
         thresholds.put(GovActionType.PARAMETER_CHANGE_ACTION,

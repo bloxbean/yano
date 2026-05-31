@@ -335,8 +335,8 @@
     "members": {
     },
     "threshold": {
-      "numerator": 2,
-      "denominator": 3
+      "numerator": 0,
+      "denominator": 1
     }
   }
 }

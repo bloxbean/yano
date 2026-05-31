@@ -44,6 +44,7 @@ public class GovernanceStateStore {
     static final byte PREFIX_PROPOSAL_SUBMISSION = 0x6D; // Permanent proposal submission metadata: slot → (epoch, govActionLifetime)
     static final byte PREFIX_NUM_DORMANT_EPOCHS = 0x6E; // Singleton key for cumulative dormant epoch counter (Haskell flush semantics)
     static final byte PREFIX_ERA_FIRST_EPOCH = 0x6F;    // Per-protocol-version first epoch: key = 0x6F + protoMajor(1 byte)
+    static final byte PREFIX_COMMITTEE_PRESENT = 0x70;  // Singleton key: 1 = SJust committee, 0 = SNothing committee
 
     // Delta op types — same values as DefaultAccountStateStore
     private static final byte OP_PUT = 0x01;
@@ -191,6 +192,10 @@ public class GovernanceStateStore {
     /** Singleton key for committee quorum threshold */
     static byte[] committeeThresholdKey() {
         return new byte[]{PREFIX_COMMITTEE_THRESHOLD};
+    }
+
+    static byte[] committeePresentKey() {
+        return new byte[]{PREFIX_COMMITTEE_PRESENT};
     }
 
     // ===== Proposal operations =====
@@ -444,6 +449,20 @@ public class GovernanceStateStore {
     public Optional<GovernanceCborCodec.CommitteeThreshold> getCommitteeThreshold() throws RocksDBException {
         byte[] val = db.get(cfState, committeeThresholdKey());
         return val != null ? Optional.of(GovernanceCborCodec.decodeCommitteeThreshold(val)) : Optional.empty();
+    }
+
+    // ===== Committee Presence =====
+
+    public void storeCommitteePresent(boolean present, WriteBatch batch, List<DeltaOp> deltaOps) throws RocksDBException {
+        byte[] key = committeePresentKey();
+        byte[] prev = db.get(cfState, key);
+        batch.put(cfState, key, new byte[]{(byte) (present ? 1 : 0)});
+        deltaOps.add(new DeltaOp(OP_PUT, key, prev));
+    }
+
+    public boolean isCommitteePresent() throws RocksDBException {
+        byte[] val = db.get(cfState, committeePresentKey());
+        return val == null || val.length == 0 || val[0] != 0;
     }
 
     // ===== Constitution =====

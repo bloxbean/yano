@@ -2,6 +2,7 @@ package com.bloxbean.cardano.yano.ledgerstate.governance;
 
 import com.bloxbean.cardano.yaci.core.model.governance.GovActionId;
 import com.bloxbean.cardano.yaci.core.model.governance.GovActionType;
+import com.bloxbean.cardano.yano.ledgerstate.DefaultAccountStateStore;
 import com.bloxbean.cardano.yano.ledgerstate.DefaultAccountStateStore.DeltaOp;
 import com.bloxbean.cardano.yano.ledgerstate.governance.model.CommitteeMemberRecord;
 import com.bloxbean.cardano.yano.ledgerstate.governance.model.DRepStateRecord;
@@ -11,6 +12,8 @@ import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.io.TempDir;
 import org.rocksdb.RocksDBException;
 import org.rocksdb.WriteBatch;
+import org.rocksdb.WriteOptions;
+import org.slf4j.LoggerFactory;
 
 import java.math.BigInteger;
 import java.nio.file.Path;
@@ -112,6 +115,76 @@ class GovernanceStateStoreTest {
             commit(batch);
         }
         assertThat(store.getAllCommitteeMembers()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("Committee presence defaults to present and stores absent")
+    void committeePresent_defaultAndStore() throws Exception {
+        assertThat(store.isCommitteePresent()).isTrue();
+
+        try (WriteBatch batch = new WriteBatch()) {
+            store.storeCommitteePresent(false, batch, new ArrayList<>());
+            commit(batch);
+        }
+        assertThat(store.isCommitteePresent()).isFalse();
+
+        try (WriteBatch batch = new WriteBatch()) {
+            store.storeCommitteePresent(true, batch, new ArrayList<>());
+            commit(batch);
+        }
+        assertThat(store.isCommitteePresent()).isTrue();
+    }
+
+    @Test
+    @DisplayName("Committee presence is restored by boundary rollback when key was absent before boundary")
+    void committeePresent_boundaryRollbackRestoresDefault() throws Exception {
+        var accountStore = new DefaultAccountStateStore(rocks.db(), rocks.cfSupplier(),
+                LoggerFactory.getLogger(GovernanceStateStoreTest.class), true);
+        long boundarySlot = 86_400L;
+
+        assertThat(store.isCommitteePresent()).isTrue();
+
+        List<DeltaOp> deltaOps = new ArrayList<>();
+        try (WriteBatch batch = new WriteBatch(); WriteOptions wo = new WriteOptions()) {
+            store.storeCommitteePresent(false, batch, deltaOps);
+            accountStore.commitBoundaryDelta(boundarySlot, DefaultAccountStateStore.PHASE_GOV_ENACT,
+                    batch, deltaOps);
+            rocks.db().write(wo, batch);
+        }
+
+        assertThat(store.isCommitteePresent()).isFalse();
+
+        accountStore.rollbackToSlot(boundarySlot - 1);
+
+        assertThat(store.isCommitteePresent()).isTrue();
+    }
+
+    @Test
+    @DisplayName("Committee presence rollback restores previous explicit value")
+    void committeePresent_boundaryRollbackRestoresPreviousValue() throws Exception {
+        var accountStore = new DefaultAccountStateStore(rocks.db(), rocks.cfSupplier(),
+                LoggerFactory.getLogger(GovernanceStateStoreTest.class), true);
+        long boundarySlot = 86_400L;
+
+        try (WriteBatch batch = new WriteBatch()) {
+            store.storeCommitteePresent(false, batch, new ArrayList<>());
+            commit(batch);
+        }
+        assertThat(store.isCommitteePresent()).isFalse();
+
+        List<DeltaOp> deltaOps = new ArrayList<>();
+        try (WriteBatch batch = new WriteBatch(); WriteOptions wo = new WriteOptions()) {
+            store.storeCommitteePresent(true, batch, deltaOps);
+            accountStore.commitBoundaryDelta(boundarySlot, DefaultAccountStateStore.PHASE_GOV_ENACT,
+                    batch, deltaOps);
+            rocks.db().write(wo, batch);
+        }
+
+        assertThat(store.isCommitteePresent()).isTrue();
+
+        accountStore.rollbackToSlot(boundarySlot - 1);
+
+        assertThat(store.isCommitteePresent()).isFalse();
     }
 
     // Real preprod DRep hashes

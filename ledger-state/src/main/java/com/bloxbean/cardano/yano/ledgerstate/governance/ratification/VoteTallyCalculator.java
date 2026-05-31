@@ -292,8 +292,8 @@ public class VoteTallyCalculator {
      */
     public static boolean committeeThresholdMet(CommitteeTally tally, BigDecimal threshold) {
         int denominator = tally.yesCount + tally.noCount;
-        if (denominator == 0) return false; // No eligible committee members → no quorum → fail
         if (threshold.compareTo(BigDecimal.ZERO) == 0) return true;
+        if (denominator == 0) return false; // No eligible committee members → no quorum → fail
 
         BigDecimal ratio = BigDecimal.valueOf(tally.yesCount)
                 .divide(BigDecimal.valueOf(denominator), MathContext.DECIMAL128);

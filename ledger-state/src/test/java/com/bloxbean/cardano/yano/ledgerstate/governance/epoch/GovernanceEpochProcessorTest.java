@@ -9,8 +9,11 @@ import com.bloxbean.cardano.yano.ledgerstate.EpochParamTracker;
 import com.bloxbean.cardano.yano.ledgerstate.governance.GovernanceStateStore;
 import com.bloxbean.cardano.yano.ledgerstate.governance.GovernanceCborCodec.CommitteeThreshold;
 import com.bloxbean.cardano.yano.ledgerstate.governance.model.CommitteeMemberRecord;
+import com.bloxbean.cardano.yano.ledgerstate.test.TestRocksDBHelper;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import org.rocksdb.WriteBatch;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
@@ -18,6 +21,7 @@ import java.lang.reflect.Method;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
@@ -27,6 +31,8 @@ import java.util.regex.Pattern;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class GovernanceEpochProcessorTest {
+
+    @TempDir Path tempDir;
 
     @Test
     @DisplayName("Ratification active check uses previous epoch boundary semantics")
@@ -99,20 +105,55 @@ class GovernanceEpochProcessorTest {
     }
 
     @Test
-    @DisplayName("Committee state remains normal through member expiry epoch")
-    void committeeState_expiryEpochInclusive() throws Exception {
+    @DisplayName("Committee state stays normal for present committee even when all members are inactive")
+    void committeeState_presentButInactiveIsNormal() throws Exception {
         GovernanceEpochProcessor processor = new GovernanceEpochProcessor(
                 null, null, null, null, null, null, null, null, null,
                 zeroProvider(), null, null, null, null, null);
         Map<GovernanceStateStore.CredentialKey, CommitteeMemberRecord> members = new HashMap<>();
         members.put(new GovernanceStateStore.CredentialKey(0, "cold"),
-                new CommitteeMemberRecord(0, "hot", 232, false));
+                new CommitteeMemberRecord(0, "hot", 232, true));
 
         Method method = GovernanceEpochProcessor.class.getDeclaredMethod("resolveCommitteeState", Map.class, int.class);
         method.setAccessible(true);
 
         assertThat(method.invoke(processor, members, 232)).isEqualTo("NORMAL");
-        assertThat(method.invoke(processor, members, 233)).isEqualTo("NO_CONFIDENCE");
+        assertThat(method.invoke(processor, members, 233)).isEqualTo("NORMAL");
+    }
+
+    @Test
+    @DisplayName("Committee state follows explicit committeePresent flag")
+    void committeeState_absentFlagIsNoConfidence() throws Exception {
+        try (var rocks = TestRocksDBHelper.create(tempDir)) {
+            GovernanceStateStore store = rocks.governanceStore();
+            try (WriteBatch batch = new WriteBatch(); var writeOptions = new org.rocksdb.WriteOptions()) {
+                store.storeCommitteePresent(false, batch, new ArrayList<>());
+                rocks.db().write(writeOptions, batch);
+            }
+
+            GovernanceEpochProcessor processor = new GovernanceEpochProcessor(
+                    rocks.db(), rocks.cfState(), rocks.cfDelta(), store,
+                    null, null, null, null, null,
+                    zeroProvider(), null, null, null, null, null);
+
+            Method method = GovernanceEpochProcessor.class.getDeclaredMethod("resolveCommitteeState", Map.class, int.class);
+            method.setAccessible(true);
+
+            assertThat(method.invoke(processor, Map.of(), 3)).isEqualTo("NO_CONFIDENCE");
+        }
+    }
+
+    @Test
+    @DisplayName("Empty committee member set is not itself no-confidence")
+    void committeeState_emptyMembersNormal() throws Exception {
+        GovernanceEpochProcessor processor = new GovernanceEpochProcessor(
+                null, null, null, null, null, null, null, null, null,
+                zeroProvider(), null, null, null, null, null);
+
+        Method method = GovernanceEpochProcessor.class.getDeclaredMethod("resolveCommitteeState", Map.class, int.class);
+        method.setAccessible(true);
+
+        assertThat(method.invoke(processor, Map.of(), 3)).isEqualTo("NORMAL");
     }
 
     /**
@@ -222,6 +263,23 @@ class GovernanceEpochProcessorTest {
     }
 
     @Test
+    @DisplayName("buildDRepThresholdMap: UpdateCommittee uses no-confidence threshold when committee absent")
+    void buildDRepThresholdMap_updateCommitteeNoConfidenceThreshold() {
+        DrepVoteThresholds thresholds = DrepVoteThresholds.builder()
+                .dvtCommitteeNormal(ratio(67, 100))
+                .dvtCommitteeNoConfidence(ratio(6, 10))
+                .build();
+
+        Map<GovActionType, BigDecimal> normalMap = GovernanceEpochProcessor.buildDRepThresholdMap(
+                false, thresholds, true);
+        Map<GovActionType, BigDecimal> noConfidenceMap = GovernanceEpochProcessor.buildDRepThresholdMap(
+                false, thresholds, false);
+
+        assertThat(normalMap.get(GovActionType.UPDATE_COMMITTEE)).isEqualByComparingTo("0.67");
+        assertThat(noConfidenceMap.get(GovActionType.UPDATE_COMMITTEE)).isEqualByComparingTo("0.6");
+    }
+
+    @Test
     @DisplayName("buildSPOThresholdMap: null thresholds → every action 1.0 (fail-safe)")
     void buildSPOThresholdMap_nullThresholds_failSafe() {
         Map<GovActionType, BigDecimal> map = GovernanceEpochProcessor.buildSPOThresholdMap(null);
@@ -249,6 +307,64 @@ class GovernanceEpochProcessorTest {
         assertThat(map.get(GovActionType.HARD_FORK_INITIATION_ACTION)).isEqualByComparingTo("0.51");
         // SPO PARAMETER_CHANGE_ACTION uses pvtPPSecurityGroup specifically
         assertThat(map.get(GovActionType.PARAMETER_CHANGE_ACTION)).isEqualByComparingTo("0.51");
+    }
+
+    @Test
+    @DisplayName("buildSPOThresholdMap: UpdateCommittee uses no-confidence threshold when committee absent")
+    void buildSPOThresholdMap_updateCommitteeNoConfidenceThreshold() {
+        PoolVotingThresholds thresholds = PoolVotingThresholds.builder()
+                .pvtCommitteeNormal(ratio(67, 100))
+                .pvtCommitteeNoConfidence(ratio(4, 10))
+                .build();
+
+        Map<GovActionType, BigDecimal> normalMap = GovernanceEpochProcessor.buildSPOThresholdMap(thresholds, true);
+        Map<GovActionType, BigDecimal> noConfidenceMap = GovernanceEpochProcessor.buildSPOThresholdMap(thresholds, false);
+
+        assertThat(normalMap.get(GovActionType.UPDATE_COMMITTEE)).isEqualByComparingTo("0.67");
+        assertThat(noConfidenceMap.get(GovActionType.UPDATE_COMMITTEE)).isEqualByComparingTo("0.4");
+    }
+
+    @Test
+    @DisplayName("Phase 2 threshold resolution uses post-enactment committee state")
+    void phase2Thresholds_usePostEnactmentCommitteeState() {
+        EpochParamProvider provider = new EpochParamProvider() {
+            @Override
+            public BigInteger getKeyDeposit(long epoch) {
+                return BigInteger.ZERO;
+            }
+
+            @Override
+            public BigInteger getPoolDeposit(long epoch) {
+                return BigInteger.ZERO;
+            }
+
+            @Override
+            public DrepVoteThresholds getDrepVotingThresholds(long epoch) {
+                return DrepVoteThresholds.builder()
+                        .dvtCommitteeNormal(ratio(67, 100))
+                        .dvtCommitteeNoConfidence(ratio(6, 10))
+                        .build();
+            }
+
+            @Override
+            public PoolVotingThresholds getPoolVotingThresholds(long epoch) {
+                return PoolVotingThresholds.builder()
+                        .pvtCommitteeNormal(ratio(67, 100))
+                        .pvtCommitteeNoConfidence(ratio(4, 10))
+                        .build();
+            }
+        };
+        GovernanceEpochProcessor processor = new GovernanceEpochProcessor(
+                null, null, null, null, null, null, null, null, null,
+                provider, null, null, null, null, null);
+
+        Map<GovActionType, BigDecimal> drepThresholds =
+                processor.resolveDRepThresholds(false, 3, "NO_CONFIDENCE");
+        Map<GovActionType, BigDecimal> spoThresholds =
+                processor.resolveSPOThresholds(3, "NO_CONFIDENCE");
+
+        assertThat(drepThresholds.get(GovActionType.UPDATE_COMMITTEE)).isEqualByComparingTo("0.6");
+        assertThat(spoThresholds.get(GovActionType.UPDATE_COMMITTEE)).isEqualByComparingTo("0.4");
     }
 
     @Test
@@ -318,6 +434,28 @@ class GovernanceEpochProcessorTest {
                 Optional.of(new CommitteeThreshold(BigInteger.valueOf(2), BigInteger.valueOf(3))));
         // 2/3 in DECIMAL128 — compare to reasonable precision, not string match.
         assertThat(got.doubleValue()).isCloseTo(0.6666666666666667, org.assertj.core.data.Offset.offset(1e-15));
+    }
+
+    @Test
+    @DisplayName("Tracked Yano devnet Conway genesis uses empty committee threshold 0/1")
+    void devnetConwayGenesis_emptyCommitteeThresholdZero() throws Exception {
+        Path src = Paths.get("app/config/network/devnet/conway-genesis.json");
+        if (!Files.exists(src)) {
+            src = Paths.get("..").resolve(src);
+        }
+        assertThat(Files.exists(src)).isTrue();
+        String source = Files.readString(src);
+
+        Pattern pattern = Pattern.compile(
+                "\"committee\"\\s*:\\s*\\{\\s*\"members\"\\s*:\\s*\\{\\s*}\\s*,\\s*" +
+                        "\"threshold\"\\s*:\\s*\\{\\s*\"numerator\"\\s*:\\s*(\\d+)\\s*,\\s*" +
+                        "\"denominator\"\\s*:\\s*(\\d+)\\s*}\\s*}",
+                Pattern.DOTALL);
+        Matcher matcher = pattern.matcher(source);
+
+        assertThat(matcher.find()).isTrue();
+        assertThat(matcher.group(1)).isEqualTo("0");
+        assertThat(matcher.group(2)).isEqualTo("1");
     }
 
     private static UnitInterval ratio(long num, long denom) {
