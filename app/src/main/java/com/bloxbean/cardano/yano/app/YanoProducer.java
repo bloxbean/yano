@@ -8,10 +8,10 @@ import com.bloxbean.cardano.yano.api.config.RuntimeOptions;
 import com.bloxbean.cardano.yano.api.config.YanoConfig;
 import com.bloxbean.cardano.yano.app.bootstrap.BootstrapConfigParser;
 import com.bloxbean.cardano.client.api.model.ProtocolParams;
-import com.bloxbean.cardano.client.common.model.SlotConfig;
 import com.bloxbean.cardano.yaci.core.common.Constants;
 import com.bloxbean.cardano.yano.api.account.LedgerStateProvider;
 import com.bloxbean.cardano.yano.ledgerrules.EpochProtocolParamsSupplier;
+import com.bloxbean.cardano.yano.ledgerrules.SlotConfigSupplier;
 import com.bloxbean.cardano.yano.ledgerrules.TransactionEvaluator;
 import com.bloxbean.cardano.yano.ledgerrules.TransactionValidator;
 import com.bloxbean.cardano.yano.runtime.Yano;
@@ -784,13 +784,12 @@ public class YanoProducer {
         // epoch-param tracking is enabled; otherwise protocol-param.json is an explicit
         // static source for devnet/custom quick setups.
         GenesisConfig genesis;
-        SlotConfig slotConfig;
+        SlotConfigSupplier slotConfigSupplier;
         int networkId;
         EpochProtocolParamsSupplier protocolParamsSupplier;
         LongSupplier currentSlotSupplier;
         EpochSlotCalc epochSlotCalc;
         String protocolParamsSource;
-        ProtocolParams staticProtocolParams = null;
         try {
             genesis = GenesisConfig.load(
                     yaciConfig.getShelleyGenesisFile(),
@@ -809,7 +808,6 @@ public class YanoProducer {
                     return;
                 }
                 ProtocolParams staticParams = ProtocolParamsMapper.fromNodeProtocolParam(genesis.getProtocolParameters());
-                staticProtocolParams = staticParams;
                 protocolParamsSupplier = slot -> staticParams;
                 protocolParamsSource = "static-protocol-param-json";
             }
@@ -817,17 +815,16 @@ public class YanoProducer {
                 var tip = yaciNode.getLocalTip();
                 return tip != null ? tip.getSlot() : -1L;
             };
+            slotConfigSupplier = new RuntimeSlotConfigSupplier(
+                    yaciConfig, yaciNode::getResolvedGenesisTimestamp, genesis);
 
             long magic = yaciConfig.getProtocolMagic();
 
-            long genesisTs = yaciConfig.getGenesisTimestamp() > 0
-                    ? yaciConfig.getGenesisTimestamp()
-                    : genesis.getSystemStartEpochMillis() > 0
-                    ? genesis.getSystemStartEpochMillis()
-                    : System.currentTimeMillis();
-            slotConfig = new SlotConfig(yaciConfig.getSlotLengthMillis(), 0, genesisTs);
-
-            log.info("Yano slot config: {}", slotConfig);
+            var initialSlotConfig = slotConfigSupplier.getSlotConfig();
+            log.info("Yano transaction slot config: slotLengthMillis={}, zeroSlot={}, zeroTimeMillis={}",
+                    initialSlotConfig.getSlotLength(),
+                    initialSlotConfig.getZeroSlot(),
+                    initialSlotConfig.getZeroTime());
 
             networkId = magic == Constants.MAINNET_PROTOCOL_MAGIC ? 1 : 0;
         } catch (Exception e) {
@@ -844,14 +841,10 @@ public class YanoProducer {
         // Initialize TransactionValidator (Scalus) — validates transactions on submission
         boolean validatorInitialized = false;
         try {
-            TransactionValidator evaluator = staticProtocolParams != null
-                    ? ScalusTransactionFactory.createValidator(staticProtocolParams,
-                            new YaciScriptSupplier(yaciNode.getUtxoState()), slotConfig, networkId,
-                            ledgerStateProvider, supplementaryRulesEnabled)
-                    : ScalusTransactionFactory.createValidator(protocolParamsSupplier,
-                            new YaciScriptSupplier(yaciNode.getUtxoState()), slotConfig, networkId,
-                            ledgerStateProvider, currentSlotSupplier,
-                            epochSlotCalc::slotToEpoch, supplementaryRulesEnabled);
+            TransactionValidator evaluator = ScalusTransactionFactory.createValidator(protocolParamsSupplier,
+                    new YaciScriptSupplier(yaciNode.getUtxoState()), slotConfigSupplier, networkId,
+                    ledgerStateProvider, currentSlotSupplier, epochSlotCalc::slotToEpoch,
+                    effectiveEpochParamsTrackingEnabled, supplementaryRulesEnabled);
             yaciNode.setTransactionEvaluator(evaluator);
             validatorInitialized = true;
             log.info("Transaction validator initialized (networkId={}, protocolParams={}, supplementaryRules={})",
@@ -866,19 +859,16 @@ public class YanoProducer {
         try {
             TransactionEvaluator transactionEvaluator;
             if ("scalus".equalsIgnoreCase(scriptEvaluator)) {
-                transactionEvaluator = staticProtocolParams != null
-                        ? ScalusTransactionFactory.createEvaluator(staticProtocolParams,
-                                new YaciScriptSupplier(yaciNode.getUtxoState()), slotConfig, networkId)
-                        : ScalusTransactionFactory.createEvaluator(protocolParamsSupplier,
-                                new YaciScriptSupplier(yaciNode.getUtxoState()), slotConfig, networkId, currentSlotSupplier);
+                transactionEvaluator = ScalusTransactionFactory.createEvaluator(protocolParamsSupplier,
+                        new YaciScriptSupplier(yaciNode.getUtxoState()), slotConfigSupplier, networkId, currentSlotSupplier);
             } else if ("julc".equalsIgnoreCase(scriptEvaluator)) {
                 transactionEvaluator = new JulcTxEvaluator(
                         () -> protocolParamsSupplier.getProtocolParams(resolveRuntimeCurrentSlot(currentSlotSupplier)),
-                        new YaciScriptSupplier(yaciNode.getUtxoState()), slotConfig);
+                        new YaciScriptSupplier(yaciNode.getUtxoState()), slotConfigSupplier);
             } else {
                 transactionEvaluator = new AikenTxEvaluator(
                         () -> protocolParamsSupplier.getProtocolParams(resolveRuntimeCurrentSlot(currentSlotSupplier)),
-                        new YaciScriptSupplier(yaciNode.getUtxoState()), slotConfig);
+                        new YaciScriptSupplier(yaciNode.getUtxoState()), slotConfigSupplier);
             }
             yaciNode.setScriptEvaluator(transactionEvaluator);
             evaluatorInitialized = true;

@@ -7,6 +7,7 @@ import com.bloxbean.cardano.client.api.model.Result;
 import com.bloxbean.cardano.client.api.model.Utxo;
 import com.bloxbean.cardano.client.common.model.SlotConfig;
 import com.bloxbean.cardano.yano.ledgerrules.EpochProtocolParamsSupplier;
+import com.bloxbean.cardano.yano.ledgerrules.SlotConfigSupplier;
 import com.bloxbean.cardano.yano.ledgerrules.TransactionEvaluator;
 import scalus.bloxbean.EvaluatorMode;
 import scalus.bloxbean.ScalusTransactionEvaluator;
@@ -24,26 +25,27 @@ public class ScalusBasedTransactionEvaluator implements TransactionEvaluator {
 
     private final EpochProtocolParamsSupplier protocolParamsSupplier;
     private final ScriptSupplier scriptSupplier;
-    private final SlotConfig slotConfig;
+    private final SlotConfigSupplier slotConfigSupplier;
     private final int networkId;
     private final LongSupplier currentSlotSupplier;
-
-    ScalusBasedTransactionEvaluator(ProtocolParams protocolParams, 
-                                    com.bloxbean.cardano.client.api.ScriptSupplier scriptSupplier,
-                                    SlotConfig slotConfig, int networkId) {
-        this(slot -> protocolParams, scriptSupplier, slotConfig, networkId, null);
-    }
 
     ScalusBasedTransactionEvaluator(EpochProtocolParamsSupplier protocolParamsSupplier,
                                     com.bloxbean.cardano.client.api.ScriptSupplier scriptSupplier,
                                     SlotConfig slotConfig, int networkId,
+                                    LongSupplier currentSlotSupplier) {
+        this(protocolParamsSupplier, scriptSupplier, () -> slotConfig, networkId, currentSlotSupplier);
+    }
+
+    ScalusBasedTransactionEvaluator(EpochProtocolParamsSupplier protocolParamsSupplier,
+                                    com.bloxbean.cardano.client.api.ScriptSupplier scriptSupplier,
+                                    SlotConfigSupplier slotConfigSupplier, int networkId,
                                     LongSupplier currentSlotSupplier) {
         this.protocolParamsSupplier = protocolParamsSupplier;
         if (scriptSupplier != null)
             this.scriptSupplier = new ScalusScriptSupplier(scriptSupplier);
         else
             this.scriptSupplier = null;
-        this.slotConfig = slotConfig;
+        this.slotConfigSupplier = slotConfigSupplier;
         this.networkId = networkId;
         this.currentSlotSupplier = currentSlotSupplier;
     }
@@ -65,8 +67,8 @@ public class ScalusBasedTransactionEvaluator implements TransactionEvaluator {
             }
         };
 
-        var scalusSlotConfig = new scalus.cardano.ledger.SlotConfig(slotConfig.getZeroTime(), slotConfig.getZeroSlot(), slotConfig.getSlotLength());
         ProtocolParams protocolParams = protocolParamsSupplier.getProtocolParams(resolveCurrentSlot());
+        var scalusSlotConfig = SlotConfigAdapters.toScalus(slotConfigSupplier.getSlotConfig());
         // Create ScalusTransactionEvaluator and evaluate
         var evaluator = new ScalusTransactionEvaluator(
                 scalusSlotConfig, protocolParams, utxoSupplier, scriptSupplier,

@@ -17,14 +17,17 @@ import com.bloxbean.cardano.client.transaction.spec.governance.VotingProcedures;
 import com.bloxbean.cardano.client.transaction.spec.governance.actions.GovActionId;
 import com.bloxbean.cardano.client.transaction.spec.governance.actions.ParameterChangeAction;
 import com.bloxbean.cardano.yano.api.account.LedgerStateProvider;
+import com.bloxbean.cardano.yano.ledgerrules.SlotConfigSupplier;
 import com.bloxbean.cardano.yano.ledgerrules.ValidationError;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.math.BigInteger;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.LongSupplier;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -37,7 +40,8 @@ class ScalusBasedTransactionValidatorTest {
     void supplementaryRuleExceptionRejectsTransaction() {
         LedgerStateProvider provider = new MinimalLedgerStateProvider();
         var validator = new ScalusBasedTransactionValidator(
-                new ProtocolParams(), null, new SlotConfig(1000, 0, 0), 0, provider);
+                slot -> new ProtocolParams(), null, new SlotConfig(1000, 0, 0), 0,
+                provider, null);
         var tx = Transaction.builder().body(null).build();
 
         var result = validator.runSupplementaryRules(tx, 0, new ProtocolParams());
@@ -110,6 +114,29 @@ class ScalusBasedTransactionValidatorTest {
     }
 
     @Test
+    void validateUsesDynamicSlotConfigSupplierPerCall() {
+        var zeroTime = new AtomicLong(1_780_000_000_000L);
+        var validator = new SlotCapturingValidator(
+                () -> new SlotConfig(1_000, 0, zeroTime.get()));
+
+        assertTrue(validator.validate(new byte[]{1, 2, 3}, Set.of()).valid());
+        zeroTime.set(1_780_000_001_000L);
+        assertTrue(validator.validate(new byte[]{1, 2, 3}, Set.of()).valid());
+
+        assertEquals(List.of(1_780_000_000_000L, 1_780_000_001_000L), validator.zeroTimes);
+    }
+
+    @Test
+    void staticProtocolParamsSupplierValidatorCanStillUseRuntimeCurrentSlot() {
+        var validator = new CurrentSlotCapturingFixedParamsValidator(() -> 456L);
+
+        var result = validator.validate(new byte[]{1, 2, 3}, Set.of());
+
+        assertTrue(result.valid());
+        assertEquals(456L, validator.currentSlot);
+    }
+
+    @Test
     void supplementaryRulesTreatEpochZeroAsKnownEpoch() {
         ProtocolParams pp = new ProtocolParams();
         pp.setEMax(5);
@@ -143,7 +170,7 @@ class ScalusBasedTransactionValidatorTest {
     @Test
     void supplementaryRulesValidateGovernanceVoteTargetsAndDisallowedVoters() {
         var validator = new ScalusBasedTransactionValidator(
-                new ProtocolParams(), null, new SlotConfig(1000, 0, 0), 0,
+                slot -> new ProtocolParams(), null, new SlotConfig(1000, 0, 0), 0,
                 new GovernanceProposalLedgerStateProvider("PARAMETER_CHANGE_ACTION", true, true));
 
         var result = validator.runSupplementaryRules(votingTx(VoterType.STAKING_POOL_KEY_HASH), 0, new ProtocolParams());
@@ -156,7 +183,7 @@ class ScalusBasedTransactionValidatorTest {
     @Test
     void supplementaryRulesRejectVotingForInactiveGovernanceAction() {
         var validator = new ScalusBasedTransactionValidator(
-                new ProtocolParams(), null, new SlotConfig(1000, 0, 0), 0,
+                slot -> new ProtocolParams(), null, new SlotConfig(1000, 0, 0), 0,
                 new GovernanceProposalLedgerStateProvider("INFO_ACTION", false, true));
 
         var result = validator.runSupplementaryRules(votingTx(VoterType.STAKING_POOL_KEY_HASH), 0, new ProtocolParams());
@@ -169,7 +196,7 @@ class ScalusBasedTransactionValidatorTest {
     @Test
     void supplementaryRulesValidateCommitteeHotVoterAuthorizationWhenAvailable() {
         var validator = new ScalusBasedTransactionValidator(
-                new ProtocolParams(), null, new SlotConfig(1000, 0, 0), 0,
+                slot -> new ProtocolParams(), null, new SlotConfig(1000, 0, 0), 0,
                 new GovernanceProposalLedgerStateProvider("INFO_ACTION", true, false));
 
         var result = validator.runSupplementaryRules(votingTx(VoterType.CONSTITUTIONAL_COMMITTEE_HOT_KEY_HASH),
@@ -184,7 +211,7 @@ class ScalusBasedTransactionValidatorTest {
     void supplementaryRulesUseCurrentTransactionHashForLocalProposalVotes() {
         String txHash = filledHex(32, 9);
         var validator = new ScalusBasedTransactionValidator(
-                new ProtocolParams(), null, new SlotConfig(1000, 0, 0), 0,
+                slot -> new ProtocolParams(), null, new SlotConfig(1000, 0, 0), 0,
                 new RegisteredPoolLedgerStateProvider());
 
         var result = validator.runSupplementaryRules(localProposalVoteTx(txHash), 0, new ProtocolParams(), txHash);
@@ -198,7 +225,7 @@ class ScalusBasedTransactionValidatorTest {
     void supplementaryRulesRejectPrevGovActionWithDifferentPurpose() {
         String prevHash = filledHex(32, 7);
         var validator = new ScalusBasedTransactionValidator(
-                new ProtocolParams(), null, new SlotConfig(1000, 0, 0), 0,
+                slot -> new ProtocolParams(), null, new SlotConfig(1000, 0, 0), 0,
                 new GovernanceProposalLedgerStateProvider("INFO_ACTION", false, true));
 
         var result = validator.runSupplementaryRules(proposalWithPreviousAction(prevHash), 0, new ProtocolParams());
@@ -212,7 +239,7 @@ class ScalusBasedTransactionValidatorTest {
     void supplementaryRulesDoNotUseLocalProposalsForPreviousActionReferences() {
         String txHash = filledHex(32, 9);
         var validator = new ScalusBasedTransactionValidator(
-                new ProtocolParams(), null, new SlotConfig(1000, 0, 0), 0,
+                slot -> new ProtocolParams(), null, new SlotConfig(1000, 0, 0), 0,
                 new RegisteredPoolLedgerStateProvider());
 
         var result = validator.runSupplementaryRules(proposalWithPreviousAction(txHash), 0, new ProtocolParams(),
@@ -226,7 +253,7 @@ class ScalusBasedTransactionValidatorTest {
     @Test
     void supplementaryRulesUseTypedCommitteeHotCredentialAuthorization() {
         var validator = new ScalusBasedTransactionValidator(
-                new ProtocolParams(), null, new SlotConfig(1000, 0, 0), 0,
+                slot -> new ProtocolParams(), null, new SlotConfig(1000, 0, 0), 0,
                 new ScriptCommitteeHotLedgerStateProvider());
 
         var result = validator.runSupplementaryRules(votingTx(VoterType.CONSTITUTIONAL_COMMITTEE_HOT_SCRIPT_HASH),
@@ -375,6 +402,48 @@ class ScalusBasedTransactionValidatorTest {
     private static class SlotUnavailableValidator extends ScalusSuccessValidator {
         SlotUnavailableValidator(LedgerStateProvider provider) {
             super(provider, () -> -1L);
+        }
+    }
+
+    private static class SlotCapturingValidator extends ScalusBasedTransactionValidator {
+        private final List<Long> zeroTimes = new ArrayList<>();
+
+        SlotCapturingValidator(SlotConfigSupplier slotConfigSupplier) {
+            super(slot -> new ProtocolParams(), null, slotConfigSupplier, 0,
+                    new MinimalLedgerStateProvider(), () -> 123L, null, false);
+        }
+
+        @Override
+        protected TransitResult runScalusValidation(byte[] txCbor, ProtocolParams protocolParams,
+                                                    Set<Utxo> inputUtxos, long currentSlot) {
+            zeroTimes.add(resolveCclSlotConfig().getZeroTime());
+            return new TransitResult(true, null, null);
+        }
+
+        @Override
+        protected Transaction deserializeTransaction(byte[] txCbor) {
+            return Transaction.builder().body(null).build();
+        }
+    }
+
+    private static class CurrentSlotCapturingFixedParamsValidator extends ScalusBasedTransactionValidator {
+        private long currentSlot = -1;
+
+        CurrentSlotCapturingFixedParamsValidator(LongSupplier currentSlotSupplier) {
+            super(slot -> new ProtocolParams(), null, () -> new SlotConfig(1_000, 0, 1_780_000_000_000L),
+                    0, null, currentSlotSupplier, null, false, false);
+        }
+
+        @Override
+        protected TransitResult runScalusValidation(byte[] txCbor, ProtocolParams protocolParams,
+                                                    Set<Utxo> inputUtxos, long currentSlot) {
+            this.currentSlot = currentSlot;
+            return new TransitResult(true, null, null);
+        }
+
+        @Override
+        protected Transaction deserializeTransaction(byte[] txCbor) {
+            return Transaction.builder().body(null).build();
         }
     }
 
