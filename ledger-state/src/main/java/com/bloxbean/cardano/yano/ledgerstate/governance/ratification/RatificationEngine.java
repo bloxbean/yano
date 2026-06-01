@@ -523,6 +523,7 @@ public class RatificationEngine {
         if (!isBootstrapPhase) {
             long activeCount = members.values().stream()
                     .filter(m -> !m.resigned() && m.expiryEpoch() >= currentEpoch)
+                    .filter(CommitteeMemberRecord::hasHotKey)
                     .count();
             if (activeCount < committeeMinSize) return false;
         }
@@ -839,6 +840,7 @@ public class RatificationEngine {
     private static long activeCommitteeCount(Map<CredentialKey, CommitteeMemberRecord> members, int currentEpoch) {
         return members.values().stream()
                 .filter(m -> !m.resigned() && m.expiryEpoch() >= currentEpoch)
+                .filter(CommitteeMemberRecord::hasHotKey)
                 .count();
     }
 

@@ -66,6 +66,11 @@ class EnactmentProcessorTest {
     @Test
     @DisplayName("UpdateCommittee adds new members with correct expiry epochs")
     void updateCommittee_addsNewMembers() throws Exception {
+        try (WriteBatch batch = new WriteBatch()) {
+            store.storeCommitteePresent(false, batch, new ArrayList<>());
+            commit(batch);
+        }
+
         var newMembers = new LinkedHashMap<Credential, Integer>();
         newMembers.put(new Credential(StakeCredType.ADDR_KEYHASH, COLD1), 242);
         newMembers.put(new Credential(StakeCredType.ADDR_KEYHASH, COLD2), 372);
@@ -94,6 +99,7 @@ class EnactmentProcessorTest {
         // Threshold updated
         var threshold = store.getCommitteeThreshold();
         assertThat(threshold).isPresent();
+        assertThat(store.isCommitteePresent()).isTrue();
     }
 
     @Test
@@ -170,6 +176,7 @@ class EnactmentProcessorTest {
         }
 
         assertThat(store.getAllCommitteeMembers()).isEmpty();
+        assertThat(store.isCommitteePresent()).isFalse();
     }
 
     // ===== TreasuryWithdrawals =====

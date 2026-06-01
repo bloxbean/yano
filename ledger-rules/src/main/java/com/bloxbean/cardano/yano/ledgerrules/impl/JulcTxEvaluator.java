@@ -8,6 +8,7 @@ import com.bloxbean.cardano.client.api.model.Utxo;
 
 import com.bloxbean.cardano.julc.clientlib.eval.JulcTransactionEvaluator;
 import com.bloxbean.cardano.julc.clientlib.eval.SlotConfig;
+import com.bloxbean.cardano.yano.ledgerrules.SlotConfigSupplier;
 import com.bloxbean.cardano.yano.ledgerrules.TransactionEvaluator;
 
 import java.util.List;
@@ -18,14 +19,18 @@ import java.util.stream.Collectors;
 public class JulcTxEvaluator implements TransactionEvaluator {
     private final ProtocolParamsSupplier protocolParamsSupplier;
     private final ScriptSupplier scriptSupplier;
-    private final com.bloxbean.cardano.julc.clientlib.eval.SlotConfig slotConfig;
+    private final SlotConfigSupplier slotConfigSupplier;
 
     public JulcTxEvaluator(ProtocolParamsSupplier protocolParamsSupplier,
                            ScriptSupplier scriptSupplier, com.bloxbean.cardano.client.common.model.SlotConfig slotConfig) {
+        this(protocolParamsSupplier, scriptSupplier, () -> slotConfig);
+    }
+
+    public JulcTxEvaluator(ProtocolParamsSupplier protocolParamsSupplier,
+                           ScriptSupplier scriptSupplier, SlotConfigSupplier slotConfigSupplier) {
         this.protocolParamsSupplier = protocolParamsSupplier;
         this.scriptSupplier = scriptSupplier;
-        this.slotConfig =
-                new SlotConfig(slotConfig.getZeroSlot(), slotConfig.getZeroTime(), slotConfig.getSlotLength());
+        this.slotConfigSupplier = slotConfigSupplier;
     }
 
     @Override
@@ -44,7 +49,9 @@ public class JulcTxEvaluator implements TransactionEvaluator {
             }
         };
 
-        var txEvaluator = new JulcTransactionEvaluator(utxoSupplier, protocolParamsSupplier, scriptSupplier, slotConfig);
+        var txEvaluator = new JulcTransactionEvaluator(
+                utxoSupplier, protocolParamsSupplier, scriptSupplier,
+                toJulcSlotConfig(slotConfigSupplier.getSlotConfig()));
 
         var evaluationResult =  txEvaluator.evaluateTx(txCbor, inputUtxos);
 
@@ -59,5 +66,9 @@ public class JulcTxEvaluator implements TransactionEvaluator {
                         er.getExUnits().getMem().longValueExact(),
                         er.getExUnits().getSteps().longValueExact()))
                 .collect(Collectors.toList());
+    }
+
+    static SlotConfig toJulcSlotConfig(com.bloxbean.cardano.client.common.model.SlotConfig slotConfig) {
+        return new SlotConfig(slotConfig.getZeroSlot(), slotConfig.getZeroTime(), slotConfig.getSlotLength());
     }
 }

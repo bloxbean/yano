@@ -2,14 +2,20 @@ package com.bloxbean.cardano.yano.ledgerstate.governance.ratification;
 
 import com.bloxbean.cardano.yaci.core.model.governance.GovActionId;
 import com.bloxbean.cardano.yaci.core.model.governance.GovActionType;
+import com.bloxbean.cardano.yano.ledgerstate.governance.GovernanceStateStore;
+import com.bloxbean.cardano.yano.ledgerstate.governance.epoch.DRepDistributionCalculator.DRepDistKey;
+import com.bloxbean.cardano.yano.ledgerstate.governance.model.CommitteeMemberRecord;
 import com.bloxbean.cardano.yano.ledgerstate.governance.model.GovActionRecord;
 import com.bloxbean.cardano.yano.ledgerstate.governance.model.RatificationResult.Status;
+import com.bloxbean.cardano.yano.ledgerstate.test.TestRocksDBHelper;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
-import java.util.Map;
+import java.nio.file.Path;
+import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -20,6 +26,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * No database, no mocks — pure input/output testing.
  */
 class RatificationEngineTest {
+
+    @TempDir Path tempDir;
 
     // ===== Helper builders =====
 
@@ -197,6 +205,19 @@ class RatificationEngineTest {
     }
 
     @Test
+    @DisplayName("Empty NORMAL committee with threshold zero can ratify")
+    void committee_emptyNormalThresholdZero_passes() {
+        var proposal = proposal(0, 6, GovActionType.PARAMETER_CHANGE_ACTION, null, null);
+        var eval = input(proposal, drepAllYes(), CC_0_YES, SPO_EMPTY,
+                new BigDecimal("0.67"), BigDecimal.ZERO, BigDecimal.ZERO);
+
+        var status = RatificationEngine.evaluateStateless(
+                eval, 3, false, NO_PREV, "NORMAL", 0, 146, false);
+
+        assertThat(status).isEqualTo(Status.RATIFIED);
+    }
+
+    @Test
     @DisplayName("Committee below min size → fails")
     void committee_belowMinSize() {
         // 3 YES but minSize=7
@@ -209,6 +230,46 @@ class RatificationEngineTest {
                 eval, 232, false, NO_PREV, "NORMAL", 7, 146, false);
 
         assertThat(status).isEqualTo(Status.ACTIVE);
+    }
+
+    @Test
+    @DisplayName("Committee min size excludes members without hot keys")
+    void committee_minSizeExcludesMembersWithoutHotKeys() throws Exception {
+        try (var rocks = TestRocksDBHelper.create(tempDir)) {
+            var store = rocks.governanceStore();
+            var engine = new RatificationEngine(store, new VoteTallyCalculator());
+            GovActionId id = new GovActionId(
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 0);
+            var proposal = proposal(1, 6, GovActionType.NEW_CONSTITUTION, null, null);
+
+            Map<GovernanceStateStore.CredentialKey, CommitteeMemberRecord> members = new LinkedHashMap<>();
+            for (int i = 0; i < 5; i++) {
+                members.put(new GovernanceStateStore.CredentialKey(0, "cold" + i),
+                        CommitteeMemberRecord.noHotKey(10));
+            }
+
+            var results = engine.evaluateAll(
+                    Map.of(id, proposal),
+                    Map.<DRepDistKey, BigInteger>of(),
+                    Set.of(),
+                    Map.of(),
+                    Map.of(),
+                    members,
+                    BigDecimal.ZERO,
+                    NO_PREV,
+                    3,
+                    false,
+                    3,
+                    146,
+                    "NORMAL",
+                    BigInteger.ZERO,
+                    Map.of(GovActionType.NEW_CONSTITUTION, BigDecimal.ZERO),
+                    Map.of(),
+                    null);
+
+            assertThat(results).hasSize(1);
+            assertThat(results.get(0).status()).isEqualTo(Status.ACTIVE);
+        }
     }
 
     @Test

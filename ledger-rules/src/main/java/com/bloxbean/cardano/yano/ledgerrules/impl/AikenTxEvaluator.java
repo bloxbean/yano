@@ -7,6 +7,7 @@ import com.bloxbean.cardano.client.api.UtxoSupplier;
 import com.bloxbean.cardano.client.api.common.OrderEnum;
 import com.bloxbean.cardano.client.api.model.Utxo;
 import com.bloxbean.cardano.client.common.model.SlotConfig;
+import com.bloxbean.cardano.yano.ledgerrules.SlotConfigSupplier;
 import com.bloxbean.cardano.yano.ledgerrules.TransactionEvaluator;
 
 import java.util.List;
@@ -15,15 +16,20 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 public class AikenTxEvaluator implements TransactionEvaluator {
-    private ProtocolParamsSupplier protocolParamsSupplier;
-    private ScriptSupplier scriptSupplier;
-    private SlotConfig slotConfig;
+    private final ProtocolParamsSupplier protocolParamsSupplier;
+    private final ScriptSupplier scriptSupplier;
+    private final SlotConfigSupplier slotConfigSupplier;
 
     public AikenTxEvaluator(ProtocolParamsSupplier protocolParamsSupplier,
                             ScriptSupplier scriptSupplier, SlotConfig slotConfig) {
+        this(protocolParamsSupplier, scriptSupplier, () -> slotConfig);
+    }
+
+    public AikenTxEvaluator(ProtocolParamsSupplier protocolParamsSupplier,
+                            ScriptSupplier scriptSupplier, SlotConfigSupplier slotConfigSupplier) {
         this.protocolParamsSupplier = protocolParamsSupplier;
         this.scriptSupplier = scriptSupplier;
-        this.slotConfig = slotConfig;
+        this.slotConfigSupplier = slotConfigSupplier;
     }
 
     @Override
@@ -42,7 +48,8 @@ public class AikenTxEvaluator implements TransactionEvaluator {
             }
         };
 
-        var aikenTxEvaluator = new AikenTransactionEvaluator(utxoSupplier, protocolParamsSupplier, scriptSupplier, slotConfig);
+        var aikenTxEvaluator = new AikenTransactionEvaluator(
+                utxoSupplier, protocolParamsSupplier, scriptSupplier, slotConfigSupplier.getSlotConfig());
 
         var aikenEvaluationResult =  aikenTxEvaluator.evaluateTx(txCbor, inputUtxos);
 
