@@ -789,6 +789,23 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
         return epochParamProvider;
     }
 
+    private boolean epochParamsTrackingEnabled() {
+        Object value = runtimeOptions.globals()
+                .getOrDefault("yano.epoch-params.tracking-enabled", "false");
+        return value instanceof Boolean b ? b : Boolean.parseBoolean(String.valueOf(value));
+    }
+
+    private String runtimeProtocolParametersFile() {
+        return epochParamsTrackingEnabled() ? null : config.getProtocolParametersFile();
+    }
+
+    private String runtimeProtocolParametersJson() {
+        if (inMemoryDevnetGenesis == null || epochParamsTrackingEnabled()) {
+            return null;
+        }
+        return inMemoryDevnetGenesis.protocolParametersJson();
+    }
+
     /**
      * Resolve the *effective* {@link EpochParamProvider} for nonce evolution.
      * Returns the {@link EpochParamTracker} when wired and enabled — it carries on-chain
@@ -805,6 +822,38 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
             }
         }
         return epochParamProvider;
+    }
+
+    private ProtocolVersionSupplier createBlockProtocolVersionSupplier() {
+        if (epochParamsTrackingEnabled()) {
+            EpochParamProvider effectiveProvider = effectiveEpochParamProvider();
+            if (!(effectiveProvider instanceof EpochParamTracker tracker) || !tracker.isEnabled()) {
+                throw new IllegalStateException(
+                        "Epoch-param tracking is enabled but EpochParamTracker is unavailable for block production");
+            }
+            LedgerStateProvider ledgerStateProvider = getLedgerStateProvider();
+            if (ledgerStateProvider == null) {
+                throw new IllegalStateException(
+                        "Epoch-param tracking is enabled but LedgerStateProvider is unavailable for block production");
+            }
+            return new EffectiveProtocolVersionSupplier(
+                    ledgerStateProvider,
+                    effectiveProvider.getEpochSlotCalc(),
+                    tracker);
+        }
+
+        if (genesisConfig == null || !genesisConfig.hasProtocolParameters()) {
+            throw new IllegalStateException(
+                    "Protocol version not found in protocol-param.json. "
+                            + "Configure 'protocol-parameters-file' or enable epoch-param tracking.");
+        }
+        try {
+            return StaticProtocolVersionSupplier.fromProtocolParametersJson(
+                    genesisConfig.getProtocolParameters());
+        } catch (Exception e) {
+            throw new IllegalStateException(
+                    "Failed to resolve static protocol version from protocol-param.json", e);
+        }
     }
 
     /**
@@ -1034,12 +1083,12 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
                     genesisConfig = GenesisConfig.fromInMemory(
                             inMemoryDevnetGenesis.shelley(),
                             inMemoryDevnetGenesis.byron(),
-                            inMemoryDevnetGenesis.protocolParametersJson());
+                            runtimeProtocolParametersJson());
                 } else {
                     genesisConfig = GenesisConfig.load(
                             config.getShelleyGenesisFile(),
                             config.getByronGenesisFile(),
-                            config.getProtocolParametersFile());
+                            runtimeProtocolParametersFile());
                 }
 
                 // Propagate epoch params from genesis to config (for REST layer)
@@ -1406,18 +1455,12 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
             initializeProducerNonceState(epochNonceState, nonceStore, replayService,
                     "block-producer-startup", "slot-leader mode");
 
-            // 5. Get protocol version from protocol-param.json
-            long protoMajor = genesisConfig.getProtocolVersionMajor();
-            long protoMinor = genesisConfig.getProtocolVersionMinor();
-            if (protoMajor <= 0) {
-                throw new IllegalStateException(
-                        "Protocol version not found in protocol-param.json. "
-                        + "Configure 'protocol-parameters-file' with current network protocol parameters.");
-            }
+            // 5. Resolve produced-block protocol version using the configured parameter mode
+            ProtocolVersionSupplier protocolVersionSupplier = createBlockProtocolVersionSupplier();
 
             // 6. Create SignedBlockBuilder with shared EpochNonceState
             var signedBlockBuilder = new SignedBlockBuilder(keys, slotsPerKESPeriod, maxKESEvolutions,
-                    epochNonceState, nonceStore, protoMajor, protoMinor);
+                    epochNonceState, nonceStore, protocolVersionSupplier);
 
             // 7. Create & register NonceEvolutionListener
             String issuerVkeyHex = signedBlockBuilder.getIssuerVkeyHex();
@@ -1515,12 +1558,12 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
                 genesisConfig = GenesisConfig.fromInMemory(
                         inMemoryDevnetGenesis.shelley(),
                         inMemoryDevnetGenesis.byron(),
-                        inMemoryDevnetGenesis.protocolParametersJson());
+                        runtimeProtocolParametersJson());
             } else {
                 genesisConfig = GenesisConfig.load(
                         config.getShelleyGenesisFile(),
                         config.getByronGenesisFile(),
-                        config.getProtocolParametersFile());
+                        runtimeProtocolParametersFile());
             }
 
             propagateGenesisToConfig(genesisConfig);
@@ -1918,18 +1961,12 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
             initializeProducerNonceState(epochNonceState, nonceStore, replayService,
                     "past-time-travel-startup", "past-time-travel slot-leader mode");
 
-            long protoMajor = genesisConfig.getProtocolVersionMajor();
-            long protoMinor = genesisConfig.getProtocolVersionMinor();
-            if (protoMajor <= 0) {
-                throw new IllegalStateException(
-                        "Protocol version not found in protocol-param.json. "
-                        + "Configure 'protocol-parameters-file' with current network protocol parameters.");
-            }
+            ProtocolVersionSupplier protocolVersionSupplier = createBlockProtocolVersionSupplier();
 
             var signedBlockBuilder = new SignedBlockBuilder(keys,
                     shelleyData.slotsPerKESPeriod(),
                     shelleyData.maxKESEvolutions(),
-                    epochNonceState, nonceStore, protoMajor, protoMinor);
+                    epochNonceState, nonceStore, protocolVersionSupplier);
 
             var stakeDataProvider = new GenesisStakeDataProvider(Path.of(config.getShelleyGenesisFile()));
             BigInteger poolStake = stakeDataProvider.getPoolStake(poolHash, 0);
@@ -2013,25 +2050,18 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
                 initializeProducerNonceState(nonceState, nonceStore, replayService,
                         "signed-devnet-startup", "signed block production");
 
-                // Get protocol version from protocol-param.json
-                long protoMajor = genesisConfig.getProtocolVersionMajor();
-                long protoMinor = genesisConfig.getProtocolVersionMinor();
-                if (protoMajor <= 0) {
-                    throw new IllegalStateException(
-                            "Protocol version not found in protocol-param.json. "
-                            + "Configure 'protocol-parameters-file' with current network protocol parameters.");
-                }
+                ProtocolVersionSupplier protocolVersionSupplier = createBlockProtocolVersionSupplier();
 
-                log.info("Using SignedBlockBuilder with real VRF/KES crypto, protocolVersion={}.{}", protoMajor, protoMinor);
+                log.info("Using SignedBlockBuilder with real VRF/KES crypto and runtime protocol version supplier");
                 return new SignedBlockBuilder(keys, slotsPerKESPeriod, maxKESEvolutions,
-                        nonceState, nonceStore, protoMajor, protoMinor);
+                        nonceState, nonceStore, protocolVersionSupplier);
             } catch (Exception e) {
                 throw new IllegalStateException("Failed to initialize SignedBlockBuilder with configured producer keys", e);
             }
         }
 
         log.info("Using DevnetBlockBuilder with dummy signatures (no key files configured)");
-        return new DevnetBlockBuilder();
+        return new DevnetBlockBuilder(createBlockProtocolVersionSupplier());
     }
 
     /**
@@ -2231,12 +2261,12 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
             genesisConfig = GenesisConfig.fromInMemory(
                     inMemoryDevnetGenesis.shelley(),
                     inMemoryDevnetGenesis.byron(),
-                    inMemoryDevnetGenesis.protocolParametersJson());
+                    runtimeProtocolParametersJson());
         } else {
             genesisConfig = GenesisConfig.load(
                     config.getShelleyGenesisFile(),
                     config.getByronGenesisFile(),
-                    config.getProtocolParametersFile());
+                    runtimeProtocolParametersFile());
         }
 
         propagateGenesisToConfig(genesisConfig);
@@ -2352,7 +2382,8 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
     private boolean hasAnyGenesisConfig() {
         return (config.getShelleyGenesisFile() != null && !config.getShelleyGenesisFile().isBlank())
                 || (config.getByronGenesisFile() != null && !config.getByronGenesisFile().isBlank())
-                || (config.getProtocolParametersFile() != null && !config.getProtocolParametersFile().isBlank());
+                || (!epochParamsTrackingEnabled()
+                    && config.getProtocolParametersFile() != null && !config.getProtocolParametersFile().isBlank());
     }
 
     @Override

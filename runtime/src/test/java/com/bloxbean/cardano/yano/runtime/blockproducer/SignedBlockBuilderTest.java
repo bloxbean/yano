@@ -24,6 +24,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.*;
@@ -75,6 +76,11 @@ class SignedBlockBuilderTest {
      * Create a fresh SignedBlockBuilder with a clean EpochNonceState and optional NonceStateStore.
      */
     private static SignedBlockBuilder createFreshBuilder(NonceStateStore store) {
+        return createFreshBuilder(store, ProtocolVersionSupplier.fixed(10, 2));
+    }
+
+    private static SignedBlockBuilder createFreshBuilder(NonceStateStore store,
+                                                        ProtocolVersionSupplier protocolVersionSupplier) {
         EpochNonceState freshNonce = new EpochNonceState(EPOCH_LENGTH, SECURITY_PARAM, ACTIVE_SLOTS_COEFF);
         try {
             Path base = Paths.get("src/test/resources/devnet");
@@ -83,7 +89,8 @@ class SignedBlockBuilderTest {
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
-        return new SignedBlockBuilder(keys, SLOTS_PER_KES_PERIOD, MAX_KES_EVOLUTIONS, freshNonce, store);
+        return new SignedBlockBuilder(keys, SLOTS_PER_KES_PERIOD, MAX_KES_EVOLUTIONS,
+                freshNonce, store, protocolVersionSupplier);
     }
 
     @Test
@@ -103,6 +110,22 @@ class SignedBlockBuilderTest {
                 com.bloxbean.cardano.yaci.core.model.serializers.BlockSerializer.INSTANCE.deserialize(result.blockCbor());
         assertThat(block).isNotNull();
         assertThat(block.getTransactionBodies()).isEmpty();
+    }
+
+    @Test
+    void buildBlock_usesProtocolVersionSupplierForHeader() {
+        AtomicLong requestedSlot = new AtomicLong(-1);
+        SignedBlockBuilder freshBuilder = createFreshBuilder(null, slot -> {
+            requestedSlot.set(slot);
+            return new ProtocolVersion(11, 0);
+        });
+
+        var result = freshBuilder.buildBlock(1, 77, new byte[32], List.of());
+        freshBuilder.commitPendingNonceState();
+
+        assertThat(requestedSlot).hasValue(77);
+        assertThat(BlockTestUtil.protocolVersionFromBlockCbor(result.blockCbor()))
+                .isEqualTo(new ProtocolVersion(11, 0));
     }
 
     @Test

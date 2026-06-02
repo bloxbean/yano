@@ -56,8 +56,8 @@
     "nOpt" : 100,
     "poolDeposit" : 500000000,
     "protocolVersion" : {
-      "major" : 10,
-      "minor" : 2
+      "major" : 11,
+      "minor" : 0
     },
     "rho" : 0.003,
     "tau" : 0.2
