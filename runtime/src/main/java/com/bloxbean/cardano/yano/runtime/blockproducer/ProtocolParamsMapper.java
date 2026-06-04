@@ -1,6 +1,8 @@
 package com.bloxbean.cardano.yano.runtime.blockproducer;
 
 import com.bloxbean.cardano.client.api.model.ProtocolParams;
+import com.bloxbean.cardano.yaci.core.types.UnitInterval;
+import com.bloxbean.cardano.yano.api.EpochParamProvider;
 import com.bloxbean.cardano.yano.api.account.LedgerStateProvider;
 import com.bloxbean.cardano.yano.api.util.CostModelUtil;
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -213,6 +215,72 @@ public class ProtocolParamsMapper {
         return pp;
     }
 
+    public static ProtocolParams fromEpochParamProvider(EpochParamProvider provider, int epoch) {
+        if (provider == null) {
+            throw new IllegalArgumentException("EpochParamProvider must not be null");
+        }
+
+        var poolThresholds = provider.getPoolVotingThresholds(epoch);
+        var drepThresholds = provider.getDrepVotingThresholds(epoch);
+        return fromSnapshot(new LedgerStateProvider.ProtocolParamsSnapshot(
+                epoch,
+                provider.getMinFeeA(epoch),
+                provider.getMinFeeB(epoch),
+                provider.getMaxBlockSize(epoch),
+                provider.getMaxTxSize(epoch),
+                provider.getMaxBlockHeaderSize(epoch),
+                provider.getKeyDeposit(epoch),
+                provider.getPoolDeposit(epoch),
+                provider.getMaxEpoch(epoch),
+                provider.getNOpt(epoch),
+                provider.getA0(epoch),
+                provider.getRho(epoch),
+                provider.getTau(epoch),
+                provider.getDecentralization(epoch),
+                provider.getExtraEntropy(epoch),
+                provider.getProtocolMajor(epoch),
+                provider.getProtocolMinor(epoch),
+                provider.getMinUtxo(epoch),
+                provider.getMinPoolCost(epoch),
+                null,
+                provider.getCostModels(epoch),
+                provider.getCostModelsRaw(epoch),
+                provider.getPriceMem(epoch),
+                provider.getPriceStep(epoch),
+                provider.getMaxTxExMem(epoch),
+                provider.getMaxTxExSteps(epoch),
+                provider.getMaxBlockExMem(epoch),
+                provider.getMaxBlockExSteps(epoch),
+                provider.getMaxValSize(epoch),
+                provider.getCollateralPercent(epoch),
+                provider.getMaxCollateralInputs(epoch),
+                provider.getCoinsPerUtxoSize(epoch),
+                provider.getCoinsPerUtxoWord(epoch),
+                ratio(poolThresholds != null ? poolThresholds.getPvtMotionNoConfidence() : null),
+                ratio(poolThresholds != null ? poolThresholds.getPvtCommitteeNormal() : null),
+                ratio(poolThresholds != null ? poolThresholds.getPvtCommitteeNoConfidence() : null),
+                ratio(poolThresholds != null ? poolThresholds.getPvtHardForkInitiation() : null),
+                ratio(poolThresholds != null ? poolThresholds.getPvtPPSecurityGroup() : null),
+                ratio(drepThresholds != null ? drepThresholds.getDvtMotionNoConfidence() : null),
+                ratio(drepThresholds != null ? drepThresholds.getDvtCommitteeNormal() : null),
+                ratio(drepThresholds != null ? drepThresholds.getDvtCommitteeNoConfidence() : null),
+                ratio(drepThresholds != null ? drepThresholds.getDvtUpdateToConstitution() : null),
+                ratio(drepThresholds != null ? drepThresholds.getDvtHardForkInitiation() : null),
+                ratio(drepThresholds != null ? drepThresholds.getDvtPPNetworkGroup() : null),
+                ratio(drepThresholds != null ? drepThresholds.getDvtPPEconomicGroup() : null),
+                ratio(drepThresholds != null ? drepThresholds.getDvtPPTechnicalGroup() : null),
+                ratio(drepThresholds != null ? drepThresholds.getDvtPPGovGroup() : null),
+                ratio(drepThresholds != null ? drepThresholds.getDvtTreasuryWithdrawal() : null),
+                provider.getCommitteeMinSize(epoch),
+                provider.getCommitteeMaxTermLength(epoch),
+                provider.getGovActionLifetime(epoch),
+                provider.getGovActionDeposit(epoch),
+                provider.getDRepDeposit(epoch),
+                provider.getDRepActivity(epoch),
+                provider.getMinFeeRefScriptCostPerByte(epoch)
+        ));
+    }
+
     @SuppressWarnings("unchecked")
     private static LinkedHashMap<String, LinkedHashMap<String, Long>> toCostModels(Map<String, Object> costModels) {
         Map<String, Object> canonical = CostModelUtil.canonicalCostModels(costModels);
@@ -246,6 +314,10 @@ public class ProtocolParamsMapper {
 
     private static boolean nonEmpty(Map<String, Object> value) {
         return value != null && !value.isEmpty();
+    }
+
+    private static BigDecimal ratio(UnitInterval interval) {
+        return interval != null ? interval.safeRatio() : null;
     }
 
     private static void setInt(JsonNode root, Consumer<Integer> setter, String... names) {

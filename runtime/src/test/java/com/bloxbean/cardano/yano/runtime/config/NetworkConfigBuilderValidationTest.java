@@ -108,7 +108,7 @@ class NetworkConfigBuilderValidationTest {
 
         @Test
         void customMagicAndEpochParams() {
-            // Uses real devnet genesis: magic=42, epochLength=600, securityParam=100,
+            // Uses real devnet genesis: magic=42, epochLength=40, securityParam=100,
             // activeSlotsCoeff=1.0, a0=0.0, nOpt=100, 25 initial funds, no Byron balances
             var genesisConfig = NetworkGenesisConfig.load(
                     DEVNET_DIR + "shelley-genesis.json",
@@ -117,7 +117,7 @@ class NetworkConfigBuilderValidationTest {
             NetworkGenesisValues values = NetworkGenesisValuesFactory.build(genesisConfig);
 
             assertThat(values.networkMagic()).isEqualTo(42);
-            assertThat(values.expectedSlotsPerEpoch()).isEqualTo(600);
+            assertThat(values.expectedSlotsPerEpoch()).isEqualTo(40);
             assertThat(values.securityParam()).isEqualTo(100);
             assertThat(values.activeSlotsCoeff()).isEqualTo(1.0);
             assertThat(values.optimalPoolCount()).isEqualTo(100);
@@ -156,7 +156,7 @@ class NetworkConfigBuilderValidationTest {
             var cfConfig = NetworkConfigBuilder.build(values);
 
             assertThat(cfConfig.getNetworkMagic()).isEqualTo(42);
-            assertThat(cfConfig.getExpectedSlotsPerEpoch()).isEqualTo(600);
+            assertThat(cfConfig.getExpectedSlotsPerEpoch()).isEqualTo(40);
             assertThat(cfConfig.getGenesisConfigSecurityParameter()).isEqualTo(100);
             assertThat(cfConfig.getShelleyStartEpoch()).isEqualTo(0);
             // Unknown/custom networks: hardfork epochs default to MAX_VALUE ("not reached")

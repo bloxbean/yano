@@ -46,6 +46,7 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.LongSupplier;
+import java.util.function.Supplier;
 
 @ApplicationScoped
 public class YanoProducer {
@@ -775,14 +776,9 @@ public class YanoProducer {
     private void initTransactionEvaluator(Yano yaciNode, YanoConfig yaciConfig) {
         boolean effectiveEpochParamsTrackingEnabled = effectiveEpochParamsTrackingEnabled();
         LedgerStateProvider ledgerStateProvider = yaciNode.getLedgerStateProvider();
-        if (effectiveEpochParamsTrackingEnabled && ledgerStateProvider == null) {
-            log.info("Transaction validation/evaluation not initialized: ledger-state provider is unavailable");
-            return;
-        }
 
-        // Load genesis config for slot math. Protocol params come from ledger-state when
-        // epoch-param tracking is enabled; otherwise protocol-param.json is an explicit
-        // static source for devnet/custom quick setups.
+        // Load genesis config for slot math. Protocol params prefer ledger-state when
+        // epoch-param tracking is wired, then protocol-param.json, then genesis bootstrap.
         GenesisConfig genesis;
         SlotConfigSupplier slotConfigSupplier;
         int networkId;
@@ -790,27 +786,25 @@ public class YanoProducer {
         LongSupplier currentSlotSupplier;
         EpochSlotCalc epochSlotCalc;
         String protocolParamsSource;
+        boolean requireLedgerStateProviderForValidation;
         try {
+            boolean loadStaticProtocolParams =
+                    !effectiveEpochParamsTrackingEnabled || ledgerStateProvider == null;
             genesis = GenesisConfig.load(
                     yaciConfig.getShelleyGenesisFile(),
                     yaciConfig.getByronGenesisFile(),
-                    effectiveEpochParamsTrackingEnabled ? null : yaciConfig.getProtocolParametersFile());
+                    loadStaticProtocolParams ? yaciConfig.getProtocolParametersFile() : null);
 
             epochSlotCalc = resolveEpochSlotCalc(yaciNode, yaciConfig, genesis);
-            if (effectiveEpochParamsTrackingEnabled) {
-                protocolParamsSupplier = new EffectiveProtocolParamsSupplier(
-                        ledgerStateProvider,
-                        epochSlotCalc);
-                protocolParamsSource = "effective-ledger";
-            } else {
-                if (genesis == null || !genesis.hasProtocolParameters()) {
-                    log.info("Transaction validation/evaluation not initialized: epoch-param tracking disabled and no protocol-param.json configured");
-                    return;
-                }
-                ProtocolParams staticParams = ProtocolParamsMapper.fromNodeProtocolParam(genesis.getProtocolParameters());
-                protocolParamsSupplier = slot -> staticParams;
-                protocolParamsSource = "static-protocol-param-json";
+            ProtocolParamsResolution protocolParamsResolution = resolveTransactionProtocolParams(
+                    effectiveEpochParamsTrackingEnabled, ledgerStateProvider, genesis, epochSlotCalc, yaciConfig);
+            if (protocolParamsResolution == null) {
+                return;
             }
+            protocolParamsSupplier = protocolParamsResolution.supplier();
+            protocolParamsSource = protocolParamsResolution.source();
+            requireLedgerStateProviderForValidation = protocolParamsResolution.requireLedgerStateProvider();
+
             currentSlotSupplier = () -> {
                 var tip = yaciNode.getLocalTip();
                 return tip != null ? tip.getSlot() : -1L;
@@ -828,13 +822,7 @@ public class YanoProducer {
 
             networkId = magic == Constants.MAINNET_PROTOCOL_MAGIC ? 1 : 0;
         } catch (Exception e) {
-            if (effectiveEpochParamsTrackingEnabled) {
-                log.error("Transaction validation/evaluation not initialized for ledger-derived protocol params: {}",
-                        e.getMessage(), e);
-            } else {
-                log.warn("Transaction validation/evaluation not initialized for static protocol params: {}",
-                        e.getMessage(), e);
-            }
+            log.warn("Transaction validation/evaluation not initialized: {}", e.getMessage(), e);
             return;
         }
 
@@ -844,7 +832,7 @@ public class YanoProducer {
             TransactionValidator evaluator = ScalusTransactionFactory.createValidator(protocolParamsSupplier,
                     new YaciScriptSupplier(yaciNode.getUtxoState()), slotConfigSupplier, networkId,
                     ledgerStateProvider, currentSlotSupplier, epochSlotCalc::slotToEpoch,
-                    effectiveEpochParamsTrackingEnabled, supplementaryRulesEnabled);
+                    requireLedgerStateProviderForValidation, supplementaryRulesEnabled);
             yaciNode.setTransactionEvaluator(evaluator);
             validatorInitialized = true;
             log.info("Transaction validator initialized (networkId={}, protocolParams={}, supplementaryRules={})",
@@ -883,6 +871,128 @@ public class YanoProducer {
                     + "Plutus script transactions will not be validated!");
         }
     }
+
+    private ProtocolParamsResolution resolveTransactionProtocolParams(boolean effectiveEpochParamsTrackingEnabled,
+                                                                     LedgerStateProvider ledgerStateProvider,
+                                                                     GenesisConfig genesis,
+                                                                     EpochSlotCalc epochSlotCalc,
+                                                                     YanoConfig yaciConfig) {
+        ProtocolParamsResolution resolution = selectTransactionProtocolParams(
+                effectiveEpochParamsTrackingEnabled,
+                ledgerStateProvider,
+                epochSlotCalc,
+                () -> resolveStaticProtocolParams(genesis, yaciConfig.getProtocolParametersFile()),
+                () -> resolveGenesisProtocolParams(yaciConfig));
+        if (resolution != null) {
+            return resolution;
+        }
+
+        log.warn("Transaction validation/evaluation not initialized: no protocol params source available "
+                        + "(effectiveLedger={}, protocolParamFile={}, shelleyGenesis={})",
+                effectiveEpochParamsTrackingEnabled && ledgerStateProvider != null,
+                sourceLabel(yaciConfig.getProtocolParametersFile()),
+                sourceLabel(yaciConfig.getShelleyGenesisFile()));
+        return null;
+    }
+
+    static ProtocolParamsResolution selectTransactionProtocolParams(boolean effectiveEpochParamsTrackingEnabled,
+                                                                    LedgerStateProvider ledgerStateProvider,
+                                                                    EpochSlotCalc epochSlotCalc,
+                                                                    Supplier<ProtocolParams> staticParamsSupplier,
+                                                                    Supplier<ProtocolParams> genesisParamsSupplier) {
+        if (effectiveEpochParamsTrackingEnabled && ledgerStateProvider != null) {
+            log.info("Transaction protocol params source: effective-ledger");
+            return new ProtocolParamsResolution(
+                    new EffectiveProtocolParamsSupplier(ledgerStateProvider, epochSlotCalc),
+                    "effective-ledger",
+                    true);
+        }
+
+        if (effectiveEpochParamsTrackingEnabled) {
+            log.warn("Epoch-param tracking is enabled but LedgerStateProvider is unavailable for transaction "
+                    + "validation/evaluation. Falling back to protocol-param.json / genesis bootstrap.");
+        }
+
+        ProtocolParams staticParams = staticParamsSupplier != null ? staticParamsSupplier.get() : null;
+        if (staticParams != null) {
+            return new ProtocolParamsResolution(slot -> staticParams, "static-protocol-param-json", false);
+        }
+
+        ProtocolParams genesisParams = genesisParamsSupplier != null ? genesisParamsSupplier.get() : null;
+        if (genesisParams != null) {
+            return new ProtocolParamsResolution(slot -> genesisParams, "genesis-bootstrap", false);
+        }
+
+        return null;
+    }
+
+    private ProtocolParams resolveStaticProtocolParams(GenesisConfig genesis, String protocolParamsFile) {
+        if (genesis == null || !genesis.hasProtocolParameters()) {
+            return null;
+        }
+
+        try {
+            ProtocolParams params = ProtocolParamsMapper.fromNodeProtocolParam(genesis.getProtocolParameters());
+            validateProtocolVersion(params, "protocol-param.json");
+            log.info("Transaction protocol params source: protocol-param-json file={} version={}.{}",
+                    sourceLabel(protocolParamsFile),
+                    params.getProtocolMajorVer(),
+                    params.getProtocolMinorVer());
+            return params;
+        } catch (Exception e) {
+            log.warn("Failed to resolve transaction protocol params from protocol-param.json file={}: {}",
+                    sourceLabel(protocolParamsFile), e.toString());
+            return null;
+        }
+    }
+
+    private ProtocolParams resolveGenesisProtocolParams(YanoConfig yaciConfig) {
+        try {
+            NetworkGenesisConfig networkGenesisConfig = NetworkGenesisConfig.load(
+                    yaciConfig.getShelleyGenesisFile(),
+                    yaciConfig.getByronGenesisFile(),
+                    yaciConfig.getAlonzoGenesisFile(),
+                    yaciConfig.getConwayGenesisFile());
+            long firstNonByronSlot = DefaultEpochParamProvider.resolveFirstNonByronSlot(
+                    networkGenesisConfig.getNetworkMagic(),
+                    networkGenesisConfig.hasByronGenesis());
+            var provider = DefaultEpochParamProvider.fromNetworkGenesisConfig(
+                    networkGenesisConfig, firstNonByronSlot);
+            ProtocolParams params = ProtocolParamsMapper.fromEpochParamProvider(provider, 0);
+            validateProtocolVersion(params, "genesis bootstrap");
+            log.info("Transaction protocol params source: genesis-bootstrap shelley={} alonzo={} conway={} version={}.{}",
+                    sourceLabel(yaciConfig.getShelleyGenesisFile()),
+                    sourceLabel(yaciConfig.getAlonzoGenesisFile()),
+                    sourceLabel(yaciConfig.getConwayGenesisFile()),
+                    params.getProtocolMajorVer(),
+                    params.getProtocolMinorVer());
+            return params;
+        } catch (Exception e) {
+            log.warn("Failed to resolve transaction protocol params from genesis bootstrap "
+                            + "shelley={} alonzo={} conway={}: {}",
+                    sourceLabel(yaciConfig.getShelleyGenesisFile()),
+                    sourceLabel(yaciConfig.getAlonzoGenesisFile()),
+                    sourceLabel(yaciConfig.getConwayGenesisFile()),
+                    e.toString());
+            return null;
+        }
+    }
+
+    private static void validateProtocolVersion(ProtocolParams params, String source) {
+        Integer major = params != null ? params.getProtocolMajorVer() : null;
+        Integer minor = params != null ? params.getProtocolMinorVer() : null;
+        if (major == null || major <= 0 || minor == null || minor < 0) {
+            throw new IllegalStateException("Protocol version not found or invalid in " + source);
+        }
+    }
+
+    private static String sourceLabel(String source) {
+        return source != null && !source.isBlank() ? source : "not-configured";
+    }
+
+    record ProtocolParamsResolution(EpochProtocolParamsSupplier supplier,
+                                    String source,
+                                    boolean requireLedgerStateProvider) {}
 
     static long resolveRuntimeCurrentSlot(LongSupplier currentSlotSupplier) {
         if (currentSlotSupplier == null) {

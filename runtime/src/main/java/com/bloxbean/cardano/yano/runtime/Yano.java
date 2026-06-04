@@ -128,6 +128,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Supplier;
 
 
 /**
@@ -825,35 +826,121 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
     }
 
     private ProtocolVersionSupplier createBlockProtocolVersionSupplier() {
-        if (epochParamsTrackingEnabled()) {
-            EpochParamProvider effectiveProvider = effectiveEpochParamProvider();
-            if (!(effectiveProvider instanceof EpochParamTracker tracker) || !tracker.isEnabled()) {
-                throw new IllegalStateException(
-                        "Epoch-param tracking is enabled but EpochParamTracker is unavailable for block production");
+        return resolveBlockProtocolVersionSupplier(
+                epochParamsTrackingEnabled(),
+                effectiveEpochParamProvider(),
+                getLedgerStateProvider(),
+                this::createStaticBlockProtocolVersionSupplier,
+                this::createGenesisBlockProtocolVersionSupplier);
+    }
+
+    static ProtocolVersionSupplier resolveBlockProtocolVersionSupplier(boolean epochParamsTrackingEnabled,
+                                                                       EpochParamProvider effectiveProvider,
+                                                                       LedgerStateProvider ledgerStateProvider,
+                                                                       Supplier<ProtocolVersionSupplier> staticSupplier,
+                                                                       Supplier<ProtocolVersionSupplier> genesisSupplier) {
+        if (epochParamsTrackingEnabled) {
+            EpochParamTracker tracker = effectiveProvider instanceof EpochParamTracker t && t.isEnabled()
+                    ? t : null;
+            if (tracker != null && ledgerStateProvider != null) {
+                log.info("Block protocol version source: effective-ledger");
+                return new EffectiveProtocolVersionSupplier(
+                        ledgerStateProvider,
+                        effectiveProvider.getEpochSlotCalc(),
+                        tracker);
             }
-            LedgerStateProvider ledgerStateProvider = getLedgerStateProvider();
-            if (ledgerStateProvider == null) {
-                throw new IllegalStateException(
-                        "Epoch-param tracking is enabled but LedgerStateProvider is unavailable for block production");
-            }
-            return new EffectiveProtocolVersionSupplier(
-                    ledgerStateProvider,
-                    effectiveProvider.getEpochSlotCalc(),
-                    tracker);
+
+            log.warn("Epoch-param tracking is enabled but effective block protocol version source is unavailable "
+                            + "(tracker={}, ledgerStateProvider={}). Falling back to protocol-param.json / Shelley genesis.",
+                    tracker != null, ledgerStateProvider != null);
         }
 
-        if (genesisConfig == null || !genesisConfig.hasProtocolParameters()) {
-            throw new IllegalStateException(
-                    "Protocol version not found in protocol-param.json. "
-                            + "Configure 'protocol-parameters-file' or enable epoch-param tracking.");
+        ProtocolVersionSupplier staticProtocolVersionSupplier = staticSupplier != null ? staticSupplier.get() : null;
+        if (staticProtocolVersionSupplier != null) {
+            return staticProtocolVersionSupplier;
         }
+
+        ProtocolVersionSupplier genesisProtocolVersionSupplier = genesisSupplier != null ? genesisSupplier.get() : null;
+        if (genesisProtocolVersionSupplier != null) {
+            return genesisProtocolVersionSupplier;
+        }
+
+        throw new IllegalStateException(
+                "No protocol version source available for block production. Configure epoch-param tracking "
+                        + "with ledger state, protocol-param.json, or a valid Shelley genesis protocolVersion.");
+    }
+
+    private ProtocolVersionSupplier createStaticBlockProtocolVersionSupplier() {
+        // Static fallback mode is fixed until the operator reconfigures or effective tracking becomes available.
+        String protocolParamsJson = null;
+        String source = null;
+        if (genesisConfig != null && genesisConfig.hasProtocolParameters()) {
+            protocolParamsJson = genesisConfig.getProtocolParameters();
+            source = inMemoryDevnetGenesis != null ? "in-memory-devnet" : config.getProtocolParametersFile();
+        } else if (inMemoryDevnetGenesis != null
+                && inMemoryDevnetGenesis.protocolParametersJson() != null
+                && !inMemoryDevnetGenesis.protocolParametersJson().isBlank()) {
+            protocolParamsJson = inMemoryDevnetGenesis.protocolParametersJson();
+            source = "in-memory-devnet";
+        } else if (config.getProtocolParametersFile() != null
+                && !config.getProtocolParametersFile().isBlank()) {
+            source = config.getProtocolParametersFile();
+            try {
+                protocolParamsJson = Files.readString(Path.of(config.getProtocolParametersFile()));
+            } catch (Exception e) {
+                log.warn("Failed to read protocol-param.json for block protocol version fallback file={}: {}",
+                        source, e.toString());
+                return null;
+            }
+        }
+
+        if (protocolParamsJson == null || protocolParamsJson.isBlank()) {
+            return null;
+        }
+
         try {
-            return StaticProtocolVersionSupplier.fromProtocolParametersJson(
-                    genesisConfig.getProtocolParameters());
+            StaticProtocolVersionSupplier supplier =
+                    StaticProtocolVersionSupplier.fromProtocolParametersJson(protocolParamsJson);
+            ProtocolVersion version = supplier.getProtocolVersion(0);
+            log.info("Block protocol version source: protocol-param-json file={} version={}.{}",
+                    sourceLabel(source), version.major(), version.minor());
+            return supplier;
         } catch (Exception e) {
-            throw new IllegalStateException(
-                    "Failed to resolve static protocol version from protocol-param.json", e);
+            log.warn("Failed to resolve block protocol version from protocol-param.json file={}: {}",
+                    sourceLabel(source), e.toString());
+            return null;
         }
+    }
+
+    private ProtocolVersionSupplier createGenesisBlockProtocolVersionSupplier() {
+        // Genesis fallback mode is fixed until the operator reconfigures or effective tracking becomes available.
+        var shelley = genesisConfig != null ? genesisConfig.getShelleyGenesisData() : null;
+        if (shelley == null && inMemoryDevnetGenesis != null) {
+            shelley = inMemoryDevnetGenesis.shelley();
+        }
+        if (shelley == null) {
+            return null;
+        }
+
+        long major = shelley.protocolMajor();
+        long minor = shelley.protocolMinor();
+        if (major <= 0 || minor < 0) {
+            log.warn("Shelley genesis protocolVersion is invalid for block protocol version fallback "
+                            + "file={} version={}.{}",
+                    sourceLabel(inMemoryDevnetGenesis != null ? "in-memory-devnet" : config.getShelleyGenesisFile()),
+                    major, minor);
+            return null;
+        }
+
+        ProtocolVersionSupplier supplier = ProtocolVersionSupplier.fixed(major, minor);
+        String source = inMemoryDevnetGenesis != null ? "in-memory-devnet" : config.getShelleyGenesisFile();
+        log.info("Block protocol version source: shelley-genesis file={} version={}.{}",
+                sourceLabel(source), major, minor);
+        return supplier;
+    }
+
+    private static String sourceLabel(String source) {
+        return source != null && !source.isBlank() ? source : "not-configured";
     }
 
     /**
