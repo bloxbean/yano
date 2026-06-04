@@ -1,9 +1,22 @@
 package com.bloxbean.cardano.yano.runtime.blockproducer;
 
 import co.nstant.in.cbor.model.*;
+import com.bloxbean.cardano.yaci.events.api.Event;
 import com.bloxbean.cardano.yaci.core.storage.ChainTip;
 import com.bloxbean.cardano.yaci.core.util.CborSerializationUtil;
+import com.bloxbean.cardano.yaci.events.api.EventListener;
+import com.bloxbean.cardano.yaci.events.api.EventMetadata;
+import com.bloxbean.cardano.yaci.events.api.PublishOptions;
+import com.bloxbean.cardano.yaci.events.api.SubscriptionHandle;
+import com.bloxbean.cardano.yaci.events.api.SubscriptionOptions;
+import com.bloxbean.cardano.yaci.events.api.EventBus;
 import com.bloxbean.cardano.yaci.events.impl.NoopEventBus;
+import com.bloxbean.cardano.yano.api.EpochParamProvider;
+import com.bloxbean.cardano.yano.api.events.BlockAppliedEvent;
+import com.bloxbean.cardano.yano.api.events.BlockProducedEvent;
+import com.bloxbean.cardano.yano.api.events.EpochTransitionEvent;
+import com.bloxbean.cardano.yano.api.events.PostEpochTransitionEvent;
+import com.bloxbean.cardano.yano.api.events.PreEpochTransitionEvent;
 import com.bloxbean.cardano.yano.api.utxo.UtxoState;
 import com.bloxbean.cardano.yano.api.utxo.model.Outpoint;
 import com.bloxbean.cardano.yano.api.utxo.model.Utxo;
@@ -16,8 +29,12 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.math.BigInteger;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -35,6 +52,8 @@ class DevnetBlockProducerTest {
         chainState = new InMemoryChainState();
         memPool = new DefaultMemPool();
         scheduler = Executors.newSingleThreadScheduledExecutor();
+        BlockProducerHelper.setEpochParamProvider(null);
+        BlockProducerHelper.resetEpochTrackingToSlot(-1);
     }
 
     @AfterEach
@@ -42,6 +61,8 @@ class DevnetBlockProducerTest {
         if (blockProducer != null && blockProducer.isRunning()) {
             blockProducer.stop();
         }
+        BlockProducerHelper.setEpochParamProvider(null);
+        BlockProducerHelper.resetEpochTrackingToSlot(-1);
         scheduler.shutdownNow();
     }
 
@@ -207,10 +228,86 @@ class DevnetBlockProducerTest {
         assertThat(block.getTransactionBodies()).isEmpty();
     }
 
+    @Test
+    void prepareEpochTransitionBeforeBlock_publishesBoundaryEventsAndPublishEventDoesNotDuplicateThem() {
+        BlockProducerHelper.setEpochParamProvider(new TestEpochParamProvider(10));
+        BlockProducerHelper.resetEpochTrackingToSlot(9);
+        RecordingEventBus eventBus = new RecordingEventBus();
+
+        BlockProducerHelper.prepareEpochTransitionBeforeBlock(eventBus, 10, 1, "test");
+        var result = new DevnetBlockBuilder().buildBlock(1, 10, new byte[32], java.util.List.of());
+        BlockProducerHelper.publishEvent(eventBus, result, 0, "test");
+
+        assertThat(eventBus.eventTypes()).containsExactly(
+                PreEpochTransitionEvent.class,
+                EpochTransitionEvent.class,
+                PostEpochTransitionEvent.class,
+                BlockProducedEvent.class,
+                BlockAppliedEvent.class);
+        assertThat(((BlockProducedEvent) eventBus.events().get(3)).era())
+                .isEqualTo(com.bloxbean.cardano.yaci.core.model.Era.Conway.getValue());
+    }
+
+    @Test
+    void produceBlock_preparesEpochTransitionBeforeBuildingBoundaryBlock() {
+        BlockProducerHelper.setEpochParamProvider(new TestEpochParamProvider(10));
+        AtomicBoolean transitionSeen = new AtomicBoolean();
+        RecordingEventBus eventBus = new RecordingEventBus(event -> {
+            if (event instanceof PreEpochTransitionEvent) {
+                transitionSeen.set(true);
+            }
+        });
+        TransitionAwareBlockBuilder builder = new TransitionAwareBlockBuilder(transitionSeen);
+
+        blockProducer = createDevnetBlockProducerAtTip(9, builder, eventBus);
+        blockProducer.produceBlock();
+
+        assertThat(builder.built()).isTrue();
+        assertThat(chainState.getTip().getBlockNumber()).isEqualTo(1);
+        assertThat(eventBus.eventTypes()).containsSubsequence(
+                PreEpochTransitionEvent.class,
+                BlockProducedEvent.class,
+                BlockAppliedEvent.class);
+    }
+
+    @Test
+    void produceBlock_doesNotBuildBlockWhenEpochTransitionFails() {
+        BlockProducerHelper.setEpochParamProvider(new TestEpochParamProvider(10));
+        RecordingEventBus eventBus = new RecordingEventBus(event -> {
+            if (event instanceof PreEpochTransitionEvent) {
+                throw new RuntimeException("boundary failed");
+            }
+        });
+        TransitionAwareBlockBuilder builder = new TransitionAwareBlockBuilder(new AtomicBoolean(false));
+
+        blockProducer = createDevnetBlockProducerAtTip(9, builder, eventBus);
+
+        RuntimeException error = assertThrows(RuntimeException.class, () -> blockProducer.produceBlock());
+        assertThat(error).hasMessageContaining("boundary failed");
+        assertThat(builder.built()).isFalse();
+        assertThat(chainState.getTip().getBlockNumber()).isEqualTo(0);
+    }
+
     private DevnetBlockProducer createDevnetBlockProducer(int blockTimeMillis, boolean lazy) {
         return new DevnetBlockProducer(
                 chainState, memPool, null, new NoopEventBus(), scheduler,
                 blockTimeMillis, lazy, System.currentTimeMillis(), 1000, null, new DummyTransactionValidationService(null, null), null);
+    }
+
+    private DevnetBlockProducer createDevnetBlockProducerAtTip(long tipSlot,
+                                                               DevnetBlockBuilder builder,
+                                                               EventBus eventBus) {
+        var existing = new DevnetBlockBuilder().buildBlock(0, tipSlot, null, java.util.List.of());
+        chainState.storeBlock(existing.blockHash(), 0L, tipSlot, existing.blockCbor());
+        chainState.storeBlockHeader(existing.blockHash(), 0L, tipSlot, existing.wrappedHeaderCbor());
+
+        DevnetBlockProducer producer = new DevnetBlockProducer(
+                chainState, memPool, null, eventBus, scheduler, builder,
+                2000, false, System.currentTimeMillis(), 1000, null,
+                new DummyTransactionValidationService(null, null), null);
+        producer.setForceSequentialSlots(true);
+        producer.start();
+        return producer;
     }
 
     private byte[] buildSampleTxCbor() {
@@ -255,6 +352,102 @@ class DevnetBlockProducerTest {
         @Override
         public ValidationResult validate(byte[] txCbor, Function<Outpoint, Utxo> resolver) {
             return  ValidationResult.success();
+        }
+    }
+
+    private static final class TestEpochParamProvider implements EpochParamProvider {
+        private final long epochLength;
+
+        private TestEpochParamProvider(long epochLength) {
+            this.epochLength = epochLength;
+        }
+
+        @Override
+        public BigInteger getKeyDeposit(long epoch) {
+            return BigInteger.ZERO;
+        }
+
+        @Override
+        public BigInteger getPoolDeposit(long epoch) {
+            return BigInteger.ZERO;
+        }
+
+        @Override
+        public long getEpochLength() {
+            return epochLength;
+        }
+
+        @Override
+        public long getByronSlotsPerEpoch() {
+            return epochLength;
+        }
+    }
+
+    private static final class TransitionAwareBlockBuilder extends DevnetBlockBuilder {
+        private final AtomicBoolean transitionSeen;
+        private final AtomicBoolean built = new AtomicBoolean();
+
+        private TransitionAwareBlockBuilder(AtomicBoolean transitionSeen) {
+            this.transitionSeen = transitionSeen;
+        }
+
+        @Override
+        public BlockBuildResult buildBlock(long blockNumber, long slot, byte[] prevHash,
+                                           java.util.List<byte[]> transactions) {
+            assertThat(transitionSeen.get()).isTrue();
+            built.set(true);
+            return super.buildBlock(blockNumber, slot, prevHash, transactions);
+        }
+
+        boolean built() {
+            return built.get();
+        }
+    }
+
+    private static final class RecordingEventBus implements EventBus {
+        private final List<Event> events = new ArrayList<>();
+        private final java.util.function.Consumer<Event> onPublish;
+
+        private RecordingEventBus() {
+            this(event -> {});
+        }
+
+        private RecordingEventBus(java.util.function.Consumer<Event> onPublish) {
+            this.onPublish = onPublish;
+        }
+
+        @Override
+        public <E extends Event> SubscriptionHandle subscribe(Class<E> eventType,
+                                                              EventListener<E> listener,
+                                                              SubscriptionOptions options) {
+            return new SubscriptionHandle() {
+                @Override
+                public void close() {
+                }
+
+                @Override
+                public boolean isActive() {
+                    return true;
+                }
+            };
+        }
+
+        @Override
+        public <E extends Event> void publish(E event, EventMetadata metadata, PublishOptions options) {
+            onPublish.accept(event);
+            events.add(event);
+        }
+
+        @Override
+        public void close() {
+        }
+
+        List<Event> events() {
+            return events;
+        }
+
+        List<Class<? extends Event>> eventTypes() {
+            return events.stream().map(Event::getClass).toList();
         }
     }
 }

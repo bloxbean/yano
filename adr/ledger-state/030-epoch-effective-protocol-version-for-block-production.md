@@ -138,10 +138,10 @@ The tracking-enabled implementation should:
 3. Return the snapshot's protocol major/minor version.
 4. Cache only the last resolved `epoch -> protocolVersion` value. Protocol
    parameters are epoch-scoped and cannot change inside an epoch.
-5. If the snapshot is missing and an enabled `EpochParamTracker` is available,
-   call `bootstrapEpochIfNeeded(epoch)` once and re-read the snapshot. This
-   handles first-block devnet production without changing the existing block
-   builder construction order.
+5. For the first non-Byron epoch only, it may call
+   `EpochParamTracker.bootstrapEpochIfNeeded(epoch)` if the genesis snapshot is
+   not yet available. It must not finalize or materialize later epoch snapshots;
+   those are produced by the normal epoch-boundary event path.
 6. Fail clearly before producing a block if tracking is enabled but effective
    protocol parameters for the block's epoch are still unavailable.
 
@@ -172,6 +172,15 @@ version and must switch to the supplier when tracking is enabled:
 All four sites must consult the same mode decision used for transaction
 validation wiring, so produced blocks cannot diverge from validated
 transactions.
+
+Local block producers must run the epoch-transition event sequence before
+building the first block in a new epoch. The block header now needs the
+new epoch's effective protocol version during `buildBlock(...)`; therefore
+`PreEpochTransitionEvent` / `EpochTransitionEvent` /
+`PostEpochTransitionEvent` must be published before block assembly for locally
+produced blocks. Public-network sync remains unchanged because received blocks
+are already built and `BodyFetchManager` already publishes epoch-transition
+events before `BlockAppliedEvent`.
 
 Existing constructors that accept fixed protocol versions may remain as wrappers
 for tests and standalone consumers:
@@ -215,10 +224,10 @@ Tradeoffs:
 
 - Block production now depends on the effective epoch-param snapshot when
   tracking is enabled.
-- The supplier is responsible for first-epoch availability. Today
-  `EpochParamTracker.bootstrapEpochIfNeeded(...)` runs from the genesis-block
-  event, while block builders are constructed before genesis is produced. Lazy
-  bootstrap on first lookup keeps the current wiring order unchanged.
+- Local block producers must prepare epoch transitions before block assembly.
+  If boundary processing fails, the block for that new epoch must not be built.
+- The supplier can still bootstrap the first non-Byron epoch snapshot for
+  genesis-block production, but regular epoch transitions remain event-driven.
 - Tests must cover both tracking-enabled and static-fallback modes.
 
 ## Implementation Notes
@@ -271,8 +280,9 @@ Add or update tests for these scenarios:
    the epoch-effective protocol version from the tracker/snapshot.
 2. The supplier caches the last epoch and refreshes when a later block slot maps
    to a new epoch.
-3. Tracking-enabled first-block production bootstraps or lazily materializes the
-   effective snapshot before resolving produced-block protocol version.
+3. Local block production publishes epoch-transition events before building the
+   first block in a new epoch, so the effective snapshot exists before resolving
+   produced-block protocol version.
 4. Tracking-enabled block production fails clearly if the effective snapshot for
    the block epoch is still unavailable.
 5. `DevnetBlockBuilder` stamps the supplier-resolved protocol version into the

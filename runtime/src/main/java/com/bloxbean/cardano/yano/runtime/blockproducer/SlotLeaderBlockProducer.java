@@ -84,6 +84,8 @@ public class SlotLeaderBlockProducer implements BlockProducerService {
             log.warn("SlotLeaderBlockProducer is already running");
             return;
         }
+        ChainTip tip = chainState.getTip();
+        BlockProducerHelper.resetEpochTrackingToSlot(tip != null ? tip.getSlot() : -1);
         running = true;
 
         // Schedule at slot-length interval (derived from genesis, not hardcoded)
@@ -216,6 +218,9 @@ public class SlotLeaderBlockProducer implements BlockProducerService {
     private void produceBlock(long slot, BlockSigner.VrfSignResult vrfResult, ChainTip tip) {
         long blockNumber = tip.getBlockNumber() + 1;
         byte[] prevHash = tip.getBlockHash();
+
+        BlockProducerHelper.prepareEpochTransitionBeforeBlock(
+                eventBus, slot, blockNumber, "slot-leader-block-producer");
 
         List<byte[]> txList = BlockProducerHelper.drainMempool(
                 memPool, transactionValidatorService, utxoState);

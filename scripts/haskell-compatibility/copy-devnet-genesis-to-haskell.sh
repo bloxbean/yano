@@ -4,12 +4,11 @@
 # IMPORTANT: Run this AFTER Yano starts, because Yano updates systemStart
 # dynamically on every startup.
 #
-# Source : <project-root>/app/config/network/devnet/{shelley,byron,alonzo}-genesis.json
-#          <project-root>/test-data-dir/genesis-overrides/conway-genesis.json
-#                                       (251-entry preprod variant; the bundled
-#                                        Yano devnet conway-genesis.json has 297
-#                                        plutusV3 entries which cardano-node
-#                                        11.0.x rejects)
+# Source : <YANO_GENESIS_DIR>/{shelley,byron,alonzo,conway}-genesis.json
+#          Defaults to <project-root>/app/config/network/devnet/.
+#          If <YANO_GENESIS_DIR>/conway-genesis.json is missing, the script
+#          falls back to <project-root>/test-data-dir/genesis-overrides/
+#          for conway (legacy flow for the bundled PV11 devnet folder).
 # Target : <project-root>/test-data-dir/haskell-node/files/
 
 set -euo pipefail
@@ -28,9 +27,19 @@ if [ ! -f "$YANO_GENESIS_DIR/shelley-genesis.json" ]; then
   echo "Make sure Yano devnet has been started at least once." >&2
   exit 1
 fi
-if [ ! -f "$GENESIS_OVERRIDE_DIR/conway-genesis.json" ]; then
-  echo "ERROR: Conway override not found at $GENESIS_OVERRIDE_DIR/conway-genesis.json" >&2
-  echo "Run scripts/setup-haskell-test-node.sh first." >&2
+
+# Decide where conway-genesis.json comes from. Prefer the source dir (e.g.
+# app/config/network/devnet/pv10/ already has a 251-entry Haskell-compatible
+# conway). Fall back to the downloaded override for legacy callers that point
+# at the PV11 devnet folder whose conway is rejected by cardano-node 11.0.x.
+if [ -f "$YANO_GENESIS_DIR/conway-genesis.json" ]; then
+  CONWAY_SRC_DIR="$YANO_GENESIS_DIR"
+elif [ -f "$GENESIS_OVERRIDE_DIR/conway-genesis.json" ]; then
+  CONWAY_SRC_DIR="$GENESIS_OVERRIDE_DIR"
+else
+  echo "ERROR: conway-genesis.json not found in $YANO_GENESIS_DIR or $GENESIS_OVERRIDE_DIR" >&2
+  echo "Run scripts/haskell-compatibility/setup-haskell-test-node.sh first, or" >&2
+  echo "point YANO_GENESIS_DIR at a folder that contains conway-genesis.json." >&2
   exit 1
 fi
 
@@ -39,10 +48,8 @@ mkdir -p "$HASKELL_FILES"
 cp "$YANO_GENESIS_DIR/shelley-genesis.json" "$HASKELL_FILES/"
 cp "$YANO_GENESIS_DIR/byron-genesis.json"   "$HASKELL_FILES/"
 cp "$YANO_GENESIS_DIR/alonzo-genesis.json"  "$HASKELL_FILES/"
-# Conway uses the cost-model-trimmed override (must match the file Yano was
-# started with via -Dyano.genesis.conway-genesis-file)
-cp "$GENESIS_OVERRIDE_DIR/conway-genesis.json" "$HASKELL_FILES/"
+cp "$CONWAY_SRC_DIR/conway-genesis.json"    "$HASKELL_FILES/"
 
 echo "Genesis copied -> $HASKELL_FILES"
 echo "  shelley/byron/alonzo : from $YANO_GENESIS_DIR"
-echo "  conway               : from $GENESIS_OVERRIDE_DIR (251-entry plutusV3CostModel)"
+echo "  conway               : from $CONWAY_SRC_DIR"

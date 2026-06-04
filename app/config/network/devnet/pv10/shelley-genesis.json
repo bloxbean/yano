@@ -1,6 +1,6 @@
 {
   "activeSlotsCoeff" : 1.0,
-  "epochLength" : 40,
+  "epochLength" : 600,
   "genDelegs" : {
     "337bc5ef0f1abf205624555c13a37258c42b46b1259a6b1a6d82574e" : {
       "delegate" : "7301761068762f5900bde9eb7c1c15b09840285130f5b0f53606cc57",
@@ -88,6 +88,6 @@
       "295b987135610616f3c74e11c94d77b6ced5ccc93a7d719cfb135062" : "7301761068762f5900bde9eb7c1c15b09840285130f5b0f53606cc57"
     }
   },
-  "systemStart" : "2026-06-03T11:05:36Z",
+  "systemStart" : "2026-06-03T14:37:11Z",
   "updateQuorum" : 1
 }
