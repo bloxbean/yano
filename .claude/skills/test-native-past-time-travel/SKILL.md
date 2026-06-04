@@ -27,21 +27,24 @@ script keeps the existing binary if its version is `>=` the requested one;
 otherwise it downloads and replaces it. macOS uses the `macos-amd64` asset
 (arm64 build has known compatibility issues for these tests).
 
-## Conway genesis override (required for cardano-node 11.0.x)
-cardano-node 11.0.x rejects Yano's bundled devnet `conway-genesis.json` because
-its `plutusV3CostModel` has 297 entries while 11.0.x expects exactly 251:
+## Genesis source: `app/config/network/devnet/pv10/`
+cardano-node 11.0.x enforces strict cost-model length validation: alonzo
+expects exactly 166 PlutusV1 entries and conway expects exactly 251 PlutusV3
+entries. The PV11-flavoured devnet folder at `app/config/network/devnet/`
+ships larger cost models (alonzo 332, conway 297) which 11.0.x rejects.
 
-```
-"Number of parameters supplied 297 does not match the expected number of 251"
-```
+A Haskell-compatible PV10 drop-in lives at `app/config/network/devnet/pv10/`
+with `alonzo-genesis.json` (166 entries) and `conway-genesis.json` (251
+entries). The kes/opcert/vrf signing keys in `pv10/` are byte-identical to the
+ones in `devnet/`. Yano is started with `-Dyano.genesis.*-file=…/pv10/…` so
+the same files reach the Haskell peer via
+`copy-devnet-genesis-to-haskell.sh app/config/network/devnet/pv10`.
 
-`scripts/haskell-compatibility/setup-haskell-test-node.sh` downloads the canonical preprod
-`conway-genesis.json` (251 entries) into
-`test-data-dir/genesis-overrides/conway-genesis.json`. Yano is then started
-with `-Dyano.genesis.conway-genesis-file=…` so it loads the same file Yano's
-peers will receive — keeping the conway-genesis hash consistent on both sides.
-The `copy-devnet-genesis-to-haskell.sh` helper copies shelley/byron/alonzo from
-Yano's devnet folder and overlays the override conway-genesis on top.
+`setup-haskell-test-node.sh` still downloads `cardano-node`, the
+dijkstra-genesis stub, and the topology/config scaffolding. The
+`test-data-dir/genesis-overrides/conway-genesis.json` it writes is no longer
+the source of truth for these tests — it remains only as a fallback for
+callers that point at the PV11 devnet folder directly.
 
 ## Test Steps
 
@@ -60,11 +63,15 @@ Yano's devnet folder and overlays the override conway-genesis on top.
    Verify:
    - `test-data-dir/haskell-node/bin/cardano-node` exists and is executable
    - `test-data-dir/genesis-overrides/conway-genesis.json` exists
-5. **Start Yano devnet** in past-time-travel mode using the native binary, with the conway-genesis override:
+5. **Start Yano devnet** in past-time-travel mode using the native binary, pointed at the `pv10/` genesis set:
    ```bash
    cd app && ./build/yano -Dquarkus.profile=devnet -Dquarkus.http.port=7070 \
      -Dyano.block-producer.past-time-travel-mode=true \
-     -Dyano.genesis.conway-genesis-file=$(pwd)/../test-data-dir/genesis-overrides/conway-genesis.json \
+     -Dyano.genesis.shelley-genesis-file=$(pwd)/config/network/devnet/pv10/shelley-genesis.json \
+     -Dyano.genesis.byron-genesis-file=$(pwd)/config/network/devnet/pv10/byron-genesis.json \
+     -Dyano.genesis.alonzo-genesis-file=$(pwd)/config/network/devnet/pv10/alonzo-genesis.json \
+     -Dyano.genesis.conway-genesis-file=$(pwd)/config/network/devnet/pv10/conway-genesis.json \
+     -Dyano.genesis.protocol-parameters-file=$(pwd)/config/network/devnet/pv10/protocol-param.json \
      > /tmp/yano-test-ptt-native.log 2>&1 &
    ```
 6. **Wait ~5s**, verify log shows "Past time travel mode: block production deferred"
@@ -82,12 +89,14 @@ Yano's devnet folder and overlays the override conway-genesis on top.
     ```
 12. **Verify** catch-up response shows ~2400 blocks produced, new slot near wall-clock
 13. **Verify wall-clock mode active**: check tip a few seconds later — slot numbers should now jump based on real time (slot > blockNumber), not be sequential
-14. **Copy genesis files** to the Haskell node:
+14. **Copy genesis files** to the Haskell node from the same `pv10/` folder:
     ```bash
-    bash scripts/haskell-compatibility/copy-devnet-genesis-to-haskell.sh
+    bash scripts/haskell-compatibility/copy-devnet-genesis-to-haskell.sh app/config/network/devnet/pv10
     ```
-    This copies `shelley/byron/alonzo` from Yano's devnet folder and overlays
-    the override `conway-genesis.json` so both nodes load the same bytes.
+    The script copies shelley/byron/alonzo/conway from `pv10/` so both nodes
+    load identical bytes. Yano rewrites `systemStart` inside
+    `pv10/shelley-genesis.json` after `/epochs/shift` runs, so this copy must
+    happen after the shift.
 15. **Verify systemStart** in `test-data-dir/haskell-node/files/shelley-genesis.json` is shifted back ~8 minutes from now
 16. **Start Haskell node** clean:
     ```bash

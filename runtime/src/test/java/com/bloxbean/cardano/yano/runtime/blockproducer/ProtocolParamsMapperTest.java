@@ -1,6 +1,10 @@
 package com.bloxbean.cardano.yano.runtime.blockproducer;
 
 import com.bloxbean.cardano.client.api.model.ProtocolParams;
+import com.bloxbean.cardano.yaci.core.model.DrepVoteThresholds;
+import com.bloxbean.cardano.yaci.core.model.PoolVotingThresholds;
+import com.bloxbean.cardano.yaci.core.types.UnitInterval;
+import com.bloxbean.cardano.yano.api.EpochParamProvider;
 import com.bloxbean.cardano.yano.api.account.LedgerStateProvider;
 import org.junit.jupiter.api.Test;
 
@@ -130,6 +134,50 @@ class ProtocolParamsMapperTest {
         assertEquals(new BigDecimal("0.0577"), pp.getPriceMem());
         assertEquals(new BigDecimal("150"), pp.getCollateralPercent());
         assertEquals(List.of(10L, 20L), new ArrayList<>(pp.getCostModels().get("PlutusV1").values()));
+    }
+
+    @Test
+    void epochParamProviderMapsToCclProtocolParams() {
+        EpochParamProvider provider = new EpochParamProvider() {
+            @Override
+            public BigInteger getKeyDeposit(long epoch) {
+                return BigInteger.valueOf(2_000_000);
+            }
+
+            @Override
+            public BigInteger getPoolDeposit(long epoch) {
+                return BigInteger.valueOf(500_000_000);
+            }
+
+            @Override public Integer getMinFeeA(long epoch) { return 44; }
+            @Override public Integer getMinFeeB(long epoch) { return 155381; }
+            @Override public Integer getMaxBlockSize(long epoch) { return 90112; }
+            @Override public int getProtocolMajor(long epoch) { return 11; }
+            @Override public int getProtocolMinor(long epoch) { return 0; }
+            @Override public Map<String, Object> getCostModelsRaw(long epoch) {
+                return Map.of("PlutusV3", List.of(1L, 2L, 3L));
+            }
+            @Override public PoolVotingThresholds getPoolVotingThresholds(long epoch) {
+                return PoolVotingThresholds.builder()
+                        .pvtMotionNoConfidence(new UnitInterval(BigInteger.ONE, BigInteger.valueOf(2)))
+                        .build();
+            }
+            @Override public DrepVoteThresholds getDrepVotingThresholds(long epoch) {
+                return DrepVoteThresholds.builder()
+                        .dvtPPGovGroup(new UnitInterval(BigInteger.valueOf(3), BigInteger.valueOf(4)))
+                        .build();
+            }
+        };
+
+        ProtocolParams pp = ProtocolParamsMapper.fromEpochParamProvider(provider, 0);
+
+        assertEquals(44, pp.getMinFeeA());
+        assertEquals("2000000", pp.getKeyDeposit());
+        assertEquals(11, pp.getProtocolMajorVer());
+        assertEquals(0, pp.getProtocolMinorVer());
+        assertEquals(List.of(1L, 2L, 3L), new ArrayList<>(pp.getCostModels().get("PlutusV3").values()));
+        assertEquals(0, new BigDecimal("0.5").compareTo(pp.getPvtMotionNoConfidence()));
+        assertEquals(0, new BigDecimal("0.75").compareTo(pp.getDvtPPGovGroup()));
     }
 
     static LedgerStateProvider.ProtocolParamsSnapshot snapshot(int epoch, BigInteger maxValSize) {

@@ -110,6 +110,7 @@ public class DevnetBlockProducer implements BlockProducerService {
             nextBlockNumber = existingTip.getBlockNumber() + 1;
             prevBlockHash = existingTip.getBlockHash();
             lastUsedSlot = existingTip.getSlot();
+            BlockProducerHelper.resetEpochTrackingToSlot(existingTip.getSlot());
             log.info("Block producer resuming from existing tip: block={}, slot={}",
                     existingTip.getBlockNumber(), existingTip.getSlot());
         } else {
@@ -206,15 +207,20 @@ public class DevnetBlockProducer implements BlockProducerService {
      * In lazy mode, skips production when mempool is empty.
      */
     synchronized void produceBlock() {
-        // Drain mempool
-        List<byte[]> txList = drainMempool();
-
-        // In lazy mode, skip if no transactions
-        if (lazy && txList.isEmpty()) {
+        // In lazy mode, skip boundary work and block production when no transactions exist.
+        if (lazy && memPool.isEmpty()) {
             return;
         }
 
         long slot = calculateCurrentSlot();
+        BlockProducerHelper.prepareEpochTransitionBeforeBlock(
+                eventBus, slot, nextBlockNumber, "devnet-block-producer");
+
+        List<byte[]> txList = drainMempool();
+        if (lazy && txList.isEmpty()) {
+            return;
+        }
+
         var result = blockBuilder.buildBlock(nextBlockNumber, slot, prevBlockHash, txList);
         storeBlock(result);
 
@@ -270,6 +276,9 @@ public class DevnetBlockProducer implements BlockProducerService {
         long currentSlot = lastUsedSlot + 1;
 
         while (currentSlot <= targetSlot) {
+            BlockProducerHelper.prepareEpochTransitionBeforeBlock(
+                    eventBus, currentSlot, nextBlockNumber, "devnet-time-advance");
+
             var result = blockBuilder.buildBlock(nextBlockNumber, currentSlot, prevBlockHash, List.of());
             storeBlock(result);
 

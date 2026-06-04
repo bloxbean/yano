@@ -128,6 +128,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Supplier;
 
 
 /**
@@ -789,6 +790,23 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
         return epochParamProvider;
     }
 
+    private boolean epochParamsTrackingEnabled() {
+        Object value = runtimeOptions.globals()
+                .getOrDefault("yano.epoch-params.tracking-enabled", "false");
+        return value instanceof Boolean b ? b : Boolean.parseBoolean(String.valueOf(value));
+    }
+
+    private String runtimeProtocolParametersFile() {
+        return epochParamsTrackingEnabled() ? null : config.getProtocolParametersFile();
+    }
+
+    private String runtimeProtocolParametersJson() {
+        if (inMemoryDevnetGenesis == null || epochParamsTrackingEnabled()) {
+            return null;
+        }
+        return inMemoryDevnetGenesis.protocolParametersJson();
+    }
+
     /**
      * Resolve the *effective* {@link EpochParamProvider} for nonce evolution.
      * Returns the {@link EpochParamTracker} when wired and enabled — it carries on-chain
@@ -805,6 +823,124 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
             }
         }
         return epochParamProvider;
+    }
+
+    private ProtocolVersionSupplier createBlockProtocolVersionSupplier() {
+        return resolveBlockProtocolVersionSupplier(
+                epochParamsTrackingEnabled(),
+                effectiveEpochParamProvider(),
+                getLedgerStateProvider(),
+                this::createStaticBlockProtocolVersionSupplier,
+                this::createGenesisBlockProtocolVersionSupplier);
+    }
+
+    static ProtocolVersionSupplier resolveBlockProtocolVersionSupplier(boolean epochParamsTrackingEnabled,
+                                                                       EpochParamProvider effectiveProvider,
+                                                                       LedgerStateProvider ledgerStateProvider,
+                                                                       Supplier<ProtocolVersionSupplier> staticSupplier,
+                                                                       Supplier<ProtocolVersionSupplier> genesisSupplier) {
+        if (epochParamsTrackingEnabled) {
+            EpochParamTracker tracker = effectiveProvider instanceof EpochParamTracker t && t.isEnabled()
+                    ? t : null;
+            if (tracker != null && ledgerStateProvider != null) {
+                log.info("Block protocol version source: effective-ledger");
+                return new EffectiveProtocolVersionSupplier(
+                        ledgerStateProvider,
+                        effectiveProvider.getEpochSlotCalc(),
+                        tracker);
+            }
+
+            log.warn("Epoch-param tracking is enabled but effective block protocol version source is unavailable "
+                            + "(tracker={}, ledgerStateProvider={}). Falling back to protocol-param.json / Shelley genesis.",
+                    tracker != null, ledgerStateProvider != null);
+        }
+
+        ProtocolVersionSupplier staticProtocolVersionSupplier = staticSupplier != null ? staticSupplier.get() : null;
+        if (staticProtocolVersionSupplier != null) {
+            return staticProtocolVersionSupplier;
+        }
+
+        ProtocolVersionSupplier genesisProtocolVersionSupplier = genesisSupplier != null ? genesisSupplier.get() : null;
+        if (genesisProtocolVersionSupplier != null) {
+            return genesisProtocolVersionSupplier;
+        }
+
+        throw new IllegalStateException(
+                "No protocol version source available for block production. Configure epoch-param tracking "
+                        + "with ledger state, protocol-param.json, or a valid Shelley genesis protocolVersion.");
+    }
+
+    private ProtocolVersionSupplier createStaticBlockProtocolVersionSupplier() {
+        // Static fallback mode is fixed until the operator reconfigures or effective tracking becomes available.
+        String protocolParamsJson = null;
+        String source = null;
+        if (genesisConfig != null && genesisConfig.hasProtocolParameters()) {
+            protocolParamsJson = genesisConfig.getProtocolParameters();
+            source = inMemoryDevnetGenesis != null ? "in-memory-devnet" : config.getProtocolParametersFile();
+        } else if (inMemoryDevnetGenesis != null
+                && inMemoryDevnetGenesis.protocolParametersJson() != null
+                && !inMemoryDevnetGenesis.protocolParametersJson().isBlank()) {
+            protocolParamsJson = inMemoryDevnetGenesis.protocolParametersJson();
+            source = "in-memory-devnet";
+        } else if (config.getProtocolParametersFile() != null
+                && !config.getProtocolParametersFile().isBlank()) {
+            source = config.getProtocolParametersFile();
+            try {
+                protocolParamsJson = Files.readString(Path.of(config.getProtocolParametersFile()));
+            } catch (Exception e) {
+                log.warn("Failed to read protocol-param.json for block protocol version fallback file={}: {}",
+                        source, e.toString());
+                return null;
+            }
+        }
+
+        if (protocolParamsJson == null || protocolParamsJson.isBlank()) {
+            return null;
+        }
+
+        try {
+            StaticProtocolVersionSupplier supplier =
+                    StaticProtocolVersionSupplier.fromProtocolParametersJson(protocolParamsJson);
+            ProtocolVersion version = supplier.getProtocolVersion(0);
+            log.info("Block protocol version source: protocol-param-json file={} version={}.{}",
+                    sourceLabel(source), version.major(), version.minor());
+            return supplier;
+        } catch (Exception e) {
+            log.warn("Failed to resolve block protocol version from protocol-param.json file={}: {}",
+                    sourceLabel(source), e.toString());
+            return null;
+        }
+    }
+
+    private ProtocolVersionSupplier createGenesisBlockProtocolVersionSupplier() {
+        // Genesis fallback mode is fixed until the operator reconfigures or effective tracking becomes available.
+        var shelley = genesisConfig != null ? genesisConfig.getShelleyGenesisData() : null;
+        if (shelley == null && inMemoryDevnetGenesis != null) {
+            shelley = inMemoryDevnetGenesis.shelley();
+        }
+        if (shelley == null) {
+            return null;
+        }
+
+        long major = shelley.protocolMajor();
+        long minor = shelley.protocolMinor();
+        if (major <= 0 || minor < 0) {
+            log.warn("Shelley genesis protocolVersion is invalid for block protocol version fallback "
+                            + "file={} version={}.{}",
+                    sourceLabel(inMemoryDevnetGenesis != null ? "in-memory-devnet" : config.getShelleyGenesisFile()),
+                    major, minor);
+            return null;
+        }
+
+        ProtocolVersionSupplier supplier = ProtocolVersionSupplier.fixed(major, minor);
+        String source = inMemoryDevnetGenesis != null ? "in-memory-devnet" : config.getShelleyGenesisFile();
+        log.info("Block protocol version source: shelley-genesis file={} version={}.{}",
+                sourceLabel(source), major, minor);
+        return supplier;
+    }
+
+    private static String sourceLabel(String source) {
+        return source != null && !source.isBlank() ? source : "not-configured";
     }
 
     /**
@@ -1034,12 +1170,12 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
                     genesisConfig = GenesisConfig.fromInMemory(
                             inMemoryDevnetGenesis.shelley(),
                             inMemoryDevnetGenesis.byron(),
-                            inMemoryDevnetGenesis.protocolParametersJson());
+                            runtimeProtocolParametersJson());
                 } else {
                     genesisConfig = GenesisConfig.load(
                             config.getShelleyGenesisFile(),
                             config.getByronGenesisFile(),
-                            config.getProtocolParametersFile());
+                            runtimeProtocolParametersFile());
                 }
 
                 // Propagate epoch params from genesis to config (for REST layer)
@@ -1406,18 +1542,12 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
             initializeProducerNonceState(epochNonceState, nonceStore, replayService,
                     "block-producer-startup", "slot-leader mode");
 
-            // 5. Get protocol version from protocol-param.json
-            long protoMajor = genesisConfig.getProtocolVersionMajor();
-            long protoMinor = genesisConfig.getProtocolVersionMinor();
-            if (protoMajor <= 0) {
-                throw new IllegalStateException(
-                        "Protocol version not found in protocol-param.json. "
-                        + "Configure 'protocol-parameters-file' with current network protocol parameters.");
-            }
+            // 5. Resolve produced-block protocol version using the configured parameter mode
+            ProtocolVersionSupplier protocolVersionSupplier = createBlockProtocolVersionSupplier();
 
             // 6. Create SignedBlockBuilder with shared EpochNonceState
             var signedBlockBuilder = new SignedBlockBuilder(keys, slotsPerKESPeriod, maxKESEvolutions,
-                    epochNonceState, nonceStore, protoMajor, protoMinor);
+                    epochNonceState, nonceStore, protocolVersionSupplier);
 
             // 7. Create & register NonceEvolutionListener
             String issuerVkeyHex = signedBlockBuilder.getIssuerVkeyHex();
@@ -1515,12 +1645,12 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
                 genesisConfig = GenesisConfig.fromInMemory(
                         inMemoryDevnetGenesis.shelley(),
                         inMemoryDevnetGenesis.byron(),
-                        inMemoryDevnetGenesis.protocolParametersJson());
+                        runtimeProtocolParametersJson());
             } else {
                 genesisConfig = GenesisConfig.load(
                         config.getShelleyGenesisFile(),
                         config.getByronGenesisFile(),
-                        config.getProtocolParametersFile());
+                        runtimeProtocolParametersFile());
             }
 
             propagateGenesisToConfig(genesisConfig);
@@ -1918,18 +2048,12 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
             initializeProducerNonceState(epochNonceState, nonceStore, replayService,
                     "past-time-travel-startup", "past-time-travel slot-leader mode");
 
-            long protoMajor = genesisConfig.getProtocolVersionMajor();
-            long protoMinor = genesisConfig.getProtocolVersionMinor();
-            if (protoMajor <= 0) {
-                throw new IllegalStateException(
-                        "Protocol version not found in protocol-param.json. "
-                        + "Configure 'protocol-parameters-file' with current network protocol parameters.");
-            }
+            ProtocolVersionSupplier protocolVersionSupplier = createBlockProtocolVersionSupplier();
 
             var signedBlockBuilder = new SignedBlockBuilder(keys,
                     shelleyData.slotsPerKESPeriod(),
                     shelleyData.maxKESEvolutions(),
-                    epochNonceState, nonceStore, protoMajor, protoMinor);
+                    epochNonceState, nonceStore, protocolVersionSupplier);
 
             var stakeDataProvider = new GenesisStakeDataProvider(Path.of(config.getShelleyGenesisFile()));
             BigInteger poolStake = stakeDataProvider.getPoolStake(poolHash, 0);
@@ -2013,25 +2137,18 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
                 initializeProducerNonceState(nonceState, nonceStore, replayService,
                         "signed-devnet-startup", "signed block production");
 
-                // Get protocol version from protocol-param.json
-                long protoMajor = genesisConfig.getProtocolVersionMajor();
-                long protoMinor = genesisConfig.getProtocolVersionMinor();
-                if (protoMajor <= 0) {
-                    throw new IllegalStateException(
-                            "Protocol version not found in protocol-param.json. "
-                            + "Configure 'protocol-parameters-file' with current network protocol parameters.");
-                }
+                ProtocolVersionSupplier protocolVersionSupplier = createBlockProtocolVersionSupplier();
 
-                log.info("Using SignedBlockBuilder with real VRF/KES crypto, protocolVersion={}.{}", protoMajor, protoMinor);
+                log.info("Using SignedBlockBuilder with real VRF/KES crypto and runtime protocol version supplier");
                 return new SignedBlockBuilder(keys, slotsPerKESPeriod, maxKESEvolutions,
-                        nonceState, nonceStore, protoMajor, protoMinor);
+                        nonceState, nonceStore, protocolVersionSupplier);
             } catch (Exception e) {
                 throw new IllegalStateException("Failed to initialize SignedBlockBuilder with configured producer keys", e);
             }
         }
 
         log.info("Using DevnetBlockBuilder with dummy signatures (no key files configured)");
-        return new DevnetBlockBuilder();
+        return new DevnetBlockBuilder(createBlockProtocolVersionSupplier());
     }
 
     /**
@@ -2231,12 +2348,12 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
             genesisConfig = GenesisConfig.fromInMemory(
                     inMemoryDevnetGenesis.shelley(),
                     inMemoryDevnetGenesis.byron(),
-                    inMemoryDevnetGenesis.protocolParametersJson());
+                    runtimeProtocolParametersJson());
         } else {
             genesisConfig = GenesisConfig.load(
                     config.getShelleyGenesisFile(),
                     config.getByronGenesisFile(),
-                    config.getProtocolParametersFile());
+                    runtimeProtocolParametersFile());
         }
 
         propagateGenesisToConfig(genesisConfig);
@@ -2352,7 +2469,8 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
     private boolean hasAnyGenesisConfig() {
         return (config.getShelleyGenesisFile() != null && !config.getShelleyGenesisFile().isBlank())
                 || (config.getByronGenesisFile() != null && !config.getByronGenesisFile().isBlank())
-                || (config.getProtocolParametersFile() != null && !config.getProtocolParametersFile().isBlank());
+                || (!epochParamsTrackingEnabled()
+                    && config.getProtocolParametersFile() != null && !config.getProtocolParametersFile().isBlank());
     }
 
     @Override

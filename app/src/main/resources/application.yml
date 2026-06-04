@@ -164,13 +164,15 @@ yano:
     account-state:
       enabled: true
     epoch-snapshot:
-      amounts-enabled: false          # UTXO balance aggregation in snapshots
+      amounts-enabled: true           # UTXO balance aggregation in snapshots
     adapot:
-      enabled: false                  # Treasury/reserves tracking
+      enabled: true                   # Treasury/reserves tracking
     rewards:
-      enabled: false                  # Epoch reward calculation
+      enabled: true                   # Epoch reward calculation
     epoch-params:
       tracking-enabled: true          # Protocol param tracking from blocks
+    governance:
+      enabled: true                   # Governance state tracking
     block-producer:
       enabled: true
       block-time-millis: 0
@@ -198,8 +200,18 @@ yano:
       alonzo-genesis-file: config/network/devnet/alonzo-genesis.json
       conway-genesis-file: config/network/devnet/conway-genesis.json
       protocol-parameters-file: config/network/devnet/protocol-param.json
+    account-state:
+      enabled: true
+    epoch-snapshot:
+      amounts-enabled: true           # UTXO balance aggregation in snapshots
+    adapot:
+      enabled: true                   # Treasury/reserves tracking
+    rewards:
+      enabled: true                   # Epoch reward calculation
     epoch-params:
       tracking-enabled: true          # Protocol param tracking from blocks
+    governance:
+      enabled: true                   # Governance state tracking
     block-producer:
       enabled: true
       slot-leader-mode: true

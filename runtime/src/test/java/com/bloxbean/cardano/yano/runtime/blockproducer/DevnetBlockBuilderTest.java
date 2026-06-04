@@ -16,6 +16,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.*;
@@ -141,6 +142,21 @@ class DevnetBlockBuilderTest {
         Array harr = (Array) hdi;
         int headerType = ((UnsignedInteger) harr.getDataItems().get(0)).getValue().intValue();
         assertEquals(6, headerType, "wrappedHeaderCbor header type must be 6 (Conway BlockHeaderType for ChainSync)");
+    }
+
+    @Test
+    void buildBlock_usesProtocolVersionSupplierForHeader() {
+        AtomicLong requestedSlot = new AtomicLong(-1);
+        builder = new DevnetBlockBuilder(slot -> {
+            requestedSlot.set(slot);
+            return new ProtocolVersion(11, 0);
+        });
+
+        var result = builder.buildBlock(1, 123, new byte[32], List.of());
+
+        assertThat(requestedSlot).hasValue(123);
+        assertThat(BlockTestUtil.protocolVersionFromBlockCbor(result.blockCbor()))
+                .isEqualTo(new ProtocolVersion(11, 0));
     }
 
     /**

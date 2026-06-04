@@ -97,14 +97,11 @@ public final class BlockProducerHelper {
 
         try {
             eventBus.publish(
-                    new BlockProducedEvent(6, result.slot(), result.blockNumber(),
+                    new BlockProducedEvent(Era.Conway.getValue(), result.slot(), result.blockNumber(),
                             result.blockHash(), txCount),
                     meta, opts);
 
             publishGenesisBlockEventIfNeeded(eventBus, result, hashHex, meta, opts);
-
-            // Detect epoch transition and publish PreEpochTransitionEvent BEFORE BlockAppliedEvent
-            publishEpochTransitionEventsIfNeeded(eventBus, result.slot(), result.blockNumber(), meta, opts);
 
             Block block = BlockSerializer.INSTANCE.deserialize(result.blockCbor());
             eventBus.publish(
@@ -122,6 +119,7 @@ public final class BlockProducerHelper {
         int epoch = epochProvider.getEpochSlotCalc().slotToEpoch(result.slot());
         eventBus.publish(new GenesisBlockEvent(Era.Conway, epoch, result.slot(), result.blockNumber(), hashHex),
                 meta, opts);
+        previousEpoch = epoch;
     }
 
     public static void notifyServer(NodeServer nodeServer) {
@@ -165,8 +163,9 @@ public final class BlockProducerHelper {
         return txList;
     }
 
-    private static void publishEpochTransitionEventsIfNeeded(EventBus eventBus, long slot, long blockNumber,
-                                                             EventMetadata meta, PublishOptions opts) {
+    public static void prepareEpochTransitionBeforeBlock(EventBus eventBus, long slot, long blockNumber,
+                                                         String origin) {
+        if (eventBus == null) return;
         if (epochProvider == null) return;
         int currentEpoch = epochForSlot(slot);
         if (currentEpoch < 0) return;
@@ -174,6 +173,12 @@ public final class BlockProducerHelper {
         if (previousEpoch >= 0 && currentEpoch > previousEpoch) {
             log.info("Epoch transition detected (block producer): {} -> {} at slot {}, block {}",
                     previousEpoch, currentEpoch, slot, blockNumber);
+            EventMetadata meta = EventMetadata.builder()
+                    .origin(origin)
+                    .slot(slot)
+                    .blockNo(blockNumber)
+                    .build();
+            PublishOptions opts = PublishOptions.builder().build();
             eventBus.publish(new PreEpochTransitionEvent(previousEpoch, currentEpoch, slot, blockNumber),
                     meta, opts);
             eventBus.publish(new EpochTransitionEvent(previousEpoch, currentEpoch, slot, blockNumber),

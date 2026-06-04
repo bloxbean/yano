@@ -43,13 +43,21 @@ public class SignedBlockBuilder extends DevnetBlockBuilder {
      */
     public SignedBlockBuilder(BlockProducerKeys keys, long slotsPerKESPeriod, long maxKESEvolutions,
                               EpochNonceState epochNonceState, NonceStateStore nonceStore) {
-        this(keys, slotsPerKESPeriod, maxKESEvolutions, epochNonceState, nonceStore, 10, 2);
+        this(keys, slotsPerKESPeriod, maxKESEvolutions, epochNonceState, nonceStore,
+                ProtocolVersionSupplier.fixed(10, 2));
     }
 
     public SignedBlockBuilder(BlockProducerKeys keys, long slotsPerKESPeriod, long maxKESEvolutions,
                               EpochNonceState epochNonceState, NonceStateStore nonceStore,
                               long protocolMajor, long protocolMinor) {
-        super(protocolMajor, protocolMinor);
+        this(keys, slotsPerKESPeriod, maxKESEvolutions, epochNonceState, nonceStore,
+                ProtocolVersionSupplier.fixed(protocolMajor, protocolMinor));
+    }
+
+    public SignedBlockBuilder(BlockProducerKeys keys, long slotsPerKESPeriod, long maxKESEvolutions,
+                              EpochNonceState epochNonceState, NonceStateStore nonceStore,
+                              ProtocolVersionSupplier protocolVersionSupplier) {
+        super(protocolVersionSupplier);
         this.keys = keys;
         this.blockSigner = new BlockSigner();
         this.epochNonceState = epochNonceState;
@@ -267,9 +275,10 @@ public class SignedBlockBuilder extends DevnetBlockBuilder {
         opCertArray.add(new ByteString(opCert.getColdSignature()));
         headerBody.add(opCertArray);
         // 9: protocolVersion [major, minor]
+        ProtocolVersion protocolVersion = resolveProtocolVersion(slot);
         Array protoVersion = new Array();
-        protoVersion.add(new UnsignedInteger(protocolMajor));
-        protoVersion.add(new UnsignedInteger(protocolMinor));
+        protoVersion.add(new UnsignedInteger(protocolVersion.major()));
+        protoVersion.add(new UnsignedInteger(protocolVersion.minor()));
         headerBody.add(protoVersion);
 
         return headerBody;

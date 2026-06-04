@@ -87,6 +87,7 @@ public class SlotLeaderTimeTravelBlockProducer implements BlockProducerService {
         if (tip != null && lastCheckedSlot < tip.getSlot()) {
             lastCheckedSlot = tip.getSlot();
         }
+        BlockProducerHelper.resetEpochTrackingToSlot(lastCheckedSlot);
 
         running = true;
         scheduledTask = scheduler.scheduleWithFixedDelay(() -> {
@@ -212,6 +213,9 @@ public class SlotLeaderTimeTravelBlockProducer implements BlockProducerService {
         ChainTip tip = chainState.getTip();
         long blockNumber = tip != null ? tip.getBlockNumber() + 1 : 0;
         byte[] prevHash = tip != null ? tip.getBlockHash() : null;
+
+        BlockProducerHelper.prepareEpochTransitionBeforeBlock(
+                eventBus, slot, blockNumber, "slot-leader-time-travel");
 
         List<byte[]> txList = BlockProducerHelper.drainMempool(
                 memPool, transactionValidatorService, utxoState);

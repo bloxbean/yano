@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.*;
 
@@ -121,6 +122,24 @@ class DefaultEpochParamProviderTest {
             assertThat(pt.getPvtPPSecurityGroup().safeRatio()).isEqualByComparingTo("0.51");
             assertThat(pt.getPvtHardForkInitiation().safeRatio()).isEqualByComparingTo("0.51");
             assertThat(pt.getPvtMotionNoConfidence().safeRatio()).isEqualByComparingTo("0.51");
+        }
+
+        @Test
+        void devnet_pv11ProtocolVersionAndCostModelsLoadedFromGenesis() {
+            var config = NetworkGenesisConfig.load(
+                    genesis("devnet", "shelley-genesis.json"),
+                    null,
+                    genesis("devnet", "alonzo-genesis.json"),
+                    genesis("devnet", "conway-genesis.json"));
+
+            var provider = DefaultEpochParamProvider.fromNetworkGenesisConfig(config, 0);
+
+            assertThat(provider.getProtocolMajor(0)).isEqualTo(11);
+            assertThat(provider.getProtocolMinor(0)).isZero();
+            assertThat((List<?>) provider.getAlonzoCostModels(0).get("PlutusV1")).hasSize(332);
+            assertThat((List<?>) provider.getAlonzoCostModels(0).get("PlutusV2")).hasSize(332);
+            assertThat((List<?>) provider.getConwayCostModels(0).get("PlutusV3")).hasSize(350);
+            assertThat(provider.getCostModels(0)).containsKeys("PlutusV1", "PlutusV2", "PlutusV3");
         }
 
         @Test

@@ -7,6 +7,7 @@ import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.List;
+import java.util.Objects;
 
 /**
  * Builds structurally valid Conway-era CBOR blocks for devnet block production.
@@ -39,21 +40,24 @@ public class DevnetBlockBuilder {
     private static final int KES_SIGNATURE_LENGTH = 448;
     private static final int OPCERT_SIGMA_LENGTH = 64;
 
-    // Conway protocol version defaults — must be >= the ledger's current protocolVersion
-    // from shelley-genesis.json. Override via constructor if genesis uses different values.
+    // Backward-compatible default for isolated tests and standalone callers.
+    // Production Yano wiring passes a runtime ProtocolVersionSupplier.
     private static final long DEFAULT_PROTOCOL_MAJOR = 10;
     private static final long DEFAULT_PROTOCOL_MINOR = 2;
 
-    protected final long protocolMajor;
-    protected final long protocolMinor;
+    private final ProtocolVersionSupplier protocolVersionSupplier;
 
     public DevnetBlockBuilder() {
         this(DEFAULT_PROTOCOL_MAJOR, DEFAULT_PROTOCOL_MINOR);
     }
 
     public DevnetBlockBuilder(long protocolMajor, long protocolMinor) {
-        this.protocolMajor = protocolMajor;
-        this.protocolMinor = protocolMinor;
+        this(ProtocolVersionSupplier.fixed(protocolMajor, protocolMinor));
+    }
+
+    public DevnetBlockBuilder(ProtocolVersionSupplier protocolVersionSupplier) {
+        this.protocolVersionSupplier = Objects.requireNonNull(protocolVersionSupplier,
+                "protocolVersionSupplier must not be null");
     }
 
     /**
@@ -232,9 +236,10 @@ public class DevnetBlockBuilder {
         opCert.add(new ByteString(new byte[OPCERT_SIGMA_LENGTH]));
         headerBody.add(opCert);
         // 9: protocolVersion [major, minor]
+        ProtocolVersion protocolVersion = resolveProtocolVersion(slot);
         Array protoVersion = new Array();
-        protoVersion.add(new UnsignedInteger(protocolMajor));
-        protoVersion.add(new UnsignedInteger(protocolMinor));
+        protoVersion.add(new UnsignedInteger(protocolVersion.major()));
+        protoVersion.add(new UnsignedInteger(protocolVersion.minor()));
         headerBody.add(protoVersion);
 
         // Header array: [header_body, signature]
@@ -243,6 +248,10 @@ public class DevnetBlockBuilder {
         headerArray.add(new ByteString(new byte[KES_SIGNATURE_LENGTH]));
 
         return headerArray;
+    }
+
+    protected ProtocolVersion resolveProtocolVersion(long slot) {
+        return protocolVersionSupplier.getProtocolVersion(slot);
     }
 
     /**
