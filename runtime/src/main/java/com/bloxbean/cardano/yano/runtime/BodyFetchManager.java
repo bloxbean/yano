@@ -26,6 +26,7 @@ import com.bloxbean.cardano.yano.api.events.BlockAppliedEvent;
 import com.bloxbean.cardano.yano.api.events.BlockReceivedEvent;
 import com.bloxbean.cardano.yano.api.events.RollbackEvent;
 import com.bloxbean.cardano.yano.api.events.TipChangedEvent;
+import com.bloxbean.cardano.yano.api.genesis.GenesisBootstrapData;
 import com.bloxbean.cardano.yano.runtime.apply.UnrecoverableApplyException;
 import com.bloxbean.cardano.yano.runtime.chain.DirectRocksDBChainState;
 import com.bloxbean.cardano.yano.runtime.chain.InMemoryChainState;
@@ -37,6 +38,7 @@ import java.util.stream.Collectors;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Supplier;
 
 /**
  * BodyFetchManager handles gap detection and range-based body fetching to complement HeaderSyncManager.
@@ -107,6 +109,7 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
     // Epoch transition detection
     private volatile EpochParamProvider epochParamProvider;
     private volatile int previousEpoch = -1;
+    private volatile Supplier<GenesisBootstrapData> genesisBootstrapDataSupplier = GenesisBootstrapData::empty;
 
     // Rollback tracking to prevent storing stale blocks
     private volatile Point lastRollbackPoint = null;
@@ -206,6 +209,10 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
      */
     public void setEpochParamProvider(EpochParamProvider provider) {
         this.epochParamProvider = provider;
+    }
+
+    public void setGenesisBootstrapDataSupplier(Supplier<GenesisBootstrapData> supplier) {
+        this.genesisBootstrapDataSupplier = supplier != null ? supplier : GenesisBootstrapData::empty;
     }
 
     public void setPeerHealth(PeerHealth peerHealth) {
@@ -1502,7 +1509,8 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
         if (!freshChain) return;
         int epoch = epochForSlot(slot);
         if (epoch < 0) return;
-        eventBus.publish(new GenesisBlockEvent(era, epoch, slot, blockNumber, blockHash), meta, opts);
+        eventBus.publish(new GenesisBlockEvent(era, epoch, slot, blockNumber, blockHash,
+                genesisBootstrapDataSupplier.get()), meta, opts);
     }
 
     private void recordBodyApplied(long slot, long blockNumber) {

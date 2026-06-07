@@ -2,6 +2,7 @@ package com.bloxbean.cardano.yano.ledgerstate;
 
 import com.bloxbean.cardano.client.address.Address;
 import com.bloxbean.cardano.client.address.AddressType;
+import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.utxo.UtxoState;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -104,10 +105,15 @@ public class UtxoBalanceAggregator {
     }
 
     /**
-     * Extract stake credential from a bech32 address string.
-     * Handles regular addresses (delegation credential) and pointer addresses (via resolver).
+     * Extract the stake credential delegated to by a payment-owning address.
      *
-     * @return credential key, or null if address has no stake credential
+     * Returns null when the address is not a payment-owning address (Reward/stake)
+     * or when it is a payment-owning address with no delegation (Byron, Enterprise,
+     * unresolved Pointer).
+     *
+     * Used by UTxO balance aggregation and genesis initialFunds seeding.
+     *
+     * @return credential key, or null
      */
     public CredentialKey extractCredential(String addressStr, PointerAddressResolver pointerResolver) {
         Address address = parseAddressOrNull(addressStr);
@@ -117,7 +123,10 @@ public class UtxoBalanceAggregator {
     private CredentialKey extractCredential(Address address, String addressStr, PointerAddressResolver pointerResolver) {
         AddressType addrType = address.getAddressType();
         if (addrType == AddressType.Byron) {
-            return null;
+            return null;     // payment-owning, no stake credential
+        }
+        if (addrType == AddressType.Reward) {
+            return null;     // not payment-owning at all
         }
 
         if (addrType == AddressType.Ptr) {
@@ -137,6 +146,10 @@ public class UtxoBalanceAggregator {
         try {
             return new Address(addressStr);
         } catch (Exception e) {
+            Address hexAddress = parseShelleyHexAddressOrNull(addressStr);
+            if (hexAddress != null) {
+                return hexAddress;
+            }
             if (!isShelleyPaymentAddress(addressStr)) {
                 // Legacy Byron/bootstrap UTXOs are base58 and never carry stake
                 // credentials. Some of those addresses are not accepted by CCL's
@@ -150,6 +163,15 @@ public class UtxoBalanceAggregator {
     private static boolean isShelleyPaymentAddress(String addressStr) {
         return addressStr != null
                 && (addressStr.startsWith("addr1") || addressStr.startsWith("addr_test1"));
+    }
+
+    private static Address parseShelleyHexAddressOrNull(String addressStr) {
+        if (addressStr == null || addressStr.isBlank()) return null;
+        try {
+            return new Address(HexUtil.decodeHexString(addressStr));
+        } catch (Exception ignored) {
+            return null;
+        }
     }
 
     /**

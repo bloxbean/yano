@@ -1,5 +1,7 @@
 package com.bloxbean.cardano.yano.runtime.genesis;
 
+import com.bloxbean.cardano.yano.api.genesis.ShelleyGenesisBootstrap;
+
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.Map;
@@ -36,6 +38,7 @@ import java.util.Map;
  * @param eMax                 epoch bound on pool retirement
  * @param extraEntropy         extra entropy seed, or null for neutral nonce
  * @param minUTxOValue         legacy minimum UTxO value
+ * @param bootstrap            genesis data that can affect ledger-state bootstrap
  */
 public record ShelleyGenesisData(
         Map<String, BigInteger> initialFunds,
@@ -67,5 +70,6 @@ public record ShelleyGenesisData(
         int maxBlockHeaderSize,
         int eMax,
         String extraEntropy,
-        long minUTxOValue
+        long minUTxOValue,
+        ShelleyGenesisBootstrap bootstrap
 ) {}

@@ -9,6 +9,7 @@ public record AdaPotDto(
         int epoch,
         String treasury,
         String reserves,
+        String deposits,
         String fees,
         @JsonProperty("distributed_rewards")
         String distributedRewards,
@@ -24,6 +25,7 @@ public record AdaPotDto(
                 snapshot.epoch(),
                 lovelace(snapshot.treasury()),
                 lovelace(snapshot.reserves()),
+                lovelace(snapshot.deposits()),
                 lovelace(snapshot.fees()),
                 lovelace(snapshot.distributedRewards()),
                 lovelace(snapshot.undistributedRewards()),

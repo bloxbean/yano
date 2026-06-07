@@ -191,6 +191,13 @@ public class DevnetBlockProducer implements BlockProducerService {
         }
 
         var result = blockBuilder.buildBlock(0, slot, null, List.of());
+        try {
+            BlockProducerHelper.publishGenesisBlockEvent(eventBus, result, "devnet-genesis");
+        } catch (RuntimeException | Error e) {
+            rollbackPendingProducedBlock();
+            throw e;
+        }
+
         storeBlock(result);
         nextBlockNumber = 1;
         prevBlockHash = result.blockHash();
@@ -198,8 +205,14 @@ public class DevnetBlockProducer implements BlockProducerService {
         log.info("Genesis block produced: slot={}, hash={}",
                 slot, HexUtil.encodeHexString(result.blockHash()));
 
-        publishEvent(result, 0);
+        publishEvent(result, 0, false);
         notifyServer();
+    }
+
+    private void rollbackPendingProducedBlock() {
+        if (blockBuilder instanceof SignedBlockBuilder signedBlockBuilder) {
+            signedBlockBuilder.rollbackPendingNonceState();
+        }
     }
 
     /**
@@ -256,7 +269,11 @@ public class DevnetBlockProducer implements BlockProducerService {
     }
 
     private void publishEvent(DevnetBlockBuilder.BlockBuildResult result, int txCount) {
-        BlockProducerHelper.publishEvent(eventBus, result, txCount, "block-producer");
+        publishEvent(result, txCount, true);
+    }
+
+    private void publishEvent(DevnetBlockBuilder.BlockBuildResult result, int txCount, boolean includeGenesisEvent) {
+        BlockProducerHelper.publishEvent(eventBus, result, txCount, "block-producer", includeGenesisEvent);
     }
 
     /**

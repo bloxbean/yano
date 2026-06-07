@@ -16,6 +16,7 @@ import com.bloxbean.cardano.yano.api.events.EpochTransitionEvent;
 import com.bloxbean.cardano.yano.api.events.GenesisBlockEvent;
 import com.bloxbean.cardano.yano.api.events.PostEpochTransitionEvent;
 import com.bloxbean.cardano.yano.api.events.PreEpochTransitionEvent;
+import com.bloxbean.cardano.yano.api.genesis.GenesisBootstrapData;
 import com.bloxbean.cardano.yano.api.model.MemPoolTransaction;
 import com.bloxbean.cardano.yano.api.utxo.UtxoState;
 import com.bloxbean.cardano.yano.ledgerrules.ValidationResult;
@@ -24,6 +25,7 @@ import lombok.extern.slf4j.Slf4j;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Supplier;
 
 /**
  * Shared utilities for block producer implementations.
@@ -36,6 +38,8 @@ public final class BlockProducerHelper {
     // Single-threaded access (block production is sequential).
     private static volatile int previousEpoch = -1;
     private static volatile EpochParamProvider epochProvider;
+    private static volatile Supplier<GenesisBootstrapData> genesisBootstrapDataSupplier = GenesisBootstrapData::empty;
+    private static volatile Supplier<String> producerPoolHashSupplier = () -> null;
 
     private BlockProducerHelper() {}
 
@@ -44,6 +48,14 @@ public final class BlockProducerHelper {
      */
     public static void setEpochParamProvider(EpochParamProvider provider) {
         epochProvider = provider;
+    }
+
+    public static void setGenesisBootstrapDataSupplier(Supplier<GenesisBootstrapData> supplier) {
+        genesisBootstrapDataSupplier = supplier != null ? supplier : GenesisBootstrapData::empty;
+    }
+
+    public static void setProducerPoolHashSupplier(Supplier<String> supplier) {
+        producerPoolHashSupplier = supplier != null ? supplier : () -> null;
     }
 
     public static void resetEpochTrackingToSlot(long tipSlot) {
@@ -84,6 +96,11 @@ public final class BlockProducerHelper {
 
     public static void publishEvent(EventBus eventBus, DevnetBlockBuilder.BlockBuildResult result,
                               int txCount, String origin) {
+        publishEvent(eventBus, result, txCount, origin, true);
+    }
+
+    public static void publishEvent(EventBus eventBus, DevnetBlockBuilder.BlockBuildResult result,
+                              int txCount, String origin, boolean includeGenesisEvent) {
         if (eventBus == null) return;
 
         String hashHex = HexUtil.encodeHexString(result.blockHash());
@@ -101,7 +118,9 @@ public final class BlockProducerHelper {
                             result.blockHash(), txCount),
                     meta, opts);
 
-            publishGenesisBlockEventIfNeeded(eventBus, result, hashHex, meta, opts);
+            if (includeGenesisEvent) {
+                publishGenesisBlockEventIfNeeded(eventBus, result, hashHex, meta, opts);
+            }
 
             Block block = BlockSerializer.INSTANCE.deserialize(result.blockCbor());
             eventBus.publish(
@@ -110,14 +129,40 @@ public final class BlockProducerHelper {
                     meta, opts);
         } catch (Exception e) {
             log.debug("Failed to publish block events: {}", e.getMessage());
+            if (result.blockNumber() == 0) {
+                throw new RuntimeException("Failed to publish genesis block events", e);
+            }
         }
+    }
+
+    public static void publishGenesisBlockEvent(EventBus eventBus, DevnetBlockBuilder.BlockBuildResult result,
+                                                String origin) {
+        if (eventBus == null) return;
+
+        String hashHex = HexUtil.encodeHexString(result.blockHash());
+        EventMetadata meta = EventMetadata.builder()
+                .origin(origin)
+                .slot(result.slot())
+                .blockNo(result.blockNumber())
+                .blockHash(hashHex)
+                .build();
+        publishGenesisBlockEventIfNeeded(eventBus, result, hashHex, meta, PublishOptions.builder().build());
     }
 
     private static void publishGenesisBlockEventIfNeeded(EventBus eventBus, DevnetBlockBuilder.BlockBuildResult result,
                                                          String hashHex, EventMetadata meta, PublishOptions opts) {
-        if (result.blockNumber() != 0 || epochProvider == null) return;
+        if (result.blockNumber() != 0) return;
+        GenesisBootstrapData bootstrapData = genesisBootstrapDataSupplier.get();
+        if (epochProvider == null) {
+            if (bootstrapData != null
+                    && (bootstrapData.hasShelleyStaking() || bootstrapData.shelleyGenesisHashHex() != null)) {
+                throw new IllegalStateException("Genesis block event requires epoch metadata for enriched bootstrap data");
+            }
+            return;
+        }
         int epoch = epochProvider.getEpochSlotCalc().slotToEpoch(result.slot());
-        eventBus.publish(new GenesisBlockEvent(Era.Conway, epoch, result.slot(), result.blockNumber(), hashHex),
+        eventBus.publish(new GenesisBlockEvent(Era.Conway, epoch, result.slot(), result.blockNumber(), hashHex,
+                        bootstrapData, producerPoolHashSupplier.get()),
                 meta, opts);
         previousEpoch = epoch;
     }

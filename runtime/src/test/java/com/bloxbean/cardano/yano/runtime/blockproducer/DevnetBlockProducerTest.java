@@ -15,8 +15,11 @@ import com.bloxbean.cardano.yano.api.EpochParamProvider;
 import com.bloxbean.cardano.yano.api.events.BlockAppliedEvent;
 import com.bloxbean.cardano.yano.api.events.BlockProducedEvent;
 import com.bloxbean.cardano.yano.api.events.EpochTransitionEvent;
+import com.bloxbean.cardano.yano.api.events.GenesisBlockEvent;
 import com.bloxbean.cardano.yano.api.events.PostEpochTransitionEvent;
 import com.bloxbean.cardano.yano.api.events.PreEpochTransitionEvent;
+import com.bloxbean.cardano.yano.api.genesis.GenesisBootstrapData;
+import com.bloxbean.cardano.yano.api.genesis.ShelleyGenesisBootstrap;
 import com.bloxbean.cardano.yano.api.utxo.UtxoState;
 import com.bloxbean.cardano.yano.api.utxo.model.Outpoint;
 import com.bloxbean.cardano.yano.api.utxo.model.Utxo;
@@ -53,6 +56,8 @@ class DevnetBlockProducerTest {
         memPool = new DefaultMemPool();
         scheduler = Executors.newSingleThreadScheduledExecutor();
         BlockProducerHelper.setEpochParamProvider(null);
+        BlockProducerHelper.setGenesisBootstrapDataSupplier(null);
+        BlockProducerHelper.setProducerPoolHashSupplier(null);
         BlockProducerHelper.resetEpochTrackingToSlot(-1);
     }
 
@@ -62,6 +67,8 @@ class DevnetBlockProducerTest {
             blockProducer.stop();
         }
         BlockProducerHelper.setEpochParamProvider(null);
+        BlockProducerHelper.setGenesisBootstrapDataSupplier(null);
+        BlockProducerHelper.setProducerPoolHashSupplier(null);
         BlockProducerHelper.resetEpochTrackingToSlot(-1);
         scheduler.shutdownNow();
     }
@@ -226,6 +233,44 @@ class DevnetBlockProducerTest {
         com.bloxbean.cardano.yaci.core.model.Block block =
                 com.bloxbean.cardano.yaci.core.model.serializers.BlockSerializer.INSTANCE.deserialize(blockCbor);
         assertThat(block.getTransactionBodies()).isEmpty();
+    }
+
+    @Test
+    void start_doesNotStoreGenesisBlockWhenGenesisBootstrapEventFails() {
+        BlockProducerHelper.setEpochParamProvider(new TestEpochParamProvider(10));
+        RecordingEventBus eventBus = new RecordingEventBus(event -> {
+            if (event instanceof GenesisBlockEvent) {
+                throw new RuntimeException("genesis bootstrap failed");
+            }
+        });
+        blockProducer = new DevnetBlockProducer(
+                chainState, memPool, null, eventBus, scheduler,
+                2000, false, System.currentTimeMillis(), 1000, null,
+                new DummyTransactionValidationService(null, null), null);
+
+        RuntimeException error = assertThrows(RuntimeException.class, () -> blockProducer.start());
+
+        assertThat(error).hasMessageContaining("genesis bootstrap failed");
+        assertThat(chainState.getTip()).isNull();
+        assertThat(blockProducer.isRunning()).isFalse();
+    }
+
+    @Test
+    void start_doesNotStoreGenesisBlockWhenEnrichedGenesisEventCannotResolveEpoch() {
+        BlockProducerHelper.setEpochParamProvider(null);
+        BlockProducerHelper.setGenesisBootstrapDataSupplier(() ->
+                new GenesisBootstrapData("aa".repeat(32), ShelleyGenesisBootstrap.empty()));
+        RecordingEventBus eventBus = new RecordingEventBus();
+        blockProducer = new DevnetBlockProducer(
+                chainState, memPool, null, eventBus, scheduler,
+                2000, false, System.currentTimeMillis(), 1000, null,
+                new DummyTransactionValidationService(null, null), null);
+
+        IllegalStateException error = assertThrows(IllegalStateException.class, () -> blockProducer.start());
+
+        assertThat(error).hasMessageContaining("requires epoch metadata");
+        assertThat(chainState.getTip()).isNull();
+        assertThat(eventBus.events()).isEmpty();
     }
 
     @Test

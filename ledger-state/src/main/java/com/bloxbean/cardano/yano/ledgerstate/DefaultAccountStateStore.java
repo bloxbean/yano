@@ -24,6 +24,10 @@ import com.bloxbean.cardano.yano.api.account.LedgerStateProvider;
 import com.bloxbean.cardano.yano.api.events.BlockAppliedEvent;
 import com.bloxbean.cardano.yano.api.events.GenesisBlockEvent;
 import com.bloxbean.cardano.yano.api.events.RollbackEvent;
+import com.bloxbean.cardano.yano.api.genesis.GenesisBootstrapData;
+import com.bloxbean.cardano.yano.api.genesis.GenesisDelegation;
+import com.bloxbean.cardano.yano.api.genesis.GenesisPool;
+import com.bloxbean.cardano.yano.api.genesis.ShelleyGenesisBootstrap;
 import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Point;
 import org.rocksdb.*;
 import org.slf4j.Logger;
@@ -91,6 +95,17 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
     private static final byte[] META_TOTAL_DEPOSITED = "total_dep".getBytes(StandardCharsets.UTF_8);
     private static final byte[] META_LAST_APPLIED_BLOCK = "meta.last_block".getBytes(StandardCharsets.UTF_8);
     private static final byte[] META_LAST_SNAPSHOT_EPOCH = "meta.last_snapshot_epoch".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] META_GENESIS_STAKING_BOOTSTRAP = "meta.genesis_staking_bootstrap".getBytes(StandardCharsets.UTF_8);
+    private static final String GENESIS_STAKING_BOOTSTRAP_VERSION = "v1";
+    // Reserved snapshot epoch for Haskell's direct-start initial ssStakeMark.
+    //
+    // This deliberately shares cfEpochSnapshot with normal epoch snapshots, but
+    // epoch -1 is not a real chain epoch, slot, or synthetic block. It is an
+    // internal namespace used only to persist the genesis mark snapshot that
+    // Haskell creates before any epoch-boundary SNAP rule runs. Do not expose it
+    // through APIs, include it in retention/pruning ranges, or reuse -1 for
+    // another snapshot purpose without migrating these keys.
+    private static final int INITIAL_MARK_SNAPSHOT_KEY = -1;
     // Epoch boundary completion tracking — stores the last completed step for crash recovery.
     // Format: 8 bytes (epoch as int, step as int). Steps: 0=started, 1=rewards, 2=snapshot, 3=poolreap, 4=governance, 5=complete
     private static final byte[] META_BOUNDARY_STEP = "meta.boundary_step".getBytes(StandardCharsets.UTF_8);
@@ -2108,8 +2123,296 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
 
     @Override
     public void handleGenesisBlock(GenesisBlockEvent event) {
-        if (!enabled || paramTracker == null || !paramTracker.isEnabled() || event == null) return;
-        paramTracker.bootstrapEpochIfNeeded(event.epoch());
+        if (!enabled || event == null) return;
+        bootstrapGenesisStaking(event);
+        if (paramTracker != null && paramTracker.isEnabled()) {
+            paramTracker.bootstrapEpochIfNeeded(event.epoch());
+        }
+    }
+
+    private void bootstrapGenesisStaking(GenesisBlockEvent event) {
+        GenesisBootstrapData bootstrapData = event.bootstrapData();
+        if (bootstrapData == null) {
+            return;
+        }
+        if (!bootstrapData.hasShelleyStaking()) {
+            validateGenesisBootstrapMarkerIfPresent(bootstrapData);
+            return;
+        }
+        if (db == null || cfState == null) {
+            throw new IllegalStateException("Genesis staking bootstrap requires RocksDB account state");
+        }
+        if (cfEpochSnapshot == null) {
+            throw new IllegalStateException("Genesis staking bootstrap requires epoch snapshot state");
+        }
+
+        String genesisHash = bootstrapData.shelleyGenesisHashHex();
+        if (genesisHash == null || genesisHash.isBlank()) {
+            throw new IllegalStateException("Genesis staking bootstrap requires a resolved Shelley genesis hash");
+        }
+
+        ShelleyGenesisBootstrap shelley = bootstrapData.shelley();
+        String markerIdentity = genesisMarkerIdentity(genesisHash);
+        List<GenesisPool> pools = shelley.pools().stream()
+                .sorted(Comparator.comparing(GenesisPool::poolHash, Comparator.nullsLast(String::compareTo)))
+                .toList();
+        List<GenesisDelegation> delegations = shelley.delegations().stream()
+                .sorted(Comparator
+                        .comparingInt(GenesisDelegation::stakeCredentialType)
+                        .thenComparing(GenesisDelegation::stakeCredentialHash, Comparator.nullsLast(String::compareTo))
+                        .thenComparing(GenesisDelegation::poolHash, Comparator.nullsLast(String::compareTo)))
+                .toList();
+        validateGenesisDelegations(pools, delegations);
+
+        try {
+            byte[] existingMarker = db.get(cfState, META_GENESIS_STAKING_BOOTSTRAP);
+            if (existingMarker != null) {
+                String existing = new String(existingMarker, StandardCharsets.UTF_8);
+                if (existing.startsWith(markerIdentity + ":")) {
+                    seedGenesisDerivedFactsIfKnown(event, shelley, pools, delegations);
+                    log.debug("Genesis staking bootstrap already applied for hash {}", genesisHash);
+                    return;
+                }
+                throw new IllegalStateException("Genesis staking bootstrap marker mismatch. existing="
+                        + existing + ", requested=" + markerIdentity);
+            }
+
+            BigInteger poolDeposit = shelley.poolDeposit();
+            BigInteger keyDeposit = shelley.keyDeposit();
+            BigInteger genesisDeposits = poolDeposit.multiply(BigInteger.valueOf(pools.size()))
+                    .add(keyDeposit.multiply(BigInteger.valueOf(delegations.size())));
+            BigInteger totalBefore = getTotalDeposited();
+            BigInteger totalAfter = totalBefore.add(genesisDeposits);
+
+            try (WriteBatch batch = new WriteBatch(); WriteOptions wo = new WriteOptions()) {
+                int activeEpoch = 0;
+                long genesisSlot = event.slot();
+
+                for (GenesisPool pool : pools) {
+                    if (pool.poolHash() == null) continue;
+                    var data = new AccountStateCborCodec.PoolRegistrationData(
+                            poolDeposit,
+                            pool.marginNumerator(),
+                            pool.marginDenominator(),
+                            pool.cost(),
+                            pool.pledge(),
+                            pool.rewardAccount(),
+                            pool.owners());
+                    byte[] encoded = AccountStateCborCodec.encodePoolRegistration(data);
+                    batch.put(cfState, poolDepositKey(pool.poolHash()), encoded);
+                    batch.put(cfState, poolParamsHistKey(pool.poolHash(), activeEpoch), encoded);
+                    batch.put(cfState, poolRegSlotKey(pool.poolHash()),
+                            ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN).putLong(genesisSlot).array());
+                }
+
+                putGenesisDerivedFactsIfKnown(event, shelley, pools, delegations, batch);
+
+                for (int i = 0; i < delegations.size(); i++) {
+                    GenesisDelegation delegation = delegations.get(i);
+                    if (delegation.stakeCredentialHash() == null || delegation.poolHash() == null) continue;
+                    int credType = delegation.stakeCredentialType();
+                    String credHash = delegation.stakeCredentialHash();
+                    int certIdx = i;
+
+                    batch.put(cfState, accountKey(credType, credHash),
+                            AccountStateCborCodec.encodeStakeAccount(BigInteger.ZERO, keyDeposit));
+                    batch.put(cfState, acctRegSlotKey(credType, credHash),
+                            ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN).putLong(genesisSlot).array());
+                    batch.put(cfState, stakeEventKey(genesisSlot, 0, certIdx, credType, credHash),
+                            AccountStateCborCodec.encodeStakeEvent(AccountStateCborCodec.EVENT_REGISTRATION));
+                    batch.put(cfState, poolDelegKey(credType, credHash),
+                            AccountStateCborCodec.encodePoolDelegation(delegation.poolHash(),
+                                    genesisSlot, 0, certIdx));
+                }
+
+                if (genesisDeposits.signum() > 0) {
+                    batch.put(cfState, META_TOTAL_DEPOSITED, totalDepositedToBytes(totalAfter));
+                    putGenesisAdaPotDeposits(event.epoch(), shelley, totalAfter, batch);
+                }
+
+                batch.put(cfState, META_GENESIS_STAKING_BOOTSTRAP,
+                        genesisMarkerValue(genesisHash, event.slot()).getBytes(StandardCharsets.UTF_8));
+                db.write(wo, batch);
+            }
+
+            log.info("Genesis staking bootstrapped: pools={}, delegations={}, deposits={}, totalDeposited={}",
+                    pools.size(), delegations.size(), genesisDeposits, totalAfter);
+        } catch (RocksDBException e) {
+            log.error("genesis staking bootstrap failed", e);
+            throw new IllegalStateException("genesis staking bootstrap failed", e);
+        }
+    }
+
+    private void validateGenesisBootstrapMarkerIfPresent(GenesisBootstrapData bootstrapData) {
+        String genesisHash = bootstrapData.shelleyGenesisHashHex();
+        if (genesisHash == null || genesisHash.isBlank() || db == null || cfState == null) {
+            return;
+        }
+
+        String markerIdentity = genesisMarkerIdentity(genesisHash);
+        try {
+            byte[] existingMarker = db.get(cfState, META_GENESIS_STAKING_BOOTSTRAP);
+            if (existingMarker == null) {
+                return;
+            }
+            String existing = new String(existingMarker, StandardCharsets.UTF_8);
+            if (!existing.startsWith(markerIdentity + ":")) {
+                throw new IllegalStateException("Genesis staking bootstrap marker mismatch. existing="
+                        + existing + ", requested=" + markerIdentity);
+            }
+        } catch (RocksDBException e) {
+            throw new IllegalStateException("genesis staking bootstrap marker check failed", e);
+        }
+    }
+
+    private void validateGenesisDelegations(List<GenesisPool> pools, List<GenesisDelegation> delegations) {
+        Set<String> poolHashes = pools.stream()
+                .map(GenesisPool::poolHash)
+                .filter(Objects::nonNull)
+                .collect(java.util.stream.Collectors.toSet());
+        for (GenesisDelegation delegation : delegations) {
+            if (delegation.stakeCredentialHash() == null || delegation.poolHash() == null) {
+                throw new IllegalStateException("Genesis staking delegation is incomplete. stakeCredential="
+                        + delegation.stakeCredentialHash() + ", pool=" + delegation.poolHash());
+            }
+            String poolHash = delegation.poolHash();
+            if (!poolHashes.contains(poolHash)) {
+                throw new IllegalStateException("Genesis staking delegation references unregistered pool. stakeCredential="
+                        + delegation.stakeCredentialHash() + ", pool=" + poolHash);
+            }
+        }
+    }
+
+    private void seedGenesisDerivedFactsIfKnown(GenesisBlockEvent event,
+                                                ShelleyGenesisBootstrap shelley,
+                                                List<GenesisPool> pools,
+                                                List<GenesisDelegation> delegations) throws RocksDBException {
+        try (WriteBatch batch = new WriteBatch(); WriteOptions wo = new WriteOptions()) {
+            putGenesisDerivedFactsIfKnown(event, shelley, pools, delegations, batch);
+            db.write(wo, batch);
+        }
+    }
+
+    private void putGenesisDerivedFactsIfKnown(GenesisBlockEvent event,
+                                               ShelleyGenesisBootstrap shelley,
+                                               List<GenesisPool> pools,
+                                               List<GenesisDelegation> delegations,
+                                               WriteBatch batch) throws RocksDBException {
+        putGenesisProducerBlockIssuerIfKnown(event, pools, batch);
+        putGenesisStakeSnapshot(shelley, delegations, batch);
+    }
+
+    private void putGenesisProducerBlockIssuerIfKnown(GenesisBlockEvent event, List<GenesisPool> pools,
+                                                      WriteBatch batch) throws RocksDBException {
+        String producerPoolHash = event.producerPoolHash();
+        if (producerPoolHash == null || producerPoolHash.isBlank()) return;
+        boolean genesisPool = pools.stream()
+                .map(GenesisPool::poolHash)
+                .filter(Objects::nonNull)
+                .anyMatch(producerPoolHash::equals);
+        if (!genesisPool) {
+            log.warn("Skipping genesis producer block issuer bootstrap because producer pool {} is not in Shelley genesis staking",
+                    producerPoolHash);
+            return;
+        }
+
+        byte[] issuerKey = blockIssuerKey(event.epoch(), event.slot());
+        byte[] existing = db.get(cfState, issuerKey);
+        if (existing != null) return;
+        batch.put(cfState, issuerKey, HexUtil.decodeHexString(producerPoolHash));
+    }
+
+    private void putGenesisStakeSnapshot(ShelleyGenesisBootstrap shelley,
+                                         List<GenesisDelegation> delegations,
+                                         WriteBatch batch) throws RocksDBException {
+        if (delegations.isEmpty()) return;
+
+        // The -1 epoch key is a reserved cfEpochSnapshot namespace for the
+        // Haskell initial mark snapshot. It lets reward calculation consume the
+        // genesis mark via the same lookup path as regular snapshots while
+        // keeping it distinct from persisted chain epochs.
+        Map<UtxoBalanceAggregator.CredentialKey, BigInteger> stakeBalances =
+                aggregateGenesisStakeBalances(shelley.initialFunds());
+        int written = 0;
+        for (GenesisDelegation delegation : delegations) {
+            if (delegation.stakeCredentialHash() == null || delegation.poolHash() == null) continue;
+
+            byte[] snapshotKey = epochDelegSnapshotKey(INITIAL_MARK_SNAPSHOT_KEY,
+                    delegation.stakeCredentialType(), delegation.stakeCredentialHash());
+            if (db.get(cfEpochSnapshot, snapshotKey) != null) continue;
+
+            var credKey = new UtxoBalanceAggregator.CredentialKey(
+                    delegation.stakeCredentialType(), delegation.stakeCredentialHash());
+            BigInteger amount = stakeBalances.getOrDefault(credKey, BigInteger.ZERO);
+            batch.put(cfEpochSnapshot, snapshotKey,
+                    AccountStateCborCodec.encodeEpochDelegSnapshot(delegation.poolHash(), amount));
+            written++;
+        }
+
+        if (written > 0) {
+            log.info("Genesis initial mark snapshot seeded: snapshotKey={}, delegations={}, fundedCredentials={}",
+                    INITIAL_MARK_SNAPSHOT_KEY, written, stakeBalances.size());
+        }
+    }
+
+    private Map<UtxoBalanceAggregator.CredentialKey, BigInteger> aggregateGenesisStakeBalances(
+            Map<String, BigInteger> initialFunds) {
+        if (initialFunds == null || initialFunds.isEmpty()) return Map.of();
+
+        UtxoBalanceAggregator aggregator = new UtxoBalanceAggregator();
+        Map<UtxoBalanceAggregator.CredentialKey, BigInteger> balances = new HashMap<>();
+        for (var entry : initialFunds.entrySet()) {
+            BigInteger amount = entry.getValue();
+            if (amount == null || amount.signum() <= 0) continue;
+
+            var credKey = aggregator.extractCredential(entry.getKey(), null);
+            if (credKey != null) {
+                balances.merge(credKey, amount, BigInteger::add);
+            }
+        }
+        return balances;
+    }
+
+    private static byte[] epochDelegSnapshotKey(int epoch, int credType, String credentialHash) {
+        byte[] epochBytes = ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(epoch).array();
+        byte[] hash = HexUtil.decodeHexString(credentialHash);
+        byte[] key = new byte[4 + 1 + hash.length];
+        System.arraycopy(epochBytes, 0, key, 0, 4);
+        key[4] = (byte) credType;
+        System.arraycopy(hash, 0, key, 5, hash.length);
+        return key;
+    }
+
+    private void putGenesisAdaPotDeposits(int epoch, ShelleyGenesisBootstrap shelley, BigInteger totalDeposited,
+                                          WriteBatch batch) throws RocksDBException {
+        if (adaPotTracker == null || !adaPotTracker.isEnabled()) return;
+
+        byte[] key = adaPotKey(epoch);
+        byte[] existing = db.get(cfState, key);
+        AccountStateCborCodec.AdaPot pot;
+        if (existing != null) {
+            var current = AccountStateCborCodec.decodeAdaPot(existing);
+            pot = new AccountStateCborCodec.AdaPot(
+                    current.treasury(), current.reserves(), totalDeposited,
+                    current.fees(), current.distributed(), current.undistributed(),
+                    current.rewardsPot(), current.poolRewardsPot());
+        } else {
+            BigInteger reserves = shelley.maxLovelaceSupply().subtract(shelley.initialFundsTotal());
+            if (reserves.signum() < 0) reserves = BigInteger.ZERO;
+            pot = new AccountStateCborCodec.AdaPot(
+                    BigInteger.ZERO, reserves, totalDeposited,
+                    BigInteger.ZERO, BigInteger.ZERO, BigInteger.ZERO,
+                    BigInteger.ZERO, BigInteger.ZERO);
+        }
+        batch.put(cfState, key, AccountStateCborCodec.encodeAdaPot(pot));
+    }
+
+    private static String genesisMarkerIdentity(String genesisHash) {
+        return GENESIS_STAKING_BOOTSTRAP_VERSION + ":" + genesisHash;
+    }
+
+    private static String genesisMarkerValue(String genesisHash, long slot) {
+        return genesisMarkerIdentity(genesisHash) + ":slot=" + slot;
     }
 
     @Override

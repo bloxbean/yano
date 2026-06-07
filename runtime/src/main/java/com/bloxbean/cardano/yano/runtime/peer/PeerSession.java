@@ -8,6 +8,7 @@ import com.bloxbean.cardano.yaci.events.api.EventBus;
 import com.bloxbean.cardano.yaci.helper.PeerClient;
 import com.bloxbean.cardano.yaci.helper.PipelineConfig;
 import com.bloxbean.cardano.yano.api.EpochParamProvider;
+import com.bloxbean.cardano.yano.api.genesis.GenesisBootstrapData;
 import com.bloxbean.cardano.yano.runtime.apply.LedgerApplyProcessor;
 import com.bloxbean.cardano.yano.runtime.BodyFetchManager;
 import com.bloxbean.cardano.yano.runtime.HeaderSyncManager;
@@ -18,6 +19,7 @@ import lombok.extern.slf4j.Slf4j;
 import java.time.Duration;
 import java.util.Objects;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 
 /**
  * Owns the lifecycle of one active upstream peer session.
@@ -35,6 +37,7 @@ public class PeerSession {
     private final PeerHealth peerHealth;
     private final PeerEndpoint endpoint;
     private final PeerClientFactory peerClientFactory;
+    private Supplier<GenesisBootstrapData> genesisBootstrapDataSupplier = GenesisBootstrapData::empty;
 
     private PeerClient peerClient;
     private HeaderSyncManager headerSyncManager;
@@ -71,6 +74,13 @@ public class PeerSession {
         this.epochParamProvider = epochParamProvider;
         this.peerClientFactory = Objects.requireNonNull(peerClientFactory, "peerClientFactory");
         this.peerHealth = new PeerHealth(endpoint.displayName(), System.currentTimeMillis());
+    }
+
+    public void setGenesisBootstrapDataSupplier(Supplier<GenesisBootstrapData> supplier) {
+        this.genesisBootstrapDataSupplier = supplier != null ? supplier : GenesisBootstrapData::empty;
+        if (bodyFetchManager != null) {
+            bodyFetchManager.setGenesisBootstrapDataSupplier(this.genesisBootstrapDataSupplier);
+        }
     }
 
     public void startPipelined(Point startPoint, PipelineConfig pipelineConfig) {
@@ -290,6 +300,7 @@ public class PeerSession {
                 syncTipContext
         );
         bodyFetchManager.setPeerHealth(peerHealth);
+        bodyFetchManager.setGenesisBootstrapDataSupplier(genesisBootstrapDataSupplier);
         log.info("📦 BodyFetchManager created with gapThreshold={}, maxBatchSize={}",
                 gapThreshold, maxBatchSize);
 
