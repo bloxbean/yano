@@ -74,7 +74,7 @@ public class DebugSnapshotResource {
             @JsonProperty("block_count") int blockCount,
             @JsonProperty("active_stake") BigInteger activeStake,
             @JsonProperty("delegator_count") int delegatorCount,
-            @JsonProperty("margin") double margin,
+            @JsonProperty("margin") BigDecimal margin,
             @JsonProperty("fixed_cost") BigInteger fixedCost,
             @JsonProperty("pledge") BigInteger pledge,
             @JsonProperty("reward_address") String rewardAddress,
