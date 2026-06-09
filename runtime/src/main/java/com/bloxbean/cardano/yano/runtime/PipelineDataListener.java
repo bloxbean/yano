@@ -192,7 +192,7 @@ public class PipelineDataListener implements BlockChainDataListener {
                 }
 
                 // Update sync progress tracking in Yano
-                callbacks.updateSyncProgress();
+                callbacks.updateSyncProgress(slot, blockNumber);
 
                 // Notify server about new block availability (only during STEADY_STATE)
                 callbacks.notifyServerNewBlockStored();
@@ -233,7 +233,7 @@ public class PipelineDataListener implements BlockChainDataListener {
                 }
 
                 // Update sync progress tracking in Yano
-                callbacks.updateSyncProgress();
+                callbacks.updateSyncProgress(slot, blockNumber);
 
                 // Notify server about new block availability (only during STEADY_STATE)
                 callbacks.notifyServerNewBlockStored();
@@ -275,7 +275,7 @@ public class PipelineDataListener implements BlockChainDataListener {
                 }
 
                 // Update sync progress tracking in Yano
-                callbacks.updateSyncProgress();
+                callbacks.updateSyncProgress(slot, blockNumber);
 
                 // Notify server about new block availability (only during STEADY_STATE)
                 callbacks.notifyServerNewBlockStored();

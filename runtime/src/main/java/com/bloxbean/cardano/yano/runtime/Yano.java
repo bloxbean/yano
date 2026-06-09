@@ -157,7 +157,7 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
     // Client sync component - now using pipelined sync for parallel ChainSync and BlockFetch
     private volatile PeerSession peerSession;
     private PeerSessionSupervisor peerSessionSupervisor;
-    private boolean isInitialSyncComplete = false;
+    private volatile boolean isInitialSyncComplete = false;
     // Pipelining state
     private PipelineConfig pipelineConfig;
     private boolean isPipelinedMode = false;
@@ -201,7 +201,7 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
     private long lastProcessedSlot = 0;
 
     // Rollback classification fields
-    private SyncPhase syncPhase = SyncPhase.INITIAL_SYNC;
+    private volatile SyncPhase syncPhase = SyncPhase.INITIAL_SYNC;
     private ChainTip lastKnownChainTip;
     private long rollbackClassificationTimeout = 30000; // 30 seconds
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
@@ -3918,33 +3918,6 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
 
 
     /**
-     * Check sync progress and detect when BlockFetch is complete to transition to ChainSync
-     */
-    private void checkSyncProgress() {
-        // If we have a remote tip and we're close to it, mark initial sync as complete
-        Point remotePoint = remoteTip != null ? remoteTip.getPoint() : null;
-        if (!isInitialSyncComplete && remotePoint != null) {
-            long slotDifference = remotePoint.getSlot() - lastProcessedSlot;
-
-            // If we're within 10 slots of the remote tip, consider initial sync complete
-            if (slotDifference <= 10) {
-                isInitialSyncComplete = true;
-                log.info("🚀 ==> TRANSITION: BlockFetch → ChainSync");
-                log.info("🚀 ==> Initial BlockFetch sync complete! Now in real-time ChainSync mode at slot {}", lastProcessedSlot);
-                log.info("🚀 ==> Yano is now fully synchronized and serving clients");
-                log.info("🚀 ==> Will now log every block as it arrives in real-time");
-                // Reflect phase change
-                var prev = syncPhase;
-                updateSyncProgress();
-                if (prev != syncPhase) {
-                    EventMetadata meta = EventMetadata.builder().origin("runtime").build();
-                    eventBus.publish(new SyncStatusChangedEvent(prev, syncPhase), meta, PublishOptions.builder().build());
-                }
-            }
-        }
-    }
-
-    /**
      * Stop Yano.
      */
     public void stop() {
@@ -4268,21 +4241,53 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
     /**
      * Update sync phase based on sync progress
      */
-    public void updateSyncProgress() {
+    public void updateSyncProgress(long slot, long blockNumber) {
+        lastProcessedSlot = slot;
+        blocksProcessed++;
+        long observedRemoteTipSlot = observedRemoteTipSlot();
+        if (syncPhase == SyncPhase.INITIAL_SYNC && !isInitialSyncComplete
+                && observedRemoteTipSlot >= 0) {
+            long distance = Math.max(0L, observedRemoteTipSlot - slot);
+            if (distance <= 10) {
+                isInitialSyncComplete = true;
+                log.info("🚀 ==> Initial sync complete at slot {} (distance to tip: {} slots)",
+                        slot, distance);
+            }
+        }
+
         if (syncPhase == SyncPhase.INITIAL_SYNC && isInitialSyncComplete) {
+            SyncPhase prev = syncPhase;
             syncPhase = SyncPhase.STEADY_STATE;
             log.info("Transitioned to STEADY_STATE sync phase");
+            EventMetadata meta = EventMetadata.builder().origin("runtime").build();
+            eventBus.publish(new SyncStatusChangedEvent(prev, syncPhase), meta, PublishOptions.builder().build());
 
             // Update BodyFetchManager sync phase and resume if needed
             BodyFetchManager bodyFetchManager = currentBodyFetchManager();
             if (isPipelinedMode && bodyFetchManager != null) {
                 bodyFetchManager.setSyncPhase(SyncPhase.STEADY_STATE);
+                bodyFetchManager.wakeFetchLoop();
                 if (bodyFetchManager.isPaused()) {
                     bodyFetchManager.resume();
                     log.info("▶️ BodyFetchManager resumed after transition to STEADY_STATE");
                 }
             }
         }
+    }
+
+    private long observedRemoteTipSlot() {
+        long observedSlot = -1L;
+        Tip tip = remoteTip;
+        if (tip != null && tip.getPoint() != null) {
+            observedSlot = tip.getPoint().getSlot();
+        }
+
+        BodyFetchManager bodyFetchManager = currentBodyFetchManager();
+        if (bodyFetchManager != null) {
+            observedSlot = Math.max(observedSlot, bodyFetchManager.getObservedNetworkTipSlot());
+        }
+
+        return observedSlot;
     }
 
     /**

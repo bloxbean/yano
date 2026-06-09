@@ -4,12 +4,15 @@ import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Point;
 import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Tip;
 
 /**
- * Runtime callbacks needed by the active peer session listener.
+ * Internal runtime callbacks needed by the active peer session listener.
+ *
+ * <p>This interface is implemented by Yano and is not part of the public
+ * plugin/API surface.</p>
  */
 public interface PeerSessionCallbacks {
     void resumeBodyFetchOnHeaderFlow();
 
-    void updateSyncProgress();
+    void updateSyncProgress(long slot, long blockNumber);
 
     void notifyServerNewBlockStored();
 

@@ -21,6 +21,11 @@ public class InMemoryChainState implements ChainState, NonceStateStore {
     private Map<String, byte[]> blockHeaderStore = new ConcurrentHashMap<>();
     private Map<Long, byte[]> blockHashByNumber = new ConcurrentHashMap<>();
     private ConcurrentSkipListMap<Long, Long> blockNumberBySlot = new ConcurrentSkipListMap<>();
+    private Map<Long, byte[]> headerHashByNumber = new ConcurrentHashMap<>();
+    private ConcurrentSkipListMap<Long, Long> headerNumberBySlot = new ConcurrentSkipListMap<>();
+    private ConcurrentSkipListMap<Long, byte[]> headerHashBySlot = new ConcurrentSkipListMap<>();
+    private ConcurrentSkipListMap<Long, byte[]> ebbHeaderHashBySlot = new ConcurrentSkipListMap<>();
+    private ConcurrentSkipListMap<Long, Long> ebbHeaderNumberBySlot = new ConcurrentSkipListMap<>();
 
     private static String toHex(byte[] bytes) {
         return HexUtil.encodeHexString(bytes);
@@ -39,6 +44,7 @@ public class InMemoryChainState implements ChainState, NonceStateStore {
         blockHeaderStore.put(key, block);
         blockHashByNumber.put(blockNumber, blockHash);
         blockNumberBySlot.put(slot, blockNumber);
+        indexMainHeader(blockHash, blockNumber, slot);
         tip = new ChainTip(slot, blockHash, blockNumber);
     }
 
@@ -55,6 +61,18 @@ public class InMemoryChainState implements ChainState, NonceStateStore {
     @Override
     public void storeBlockHeader(byte[] blockHash, Long blockNumber, Long slot, byte[] blockHeader) {
         blockHeaderStore.put(toHex(blockHash), blockHeader);
+        indexMainHeader(blockHash, blockNumber, slot);
+        headerTip = new ChainTip(slot, blockHash, blockNumber);
+    }
+
+    public void storeByronEbHeader(byte[] blockHash, Long blockNumber, Long slot, byte[] blockHeader) {
+        blockHeaderStore.put(toHex(blockHash), blockHeader);
+        if (slot != null) {
+            ebbHeaderHashBySlot.put(slot, blockHash);
+            if (blockNumber != null) {
+                ebbHeaderNumberBySlot.put(slot, blockNumber);
+            }
+        }
         headerTip = new ChainTip(slot, blockHash, blockNumber);
     }
 
@@ -74,13 +92,26 @@ public class InMemoryChainState implements ChainState, NonceStateStore {
 
     @Override
     public void rollbackTo(Long slot) {
-        // Get all block numbers greater than the provided slot
+        headerHashBySlot.tailMap(slot, false).forEach((headerSlot, blockHash) -> {
+            String key = toHex(blockHash);
+            blockHeaderStore.remove(key);
+            removeHashValue(headerHashByNumber, blockHash);
+            headerNumberBySlot.remove(headerSlot);
+        });
+        headerHashBySlot.tailMap(slot, false).clear();
+        headerNumberBySlot.tailMap(slot, false).clear();
+
+        ebbHeaderHashBySlot.tailMap(slot, false).forEach((headerSlot, blockHash) ->
+                blockHeaderStore.remove(toHex(blockHash)));
+        ebbHeaderHashBySlot.tailMap(slot, false).clear();
+        ebbHeaderNumberBySlot.tailMap(slot, false).clear();
+
+        // Get all body block numbers greater than the provided slot
         blockNumberBySlot.tailMap(slot, false).forEach((blockSlot, blockNumber) -> {
             byte[] blockHash = blockHashByNumber.get(blockNumber);
             if (blockHash != null) {
                 String key = toHex(blockHash);
                 blockStore.remove(key);
-                blockHeaderStore.remove(key);
                 blockHashByNumber.remove(blockNumber);
             }
         });
@@ -88,25 +119,26 @@ public class InMemoryChainState implements ChainState, NonceStateStore {
         // Remove the entries from blockNumberBySlot where slots are greater than the provided slot
         blockNumberBySlot.tailMap(slot, false).clear();
 
-        var lastEntry = blockNumberBySlot.floorEntry(slot);
-        if (lastEntry == null) {
-            tip = null;
-            headerTip = null;
-            return;
-        }
+        tip = bodyTipAtOrBefore(slot);
+        headerTip = headerTipAtOrBefore(slot);
+    }
 
+    private ChainTip bodyTipAtOrBefore(Long slot) {
+        var lastEntry = blockNumberBySlot.floorEntry(slot);
+        if (lastEntry == null) return null;
         Long tipSlot = lastEntry.getKey();
         Long blockNumber = lastEntry.getValue();
         byte[] blockHash = blockHashByNumber.get(blockNumber);
-        if (blockHash == null) {
-            tip = null;
-            headerTip = null;
-            return;
-        }
+        return blockHash != null && blockStore.containsKey(toHex(blockHash))
+                ? new ChainTip(tipSlot, blockHash, blockNumber)
+                : null;
+    }
 
-        String key = toHex(blockHash);
-        tip = blockStore.containsKey(key) ? new ChainTip(tipSlot, blockHash, blockNumber) : null;
-        headerTip = blockHeaderStore.containsKey(key) ? new ChainTip(tipSlot, blockHash, blockNumber) : null;
+    private ChainTip headerTipAtOrBefore(Long slot) {
+        HeaderPoint headerPoint = lastHeaderPointAtOrBefore(slot);
+        return headerPoint != null
+                ? new ChainTip(headerPoint.slot(), headerPoint.hash(), headerPoint.blockNumber())
+                : null;
     }
 
     public void rollbackToOrigin() {
@@ -114,6 +146,11 @@ public class InMemoryChainState implements ChainState, NonceStateStore {
         blockHeaderStore.clear();
         blockHashByNumber.clear();
         blockNumberBySlot.clear();
+        headerHashByNumber.clear();
+        headerNumberBySlot.clear();
+        headerHashBySlot.clear();
+        ebbHeaderHashBySlot.clear();
+        ebbHeaderNumberBySlot.clear();
         tip = null;
         headerTip = null;
         epochNonceState = null;
@@ -133,7 +170,7 @@ public class InMemoryChainState implements ChainState, NonceStateStore {
 
     @Override
     public byte[] getBlockHeaderByNumber(Long blockNumber) {
-        byte[] blockHash = blockHashByNumber.get(blockNumber);
+        byte[] blockHash = headerHashByNumber.get(blockNumber);
         if (blockHash != null) {
             return blockHeaderStore.get(toHex(blockHash));
         }
@@ -150,16 +187,8 @@ public class InMemoryChainState implements ChainState, NonceStateStore {
 
         if (headerTip == null || currentSlot >= headerTip.getSlot()) return null;
 
-        Long nextSlot = blockNumberBySlot.higherKey(currentSlot);
-        if (nextSlot == null) return null;
-
-        Long blockNumber = blockNumberBySlot.get(nextSlot);
-        if (blockNumber == null) return null;
-
-        byte[] blockHash = blockHashByNumber.get(blockNumber);
-        if (blockHash == null) return null;
-
-        return new Point(nextSlot, HexUtil.encodeHexString(blockHash));
+        HeaderPoint next = nextHeaderPointAfter(currentSlot, currentPoint.getHash());
+        return next != null ? new Point(next.slot(), HexUtil.encodeHexString(next.hash())) : null;
     }
 
     @Override
@@ -192,24 +221,8 @@ public class InMemoryChainState implements ChainState, NonceStateStore {
      * Find the first (earliest) block in our chain
      */
     public Point getFirstBlock() {
-        // Slot-first: earliest slot in our map
-        if (blockNumberBySlot.isEmpty()) return null;
-
-        try {
-            Long firstSlot = blockNumberBySlot.firstKey();
-            if (firstSlot == null) return null;
-
-            Long blockNumber = blockNumberBySlot.get(firstSlot);
-            if (blockNumber == null) return null;
-
-            byte[] blockHash = blockHashByNumber.get(blockNumber);
-            if (blockHash == null) return null;
-
-            return new Point(firstSlot, HexUtil.encodeHexString(blockHash));
-        } catch (Exception e) {
-            if (log.isDebugEnabled()) log.debug("Error finding first block: {}", e.getMessage());
-            return null;
-        }
+        HeaderPoint first = firstHeaderPoint();
+        return first != null ? new Point(first.slot(), HexUtil.encodeHexString(first.hash())) : null;
     }
 
     @Override
@@ -221,7 +234,7 @@ public class InMemoryChainState implements ChainState, NonceStateStore {
         try {
             // Resolve start slot (handle ORIGIN)
             Long startSlot = from.getSlot() == 0 && from.getHash() == null
-                    ? blockNumberBySlot.isEmpty() ? null : blockNumberBySlot.firstKey()
+                    ? firstHeaderSlot()
                     : from.getSlot();
             Long endSlot = to.getSlot();
             if (startSlot == null || endSlot == null) return out;
@@ -229,15 +242,8 @@ public class InMemoryChainState implements ChainState, NonceStateStore {
             long minSlot = Math.min(startSlot, endSlot);
             long maxSlot = Math.max(startSlot, endSlot);
 
-            // Iterate by slot order
-            for (Map.Entry<Long, Long> entry : blockNumberBySlot.subMap(minSlot, true, maxSlot, true).entrySet()) {
-                Long slot = entry.getKey();
-                Long blockNumber = entry.getValue();
-                byte[] blockHash = blockHashByNumber.get(blockNumber);
-                if (blockHash != null) {
-                    out.add(new Point(slot, HexUtil.encodeHexString(blockHash)));
-                }
-            }
+            headerPointsInRange(minSlot, maxSlot).forEach(headerPoint ->
+                    out.add(new Point(headerPoint.slot(), HexUtil.encodeHexString(headerPoint.hash()))));
         } catch (Exception e) {
             if (log.isDebugEnabled()) log.debug("Error finding blocks in range: {}", e.getMessage());
         }
@@ -278,29 +284,16 @@ public class InMemoryChainState implements ChainState, NonceStateStore {
         try {
             long fromSlot = from.getSlot();
 
-            // Get all available slots starting from the fromSlot in order
-            List<Long> sortedSlots = blockNumberBySlot.keySet().stream()
-                    .filter(slot -> slot >= fromSlot)
-                    .sorted()
+            List<HeaderPoint> points = headerPointsInRange(fromSlot, Long.MAX_VALUE).stream()
                     .limit(batchSize)
                     .toList();
 
-            if (sortedSlots.isEmpty()) {
+            if (points.isEmpty()) {
                 return null;
             }
 
-            // Get the last slot and its corresponding block
-            Long lastSlot = sortedSlots.get(sortedSlots.size() - 1);
-            Long lastBlockNumber = blockNumberBySlot.get(lastSlot);
-
-            if (lastBlockNumber != null) {
-                byte[] lastBlockHash = blockHashByNumber.get(lastBlockNumber);
-                if (lastBlockHash != null) {
-                    return new Point(lastSlot, HexUtil.encodeHexString(lastBlockHash));
-                }
-            }
-
-            return null;
+            HeaderPoint lastPoint = points.get(points.size() - 1);
+            return new Point(lastPoint.slot(), HexUtil.encodeHexString(lastPoint.hash()));
         } catch (Exception e) {
             if (log.isDebugEnabled()) {
                 log.debug("Error finding last point after N blocks: {}", e.getMessage());
@@ -311,17 +304,120 @@ public class InMemoryChainState implements ChainState, NonceStateStore {
 
     @Override
     public Long getBlockNumberBySlot(Long slot) {
-        return blockNumberBySlot.get(slot);
+        Long blockNumber = headerNumberBySlot.get(slot);
+        return blockNumber != null ? blockNumber : blockNumberBySlot.get(slot);
     }
 
     @Override
     public Long getSlotByBlockNumber(Long blockNumber) {
-        for (Map.Entry<Long, Long> entry : blockNumberBySlot.entrySet()) {
+        for (Map.Entry<Long, Long> entry : headerNumberBySlot.entrySet()) {
             if (entry.getValue().equals(blockNumber)) {
                 return entry.getKey();
             }
         }
         return null;
+    }
+
+    private void indexMainHeader(byte[] blockHash, Long blockNumber, Long slot) {
+        if (blockNumber != null) {
+            headerHashByNumber.put(blockNumber, blockHash);
+        }
+        if (slot != null) {
+            headerHashBySlot.put(slot, blockHash);
+            if (blockNumber != null) {
+                headerNumberBySlot.put(slot, blockNumber);
+            }
+        }
+    }
+
+    private static void removeHashValue(Map<Long, byte[]> map, byte[] hash) {
+        if (hash == null) return;
+        map.entrySet().removeIf(entry -> java.util.Arrays.equals(entry.getValue(), hash));
+    }
+
+    private Long firstHeaderSlot() {
+        HeaderPoint first = firstHeaderPoint();
+        return first != null ? first.slot() : null;
+    }
+
+    private HeaderPoint firstHeaderPoint() {
+        HeaderPoint main = firstHeaderPoint(headerHashBySlot, headerNumberBySlot);
+        HeaderPoint ebb = firstHeaderPoint(ebbHeaderHashBySlot, ebbHeaderNumberBySlot);
+        return earlier(main, ebb);
+    }
+
+    private HeaderPoint lastHeaderPointAtOrBefore(long slot) {
+        HeaderPoint main = floorHeaderPoint(headerHashBySlot, headerNumberBySlot, slot);
+        HeaderPoint ebb = floorHeaderPoint(ebbHeaderHashBySlot, ebbHeaderNumberBySlot, slot);
+        return later(main, ebb);
+    }
+
+    private HeaderPoint nextHeaderPointAfter(long currentSlot, String currentHash) {
+        HeaderPoint main = nextHeaderPoint(headerHashBySlot, headerNumberBySlot, currentSlot, currentHash);
+        HeaderPoint ebb = nextHeaderPoint(ebbHeaderHashBySlot, ebbHeaderNumberBySlot, currentSlot, currentHash);
+        return earlier(main, ebb);
+    }
+
+    private List<HeaderPoint> headerPointsInRange(long minSlot, long maxSlot) {
+        List<HeaderPoint> points = new ArrayList<>();
+        headerHashBySlot.subMap(minSlot, true, maxSlot, true).forEach((slot, hash) ->
+                points.add(new HeaderPoint(slot, headerNumberBySlot.getOrDefault(slot, -1L), hash)));
+        ebbHeaderHashBySlot.subMap(minSlot, true, maxSlot, true).forEach((slot, hash) ->
+                points.add(new HeaderPoint(slot, ebbHeaderNumberBySlot.getOrDefault(slot, -1L), hash)));
+        points.sort((left, right) -> {
+            int slotCompare = Long.compare(left.slot(), right.slot());
+            if (slotCompare != 0) return slotCompare;
+            boolean leftEbb = ebbHeaderHashBySlot.get(left.slot()) != null
+                    && java.util.Arrays.equals(ebbHeaderHashBySlot.get(left.slot()), left.hash());
+            boolean rightEbb = ebbHeaderHashBySlot.get(right.slot()) != null
+                    && java.util.Arrays.equals(ebbHeaderHashBySlot.get(right.slot()), right.hash());
+            if (leftEbb != rightEbb) return leftEbb ? -1 : 1;
+            return left.blockHashHex().compareTo(right.blockHashHex());
+        });
+        return points;
+    }
+
+    private static HeaderPoint firstHeaderPoint(ConcurrentSkipListMap<Long, byte[]> hashes,
+                                                ConcurrentSkipListMap<Long, Long> numbers) {
+        var entry = hashes.firstEntry();
+        return entry != null ? new HeaderPoint(entry.getKey(), numbers.getOrDefault(entry.getKey(), -1L), entry.getValue()) : null;
+    }
+
+    private static HeaderPoint floorHeaderPoint(ConcurrentSkipListMap<Long, byte[]> hashes,
+                                                ConcurrentSkipListMap<Long, Long> numbers,
+                                                long slot) {
+        var entry = hashes.floorEntry(slot);
+        return entry != null ? new HeaderPoint(entry.getKey(), numbers.getOrDefault(entry.getKey(), -1L), entry.getValue()) : null;
+    }
+
+    private static HeaderPoint nextHeaderPoint(ConcurrentSkipListMap<Long, byte[]> hashes,
+                                               ConcurrentSkipListMap<Long, Long> numbers,
+                                               long currentSlot,
+                                               String currentHash) {
+        var entry = hashes.ceilingEntry(currentSlot);
+        while (entry != null && entry.getKey() == currentSlot && currentHash != null
+                && currentHash.equals(HexUtil.encodeHexString(entry.getValue()))) {
+            entry = hashes.higherEntry(currentSlot);
+        }
+        return entry != null ? new HeaderPoint(entry.getKey(), numbers.getOrDefault(entry.getKey(), -1L), entry.getValue()) : null;
+    }
+
+    private static HeaderPoint earlier(HeaderPoint left, HeaderPoint right) {
+        if (left == null) return right;
+        if (right == null) return left;
+        return left.slot() <= right.slot() ? left : right;
+    }
+
+    private static HeaderPoint later(HeaderPoint left, HeaderPoint right) {
+        if (left == null) return right;
+        if (right == null) return left;
+        return left.slot() >= right.slot() ? left : right;
+    }
+
+    private record HeaderPoint(long slot, long blockNumber, byte[] hash) {
+        String blockHashHex() {
+            return HexUtil.encodeHexString(hash);
+        }
     }
 
     // --- NonceStateStore implementation ---

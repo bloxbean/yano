@@ -418,7 +418,7 @@ class PeerSessionSupervisorTest {
         }
 
         @Override
-        public void updateSyncProgress() {
+        public void updateSyncProgress(long slot, long blockNumber) {
         }
 
         @Override
