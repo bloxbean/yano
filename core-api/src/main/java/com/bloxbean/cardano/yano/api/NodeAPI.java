@@ -11,11 +11,13 @@ import com.bloxbean.cardano.yano.api.account.LedgerStateProvider;
 import com.bloxbean.cardano.yano.api.model.FundResult;
 import com.bloxbean.cardano.yano.api.model.GenesisParameters;
 import com.bloxbean.cardano.yano.api.model.NodeStatus;
+import com.bloxbean.cardano.yano.api.model.ProtocolParamsSnapshot;
 import com.bloxbean.cardano.yano.api.model.SnapshotInfo;
 import com.bloxbean.cardano.yano.api.model.TimeAdvanceResult;
 import com.bloxbean.cardano.yano.api.utxo.UtxoState;
 
 import java.util.List;
+import java.util.Optional;
 
 /**
  * Main interface for Yano node operations.
@@ -183,6 +185,21 @@ public interface NodeAPI {
      * @return protocol parameters as a JSON string, or null if not available
      */
     String getProtocolParameters();
+
+    /**
+     * Get effective protocol parameters for an epoch.
+     * Implementations should prefer tracked ledger-state parameters when available
+     * and may fall back to configured static protocol parameters.
+     *
+     * @param epoch epoch number
+     * @return effective protocol parameters for the epoch, or empty if unavailable
+     */
+    default Optional<ProtocolParamsSnapshot> getProtocolParameters(int epoch) {
+        LedgerStateProvider ledgerStateProvider = getLedgerStateProvider();
+        return ledgerStateProvider != null
+                ? ledgerStateProvider.getProtocolParameters(epoch)
+                : Optional.empty();
+    }
 
     /**
      * Get genesis parameters from shelley-genesis.json.

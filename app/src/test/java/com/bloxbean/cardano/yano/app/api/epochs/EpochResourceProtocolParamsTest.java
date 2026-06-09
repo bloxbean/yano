@@ -2,7 +2,9 @@ package com.bloxbean.cardano.yano.app.api.epochs;
 
 import com.bloxbean.cardano.yano.api.NodeAPI;
 import com.bloxbean.cardano.yano.api.account.LedgerStateProvider;
+import com.bloxbean.cardano.yano.api.model.ProtocolParamsSnapshot;
 import com.bloxbean.cardano.yano.app.api.epochs.dto.ProtocolParamsDto;
+import com.bloxbean.cardano.yano.runtime.blockproducer.ProtocolParamsMapper;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.ws.rs.core.Response;
 import org.junit.jupiter.api.Test;
@@ -10,6 +12,8 @@ import org.junit.jupiter.api.Test;
 import java.lang.reflect.Proxy;
 import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
@@ -18,6 +22,17 @@ import static org.junit.jupiter.api.Assertions.*;
 class EpochResourceProtocolParamsTest {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final String STATIC_BLOCKFROST_PROTOCOL_PARAMS = """
+            {
+              "min_fee_a": 999,
+              "protocol_major_ver": 11,
+              "key_deposit": "2000000",
+              "coins_per_utxo_size": "4310",
+              "pvt_p_p_security_group": 0.51,
+              "dvt_p_p_gov_group": 0.75,
+              "nonce": "static-nonce"
+            }
+            """;
 
     @Test
     void parametersShouldReturnBlockfrostMappedLedgerSnapshot() throws Exception {
@@ -54,13 +69,50 @@ class EpochResourceProtocolParamsTest {
     }
 
     @Test
-    void parametersShouldReturn503WhenLedgerStateProviderIsUnavailable() {
+    void parametersShouldReturnStaticParamsWhenLedgerStateProviderIsUnavailable() throws Exception {
         EpochResource resource = new EpochResource();
         resource.nodeAPI = nodeApiWith(null);
 
         Response response = resource.getParametersByEpoch(42);
 
-        assertEquals(503, response.getStatus());
+        assertEquals(200, response.getStatus());
+        ProtocolParamsDto dto = (ProtocolParamsDto) response.getEntity();
+        assertEquals(42, dto.getEpoch());
+        assertEquals(999, dto.getMinFeeA());
+        assertEquals(11, dto.getProtocolMajorVer());
+        assertEquals("2000000", dto.getKeyDeposit());
+        assertEquals("4310", dto.getCoinsPerUtxoSize());
+        assertEquals(new BigDecimal("0.51"), dto.getPvtppSecurityGroup());
+        assertEquals(new BigDecimal("0.75"), dto.getDvtPPGovGroup());
+        assertEquals("static-nonce", dto.getNonce());
+
+        String json = MAPPER.writeValueAsString(dto);
+        assertTrue(json.contains("\"min_fee_a\":999"));
+        assertTrue(json.contains("\"protocol_major_ver\":11"));
+    }
+
+    @Test
+    void staticParametersShouldReturnIndependentDtoForEachRequestedEpoch() {
+        EpochResource resource = new EpochResource();
+        resource.nodeAPI = nodeApiWith(null);
+
+        ProtocolParamsDto epoch42 = (ProtocolParamsDto) resource.getParametersByEpoch(42).getEntity();
+        ProtocolParamsDto epoch43 = (ProtocolParamsDto) resource.getParametersByEpoch(43).getEntity();
+
+        assertNotSame(epoch42, epoch43);
+        assertEquals(42, epoch42.getEpoch());
+        assertEquals(43, epoch43.getEpoch());
+        assertEquals(999, epoch43.getMinFeeA());
+    }
+
+    @Test
+    void parametersShouldReturn404WhenProtocolParamsAreUnavailable() {
+        EpochResource resource = new EpochResource();
+        resource.nodeAPI = nodeApiWith(null, null, null);
+
+        Response response = resource.getParametersByEpoch(42);
+
+        assertEquals(404, response.getStatus());
     }
 
     @Test
@@ -97,11 +149,26 @@ class EpochResourceProtocolParamsTest {
     }
 
     private static NodeAPI nodeApiWith(LedgerStateProvider ledgerStateProvider, String nonce) {
+        return nodeApiWith(ledgerStateProvider, nonce, STATIC_BLOCKFROST_PROTOCOL_PARAMS);
+    }
+
+    private static NodeAPI nodeApiWith(LedgerStateProvider ledgerStateProvider, String nonce, String protocolParams) {
         return (NodeAPI) Proxy.newProxyInstance(NodeAPI.class.getClassLoader(), new Class<?>[]{NodeAPI.class},
                 (proxy, method, args) -> switch (method.getName()) {
                     case "getLedgerStateProvider" -> ledgerStateProvider;
                     case "getEpochNonce" -> nonce;
-                    case "getProtocolParameters" -> "{\"txFeePerByte\":999}";
+                    case "getProtocolParameters" -> {
+                        if (method.getParameterCount() == 1) {
+                            int epoch = (Integer) args[0];
+                            if (ledgerStateProvider != null) {
+                                yield ledgerStateProvider.getProtocolParameters(epoch);
+                            }
+                            yield protocolParams != null
+                                    ? Optional.of(staticSnapshot(protocolParams, epoch))
+                                    : Optional.empty();
+                        }
+                        yield protocolParams;
+                    }
                     case "toString" -> "TestNodeAPI";
                     case "hashCode" -> System.identityHashCode(proxy);
                     case "equals" -> proxy == args[0];
@@ -109,11 +176,19 @@ class EpochResourceProtocolParamsTest {
                 });
     }
 
-    private static LedgerStateProvider provider(LedgerStateProvider.ProtocolParamsSnapshot snapshot) {
+    private static ProtocolParamsSnapshot staticSnapshot(String protocolParams, int epoch) {
+        try {
+            return ProtocolParamsMapper.fromNodeProtocolParamSnapshot(protocolParams, epoch);
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    private static LedgerStateProvider provider(ProtocolParamsSnapshot snapshot) {
         return provider(Optional.of(snapshot));
     }
 
-    private static LedgerStateProvider provider(Optional<LedgerStateProvider.ProtocolParamsSnapshot> snapshot) {
+    private static LedgerStateProvider provider(Optional<ProtocolParamsSnapshot> snapshot) {
         return (LedgerStateProvider) Proxy.newProxyInstance(LedgerStateProvider.class.getClassLoader(),
                 new Class<?>[]{LedgerStateProvider.class},
                 (proxy, method, args) -> switch (method.getName()) {
@@ -137,8 +212,8 @@ class EpochResourceProtocolParamsTest {
                 });
     }
 
-    private static LedgerStateProvider.ProtocolParamsSnapshot snapshot(int epoch) {
-        return new LedgerStateProvider.ProtocolParamsSnapshot(
+    private static ProtocolParamsSnapshot snapshot(int epoch) {
+        return new ProtocolParamsSnapshot(
                 epoch,
                 44,
                 155381,
@@ -159,8 +234,8 @@ class EpochResourceProtocolParamsTest {
                 null,
                 BigInteger.valueOf(170_000_000),
                 null,
-                Map.of("PlutusV1", Map.of("addInteger-cpu-arguments-intercept", 197209L)),
-                Map.of("PlutusV1", java.util.List.of(197209L, 0L)),
+                Map.of("PlutusV1", linkedMap("addInteger-cpu-arguments-intercept", 197209L)),
+                Map.of("PlutusV1", List.of(197209L, 0L)),
                 new BigDecimal("0.0577"),
                 new BigDecimal("0.0000721"),
                 BigInteger.valueOf(16_500_000),
@@ -195,6 +270,12 @@ class EpochResourceProtocolParamsTest {
                 20,
                 new BigDecimal("15")
         );
+    }
+
+    private static LinkedHashMap<String, Long> linkedMap(String key, Long value) {
+        LinkedHashMap<String, Long> map = new LinkedHashMap<>();
+        map.put(key, value);
+        return map;
     }
 
     private static Object defaultValue(Class<?> returnType) {

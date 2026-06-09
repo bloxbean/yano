@@ -2,6 +2,7 @@ package com.bloxbean.cardano.yano.runtime.blockproducer;
 
 import com.bloxbean.cardano.client.api.model.ProtocolParams;
 import com.bloxbean.cardano.yano.api.account.LedgerStateProvider;
+import com.bloxbean.cardano.yano.api.model.ProtocolParamsSnapshot;
 import com.bloxbean.cardano.yano.api.util.EpochSlotCalc;
 import org.junit.jupiter.api.Test;
 
@@ -71,7 +72,7 @@ class EffectiveProtocolParamsSupplierTest {
         assertEquals("Effective protocol parameters require a non-negative slot; got -1", error.getMessage());
     }
 
-    private static LedgerStateProvider provider(Function<Integer, Optional<LedgerStateProvider.ProtocolParamsSnapshot>> snapshots) {
+    private static LedgerStateProvider provider(Function<Integer, Optional<ProtocolParamsSnapshot>> snapshots) {
         return (LedgerStateProvider) Proxy.newProxyInstance(
                 LedgerStateProvider.class.getClassLoader(),
                 new Class<?>[]{LedgerStateProvider.class},

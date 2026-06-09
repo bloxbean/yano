@@ -33,6 +33,7 @@ import com.bloxbean.cardano.yano.api.listener.NodeEventListener;
 import com.bloxbean.cardano.yano.api.model.FundResult;
 import com.bloxbean.cardano.yano.api.model.GenesisParameters;
 import com.bloxbean.cardano.yano.api.model.NodeStatus;
+import com.bloxbean.cardano.yano.api.model.ProtocolParamsSnapshot;
 import com.bloxbean.cardano.yano.api.model.SnapshotInfo;
 import com.bloxbean.cardano.yano.api.model.TimeAdvanceResult;
 import com.bloxbean.cardano.yano.api.utxo.UtxoState;
@@ -124,6 +125,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -181,6 +183,7 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
     private SlotLeaderTimeTravelBlockProducer slotLeaderTimeTravelBlockProducer;
     private EpochNonceState epochNonceState; // shared nonce state (accessible for REST endpoint)
     private GenesisConfig genesisConfig;
+    private volatile StaticProtocolParamsSnapshotCache staticProtocolParamsSnapshotCache;
     private long resolvedGenesisTimestamp;
     private SlotTimeCalculator slotTimeCalculator;
     private boolean slotTimeEventSubscriptionRegistered;
@@ -199,6 +202,8 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
     private final Object peerSessionLock = new Object();
     private final PeerRecoveryFailureTracker peerRecoveryFailureTracker =
             new PeerRecoveryFailureTracker(MAX_PEER_RECOVERY_FAILURES);
+
+    private record StaticProtocolParamsSnapshotCache(String json, ProtocolParamsSnapshot snapshot) {}
 
     // Statistics
     private long blocksProcessed = 0;
@@ -1263,9 +1268,7 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
             if (config.isEnableClient()) {
                 // Initialize epoch nonce tracking after any startup rollback so
                 // repair validates against the final pre-sync body tip.
-                if (!config.isEnableBlockProducer()) {
-                    initNonceTracking();
-                }
+                initRelayNonceTrackingIfRequired();
 
                 if (deferServerStartUntilClientStateReady && !serverStarted) {
                     startServer();
@@ -1274,9 +1277,7 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
 
                 startClientSync();
             } else {
-                if (!config.isEnableBlockProducer()) {
-                    initNonceTracking();
-                }
+                initRelayNonceTrackingIfRequired();
             }
 
             log.info("Yano started successfully");
@@ -1748,6 +1749,13 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
      * nonce snapshot was persisted.
      */
     private void initNonceTracking() {
+        if (config.isEnableBootstrap()) {
+            epochNonceState = null;
+            log.warn("initNonceTracking called in bootstrap mode; skipping because partial chain state "
+                    + "cannot replay nonce history");
+            return;
+        }
+
         if (genesisConfig == null || genesisConfig.getShelleyGenesisData() == null) {
             log.debug("Nonce tracking not initialized: no shelley genesis data");
             return;
@@ -1809,6 +1817,23 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
             epochNonceState = null;
             throw new IllegalStateException("Failed to initialize nonce tracking", e);
         }
+    }
+
+    void initRelayNonceTrackingIfRequired() {
+        if (!shouldInitializeRelayNonceTracking(config.isEnableBlockProducer(), config.isEnableBootstrap())) {
+            if (config.isEnableBootstrap() && !config.isEnableBlockProducer()) {
+                epochNonceState = null;
+                log.info("Epoch nonce tracking disabled in bootstrap mode; "
+                        + "partial chain state cannot replay nonce history");
+            }
+            return;
+        }
+
+        initNonceTracking();
+    }
+
+    static boolean shouldInitializeRelayNonceTracking(boolean blockProducerEnabled, boolean bootstrapEnabled) {
+        return !blockProducerEnabled && !bootstrapEnabled;
     }
 
     /**
@@ -2597,6 +2622,43 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
     @Override
     public String getProtocolParameters() {
         return genesisConfig != null ? genesisConfig.getProtocolParameters() : null;
+    }
+
+    @Override
+    public Optional<ProtocolParamsSnapshot> getProtocolParameters(int epoch) {
+        if (epoch < 0) {
+            return Optional.empty();
+        }
+
+        LedgerStateProvider ledgerStateProvider = getLedgerStateProvider();
+        if (ledgerStateProvider != null) {
+            Optional<ProtocolParamsSnapshot> ledgerParams = ledgerStateProvider.getProtocolParameters(epoch);
+            if (ledgerParams.isPresent()) {
+                return ledgerParams;
+            }
+        }
+
+        return staticProtocolParamsSnapshot(epoch);
+    }
+
+    private Optional<ProtocolParamsSnapshot> staticProtocolParamsSnapshot(int epoch) {
+        String json = getProtocolParameters();
+        if (json == null || json.isBlank()) {
+            return Optional.empty();
+        }
+
+        StaticProtocolParamsSnapshotCache cached = staticProtocolParamsSnapshotCache;
+        if (cached != null && cached.json().equals(json)) {
+            return Optional.of(cached.snapshot().withEpoch(epoch));
+        }
+
+        try {
+            ProtocolParamsSnapshot snapshot = ProtocolParamsMapper.fromNodeProtocolParamSnapshot(json, epoch);
+            staticProtocolParamsSnapshotCache = new StaticProtocolParamsSnapshotCache(json, snapshot);
+            return Optional.of(snapshot);
+        } catch (Exception e) {
+            throw new IllegalStateException("Static protocol parameters are not available", e);
+        }
     }
 
     @Override

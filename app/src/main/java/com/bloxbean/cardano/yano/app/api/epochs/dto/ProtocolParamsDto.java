@@ -1,6 +1,6 @@
 package com.bloxbean.cardano.yano.app.api.epochs.dto;
 
-import com.bloxbean.cardano.yano.api.account.LedgerStateProvider;
+import com.bloxbean.cardano.yano.api.model.ProtocolParamsSnapshot;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.PropertyNamingStrategies;
@@ -12,10 +12,12 @@ import lombok.NoArgsConstructor;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 @Data
-@Builder
+@Builder(toBuilder = true)
 @NoArgsConstructor
 @AllArgsConstructor
 @JsonIgnoreProperties(ignoreUnknown = true)
@@ -45,9 +47,8 @@ public class ProtocolParamsDto {
     private String nonce;
 
     //Alonzo changes
-//    private Map<String, Map<String, Long>> costModels;
-    private Map<String, Object> costModels;
-    private Map<String, Object> costModelsRaw;
+    private Map<String, LinkedHashMap<String, Long>> costModels;
+    private Map<String, List<Long>> costModelsRaw;
     private BigDecimal priceMem;
     private BigDecimal priceStep;
     private String maxTxExMem;
@@ -111,11 +112,11 @@ public class ProtocolParamsDto {
         return nOpt;
     }
 
-    public static ProtocolParamsDto from(LedgerStateProvider.ProtocolParamsSnapshot snapshot) {
+    public static ProtocolParamsDto from(ProtocolParamsSnapshot snapshot) {
         return from(snapshot, null);
     }
 
-    public static ProtocolParamsDto from(LedgerStateProvider.ProtocolParamsSnapshot snapshot, String epochNonce) {
+    public static ProtocolParamsDto from(ProtocolParamsSnapshot snapshot, String epochNonce) {
         ProtocolParamsDto dto = new ProtocolParamsDto();
         dto.setEpoch(snapshot.epoch());
         dto.setMinFeeA(snapshot.minFeeA());
@@ -179,7 +180,7 @@ public class ProtocolParamsDto {
         return dto;
     }
 
-    private static BigInteger blockfrostMinUtxo(LedgerStateProvider.ProtocolParamsSnapshot snapshot) {
+    private static BigInteger blockfrostMinUtxo(ProtocolParamsSnapshot snapshot) {
         return firstNonNull(snapshot.minUtxo(), snapshot.coinsPerUtxoSize(), snapshot.coinsPerUtxoWord());
     }
 

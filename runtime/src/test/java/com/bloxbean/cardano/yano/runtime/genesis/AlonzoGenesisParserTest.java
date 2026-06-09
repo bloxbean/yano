@@ -15,7 +15,7 @@ class AlonzoGenesisParserTest {
     Path tempDir;
 
     @Test
-    void parsesObjectCostModelsInLexicographicOperationOrder() throws Exception {
+    void parsesPartialObjectCostModelsInInputOrder() throws Exception {
         Path file = tempDir.resolve("alonzo-genesis.json");
         Files.writeString(file, """
                 {
@@ -41,6 +41,6 @@ class AlonzoGenesisParserTest {
 
         AlonzoGenesisData data = AlonzoGenesisParser.parse(file.toFile());
 
-        assertThat(data.costModels()).containsEntry("PlutusV1", List.of(10L, 20L, 30L));
+        assertThat(data.costModels()).containsEntry("PlutusV1", List.of(20L, 10L, 30L));
     }
 }

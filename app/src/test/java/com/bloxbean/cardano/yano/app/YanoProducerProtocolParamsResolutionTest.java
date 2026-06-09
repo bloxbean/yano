@@ -2,6 +2,7 @@ package com.bloxbean.cardano.yano.app;
 
 import com.bloxbean.cardano.client.api.model.ProtocolParams;
 import com.bloxbean.cardano.yano.api.account.LedgerStateProvider;
+import com.bloxbean.cardano.yano.api.model.ProtocolParamsSnapshot;
 import com.bloxbean.cardano.yano.api.util.EpochSlotCalc;
 import com.bloxbean.cardano.yano.runtime.blockproducer.EffectiveProtocolParamsSupplier;
 import org.junit.jupiter.api.Test;
@@ -174,9 +175,9 @@ class YanoProducerProtocolParamsResolutionTest {
         }
     }
 
-    private static LedgerStateProvider.ProtocolParamsSnapshot snapshot(
+    private static ProtocolParamsSnapshot snapshot(
             int epoch, Integer major, Integer minor) {
-        return new LedgerStateProvider.ProtocolParamsSnapshot(
+        return new ProtocolParamsSnapshot(
                 epoch,
                 null, null, null, null, null,
                 null, null, null, null,

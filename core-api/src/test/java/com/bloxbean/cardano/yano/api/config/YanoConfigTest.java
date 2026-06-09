@@ -122,6 +122,22 @@ class YanoConfigTest {
     }
 
     @Test
+    void validate_shouldThrowWhenBootstrapAndBlockProducerAreBothEnabled() {
+        YanoConfig config = YanoConfig.builder()
+                .enableBootstrap(true)
+                .enableBlockProducer(true)
+                .enableClient(false)
+                .enableServer(true)
+                .serverPort(13337)
+                .protocolMagic(Constants.PREPROD_PROTOCOL_MAGIC)
+                .build();
+
+        assertThatThrownBy(config::validate)
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Bootstrap mode cannot be combined with block producer mode");
+    }
+
+    @Test
     void validate_shouldThrowWhenRocksDBEnabledButNoPath() {
         YanoConfig config = YanoConfig.builder()
                 .enableClient(false)

@@ -21,6 +21,8 @@ import com.bloxbean.cardano.yano.api.model.CredentialKey;
 import com.bloxbean.cardano.yano.api.account.AccountStateReadStore;
 import com.bloxbean.cardano.yano.api.account.AccountStateStore;
 import com.bloxbean.cardano.yano.api.account.LedgerStateProvider;
+import com.bloxbean.cardano.yano.api.model.ProtocolParamsSnapshot;
+import com.bloxbean.cardano.yano.api.util.CostModelUtil;
 import com.bloxbean.cardano.yano.api.events.BlockAppliedEvent;
 import com.bloxbean.cardano.yano.api.events.GenesisBlockEvent;
 import com.bloxbean.cardano.yano.api.events.RollbackEvent;
@@ -1291,7 +1293,7 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
     }
 
     @Override
-    public Optional<LedgerStateProvider.ProtocolParamsSnapshot> getProtocolParameters(int epoch) {
+    public Optional<ProtocolParamsSnapshot> getProtocolParameters(int epoch) {
         if (epoch < 0) return Optional.empty();
         if (paramTracker != null && paramTracker.isEnabled()
                 && paramTracker.getResolvedParams(epoch) == null) {
@@ -1320,7 +1322,7 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
         PoolVotingThresholds poolThresholds = provider.getPoolVotingThresholds(epoch);
         DrepVoteThresholds drepThresholds = provider.getDrepVotingThresholds(epoch);
 
-        return Optional.of(new LedgerStateProvider.ProtocolParamsSnapshot(
+        return Optional.of(new ProtocolParamsSnapshot(
                 epoch,
                 provider.getMinFeeA(epoch),
                 provider.getMinFeeB(epoch),
@@ -1341,8 +1343,8 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                 provider.getMinUtxo(epoch),
                 provider.getMinPoolCost(epoch),
                 null,
-                provider.getCostModels(epoch),
-                provider.getCostModelsRaw(epoch),
+                CostModelUtil.canonicalCostModelsTyped(provider.getCostModels(epoch)),
+                CostModelUtil.canonicalRawCostModelsTyped(provider.getCostModelsRaw(epoch)),
                 provider.getPriceMem(epoch),
                 provider.getPriceStep(epoch),
                 provider.getMaxTxExMem(epoch),
