@@ -524,14 +524,28 @@ class PipelineDataListenerHealthTest {
                 501L,
                 "b10c1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef");
         List<Transaction> transactions = Collections.emptyList();
+        long[] progress = {-1L, -1L};
+        PipelineDataListener progressListener = new PipelineDataListener(
+                headerSyncManager,
+                bodyFetchManager,
+                new NoopCallbacks() {
+                    @Override
+                    public void updateSyncProgress(long slot, long blockNumber) {
+                        progress[0] = slot;
+                        progress[1] = blockNumber;
+                    }
+                },
+                peerHealth);
 
-        listener.onBlock(Era.Shelley, block, transactions);
+        progressListener.onBlock(Era.Shelley, block, transactions);
 
         PeerSessionStatus status = peerHealth.snapshot(System.currentTimeMillis());
         assertEquals(1001L, status.lastBodyReceivedSlot());
         assertEquals(501L, status.lastBodyReceivedBlockNumber());
         assertEquals(1001L, status.lastBodyAppliedSlot());
         assertEquals(501L, status.lastBodyAppliedBlockNumber());
+        assertEquals(1001L, progress[0]);
+        assertEquals(501L, progress[1]);
         assertTrue(status.lastBodyReceivedAtMillis() > 0);
         assertTrue(status.lastBodyAppliedAtMillis() > 0);
 
@@ -1193,7 +1207,7 @@ class PipelineDataListenerHealthTest {
         }
 
         @Override
-        public void updateSyncProgress() {
+        public void updateSyncProgress(long slot, long blockNumber) {
         }
 
         @Override

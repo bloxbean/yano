@@ -14,6 +14,7 @@ import com.bloxbean.cardano.yano.runtime.BodyFetchManager;
 import com.bloxbean.cardano.yano.runtime.HeaderSyncManager;
 import com.bloxbean.cardano.yano.runtime.PipelineDataListener;
 import com.bloxbean.cardano.yano.runtime.SyncTipContext;
+import com.bloxbean.cardano.yano.runtime.HeaderAppliedEventPublisher;
 import lombok.extern.slf4j.Slf4j;
 
 import java.time.Duration;
@@ -42,6 +43,7 @@ public class PeerSession {
     private PeerClient peerClient;
     private HeaderSyncManager headerSyncManager;
     private BodyFetchManager bodyFetchManager;
+    private HeaderAppliedEventPublisher headerAppliedEventPublisher;
     private PipelineDataListener pipelineDataListener;
     private LedgerApplyProcessor ledgerApplyProcessor;
     private long ledgerGeneration;
@@ -222,6 +224,8 @@ public class PeerSession {
                 log.warn("Error stopping PeerClient", e);
             }
         }
+
+        closeHeaderAppliedEventPublisher();
     }
 
     public boolean isRunning() {
@@ -278,10 +282,9 @@ public class PeerSession {
 
     private void initializePipelineManagers(PipelineConfig pipelineConfig) {
         stopExistingBodyFetchManager();
+        closeHeaderAppliedEventPublisher();
 
         SyncTipContext syncTipContext = new SyncTipContext();
-        headerSyncManager = new HeaderSyncManager(peerClient, chainState, 50000, syncTipContext);
-        log.info("📋 HeaderSyncManager created");
 
         long gapThreshold = Math.max(pipelineConfig.getBodyBatchSize() / 10, 100);
         int maxBatchSize = pipelineConfig.getBodyBatchSize();
@@ -303,6 +306,11 @@ public class PeerSession {
         bodyFetchManager.setGenesisBootstrapDataSupplier(genesisBootstrapDataSupplier);
         log.info("📦 BodyFetchManager created with gapThreshold={}, maxBatchSize={}",
                 gapThreshold, maxBatchSize);
+
+        headerAppliedEventPublisher = new HeaderAppliedEventPublisher(eventBus);
+        headerSyncManager = new HeaderSyncManager(peerClient, chainState, 50000, syncTipContext,
+                bodyFetchManager, headerAppliedEventPublisher);
+        log.info("📋 HeaderSyncManager created");
 
         if (epochParamProvider != null) {
             bodyFetchManager.setEpochParamProvider(epochParamProvider);
@@ -331,6 +339,13 @@ public class PeerSession {
     private void stopExistingBodyFetchManager() {
         if (bodyFetchManager != null && bodyFetchManager.isRunning()) {
             bodyFetchManager.stop();
+        }
+    }
+
+    private void closeHeaderAppliedEventPublisher() {
+        if (headerAppliedEventPublisher != null) {
+            headerAppliedEventPublisher.close();
+            headerAppliedEventPublisher = null;
         }
     }
 

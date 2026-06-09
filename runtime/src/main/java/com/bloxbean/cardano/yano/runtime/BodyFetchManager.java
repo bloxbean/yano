@@ -34,6 +34,8 @@ import com.bloxbean.cardano.yano.runtime.peer.PeerHealth;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.List;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.LockSupport;
 import java.util.stream.Collectors;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -56,7 +58,7 @@ import java.util.function.Supplier;
  * This enables true parallel pipeline architecture where headers sync ahead of bodies.
  */
 @Slf4j
-public class BodyFetchManager implements BlockChainDataListener, Runnable {
+public class BodyFetchManager implements BlockChainDataListener, Runnable, HeaderAppliedSignal {
     /**
      * Result of attempting to apply one decoded block body to local ledger state.
      */
@@ -74,6 +76,8 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
 
     private static final long SLOW_EPOCH_TRANSITION_WARN_MS =
             positiveLongProperty("yano.bodyFetch.slowEpochTransitionWarnMs", 1_000L);
+    private static final long REALTIME_FALLBACK_POLL_MS =
+            positiveLongProperty("yano.bodyFetch.realtimeFallbackPollMs", 5_000L);
 
     private final PeerClient peerClient;
     private final ChainState chainState;
@@ -91,6 +95,7 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
     private final AtomicBoolean paused = new AtomicBoolean(false);
     private volatile Thread monitoringThread;
     private volatile SyncPhase syncPhase = SyncPhase.INITIAL_SYNC;
+    private final AtomicLong lastAppliedBodySlot = new AtomicLong(-1L);
 
     // Metrics
     private final AtomicInteger bodiesReceived = new AtomicInteger(0);
@@ -189,6 +194,7 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
 
         startTime = System.currentTimeMillis();
         resetMetrics();
+        initializeAppliedBodySlotFromTip();
 
         // Check if we should immediately resume (when already near tip)
         checkForImmediateResume();
@@ -241,8 +247,20 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
             return;
         }
 
-        if (monitoringThread != null) {
-            monitoringThread.interrupt();
+        Thread thread = monitoringThread;
+        if (thread != null) {
+            thread.interrupt();
+            if (thread != Thread.currentThread()) {
+                try {
+                    thread.join(TimeUnit.SECONDS.toMillis(5));
+                    if (thread.isAlive()) {
+                        log.warn("BodyFetchManager monitoring thread did not stop within timeout");
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    log.warn("Interrupted while waiting for BodyFetchManager monitoring thread to stop");
+                }
+            }
         }
 
         if (log.isInfoEnabled()) {
@@ -269,6 +287,21 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
         if (log.isDebugEnabled()) {
             log.debug("▶️ BodyFetchManager resumed");
         }
+        wakeFetchLoop();
+    }
+
+    @Override
+    public void onHeaderApplied(long slot, long blockNumber, String blockHash) {
+        if (shouldWakeFromHeader(slot)) {
+            wakeFetchLoop();
+        }
+    }
+
+    public void wakeFetchLoop() {
+        Thread thread = monitoringThread;
+        if (thread != null) {
+            LockSupport.unpark(thread);
+        }
     }
 
     /**
@@ -286,14 +319,13 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
                     checkAndFetchBodies();
                 }
 
-                // Adaptive monitoring interval based on sync phase
-                long currentInterval = getAdaptiveMonitoringInterval();
-                Thread.sleep(currentInterval);
+                // Push-driven wakeups with phase-aware fallback polling.
+                LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(getAdaptiveMonitoringInterval()));
+                if (Thread.interrupted()) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
 
-            } catch (InterruptedException e) {
-                log.info("BodyFetchManager monitoring thread interrupted");
-                Thread.currentThread().interrupt();
-                break;
             } catch (Exception e) {
                 log.error("Error in BodyFetchManager monitoring loop", e);
                 // Continue running despite errors
@@ -309,8 +341,8 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
      * During bulk: slower monitoring for efficiency
      */
     private long getAdaptiveMonitoringInterval() {
-        if (syncPhase == SyncPhase.STEADY_STATE) {
-            return 100; // 100ms at tip for immediate body fetching
+        if (isRealtimeFetchMode()) {
+            return REALTIME_FALLBACK_POLL_MS;
         }
         return monitoringIntervalMs; // Use configured interval for bulk sync
     }
@@ -386,12 +418,57 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
      */
     private boolean shouldFetchBodies(long gapSize) {
         // At tip: fetch immediately when any header is ahead
-        if (syncPhase == SyncPhase.STEADY_STATE) {
+        if (isRealtimeFetchMode()) {
             return gapSize >= 1; // Immediate body fetching at tip
         }
 
         // During bulk sync: use configured threshold for efficient batching
         return gapSize >= gapThreshold;
+    }
+
+    private boolean isRealtimeFetchMode() {
+        return syncPhase == SyncPhase.STEADY_STATE || isNearObservedNetworkTip();
+    }
+
+    private boolean shouldWakeFromHeader(long headerSlot) {
+        if (syncPhase == SyncPhase.STEADY_STATE) {
+            return true;
+        }
+
+        long bodySlot = lastAppliedBodySlot.get();
+        long networkTipSlot = syncTipContext != null ? syncTipContext.getNetworkTipSlot() : -1L;
+        if (networkTipSlot > 0 && bodySlot >= 0
+                && Math.max(0L, networkTipSlot - bodySlot) <= tipProximityThreshold) {
+            return true;
+        }
+
+        if (bodySlot < 0) {
+            return headerSlot >= gapThreshold;
+        }
+
+        return headerSlot - bodySlot >= gapThreshold;
+    }
+
+    private boolean isNearObservedNetworkTip() {
+        if (syncTipContext == null) {
+            return false;
+        }
+        long networkTipSlot = syncTipContext.getNetworkTipSlot();
+        if (networkTipSlot <= 0) {
+            return false;
+        }
+
+        ChainTip bodyTip = chainState.getTip();
+        ChainTip headerTip = chainState.getHeaderTip();
+        long localSlot = bodyTip != null
+                ? bodyTip.getSlot()
+                : headerTip != null ? headerTip.getSlot() : -1L;
+        if (localSlot < 0) {
+            return false;
+        }
+
+        long distance = Math.max(0L, networkTipSlot - localSlot);
+        return distance <= tipProximityThreshold;
     }
 
     /**
@@ -973,6 +1050,7 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
         currentBatchFrom = null;
         currentBatchTo = null;
         currentBatchSize = 0;
+        wakeFetchLoop();
     }
 
     @Override
@@ -984,15 +1062,16 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
     @Override
     public void onRollback(Point point) {
         log.info("🔄 Rollback detected to point: {}", point);
+        paused.set(true);
         // Store the rollback point to prevent storing stale blocks
         lastRollbackPoint = point;
-        // Body fetching will be paused by external rollback handling
         // Reset any in-progress batch
         batchInProgress = false;
         currentBatchFrom = null;
         currentBatchTo = null;
         currentBatchSize = 0;
         consecutiveStaleBlocks.set(0);
+        resetAppliedBodySlotAfterRollback(point);
     }
 
     @Override
@@ -1402,6 +1481,7 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
             if (log.isDebugEnabled()) {
                 log.debug("🔄 BodyFetchManager sync phase changed: {} -> {}", oldPhase, syncPhase);
             }
+            wakeFetchLoop();
         }
     }
 
@@ -1410,6 +1490,10 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
      */
     public SyncPhase getSyncPhase() {
         return syncPhase;
+    }
+
+    long getObservedNetworkTipSlot() {
+        return syncTipContext != null ? syncTipContext.getNetworkTipSlot() : -1L;
     }
 
     /**
@@ -1514,10 +1598,24 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable {
     }
 
     private void recordBodyApplied(long slot, long blockNumber) {
+        lastAppliedBodySlot.accumulateAndGet(slot, Math::max);
         PeerHealth health = peerHealth;
         if (health != null) {
             health.recordBodyApplied(slot, blockNumber, System.currentTimeMillis());
         }
+    }
+
+    private void initializeAppliedBodySlotFromTip() {
+        ChainTip tip = chainState.getTip();
+        lastAppliedBodySlot.set(tip != null ? tip.getSlot() : -1L);
+    }
+
+    private void resetAppliedBodySlotAfterRollback(Point point) {
+        if (point == null) {
+            lastAppliedBodySlot.set(-1L);
+            return;
+        }
+        lastAppliedBodySlot.updateAndGet(current -> current < 0 ? current : Math.min(current, point.getSlot()));
     }
 
     /**

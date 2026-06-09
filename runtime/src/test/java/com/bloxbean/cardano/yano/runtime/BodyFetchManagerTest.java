@@ -7,16 +7,19 @@ import com.bloxbean.cardano.yaci.core.model.HeaderBody;
 import com.bloxbean.cardano.yaci.core.model.byron.ByronEbBlock;
 import com.bloxbean.cardano.yaci.core.model.byron.ByronMainBlock;
 import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Point;
+import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Tip;
 import com.bloxbean.cardano.yaci.core.storage.ChainState;
 import com.bloxbean.cardano.yaci.core.storage.ChainTip;
 import com.bloxbean.cardano.yaci.helper.PeerClient;
 import com.bloxbean.cardano.yaci.helper.model.Transaction;
+import com.bloxbean.cardano.yano.api.SyncPhase;
 import com.bloxbean.cardano.yano.runtime.chain.InMemoryChainState;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 
+import java.lang.reflect.Method;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
@@ -45,6 +48,7 @@ class BodyFetchManagerTest {
     private static final int GAP_THRESHOLD = 5;
     private static final int MAX_BATCH_SIZE = 10;
     private static final long MONITORING_INTERVAL = 50; // Fast for testing
+    private static final long SIGNAL_TEST_MONITORING_INTERVAL = 5000; // Proves wakeup without relying on polling
     
     @BeforeEach
     void setUp() {
@@ -190,6 +194,127 @@ class BodyFetchManagerTest {
     }
     
     @Test
+    @DisplayName("Near network tip fetches immediately before phase flip")
+    void nearNetworkTipFetchesImmediatelyBeforePhaseFlip() throws Exception {
+        SyncTipContext syncTipContext = new SyncTipContext();
+        BodyFetchManager nearTipManager = new BodyFetchManager(
+                mockPeerClient,
+                chainState,
+                new com.bloxbean.cardano.yaci.events.impl.SimpleEventBus(),
+                100,
+                MAX_BATCH_SIZE,
+                MONITORING_INTERVAL,
+                1000,
+                syncTipContext
+        );
+
+        chainState.storeBlock(
+                hexToBytes("10000000000000000000000000000000000000000000000000000000000000aa"),
+                100L,
+                1000L,
+                "body-block".getBytes()
+        );
+        syncTipContext.update(new Tip(new Point(1001L,
+                "10000000000000000000000000000000000000000000000000000000000000ab"), 101L));
+
+        Method shouldFetchBodies = BodyFetchManager.class.getDeclaredMethod("shouldFetchBodies", long.class);
+        shouldFetchBodies.setAccessible(true);
+
+        assertTrue((Boolean) shouldFetchBodies.invoke(nearTipManager, 1L),
+                "Near-tip body fetch should not wait for the bulk-sync threshold");
+    }
+
+    @Test
+    @DisplayName("Header signal wakes steady-state fetch loop")
+    void headerSignalWakesSteadyStateFetchLoop() throws Exception {
+        BodyFetchManager signalManager = new BodyFetchManager(
+                mockPeerClient,
+                chainState,
+                new com.bloxbean.cardano.yaci.events.impl.SimpleEventBus(),
+                GAP_THRESHOLD,
+                MAX_BATCH_SIZE,
+                SIGNAL_TEST_MONITORING_INTERVAL,
+                1000
+        );
+        signalManager.setSyncPhase(SyncPhase.STEADY_STATE);
+        chainState.storeBlock(
+                hexToBytes("20000000000000000000000000000000000000000000000000000000000000aa"),
+                100L,
+                1000L,
+                "body-block".getBytes()
+        );
+        String nextHash = "20000000000000000000000000000000000000000000000000000000000000ab";
+
+        mockPeerClient.resetFetchCallCount();
+        signalManager.start();
+        try {
+            Thread.sleep(100);
+            assertEquals(0, mockPeerClient.getFetchCallCount(),
+                    "Without a header gap, the initial monitor check should not fetch");
+
+            chainState.storeBlockHeader(hexToBytes(nextHash), 101L, 1001L, "header".getBytes());
+            signalManager.onHeaderApplied(1001L, 101L, nextHash);
+
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (System.nanoTime() < deadline && mockPeerClient.getFetchCallCount() == 0) {
+                Thread.sleep(10);
+            }
+
+            assertTrue(mockPeerClient.getFetchCallCount() > 0,
+                    "Header signal should wake the fetch loop without waiting for fallback polling");
+        } finally {
+            signalManager.stop();
+        }
+    }
+
+    @Test
+    @DisplayName("Header signal wakes initial-sync fetch loop near observed network tip")
+    void headerSignalWakesInInitialSyncNearTip() throws Exception {
+        SyncTipContext syncTipContext = new SyncTipContext();
+        BodyFetchManager nearTipManager = new BodyFetchManager(
+                mockPeerClient,
+                chainState,
+                new com.bloxbean.cardano.yaci.events.impl.SimpleEventBus(),
+                100,
+                MAX_BATCH_SIZE,
+                SIGNAL_TEST_MONITORING_INTERVAL,
+                1000,
+                syncTipContext
+        );
+        nearTipManager.setSyncPhase(SyncPhase.INITIAL_SYNC);
+
+        chainState.storeBlock(
+                hexToBytes("21000000000000000000000000000000000000000000000000000000000000aa"),
+                100L,
+                1000L,
+                "body-block".getBytes()
+        );
+        String nextHash = "21000000000000000000000000000000000000000000000000000000000000ab";
+        syncTipContext.update(new Tip(new Point(1001L, nextHash), 101L));
+
+        mockPeerClient.resetFetchCallCount();
+        nearTipManager.start();
+        try {
+            Thread.sleep(100);
+            assertEquals(0, mockPeerClient.getFetchCallCount(),
+                    "Without a header gap, the initial monitor check should not fetch");
+
+            chainState.storeBlockHeader(hexToBytes(nextHash), 101L, 1001L, "header".getBytes());
+            nearTipManager.onHeaderApplied(1001L, 101L, nextHash);
+
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (System.nanoTime() < deadline && mockPeerClient.getFetchCallCount() == 0) {
+                Thread.sleep(10);
+            }
+
+            assertTrue(mockPeerClient.getFetchCallCount() > 0,
+                    "Header signal should wake near-tip initial sync without waiting for the bulk threshold");
+        } finally {
+            nearTipManager.stop();
+        }
+    }
+
+    @Test
     @DisplayName("Test BlockChainDataListener - onBlock method")
     void testOnBlock() {
         // Seed previous block to satisfy continuity checks
@@ -267,6 +392,7 @@ class BodyFetchManagerTest {
         
         // This should not throw and should log appropriately
         assertDoesNotThrow(() -> bodyFetchManager.onRollback(rollbackPoint));
+        assertTrue(bodyFetchManager.isPaused(), "Rollback should pause body fetching until rollback coordination resumes it");
     }
     
     @Test
