@@ -235,16 +235,8 @@ public class EpochResource {
     }
 
     private Response protocolParamsResponse(int epoch) {
-        LedgerStateProvider ledgerStateProvider = nodeAPI.getLedgerStateProvider();
-        if (ledgerStateProvider == null) {
-            log.warn("Protocol parameters requested but ledger state provider is not available");
-            return Response.status(Response.Status.SERVICE_UNAVAILABLE)
-                    .entity(Map.of("error", "Ledger state provider not available"))
-                    .build();
-        }
-
         try {
-            return ledgerStateProvider.getProtocolParameters(epoch)
+            return nodeAPI.getProtocolParameters(epoch)
                     .map(snapshot -> ProtocolParamsDto.from(snapshot, nodeAPI.getEpochNonce(epoch)))
                     .map(dto -> Response.ok(dto).build())
                     .orElseGet(() -> Response.status(Response.Status.NOT_FOUND)

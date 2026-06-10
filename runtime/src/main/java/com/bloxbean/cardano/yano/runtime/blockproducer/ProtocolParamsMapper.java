@@ -3,7 +3,7 @@ package com.bloxbean.cardano.yano.runtime.blockproducer;
 import com.bloxbean.cardano.client.api.model.ProtocolParams;
 import com.bloxbean.cardano.yaci.core.types.UnitInterval;
 import com.bloxbean.cardano.yano.api.EpochParamProvider;
-import com.bloxbean.cardano.yano.api.account.LedgerStateProvider;
+import com.bloxbean.cardano.yano.api.model.ProtocolParamsSnapshot;
 import com.bloxbean.cardano.yano.api.util.CostModelUtil;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -157,7 +157,126 @@ public class ProtocolParamsMapper {
         return pp;
     }
 
-    public static ProtocolParams fromSnapshot(LedgerStateProvider.ProtocolParamsSnapshot snapshot) {
+    public static ProtocolParamsSnapshot fromNodeProtocolParamSnapshot(String json, int epoch) throws IOException {
+        JsonNode root = MAPPER.readTree(json);
+        JsonNode protocolVersion = node(root, "protocolVersion", "protocol_version");
+        JsonNode executionUnitPrices = node(root, "executionUnitPrices", "execution_unit_prices");
+        JsonNode maxTxExecutionUnits = node(root, "maxTxExecutionUnits", "max_tx_execution_units");
+        JsonNode maxBlockExecutionUnits = node(root, "maxBlockExecutionUnits", "max_block_execution_units");
+        JsonNode poolVotingThresholds = node(root, "poolVotingThresholds", "pool_voting_thresholds");
+        JsonNode drepVotingThresholds = node(root, "dRepVotingThresholds", "drepVotingThresholds", "drep_voting_thresholds");
+
+        Map<String, Object> costModelsInput = objectMap(node(root, "costModels", "cost_models"));
+        Map<String, Object> costModelsRawInput = objectMap(node(root, "costModelsRaw", "cost_models_raw"));
+        Map<String, ?> projectionInput = costModelsInput != null ? costModelsInput : costModelsRawInput;
+        Map<String, ?> rawInput = costModelsRawInput != null ? costModelsRawInput : costModelsInput;
+
+        return new ProtocolParamsSnapshot(
+                epoch,
+                intValue(root, "minFeeA", "min_fee_a", "txFeePerByte"),
+                intValue(root, "minFeeB", "min_fee_b", "txFeeFixed"),
+                intValue(root, "maxBlockSize", "max_block_size", "maxBlockBodySize"),
+                intValue(root, "maxTxSize", "max_tx_size"),
+                intValue(root, "maxBlockHeaderSize", "max_block_header_size"),
+                bigIntegerValue(root, "keyDeposit", "key_deposit", "stakeAddressDeposit"),
+                bigIntegerValue(root, "poolDeposit", "pool_deposit", "stakePoolDeposit"),
+                intValue(root, "eMax", "e_max", "poolRetireMaxEpoch"),
+                intValue(root, "nOpt", "n_opt", "stakePoolTargetNum"),
+                bigDecimalValue(root, "a0", "poolPledgeInfluence"),
+                bigDecimalValue(root, "rho", "monetaryExpansion"),
+                bigDecimalValue(root, "tau", "treasuryCut"),
+                bigDecimalValue(root, "decentralisationParam", "decentralization", "decentralisation_param"),
+                textValue(root, "extraEntropy", "extra_entropy", "extraPraosEntropy"),
+                protocolVersion != null
+                        ? intValue(protocolVersion, "major")
+                        : intValue(root, "protocolMajorVer", "protocol_major_ver"),
+                protocolVersion != null
+                        ? intValue(protocolVersion, "minor")
+                        : intValue(root, "protocolMinorVer", "protocol_minor_ver"),
+                bigIntegerValue(root, "minUtxo", "min_utxo", "minUTxOValue"),
+                bigIntegerValue(root, "minPoolCost", "min_pool_cost"),
+                textValue(root, "nonce"),
+                CostModelUtil.canonicalCostModelsTyped(projectionInput),
+                CostModelUtil.canonicalRawCostModelsTyped(rawInput),
+                executionUnitPrices != null
+                        ? bigDecimalValue(executionUnitPrices, "priceMemory", "memory", "mem")
+                        : bigDecimalValue(root, "priceMem", "price_mem"),
+                executionUnitPrices != null
+                        ? bigDecimalValue(executionUnitPrices, "priceSteps", "steps", "step")
+                        : bigDecimalValue(root, "priceStep", "price_step"),
+                maxTxExecutionUnits != null
+                        ? bigIntegerValue(maxTxExecutionUnits, "memory", "mem")
+                        : bigIntegerValue(root, "maxTxExMem", "max_tx_ex_mem"),
+                maxTxExecutionUnits != null
+                        ? bigIntegerValue(maxTxExecutionUnits, "steps", "step")
+                        : bigIntegerValue(root, "maxTxExSteps", "max_tx_ex_steps"),
+                maxBlockExecutionUnits != null
+                        ? bigIntegerValue(maxBlockExecutionUnits, "memory", "mem")
+                        : bigIntegerValue(root, "maxBlockExMem", "max_block_ex_mem"),
+                maxBlockExecutionUnits != null
+                        ? bigIntegerValue(maxBlockExecutionUnits, "steps", "step")
+                        : bigIntegerValue(root, "maxBlockExSteps", "max_block_ex_steps"),
+                bigIntegerValue(root, "maxValSize", "max_val_size", "maxValueSize"),
+                intValue(root, "collateralPercent", "collateral_percent", "collateralPercentage"),
+                intValue(root, "maxCollateralInputs", "max_collateral_inputs"),
+                bigIntegerValue(root, "coinsPerUtxoSize", "coins_per_utxo_size", "utxoCostPerByte"),
+                bigIntegerValue(root, "coinsPerUtxoWord", "coins_per_utxo_word", "utxoCostPerWord"),
+                bigDecimalValue(poolVotingThresholds, root,
+                        new String[]{"motionNoConfidence", "motion_no_confidence"},
+                        "pvtMotionNoConfidence", "pvt_motion_no_confidence"),
+                bigDecimalValue(poolVotingThresholds, root,
+                        new String[]{"committeeNormal", "committee_normal"},
+                        "pvtCommitteeNormal", "pvt_committee_normal"),
+                bigDecimalValue(poolVotingThresholds, root,
+                        new String[]{"committeeNoConfidence", "committee_no_confidence"},
+                        "pvtCommitteeNoConfidence", "pvt_committee_no_confidence"),
+                bigDecimalValue(poolVotingThresholds, root,
+                        new String[]{"hardForkInitiation", "hard_fork_initiation"},
+                        "pvtHardForkInitiation", "pvt_hard_fork_initiation"),
+                bigDecimalValue(poolVotingThresholds, root,
+                        new String[]{"ppSecurityGroup", "pp_security_group", "securityRelevantParamVotingThreshold"},
+                        "pvtPPSecurityGroup", "pvt_p_p_security_group", "pvtpp_security_group"),
+                bigDecimalValue(drepVotingThresholds, root,
+                        new String[]{"motionNoConfidence", "motion_no_confidence"},
+                        "dvtMotionNoConfidence", "dvt_motion_no_confidence"),
+                bigDecimalValue(drepVotingThresholds, root,
+                        new String[]{"committeeNormal", "committee_normal"},
+                        "dvtCommitteeNormal", "dvt_committee_normal"),
+                bigDecimalValue(drepVotingThresholds, root,
+                        new String[]{"committeeNoConfidence", "committee_no_confidence"},
+                        "dvtCommitteeNoConfidence", "dvt_committee_no_confidence"),
+                bigDecimalValue(drepVotingThresholds, root,
+                        new String[]{"updateToConstitution", "update_to_constitution"},
+                        "dvtUpdateToConstitution", "dvt_update_to_constitution"),
+                bigDecimalValue(drepVotingThresholds, root,
+                        new String[]{"hardForkInitiation", "hard_fork_initiation"},
+                        "dvtHardForkInitiation", "dvt_hard_fork_initiation"),
+                bigDecimalValue(drepVotingThresholds, root,
+                        new String[]{"ppNetworkGroup", "pp_network_group"},
+                        "dvtPPNetworkGroup", "dvt_p_p_network_group"),
+                bigDecimalValue(drepVotingThresholds, root,
+                        new String[]{"ppEconomicGroup", "pp_economic_group"},
+                        "dvtPPEconomicGroup", "dvt_p_p_economic_group"),
+                bigDecimalValue(drepVotingThresholds, root,
+                        new String[]{"ppTechnicalGroup", "pp_technical_group"},
+                        "dvtPPTechnicalGroup", "dvt_p_p_technical_group"),
+                bigDecimalValue(drepVotingThresholds, root,
+                        new String[]{"ppGovGroup", "pp_gov_group"},
+                        "dvtPPGovGroup", "dvt_p_p_gov_group"),
+                bigDecimalValue(drepVotingThresholds, root,
+                        new String[]{"treasuryWithdrawal", "treasury_withdrawal"},
+                        "dvtTreasuryWithdrawal", "dvt_treasury_withdrawal"),
+                intValue(root, "committeeMinSize", "committee_min_size"),
+                intValue(root, "committeeMaxTermLength", "committee_max_term_length"),
+                intValue(root, "govActionLifetime", "gov_action_lifetime"),
+                bigIntegerValue(root, "govActionDeposit", "gov_action_deposit"),
+                bigIntegerValue(root, "dRepDeposit", "drepDeposit", "drep_deposit"),
+                intValue(root, "dRepActivity", "drepActivity", "drep_activity"),
+                bigDecimalValue(root, "minFeeRefScriptCostPerByte", "min_fee_ref_script_cost_per_byte")
+        );
+    }
+
+    public static ProtocolParams fromSnapshot(ProtocolParamsSnapshot snapshot) {
         ProtocolParams pp = new ProtocolParams();
         pp.setMinFeeA(snapshot.minFeeA());
         pp.setMinFeeB(snapshot.minFeeB());
@@ -178,7 +297,8 @@ public class ProtocolParamsMapper {
         pp.setMinUtxo(string(snapshot.minUtxo()));
         pp.setMinPoolCost(string(snapshot.minPoolCost()));
         pp.setNonce(snapshot.nonce());
-        pp.setCostModels(toCostModels(nonEmpty(snapshot.costModelsRaw()) ? snapshot.costModelsRaw() : snapshot.costModels()));
+        Map<String, ?> costModels = nonEmpty(snapshot.costModelsRaw()) ? snapshot.costModelsRaw() : snapshot.costModels();
+        pp.setCostModels(toCostModels(costModels));
         pp.setPriceMem(snapshot.priceMem());
         pp.setPriceStep(snapshot.priceStep());
         pp.setMaxTxExMem(string(snapshot.maxTxExMem()));
@@ -222,7 +342,7 @@ public class ProtocolParamsMapper {
 
         var poolThresholds = provider.getPoolVotingThresholds(epoch);
         var drepThresholds = provider.getDrepVotingThresholds(epoch);
-        return fromSnapshot(new LedgerStateProvider.ProtocolParamsSnapshot(
+        return fromSnapshot(new ProtocolParamsSnapshot(
                 epoch,
                 provider.getMinFeeA(epoch),
                 provider.getMinFeeB(epoch),
@@ -243,8 +363,8 @@ public class ProtocolParamsMapper {
                 provider.getMinUtxo(epoch),
                 provider.getMinPoolCost(epoch),
                 null,
-                provider.getCostModels(epoch),
-                provider.getCostModelsRaw(epoch),
+                CostModelUtil.canonicalCostModelsTyped(provider.getCostModels(epoch)),
+                CostModelUtil.canonicalRawCostModelsTyped(provider.getCostModelsRaw(epoch)),
                 provider.getPriceMem(epoch),
                 provider.getPriceStep(epoch),
                 provider.getMaxTxExMem(epoch),
@@ -281,23 +401,14 @@ public class ProtocolParamsMapper {
         ));
     }
 
-    @SuppressWarnings("unchecked")
-    private static LinkedHashMap<String, LinkedHashMap<String, Long>> toCostModels(Map<String, Object> costModels) {
-        Map<String, Object> canonical = CostModelUtil.canonicalCostModels(costModels);
+    private static LinkedHashMap<String, LinkedHashMap<String, Long>> toCostModels(Map<String, ?> costModels) {
+        Map<String, LinkedHashMap<String, Long>> canonical = CostModelUtil.canonicalCostModelsTyped(costModels);
         if (canonical == null || canonical.isEmpty()) return null;
 
         LinkedHashMap<String, LinkedHashMap<String, Long>> result = new LinkedHashMap<>();
         canonical.forEach((language, model) -> {
             LinkedHashMap<String, Long> indexed = new LinkedHashMap<>();
-            if (model instanceof Map<?, ?> map) {
-                map.forEach((key, value) -> indexed.put(String.valueOf(key), toLong(value)));
-            } else if (model instanceof List<?> list) {
-                for (int i = 0; i < list.size(); i++) {
-                    indexed.put(String.format("%03d", i), toLong(list.get(i)));
-                }
-            } else {
-                throw new IllegalArgumentException("Unsupported cost model value: " + model);
-            }
+            model.forEach((key, value) -> indexed.put(key, toLong(value)));
             result.put(language, indexed);
         });
         return result;
@@ -312,7 +423,7 @@ public class ProtocolParamsMapper {
         return null;
     }
 
-    private static boolean nonEmpty(Map<String, Object> value) {
+    private static boolean nonEmpty(Map<String, ?> value) {
         return value != null && !value.isEmpty();
     }
 
@@ -350,6 +461,42 @@ public class ProtocolParamsMapper {
         JsonNode value = node(nested, nestedNames);
         if (value == null) value = node(root, rootNames);
         if (value != null) setter.accept(value.decimalValue());
+    }
+
+    private static Map<String, Object> objectMap(JsonNode node) {
+        if (node == null || !node.isObject()) return null;
+        return MAPPER.convertValue(node, MAP_TYPE);
+    }
+
+    private static Integer intValue(JsonNode root, String... names) {
+        JsonNode value = node(root, names);
+        if (value == null) return null;
+        return value.isTextual() ? Integer.parseInt(value.asText()) : value.intValue();
+    }
+
+    private static String textValue(JsonNode root, String... names) {
+        JsonNode value = node(root, names);
+        return value != null ? value.asText() : null;
+    }
+
+    private static BigInteger bigIntegerValue(JsonNode root, String... names) {
+        JsonNode value = node(root, names);
+        if (value == null) return null;
+        return value.isTextual() ? new BigInteger(value.asText()) : value.bigIntegerValue();
+    }
+
+    private static BigDecimal bigDecimalValue(JsonNode root, String... names) {
+        JsonNode value = node(root, names);
+        if (value == null) return null;
+        return value.isTextual() ? new BigDecimal(value.asText()) : value.decimalValue();
+    }
+
+    private static BigDecimal bigDecimalValue(JsonNode nested, JsonNode root,
+                                              String[] nestedNames, String... rootNames) {
+        JsonNode value = node(nested, nestedNames);
+        if (value == null) value = node(root, rootNames);
+        if (value == null) return null;
+        return value.isTextual() ? new BigDecimal(value.asText()) : value.decimalValue();
     }
 
     private static String string(BigInteger value) {

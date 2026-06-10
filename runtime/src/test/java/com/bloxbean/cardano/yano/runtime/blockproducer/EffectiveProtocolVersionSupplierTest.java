@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.runtime.blockproducer;
 
 import com.bloxbean.cardano.yano.api.account.LedgerStateProvider;
+import com.bloxbean.cardano.yano.api.model.ProtocolParamsSnapshot;
 import com.bloxbean.cardano.yano.api.util.EpochSlotCalc;
 import org.junit.jupiter.api.Test;
 
@@ -91,9 +92,9 @@ class EffectiveProtocolVersionSupplierTest {
                 .hasMessageContaining("Effective protocol version is unavailable or invalid for epoch 0");
     }
 
-    private static LedgerStateProvider.ProtocolParamsSnapshot snapshot(
+    private static ProtocolParamsSnapshot snapshot(
             int epoch, Integer major, Integer minor) {
-        return new LedgerStateProvider.ProtocolParamsSnapshot(
+        return new ProtocolParamsSnapshot(
                 epoch,
                 null, null, null, null, null,
                 null, null, null, null,

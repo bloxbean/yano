@@ -602,7 +602,7 @@ public class EpochRewardCalculator {
                     .owners(new HashSet<>(owners))
                     .ownerActiveStake(ownerActiveStake)
                     .poolFees(BigInteger.ZERO)
-                    .margin(margin)
+                    .margin(BigDecimal.valueOf(margin))
                     .fixedCost(fixedCost)
                     .pledge(pledge)
                     .build());

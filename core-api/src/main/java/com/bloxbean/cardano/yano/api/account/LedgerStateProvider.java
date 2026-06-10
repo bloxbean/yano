@@ -1,8 +1,8 @@
 package com.bloxbean.cardano.yano.api.account;
 
+import com.bloxbean.cardano.yano.api.model.ProtocolParamsSnapshot;
+
 import java.math.BigInteger;
-import java.math.BigDecimal;
-import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
@@ -284,65 +284,6 @@ public interface LedgerStateProvider {
      * Get the reserves balance at a given epoch.
      */
     default Optional<BigInteger> getReserves(int epoch) { return Optional.empty(); }
-
-    // --- Protocol Parameters ---
-
-    record ProtocolParamsSnapshot(
-            int epoch,
-            Integer minFeeA,
-            Integer minFeeB,
-            Integer maxBlockSize,
-            Integer maxTxSize,
-            Integer maxBlockHeaderSize,
-            BigInteger keyDeposit,
-            BigInteger poolDeposit,
-            Integer eMax,
-            Integer nOpt,
-            BigDecimal a0,
-            BigDecimal rho,
-            BigDecimal tau,
-            BigDecimal decentralisationParam,
-            String extraEntropy,
-            Integer protocolMajorVer,
-            Integer protocolMinorVer,
-            BigInteger minUtxo,
-            BigInteger minPoolCost,
-            String nonce,
-            Map<String, Object> costModels,
-            Map<String, Object> costModelsRaw,
-            BigDecimal priceMem,
-            BigDecimal priceStep,
-            BigInteger maxTxExMem,
-            BigInteger maxTxExSteps,
-            BigInteger maxBlockExMem,
-            BigInteger maxBlockExSteps,
-            BigInteger maxValSize,
-            Integer collateralPercent,
-            Integer maxCollateralInputs,
-            BigInteger coinsPerUtxoSize,
-            BigInteger coinsPerUtxoWord,
-            BigDecimal pvtMotionNoConfidence,
-            BigDecimal pvtCommitteeNormal,
-            BigDecimal pvtCommitteeNoConfidence,
-            BigDecimal pvtHardForkInitiation,
-            BigDecimal pvtPPSecurityGroup,
-            BigDecimal dvtMotionNoConfidence,
-            BigDecimal dvtCommitteeNormal,
-            BigDecimal dvtCommitteeNoConfidence,
-            BigDecimal dvtUpdateToConstitution,
-            BigDecimal dvtHardForkInitiation,
-            BigDecimal dvtPPNetworkGroup,
-            BigDecimal dvtPPEconomicGroup,
-            BigDecimal dvtPPTechnicalGroup,
-            BigDecimal dvtPPGovGroup,
-            BigDecimal dvtTreasuryWithdrawal,
-            Integer committeeMinSize,
-            Integer committeeMaxTermLength,
-            Integer govActionLifetime,
-            BigInteger govActionDeposit,
-            BigInteger drepDeposit,
-            Integer drepActivity,
-            BigDecimal minFeeRefScriptCostPerByte) {}
 
     default Optional<ProtocolParamsSnapshot> getProtocolParameters(int epoch) {
         return Optional.empty();

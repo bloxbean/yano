@@ -6,6 +6,7 @@ import com.bloxbean.cardano.yano.runtime.blockproducer.GenesisConfig;
 import com.bloxbean.cardano.yano.runtime.genesis.ByronGenesisData;
 import com.bloxbean.cardano.yano.runtime.genesis.ConwayGenesisData;
 import com.bloxbean.cardano.yano.runtime.genesis.ShelleyGenesisData;
+import com.bloxbean.cardano.yano.api.genesis.ShelleyGenesisBootstrap;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
@@ -25,7 +26,8 @@ class InMemoryDevnetGenesisTest {
                 62, 129600, 5, 10, 0,
                 new BigDecimal("0.003"), new BigDecimal("0.2"), BigDecimal.ZERO,
                 100, 0, 2_000_000, 500_000_000, BigDecimal.ZERO,
-                44, 155381, 65536, 16384, 1100, 18, null, 1_000_000);
+                44, 155381, 65536, 16384, 1100, 18, null, 1_000_000,
+                ShelleyGenesisBootstrap.empty());
     }
 
     private static ByronGenesisData testByron() {

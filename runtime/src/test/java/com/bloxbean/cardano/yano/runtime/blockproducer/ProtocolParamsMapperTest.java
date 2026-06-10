@@ -5,12 +5,13 @@ import com.bloxbean.cardano.yaci.core.model.DrepVoteThresholds;
 import com.bloxbean.cardano.yaci.core.model.PoolVotingThresholds;
 import com.bloxbean.cardano.yaci.core.types.UnitInterval;
 import com.bloxbean.cardano.yano.api.EpochParamProvider;
-import com.bloxbean.cardano.yano.api.account.LedgerStateProvider;
+import com.bloxbean.cardano.yano.api.model.ProtocolParamsSnapshot;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -78,7 +79,7 @@ class ProtocolParamsMapperTest {
         assertEquals(new BigDecimal("0.75"), pp.getDvtPPGovGroup());
         assertEquals(BigInteger.valueOf(100_000_000_000L), pp.getGovActionDeposit());
         assertEquals(BigInteger.valueOf(500_000_000L), pp.getDrepDeposit());
-        assertEquals(List.of(1L, 2L), new ArrayList<>(pp.getCostModels().get("PlutusV1").values()));
+        assertEquals(List.of(2L, 1L), new ArrayList<>(pp.getCostModels().get("PlutusV1").values()));
     }
 
     @Test
@@ -180,8 +181,8 @@ class ProtocolParamsMapperTest {
         assertEquals(0, new BigDecimal("0.75").compareTo(pp.getDvtPPGovGroup()));
     }
 
-    static LedgerStateProvider.ProtocolParamsSnapshot snapshot(int epoch, BigInteger maxValSize) {
-        return new LedgerStateProvider.ProtocolParamsSnapshot(
+    static ProtocolParamsSnapshot snapshot(int epoch, BigInteger maxValSize) {
+        return new ProtocolParamsSnapshot(
                 epoch,
                 44,
                 155381,
@@ -202,7 +203,7 @@ class ProtocolParamsMapperTest {
                 null,
                 BigInteger.valueOf(170_000_000),
                 null,
-                Map.of("PlutusV1", Map.of("000", 10L, "001", 20L)),
+                Map.of("PlutusV1", linkedMap("000", 10L, "001", 20L)),
                 Map.of("PlutusV1", List.of(10L, 20L)),
                 new BigDecimal("0.0577"),
                 new BigDecimal("0.0000721"),
@@ -238,5 +239,12 @@ class ProtocolParamsMapperTest {
                 20,
                 new BigDecimal("15")
         );
+    }
+
+    private static LinkedHashMap<String, Long> linkedMap(String key1, long value1, String key2, long value2) {
+        LinkedHashMap<String, Long> map = new LinkedHashMap<>();
+        map.put(key1, value1);
+        map.put(key2, value2);
+        return map;
     }
 }

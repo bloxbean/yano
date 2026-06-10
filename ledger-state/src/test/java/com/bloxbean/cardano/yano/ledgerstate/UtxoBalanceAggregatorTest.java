@@ -10,10 +10,14 @@ import java.util.List;
 import java.util.Optional;
 import java.util.function.BiConsumer;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class UtxoBalanceAggregatorTest {
+    private static final String PAYMENT_HASH = "11".repeat(28);
+    private static final String STAKE_HASH = "22".repeat(28);
 
     @Test
     void aggregateBalancesSkipsLegacyByronAddressWithoutStakeCredential() {
@@ -37,6 +41,35 @@ class UtxoBalanceAggregatorTest {
         var balances = aggregator.aggregateBalances(utxoState);
 
         assertTrue(balances.isEmpty());
+    }
+
+    @Test
+    void extractCredentialParsesShelleyHexBaseAddress() {
+        UtxoBalanceAggregator aggregator = new UtxoBalanceAggregator();
+        String addressHex = "00" + PAYMENT_HASH + STAKE_HASH;
+
+        var credential = aggregator.extractCredential(addressHex, null);
+
+        assertEquals(new UtxoBalanceAggregator.CredentialKey(0, STAKE_HASH), credential);
+    }
+
+    @Test
+    void extractCredentialSkipsRewardAccountHexAddress() {
+        UtxoBalanceAggregator aggregator = new UtxoBalanceAggregator();
+        String rewardAccountHex = "e0" + STAKE_HASH;
+
+        var credential = aggregator.extractCredential(rewardAccountHex, null);
+
+        assertNull(credential);
+    }
+
+    @Test
+    void extractCredentialReturnsNullForMalformedNonShelleyHex() {
+        UtxoBalanceAggregator aggregator = new UtxoBalanceAggregator();
+
+        assertNull(aggregator.extractCredential("0011223", null));
+        assertNull(aggregator.extractCredential("001122zz", null));
+        assertNull(aggregator.extractCredential("Ae2tdPwUPEZHWn3PDn9cVng11YnjXTb6bmfQ4Pw9nCvVstM7uEYEqUzuQAb", null));
     }
 
     @Test

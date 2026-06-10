@@ -2,6 +2,7 @@ package com.bloxbean.cardano.yano.runtime;
 
 import com.bloxbean.cardano.yano.api.EpochParamProvider;
 import com.bloxbean.cardano.yano.api.account.LedgerStateProvider;
+import com.bloxbean.cardano.yano.api.model.ProtocolParamsSnapshot;
 import com.bloxbean.cardano.yano.ledgerstate.EpochParamTracker;
 import com.bloxbean.cardano.yano.runtime.blockproducer.EffectiveProtocolVersionSupplier;
 import com.bloxbean.cardano.yano.runtime.blockproducer.ProtocolVersion;
@@ -182,9 +183,9 @@ class YanoProtocolVersionSupplierResolutionTest {
         }
     }
 
-    private static LedgerStateProvider.ProtocolParamsSnapshot snapshot(
+    private static ProtocolParamsSnapshot snapshot(
             int epoch, Integer major, Integer minor) {
-        return new LedgerStateProvider.ProtocolParamsSnapshot(
+        return new ProtocolParamsSnapshot(
                 epoch,
                 null, null, null, null, null,
                 null, null, null, null,

@@ -14,7 +14,8 @@
       {"pattern": ".*\\.xml"},
       {"pattern": ".*\\.yml"},
       {"pattern": ".*\\.yaml"},
-      {"pattern": "genesis/.*\\.json"}
+      {"pattern": "genesis/.*\\.json"},
+      {"pattern": "cost-model-opnames/.*\\.txt"}
     ]
   },
   "bundles": [

@@ -417,6 +417,10 @@ public class YanoConfig implements NodeConfig {
             throw new IllegalArgumentException("At least one of client, server, or block producer must be enabled");
         }
 
+        if (enableBootstrap && enableBlockProducer) {
+            throw new IllegalArgumentException("Bootstrap mode cannot be combined with block producer mode");
+        }
+
         if (enableBlockProducer) {
             if (!slotLeaderMode && enableClient) {
                 throw new IllegalArgumentException("Devnet block producer mode cannot be used with client mode");

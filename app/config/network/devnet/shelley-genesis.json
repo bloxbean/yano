@@ -1,6 +1,6 @@
 {
   "activeSlotsCoeff" : 1.0,
-  "epochLength" : 40,
+  "epochLength" : 1200,
   "genDelegs" : {
     "337bc5ef0f1abf205624555c13a37258c42b46b1259a6b1a6d82574e" : {
       "delegate" : "7301761068762f5900bde9eb7c1c15b09840285130f5b0f53606cc57",
@@ -34,7 +34,7 @@
     "60ba957a0fff6816021b2afa7900beea68fd10f2d78fb5b64de0d2379c" : 3000000000000000,
     "604fb41f142d1f7b8e51dd9232a110cf72aec955275439b72870b9c20d" : 10000000000000
   },
-  "maxKESEvolutions" : 60,
+  "maxKESEvolutions" : 10000,
   "maxLovelaceSupply" : 45000000000000000,
   "networkId" : "Testnet",
   "networkMagic" : 42,

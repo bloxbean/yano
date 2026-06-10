@@ -229,6 +229,14 @@ public class SignedBlockBuilder extends DevnetBlockBuilder {
     }
 
     /**
+     * Get the pool id/hash derived from the issuer cold verification key.
+     */
+    public String getIssuerPoolHashHex() {
+        return HexUtil.encodeHexString(
+                com.bloxbean.cardano.client.crypto.Blake2bUtil.blake2bHash224(issuerVkey));
+    }
+
+    /**
      * Get the shared BlockSigner instance (for reuse in SlotLeaderCheck).
      */
     public BlockSigner getBlockSigner() {

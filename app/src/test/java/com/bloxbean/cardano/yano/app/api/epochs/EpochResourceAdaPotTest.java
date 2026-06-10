@@ -115,7 +115,7 @@ class EpochResourceAdaPotTest {
         assertTrue(json.contains("\"undistributed_rewards\":\"600\""));
         assertTrue(json.contains("\"rewards_pot\":\"700\""));
         assertTrue(json.contains("\"pool_rewards_pot\":\"800\""));
-        assertFalse(json.contains("\"deposits\""));
+        assertTrue(json.contains("\"deposits\":\"300\""));
     }
 
     private static EpochResource resourceWith(LedgerStateProvider ledgerStateProvider) {

@@ -3,6 +3,7 @@ package com.bloxbean.cardano.yano.app;
 import com.bloxbean.cardano.yano.api.config.YanoConfig;
 import com.bloxbean.cardano.yano.runtime.blockproducer.GenesisConfig;
 import com.bloxbean.cardano.yano.runtime.genesis.ShelleyGenesisData;
+import com.bloxbean.cardano.yano.api.genesis.ShelleyGenesisBootstrap;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
@@ -114,7 +115,8 @@ class RuntimeSlotConfigSupplierTest {
                         0,
                         0,
                         null,
-                        0),
+                        0,
+                        ShelleyGenesisBootstrap.empty()),
                 null,
                 null);
     }

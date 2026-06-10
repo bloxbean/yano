@@ -146,7 +146,8 @@ public class GenesisConfig {
                 shelleyGenesisData.maxBlockHeaderSize(),
                 shelleyGenesisData.eMax(),
                 shelleyGenesisData.extraEntropy(),
-                shelleyGenesisData.minUTxOValue()
+                shelleyGenesisData.minUTxOValue(),
+                shelleyGenesisData.bootstrap()
         );
 
         return new GenesisConfig(initialFunds, protocolParameters, byronBalances, shelley, byronGenesisData);

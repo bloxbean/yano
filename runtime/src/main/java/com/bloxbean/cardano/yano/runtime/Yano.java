@@ -6,6 +6,8 @@ import com.bloxbean.cardano.yaci.core.common.Constants;
 import com.bloxbean.cardano.yaci.core.common.TxBodyType;
 import com.bloxbean.cardano.yaci.core.config.YaciConfig;
 import com.bloxbean.cardano.yaci.core.model.Era;
+import com.bloxbean.cardano.yaci.core.model.HeaderBody;
+import com.bloxbean.cardano.yaci.core.model.serializers.BlockSerializer;
 import com.bloxbean.cardano.yaci.core.network.server.NodeServer;
 import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Point;
 import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Tip;
@@ -31,6 +33,7 @@ import com.bloxbean.cardano.yano.api.listener.NodeEventListener;
 import com.bloxbean.cardano.yano.api.model.FundResult;
 import com.bloxbean.cardano.yano.api.model.GenesisParameters;
 import com.bloxbean.cardano.yano.api.model.NodeStatus;
+import com.bloxbean.cardano.yano.api.model.ProtocolParamsSnapshot;
 import com.bloxbean.cardano.yano.api.model.SnapshotInfo;
 import com.bloxbean.cardano.yano.api.model.TimeAdvanceResult;
 import com.bloxbean.cardano.yano.api.utxo.UtxoState;
@@ -55,6 +58,7 @@ import com.bloxbean.cardano.yano.api.events.MemPoolTransactionReceivedEvent;
 import com.bloxbean.cardano.yano.api.events.NodeStartedEvent;
 import com.bloxbean.cardano.yano.api.events.RollbackEvent;
 import com.bloxbean.cardano.yano.api.events.SyncStatusChangedEvent;
+import com.bloxbean.cardano.yano.api.genesis.GenesisBootstrapData;
 import com.bloxbean.cardano.yano.runtime.handlers.YaciTxSubmissionHandler;
 import com.bloxbean.cardano.yano.runtime.migration.StakeBalanceIndexStartupMigration;
 import com.bloxbean.cardano.yano.runtime.migration.StartupMigrationContext;
@@ -121,6 +125,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -178,6 +183,7 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
     private SlotLeaderTimeTravelBlockProducer slotLeaderTimeTravelBlockProducer;
     private EpochNonceState epochNonceState; // shared nonce state (accessible for REST endpoint)
     private GenesisConfig genesisConfig;
+    private volatile StaticProtocolParamsSnapshotCache staticProtocolParamsSnapshotCache;
     private long resolvedGenesisTimestamp;
     private SlotTimeCalculator slotTimeCalculator;
     private boolean slotTimeEventSubscriptionRegistered;
@@ -185,6 +191,7 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
     private TransactionEvaluationService transactionEvalService;
     private YaciTxSubmissionHandler txSubmissionHandler;
     private MempoolEvictionPolicy mempoolEvictionPolicy;
+    private volatile GenesisBootstrapData genesisBootstrapData = GenesisBootstrapData.empty();
 
     // Status tracking
     private final AtomicBoolean isRunning = new AtomicBoolean(false);
@@ -195,6 +202,8 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
     private final Object peerSessionLock = new Object();
     private final PeerRecoveryFailureTracker peerRecoveryFailureTracker =
             new PeerRecoveryFailureTracker(MAX_PEER_RECOVERY_FAILURES);
+
+    private record StaticProtocolParamsSnapshotCache(String json, ProtocolParamsSnapshot snapshot) {}
 
     // Statistics
     private long blocksProcessed = 0;
@@ -369,6 +378,7 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
                         config.getAlonzoGenesisFile(),
                         config.getConwayGenesisFile());
             }
+            refreshGenesisBootstrapData(networkGenesisConfig);
 
             if (acctEnabled) {
                 // Build epoch param provider from genesis config — fail fast if genesis is configured but broken
@@ -1095,13 +1105,15 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
     }
 
     private void publishDirectStartGenesisBootstrapIfNeeded() {
+        boolean failClosed = false;
         try {
             if (accountStateStore == null || epochParamProvider == null || chainState.getTip() == null) return;
 
             int firstNonByronEpoch = epochParamProvider.getEpochSlotCalc()
                     .slotToEpoch(epochParamProvider.getShelleyStartSlot());
             if (firstNonByronEpoch != 0) return;
-            if (accountStateStore.getProtocolParameters(0).isPresent()) return;
+            GenesisBootstrapData payload = currentGenesisBootstrapData();
+            failClosed = shouldFailClosedGenesisBootstrapPublication(payload);
             if (eraService == null) return;
 
             var startEra = eraService.getEarliestKnownEra();
@@ -1117,11 +1129,43 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
                     .blockHash(hash)
                     .build();
 
-            eventBus.publish(new GenesisBlockEvent(startEra.get(), 0, slot, 0, hash),
+            String producerPoolHash = payload.hasShelleyStaking() ? resolveRequiredStoredGenesisProducerPoolHash() : null;
+            eventBus.publish(new GenesisBlockEvent(startEra.get(), 0, slot, 0, hash, payload, producerPoolHash),
                     meta, PublishOptions.builder().build());
             log.info("Published startup genesis bootstrap event for direct-start chain");
         } catch (Throwable t) {
+            if (failClosed) {
+                throw new RuntimeException("Failed to publish startup genesis bootstrap event", t);
+            }
             log.warn("Failed to publish startup genesis bootstrap event: {}", t.toString());
+        }
+    }
+
+    static boolean shouldFailClosedGenesisBootstrapPublication(GenesisBootstrapData payload) {
+        return payload != null && (payload.hasShelleyStaking() || payload.shelleyGenesisHashHex() != null);
+    }
+
+    private String resolveRequiredStoredGenesisProducerPoolHash() {
+        try {
+            byte[] blockBytes = chainState.getBlockByNumber(0L);
+            if (blockBytes == null) {
+                throw new IllegalStateException("stored block 0 body is missing");
+            }
+            var block = BlockSerializer.INSTANCE.deserialize(blockBytes);
+            HeaderBody headerBody = block != null && block.getHeader() != null
+                    ? block.getHeader().getHeaderBody() : null;
+            if (headerBody == null || headerBody.getBlockNumber() != 0) {
+                throw new IllegalStateException("stored block 0 has no valid header body");
+            }
+
+            String issuerVkey = headerBody.getIssuerVkey();
+            if (issuerVkey == null || issuerVkey.isBlank()) {
+                throw new IllegalStateException("stored block 0 has no issuer vkey");
+            }
+
+            return HexUtil.encodeHexString(Blake2bUtil.blake2bHash224(HexUtil.decodeHexString(issuerVkey)));
+        } catch (Throwable t) {
+            throw new IllegalStateException("Failed to derive genesis producer pool hash from stored block 0", t);
         }
     }
 
@@ -1224,9 +1268,7 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
             if (config.isEnableClient()) {
                 // Initialize epoch nonce tracking after any startup rollback so
                 // repair validates against the final pre-sync body tip.
-                if (!config.isEnableBlockProducer()) {
-                    initNonceTracking();
-                }
+                initRelayNonceTrackingIfRequired();
 
                 if (deferServerStartUntilClientStateReady && !serverStarted) {
                     startServer();
@@ -1235,9 +1277,7 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
 
                 startClientSync();
             } else {
-                if (!config.isEnableBlockProducer()) {
-                    initNonceTracking();
-                }
+                initRelayNonceTrackingIfRequired();
             }
 
             log.info("Yano started successfully");
@@ -1400,6 +1440,9 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
      */
     private void startBlockProducer() {
         // Wire epoch param provider for epoch transition detection in block producer path
+        com.bloxbean.cardano.yano.runtime.blockproducer.BlockProducerHelper.setGenesisBootstrapDataSupplier(
+                this::currentGenesisBootstrapData);
+        com.bloxbean.cardano.yano.runtime.blockproducer.BlockProducerHelper.setProducerPoolHashSupplier(null);
         if (this.epochParamProvider != null) {
             com.bloxbean.cardano.yano.runtime.blockproducer.BlockProducerHelper.setEpochParamProvider(this.epochParamProvider);
         }
@@ -1444,9 +1487,11 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
         // Resolve genesis timestamp: persist on fresh start, read back on restart
         resolvedGenesisTimestamp = genesisConfig.resolveAndPersistGenesisTimestamp(
                 config.getGenesisTimestamp(), freshStart, config.getShelleyGenesisFile());
+        refreshGenesisBootstrapData(genesisConfig.getShelleyGenesisData());
 
         // Choose block builder: if all three key files are configured, use SignedBlockBuilder
         DevnetBlockBuilder blockBuilder = createBlockBuilder(freshStart);
+        configureGenesisProducerPoolHash(blockBuilder);
 
         setConwayEraStartIfFreshStart(freshStart);
 
@@ -1496,6 +1541,7 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
 
             resolvedGenesisTimestamp = genesisConfig.resolveAndPersistGenesisTimestamp(
                     config.getGenesisTimestamp(), freshStart, config.getShelleyGenesisFile());
+            refreshGenesisBootstrapData(genesisConfig.getShelleyGenesisData());
         } else {
             resolvedGenesisTimestamp = genesisConfig.getSystemStartEpochMillis();
             if (resolvedGenesisTimestamp <= 0) {
@@ -1548,6 +1594,7 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
             // 6. Create SignedBlockBuilder with shared EpochNonceState
             var signedBlockBuilder = new SignedBlockBuilder(keys, slotsPerKESPeriod, maxKESEvolutions,
                     epochNonceState, nonceStore, protocolVersionSupplier);
+            configureGenesisProducerPoolHash(signedBlockBuilder);
 
             // 7. Create & register NonceEvolutionListener
             String issuerVkeyHex = signedBlockBuilder.getIssuerVkeyHex();
@@ -1577,6 +1624,12 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
             // 10. Devnet genesis block production: seed the chain before starting slot-leader loop
             if (config.isDevMode() && freshStart) {
                 var genesisResult = signedBlockBuilder.buildBlock(0, 0, null, java.util.List.of());
+                try {
+                    BlockProducerHelper.publishGenesisBlockEvent(eventBus, genesisResult, "slot-leader-genesis");
+                } catch (RuntimeException | Error e) {
+                    signedBlockBuilder.rollbackPendingNonceState();
+                    throw e;
+                }
                 BlockProducerHelper.storeProducedBlock(chainState, signedBlockBuilder, genesisResult);
                 log.info("Genesis block produced (slot-leader devnet): hash={}",
                         HexUtil.encodeHexString(genesisResult.blockHash()));
@@ -1584,7 +1637,7 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
                 storeGenesisUtxosIfNeeded(freshStart);
                 setConwayEraStartIfFreshStart(freshStart);
 
-                BlockProducerHelper.publishEvent(eventBus, genesisResult, 0, "slot-leader-genesis");
+                BlockProducerHelper.publishEvent(eventBus, genesisResult, 0, "slot-leader-genesis", false);
                 BlockProducerHelper.notifyServer(nodeServer);
             }
 
@@ -1654,6 +1707,29 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
             }
 
             propagateGenesisToConfig(genesisConfig);
+            refreshGenesisBootstrapData(genesisConfig.getShelleyGenesisData());
+        }
+    }
+
+    private GenesisBootstrapData currentGenesisBootstrapData() {
+        return genesisBootstrapData != null ? genesisBootstrapData : GenesisBootstrapData.empty();
+    }
+
+    private void refreshGenesisBootstrapData(NetworkGenesisConfig networkGenesisConfig) {
+        if (networkGenesisConfig == null) return;
+        refreshGenesisBootstrapData(networkGenesisConfig.getShelleyGenesisData());
+    }
+
+    private void refreshGenesisBootstrapData(
+            com.bloxbean.cardano.yano.runtime.genesis.ShelleyGenesisData shelleyGenesisData) {
+        if (shelleyGenesisData == null) return;
+        byte[] hash = resolveGenesisHash();
+        String hashHex = hash != null ? HexUtil.encodeHexString(hash) : null;
+        this.genesisBootstrapData = new GenesisBootstrapData(hashHex, shelleyGenesisData.bootstrap());
+        var shelley = this.genesisBootstrapData.shelley();
+        if (shelley != null && shelley.hasStaking()) {
+            log.info("Genesis bootstrap payload ready: hash={}, pools={}, delegations={}",
+                    hashHex, shelley.pools().size(), shelley.delegations().size());
         }
     }
 
@@ -1673,6 +1749,13 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
      * nonce snapshot was persisted.
      */
     private void initNonceTracking() {
+        if (config.isEnableBootstrap()) {
+            epochNonceState = null;
+            log.warn("initNonceTracking called in bootstrap mode; skipping because partial chain state "
+                    + "cannot replay nonce history");
+            return;
+        }
+
         if (genesisConfig == null || genesisConfig.getShelleyGenesisData() == null) {
             log.debug("Nonce tracking not initialized: no shelley genesis data");
             return;
@@ -1734,6 +1817,23 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
             epochNonceState = null;
             throw new IllegalStateException("Failed to initialize nonce tracking", e);
         }
+    }
+
+    void initRelayNonceTrackingIfRequired() {
+        if (!shouldInitializeRelayNonceTracking(config.isEnableBlockProducer(), config.isEnableBootstrap())) {
+            if (config.isEnableBootstrap() && !config.isEnableBlockProducer()) {
+                epochNonceState = null;
+                log.info("Epoch nonce tracking disabled in bootstrap mode; "
+                        + "partial chain state cannot replay nonce history");
+            }
+            return;
+        }
+
+        initNonceTracking();
+    }
+
+    static boolean shouldInitializeRelayNonceTracking(boolean blockProducerEnabled, boolean bootstrapEnabled) {
+        return !blockProducerEnabled && !bootstrapEnabled;
     }
 
     /**
@@ -1999,6 +2099,16 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
         devnetBlockProducer = producer;
         blockProducerService = producer;
         return producer;
+    }
+
+    private void configureGenesisProducerPoolHash(DevnetBlockBuilder blockBuilder) {
+        if (blockBuilder instanceof SignedBlockBuilder signedBlockBuilder) {
+            String poolHash = signedBlockBuilder.getIssuerPoolHashHex();
+            com.bloxbean.cardano.yano.runtime.blockproducer.BlockProducerHelper.setProducerPoolHashSupplier(() -> poolHash);
+            log.info("Genesis producer pool hash available for block-producer events: {}", poolHash);
+        } else {
+            com.bloxbean.cardano.yano.runtime.blockproducer.BlockProducerHelper.setProducerPoolHashSupplier(null);
+        }
     }
 
     /**
@@ -2512,6 +2622,43 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
     @Override
     public String getProtocolParameters() {
         return genesisConfig != null ? genesisConfig.getProtocolParameters() : null;
+    }
+
+    @Override
+    public Optional<ProtocolParamsSnapshot> getProtocolParameters(int epoch) {
+        if (epoch < 0) {
+            return Optional.empty();
+        }
+
+        LedgerStateProvider ledgerStateProvider = getLedgerStateProvider();
+        if (ledgerStateProvider != null) {
+            Optional<ProtocolParamsSnapshot> ledgerParams = ledgerStateProvider.getProtocolParameters(epoch);
+            if (ledgerParams.isPresent()) {
+                return ledgerParams;
+            }
+        }
+
+        return staticProtocolParamsSnapshot(epoch);
+    }
+
+    private Optional<ProtocolParamsSnapshot> staticProtocolParamsSnapshot(int epoch) {
+        String json = getProtocolParameters();
+        if (json == null || json.isBlank()) {
+            return Optional.empty();
+        }
+
+        StaticProtocolParamsSnapshotCache cached = staticProtocolParamsSnapshotCache;
+        if (cached != null && cached.json().equals(json)) {
+            return Optional.of(cached.snapshot().withEpoch(epoch));
+        }
+
+        try {
+            ProtocolParamsSnapshot snapshot = ProtocolParamsMapper.fromNodeProtocolParamSnapshot(json, epoch);
+            staticProtocolParamsSnapshotCache = new StaticProtocolParamsSnapshotCache(json, snapshot);
+            return Optional.of(snapshot);
+        } catch (Exception e) {
+            throw new IllegalStateException("Static protocol parameters are not available", e);
+        }
     }
 
     @Override
@@ -3238,6 +3385,7 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
         }
         genesisConfig = genesisConfig.withSystemStart(shiftedSystemStart);
         propagateGenesisToConfig(genesisConfig);
+        refreshGenesisBootstrapData(genesisConfig.getShelleyGenesisData());
 
         boolean freshStart = chainState.getTip() == null;
 
@@ -3496,7 +3644,7 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
     }
 
     private PeerSession createPeerSession() {
-        return new PeerSession(
+        var session = new PeerSession(
                 new PeerEndpoint(remoteCardanoHost, remoteCardanoPort, protocolMagic),
                 chainState,
                 eventBus,
@@ -3504,6 +3652,8 @@ public class Yano implements NodeAPI, PeerSessionCallbacks {
                 epochParamProvider,
                 peerClientFactory
         );
+        session.setGenesisBootstrapDataSupplier(this::currentGenesisBootstrapData);
+        return session;
     }
 
     private void startPeerSessionSupervisor() {

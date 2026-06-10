@@ -8,11 +8,6 @@ import java.util.Map;
 
 /**
  * Canonicalizes Plutus cost model shapes before persistence and API projection.
- * <p>
- * Genesis files may provide a cost model as an operation-name map. That map must
- * be ordered lexicographically by operation name before it is stored as an
- * ordered list and before it is projected as the ordered cost-model list expected
- * by Blockfrost-compatible APIs.
  */
 public final class CostModelUtil {
 
@@ -20,32 +15,66 @@ public final class CostModelUtil {
     }
 
     public static Map<String, Object> canonicalCostModels(Map<String, Object> costModels) {
-        if (costModels == null || costModels.isEmpty()) return null;
-
+        Map<String, LinkedHashMap<String, Long>> typed = canonicalCostModelsTyped(costModels);
+        if (typed == null) return null;
         Map<String, Object> result = new LinkedHashMap<>();
-        costModels.forEach((language, model) ->
-                result.put(language, indexedCostModel(canonicalCostModelList(model))));
+        typed.forEach(result::put);
         return result;
     }
 
     public static Map<String, Object> canonicalRawCostModels(Map<String, Object> costModels) {
+        Map<String, List<Long>> typed = canonicalRawCostModelsTyped(costModels);
+        if (typed == null) return null;
+        Map<String, Object> result = new LinkedHashMap<>();
+        typed.forEach(result::put);
+        return result;
+    }
+
+    public static Map<String, LinkedHashMap<String, Long>> canonicalCostModelsTyped(Map<String, ?> costModels) {
         if (costModels == null || costModels.isEmpty()) return null;
 
-        Map<String, Object> result = new LinkedHashMap<>();
+        Map<String, LinkedHashMap<String, Long>> result = new LinkedHashMap<>();
         costModels.forEach((language, model) ->
-                result.put(language, canonicalCostModelList(model)));
+                result.put(language, canonicalCostModelMap(language, model)));
+        return result;
+    }
+
+    public static Map<String, List<Long>> canonicalRawCostModelsTyped(Map<String, ?> costModels) {
+        if (costModels == null || costModels.isEmpty()) return null;
+
+        Map<String, List<Long>> result = new LinkedHashMap<>();
+        costModels.forEach((language, model) ->
+                result.put(language, canonicalCostModelList(language, model)));
         return result;
     }
 
     public static List<Long> canonicalCostModelList(Object model) {
+        return canonicalCostModelList(null, model);
+    }
+
+    public static List<Long> canonicalCostModelList(String language, Object model) {
         if (model instanceof List<?> list) {
             return list.stream().map(CostModelUtil::toLongValue).toList();
         }
 
         if (model instanceof Map<?, ?> map) {
-            return map.entrySet().stream()
-                    .sorted(Comparator.comparing(entry -> String.valueOf(entry.getKey())))
-                    .map(Map.Entry::getValue)
+            if (numericKeyed(map)) {
+                return map.entrySet().stream()
+                        .sorted(Comparator.comparingInt(entry -> numericIndex(entry.getKey())))
+                        .map(Map.Entry::getValue)
+                        .map(CostModelUtil::toLongValue)
+                        .toList();
+            }
+
+            List<String> names = CostModelOpNames.forLanguage(language);
+            if (names != null && map.keySet().containsAll(names)) {
+                return names.stream()
+                        .map(map::get)
+                        .map(CostModelUtil::toLongValue)
+                        .toList();
+            }
+
+            return map.values().stream()
                     .map(CostModelUtil::toLongValue)
                     .toList();
         }
@@ -61,12 +90,58 @@ public final class CostModelUtil {
         throw new IllegalArgumentException("Unsupported cost model value: " + model);
     }
 
-    private static Map<String, Long> indexedCostModel(List<Long> costs) {
-        Map<String, Long> result = new LinkedHashMap<>();
+    public static LinkedHashMap<String, Long> canonicalCostModelMap(String language, Object model) {
+        if (model instanceof Map<?, ?> map && !numericKeyed(map)) {
+            List<String> names = CostModelOpNames.forLanguage(language);
+            if (names != null && map.keySet().containsAll(names)) {
+                LinkedHashMap<String, Long> result = new LinkedHashMap<>();
+                for (String name : names) {
+                    result.put(name, toLongValue(map.get(name)));
+                }
+                return result;
+            }
+
+            LinkedHashMap<String, Long> result = new LinkedHashMap<>();
+            map.forEach((key, value) -> result.put(String.valueOf(key), toLongValue(value)));
+            return result;
+        }
+
+        List<Long> costs = canonicalCostModelList(language, model);
+        List<String> names = CostModelOpNames.forLanguage(language);
+        if (names != null && names.size() == costs.size()) {
+            LinkedHashMap<String, Long> result = new LinkedHashMap<>();
+            for (int i = 0; i < costs.size(); i++) {
+                result.put(names.get(i), costs.get(i));
+            }
+            return result;
+        }
+
+        return indexedCostModel(costs);
+    }
+
+    private static LinkedHashMap<String, Long> indexedCostModel(List<Long> costs) {
+        LinkedHashMap<String, Long> result = new LinkedHashMap<>();
         for (int i = 0; i < costs.size(); i++) {
             result.put(String.format("%03d", i), costs.get(i));
         }
         return result;
+    }
+
+    private static boolean numericKeyed(Map<?, ?> map) {
+        return !map.isEmpty() && map.keySet().stream().allMatch(CostModelUtil::isNumericKey);
+    }
+
+    private static boolean isNumericKey(Object key) {
+        try {
+            Integer.parseInt(String.valueOf(key));
+            return true;
+        } catch (NumberFormatException e) {
+            return false;
+        }
+    }
+
+    private static int numericIndex(Object key) {
+        return Integer.parseInt(String.valueOf(key));
     }
 
     private static Long toLongValue(Object value) {

@@ -478,6 +478,7 @@ public class EpochBoundaryProcessor {
         // Get previous AdaPot
         BigInteger prevTreasury = BigInteger.ZERO;
         BigInteger prevReserves = BigInteger.ZERO;
+        BigInteger currentDeposits = BigInteger.ZERO;
 
         if (adaPotTracker != null && adaPotTracker.isEnabled()) {
             var prevPot = adaPotTracker.getAdaPot(previousEpoch);
@@ -490,10 +491,15 @@ public class EpochBoundaryProcessor {
             if (prevPot.isPresent()) {
                 prevTreasury = prevPot.get().treasury();
                 prevReserves = prevPot.get().reserves();
+                currentDeposits = prevPot.get().deposits();
             } else {
                 throw new IllegalStateException("No AdaPot found for previous epoch " + previousEpoch
                         + "; reward calculation cannot proceed with zero treasury/reserves");
             }
+        }
+
+        if (snapshotCreator != null) {
+            currentDeposits = snapshotCreator.getTotalDeposited();
         }
 
         // Resolve param provider (prefer tracker if available)
@@ -516,7 +522,7 @@ public class EpochBoundaryProcessor {
                 var newPot = new AccountStateCborCodec.AdaPot(
                         result.getTreasury(),
                         result.getReserves(),
-                        BigInteger.ZERO, // deposits tracked separately
+                        currentDeposits,
                         rewardCalculator.getEpochFees(newEpoch - 1),
                         result.getTotalDistributedRewards(),
                         result.getTotalUndistributedRewards() != null
@@ -669,12 +675,14 @@ public class EpochBoundaryProcessor {
         if (initialReserves == null) initialReserves = BigInteger.ZERO;
         if (initialTreasury == null) initialTreasury = BigInteger.ZERO;
 
+        BigInteger deposits = snapshotCreator != null ? snapshotCreator.getTotalDeposited() : BigInteger.ZERO;
+
         var pot = new AccountStateCborCodec.AdaPot(
                 initialTreasury, initialReserves,
-                BigInteger.ZERO, BigInteger.ZERO, BigInteger.ZERO,
+                deposits, BigInteger.ZERO, BigInteger.ZERO,
                 BigInteger.ZERO, BigInteger.ZERO, BigInteger.ZERO);
         adaPotTracker.storeAdaPot(shelleyStartEpoch, pot);
-        log.info("AdaPot bootstrapped at shelley start epoch {}: treasury={}, reserves={}",
-                shelleyStartEpoch, initialTreasury, initialReserves);
+        log.info("AdaPot bootstrapped at shelley start epoch {}: treasury={}, reserves={}, deposits={}",
+                shelleyStartEpoch, initialTreasury, initialReserves, deposits);
     }
 }
