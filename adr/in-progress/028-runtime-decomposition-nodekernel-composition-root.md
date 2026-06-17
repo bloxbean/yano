@@ -1020,9 +1020,12 @@ to a later major version.
 ## Postponed Follow-Up Work
 
 These items were non-blocking for issue #17. The runtime-kernel and
-producer/chronology items are completed under follow-up issue #21. Issue #19
-keeps `DevnetToolkit` in the `runtime` artifact for now; a split is deferred
-until a concrete packaging, dependency, native-image, or versioning need appears.
+producer/chronology items are completed under follow-up issue #21. The original
+issue #19 decision kept `DevnetToolkit` in the `runtime` artifact for the current
+slice. That decision is now superseded by
+`028-devnet-control-toolkit-and-testkit-spi.md`, because planned devnet growth and
+ADR-027 R1 `yano-testkit` packaging provide a concrete reason to split the
+toolkit behind a clean runtime SPI.
 
 - **Issue #21 / Stage 21A — kernel ownership and scheduler context:** replace
   the current one-subsystem `RuntimeNode` kernel adapter with the runtime-owned
@@ -1069,7 +1072,8 @@ until a concrete packaging, dependency, native-image, or versioning need appears
   `yano-devnet-toolkit` artifact only when a real consumer needs a runtime
   artifact without devnet classes or when devnet tooling adds heavyweight
   optional dependencies, material native-image cost, or independent versioning
-  pressure.
+  pressure. The new devnet-control ADR records that this revisit condition has
+  now been met by the planned devnet/testkit roadmap.
 - **Adapter proofs:** add Spring/Micronaut/plain-Java examples after the runtime
   API is stable.
 - **Extension builder APIs:** decide whether custom mempool injection, subsystem

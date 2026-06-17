@@ -2,7 +2,7 @@
 
 **ADR:** `028-runtime-decomposition-nodekernel-composition-root.md`
 **Design doc:** `028-runtime-decomposition-high-level-design.md`
-**Current status:** Issue #17 core decomposition and reviewer hardening are implemented and validated. Issue #21 runtime-kernel follow-up is implemented and validated: kernel ownership is load-bearing, shared scheduler ownership is wired, adapter readiness uses kernel health, chronology and producer startup orchestration are extracted, and maintenance failure signaling is consistent. Issue #19 is decided: keep `DevnetToolkit` in `runtime` until a concrete packaging, dependency, native-image, or versioning need justifies a split.
+**Current status:** Issue #17 core decomposition and reviewer hardening are implemented and validated. Issue #21 runtime-kernel follow-up is implemented and validated: kernel ownership is load-bearing, shared scheduler ownership is wired, adapter readiness uses kernel health, chronology and producer startup orchestration are extracted, and maintenance failure signaling is consistent. The earlier issue #19 "keep in runtime for now" packaging decision is superseded by `028-devnet-control-toolkit-and-testkit-spi.md`, because the roadmap now includes larger devnet functionality and a `yano-testkit` module.
 **Last updated:** 2026-06-17
 
 ## Summary
@@ -1352,6 +1352,11 @@ snapshot restore, devnet, and sync behavior.
 
 Decision: keep `DevnetToolkit` and the runtime devnet services in the `runtime`
 artifact for now. Do not create a `yano-devnet-toolkit` module in this slice.
+
+Superseded follow-up: `028-devnet-control-toolkit-and-testkit-spi.md` defines the
+next implementation direction: split `yano-devnet-toolkit` behind a narrow
+runtime SPI and build `yano-testkit` on top of it. The change in direction is
+driven by planned devnet growth and ADR-027 R1 testkit packaging.
 
 Rationale:
 
