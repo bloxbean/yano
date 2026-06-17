@@ -15,6 +15,7 @@ import com.bloxbean.cardano.yaci.core.storage.ChainState;
 import com.bloxbean.cardano.yaci.core.storage.ChainTip;
 import com.bloxbean.cardano.yaci.core.util.CborSerializationUtil;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
+import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
 import com.bloxbean.cardano.yano.api.utxo.UtxoState;
 import com.bloxbean.cardano.yano.api.utxo.model.AssetAmount;
 import com.bloxbean.cardano.yano.api.utxo.model.Outpoint;
@@ -25,6 +26,7 @@ import com.bloxbean.cardano.yano.runtime.db.RocksDbSupplier;
 import com.bloxbean.cardano.yano.runtime.db.UtxoCfNames;
 import com.bloxbean.cardano.yano.api.events.BlockAppliedEvent;
 import com.bloxbean.cardano.yano.api.events.RollbackEvent;
+import com.bloxbean.cardano.yano.runtime.chain.ByronGenesisUtxoMetadataStore;
 import org.rocksdb.*;
 import org.slf4j.Logger;
 
@@ -32,6 +34,7 @@ import java.math.BigInteger;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -78,7 +81,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
     private volatile StorageFilterChain filterChain;
     // Metrics
     private final boolean metricsEnabled;
-    private final ScheduledExecutorService metricsScheduler;
+    private ScheduledExecutorService metricsScheduler;
     private final long rocksSampleMillis;
     private volatile long lastPruneMs = 0L;
     private volatile long lastDeltaDeleted = 0L;
@@ -97,7 +100,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
         this.supplier = supplier;
         this.db = supplier.rocks().db();
         this.log = logger;
-        Object ev = config != null ? config.getOrDefault("yano.utxo.enabled", Boolean.TRUE) : Boolean.TRUE;
+        Object ev = config != null ? config.getOrDefault(YanoPropertyKeys.Utxo.ENABLED, Boolean.TRUE) : Boolean.TRUE;
         this.enabled = (ev instanceof Boolean b) ? b : Boolean.parseBoolean(String.valueOf(ev));
 
         this.cfUnspent = supplier.rocks().handle(UtxoCfNames.UTXO_UNSPENT);
@@ -108,15 +111,15 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
         this.cfScriptRef = supplier.rocks().handle(UtxoCfNames.SCRIPT_REF);
         this.cfStakeBalance = supplier.rocks().handle(UtxoCfNames.UTXO_STAKE_BALANCE);
 
-        this.pruneDepth = getInt(config, "yano.utxo.pruneDepth", 2160);
+        this.pruneDepth = getInt(config, YanoPropertyKeys.Utxo.PRUNE_DEPTH, 2160);
         // Default 2 epochs (864000 slots) to support incremental balance aggregation at epoch boundaries.
         // The delta log must retain at least one full epoch's worth of entries.
-        this.rollbackWindow = getInt(config, "yano.utxo.rollbackWindow", 864000);
-        this.pruneBatchSize = getInt(config, "yano.utxo.pruneBatchSize", 500);
+        this.rollbackWindow = getInt(config, YanoPropertyKeys.Utxo.ROLLBACK_WINDOW, 864000);
+        this.pruneBatchSize = getInt(config, YanoPropertyKeys.Utxo.PRUNE_BATCH_SIZE, 500);
         // Indexing strategy
-        boolean addrIdx = getBool(config, "yano.utxo.index.address_hash", true);
-        boolean payCredIdx = getBool(config, "yano.utxo.index.payment_credential", true);
-        Object strat = config != null ? config.get("yano.utxo.indexingStrategy") : null;
+        boolean addrIdx = getBool(config, YanoPropertyKeys.Utxo.INDEX_ADDRESS_HASH, true);
+        boolean payCredIdx = getBool(config, YanoPropertyKeys.Utxo.INDEX_PAYMENT_CREDENTIAL, true);
+        Object strat = config != null ? config.get(YanoPropertyKeys.Utxo.INDEXING_STRATEGY) : null;
         if (strat != null) {
             String s = String.valueOf(strat);
             if ("address_hash".equalsIgnoreCase(s)) {
@@ -129,22 +132,18 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
         }
         this.indexAddressHash = addrIdx;
         this.indexPaymentCred = payCredIdx;
-        this.stakeBalanceIndexEnabled = getBool(config, "yano.account.stake-balance-index-enabled", true);
-        this.configuredUtxoFiltersEnabled = getBool(config, "yano.filters.utxo.enabled", false);
+        this.stakeBalanceIndexEnabled = getBool(
+                config, YanoPropertyKeys.AccountState.STAKE_BALANCE_INDEX_ENABLED, true);
+        this.configuredUtxoFiltersEnabled = getBool(config, YanoPropertyKeys.UtxoFilter.ENABLED, false);
 
         this.processor = new DefaultUtxoProcessor(this.db);
         refreshStakeBalanceIndexReady();
 
         // Metrics setup
-        this.metricsEnabled = getBool(config, "yano.metrics.enabled", true);
-        int sampleSec = getInt(config, "yano.metrics.sample.rocksdb.seconds", 30);
+        this.metricsEnabled = getBool(config, YanoPropertyKeys.Metrics.ENABLED, true);
+        int sampleSec = getInt(config, YanoPropertyKeys.Metrics.ROCKSDB_SAMPLE_SECONDS, 0);
         this.rocksSampleMillis = Math.max(0, sampleSec) * 1000L;
-        if (metricsEnabled && rocksSampleMillis > 0) {
-            this.metricsScheduler = Executors.newScheduledThreadPool(1, Thread.ofVirtual().factory());
-            this.metricsScheduler.scheduleAtFixedRate(this::sampleCfEstimates, rocksSampleMillis, rocksSampleMillis, TimeUnit.MILLISECONDS);
-        } else {
-            this.metricsScheduler = null;
-        }
+        startMetricsSampler();
 
         log.info("DefaultUtxoStore initialized (enabled={})", enabled);
     }
@@ -154,7 +153,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
      * The supplier's underlying RocksDB has been closed and reopened, so all
      * cached handles are stale.
      */
-    public void reinitialize() {
+    public synchronized void reinitialize() {
         var ctx = supplier.rocks();
         this.db = ctx.db();
         this.cfUnspent = ctx.handle(UtxoCfNames.UTXO_UNSPENT);
@@ -678,7 +677,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
     private record StakeCredentialKey(int credType, String credHash) {}
 
     @Override
-    public void applyBlock(BlockAppliedEvent e) {
+    public synchronized void applyBlock(BlockAppliedEvent e) {
         if (!enabled) return;
         if (e.block() == null) return; // header-only or EBB
         long t0 = System.nanoTime();
@@ -981,7 +980,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
     }
 
     @Override
-    public void storeGenesisUtxos(java.util.Map<String, BigInteger> shelleyFunds, long networkMagic, long slot, long blockNumber, String blockHash) {
+    public synchronized void storeGenesisUtxos(java.util.Map<String, BigInteger> shelleyFunds, long networkMagic, long slot, long blockNumber, String blockHash) {
         if (!enabled) return;
         if (shelleyFunds == null || shelleyFunds.isEmpty()) {
             markStakeBalanceIndexReadyNow();
@@ -1055,7 +1054,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
     private org.rocksdb.ColumnFamilyHandle metadataHandle; // metadata CF handle for atomic write
 
     @Override
-    public void storeByronGenesisUtxos(java.util.Map<String, BigInteger> nonAvvmBalances, long slot, long blockNumber, String blockHash) {
+    public synchronized void storeByronGenesisUtxos(java.util.Map<String, BigInteger> nonAvvmBalances, long slot, long blockNumber, String blockHash) {
         if (!enabled) return;
         if (nonAvvmBalances == null || nonAvvmBalances.isEmpty()) {
             markStakeBalanceIndexReadyNow();
@@ -1132,6 +1131,27 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
     /** Access to cfUnspent handle for direct queries. */
     public ColumnFamilyHandle getCfUnspent() {
         return cfUnspent;
+    }
+
+    /**
+     * Wire Allegra bootstrap removal dependencies. Called once during Yano wiring.
+     */
+    public void wireAllegraBootstrapRemoval(ByronGenesisUtxoMetadataStore metadataStore) {
+        if (metadataStore == null) {
+            return;
+        }
+
+        ColumnFamilyHandle metadataCfHandle = supplier.rocks().handle("metadata");
+        if (metadataCfHandle == null) {
+            log.warn("Allegra bootstrap removal not wired: missing chain metadata column family");
+            return;
+        }
+
+        wireAllegraBootstrapRemoval(
+                metadataStore::getByronGenesisUtxoKeys,
+                metadataStore::isAllegraBootstrapDone,
+                metadataStore.getAllegraBootstrapDoneKey(),
+                metadataCfHandle);
     }
 
     /**
@@ -1274,7 +1294,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
     private final AtomicLong faucetNonce = new AtomicLong(System.nanoTime());
 
     @Override
-    public String injectFaucetUtxo(String address, long lovelace) {
+    public synchronized String injectFaucetUtxo(String address, long lovelace) {
         if (!enabled) throw new IllegalStateException("UTXO store is not enabled");
 
         // Generate unique tx hash: blake2b-256(address_bytes + nonce)
@@ -1403,7 +1423,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
     }
 
     @Override
-    public void rollbackTo(RollbackEvent e) {
+    public synchronized void rollbackTo(RollbackEvent e) {
         if (!enabled) return;
         long targetSlot = e.target().getSlot();
         ensureRollbackTargetIsSafe(targetSlot);
@@ -1493,7 +1513,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
 
     @Override
     public void close() {
-        if (metricsScheduler != null) metricsScheduler.shutdownNow();
+        pauseMetricsSampler(Duration.ofSeconds(5));
     }
 
     // --- RollbackCapableStore implementation ---
@@ -1548,7 +1568,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
     }
 
     @Override
-    public void rollbackToSlot(long targetSlot) {
+    public synchronized void rollbackToSlot(long targetSlot) {
         if (!enabled) return;
         ensureRollbackTargetIsSafe(targetSlot);
         // Reuse internal rollback logic directly (no RollbackEvent construction)
@@ -1745,7 +1765,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
      * Uses lastAppliedSlot to compute safe cutoffs.
      */
     @Override
-    public void pruneOnce() {
+    public synchronized void pruneOnce() {
         if (!enabled) return;
         long t0 = System.nanoTime();
         long currentSlot = readLastAppliedSlot();
@@ -1903,6 +1923,49 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
             cfEstimates.set(Collections.unmodifiableMap(m));
         } catch (Throwable ignored) {
         }
+    }
+
+    public synchronized boolean isMetricsSamplerRunning() {
+        return metricsScheduler != null && !metricsScheduler.isShutdown();
+    }
+
+    public synchronized boolean pauseMetricsSampler(Duration timeout) {
+        if (metricsScheduler == null) {
+            return true;
+        }
+        Duration effectiveTimeout = timeout != null ? timeout : Duration.ofSeconds(5);
+        ScheduledExecutorService scheduler = metricsScheduler;
+        scheduler.shutdown();
+        try {
+            if (!scheduler.awaitTermination(Math.max(1L, effectiveTimeout.toMillis()), TimeUnit.MILLISECONDS)) {
+                scheduler.shutdownNow();
+                if (!scheduler.awaitTermination(Math.max(1L, effectiveTimeout.toMillis()), TimeUnit.MILLISECONDS)) {
+                    return false;
+                }
+            }
+            metricsScheduler = null;
+            return true;
+        } catch (InterruptedException e) {
+            scheduler.shutdownNow();
+            Thread.currentThread().interrupt();
+            return false;
+        }
+    }
+
+    public synchronized void resumeMetricsSampler() {
+        startMetricsSampler();
+    }
+
+    private void startMetricsSampler() {
+        if (!metricsEnabled || rocksSampleMillis <= 0 || metricsScheduler != null) {
+            return;
+        }
+        metricsScheduler = Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread thread = new Thread(r, "yano-utxo-rocksdb-metrics");
+            thread.setDaemon(true);
+            return thread;
+        });
+        metricsScheduler.scheduleAtFixedRate(this::sampleCfEstimates, rocksSampleMillis, rocksSampleMillis, TimeUnit.MILLISECONDS);
     }
 
     private long parseEstimate(ColumnFamilyHandle cf) {

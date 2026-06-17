@@ -1,7 +1,7 @@
 package com.bloxbean.cardano.yano.app.api.tx;
 
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
-import com.bloxbean.cardano.yano.api.NodeAPI;
+import com.bloxbean.cardano.yano.api.TxGateway;
 import com.bloxbean.cardano.yano.runtime.blockproducer.TransactionValidationException;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.Consumes;
@@ -21,7 +21,7 @@ import java.util.stream.Collectors;
 public class TxResource {
 
     @Inject
-    NodeAPI nodeAPI;
+    TxGateway txGateway;
 
     /**
      * Blockfrost-compatible tx submission endpoint.
@@ -63,7 +63,7 @@ public class TxResource {
                     .build();
         }
         try {
-            String txHash = nodeAPI.submitTransaction(txCbor);
+            String txHash = txGateway.submitTransaction(txCbor);
             // Return quoted JSON string to match Blockfrost response format
             return Response.ok("\"" + txHash + "\"").build();
         } catch (TransactionValidationException e) {

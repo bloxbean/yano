@@ -17,6 +17,7 @@ import com.bloxbean.cardano.yaci.events.api.EventBus;
 import com.bloxbean.cardano.yaci.events.api.EventMetadata;
 import com.bloxbean.cardano.yaci.events.api.PublishOptions;
 import com.bloxbean.cardano.yano.api.EpochParamProvider;
+import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
 import com.bloxbean.cardano.yano.api.events.BlockConsensusEvent;
 import com.bloxbean.cardano.yano.api.events.EpochTransitionEvent;
 import com.bloxbean.cardano.yano.api.events.GenesisBlockEvent;
@@ -28,8 +29,9 @@ import com.bloxbean.cardano.yano.api.events.RollbackEvent;
 import com.bloxbean.cardano.yano.api.events.TipChangedEvent;
 import com.bloxbean.cardano.yano.api.genesis.GenesisBootstrapData;
 import com.bloxbean.cardano.yano.runtime.apply.UnrecoverableApplyException;
-import com.bloxbean.cardano.yano.runtime.chain.DirectRocksDBChainState;
-import com.bloxbean.cardano.yano.runtime.chain.InMemoryChainState;
+import com.bloxbean.cardano.yano.runtime.chain.ChainStateRecovery;
+import com.bloxbean.cardano.yano.runtime.chain.EraMetadataStore;
+import com.bloxbean.cardano.yano.runtime.chain.OriginRollbackCapable;
 import com.bloxbean.cardano.yano.runtime.peer.PeerHealth;
 import lombok.extern.slf4j.Slf4j;
 
@@ -75,9 +77,9 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable, Heade
     }
 
     private static final long SLOW_EPOCH_TRANSITION_WARN_MS =
-            positiveLongProperty("yano.bodyFetch.slowEpochTransitionWarnMs", 1_000L);
+            positiveLongProperty(YanoPropertyKeys.BodyFetch.SLOW_EPOCH_TRANSITION_WARN_MS, 1_000L);
     private static final long REALTIME_FALLBACK_POLL_MS =
-            positiveLongProperty("yano.bodyFetch.realtimeFallbackPollMs", 5_000L);
+            positiveLongProperty(YanoPropertyKeys.BodyFetch.REALTIME_FALLBACK_POLL_MS, 5_000L);
 
     private final PeerClient peerClient;
     private final ChainState chainState;
@@ -1141,12 +1143,8 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable, Heade
     }
 
     private void rollbackChainStateToOrigin() {
-        if (chainState instanceof DirectRocksDBChainState rocks) {
-            rocks.rollbackToOrigin();
-            return;
-        }
-        if (chainState instanceof InMemoryChainState memory) {
-            memory.rollbackToOrigin();
+        if (chainState instanceof OriginRollbackCapable originRollback) {
+            originRollback.rollbackToOrigin();
             return;
         }
         chainState.rollbackTo(0L);
@@ -1199,10 +1197,10 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable, Heade
                 // Pause fetching during probe to avoid churn
                 paused.set(true);
 
-                if (chainState instanceof DirectRocksDBChainState rocks) {
-                    if (rocks.detectCorruption()) {
+                if (chainState instanceof ChainStateRecovery recovery) {
+                    if (recovery.detectCorruption()) {
                         log.warn("🚨 Corruption detected during runtime probe - attempting recovery");
-                        rocks.recoverFromCorruption();
+                        recovery.recoverFromCorruption();
                         log.info("✅ Recovery completed after stale-block probe");
                         // After recovery, reset counters and allow fetching to resume
                         consecutiveStaleBlocks.set(0);
@@ -1492,7 +1490,7 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable, Heade
         return syncPhase;
     }
 
-    long getObservedNetworkTipSlot() {
+    public long getObservedNetworkTipSlot() {
         return syncTipContext != null ? syncTipContext.getNetworkTipSlot() : -1L;
     }
 
@@ -1625,8 +1623,8 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable, Heade
      */
     private void persistEraStartSlotIfNeeded(Era era, long slot) {
         if (era == null) return;
-        if (chainState instanceof DirectRocksDBChainState rocksState) {
-            rocksState.setEraStartSlot(era.getValue(), slot);
+        if (chainState instanceof EraMetadataStore eraMetadataStore) {
+            eraMetadataStore.setEraStartSlot(era.getValue(), slot);
         }
     }
 

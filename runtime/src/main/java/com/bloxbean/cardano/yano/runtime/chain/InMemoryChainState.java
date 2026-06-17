@@ -14,8 +14,13 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentSkipListMap;
 
+/**
+ * In-memory implementation of chain-state capabilities for tests, devnet, and
+ * non-persistent runtime profiles.
+ */
 @Slf4j
-public class InMemoryChainState implements ChainState, NonceStateStore {
+public class InMemoryChainState implements ChainState, NonceStateStore,
+        ByronEbHeaderStore, OriginRollbackCapable {
     // Use hex string keys instead of byte[] to ensure proper equals/hashCode behavior
     private Map<String, byte[]> blockStore = new ConcurrentHashMap<>();
     private Map<String, byte[]> blockHeaderStore = new ConcurrentHashMap<>();
@@ -414,6 +419,9 @@ public class InMemoryChainState implements ChainState, NonceStateStore {
         return left.slot() >= right.slot() ? left : right;
     }
 
+    /**
+     * Header index entry used to locate nearest rollback points by slot.
+     */
     private record HeaderPoint(long slot, long blockNumber, byte[] hash) {
         String blockHashHex() {
             return HexUtil.encodeHexString(hash);

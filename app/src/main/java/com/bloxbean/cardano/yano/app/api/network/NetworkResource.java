@@ -1,8 +1,9 @@
 package com.bloxbean.cardano.yano.app.api.network;
 
-import com.bloxbean.cardano.yaci.core.storage.ChainState;
 import com.bloxbean.cardano.yaci.core.storage.ChainTip;
-import com.bloxbean.cardano.yano.api.NodeAPI;
+import com.bloxbean.cardano.yano.api.ChainQuery;
+import com.bloxbean.cardano.yano.api.LedgerQuery;
+import com.bloxbean.cardano.yano.api.NodeLifecycle;
 import com.bloxbean.cardano.yano.api.account.AccountStateReadStore;
 import com.bloxbean.cardano.yano.api.account.LedgerStateProvider;
 import com.bloxbean.cardano.yano.api.model.GenesisParameters;
@@ -26,18 +27,24 @@ public class NetworkResource {
     private static final Logger log = LoggerFactory.getLogger(NetworkResource.class);
 
     @Inject
-    NodeAPI nodeAPI;
+    NodeLifecycle nodeLifecycle;
+
+    @Inject
+    ChainQuery chainQuery;
+
+    @Inject
+    LedgerQuery ledgerQuery;
 
     @GET
     public Response getNetwork() {
-        LedgerStateProvider ledgerStateProvider = nodeAPI.getLedgerStateProvider();
+        LedgerStateProvider ledgerStateProvider = ledgerQuery.getLedgerStateProvider();
         if (ledgerStateProvider == null || !ledgerStateProvider.isAdaPotTrackingEnabled()) {
             return Response.status(Response.Status.SERVICE_UNAVAILABLE)
                     .entity(Map.of("error", "AdaPot tracking is not enabled"))
                     .build();
         }
 
-        GenesisParameters genesis = nodeAPI.getGenesisParameters();
+        GenesisParameters genesis = ledgerQuery.getGenesisParameters();
         if (genesis == null || genesis.maxLovelaceSupply() == null) {
             return Response.status(Response.Status.SERVICE_UNAVAILABLE)
                     .entity(Map.of("error", "Genesis parameters not available"))
@@ -79,9 +86,8 @@ public class NetworkResource {
     }
 
     private int currentEpoch() {
-        ChainState cs = nodeAPI.getChainState();
-        ChainTip tip = cs != null ? cs.getTip() : null;
+        ChainTip tip = chainQuery != null ? chainQuery.getLocalTip() : null;
         if (tip == null) return 0;
-        return EpochUtil.slotToEpoch(tip.getSlot(), nodeAPI.getConfig());
+        return EpochUtil.slotToEpoch(tip.getSlot(), nodeLifecycle.getConfig());
     }
 }

@@ -1,6 +1,5 @@
 package com.bloxbean.cardano.yano.runtime;
 
-import com.bloxbean.cardano.yano.runtime.chain.InMemoryChainState;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -16,7 +15,7 @@ class SlotTimeCalculatorTest {
 
     @Test
     void preprod_byronSlot() {
-        var calc = new SlotTimeCalculator(1654041600L, 20, 1.0, new InMemoryChainState());
+        var calc = new SlotTimeCalculator(1654041600L, 20, 1.0, null);
         // Set firstNonByronSlot via calculation — for preprod it's 86400
         // Since InMemoryChainState has no era data, Byron formula applies: startTime + slot * 20
         // Byron slot 23761 → 1654041600 + 23761 * 20 = 1654041600 + 475220 = 1654516820
@@ -120,8 +119,8 @@ class SlotTimeCalculatorTest {
 
     @Test
     void firstNonByronSlotNotResolved_fallsBackToByronFormula() {
-        // InMemoryChainState has no era data, so resolveFirstNonByronSlot returns -1
-        var calc = new SlotTimeCalculator(1654041600L, 20, 1.0, new InMemoryChainState());
+        // Without an era metadata store, resolveFirstNonByronSlot returns -1
+        var calc = new SlotTimeCalculator(1654041600L, 20, 1.0, null);
         long time = calc.slotToUnixTime(100);
         // Falls back to Byron: 1654041600 + 100 * 20 = 1654043600
         assertThat(time).isEqualTo(1654043600L);
@@ -140,28 +139,28 @@ class SlotTimeCalculatorTest {
 
     private static class PreprodCalculator extends SlotTimeCalculator {
         PreprodCalculator() {
-            super(1654041600L, 20, 1.0, new InMemoryChainState());
+            super(1654041600L, 20, 1.0, null);
             setFirstNonByronSlot(86400);
         }
     }
 
     private static class PreviewCalculator extends SlotTimeCalculator {
         PreviewCalculator() {
-            super(1666656000L, 20, 1.0, new InMemoryChainState());
+            super(1666656000L, 20, 1.0, null);
             setFirstNonByronSlot(0);
         }
     }
 
     private static class MainnetCalculator extends SlotTimeCalculator {
         MainnetCalculator() {
-            super(1506203091L, 20, 1.0, new InMemoryChainState());
+            super(1506203091L, 20, 1.0, null);
             setFirstNonByronSlot(4492800);
         }
     }
 
     private static class DevnetCalculator extends SlotTimeCalculator {
         DevnetCalculator(long startTime, double slotLength) {
-            super(startTime, 20, slotLength, new InMemoryChainState());
+            super(startTime, 20, slotLength, null);
             setFirstNonByronSlot(0);
         }
     }

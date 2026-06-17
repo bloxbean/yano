@@ -17,6 +17,8 @@ using Haskell ledger state as the reference.
 - yaci-store bootJar built at
   `applications/all/build/libs/yaci-store-*.jar`, or run with
   `BUILD_YACI_STORE=1`
+- or a native YaciStore executable, such as the Yaci CLI store binary at
+  `~/.yaci-cli/components/store/yaci-store-all`
 - Haskell `cardano-node` and `cardano-cli` installed by:
 
 ```bash
@@ -68,6 +70,13 @@ For yaci-store, Java 21 is recommended:
 ```bash
 JAVA21_HOME=$(/usr/libexec/java_home -v 21) \
 BUILD_YACI_STORE=1 \
+bash scripts/devnet-adapot-comparison/run-devnet-haskell-yacistore-adapot-comparison.sh
+```
+
+Use a Yaci CLI native store binary instead of a boot jar:
+
+```bash
+YACI_STORE_JAR=$HOME/.yaci-cli/components/store/yaci-store-all \
 bash scripts/devnet-adapot-comparison/run-devnet-haskell-yacistore-adapot-comparison.sh
 ```
 

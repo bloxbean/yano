@@ -256,9 +256,9 @@ class DefaultEpochParamProviderTest {
         @Test
         void correctConwayValues() {
             var config = NetworkGenesisConfig.load(
-                    "../app/src/main/resources/genesis/sanchonet/shelley-genesis.json",
+                    "src/main/resources/genesis/sanchonet/shelley-genesis.json",
                     null, null,
-                    "../app/src/main/resources/genesis/sanchonet/conway-genesis.json");
+                    "src/main/resources/genesis/sanchonet/conway-genesis.json");
 
             var provider = DefaultEpochParamProvider.fromNetworkGenesisConfig(config, 0);
 

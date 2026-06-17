@@ -1,5 +1,6 @@
 package com.bloxbean.cardano.yano.runtime.config;
 
+import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
 import lombok.extern.slf4j.Slf4j;
 
 import java.security.Security;
@@ -28,8 +29,8 @@ import java.util.Objects;
  */
 @Slf4j
 public final class DnsCachePolicy {
-    public static final String DNS_CACHE_TTL_KEY = "yano.dns.cache.ttl";
-    public static final String DNS_CACHE_NEGATIVE_TTL_KEY = "yano.dns.cache.negative.ttl";
+    public static final String DNS_CACHE_TTL_KEY = YanoPropertyKeys.Dns.CACHE_TTL;
+    public static final String DNS_CACHE_NEGATIVE_TTL_KEY = YanoPropertyKeys.Dns.CACHE_NEGATIVE_TTL;
 
     public static final int DEFAULT_DNS_CACHE_TTL_SECONDS = 60;
     public static final int DEFAULT_DNS_CACHE_NEGATIVE_TTL_SECONDS = 10;

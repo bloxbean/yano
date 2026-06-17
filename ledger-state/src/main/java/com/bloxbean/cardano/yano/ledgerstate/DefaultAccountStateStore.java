@@ -13,14 +13,15 @@ import com.bloxbean.cardano.yaci.core.model.governance.DrepType;
 import com.bloxbean.cardano.yaci.core.model.governance.GovActionId;
 import com.bloxbean.cardano.yaci.core.model.governance.GovActionType;
 import com.bloxbean.cardano.yaci.core.types.UnitInterval;
-import com.bloxbean.cardano.yaci.core.storage.ChainState;
 import com.bloxbean.cardano.yaci.core.storage.ChainTip;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
+import com.bloxbean.cardano.yano.api.ChainBlockReader;
 import com.bloxbean.cardano.yano.api.EpochParamProvider;
 import com.bloxbean.cardano.yano.api.model.CredentialKey;
 import com.bloxbean.cardano.yano.api.account.AccountStateReadStore;
 import com.bloxbean.cardano.yano.api.account.AccountStateStore;
 import com.bloxbean.cardano.yano.api.account.LedgerStateProvider;
+import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
 import com.bloxbean.cardano.yano.api.model.ProtocolParamsSnapshot;
 import com.bloxbean.cardano.yano.api.util.CostModelUtil;
 import com.bloxbean.cardano.yano.api.events.BlockAppliedEvent;
@@ -267,9 +268,11 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
         this.pointerAddressResolver = new PointerAddressResolver(db, cfState);
         this.readStore = new DefaultAccountStateReadStore(db, cfEpochSnapshot, () -> governanceBlockProcessor, log);
         this.epochBlockDataRetentionLag = getInt(config,
-                "yano.account-state.epoch-block-data-retention-lag", DEFAULT_EPOCH_BLOCK_DATA_RETENTION_LAG);
+                YanoPropertyKeys.AccountState.EPOCH_BLOCK_DATA_RETENTION_LAG,
+                DEFAULT_EPOCH_BLOCK_DATA_RETENTION_LAG);
         this.snapshotRetentionEpochs = getInt(config,
-                "yano.account-state.snapshot-retention-epochs", DEFAULT_SNAPSHOT_RETENTION_EPOCHS);
+                YanoPropertyKeys.AccountState.SNAPSHOT_RETENTION_EPOCHS,
+                DEFAULT_SNAPSHOT_RETENTION_EPOCHS);
     }
 
     // --- Optional subsystem wiring ---
@@ -4258,8 +4261,8 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
     }
 
     @Override
-    public void reconcile(ChainState chainState) {
-        if (!enabled || chainState == null) return;
+    public void reconcile(ChainBlockReader chainBlocks) {
+        if (!enabled || chainBlocks == null) return;
 
         long lastAppliedBlock = 0L;
         try {
@@ -4274,7 +4277,7 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
             throw new RuntimeException("Failed to read account state last applied block", e);
         }
 
-        ChainTip tip = chainState.getTip();
+        ChainTip tip = chainBlocks.getLocalTip();
         if (tip == null) return;
         long tipBlock = tip.getBlockNumber();
 
@@ -4291,8 +4294,8 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
         // Account state only tracks Shelley+ data (staking, rewards, delegations).
         // Replaying Byron blocks is pure overhead — no relevant state to reconcile.
         if (lastAppliedBlock == 0) {
-            byte[] tipBlockBytes = chainState.getBlockByNumber(tipBlock);
-            if (StoredBlockUtil.isStoredByronBlock(chainState.getBlockEra(tipBlock), tipBlockBytes)) {
+            byte[] tipBlockBytes = chainBlocks.getBlockByNumber(tipBlock);
+            if (StoredBlockUtil.isStoredByronBlock(chainBlocks.getBlockEra(tipBlock), tipBlockBytes)) {
                 log.info("Account state reconcile skipped: tip block {} is Byron era, nothing to reconcile", tipBlock);
                 return;
             }
@@ -4304,11 +4307,11 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
             if ((bn - lastAppliedBlock) % 1000 == 0) {
                 log.info("Account state reconcile progress: block {}/{}", bn, tipBlock);
             }
-            byte[] blockBytes = chainState.getBlockByNumber(bn);
+            byte[] blockBytes = chainBlocks.getBlockByNumber(bn);
             if (blockBytes == null) {
                 throw new IllegalStateException("Account state reconcile missing local block body for block " + bn);
             }
-            Era storedEra = chainState.getBlockEra(bn);
+            Era storedEra = chainBlocks.getBlockEra(bn);
             if (StoredBlockUtil.isStoredByronBlock(storedEra, blockBytes)) {
                 continue;
             }

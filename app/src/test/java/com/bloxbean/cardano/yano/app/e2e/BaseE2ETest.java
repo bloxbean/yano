@@ -47,8 +47,12 @@ public abstract class BaseE2ETest {
 
     protected abstract int getAccountBaseIndex();
 
+    protected String getMnemonic() {
+        return MNEMONIC;
+    }
+
     protected Account getAccount(int offset) {
-        return new Account(Networks.testnet(), MNEMONIC, getAccountBaseIndex() + offset);
+        return new Account(Networks.testnet(), getMnemonic(), getAccountBaseIndex() + offset);
     }
 
     @BeforeAll
@@ -57,7 +61,11 @@ public abstract class BaseE2ETest {
         if (externalUrl != null && !externalUrl.isBlank()) {
             baseUrl = externalUrl;
         } else {
-            baseUrl = quarkusTestUrl.toString() + "/api/v1/";
+            baseUrl = quarkusTestUrl.toString();
+            if (!baseUrl.endsWith("/")) {
+                baseUrl = baseUrl + "/";
+            }
+            baseUrl = baseUrl + "api/v1/";
         }
         if (!baseUrl.endsWith("/")) {
             baseUrl = baseUrl + "/";

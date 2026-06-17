@@ -1,7 +1,8 @@
 package com.bloxbean.cardano.yano.runtime;
 
+import com.bloxbean.cardano.yano.runtime.internal.RuntimeNode;
+
 import com.bloxbean.cardano.yano.api.config.YanoConfig;
-import com.bloxbean.cardano.yano.runtime.chain.InMemoryChainState;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.AfterEach;
@@ -10,18 +11,15 @@ import org.junit.jupiter.api.DisplayName;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Integration test to verify that Yano properly integrates HeaderSyncManager and BodyFetchManager
+ * Integration test to verify that RuntimeNode properly integrates HeaderSyncManager and BodyFetchManager
  * in pipeline mode. This test validates the core architecture without requiring network connectivity.
  */
 class PipelineIntegrationTest {
 
-    private Yano yaciNode;
-    private InMemoryChainState chainState;
+    private RuntimeNode yaciNode;
 
     @BeforeEach
     void setUp() {
-        chainState = new InMemoryChainState();
-
         YanoConfig config = YanoConfig.builder()
             .remoteHost("localhost")
             .remotePort(3001)
@@ -33,7 +31,7 @@ class PipelineIntegrationTest {
             .enablePipelinedSync(true)
             .build();
 
-        yaciNode = new Yano(config);
+        yaciNode = new RuntimeNode(config);
     }
 
     @AfterEach
@@ -44,53 +42,66 @@ class PipelineIntegrationTest {
     }
 
     @Test
-    @DisplayName("Test Yano initialization with pipeline components")
+    @DisplayName("Test RuntimeNode initialization with pipeline components")
     void testYanoInitialization() {
-        assertNotNull(yaciNode, "Yano should be created successfully");
-        assertFalse(yaciNode.isRunning(), "Yano should not be running initially");
-        assertNotNull(chainState, "ChainState should be available");
+        assertNotNull(yaciNode, "RuntimeNode should be created successfully");
+        assertFalse(yaciNode.isRunning(), "RuntimeNode should not be running initially");
+        assertNull(yaciNode.getLocalTip(), "RuntimeNode should start without a local tip");
     }
 
     @Test
     @DisplayName("Test pipeline managers are null before sync start")
     void testPipelineManagersBeforeSync() {
         // Pipeline managers should not be created until sync starts
-        // We can verify this by checking that Yano compiles and creates without errors
-        assertNotNull(yaciNode, "Yano with pipeline support should compile and create");
+        // We can verify this by checking that RuntimeNode compiles and creates without errors
+        assertNotNull(yaciNode, "RuntimeNode with pipeline support should compile and create");
     }
 
     @Test
-    @DisplayName("Test Yano basic lifecycle")
+    @DisplayName("Test RuntimeNode basic lifecycle")
     void testYanoLifecycle() {
-        // This tests basic Yano functionality without starting network services
-        assertFalse(yaciNode.isRunning(), "Yano should not be running initially");
+        // This tests basic RuntimeNode functionality without starting network services
+        assertFalse(yaciNode.isRunning(), "RuntimeNode should not be running initially");
         assertFalse(yaciNode.isServerRunning(), "Server should not be running initially");
 
         // Test status access
         assertDoesNotThrow(() -> yaciNode.getStatus(), "getStatus() should not throw");
 
-        // Test chainState access
-        assertNotNull(yaciNode.getChainState(), "ChainState should be accessible");
+        assertNull(yaciNode.getLocalTip(), "Initial local tip should be empty");
     }
 
     @Test
-    @DisplayName("Test Yano status reporting with pipeline configuration")
+    @DisplayName("Test RuntimeNode status reporting with pipeline configuration")
     void testStatusReporting() {
         // Test status before any sync
         var status = yaciNode.getStatus();
         assertNotNull(status, "Status should be available");
 
-        // Verify chainstate integration
-        assertNotNull(yaciNode.getChainState(), "ChainState should be available");
+        // Verify chain query integration
+        assertNull(yaciNode.getLocalTip(), "Chain query should be available before sync");
+    }
+
+    @Test
+    @DisplayName("Test runtime degradation is reported in node status")
+    void testRuntimeDegradationStatusReporting() {
+        yaciNode.getMaintenanceGate().markDegraded("restore", "runtime restart required", null);
+
+        var status = yaciNode.getStatus();
+
+        assertTrue(status.isRuntimeDegraded(), "Runtime degradation should be reported");
+        assertEquals("restore", status.getRuntimeDegradedOperation());
+        assertEquals("runtime restart required", status.getRuntimeDegradedReason());
+        assertTrue(status.getStatusMessage().contains("runtimeDegraded"));
+        assertFalse(status.isMaintenanceActive(), "No maintenance lease should be active");
     }
 
     @Test
     @DisplayName("Test pipeline configuration is properly handled")
     void testPipelineConfiguration() {
         // This test verifies that the pipeline architecture compiles and integrates
-        // without runtime errors during Yano creation
+        // without runtime errors during RuntimeNode creation
 
-        // Test that Yano can handle different configurations
+        // Test that RuntimeNode can handle different configurations
         YanoConfig config = YanoConfig.builder()
             .remoteHost("test-host")
             .remotePort(3001)
@@ -104,8 +115,8 @@ class PipelineIntegrationTest {
 
         // This should not throw an exception
         assertDoesNotThrow(() -> {
-            Yano testNode = new Yano(config);
-            assertNotNull(testNode, "Yano should be created successfully");
+            RuntimeNode testNode = new RuntimeNode(config);
+            assertNotNull(testNode, "RuntimeNode should be created successfully");
 
             // Clean up
             if (testNode.isRunning()) {
@@ -117,8 +128,8 @@ class PipelineIntegrationTest {
     @Test
     @DisplayName("Test integration doesn't break existing functionality")
     void testBackwardsCompatibility() {
-        // Verify that adding pipeline support doesn't break basic Yano operations
-        assertNotNull(yaciNode.getChainState(), "ChainState should be accessible");
+        // Verify that adding pipeline support doesn't break basic RuntimeNode operations
+        assertNull(yaciNode.getLocalTip(), "Chain query should be available");
         assertFalse(yaciNode.isRunning(), "Should not be running initially");
         assertFalse(yaciNode.isServerRunning(), "Server should not be running initially");
 
@@ -127,40 +138,12 @@ class PipelineIntegrationTest {
     }
 
     @Test
-    @DisplayName("Test chainState operations work with pipeline integration")
+    @DisplayName("Test chain query operations work with pipeline integration")
     void testChainStateIntegration() {
-        // Get the Yano's chainState
-        var nodeChainState = yaciNode.getChainState();
-        assertNotNull(nodeChainState, "ChainState should be available");
-
-        // Verify basic chainState operations work
-        assertNull(nodeChainState.getTip(), "Initially no tip");
-        assertNull(nodeChainState.getHeaderTip(), "Initially no header tip");
-
-        // Add test header (64-character hex string = 32 bytes)
-        nodeChainState.storeBlockHeader(
-            hexToBytes("1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"),
-            500L,
-            1500L,
-            "header-data".getBytes()
-        );
-
-        assertNotNull(nodeChainState.getHeaderTip(), "Header tip should be set");
-        assertEquals(1500L, nodeChainState.getHeaderTip().getSlot(), "Header tip slot should match");
-
-        // Add test block (64-character hex string = 32 bytes)
-        nodeChainState.storeBlock(
-            hexToBytes("abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"),
-            499L,
-            1499L,
-            "block-data".getBytes()
-        );
-
-        assertNotNull(nodeChainState.getTip(), "Tip should be set");
-        assertEquals(1499L, nodeChainState.getTip().getSlot(), "Tip slot should match");
-
-        // Verify gap exists (header_tip ahead of tip)
-        assertEquals(1L, nodeChainState.getHeaderTip().getSlot() - nodeChainState.getTip().getSlot(), "Gap should be 1 slot");
+        assertNull(yaciNode.getLocalTip(), "Initially no tip");
+        assertNull(yaciNode.getBlock(hexToBytes("abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890")),
+                "Unknown block hash should not resolve");
+        assertNull(yaciNode.getBlockByNumber(499L), "Unknown block number should not resolve");
     }
 
     // Helper method

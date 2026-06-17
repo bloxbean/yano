@@ -9,8 +9,7 @@ import org.rocksdb.RocksDB;
 
 /**
  * Built-in RocksDB-backed {@link AccountStateStoreProvider} (priority 0).
- * Available when the runtime {@link com.bloxbean.cardano.yaci.core.storage.ChainState} implements
- * {@link RocksDbAccess}.
+ * Available when the runtime supplies {@link RocksDbAccess}.
  */
 public class DefaultAccountStateStoreProvider implements AccountStateStoreProvider {
 
@@ -26,12 +25,12 @@ public class DefaultAccountStateStoreProvider implements AccountStateStoreProvid
 
     @Override
     public boolean isAvailable(AccountStateStoreContext context) {
-        return context.chainState() instanceof RocksDbAccess;
+        return context.rocksDbAccess() != null;
     }
 
     @Override
     public AccountStateStore create(AccountStateStoreContext context) {
-        RocksDbAccess access = (RocksDbAccess) context.chainState();
+        RocksDbAccess access = context.rocksDbAccess();
         RocksDB db = (RocksDB) access.getDb();
         return new DefaultAccountStateStore(
                 db,

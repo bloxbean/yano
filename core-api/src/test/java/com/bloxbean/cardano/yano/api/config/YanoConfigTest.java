@@ -38,6 +38,40 @@ class YanoConfigTest {
     }
 
     @Test
+    void defaultForNetwork_shouldSelectKnownNetworkDefaults() {
+        YanoConfig mainnet = YanoConfig.defaultForNetwork("mainnet");
+        assertThat(mainnet.getProtocolMagic()).isEqualTo(Constants.MAINNET_PROTOCOL_MAGIC);
+        assertThat(mainnet.getNetwork()).isEqualTo("mainnet");
+
+        YanoConfig preview = YanoConfig.defaultForNetwork("preview");
+        assertThat(preview.getProtocolMagic()).isEqualTo(Constants.PREVIEW_PROTOCOL_MAGIC);
+        assertThat(preview.getNetwork()).isEqualTo("preview");
+
+        YanoConfig sanchonet = YanoConfig.defaultForNetwork("sanchonet");
+        assertThat(sanchonet.getProtocolMagic()).isEqualTo(Constants.SANCHONET_PROTOCOL_MAGIC);
+        assertThat(sanchonet.getNetwork()).isEqualTo("sanchonet");
+
+        YanoConfig preprod = YanoConfig.defaultForNetwork("preprod");
+        assertThat(preprod.getProtocolMagic()).isEqualTo(Constants.PREPROD_PROTOCOL_MAGIC);
+        assertThat(preprod.getNetwork()).isEqualTo("preprod");
+    }
+
+    @Test
+    void defaultForNetwork_shouldFallbackToPreprodForUnknownBlankOrNull() {
+        YanoConfig custom = YanoConfig.defaultForNetwork("custom");
+        assertThat(custom.getProtocolMagic()).isEqualTo(Constants.PREPROD_PROTOCOL_MAGIC);
+        assertThat(custom.getNetwork()).isEqualTo("preprod");
+
+        YanoConfig blank = YanoConfig.defaultForNetwork("  ");
+        assertThat(blank.getProtocolMagic()).isEqualTo(Constants.PREPROD_PROTOCOL_MAGIC);
+        assertThat(blank.getNetwork()).isEqualTo("preprod");
+
+        YanoConfig missing = YanoConfig.defaultForNetwork(null);
+        assertThat(missing.getProtocolMagic()).isEqualTo(Constants.PREPROD_PROTOCOL_MAGIC);
+        assertThat(missing.getNetwork()).isEqualTo("preprod");
+    }
+
+    @Test
     void serverOnly_shouldCreateValidServerOnlyConfiguration() {
         YanoConfig config = YanoConfig.serverOnly(13337);
 

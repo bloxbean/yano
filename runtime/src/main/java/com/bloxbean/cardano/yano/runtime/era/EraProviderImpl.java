@@ -3,14 +3,14 @@ package com.bloxbean.cardano.yano.runtime.era;
 import com.bloxbean.cardano.yaci.core.model.Era;
 import com.bloxbean.cardano.yano.api.era.EraProvider;
 import com.bloxbean.cardano.yano.api.util.EpochSlotCalc;
-import com.bloxbean.cardano.yano.runtime.chain.DirectRocksDBChainState;
+import com.bloxbean.cardano.yano.runtime.chain.EraMetadataStore;
 
 import java.util.Optional;
 import java.util.OptionalLong;
 
 /**
  * Small reusable helper for era metadata queries.
- * Reads persisted era-start slots from {@link DirectRocksDBChainState}
+ * Reads persisted era-start slots from {@link EraMetadataStore}
  * and converts to epochs using {@link EpochSlotCalc}.
  * <p>
  * Implements {@link EraProvider} so ledger-state consumers can use it
@@ -21,11 +21,11 @@ import java.util.OptionalLong;
  */
 public final class EraProviderImpl implements EraProvider {
 
-    private final DirectRocksDBChainState chainState;
+    private final EraMetadataStore eraMetadataStore;
     private final EpochSlotCalc epochSlotCalc;
 
-    public EraProviderImpl(DirectRocksDBChainState chainState, EpochSlotCalc epochSlotCalc) {
-        this.chainState = chainState;
+    public EraProviderImpl(EraMetadataStore eraMetadataStore, EpochSlotCalc epochSlotCalc) {
+        this.eraMetadataStore = eraMetadataStore;
         this.epochSlotCalc = epochSlotCalc;
     }
 
@@ -33,14 +33,14 @@ public final class EraProviderImpl implements EraProvider {
      * Get the persisted start slot for a given era.
      */
     public OptionalLong getStartSlot(Era era) {
-        return chainState.getEraStartSlot(era.getValue());
+        return eraMetadataStore.getEraStartSlot(era.getValue());
     }
 
     /**
      * Get the start epoch for a given era, converting from the persisted start slot.
      */
     public Optional<Integer> getStartEpoch(Era era) {
-        var slot = chainState.getEraStartSlot(era.getValue());
+        var slot = eraMetadataStore.getEraStartSlot(era.getValue());
         if (slot.isEmpty()) return Optional.empty();
         return Optional.of(epochSlotCalc.slotToEpoch(slot.getAsLong()));
     }
@@ -56,7 +56,7 @@ public final class EraProviderImpl implements EraProvider {
         long minSlot = Long.MAX_VALUE;
         // Scan Era enum values
         for (Era era : Era.values()) {
-            var slot = chainState.getEraStartSlot(era.getValue());
+            var slot = eraMetadataStore.getEraStartSlot(era.getValue());
             if (slot.isPresent() && slot.getAsLong() < minSlot) {
                 minSlot = slot.getAsLong();
                 minEraValue = era.getValue();
@@ -64,7 +64,7 @@ public final class EraProviderImpl implements EraProvider {
         }
         // Also scan beyond the enum for future eras (e.g., Dijkstra = 8+)
         for (int ev = Era.Conway.getValue() + 1; ev <= 10; ev++) {
-            var slot = chainState.getEraStartSlot(ev);
+            var slot = eraMetadataStore.getEraStartSlot(ev);
             if (slot.isPresent() && slot.getAsLong() < minSlot) {
                 minSlot = slot.getAsLong();
                 minEraValue = ev;
@@ -121,7 +121,7 @@ public final class EraProviderImpl implements EraProvider {
 
     @Override
     public Integer resolveKnownFirstEpochOrNull(int eraValue) {
-        var eraSlot = chainState.getEraStartSlot(eraValue);
+        var eraSlot = eraMetadataStore.getEraStartSlot(eraValue);
         if (eraSlot.isEmpty()) return null;
         return epochSlotCalc.slotToEpoch(eraSlot.getAsLong());
     }

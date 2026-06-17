@@ -33,7 +33,7 @@ import static org.junit.jupiter.api.Assertions.*;
  * </ol>
  */
 @QuarkusTest
-@TestProfile(DevnetTestProfile.class)
+@TestProfile(DRepValidationTestProfile.class)
 class DRepRegistrationE2ETest extends BaseE2ETest {
 
     private static final Logger log = LoggerFactory.getLogger(DRepRegistrationE2ETest.class);
@@ -45,6 +45,12 @@ class DRepRegistrationE2ETest extends BaseE2ETest {
     @Override
     protected int getAccountBaseIndex() {
         return 400; // unique index to avoid collisions with other E2E tests
+    }
+
+    @Override
+    protected String getMnemonic() {
+        return "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon "
+                + "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon kite";
     }
 
     @BeforeAll

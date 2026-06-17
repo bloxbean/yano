@@ -257,7 +257,7 @@ class NetworkGenesisConfigTest {
     class SanchonetGenesis {
 
         private String sanchoPath(String file) {
-            return "../app/src/main/resources/genesis/sanchonet/" + file;
+            return "src/main/resources/genesis/sanchonet/" + file;
         }
 
         @Test

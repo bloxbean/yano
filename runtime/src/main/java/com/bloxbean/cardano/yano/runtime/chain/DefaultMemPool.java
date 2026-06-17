@@ -49,6 +49,11 @@ public class DefaultMemPool implements MemPool {
     }
 
     @Override
+    public synchronized boolean contains(String txHash) {
+        return txIndex.containsKey(txHash);
+    }
+
+    @Override
     public synchronized void clear() {
         txIndex.clear();
     }

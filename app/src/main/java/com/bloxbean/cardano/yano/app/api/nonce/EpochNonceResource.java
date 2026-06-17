@@ -1,6 +1,6 @@
 package com.bloxbean.cardano.yano.app.api.nonce;
 
-import com.bloxbean.cardano.yano.api.NodeAPI;
+import com.bloxbean.cardano.yano.api.LedgerQuery;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.GET;
 import jakarta.ws.rs.Path;
@@ -18,12 +18,12 @@ import java.util.Map;
 public class EpochNonceResource {
 
     @Inject
-    NodeAPI nodeAPI;
+    LedgerQuery ledgerQuery;
 
     @GET
     @Path("/epoch-nonce")
     public Response getCurrentEpochNonce() {
-        Map<String, Object> info = nodeAPI.getEpochNonceInfo();
+        Map<String, Object> info = ledgerQuery.getEpochNonceInfo();
         if (info == null) {
             return Response.status(Response.Status.NOT_FOUND)
                     .entity(Map.of("error", "Epoch nonce state not available"))

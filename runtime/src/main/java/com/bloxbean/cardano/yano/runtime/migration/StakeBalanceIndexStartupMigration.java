@@ -1,5 +1,6 @@
 package com.bloxbean.cardano.yano.runtime.migration;
 
+import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
 import com.bloxbean.cardano.yano.runtime.utxo.StakeBalanceIndexRebuilder;
 
 public final class StakeBalanceIndexStartupMigration implements StartupMigration {
@@ -22,27 +23,27 @@ public final class StakeBalanceIndexStartupMigration implements StartupMigration
 
     @Override
     public boolean shouldRun(StartupMigrationContext context) {
-        if (!context.bool("yano.utxo.enabled", true)) return false;
-        if (!context.bool("yano.account.stake-balance-index-enabled", true)) return false;
+        if (!context.bool(YanoPropertyKeys.Utxo.ENABLED, true)) return false;
+        if (!context.bool(YanoPropertyKeys.AccountState.STAKE_BALANCE_INDEX_ENABLED, true)) return false;
 
-        boolean filtersEnabled = context.bool("yano.filters.utxo.enabled", false);
+        boolean filtersEnabled = context.bool(YanoPropertyKeys.UtxoFilter.ENABLED, false);
         if (filtersEnabled) {
-            return rebuilder.isReady(context.chainState());
+            return rebuilder.isReady(context.rocksDbSupplier());
         }
 
-        return !rebuilder.isReady(context.chainState());
+        return !rebuilder.isReady(context.rocksDbSupplier());
     }
 
     @Override
     public StartupMigrationResult run(StartupMigrationContext context) {
-        boolean filtersEnabled = context.bool("yano.filters.utxo.enabled", false);
+        boolean filtersEnabled = context.bool(YanoPropertyKeys.UtxoFilter.ENABLED, false);
         if (filtersEnabled) {
-            rebuilder.clearReadyMarker(context.chainState());
+            rebuilder.clearReadyMarker(context.rocksDbSupplier());
             return StartupMigrationResult.changed(
                     "cleared complete stake-balance ready marker because UTXO storage filters are enabled");
         }
 
-        var result = rebuilder.rebuild(context.chainState(), false);
+        var result = rebuilder.rebuild(context.rocksDbSupplier(), false);
         if (!result.rebuilt()) {
             return StartupMigrationResult.unchanged("stake-balance index already ready");
         }

@@ -11,8 +11,7 @@ import com.bloxbean.cardano.yaci.core.protocol.chainsync.n2n.ChainSyncAgentListe
 import com.bloxbean.cardano.yaci.core.storage.ChainState;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yaci.helper.PeerClient;
-import com.bloxbean.cardano.yano.runtime.chain.DirectRocksDBChainState;
-import com.bloxbean.cardano.yano.runtime.chain.InMemoryChainState;
+import com.bloxbean.cardano.yano.runtime.chain.ByronEbHeaderStore;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.concurrent.atomic.AtomicLong;
@@ -228,10 +227,8 @@ public class HeaderSyncManager implements ChainSyncAgentListener {
 
             // Store Byron EB header: avoid updating number->slot mapping (EBB shares difficulty)
             var hashBytes = HexUtil.decodeHexString(blockHash);
-            if (chainState instanceof DirectRocksDBChainState rocks) {
-                rocks.storeByronEbHeader(hashBytes, blockNumber, absoluteSlot, originalHeaderBytes);
-            } else if (chainState instanceof InMemoryChainState inMemory) {
-                inMemory.storeByronEbHeader(hashBytes, blockNumber, absoluteSlot, originalHeaderBytes);
+            if (chainState instanceof ByronEbHeaderStore byronEbHeaderStore) {
+                byronEbHeaderStore.storeByronEbHeader(hashBytes, blockNumber, absoluteSlot, originalHeaderBytes);
             } else {
                 chainState.storeBlockHeader(hashBytes, blockNumber, absoluteSlot, originalHeaderBytes);
             }

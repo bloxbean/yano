@@ -3,6 +3,7 @@ package com.bloxbean.cardano.yano.runtime;
 import com.bloxbean.cardano.yaci.events.api.EventBus;
 import com.bloxbean.cardano.yaci.events.api.EventMetadata;
 import com.bloxbean.cardano.yaci.events.api.PublishOptions;
+import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
 import com.bloxbean.cardano.yano.api.events.HeaderAppliedEvent;
 import lombok.extern.slf4j.Slf4j;
 
@@ -15,7 +16,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 @Slf4j
 public final class HeaderAppliedEventPublisher implements AutoCloseable {
     private static final int DEFAULT_QUEUE_CAPACITY =
-            positiveIntProperty("yano.headerAppliedEvent.queueCapacity", 8192);
+            positiveIntProperty(YanoPropertyKeys.HeaderAppliedEvent.QUEUE_CAPACITY, 8192);
 
     private final EventBus eventBus;
     private final BlockingQueue<HeaderAppliedEvent> queue;

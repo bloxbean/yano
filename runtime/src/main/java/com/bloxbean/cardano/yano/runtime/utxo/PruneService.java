@@ -1,5 +1,6 @@
 package com.bloxbean.cardano.yano.runtime.utxo;
 
+import java.time.Duration;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -29,11 +30,17 @@ public final class PruneService implements AutoCloseable {
 
     @Override
     public void close() {
+        closeAndAwait(Duration.ofSeconds(5));
+    }
+
+    public boolean closeAndAwait(Duration timeout) {
         scheduler.shutdownNow();
+        Duration effectiveTimeout = timeout != null ? timeout : Duration.ofSeconds(5);
         try {
-            scheduler.awaitTermination(5, TimeUnit.SECONDS);
+            return scheduler.awaitTermination(Math.max(1L, effectiveTimeout.toMillis()), TimeUnit.MILLISECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+            return false;
         }
     }
 }

@@ -1,6 +1,6 @@
 package com.bloxbean.cardano.yano.app;
 
-import com.bloxbean.cardano.yano.api.NodeAPI;
+import com.bloxbean.cardano.yano.api.NodeLifecycle;
 import com.bloxbean.cardano.yano.api.model.NodeStatus;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -13,15 +13,18 @@ import org.eclipse.microprofile.health.Readiness;
 public class YanoHealthCheck implements HealthCheck {
 
     @Inject
-    NodeAPI nodeAPI;
+    NodeLifecycle nodeLifecycle;
 
     @Override
     public HealthCheckResponse call() {
         try {
-            NodeStatus status = nodeAPI.getStatus();
+            NodeStatus status = nodeLifecycle.getStatus();
 
-            boolean isHealthy = status.getStatusMessage() == null ||
-                    !status.getStatusMessage().toLowerCase().contains("error");
+            boolean isHealthy = status != null
+                    && !status.isRuntimeDegraded()
+                    && !status.isPeerRecoveryTerminal()
+                    && (status.getStatusMessage() == null
+                    || !status.getStatusMessage().toLowerCase().contains("error"));
 
             if (isHealthy) {
                 return HealthCheckResponse.up("yano");

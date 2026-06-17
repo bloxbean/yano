@@ -4,10 +4,11 @@ import com.bloxbean.cardano.yaci.core.model.Block;
 import com.bloxbean.cardano.yaci.core.model.HeaderBody;
 import com.bloxbean.cardano.yaci.core.model.TransactionBody;
 import com.bloxbean.cardano.yaci.core.model.serializers.BlockSerializer;
-import com.bloxbean.cardano.yaci.core.storage.ChainState;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yaci.core.storage.ChainTip;
-import com.bloxbean.cardano.yano.api.NodeAPI;
+import com.bloxbean.cardano.yano.api.ChainQuery;
+import com.bloxbean.cardano.yano.api.LedgerQuery;
+import com.bloxbean.cardano.yano.api.NodeLifecycle;
 import com.bloxbean.cardano.yano.app.api.EpochUtil;
 import com.bloxbean.cardano.yano.app.api.blocks.dto.BlockDto;
 import jakarta.inject.Inject;
@@ -24,13 +25,18 @@ import java.util.Map;
 public class BlockResource {
 
     @Inject
-    NodeAPI nodeAPI;
+    ChainQuery chainQuery;
+
+    @Inject
+    LedgerQuery ledgerQuery;
+
+    @Inject
+    NodeLifecycle nodeLifecycle;
 
     @GET
     @Path("/{hashOrNumber}")
     public Response getBlock(@PathParam("hashOrNumber") String hashOrNumber) {
-        ChainState chainState = nodeAPI.getChainState();
-        if (chainState == null) {
+        if (chainQuery == null) {
             return Response.status(Response.Status.NOT_FOUND)
                     .entity(Map.of("error", "Chain state not available"))
                     .build();
@@ -41,9 +47,9 @@ public class BlockResource {
             // Detect if parameter is a block number (all digits) or a hash (hex)
             if (hashOrNumber.matches("\\d+")) {
                 long blockNumber = Long.parseLong(hashOrNumber);
-                blockCbor = chainState.getBlockByNumber(blockNumber);
+                blockCbor = chainQuery.getBlockByNumber(blockNumber);
             } else {
-                blockCbor = chainState.getBlock(HexUtil.decodeHexString(hashOrNumber));
+                blockCbor = chainQuery.getBlock(HexUtil.decodeHexString(hashOrNumber));
             }
         } catch (Exception e) {
             return Response.status(Response.Status.NOT_FOUND)
@@ -61,7 +67,7 @@ public class BlockResource {
 
         try {
             Block block = BlockSerializer.INSTANCE.deserialize(blockCbor);
-            ChainTip tip = chainState.getTip();
+            ChainTip tip = chainQuery.getLocalTip();
             int confirmations = 0;
             if (tip != null) {
                 confirmations = (int) (tip.getBlockNumber() - block.getHeader().getHeaderBody().getBlockNumber());
@@ -78,21 +84,20 @@ public class BlockResource {
     @GET
     @Path("/latest")
     public Response getLatestBlock() {
-        ChainState chainState = nodeAPI.getChainState();
-        if (chainState == null) {
+        if (chainQuery == null) {
             return Response.status(Response.Status.NOT_FOUND)
                     .entity(Map.of("error", "Chain state not available"))
                     .build();
         }
 
-        ChainTip tip = chainState.getTip();
+        ChainTip tip = chainQuery.getLocalTip();
         if (tip == null || tip.getBlockHash() == null) {
             return Response.status(Response.Status.NOT_FOUND)
                     .entity(Map.of("error", "No blocks found"))
                     .build();
         }
 
-        byte[] blockCbor = chainState.getBlock(tip.getBlockHash());
+        byte[] blockCbor = chainQuery.getBlock(tip.getBlockHash());
         if (blockCbor == null) {
             return Response.status(Response.Status.NOT_FOUND)
                     .entity(Map.of("error", "Block body not found"))
@@ -113,8 +118,8 @@ public class BlockResource {
     private BlockDto toBlockDto(Block block, int confirmations) {
         HeaderBody hb = block.getHeader().getHeaderBody();
         long slot = hb.getSlot();
-        int epoch = EpochUtil.slotToEpoch(slot, nodeAPI.getConfig());
-        int epochSlot = EpochUtil.slotToEpochSlot(slot, nodeAPI.getConfig());
+        int epoch = EpochUtil.slotToEpoch(slot, nodeLifecycle.getConfig());
+        int epochSlot = EpochUtil.slotToEpochSlot(slot, nodeLifecycle.getConfig());
 
         int txCount = block.getTransactionBodies() != null ? block.getTransactionBodies().size() : 0;
 
@@ -143,7 +148,7 @@ public class BlockResource {
         int eraNum = block.getEra() != null ? block.getEra().getValue() : 0;
 
         return new BlockDto(
-                nodeAPI.slotToUnixTime(slot),
+                ledgerQuery.slotToUnixTime(slot),
                 hb.getBlockNumber(),
                 hb.getBlockNumber(),
                 hb.getBlockHash(),

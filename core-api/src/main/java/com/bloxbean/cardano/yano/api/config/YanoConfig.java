@@ -5,6 +5,7 @@ import lombok.Builder;
 import lombok.Data;
 
 import java.util.List;
+import java.util.Locale;
 
 /**
  * Configuration for Yano.
@@ -153,8 +154,29 @@ public class YanoConfig implements NodeConfig {
     }
 
     /**
+     * Select a default configuration for a known network name.
+     * Unknown, blank, or null network names fall back to preprod. Epoch/slot
+     * values remain unset and are loaded from genesis at runtime.
+     */
+    public static YanoConfig defaultForNetwork(String network) {
+        String normalized = network == null ? "preprod" : network.trim().toLowerCase(Locale.ROOT);
+        String selected = switch (normalized) {
+            case "mainnet", "preview", "sanchonet", "preprod" -> normalized;
+            default -> "preprod";
+        };
+        YanoConfig config = switch (selected) {
+            case "mainnet" -> mainnetDefault();
+            case "preview" -> previewDefault();
+            case "sanchonet" -> sanchonetDefault();
+            default -> preprodDefault();
+        };
+        config.setNetwork(selected);
+        return config;
+    }
+
+    /**
      * Create a default configuration for preprod.
-     * Sets known epoch/slot values for the preprod network.
+     * Epoch/slot values are loaded from genesis at runtime.
      */
     public static YanoConfig preprodDefault() {
         return YanoConfig.builder()

@@ -1,7 +1,7 @@
 package com.bloxbean.cardano.yano.runtime.config;
 
 import com.bloxbean.cardano.yano.api.config.YanoConfig;
-import com.bloxbean.cardano.yano.runtime.Yano;
+import com.bloxbean.cardano.yano.runtime.internal.RuntimeNode;
 import com.bloxbean.cardano.yano.runtime.blockproducer.GenesisConfig;
 import com.bloxbean.cardano.yano.runtime.genesis.ByronGenesisData;
 import com.bloxbean.cardano.yano.runtime.genesis.ConwayGenesisData;
@@ -136,7 +136,7 @@ class InMemoryDevnetGenesisTest {
         assertThat(calc.slotToEpoch(1200)).isEqualTo(2);
     }
 
-    // --- Yano constructor tests ---
+    // --- RuntimeNode constructor tests ---
 
     @Test
     void yaciNode_constructor_rejectsNonDevnetConfig() {
@@ -144,7 +144,7 @@ class InMemoryDevnetGenesisTest {
         var config = YanoConfig.preprodDefault();
         var genesis = new InMemoryDevnetGenesis(testShelley(), null, null, null);
 
-        assertThatThrownBy(() -> new Yano(config, null, genesis))
+        assertThatThrownBy(() -> new RuntimeNode(config, null, genesis))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("devMode=true");
     }
@@ -156,7 +156,7 @@ class InMemoryDevnetGenesisTest {
 
         // Should not throw — devMode=true and enableBlockProducer=true
         // Constructor initializes account-state/epoch-params from in-memory genesis
-        assertThatCode(() -> new Yano(config, null, genesis))
+        assertThatCode(() -> new RuntimeNode(config, null, genesis))
                 .doesNotThrowAnyException();
     }
 
@@ -165,7 +165,7 @@ class InMemoryDevnetGenesisTest {
         var config = YanoConfig.devnetDefault(0); // port 0 = OS assigns random available port
 
         // null in-memory genesis is fine — uses file-based path
-        assertThatCode(() -> new Yano(config, null, null))
+        assertThatCode(() -> new RuntimeNode(config, null, null))
                 .doesNotThrowAnyException();
     }
 }

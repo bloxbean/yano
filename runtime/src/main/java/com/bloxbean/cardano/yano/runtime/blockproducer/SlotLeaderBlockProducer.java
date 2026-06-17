@@ -9,15 +9,18 @@ import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yaci.events.api.EventBus;
 import com.bloxbean.cardano.yano.api.utxo.UtxoState;
 import com.bloxbean.cardano.yano.runtime.chain.MemPool;
+import com.bloxbean.cardano.yano.runtime.tx.BlockTransactionSelector;
 import lombok.extern.slf4j.Slf4j;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.math.MathContext;
 import java.util.List;
+import java.util.Objects;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 
 /**
  * Slot leader block producer for public networks (preview, preprod, mainnet).
@@ -31,8 +34,8 @@ public class SlotLeaderBlockProducer implements BlockProducerService {
     private static final long SYNC_TOLERANCE_SLOTS = 10;
 
     private final ChainState chainState;
-    private final MemPool memPool;
-    private final NodeServer nodeServer;
+    private final BlockTransactionSelector transactions;
+    private final Supplier<NodeServer> nodeServerSupplier;
     private final EventBus eventBus;
     private final ScheduledExecutorService scheduler;
     private final SignedBlockBuilder blockBuilder;
@@ -42,10 +45,6 @@ public class SlotLeaderBlockProducer implements BlockProducerService {
     private final String poolHash;
     private final long genesisTimestamp;
     private final int slotLengthMillis;
-
-    // Optional: transaction validator for mempool draining
-    private final TransactionValidationService transactionValidatorService;
-    private final UtxoState utxoState;
 
     // Runtime state
     private ScheduledFuture<?> scheduledTask;
@@ -62,9 +61,64 @@ public class SlotLeaderBlockProducer implements BlockProducerService {
             SlotLeaderCheck slotLeaderCheck, StakeDataProvider stakeDataProvider,
             String poolHash, long genesisTimestamp, int slotLengthMillis,
             TransactionValidationService transactionValidatorService, UtxoState utxoState) {
+        this(chainState, memPool, () -> nodeServer, eventBus, scheduler, blockBuilder, epochNonceState,
+                slotLeaderCheck, stakeDataProvider, poolHash, genesisTimestamp, slotLengthMillis,
+                transactionValidatorService, utxoState);
+    }
+
+    public static SlotLeaderBlockProducer withServerSupplier(
+            ChainState chainState, MemPool memPool, Supplier<NodeServer> nodeServerSupplier,
+            EventBus eventBus, ScheduledExecutorService scheduler,
+            SignedBlockBuilder blockBuilder, EpochNonceState epochNonceState,
+            SlotLeaderCheck slotLeaderCheck, StakeDataProvider stakeDataProvider,
+            String poolHash, long genesisTimestamp, int slotLengthMillis,
+            TransactionValidationService transactionValidatorService, UtxoState utxoState) {
+        return new SlotLeaderBlockProducer(chainState, memPool, nodeServerSupplier, eventBus, scheduler, blockBuilder,
+                epochNonceState, slotLeaderCheck, stakeDataProvider, poolHash, genesisTimestamp, slotLengthMillis,
+                transactionValidatorService, utxoState);
+    }
+
+    public static SlotLeaderBlockProducer withTransactionSelector(
+            ChainState chainState, BlockTransactionSelector transactions, Supplier<NodeServer> nodeServerSupplier,
+            EventBus eventBus, ScheduledExecutorService scheduler,
+            SignedBlockBuilder blockBuilder, EpochNonceState epochNonceState,
+            SlotLeaderCheck slotLeaderCheck, StakeDataProvider stakeDataProvider,
+            String poolHash, long genesisTimestamp, int slotLengthMillis) {
+        return new SlotLeaderBlockProducer(chainState, transactions, nodeServerSupplier, eventBus, scheduler,
+                blockBuilder, epochNonceState, slotLeaderCheck, stakeDataProvider, poolHash, genesisTimestamp,
+                slotLengthMillis);
+    }
+
+    private SlotLeaderBlockProducer(
+            ChainState chainState, MemPool memPool, Supplier<NodeServer> nodeServerSupplier,
+            EventBus eventBus, ScheduledExecutorService scheduler,
+            SignedBlockBuilder blockBuilder, EpochNonceState epochNonceState,
+            SlotLeaderCheck slotLeaderCheck, StakeDataProvider stakeDataProvider,
+            String poolHash, long genesisTimestamp, int slotLengthMillis,
+            TransactionValidationService transactionValidatorService, UtxoState utxoState) {
+        this(chainState,
+                BlockProducerHelper.transactionSelector(memPool, transactionValidatorService, utxoState),
+                nodeServerSupplier,
+                eventBus,
+                scheduler,
+                blockBuilder,
+                epochNonceState,
+                slotLeaderCheck,
+                stakeDataProvider,
+                poolHash,
+                genesisTimestamp,
+                slotLengthMillis);
+    }
+
+    private SlotLeaderBlockProducer(
+            ChainState chainState, BlockTransactionSelector transactions, Supplier<NodeServer> nodeServerSupplier,
+            EventBus eventBus, ScheduledExecutorService scheduler,
+            SignedBlockBuilder blockBuilder, EpochNonceState epochNonceState,
+            SlotLeaderCheck slotLeaderCheck, StakeDataProvider stakeDataProvider,
+            String poolHash, long genesisTimestamp, int slotLengthMillis) {
         this.chainState = chainState;
-        this.memPool = memPool;
-        this.nodeServer = nodeServer;
+        this.transactions = Objects.requireNonNull(transactions, "transactions");
+        this.nodeServerSupplier = nodeServerSupplier != null ? nodeServerSupplier : () -> null;
         this.eventBus = eventBus;
         this.scheduler = scheduler;
         this.blockBuilder = blockBuilder;
@@ -74,8 +128,6 @@ public class SlotLeaderBlockProducer implements BlockProducerService {
         this.poolHash = poolHash;
         this.genesisTimestamp = genesisTimestamp;
         this.slotLengthMillis = slotLengthMillis;
-        this.transactionValidatorService = transactionValidatorService;
-        this.utxoState = utxoState;
     }
 
     @Override
@@ -129,6 +181,10 @@ public class SlotLeaderBlockProducer implements BlockProducerService {
     }
 
     synchronized void checkAndProduceBlock() {
+        if (!running) {
+            return;
+        }
+
         // 1. Calculate current wall-clock slot
         long currentSlot = (System.currentTimeMillis() - genesisTimestamp) / slotLengthMillis;
 
@@ -222,8 +278,7 @@ public class SlotLeaderBlockProducer implements BlockProducerService {
         BlockProducerHelper.prepareEpochTransitionBeforeBlock(
                 eventBus, slot, blockNumber, "slot-leader-block-producer");
 
-        List<byte[]> txList = BlockProducerHelper.drainMempool(
-                memPool, transactionValidatorService, utxoState);
+        List<byte[]> txList = transactions.drainForBlock();
 
         var result = blockBuilder.buildBlock(blockNumber, slot, prevHash, txList, vrfResult);
 
@@ -233,7 +288,7 @@ public class SlotLeaderBlockProducer implements BlockProducerService {
                 blockNumber, slot, txList.size(), HexUtil.encodeHexString(result.blockHash()));
 
         BlockProducerHelper.publishEvent(eventBus, result, txList.size(), "slot-leader-block-producer");
-        BlockProducerHelper.notifyServer(nodeServer);
+        BlockProducerHelper.notifyServer(nodeServerSupplier.get());
     }
 
     /**

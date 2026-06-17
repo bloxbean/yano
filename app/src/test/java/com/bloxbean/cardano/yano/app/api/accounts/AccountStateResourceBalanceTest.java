@@ -3,7 +3,7 @@ package com.bloxbean.cardano.yano.app.api.accounts;
 import com.bloxbean.cardano.client.address.Address;
 import com.bloxbean.cardano.client.address.AddressProvider;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
-import com.bloxbean.cardano.yano.api.NodeAPI;
+import com.bloxbean.cardano.yano.app.test.TestNodeRoles;
 import com.bloxbean.cardano.yano.api.account.AccountHistoryProvider;
 import com.bloxbean.cardano.yano.api.account.AccountStateReadStore;
 import com.bloxbean.cardano.yano.api.account.AccountStateStore;
@@ -289,19 +289,21 @@ class AccountStateResourceBalanceTest {
     private static AccountStateResource resourceWith(LedgerStateProvider ledgerStateProvider, UtxoState utxoState,
                                                      AccountHistoryProvider accountHistoryProvider) {
         AccountStateResource resource = new AccountStateResource();
-        resource.nodeAPI = nodeApiWith(ledgerStateProvider, utxoState, accountHistoryProvider);
+        TestNodeRoles nodeRoles = nodeRolesWith(ledgerStateProvider, utxoState, accountHistoryProvider);
+        resource.nodeLifecycle = nodeRoles;
+        resource.ledgerQuery = nodeRoles;
         return resource;
     }
 
-    private static NodeAPI nodeApiWith(LedgerStateProvider ledgerStateProvider, UtxoState utxoState,
+    private static TestNodeRoles nodeRolesWith(LedgerStateProvider ledgerStateProvider, UtxoState utxoState,
                                        AccountHistoryProvider accountHistoryProvider) {
-        return (NodeAPI) Proxy.newProxyInstance(NodeAPI.class.getClassLoader(), new Class<?>[]{NodeAPI.class},
+        return (TestNodeRoles) Proxy.newProxyInstance(TestNodeRoles.class.getClassLoader(), new Class<?>[]{TestNodeRoles.class},
                 (proxy, method, args) -> switch (method.getName()) {
                     case "getLedgerStateProvider" -> ledgerStateProvider;
                     case "getUtxoState" -> utxoState;
                     case "getAccountHistoryProvider" -> accountHistoryProvider;
                     case "getConfig" -> nodeConfig();
-                    case "toString" -> "TestNodeAPI";
+                    case "toString" -> "TestNodeRoles";
                     case "hashCode" -> System.identityHashCode(proxy);
                     case "equals" -> proxy == args[0];
                     default -> defaultValue(method.getReturnType());

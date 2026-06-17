@@ -1,19 +1,14 @@
 package com.bloxbean.cardano.yano.runtime.handlers;
 
-import com.bloxbean.cardano.client.transaction.util.TransactionUtil;
 import com.bloxbean.cardano.yaci.core.protocol.txsubmission.TxSubmissionListener;
 import com.bloxbean.cardano.yaci.core.protocol.txsubmission.messges.*;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
-import com.bloxbean.cardano.yaci.events.api.EventMetadata;
-import com.bloxbean.cardano.yaci.events.api.PublishOptions;
-import com.bloxbean.cardano.yaci.events.api.EventBus;
-import com.bloxbean.cardano.yano.api.events.TransactionValidateEvent;
-import com.bloxbean.cardano.yano.api.events.MemPoolTransactionReceivedEvent;
-import com.bloxbean.cardano.yano.api.model.MemPoolTransaction;
-import com.bloxbean.cardano.yano.runtime.chain.MemPool;
+import com.bloxbean.cardano.yano.runtime.blockproducer.TransactionValidationException;
+import com.bloxbean.cardano.yano.runtime.tx.TransactionAdmission;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
@@ -28,8 +23,7 @@ import java.util.stream.Collectors;
 @Slf4j
 public class YaciTxSubmissionHandler implements TxSubmissionListener, TxSubmissionHandler {
 
-    private final MemPool memPool;
-    private final EventBus eventBus;
+    private final TransactionAdmission transactionAdmission;
     private final boolean blockProducerMode;
     private final Set<String> knownTxIds = ConcurrentHashMap.newKeySet();
     private final Map<String, String> clientConnections = new ConcurrentHashMap<>();
@@ -41,13 +35,12 @@ public class YaciTxSubmissionHandler implements TxSubmissionListener, TxSubmissi
     private long txsRejected = 0;
     private long txsProcessed = 0;
 
-    public YaciTxSubmissionHandler(MemPool memPool, EventBus eventBus) {
-        this(memPool, eventBus, false);
+    public YaciTxSubmissionHandler(TransactionAdmission transactionAdmission) {
+        this(transactionAdmission, false);
     }
 
-    public YaciTxSubmissionHandler(MemPool memPool, EventBus eventBus, boolean blockProducerMode) {
-        this.memPool = memPool;
-        this.eventBus = eventBus;
+    public YaciTxSubmissionHandler(TransactionAdmission transactionAdmission, boolean blockProducerMode) {
+        this.transactionAdmission = Objects.requireNonNull(transactionAdmission, "transactionAdmission");
         this.blockProducerMode = blockProducerMode;
     }
 
@@ -99,36 +92,17 @@ public class YaciTxSubmissionHandler implements TxSubmissionListener, TxSubmissi
 
         for (Tx tx : replyTxs.getTxns()) {
             try {
-                String txHash = TransactionUtil.getTxHash(tx.getTx());
-
-                // Validate via event bus — registered listeners (default + plugins) will veto if invalid
-                var validateEvent = new TransactionValidateEvent(tx.getTx(), txHash, "txsubmission");
-                if (eventBus != null) {
-                    eventBus.publish(validateEvent,
-                            EventMetadata.builder().origin("txsubmission").build(),
-                            PublishOptions.builder().build());
-                }
-
-                if (validateEvent.isRejected()) {
-                    txsRejected++;
-                    String errorMsg = validateEvent.rejections().stream()
-                            .map(r -> r.reason())
-                            .collect(Collectors.joining("; "));
-                    log.warn("Rejecting invalid N2N tx {}: {}", txHash, errorMsg);
-                    continue;
-                }
-
-                // Add to mempool and publish event
-                MemPoolTransaction mpt = memPool.addTransaction(tx.getTx());
-                if (eventBus != null && mpt != null) {
-                    eventBus.publish(new MemPoolTransactionReceivedEvent(mpt),
-                            EventMetadata.builder().origin("txsubmission").build(),
-                            PublishOptions.builder().build());
-                }
+                String txHash = transactionAdmission.admitTransaction(tx.getTx(), "txsubmission");
                 txsAccepted++;
 
                 log.info("Transaction added to mempool: {} ({} bytes)", txHash, tx.getTx().length);
 
+            } catch (TransactionValidationException e) {
+                txsRejected++;
+                String errorMsg = e.getErrors().stream()
+                        .map(TransactionValidationException.Error::message)
+                        .collect(Collectors.joining("; "));
+                log.warn("Rejecting invalid N2N tx: {}", !errorMsg.isBlank() ? errorMsg : e.getMessage());
             } catch (Exception e) {
                 txsRejected++;
                 log.warn("Failed to process received transaction: {}", e.getMessage());
@@ -226,7 +200,7 @@ public class YaciTxSubmissionHandler implements TxSubmissionListener, TxSubmissi
     }
 
     public int getMempoolSize() {
-        return memPool.size();
+        return transactionAdmission.mempoolSize();
     }
 
     /**

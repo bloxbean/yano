@@ -6,6 +6,9 @@
       },
       {
         "pattern": "\\QMETA-INF/services/com.bloxbean.cardano.yaci.events.api.support.DomainEventBindings\\E"
+      },
+      {
+        "pattern": "genesis/.*\\.json"
       }
     ]
   }

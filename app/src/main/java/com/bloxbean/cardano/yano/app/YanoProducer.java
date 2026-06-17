@@ -2,30 +2,37 @@ package com.bloxbean.cardano.yano.app;
 
 import com.bloxbean.cardano.yaci.events.api.SubscriptionOptions;
 import com.bloxbean.cardano.yaci.events.api.config.EventsOptions;
-import com.bloxbean.cardano.yano.api.NodeAPI;
+import com.bloxbean.cardano.yano.api.ChainQuery;
+import com.bloxbean.cardano.yano.api.DevnetControl;
+import com.bloxbean.cardano.yano.api.LedgerQuery;
+import com.bloxbean.cardano.yano.api.NodeLifecycle;
+import com.bloxbean.cardano.yano.api.ProducerControl;
+import com.bloxbean.cardano.yano.api.TxEvaluationGateway;
+import com.bloxbean.cardano.yano.api.TxGateway;
 import com.bloxbean.cardano.yano.api.config.PluginsOptions;
 import com.bloxbean.cardano.yano.api.config.RuntimeOptions;
 import com.bloxbean.cardano.yano.api.config.YanoConfig;
+import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
 import com.bloxbean.cardano.yano.app.bootstrap.BootstrapConfigParser;
-import com.bloxbean.cardano.client.api.model.ProtocolParams;
-import com.bloxbean.cardano.yaci.core.common.Constants;
-import com.bloxbean.cardano.yano.api.account.LedgerStateProvider;
-import com.bloxbean.cardano.yano.ledgerrules.EpochProtocolParamsSupplier;
-import com.bloxbean.cardano.yano.ledgerrules.SlotConfigSupplier;
-import com.bloxbean.cardano.yano.ledgerrules.TransactionEvaluator;
-import com.bloxbean.cardano.yano.ledgerrules.TransactionValidator;
-import com.bloxbean.cardano.yano.runtime.Yano;
-import com.bloxbean.cardano.yano.api.util.EpochSlotCalc;
-import com.bloxbean.cardano.yano.ledgerrules.impl.AikenTxEvaluator;
-import com.bloxbean.cardano.yano.ledgerrules.impl.JulcTxEvaluator;
-import com.bloxbean.cardano.yano.runtime.blockproducer.EffectiveProtocolParamsSupplier;
-import com.bloxbean.cardano.yano.runtime.blockproducer.GenesisConfig;
-import com.bloxbean.cardano.yano.runtime.blockproducer.ProtocolParamsMapper;
-import com.bloxbean.cardano.yano.runtime.config.DefaultEpochParamProvider;
+import com.bloxbean.cardano.yano.bootstrap.providers.DefaultBootstrapDataProviderFactory;
+import com.bloxbean.cardano.yano.runtime.assembly.YanoAssembly;
+import com.bloxbean.cardano.yano.runtime.assembly.YanoNode;
 import com.bloxbean.cardano.yano.runtime.config.DnsCachePolicy;
+import com.bloxbean.cardano.yano.runtime.config.GenesisFileResolver;
 import com.bloxbean.cardano.yano.runtime.config.NetworkGenesisConfig;
-import com.bloxbean.cardano.yano.ledgerrules.impl.YaciScriptSupplier;
-import com.bloxbean.cardano.yano.scalusbridge.ScalusTransactionFactory;
+import com.bloxbean.cardano.yano.runtime.config.RollbackRetentionGenesisValues;
+import com.bloxbean.cardano.yano.runtime.config.RollbackRetentionPlanner;
+import com.bloxbean.cardano.yano.runtime.config.RollbackRetentionSettings;
+import com.bloxbean.cardano.yano.runtime.debug.DebugLedgerStateAccess;
+import com.bloxbean.cardano.yano.runtime.maintenance.RuntimeMaintenanceGate;
+import com.bloxbean.cardano.yano.runtime.tx.TransactionBootstrapOptions;
+import com.bloxbean.cardano.yano.tx.DefaultTransactionServicesFactory;
+import com.bloxbean.cardano.yano.api.model.DevnetRestoreResult;
+import com.bloxbean.cardano.yano.api.model.DevnetRollbackResult;
+import com.bloxbean.cardano.yano.api.model.DevnetRollbackTarget;
+import com.bloxbean.cardano.yano.api.model.FundResult;
+import com.bloxbean.cardano.yano.api.model.SnapshotInfo;
+import com.bloxbean.cardano.yano.api.model.TimeAdvanceResult;
 import io.quarkus.runtime.ShutdownEvent;
 import io.quarkus.runtime.StartupEvent;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -38,44 +45,43 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.IOException;
-import java.io.InputStream;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.function.LongSupplier;
-import java.util.function.Supplier;
 
+/**
+ * Quarkus composition boundary that maps application properties to a
+ * role-specific {@link YanoNode}.
+ */
 @ApplicationScoped
 public class YanoProducer {
 
     private static final Logger log = LoggerFactory.getLogger(YanoProducer.class);
-    private static final String ROLLBACK_RETENTION_EPOCHS = "yano.rollback-retention-epochs";
-    private static final String UTXO_ROLLBACK_WINDOW = "yano.utxo.rollbackWindow";
+    private static final String ROLLBACK_RETENTION_EPOCHS = RollbackRetentionPlanner.ROLLBACK_RETENTION_EPOCHS;
+    private static final String UTXO_ROLLBACK_WINDOW = RollbackRetentionPlanner.UTXO_ROLLBACK_WINDOW;
     private static final String ACCOUNT_STATE_EPOCH_BLOCK_DATA_RETENTION_LAG =
-            "yano.account-state.epoch-block-data-retention-lag";
+            RollbackRetentionPlanner.ACCOUNT_STATE_EPOCH_BLOCK_DATA_RETENTION_LAG;
     private static final String ACCOUNT_STATE_SNAPSHOT_RETENTION_EPOCHS =
-            "yano.account-state.snapshot-retention-epochs";
+            RollbackRetentionPlanner.ACCOUNT_STATE_SNAPSHOT_RETENTION_EPOCHS;
     private static final String ACCOUNT_HISTORY_ROLLBACK_SAFETY_SLOTS =
-            "yano.account-history.rollback-safety-slots";
+            RollbackRetentionPlanner.ACCOUNT_HISTORY_ROLLBACK_SAFETY_SLOTS;
     private static final String BLOCK_BODY_PRUNE_DEPTH =
-            "yano.chain.block-body-prune-depth";
+            RollbackRetentionPlanner.BLOCK_BODY_PRUNE_DEPTH;
 
     @Inject
     Config appConfig;
 
-    @ConfigProperty(name = "yano.network", defaultValue = "mainnet")
+    @ConfigProperty(name = YanoPropertyKeys.NETWORK, defaultValue = "mainnet")
     String network;
 
-    @ConfigProperty(name = "yano.remote.host", defaultValue = "backbone.cardano.iog.io")
+    @ConfigProperty(name = YanoPropertyKeys.Remote.HOST, defaultValue = "backbone.cardano.iog.io")
     String remoteHost;
 
-    @ConfigProperty(name = "yano.remote.port", defaultValue = "3001")
+    @ConfigProperty(name = YanoPropertyKeys.Remote.PORT, defaultValue = "3001")
     int remotePort;
 
-    @ConfigProperty(name = "yano.remote.protocol-magic", defaultValue = "764824073")
+    @ConfigProperty(name = YanoPropertyKeys.Remote.PROTOCOL_MAGIC, defaultValue = "764824073")
     long protocolMagic;
 
     @ConfigProperty(name = DnsCachePolicy.DNS_CACHE_TTL_KEY)
@@ -84,260 +90,260 @@ public class YanoProducer {
     @ConfigProperty(name = DnsCachePolicy.DNS_CACHE_NEGATIVE_TTL_KEY)
     java.util.Optional<Integer> dnsCacheNegativeTtl;
 
-    @ConfigProperty(name = "yano.server.port", defaultValue = "13337")
+    @ConfigProperty(name = YanoPropertyKeys.Server.PORT, defaultValue = "13337")
     int serverPort;
 
-    @ConfigProperty(name = "yano.client.enabled", defaultValue = "true")
+    @ConfigProperty(name = YanoPropertyKeys.Client.ENABLED, defaultValue = "true")
     boolean clientEnabled;
 
-    @ConfigProperty(name = "yano.server.enabled", defaultValue = "true")
+    @ConfigProperty(name = YanoPropertyKeys.Server.ENABLED, defaultValue = "true")
     boolean serverEnabled;
 
-    @ConfigProperty(name = "yano.storage.rocksdb", defaultValue = "true")
+    @ConfigProperty(name = YanoPropertyKeys.Storage.ROCKSDB, defaultValue = "true")
     boolean useRocksDB;
 
-    @ConfigProperty(name = "yano.storage.path", defaultValue = "./chainstate")
+    @ConfigProperty(name = YanoPropertyKeys.Storage.PATH, defaultValue = "./chainstate")
     String storagePath;
 
-    @ConfigProperty(name = "yano.auto-sync-start", defaultValue = "false")
+    @ConfigProperty(name = YanoPropertyKeys.AUTO_SYNC_START, defaultValue = "false")
     boolean autoSyncStart;
 
     @ConfigProperty(name = "quarkus.http.port", defaultValue = "8080")
     int httpPort;
 
-    @ConfigProperty(name = "yano.api-prefix", defaultValue = "/api/v1")
+    @ConfigProperty(name = YanoPropertyKeys.API_PREFIX, defaultValue = "/api/v1")
     String apiPrefix;
 
-    @ConfigProperty(name = "yaci.events.enabled", defaultValue = "true")
+    @ConfigProperty(name = YanoPropertyKeys.Events.ENABLED, defaultValue = "true")
     boolean eventsEnabled;
 
-    @ConfigProperty(name = "yaci.plugins.enabled", defaultValue = "true")
+    @ConfigProperty(name = YanoPropertyKeys.Plugins.ENABLED, defaultValue = "true")
     boolean pluginsEnabled;
 
-    @ConfigProperty(name = "yaci.plugins.logging.enabled", defaultValue = "false")
+    @ConfigProperty(name = YanoPropertyKeys.Plugins.LOGGING_ENABLED, defaultValue = "false")
     boolean pluginsLoggingEnabled;
 
     // UTXO config
-    @ConfigProperty(name = "yano.utxo.enabled", defaultValue = "true")
+    @ConfigProperty(name = YanoPropertyKeys.Utxo.ENABLED, defaultValue = "true")
     boolean utxoEnabled;
-    @ConfigProperty(name = "yano.utxo.pruneDepth", defaultValue = "2160")
+    @ConfigProperty(name = YanoPropertyKeys.Utxo.PRUNE_DEPTH, defaultValue = "2160")
     int utxoPruneDepth;
-    @ConfigProperty(name = "yano.utxo.rollbackWindow", defaultValue = "4320")
+    @ConfigProperty(name = YanoPropertyKeys.Utxo.ROLLBACK_WINDOW, defaultValue = "4320")
     int utxoRollbackWindow;
-    @ConfigProperty(name = "yano.utxo.pruneBatchSize", defaultValue = "500")
+    @ConfigProperty(name = YanoPropertyKeys.Utxo.PRUNE_BATCH_SIZE, defaultValue = "500")
     int utxoPruneBatchSize;
-    @ConfigProperty(name = "yano.utxo.prune.schedule.seconds", defaultValue = "5")
+    @ConfigProperty(name = YanoPropertyKeys.Utxo.PRUNE_SCHEDULE_SECONDS, defaultValue = "5")
     long utxoPruneScheduleSeconds;
-    @ConfigProperty(name = "yano.utxo.metrics.lag.logSeconds", defaultValue = "10")
+    @ConfigProperty(name = YanoPropertyKeys.Utxo.METRICS_LAG_LOG_SECONDS, defaultValue = "10")
     long utxoMetricsLagLogSeconds;
-    @ConfigProperty(name = "yano.utxo.lag.failIfAbove", defaultValue = "-1")
+    @ConfigProperty(name = YanoPropertyKeys.Utxo.LAG_FAIL_IF_ABOVE, defaultValue = "-1")
     long utxoLagFailIfAbove;
-    @ConfigProperty(name = "yano.utxo.index.address_hash", defaultValue = "true")
+    @ConfigProperty(name = YanoPropertyKeys.Utxo.INDEX_ADDRESS_HASH, defaultValue = "true")
     boolean utxoIndexAddressHash;
-    @ConfigProperty(name = "yano.utxo.index.payment_credential", defaultValue = "true")
+    @ConfigProperty(name = YanoPropertyKeys.Utxo.INDEX_PAYMENT_CREDENTIAL, defaultValue = "true")
     boolean utxoIndexPaymentCred;
-    @ConfigProperty(name = "yano.utxo.indexingStrategy", defaultValue = "both")
+    @ConfigProperty(name = YanoPropertyKeys.Utxo.INDEXING_STRATEGY, defaultValue = "both")
     String utxoIndexingStrategy;
-    @ConfigProperty(name = "yano.utxo.delta.selfContained", defaultValue = "false")
+    @ConfigProperty(name = YanoPropertyKeys.Utxo.DELTA_SELF_CONTAINED, defaultValue = "false")
     boolean utxoDeltaSelfContained;
-    @ConfigProperty(name = "yano.utxo.applyAsync", defaultValue = "false")
+    @ConfigProperty(name = YanoPropertyKeys.Utxo.APPLY_ASYNC, defaultValue = "false")
     boolean utxoApplyAsync;
 
-    @ConfigProperty(name = "yano.metrics.enabled", defaultValue = "true")
+    @ConfigProperty(name = YanoPropertyKeys.Metrics.ENABLED, defaultValue = "true")
     boolean metricsEnabled;
-    @ConfigProperty(name = "yano.metrics.sample.rocksdb.seconds", defaultValue = "30")
+    @ConfigProperty(name = YanoPropertyKeys.Metrics.ROCKSDB_SAMPLE_SECONDS, defaultValue = "0")
     int metricsSampleRocksDbSeconds;
-    @ConfigProperty(name = "yano.validation.default-validator-enabled", defaultValue = "true")
+    @ConfigProperty(name = YanoPropertyKeys.Validation.DEFAULT_VALIDATOR_ENABLED, defaultValue = "true")
     boolean defaultValidatorEnabled;
 
     // CCL "supplementary rules" (GOVCERT/governance/delegatee) layered on top of Scalus validation.
     // Disabled by default — they don't yet account for intra-tx state changes within a single block.
-    @ConfigProperty(name = "yano.validation.supplementary-rules-enabled", defaultValue = "false")
+    @ConfigProperty(name = YanoPropertyKeys.Validation.SUPPLEMENTARY_RULES_ENABLED, defaultValue = "false")
     boolean supplementaryRulesEnabled;
 
     @ConfigProperty(name = ROLLBACK_RETENTION_EPOCHS)
     java.util.Optional<Integer> rollbackRetentionEpochs;
 
     // Account state config
-    @ConfigProperty(name = "yano.account-state.enabled", defaultValue = "false")
+    @ConfigProperty(name = YanoPropertyKeys.AccountState.ENABLED, defaultValue = "false")
     boolean accountStateEnabled;
-    @ConfigProperty(name = "yano.account-state.epoch-block-data-retention-lag", defaultValue = "5")
+    @ConfigProperty(name = YanoPropertyKeys.AccountState.EPOCH_BLOCK_DATA_RETENTION_LAG, defaultValue = "5")
     int accountStateEpochBlockDataRetentionLag;
-    @ConfigProperty(name = "yano.account-state.snapshot-retention-epochs", defaultValue = "50")
+    @ConfigProperty(name = YanoPropertyKeys.AccountState.SNAPSHOT_RETENTION_EPOCHS, defaultValue = "50")
     int accountStateSnapshotRetentionEpochs;
-    @ConfigProperty(name = "yano.account.stake-balance-index-enabled", defaultValue = "true")
+    @ConfigProperty(name = YanoPropertyKeys.AccountState.STAKE_BALANCE_INDEX_ENABLED, defaultValue = "true")
     boolean stakeBalanceIndexEnabled;
-    @ConfigProperty(name = "yano.account-history.enabled", defaultValue = "false")
+    @ConfigProperty(name = YanoPropertyKeys.AccountHistory.ENABLED, defaultValue = "false")
     boolean accountHistoryEnabled;
-    @ConfigProperty(name = "yano.account-history.tx-events-enabled", defaultValue = "true")
+    @ConfigProperty(name = YanoPropertyKeys.AccountHistory.TX_EVENTS_ENABLED, defaultValue = "true")
     boolean accountHistoryTxEventsEnabled;
-    @ConfigProperty(name = "yano.account-history.rewards-enabled", defaultValue = "false")
+    @ConfigProperty(name = YanoPropertyKeys.AccountHistory.REWARDS_ENABLED, defaultValue = "false")
     boolean accountHistoryRewardsEnabled;
-    @ConfigProperty(name = "yano.account-history.retention-epochs", defaultValue = "0")
+    @ConfigProperty(name = YanoPropertyKeys.AccountHistory.RETENTION_EPOCHS, defaultValue = "0")
     int accountHistoryRetentionEpochs;
-    @ConfigProperty(name = "yano.account-history.prune-interval-seconds", defaultValue = "300")
+    @ConfigProperty(name = YanoPropertyKeys.AccountHistory.PRUNE_INTERVAL_SECONDS, defaultValue = "300")
     long accountHistoryPruneIntervalSeconds;
-    @ConfigProperty(name = "yano.account-history.prune-batch-size", defaultValue = "50000")
+    @ConfigProperty(name = YanoPropertyKeys.AccountHistory.PRUNE_BATCH_SIZE, defaultValue = "50000")
     int accountHistoryPruneBatchSize;
-    @ConfigProperty(name = "yano.account-history.rollback-safety-slots")
+    @ConfigProperty(name = YanoPropertyKeys.AccountHistory.ROLLBACK_SAFETY_SLOTS)
     java.util.Optional<Long> accountHistoryRollbackSafetySlots;
 
     // Epoch subsystem config
-    @ConfigProperty(name = "yano.epoch-snapshot.amounts-enabled", defaultValue = "false")
+    @ConfigProperty(name = YanoPropertyKeys.EpochSnapshot.AMOUNTS_ENABLED, defaultValue = "false")
     boolean epochSnapshotAmountsEnabled;
-    @ConfigProperty(name = "yano.epoch-snapshot.balance-mode", defaultValue = "full-scan")
+    @ConfigProperty(name = YanoPropertyKeys.EpochSnapshot.BALANCE_MODE, defaultValue = "full-scan")
     String balanceMode; // "full-scan" or "incremental"
-    @ConfigProperty(name = "yano.adapot.enabled", defaultValue = "false")
+    @ConfigProperty(name = YanoPropertyKeys.Ledger.ADAPOT_ENABLED, defaultValue = "false")
     boolean adapotEnabled;
-    @ConfigProperty(name = "yano.rewards.enabled", defaultValue = "false")
+    @ConfigProperty(name = YanoPropertyKeys.Ledger.REWARDS_ENABLED, defaultValue = "false")
     boolean rewardsEnabled;
-    @ConfigProperty(name = "yano.epoch-params.tracking-enabled", defaultValue = "false")
+    @ConfigProperty(name = YanoPropertyKeys.Ledger.EPOCH_PARAMS_TRACKING_ENABLED, defaultValue = "false")
     boolean epochParamsTrackingEnabled;
-    @ConfigProperty(name = "yano.governance.enabled", defaultValue = "false")
+    @ConfigProperty(name = YanoPropertyKeys.Ledger.GOVERNANCE_ENABLED, defaultValue = "false")
     boolean governanceEnabled;
-    @ConfigProperty(name = "yano.snapshot-export.enabled", defaultValue = "false")
+    @ConfigProperty(name = YanoPropertyKeys.SnapshotExport.ENABLED, defaultValue = "false")
     boolean snapshotExportEnabled;
-    @ConfigProperty(name = "yano.snapshot-export.stake", defaultValue = "false")
+    @ConfigProperty(name = YanoPropertyKeys.SnapshotExport.STAKE, defaultValue = "false")
     boolean snapshotExportStake;
-    @ConfigProperty(name = "yano.snapshot-export.drep-dist", defaultValue = "true")
+    @ConfigProperty(name = YanoPropertyKeys.SnapshotExport.DREP_DIST, defaultValue = "true")
     boolean snapshotExportDrepDist;
-    @ConfigProperty(name = "yano.snapshot-export.adapot", defaultValue = "true")
+    @ConfigProperty(name = YanoPropertyKeys.SnapshotExport.ADAPOT, defaultValue = "true")
     boolean snapshotExportAdaPot;
-    @ConfigProperty(name = "yano.snapshot-export.proposals", defaultValue = "true")
+    @ConfigProperty(name = YanoPropertyKeys.SnapshotExport.PROPOSALS, defaultValue = "true")
     boolean snapshotExportProposals;
-    @ConfigProperty(name = "yano.exit-on-epoch-calc-error", defaultValue = "false")
+    @ConfigProperty(name = YanoPropertyKeys.Ledger.EXIT_ON_EPOCH_CALC_ERROR, defaultValue = "false")
     boolean exitOnEpochCalcError;
-    @ConfigProperty(name = "yano.auto-checkpoint-interval", defaultValue = "0")
+    @ConfigProperty(name = YanoPropertyKeys.Ledger.AUTO_CHECKPOINT_INTERVAL, defaultValue = "0")
     int autoCheckpointInterval;
-    @ConfigProperty(name = "yano.snapshot-export.dir", defaultValue = "data")
+    @ConfigProperty(name = YanoPropertyKeys.SnapshotExport.DIR, defaultValue = "data")
     String snapshotExportDir;
 
     // Block body pruning config
-    @ConfigProperty(name = "yano.chain.block-body-prune-depth", defaultValue = "0")
+    @ConfigProperty(name = YanoPropertyKeys.Chain.BLOCK_BODY_PRUNE_DEPTH, defaultValue = "0")
     int blockBodyPruneDepth;
-    @ConfigProperty(name = "yano.chain.block-prune-batch-size", defaultValue = "500000")
+    @ConfigProperty(name = YanoPropertyKeys.Chain.BLOCK_PRUNE_BATCH_SIZE, defaultValue = "500000")
     int blockPruneBatchSize;
-    @ConfigProperty(name = "yano.chain.block-prune-interval-seconds", defaultValue = "300")
+    @ConfigProperty(name = YanoPropertyKeys.Chain.BLOCK_PRUNE_INTERVAL_SECONDS, defaultValue = "300")
     long blockPruneIntervalSeconds;
 
     // UTXO storage filter config
-    @ConfigProperty(name = "yano.filters.utxo.enabled", defaultValue = "false")
+    @ConfigProperty(name = YanoPropertyKeys.UtxoFilter.ENABLED, defaultValue = "false")
     boolean utxoFilterEnabled;
-    @ConfigProperty(name = "yano.filters.utxo.addresses")
+    @ConfigProperty(name = YanoPropertyKeys.UtxoFilter.ADDRESSES)
     java.util.Optional<java.util.List<String>> utxoFilterAddresses;
-    @ConfigProperty(name = "yano.filters.utxo.payment-credentials")
+    @ConfigProperty(name = YanoPropertyKeys.UtxoFilter.PAYMENT_CREDENTIALS)
     java.util.Optional<java.util.List<String>> utxoFilterPaymentCredentials;
 
     // Dev mode
-    @ConfigProperty(name = "yano.dev-mode", defaultValue = "false")
+    @ConfigProperty(name = YanoPropertyKeys.DEV_MODE, defaultValue = "false")
     boolean devMode;
 
     // Adhoc rollback — pass via command line, NOT application.yml (to avoid accidental re-rollback)
     // Usage: -Dyano.debug.rollback-to-slot=54172800 or -Dyano.debug.rollback-to-epoch=320
-    @ConfigProperty(name = "yano.debug.rollback-to-slot", defaultValue = "-1")
+    @ConfigProperty(name = YanoPropertyKeys.Debug.ROLLBACK_TO_SLOT, defaultValue = "-1")
     long debugRollbackToSlot;
 
-    @ConfigProperty(name = "yano.debug.rollback-to-epoch", defaultValue = "-1")
+    @ConfigProperty(name = YanoPropertyKeys.Debug.ROLLBACK_TO_EPOCH, defaultValue = "-1")
     int debugRollbackToEpoch;
 
     // Block producer config
-    @ConfigProperty(name = "yano.block-producer.enabled", defaultValue = "false")
+    @ConfigProperty(name = YanoPropertyKeys.BlockProducer.ENABLED, defaultValue = "false")
     boolean blockProducerEnabled;
 
-    @ConfigProperty(name = "yano.block-producer.block-time-millis", defaultValue = "2000")
+    @ConfigProperty(name = YanoPropertyKeys.BlockProducer.BLOCK_TIME_MILLIS, defaultValue = "2000")
     int blockTimeMillis;
 
-    @ConfigProperty(name = "yano.block-producer.lazy", defaultValue = "false")
+    @ConfigProperty(name = YanoPropertyKeys.BlockProducer.LAZY, defaultValue = "false")
     boolean blockProducerLazy;
 
-    @ConfigProperty(name = "yano.block-producer.genesis-timestamp", defaultValue = "0")
+    @ConfigProperty(name = YanoPropertyKeys.BlockProducer.GENESIS_TIMESTAMP, defaultValue = "0")
     long genesisTimestamp;
 
-    @ConfigProperty(name = "yano.block-producer.slot-length-millis", defaultValue = "1000")
+    @ConfigProperty(name = YanoPropertyKeys.BlockProducer.SLOT_LENGTH_MILLIS, defaultValue = "1000")
     int slotLengthMillis;
 
-    @ConfigProperty(name = "yano.block-producer.tx-evaluation", defaultValue = "true")
+    @ConfigProperty(name = YanoPropertyKeys.BlockProducer.TX_EVALUATION, defaultValue = "true")
     boolean txEvaluationEnabled;
 
-    @ConfigProperty(name = "yano.block-producer.script-evaluator", defaultValue = "scalus")
+    @ConfigProperty(name = YanoPropertyKeys.BlockProducer.SCRIPT_EVALUATOR, defaultValue = "scalus")
     String scriptEvaluator;
 
-    @ConfigProperty(name = "yano.block-producer.vrf-skey-file")
+    @ConfigProperty(name = YanoPropertyKeys.BlockProducer.VRF_SKEY_FILE)
     java.util.Optional<String> vrfSkeyFile;
 
-    @ConfigProperty(name = "yano.block-producer.kes-skey-file")
+    @ConfigProperty(name = YanoPropertyKeys.BlockProducer.KES_SKEY_FILE)
     java.util.Optional<String> kesSkeyFile;
 
-    @ConfigProperty(name = "yano.block-producer.opcert-file")
+    @ConfigProperty(name = YanoPropertyKeys.BlockProducer.OPCERT_FILE)
     java.util.Optional<String> opCertFile;
 
-    @ConfigProperty(name = "yano.block-producer.slot-leader-mode", defaultValue = "false")
+    @ConfigProperty(name = YanoPropertyKeys.BlockProducer.SLOT_LEADER_MODE, defaultValue = "false")
     boolean slotLeaderMode;
 
-    @ConfigProperty(name = "yano.block-producer.stake-data-provider-url")
+    @ConfigProperty(name = YanoPropertyKeys.BlockProducer.STAKE_DATA_PROVIDER_URL)
     java.util.Optional<String> stakeDataProviderUrl;
 
-    @ConfigProperty(name = "yano.block-producer.initial-epoch-nonce")
+    @ConfigProperty(name = YanoPropertyKeys.BlockProducer.INITIAL_EPOCH_NONCE)
     java.util.Optional<String> initialEpochNonce;
 
-    @ConfigProperty(name = "yano.block-producer.initial-epoch", defaultValue = "-1")
+    @ConfigProperty(name = YanoPropertyKeys.BlockProducer.INITIAL_EPOCH, defaultValue = "-1")
     int initialEpoch;
 
-    @ConfigProperty(name = "yano.block-producer.start-epoch", defaultValue = "0")
+    @ConfigProperty(name = YanoPropertyKeys.BlockProducer.START_EPOCH, defaultValue = "0")
     int startEpoch;
 
-    @ConfigProperty(name = "yano.block-producer.past-time-travel-mode", defaultValue = "false")
+    @ConfigProperty(name = YanoPropertyKeys.BlockProducer.PAST_TIME_TRAVEL_MODE, defaultValue = "false")
     boolean pastTimeTravelMode;
 
-    @ConfigProperty(name = "yano.block-producer.past-time-travel-slot-leader-mode", defaultValue = "false")
+    @ConfigProperty(name = YanoPropertyKeys.BlockProducer.PAST_TIME_TRAVEL_SLOT_LEADER_MODE, defaultValue = "false")
     boolean pastTimeTravelSlotLeaderMode;
 
     // Bootstrap config
-    @ConfigProperty(name = "yano.bootstrap.enabled", defaultValue = "false")
+    @ConfigProperty(name = YanoPropertyKeys.Bootstrap.ENABLED, defaultValue = "false")
     boolean bootstrapEnabled;
 
-    @ConfigProperty(name = "yano.bootstrap.block-number", defaultValue = "-1")
+    @ConfigProperty(name = YanoPropertyKeys.Bootstrap.BLOCK_NUMBER, defaultValue = "-1")
     long bootstrapBlockNumber;
 
-    @ConfigProperty(name = "yano.bootstrap.provider", defaultValue = "blockfrost")
+    @ConfigProperty(name = YanoPropertyKeys.Bootstrap.PROVIDER, defaultValue = "blockfrost")
     String bootstrapProvider;
 
-    @ConfigProperty(name = "yano.bootstrap.addresses")
+    @ConfigProperty(name = YanoPropertyKeys.Bootstrap.ADDRESSES)
     java.util.Optional<java.util.List<String>> bootstrapAddresses;
 
-    @ConfigProperty(name = "yano.bootstrap.utxos")
+    @ConfigProperty(name = YanoPropertyKeys.Bootstrap.UTXOS)
     java.util.Optional<java.util.List<String>> bootstrapUtxos;
 
-    @ConfigProperty(name = "yano.bootstrap.blockfrost.api-key")
+    @ConfigProperty(name = YanoPropertyKeys.Bootstrap.BLOCKFROST_API_KEY)
     java.util.Optional<String> bootstrapBlockfrostApiKey;
 
-    @ConfigProperty(name = "yano.bootstrap.blockfrost.base-url")
+    @ConfigProperty(name = YanoPropertyKeys.Bootstrap.BLOCKFROST_BASE_URL)
     java.util.Optional<String> bootstrapBlockfrostBaseUrl;
 
-    @ConfigProperty(name = "yano.bootstrap.koios.base-url")
+    @ConfigProperty(name = YanoPropertyKeys.Bootstrap.KOIOS_BASE_URL)
     java.util.Optional<String> bootstrapKoiosBaseUrl;
 
     // Genesis config (shared between devnet and relay modes)
-    @ConfigProperty(name = "yano.genesis.shelley-genesis-file")
+    @ConfigProperty(name = YanoPropertyKeys.Genesis.SHELLEY_FILE)
     java.util.Optional<String> shelleyGenesisFile;
 
-    @ConfigProperty(name = "yano.genesis.byron-genesis-file")
+    @ConfigProperty(name = YanoPropertyKeys.Genesis.BYRON_FILE)
     java.util.Optional<String> byronGenesisFile;
 
-    @ConfigProperty(name = "yano.genesis.alonzo-genesis-file")
+    @ConfigProperty(name = YanoPropertyKeys.Genesis.ALONZO_FILE)
     java.util.Optional<String> alonzoGenesisFile;
 
-    @ConfigProperty(name = "yano.genesis.conway-genesis-file")
+    @ConfigProperty(name = YanoPropertyKeys.Genesis.CONWAY_FILE)
     java.util.Optional<String> conwayGenesisFile;
 
-    @ConfigProperty(name = "yano.genesis.shelley-genesis-hash")
+    @ConfigProperty(name = YanoPropertyKeys.Genesis.SHELLEY_HASH)
     java.util.Optional<String> shelleyGenesisHash;
 
-    @ConfigProperty(name = "yano.genesis.protocol-parameters-file")
+    @ConfigProperty(name = YanoPropertyKeys.Genesis.PROTOCOL_PARAMETERS_FILE)
     java.util.Optional<String> protocolParametersFile;
 
     private final ClassLoader pluginClassLoader;
-    private NodeAPI nodeAPI;
+    private YanoNode yanoNode;
 
     public YanoProducer(@Named("pluginClassLoader") ClassLoader pluginClassLoader) {
         this.pluginClassLoader = pluginClassLoader;
@@ -359,145 +365,14 @@ public class YanoProducer {
         return configured && !isBootstrapPartialStateMode();
     }
 
-    record RollbackRetentionSettings(
-            int utxoRollbackWindow,
-            int accountStateEpochBlockDataRetentionLag,
-            int accountStateSnapshotRetentionEpochs,
-            java.util.Optional<Long> accountHistoryRollbackSafetySlots,
-            int blockBodyPruneDepth,
-            boolean umbrellaEnabled,
-            int retentionEpochs,
-            long slotWindow) {
-    }
-
-    record RollbackRetentionGenesisValues(long epochLength, double activeSlotsCoeff) {
-    }
-
-    static RollbackRetentionSettings resolveRollbackRetentionSettings(
-            java.util.Optional<Integer> rollbackRetentionEpochs,
-            long epochLength,
-            double activeSlotsCoeff,
-            int utxoRollbackWindow,
-            boolean utxoRollbackWindowConfigured,
-            int accountStateEpochBlockDataRetentionLag,
-            boolean accountStateEpochBlockDataRetentionLagConfigured,
-            int accountStateSnapshotRetentionEpochs,
-            boolean accountStateSnapshotRetentionEpochsConfigured,
-            java.util.Optional<Long> accountHistoryRollbackSafetySlots,
-            boolean accountHistoryRollbackSafetySlotsConfigured,
-            int blockBodyPruneDepth,
-            boolean blockBodyPruneDepthConfigured) {
-
-        var unchanged = new RollbackRetentionSettings(
-                utxoRollbackWindow,
-                accountStateEpochBlockDataRetentionLag,
-                accountStateSnapshotRetentionEpochs,
-                accountHistoryRollbackSafetySlots,
-                blockBodyPruneDepth,
-                false,
-                0,
-                0);
-
-        if (rollbackRetentionEpochs == null || rollbackRetentionEpochs.isEmpty()) {
-            return unchanged;
-        }
-
-        int retentionEpochs = rollbackRetentionEpochs.get();
-        if (retentionEpochs < 0) {
-            throw new IllegalArgumentException(ROLLBACK_RETENTION_EPOCHS + " must be >= 0");
-        }
-        if (retentionEpochs == 0) {
-            return unchanged;
-        }
-        if (epochLength <= 0) {
-            throw new IllegalArgumentException("Cannot apply " + ROLLBACK_RETENTION_EPOCHS
-                    + " without a positive Shelley epoch length");
-        }
-
-        long slotWindow = Math.multiplyExact((long) retentionEpochs, epochLength);
-        int slotWindowInt = requireIntRange(slotWindow, UTXO_ROLLBACK_WINDOW);
-        int rewardInputLag = requireIntRange((long) retentionEpochs + 1,
-                ACCOUNT_STATE_EPOCH_BLOCK_DATA_RETENTION_LAG);
-        int snapshotRetention = requireIntRange((long) retentionEpochs + 4,
-                ACCOUNT_STATE_SNAPSHOT_RETENTION_EPOCHS);
-
-        int resolvedUtxoRollbackWindow = utxoRollbackWindowConfigured
-                ? utxoRollbackWindow
-                : Math.max(utxoRollbackWindow, slotWindowInt);
-        int resolvedAccountStateLag = accountStateEpochBlockDataRetentionLagConfigured
-                ? accountStateEpochBlockDataRetentionLag
-                : Math.max(accountStateEpochBlockDataRetentionLag, rewardInputLag);
-        int resolvedSnapshotRetention = accountStateSnapshotRetentionEpochsConfigured
-                ? accountStateSnapshotRetentionEpochs
-                : Math.max(accountStateSnapshotRetentionEpochs, snapshotRetention);
-        java.util.Optional<Long> resolvedAccountHistorySafety = accountHistoryRollbackSafetySlotsConfigured
-                ? accountHistoryRollbackSafetySlots
-                : java.util.Optional.of(Math.max(accountHistoryRollbackSafetySlots.orElse(0L), slotWindow));
-
-        int resolvedBlockBodyPruneDepth = blockBodyPruneDepth;
-        if (blockBodyPruneDepth > 0) {
-            int minimumPruneDepth = computeMinimumBlockBodyPruneDepth(
-                    retentionEpochs, epochLength, activeSlotsCoeff);
-            resolvedBlockBodyPruneDepth = Math.max(blockBodyPruneDepth, minimumPruneDepth);
-        }
-
-        return new RollbackRetentionSettings(
-                resolvedUtxoRollbackWindow,
-                resolvedAccountStateLag,
-                resolvedSnapshotRetention,
-                resolvedAccountHistorySafety,
-                resolvedBlockBodyPruneDepth,
-                true,
-                retentionEpochs,
-                slotWindow);
-    }
-
-    static int computeMinimumBlockBodyPruneDepth(int retentionEpochs,
-                                                 long epochLength,
-                                                 double activeSlotsCoeff) {
-        if (retentionEpochs <= 0) return 0;
-        if (epochLength <= 0) {
-            throw new IllegalArgumentException("epochLength must be > 0");
-        }
-        double effectiveActiveSlotsCoeff = activeSlotsCoeff > 0 ? activeSlotsCoeff : 1.0;
-        long estimatedBlocksPerEpoch = (long) Math.ceil(epochLength * effectiveActiveSlotsCoeff);
-        long safeBlocksPerEpoch = Math.multiplyExact(estimatedBlocksPerEpoch, 2L);
-        return requireIntRange(Math.multiplyExact((long) retentionEpochs, safeBlocksPerEpoch),
-                BLOCK_BODY_PRUNE_DEPTH);
-    }
-
-    private static int requireIntRange(long value, String propertyName) {
-        if (value > Integer.MAX_VALUE) {
-            throw new IllegalArgumentException(propertyName + " exceeds integer range: " + value);
-        }
-        return (int) value;
-    }
-
-    @Produces
-    @ApplicationScoped
-    public NodeAPI createNodeAPI() {
-        if (nodeAPI != null) {
-            return nodeAPI;
+    private YanoNode ensureYanoNode() {
+        if (yanoNode != null) {
+            return yanoNode;
         }
 
         log.info("Creating Yano with network: {}", network);
 
-        YanoConfig yaciConfig;
-        switch (network.toLowerCase()) {
-            case "mainnet":
-                yaciConfig = YanoConfig.mainnetDefault();
-                break;
-            case "preview":
-                yaciConfig = YanoConfig.previewDefault();
-                break;
-            case "sanchonet":
-                yaciConfig = YanoConfig.sanchonetDefault();
-                break;
-            case "preprod":
-            default:
-                yaciConfig = YanoConfig.preprodDefault();
-                break;
-        }
+        YanoConfig yaciConfig = YanoConfig.defaultForNetwork(network);
 
         // Resolve genesis files: user config takes precedence, then auto-resolve from bundled classpath resources
         String resolvedShelleyGenesis = resolveGenesisFile(shelleyGenesisFile.orElse(null), protocolMagic, "shelley-genesis.json");
@@ -593,20 +468,8 @@ public class YanoProducer {
         RollbackRetentionGenesisValues rollbackRetentionGenesisValues = rollbackRetentionEpochs.orElse(0) > 0
                 ? resolveRollbackRetentionGenesisValues(resolvedShelleyGenesis)
                 : new RollbackRetentionGenesisValues(0, 0);
-        RollbackRetentionSettings rollbackRetentionSettings = resolveRollbackRetentionSettings(
-                rollbackRetentionEpochs,
-                rollbackRetentionGenesisValues.epochLength(),
-                rollbackRetentionGenesisValues.activeSlotsCoeff(),
-                utxoRollbackWindow,
-                isConfigPropertyPresent(UTXO_ROLLBACK_WINDOW),
-                accountStateEpochBlockDataRetentionLag,
-                isConfigPropertyPresent(ACCOUNT_STATE_EPOCH_BLOCK_DATA_RETENTION_LAG),
-                accountStateSnapshotRetentionEpochs,
-                isConfigPropertyPresent(ACCOUNT_STATE_SNAPSHOT_RETENTION_EPOCHS),
-                accountHistoryRollbackSafetySlots,
-                isConfigPropertyPresent(ACCOUNT_HISTORY_ROLLBACK_SAFETY_SLOTS),
-                blockBodyPruneDepth,
-                isConfigPropertyPresent(BLOCK_BODY_PRUNE_DEPTH));
+        RollbackRetentionSettings rollbackRetentionSettings =
+                resolveRollbackRetentionSettings(rollbackRetentionGenesisValues);
 
         if (rollbackRetentionSettings.umbrellaEnabled()) {
             if (blockBodyPruneDepth > 0
@@ -637,93 +500,147 @@ public class YanoProducer {
 
         // Globals: UTXO options
         Map<String, Object> globals = new HashMap<>();
-        globals.put("yano.utxo.enabled", utxoEnabled);
-        globals.put("yano.utxo.pruneDepth", utxoPruneDepth);
-        globals.put(UTXO_ROLLBACK_WINDOW, rollbackRetentionSettings.utxoRollbackWindow());
-        globals.put("yano.utxo.pruneBatchSize", utxoPruneBatchSize);
-        globals.put("yano.utxo.prune.schedule.seconds", utxoPruneScheduleSeconds);
-        globals.put("yano.utxo.metrics.lag.logSeconds", utxoMetricsLagLogSeconds);
-        globals.put("yano.utxo.lag.failIfAbove", utxoLagFailIfAbove);
-        globals.put("yano.utxo.index.address_hash", utxoIndexAddressHash);
-        globals.put("yano.utxo.index.payment_credential", utxoIndexPaymentCred);
-        globals.put("yano.utxo.indexingStrategy", utxoIndexingStrategy);
-        globals.put("yano.utxo.delta.selfContained", utxoDeltaSelfContained);
-        globals.put("yano.utxo.applyAsync", utxoApplyAsync);
-        globals.put("yano.metrics.enabled", metricsEnabled);
-        globals.put("yano.metrics.sample.rocksdb.seconds", metricsSampleRocksDbSeconds);
-        globals.put("yano.validation.default-validator-enabled", defaultValidatorEnabled);
-        globals.put("yano.validation.supplementary-rules-enabled", supplementaryRulesEnabled);
-        globals.put("yano.block-producer.tx-evaluation", txEvaluationEnabled);
+        putRollbackRetentionGlobals(globals, rollbackRetentionSettings);
+        globals.put(YanoPropertyKeys.Utxo.ENABLED, utxoEnabled);
+        globals.put(YanoPropertyKeys.Utxo.PRUNE_DEPTH, utxoPruneDepth);
+        globals.put(YanoPropertyKeys.Utxo.PRUNE_BATCH_SIZE, utxoPruneBatchSize);
+        globals.put(YanoPropertyKeys.Utxo.PRUNE_SCHEDULE_SECONDS, utxoPruneScheduleSeconds);
+        globals.put(YanoPropertyKeys.Utxo.METRICS_LAG_LOG_SECONDS, utxoMetricsLagLogSeconds);
+        globals.put(YanoPropertyKeys.Utxo.LAG_FAIL_IF_ABOVE, utxoLagFailIfAbove);
+        globals.put(YanoPropertyKeys.Utxo.INDEX_ADDRESS_HASH, utxoIndexAddressHash);
+        globals.put(YanoPropertyKeys.Utxo.INDEX_PAYMENT_CREDENTIAL, utxoIndexPaymentCred);
+        globals.put(YanoPropertyKeys.Utxo.INDEXING_STRATEGY, utxoIndexingStrategy);
+        globals.put(YanoPropertyKeys.Utxo.DELTA_SELF_CONTAINED, utxoDeltaSelfContained);
+        globals.put(YanoPropertyKeys.Utxo.APPLY_ASYNC, utxoApplyAsync);
+        globals.put(YanoPropertyKeys.Metrics.ENABLED, metricsEnabled);
+        globals.put(YanoPropertyKeys.Metrics.ROCKSDB_SAMPLE_SECONDS, metricsSampleRocksDbSeconds);
+        globals.put(YanoPropertyKeys.Validation.DEFAULT_VALIDATOR_ENABLED, defaultValidatorEnabled);
+        globals.put(YanoPropertyKeys.Validation.SUPPLEMENTARY_RULES_ENABLED, supplementaryRulesEnabled);
+        globals.put(YanoPropertyKeys.BlockProducer.TX_EVALUATION, txEvaluationEnabled);
         dnsCacheTtl.ifPresent(value -> globals.put(DnsCachePolicy.DNS_CACHE_TTL_KEY, value));
         dnsCacheNegativeTtl.ifPresent(value -> globals.put(DnsCachePolicy.DNS_CACHE_NEGATIVE_TTL_KEY, value));
 
         // Account state
-        globals.put("yano.account-state.enabled", effectiveAccountStateEnabled);
-        globals.put(ACCOUNT_STATE_EPOCH_BLOCK_DATA_RETENTION_LAG,
-                rollbackRetentionSettings.accountStateEpochBlockDataRetentionLag());
-        globals.put(ACCOUNT_STATE_SNAPSHOT_RETENTION_EPOCHS,
-                rollbackRetentionSettings.accountStateSnapshotRetentionEpochs());
-        globals.put("yano.account.stake-balance-index-enabled", effectiveStakeBalanceIndexEnabled);
-        globals.put("yano.account-history.enabled", effectiveAccountHistoryEnabled);
-        globals.put("yano.account-history.tx-events-enabled", effectiveAccountHistoryTxEventsEnabled);
-        globals.put("yano.account-history.rewards-enabled", effectiveAccountHistoryRewardsEnabled);
-        globals.put("yano.account-history.retention-epochs", accountHistoryRetentionEpochs);
-        globals.put("yano.account-history.prune-interval-seconds", accountHistoryPruneIntervalSeconds);
-        globals.put("yano.account-history.prune-batch-size", accountHistoryPruneBatchSize);
-        rollbackRetentionSettings.accountHistoryRollbackSafetySlots().ifPresent(v ->
-                globals.put(ACCOUNT_HISTORY_ROLLBACK_SAFETY_SLOTS, v));
+        globals.put(YanoPropertyKeys.AccountState.ENABLED, effectiveAccountStateEnabled);
+        globals.put(YanoPropertyKeys.AccountState.STAKE_BALANCE_INDEX_ENABLED, effectiveStakeBalanceIndexEnabled);
+        globals.put(YanoPropertyKeys.AccountHistory.ENABLED, effectiveAccountHistoryEnabled);
+        globals.put(YanoPropertyKeys.AccountHistory.TX_EVENTS_ENABLED, effectiveAccountHistoryTxEventsEnabled);
+        globals.put(YanoPropertyKeys.AccountHistory.REWARDS_ENABLED, effectiveAccountHistoryRewardsEnabled);
+        globals.put(YanoPropertyKeys.AccountHistory.RETENTION_EPOCHS, accountHistoryRetentionEpochs);
+        globals.put(YanoPropertyKeys.AccountHistory.PRUNE_INTERVAL_SECONDS, accountHistoryPruneIntervalSeconds);
+        globals.put(YanoPropertyKeys.AccountHistory.PRUNE_BATCH_SIZE, accountHistoryPruneBatchSize);
 
         // Epoch subsystems
-        globals.put("yano.epoch-snapshot.amounts-enabled", effectiveEpochSnapshotAmountsEnabled);
-        globals.put("yano.epoch-snapshot.balance-mode", balanceMode);
-        globals.put("yano.adapot.enabled", effectiveAdaPotEnabled);
-        globals.put("yano.rewards.enabled", effectiveRewardsEnabled);
-        globals.put("yano.epoch-params.tracking-enabled", effectiveEpochParamsTrackingEnabled);
-        globals.put("yano.governance.enabled", effectiveGovernanceEnabled);
-        globals.put("yano.snapshot-export.enabled", effectiveSnapshotExportEnabled);
-        globals.put("yano.snapshot-export.dir", snapshotExportDir);
-        globals.put("yano.snapshot-export.stake", snapshotExportStake);
-        globals.put("yano.snapshot-export.drep-dist", snapshotExportDrepDist);
-        globals.put("yano.snapshot-export.adapot", snapshotExportAdaPot);
-        globals.put("yano.snapshot-export.proposals", snapshotExportProposals);
-        globals.put("yano.exit-on-epoch-calc-error", exitOnEpochCalcError);
-        globals.put("yano.auto-checkpoint-interval", autoCheckpointInterval);
+        globals.put(YanoPropertyKeys.EpochSnapshot.AMOUNTS_ENABLED, effectiveEpochSnapshotAmountsEnabled);
+        globals.put(YanoPropertyKeys.EpochSnapshot.BALANCE_MODE, balanceMode);
+        globals.put(YanoPropertyKeys.Ledger.ADAPOT_ENABLED, effectiveAdaPotEnabled);
+        globals.put(YanoPropertyKeys.Ledger.REWARDS_ENABLED, effectiveRewardsEnabled);
+        globals.put(YanoPropertyKeys.Ledger.EPOCH_PARAMS_TRACKING_ENABLED, effectiveEpochParamsTrackingEnabled);
+        globals.put(YanoPropertyKeys.Ledger.GOVERNANCE_ENABLED, effectiveGovernanceEnabled);
+        globals.put(YanoPropertyKeys.SnapshotExport.ENABLED, effectiveSnapshotExportEnabled);
+        globals.put(YanoPropertyKeys.SnapshotExport.DIR, snapshotExportDir);
+        globals.put(YanoPropertyKeys.SnapshotExport.STAKE, snapshotExportStake);
+        globals.put(YanoPropertyKeys.SnapshotExport.DREP_DIST, snapshotExportDrepDist);
+        globals.put(YanoPropertyKeys.SnapshotExport.ADAPOT, snapshotExportAdaPot);
+        globals.put(YanoPropertyKeys.SnapshotExport.PROPOSALS, snapshotExportProposals);
+        globals.put(YanoPropertyKeys.Ledger.EXIT_ON_EPOCH_CALC_ERROR, exitOnEpochCalcError);
+        globals.put(YanoPropertyKeys.Ledger.AUTO_CHECKPOINT_INTERVAL, autoCheckpointInterval);
 
         // Block pruning
-        globals.put(BLOCK_BODY_PRUNE_DEPTH, rollbackRetentionSettings.blockBodyPruneDepth());
-        globals.put("yano.chain.block-prune-batch-size", blockPruneBatchSize);
-        globals.put("yano.chain.block-prune-interval-seconds", blockPruneIntervalSeconds);
+        globals.put(YanoPropertyKeys.Chain.BLOCK_PRUNE_BATCH_SIZE, blockPruneBatchSize);
+        globals.put(YanoPropertyKeys.Chain.BLOCK_PRUNE_INTERVAL_SECONDS, blockPruneIntervalSeconds);
 
         // UTXO filters
-        globals.put("yano.filters.utxo.enabled", utxoFilterEnabled);
-        globals.put("yano.filters.utxo.addresses", utxoFilterAddresses.orElse(java.util.List.of()));
-        globals.put("yano.filters.utxo.payment-credentials", utxoFilterPaymentCredentials.orElse(java.util.List.of()));
+        globals.put(YanoPropertyKeys.UtxoFilter.ENABLED, utxoFilterEnabled);
+        globals.put(YanoPropertyKeys.UtxoFilter.ADDRESSES, utxoFilterAddresses.orElse(java.util.List.of()));
+        globals.put(YanoPropertyKeys.UtxoFilter.PAYMENT_CREDENTIALS,
+                utxoFilterPaymentCredentials.orElse(java.util.List.of()));
 
         RuntimeOptions runtimeOptions = new RuntimeOptions(eventsOptions, pluginsOptions, globals);
 
         // Set plugin classloader on thread context so PluginManager picks it up
         Thread.currentThread().setContextClassLoader(pluginClassLoader);
 
-        nodeAPI = new Yano(yaciConfig, runtimeOptions);
-        log.info("Yano created successfully");
+        YanoAssembly.Builder assembly = YanoAssembly.fromConfig(yaciConfig)
+                .runtimeOptions(runtimeOptions);
 
-        // Configure adhoc rollback if requested via command line
         if (debugRollbackToSlot >= 0 || debugRollbackToEpoch >= 0) {
-            ((Yano) nodeAPI).setAdhocRollback(debugRollbackToSlot, debugRollbackToEpoch);
+            assembly.adhocRollback(debugRollbackToSlot, debugRollbackToEpoch);
             log.info("Adhoc rollback configured: slot={}, epoch={}", debugRollbackToSlot, debugRollbackToEpoch);
         }
 
-        // Wire bootstrap data provider if bootstrap is enabled
         if (bootstrapEnabled) {
-            wireBootstrapProvider((Yano) nodeAPI, yaciConfig);
+            DefaultBootstrapDataProviderFactory.create(yaciConfig)
+                    .ifPresent(assembly::bootstrapDataProvider);
         }
 
-        // Initialize transaction evaluator if enabled
-        if (txEvaluationEnabled) {
-            initTransactionEvaluator((Yano) nodeAPI, yaciConfig);
-        }
+        yanoNode = assembly.transactionBootstrap(
+                        TransactionBootstrapOptions.of(
+                                txEvaluationEnabled,
+                                effectiveEpochParamsTrackingEnabled(),
+                                supplementaryRulesEnabled,
+                                scriptEvaluator),
+                        DefaultTransactionServicesFactory::create)
+                .build();
+        log.info("Yano created successfully");
 
-        return nodeAPI;
+        return yanoNode;
+    }
+
+    @Produces
+    @ApplicationScoped
+    public NodeLifecycle createNodeLifecycle() {
+        return ensureYanoNode().lifecycle();
+    }
+
+    @Produces
+    @ApplicationScoped
+    public ChainQuery createChainQuery() {
+        return ensureYanoNode().chain();
+    }
+
+    @Produces
+    @ApplicationScoped
+    public LedgerQuery createLedgerQuery() {
+        return ensureYanoNode().ledger();
+    }
+
+    @Produces
+    @ApplicationScoped
+    public TxGateway createTxGateway() {
+        return ensureYanoNode().txGateway();
+    }
+
+    @Produces
+    @ApplicationScoped
+    public TxEvaluationGateway createTxEvaluationGateway() {
+        return ensureYanoNode().txEvaluationGateway();
+    }
+
+    @Produces
+    @ApplicationScoped
+    public ProducerControl createProducerControl() {
+        return ensureYanoNode().producerControl().orElse(UnavailableProducerControl.INSTANCE);
+    }
+
+    @Produces
+    @ApplicationScoped
+    public DevnetControl createDevnetControl() {
+        return ensureYanoNode().devnetControl().orElse(UnavailableDevnetControl.INSTANCE);
+    }
+
+    @Produces
+    @ApplicationScoped
+    public DebugLedgerStateAccess createDebugLedgerStateAccess() {
+        return ensureYanoNode().debugLedgerStateAccess()
+                .orElseThrow(() -> new IllegalStateException("Debug ledger-state access unavailable"));
+    }
+
+    @Produces
+    @ApplicationScoped
+    public RuntimeMaintenanceGate createRuntimeMaintenanceGate() {
+        return ensureYanoNode().maintenanceGate()
+                .orElseThrow(() -> new IllegalStateException("Runtime maintenance gate unavailable"));
     }
 
     void onStart(@Observes StartupEvent event) {
@@ -733,8 +650,7 @@ public class YanoProducer {
         if (autoSyncStart) {
             try {
                 log.info("Auto-starting Yano synchronization...");
-                NodeAPI node = createNodeAPI();
-                node.start();
+                ensureYanoNode().start();
                 log.info("Yano started automatically and syncing with {} network", network);
                 log.info("REST API available at {}/ for manual control", nodeApiBaseUrl());
             } catch (Exception e) {
@@ -770,322 +686,108 @@ public class YanoProducer {
         return prefix;
     }
 
-    /**
-     * Initialize the Scalus-based transaction evaluator and inject it into the node.
-     */
-    private void initTransactionEvaluator(Yano yaciNode, YanoConfig yaciConfig) {
-        boolean effectiveEpochParamsTrackingEnabled = effectiveEpochParamsTrackingEnabled();
-        LedgerStateProvider ledgerStateProvider = yaciNode.getLedgerStateProvider();
-
-        // Load genesis config for slot math. Protocol params prefer ledger-state when
-        // epoch-param tracking is wired, then protocol-param.json, then genesis bootstrap.
-        GenesisConfig genesis;
-        SlotConfigSupplier slotConfigSupplier;
-        int networkId;
-        EpochProtocolParamsSupplier protocolParamsSupplier;
-        LongSupplier currentSlotSupplier;
-        EpochSlotCalc epochSlotCalc;
-        String protocolParamsSource;
-        boolean requireLedgerStateProviderForValidation;
-        try {
-            boolean loadStaticProtocolParams =
-                    !effectiveEpochParamsTrackingEnabled || ledgerStateProvider == null;
-            genesis = GenesisConfig.load(
-                    yaciConfig.getShelleyGenesisFile(),
-                    yaciConfig.getByronGenesisFile(),
-                    loadStaticProtocolParams ? yaciConfig.getProtocolParametersFile() : null);
-
-            epochSlotCalc = resolveEpochSlotCalc(yaciNode, yaciConfig, genesis);
-            ProtocolParamsResolution protocolParamsResolution = resolveTransactionProtocolParams(
-                    effectiveEpochParamsTrackingEnabled, ledgerStateProvider, genesis, epochSlotCalc, yaciConfig);
-            if (protocolParamsResolution == null) {
-                return;
-            }
-            protocolParamsSupplier = protocolParamsResolution.supplier();
-            protocolParamsSource = protocolParamsResolution.source();
-            requireLedgerStateProviderForValidation = protocolParamsResolution.requireLedgerStateProvider();
-
-            currentSlotSupplier = () -> {
-                var tip = yaciNode.getLocalTip();
-                return tip != null ? tip.getSlot() : -1L;
-            };
-            slotConfigSupplier = new RuntimeSlotConfigSupplier(
-                    yaciConfig, yaciNode::getResolvedGenesisTimestamp, genesis);
-
-            long magic = yaciConfig.getProtocolMagic();
-
-            var initialSlotConfig = slotConfigSupplier.getSlotConfig();
-            log.info("Yano transaction slot config: slotLengthMillis={}, zeroSlot={}, zeroTimeMillis={}",
-                    initialSlotConfig.getSlotLength(),
-                    initialSlotConfig.getZeroSlot(),
-                    initialSlotConfig.getZeroTime());
-
-            networkId = magic == Constants.MAINNET_PROTOCOL_MAGIC ? 1 : 0;
-        } catch (Exception e) {
-            log.warn("Transaction validation/evaluation not initialized: {}", e.getMessage(), e);
-            return;
-        }
-
-        // Initialize TransactionValidator (Scalus) — validates transactions on submission
-        boolean validatorInitialized = false;
-        try {
-            TransactionValidator evaluator = ScalusTransactionFactory.createValidator(protocolParamsSupplier,
-                    new YaciScriptSupplier(yaciNode.getUtxoState()), slotConfigSupplier, networkId,
-                    ledgerStateProvider, currentSlotSupplier, epochSlotCalc::slotToEpoch,
-                    requireLedgerStateProviderForValidation, supplementaryRulesEnabled);
-            yaciNode.setTransactionEvaluator(evaluator);
-            validatorInitialized = true;
-            log.info("Transaction validator initialized (networkId={}, protocolParams={}, supplementaryRules={})",
-                    networkId, protocolParamsSource, supplementaryRulesEnabled);
-        } catch (Exception e) {
-            log.error("Failed to initialize transaction validator (Scalus). "
-                    + "Transactions will NOT be validated on submission! Error: {}", e.getMessage(), e);
-        }
-
-        // Initialize TransactionEvaluator (Aiken/Scalus) — powers /utils/txs/evaluate endpoint
-        boolean evaluatorInitialized = false;
-        try {
-            TransactionEvaluator transactionEvaluator;
-            if ("scalus".equalsIgnoreCase(scriptEvaluator)) {
-                transactionEvaluator = ScalusTransactionFactory.createEvaluator(protocolParamsSupplier,
-                        new YaciScriptSupplier(yaciNode.getUtxoState()), slotConfigSupplier, networkId, currentSlotSupplier);
-            } else if ("julc".equalsIgnoreCase(scriptEvaluator)) {
-                transactionEvaluator = new JulcTxEvaluator(
-                        () -> protocolParamsSupplier.getProtocolParams(resolveRuntimeCurrentSlot(currentSlotSupplier)),
-                        new YaciScriptSupplier(yaciNode.getUtxoState()), slotConfigSupplier);
-            } else {
-                transactionEvaluator = new AikenTxEvaluator(
-                        () -> protocolParamsSupplier.getProtocolParams(resolveRuntimeCurrentSlot(currentSlotSupplier)),
-                        new YaciScriptSupplier(yaciNode.getUtxoState()), slotConfigSupplier);
-            }
-            yaciNode.setScriptEvaluator(transactionEvaluator);
-            evaluatorInitialized = true;
-            log.info("Script evaluator initialized (networkId={}, evaluator={})", networkId, scriptEvaluator);
-        } catch (Exception e) {
-            log.error("Failed to initialize script evaluator ({}). "
-                    + "The /utils/txs/evaluate endpoint will not work. Error: {}", scriptEvaluator, e.getMessage(), e);
-        }
-
-        if (!validatorInitialized && !evaluatorInitialized) {
-            log.error("Neither transaction validator nor script evaluator could be initialized. "
-                    + "Plutus script transactions will not be validated!");
-        }
-    }
-
-    private ProtocolParamsResolution resolveTransactionProtocolParams(boolean effectiveEpochParamsTrackingEnabled,
-                                                                     LedgerStateProvider ledgerStateProvider,
-                                                                     GenesisConfig genesis,
-                                                                     EpochSlotCalc epochSlotCalc,
-                                                                     YanoConfig yaciConfig) {
-        ProtocolParamsResolution resolution = selectTransactionProtocolParams(
-                effectiveEpochParamsTrackingEnabled,
-                ledgerStateProvider,
-                epochSlotCalc,
-                () -> resolveStaticProtocolParams(genesis, yaciConfig.getProtocolParametersFile()),
-                () -> resolveGenesisProtocolParams(yaciConfig));
-        if (resolution != null) {
-            return resolution;
-        }
-
-        log.warn("Transaction validation/evaluation not initialized: no protocol params source available "
-                        + "(effectiveLedger={}, protocolParamFile={}, shelleyGenesis={})",
-                effectiveEpochParamsTrackingEnabled && ledgerStateProvider != null,
-                sourceLabel(yaciConfig.getProtocolParametersFile()),
-                sourceLabel(yaciConfig.getShelleyGenesisFile()));
-        return null;
-    }
-
-    static ProtocolParamsResolution selectTransactionProtocolParams(boolean effectiveEpochParamsTrackingEnabled,
-                                                                    LedgerStateProvider ledgerStateProvider,
-                                                                    EpochSlotCalc epochSlotCalc,
-                                                                    Supplier<ProtocolParams> staticParamsSupplier,
-                                                                    Supplier<ProtocolParams> genesisParamsSupplier) {
-        if (effectiveEpochParamsTrackingEnabled && ledgerStateProvider != null) {
-            log.info("Transaction protocol params source: effective-ledger");
-            return new ProtocolParamsResolution(
-                    new EffectiveProtocolParamsSupplier(ledgerStateProvider, epochSlotCalc),
-                    "effective-ledger",
-                    true);
-        }
-
-        if (effectiveEpochParamsTrackingEnabled) {
-            log.warn("Epoch-param tracking is enabled but LedgerStateProvider is unavailable for transaction "
-                    + "validation/evaluation. Falling back to protocol-param.json / genesis bootstrap.");
-        }
-
-        ProtocolParams staticParams = staticParamsSupplier != null ? staticParamsSupplier.get() : null;
-        if (staticParams != null) {
-            return new ProtocolParamsResolution(slot -> staticParams, "static-protocol-param-json", false);
-        }
-
-        ProtocolParams genesisParams = genesisParamsSupplier != null ? genesisParamsSupplier.get() : null;
-        if (genesisParams != null) {
-            return new ProtocolParamsResolution(slot -> genesisParams, "genesis-bootstrap", false);
-        }
-
-        return null;
-    }
-
-    private ProtocolParams resolveStaticProtocolParams(GenesisConfig genesis, String protocolParamsFile) {
-        if (genesis == null || !genesis.hasProtocolParameters()) {
-            return null;
-        }
-
-        try {
-            ProtocolParams params = ProtocolParamsMapper.fromNodeProtocolParam(genesis.getProtocolParameters());
-            validateProtocolVersion(params, "protocol-param.json");
-            log.info("Transaction protocol params source: protocol-param-json file={} version={}.{}",
-                    sourceLabel(protocolParamsFile),
-                    params.getProtocolMajorVer(),
-                    params.getProtocolMinorVer());
-            return params;
-        } catch (Exception e) {
-            log.warn("Failed to resolve transaction protocol params from protocol-param.json file={}: {}",
-                    sourceLabel(protocolParamsFile), e.toString());
-            return null;
-        }
-    }
-
-    private ProtocolParams resolveGenesisProtocolParams(YanoConfig yaciConfig) {
-        try {
-            NetworkGenesisConfig networkGenesisConfig = NetworkGenesisConfig.load(
-                    yaciConfig.getShelleyGenesisFile(),
-                    yaciConfig.getByronGenesisFile(),
-                    yaciConfig.getAlonzoGenesisFile(),
-                    yaciConfig.getConwayGenesisFile());
-            long firstNonByronSlot = DefaultEpochParamProvider.resolveFirstNonByronSlot(
-                    networkGenesisConfig.getNetworkMagic(),
-                    networkGenesisConfig.hasByronGenesis());
-            var provider = DefaultEpochParamProvider.fromNetworkGenesisConfig(
-                    networkGenesisConfig, firstNonByronSlot);
-            ProtocolParams params = ProtocolParamsMapper.fromEpochParamProvider(provider, 0);
-            validateProtocolVersion(params, "genesis bootstrap");
-            log.info("Transaction protocol params source: genesis-bootstrap shelley={} alonzo={} conway={} version={}.{}",
-                    sourceLabel(yaciConfig.getShelleyGenesisFile()),
-                    sourceLabel(yaciConfig.getAlonzoGenesisFile()),
-                    sourceLabel(yaciConfig.getConwayGenesisFile()),
-                    params.getProtocolMajorVer(),
-                    params.getProtocolMinorVer());
-            return params;
-        } catch (Exception e) {
-            log.warn("Failed to resolve transaction protocol params from genesis bootstrap "
-                            + "shelley={} alonzo={} conway={}: {}",
-                    sourceLabel(yaciConfig.getShelleyGenesisFile()),
-                    sourceLabel(yaciConfig.getAlonzoGenesisFile()),
-                    sourceLabel(yaciConfig.getConwayGenesisFile()),
-                    e.toString());
-            return null;
-        }
-    }
-
-    private static void validateProtocolVersion(ProtocolParams params, String source) {
-        Integer major = params != null ? params.getProtocolMajorVer() : null;
-        Integer minor = params != null ? params.getProtocolMinorVer() : null;
-        if (major == null || major <= 0 || minor == null || minor < 0) {
-            throw new IllegalStateException("Protocol version not found or invalid in " + source);
-        }
-    }
-
-    private static String sourceLabel(String source) {
-        return source != null && !source.isBlank() ? source : "not-configured";
-    }
-
-    record ProtocolParamsResolution(EpochProtocolParamsSupplier supplier,
-                                    String source,
-                                    boolean requireLedgerStateProvider) {}
-
-    static long resolveRuntimeCurrentSlot(LongSupplier currentSlotSupplier) {
-        if (currentSlotSupplier == null) {
-            throw new IllegalStateException("Failed to resolve current slot from runtime");
-        }
-
-        try {
-            long slot = currentSlotSupplier.getAsLong();
-            if (slot >= 0) return slot;
-            throw new IllegalStateException("current slot supplier returned " + slot);
-        } catch (Exception e) {
-            throw new IllegalStateException("Failed to resolve current slot from runtime", e);
-        }
-    }
-
-    private EpochSlotCalc resolveEpochSlotCalc(Yano yaciNode, YanoConfig yaciConfig, GenesisConfig genesis) {
-        var provider = yaciNode.getEpochParamProvider();
-        if (provider != null) {
-            return provider.getEpochSlotCalc();
-        }
-
-        if (yaciConfig.isEpochParamsInitialized()) {
-            return new EpochSlotCalc(yaciConfig.getEpochLength(),
-                    yaciConfig.getByronSlotsPerEpoch(),
-                    yaciConfig.getFirstNonByronSlot());
-        }
-
-        var shelley = genesis.getShelleyGenesisData();
-        if (shelley == null) {
-            throw new IllegalStateException("Cannot resolve epoch slot math without Shelley genesis");
-        }
-
-        boolean hasByron = genesis.getByronGenesisData() != null;
-        long byronSlotsPerEpoch = hasByron
-                ? genesis.getByronGenesisData().epochLength()
-                : shelley.securityParam() * 10;
-        long firstNonByronSlot = DefaultEpochParamProvider
-                .resolveFirstNonByronSlot(yaciConfig.getProtocolMagic(), hasByron);
-        return new EpochSlotCalc(shelley.epochLength(), byronSlotsPerEpoch, firstNonByronSlot);
-    }
-
-    /**
-     * Wire the bootstrap data provider into the Yano based on configuration.
-     */
-    private void wireBootstrapProvider(Yano yaciNode, YanoConfig yaciConfig) {
-        try {
-            String providerType = yaciConfig.getBootstrapProvider() != null
-                    ? yaciConfig.getBootstrapProvider().toLowerCase() : "blockfrost";
-            String net = yaciConfig.getNetwork() != null ? yaciConfig.getNetwork() : "preprod";
-
-            com.bloxbean.cardano.yano.api.bootstrap.BootstrapDataProvider provider;
-            switch (providerType) {
-                case "koios" -> {
-                    if (yaciConfig.getBootstrapKoiosBaseUrl() != null
-                            && !yaciConfig.getBootstrapKoiosBaseUrl().isBlank()) {
-                        provider = new com.bloxbean.cardano.yano.bootstrap.providers.KoiosBootstrapProvider(
-                                yaciConfig.getBootstrapKoiosBaseUrl());
-                    } else {
-                        provider = com.bloxbean.cardano.yano.bootstrap.providers.KoiosBootstrapProvider
-                                .forNetwork(net);
-                    }
-                }
-                default -> { // blockfrost
-                    String apiKey = yaciConfig.getBootstrapBlockfrostApiKey();
-                    if (apiKey == null || apiKey.isBlank()) {
-                        log.warn("Bootstrap enabled but no Blockfrost API key configured. "
-                                + "Set yano.bootstrap.blockfrost.api-key");
-                        return;
-                    }
-                    if (yaciConfig.getBootstrapBlockfrostBaseUrl() != null
-                            && !yaciConfig.getBootstrapBlockfrostBaseUrl().isBlank()) {
-                        provider = new com.bloxbean.cardano.yano.bootstrap.providers.BlockfrostBootstrapProvider(
-                                yaciConfig.getBootstrapBlockfrostBaseUrl(), apiKey);
-                    } else {
-                        provider = com.bloxbean.cardano.yano.bootstrap.providers.BlockfrostBootstrapProvider
-                                .forNetwork(net, apiKey);
-                    }
-                }
-            }
-            yaciNode.setBootstrapDataProvider(provider);
-            log.info("Bootstrap data provider configured: {}", providerType);
-        } catch (Exception e) {
-            log.error("Failed to configure bootstrap provider: {}", e.getMessage());
-        }
-    }
-
     void onStop(@Observes ShutdownEvent event) {
         log.info("Yano application shutting down...");
-        if (nodeAPI != null && nodeAPI.isRunning()) {
+        if (yanoNode != null) {
             log.info("Stopping Yano...");
-            nodeAPI.stop();
+            yanoNode.close();
             log.info("Yano stopped");
         }
+    }
+
+    /**
+     * Placeholder for CDI injection sites when producer control is not available
+     * for the assembled node role.
+     */
+    private enum UnavailableProducerControl implements ProducerControl {
+        INSTANCE;
+
+        @Override
+        public void startProducer() {
+            throw unavailableRole("ProducerControl");
+        }
+
+        @Override
+        public void stopProducer() {
+            throw unavailableRole("ProducerControl");
+        }
+
+        @Override
+        public void resetProducerToChainTip() {
+            throw unavailableRole("ProducerControl");
+        }
+    }
+
+    /**
+     * Placeholder for CDI injection sites when devnet control is not available
+     * for the assembled node role.
+     */
+    private enum UnavailableDevnetControl implements DevnetControl {
+        INSTANCE;
+
+        @Override
+        public void rollbackDevnetToSlot(long targetSlot) {
+            throw unavailableRole("DevnetControl");
+        }
+
+        @Override
+        public DevnetRollbackResult rollbackDevnet(DevnetRollbackTarget target) {
+            throw unavailableRole("DevnetControl");
+        }
+
+        @Override
+        public SnapshotInfo createDevnetSnapshot(String name) {
+            throw unavailableRole("DevnetControl");
+        }
+
+        @Override
+        public void restoreDevnetSnapshot(String name) {
+            throw unavailableRole("DevnetControl");
+        }
+
+        @Override
+        public DevnetRestoreResult restoreDevnetSnapshotAndGetTip(String name) {
+            throw unavailableRole("DevnetControl");
+        }
+
+        @Override
+        public List<SnapshotInfo> listDevnetSnapshots() {
+            throw unavailableRole("DevnetControl");
+        }
+
+        @Override
+        public void deleteDevnetSnapshot(String name) {
+            throw unavailableRole("DevnetControl");
+        }
+
+        @Override
+        public FundResult fundAddress(String address, long lovelace) {
+            throw unavailableRole("DevnetControl");
+        }
+
+        @Override
+        public TimeAdvanceResult advanceTimeBySlots(int slots) {
+            throw unavailableRole("DevnetControl");
+        }
+
+        @Override
+        public TimeAdvanceResult advanceTimeBySeconds(int seconds) {
+            throw unavailableRole("DevnetControl");
+        }
+
+        @Override
+        public long shiftGenesisAndStartProducer(int epochs) {
+            throw unavailableRole("DevnetControl");
+        }
+
+        @Override
+        public TimeAdvanceResult catchUpToWallClock() {
+            throw unavailableRole("DevnetControl");
+        }
+    }
+
+    private static IllegalStateException unavailableRole(String role) {
+        return new IllegalStateException(role + " is not available for this Yano assembly");
     }
 
     private RollbackRetentionGenesisValues resolveRollbackRetentionGenesisValues(String resolvedShelleyGenesis) {
@@ -1096,6 +798,33 @@ public class YanoProducer {
             throw new IllegalStateException("Failed to resolve Shelley genesis values for "
                     + ROLLBACK_RETENTION_EPOCHS + " from " + resolvedShelleyGenesis, e);
         }
+    }
+
+    RollbackRetentionSettings resolveRollbackRetentionSettings(RollbackRetentionGenesisValues genesisValues) {
+        return RollbackRetentionPlanner.resolve(
+                rollbackRetentionEpochs,
+                genesisValues.epochLength(),
+                genesisValues.activeSlotsCoeff(),
+                utxoRollbackWindow,
+                isConfigPropertyPresent(UTXO_ROLLBACK_WINDOW),
+                accountStateEpochBlockDataRetentionLag,
+                isConfigPropertyPresent(ACCOUNT_STATE_EPOCH_BLOCK_DATA_RETENTION_LAG),
+                accountStateSnapshotRetentionEpochs,
+                isConfigPropertyPresent(ACCOUNT_STATE_SNAPSHOT_RETENTION_EPOCHS),
+                accountHistoryRollbackSafetySlots,
+                isConfigPropertyPresent(ACCOUNT_HISTORY_ROLLBACK_SAFETY_SLOTS),
+                blockBodyPruneDepth);
+    }
+
+    void putRollbackRetentionGlobals(Map<String, Object> globals, RollbackRetentionSettings settings) {
+        globals.put(UTXO_ROLLBACK_WINDOW, settings.utxoRollbackWindow());
+        globals.put(ACCOUNT_STATE_EPOCH_BLOCK_DATA_RETENTION_LAG,
+                settings.accountStateEpochBlockDataRetentionLag());
+        globals.put(ACCOUNT_STATE_SNAPSHOT_RETENTION_EPOCHS,
+                settings.accountStateSnapshotRetentionEpochs());
+        settings.accountHistoryRollbackSafetySlots().ifPresent(v ->
+                globals.put(ACCOUNT_HISTORY_ROLLBACK_SAFETY_SLOTS, v));
+        globals.put(BLOCK_BODY_PRUNE_DEPTH, settings.blockBodyPruneDepth());
     }
 
     private boolean isConfigPropertyPresent(String propertyName) {
@@ -1116,45 +845,7 @@ public class YanoProducer {
      * classpath resource to a temp file.
      */
     private String resolveGenesisFile(String userPath, long magic, String filename) {
-        // If user provided an explicit path and file exists, use it
-        if (userPath != null && !userPath.isBlank()) {
-            if (new java.io.File(userPath).exists()) {
-                return userPath;
-            }
-            log.debug("User-configured genesis file not found: {}, trying bundled resource", userPath);
-        }
-
-        // Auto-resolve from bundled classpath resources based on protocol magic
-        String networkDir = networkDirForMagic(magic);
-        if (networkDir == null) {
-            return userPath; // Unknown network, can't auto-resolve
-        }
-
-        String classpathResource = "genesis/" + networkDir + "/" + filename;
-        try (InputStream is = Thread.currentThread().getContextClassLoader().getResourceAsStream(classpathResource)) {
-            if (is == null) {
-                log.debug("Bundled genesis resource not found: {}", classpathResource);
-                return userPath;
-            }
-            // Extract to temp file
-            Path tempFile = Files.createTempFile("yaci-" + networkDir + "-", "-" + filename);
-            tempFile.toFile().deleteOnExit();
-            Files.copy(is, tempFile, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
-            log.info("Auto-resolved {} from bundled resource for {} network", filename, networkDir);
-            return tempFile.toString();
-        } catch (IOException e) {
-            log.warn("Failed to extract bundled genesis resource {}: {}", classpathResource, e.getMessage());
-            return userPath;
-        }
-    }
-
-    private static final long SANCHONET_PROTOCOL_MAGIC = 4;
-
-    private static String networkDirForMagic(long magic) {
-        if (magic == Constants.MAINNET_PROTOCOL_MAGIC) return "mainnet";
-        if (magic == Constants.PREPROD_PROTOCOL_MAGIC) return "preprod";
-        if (magic == Constants.PREVIEW_PROTOCOL_MAGIC) return "preview";
-        if (magic == SANCHONET_PROTOCOL_MAGIC) return "sanchonet";
-        return null;
+        return GenesisFileResolver.resolve(
+                userPath, magic, filename, Thread.currentThread().getContextClassLoader());
     }
 }

@@ -1,6 +1,6 @@
 package com.bloxbean.cardano.yano.app.api.genesis;
 
-import com.bloxbean.cardano.yano.api.NodeAPI;
+import com.bloxbean.cardano.yano.api.LedgerQuery;
 import com.bloxbean.cardano.yano.api.model.GenesisParameters;
 import com.bloxbean.cardano.yano.app.api.genesis.dto.GenesisDto;
 import jakarta.inject.Inject;
@@ -16,11 +16,11 @@ import java.util.Map;
 public class GenesisResource {
 
     @Inject
-    NodeAPI nodeAPI;
+    LedgerQuery ledgerQuery;
 
     @GET
     public Response getGenesis() {
-        GenesisParameters params = nodeAPI.getGenesisParameters();
+        GenesisParameters params = ledgerQuery.getGenesisParameters();
         if (params == null) {
             return Response.status(Response.Status.NOT_FOUND)
                     .entity(Map.of("error", "Genesis data not available"))

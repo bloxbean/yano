@@ -1,6 +1,6 @@
 package com.bloxbean.cardano.yano.api.account;
 
-import com.bloxbean.cardano.yaci.core.storage.ChainState;
+import com.bloxbean.cardano.yano.api.ChainBlockReader;
 import com.bloxbean.cardano.yano.api.events.BlockAppliedEvent;
 import com.bloxbean.cardano.yano.api.events.GenesisBlockEvent;
 import com.bloxbean.cardano.yano.api.events.RollbackEvent;
@@ -22,7 +22,7 @@ public interface AccountStateStore extends LedgerStateProvider {
      * Reconcile store state with chain tip on startup.
      * Same pattern as DefaultUtxoStore.reconcile().
      */
-    void reconcile(ChainState chainState);
+    void reconcile(ChainBlockReader chainBlocks);
 
     boolean isEnabled();
 

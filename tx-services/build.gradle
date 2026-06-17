@@ -1,0 +1,21 @@
+dependencies {
+    api project(':runtime')
+
+    implementation project(':scalus-bridge')
+}
+
+java {
+    sourceCompatibility = 25
+    targetCompatibility = 25
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            pom {
+                name = 'Yano Transaction Services'
+                description = 'Optional transaction validation and script evaluation services for Yano'
+            }
+        }
+    }
+}

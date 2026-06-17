@@ -1,6 +1,9 @@
 package com.bloxbean.cardano.yano.app;
 
-import com.bloxbean.cardano.yano.api.NodeAPI;
+import com.bloxbean.cardano.yano.api.ChainQuery;
+import com.bloxbean.cardano.yano.api.LedgerQuery;
+import com.bloxbean.cardano.yano.api.NodeLifecycle;
+import com.bloxbean.cardano.yano.api.TxGateway;
 import com.bloxbean.cardano.yano.api.config.YanoConfig;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.Consumes;
@@ -18,25 +21,34 @@ import java.util.Map;
 public class YanoResource {
 
     @Inject
-    NodeAPI nodeAPI;
+    NodeLifecycle nodeLifecycle;
+
+    @Inject
+    ChainQuery chainQuery;
+
+    @Inject
+    LedgerQuery ledgerQuery;
+
+    @Inject
+    TxGateway txGateway;
 
     @GET
     @Path("/status")
     public Response getStatus() {
-        return Response.ok(nodeAPI.getStatus()).build();
+        return Response.ok(nodeLifecycle.getStatus()).build();
     }
 
     @POST
     @Path("/start")
     public Response start() {
-        if (nodeAPI.isRunning()) {
+        if (nodeLifecycle.isRunning()) {
             return Response.status(Response.Status.CONFLICT)
                     .entity(Map.of("error", "Node is already running"))
                     .build();
         }
 
         try {
-            nodeAPI.start();
+            nodeLifecycle.start();
             return Response.ok(Map.of("message", "Node started successfully")).build();
         } catch (Exception e) {
             return Response.serverError()
@@ -48,14 +60,14 @@ public class YanoResource {
     @POST
     @Path("/stop")
     public Response stop() {
-        if (!nodeAPI.isRunning()) {
+        if (!nodeLifecycle.isRunning()) {
             return Response.status(Response.Status.CONFLICT)
                     .entity(Map.of("error", "Node is not running"))
                     .build();
         }
 
         try {
-            nodeAPI.stop();
+            nodeLifecycle.stop();
             return Response.ok(Map.of("message", "Node stopped successfully")).build();
         } catch (Exception e) {
             return Response.serverError()
@@ -67,7 +79,7 @@ public class YanoResource {
     @GET
     @Path("/tip")
     public Response getLocalTip() {
-        var tip = nodeAPI.getLocalTip();
+        var tip = chainQuery.getLocalTip();
         if (tip == null) {
             return Response.status(Response.Status.NOT_FOUND)
                     .entity(Map.of("error", "No local tip available"))
@@ -79,7 +91,7 @@ public class YanoResource {
     @GET
     @Path("/config")
     public Response getConfig() {
-        var config = nodeAPI.getConfig();
+        var config = nodeLifecycle.getConfig();
         // Build a safe response map — epoch fields may throw if not yet initialized from genesis
         var result = new java.util.LinkedHashMap<String, Object>();
         result.put("protocolMagic", config.getProtocolMagic());
@@ -113,7 +125,7 @@ public class YanoResource {
         }
 
         try {
-            String txHash = nodeAPI.submitTransaction(txCbor);
+            String txHash = txGateway.submitTransaction(txCbor);
             return Response.accepted(Map.of("txHash", txHash)).build();
         } catch (Exception e) {
             return Response.serverError()
@@ -125,7 +137,7 @@ public class YanoResource {
     @GET
     @Path("/protocol-params")
     public Response getProtocolParameters() {
-        String params = nodeAPI.getProtocolParameters();
+        String params = ledgerQuery.getProtocolParameters();
         if (params == null) {
             return Response.status(Response.Status.NOT_FOUND)
                     .entity(Map.of("error", "Protocol parameters not available"))
@@ -137,7 +149,7 @@ public class YanoResource {
     @GET
     @Path("/epoch-calc-status")
     public Response getEpochCalcStatus() {
-        var status = nodeAPI.getEpochCalcStatus();
+        var status = ledgerQuery.getEpochCalcStatus();
         if (status == null) {
             return Response.ok(Map.of("status", "OK")).build();
         }
@@ -146,15 +158,15 @@ public class YanoResource {
 
     @POST
     @Path("/recover")
-    public Response recoverChainState() {
+    public Response recoverChain() {
         try {
-            if (nodeAPI.isRunning()) {
+            if (nodeLifecycle.isRunning()) {
                 return Response.status(Response.Status.CONFLICT)
                         .entity(Map.of("error", "Cannot recover chain state while node is running. Please stop the node first."))
                         .build();
             }
 
-            boolean recovered = nodeAPI.recoverChainState();
+            boolean recovered = chainQuery.recoverChain();
 
             if (recovered) {
                 return Response.ok(Map.of("message", "Chain state recovery completed successfully")).build();

@@ -1,10 +1,11 @@
 package com.bloxbean.cardano.yano.runtime.bootstrap;
 
 import com.bloxbean.cardano.yaci.core.storage.ChainTip;
+import com.bloxbean.cardano.yaci.core.storage.ChainState;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.bootstrap.*;
 import com.bloxbean.cardano.yano.runtime.blockproducer.DevnetBlockBuilder;
-import com.bloxbean.cardano.yano.runtime.chain.DirectRocksDBChainState;
+import com.bloxbean.cardano.yano.runtime.chain.BootstrapChainStateWriter;
 import com.bloxbean.cardano.yano.runtime.utxo.UtxoStoreWriter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -27,11 +28,13 @@ public class BootstrapService {
     /** Safety margin when using "latest" — subtract this from current tip */
     private static final int LATEST_SAFETY_MARGIN = 100;
 
-    private final DirectRocksDBChainState chainState;
+    private final ChainState chainState;
+    private final BootstrapChainStateWriter bootstrapWriter;
     private final UtxoStoreWriter utxoStore;
 
-    public BootstrapService(DirectRocksDBChainState chainState, UtxoStoreWriter utxoStore) {
+    public BootstrapService(ChainState chainState, BootstrapChainStateWriter bootstrapWriter, UtxoStoreWriter utxoStore) {
         this.chainState = chainState;
+        this.bootstrapWriter = bootstrapWriter;
         this.utxoStore = utxoStore;
     }
 
@@ -136,9 +139,9 @@ public class BootstrapService {
             // Store with the REAL hash from the provider (not the computed hash from dummy header)
             byte[] realHash = HexUtil.decodeHexString(block.blockHash());
 
-            chainState.forceStoreBlockHeader(realHash, block.blockNumber(),
+            bootstrapWriter.forceStoreBlockHeader(realHash, block.blockNumber(),
                     block.slot(), built.wrappedHeaderCbor());
-            chainState.forceStoreBlock(realHash, block.blockNumber(),
+            bootstrapWriter.forceStoreBlock(realHash, block.blockNumber(),
                     block.slot(), built.blockCbor());
         }
     }

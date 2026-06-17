@@ -47,6 +47,12 @@ class AccountStateEndpointsE2ETest extends BaseE2ETest {
         return 300; // unique index to avoid collisions with other E2E tests
     }
 
+    @Override
+    protected String getMnemonic() {
+        return "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon "
+                + "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art";
+    }
+
     @BeforeAll
     void fundAccounts() throws Exception {
         account = getAccount(0);

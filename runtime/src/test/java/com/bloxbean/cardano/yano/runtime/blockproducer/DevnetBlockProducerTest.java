@@ -28,6 +28,7 @@ import com.bloxbean.cardano.yano.ledgerrules.ValidationResult;
 import com.bloxbean.cardano.yano.runtime.chain.DefaultMemPool;
 import com.bloxbean.cardano.yano.runtime.chain.InMemoryChainState;
 import com.bloxbean.cardano.yano.runtime.chain.MemPool;
+import com.bloxbean.cardano.yano.runtime.tx.BlockTransactionSelector;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -126,6 +127,43 @@ class DevnetBlockProducerTest {
         ChainTip tip = chainState.getTip();
         assertNotNull(tip);
         assertThat(tip.getBlockNumber()).isGreaterThanOrEqualTo(1);
+    }
+
+    @Test
+    void lazyModeCanProduceUsingTransactionSelectorBoundary() throws Exception {
+        AtomicBoolean drained = new AtomicBoolean(false);
+        AtomicBoolean pending = new AtomicBoolean(true);
+        BlockTransactionSelector selector = new BlockTransactionSelector() {
+            @Override
+            public boolean hasPendingTransactions() {
+                return pending.get();
+            }
+
+            @Override
+            public List<byte[]> drainForBlock() {
+                drained.set(true);
+                pending.set(false);
+                return List.of(buildSampleTxCbor());
+            }
+        };
+        blockProducer = DevnetBlockProducer.withTransactionSelector(
+                chainState,
+                selector,
+                () -> null,
+                new NoopEventBus(),
+                scheduler,
+                new DevnetBlockBuilder(),
+                200,
+                true,
+                System.currentTimeMillis(),
+                1000,
+                null);
+        blockProducer.start();
+
+        Thread.sleep(500);
+
+        assertThat(drained).isTrue();
+        assertThat(chainState.getTip().getBlockNumber()).isGreaterThanOrEqualTo(1);
     }
 
     @Test

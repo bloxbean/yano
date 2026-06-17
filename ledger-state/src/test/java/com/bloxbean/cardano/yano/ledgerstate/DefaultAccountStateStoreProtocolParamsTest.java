@@ -1,5 +1,6 @@
 package com.bloxbean.cardano.yano.ledgerstate;
 
+import com.bloxbean.cardano.yano.api.ChainBlockReader;
 import com.bloxbean.cardano.yano.api.EpochParamProvider;
 import com.bloxbean.cardano.yano.api.era.EraProvider;
 import com.bloxbean.cardano.yano.api.events.BlockAppliedEvent;
@@ -8,8 +9,6 @@ import com.bloxbean.cardano.yaci.core.model.Block;
 import com.bloxbean.cardano.yaci.core.model.DrepVoteThresholds;
 import com.bloxbean.cardano.yaci.core.model.Era;
 import com.bloxbean.cardano.yaci.core.model.PoolVotingThresholds;
-import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Point;
-import com.bloxbean.cardano.yaci.core.storage.ChainState;
 import com.bloxbean.cardano.yaci.core.storage.ChainTip;
 import com.bloxbean.cardano.yaci.core.types.NonNegativeInterval;
 import com.bloxbean.cardano.yaci.core.types.UnitInterval;
@@ -24,7 +23,6 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.file.Path;
 import java.util.Collections;
-import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -360,28 +358,13 @@ class DefaultAccountStateStoreProtocolParamsTest {
         return ByteBuffer.wrap(value).order(ByteOrder.BIG_ENDIAN).getLong();
     }
 
-    private static ChainState chainStateWithTip() {
-        return new ChainState() {
+    private static ChainBlockReader chainStateWithTip() {
+        return new ChainBlockReader() {
             private final ChainTip tip = new ChainTip(100, new byte[32], 1);
 
-            @Override public void storeBlock(byte[] blockHash, Long blockNumber, Long slot, byte[] block) {}
-            @Override public byte[] getBlock(byte[] blockHash) { return null; }
-            @Override public boolean hasBlock(byte[] blockHash) { return false; }
-            @Override public void storeBlockHeader(byte[] blockHash, Long blockNumber, Long slot, byte[] blockHeader) {}
-            @Override public byte[] getBlockHeader(byte[] blockHash) { return null; }
-            @Override public byte[] getBlockByNumber(Long number) { return null; }
-            @Override public byte[] getBlockHeaderByNumber(Long blockNumber) { return null; }
-            @Override public Point findNextBlock(Point currentPoint) { return null; }
-            @Override public Point findNextBlockHeader(Point currentPoint) { return null; }
-            @Override public List<Point> findBlocksInRange(Point from, Point to) { return List.of(); }
-            @Override public Point findLastPointAfterNBlocks(Point from, long batchSize) { return null; }
-            @Override public boolean hasPoint(Point point) { return false; }
-            @Override public Point getFirstBlock() { return null; }
-            @Override public Long getBlockNumberBySlot(Long slot) { return null; }
-            @Override public Long getSlotByBlockNumber(Long blockNumber) { return null; }
-            @Override public void rollbackTo(Long slot) {}
-            @Override public ChainTip getTip() { return tip; }
-            @Override public ChainTip getHeaderTip() { return tip; }
+            @Override public ChainTip getLocalTip() { return tip; }
+            @Override public byte[] getBlockByNumber(long blockNumber) { return null; }
+            @Override public Era getBlockEra(long blockNumber) { return null; }
         };
     }
 }

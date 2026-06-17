@@ -1,6 +1,8 @@
 package com.bloxbean.cardano.yano.runtime.chain;
 
 import com.bloxbean.cardano.yaci.core.storage.ChainTip;
+import com.bloxbean.cardano.yaci.core.storage.ChainState;
+import com.bloxbean.cardano.yano.runtime.db.RocksDbSupplier;
 import com.bloxbean.cardano.yano.runtime.utxo.Prunable;
 import org.rocksdb.*;
 import org.slf4j.Logger;
@@ -29,12 +31,14 @@ public final class BlockPruner implements Prunable {
     private static final Logger log = LoggerFactory.getLogger(BlockPruner.class);
     private static final byte[] CURSOR_KEY = "prune.block.cursor".getBytes(StandardCharsets.UTF_8);
 
-    private final DirectRocksDBChainState chainState;
+    private final ChainState chainState;
+    private final RocksDbSupplier rocksDbSupplier;
     private final int retentionBlocks;
     private final int batchSize;
 
-    public BlockPruner(DirectRocksDBChainState chainState, int retentionBlocks, int batchSize) {
+    public BlockPruner(ChainState chainState, RocksDbSupplier rocksDbSupplier, int retentionBlocks, int batchSize) {
         this.chainState = chainState;
+        this.rocksDbSupplier = rocksDbSupplier;
         this.retentionBlocks = retentionBlocks;
         this.batchSize = batchSize;
     }
@@ -42,7 +46,7 @@ public final class BlockPruner implements Prunable {
     @Override
     public void pruneOnce() {
         try {
-            var ctx = chainState.rocks();
+            var ctx = rocksDbSupplier.rocks();
             RocksDB db = ctx.db();
             ColumnFamilyHandle slotByNumberCf = ctx.handle("slot_by_number");
             ColumnFamilyHandle slotToHashCf = ctx.handle("slot_to_hash");

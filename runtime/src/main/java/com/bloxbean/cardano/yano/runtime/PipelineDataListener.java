@@ -12,6 +12,7 @@ import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Point;
 import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Tip;
 import com.bloxbean.cardano.yaci.helper.listener.BlockChainDataListener;
 import com.bloxbean.cardano.yaci.helper.model.Transaction;
+import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
 import com.bloxbean.cardano.yano.runtime.apply.LedgerApplyProcessor;
 import com.bloxbean.cardano.yano.runtime.peer.PeerHealth;
 import com.bloxbean.cardano.yano.runtime.peer.PeerRecoveryReason;
@@ -32,7 +33,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  * and delegates events to the appropriate pipeline managers:
  * - HeaderSyncManager for ChainSync events (headers)
  * - BodyFetchManager for BlockFetch events (bodies)
- * - Yano for rollback coordination
+ * - PeerSessionCallbacks for rollback coordination
  *
  * This allows the pipeline architecture to work with the existing
  * PeerClient.connect() method without modifications.
@@ -40,9 +41,9 @@ import java.util.concurrent.atomic.AtomicInteger;
 @Slf4j
 public class PipelineDataListener implements BlockChainDataListener {
     private static final long SLOW_BODY_CALLBACK_WARN_MS =
-            positiveLongProperty("yano.pipeline.slowBodyCallbackWarnMs", 1_000L);
+            positiveLongProperty(YanoPropertyKeys.Pipeline.SLOW_BODY_CALLBACK_WARN_MS, 1_000L);
     private static final long NON_RECOVERING_ROLLBACK_WAIT_MS =
-            positiveLongProperty("yano.pipeline.nonRecoveringRollbackWaitMs", 30_000L);
+            positiveLongProperty(YanoPropertyKeys.Pipeline.NON_RECOVERING_ROLLBACK_WAIT_MS, 30_000L);
 
     private final HeaderSyncManager headerSyncManager;
     private final BodyFetchManager bodyFetchManager;
@@ -381,11 +382,11 @@ public class PipelineDataListener implements BlockChainDataListener {
                     peerHealth.markBodyFetchCompleted();
                 }
                 bodyFetchManager.onRollback(point);
-                // Delegate rollback handling to Yano for classification and coordination
-                // Yano will pause/resume BodyFetchManager and handle server notifications
+                // Delegate rollback handling for classification and coordination.
+                // The callback owner pauses/resumes BodyFetchManager and notifies downstream servers.
                 callbacks.handleChainSyncRollback(point);
 
-                log.info("Rollback to point: {} - delegated to Yano for coordination", point);
+                log.info("Rollback to point: {} - delegated to runtime callbacks for coordination", point);
             };
             if (hasLedgerApplyProcessor()) {
                 CompletableFuture<LedgerApplyProcessor.Outcome> rollback =

@@ -5,8 +5,8 @@ import com.bloxbean.cardano.yaci.core.model.TransactionBody;
 import com.bloxbean.cardano.yaci.core.model.certs.*;
 import com.bloxbean.cardano.yaci.core.model.governance.Drep;
 import com.bloxbean.cardano.yaci.core.model.governance.DrepType;
-import com.bloxbean.cardano.yaci.core.storage.ChainState;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
+import com.bloxbean.cardano.yano.api.ChainBlockReader;
 import com.bloxbean.cardano.yano.api.EpochParamProvider;
 import com.bloxbean.cardano.yano.api.account.AccountStateStore;
 import com.bloxbean.cardano.yano.api.account.LedgerStateProvider;
@@ -587,7 +587,7 @@ public class InMemoryAccountStateStore implements AccountStateStore {
     }
 
     @Override
-    public void reconcile(ChainState chainState) {
+    public void reconcile(ChainBlockReader chainBlocks) {
         // In-memory store doesn't persist — no-op
     }
 

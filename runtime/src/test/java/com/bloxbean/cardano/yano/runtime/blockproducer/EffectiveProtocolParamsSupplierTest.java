@@ -4,6 +4,7 @@ import com.bloxbean.cardano.client.api.model.ProtocolParams;
 import com.bloxbean.cardano.yano.api.account.LedgerStateProvider;
 import com.bloxbean.cardano.yano.api.model.ProtocolParamsSnapshot;
 import com.bloxbean.cardano.yano.api.util.EpochSlotCalc;
+import com.bloxbean.cardano.yano.runtime.tx.EffectiveProtocolParamsSupplier;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Proxy;

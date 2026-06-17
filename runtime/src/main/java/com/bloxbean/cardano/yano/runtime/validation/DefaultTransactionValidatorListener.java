@@ -7,6 +7,9 @@ import com.bloxbean.cardano.yano.ledgerrules.ValidationResult;
 import com.bloxbean.cardano.yano.runtime.blockproducer.TransactionValidationService;
 import lombok.extern.slf4j.Slf4j;
 
+import java.util.Objects;
+import java.util.function.Supplier;
+
 /**
  * Default transaction validator that wraps the existing {@link TransactionValidationService}.
  * <p>
@@ -19,10 +22,14 @@ import lombok.extern.slf4j.Slf4j;
 @Slf4j
 public class DefaultTransactionValidatorListener {
 
-    private final TransactionValidationService validationService;
+    private final Supplier<TransactionValidationService> validationServiceSupplier;
 
     public DefaultTransactionValidatorListener(TransactionValidationService validationService) {
-        this.validationService = validationService;
+        this(() -> validationService);
+    }
+
+    public DefaultTransactionValidatorListener(Supplier<TransactionValidationService> validationServiceSupplier) {
+        this.validationServiceSupplier = Objects.requireNonNull(validationServiceSupplier, "validationServiceSupplier");
     }
 
     @DomainEventListener(order = 100)
@@ -30,6 +37,12 @@ public class DefaultTransactionValidatorListener {
         // Short-circuit: if already rejected by an earlier listener, skip expensive validation
         if (event.isRejected()) {
             log.debug("Tx {} already rejected, skipping default validation", event.txHash());
+            return;
+        }
+
+        TransactionValidationService validationService = validationServiceSupplier.get();
+        if (validationService == null) {
+            event.reject("DefaultTransactionValidator", "transaction validation service is not available");
             return;
         }
 

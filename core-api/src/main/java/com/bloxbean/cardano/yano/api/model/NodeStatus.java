@@ -77,6 +77,37 @@ public class NodeStatus {
     private final String statusMessage;
 
     /**
+     * Whether an exclusive maintenance operation is currently active.
+     */
+    private final boolean maintenanceActive;
+
+    /**
+     * Current exclusive maintenance reason, if active.
+     */
+    private final String maintenanceReason;
+
+    /**
+     * Whether a failed exclusive maintenance operation left runtime services in
+     * a degraded state that needs operator action.
+     */
+    private final boolean runtimeDegraded;
+
+    /**
+     * Human-readable reason for the degraded runtime state.
+     */
+    private final String runtimeDegradedReason;
+
+    /**
+     * Maintenance operation that marked the runtime degraded.
+     */
+    private final String runtimeDegradedOperation;
+
+    /**
+     * Timestamp when the runtime was marked degraded.
+     */
+    private final Long runtimeDegradedAtMillis;
+
+    /**
      * Current upstream peer name, if client sync is active.
      */
     private final String peerName;
@@ -164,6 +195,10 @@ public class NodeStatus {
      * Get a human-readable status summary
      */
     public String getStatusSummary() {
+        if (runtimeDegraded) {
+            return "Degraded";
+        }
+
         if (!running) {
             return "Stopped";
         }
