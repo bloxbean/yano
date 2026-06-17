@@ -37,7 +37,7 @@ class NonceEvolutionListenerFactoryTest {
                 1.0,
                 Constants.BYRON_SLOTS_PER_EPOCH);
 
-        NonceEvolutionListener listener = NonceEvolutionListenerFactory.registerSlotLeader(
+        NonceEvolutionListenerFactory.Registration registration = NonceEvolutionListenerFactory.registerSlotLeader(
                 eventBus,
                 nonceState,
                 null,
@@ -48,10 +48,16 @@ class NonceEvolutionListenerFactoryTest {
                 (slot, hashHex, serialized) -> null,
                 null);
 
-        assertThat(listener).isNotNull();
+        assertThat(registration.listener()).isNotNull();
+        assertThat(registration.subscriptionHandles()).hasSize(2);
         assertThat(eventBus.listeners).containsKeys(BlockAppliedEvent.class, RollbackEvent.class);
         assertThat(eventBus.listeners.get(BlockAppliedEvent.class)).hasSize(1);
         assertThat(eventBus.listeners.get(RollbackEvent.class)).hasSize(1);
+
+        registration.close();
+
+        assertThat(registration.subscriptionHandles())
+                .allSatisfy(handle -> assertThat(handle.isActive()).isFalse());
     }
 
     @Test

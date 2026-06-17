@@ -2,13 +2,13 @@
 
 **ADR:** `028-runtime-decomposition-nodekernel-composition-root.md`
 **Design doc:** `028-runtime-decomposition-high-level-design.md`
-**Current status:** Stage B storage/serve/maintenance, UTXO, full ledger-state, sync, degraded-maintenance hardening, Stage C transaction bootstrap optional-module placement, transaction admission, producer transaction-selection, lifecycle quiescence, producer startup-planning, producer recipe selection, producer construction factories, Stage D faucet/time-advance/catch-up/shifted-genesis/snapshot-catalog/snapshot-restore extraction plus explicit `DevnetToolkit`, Stage E config-derived assembly/config-helper cleanup and shared property-key contract, and Stage F debug endpoint narrow-interface boundaries implemented and validated; pre-release cleanup removed deprecated `Yano`/`NodeAPI`/raw mempool public surfaces, moved runtime implementation under `runtime.internal`, and removed raw `ChainState` exposure from `ChainQuery` and the account-state public SPI
+**Current status:** Issue #17 core decomposition and reviewer hardening are implemented and validated. Shutdown leak prevention, peer recovery health, stale intersection cleanup, nonce-listener ownership, bootstrap partial-state policy placement, and small concurrency/defensive fixes are complete. Large kernel-driven lifecycle ownership and the remaining producer/chronology extraction are explicit non-blocking follow-up stages rather than part of the current load-bearing runtime.
 **Last updated:** 2026-06-17
 
 ## Summary
 
-ADR-028's implementation scope is complete. The composition/API slice
-landed the runtime kernel, explicit assembly root, and narrow API seams; Stage B
+ADR-028's issue #17 implementation scope is complete. The composition/API slice
+landed an interim runtime kernel boundary, explicit assembly root, and narrow API seams; Stage B
 extracted the chain-storage boundary, downstream serving boundary, runtime
 maintenance gate used by devnet restore/rollback/recovery, UTXO ownership, full
 derived ledger-state ownership, upstream sync ownership, and degraded runtime
@@ -37,16 +37,18 @@ snapshot restore orchestration behind runtime devnet services and now exposes
 those operations through an explicit `DevnetToolkit` implementation of
 `DevnetControl`. The remaining debug resource now injects a dedicated internal
 debug interface instead of broad `NodeAPI`. The latest Stage E slices moved
-config-derived recipe routing, rollback-retention planning, bootstrap-provider
-selection, bundled genesis resolution/resources, and known-network default
-selection out of app-local logic. The pre-release cleanup removed the old public
+config-derived recipe routing, rollback-retention planning, bootstrap partial-state
+policy, bootstrap-provider selection, bundled genesis resolution/resources, and
+known-network default selection out of app-local logic. The pre-release cleanup removed the old public
 `Yano` class, the broad `NodeAPI` facade, raw `Yano.getMemPool()`, the public
 `TxSubsystem` mempool accessor, and the unused in-memory devnet genesis setter;
 runtime construction now goes through `YanoAssembly`/`YanoNode` and role
 interfaces. `ChainQuery` now exposes tip/block reads directly instead of leaking
 raw `ChainState`, account-state providers receive `ChainBlockReader` plus optional
 `RocksDbAccess` instead of mutable chain storage, and the implementation class
-lives in `runtime.internal`.
+lives in `runtime.internal`. Direct kernel ownership of the real subsystems and
+the remaining producer/chronology extraction are intentionally tracked as
+non-blocking follow-up work.
 
 ## Completed In Issue #17
 
@@ -1062,6 +1064,38 @@ The final Haskell sync refresh covered:
 - regular block-producer sync for 2+ epochs, ending with matching Yano/Haskell
   tips at slot 1202 after the slot-1200 target
 
+Reviewer hardening refresh on 2026-06-17 passed after implementing the
+shutdown, peer-recovery, nonce-listener, bootstrap-policy, idempotent-close, and
+small defensive fixes:
+
+```bash
+./gradlew :runtime:test --rerun-tasks --console=plain
+./gradlew :core-api:test :ledger-state:test :tx-services:test :runtime:test :app:compileJava :app:compileTestJava --console=plain
+./gradlew :app:quarkusBuild --console=plain
+./gradlew :app:haskellSyncTest --console=plain
+git diff --check
+```
+
+The first Haskell sync refresh exposed a test-environment leak from the local
+`app/config/application.yml`: the e2e helper copied the local config and allowed
+`yano.remote.protocol-magic=1` to override the devnet PV10 magic `42`, which made
+Haskell fail the N2N handshake with `SDUDecodeError "short SDU"`. The helper now
+sets `-Dyano.remote.protocol-magic=42` explicitly. The rerun passed:
+
+- past-time-travel devnet sync from slot 0, ending with matching Yano/Haskell tips
+  at slot 4903
+- regular block-producer sync for 2+ epochs, ending with matching Yano/Haskell
+  tips at slot 1201 after the slot-1200 target
+
+The Claude `test-haskell-sync` skill path was also run with cardano-node 11.0.1,
+PV10 genesis copied from an isolated temp directory, fixed ports
+`7070/13337/3002`, and same-slot hash comparison. It passed at slot 1211 with
+matching hash `c96adc4faccd7ed030f7aafabcb85f802eaf16baa64f17c258b3c46ce05a5399`.
+Logs were retained at:
+
+- `/tmp/claude-skill-haskell-sync-yano.log`
+- `/tmp/claude-skill-haskell-sync-haskell.log`
+
 Focused subsystem validations run during the staged implementation are retained
 below for traceability:
 
@@ -1221,6 +1255,41 @@ The remaining compatibility cleanup tasks are complete:
 
 ## Remaining Non-Blocking Follow-Up Work
 
+### Kernel-Driven Lifecycle Ownership
+
+- Replace the current one-subsystem `RuntimeNode` kernel adapter with direct
+  `NodeKernel` ownership of the real runtime subsystems:
+  `ChainStorageSubsystem`, `SyncSubsystem`, `ServeSubsystem`,
+  `LedgerStateSubsystem`, `UtxoSubsystem`, `TxSubsystem`,
+  `ProducerSubsystem`, and `AccountHistorySubsystem`.
+- Move runtime scheduler/recovery executor ownership behind `Schedulers` so
+  there is one shutdown point and one place to adopt virtual-thread or custom
+  scheduler policies.
+- Make kernel health aggregation load-bearing for adapter readiness instead of
+  relying only on `NodeStatus` projection.
+- Retire the remaining ad-hoc lifecycle flags and manual partial-start cleanup
+  once the real subsystems are kernel-owned.
+
+### Producer And Chronology Extraction
+
+- Finish extracting producer/chronology orchestration from `RuntimeNode`:
+  genesis/era bootstrap, nonce state initialization and replay, genesis UTXO
+  seeding, protocol-version supplier resolution, and slot-leader/devnet
+  producer startup orchestration.
+- Promote the thin `ChronologyService` into the planned chronology boundary, or
+  explicitly rename the ADR role if the remaining ownership lands in producer
+  factories instead.
+- Keep the current producer strategy/factory split as the stable surface while
+  moving the remaining construction policy out of `RuntimeNode`.
+
+### Maintenance Failure Signaling
+
+- Review whether generic devnet controls and producer start/stop/reset should
+  mark runtime degraded when maintenance fails after partially mutating state.
+  Snapshot restore already has fail-closed degraded signaling; the remaining
+  mutators currently fail to the caller and restart producers in `finally`
+  where applicable.
+
 ### Adapter And Packaging Proofs
 
 - Keep Quarkus as a thin adapter: configuration mapping, bean exposure, and
@@ -1229,6 +1298,10 @@ The remaining compatibility cleanup tasks are complete:
   stable.
 - Decide later whether `DevnetToolkit` should move to a separately packaged module
   if a non-devnet runtime artifact needs to exclude devnet controls.
+- Decide whether builder override APIs such as custom mempool injection,
+  subsystem disabling, or external subsystem registration are part of the public
+  extension model. Do not add them until there is a concrete adapter or
+  embedding use case.
 
 ## Completion Criteria For Full ADR-028
 
@@ -1242,4 +1315,6 @@ ADR-028 can be considered fully implemented when:
 - Full JVM, e2e, Haskell sync, and Quarkus build validations pass after the final
   extraction.
 
-Current status: satisfied for ADR-028 implementation and pre-release cleanup.
+Current status: satisfied for the issue #17 ADR-028 decomposition and
+pre-release cleanup. The non-blocking follow-up stages above remain open design
+and implementation work.

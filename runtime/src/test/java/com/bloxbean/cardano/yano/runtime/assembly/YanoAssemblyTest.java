@@ -10,6 +10,7 @@ import com.bloxbean.cardano.yano.api.TxGateway;
 import com.bloxbean.cardano.yano.api.bootstrap.BootstrapDataProvider;
 import com.bloxbean.cardano.yano.api.config.RuntimeOptions;
 import com.bloxbean.cardano.yano.api.config.YanoConfig;
+import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
 import com.bloxbean.cardano.yano.api.model.NodeStatus;
 import com.bloxbean.cardano.yano.runtime.debug.DebugLedgerStateAccess;
 import com.bloxbean.cardano.yano.runtime.kernel.SubsystemHealth;
@@ -123,6 +124,53 @@ class YanoAssemblyTest {
         } finally {
             node.close();
         }
+    }
+
+    @Test
+    void bootstrapPartialStatePolicyDisablesDerivedLedgerStateGlobals() {
+        YanoConfig config = YanoConfig.serverOnly(0);
+        config.setEnableBootstrap(true);
+        RuntimeOptions options = new RuntimeOptions(null, null, Map.ofEntries(
+                Map.entry(YanoPropertyKeys.AccountState.ENABLED, true),
+                Map.entry(YanoPropertyKeys.AccountState.STAKE_BALANCE_INDEX_ENABLED, true),
+                Map.entry(YanoPropertyKeys.AccountHistory.ENABLED, true),
+                Map.entry(YanoPropertyKeys.AccountHistory.TX_EVENTS_ENABLED, true),
+                Map.entry(YanoPropertyKeys.AccountHistory.REWARDS_ENABLED, true),
+                Map.entry(YanoPropertyKeys.EpochSnapshot.AMOUNTS_ENABLED, true),
+                Map.entry(YanoPropertyKeys.Ledger.ADAPOT_ENABLED, true),
+                Map.entry(YanoPropertyKeys.Ledger.REWARDS_ENABLED, true),
+                Map.entry(YanoPropertyKeys.Ledger.EPOCH_PARAMS_TRACKING_ENABLED, true),
+                Map.entry(YanoPropertyKeys.Ledger.GOVERNANCE_ENABLED, true),
+                Map.entry(YanoPropertyKeys.SnapshotExport.ENABLED, true),
+                Map.entry(YanoPropertyKeys.Utxo.ENABLED, true)));
+
+        RuntimeOptions resolved = YanoAssembly.applyBootstrapPartialStatePolicy(config, options);
+
+        assertEquals(false, resolved.globals().get(YanoPropertyKeys.AccountState.ENABLED));
+        assertEquals(false, resolved.globals().get(YanoPropertyKeys.AccountState.STAKE_BALANCE_INDEX_ENABLED));
+        assertEquals(false, resolved.globals().get(YanoPropertyKeys.AccountHistory.ENABLED));
+        assertEquals(false, resolved.globals().get(YanoPropertyKeys.AccountHistory.TX_EVENTS_ENABLED));
+        assertEquals(false, resolved.globals().get(YanoPropertyKeys.AccountHistory.REWARDS_ENABLED));
+        assertEquals(false, resolved.globals().get(YanoPropertyKeys.EpochSnapshot.AMOUNTS_ENABLED));
+        assertEquals(false, resolved.globals().get(YanoPropertyKeys.Ledger.ADAPOT_ENABLED));
+        assertEquals(false, resolved.globals().get(YanoPropertyKeys.Ledger.REWARDS_ENABLED));
+        assertEquals(false, resolved.globals().get(YanoPropertyKeys.Ledger.EPOCH_PARAMS_TRACKING_ENABLED));
+        assertEquals(false, resolved.globals().get(YanoPropertyKeys.Ledger.GOVERNANCE_ENABLED));
+        assertEquals(false, resolved.globals().get(YanoPropertyKeys.SnapshotExport.ENABLED));
+        assertEquals(true, resolved.globals().get(YanoPropertyKeys.Utxo.ENABLED));
+        assertFalse(YanoAssembly.effectiveDerivedLedgerStateEnabled(config, true));
+    }
+
+    @Test
+    void bootstrapPartialStatePolicyLeavesNonBootstrapOptionsUnchanged() {
+        YanoConfig config = YanoConfig.serverOnly(0);
+        RuntimeOptions options = new RuntimeOptions(null, null, Map.of(
+                YanoPropertyKeys.AccountState.ENABLED, true));
+
+        RuntimeOptions resolved = YanoAssembly.applyBootstrapPartialStatePolicy(config, options);
+
+        assertSame(options, resolved);
+        assertTrue(YanoAssembly.effectiveDerivedLedgerStateEnabled(config, true));
     }
 
     @Test

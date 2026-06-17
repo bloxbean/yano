@@ -147,10 +147,10 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
     // Block producer (devnet, slot-leader, or time-travel strategy)
     private final ProducerSubsystem producerSubsystem = new ProducerSubsystem();
     private final ProducerStartupPlan producerStartupPlanOverride;
-    private EpochNonceState epochNonceState; // shared nonce state (accessible for REST endpoint)
-    private GenesisConfig genesisConfig;
+    private volatile EpochNonceState epochNonceState; // shared nonce state (accessible for REST endpoint)
+    private volatile GenesisConfig genesisConfig;
     private volatile StaticProtocolParamsSnapshotCache staticProtocolParamsSnapshotCache;
-    private long resolvedGenesisTimestamp;
+    private volatile long resolvedGenesisTimestamp;
     private final ChronologyService chronologyService;
     private boolean slotTimeEventSubscriptionRegistered;
     private final TxSubsystem txSubsystem;
@@ -177,8 +177,9 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
     private final UtxoSubsystem utxoSubsystem;
     private final LedgerStateSubsystem ledgerStateSubsystem;
     private final SyncSubsystem syncSubsystem;
-    private UtxoStoreWriter utxoStore;
+    private volatile UtxoStoreWriter utxoStore;
     private BootstrapDataProvider bootstrapDataProvider;
+    private volatile List<SubscriptionHandle> nonceListenerSubscriptions = List.of();
 
     // In-memory devnet genesis — set before start() for devnet mode without genesis files
     private InMemoryDevnetGenesis inMemoryDevnetGenesis;
@@ -926,7 +927,7 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
             var slotLeaderCheck = signingComponents.slotLeaderCheck();
             configureGenesisProducerPoolHash(signedBlockBuilder);
 
-            NonceEvolutionListenerFactory.registerSlotLeader(
+            var nonceRegistration = NonceEvolutionListenerFactory.registerSlotLeader(
                     eventBus,
                     epochNonceState,
                     nonceStore,
@@ -936,6 +937,7 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                     networkMagic,
                     this::resolveNonceSnapshotCursor,
                     replayService);
+            replaceNonceListenerSubscriptions(nonceRegistration.subscriptionHandles());
 
             // Create StakeDataProvider. Devnet uses FixedStakeDataProvider (sigma=1.0).
             StakeDataProvider stakeDataProvider = StakeDataProviderFactory.createLiveSlotLeaderProvider(config);
@@ -1115,8 +1117,8 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
             var nonceListener = new NonceEvolutionListener(epochNonceState, nonceStore, null,
                     effectiveParamProvider, trackedParams, networkMagic,
                     this::resolveNonceSnapshotCursor, replayService);
-            AnnotationListenerRegistrar.register(eventBus, nonceListener,
-                    com.bloxbean.cardano.yaci.events.api.SubscriptionOptions.builder().build());
+            replaceNonceListenerSubscriptions(AnnotationListenerRegistrar.register(eventBus, nonceListener,
+                    com.bloxbean.cardano.yaci.events.api.SubscriptionOptions.builder().build()));
 
             log.info("Epoch nonce tracking initialized for relay mode (epochLength={}, k={}, f={})",
                     epochLength, securityParam, activeSlotsCoeff);
@@ -1141,6 +1143,23 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
 
     public static boolean shouldInitializeRelayNonceTracking(boolean blockProducerEnabled, boolean bootstrapEnabled) {
         return !blockProducerEnabled && !bootstrapEnabled;
+    }
+
+    private void replaceNonceListenerSubscriptions(List<SubscriptionHandle> subscriptionHandles) {
+        closeNonceListenerSubscriptions();
+        nonceListenerSubscriptions = subscriptionHandles != null ? List.copyOf(subscriptionHandles) : List.of();
+    }
+
+    private void closeNonceListenerSubscriptions() {
+        List<SubscriptionHandle> handles = nonceListenerSubscriptions;
+        nonceListenerSubscriptions = List.of();
+        for (SubscriptionHandle handle : handles) {
+            try {
+                handle.close();
+            } catch (Exception e) {
+                log.warn("Error closing nonce listener subscription", e);
+            }
+        }
     }
 
     /**
@@ -2589,6 +2608,7 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
 
         // Stop block producer
         producerSubsystem.stop();
+        closeNonceListenerSubscriptions();
 
         // Disable admission before stopping the server so a half-stopped N2N
         // server cannot continue admitting transactions.
@@ -2615,12 +2635,14 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
             log.warn("Error stopping block producer during close", e);
         }
 
-        txSubsystem.close();
-        serveSubsystem.close();
+        closeNonceListenerSubscriptions();
+
+        closeTerminalResource("transaction subsystem", txSubsystem::close);
+        closeTerminalResource("server subsystem", serveSubsystem::close);
 
         pauseRuntimeBackgroundServices();
 
-        syncSubsystem.close();
+        closeTerminalResource("sync subsystem", syncSubsystem::close);
 
         scheduler.shutdown();
         try {
@@ -2658,7 +2680,16 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
             log.error("Skipping EventBus close because an apply worker did not stop or drain");
         }
 
-        chainStorage.closeAfterRuntimeDrain(unsafeLedgerApplyWorker);
+        boolean unsafeLedgerApplyWorkerAtClose = unsafeLedgerApplyWorker;
+        closeTerminalResource("chain storage", () -> chainStorage.closeAfterRuntimeDrain(unsafeLedgerApplyWorkerAtClose));
+    }
+
+    private void closeTerminalResource(String name, Runnable closeAction) {
+        try {
+            closeAction.run();
+        } catch (Exception e) {
+            log.warn("Error closing {} during runtime close", name, e);
+        }
     }
 
     // Rollback handling - coordinates between managers and handles server notifications

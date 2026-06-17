@@ -69,6 +69,7 @@ public class YanoManager {
         cmd.add("-Dquarkus.profile=devnet");
         cmd.add("-Dquarkus.http.port=" + httpPort);
         cmd.add("-Dyano.server.port=" + n2nPort);
+        cmd.add("-Dyano.remote.protocol-magic=42");
         cmd.add("-Dyano.storage.path=" + chainstateDir);
         cmd.add("-Dyano.block-producer.block-time-millis=200");
 

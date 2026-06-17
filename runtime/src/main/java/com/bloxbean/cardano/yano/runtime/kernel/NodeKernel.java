@@ -76,6 +76,9 @@ public final class NodeKernel implements AutoCloseable {
 
     @Override
     public synchronized void close() {
+        if (closed) {
+            return;
+        }
         KernelLifecycleException failure = new KernelLifecycleException("Kernel close failed");
         try {
             if (state != KernelState.STOPPED && state != KernelState.CREATED) {

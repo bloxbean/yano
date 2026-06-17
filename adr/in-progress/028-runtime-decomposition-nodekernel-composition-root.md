@@ -957,7 +957,11 @@ subsystems.
 
 **Stage C — Kernel + assembly**
 5. Introduce `Subsystem`, `NodeKernel`, `Schedulers`. This is implemented for the
-   role-based assembly.
+   role-based assembly as an interim kernel boundary around `RuntimeNode`.
+   Wiring the real storage/sync/serve/ledger/UTXO/tx/producer/account-history
+   subsystems directly into `NodeKernel`, moving executor ownership into
+   `Schedulers`, and making kernel health the load-bearing readiness source is
+   postponed as a follow-up lifecycle stage.
 6. Introduce `YanoAssembly` with `relay`/`devnet`/`devnetTimeTravel` recipes. This
    is implemented through `RuntimeYanoNode`; the broad facade has been removed.
 7. Collapse the three producer fields into `ProducerSubsystem` strategies.
@@ -974,10 +978,11 @@ subsystems.
    Quarkus producer to a config mapper. Implemented for transaction
    validation/evaluation bootstrap, transaction admission ownership,
    config-derived recipe selection, reusable rollback-retention planning,
-   bootstrap provider selection, bundled genesis resolution, and network default
-   selection. Concrete transaction-service construction lives in the optional
-   `tx-services` module; concrete bootstrap-provider construction lives in the
-   optional `bootstrap-providers` module.
+   bootstrap partial-state policy, bootstrap provider selection, bundled genesis
+   resolution, and network default selection. Concrete transaction-service
+   construction lives in the optional `tx-services` module; concrete
+   bootstrap-provider construction lives in the optional `bootstrap-providers`
+   module.
 10. Ship `yano-spring-boot-starter` as the proof that Decision 5 holds (a starter
     that needs runtime changes reveals leaked assembly logic immediately).
 
@@ -1011,3 +1016,31 @@ to a later major version.
 - Header verification design (ADR-027 R4) — but `SyncSubsystem` is shaped so a
   `HeaderVerifier` slots between header receipt and apply.
 - Plugin SPI typing (P0.3) — follow-up ADR.
+
+## Postponed Follow-Up Work
+
+These items are non-blocking for issue #17 but should be tracked explicitly so
+the ADR does not overstate the current load-bearing architecture.
+
+- **Kernel-driven lifecycle ownership:** replace the current one-subsystem
+  `RuntimeNode` kernel adapter with direct `NodeKernel` ownership of the real
+  storage, sync, serve, ledger, UTXO, tx, producer, and account-history
+  subsystems. Move runtime scheduler/recovery executor ownership behind
+  `Schedulers`, make kernel health aggregation feed adapter readiness, and then
+  retire the remaining ad-hoc lifecycle flags and manual partial-start cleanup.
+- **Producer and chronology extraction:** finish moving genesis/era bootstrap,
+  nonce initialization/replay, genesis UTXO seeding, protocol-version supplier
+  resolution, and slot-leader/devnet startup orchestration out of `RuntimeNode`.
+  Either promote `ChronologyService` into the planned chronology boundary or
+  rename the ADR role if that ownership lands in producer factories instead.
+- **Maintenance failure signaling:** review whether generic devnet controls and
+  producer start/stop/reset should mark runtime degraded when maintenance fails
+  after partially mutating state. Snapshot restore already has fail-closed
+  degraded signaling; the remaining mutators currently fail to the caller and
+  restart producers in `finally` where applicable.
+- **Adapter and packaging proofs:** add Spring/Micronaut/plain-Java examples
+  after the runtime API is stable, and decide later whether `DevnetToolkit`
+  should move to a separately packaged module.
+- **Extension builder APIs:** decide whether custom mempool injection, subsystem
+  disabling, or external subsystem registration are part of the public extension
+  model before adding builder overrides.

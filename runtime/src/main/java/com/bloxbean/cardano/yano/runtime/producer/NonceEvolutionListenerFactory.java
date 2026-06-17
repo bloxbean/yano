@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.runtime.producer;
 
 import com.bloxbean.cardano.yaci.events.api.EventBus;
+import com.bloxbean.cardano.yaci.events.api.SubscriptionHandle;
 import com.bloxbean.cardano.yaci.events.api.SubscriptionOptions;
 import com.bloxbean.cardano.yaci.events.api.support.AnnotationListenerRegistrar;
 import com.bloxbean.cardano.yano.api.EpochParamProvider;
@@ -11,6 +12,7 @@ import com.bloxbean.cardano.yano.runtime.blockproducer.NonceStateStore;
 import com.bloxbean.cardano.yano.runtime.blockproducer.SignedBlockBuilder;
 import lombok.extern.slf4j.Slf4j;
 
+import java.util.List;
 import java.util.Objects;
 
 /**
@@ -23,15 +25,15 @@ public final class NonceEvolutionListenerFactory {
     private NonceEvolutionListenerFactory() {
     }
 
-    public static NonceEvolutionListener registerSlotLeader(EventBus eventBus,
-                                                            EpochNonceState nonceState,
-                                                            NonceStateStore nonceStore,
-                                                            SignedBlockBuilder signedBlockBuilder,
-                                                            EpochParamProvider effectiveParamProvider,
-                                                            boolean trackedParams,
-                                                            long networkMagic,
-                                                            NonceEvolutionListener.NonceCursorResolver cursorResolver,
-                                                            NonceReplayService replayService) {
+    public static Registration registerSlotLeader(EventBus eventBus,
+                                                  EpochNonceState nonceState,
+                                                  NonceStateStore nonceStore,
+                                                  SignedBlockBuilder signedBlockBuilder,
+                                                  EpochParamProvider effectiveParamProvider,
+                                                  boolean trackedParams,
+                                                  long networkMagic,
+                                                  NonceEvolutionListener.NonceCursorResolver cursorResolver,
+                                                  NonceReplayService replayService) {
         Objects.requireNonNull(signedBlockBuilder, "signedBlockBuilder");
         String issuerVkeyHex = signedBlockBuilder.getIssuerVkeyHex();
         logTrackingMode(trackedParams, networkMagic);
@@ -44,9 +46,9 @@ public final class NonceEvolutionListenerFactory {
                 networkMagic,
                 cursorResolver,
                 replayService);
-        register(eventBus, listener);
+        List<SubscriptionHandle> subscriptionHandles = register(eventBus, listener);
         log.info("NonceEvolutionListener registered (skipping own blocks with issuerVkey={})", issuerVkeyHex);
-        return listener;
+        return new Registration(listener, subscriptionHandles);
     }
 
     public static void logTrackingMode(boolean trackedParams, long networkMagic) {
@@ -81,11 +83,30 @@ public final class NonceEvolutionListenerFactory {
                 replayService);
     }
 
-    private static void register(EventBus eventBus, NonceEvolutionListener listener) {
+    private static List<SubscriptionHandle> register(EventBus eventBus, NonceEvolutionListener listener) {
         Objects.requireNonNull(eventBus, "eventBus");
-        AnnotationListenerRegistrar.register(
+        return AnnotationListenerRegistrar.register(
                 eventBus,
                 listener,
                 SubscriptionOptions.builder().build());
+    }
+
+    /**
+     * Registered nonce listener and the event-bus handles that own its
+     * subscriptions.
+     */
+    public record Registration(NonceEvolutionListener listener,
+                               List<SubscriptionHandle> subscriptionHandles) implements AutoCloseable {
+        public Registration {
+            Objects.requireNonNull(listener, "listener");
+            subscriptionHandles = subscriptionHandles == null ? List.of() : List.copyOf(subscriptionHandles);
+        }
+
+        @Override
+        public void close() {
+            for (SubscriptionHandle handle : subscriptionHandles) {
+                handle.close();
+            }
+        }
     }
 }

@@ -122,6 +122,13 @@ class DevnetCatchUpServiceTest {
                 assertThrows(IllegalStateException.class,
                         () -> service(chainState, wrongProducer, true, 1_000, 1_000, 16_000)
                                 .catchUpToWallClock()).getMessage());
+
+        ProducerSubsystem devnetProducer = new ProducerSubsystem();
+        devnetProducer.install(new FakeProduction(chainState, ProducerMode.DEVNET, 1, 0));
+        assertEquals("Catch-up requires positive slot length",
+                assertThrows(IllegalStateException.class,
+                        () -> service(chainState, devnetProducer, false, 1_000, 0, 16_000)
+                                .catchUpToWallClock()).getMessage());
     }
 
     private static DevnetCatchUpService service(InMemoryChainState chainState,

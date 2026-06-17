@@ -173,6 +173,7 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
             log.info("Starting {} client sync with {}:{}...",
                     usePipeline ? "pipelined" : "sequential", remoteCardanoHost, remoteCardanoPort);
             syncGeneration.incrementAndGet();
+            cancelIntersectionTransition();
             isSyncing.set(true);
             pipelinedMode = usePipeline;
 
@@ -722,6 +723,7 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
                 peerSession = null;
                 boolean usePipeline = config.isEnablePipelinedSync();
                 syncGeneration.incrementAndGet();
+                cancelIntersectionTransition();
                 isSyncing.set(true);
                 pipelinedMode = usePipeline;
 
@@ -802,6 +804,12 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
                                          Exception e,
                                          PeerRecoveryFailureTracker.Snapshot failure) {
         PeerSession failedSession = peerSession;
+        if (!failure.terminal()) {
+            if (failedSession != null) {
+                failedSession.getPeerHealth().recordRecoveryAttempt(reason);
+            }
+            return;
+        }
         if (failedSession == null) {
             failedSession = createPeerSession();
             peerSession = failedSession;

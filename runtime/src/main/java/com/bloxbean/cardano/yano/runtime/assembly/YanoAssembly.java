@@ -3,6 +3,7 @@ package com.bloxbean.cardano.yano.runtime.assembly;
 import com.bloxbean.cardano.yano.api.bootstrap.BootstrapDataProvider;
 import com.bloxbean.cardano.yano.api.config.RuntimeOptions;
 import com.bloxbean.cardano.yano.api.config.YanoConfig;
+import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
 import com.bloxbean.cardano.yano.runtime.internal.RuntimeNode;
 import com.bloxbean.cardano.yano.runtime.config.InMemoryDevnetGenesis;
 import com.bloxbean.cardano.yano.runtime.producer.ProducerMode;
@@ -13,6 +14,8 @@ import com.bloxbean.cardano.yano.runtime.tx.TransactionServicesFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Objects;
 
 /**
@@ -20,6 +23,19 @@ import java.util.Objects;
  */
 public final class YanoAssembly {
     private static final Logger log = LoggerFactory.getLogger(YanoAssembly.class);
+    private static final String[] BOOTSTRAP_DISABLED_DERIVED_LEDGER_KEYS = {
+            YanoPropertyKeys.AccountState.ENABLED,
+            YanoPropertyKeys.AccountState.STAKE_BALANCE_INDEX_ENABLED,
+            YanoPropertyKeys.AccountHistory.ENABLED,
+            YanoPropertyKeys.AccountHistory.TX_EVENTS_ENABLED,
+            YanoPropertyKeys.AccountHistory.REWARDS_ENABLED,
+            YanoPropertyKeys.EpochSnapshot.AMOUNTS_ENABLED,
+            YanoPropertyKeys.Ledger.ADAPOT_ENABLED,
+            YanoPropertyKeys.Ledger.REWARDS_ENABLED,
+            YanoPropertyKeys.Ledger.EPOCH_PARAMS_TRACKING_ENABLED,
+            YanoPropertyKeys.Ledger.GOVERNANCE_ENABLED,
+            YanoPropertyKeys.SnapshotExport.ENABLED
+    };
 
     private YanoAssembly() {
     }
@@ -56,6 +72,49 @@ public final class YanoAssembly {
                     : devnet(config);
         }
         return relay(config);
+    }
+
+    /**
+     * Returns true when the runtime is bootstrapping partial chain state from an
+     * external provider instead of replaying the full chain locally.
+     */
+    public static boolean isBootstrapPartialStateMode(YanoConfig config) {
+        return config != null && config.isEnableBootstrap();
+    }
+
+    /**
+     * Applies runtime-owned bootstrap-mode policy to derived ledger-state
+     * globals. In bootstrap partial-state mode, UTXO bootstrap stays enabled but
+     * derived indexes that require full history are forced off.
+     */
+    public static RuntimeOptions applyBootstrapPartialStatePolicy(YanoConfig config,
+                                                                  RuntimeOptions runtimeOptions) {
+        RuntimeOptions base = runtimeOptions != null ? runtimeOptions : RuntimeOptions.defaults();
+        if (!isBootstrapPartialStateMode(config)) {
+            return base;
+        }
+
+        Map<String, Object> globals = new HashMap<>(base.globals());
+        boolean changed = false;
+        for (String key : BOOTSTRAP_DISABLED_DERIVED_LEDGER_KEYS) {
+            Object previous = globals.put(key, false);
+            changed |= !Boolean.FALSE.equals(previous);
+        }
+        if (changed) {
+            log.info("Bootstrap mode enabled: disabling derived ledger-state subsystems "
+                    + "(account-state, stake-balance-index, account-history, epoch-params, "
+                    + "rewards, adapot, governance, snapshots). UTXO bootstrap remains enabled; "
+                    + "transaction evaluation may use protocol-param.json if configured.");
+        }
+        return new RuntimeOptions(base.events(), base.plugins(), globals);
+    }
+
+    /**
+     * Resolves an individual derived ledger-state flag after runtime bootstrap
+     * policy has been applied.
+     */
+    public static boolean effectiveDerivedLedgerStateEnabled(YanoConfig config, boolean configured) {
+        return configured && !isBootstrapPartialStateMode(config);
     }
 
     /**

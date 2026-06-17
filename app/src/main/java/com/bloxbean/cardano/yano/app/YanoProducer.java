@@ -349,22 +349,6 @@ public class YanoProducer {
         this.pluginClassLoader = pluginClassLoader;
     }
 
-    private boolean isBootstrapPartialStateMode() {
-        return bootstrapEnabled;
-    }
-
-    private boolean effectiveAccountStateEnabled() {
-        return accountStateEnabled && !isBootstrapPartialStateMode();
-    }
-
-    private boolean effectiveEpochParamsTrackingEnabled() {
-        return epochParamsTrackingEnabled && !isBootstrapPartialStateMode();
-    }
-
-    private boolean effectiveDerivedLedgerStateEnabled(boolean configured) {
-        return configured && !isBootstrapPartialStateMode();
-    }
-
     private YanoNode ensureYanoNode() {
         if (yanoNode != null) {
             return yanoNode;
@@ -447,24 +431,6 @@ public class YanoProducer {
         PluginsOptions pluginsOptions = new PluginsOptions(
                 pluginsEnabled, false, Set.of(), Set.of(), pluginConfigMap);
 
-        boolean effectiveAccountStateEnabled = effectiveAccountStateEnabled();
-        boolean effectiveEpochParamsTrackingEnabled = effectiveEpochParamsTrackingEnabled();
-        boolean effectiveAccountHistoryEnabled = effectiveDerivedLedgerStateEnabled(accountHistoryEnabled);
-        boolean effectiveAccountHistoryTxEventsEnabled = effectiveDerivedLedgerStateEnabled(accountHistoryTxEventsEnabled);
-        boolean effectiveAccountHistoryRewardsEnabled = effectiveDerivedLedgerStateEnabled(accountHistoryRewardsEnabled);
-        boolean effectiveStakeBalanceIndexEnabled = effectiveDerivedLedgerStateEnabled(stakeBalanceIndexEnabled);
-        boolean effectiveEpochSnapshotAmountsEnabled = effectiveDerivedLedgerStateEnabled(epochSnapshotAmountsEnabled);
-        boolean effectiveAdaPotEnabled = effectiveDerivedLedgerStateEnabled(adapotEnabled);
-        boolean effectiveRewardsEnabled = effectiveDerivedLedgerStateEnabled(rewardsEnabled);
-        boolean effectiveGovernanceEnabled = effectiveDerivedLedgerStateEnabled(governanceEnabled);
-        boolean effectiveSnapshotExportEnabled = effectiveDerivedLedgerStateEnabled(snapshotExportEnabled);
-
-        if (isBootstrapPartialStateMode()) {
-            log.info("Bootstrap mode enabled: disabling derived ledger-state subsystems "
-                    + "(account-state, stake-balance-index, account-history, epoch-params, rewards, adapot, governance, snapshots). "
-                    + "UTXO bootstrap remains enabled; transaction evaluation may use protocol-param.json if configured.");
-        }
-
         RollbackRetentionGenesisValues rollbackRetentionGenesisValues = rollbackRetentionEpochs.orElse(0) > 0
                 ? resolveRollbackRetentionGenesisValues(resolvedShelleyGenesis)
                 : new RollbackRetentionGenesisValues(0, 0);
@@ -521,23 +487,23 @@ public class YanoProducer {
         dnsCacheNegativeTtl.ifPresent(value -> globals.put(DnsCachePolicy.DNS_CACHE_NEGATIVE_TTL_KEY, value));
 
         // Account state
-        globals.put(YanoPropertyKeys.AccountState.ENABLED, effectiveAccountStateEnabled);
-        globals.put(YanoPropertyKeys.AccountState.STAKE_BALANCE_INDEX_ENABLED, effectiveStakeBalanceIndexEnabled);
-        globals.put(YanoPropertyKeys.AccountHistory.ENABLED, effectiveAccountHistoryEnabled);
-        globals.put(YanoPropertyKeys.AccountHistory.TX_EVENTS_ENABLED, effectiveAccountHistoryTxEventsEnabled);
-        globals.put(YanoPropertyKeys.AccountHistory.REWARDS_ENABLED, effectiveAccountHistoryRewardsEnabled);
+        globals.put(YanoPropertyKeys.AccountState.ENABLED, accountStateEnabled);
+        globals.put(YanoPropertyKeys.AccountState.STAKE_BALANCE_INDEX_ENABLED, stakeBalanceIndexEnabled);
+        globals.put(YanoPropertyKeys.AccountHistory.ENABLED, accountHistoryEnabled);
+        globals.put(YanoPropertyKeys.AccountHistory.TX_EVENTS_ENABLED, accountHistoryTxEventsEnabled);
+        globals.put(YanoPropertyKeys.AccountHistory.REWARDS_ENABLED, accountHistoryRewardsEnabled);
         globals.put(YanoPropertyKeys.AccountHistory.RETENTION_EPOCHS, accountHistoryRetentionEpochs);
         globals.put(YanoPropertyKeys.AccountHistory.PRUNE_INTERVAL_SECONDS, accountHistoryPruneIntervalSeconds);
         globals.put(YanoPropertyKeys.AccountHistory.PRUNE_BATCH_SIZE, accountHistoryPruneBatchSize);
 
         // Epoch subsystems
-        globals.put(YanoPropertyKeys.EpochSnapshot.AMOUNTS_ENABLED, effectiveEpochSnapshotAmountsEnabled);
+        globals.put(YanoPropertyKeys.EpochSnapshot.AMOUNTS_ENABLED, epochSnapshotAmountsEnabled);
         globals.put(YanoPropertyKeys.EpochSnapshot.BALANCE_MODE, balanceMode);
-        globals.put(YanoPropertyKeys.Ledger.ADAPOT_ENABLED, effectiveAdaPotEnabled);
-        globals.put(YanoPropertyKeys.Ledger.REWARDS_ENABLED, effectiveRewardsEnabled);
-        globals.put(YanoPropertyKeys.Ledger.EPOCH_PARAMS_TRACKING_ENABLED, effectiveEpochParamsTrackingEnabled);
-        globals.put(YanoPropertyKeys.Ledger.GOVERNANCE_ENABLED, effectiveGovernanceEnabled);
-        globals.put(YanoPropertyKeys.SnapshotExport.ENABLED, effectiveSnapshotExportEnabled);
+        globals.put(YanoPropertyKeys.Ledger.ADAPOT_ENABLED, adapotEnabled);
+        globals.put(YanoPropertyKeys.Ledger.REWARDS_ENABLED, rewardsEnabled);
+        globals.put(YanoPropertyKeys.Ledger.EPOCH_PARAMS_TRACKING_ENABLED, epochParamsTrackingEnabled);
+        globals.put(YanoPropertyKeys.Ledger.GOVERNANCE_ENABLED, governanceEnabled);
+        globals.put(YanoPropertyKeys.SnapshotExport.ENABLED, snapshotExportEnabled);
         globals.put(YanoPropertyKeys.SnapshotExport.DIR, snapshotExportDir);
         globals.put(YanoPropertyKeys.SnapshotExport.STAKE, snapshotExportStake);
         globals.put(YanoPropertyKeys.SnapshotExport.DREP_DIST, snapshotExportDrepDist);
@@ -556,7 +522,9 @@ public class YanoProducer {
         globals.put(YanoPropertyKeys.UtxoFilter.PAYMENT_CREDENTIALS,
                 utxoFilterPaymentCredentials.orElse(java.util.List.of()));
 
-        RuntimeOptions runtimeOptions = new RuntimeOptions(eventsOptions, pluginsOptions, globals);
+        RuntimeOptions runtimeOptions = YanoAssembly.applyBootstrapPartialStatePolicy(
+                yaciConfig,
+                new RuntimeOptions(eventsOptions, pluginsOptions, globals));
 
         // Set plugin classloader on thread context so PluginManager picks it up
         Thread.currentThread().setContextClassLoader(pluginClassLoader);
@@ -577,7 +545,7 @@ public class YanoProducer {
         yanoNode = assembly.transactionBootstrap(
                         TransactionBootstrapOptions.of(
                                 txEvaluationEnabled,
-                                effectiveEpochParamsTrackingEnabled(),
+                                YanoAssembly.effectiveDerivedLedgerStateEnabled(yaciConfig, epochParamsTrackingEnabled),
                                 supplementaryRulesEnabled,
                                 scriptEvaluator),
                         DefaultTransactionServicesFactory::create)

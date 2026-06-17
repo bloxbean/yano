@@ -141,7 +141,11 @@ public final class DevnetCatchUpService {
     }
 
     private long wallClockSlot() {
+        int slotLength = slotLengthMillis.getAsInt();
+        if (slotLength <= 0) {
+            throw new IllegalStateException("Catch-up requires positive slot length");
+        }
         return (currentTimeMillis.getAsLong() - resolvedGenesisTimestampMillis.getAsLong())
-                / slotLengthMillis.getAsInt();
+                / slotLength;
     }
 }

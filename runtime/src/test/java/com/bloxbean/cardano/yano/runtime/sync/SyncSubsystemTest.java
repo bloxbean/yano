@@ -149,6 +149,51 @@ class SyncSubsystemTest {
     }
 
     @Test
+    void clientStartupCancelsPendingIntersectionTransition() {
+        YanoConfig config = serverOnlyConfig();
+        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+        TestRuntime runtime = new TestRuntime(config, scheduler, () -> false, null);
+
+        try {
+            SyncSubsystem sync = runtime.sync(null);
+            sync.setRollbackClassificationTimeoutMillis(60_000L);
+
+            sync.onIntersectionFound();
+            assertThat(sync.hasPendingIntersectionTransition()).isTrue();
+
+            sync.startClientSync();
+
+            assertThat(sync.hasPendingIntersectionTransition()).isFalse();
+        } finally {
+            runtime.close();
+            scheduler.shutdownNow();
+        }
+    }
+
+    @Test
+    void recoverableStartupRecoveryFailureDoesNotMarkPeerTerminal() {
+        YanoConfig config = clientConfig();
+        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+        TestRuntime runtime = new TestRuntime(config, scheduler, () -> true,
+                (endpoint, point) -> {
+                    throw new RuntimeException("temporary");
+                });
+
+        try {
+            SyncSubsystem sync = runtime.sync(config.getRemoteHost());
+
+            sync.startClientSync();
+
+            assertThat(sync.peerRecoverySnapshot().terminal()).isFalse();
+            assertThat(sync.health().status()).isEqualTo(SubsystemHealth.Status.UP);
+            assertThat(sync.currentPeerSessionStatus().terminalFailureMessage()).isNull();
+        } finally {
+            runtime.close();
+            scheduler.shutdownNow();
+        }
+    }
+
+    @Test
     void terminalStartupRecoveryFailureStopsSyncAndReportsDownHealth() {
         YanoConfig config = clientConfig();
         ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();

@@ -111,6 +111,19 @@ class NodeKernelTest {
     }
 
     @Test
+    void closeIsIdempotent() {
+        List<String> calls = new ArrayList<>();
+        var first = new RecordingSubsystem("first", calls);
+
+        NodeKernel kernel = new NodeKernel(List.of(first), context());
+
+        kernel.close();
+        kernel.close();
+
+        assertEquals(List.of("first:close"), calls);
+    }
+
+    @Test
     void healthFallsBackToDownWhenSubsystemHealthThrows() {
         List<String> calls = new ArrayList<>();
         var first = new RecordingSubsystem("first", calls);

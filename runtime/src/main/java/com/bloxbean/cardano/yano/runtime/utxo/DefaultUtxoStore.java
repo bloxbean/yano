@@ -1655,7 +1655,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
     }
 
     @Override
-    public void reconcile(ChainState chainState) {
+    public synchronized void reconcile(ChainState chainState) {
         if (!enabled || chainState == null) return;
         long lastAppliedBlock = 0L;
         try {
