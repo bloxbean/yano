@@ -24,6 +24,7 @@ import com.bloxbean.cardano.yano.runtime.config.RollbackRetentionGenesisValues;
 import com.bloxbean.cardano.yano.runtime.config.RollbackRetentionPlanner;
 import com.bloxbean.cardano.yano.runtime.config.RollbackRetentionSettings;
 import com.bloxbean.cardano.yano.runtime.debug.DebugLedgerStateAccess;
+import com.bloxbean.cardano.yano.runtime.kernel.NodeKernel;
 import com.bloxbean.cardano.yano.runtime.maintenance.RuntimeMaintenanceGate;
 import com.bloxbean.cardano.yano.runtime.tx.TransactionBootstrapOptions;
 import com.bloxbean.cardano.yano.tx.DefaultTransactionServicesFactory;
@@ -602,6 +603,13 @@ public class YanoProducer {
     public DebugLedgerStateAccess createDebugLedgerStateAccess() {
         return ensureYanoNode().debugLedgerStateAccess()
                 .orElseThrow(() -> new IllegalStateException("Debug ledger-state access unavailable"));
+    }
+
+    @Produces
+    @ApplicationScoped
+    public NodeKernel createNodeKernel() {
+        return ensureYanoNode().kernel()
+                .orElseThrow(() -> new IllegalStateException("Runtime kernel unavailable"));
     }
 
     @Produces

@@ -19,17 +19,33 @@ public final class DevnetTimeAdvanceService {
     private final ChainState chainState;
     private final ProducerSubsystem producerSubsystem;
     private final int maxAdvanceSlots;
+    private final MaintenanceFailureReporter failureReporter;
 
     public DevnetTimeAdvanceService(BooleanSupplier devMode,
                                     BooleanSupplier devnetProductionAvailable,
                                     ChainState chainState,
                                     ProducerSubsystem producerSubsystem,
                                     int maxAdvanceSlots) {
+        this(devMode,
+                devnetProductionAvailable,
+                chainState,
+                producerSubsystem,
+                maxAdvanceSlots,
+                MaintenanceFailureReporter.noop());
+    }
+
+    public DevnetTimeAdvanceService(BooleanSupplier devMode,
+                                    BooleanSupplier devnetProductionAvailable,
+                                    ChainState chainState,
+                                    ProducerSubsystem producerSubsystem,
+                                    int maxAdvanceSlots,
+                                    MaintenanceFailureReporter failureReporter) {
         this.devMode = Objects.requireNonNull(devMode, "devMode");
         this.devnetProductionAvailable = Objects.requireNonNull(devnetProductionAvailable, "devnetProductionAvailable");
         this.chainState = Objects.requireNonNull(chainState, "chainState");
         this.producerSubsystem = Objects.requireNonNull(producerSubsystem, "producerSubsystem");
         this.maxAdvanceSlots = maxAdvanceSlots;
+        this.failureReporter = failureReporter != null ? failureReporter : MaintenanceFailureReporter.noop();
     }
 
     public TimeAdvanceResult advanceBySlots(int slots) {
@@ -50,11 +66,13 @@ public final class DevnetTimeAdvanceService {
         long targetSlot = currentSlot + slots;
 
         boolean wasRunning = producerSubsystem.isRunning();
-        if (wasRunning) {
-            producerSubsystem.stop();
-        }
+        boolean mutationStarted = false;
 
         try {
+            mutationStarted = true;
+            if (wasRunning) {
+                producerSubsystem.stop();
+            }
             int blocksProduced = producerSubsystem.produceEmptyBlocksToSlot(targetSlot, "Time advance");
             ChainTip newTip = chainState.getTip();
 
@@ -62,9 +80,25 @@ public final class DevnetTimeAdvanceService {
                     newTip != null ? newTip.getSlot() : 0,
                     newTip != null ? newTip.getBlockNumber() : 0,
                     blocksProduced);
+        } catch (RuntimeException | Error e) {
+            if (mutationStarted) {
+                failureReporter.markDegraded(
+                        "devnet time advance",
+                        "Devnet time advance failed after producer or chain state mutation started; restart required",
+                        e);
+            }
+            throw e;
         } finally {
             if (wasRunning) {
-                producerSubsystem.start();
+                try {
+                    producerSubsystem.start();
+                } catch (RuntimeException | Error e) {
+                    failureReporter.markDegraded(
+                            "devnet time advance",
+                            "Devnet time advance could not restart the producer; restart required",
+                            e);
+                    throw e;
+                }
             }
         }
     }

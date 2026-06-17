@@ -6,6 +6,7 @@ import com.bloxbean.cardano.yano.api.config.YanoConfig;
 import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
 import com.bloxbean.cardano.yano.runtime.internal.RuntimeNode;
 import com.bloxbean.cardano.yano.runtime.config.InMemoryDevnetGenesis;
+import com.bloxbean.cardano.yano.runtime.kernel.Schedulers;
 import com.bloxbean.cardano.yano.runtime.producer.ProducerMode;
 import com.bloxbean.cardano.yano.runtime.producer.ProducerStartupPlan;
 import com.bloxbean.cardano.yano.runtime.tx.TransactionBootstrapOptions;
@@ -179,7 +180,8 @@ public final class YanoAssembly {
 
         public YanoNode build() {
             validateRole();
-            RuntimeNode runtimeNode = new RuntimeNode(config, runtimeOptions, inMemoryGenesis, producerStartupPlan());
+            Schedulers schedulers = new Schedulers();
+            RuntimeNode runtimeNode = new RuntimeNode(config, runtimeOptions, inMemoryGenesis, producerStartupPlan(), schedulers);
             applyPreStartConfiguration(runtimeNode);
             installTransactionServices(runtimeNode);
             return new RuntimeYanoNode(
@@ -193,7 +195,8 @@ public final class YanoAssembly {
                     runtimeNode.getMaintenanceGate(),
                     runtimeNode,
                     runtimeNode,
-                    role);
+                    role,
+                    schedulers);
         }
 
         private void applyPreStartConfiguration(RuntimeNode runtimeNode) {

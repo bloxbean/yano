@@ -3,6 +3,7 @@ package com.bloxbean.cardano.yano.runtime;
 import com.bloxbean.cardano.yano.runtime.internal.RuntimeNode;
 
 import com.bloxbean.cardano.yano.api.config.YanoConfig;
+import com.bloxbean.cardano.yano.runtime.kernel.SubsystemHealth;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -45,6 +46,34 @@ class YanoStartupMaintenanceTest {
         } finally {
             yano.close();
         }
+    }
+
+    @Test
+    void directKernelCloseAfterFailedStartupClosesResourcesAndKeepsStatusInspectable() {
+        YanoConfig config = YanoConfig.builder()
+                .enableBootstrap(true)
+                .enableClient(true)
+                .enableServer(false)
+                .enableBlockProducer(false)
+                .useRocksDB(true)
+                .rocksDBPath(tempDir.resolve("failed-kernel-close-chainstate").toString())
+                .remoteHost("localhost")
+                .remotePort(3001)
+                .protocolMagic(42)
+                .build();
+        RuntimeNode yano = new RuntimeNode(config);
+
+        assertThatThrownBy(yano::start)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Bootstrap is enabled but no BootstrapDataProvider");
+
+        yano.kernel().close();
+
+        assertThat(yano.getStatus().isRuntimeDegraded()).isTrue();
+        assertThat(yano.kernel().health()).anySatisfy(health -> {
+            assertThat(health.name()).isEqualTo("chain-storage");
+            assertThat(health.status()).isEqualTo(SubsystemHealth.Status.DOWN);
+        });
     }
 
     @Test
@@ -110,6 +139,34 @@ class YanoStartupMaintenanceTest {
 
         RuntimeNode yanoForClose = new RuntimeNode(config);
         try {
+            assertMutationWaitsForMaintenance(yanoForClose, yanoForClose::close);
+        } finally {
+            yanoForClose.close();
+        }
+    }
+
+    @Test
+    void startedNodeLifecycleWaitsForActiveMaintenance() throws Exception {
+        YanoConfig config = YanoConfig.builder()
+                .enableClient(false)
+                .enableServer(false)
+                .enableBlockProducer(false)
+                .remoteHost("localhost")
+                .remotePort(3001)
+                .protocolMagic(42)
+                .build();
+
+        RuntimeNode yanoForStop = new RuntimeNode(config);
+        try {
+            yanoForStop.start();
+            assertMutationWaitsForMaintenance(yanoForStop, yanoForStop::stop);
+        } finally {
+            yanoForStop.close();
+        }
+
+        RuntimeNode yanoForClose = new RuntimeNode(config);
+        try {
+            yanoForClose.start();
             assertMutationWaitsForMaintenance(yanoForClose, yanoForClose::close);
         } finally {
             yanoForClose.close();

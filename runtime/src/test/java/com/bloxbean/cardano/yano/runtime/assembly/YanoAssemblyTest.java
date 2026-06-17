@@ -110,6 +110,39 @@ class YanoAssemblyTest {
     }
 
     @Test
+    void assembledRuntimeKernelExposesRuntimeSubsystems() {
+        YanoNode node = YanoAssembly.relay(YanoConfig.serverOnly(0))
+                .runtimeOptions(RuntimeOptions.defaults())
+                .build();
+
+        try {
+            List<String> subsystemNames = node.kernel().orElseThrow().subsystems().stream()
+                    .map(com.bloxbean.cardano.yano.runtime.kernel.Subsystem::name)
+                    .toList();
+
+            assertEquals(List.of(
+                    "runtime-resources",
+                    "runtime-startup-boundary",
+                    "tx",
+                    "serve",
+                    "runtime-bootstrap-recovery",
+                    "utxo",
+                    "ledger-state",
+                    "chain-storage",
+                    "producer",
+                    "chronology",
+                    "serve-deferred",
+                    "sync",
+                    "runtime-startup-publication",
+                    "runtime-shutdown-boundary"), subsystemNames);
+            assertTrue(node.kernel().orElseThrow().health().stream()
+                    .allMatch(health -> health.status() == SubsystemHealth.Status.UP));
+        } finally {
+            node.close();
+        }
+    }
+
+    @Test
     void transactionBootstrapFactoryFailureDoesNotFailAssembly() {
         YanoNode node = YanoAssembly.relay(YanoConfig.serverOnly(0))
                 .transactionBootstrap(TransactionBootstrapOptions.enabled(false, false, "scalus"),
@@ -222,6 +255,7 @@ class YanoAssemblyTest {
             ProducerStartupPlan plan = producerStartupPlan(node);
             assertEquals(ProducerMode.DEVNET, plan.mode());
             assertFalse(plan.deferredUntilGenesisShift());
+            assertTrue(node.devnetControl().isPresent());
         } finally {
             node.close();
         }
@@ -273,6 +307,7 @@ class YanoAssemblyTest {
             ProducerStartupPlan plan = producerStartupPlan(devnetNode);
             assertEquals(ProducerMode.DEVNET, plan.mode());
             assertFalse(plan.deferredUntilGenesisShift());
+            assertTrue(devnetNode.devnetControl().isPresent());
         } finally {
             devnetNode.close();
         }
@@ -284,6 +319,7 @@ class YanoAssemblyTest {
             ProducerStartupPlan plan = producerStartupPlan(timeTravelNode);
             assertEquals(ProducerMode.DEVNET_TIME_TRAVEL, plan.mode());
             assertTrue(plan.deferredUntilGenesisShift());
+            assertTrue(timeTravelNode.devnetControl().isPresent());
         } finally {
             timeTravelNode.close();
         }
@@ -331,6 +367,7 @@ class YanoAssemblyTest {
             ProducerStartupPlan plan = producerStartupPlan(node);
             assertEquals(ProducerMode.DEVNET_TIME_TRAVEL, plan.mode());
             assertTrue(plan.deferredUntilGenesisShift());
+            assertTrue(node.devnetControl().isPresent());
         } finally {
             node.close();
         }
@@ -348,6 +385,7 @@ class YanoAssemblyTest {
             ProducerStartupPlan plan = producerStartupPlan(node);
             assertEquals(ProducerMode.SLOT_LEADER_TIME_TRAVEL, plan.mode());
             assertTrue(plan.deferredUntilGenesisShift());
+            assertTrue(node.devnetControl().isPresent());
         } finally {
             node.close();
         }

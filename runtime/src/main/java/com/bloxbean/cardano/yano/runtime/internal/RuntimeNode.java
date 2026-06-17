@@ -58,7 +58,7 @@ import com.bloxbean.cardano.yano.runtime.chain.ChainStateSnapshots;
 import com.bloxbean.cardano.yano.runtime.chain.EraMetadataStore;
 import com.bloxbean.cardano.yano.runtime.chain.NearestSlotLookup;
 import com.bloxbean.cardano.yano.runtime.chronology.ChronologyService;
-import com.bloxbean.cardano.yano.api.events.BlockAppliedEvent;
+import com.bloxbean.cardano.yano.runtime.chronology.ChronologySubsystem;
 import com.bloxbean.cardano.yano.api.events.NodeStartedEvent;
 import com.bloxbean.cardano.yano.api.events.RollbackEvent;
 import com.bloxbean.cardano.yano.runtime.maintenance.RuntimeMaintenanceGate;
@@ -68,6 +68,7 @@ import com.bloxbean.cardano.yano.runtime.peer.PeerSessionStatus;
 import com.bloxbean.cardano.yano.runtime.producer.DevnetBlockBuilderFactory;
 import com.bloxbean.cardano.yano.runtime.producer.DevnetProducerFactory;
 import com.bloxbean.cardano.yano.runtime.producer.NonceEvolutionListenerFactory;
+import com.bloxbean.cardano.yano.runtime.producer.ProducerStartupCoordinator;
 import com.bloxbean.cardano.yano.runtime.producer.ProducerStartupPlan;
 import com.bloxbean.cardano.yano.runtime.producer.ProducerSubsystem;
 import com.bloxbean.cardano.yano.runtime.producer.SlotLeaderKeyMaterial;
@@ -98,6 +99,15 @@ import com.bloxbean.cardano.yano.runtime.devnet.DevnetTimeAdvanceService;
 import com.bloxbean.cardano.yano.runtime.devnet.DevnetToolkit;
 import com.bloxbean.cardano.yano.runtime.events.PropagatingEventBus;
 import com.bloxbean.cardano.yano.api.util.EpochSlotCalc;
+import com.bloxbean.cardano.yano.runtime.kernel.KernelLifecycleException;
+import com.bloxbean.cardano.yano.runtime.kernel.KernelState;
+import com.bloxbean.cardano.yano.runtime.kernel.NodeKernel;
+import com.bloxbean.cardano.yano.runtime.kernel.RuntimeKernelProvider;
+import com.bloxbean.cardano.yano.runtime.kernel.Schedulers;
+import com.bloxbean.cardano.yano.runtime.kernel.ServiceRegistry;
+import com.bloxbean.cardano.yano.runtime.kernel.Subsystem;
+import com.bloxbean.cardano.yano.runtime.kernel.SubsystemContext;
+import com.bloxbean.cardano.yano.runtime.kernel.SubsystemHealth;
 import com.bloxbean.cardano.yano.runtime.ledger.LedgerStateSubsystem;
 import com.bloxbean.cardano.yano.runtime.server.ServeSubsystem;
 import com.bloxbean.cardano.yano.runtime.storage.ChainStorageSubsystem;
@@ -114,11 +124,10 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Supplier;
 
@@ -129,7 +138,7 @@ import java.util.function.Supplier;
  */
 @Slf4j
 public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGateway, TxEvaluationGateway,
-        ProducerControl, AutoCloseable, DebugLedgerStateAccess {
+        ProducerControl, AutoCloseable, DebugLedgerStateAccess, RuntimeKernelProvider {
     // Configuration
     private final YanoConfig config;
 
@@ -146,13 +155,13 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
 
     // Block producer (devnet, slot-leader, or time-travel strategy)
     private final ProducerSubsystem producerSubsystem = new ProducerSubsystem();
+    private final ProducerStartupCoordinator producerStartupCoordinator;
     private final ProducerStartupPlan producerStartupPlanOverride;
     private volatile EpochNonceState epochNonceState; // shared nonce state (accessible for REST endpoint)
     private volatile GenesisConfig genesisConfig;
     private volatile StaticProtocolParamsSnapshotCache staticProtocolParamsSnapshotCache;
     private volatile long resolvedGenesisTimestamp;
-    private final ChronologyService chronologyService;
-    private boolean slotTimeEventSubscriptionRegistered;
+    private final ChronologySubsystem chronologySubsystem;
     private final TxSubsystem txSubsystem;
     private final DevnetControl devnetControl;
     // Status tracking
@@ -165,7 +174,9 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
      */
     private record StaticProtocolParamsSnapshotCache(String json, ProtocolParamsSnapshot snapshot) {}
 
-    private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+    private final Schedulers schedulers;
+    private final ScheduledExecutorService scheduler;
+    private final NodeKernel kernel;
 
     private final CopyOnWriteArrayList<BlockChainDataListener> blockChainDataListeners = new CopyOnWriteArrayList<>();
     private final CopyOnWriteArrayList<NodeEventListener> nodeEventListeners = new CopyOnWriteArrayList<>();
@@ -214,6 +225,22 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                        RuntimeOptions options,
                        InMemoryDevnetGenesis inMemoryGenesis,
                        ProducerStartupPlan producerStartupPlan) {
+        this(config, options, inMemoryGenesis, producerStartupPlan, new Schedulers());
+    }
+
+    /**
+     * Constructor used by explicit runtime assembly recipes that already own a
+     * kernel scheduler context.
+     *
+     * @param inMemoryGenesis in-memory devnet genesis (nullable — only for devnet block-producer mode)
+     * @param producerStartupPlan recipe-selected block producer startup plan; {@code null} derives a plan from config
+     * @param schedulers kernel scheduler context shared by runtime subsystems
+     */
+    public RuntimeNode(YanoConfig config,
+                       RuntimeOptions options,
+                       InMemoryDevnetGenesis inMemoryGenesis,
+                       ProducerStartupPlan producerStartupPlan,
+                       Schedulers schedulers) {
         if (inMemoryGenesis != null && (!config.isDevMode() || !config.isEnableBlockProducer())) {
             throw new IllegalStateException(
                     "In-memory devnet genesis is only valid when devMode=true and enableBlockProducer=true");
@@ -226,6 +253,8 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
         this.config = config;
         this.runtimeOptions = options != null ? options : RuntimeOptions.defaults();
         this.producerStartupPlanOverride = producerStartupPlan;
+        this.schedulers = Objects.requireNonNull(schedulers, "schedulers");
+        this.scheduler = this.schedulers.scheduled();
         DnsCachePolicy.configureForClientMode(this.runtimeOptions.globals(), config.isEnableClient());
         this.remoteCardanoHost = config.getRemoteHost();
         this.remoteCardanoPort = config.getRemotePort();
@@ -234,8 +263,6 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
 
         this.chainStorage = new ChainStorageSubsystem(config, this.runtimeOptions, log);
         this.chainState = chainStorage.chainState();
-        this.chronologyService = new ChronologyService(this.chainState);
-
         // Configure Yaci
         YaciConfig.INSTANCE.setReturnBlockCbor(true);
         YaciConfig.INSTANCE.setReturnTxBodyCbor(true);
@@ -292,11 +319,16 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 utxoSubsystem::state,
                 this::resolveGenesisHash,
                 inMemoryDevnetGenesis);
+        this.chronologySubsystem = new ChronologySubsystem(
+                new ChronologyService(this.chainState),
+                eventBus,
+                ledgerStateSubsystem);
         this.syncSubsystem = new SyncSubsystem(
                 config,
                 chainState,
                 eventBus,
                 scheduler,
+                this.schedulers.tasks(),
                 serveSubsystem,
                 ledgerStateSubsystem,
                 chainStorage,
@@ -307,6 +339,7 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 remoteCardanoPort,
                 protocolMagic,
                 log);
+        this.producerStartupCoordinator = new ProducerStartupCoordinator(producerStartupActions());
         this.devnetControl = new DevnetToolkit(
                 this::rollbackDevnetToSlot,
                 this::rollbackDevnet,
@@ -320,6 +353,9 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 this::advanceTimeBySeconds,
                 this::shiftGenesisAndStartProducer,
                 this::catchUpToWallClock);
+        this.kernel = new NodeKernel(
+                runtimeKernelSubsystems(),
+                new SubsystemContext(eventBus, schedulers, this.runtimeOptions.globals(), new ServiceRegistry()));
     }
 
     private RocksDbSupplier rocksDbSupplierOrNull() {
@@ -336,6 +372,305 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
 
     private ByronGenesisUtxoMetadataStore byronGenesisUtxoMetadataStoreOrNull() {
         return chainStorage.byronGenesisUtxoMetadataStoreOrNull();
+    }
+
+    @Override
+    public NodeKernel kernel() {
+        return kernel;
+    }
+
+    private List<Subsystem> runtimeKernelSubsystems() {
+        return RuntimeKernelStages.create(runtimeKernelActions());
+    }
+
+    private SubsystemHealth runtimeHealth(String name) {
+        try {
+            NodeStatus status = getStatus();
+            if (status != null && status.isRuntimeDegraded()) {
+                return SubsystemHealth.degraded(name, status.getRuntimeDegradedReason());
+            }
+            if (status != null && status.isPeerRecoveryTerminal()) {
+                return SubsystemHealth.down(name, status.getPeerTerminalFailureMessage());
+            }
+            if (status != null && status.getStatusMessage() != null
+                    && status.getStatusMessage().toLowerCase().contains("error")) {
+                return SubsystemHealth.down(name, status.getStatusMessage());
+            }
+            return SubsystemHealth.up(name);
+        } catch (Exception e) {
+            return SubsystemHealth.down(name, e.toString());
+        }
+    }
+
+    private RuntimeKernelStages.Actions runtimeKernelActions() {
+        return new RuntimeKernelStages.Actions() {
+            @Override
+            public boolean isClosed() {
+                return closed.get();
+            }
+
+            @Override
+            public boolean markRunningForStartup() {
+                return isRunning.compareAndSet(false, true);
+            }
+
+            @Override
+            public void markStoppedAfterStartupFailure() {
+                isRunning.set(false);
+            }
+
+            @Override
+            public boolean markStoppingForShutdown() {
+                return isRunning.compareAndSet(true, false);
+            }
+
+            @Override
+            public RuntimeMaintenanceGate maintenanceGate() {
+                return chainStorage.maintenanceGate();
+            }
+
+            @Override
+            public void logStarting() {
+                log.info("Starting Yano...");
+            }
+
+            @Override
+            public void logAlreadyRunning() {
+                log.warn("Node is already running");
+            }
+
+            @Override
+            public void logStopping() {
+                log.info("Stopping Yano...");
+            }
+
+            @Override
+            public void logStopped() {
+                log.info("Yano stopped");
+            }
+
+            @Override
+            public void logStartupCleanupFailure(RuntimeException failure) {
+                log.warn("Runtime cleanup after failed startup also failed", failure);
+            }
+
+            @Override
+            public void stopRuntimeServices() {
+                RuntimeNode.this.stopRuntimeServices();
+            }
+
+            @Override
+            public void closeRuntimeResourcesUnderMaintenance() {
+                withRuntimeMaintenance("node close", () -> closeRuntimeResources(unsafeLedgerApplyShutdown));
+            }
+
+            @Override
+            public SubsystemHealth runtimeHealth(String name) {
+                return RuntimeNode.this.runtimeHealth(name);
+            }
+
+            @Override
+            public boolean isServerEnabled() {
+                return config.isEnableServer();
+            }
+
+            @Override
+            public boolean deferServerStartUntilClientStateReady() {
+                return config.isEnableServer() && config.isEnableClient() && !config.isEnableBlockProducer();
+            }
+
+            @Override
+            public void startServer() {
+                RuntimeNode.this.startServer();
+            }
+
+            @Override
+            public void stopServer() {
+                serveSubsystem.stop();
+            }
+
+            @Override
+            public SubsystemHealth serverHealth(String stageName) {
+                return config.isEnableServer() && isRunning.get()
+                        ? serveSubsystem.health()
+                        : SubsystemHealth.up(stageName);
+            }
+
+            @Override
+            public String txName() {
+                return txSubsystem.name();
+            }
+
+            @Override
+            public void startTx() {
+                txSubsystem.start();
+            }
+
+            @Override
+            public void stopTx() {
+                txSubsystem.stop();
+            }
+
+            @Override
+            public SubsystemHealth txHealth() {
+                return txSubsystem.health();
+            }
+
+            @Override
+            public void runBootstrapRecovery() {
+                loadGenesisConfigForStartup();
+                if (!config.isEnableBlockProducer() && config.getShelleyGenesisFile() != null
+                        && chainState.getTip() == null) {
+                    initializeGenesisUtxos();
+                }
+                if (config.isEnableBootstrap() && config.isEnableClient()
+                        && chainState.getTip() == null && chainState.getHeaderTip() == null) {
+                    performBootstrap();
+                }
+                validateChainState();
+                performStartupAdhocRollback();
+                completeStartupDerivedStateRecovery();
+            }
+
+            @Override
+            public String utxoName() {
+                return utxoSubsystem.name();
+            }
+
+            @Override
+            public void startUtxo() {
+                utxoSubsystem.startBackgroundServices();
+            }
+
+            @Override
+            public void stopUtxo() {
+                utxoSubsystem.pauseBackgroundServices();
+            }
+
+            @Override
+            public SubsystemHealth utxoHealth() {
+                return utxoSubsystem.health();
+            }
+
+            @Override
+            public String ledgerStateName() {
+                return ledgerStateSubsystem.name();
+            }
+
+            @Override
+            public void startLedgerState() {
+                ledgerStateSubsystem.start();
+            }
+
+            @Override
+            public void stopLedgerState() {
+                ledgerStateSubsystem.stop();
+            }
+
+            @Override
+            public SubsystemHealth ledgerStateHealth() {
+                return ledgerStateSubsystem.health();
+            }
+
+            @Override
+            public String chainStorageName() {
+                return chainStorage.name();
+            }
+
+            @Override
+            public void startChainPrune() {
+                chainStorage.startBlockPruneService();
+            }
+
+            @Override
+            public void stopChainPrune() {
+                chainStorage.stopBlockPruneService();
+            }
+
+            @Override
+            public SubsystemHealth chainStorageHealth() {
+                return chainStorage.health();
+            }
+
+            @Override
+            public String producerName() {
+                return producerSubsystem.name();
+            }
+
+            @Override
+            public void startProducer() {
+                if (config.isEnableBlockProducer()) {
+                    producerStartupCoordinator.start();
+                }
+            }
+
+            @Override
+            public void stopProducer() {
+                producerSubsystem.stop();
+            }
+
+            @Override
+            public SubsystemHealth producerHealth() {
+                return producerSubsystem.health();
+            }
+
+            @Override
+            public void closeNonceListeners() {
+                closeNonceListenerSubscriptions();
+            }
+
+            @Override
+            public String chronologyName() {
+                return chronologySubsystem.name();
+            }
+
+            @Override
+            public void startChronology() {
+                initSlotTimeCalculator();
+            }
+
+            @Override
+            public SubsystemHealth chronologyHealth() {
+                return chronologySubsystem.health();
+            }
+
+            @Override
+            public String syncName() {
+                return syncSubsystem.name();
+            }
+
+            @Override
+            public void startSync() {
+                initRelayNonceTrackingIfRequired();
+                if (config.isEnableClient()) {
+                    syncSubsystem.startClientSync();
+                }
+            }
+
+            @Override
+            public void stopSyncForShutdown() {
+                boolean unsafeLedgerApplyWorker = syncSubsystem.stopForShutdown();
+                if (unsafeLedgerApplyWorker) {
+                    unsafeLedgerApplyShutdown = true;
+                }
+            }
+
+            @Override
+            public SubsystemHealth syncHealth() {
+                return config.isEnableClient() ? syncSubsystem.health() : SubsystemHealth.up(syncSubsystem.name());
+            }
+
+            @Override
+            public void startPublication() {
+                publishStartupEventAndInitializeFilters();
+            }
+
+            @Override
+            public void finishSuccessfulStartup() {
+                log.info("Yano started successfully");
+                printStartupStatus();
+            }
+        };
     }
 
     private ChainStateSnapshots snapshotsOrThrow() {
@@ -532,16 +867,6 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
         ledgerStateSubsystem.completeStartupRecovery(utxoSubsystem::completeStartupRecovery);
     }
 
-    private void startRuntimeBackgroundServices() {
-        utxoSubsystem.startBackgroundServices();
-        ledgerStateSubsystem.start();
-        startBlockPruneService();
-    }
-
-    private void startBlockPruneService() {
-        chainStorage.startBlockPruneService();
-    }
-
     private void pauseRuntimeBackgroundServices() {
         utxoSubsystem.pauseBackgroundServices();
 
@@ -555,148 +880,78 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
         return ledgerStateSubsystem.accountHistoryProvider();
     }
 
+    private void publishStartupEventAndInitializeFilters() {
+        if (pluginManager != null && runtimeOptions.plugins().enabled()) {
+            try {
+                pluginManager.discoverAndInit();
+                pluginManager.startAll();
+            } catch (Exception e) {
+                log.warn("Plugin manager init/start failed: {}", e.toString(), e);
+            }
+        }
+
+        utxoSubsystem.initializeFilterChain(
+                pluginManager != null ? pluginManager.getStorageFilters() : List.of());
+
+        EventMetadata meta = EventMetadata.builder().origin("runtime").build();
+        eventBus.publish(
+                new NodeStartedEvent(System.currentTimeMillis()),
+                meta,
+                PublishOptions.builder().build());
+    }
+
     /**
      * Start the node (both client and server)
      */
     public void start() {
-        if (closed.get()) {
-            throw new IllegalStateException("Cannot start a closed Yano instance");
+        try {
+            kernel.start();
+        } catch (KernelLifecycleException e) {
+            throw unwrapKernelStartupFailure(e);
         }
-        if (isRunning.compareAndSet(false, true)) {
-            try (var startupMaintenance = chainStorage.maintenanceGate().enterMaintenance("node startup")) {
-                boolean startupMutationStarted = false;
-                try {
-                    log.info("Starting Yano...");
+    }
 
-                    boolean deferServerStartUntilClientStateReady =
-                            config.isEnableServer() && config.isEnableClient() && !config.isEnableBlockProducer();
-                    boolean serverStarted = false;
-
-                    // Enable transaction admission before any N2N tx-submission
-                    // handler can be reached by a downstream peer.
-                    txSubsystem.start();
-
-                    // Block production expects the server to be available before local blocks
-                    // are produced. Client-only relay mode defers server start until local
-                    // state has passed startup rollback/recovery.
-                    if (config.isEnableServer() && !deferServerStartUntilClientStateReady) {
-                        startServer();
-                        serverStarted = true;
-                    }
-
-                    startupMutationStarted = true;
-
-            // Always load genesis config if any genesis files are configured (for protocol params, epoch length, etc.)
-            if (genesisConfig == null && (hasAnyGenesisConfig() || inMemoryDevnetGenesis != null)) {
-                if (inMemoryDevnetGenesis != null) {
-                    genesisConfig = GenesisConfig.fromInMemory(
-                            inMemoryDevnetGenesis.shelley(),
-                            inMemoryDevnetGenesis.byron(),
-                            runtimeProtocolParametersJson());
-                } else {
-                    genesisConfig = GenesisConfig.load(
-                            config.getShelleyGenesisFile(),
-                            config.getByronGenesisFile(),
-                            runtimeProtocolParametersFile());
-                }
-
-                // Propagate epoch params from genesis to config (for REST layer)
-                propagateGenesisToConfig(genesisConfig);
-
-                log.info("Genesis config loaded (protocolParams={}, shelleyData={})",
-                        genesisConfig.hasProtocolParameters() ? "available" : "none",
-                        genesisConfig.getShelleyGenesisData() != null ? "available" : "none");
-
+    private RuntimeException unwrapKernelStartupFailure(KernelLifecycleException e) {
+        Throwable cause = e.getCause();
+        if (cause instanceof RuntimeException runtimeException) {
+            for (Throwable suppressed : e.getSuppressed()) {
+                runtimeException.addSuppressed(suppressed);
             }
-
-            // Pre-populate genesis UTXOs for relay mode (when not in block-producer mode)
-            if (!config.isEnableBlockProducer() && config.getShelleyGenesisFile() != null
-                    && chainState.getTip() == null) {
-                initializeGenesisUtxos();
+            return runtimeException;
+        }
+        if (cause instanceof Error error) {
+            for (Throwable suppressed : e.getSuppressed()) {
+                error.addSuppressed(suppressed);
             }
+            throw error;
+        }
+        return e;
+    }
 
-            // Bootstrap state if enabled and chain state is empty
-            if (config.isEnableBootstrap() && config.isEnableClient()
-                    && chainState.getTip() == null && chainState.getHeaderTip() == null) {
-                performBootstrap();
-            }
+    private void loadGenesisConfigForStartup() {
+        // Always load genesis config if any genesis files are configured (for protocol params, epoch length, etc.)
+        if (genesisConfig != null || (!hasAnyGenesisConfig() && inMemoryDevnetGenesis == null)) {
+            return;
+        }
 
-            // Validate and apply one-shot startup rollback before starting either
-            // client sync or block production. Block producer nonce state is restored
-            // during startBlockProducer(), so rollback must happen first.
-            validateChainState();
-            performStartupAdhocRollback();
-
-            completeStartupDerivedStateRecovery();
-            startRuntimeBackgroundServices();
-
-            // Start block producer if enabled (after server so we can notify, but
-            // after startup rollback so nonce state aligns with the final body tip).
-            if (config.isEnableBlockProducer()) {
-                startBlockProducer();
-            }
-
-            // Initialize slot-to-time calculator from genesis data.
-            // Done after startBlockProducer() so resolvedGenesisTimestamp is authoritative.
-            initSlotTimeCalculator();
-
-            // Start client sync after state recovery has completed.
-            if (config.isEnableClient()) {
-                // Initialize epoch nonce tracking after any startup rollback so
-                // repair validates against the final pre-sync body tip.
-                initRelayNonceTrackingIfRequired();
-
-                if (deferServerStartUntilClientStateReady && !serverStarted) {
-                    startServer();
-                    serverStarted = true;
-                }
-
-                syncSubsystem.startClientSync();
-            } else {
-                initRelayNonceTrackingIfRequired();
-            }
-
-            log.info("Yano started successfully");
-
-            // Print startup status
-            printStartupStatus();
-
-            // Start plugins and publish a startup event
-            if (pluginManager != null && this.runtimeOptions.plugins().enabled()) {
-                try {
-                    pluginManager.discoverAndInit();
-                    pluginManager.startAll();
-                } catch (Exception e) {
-                    log.warn("Plugin manager init/start failed: {}", e.toString(), e);
-                }
-            }
-
-            // Initialize UTXO filter chain after plugins so plugin-registered filters are included.
-            utxoSubsystem.initializeFilterChain(
-                    pluginManager != null ? pluginManager.getStorageFilters() : List.of());
-
-                    EventMetadata meta = EventMetadata.builder().origin("runtime").build();
-                    eventBus.publish(new NodeStartedEvent(System.currentTimeMillis()), meta, PublishOptions.builder().build());
-                } catch (RuntimeException | Error e) {
-                    try {
-                        stopRuntimeServices();
-                    } catch (RuntimeException stopFailure) {
-                        e.addSuppressed(stopFailure);
-                        log.warn("Runtime cleanup after failed startup also failed", stopFailure);
-                    } finally {
-                        isRunning.set(false);
-                    }
-                    if (startupMutationStarted) {
-                        startupMaintenance.markDegraded(
-                                "Node startup failed during storage/bootstrap/recovery; restart required",
-                                e);
-                    }
-                    throw e;
-                }
-            }
+        if (inMemoryDevnetGenesis != null) {
+            genesisConfig = GenesisConfig.fromInMemory(
+                    inMemoryDevnetGenesis.shelley(),
+                    inMemoryDevnetGenesis.byron(),
+                    runtimeProtocolParametersJson());
         } else {
-            log.warn("Node is already running");
+            genesisConfig = GenesisConfig.load(
+                    config.getShelleyGenesisFile(),
+                    config.getByronGenesisFile(),
+                    runtimeProtocolParametersFile());
         }
+
+        // Propagate epoch params from genesis to config (for REST layer).
+        propagateGenesisToConfig(genesisConfig);
+
+        log.info("Genesis config loaded (protocolParams={}, shelleyData={})",
+                genesisConfig.hasProtocolParameters() ? "available" : "none",
+                genesisConfig.getShelleyGenesisData() != null ? "available" : "none");
     }
 
     /**
@@ -759,80 +1014,172 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
         serveSubsystem.start();
     }
 
-    /**
-     * Start the block producer — branches between devnet and slot-leader modes.
-     */
-    private void startBlockProducer() {
-        // Wire epoch param provider for epoch transition detection in block producer path
-        com.bloxbean.cardano.yano.runtime.blockproducer.BlockProducerHelper.setGenesisBootstrapDataSupplier(
-                this::currentGenesisBootstrapData);
-        com.bloxbean.cardano.yano.runtime.blockproducer.BlockProducerHelper.setProducerPoolHashSupplier(null);
-        if (getEpochParamProvider() != null) {
-            com.bloxbean.cardano.yano.runtime.blockproducer.BlockProducerHelper.setEpochParamProvider(getEpochParamProvider());
-        }
-        ProducerStartupPlan startupPlan = producerStartupPlan();
-        if (startupPlan.deferredUntilGenesisShift()) {
-            deferPastTimeTravelBlockProducer();
-            return;
-        }
-        switch (startupPlan.mode()) {
-            case SLOT_LEADER -> startSlotLeaderBlockProducer();
-            case DEVNET -> startDevnetBlockProducer();
-            default -> throw new IllegalStateException(
-                    "Producer startup mode " + startupPlan.mode() + " must be deferred until genesis shift");
-        }
-    }
-
-    /**
-     * Start the block producer for devnet mode (unconditional fixed-interval production).
-     */
-    private void startDevnetBlockProducer() {
-        log.info("Starting block producer (devnet mode)...");
-
-        loadAndPropagateGenesisConfig();
-        autoDeriveBlockTimeMillis();
-        autoDeriveSlotLengthMillis();
-
-        boolean freshStart = chainState.getTip() == null;
-
-        // Epoch fast-forward: shift genesis timestamp backwards so wall-clock slot starts at target epoch
-        if (freshStart && config.getStartEpoch() > 0 && config.getGenesisTimestamp() <= 0) {
-            var shelleyData = genesisConfig.getShelleyGenesisData();
-            if (shelleyData != null) {
-                long shiftMillis = computeEpochShiftMillis(config.getStartEpoch());
-                config.setGenesisTimestamp(System.currentTimeMillis() - shiftMillis);
-                log.info("Epoch fast-forward: shifted genesis timestamp back by {}ms for startEpoch={}",
-                        shiftMillis, config.getStartEpoch());
+    private ProducerStartupCoordinator.Actions producerStartupActions() {
+        return new ProducerStartupCoordinator.Actions() {
+            @Override
+            public void wireBlockProducerHelpers() {
+                BlockProducerHelper.setGenesisBootstrapDataSupplier(RuntimeNode.this::currentGenesisBootstrapData);
+                BlockProducerHelper.setProducerPoolHashSupplier(null);
+                if (getEpochParamProvider() != null) {
+                    BlockProducerHelper.setEpochParamProvider(getEpochParamProvider());
+                }
             }
-        }
 
-        // Resolve genesis timestamp: persist on fresh start, read back on restart
-        resolvedGenesisTimestamp = genesisConfig.resolveAndPersistGenesisTimestamp(
-                config.getGenesisTimestamp(), freshStart, config.getShelleyGenesisFile());
-        refreshGenesisBootstrapData(genesisConfig.getShelleyGenesisData());
-
-        // Choose block builder: if all three key files are configured, use SignedBlockBuilder
-        DevnetBlockBuilder blockBuilder = devnetBlockBuilderFactory().create(freshStart);
-        configureGenesisProducerPoolHash(blockBuilder);
-
-        setConwayEraStartIfFreshStart(freshStart);
-
-        DevnetBlockProducer producer = createLiveDevnetProducer(blockBuilder);
-        producer.start();
-
-        // Epoch fast-forward: rapid catch-up producing empty blocks to current wall-clock slot
-        if (freshStart && config.getStartEpoch() > 0) {
-            long catchUpToSlot = (System.currentTimeMillis() - resolvedGenesisTimestamp) / config.getSlotLengthMillis();
-            if (catchUpToSlot > 1) {
-                log.info("Epoch fast-forward: producing empty blocks from slot 1 to {}", catchUpToSlot);
-                int produced = producer.produceEmptyBlocksToSlot(catchUpToSlot);
-                log.info("Epoch fast-forward complete: {} blocks produced", produced);
+            @Override
+            public ProducerStartupPlan startupPlan() {
+                return producerStartupPlan();
             }
-        }
 
-        storeGenesisUtxosIfNeeded(freshStart);
+            @Override
+            public YanoConfig config() {
+                return config;
+            }
 
-        log.info("Block producer started (devnet mode)");
+            @Override
+            public ChainState chainState() {
+                return chainState;
+            }
+
+            @Override
+            public EventBus eventBus() {
+                return eventBus;
+            }
+
+            @Override
+            public GenesisConfig genesisConfig() {
+                return genesisConfig;
+            }
+
+            @Override
+            public ChainTip chainTip() {
+                return chainState.getTip();
+            }
+
+            @Override
+            public void loadAndPropagateGenesisConfig() {
+                RuntimeNode.this.loadAndPropagateGenesisConfig();
+            }
+
+            @Override
+            public void autoDeriveBlockTimeMillis() {
+                RuntimeNode.this.autoDeriveBlockTimeMillis();
+            }
+
+            @Override
+            public void autoDeriveSlotLengthMillis() {
+                RuntimeNode.this.autoDeriveSlotLengthMillis();
+            }
+
+            @Override
+            public long computeEpochShiftMillis(int epochs) {
+                return RuntimeNode.this.computeEpochShiftMillis(epochs);
+            }
+
+            @Override
+            public void setResolvedGenesisTimestamp(long timestampMillis) {
+                resolvedGenesisTimestamp = timestampMillis;
+            }
+
+            @Override
+            public long resolvedGenesisTimestamp() {
+                return resolvedGenesisTimestamp;
+            }
+
+            @Override
+            public void refreshGenesisBootstrapDataFromGenesis() {
+                refreshGenesisBootstrapData(genesisConfig.getShelleyGenesisData());
+            }
+
+            @Override
+            public DevnetBlockBuilder createDevnetBlockBuilder(boolean freshStart) {
+                return devnetBlockBuilderFactory().create(freshStart);
+            }
+
+            @Override
+            public void configureGenesisProducerPoolHash(DevnetBlockBuilder blockBuilder) {
+                RuntimeNode.this.configureGenesisProducerPoolHash(blockBuilder);
+            }
+
+            @Override
+            public void setConwayEraStartIfFreshStart(boolean freshStart) {
+                RuntimeNode.this.setConwayEraStartIfFreshStart(freshStart);
+            }
+
+            @Override
+            public DevnetBlockProducer createLiveDevnetProducer(DevnetBlockBuilder blockBuilder) {
+                return RuntimeNode.this.createLiveDevnetProducer(blockBuilder);
+            }
+
+            @Override
+            public void storeGenesisUtxosIfNeeded(boolean freshStart) {
+                RuntimeNode.this.storeGenesisUtxosIfNeeded(freshStart);
+            }
+
+            @Override
+            public void notifyServeNewDataAvailable() {
+                serveSubsystem.notifyNewDataAvailable();
+            }
+
+            @Override
+            public void setEpochNonceState(EpochNonceState epochNonceState) {
+                RuntimeNode.this.epochNonceState = epochNonceState;
+            }
+
+            @Override
+            public void initializeNonceShelleyStartSlot(EpochNonceState epochNonceState) {
+                RuntimeNode.this.initializeNonceShelleyStartSlot(epochNonceState);
+            }
+
+            @Override
+            public NonceStateStore nonceStoreOrNull() {
+                return chainState instanceof NonceStateStore nonceStore ? nonceStore : null;
+            }
+
+            @Override
+            public EpochParamProvider effectiveEpochParamProvider() {
+                return RuntimeNode.this.effectiveEpochParamProvider();
+            }
+
+            @Override
+            public byte[] resolveGenesisHash() {
+                return RuntimeNode.this.resolveGenesisHash();
+            }
+
+            @Override
+            public void initializeProducerNonceState(EpochNonceState nonceState,
+                                                     NonceStateStore nonceStore,
+                                                     NonceReplayService replayService,
+                                                     String operation,
+                                                     String modeDescription) {
+                RuntimeNode.this.initializeProducerNonceState(
+                        nonceState, nonceStore, replayService, operation, modeDescription);
+            }
+
+            @Override
+            public ProtocolVersionSupplier createBlockProtocolVersionSupplier() {
+                return RuntimeNode.this.createBlockProtocolVersionSupplier();
+            }
+
+            @Override
+            public NonceEvolutionListener.NonceCursorResolver nonceCursorResolver() {
+                return RuntimeNode.this::resolveNonceSnapshotCursor;
+            }
+
+            @Override
+            public void replaceNonceListenerSubscriptions(List<SubscriptionHandle> subscriptionHandles) {
+                RuntimeNode.this.replaceNonceListenerSubscriptions(subscriptionHandles);
+            }
+
+            @Override
+            public SlotLeaderProducerFactory slotLeaderProducerFactory() {
+                return RuntimeNode.this.slotLeaderProducerFactory();
+            }
+
+            @Override
+            public void deferPastTimeTravelBlockProducer() {
+                RuntimeNode.this.deferPastTimeTravelBlockProducer();
+            }
+        };
     }
 
     private void deferPastTimeTravelBlockProducer() {
@@ -840,174 +1187,6 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
         loadAndPropagateGenesisConfig();
         autoDeriveBlockTimeMillis();
         autoDeriveSlotLengthMillis();
-    }
-
-    /**
-     * Start the slot-leader block producer for public networks (Ouroboros Praos).
-     */
-    private void startSlotLeaderBlockProducer() {
-        log.info("Starting block producer (slot-leader mode)...");
-
-        loadAndPropagateGenesisConfig();
-        autoDeriveSlotLengthMillis();
-
-        var shelleyData = genesisConfig.getShelleyGenesisData();
-        if (shelleyData == null) {
-            throw new IllegalStateException("Shelley genesis data required for slot-leader mode");
-        }
-
-        boolean freshStart = chainState.getTip() == null;
-
-        // Resolve genesis timestamp: devnet uses resolveAndPersist pattern, public networks use systemStart
-        if (config.isDevMode()) {
-            // Epoch fast-forward: shift genesis timestamp backwards for target epoch
-            if (freshStart && config.getStartEpoch() > 0 && config.getGenesisTimestamp() <= 0) {
-                long shiftMillis = computeEpochShiftMillis(config.getStartEpoch());
-                config.setGenesisTimestamp(System.currentTimeMillis() - shiftMillis);
-                log.info("Epoch fast-forward: shifted genesis timestamp back by {}ms for startEpoch={}",
-                        shiftMillis, config.getStartEpoch());
-            }
-
-            resolvedGenesisTimestamp = genesisConfig.resolveAndPersistGenesisTimestamp(
-                    config.getGenesisTimestamp(), freshStart, config.getShelleyGenesisFile());
-            refreshGenesisBootstrapData(genesisConfig.getShelleyGenesisData());
-        } else {
-            resolvedGenesisTimestamp = genesisConfig.getSystemStartEpochMillis();
-            if (resolvedGenesisTimestamp <= 0) {
-                throw new IllegalStateException("systemStart required in shelley-genesis.json for slot-leader mode");
-            }
-        }
-
-        long epochLength = shelleyData.epochLength();
-        long securityParam = shelleyData.securityParam();
-        double activeSlotsCoeff = genesisConfig.getActiveSlotsCoeff();
-        long slotsPerKESPeriod = shelleyData.slotsPerKESPeriod();
-        long maxKESEvolutions = shelleyData.maxKESEvolutions();
-
-        try {
-            SlotLeaderKeyMaterial keyMaterial = SlotLeaderKeyMaterial.load(config);
-            String poolHash = keyMaterial.poolHash();
-            log.info("Pool hash: {}", poolHash);
-
-            // Initialize shared EpochNonceState (era-aware)
-            long byronSlotsPerEpoch = genesisConfig.getByronGenesisData() != null
-                    ? genesisConfig.getByronGenesisData().epochLength() : Constants.BYRON_SLOTS_PER_EPOCH;
-            epochNonceState = new EpochNonceState(epochLength, securityParam, activeSlotsCoeff, byronSlotsPerEpoch);
-            initializeNonceShelleyStartSlot(epochNonceState);
-            NonceStateStore nonceStore = (chainState instanceof NonceStateStore)
-                    ? (NonceStateStore) chainState : null;
-
-            EpochParamProvider effectiveParamProvider = effectiveEpochParamProvider();
-            boolean trackedParams = effectiveParamProvider instanceof EpochParamTracker tracker
-                    && tracker.isEnabled();
-            long networkMagic = config.getProtocolMagic();
-            NonceReplayService replayService = nonceStore != null
-                    ? new NonceReplayService(chainState, nonceStore,
-                            new EpochNonceEvolver(effectiveParamProvider, trackedParams, networkMagic),
-                            resolveGenesisHash())
-                    : null;
-
-            // Seed nonce: repair durable state to body tip > config seed > genesis init
-            initializeProducerNonceState(epochNonceState, nonceStore, replayService,
-                    "block-producer-startup", "slot-leader mode");
-
-            // Resolve produced-block protocol version using the configured parameter mode
-            ProtocolVersionSupplier protocolVersionSupplier = createBlockProtocolVersionSupplier();
-
-            // Create signed builder and slot leader check with a shared signer
-            var signingComponents = SlotLeaderSigningComponents.create(
-                    keyMaterial,
-                    slotsPerKESPeriod,
-                    maxKESEvolutions,
-                    epochNonceState,
-                    nonceStore,
-                    protocolVersionSupplier,
-                    activeSlotsCoeff);
-            var signedBlockBuilder = signingComponents.signedBlockBuilder();
-            var slotLeaderCheck = signingComponents.slotLeaderCheck();
-            configureGenesisProducerPoolHash(signedBlockBuilder);
-
-            var nonceRegistration = NonceEvolutionListenerFactory.registerSlotLeader(
-                    eventBus,
-                    epochNonceState,
-                    nonceStore,
-                    signedBlockBuilder,
-                    effectiveParamProvider,
-                    trackedParams,
-                    networkMagic,
-                    this::resolveNonceSnapshotCursor,
-                    replayService);
-            replaceNonceListenerSubscriptions(nonceRegistration.subscriptionHandles());
-
-            // Create StakeDataProvider. Devnet uses FixedStakeDataProvider (sigma=1.0).
-            StakeDataProvider stakeDataProvider = StakeDataProviderFactory.createLiveSlotLeaderProvider(config);
-
-            // Devnet genesis block production: seed the chain before starting slot-leader loop
-            if (config.isDevMode() && freshStart) {
-                var genesisResult = signedBlockBuilder.buildBlock(0, 0, null, java.util.List.of());
-                try {
-                    BlockProducerHelper.publishGenesisBlockEvent(eventBus, genesisResult, "slot-leader-genesis");
-                } catch (RuntimeException | Error e) {
-                    signedBlockBuilder.rollbackPendingNonceState();
-                    throw e;
-                }
-                BlockProducerHelper.storeProducedBlock(chainState, signedBlockBuilder, genesisResult);
-                log.info("Genesis block produced (slot-leader devnet): hash={}",
-                        HexUtil.encodeHexString(genesisResult.blockHash()));
-
-                storeGenesisUtxosIfNeeded(freshStart);
-                setConwayEraStartIfFreshStart(freshStart);
-
-                BlockProducerHelper.publishEvent(eventBus, genesisResult, 0, "slot-leader-genesis", false);
-                serveSubsystem.notifyNewDataAvailable();
-            }
-
-            // 11. Devnet epoch fast-forward: rapid catch-up producing blocks to current wall-clock slot
-            //     The loop runs until the chain tip is within 1 slot of wall-clock, since
-            //     the fast-forward itself takes real time and the wall-clock advances.
-            if (config.isDevMode() && freshStart && config.getStartEpoch() > 0) {
-                long initialTarget = (System.currentTimeMillis() - resolvedGenesisTimestamp) / config.getSlotLengthMillis();
-                if (initialTarget > 1) {
-                    log.info("Epoch fast-forward (slot-leader): catching up to wall-clock slot ~{}", initialTarget);
-                    int produced = 0;
-                    long slot = 1;
-                    while (true) {
-                        long currentWallClockSlot = (System.currentTimeMillis() - resolvedGenesisTimestamp) / config.getSlotLengthMillis();
-                        if (slot > currentWallClockSlot) break;
-
-                        byte[] epochNonce = epochNonceState.previewEpochNonceForSlot(slot);
-                        var vrfResult = slotLeaderCheck.checkAndProve(slot, epochNonce, java.math.BigDecimal.ONE);
-                        if (vrfResult != null) {
-                            ChainTip tip = chainState.getTip();
-                            var result = signedBlockBuilder.buildBlock(
-                                    tip.getBlockNumber() + 1, slot, tip.getBlockHash(), java.util.List.of(), vrfResult);
-                            BlockProducerHelper.storeProducedBlock(chainState, signedBlockBuilder, result);
-                            BlockProducerHelper.publishEvent(eventBus, result, 0, "slot-leader-catch-up");
-                            produced++;
-                        }
-                        if (produced > 0 && produced % 1000 == 0) {
-                            log.info("Epoch fast-forward progress: {} blocks produced, current slot={}", produced, slot);
-                        }
-                        slot++;
-                    }
-                    serveSubsystem.notifyNewDataAvailable();
-                    log.info("Epoch fast-forward complete (slot-leader): {} blocks produced, tip slot={}",
-                            produced, chainState.getTip() != null ? chainState.getTip().getSlot() : -1);
-                }
-            }
-
-            int slotLengthMillis = config.getSlotLengthMillis();
-            slotLeaderProducerFactory().startLive(
-                    signedBlockBuilder,
-                    epochNonceState,
-                    slotLeaderCheck,
-                    stakeDataProvider,
-                    poolHash,
-                    resolvedGenesisTimestamp,
-                    slotLengthMillis);
-        } catch (Exception e) {
-            throw new RuntimeException("Failed to start slot-leader block producer", e);
-        }
     }
 
     private void loadAndPropagateGenesisConfig() {
@@ -1560,16 +1739,7 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
      * Initialize the SlotTimeCalculator from genesis config data.
      */
     private void initSlotTimeCalculator() {
-        if (chronologyService.initialize(genesisConfig, resolvedGenesisTimestamp)) {
-            if (!slotTimeEventSubscriptionRegistered) {
-                slotTimeEventSubscriptionRegistered = true;
-                // Subscribe to BlockAppliedEvent to detect era transitions (only when slot-time is active)
-                eventBus.subscribe(BlockAppliedEvent.class, ctx -> {
-                    BlockAppliedEvent event = ctx.event();
-                    ledgerStateSubsystem.handleEraTransition(event);
-                }, SubscriptionOptions.builder().build());
-            }
-        }
+        chronologySubsystem.initialize(genesisConfig, resolvedGenesisTimestamp);
     }
 
     /**
@@ -1605,7 +1775,15 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
             if (!producerSubsystem.hasProduction()) {
                 throw new UnsupportedOperationException("Producer control is not available");
             }
-            producerSubsystem.start();
+            try {
+                producerSubsystem.start();
+            } catch (RuntimeException | Error e) {
+                markRuntimeDegraded(
+                        "producer start",
+                        "Producer start failed after producer control mutation started; restart required",
+                        e);
+                throw e;
+            }
         });
     }
 
@@ -1615,7 +1793,15 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
             if (!producerSubsystem.hasProduction()) {
                 throw new UnsupportedOperationException("Producer control is not available");
             }
-            producerSubsystem.stop();
+            try {
+                producerSubsystem.stop();
+            } catch (RuntimeException | Error e) {
+                markRuntimeDegraded(
+                        "producer stop",
+                        "Producer stop failed after producer control mutation started; restart required",
+                        e);
+                throw e;
+            }
         });
     }
 
@@ -1625,7 +1811,15 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
             if (!producerSubsystem.hasProduction()) {
                 throw new UnsupportedOperationException("Producer control is not available");
             }
-            producerSubsystem.resetToChainTip();
+            try {
+                producerSubsystem.resetToChainTip();
+            } catch (RuntimeException | Error e) {
+                markRuntimeDegraded(
+                        "producer reset",
+                        "Producer reset failed after producer control mutation started; restart required",
+                        e);
+                throw e;
+            }
         });
     }
 
@@ -2206,6 +2400,10 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
         }
     }
 
+    private void markRuntimeDegraded(String operation, String message, Throwable cause) {
+        chainStorage.maintenanceGate().markDegraded(operation, message, cause);
+    }
+
     private <T> T withRuntimeRead(String operationName, Supplier<T> operation) {
         try (var ignored = chainStorage.maintenanceGate().enterRead(operationName)) {
             return operation.get();
@@ -2384,7 +2582,7 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
 
                     @Override
                     public void invalidateSlotTimeCache() {
-                        chronologyService.invalidateSlotTimeCache();
+                        chronologySubsystem.invalidateSlotTimeCache();
                     }
                 });
     }
@@ -2418,7 +2616,8 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
         return new DevnetFaucetService(
                 config::isDevMode,
                 producerSubsystem::hasProduction,
-                () -> utxoStore);
+                () -> utxoStore,
+                this::markRuntimeDegraded);
     }
 
     private TimeAdvanceResult advanceTimeBySlots(int slots) {
@@ -2437,7 +2636,8 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 producerSubsystem::hasDevnetProduction,
                 chainState,
                 producerSubsystem,
-                DevnetTimeAdvanceService.DEFAULT_MAX_ADVANCE_SLOTS);
+                DevnetTimeAdvanceService.DEFAULT_MAX_ADVANCE_SLOTS,
+                this::markRuntimeDegraded);
     }
 
     /**
@@ -2515,7 +2715,8 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                     public void startDevnetTimeTravel(boolean freshStart) {
                         startShiftedDevnetTimeTravelProducer(freshStart);
                     }
-                });
+                },
+                this::markRuntimeDegraded);
     }
 
     private void startShiftedSlotLeaderTimeTravelProducer(boolean freshStart) {
@@ -2556,12 +2757,13 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 producerSubsystem,
                 () -> resolvedGenesisTimestamp,
                 config::getSlotLengthMillis,
-                System::currentTimeMillis);
+                System::currentTimeMillis,
+                this::markRuntimeDegraded);
     }
 
     @Override
     public long slotToUnixTime(long slot) {
-        return chronologyService.slotToUnixTime(slot).orElse(0);
+        return chronologySubsystem.slotToUnixTime(slot).orElse(0L);
     }
 
     private HeaderSyncManager currentHeaderSyncManager() {
@@ -2581,25 +2783,18 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
      * Stop Yano.
      */
     public void stop() {
-        withRuntimeMaintenance("node stop", this::stopIfRunning);
-    }
-
-    private void stopIfRunning() {
-        if (isRunning.compareAndSet(true, false)) {
-            log.info("Stopping Yano...");
-
-            stopRuntimeServices();
-
-            log.info("Yano stopped");
+        KernelState state = kernel.state();
+        if (state == KernelState.CREATED || state == KernelState.STOPPED || state == KernelState.FAILED) {
+            withRuntimeMaintenance("node stop", () -> {
+            });
+            return;
         }
+        kernel.stop();
     }
 
     @Override
     public void close() {
-        withRuntimeMaintenance("node close", () -> {
-            stopIfRunning();
-            closeRuntimeResources(unsafeLedgerApplyShutdown);
-        });
+        kernel.close();
     }
 
     private void stopRuntimeServices() {
@@ -2644,15 +2839,7 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
 
         closeTerminalResource("sync subsystem", syncSubsystem::close);
 
-        scheduler.shutdown();
-        try {
-            if (!scheduler.awaitTermination(5, TimeUnit.SECONDS)) {
-                scheduler.shutdownNow();
-            }
-        } catch (InterruptedException e) {
-            scheduler.shutdownNow();
-            Thread.currentThread().interrupt();
-        }
+        schedulers.close();
 
         if (!unsafeLedgerApplyWorker) {
             try {
@@ -2861,8 +3048,8 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
 
     @Override
     public NodeStatus getStatus() {
-        ChainTip localTip = getLocalTip();
-        ChainTip headerTip = chainState.getHeaderTip();
+        ChainTip localTip = statusLocalTip();
+        ChainTip headerTip = statusHeaderTip();
         PeerSessionStatus peerStatus = currentPeerSessionStatus();
         PeerRecoveryFailureTracker.Snapshot recoveryStatus = syncSubsystem.peerRecoverySnapshot();
         RuntimeMaintenanceGate maintenanceGate = chainStorage.maintenanceGate();
@@ -2955,6 +3142,28 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 .peerBodyFetchInProgressAgeMillis(peerStatus != null ? peerStatus.bodyFetchInProgressAgeMillis() : null)
                 .timestamp(System.currentTimeMillis())
                 .build();
+    }
+
+    private ChainTip statusLocalTip() {
+        if (closed.get()) {
+            return null;
+        }
+        try {
+            return getLocalTip();
+        } catch (RuntimeException e) {
+            throw e;
+        }
+    }
+
+    private ChainTip statusHeaderTip() {
+        if (closed.get()) {
+            return null;
+        }
+        try {
+            return chainState.getHeaderTip();
+        } catch (RuntimeException e) {
+            throw e;
+        }
     }
 
     private static String peerRecoveryReason(PeerSessionStatus peerStatus,

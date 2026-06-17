@@ -2,7 +2,7 @@
 
 **ADR:** `028-runtime-decomposition-nodekernel-composition-root.md`
 **Design doc:** `028-runtime-decomposition-high-level-design.md`
-**Current status:** Issue #17 core decomposition and reviewer hardening are implemented and validated. Shutdown leak prevention, peer recovery health, stale intersection cleanup, nonce-listener ownership, bootstrap partial-state policy placement, and small concurrency/defensive fixes are complete. Large kernel-driven lifecycle ownership and the remaining producer/chronology extraction are explicit non-blocking follow-up stages rather than part of the current load-bearing runtime.
+**Current status:** Issue #17 core decomposition and reviewer hardening are implemented and validated. Issue #21 runtime-kernel follow-up is implemented and validated: kernel ownership is load-bearing, shared scheduler ownership is wired, adapter readiness uses kernel health, chronology and producer startup orchestration are extracted, and maintenance failure signaling is consistent. Issue #19 is decided: keep `DevnetToolkit` in `runtime` until a concrete packaging, dependency, native-image, or versioning need justifies a split.
 **Last updated:** 2026-06-17
 
 ## Summary
@@ -46,9 +46,9 @@ runtime construction now goes through `YanoAssembly`/`YanoNode` and role
 interfaces. `ChainQuery` now exposes tip/block reads directly instead of leaking
 raw `ChainState`, account-state providers receive `ChainBlockReader` plus optional
 `RocksDbAccess` instead of mutable chain storage, and the implementation class
-lives in `runtime.internal`. Direct kernel ownership of the real subsystems and
-the remaining producer/chronology extraction are intentionally tracked as
-non-blocking follow-up work.
+lives in `runtime.internal`. Direct kernel ownership of the real runtime stages,
+shared scheduler ownership, producer startup orchestration, chronology ownership,
+and maintenance-failure signaling were completed under issue #21.
 
 ## Completed In Issue #17
 
@@ -1253,51 +1253,162 @@ The remaining compatibility cleanup tasks are complete:
   `runtime` for now; moving them to a separate toolkit module is deferred until
   there is a packaging need.
 
-## Remaining Non-Blocking Follow-Up Work
+## Issue #21 Follow-Up Work Complete
 
-### Kernel-Driven Lifecycle Ownership
+Issue #21 promoted the remaining runtime kernel and producer/chronology work from
+non-blocking ADR follow-up into completed implementation scope. The kernel
+lifecycle is now load-bearing without regressing the existing restart, rollback,
+snapshot restore, devnet, and sync behavior.
 
-- Replace the current one-subsystem `RuntimeNode` kernel adapter with direct
-  `NodeKernel` ownership of the real runtime subsystems:
-  `ChainStorageSubsystem`, `SyncSubsystem`, `ServeSubsystem`,
-  `LedgerStateSubsystem`, `UtxoSubsystem`, `TxSubsystem`,
-  `ProducerSubsystem`, and `AccountHistorySubsystem`.
-- Move runtime scheduler/recovery executor ownership behind `Schedulers` so
-  there is one shutdown point and one place to adopt virtual-thread or custom
-  scheduler policies.
-- Make kernel health aggregation load-bearing for adapter readiness instead of
-  relying only on `NodeStatus` projection.
-- Retire the remaining ad-hoc lifecycle flags and manual partial-start cleanup
-  once the real subsystems are kernel-owned.
+### Stage 21A - Kernel Ownership And Scheduler Context
 
-### Producer And Chronology Extraction
+- Implemented shape: assembled `RuntimeNode` now implements `RuntimeKernelProvider`
+  and owns the `NodeKernel` returned by `YanoAssembly`. `RuntimeYanoNode` uses that
+  kernel directly for runtime assemblies instead of wrapping the node in a second
+  one-subsystem kernel.
+- Kernel subsystem order is explicit:
+  `runtime-resources`, `runtime-startup-boundary`, `tx`, `serve`,
+  `runtime-bootstrap-recovery`, `utxo`, `ledger-state`, `chain-storage`,
+  `producer`, `chronology`, `serve-deferred`, `sync`,
+  `runtime-startup-publication`, `runtime-shutdown-boundary`.
+- Runtime scheduled work now uses the kernel `Schedulers` context. `SyncSubsystem`
+  receives the shared task executor for peer recovery, so scheduler shutdown has
+  one owner.
+- Quarkus readiness now consumes `NodeKernel.health()` and reports readiness down
+  when any kernel subsystem reports `DOWN` or `DEGRADED`.
 
-- Finish extracting producer/chronology orchestration from `RuntimeNode`:
-  genesis/era bootstrap, nonce state initialization and replay, genesis UTXO
-  seeding, protocol-version supplier resolution, and slot-leader/devnet
-  producer startup orchestration.
-- Promote the thin `ChronologyService` into the planned chronology boundary, or
-  explicitly rename the ADR role if the remaining ownership lands in producer
-  factories instead.
-- Keep the current producer strategy/factory split as the stable surface while
-  moving the remaining construction policy out of `RuntimeNode`.
+### Stage 21B - Startup And Stop Coordinator Extraction
 
-### Maintenance Failure Signaling
+- Implemented shape: `RuntimeNode.start()` delegates to `kernel.start()`.
+  Startup sequencing is now split into named kernel stages in
+  `RuntimeKernelStages` for transaction admission, early/deferred server start,
+  bootstrap/recovery, derived-state background services, chain pruning, producer
+  startup, chronology init, sync startup, plugin/filter startup, and startup
+  event publication. `RuntimeNode` supplies concrete operations through a narrow
+  `RuntimeKernelStages.Actions` adapter instead of owning the lifecycle stage
+  implementations.
+- Stop sequencing is driven by reverse kernel order. The
+  `runtime-shutdown-boundary` marks the runtime not-running before stopping sync,
+  so peer recovery cannot restart during shutdown, and it holds the maintenance
+  gate until `runtime-startup-boundary` releases it at the end of stop.
+- Terminal close remains centralized in `runtime-resources` instead of being a
+  plain reverse-order close of all stores. This is deliberate: UTXO async apply,
+  event-bus shutdown, ledger-state handlers, plugin close, and final
+  `ChainState`/RocksDB close require the existing drain-and-close ordering.
+- Failed startup cleanup is fail-closed and inspectable: startup failures stop
+  any partially started runtime services, mark runtime degraded after storage or
+  recovery mutation begins, close terminal resources through the kernel-owned
+  `runtime-resources` stage, and keep degraded status inspectable without reading
+  closed RocksDB handles.
 
-- Review whether generic devnet controls and producer start/stop/reset should
-  mark runtime degraded when maintenance fails after partially mutating state.
-  Snapshot restore already has fail-closed degraded signaling; the remaining
-  mutators currently fail to the caller and restart producers in `finally`
-  where applicable.
+### Stage 21C - Producer And Chronology Extraction
 
-### Adapter And Packaging Proofs
+- Implemented shape: `ChronologySubsystem` now owns slot-time initialization,
+  era-transition subscription, cache invalidation, and `slotToUnixTime` access.
+  `RuntimeNode` delegates chronology lifecycle and health to that subsystem.
+- Implemented shape: `ProducerStartupCoordinator` owns producer startup mode
+  selection, producer-wide helper wiring, deferred time-travel validation, devnet
+  startup sequencing, and slot-leader startup sequencing. It now owns genesis
+  timestamp resolution, epoch fast-forward orchestration, nonce-state setup,
+  nonce listener registration, protocol-version supplier selection, genesis
+  block/UTXO seeding calls, and final producer factory invocation. `RuntimeNode`
+  supplies concrete dependencies through `ProducerStartupCoordinator.Actions`.
+- Remaining producer construction primitives stay in existing producer-specific
+  factories and helper methods, but the startup orchestration and mode policy no
+  longer live in `RuntimeNode`.
+
+### Stage 21D - Maintenance Failure Signaling
+
+- Implemented shape: generic devnet controls receive a
+  `MaintenanceFailureReporter` and mark runtime degraded when a failure happens
+  after mutable state changes or producer restart fails.
+- Implemented shape: producer start/stop/reset mark runtime degraded when the
+  producer control mutation starts and then fails.
+- Snapshot restore and devnet rollback keep their existing fail-closed degraded
+  signaling.
+
+### Validation Gate For Issue #21
+
+- Focused runtime/kernel/readiness tests passed:
+  `./gradlew :runtime:test --tests '*NodeKernelTest' --tests '*YanoStartupMaintenanceTest' --tests '*YanoAssemblyTest' --tests '*ProducerStartupCoordinatorTest' :app:test --tests '*YanoHealthCheckTest' --console=plain -q`.
+- Touched-module JVM tests passed:
+  `./gradlew :runtime:test :app:test --console=plain -q`.
+- Haskell sync validation passed:
+  `./gradlew :app:haskellSyncTest --console=plain -q`.
+- Devnet AdaPot comparison passed through target epoch 32 using the Yaci CLI
+  native store binary at `~/.yaci-cli/components/store/yaci-store-all`. Final
+  comparison values matched across Haskell, Yano, and YaciStore:
+  deposits `502000000`, treasury `653894896802805`, reserves
+  `35335542735164389`, and genesis deposits `502000000`.
+- The AdaPot rerun used explicit local-config overrides
+  `-Dyano.remote.protocol-magic=42` and
+  `-Dyano.exit-on-epoch-calc-error=false` because the dirty local
+  `app/config/application.yml` overrides those values to `1` and `true`.
+- Two independent follow-up reviewers found no remaining issue #21 lifecycle or
+  design blockers after the final fixes. One reviewer also reran the focused
+  lifecycle/kernel tests and `git diff --check`.
+
+## Issue #19 DevnetToolkit Packaging Decision
+
+Decision: keep `DevnetToolkit` and the runtime devnet services in the `runtime`
+artifact for now. Do not create a `yano-devnet-toolkit` module in this slice.
+
+Rationale:
+
+- There is no concrete consumer or deployment profile that currently needs a
+  runtime artifact without devnet classes.
+- Splitting now would not reduce the runtime dependency graph. The devnet
+  services use existing runtime dependencies and JDK APIs; they do not pull a
+  separate framework, CLI, Haskell, database, or test-container stack into
+  `runtime`.
+- The devnet implementation is tightly coupled to runtime-internal coordination
+  points that should not become public module contracts prematurely:
+  `RuntimeMaintenanceGate`, snapshot/restore drain ordering,
+  `ChainStateSnapshots`, `ProducerSubsystem`, `UtxoStoreWriter`, genesis shift,
+  and chain-state rollback/recovery operations.
+- The public API surface is already isolated. `core-api` exposes only the
+  optional `DevnetControl` role, and `YanoNode.devnetControl()` is present only
+  for devnet/devnet-time-travel recipes with dev mode and block production
+  enabled. Relay and plain slot-leader assemblies do not expose devnet controls.
+- Keeping the code in `runtime` preserves straightforward Quarkus and plain Java
+  assembly: no hidden classpath assumption is needed to make devnet recipes work.
+
+Revisit a split only when at least one of these is true:
+
+- a real adapter, embedded deployment, or distribution needs a runtime artifact
+  that excludes devnet classes;
+- devnet tooling starts to require optional heavyweight dependencies not needed
+  by relay/runtime users;
+- native-image size/startup analysis shows material cost from reachable devnet
+  classes in non-devnet assemblies;
+- devnet APIs need independent versioning or release cadence.
+
+If those conditions appear, prefer a `yano-devnet-toolkit` module that depends on
+`runtime` and wires through explicit internal extension points introduced in that
+same split. Do not leak `RuntimeNode` or mutable `ChainState` implementation
+types as the module boundary.
+
+Issue #19 executable guard: assembly tests now assert devnet/devnet-time-travel
+recipes expose `DevnetControl`, while relay and plain slot-leader recipes do not.
+Two independent reviewers found no packaging/design or acceptance blockers; a
+minor test gap for slot-leader time-travel devnet-control exposure was fixed.
+Validation for this decision passed with:
+
+- `./gradlew :runtime:test --tests '*YanoAssemblyTest' --tests '*Devnet*ServiceTest' --tests '*DevnetSnapshotStoreTest' --console=plain -q`
+- `./gradlew :runtime:test :app:test --console=plain -q`
+- `git diff --check`
+- `./gradlew :app:haskellSyncTest --console=plain -q`
+- `JAVA_TOOL_OPTIONS='-Dyano.exit-on-epoch-calc-error=false -Dyano.remote.protocol-magic=42' YACI_STORE_JAR=$HOME/.yaci-cli/components/store/yaci-store-all bash scripts/devnet-adapot-comparison/run-devnet-haskell-yacistore-adapot-comparison.sh`
+  passed at epoch 32 with Haskell/Yano/YaciStore deposits `502000000`,
+  treasury `653894896811217`, reserves `35335542735121983`, and genesis deposits
+  `502000000`.
+
+## Remaining Follow-Up After Issue #19
 
 - Keep Quarkus as a thin adapter: configuration mapping, bean exposure, and
   lifecycle bridging only.
 - Add equivalent Spring/Micronaut/plain-Java examples after the runtime API is
   stable.
-- Decide later whether `DevnetToolkit` should move to a separately packaged module
-  if a non-devnet runtime artifact needs to exclude devnet controls.
 - Decide whether builder override APIs such as custom mempool injection,
   subsystem disabling, or external subsystem registration are part of the public
   extension model. Do not add them until there is a concrete adapter or
@@ -1315,6 +1426,6 @@ ADR-028 can be considered fully implemented when:
 - Full JVM, e2e, Haskell sync, and Quarkus build validations pass after the final
   extraction.
 
-Current status: satisfied for the issue #17 ADR-028 decomposition and
-pre-release cleanup. The non-blocking follow-up stages above remain open design
-and implementation work.
+Current status: satisfied for the issue #17 ADR-028 decomposition,
+pre-release cleanup, issue #21 runtime-kernel follow-up, and issue #19
+DevnetToolkit packaging decision.

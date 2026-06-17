@@ -116,15 +116,56 @@ class DevnetTimeAdvanceServiceTest {
                 assertThrows(IllegalStateException.class, () -> service.advanceBySeconds(1)).getMessage());
     }
 
+    @Test
+    void invalidInputDoesNotReportMaintenanceDegraded() {
+        InMemoryChainState chainState = new InMemoryChainState();
+        ProducerSubsystem producerSubsystem = devnetProducer(chainState, 1000);
+        RecordingReporter reporter = new RecordingReporter();
+        DevnetTimeAdvanceService service = service(chainState, producerSubsystem, 5, reporter);
+
+        assertThrows(IllegalArgumentException.class, () -> service.advanceBySlots(0));
+
+        assertEquals(0, reporter.count);
+    }
+
+    @Test
+    void failureAfterMutationStartReportsMaintenanceDegraded() {
+        InMemoryChainState chainState = new InMemoryChainState();
+        storeTip(chainState, 10, 3);
+        ProducerSubsystem producerSubsystem = new ProducerSubsystem();
+        FakeDevnetProduction production = new FakeDevnetProduction(chainState, 2, 1000);
+        production.produceFailure = new IllegalStateException("produce failed");
+        producerSubsystem.install(production);
+        producerSubsystem.start();
+        RecordingReporter reporter = new RecordingReporter();
+
+        DevnetTimeAdvanceService service = service(chainState, producerSubsystem, 100, reporter);
+
+        assertEquals("produce failed",
+                assertThrows(IllegalStateException.class, () -> service.advanceBySlots(5)).getMessage());
+        assertEquals(1, reporter.count);
+        assertEquals("devnet time advance", reporter.operation);
+        assertTrue(reporter.message.contains("restart required"));
+        assertTrue(producerSubsystem.isRunning());
+    }
+
     private static DevnetTimeAdvanceService service(InMemoryChainState chainState,
                                                     ProducerSubsystem producerSubsystem,
                                                     int maxAdvanceSlots) {
+        return service(chainState, producerSubsystem, maxAdvanceSlots, MaintenanceFailureReporter.noop());
+    }
+
+    private static DevnetTimeAdvanceService service(InMemoryChainState chainState,
+                                                    ProducerSubsystem producerSubsystem,
+                                                    int maxAdvanceSlots,
+                                                    MaintenanceFailureReporter reporter) {
         return new DevnetTimeAdvanceService(
                 () -> true,
                 producerSubsystem::hasDevnetProduction,
                 chainState,
                 producerSubsystem,
-                maxAdvanceSlots);
+                maxAdvanceSlots,
+                reporter);
     }
 
     private static ProducerSubsystem devnetProducer(InMemoryChainState chainState, int slotLengthMillis) {
@@ -151,6 +192,7 @@ class DevnetTimeAdvanceServiceTest {
         private int starts;
         private int stops;
         private long targetSlot;
+        private RuntimeException produceFailure;
 
         private FakeDevnetProduction(InMemoryChainState chainState, int blocksProduced, int slotLengthMillis) {
             this.chainState = chainState;
@@ -191,6 +233,9 @@ class DevnetTimeAdvanceServiceTest {
 
         @Override
         public int produceEmptyBlocksToSlot(long targetSlot) {
+            if (produceFailure != null) {
+                throw produceFailure;
+            }
             this.targetSlot = targetSlot;
             long blockNumber = chainState.getTip() != null ? chainState.getTip().getBlockNumber() : 0;
             storeTip(chainState, targetSlot, blockNumber + blocksProduced);
@@ -200,6 +245,19 @@ class DevnetTimeAdvanceServiceTest {
         @Override
         public int slotLengthMillis() {
             return slotLengthMillis;
+        }
+    }
+
+    private static final class RecordingReporter implements MaintenanceFailureReporter {
+        private int count;
+        private String operation;
+        private String message;
+
+        @Override
+        public void markDegraded(String operation, String message, Throwable cause) {
+            count++;
+            this.operation = operation;
+            this.message = message;
         }
     }
 }

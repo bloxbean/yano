@@ -73,11 +73,8 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
     private final long protocolMagic;
     private final Logger log;
     private final PeerClientFactory peerClientFactory;
-    private final ExecutorService peerRecoveryExecutor = Executors.newSingleThreadExecutor(r -> {
-        Thread thread = new Thread(r, "YanoPeerRecovery");
-        thread.setDaemon(true);
-        return thread;
-    });
+    private final ExecutorService peerRecoveryExecutor;
+    private final boolean ownsPeerRecoveryExecutor;
 
     private final AtomicBoolean isSyncing = new AtomicBoolean(false);
     private final AtomicBoolean rollbackInProgress = new AtomicBoolean(false);
@@ -115,7 +112,30 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
                          Logger log) {
         this(config, chainState, eventBus, scheduler, serveSubsystem, ledgerStateSubsystem, chainStorage,
                 runtimeRunning, epochParamProviderSupplier, genesisBootstrapDataSupplier,
-                remoteCardanoHost, remoteCardanoPort, protocolMagic, log, DefaultPeerClientFactory.supervised());
+                remoteCardanoHost, remoteCardanoPort, protocolMagic, log, defaultPeerRecoveryExecutor(), true,
+                DefaultPeerClientFactory.supervised());
+    }
+
+    public SyncSubsystem(YanoConfig config,
+                         ChainState chainState,
+                         EventBus eventBus,
+                         ScheduledExecutorService scheduler,
+                         ExecutorService peerRecoveryExecutor,
+                         ServeSubsystem serveSubsystem,
+                         LedgerStateSubsystem ledgerStateSubsystem,
+                         ChainStorageSubsystem chainStorage,
+                         BooleanSupplier runtimeRunning,
+                         Supplier<EpochParamProvider> epochParamProviderSupplier,
+                         Supplier<GenesisBootstrapData> genesisBootstrapDataSupplier,
+                         String remoteCardanoHost,
+                         int remoteCardanoPort,
+                         long protocolMagic,
+                         Logger log) {
+        this(config, chainState, eventBus, scheduler, serveSubsystem, ledgerStateSubsystem, chainStorage,
+                runtimeRunning, epochParamProviderSupplier, genesisBootstrapDataSupplier,
+                remoteCardanoHost, remoteCardanoPort, protocolMagic, log,
+                Objects.requireNonNull(peerRecoveryExecutor, "peerRecoveryExecutor"), false,
+                DefaultPeerClientFactory.supervised());
     }
 
     SyncSubsystem(YanoConfig config,
@@ -132,6 +152,29 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
                   int remoteCardanoPort,
                   long protocolMagic,
                   Logger log,
+                  PeerClientFactory peerClientFactory) {
+        this(config, chainState, eventBus, scheduler, serveSubsystem, ledgerStateSubsystem, chainStorage,
+                runtimeRunning, epochParamProviderSupplier, genesisBootstrapDataSupplier,
+                remoteCardanoHost, remoteCardanoPort, protocolMagic, log, defaultPeerRecoveryExecutor(), true,
+                peerClientFactory);
+    }
+
+    SyncSubsystem(YanoConfig config,
+                  ChainState chainState,
+                  EventBus eventBus,
+                  ScheduledExecutorService scheduler,
+                  ServeSubsystem serveSubsystem,
+                  LedgerStateSubsystem ledgerStateSubsystem,
+                  ChainStorageSubsystem chainStorage,
+                  BooleanSupplier runtimeRunning,
+                  Supplier<EpochParamProvider> epochParamProviderSupplier,
+                  Supplier<GenesisBootstrapData> genesisBootstrapDataSupplier,
+                  String remoteCardanoHost,
+                  int remoteCardanoPort,
+                  long protocolMagic,
+                  Logger log,
+                  ExecutorService peerRecoveryExecutor,
+                  boolean ownsPeerRecoveryExecutor,
                   PeerClientFactory peerClientFactory) {
         this.config = Objects.requireNonNull(config, "config");
         this.chainState = Objects.requireNonNull(chainState, "chainState");
@@ -152,6 +195,8 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
         this.remoteCardanoPort = remoteCardanoPort;
         this.protocolMagic = protocolMagic;
         this.log = Objects.requireNonNull(log, "log");
+        this.peerRecoveryExecutor = Objects.requireNonNull(peerRecoveryExecutor, "peerRecoveryExecutor");
+        this.ownsPeerRecoveryExecutor = ownsPeerRecoveryExecutor;
         this.peerClientFactory = Objects.requireNonNull(peerClientFactory, "peerClientFactory");
         this.pipelineConfig = createPipelineConfig();
     }
@@ -532,14 +577,16 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
             holder.close();
             supervisorHolder = null;
         }
-        peerRecoveryExecutor.shutdown();
-        try {
-            if (!peerRecoveryExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
+        if (ownsPeerRecoveryExecutor) {
+            peerRecoveryExecutor.shutdown();
+            try {
+                if (!peerRecoveryExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
+                    peerRecoveryExecutor.shutdownNow();
+                }
+            } catch (InterruptedException e) {
                 peerRecoveryExecutor.shutdownNow();
+                Thread.currentThread().interrupt();
             }
-        } catch (InterruptedException e) {
-            peerRecoveryExecutor.shutdownNow();
-            Thread.currentThread().interrupt();
         }
         closed = true;
     }
@@ -1105,6 +1152,14 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
                 .processingThreads(4)
                 .headerBufferSize(config.getHeaderPipelineDepth() * 5)
                 .build();
+    }
+
+    private static ExecutorService defaultPeerRecoveryExecutor() {
+        return Executors.newSingleThreadExecutor(r -> {
+            Thread thread = new Thread(r, "YanoPeerRecovery");
+            thread.setDaemon(true);
+            return thread;
+        });
     }
 
     /**

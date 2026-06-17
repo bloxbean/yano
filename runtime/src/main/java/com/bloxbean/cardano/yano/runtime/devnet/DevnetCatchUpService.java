@@ -24,6 +24,7 @@ public final class DevnetCatchUpService {
     private final LongSupplier resolvedGenesisTimestampMillis;
     private final IntSupplier slotLengthMillis;
     private final LongSupplier currentTimeMillis;
+    private final MaintenanceFailureReporter failureReporter;
 
     public DevnetCatchUpService(BooleanSupplier devMode,
                                 BooleanSupplier pastTimeTravelSlotLeaderMode,
@@ -32,6 +33,24 @@ public final class DevnetCatchUpService {
                                 LongSupplier resolvedGenesisTimestampMillis,
                                 IntSupplier slotLengthMillis,
                                 LongSupplier currentTimeMillis) {
+        this(devMode,
+                pastTimeTravelSlotLeaderMode,
+                chainState,
+                producerSubsystem,
+                resolvedGenesisTimestampMillis,
+                slotLengthMillis,
+                currentTimeMillis,
+                MaintenanceFailureReporter.noop());
+    }
+
+    public DevnetCatchUpService(BooleanSupplier devMode,
+                                BooleanSupplier pastTimeTravelSlotLeaderMode,
+                                ChainState chainState,
+                                ProducerSubsystem producerSubsystem,
+                                LongSupplier resolvedGenesisTimestampMillis,
+                                IntSupplier slotLengthMillis,
+                                LongSupplier currentTimeMillis,
+                                MaintenanceFailureReporter failureReporter) {
         this.devMode = Objects.requireNonNull(devMode, "devMode");
         this.pastTimeTravelSlotLeaderMode = Objects.requireNonNull(
                 pastTimeTravelSlotLeaderMode, "pastTimeTravelSlotLeaderMode");
@@ -41,6 +60,7 @@ public final class DevnetCatchUpService {
                 resolvedGenesisTimestampMillis, "resolvedGenesisTimestampMillis");
         this.slotLengthMillis = Objects.requireNonNull(slotLengthMillis, "slotLengthMillis");
         this.currentTimeMillis = Objects.requireNonNull(currentTimeMillis, "currentTimeMillis");
+        this.failureReporter = failureReporter != null ? failureReporter : MaintenanceFailureReporter.noop();
     }
 
     public TimeAdvanceResult catchUpToWallClock() {
@@ -69,11 +89,13 @@ public final class DevnetCatchUpService {
                 slotsToAdvance, currentSlot, wallClockSlot);
 
         boolean wasRunning = producerSubsystem.isRunning();
-        if (wasRunning) {
-            producerSubsystem.stop();
-        }
+        boolean mutationStarted = false;
 
         try {
+            mutationStarted = true;
+            if (wasRunning) {
+                producerSubsystem.stop();
+            }
             int blocksProduced = producerSubsystem.produceEmptyBlocksToSlot(wallClockSlot, "Catch-up");
             producerSubsystem.setForceSequentialSlots(false, "Catch-up");
             ChainTip newTip = chainState.getTip();
@@ -85,9 +107,14 @@ public final class DevnetCatchUpService {
                     newTip != null ? newTip.getSlot() : 0,
                     newTip != null ? newTip.getBlockNumber() : 0,
                     blocksProduced);
+        } catch (RuntimeException | Error e) {
+            if (mutationStarted) {
+                markCatchUpDegraded(e);
+            }
+            throw e;
         } finally {
             if (wasRunning) {
-                producerSubsystem.start();
+                restartProducerAfterCatchUp();
             }
         }
     }
@@ -115,11 +142,13 @@ public final class DevnetCatchUpService {
                 slotsToAdvance, currentSlot, wallClockSlot);
 
         boolean wasRunning = producerSubsystem.isRunning();
-        if (wasRunning) {
-            producerSubsystem.stop();
-        }
+        boolean mutationStarted = false;
 
         try {
+            mutationStarted = true;
+            if (wasRunning) {
+                producerSubsystem.stop();
+            }
             int blocksProduced = producerSubsystem.produceLeaderBlocksToSlot(wallClockSlot, "Slot-leader catch-up");
             producerSubsystem.setForceSequentialSlots(false, "Slot-leader catch-up");
             ChainTip newTip = chainState.getTip();
@@ -133,11 +162,35 @@ public final class DevnetCatchUpService {
                     newTip != null ? newTip.getSlot() : lastCheckedSlot,
                     newTip != null ? newTip.getBlockNumber() : 0,
                     blocksProduced);
+        } catch (RuntimeException | Error e) {
+            if (mutationStarted) {
+                markCatchUpDegraded(e);
+            }
+            throw e;
         } finally {
             if (wasRunning) {
-                producerSubsystem.start();
+                restartProducerAfterCatchUp();
             }
         }
+    }
+
+    private void restartProducerAfterCatchUp() {
+        try {
+            producerSubsystem.start();
+        } catch (RuntimeException | Error e) {
+            failureReporter.markDegraded(
+                    "devnet catch-up",
+                    "Devnet catch-up could not restart the producer; restart required",
+                    e);
+            throw e;
+        }
+    }
+
+    private void markCatchUpDegraded(Throwable cause) {
+        failureReporter.markDegraded(
+                "devnet catch-up",
+                "Devnet catch-up failed after producer or chain state mutation started; restart required",
+                cause);
     }
 
     private long wallClockSlot() {

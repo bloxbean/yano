@@ -52,17 +52,33 @@ public final class DevnetGenesisShiftService {
     private final BooleanSupplier productionInstalled;
     private final LongSupplier currentTimeMillis;
     private final Actions actions;
+    private final MaintenanceFailureReporter failureReporter;
 
     public DevnetGenesisShiftService(BooleanSupplier pastTimeTravelMode,
                                      Supplier<ProducerStartupPlan> startupPlan,
                                      BooleanSupplier productionInstalled,
                                      LongSupplier currentTimeMillis,
                                      Actions actions) {
+        this(pastTimeTravelMode,
+                startupPlan,
+                productionInstalled,
+                currentTimeMillis,
+                actions,
+                MaintenanceFailureReporter.noop());
+    }
+
+    public DevnetGenesisShiftService(BooleanSupplier pastTimeTravelMode,
+                                     Supplier<ProducerStartupPlan> startupPlan,
+                                     BooleanSupplier productionInstalled,
+                                     LongSupplier currentTimeMillis,
+                                     Actions actions,
+                                     MaintenanceFailureReporter failureReporter) {
         this.pastTimeTravelMode = Objects.requireNonNull(pastTimeTravelMode, "pastTimeTravelMode");
         this.startupPlan = Objects.requireNonNull(startupPlan, "startupPlan");
         this.productionInstalled = Objects.requireNonNull(productionInstalled, "productionInstalled");
         this.currentTimeMillis = Objects.requireNonNull(currentTimeMillis, "currentTimeMillis");
         this.actions = Objects.requireNonNull(actions, "actions");
+        this.failureReporter = failureReporter != null ? failureReporter : MaintenanceFailureReporter.noop();
     }
 
     public long shiftGenesisAndStartProducer(int epochs) {
@@ -93,28 +109,37 @@ public final class DevnetGenesisShiftService {
         String shiftedSystemStart = Instant.ofEpochMilli(shifted)
                 .truncatedTo(ChronoUnit.SECONDS).toString();
         long shiftedMillis = Instant.parse(shiftedSystemStart).toEpochMilli();
-        actions.setConfigGenesisTimestamp(shiftedMillis);
-        log.info("Past time travel: shifted genesis timestamp back by {}ms for {} epochs", shiftMillis, epochs);
 
-        persistShiftedSystemStart(shiftedSystemStart);
+        try {
+            actions.setConfigGenesisTimestamp(shiftedMillis);
+            log.info("Past time travel: shifted genesis timestamp back by {}ms for {} epochs", shiftMillis, epochs);
 
-        GenesisConfig shiftedGenesis = genesisConfig.withSystemStart(shiftedSystemStart);
-        actions.applyShiftedGenesis(shiftedGenesis);
+            persistShiftedSystemStart(shiftedSystemStart);
 
-        boolean freshStart = actions.isFreshStart();
-        long resolvedGenesisTimestamp = shiftedGenesis.resolveAndPersistGenesisTimestamp(
-                shiftedMillis, freshStart, actions.shelleyGenesisFile());
-        actions.setResolvedGenesisTimestamp(resolvedGenesisTimestamp);
-        actions.initSlotTimeCalculator();
+            GenesisConfig shiftedGenesis = genesisConfig.withSystemStart(shiftedSystemStart);
+            actions.applyShiftedGenesis(shiftedGenesis);
 
-        actions.setConwayEraStartIfFreshStart(freshStart);
-        actions.storeGenesisUtxosIfNeeded(freshStart);
+            boolean freshStart = actions.isFreshStart();
+            long resolvedGenesisTimestamp = shiftedGenesis.resolveAndPersistGenesisTimestamp(
+                    shiftedMillis, freshStart, actions.shelleyGenesisFile());
+            actions.setResolvedGenesisTimestamp(resolvedGenesisTimestamp);
+            actions.initSlotTimeCalculator();
 
-        switch (plan.mode()) {
-            case SLOT_LEADER_TIME_TRAVEL -> actions.startSlotLeaderTimeTravel(freshStart);
-            case DEVNET_TIME_TRAVEL -> actions.startDevnetTimeTravel(freshStart);
-            default -> throw new IllegalStateException(
-                    "Unsupported deferred producer startup mode: " + plan.mode());
+            actions.setConwayEraStartIfFreshStart(freshStart);
+            actions.storeGenesisUtxosIfNeeded(freshStart);
+
+            switch (plan.mode()) {
+                case SLOT_LEADER_TIME_TRAVEL -> actions.startSlotLeaderTimeTravel(freshStart);
+                case DEVNET_TIME_TRAVEL -> actions.startDevnetTimeTravel(freshStart);
+                default -> throw new IllegalStateException(
+                        "Unsupported deferred producer startup mode: " + plan.mode());
+            }
+        } catch (RuntimeException | Error e) {
+            failureReporter.markDegraded(
+                    "devnet genesis shift",
+                    "Devnet genesis shift failed after shifted genesis mutation started; restart required",
+                    e);
+            throw e;
         }
 
         log.info("Past time travel: block producer started after {}ms genesis shift ({} epochs)",

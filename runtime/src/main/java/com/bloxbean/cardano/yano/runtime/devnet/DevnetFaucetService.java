@@ -14,13 +14,22 @@ public final class DevnetFaucetService {
     private final BooleanSupplier devMode;
     private final BooleanSupplier blockProductionAvailable;
     private final Supplier<UtxoStoreWriter> utxoStoreSupplier;
+    private final MaintenanceFailureReporter failureReporter;
 
     public DevnetFaucetService(BooleanSupplier devMode,
                                BooleanSupplier blockProductionAvailable,
                                Supplier<UtxoStoreWriter> utxoStoreSupplier) {
+        this(devMode, blockProductionAvailable, utxoStoreSupplier, MaintenanceFailureReporter.noop());
+    }
+
+    public DevnetFaucetService(BooleanSupplier devMode,
+                               BooleanSupplier blockProductionAvailable,
+                               Supplier<UtxoStoreWriter> utxoStoreSupplier,
+                               MaintenanceFailureReporter failureReporter) {
         this.devMode = Objects.requireNonNull(devMode, "devMode");
         this.blockProductionAvailable = Objects.requireNonNull(blockProductionAvailable, "blockProductionAvailable");
         this.utxoStoreSupplier = Objects.requireNonNull(utxoStoreSupplier, "utxoStoreSupplier");
+        this.failureReporter = failureReporter != null ? failureReporter : MaintenanceFailureReporter.noop();
     }
 
     public FundResult fundAddress(String address, long lovelace) {
@@ -37,8 +46,16 @@ public final class DevnetFaucetService {
             throw new IllegalArgumentException("Lovelace amount must be positive");
         }
 
-        String txHash = utxoStore.injectFaucetUtxo(address, lovelace);
-        return new FundResult(txHash, 0, lovelace);
+        try {
+            String txHash = utxoStore.injectFaucetUtxo(address, lovelace);
+            return new FundResult(txHash, 0, lovelace);
+        } catch (RuntimeException | Error e) {
+            failureReporter.markDegraded(
+                    "devnet faucet",
+                    "Devnet faucet failed while injecting UTXO state; restart required",
+                    e);
+            throw e;
+        }
     }
 
     private void requireDevMode() {

@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.runtime.kernel;
 
 import java.util.Objects;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -12,6 +13,7 @@ import java.util.concurrent.TimeUnit;
 public final class Schedulers implements AutoCloseable {
     private final ScheduledExecutorService scheduledExecutor;
     private final ExecutorService taskExecutor;
+    private final AtomicBoolean closed = new AtomicBoolean(false);
 
     public Schedulers() {
         this(Executors.newScheduledThreadPool(2, Thread.ofVirtual().name("YanoKernelScheduler-", 0).factory()),
@@ -40,6 +42,9 @@ public final class Schedulers implements AutoCloseable {
 
     @Override
     public void close() {
+        if (!closed.compareAndSet(false, true)) {
+            return;
+        }
         shutdown(taskExecutor);
         shutdown(scheduledExecutor);
     }

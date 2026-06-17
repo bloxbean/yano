@@ -1019,28 +1019,59 @@ to a later major version.
 
 ## Postponed Follow-Up Work
 
-These items are non-blocking for issue #17 but should be tracked explicitly so
-the ADR does not overstate the current load-bearing architecture.
+These items were non-blocking for issue #17. The runtime-kernel and
+producer/chronology items are completed under follow-up issue #21. Issue #19
+keeps `DevnetToolkit` in the `runtime` artifact for now; a split is deferred
+until a concrete packaging, dependency, native-image, or versioning need appears.
 
-- **Kernel-driven lifecycle ownership:** replace the current one-subsystem
-  `RuntimeNode` kernel adapter with direct `NodeKernel` ownership of the real
-  storage, sync, serve, ledger, UTXO, tx, producer, and account-history
-  subsystems. Move runtime scheduler/recovery executor ownership behind
-  `Schedulers`, make kernel health aggregation feed adapter readiness, and then
-  retire the remaining ad-hoc lifecycle flags and manual partial-start cleanup.
-- **Producer and chronology extraction:** finish moving genesis/era bootstrap,
-  nonce initialization/replay, genesis UTXO seeding, protocol-version supplier
-  resolution, and slot-leader/devnet startup orchestration out of `RuntimeNode`.
-  Either promote `ChronologyService` into the planned chronology boundary or
-  rename the ADR role if that ownership lands in producer factories instead.
-- **Maintenance failure signaling:** review whether generic devnet controls and
-  producer start/stop/reset should mark runtime degraded when maintenance fails
-  after partially mutating state. Snapshot restore already has fail-closed
-  degraded signaling; the remaining mutators currently fail to the caller and
-  restart producers in `finally` where applicable.
-- **Adapter and packaging proofs:** add Spring/Micronaut/plain-Java examples
-  after the runtime API is stable, and decide later whether `DevnetToolkit`
-  should move to a separately packaged module.
+- **Issue #21 / Stage 21A — kernel ownership and scheduler context:** replace
+  the current one-subsystem `RuntimeNode` kernel adapter with the runtime-owned
+  `NodeKernel`. The implemented kernel has explicit stages for resource close,
+  startup boundary, transaction admission, early/deferred serving,
+  bootstrap/recovery, UTXO, ledger-state, chain pruning, producer startup,
+  chronology, sync, startup publication, and shutdown boundary. Runtime assembly
+  must return this kernel directly, not wrap `RuntimeNode` in a second kernel.
+  Runtime scheduled work and recovery executors must be sourced from
+  `Schedulers`, and adapter readiness must include kernel health.
+- **Issue #21 / Stage 21B — startup/stop coordinator extraction:** move the
+  ordered bootstrap, rollback/recovery, deferred server start, plugin startup,
+  UTXO filter initialization, startup event publication, and partial-start
+  cleanup logic out of `RuntimeNode.start()` into explicit kernel-owned
+  coordinator subsystems. The stage implementations live in
+  `RuntimeKernelStages`, with `RuntimeNode` supplying concrete operations through
+  an `Actions` adapter. `RuntimeNode.start()` and normal `stop()` delegate to the
+  kernel and maintenance gate. Terminal close intentionally remains a
+  `runtime-resources` coordinator stage because event-handler drain, plugin
+  close, UTXO/ledger close, and final ChainState/RocksDB close require stricter
+  ordering than a plain reverse close of all stores.
+- **Issue #21 / Stage 21C — producer and chronology extraction:** finish moving
+  genesis/era bootstrap, nonce initialization/replay, genesis UTXO seeding,
+  protocol-version supplier resolution, and slot-leader/devnet startup
+  orchestration out of `RuntimeNode`. `ChronologyService` is promoted behind
+  `ChronologySubsystem`. Producer startup mode selection, deferred-mode
+  validation, devnet startup sequencing, and slot-leader startup sequencing are
+  owned by `ProducerStartupCoordinator`; concrete block-builder and producer
+  construction stays behind the existing producer factories.
+- **Issue #21 / Stage 21D — maintenance failure signaling:** make generic devnet
+  controls and producer start/stop/reset mark runtime degraded when maintenance
+  fails after partially mutating state. Snapshot restore and devnet rollback
+  already have fail-closed degraded signaling; this stage applies the same rule
+  consistently to the remaining mutators.
+- **Issue #21 validation:** focused runtime/kernel/readiness tests, touched-module
+  JVM tests, Haskell sync validation, reviewer follow-up, and the devnet AdaPot
+  comparison through epoch 32 passed after the final issue #21 slice.
+- **Issue #19 / DevnetToolkit packaging:** keep `DevnetToolkit` and the runtime
+  devnet services in `runtime` for now. The devnet services do not add a separate
+  dependency stack, are tightly coupled to runtime-internal maintenance,
+  snapshot/restore, producer, UTXO, and chain-state coordination, and the public
+  API surface is already isolated through optional `DevnetControl` exposure on
+  devnet/devnet-time-travel recipes only. Revisit a separate
+  `yano-devnet-toolkit` artifact only when a real consumer needs a runtime
+  artifact without devnet classes or when devnet tooling adds heavyweight
+  optional dependencies, material native-image cost, or independent versioning
+  pressure.
+- **Adapter proofs:** add Spring/Micronaut/plain-Java examples after the runtime
+  API is stable.
 - **Extension builder APIs:** decide whether custom mempool injection, subsystem
   disabling, or external subsystem registration are part of the public extension
   model before adding builder overrides.

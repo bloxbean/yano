@@ -13,6 +13,7 @@ import com.bloxbean.cardano.yano.api.listener.NodeEventListener;
 import com.bloxbean.cardano.yano.api.model.NodeStatus;
 import com.bloxbean.cardano.yano.runtime.debug.DebugLedgerStateAccess;
 import com.bloxbean.cardano.yano.runtime.kernel.NodeKernel;
+import com.bloxbean.cardano.yano.runtime.kernel.RuntimeKernelProvider;
 import com.bloxbean.cardano.yano.runtime.kernel.Schedulers;
 import com.bloxbean.cardano.yano.runtime.kernel.ServiceRegistry;
 import com.bloxbean.cardano.yano.runtime.kernel.Subsystem;
@@ -57,6 +58,32 @@ final class RuntimeYanoNode implements YanoNode {
                     DebugLedgerStateAccess debugLedgerStateAccess,
                     AutoCloseable closeable,
                     YanoAssembly.Role role) {
+        this(nodeLifecycle,
+                chainQuery,
+                ledgerQuery,
+                txGateway,
+                txEvaluationGateway,
+                producerControl,
+                devnetControl,
+                maintenanceGate,
+                debugLedgerStateAccess,
+                closeable,
+                role,
+                new Schedulers());
+    }
+
+    RuntimeYanoNode(NodeLifecycle nodeLifecycle,
+                    ChainQuery chainQuery,
+                    LedgerQuery ledgerQuery,
+                    TxGateway txGateway,
+                    TxEvaluationGateway txEvaluationGateway,
+                    ProducerControl producerControl,
+                    DevnetControl devnetControl,
+                    RuntimeMaintenanceGate maintenanceGate,
+                    DebugLedgerStateAccess debugLedgerStateAccess,
+                    AutoCloseable closeable,
+                    YanoAssembly.Role role,
+                    Schedulers schedulers) {
         this.nodeLifecycle = Objects.requireNonNull(nodeLifecycle, "nodeLifecycle");
         this.chainQuery = Objects.requireNonNull(chainQuery, "chainQuery");
         this.ledgerQuery = Objects.requireNonNull(ledgerQuery, "ledgerQuery");
@@ -78,9 +105,12 @@ final class RuntimeYanoNode implements YanoNode {
         services.register(DevnetControl.class, devnetControl);
         services.register(RuntimeMaintenanceGate.class, maintenanceGate);
         services.register(DebugLedgerStateAccess.class, debugLedgerStateAccess);
-        this.kernel = new NodeKernel(
-                List.of(new RuntimeNodeSubsystem(nodeLifecycle, closeable)),
-                new SubsystemContext(null, new Schedulers(), Map.of(), services));
+        Objects.requireNonNull(schedulers, "schedulers");
+        this.kernel = nodeLifecycle instanceof RuntimeKernelProvider provider
+                ? provider.kernel()
+                : new NodeKernel(
+                        List.of(new RuntimeNodeSubsystem(nodeLifecycle, closeable)),
+                        new SubsystemContext(null, schedulers, Map.of(), services));
         this.lifecycle = new KernelBackedLifecycle();
     }
 
@@ -146,6 +176,16 @@ final class RuntimeYanoNode implements YanoNode {
 
     @Override
     public void close() {
+        if (nodeLifecycle instanceof RuntimeKernelProvider && closeable != null) {
+            try {
+                closeable.close();
+            } catch (RuntimeException e) {
+                throw e;
+            } catch (Exception e) {
+                throw new RuntimeException("Failed to close Yano node", e);
+            }
+            return;
+        }
         kernel.close();
     }
 
@@ -156,12 +196,20 @@ final class RuntimeYanoNode implements YanoNode {
     private final class KernelBackedLifecycle implements NodeLifecycle {
         @Override
         public void start() {
-            kernel.start();
+            if (nodeLifecycle instanceof RuntimeKernelProvider) {
+                nodeLifecycle.start();
+            } else {
+                kernel.start();
+            }
         }
 
         @Override
         public void stop() {
-            kernel.stop();
+            if (nodeLifecycle instanceof RuntimeKernelProvider) {
+                nodeLifecycle.stop();
+            } else {
+                kernel.stop();
+            }
         }
 
         @Override

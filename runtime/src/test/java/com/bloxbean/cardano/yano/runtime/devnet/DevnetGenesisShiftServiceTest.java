@@ -102,7 +102,46 @@ class DevnetGenesisShiftServiceTest {
                                 new ProducerStartupPlan(ProducerMode.DEVNET_TIME_TRAVEL, true),
                                 false,
                                 100_000,
-                                missingShelley).shiftGenesisAndStartProducer(1)).getMessage());
+                        missingShelley).shiftGenesisAndStartProducer(1)).getMessage());
+    }
+
+    @Test
+    void failureAfterShiftMutationReportsMaintenanceDegraded() {
+        FakeActions actions = new FakeActions(genesisConfig(shelleyGenesis(10, 2.0)), true);
+        actions.startFailure = new IllegalStateException("producer failed");
+        RecordingReporter reporter = new RecordingReporter();
+
+        DevnetGenesisShiftService service = new DevnetGenesisShiftService(
+                () -> true,
+                () -> new ProducerStartupPlan(ProducerMode.DEVNET_TIME_TRAVEL, true),
+                () -> false,
+                () -> 101_234,
+                actions,
+                reporter);
+
+        assertEquals("producer failed",
+                assertThrows(IllegalStateException.class, () -> service.shiftGenesisAndStartProducer(2)).getMessage());
+        assertEquals(1, reporter.count);
+        assertEquals("devnet genesis shift", reporter.operation);
+        assertTrue(reporter.message.contains("restart required"));
+        assertEquals(61_000, actions.configGenesisTimestamp);
+    }
+
+    @Test
+    void validationFailureDoesNotReportMaintenanceDegraded() {
+        FakeActions actions = new FakeActions(genesisConfig(shelleyGenesis(10, 2.0)), true);
+        RecordingReporter reporter = new RecordingReporter();
+
+        DevnetGenesisShiftService service = new DevnetGenesisShiftService(
+                () -> false,
+                () -> new ProducerStartupPlan(ProducerMode.DEVNET_TIME_TRAVEL, true),
+                () -> false,
+                () -> 101_234,
+                actions,
+                reporter);
+
+        assertThrows(IllegalStateException.class, () -> service.shiftGenesisAndStartProducer(2));
+        assertEquals(0, reporter.count);
     }
 
     private static DevnetGenesisShiftService service(boolean pastTimeTravelMode,
@@ -166,6 +205,7 @@ class DevnetGenesisShiftServiceTest {
         private boolean genesisUtxosStoredForFreshStart;
         private boolean slotLeaderTimeTravelStarted;
         private boolean devnetTimeTravelStarted;
+        private RuntimeException startFailure;
 
         private FakeActions(GenesisConfig genesisConfig, boolean freshStart) {
             this.genesisConfig = genesisConfig;
@@ -219,12 +259,31 @@ class DevnetGenesisShiftServiceTest {
 
         @Override
         public void startSlotLeaderTimeTravel(boolean freshStart) {
+            if (startFailure != null) {
+                throw startFailure;
+            }
             slotLeaderTimeTravelStarted = true;
         }
 
         @Override
         public void startDevnetTimeTravel(boolean freshStart) {
+            if (startFailure != null) {
+                throw startFailure;
+            }
             devnetTimeTravelStarted = true;
+        }
+    }
+
+    private static final class RecordingReporter implements MaintenanceFailureReporter {
+        private int count;
+        private String operation;
+        private String message;
+
+        @Override
+        public void markDegraded(String operation, String message, Throwable cause) {
+            count++;
+            this.operation = operation;
+            this.message = message;
         }
     }
 }
