@@ -1,11 +1,11 @@
 # ADR-029: Devnet Control Toolkit And Testkit SPI
 
-**Status:** Accepted - initial implementation complete
+**Status:** Accepted - initial implementation complete; SPI pruning follow-up complete
 **Date:** 2026-06-17
 **Related:** ADR-027 R1 (Test-network kit), ADR-028 (Runtime Decomposition), ADR-021 (Snapshot Restore Coordinator), GitHub issue #19
 **Supersedes:** the ADR-028 issue #19 decision to keep `DevnetToolkit` in
 `runtime` for the current slice
-**Implementation:** initial module split implemented and validated on 2026-06-17
+**Implementation:** initial module split implemented and validated on 2026-06-17; runtime adapter extraction and unused SPI pruning implemented on 2026-06-18
 
 ## Context
 
@@ -128,16 +128,10 @@ ports for operations that do not belong in the public production roles:
 
 ```java
 public interface DevnetRuntime {
-    YanoConfig config();
-    RuntimeMaintenance maintenance();
-    ChainBlockReader chainBlocks();
-    ProducerControl producerControl();
     DevnetChainMutation chainMutation();
     DevnetProducerExtensions producerExtensions();
     DevnetFundingAccess funding();
     DevnetSnapshotAccess snapshots();
-    DevnetGenesisAccess genesis();
-    DevnetChronologyAccess chronology();
 }
 ```
 
@@ -155,36 +149,17 @@ unrelated capabilities.
 
 The initial toolkit adapter uses only the ports needed to implement
 `DevnetControl`: `chainMutation`, `snapshots`, `funding`, and
-`producerExtensions`. The `maintenance`, `chainBlocks`, `producerControl`,
-`genesis`, and `chronology` accessors are intentionally forward-looking for
-future toolkit/testkit flows; they should remain unused until a real operation
-needs them.
+`producerExtensions`.
 
-### `RuntimeMaintenance`
+The earlier proposed `maintenance`, `chainBlocks`, `producerControl`,
+`genesis`, and `chronology` accessors were removed during the cleanup pass
+because no current toolkit/testkit operation consumed them. Reintroduce one only
+when a concrete feature needs it, and document why the existing public role or
+runtime service is not sufficient.
 
-Devnet operations that mutate runtime state must use the same maintenance gate as
-startup, rollback, restore, and recovery:
-
-```java
-public interface RuntimeMaintenance {
-    <T> T runExclusive(String reason, MaintenanceMutation<T> mutation);
-    <T> T runRead(String reason, Supplier<T> read);
-    void markDegraded(String operation, Throwable cause);
-}
-```
-
-Rules:
-
-- Toolkit code never pauses producers, pruners, async handlers, or servers by
-  directly reaching into runtime classes.
-- Mutating toolkit operations run inside `runExclusive(...)`.
-- If an operation mutates state and later fails, it must call `markDegraded(...)`
-  or use an operation wrapper that does so automatically.
-- Validation failures before mutation should fail to the caller without marking
-  runtime degraded.
-- `runExclusive(reason, ...)` clears degraded state only for the same `reason`
-  after a successful operation. It must not clear unrelated degraded operations.
-- The SPI intentionally has no broad `clearDegraded()` method.
+Toolkit code never pauses producers, pruners, async handlers, or servers by
+directly reaching into runtime classes. Mutating toolkit operations call runtime
+ports that already execute under the existing runtime maintenance discipline.
 
 ### `DevnetChainMutation`
 
@@ -271,48 +246,18 @@ The runtime implementation validates dev mode/block-production availability and
 serializes writes with the same UTXO store mutation discipline used by rollback,
 restore, pruning, and block apply.
 
-### `DevnetGenesisAccess`
+### Deferred Ports
 
-Genesis operations should be explicit because they affect Haskell compatibility,
-slot timing, epoch length, and producer startup:
+Genesis-file and chronology ports are deliberately not part of the initial SPI.
+The current toolkit/testkit slice can perform genesis shift, time advance, and
+catch-up through `DevnetProducerExtensions`, while the runtime retains ownership
+of cache invalidation, slot-time recalculation, producer restart, and validation
+of deferred time-travel modes.
 
-```java
-public interface DevnetGenesisAccess {
-    Optional<Path> shelleyGenesisFile();
-    Optional<Path> byronGenesisFile();
-    Optional<Path> alonzoGenesisFile();
-    Optional<Path> conwayGenesisFile();
-    Optional<Path> protocolParametersFile();
-    GenesisConfig currentGenesisConfig();
-}
-```
-
-The toolkit can provide higher-level flows, but the runtime owns cache
-invalidation, slot-time recalculation, producer restart, and validation of
-deferred time-travel modes.
-
-The `Optional<Path>` accessors exist for Haskell compatibility tests and external
-comparison tools that need to pass real genesis files to `cardano-node` or other
-processes. In-memory devnet assemblies may return `Optional.empty()`. Consumers
-that only need values should prefer `currentGenesisConfig()` or future content
-DTOs over filesystem paths.
-
-### `DevnetChronologyAccess`
-
-Time controls should use the chronology boundary, not reparse genesis files:
-
-```java
-public interface DevnetChronologyAccess {
-    long currentWallClockSlot();
-    long slotLengthMillis();
-    long epochLength();
-    long slotToUnixTime(long slot);
-    void invalidateCaches();
-}
-```
-
-This keeps `ChronologySubsystem` as the runtime owner for slot-time state while
-allowing toolkit operations to reason about time.
+If a future Haskell-compatibility helper or testkit feature needs direct genesis
+file paths or slot/time query values, add the smallest possible port for that
+feature. Filesystem-path access should remain optional because in-memory devnet
+assemblies may not have real genesis files.
 
 ### Type Ownership
 
@@ -326,8 +271,8 @@ DTOs.
 | `DevnetControl` | `core-api` public optional role |
 | `FundResult`, `TimeAdvanceResult`, `SnapshotInfo`, `DevnetRollbackResult`, `DevnetRestoreResult` | `core-api` public DTOs |
 | `FundingRequest` | `core-api` public DTO |
-| `RuntimeMaintenance` and `Devnet*` SPI ports | `runtime.devnet.spi` internal Yano module SPI |
-| `ProducerMode`, `GenesisConfig` | `runtime`; acceptable only because the SPI is runtime-owned |
+| `Devnet*` SPI ports | `runtime.devnet.spi` internal Yano module SPI |
+| `ProducerMode` | `runtime`; acceptable only because the SPI is runtime-owned |
 
 ## Assembly
 
@@ -405,17 +350,26 @@ Current implementation status:
   `DevnetControl` only through the toolkit decorator.
 - Stage 4 foundation is implemented: `testkit` exists with a closeable
   `YanoDevnetTestKit` wrapper and JUnit 5 `YanoDevnetExtension`.
+- Follow-up cleanup is implemented: the runtime devnet SPI adapter moved out of
+  `RuntimeNode`, and unused proposed SPI ports were pruned instead of kept as
+  speculative surface.
 - Full Stage 4 testkit ergonomics, examples, native packaging checks, and
   framework examples remain future work.
 
-Validation completed for the initial split:
+Validation completed for the initial split and runtime adapter cleanup:
 
 - `./gradlew :runtime:compileJava :devnet-toolkit:compileJava --console=plain`
 - `./gradlew :runtime:test --tests 'com.bloxbean.cardano.yano.runtime.assembly.YanoAssemblyTest' --tests 'com.bloxbean.cardano.yano.runtime.YanoStartupMaintenanceTest' --tests 'com.bloxbean.cardano.yano.runtime.YanoProducerStartupPlanTest' :devnet-toolkit:test :testkit:test :app:compileJava :app:compileTestJava --console=plain`
 - `./gradlew :runtime:test :devnet-toolkit:test :testkit:test :app:test --console=plain`
+- `./gradlew :runtime:test :devnet-toolkit:test :testkit:test --console=plain`
 - `./gradlew :app:quarkusBuild --console=plain`
 - `./gradlew :app:haskellSyncTest --console=plain -q`
+- Haskell sync task coverage: `RegularBPSyncTest` and
+  `PastTimeTravelSyncTest`, both with `failures=0` and `errors=0`.
 - `JAVA_TOOL_OPTIONS='-Dyano.exit-on-epoch-calc-error=false -Dyano.remote.protocol-magic=42' YACI_STORE_JAR="$HOME/.yaci-cli/components/store/yaci-store-all" bash scripts/devnet-adapot-comparison/run-devnet-haskell-yacistore-adapot-comparison.sh`
+- AdaPot comparison result at epoch 32: Haskell, Yano, and Yaci Store all
+  matched `deposits=502000000`, `treasury=656723393708654`, and
+  `reserves=35332713904358080`.
 - Devnet epoch-crossing skill workflow with 50-slot epochs
 - Past-time-travel skill workflow with dynamic PV10 genesis-shift expectation
 - `git diff --check`
@@ -484,6 +438,27 @@ Validation completed for the initial split:
 - Compare native image size/reachability for relay-only and devnet-enabled
   assemblies when practical.
 - Keep GraalVM resources/reflect config deterministic.
+
+### Follow-Up Cleanup - Runtime Adapter Extraction And SPI Pruning
+
+This cleanup was implemented after the initial module split. The initial split
+proved the module boundary and kept safety-critical devnet execution in
+`runtime`; the cleanup keeps that design from turning into a larger abstraction
+surface than the current toolkit/testkit needs.
+
+- `RuntimeDevnetRuntime` moved out of `RuntimeNode` into a package-private
+  runtime-owned implementation.
+- The runtime adapter now receives narrow callbacks and ports instead of the
+  whole `RuntimeNode`.
+- `RuntimeNode` constructs the adapter and exposes `devnetRuntime()`; it no
+  longer contains the devnet SPI adapter classes.
+- Unused proposed SPI ports were removed: `RuntimeMaintenance`,
+  `MaintenanceMutation`, `DevnetGenesisAccess`, and `DevnetChronologyAccess`.
+- `devnet-toolkit` remains focused on reusable devnet/test flows that compose
+  safe runtime ports. It must not duplicate rollback, restore, faucet, producer,
+  chronology, or storage mutation mechanics.
+- Do not add more `Devnet*` SPI interfaces unless a real toolkit/testkit
+  operation needs them.
 
 ## Validation Requirements
 

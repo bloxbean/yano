@@ -34,7 +34,6 @@ import com.bloxbean.cardano.yano.api.model.DevnetRollbackResult;
 import com.bloxbean.cardano.yano.api.model.DevnetRollbackTarget;
 import com.bloxbean.cardano.yano.api.model.DevnetRestoreResult;
 import com.bloxbean.cardano.yano.api.model.FundResult;
-import com.bloxbean.cardano.yano.api.model.FundingRequest;
 import com.bloxbean.cardano.yano.api.model.GenesisParameters;
 import com.bloxbean.cardano.yano.api.model.NodeStatus;
 import com.bloxbean.cardano.yano.api.model.ProtocolParamsSnapshot;
@@ -96,15 +95,8 @@ import com.bloxbean.cardano.yano.runtime.devnet.DevnetGenesisShiftService;
 import com.bloxbean.cardano.yano.runtime.devnet.DevnetSnapshotCatalogService;
 import com.bloxbean.cardano.yano.runtime.devnet.DevnetSnapshotRestoreService;
 import com.bloxbean.cardano.yano.runtime.devnet.DevnetTimeAdvanceService;
-import com.bloxbean.cardano.yano.runtime.devnet.spi.DevnetChainMutation;
-import com.bloxbean.cardano.yano.runtime.devnet.spi.DevnetChronologyAccess;
-import com.bloxbean.cardano.yano.runtime.devnet.spi.DevnetFundingAccess;
-import com.bloxbean.cardano.yano.runtime.devnet.spi.DevnetGenesisAccess;
-import com.bloxbean.cardano.yano.runtime.devnet.spi.DevnetProducerExtensions;
 import com.bloxbean.cardano.yano.runtime.devnet.spi.DevnetRuntime;
 import com.bloxbean.cardano.yano.runtime.devnet.spi.DevnetRuntimeProvider;
-import com.bloxbean.cardano.yano.runtime.devnet.spi.DevnetSnapshotAccess;
-import com.bloxbean.cardano.yano.runtime.devnet.spi.RuntimeMaintenance;
 import com.bloxbean.cardano.yano.runtime.events.PropagatingEventBus;
 import com.bloxbean.cardano.yano.api.util.EpochSlotCalc;
 import com.bloxbean.cardano.yano.runtime.kernel.KernelLifecycleException;
@@ -348,7 +340,20 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 protocolMagic,
                 log);
         this.producerStartupCoordinator = new ProducerStartupCoordinator(producerStartupActions());
-        this.devnetRuntime = new RuntimeDevnetRuntime();
+        this.devnetRuntime = RuntimeDevnetRuntime.create(
+                this::rollbackDevnet,
+                producerSubsystem::hasProduction,
+                producerSubsystem::modeOrNull,
+                this::advanceTimeBySlots,
+                this::advanceTimeUntilSlot,
+                this::advanceTimeBySeconds,
+                this::catchUpToWallClock,
+                this::shiftGenesisAndStartProducer,
+                this::fundAddress,
+                this::createDevnetSnapshot,
+                this::restoreDevnetSnapshotAndGetTip,
+                this::listDevnetSnapshots,
+                this::deleteDevnetSnapshot);
         this.kernel = new NodeKernel(
                 runtimeKernelSubsystems(),
                 new SubsystemContext(eventBus, schedulers, this.runtimeOptions.globals(), new ServiceRegistry()));
@@ -2764,237 +2769,6 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 config::getSlotLengthMillis,
                 System::currentTimeMillis,
                 this::markRuntimeDegraded);
-    }
-
-    private final class RuntimeDevnetRuntime implements DevnetRuntime {
-        private final RuntimeMaintenance maintenance = new RuntimeMaintenanceAdapter();
-        private final DevnetChainMutation chainMutation = RuntimeNode.this::rollbackDevnet;
-        private final DevnetProducerExtensions producerExtensions = new RuntimeDevnetProducerExtensions();
-        private final DevnetFundingAccess funding = new RuntimeDevnetFundingAccess();
-        private final DevnetSnapshotAccess snapshots = new RuntimeDevnetSnapshotAccess();
-        private final DevnetGenesisAccess genesis = new RuntimeDevnetGenesisAccess();
-        private final DevnetChronologyAccess chronology = new RuntimeDevnetChronologyAccess();
-
-        @Override
-        public YanoConfig config() {
-            return config;
-        }
-
-        @Override
-        public RuntimeMaintenance maintenance() {
-            return maintenance;
-        }
-
-        @Override
-        public RuntimeNode chainBlocks() {
-            return RuntimeNode.this;
-        }
-
-        @Override
-        public RuntimeNode producerControl() {
-            return RuntimeNode.this;
-        }
-
-        @Override
-        public DevnetChainMutation chainMutation() {
-            return chainMutation;
-        }
-
-        @Override
-        public DevnetProducerExtensions producerExtensions() {
-            return producerExtensions;
-        }
-
-        @Override
-        public DevnetFundingAccess funding() {
-            return funding;
-        }
-
-        @Override
-        public DevnetSnapshotAccess snapshots() {
-            return snapshots;
-        }
-
-        @Override
-        public DevnetGenesisAccess genesis() {
-            return genesis;
-        }
-
-        @Override
-        public DevnetChronologyAccess chronology() {
-            return chronology;
-        }
-    }
-
-    private final class RuntimeMaintenanceAdapter implements RuntimeMaintenance {
-        @Override
-        public <T> T runExclusive(String reason, com.bloxbean.cardano.yano.runtime.devnet.spi.MaintenanceMutation<T> mutation) {
-            Objects.requireNonNull(mutation, "mutation");
-            try (var maintenance = chainStorage.maintenanceGate().enterMaintenance(reason)) {
-                T result = mutation.run();
-                maintenance.clearDegraded();
-                return result;
-            }
-        }
-
-        @Override
-        public <T> T runRead(String reason, java.util.function.Supplier<T> read) {
-            Objects.requireNonNull(read, "read");
-            return withRuntimeRead(reason, read);
-        }
-
-        @Override
-        public void markDegraded(String operation, Throwable cause) {
-            markRuntimeDegraded(operation, null, cause);
-        }
-
-        @Override
-        public void markDegraded(String operation, String message, Throwable cause) {
-            markRuntimeDegraded(operation, message, cause);
-        }
-    }
-
-    private final class RuntimeDevnetProducerExtensions implements DevnetProducerExtensions {
-        @Override
-        public boolean isAvailable() {
-            return producerSubsystem.hasProduction();
-        }
-
-        @Override
-        public Optional<com.bloxbean.cardano.yano.runtime.producer.ProducerMode> mode() {
-            return Optional.ofNullable(producerSubsystem.modeOrNull());
-        }
-
-        @Override
-        public TimeAdvanceResult advanceBySlots(int slots) {
-            return advanceTimeBySlots(slots);
-        }
-
-        @Override
-        public TimeAdvanceResult advanceUntilSlot(long targetSlot) {
-            return advanceTimeUntilSlot(targetSlot);
-        }
-
-        @Override
-        public TimeAdvanceResult advanceBySeconds(int seconds) {
-            return advanceTimeBySeconds(seconds);
-        }
-
-        @Override
-        public TimeAdvanceResult catchUpToWallClock() {
-            return RuntimeNode.this.catchUpToWallClock();
-        }
-
-        @Override
-        public long shiftGenesisAndStartProducer(int epochs) {
-            return RuntimeNode.this.shiftGenesisAndStartProducer(epochs);
-        }
-    }
-
-    private final class RuntimeDevnetFundingAccess implements DevnetFundingAccess {
-        @Override
-        public FundResult fundAddress(String address, long lovelace) {
-            return RuntimeNode.this.fundAddress(address, lovelace);
-        }
-
-        @Override
-        public List<FundResult> fundAddresses(List<FundingRequest> requests) {
-            Objects.requireNonNull(requests, "requests");
-            return requests.stream()
-                    .map(request -> fundAddress(request.address(), request.lovelace()))
-                    .toList();
-        }
-    }
-
-    private final class RuntimeDevnetSnapshotAccess implements DevnetSnapshotAccess {
-        @Override
-        public SnapshotInfo create(String name) {
-            return createDevnetSnapshot(name);
-        }
-
-        @Override
-        public DevnetRestoreResult restore(String name) {
-            return restoreDevnetSnapshotAndGetTip(name);
-        }
-
-        @Override
-        public List<SnapshotInfo> list() {
-            return listDevnetSnapshots();
-        }
-
-        @Override
-        public void delete(String name) {
-            deleteDevnetSnapshot(name);
-        }
-    }
-
-    private final class RuntimeDevnetGenesisAccess implements DevnetGenesisAccess {
-        @Override
-        public Optional<Path> shelleyGenesisFile() {
-            return configuredPath(config.getShelleyGenesisFile());
-        }
-
-        @Override
-        public Optional<Path> byronGenesisFile() {
-            return configuredPath(config.getByronGenesisFile());
-        }
-
-        @Override
-        public Optional<Path> alonzoGenesisFile() {
-            return configuredPath(config.getAlonzoGenesisFile());
-        }
-
-        @Override
-        public Optional<Path> conwayGenesisFile() {
-            return configuredPath(config.getConwayGenesisFile());
-        }
-
-        @Override
-        public Optional<Path> protocolParametersFile() {
-            return configuredPath(config.getProtocolParametersFile());
-        }
-
-        @Override
-        public GenesisConfig currentGenesisConfig() {
-            return genesisConfig;
-        }
-    }
-
-    private final class RuntimeDevnetChronologyAccess implements DevnetChronologyAccess {
-        @Override
-        public long currentWallClockSlot() {
-            int slotLength = config.getSlotLengthMillis();
-            if (slotLength <= 0) {
-                throw new IllegalStateException("Current wall-clock slot requires positive slot length");
-            }
-            return (System.currentTimeMillis() - resolvedGenesisTimestamp) / slotLength;
-        }
-
-        @Override
-        public long slotLengthMillis() {
-            return config.getSlotLengthMillis();
-        }
-
-        @Override
-        public long epochLength() {
-            GenesisConfig current = genesisConfig;
-            var shelley = current != null ? current.getShelleyGenesisData() : null;
-            return shelley != null ? shelley.epochLength() : config.getEpochLength();
-        }
-
-        @Override
-        public long slotToUnixTime(long slot) {
-            return RuntimeNode.this.slotToUnixTime(slot);
-        }
-
-        @Override
-        public void invalidateCaches() {
-            chronologySubsystem.invalidateSlotTimeCache();
-        }
-    }
-
-    private Optional<Path> configuredPath(String path) {
-        return path == null || path.isBlank() ? Optional.empty() : Optional.of(Path.of(path));
     }
 
     @Override
