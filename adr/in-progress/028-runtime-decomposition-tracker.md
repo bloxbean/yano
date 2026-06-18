@@ -2,8 +2,15 @@
 
 **ADR:** `028-runtime-decomposition-nodekernel-composition-root.md`
 **Design doc:** `028-runtime-decomposition-high-level-design.md`
-**Current status:** Issue #17 core decomposition and reviewer hardening are implemented and validated. Issue #21 runtime-kernel follow-up is implemented and validated: kernel ownership is load-bearing, shared scheduler ownership is wired, adapter readiness uses kernel health, chronology and producer startup orchestration are extracted, and maintenance failure signaling is consistent. The earlier issue #19 "keep in runtime for now" packaging decision is superseded by `028-devnet-control-toolkit-and-testkit-spi.md`, because the roadmap now includes larger devnet functionality and a `yano-testkit` module.
+**Current status:** Issue #17 core decomposition and reviewer hardening are implemented and validated. Issue #21 runtime-kernel follow-up is implemented and validated: kernel ownership is load-bearing, shared scheduler ownership is wired, adapter readiness uses kernel health, chronology and producer startup orchestration are extracted, and maintenance failure signaling is consistent. The earlier issue #19 "keep in runtime for now" packaging decision is superseded by `029-devnet-control-toolkit-and-testkit-spi.md`, because the roadmap now includes larger devnet functionality and a `testkit` module.
 **Last updated:** 2026-06-17
+
+ADR-029 implementation update: the initial devnet toolkit split is implemented.
+`runtime` now exposes a reuse-first devnet SPI and no longer installs
+`DevnetControl` directly on runtime devnet recipes. `devnet-toolkit`
+provides `DevnetToolkit` and `YanoDevnetAssembly`; Quarkus app composition uses
+the toolkit assembly; `testkit` has an initial managed devnet test-kit
+foundation.
 
 ## Summary
 
@@ -1247,11 +1254,11 @@ The remaining compatibility cleanup tasks are complete:
   accessor, and the unused `setInMemoryDevnetGenesis(...)` compatibility setter.
 - Replaced the app `NodeAPI` CDI producer with internal `YanoNode` caching and
   narrow role producers.
-- Added explicit `DevnetToolkit` as the `DevnetControl` implementation exposed by
-  devnet and devnet-time-travel recipes. Plain slot-leader recipes expose
-  producer controls but not devnet-toolkit controls. Devnet services remain in
-  `runtime` for now; moving them to a separate toolkit module is deferred until
-  there is a packaging need.
+- Added explicit `DevnetToolkit` as the `DevnetControl` implementation. This
+  packaging detail is superseded by ADR-029: `DevnetToolkit` and
+  `YanoDevnetAssembly` now live in `devnet-toolkit`, while devnet and
+  devnet-time-travel runtime recipes expose only devnet-safe SPI ports. Plain
+  slot-leader recipes expose producer controls but not devnet-toolkit controls.
 
 ## Issue #21 Follow-Up Work Complete
 
@@ -1350,15 +1357,16 @@ snapshot restore, devnet, and sync behavior.
 
 ## Issue #19 DevnetToolkit Packaging Decision
 
-Decision: keep `DevnetToolkit` and the runtime devnet services in the `runtime`
-artifact for now. Do not create a `yano-devnet-toolkit` module in this slice.
+Decision: superseded and implemented by
+`029-devnet-control-toolkit-and-testkit-spi.md`.
 
-Superseded follow-up: `028-devnet-control-toolkit-and-testkit-spi.md` defines the
-next implementation direction: split `yano-devnet-toolkit` behind a narrow
-runtime SPI and build `yano-testkit` on top of it. The change in direction is
-driven by planned devnet growth and ADR-027 R1 testkit packaging.
+The original issue #19 decision kept `DevnetToolkit` and the runtime devnet
+services in the `runtime` artifact because there was no concrete consumer for a
+separate module. ADR-027 R1 testkit work and planned devnet growth changed that
+tradeoff. The implemented ADR-029 direction creates `devnet-toolkit` behind
+a narrow runtime SPI and adds the initial `testkit` foundation.
 
-Rationale:
+Historical rationale for the original deferral:
 
 - There is no concrete consumer or deployment profile that currently needs a
   runtime artifact without devnet classes.
@@ -1388,25 +1396,31 @@ Revisit a split only when at least one of these is true:
   classes in non-devnet assemblies;
 - devnet APIs need independent versioning or release cadence.
 
-If those conditions appear, prefer a `yano-devnet-toolkit` module that depends on
-`runtime` and wires through explicit internal extension points introduced in that
-same split. Do not leak `RuntimeNode` or mutable `ChainState` implementation
-types as the module boundary.
+The revisit condition is now met. ADR-029 implemented the preferred split:
 
-Issue #19 executable guard: assembly tests now assert devnet/devnet-time-travel
-recipes expose `DevnetControl`, while relay and plain slot-leader recipes do not.
-Two independent reviewers found no packaging/design or acceptance blockers; a
-minor test gap for slot-leader time-travel devnet-control exposure was fixed.
-Validation for this decision passed with:
+- `runtime` owns the safety-critical devnet backing services and exposes
+  `runtime.devnet.spi` capability ports.
+- Runtime devnet recipes no longer install `DevnetControl` directly.
+- `devnet-toolkit` owns `DevnetToolkit` and `YanoDevnetAssembly`.
+- The Quarkus app depends on `devnet-toolkit` because it exposes devnet REST
+  endpoints.
+- `testkit` has an initial closeable `YanoDevnetTestKit` wrapper and JUnit 5
+  `YanoDevnetExtension`.
 
-- `./gradlew :runtime:test --tests '*YanoAssemblyTest' --tests '*Devnet*ServiceTest' --tests '*DevnetSnapshotStoreTest' --console=plain -q`
-- `./gradlew :runtime:test :app:test --console=plain -q`
-- `git diff --check`
+Validation for the ADR-029 split passed with:
+
+- `./gradlew :runtime:compileJava :devnet-toolkit:compileJava --console=plain`
+- `./gradlew :runtime:test --tests 'com.bloxbean.cardano.yano.runtime.assembly.YanoAssemblyTest' --tests 'com.bloxbean.cardano.yano.runtime.YanoStartupMaintenanceTest' --tests 'com.bloxbean.cardano.yano.runtime.YanoProducerStartupPlanTest' :devnet-toolkit:test :testkit:test :app:compileJava :app:compileTestJava --console=plain`
+- `./gradlew :runtime:test :devnet-toolkit:test :testkit:test :app:test --console=plain`
+- `./gradlew :app:quarkusBuild --console=plain`
 - `./gradlew :app:haskellSyncTest --console=plain -q`
-- `JAVA_TOOL_OPTIONS='-Dyano.exit-on-epoch-calc-error=false -Dyano.remote.protocol-magic=42' YACI_STORE_JAR=$HOME/.yaci-cli/components/store/yaci-store-all bash scripts/devnet-adapot-comparison/run-devnet-haskell-yacistore-adapot-comparison.sh`
+- `JAVA_TOOL_OPTIONS='-Dyano.exit-on-epoch-calc-error=false -Dyano.remote.protocol-magic=42' YACI_STORE_JAR="$HOME/.yaci-cli/components/store/yaci-store-all" bash scripts/devnet-adapot-comparison/run-devnet-haskell-yacistore-adapot-comparison.sh`
   passed at epoch 32 with Haskell/Yano/YaciStore deposits `502000000`,
-  treasury `653894896811217`, reserves `35335542735121983`, and genesis deposits
+  treasury `653894896810552`, reserves `35335542735126511`, and genesis deposits
   `502000000`.
+- Devnet epoch-crossing skill workflow with 50-slot epochs.
+- Past-time-travel skill workflow with dynamic PV10 genesis-shift expectation.
+- `git diff --check`.
 
 ## Remaining Follow-Up After Issue #19
 
@@ -1432,5 +1446,5 @@ ADR-028 can be considered fully implemented when:
   extraction.
 
 Current status: satisfied for the issue #17 ADR-028 decomposition,
-pre-release cleanup, issue #21 runtime-kernel follow-up, and issue #19
-DevnetToolkit packaging decision.
+pre-release cleanup, issue #21 runtime-kernel follow-up, and ADR-029's
+replacement for the original issue #19 DevnetToolkit packaging decision.

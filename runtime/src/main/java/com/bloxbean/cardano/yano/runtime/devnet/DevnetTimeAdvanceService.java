@@ -56,6 +56,25 @@ public final class DevnetTimeAdvanceService {
         return advanceBySlotCount(slots);
     }
 
+    public TimeAdvanceResult advanceUntilSlot(long targetSlot) {
+        requireDevMode();
+        if (targetSlot < 0) {
+            throw new IllegalArgumentException("Target slot must be >= 0, got: " + targetSlot);
+        }
+
+        ChainTip currentTip = chainState.getTip();
+        long currentSlot = currentTip != null ? currentTip.getSlot() : 0;
+        long slots = targetSlot - currentSlot;
+        if (slots <= 0) {
+            return new TimeAdvanceResult(
+                    currentSlot,
+                    currentTip != null ? currentTip.getBlockNumber() : 0,
+                    0);
+        }
+
+        return advanceBySlotCount(slots);
+    }
+
     private TimeAdvanceResult advanceBySlotCount(long slots) {
         if (slots > maxAdvanceSlots) {
             throw new IllegalArgumentException("Cannot advance more than " + maxAdvanceSlots + " slots per request");

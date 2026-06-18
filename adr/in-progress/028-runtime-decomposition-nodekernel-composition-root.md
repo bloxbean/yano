@@ -1,6 +1,6 @@
 # ADR-028: Runtime Decomposition — NodeKernel, Subsystems, and an Explicit Composition Root
 
-**Status:** Accepted; implemented for issue #17; pre-release compatibility cleanup completed
+**Status:** Accepted; implemented for issue #17, pre-release compatibility cleanup, issue #21 follow-up, and ADR-029 devnet-toolkit packaging split
 **Date:** 2026-06-13
 **Related:** ADR-027 (Strategic Direction, item P0.1), ADR-021 (Snapshot Restore Coordinator), adr/network/002 (Peer Management Module), GitHub issue #17
 
@@ -870,11 +870,11 @@ Snapshot restore orchestration has moved out of the public runtime surface:
   result.
 
 Snapshot create/list/delete now sit behind `DevnetSnapshotCatalogService`, while
-restore remains behind `DevnetSnapshotRestoreService`. `DevnetToolkit` is now the
-explicit `DevnetControl` component collecting the catalog, restore, faucet, time,
-catch-up, and genesis-shift operations. The later decision is physical packaging
-only: keep it in `runtime` for now, and move it to a separate toolkit module only
-when there is a concrete need to ship a runtime artifact without devnet controls.
+restore remains behind `DevnetSnapshotRestoreService`. `DevnetToolkit` is the
+explicit `DevnetControl` adapter collecting the catalog, restore, faucet, time,
+catch-up, and genesis-shift operations. The earlier physical-packaging deferral
+is superseded by ADR-029: the adapter and devnet assembly helper now live in
+`devnet-toolkit`, while safety-critical services remain in `runtime`.
 
 ## Stage E implementation update - config-derived assembly selection
 
@@ -1023,8 +1023,8 @@ These items were non-blocking for issue #17. The runtime-kernel and
 producer/chronology items are completed under follow-up issue #21. The original
 issue #19 decision kept `DevnetToolkit` in the `runtime` artifact for the current
 slice. That decision is now superseded by
-`028-devnet-control-toolkit-and-testkit-spi.md`, because planned devnet growth and
-ADR-027 R1 `yano-testkit` packaging provide a concrete reason to split the
+`029-devnet-control-toolkit-and-testkit-spi.md`, because planned devnet growth and
+ADR-027 R1 `testkit` packaging provide a concrete reason to split the
 toolkit behind a clean runtime SPI.
 
 - **Issue #21 / Stage 21A — kernel ownership and scheduler context:** replace
@@ -1063,17 +1063,13 @@ toolkit behind a clean runtime SPI.
 - **Issue #21 validation:** focused runtime/kernel/readiness tests, touched-module
   JVM tests, Haskell sync validation, reviewer follow-up, and the devnet AdaPot
   comparison through epoch 32 passed after the final issue #21 slice.
-- **Issue #19 / DevnetToolkit packaging:** keep `DevnetToolkit` and the runtime
-  devnet services in `runtime` for now. The devnet services do not add a separate
-  dependency stack, are tightly coupled to runtime-internal maintenance,
-  snapshot/restore, producer, UTXO, and chain-state coordination, and the public
-  API surface is already isolated through optional `DevnetControl` exposure on
-  devnet/devnet-time-travel recipes only. Revisit a separate
-  `yano-devnet-toolkit` artifact only when a real consumer needs a runtime
-  artifact without devnet classes or when devnet tooling adds heavyweight
-  optional dependencies, material native-image cost, or independent versioning
-  pressure. The new devnet-control ADR records that this revisit condition has
-  now been met by the planned devnet/testkit roadmap.
+- **Issue #19 / DevnetToolkit packaging:** superseded by ADR-029. The planned
+  devnet growth and ADR-027 R1 `testkit` roadmap now provide the concrete
+  consumer that the original issue #19 decision deferred. The implemented
+  direction keeps safety-critical devnet services in `runtime`, exposes narrow
+  runtime SPI ports, moves the optional `DevnetControl` adapter and devnet
+  assembly helpers to `devnet-toolkit`, and adds the initial `testkit`
+  foundation.
 - **Adapter proofs:** add Spring/Micronaut/plain-Java examples after the runtime
   API is stable.
 - **Extension builder APIs:** decide whether custom mempool injection, subsystem

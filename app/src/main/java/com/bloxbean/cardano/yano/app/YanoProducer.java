@@ -15,6 +15,7 @@ import com.bloxbean.cardano.yano.api.config.YanoConfig;
 import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
 import com.bloxbean.cardano.yano.app.bootstrap.BootstrapConfigParser;
 import com.bloxbean.cardano.yano.bootstrap.providers.DefaultBootstrapDataProviderFactory;
+import com.bloxbean.cardano.yano.devnet.YanoDevnetAssembly;
 import com.bloxbean.cardano.yano.runtime.assembly.YanoAssembly;
 import com.bloxbean.cardano.yano.runtime.assembly.YanoNode;
 import com.bloxbean.cardano.yano.runtime.config.DnsCachePolicy;
@@ -530,7 +531,7 @@ public class YanoProducer {
         // Set plugin classloader on thread context so PluginManager picks it up
         Thread.currentThread().setContextClassLoader(pluginClassLoader);
 
-        YanoAssembly.Builder assembly = YanoAssembly.fromConfig(yaciConfig)
+        YanoDevnetAssembly.Builder assembly = YanoDevnetAssembly.fromConfig(yaciConfig)
                 .runtimeOptions(runtimeOptions);
 
         if (debugRollbackToSlot >= 0 || debugRollbackToEpoch >= 0) {

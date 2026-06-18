@@ -89,10 +89,10 @@ class YanoStartupMaintenanceTest {
         RuntimeNode yano = new RuntimeNode(config);
         try {
             assertMutationWaitsForMaintenance(yano,
-                    () -> yano.devnetControl().advanceTimeBySlots(1),
+                    () -> yano.devnetRuntime().orElseThrow().producerExtensions().advanceBySlots(1),
                     IllegalStateException.class);
             assertMutationWaitsForMaintenance(yano,
-                    () -> yano.devnetControl().restoreDevnetSnapshot("snap"),
+                    () -> yano.devnetRuntime().orElseThrow().snapshots().restore("snap"),
                     IllegalStateException.class);
         } finally {
             yano.close();
@@ -170,6 +170,36 @@ class YanoStartupMaintenanceTest {
             assertMutationWaitsForMaintenance(yanoForClose, yanoForClose::close);
         } finally {
             yanoForClose.close();
+        }
+    }
+
+    @Test
+    void successfulRuntimeMaintenanceClearsOnlyMatchingDegradedOperation() {
+        YanoConfig config = YanoConfig.builder()
+                .enableClient(false)
+                .enableServer(false)
+                .enableBlockProducer(false)
+                .remoteHost("localhost")
+                .remotePort(3001)
+                .protocolMagic(42)
+                .build();
+        RuntimeNode yano = new RuntimeNode(config);
+
+        try {
+            yano.getMaintenanceGate().markDegraded("node stop", "stale node stop failure", null);
+            assertThat(yano.getStatus().isRuntimeDegraded()).isTrue();
+
+            yano.stop();
+
+            assertThat(yano.getStatus().isRuntimeDegraded()).isFalse();
+
+            yano.getMaintenanceGate().markDegraded("devnet time advance", "stale time advance failure", null);
+            yano.stop();
+
+            assertThat(yano.getStatus().isRuntimeDegraded()).isTrue();
+            assertThat(yano.getStatus().getRuntimeDegradedOperation()).isEqualTo("devnet time advance");
+        } finally {
+            yano.close();
         }
     }
 

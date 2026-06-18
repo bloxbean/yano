@@ -18,7 +18,6 @@ import com.bloxbean.cardano.yaci.events.impl.NoopEventBus;
 import com.bloxbean.cardano.yaci.helper.*;
 import com.bloxbean.cardano.yaci.helper.listener.BlockChainDataListener;
 import com.bloxbean.cardano.yano.api.ChainQuery;
-import com.bloxbean.cardano.yano.api.DevnetControl;
 import com.bloxbean.cardano.yano.api.EpochParamProvider;
 import com.bloxbean.cardano.yano.api.LedgerQuery;
 import com.bloxbean.cardano.yano.api.NodeLifecycle;
@@ -35,6 +34,7 @@ import com.bloxbean.cardano.yano.api.model.DevnetRollbackResult;
 import com.bloxbean.cardano.yano.api.model.DevnetRollbackTarget;
 import com.bloxbean.cardano.yano.api.model.DevnetRestoreResult;
 import com.bloxbean.cardano.yano.api.model.FundResult;
+import com.bloxbean.cardano.yano.api.model.FundingRequest;
 import com.bloxbean.cardano.yano.api.model.GenesisParameters;
 import com.bloxbean.cardano.yano.api.model.NodeStatus;
 import com.bloxbean.cardano.yano.api.model.ProtocolParamsSnapshot;
@@ -96,7 +96,15 @@ import com.bloxbean.cardano.yano.runtime.devnet.DevnetGenesisShiftService;
 import com.bloxbean.cardano.yano.runtime.devnet.DevnetSnapshotCatalogService;
 import com.bloxbean.cardano.yano.runtime.devnet.DevnetSnapshotRestoreService;
 import com.bloxbean.cardano.yano.runtime.devnet.DevnetTimeAdvanceService;
-import com.bloxbean.cardano.yano.runtime.devnet.DevnetToolkit;
+import com.bloxbean.cardano.yano.runtime.devnet.spi.DevnetChainMutation;
+import com.bloxbean.cardano.yano.runtime.devnet.spi.DevnetChronologyAccess;
+import com.bloxbean.cardano.yano.runtime.devnet.spi.DevnetFundingAccess;
+import com.bloxbean.cardano.yano.runtime.devnet.spi.DevnetGenesisAccess;
+import com.bloxbean.cardano.yano.runtime.devnet.spi.DevnetProducerExtensions;
+import com.bloxbean.cardano.yano.runtime.devnet.spi.DevnetRuntime;
+import com.bloxbean.cardano.yano.runtime.devnet.spi.DevnetRuntimeProvider;
+import com.bloxbean.cardano.yano.runtime.devnet.spi.DevnetSnapshotAccess;
+import com.bloxbean.cardano.yano.runtime.devnet.spi.RuntimeMaintenance;
 import com.bloxbean.cardano.yano.runtime.events.PropagatingEventBus;
 import com.bloxbean.cardano.yano.api.util.EpochSlotCalc;
 import com.bloxbean.cardano.yano.runtime.kernel.KernelLifecycleException;
@@ -138,7 +146,7 @@ import java.util.function.Supplier;
  */
 @Slf4j
 public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGateway, TxEvaluationGateway,
-        ProducerControl, AutoCloseable, DebugLedgerStateAccess, RuntimeKernelProvider {
+        ProducerControl, AutoCloseable, DebugLedgerStateAccess, RuntimeKernelProvider, DevnetRuntimeProvider {
     // Configuration
     private final YanoConfig config;
 
@@ -163,7 +171,7 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
     private volatile long resolvedGenesisTimestamp;
     private final ChronologySubsystem chronologySubsystem;
     private final TxSubsystem txSubsystem;
-    private final DevnetControl devnetControl;
+    private final DevnetRuntime devnetRuntime;
     // Status tracking
     private final AtomicBoolean isRunning = new AtomicBoolean(false);
     private final AtomicBoolean closed = new AtomicBoolean(false);
@@ -340,19 +348,7 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 protocolMagic,
                 log);
         this.producerStartupCoordinator = new ProducerStartupCoordinator(producerStartupActions());
-        this.devnetControl = new DevnetToolkit(
-                this::rollbackDevnetToSlot,
-                this::rollbackDevnet,
-                this::createDevnetSnapshot,
-                this::restoreDevnetSnapshot,
-                this::restoreDevnetSnapshotAndGetTip,
-                this::listDevnetSnapshots,
-                this::deleteDevnetSnapshot,
-                this::fundAddress,
-                this::advanceTimeBySlots,
-                this::advanceTimeBySeconds,
-                this::shiftGenesisAndStartProducer,
-                this::catchUpToWallClock);
+        this.devnetRuntime = new RuntimeDevnetRuntime();
         this.kernel = new NodeKernel(
                 runtimeKernelSubsystems(),
                 new SubsystemContext(eventBus, schedulers, this.runtimeOptions.globals(), new ServiceRegistry()));
@@ -685,8 +681,9 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
         return chainStorage.recoveryOrNull();
     }
 
-    public DevnetControl devnetControl() {
-        return devnetControl;
+    @Override
+    public Optional<DevnetRuntime> devnetRuntime() {
+        return Optional.of(devnetRuntime);
     }
 
     @Override
@@ -2389,14 +2386,17 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
     }
 
     private <T> T withRuntimeMaintenance(String reason, Supplier<T> operation) {
-        try (var ignored = chainStorage.maintenanceGate().enterMaintenance(reason)) {
-            return operation.get();
+        try (var maintenance = chainStorage.maintenanceGate().enterMaintenance(reason)) {
+            T result = operation.get();
+            maintenance.clearDegraded();
+            return result;
         }
     }
 
     private void withRuntimeMaintenance(String reason, Runnable operation) {
-        try (var ignored = chainStorage.maintenanceGate().enterMaintenance(reason)) {
+        try (var maintenance = chainStorage.maintenanceGate().enterMaintenance(reason)) {
             operation.run();
+            maintenance.clearDegraded();
         }
     }
 
@@ -2625,6 +2625,11 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 () -> devnetTimeAdvanceService().advanceBySlots(slots));
     }
 
+    private TimeAdvanceResult advanceTimeUntilSlot(long targetSlot) {
+        return withRuntimeMaintenance("devnet time advance",
+                () -> devnetTimeAdvanceService().advanceUntilSlot(targetSlot));
+    }
+
     private TimeAdvanceResult advanceTimeBySeconds(int seconds) {
         return withRuntimeMaintenance("devnet time advance",
                 () -> devnetTimeAdvanceService().advanceBySeconds(seconds));
@@ -2759,6 +2764,237 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 config::getSlotLengthMillis,
                 System::currentTimeMillis,
                 this::markRuntimeDegraded);
+    }
+
+    private final class RuntimeDevnetRuntime implements DevnetRuntime {
+        private final RuntimeMaintenance maintenance = new RuntimeMaintenanceAdapter();
+        private final DevnetChainMutation chainMutation = RuntimeNode.this::rollbackDevnet;
+        private final DevnetProducerExtensions producerExtensions = new RuntimeDevnetProducerExtensions();
+        private final DevnetFundingAccess funding = new RuntimeDevnetFundingAccess();
+        private final DevnetSnapshotAccess snapshots = new RuntimeDevnetSnapshotAccess();
+        private final DevnetGenesisAccess genesis = new RuntimeDevnetGenesisAccess();
+        private final DevnetChronologyAccess chronology = new RuntimeDevnetChronologyAccess();
+
+        @Override
+        public YanoConfig config() {
+            return config;
+        }
+
+        @Override
+        public RuntimeMaintenance maintenance() {
+            return maintenance;
+        }
+
+        @Override
+        public RuntimeNode chainBlocks() {
+            return RuntimeNode.this;
+        }
+
+        @Override
+        public RuntimeNode producerControl() {
+            return RuntimeNode.this;
+        }
+
+        @Override
+        public DevnetChainMutation chainMutation() {
+            return chainMutation;
+        }
+
+        @Override
+        public DevnetProducerExtensions producerExtensions() {
+            return producerExtensions;
+        }
+
+        @Override
+        public DevnetFundingAccess funding() {
+            return funding;
+        }
+
+        @Override
+        public DevnetSnapshotAccess snapshots() {
+            return snapshots;
+        }
+
+        @Override
+        public DevnetGenesisAccess genesis() {
+            return genesis;
+        }
+
+        @Override
+        public DevnetChronologyAccess chronology() {
+            return chronology;
+        }
+    }
+
+    private final class RuntimeMaintenanceAdapter implements RuntimeMaintenance {
+        @Override
+        public <T> T runExclusive(String reason, com.bloxbean.cardano.yano.runtime.devnet.spi.MaintenanceMutation<T> mutation) {
+            Objects.requireNonNull(mutation, "mutation");
+            try (var maintenance = chainStorage.maintenanceGate().enterMaintenance(reason)) {
+                T result = mutation.run();
+                maintenance.clearDegraded();
+                return result;
+            }
+        }
+
+        @Override
+        public <T> T runRead(String reason, java.util.function.Supplier<T> read) {
+            Objects.requireNonNull(read, "read");
+            return withRuntimeRead(reason, read);
+        }
+
+        @Override
+        public void markDegraded(String operation, Throwable cause) {
+            markRuntimeDegraded(operation, null, cause);
+        }
+
+        @Override
+        public void markDegraded(String operation, String message, Throwable cause) {
+            markRuntimeDegraded(operation, message, cause);
+        }
+    }
+
+    private final class RuntimeDevnetProducerExtensions implements DevnetProducerExtensions {
+        @Override
+        public boolean isAvailable() {
+            return producerSubsystem.hasProduction();
+        }
+
+        @Override
+        public Optional<com.bloxbean.cardano.yano.runtime.producer.ProducerMode> mode() {
+            return Optional.ofNullable(producerSubsystem.modeOrNull());
+        }
+
+        @Override
+        public TimeAdvanceResult advanceBySlots(int slots) {
+            return advanceTimeBySlots(slots);
+        }
+
+        @Override
+        public TimeAdvanceResult advanceUntilSlot(long targetSlot) {
+            return advanceTimeUntilSlot(targetSlot);
+        }
+
+        @Override
+        public TimeAdvanceResult advanceBySeconds(int seconds) {
+            return advanceTimeBySeconds(seconds);
+        }
+
+        @Override
+        public TimeAdvanceResult catchUpToWallClock() {
+            return RuntimeNode.this.catchUpToWallClock();
+        }
+
+        @Override
+        public long shiftGenesisAndStartProducer(int epochs) {
+            return RuntimeNode.this.shiftGenesisAndStartProducer(epochs);
+        }
+    }
+
+    private final class RuntimeDevnetFundingAccess implements DevnetFundingAccess {
+        @Override
+        public FundResult fundAddress(String address, long lovelace) {
+            return RuntimeNode.this.fundAddress(address, lovelace);
+        }
+
+        @Override
+        public List<FundResult> fundAddresses(List<FundingRequest> requests) {
+            Objects.requireNonNull(requests, "requests");
+            return requests.stream()
+                    .map(request -> fundAddress(request.address(), request.lovelace()))
+                    .toList();
+        }
+    }
+
+    private final class RuntimeDevnetSnapshotAccess implements DevnetSnapshotAccess {
+        @Override
+        public SnapshotInfo create(String name) {
+            return createDevnetSnapshot(name);
+        }
+
+        @Override
+        public DevnetRestoreResult restore(String name) {
+            return restoreDevnetSnapshotAndGetTip(name);
+        }
+
+        @Override
+        public List<SnapshotInfo> list() {
+            return listDevnetSnapshots();
+        }
+
+        @Override
+        public void delete(String name) {
+            deleteDevnetSnapshot(name);
+        }
+    }
+
+    private final class RuntimeDevnetGenesisAccess implements DevnetGenesisAccess {
+        @Override
+        public Optional<Path> shelleyGenesisFile() {
+            return configuredPath(config.getShelleyGenesisFile());
+        }
+
+        @Override
+        public Optional<Path> byronGenesisFile() {
+            return configuredPath(config.getByronGenesisFile());
+        }
+
+        @Override
+        public Optional<Path> alonzoGenesisFile() {
+            return configuredPath(config.getAlonzoGenesisFile());
+        }
+
+        @Override
+        public Optional<Path> conwayGenesisFile() {
+            return configuredPath(config.getConwayGenesisFile());
+        }
+
+        @Override
+        public Optional<Path> protocolParametersFile() {
+            return configuredPath(config.getProtocolParametersFile());
+        }
+
+        @Override
+        public GenesisConfig currentGenesisConfig() {
+            return genesisConfig;
+        }
+    }
+
+    private final class RuntimeDevnetChronologyAccess implements DevnetChronologyAccess {
+        @Override
+        public long currentWallClockSlot() {
+            int slotLength = config.getSlotLengthMillis();
+            if (slotLength <= 0) {
+                throw new IllegalStateException("Current wall-clock slot requires positive slot length");
+            }
+            return (System.currentTimeMillis() - resolvedGenesisTimestamp) / slotLength;
+        }
+
+        @Override
+        public long slotLengthMillis() {
+            return config.getSlotLengthMillis();
+        }
+
+        @Override
+        public long epochLength() {
+            GenesisConfig current = genesisConfig;
+            var shelley = current != null ? current.getShelleyGenesisData() : null;
+            return shelley != null ? shelley.epochLength() : config.getEpochLength();
+        }
+
+        @Override
+        public long slotToUnixTime(long slot) {
+            return RuntimeNode.this.slotToUnixTime(slot);
+        }
+
+        @Override
+        public void invalidateCaches() {
+            chronologySubsystem.invalidateSlotTimeCache();
+        }
+    }
+
+    private Optional<Path> configuredPath(String path) {
+        return path == null || path.isBlank() ? Optional.empty() : Optional.of(Path.of(path));
     }
 
     @Override

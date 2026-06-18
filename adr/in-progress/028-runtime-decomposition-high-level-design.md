@@ -138,8 +138,8 @@ sequenceDiagram
 - Account-state providers receive `ChainBlockReader` for replay/reconciliation
   and explicit `RocksDbAccess` only for RocksDB-backed stores; they do not depend
   on `DirectRocksDBChainState` or mutable `ChainState`.
-- `DevnetControl` is backed by `DevnetToolkit`; it remains in `runtime` until a
-  separate toolkit module has a concrete packaging requirement. Plain slot-leader
-  recipes expose producer controls, not devnet-toolkit controls.
+- `DevnetControl` is backed by `devnet-toolkit` through ADR-029. Runtime
+  devnet recipes expose devnet-safe SPI ports but not the optional control
+  adapter; plain slot-leader recipes expose producer controls only.
 - Runtime writes that move chain, producer, or devnet state go through
   `RuntimeMaintenanceGate`; normal reads use role interfaces.

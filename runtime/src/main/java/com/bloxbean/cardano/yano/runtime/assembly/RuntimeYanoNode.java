@@ -12,6 +12,8 @@ import com.bloxbean.cardano.yano.api.config.YanoConfig;
 import com.bloxbean.cardano.yano.api.listener.NodeEventListener;
 import com.bloxbean.cardano.yano.api.model.NodeStatus;
 import com.bloxbean.cardano.yano.runtime.debug.DebugLedgerStateAccess;
+import com.bloxbean.cardano.yano.runtime.devnet.spi.DevnetRuntime;
+import com.bloxbean.cardano.yano.runtime.devnet.spi.DevnetRuntimeProvider;
 import com.bloxbean.cardano.yano.runtime.kernel.NodeKernel;
 import com.bloxbean.cardano.yano.runtime.kernel.RuntimeKernelProvider;
 import com.bloxbean.cardano.yano.runtime.kernel.Schedulers;
@@ -32,14 +34,13 @@ import java.util.Optional;
  * <p>This type binds the role-specific API facets to a lifecycle backed by the
  * runtime kernel.</p>
  */
-final class RuntimeYanoNode implements YanoNode {
+final class RuntimeYanoNode implements YanoNode, DevnetRuntimeProvider {
     private final NodeLifecycle nodeLifecycle;
     private final ChainQuery chainQuery;
     private final LedgerQuery ledgerQuery;
     private final TxGateway txGateway;
     private final TxEvaluationGateway txEvaluationGateway;
     private final ProducerControl producerControl;
-    private final DevnetControl devnetControl;
     private final RuntimeMaintenanceGate maintenanceGate;
     private final DebugLedgerStateAccess debugLedgerStateAccess;
     private final AutoCloseable closeable;
@@ -53,7 +54,6 @@ final class RuntimeYanoNode implements YanoNode {
                     TxGateway txGateway,
                     TxEvaluationGateway txEvaluationGateway,
                     ProducerControl producerControl,
-                    DevnetControl devnetControl,
                     RuntimeMaintenanceGate maintenanceGate,
                     DebugLedgerStateAccess debugLedgerStateAccess,
                     AutoCloseable closeable,
@@ -64,7 +64,6 @@ final class RuntimeYanoNode implements YanoNode {
                 txGateway,
                 txEvaluationGateway,
                 producerControl,
-                devnetControl,
                 maintenanceGate,
                 debugLedgerStateAccess,
                 closeable,
@@ -78,7 +77,6 @@ final class RuntimeYanoNode implements YanoNode {
                     TxGateway txGateway,
                     TxEvaluationGateway txEvaluationGateway,
                     ProducerControl producerControl,
-                    DevnetControl devnetControl,
                     RuntimeMaintenanceGate maintenanceGate,
                     DebugLedgerStateAccess debugLedgerStateAccess,
                     AutoCloseable closeable,
@@ -90,7 +88,6 @@ final class RuntimeYanoNode implements YanoNode {
         this.txGateway = Objects.requireNonNull(txGateway, "txGateway");
         this.txEvaluationGateway = Objects.requireNonNull(txEvaluationGateway, "txEvaluationGateway");
         this.producerControl = Objects.requireNonNull(producerControl, "producerControl");
-        this.devnetControl = Objects.requireNonNull(devnetControl, "devnetControl");
         this.maintenanceGate = Objects.requireNonNull(maintenanceGate, "maintenanceGate");
         this.debugLedgerStateAccess = Objects.requireNonNull(debugLedgerStateAccess, "debugLedgerStateAccess");
         this.closeable = closeable;
@@ -102,7 +99,6 @@ final class RuntimeYanoNode implements YanoNode {
         services.register(TxGateway.class, txGateway);
         services.register(TxEvaluationGateway.class, txEvaluationGateway);
         services.register(ProducerControl.class, producerControl);
-        services.register(DevnetControl.class, devnetControl);
         services.register(RuntimeMaintenanceGate.class, maintenanceGate);
         services.register(DebugLedgerStateAccess.class, debugLedgerStateAccess);
         Objects.requireNonNull(schedulers, "schedulers");
@@ -149,12 +145,18 @@ final class RuntimeYanoNode implements YanoNode {
 
     @Override
     public Optional<DevnetControl> devnetControl() {
+        return Optional.empty();
+    }
+
+    @Override
+    public Optional<DevnetRuntime> devnetRuntime() {
         if ((role == YanoAssembly.Role.DEVNET
                 || role == YanoAssembly.Role.DEVNET_TIME_TRAVEL)
                 && nodeLifecycle.getConfig() instanceof YanoConfig config
                 && config.isDevMode()
-                && config.isEnableBlockProducer()) {
-            return Optional.of(devnetControl);
+                && config.isEnableBlockProducer()
+                && nodeLifecycle instanceof DevnetRuntimeProvider provider) {
+            return provider.devnetRuntime();
         }
         return Optional.empty();
     }

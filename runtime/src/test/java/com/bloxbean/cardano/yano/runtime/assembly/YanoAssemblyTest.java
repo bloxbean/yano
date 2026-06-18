@@ -1,7 +1,6 @@
 package com.bloxbean.cardano.yano.runtime.assembly;
 
 import com.bloxbean.cardano.yano.api.ChainQuery;
-import com.bloxbean.cardano.yano.api.DevnetControl;
 import com.bloxbean.cardano.yano.api.LedgerQuery;
 import com.bloxbean.cardano.yano.api.NodeLifecycle;
 import com.bloxbean.cardano.yano.api.ProducerControl;
@@ -13,6 +12,7 @@ import com.bloxbean.cardano.yano.api.config.YanoConfig;
 import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
 import com.bloxbean.cardano.yano.api.model.NodeStatus;
 import com.bloxbean.cardano.yano.runtime.debug.DebugLedgerStateAccess;
+import com.bloxbean.cardano.yano.runtime.devnet.spi.DevnetRuntimeProvider;
 import com.bloxbean.cardano.yano.runtime.kernel.SubsystemHealth;
 import com.bloxbean.cardano.yano.runtime.maintenance.RuntimeMaintenanceGate;
 import com.bloxbean.cardano.yano.runtime.producer.ProducerMode;
@@ -255,7 +255,8 @@ class YanoAssemblyTest {
             ProducerStartupPlan plan = producerStartupPlan(node);
             assertEquals(ProducerMode.DEVNET, plan.mode());
             assertFalse(plan.deferredUntilGenesisShift());
-            assertTrue(node.devnetControl().isPresent());
+            assertTrue(node.devnetControl().isEmpty());
+            assertTrue(((DevnetRuntimeProvider) node).devnetRuntime().isPresent());
         } finally {
             node.close();
         }
@@ -307,7 +308,8 @@ class YanoAssemblyTest {
             ProducerStartupPlan plan = producerStartupPlan(devnetNode);
             assertEquals(ProducerMode.DEVNET, plan.mode());
             assertFalse(plan.deferredUntilGenesisShift());
-            assertTrue(devnetNode.devnetControl().isPresent());
+            assertTrue(devnetNode.devnetControl().isEmpty());
+            assertTrue(((DevnetRuntimeProvider) devnetNode).devnetRuntime().isPresent());
         } finally {
             devnetNode.close();
         }
@@ -319,7 +321,8 @@ class YanoAssemblyTest {
             ProducerStartupPlan plan = producerStartupPlan(timeTravelNode);
             assertEquals(ProducerMode.DEVNET_TIME_TRAVEL, plan.mode());
             assertTrue(plan.deferredUntilGenesisShift());
-            assertTrue(timeTravelNode.devnetControl().isPresent());
+            assertTrue(timeTravelNode.devnetControl().isEmpty());
+            assertTrue(((DevnetRuntimeProvider) timeTravelNode).devnetRuntime().isPresent());
         } finally {
             timeTravelNode.close();
         }
@@ -367,7 +370,8 @@ class YanoAssemblyTest {
             ProducerStartupPlan plan = producerStartupPlan(node);
             assertEquals(ProducerMode.DEVNET_TIME_TRAVEL, plan.mode());
             assertTrue(plan.deferredUntilGenesisShift());
-            assertTrue(node.devnetControl().isPresent());
+            assertTrue(node.devnetControl().isEmpty());
+            assertTrue(((DevnetRuntimeProvider) node).devnetRuntime().isPresent());
         } finally {
             node.close();
         }
@@ -385,7 +389,8 @@ class YanoAssemblyTest {
             ProducerStartupPlan plan = producerStartupPlan(node);
             assertEquals(ProducerMode.SLOT_LEADER_TIME_TRAVEL, plan.mode());
             assertTrue(plan.deferredUntilGenesisShift());
-            assertTrue(node.devnetControl().isPresent());
+            assertTrue(node.devnetControl().isEmpty());
+            assertTrue(((DevnetRuntimeProvider) node).devnetRuntime().isPresent());
         } finally {
             node.close();
         }
@@ -429,7 +434,7 @@ class YanoAssemblyTest {
     }
 
     @Test
-    void runtimeNodeDevnetControlIsRecipeScoped() {
+    void runtimeNodeDevnetControlIsAlwaysEmpty() {
         TestRuntimeNode nodeApi = runtimeNode(
                 (proxy, method, args) -> {
                     if ("getConfig".equals(method.getName())) {
@@ -442,9 +447,9 @@ class YanoAssemblyTest {
                 });
 
         assertTrue(runtimeYanoNode(nodeApi, YanoAssembly.Role.RELAY).devnetControl().isEmpty());
-        assertTrue(runtimeYanoNode(nodeApi, YanoAssembly.Role.DEVNET).devnetControl().isPresent());
+        assertTrue(runtimeYanoNode(nodeApi, YanoAssembly.Role.DEVNET).devnetControl().isEmpty());
         assertTrue(runtimeYanoNode(nodeApi, YanoAssembly.Role.SLOT_LEADER).devnetControl().isEmpty());
-        assertTrue(runtimeYanoNode(nodeApi, YanoAssembly.Role.DEVNET_TIME_TRAVEL).devnetControl().isPresent());
+        assertTrue(runtimeYanoNode(nodeApi, YanoAssembly.Role.DEVNET_TIME_TRAVEL).devnetControl().isEmpty());
     }
 
     @Test
@@ -547,7 +552,6 @@ class YanoAssemblyTest {
                 node,
                 node,
                 node,
-                node,
                 new RuntimeMaintenanceGate(),
                 node,
                 node,
@@ -569,7 +573,8 @@ class YanoAssemblyTest {
         if ("getConfig".equals(method.getName())) {
             return YanoConfig.serverOnly(0);
         }
-        if ("getDefaultAccountStateStore".equals(method.getName())) {
+        if ("getDefaultAccountStateStore".equals(method.getName())
+                || method.getReturnType() == Optional.class) {
             return Optional.empty();
         }
         if (method.getReturnType() == boolean.class) {
@@ -585,7 +590,7 @@ class YanoAssemblyTest {
     }
 
     private interface TestRuntimeNode extends NodeLifecycle, ChainQuery, LedgerQuery, TxGateway,
-            TxEvaluationGateway, ProducerControl, DevnetControl, DebugLedgerStateAccess, AutoCloseable {
+            TxEvaluationGateway, ProducerControl, DebugLedgerStateAccess, AutoCloseable {
     }
 
     private static Object field(Object target, String name) {

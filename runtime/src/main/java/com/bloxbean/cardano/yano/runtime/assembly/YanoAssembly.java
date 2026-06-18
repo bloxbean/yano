@@ -191,7 +191,6 @@ public final class YanoAssembly {
                     runtimeNode,
                     runtimeNode,
                     runtimeNode,
-                    runtimeNode.devnetControl(),
                     runtimeNode.getMaintenanceGate(),
                     runtimeNode,
                     runtimeNode,

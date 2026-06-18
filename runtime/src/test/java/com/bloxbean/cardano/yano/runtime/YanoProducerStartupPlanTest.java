@@ -21,7 +21,9 @@ class YanoProducerStartupPlanTest {
         RuntimeNode yano = new RuntimeNode(config);
 
         try {
-            assertThatThrownBy(() -> yano.devnetControl().shiftGenesisAndStartProducer(1))
+            assertThatThrownBy(() -> yano.devnetRuntime().orElseThrow()
+                    .producerExtensions()
+                    .shiftGenesisAndStartProducer(1))
                     .isInstanceOf(IllegalStateException.class)
                     .hasMessageContaining("requires a deferred past-time-travel producer plan");
         } finally {

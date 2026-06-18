@@ -1,6 +1,8 @@
 rootProject.name = 'yano'
 include 'core-api'
 include 'runtime'
+include 'devnet-toolkit'
+include 'testkit'
 include 'tx-services'
 include 'bootstrap-providers'
 include 'app'
