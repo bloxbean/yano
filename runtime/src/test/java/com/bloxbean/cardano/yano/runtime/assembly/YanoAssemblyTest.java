@@ -41,6 +41,9 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class YanoAssemblyTest {
+    @TempDir
+    Path tempDir;
+
     @Test
     void relayRecipeBuildsRoleBasedNode() {
         YanoNode node = YanoAssembly.relay(YanoConfig.serverOnly(0))
@@ -244,12 +247,12 @@ class YanoAssemblyTest {
     @Test
     void timeTravelRecipeRequiresPastTimeTravelMode() {
         assertThrows(IllegalStateException.class,
-                () -> YanoAssembly.devnetTimeTravel(YanoConfig.devnetDefault(0)).build());
+                () -> YanoAssembly.devnetTimeTravel(devnetConfig("missing-time-travel")).build());
     }
 
     @Test
     void devnetRecipeInstallsLiveDevnetProducerPlan() {
-        YanoNode node = YanoAssembly.devnet(YanoConfig.devnetDefault(0)).build();
+        YanoNode node = YanoAssembly.devnet(devnetConfig("devnet")).build();
 
         try {
             ProducerStartupPlan plan = producerStartupPlan(node);
@@ -264,7 +267,7 @@ class YanoAssemblyTest {
 
     @Test
     void slotLeaderRecipeInstallsLiveSlotLeaderProducerPlan() {
-        YanoConfig config = YanoConfig.devnetDefault(0);
+        YanoConfig config = devnetConfig("slot-leader");
         config.setSlotLeaderMode(true);
 
         YanoNode node = YanoAssembly.slotLeader(config).build();
@@ -281,12 +284,12 @@ class YanoAssemblyTest {
     @Test
     void slotLeaderRecipeRequiresSlotLeaderConfig() {
         assertThrows(IllegalStateException.class,
-                () -> YanoAssembly.slotLeader(YanoConfig.devnetDefault(0)).build());
+                () -> YanoAssembly.slotLeader(devnetConfig("missing-slot-leader")).build());
     }
 
     @Test
     void fromConfigRoutesSlotLeaderBeforeDevnetRecipe() {
-        YanoConfig config = YanoConfig.devnetDefault(0);
+        YanoConfig config = devnetConfig("from-config-slot-leader");
         config.setSlotLeaderMode(true);
 
         YanoNode node = YanoAssembly.fromConfig(config).build();
@@ -303,7 +306,7 @@ class YanoAssemblyTest {
 
     @Test
     void fromConfigRoutesDevnetAndTimeTravelRecipes() {
-        YanoNode devnetNode = YanoAssembly.fromConfig(YanoConfig.devnetDefault(0)).build();
+        YanoNode devnetNode = YanoAssembly.fromConfig(devnetConfig("from-config-devnet")).build();
         try {
             ProducerStartupPlan plan = producerStartupPlan(devnetNode);
             assertEquals(ProducerMode.DEVNET, plan.mode());
@@ -314,7 +317,7 @@ class YanoAssemblyTest {
             devnetNode.close();
         }
 
-        YanoConfig timeTravelConfig = YanoConfig.devnetDefault(0);
+        YanoConfig timeTravelConfig = devnetConfig("from-config-time-travel");
         timeTravelConfig.setPastTimeTravelMode(true);
         YanoNode timeTravelNode = YanoAssembly.fromConfig(timeTravelConfig).build();
         try {
@@ -330,7 +333,7 @@ class YanoAssemblyTest {
 
     @Test
     void fromConfigTreatsIsolatedPastTimeTravelSlotLeaderFlagAsNormalDevnet() {
-        YanoConfig config = YanoConfig.devnetDefault(0);
+        YanoConfig config = devnetConfig("isolated-ptt-slot-leader");
         config.setPastTimeTravelSlotLeaderMode(true);
 
         YanoNode node = YanoAssembly.fromConfig(config).build();
@@ -361,7 +364,7 @@ class YanoAssemblyTest {
 
     @Test
     void devnetTimeTravelRecipeInstallsDeferredDevnetProducerPlan() {
-        YanoConfig config = YanoConfig.devnetDefault(0);
+        YanoConfig config = devnetConfig("devnet-time-travel");
         config.setPastTimeTravelMode(true);
 
         YanoNode node = YanoAssembly.devnetTimeTravel(config).build();
@@ -379,7 +382,7 @@ class YanoAssemblyTest {
 
     @Test
     void devnetTimeTravelRecipeSupportsSlotLeaderTimeTravelPlan() {
-        YanoConfig config = YanoConfig.devnetDefault(0);
+        YanoConfig config = devnetConfig("slot-leader-time-travel");
         config.setPastTimeTravelMode(true);
         config.setPastTimeTravelSlotLeaderMode(true);
 
@@ -398,7 +401,7 @@ class YanoAssemblyTest {
 
     @Test
     void devnetRecipeRejectsSlotLeaderOrTimeTravelFlags() {
-        YanoConfig config = YanoConfig.devnetDefault(0);
+        YanoConfig config = devnetConfig("reject-slot-leader");
         config.setSlotLeaderMode(true);
 
         assertThrows(IllegalStateException.class, () -> YanoAssembly.devnet(config).build());
@@ -406,7 +409,7 @@ class YanoAssemblyTest {
 
     @Test
     void devnetTimeTravelRecipeRejectsAmbiguousSlotLeaderFlag() {
-        YanoConfig config = YanoConfig.devnetDefault(0);
+        YanoConfig config = devnetConfig("reject-ambiguous-slot-leader");
         config.setPastTimeTravelMode(true);
         config.setSlotLeaderMode(true);
 
@@ -538,6 +541,12 @@ class YanoAssemblyTest {
                     }
                     return defaultValue(method);
                 });
+    }
+
+    private YanoConfig devnetConfig(String name) {
+        YanoConfig config = YanoConfig.devnetDefault(0);
+        config.setRocksDBPath(tempDir.resolve(name).toString());
+        return config;
     }
 
     private static RuntimeYanoNode runtimeYanoNode(TestRuntimeNode node) {

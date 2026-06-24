@@ -212,6 +212,8 @@ class YanoConfigTest {
         assertThat(config.isDevMode()).isTrue();
         assertThat(config.getProtocolMagic()).isEqualTo(42);
         assertThat(config.isPastTimeTravelMode()).isFalse();
+        assertThat(config.isUseRocksDB()).isTrue();
+        assertThat(config.getRocksDBPath()).isEqualTo("./chainstate-devnet");
 
         assertThatCode(config::validate).doesNotThrowAnyException();
     }
