@@ -112,7 +112,7 @@ public class PeerSession {
             peerHealth.markState(PeerSessionState.RUNNING);
             log.info("🚀 Pipeline startup complete - HeaderSync and BodyFetch active");
         } catch (RuntimeException e) {
-            markStartupFailed(e);
+            markStartupFailed();
             throw e;
         }
     }
@@ -140,7 +140,7 @@ public class PeerSession {
             peerHealth.markState(PeerSessionState.RUNNING);
             log.info("📦 ==> Sequential sync started from point: {}", startPoint);
         } catch (RuntimeException e) {
-            markStartupFailed(e);
+            markStartupFailed();
             throw e;
         }
     }
@@ -391,10 +391,9 @@ public class PeerSession {
         }
     }
 
-    private void markStartupFailed(RuntimeException e) {
+    private void markStartupFailed() {
         stopResources(Duration.ofSeconds(5));
         peerHealth.markBodyFetchCompleted();
-        String message = e.getMessage() != null ? e.getMessage() : e.getClass().getName();
-        peerHealth.markTerminalFailure(PeerRecoveryReason.STARTUP_FAILED, "Peer session startup failed: " + message);
+        peerHealth.markState(PeerSessionState.STOPPED);
     }
 }

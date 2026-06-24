@@ -17,14 +17,14 @@ import com.bloxbean.cardano.yano.api.events.GenesisBlockEvent;
 import com.bloxbean.cardano.yano.api.events.PostEpochTransitionEvent;
 import com.bloxbean.cardano.yano.api.events.PreEpochTransitionEvent;
 import com.bloxbean.cardano.yano.api.genesis.GenesisBootstrapData;
-import com.bloxbean.cardano.yano.api.model.MemPoolTransaction;
 import com.bloxbean.cardano.yano.api.utxo.UtxoState;
-import com.bloxbean.cardano.yano.ledgerrules.ValidationResult;
 import com.bloxbean.cardano.yano.runtime.chain.MemPool;
+import com.bloxbean.cardano.yano.runtime.tx.BlockTransactionSelector;
+import com.bloxbean.cardano.yano.runtime.tx.BlockTransactionSelectors;
 import lombok.extern.slf4j.Slf4j;
 
-import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 import java.util.function.Supplier;
 
 /**
@@ -176,36 +176,17 @@ public final class BlockProducerHelper {
         }
     }
 
+    public static BlockTransactionSelector transactionSelector(MemPool memPool,
+                                                               TransactionValidationService validatorService,
+                                                               UtxoState utxoState) {
+        Objects.requireNonNull(memPool, "memPool");
+        return BlockTransactionSelectors.fromMemPool(memPool, () -> validatorService, () -> utxoState, log);
+    }
+
     public static List<byte[]> drainMempool(MemPool memPool,
                                       TransactionValidationService validatorService,
                                       UtxoState utxoState) {
-        if (validatorService == null || utxoState == null) {
-            List<byte[]> txList = new ArrayList<>();
-            while (!memPool.isEmpty()) {
-                MemPoolTransaction mpt = memPool.getNextTransaction();
-                if (mpt == null) break;
-                txList.add(mpt.txBytes());
-            }
-            return txList;
-        }
-
-        BlockBuildUtxoOverlay overlay = new BlockBuildUtxoOverlay(utxoState);
-        List<byte[]> txList = new ArrayList<>();
-        while (!memPool.isEmpty()) {
-            MemPoolTransaction mpt = memPool.getNextTransaction();
-            if (mpt == null) break;
-
-            ValidationResult result = validatorService.validate(mpt.txBytes(), overlay.resolver());
-            if (result.valid()) {
-                txList.add(mpt.txBytes());
-                overlay.markSpent(mpt.txBytes());
-            } else {
-                String txHashHex = HexUtil.encodeHexString(mpt.txHash());
-                log.warn("Dropping invalid tx {} during block production: {}",
-                        txHashHex, result.firstErrorMessage("unknown error"));
-            }
-        }
-        return txList;
+        return transactionSelector(memPool, validatorService, utxoState).drainForBlock();
     }
 
     public static void prepareEpochTransitionBeforeBlock(EventBus eventBus, long slot, long blockNumber,

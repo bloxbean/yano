@@ -10,6 +10,7 @@ import com.bloxbean.cardano.yaci.core.storage.ChainTip;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.EpochParamProvider;
 import com.bloxbean.cardano.yano.api.account.AccountHistoryProvider;
+import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
 import com.bloxbean.cardano.yano.api.events.BlockAppliedEvent;
 import com.bloxbean.cardano.yano.api.events.RollbackEvent;
 import com.bloxbean.cardano.yano.api.util.StoredBlockUtil;
@@ -60,13 +61,13 @@ public final class AccountHistoryStore implements AccountHistoryProvider, Rollba
             throw new IllegalStateException("account history column families are not available");
         }
         this.log = log;
-        this.enabled = getBool(config, "yano.account-history.enabled", false);
-        this.txEventsEnabled = getBool(config, "yano.account-history.tx-events-enabled", true);
-        this.rewardsHistoryEnabled = getBool(config, "yano.account-history.rewards-enabled", false);
-        this.retentionEpochs = getInt(config, "yano.account-history.retention-epochs", 0);
-        this.pruneBatchSize = getInt(config, "yano.account-history.prune-batch-size", 50_000);
-        this.rollbackSafetySlots = getLong(config, "yano.account-history.rollback-safety-slots",
-                getLong(config, "yano.utxo.rollbackWindow", 0));
+        this.enabled = getBool(config, YanoPropertyKeys.AccountHistory.ENABLED, false);
+        this.txEventsEnabled = getBool(config, YanoPropertyKeys.AccountHistory.TX_EVENTS_ENABLED, true);
+        this.rewardsHistoryEnabled = getBool(config, YanoPropertyKeys.AccountHistory.REWARDS_ENABLED, false);
+        this.retentionEpochs = getInt(config, YanoPropertyKeys.AccountHistory.RETENTION_EPOCHS, 0);
+        this.pruneBatchSize = getInt(config, YanoPropertyKeys.AccountHistory.PRUNE_BATCH_SIZE, 50_000);
+        this.rollbackSafetySlots = getLong(config, YanoPropertyKeys.AccountHistory.ROLLBACK_SAFETY_SLOTS,
+                getLong(config, YanoPropertyKeys.Utxo.ROLLBACK_WINDOW, 0));
         this.epochParamProvider = epochParamProvider != null ? epochParamProvider : new EpochParamProvider() {
             @Override public BigInteger getKeyDeposit(long epoch) { return BigInteger.ZERO; }
             @Override public BigInteger getPoolDeposit(long epoch) { return BigInteger.ZERO; }

@@ -133,7 +133,7 @@ run_java21() {
   local home
   home="$(resolve_java21_home || true)"
   if [ -n "$home" ]; then
-    JAVA_HOME="$home" "$@"
+    JAVA_HOME="$home" PATH="$home/bin:$PATH" "$@"
   else
     "$@"
   fi
@@ -141,7 +141,7 @@ run_java21() {
 
 run_yano_java() {
   if [ -n "${YANO_JAVA_HOME:-}" ]; then
-    JAVA_HOME="$YANO_JAVA_HOME" "$@"
+    JAVA_HOME="$YANO_JAVA_HOME" PATH="$YANO_JAVA_HOME/bin:$PATH" "$@"
   else
     "$@"
   fi
@@ -337,6 +337,10 @@ print_reward_version() {
 
 print_store_reward_version() {
   local jar="$1"
+  if ! unzip -tq "$jar" >/dev/null 2>&1; then
+    log "yaci-store binary is not a jar; embedded reward library version cannot be inspected from archive"
+    return 0
+  fi
   local nested="$TEST_DIR/cf-rewards-store-check.jar"
   if unzip -p "$jar" BOOT-INF/lib/cf-rewards-calculation-*.jar > "$nested" 2>/dev/null; then
     local props
@@ -548,12 +552,22 @@ start_haskell_node() {
 start_yaci_store() {
   write_yaci_store_properties
   log "Starting yaci-store from $YACI_STORE_JAR"
-  (
-    run_java21 nohup java -jar "$YACI_STORE_JAR" \
-      --spring.config.additional-location="$YACI_STORE_PROPERTIES" \
-      > "$LOG_DIR/yaci-store-stdout.log" 2>&1 &
-    printf '%s\n' "$!" > "$TEST_DIR/yaci-store.pid"
-  )
+  if unzip -tq "$YACI_STORE_JAR" >/dev/null 2>&1; then
+    (
+      run_java21 nohup java -jar "$YACI_STORE_JAR" \
+        --spring.config.additional-location="$YACI_STORE_PROPERTIES" \
+        > "$LOG_DIR/yaci-store-stdout.log" 2>&1 &
+      printf '%s\n' "$!" > "$TEST_DIR/yaci-store.pid"
+    )
+  else
+    [ -x "$YACI_STORE_JAR" ] || die "yaci-store binary is not executable: $YACI_STORE_JAR"
+    (
+      nohup "$YACI_STORE_JAR" \
+        --spring.config.additional-location="$YACI_STORE_PROPERTIES" \
+        > "$LOG_DIR/yaci-store-stdout.log" 2>&1 &
+      printf '%s\n' "$!" > "$TEST_DIR/yaci-store.pid"
+    )
+  fi
   PIDS+=("$(cat "$TEST_DIR/yaci-store.pid")")
   wait_for_http "yaci-store latest block API" "http://localhost:$YACI_STORE_PORT/api/v1/blocks/latest" "$STARTUP_TIMEOUT_SECONDS"
 }

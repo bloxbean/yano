@@ -2,7 +2,8 @@ package com.bloxbean.cardano.yano.app.api.accounts;
 
 import com.bloxbean.cardano.client.address.Address;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
-import com.bloxbean.cardano.yano.api.NodeAPI;
+import com.bloxbean.cardano.yano.api.LedgerQuery;
+import com.bloxbean.cardano.yano.api.NodeLifecycle;
 import com.bloxbean.cardano.yano.api.account.AccountHistoryProvider;
 import com.bloxbean.cardano.yano.api.account.AccountStateReadStore;
 import com.bloxbean.cardano.yano.api.account.AccountStateStore;
@@ -32,19 +33,22 @@ public class AccountStateResource {
     private static final Logger log = LoggerFactory.getLogger(AccountStateResource.class);
 
     @Inject
-    NodeAPI nodeAPI;
+    NodeLifecycle nodeLifecycle;
+
+    @Inject
+    LedgerQuery ledgerQuery;
 
     private AccountStateStore store() {
-        LedgerStateProvider provider = nodeAPI.getLedgerStateProvider();
+        LedgerStateProvider provider = ledgerQuery.getLedgerStateProvider();
         return provider instanceof AccountStateStore accountStateStore ? accountStateStore : null;
     }
 
     private AccountHistoryProvider historyProvider() {
-        return nodeAPI.getAccountHistoryProvider();
+        return ledgerQuery.getAccountHistoryProvider();
     }
 
     private AccountStateReadStore readStore() {
-        LedgerStateProvider provider = nodeAPI.getLedgerStateProvider();
+        LedgerStateProvider provider = ledgerQuery.getLedgerStateProvider();
         return provider instanceof AccountStateReadStore accountStateReadStore ? accountStateReadStore : null;
     }
 
@@ -142,7 +146,7 @@ public class AccountStateResource {
     @GET
     @Path("/{stakeAddress}/stake")
     public Response getCurrentStake(@PathParam("stakeAddress") String stakeAddress) {
-        LedgerStateProvider ledgerState = nodeAPI.getLedgerStateProvider();
+        LedgerStateProvider ledgerState = ledgerQuery.getLedgerStateProvider();
         if (ledgerState == null) return featureUnavailable("Account state not available");
 
         int epoch = ledgerState.getLatestSnapshotEpoch();
@@ -300,7 +304,7 @@ public class AccountStateResource {
     }
 
     private AccountLoadResult loadAccount(StakeCredentialRef credential) {
-        LedgerStateProvider ledgerState = nodeAPI.getLedgerStateProvider();
+        LedgerStateProvider ledgerState = ledgerQuery.getLedgerStateProvider();
         if (ledgerState == null) {
             return AccountLoadResult.error(featureUnavailable("Account state not available"));
         }
@@ -308,7 +312,7 @@ public class AccountStateResource {
             return AccountLoadResult.error(featureUnavailable("Account state not available"));
         }
 
-        UtxoState utxoState = nodeAPI.getUtxoState();
+        UtxoState utxoState = ledgerQuery.getUtxoState();
         if (utxoState == null || !utxoState.isEnabled()) {
             return AccountLoadResult.error(featureUnavailable("UTXO state not available"));
         }
@@ -414,7 +418,7 @@ public class AccountStateResource {
     }
 
     private Integer epochForSlot(long slot) {
-        var config = nodeAPI != null ? nodeAPI.getConfig() : null;
+        var config = nodeLifecycle != null ? nodeLifecycle.getConfig() : null;
         if (slot < 0 || config == null) {
             return null;
         }
@@ -427,7 +431,7 @@ public class AccountStateResource {
 
     private long protocolMagic() {
         try {
-            var config = nodeAPI != null ? nodeAPI.getConfig() : null;
+            var config = nodeLifecycle != null ? nodeLifecycle.getConfig() : null;
             return config != null ? config.getProtocolMagic() : 0;
         } catch (Exception e) {
             return 0;

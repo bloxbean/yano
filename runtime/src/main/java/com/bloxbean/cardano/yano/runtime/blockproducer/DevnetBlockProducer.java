@@ -7,12 +7,15 @@ import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yaci.events.api.EventBus;
 import com.bloxbean.cardano.yano.api.utxo.UtxoState;
 import com.bloxbean.cardano.yano.runtime.chain.MemPool;
+import com.bloxbean.cardano.yano.runtime.tx.BlockTransactionSelector;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.List;
+import java.util.Objects;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 
 /**
  * Produces blocks for a standalone devnet node.
@@ -23,8 +26,8 @@ import java.util.concurrent.TimeUnit;
 public class DevnetBlockProducer implements BlockProducerService {
 
     private final ChainState chainState;
-    private final MemPool memPool;
-    private final NodeServer nodeServer;
+    private final BlockTransactionSelector transactions;
+    private final Supplier<NodeServer> nodeServerSupplier;
     private final EventBus eventBus;
     private final ScheduledExecutorService scheduler;
     private final DevnetBlockBuilder blockBuilder;
@@ -34,10 +37,6 @@ public class DevnetBlockProducer implements BlockProducerService {
     private final long genesisTimestamp;
     private final int slotLengthMillis;
     private final GenesisConfig genesisConfig;
-
-    // Optional: transaction evaluator for block-time validation
-    private final TransactionValidationService transactionValidatorService;
-    private final UtxoState utxoState;
 
     private ScheduledFuture<?> scheduledTask;
     private long nextBlockNumber;
@@ -51,7 +50,7 @@ public class DevnetBlockProducer implements BlockProducerService {
                          int blockTimeMillis, boolean lazy,
                          long genesisTimestamp, int slotLengthMillis,
                          GenesisConfig genesisConfig) {
-        this(chainState, memPool, nodeServer, eventBus, scheduler, new DevnetBlockBuilder(),
+        this(chainState, memPool, () -> nodeServer, eventBus, scheduler, new DevnetBlockBuilder(),
                 blockTimeMillis, lazy, genesisTimestamp, slotLengthMillis,
                 genesisConfig, null, null);
     }
@@ -63,7 +62,7 @@ public class DevnetBlockProducer implements BlockProducerService {
                          GenesisConfig genesisConfig,
                          TransactionValidationService transactionValidatorService,
                          UtxoState utxoState) {
-        this(chainState, memPool, nodeServer, eventBus, scheduler, new DevnetBlockBuilder(),
+        this(chainState, memPool, () -> nodeServer, eventBus, scheduler, new DevnetBlockBuilder(),
                 blockTimeMillis, lazy, genesisTimestamp, slotLengthMillis,
                 genesisConfig, transactionValidatorService, utxoState);
     }
@@ -76,9 +75,67 @@ public class DevnetBlockProducer implements BlockProducerService {
                          GenesisConfig genesisConfig,
                          TransactionValidationService transactionValidatorService,
                          UtxoState utxoState) {
+        this(chainState, memPool, () -> nodeServer, eventBus, scheduler, blockBuilder,
+                blockTimeMillis, lazy, genesisTimestamp, slotLengthMillis,
+                genesisConfig, transactionValidatorService, utxoState);
+    }
+
+    public static DevnetBlockProducer withServerSupplier(
+            ChainState chainState, MemPool memPool, Supplier<NodeServer> nodeServerSupplier,
+            EventBus eventBus, ScheduledExecutorService scheduler,
+            DevnetBlockBuilder blockBuilder,
+            int blockTimeMillis, boolean lazy,
+            long genesisTimestamp, int slotLengthMillis,
+            GenesisConfig genesisConfig,
+            TransactionValidationService transactionValidatorService,
+            UtxoState utxoState) {
+        return new DevnetBlockProducer(chainState, memPool, nodeServerSupplier, eventBus, scheduler, blockBuilder,
+                blockTimeMillis, lazy, genesisTimestamp, slotLengthMillis,
+                genesisConfig, transactionValidatorService, utxoState);
+    }
+
+    public static DevnetBlockProducer withTransactionSelector(
+            ChainState chainState, BlockTransactionSelector transactions, Supplier<NodeServer> nodeServerSupplier,
+            EventBus eventBus, ScheduledExecutorService scheduler,
+            DevnetBlockBuilder blockBuilder,
+            int blockTimeMillis, boolean lazy,
+            long genesisTimestamp, int slotLengthMillis,
+            GenesisConfig genesisConfig) {
+        return new DevnetBlockProducer(chainState, transactions, nodeServerSupplier, eventBus, scheduler, blockBuilder,
+                blockTimeMillis, lazy, genesisTimestamp, slotLengthMillis, genesisConfig);
+    }
+
+    private DevnetBlockProducer(ChainState chainState, MemPool memPool, Supplier<NodeServer> nodeServerSupplier,
+                         EventBus eventBus, ScheduledExecutorService scheduler,
+                         DevnetBlockBuilder blockBuilder,
+                         int blockTimeMillis, boolean lazy,
+                         long genesisTimestamp, int slotLengthMillis,
+                         GenesisConfig genesisConfig,
+                         TransactionValidationService transactionValidatorService,
+                         UtxoState utxoState) {
+        this(chainState,
+                BlockProducerHelper.transactionSelector(memPool, transactionValidatorService, utxoState),
+                nodeServerSupplier,
+                eventBus,
+                scheduler,
+                blockBuilder,
+                blockTimeMillis,
+                lazy,
+                genesisTimestamp,
+                slotLengthMillis,
+                genesisConfig);
+    }
+
+    private DevnetBlockProducer(ChainState chainState, BlockTransactionSelector transactions,
+                         Supplier<NodeServer> nodeServerSupplier,
+                         EventBus eventBus, ScheduledExecutorService scheduler,
+                         DevnetBlockBuilder blockBuilder,
+                         int blockTimeMillis, boolean lazy,
+                         long genesisTimestamp, int slotLengthMillis,
+                         GenesisConfig genesisConfig) {
         this.chainState = chainState;
-        this.memPool = memPool;
-        this.nodeServer = nodeServer;
+        this.transactions = Objects.requireNonNull(transactions, "transactions");
+        this.nodeServerSupplier = nodeServerSupplier != null ? nodeServerSupplier : () -> null;
         this.eventBus = eventBus;
         this.scheduler = scheduler;
         this.blockBuilder = blockBuilder;
@@ -90,8 +147,6 @@ public class DevnetBlockProducer implements BlockProducerService {
         this.genesisTimestamp = genesisTimestamp;
         this.slotLengthMillis = slotLengthMillis;
         this.genesisConfig = genesisConfig;
-        this.transactionValidatorService = transactionValidatorService;
-        this.utxoState = utxoState;
     }
 
     /**
@@ -220,8 +275,12 @@ public class DevnetBlockProducer implements BlockProducerService {
      * In lazy mode, skips production when mempool is empty.
      */
     synchronized void produceBlock() {
+        if (!running) {
+            return;
+        }
+
         // In lazy mode, skip boundary work and block production when no transactions exist.
-        if (lazy && memPool.isEmpty()) {
+        if (lazy && !transactions.hasPendingTransactions()) {
             return;
         }
 
@@ -249,7 +308,7 @@ public class DevnetBlockProducer implements BlockProducerService {
     }
 
     private List<byte[]> drainMempool() {
-        return BlockProducerHelper.drainMempool(memPool, transactionValidatorService, utxoState);
+        return transactions.drainForBlock();
     }
 
     private void storeBlock(DevnetBlockBuilder.BlockBuildResult result) {
@@ -328,6 +387,6 @@ public class DevnetBlockProducer implements BlockProducerService {
     }
 
     private void notifyServer() {
-        BlockProducerHelper.notifyServer(nodeServer);
+        BlockProducerHelper.notifyServer(nodeServerSupplier.get());
     }
 }

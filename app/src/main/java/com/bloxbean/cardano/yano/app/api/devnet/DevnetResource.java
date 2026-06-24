@@ -1,9 +1,11 @@
 package com.bloxbean.cardano.yano.app.api.devnet;
 
-import com.bloxbean.cardano.yaci.core.storage.ChainState;
-import com.bloxbean.cardano.yaci.core.storage.ChainTip;
-import com.bloxbean.cardano.yano.api.NodeAPI;
+import com.bloxbean.cardano.yano.api.DevnetControl;
+import com.bloxbean.cardano.yano.api.NodeLifecycle;
 import com.bloxbean.cardano.yano.api.config.YanoConfig;
+import com.bloxbean.cardano.yano.api.model.DevnetRollbackResult;
+import com.bloxbean.cardano.yano.api.model.DevnetRollbackTarget;
+import com.bloxbean.cardano.yano.api.model.DevnetRestoreResult;
 import com.bloxbean.cardano.yano.api.model.FundResult;
 import com.bloxbean.cardano.yano.api.model.SnapshotInfo;
 import com.bloxbean.cardano.yano.api.model.TimeAdvanceResult;
@@ -33,10 +35,13 @@ public class DevnetResource {
     private static final Logger log = LoggerFactory.getLogger(DevnetResource.class);
 
     @Inject
-    NodeAPI nodeAPI;
+    NodeLifecycle nodeLifecycle;
+
+    @Inject
+    DevnetControl devnetControl;
 
     private void requireDevMode() {
-        if (!(nodeAPI.getConfig() instanceof YanoConfig config) || !config.isDevMode()) {
+        if (!(nodeLifecycle.getConfig() instanceof YanoConfig config) || !config.isDevMode()) {
             throw new DevnetOnlyException("This endpoint requires dev mode (set yano.dev-mode=true)");
         }
     }
@@ -54,17 +59,12 @@ public class DevnetResource {
                     .build();
         }
 
-        long targetSlot;
+        DevnetRollbackResult result;
         try {
-            targetSlot = resolveTargetSlot(request);
-        } catch (IllegalArgumentException e) {
-            return Response.status(Response.Status.BAD_REQUEST)
-                    .entity(Map.of("error", e.getMessage()))
-                    .build();
-        }
-
-        try {
-            nodeAPI.rollbackDevnetToSlot(targetSlot);
+            DevnetRollbackTarget target = request != null
+                    ? new DevnetRollbackTarget(request.slot(), request.blockNumber(), request.count())
+                    : new DevnetRollbackTarget(null, null, null);
+            result = devnetControl.rollbackDevnet(target);
         } catch (IllegalStateException e) {
             return Response.status(Response.Status.CONFLICT)
                     .entity(Map.of("error", e.getMessage()))
@@ -79,13 +79,9 @@ public class DevnetResource {
                     .build();
         }
 
-        ChainTip newTip = nodeAPI.getChainState().getTip();
-        long newSlot = newTip != null ? newTip.getSlot() : 0;
-        long newBlock = newTip != null ? newTip.getBlockNumber() : 0;
-
         return Response.ok(new RollbackResponse(
-                "Rolled back to slot " + newSlot + ", block " + newBlock,
-                newSlot, newBlock
+                "Rolled back to slot " + result.slot() + ", block " + result.blockNumber(),
+                result.slot(), result.blockNumber()
         )).build();
     }
 
@@ -103,7 +99,7 @@ public class DevnetResource {
         }
 
         try {
-            SnapshotInfo info = nodeAPI.createDevnetSnapshot(request.name());
+            SnapshotInfo info = devnetControl.createDevnetSnapshot(request.name());
             return Response.ok(new SnapshotResponse(
                     info.name(), info.slot(), info.blockNumber(), info.createdAt()
             )).build();
@@ -133,8 +129,9 @@ public class DevnetResource {
                     .build();
         }
 
+        DevnetRestoreResult result;
         try {
-            nodeAPI.restoreDevnetSnapshot(name);
+            result = devnetControl.restoreDevnetSnapshotAndGetTip(name);
         } catch (IllegalArgumentException e) {
             return Response.status(Response.Status.BAD_REQUEST)
                     .entity(Map.of("error", e.getMessage()))
@@ -149,14 +146,10 @@ public class DevnetResource {
                     .build();
         }
 
-        ChainTip newTip = nodeAPI.getChainState().getTip();
-        long newSlot = newTip != null ? newTip.getSlot() : 0;
-        long newBlock = newTip != null ? newTip.getBlockNumber() : 0;
-
         return Response.ok(Map.of(
                 "message", "Restored snapshot '" + name + "'",
-                "slot", newSlot,
-                "block_number", newBlock
+                "slot", result.slot(),
+                "block_number", result.blockNumber()
         )).build();
     }
 
@@ -171,11 +164,17 @@ public class DevnetResource {
                     .build();
         }
 
-        List<SnapshotInfo> snapshots = nodeAPI.listDevnetSnapshots();
-        var response = snapshots.stream()
-                .map(s -> new SnapshotResponse(s.name(), s.slot(), s.blockNumber(), s.createdAt()))
-                .toList();
-        return Response.ok(response).build();
+        try {
+            List<SnapshotInfo> snapshots = devnetControl.listDevnetSnapshots();
+            var response = snapshots.stream()
+                    .map(s -> new SnapshotResponse(s.name(), s.slot(), s.blockNumber(), s.createdAt()))
+                    .toList();
+            return Response.ok(response).build();
+        } catch (IllegalStateException e) {
+            return Response.status(Response.Status.CONFLICT)
+                    .entity(Map.of("error", e.getMessage()))
+                    .build();
+        }
     }
 
     @DELETE
@@ -190,9 +189,13 @@ public class DevnetResource {
         }
 
         try {
-            nodeAPI.deleteDevnetSnapshot(name);
+            devnetControl.deleteDevnetSnapshot(name);
         } catch (IllegalArgumentException e) {
             return Response.status(Response.Status.BAD_REQUEST)
+                    .entity(Map.of("error", e.getMessage()))
+                    .build();
+        } catch (IllegalStateException e) {
+            return Response.status(Response.Status.CONFLICT)
                     .entity(Map.of("error", e.getMessage()))
                     .build();
         } catch (Exception e) {
@@ -225,7 +228,7 @@ public class DevnetResource {
         long lovelace = request.ada().multiply(java.math.BigDecimal.valueOf(1_000_000)).longValueExact();
 
         try {
-            FundResult result = nodeAPI.fundAddress(request.address(), lovelace);
+            FundResult result = devnetControl.fundAddress(request.address(), lovelace);
             return Response.ok(new FundResponse(
                     result.txHash(), result.index(), result.lovelace()
             )).build();
@@ -271,15 +274,15 @@ public class DevnetResource {
         try {
             TimeAdvanceResult result;
             if (request.slots() != null) {
-                result = nodeAPI.advanceTimeBySlots(request.slots());
+                result = devnetControl.advanceTimeBySlots(request.slots());
             } else if (request.epochs() != null) {
                 // Convert epochs to slots using configured epoch length
-                YanoConfig config = (YanoConfig) nodeAPI.getConfig();
+                YanoConfig config = (YanoConfig) nodeLifecycle.getConfig();
                 long epochLength = config.getEpochLength();
                 int slots = (int) (request.epochs() * epochLength);
-                result = nodeAPI.advanceTimeBySlots(slots);
+                result = devnetControl.advanceTimeBySlots(slots);
             } else {
-                result = nodeAPI.advanceTimeBySeconds(request.seconds());
+                result = devnetControl.advanceTimeBySeconds(request.seconds());
             }
 
             String message = "Advanced " + result.blocksProduced() + " blocks";
@@ -315,9 +318,9 @@ public class DevnetResource {
         }
 
         try {
-            long shiftMillis = nodeAPI.shiftGenesisAndStartProducer(request.epochs());
+            long shiftMillis = devnetControl.shiftGenesisAndStartProducer(request.epochs());
 
-            YanoConfig config = (YanoConfig) nodeAPI.getConfig();
+            YanoConfig config = (YanoConfig) nodeLifecycle.getConfig();
             String systemStart = Instant.ofEpochMilli(config.getGenesisTimestamp()).toString();
 
             return Response.ok(Map.of(
@@ -353,7 +356,7 @@ public class DevnetResource {
         }
 
         try {
-            TimeAdvanceResult result = nodeAPI.catchUpToWallClock();
+            TimeAdvanceResult result = devnetControl.catchUpToWallClock();
 
             String message = "Caught up to wall-clock: " + result.blocksProduced() + " blocks produced";
             return Response.ok(new TimeAdvanceResponse(
@@ -386,7 +389,7 @@ public class DevnetResource {
         }
 
         // Safe cast — requireDevMode() already verified config is YanoConfig
-        YanoConfig config = (YanoConfig) nodeAPI.getConfig();
+        YanoConfig config = (YanoConfig) nodeLifecycle.getConfig();
 
         // Collect genesis files
         Map<String, File> genesisFiles = new LinkedHashMap<>();
@@ -430,49 +433,6 @@ public class DevnetResource {
     }
 
     // --- Helpers ---
-
-    private long resolveTargetSlot(RollbackRequest request) {
-        int paramCount = 0;
-        if (request.slot() != null) paramCount++;
-        if (request.blockNumber() != null) paramCount++;
-        if (request.count() != null) paramCount++;
-
-        if (paramCount == 0 || paramCount > 1) {
-            throw new IllegalArgumentException("Exactly one of 'slot', 'blockNumber', or 'count' must be provided");
-        }
-
-        ChainState chainState = nodeAPI.getChainState();
-
-        if (request.slot() != null) {
-            return request.slot();
-        }
-
-        if (request.blockNumber() != null) {
-            Long slot = chainState.getSlotByBlockNumber(request.blockNumber());
-            if (slot == null) {
-                throw new IllegalArgumentException("No block found with number " + request.blockNumber());
-            }
-            return slot;
-        }
-
-        // count mode
-        ChainTip tip = chainState.getTip();
-        if (tip == null) {
-            throw new IllegalArgumentException("Chain is empty, cannot rollback by count");
-        }
-
-        long targetBlockNumber = tip.getBlockNumber() - request.count();
-        if (targetBlockNumber < 0) {
-            throw new IllegalArgumentException("Count " + request.count()
-                    + " exceeds current chain height " + tip.getBlockNumber());
-        }
-
-        Long slot = chainState.getSlotByBlockNumber(targetBlockNumber);
-        if (slot == null) {
-            throw new IllegalArgumentException("No block found at block number " + targetBlockNumber);
-        }
-        return slot;
-    }
 
     /**
      * Exception for endpoints that are only available in devnet (block producer) mode.

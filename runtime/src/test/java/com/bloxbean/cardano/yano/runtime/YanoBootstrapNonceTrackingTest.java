@@ -1,5 +1,7 @@
 package com.bloxbean.cardano.yano.runtime;
 
+import com.bloxbean.cardano.yano.runtime.internal.RuntimeNode;
+
 import com.bloxbean.cardano.yano.api.config.YanoConfig;
 import org.junit.jupiter.api.Test;
 
@@ -9,12 +11,12 @@ class YanoBootstrapNonceTrackingTest {
 
     @Test
     void relayNonceTrackingIsDisabledInBootstrapMode() {
-        assertThat(Yano.shouldInitializeRelayNonceTracking(false, true)).isFalse();
+        assertThat(RuntimeNode.shouldInitializeRelayNonceTracking(false, true)).isFalse();
     }
 
     @Test
     void relayNonceTrackingIsEnabledForNormalRelayMode() {
-        assertThat(Yano.shouldInitializeRelayNonceTracking(false, false)).isTrue();
+        assertThat(RuntimeNode.shouldInitializeRelayNonceTracking(false, false)).isTrue();
     }
 
     @Test
@@ -26,7 +28,7 @@ class YanoBootstrapNonceTrackingTest {
                 .enableServer(false)
                 .useRocksDB(false)
                 .build();
-        Yano yano = new Yano(config);
+        RuntimeNode yano = new RuntimeNode(config);
 
         yano.initRelayNonceTrackingIfRequired();
 
@@ -35,7 +37,7 @@ class YanoBootstrapNonceTrackingTest {
 
     @Test
     void blockProducerModeDoesNotUseRelayNonceTrackingHelper() {
-        assertThat(Yano.shouldInitializeRelayNonceTracking(true, false)).isFalse();
-        assertThat(Yano.shouldInitializeRelayNonceTracking(true, true)).isFalse();
+        assertThat(RuntimeNode.shouldInitializeRelayNonceTracking(true, false)).isFalse();
+        assertThat(RuntimeNode.shouldInitializeRelayNonceTracking(true, true)).isFalse();
     }
 }

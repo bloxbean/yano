@@ -3,7 +3,7 @@ package com.bloxbean.cardano.yano.app.api.scripts;
 import com.bloxbean.cardano.client.api.util.ReferenceScriptUtil;
 import com.bloxbean.cardano.client.exception.CborSerializationException;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
-import com.bloxbean.cardano.yano.api.NodeAPI;
+import com.bloxbean.cardano.yano.api.LedgerQuery;
 import com.bloxbean.cardano.yano.api.utxo.UtxoState;
 import com.bloxbean.cardano.yano.app.api.scripts.dto.ScriptCborDto;
 import jakarta.inject.Inject;
@@ -19,12 +19,12 @@ import jakarta.ws.rs.core.Response;
 public class ScriptResource {
 
     @Inject
-    NodeAPI nodeAPI;
+    LedgerQuery ledgerQuery;
 
     @GET
     @Path("/{script_hash}/cbor")
     public Response getScriptCbor(@PathParam("script_hash") String scriptHash) {
-        UtxoState u = nodeAPI.getUtxoState();
+        UtxoState u = ledgerQuery.getUtxoState();
         if (u == null || !u.isEnabled()) {
             return Response.status(Response.Status.SERVICE_UNAVAILABLE)
                     .entity("{\"error\":\"UTXO state disabled\"}")

@@ -1,6 +1,6 @@
 package com.bloxbean.cardano.yano.app.api.epochs;
 
-import com.bloxbean.cardano.yano.api.NodeAPI;
+import com.bloxbean.cardano.yano.app.test.TestNodeRoles;
 import com.bloxbean.cardano.yano.api.account.LedgerStateProvider;
 import com.bloxbean.cardano.yano.app.api.epochs.dto.AdaPotDto;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -120,15 +120,18 @@ class EpochResourceAdaPotTest {
 
     private static EpochResource resourceWith(LedgerStateProvider ledgerStateProvider) {
         EpochResource resource = new EpochResource();
-        resource.nodeAPI = nodeApiWith(ledgerStateProvider);
+        TestNodeRoles nodeRoles = nodeRolesWith(ledgerStateProvider);
+        resource.nodeLifecycle = nodeRoles;
+        resource.chainQuery = nodeRoles;
+        resource.ledgerQuery = nodeRoles;
         return resource;
     }
 
-    private static NodeAPI nodeApiWith(LedgerStateProvider ledgerStateProvider) {
-        return (NodeAPI) Proxy.newProxyInstance(NodeAPI.class.getClassLoader(), new Class<?>[]{NodeAPI.class},
+    private static TestNodeRoles nodeRolesWith(LedgerStateProvider ledgerStateProvider) {
+        return (TestNodeRoles) Proxy.newProxyInstance(TestNodeRoles.class.getClassLoader(), new Class<?>[]{TestNodeRoles.class},
                 (proxy, method, args) -> switch (method.getName()) {
                     case "getLedgerStateProvider" -> ledgerStateProvider;
-                    case "toString" -> "TestNodeAPI";
+                    case "toString" -> "TestNodeRoles";
                     case "hashCode" -> System.identityHashCode(proxy);
                     case "equals" -> proxy == args[0];
                     default -> defaultValue(method.getReturnType());

@@ -1,12 +1,10 @@
 package com.bloxbean.cardano.yano.app.api.accounts;
 
-import com.bloxbean.cardano.yano.api.NodeAPI;
 import com.bloxbean.cardano.yano.ledgerstate.AccountStateCborCodec;
 import com.bloxbean.cardano.yano.ledgerstate.DefaultAccountStateStore;
 import com.bloxbean.cardano.yano.ledgerstate.EpochRewardCalculator;
-import com.bloxbean.cardano.yano.runtime.Yano;
+import com.bloxbean.cardano.yano.runtime.debug.DebugLedgerStateAccess;
 import com.fasterxml.jackson.annotation.JsonProperty;
-import io.quarkus.arc.ClientProxy;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.*;
 import jakarta.ws.rs.core.MediaType;
@@ -23,7 +21,7 @@ import java.util.*;
 public class DebugSnapshotResource {
 
     @Inject
-    NodeAPI nodeAPI;
+    DebugLedgerStateAccess debugLedgerStateAccess;
 
     // --- DTOs ---
 
@@ -137,10 +135,7 @@ public class DebugSnapshotResource {
     // --- Helpers ---
 
     private DefaultAccountStateStore defaultStore() {
-        Yano yaciNode = (Yano) ClientProxy.unwrap(nodeAPI);
-        var store = yaciNode.getAccountStateStore();
-        if (store instanceof DefaultAccountStateStore ds) return ds;
-        return null;
+        return debugLedgerStateAccess.getDefaultAccountStateStore().orElse(null);
     }
 
     private EpochRewardCalculator rewardCalculator() {
@@ -227,8 +222,7 @@ public class DebugSnapshotResource {
     @GET
     @Path("/utxo-balance/{credHash}")
     public Response getUtxoBalance(@PathParam("credHash") String credHash) {
-        Yano yaciNode = (Yano) ClientProxy.unwrap(nodeAPI);
-        UtxoState utxoState = yaciNode.getUtxoState();
+        UtxoState utxoState = debugLedgerStateAccess.getUtxoState();
         if (utxoState == null || !utxoState.isEnabled()) {
             return Response.status(Response.Status.SERVICE_UNAVAILABLE)
                     .entity("{\"error\":\"UTXO state not available\"}")

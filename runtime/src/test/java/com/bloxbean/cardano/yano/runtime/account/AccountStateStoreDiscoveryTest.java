@@ -1,6 +1,6 @@
 package com.bloxbean.cardano.yano.runtime.account;
 
-import com.bloxbean.cardano.yaci.core.storage.ChainState;
+import com.bloxbean.cardano.yano.api.ChainBlockReader;
 import com.bloxbean.cardano.yano.api.EpochParamProvider;
 import com.bloxbean.cardano.yano.api.account.AccountStateStore;
 import com.bloxbean.cardano.yano.api.account.AccountStateStoreContext;
@@ -27,7 +27,7 @@ class AccountStateStoreDiscoveryTest {
     };
 
     private static final AccountStateStoreContext CTX = new AccountStateStoreContext(
-            null, Map.of(), LoggerFactory.getLogger(AccountStateStoreDiscoveryTest.class), ZERO_PROVIDER);
+            null, null, Map.of(), LoggerFactory.getLogger(AccountStateStoreDiscoveryTest.class), ZERO_PROVIDER);
 
     @Test
     void highestPriorityWins() {
@@ -89,7 +89,7 @@ class AccountStateStoreDiscoveryTest {
         @Override public boolean isEnabled() { return true; }
         @Override public void applyBlock(BlockAppliedEvent event) {}
         @Override public void rollbackTo(RollbackEvent event) {}
-        @Override public void reconcile(ChainState chainState) {}
+        @Override public void reconcile(ChainBlockReader chainBlocks) {}
         @Override public Optional<BigInteger> getRewardBalance(int credType, String credentialHash) { return Optional.empty(); }
         @Override public Optional<BigInteger> getStakeDeposit(int credType, String credentialHash) { return Optional.empty(); }
         @Override public Optional<String> getDelegatedPool(int credType, String credentialHash) { return Optional.empty(); }

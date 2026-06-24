@@ -21,10 +21,13 @@ dependencies {
     implementation(project(':runtime')) {
         exclude group: 'io.netty', module: 'netty-all'
     }
+    implementation(project(':devnet-toolkit')) {
+        exclude group: 'io.netty', module: 'netty-all'
+    }
     implementation(project(':bootstrap-providers')) {
         exclude group: 'io.netty', module: 'netty-all'
     }
-    implementation(project(':scalus-bridge')) {
+    implementation(project(':tx-services')) {
         exclude group: 'io.netty', module: 'netty-all'
     }
     implementation(project(':epoch-export')) {

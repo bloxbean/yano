@@ -277,12 +277,14 @@ All modules ship as standalone libraries on Maven Central (`com.bloxbean.cardano
 | **app** | Quarkus REST application wrapper | JAX-RS resources, health checks, CDI producers |
 
 **Using as libraries** — to build a custom node, depend on `core-api` + `runtime`
-and wire `Yano` directly:
+and wire it through the composition root:
 
 ```java
 var config = YanoConfig.preprodDefault();
-var node = new Yano(config, runtimeOptions);
-node.start();
+var node = YanoAssembly.fromConfig(config)
+        .runtimeOptions(runtimeOptions)
+        .build();
+node.lifecycle().start();
 ```
 
 ---

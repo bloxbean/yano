@@ -62,7 +62,7 @@ class PeerSessionHealthTest {
     }
 
     @Test
-    void startupFailureMarksSessionTerminalAndClearsBodyFetchState() throws Exception {
+    void startupFailureStopsSessionAndClearsBodyFetchState() throws Exception {
         PeerSession session = newSession();
         setPeerClient(session, new FailingConnectPeerClient());
 
@@ -71,15 +71,15 @@ class PeerSessionHealthTest {
 
         assertEquals("connect failed", error.getMessage());
         PeerSessionStatus status = session.getStatus();
-        assertEquals(PeerSessionState.TERMINAL_FAILURE, status.state());
-        assertEquals(PeerRecoveryReason.STARTUP_FAILED, status.lastRecoveryReason());
+        assertEquals(PeerSessionState.STOPPED, status.state());
+        assertEquals(PeerRecoveryReason.UNKNOWN, status.lastRecoveryReason());
         assertFalse(status.bodyFetchInProgress());
-        assertTrue(status.terminalFailureMessage().contains("connect failed"));
+        assertEquals(null, status.terminalFailureMessage());
 
         session.stop();
         PeerSessionStatus afterStop = session.getStatus();
-        assertEquals(PeerSessionState.TERMINAL_FAILURE, afterStop.state());
-        assertEquals(PeerRecoveryReason.STARTUP_FAILED, afterStop.lastRecoveryReason());
+        assertEquals(PeerSessionState.STOPPED, afterStop.state());
+        assertEquals(PeerRecoveryReason.UNKNOWN, afterStop.lastRecoveryReason());
     }
 
     @Test

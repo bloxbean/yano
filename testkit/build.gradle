@@ -1,0 +1,6 @@
+dependencies {
+    api project(':core-api')
+    api project(':runtime')
+    api project(':devnet-toolkit')
+    api libs.junit.jupiter.api
+}

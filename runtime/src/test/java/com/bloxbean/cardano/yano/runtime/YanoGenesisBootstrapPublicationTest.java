@@ -4,6 +4,7 @@ import com.bloxbean.cardano.yano.api.genesis.GenesisBootstrapData;
 import com.bloxbean.cardano.yano.api.genesis.GenesisDelegation;
 import com.bloxbean.cardano.yano.api.genesis.GenesisPool;
 import com.bloxbean.cardano.yano.api.genesis.ShelleyGenesisBootstrap;
+import com.bloxbean.cardano.yano.runtime.ledger.LedgerStateSubsystem;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigInteger;
@@ -17,9 +18,9 @@ class YanoGenesisBootstrapPublicationTest {
 
     @Test
     void directStartGenesisPublicationFailsClosedForHashOnlyPayloads() {
-        assertThat(Yano.shouldFailClosedGenesisBootstrapPublication(GenesisBootstrapData.empty()))
+        assertThat(LedgerStateSubsystem.shouldFailClosedGenesisBootstrapPublication(GenesisBootstrapData.empty()))
                 .isFalse();
-        assertThat(Yano.shouldFailClosedGenesisBootstrapPublication(
+        assertThat(LedgerStateSubsystem.shouldFailClosedGenesisBootstrapPublication(
                 new GenesisBootstrapData("aa".repeat(32), ShelleyGenesisBootstrap.empty())))
                 .isTrue();
     }
@@ -36,7 +37,7 @@ class YanoGenesisBootstrapPublicationTest {
                         "e0" + "cc".repeat(28), Set.of(), List.of(), null, null)),
                 List.of(new GenesisDelegation("dd".repeat(28), "aa".repeat(28))));
 
-        assertThat(Yano.shouldFailClosedGenesisBootstrapPublication(
+        assertThat(LedgerStateSubsystem.shouldFailClosedGenesisBootstrapPublication(
                 new GenesisBootstrapData(null, staking)))
                 .isTrue();
     }

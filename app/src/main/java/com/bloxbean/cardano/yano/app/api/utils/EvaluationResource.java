@@ -1,11 +1,8 @@
 package com.bloxbean.cardano.yano.app.api.utils;
 
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
-import com.bloxbean.cardano.yano.api.NodeAPI;
-import com.bloxbean.cardano.yano.ledgerrules.TransactionEvaluator;
-import com.bloxbean.cardano.yano.runtime.Yano;
-import com.bloxbean.cardano.yano.runtime.blockproducer.TransactionEvaluationService;
-import io.quarkus.arc.ClientProxy;
+import com.bloxbean.cardano.yano.api.TxEvaluationGateway;
+import com.bloxbean.cardano.yano.api.model.TxEvaluationResult;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.*;
 import jakarta.ws.rs.core.MediaType;
@@ -13,6 +10,7 @@ import jakarta.ws.rs.core.Response;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -28,7 +26,7 @@ public class EvaluationResource {
     private static final Logger log = LoggerFactory.getLogger(EvaluationResource.class);
 
     @Inject
-    NodeAPI nodeAPI;
+    TxEvaluationGateway txEvaluationGateway;
 
     /**
      * Accepts raw CBOR bytes (application/cbor).
@@ -36,8 +34,8 @@ public class EvaluationResource {
     @POST
     @Path("/evaluate")
     @Consumes("application/cbor")
-    public Response evaluateCbor(String txCbor) {
-        return doEvaluate(HexUtil.decodeHexString(txCbor));
+    public Response evaluateCbor(byte[] txCbor) {
+        return doEvaluate(normalizeCborPayload(txCbor));
     }
 
     /**
@@ -64,20 +62,17 @@ public class EvaluationResource {
             return errorResponse("Transaction CBOR bytes required");
         }
 
-        Yano yaciNode = (Yano) ClientProxy.unwrap(nodeAPI);
-
-        TransactionEvaluationService evalService = yaciNode.getTransactionEvalService();
-        if (evalService == null) {
+        if (!txEvaluationGateway.isTransactionEvaluationAvailable()) {
             return errorResponse("Script evaluation not initialized. " +
                     "Ensure tx-evaluation is enabled and protocol parameters are configured.");
         }
 
         try {
-            List<TransactionEvaluator.EvaluationResult> results = evalService.evaluate(txCbor);
+            List<TxEvaluationResult> results = txEvaluationGateway.evaluateTransaction(txCbor);
 
             // Build Ogmios-compatible response
             Map<String, Object> evaluationResult = new LinkedHashMap<>();
-            for (TransactionEvaluator.EvaluationResult r : results) {
+            for (TxEvaluationResult r : results) {
                 String key = r.tag() + ":" + r.index();
                 Map<String, Long> exUnits = new LinkedHashMap<>();
                 exUnits.put("memory", r.memory());
@@ -131,6 +126,50 @@ public class EvaluationResource {
         response.put("result", result);
 
         return Response.ok(response).build();
+    }
+
+    static byte[] normalizeCborPayload(byte[] payload) {
+        if (payload == null || payload.length == 0) {
+            return payload;
+        }
+
+        int start = 0;
+        int end = payload.length;
+        while (start < end && isAsciiWhitespace(payload[start])) {
+            start++;
+        }
+        while (end > start && isAsciiWhitespace(payload[end - 1])) {
+            end--;
+        }
+
+        int length = end - start;
+        if (length == 0 || (length % 2) != 0) {
+            return payload;
+        }
+
+        for (int i = start; i < end; i++) {
+            if (!isAsciiHex(payload[i])) {
+                return payload;
+            }
+        }
+
+        byte[] trimmedPayload = payload;
+        if (start != 0 || end != payload.length) {
+            trimmedPayload = new byte[length];
+            System.arraycopy(payload, start, trimmedPayload, 0, length);
+        }
+
+        return HexUtil.decodeHexString(new String(trimmedPayload, StandardCharsets.US_ASCII));
+    }
+
+    private static boolean isAsciiWhitespace(byte value) {
+        return value == ' ' || value == '\n' || value == '\r' || value == '\t';
+    }
+
+    private static boolean isAsciiHex(byte value) {
+        return (value >= '0' && value <= '9')
+                || (value >= 'a' && value <= 'f')
+                || (value >= 'A' && value <= 'F');
     }
 
     static String failureMessage(Throwable error) {

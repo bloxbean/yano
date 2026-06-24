@@ -62,12 +62,14 @@ public class YanoManager {
         if (!Files.exists(configDst)) {
             copyDirectory(configSrc, configDst);
         }
+        applyHaskellNodeCompatibilityConfig(configDst);
 
         List<String> cmd = new ArrayList<>();
         cmd.add("java");
         cmd.add("-Dquarkus.profile=devnet");
         cmd.add("-Dquarkus.http.port=" + httpPort);
         cmd.add("-Dyano.server.port=" + n2nPort);
+        cmd.add("-Dyano.remote.protocol-magic=42");
         cmd.add("-Dyano.storage.path=" + chainstateDir);
         cmd.add("-Dyano.block-producer.block-time-millis=200");
 
@@ -227,5 +229,17 @@ public class YanoManager {
                 }
             });
         }
+    }
+
+    private static void applyHaskellNodeCompatibilityConfig(Path configDir) throws IOException {
+        Path devnetDir = configDir.resolve("network").resolve("devnet");
+        Path protocol10Dir = devnetDir.resolve("pv10");
+        if (!Files.isDirectory(protocol10Dir)) {
+            log.warn("Haskell sync protocol-10 devnet config not found at {}", protocol10Dir);
+            return;
+        }
+
+        copyDirectory(protocol10Dir, devnetDir);
+        log.info("Applied protocol-10 devnet config overlay for Haskell sync compatibility");
     }
 }

@@ -1,8 +1,9 @@
 package com.bloxbean.cardano.yano.app.api.epochs;
 
-import com.bloxbean.cardano.yaci.core.storage.ChainState;
 import com.bloxbean.cardano.yaci.core.storage.ChainTip;
-import com.bloxbean.cardano.yano.api.NodeAPI;
+import com.bloxbean.cardano.yano.api.ChainQuery;
+import com.bloxbean.cardano.yano.api.LedgerQuery;
+import com.bloxbean.cardano.yano.api.NodeLifecycle;
 import com.bloxbean.cardano.yano.api.account.AccountStateReadStore;
 import com.bloxbean.cardano.yano.api.account.LedgerStateProvider;
 import com.bloxbean.cardano.yano.api.util.CardanoBech32Ids;
@@ -36,7 +37,13 @@ public class EpochResource {
     private static final Logger log = LoggerFactory.getLogger(EpochResource.class);
 
     @Inject
-    NodeAPI nodeAPI;
+    NodeLifecycle nodeLifecycle;
+
+    @Inject
+    ChainQuery chainQuery;
+
+    @Inject
+    LedgerQuery ledgerQuery;
 
     @GET
     @Path("/latest")
@@ -145,7 +152,7 @@ public class EpochResource {
     @GET
     @Path("/latest/stake/total")
     public Response getLatestTotalStake() {
-        LedgerStateProvider ledgerStateProvider = nodeAPI.getLedgerStateProvider();
+        LedgerStateProvider ledgerStateProvider = ledgerQuery.getLedgerStateProvider();
         if (ledgerStateProvider == null) return stakeReadUnavailable();
 
         int epoch = ledgerStateProvider.getLatestSnapshotEpoch();
@@ -236,8 +243,8 @@ public class EpochResource {
 
     private Response protocolParamsResponse(int epoch) {
         try {
-            return nodeAPI.getProtocolParameters(epoch)
-                    .map(snapshot -> ProtocolParamsDto.from(snapshot, nodeAPI.getEpochNonce(epoch)))
+            return ledgerQuery.getProtocolParameters(epoch)
+                    .map(snapshot -> ProtocolParamsDto.from(snapshot, ledgerQuery.getEpochNonce(epoch)))
                     .map(dto -> Response.ok(dto).build())
                     .orElseGet(() -> Response.status(Response.Status.NOT_FOUND)
                             .entity(Map.of("error", "Protocol parameters not available for epoch " + epoch))
@@ -248,7 +255,7 @@ public class EpochResource {
     }
 
     private LedgerStateProvider ledgerStateProvider() {
-        LedgerStateProvider ledgerStateProvider = nodeAPI.getLedgerStateProvider();
+        LedgerStateProvider ledgerStateProvider = ledgerQuery.getLedgerStateProvider();
         if (ledgerStateProvider == null || !ledgerStateProvider.isAdaPotTrackingEnabled()) {
             return null;
         }
@@ -256,7 +263,7 @@ public class EpochResource {
     }
 
     private AccountStateReadStore accountStateReadStore() {
-        LedgerStateProvider ledgerStateProvider = nodeAPI.getLedgerStateProvider();
+        LedgerStateProvider ledgerStateProvider = ledgerQuery.getLedgerStateProvider();
         return ledgerStateProvider instanceof AccountStateReadStore accountStateReadStore
                 ? accountStateReadStore
                 : null;
@@ -299,7 +306,7 @@ public class EpochResource {
 
     private long protocolMagic() {
         try {
-            var config = nodeAPI != null ? nodeAPI.getConfig() : null;
+            var config = nodeLifecycle != null ? nodeLifecycle.getConfig() : null;
             return config != null ? config.getProtocolMagic() : 0;
         } catch (Exception e) {
             return 0;
@@ -307,10 +314,9 @@ public class EpochResource {
     }
 
     private int currentEpoch() {
-        ChainState cs = nodeAPI.getChainState();
-        ChainTip tip = cs != null ? cs.getTip() : null;
+        ChainTip tip = chainQuery != null ? chainQuery.getLocalTip() : null;
         if (tip == null) return 0;
-        return EpochUtil.slotToEpoch(tip.getSlot(), nodeAPI.getConfig());
+        return EpochUtil.slotToEpoch(tip.getSlot(), nodeLifecycle.getConfig());
     }
 
     private record PageRequest(int page, int count, String error) {

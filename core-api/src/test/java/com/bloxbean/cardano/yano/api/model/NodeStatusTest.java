@@ -141,6 +141,18 @@ class NodeStatusTest {
     }
 
     @Test
+    void getStatusSummary_shouldReturnDegradedBeforeOtherStates() {
+        NodeStatus status = NodeStatus.builder()
+                .running(false)
+                .syncing(false)
+                .runtimeDegraded(true)
+                .runtimeDegradedReason("restart required")
+                .build();
+
+        assertThat(status.getStatusSummary()).isEqualTo("Degraded");
+    }
+
+    @Test
     void getStatusSummary_shouldReturnServerOnlyWhenNotSyncing() {
         NodeStatus status = NodeStatus.builder()
                 .running(true)
@@ -199,6 +211,12 @@ class NodeStatusTest {
                 .initialSyncComplete(false)
                 .syncMode("pipelined")
                 .statusMessage("All good")
+                .maintenanceActive(true)
+                .maintenanceReason("node startup")
+                .runtimeDegraded(true)
+                .runtimeDegradedReason("restart required")
+                .runtimeDegradedOperation("devnet rollback")
+                .runtimeDegradedAtMillis(now - 100)
                 .peerName("mainnet-1")
                 .peerState("HEALTHY")
                 .peerRecoveryReason("KEEPALIVE_STALE")
@@ -226,6 +244,12 @@ class NodeStatusTest {
         assertThat(status.isInitialSyncComplete()).isFalse();
         assertThat(status.getSyncMode()).isEqualTo("pipelined");
         assertThat(status.getStatusMessage()).isEqualTo("All good");
+        assertThat(status.isMaintenanceActive()).isTrue();
+        assertThat(status.getMaintenanceReason()).isEqualTo("node startup");
+        assertThat(status.isRuntimeDegraded()).isTrue();
+        assertThat(status.getRuntimeDegradedReason()).isEqualTo("restart required");
+        assertThat(status.getRuntimeDegradedOperation()).isEqualTo("devnet rollback");
+        assertThat(status.getRuntimeDegradedAtMillis()).isEqualTo(now - 100);
         assertThat(status.getPeerName()).isEqualTo("mainnet-1");
         assertThat(status.getPeerState()).isEqualTo("HEALTHY");
         assertThat(status.getPeerRecoveryReason()).isEqualTo("KEEPALIVE_STALE");

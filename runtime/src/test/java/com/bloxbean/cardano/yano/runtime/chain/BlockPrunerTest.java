@@ -72,7 +72,7 @@ class BlockPrunerTest {
         }
 
         // Create pruner: retain last 3 blocks, batch size 100
-        BlockPruner pruner = new BlockPruner(chain, 3, 100);
+        BlockPruner pruner = new BlockPruner(chain, chain, 3, 100);
         pruner.pruneOnce();
 
         // Blocks 0-6 should be pruned (tip=9, cutoff=9-3=6)
@@ -99,7 +99,7 @@ class BlockPrunerTest {
         }
 
         // Create pruner: retain 2 blocks, batch=3
-        BlockPruner pruner = new BlockPruner(chain, 2, 3);
+        BlockPruner pruner = new BlockPruner(chain, chain, 2, 3);
 
         // First pass: should prune at most 3 blocks (blocks 0, 1, 2)
         pruner.pruneOnce();
@@ -128,7 +128,7 @@ class BlockPrunerTest {
         storeBlockAndHeader(0, 0);
         storeBlockAndHeader(1, 10);
 
-        BlockPruner pruner = new BlockPruner(chain, 5, 100);
+        BlockPruner pruner = new BlockPruner(chain, chain, 5, 100);
         pruner.pruneOnce(); // should be no-op
 
         assertNotNull(chain.getBlock(hash(0)));
@@ -141,7 +141,7 @@ class BlockPrunerTest {
             storeBlockAndHeader(i, i * 10);
         }
 
-        BlockPruner pruner = new BlockPruner(chain, 2, 100);
+        BlockPruner pruner = new BlockPruner(chain, chain, 2, 100);
         pruner.pruneOnce(); // prune blocks 0, 1, 2
 
         assertNull(chain.getBlock(hash(0)));
@@ -162,11 +162,11 @@ class BlockPrunerTest {
         }
 
         // First pruner instance: prune with batch=3
-        BlockPruner pruner1 = new BlockPruner(chain, 2, 3);
+        BlockPruner pruner1 = new BlockPruner(chain, chain, 2, 3);
         pruner1.pruneOnce(); // prunes blocks 0, 1, 2
 
         // Simulate restart: create new pruner instance
-        BlockPruner pruner2 = new BlockPruner(chain, 2, 3);
+        BlockPruner pruner2 = new BlockPruner(chain, chain, 2, 3);
         pruner2.pruneOnce(); // should resume from cursor, prune 3, 4, 5
 
         assertNull(chain.getBlock(hash(3)));

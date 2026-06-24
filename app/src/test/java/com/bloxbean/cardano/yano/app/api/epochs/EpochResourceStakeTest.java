@@ -1,6 +1,6 @@
 package com.bloxbean.cardano.yano.app.api.epochs;
 
-import com.bloxbean.cardano.yano.api.NodeAPI;
+import com.bloxbean.cardano.yano.app.test.TestNodeRoles;
 import com.bloxbean.cardano.yano.api.account.AccountStateReadStore;
 import com.bloxbean.cardano.yano.api.account.LedgerStateProvider;
 import com.bloxbean.cardano.yano.api.util.CardanoBech32Ids;
@@ -84,14 +84,17 @@ class EpochResourceStakeTest {
 
     private static EpochResource resourceWith(LedgerStateProvider ledgerStateProvider) {
         EpochResource resource = new EpochResource();
-        resource.nodeAPI = (NodeAPI) Proxy.newProxyInstance(NodeAPI.class.getClassLoader(), new Class<?>[]{NodeAPI.class},
+        TestNodeRoles nodeRoles = (TestNodeRoles) Proxy.newProxyInstance(TestNodeRoles.class.getClassLoader(), new Class<?>[]{TestNodeRoles.class},
                 (proxy, method, args) -> switch (method.getName()) {
                     case "getLedgerStateProvider" -> ledgerStateProvider;
-                    case "toString" -> "TestNodeAPI";
+                    case "toString" -> "TestNodeRoles";
                     case "hashCode" -> System.identityHashCode(proxy);
                     case "equals" -> proxy == args[0];
                     default -> defaultValue(method.getReturnType());
                 });
+        resource.nodeLifecycle = nodeRoles;
+        resource.chainQuery = nodeRoles;
+        resource.ledgerQuery = nodeRoles;
         return resource;
     }
 

@@ -192,7 +192,7 @@
     "allDeclaredFields": true
   },
   {
-    "name": "com.bloxbean.cardano.yano.runtime.Yano",
+    "name": "com.bloxbean.cardano.yano.runtime.internal.RuntimeNode",
     "allDeclaredFields": true,
     "allDeclaredMethods": true,
     "allDeclaredConstructors": true,

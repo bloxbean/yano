@@ -1,8 +1,9 @@
 package com.bloxbean.cardano.yano.app.api.governance;
 
-import com.bloxbean.cardano.yaci.core.storage.ChainState;
 import com.bloxbean.cardano.yaci.core.storage.ChainTip;
-import com.bloxbean.cardano.yano.api.NodeAPI;
+import com.bloxbean.cardano.yano.api.ChainQuery;
+import com.bloxbean.cardano.yano.api.LedgerQuery;
+import com.bloxbean.cardano.yano.api.NodeLifecycle;
 import com.bloxbean.cardano.yano.api.account.AccountStateReadStore;
 import com.bloxbean.cardano.yano.api.account.LedgerStateProvider;
 import com.bloxbean.cardano.yano.api.util.CardanoBech32Ids;
@@ -37,7 +38,13 @@ public class GovernanceResource {
     private static final Logger log = LoggerFactory.getLogger(GovernanceResource.class);
 
     @Inject
-    NodeAPI nodeAPI;
+    NodeLifecycle nodeLifecycle;
+
+    @Inject
+    ChainQuery chainQuery;
+
+    @Inject
+    LedgerQuery ledgerQuery;
 
     @GET
     @Path("/proposals")
@@ -235,7 +242,7 @@ public class GovernanceResource {
     }
 
     private AccountStateReadStore readStore() {
-        LedgerStateProvider provider = nodeAPI.getLedgerStateProvider();
+        LedgerStateProvider provider = ledgerQuery.getLedgerStateProvider();
         return provider instanceof AccountStateReadStore accountStateReadStore ? accountStateReadStore : null;
     }
 
@@ -469,10 +476,9 @@ public class GovernanceResource {
     }
 
     private int currentEpoch() {
-        ChainState cs = nodeAPI.getChainState();
-        ChainTip tip = cs != null ? cs.getTip() : null;
+        ChainTip tip = chainQuery != null ? chainQuery.getLocalTip() : null;
         if (tip == null) return 0;
-        return EpochUtil.slotToEpoch(tip.getSlot(), nodeAPI.getConfig());
+        return EpochUtil.slotToEpoch(tip.getSlot(), nodeLifecycle.getConfig());
     }
 
     private static boolean isTxHash(String value) {

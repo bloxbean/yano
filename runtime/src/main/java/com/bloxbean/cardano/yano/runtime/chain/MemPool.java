@@ -17,6 +17,9 @@ public interface MemPool {
     // Get the current size of the mempool
     int size();
 
+    // Check whether the mempool already contains a transaction hash
+    boolean contains(String txHash);
+
     // Clear the mempool
     void clear();
 

@@ -1,10 +1,14 @@
 package com.bloxbean.cardano.yano.runtime.migration;
 
-import com.bloxbean.cardano.yano.runtime.chain.DirectRocksDBChainState;
+import com.bloxbean.cardano.yano.runtime.db.RocksDbSupplier;
 
 import java.util.Map;
 
-public record StartupMigrationContext(DirectRocksDBChainState chainState,
+/**
+ * Context shared with startup migrations that need storage access and resolved
+ * runtime globals.
+ */
+public record StartupMigrationContext(RocksDbSupplier rocksDbSupplier,
                                       Map<String, Object> globals,
                                       String chainstatePath) {
     public StartupMigrationContext {

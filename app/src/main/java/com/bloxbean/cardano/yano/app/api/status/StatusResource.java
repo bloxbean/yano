@@ -1,9 +1,9 @@
 package com.bloxbean.cardano.yano.app.api.status;
 
-import com.bloxbean.cardano.yaci.core.storage.ChainState;
 import com.bloxbean.cardano.yaci.core.storage.ChainTip;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
-import com.bloxbean.cardano.yano.api.NodeAPI;
+import com.bloxbean.cardano.yano.api.ChainQuery;
+import com.bloxbean.cardano.yano.api.LedgerQuery;
 import com.bloxbean.cardano.yano.api.utxo.UtxoState;
 import com.bloxbean.cardano.yano.runtime.utxo.UtxoStatusProvider;
 import jakarta.inject.Inject;
@@ -20,12 +20,14 @@ import java.util.Map;
 public class StatusResource {
 
     @Inject
-    NodeAPI nodeAPI;
+    ChainQuery chainQuery;
+
+    @Inject
+    LedgerQuery ledgerQuery;
 
     @GET
     public Response status() {
-        ChainState cs = nodeAPI.getChainState();
-        ChainTip tip = cs != null ? cs.getTip() : null;
+        ChainTip tip = chainQuery != null ? chainQuery.getLocalTip() : null;
 
         Map<String, Object> chain = new HashMap<>();
         if (tip != null) {
@@ -35,7 +37,7 @@ public class StatusResource {
         }
 
         Map<String, Object> utxo = new HashMap<>();
-        UtxoState u = nodeAPI.getUtxoState();
+        UtxoState u = ledgerQuery.getUtxoState();
         utxo.put("enabled", u != null && u.isEnabled());
         long lastAppliedBlock = 0L;
         long lastAppliedSlot = 0L;

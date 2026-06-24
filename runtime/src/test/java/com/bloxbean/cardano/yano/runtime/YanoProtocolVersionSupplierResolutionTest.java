@@ -1,5 +1,7 @@
 package com.bloxbean.cardano.yano.runtime;
 
+import com.bloxbean.cardano.yano.runtime.internal.RuntimeNode;
+
 import com.bloxbean.cardano.yano.api.EpochParamProvider;
 import com.bloxbean.cardano.yano.api.account.LedgerStateProvider;
 import com.bloxbean.cardano.yano.api.model.ProtocolParamsSnapshot;
@@ -23,7 +25,7 @@ class YanoProtocolVersionSupplierResolutionTest {
 
     @Test
     void trackingWithLedgerStateUsesEffectiveSupplierFirst() {
-        ProtocolVersionSupplier supplier = Yano.resolveBlockProtocolVersionSupplier(
+        ProtocolVersionSupplier supplier = RuntimeNode.resolveBlockProtocolVersionSupplier(
                 true, tracker, ledgerStateProvider,
                 () -> ProtocolVersionSupplier.fixed(12, 0),
                 () -> ProtocolVersionSupplier.fixed(13, 0));
@@ -37,7 +39,7 @@ class YanoProtocolVersionSupplierResolutionTest {
         AtomicInteger staticCalls = new AtomicInteger();
         AtomicInteger genesisCalls = new AtomicInteger();
 
-        ProtocolVersionSupplier supplier = Yano.resolveBlockProtocolVersionSupplier(
+        ProtocolVersionSupplier supplier = RuntimeNode.resolveBlockProtocolVersionSupplier(
                 true, tracker, null,
                 () -> {
                     staticCalls.incrementAndGet();
@@ -55,7 +57,7 @@ class YanoProtocolVersionSupplierResolutionTest {
 
     @Test
     void trackingWithoutLedgerStateFallsBackToGenesisWhenStaticUnavailable() {
-        ProtocolVersionSupplier supplier = Yano.resolveBlockProtocolVersionSupplier(
+        ProtocolVersionSupplier supplier = RuntimeNode.resolveBlockProtocolVersionSupplier(
                 true, tracker, null,
                 () -> null,
                 () -> ProtocolVersionSupplier.fixed(13, 0));
@@ -65,7 +67,7 @@ class YanoProtocolVersionSupplierResolutionTest {
 
     @Test
     void trackingWithoutAnyFallbackThrowsClearly() {
-        assertThatThrownBy(() -> Yano.resolveBlockProtocolVersionSupplier(
+        assertThatThrownBy(() -> RuntimeNode.resolveBlockProtocolVersionSupplier(
                 true, tracker, null,
                 () -> null,
                 () -> null))
@@ -77,7 +79,7 @@ class YanoProtocolVersionSupplierResolutionTest {
     void trackingOffUsesStaticBeforeGenesis() {
         AtomicInteger genesisCalls = new AtomicInteger();
 
-        ProtocolVersionSupplier supplier = Yano.resolveBlockProtocolVersionSupplier(
+        ProtocolVersionSupplier supplier = RuntimeNode.resolveBlockProtocolVersionSupplier(
                 false, tracker, ledgerStateProvider,
                 () -> ProtocolVersionSupplier.fixed(12, 0),
                 () -> {
@@ -91,7 +93,7 @@ class YanoProtocolVersionSupplierResolutionTest {
 
     @Test
     void trackingOffUsesGenesisWhenStaticUnavailable() {
-        ProtocolVersionSupplier supplier = Yano.resolveBlockProtocolVersionSupplier(
+        ProtocolVersionSupplier supplier = RuntimeNode.resolveBlockProtocolVersionSupplier(
                 false, tracker, ledgerStateProvider,
                 () -> null,
                 () -> ProtocolVersionSupplier.fixed(13, 0));

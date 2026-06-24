@@ -4,9 +4,9 @@ import com.bloxbean.cardano.yaci.core.model.Block;
 import com.bloxbean.cardano.yaci.core.model.TransactionBody;
 import com.bloxbean.cardano.yaci.core.model.TransactionInput;
 import com.bloxbean.cardano.yaci.core.model.serializers.BlockSerializer;
-import com.bloxbean.cardano.yaci.core.storage.ChainState;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
-import com.bloxbean.cardano.yano.api.NodeAPI;
+import com.bloxbean.cardano.yano.api.ChainQuery;
+import com.bloxbean.cardano.yano.api.LedgerQuery;
 import com.bloxbean.cardano.yano.api.utxo.UtxoState;
 import com.bloxbean.cardano.yano.api.utxo.model.AssetAmount;
 import com.bloxbean.cardano.yano.api.utxo.model.Outpoint;
@@ -33,12 +33,15 @@ public class TransactionResource {
     private static final Logger log = LoggerFactory.getLogger(TransactionResource.class);
 
     @Inject
-    NodeAPI nodeAPI;
+    ChainQuery chainQuery;
+
+    @Inject
+    LedgerQuery ledgerQuery;
 
     @GET
     @Path("/{txHash}")
     public Response getTxInfo(@PathParam("txHash") String txHash) {
-        UtxoState utxoState = nodeAPI.getUtxoState();
+        UtxoState utxoState = ledgerQuery.getUtxoState();
         if (utxoState == null || !utxoState.isEnabled()) {
             return Response.status(Response.Status.SERVICE_UNAVAILABLE)
                     .entity(Map.of("error", "UTXO state disabled"))
@@ -52,17 +55,16 @@ public class TransactionResource {
                             "status_code", 404,
                             "message", "The requested component has not been found."))
                     .build();
-        }
-
-        try {
-            long blockNumber = outputs.get(0).blockNumber();
-            ChainState chainState = nodeAPI.getChainState();
-            byte[] blockCbor = chainState != null ? chainState.getBlockByNumber(blockNumber) : null;
-            if (blockCbor == null) {
-                return Response.status(Response.Status.NOT_FOUND)
-                        .entity(Map.of("error", "Block not found for transaction"))
-                        .build();
             }
+
+            try {
+                long blockNumber = outputs.get(0).blockNumber();
+                byte[] blockCbor = chainQuery != null ? chainQuery.getBlockByNumber(blockNumber) : null;
+                if (blockCbor == null) {
+                    return Response.status(Response.Status.NOT_FOUND)
+                            .entity(Map.of("error", "Block not found for transaction"))
+                            .build();
+                }
 
             Block block = BlockSerializer.INSTANCE.deserialize(blockCbor);
             if (block == null || block.getTransactionBodies() == null) {
@@ -126,7 +128,7 @@ public class TransactionResource {
                     txHash,
                     blockHash,
                     blockNumber,
-                    nodeAPI.slotToUnixTime(slot),
+                    ledgerQuery.slotToUnixTime(slot),
                     slot,
                     txIndex,
                     outputAmounts,
@@ -149,7 +151,7 @@ public class TransactionResource {
     @GET
     @Path("/{txHash}/utxos")
     public Response getTxUtxos(@PathParam("txHash") String txHash) {
-        UtxoState utxoState = nodeAPI.getUtxoState();
+        UtxoState utxoState = ledgerQuery.getUtxoState();
         if (utxoState == null || !utxoState.isEnabled()) {
             return Response.status(Response.Status.SERVICE_UNAVAILABLE)
                     .entity(Map.of("error", "UTXO state disabled"))
@@ -175,10 +177,9 @@ public class TransactionResource {
     private List<TxUtxoDto> resolveInputs(String txHash, long blockNumber, UtxoState utxoState) {
         List<TxUtxoDto> inputDtos = new ArrayList<>();
         try {
-            ChainState chainState = nodeAPI.getChainState();
-            if (chainState == null) return inputDtos;
+            if (chainQuery == null) return inputDtos;
 
-            byte[] blockCbor = chainState.getBlockByNumber(blockNumber);
+            byte[] blockCbor = chainQuery.getBlockByNumber(blockNumber);
             if (blockCbor == null) return inputDtos;
 
             Block block = BlockSerializer.INSTANCE.deserialize(blockCbor);

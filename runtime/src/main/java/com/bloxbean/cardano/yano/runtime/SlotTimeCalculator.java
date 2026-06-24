@@ -1,7 +1,6 @@
 package com.bloxbean.cardano.yano.runtime;
 
-import com.bloxbean.cardano.yaci.core.storage.ChainState;
-import com.bloxbean.cardano.yano.runtime.chain.DirectRocksDBChainState;
+import com.bloxbean.cardano.yano.runtime.chain.EraMetadataStore;
 import lombok.extern.slf4j.Slf4j;
 
 /**
@@ -23,15 +22,15 @@ public class SlotTimeCalculator {
     private final long networkStartTimeSec;
     private final long byronSlotDurationSec;
     private final double shelleySlotLengthSec;
-    private final ChainState chainState;
+    private final EraMetadataStore eraMetadataStore;
     private long firstNonByronSlot = -1;
 
     public SlotTimeCalculator(long networkStartTimeSec, long byronSlotDurationSec,
-                              double shelleySlotLengthSec, ChainState chainState) {
+                              double shelleySlotLengthSec, EraMetadataStore eraMetadataStore) {
         this.networkStartTimeSec = networkStartTimeSec;
         this.byronSlotDurationSec = byronSlotDurationSec;
         this.shelleySlotLengthSec = shelleySlotLengthSec;
-        this.chainState = chainState;
+        this.eraMetadataStore = eraMetadataStore;
     }
 
     /**
@@ -69,8 +68,8 @@ public class SlotTimeCalculator {
 
     private long resolveFirstNonByronSlot() {
         if (firstNonByronSlot >= 0) return firstNonByronSlot;
-        if (chainState instanceof DirectRocksDBChainState rocksState) {
-            var opt = rocksState.getFirstNonByronEraStartSlot();
+        if (eraMetadataStore != null) {
+            var opt = eraMetadataStore.getFirstNonByronEraStartSlot();
             if (opt.isPresent()) {
                 firstNonByronSlot = opt.getAsLong();
                 return firstNonByronSlot;

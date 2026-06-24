@@ -1,6 +1,6 @@
 package com.bloxbean.cardano.yano.app.api.epochs;
 
-import com.bloxbean.cardano.yano.api.NodeAPI;
+import com.bloxbean.cardano.yano.app.test.TestNodeRoles;
 import com.bloxbean.cardano.yano.api.account.LedgerStateProvider;
 import com.bloxbean.cardano.yano.api.model.ProtocolParamsSnapshot;
 import com.bloxbean.cardano.yano.app.api.epochs.dto.ProtocolParamsDto;
@@ -71,7 +71,7 @@ class EpochResourceProtocolParamsTest {
     @Test
     void parametersShouldReturnStaticParamsWhenLedgerStateProviderIsUnavailable() throws Exception {
         EpochResource resource = new EpochResource();
-        resource.nodeAPI = nodeApiWith(null);
+        wire(resource, nodeRolesWith(null));
 
         Response response = resource.getParametersByEpoch(42);
 
@@ -94,7 +94,7 @@ class EpochResourceProtocolParamsTest {
     @Test
     void staticParametersShouldReturnIndependentDtoForEachRequestedEpoch() {
         EpochResource resource = new EpochResource();
-        resource.nodeAPI = nodeApiWith(null);
+        wire(resource, nodeRolesWith(null));
 
         ProtocolParamsDto epoch42 = (ProtocolParamsDto) resource.getParametersByEpoch(42).getEntity();
         ProtocolParamsDto epoch43 = (ProtocolParamsDto) resource.getParametersByEpoch(43).getEntity();
@@ -108,7 +108,7 @@ class EpochResourceProtocolParamsTest {
     @Test
     void parametersShouldReturn404WhenProtocolParamsAreUnavailable() {
         EpochResource resource = new EpochResource();
-        resource.nodeAPI = nodeApiWith(null, null, null);
+        wire(resource, nodeRolesWith(null, null, null));
 
         Response response = resource.getParametersByEpoch(42);
 
@@ -140,20 +140,26 @@ class EpochResourceProtocolParamsTest {
 
     private static EpochResource resourceWith(LedgerStateProvider ledgerStateProvider, String nonce) {
         EpochResource resource = new EpochResource();
-        resource.nodeAPI = nodeApiWith(ledgerStateProvider, nonce);
+        wire(resource, nodeRolesWith(ledgerStateProvider, nonce));
         return resource;
     }
 
-    private static NodeAPI nodeApiWith(LedgerStateProvider ledgerStateProvider) {
-        return nodeApiWith(ledgerStateProvider, null);
+    private static void wire(EpochResource resource, TestNodeRoles nodeRoles) {
+        resource.nodeLifecycle = nodeRoles;
+        resource.chainQuery = nodeRoles;
+        resource.ledgerQuery = nodeRoles;
     }
 
-    private static NodeAPI nodeApiWith(LedgerStateProvider ledgerStateProvider, String nonce) {
-        return nodeApiWith(ledgerStateProvider, nonce, STATIC_BLOCKFROST_PROTOCOL_PARAMS);
+    private static TestNodeRoles nodeRolesWith(LedgerStateProvider ledgerStateProvider) {
+        return nodeRolesWith(ledgerStateProvider, null);
     }
 
-    private static NodeAPI nodeApiWith(LedgerStateProvider ledgerStateProvider, String nonce, String protocolParams) {
-        return (NodeAPI) Proxy.newProxyInstance(NodeAPI.class.getClassLoader(), new Class<?>[]{NodeAPI.class},
+    private static TestNodeRoles nodeRolesWith(LedgerStateProvider ledgerStateProvider, String nonce) {
+        return nodeRolesWith(ledgerStateProvider, nonce, STATIC_BLOCKFROST_PROTOCOL_PARAMS);
+    }
+
+    private static TestNodeRoles nodeRolesWith(LedgerStateProvider ledgerStateProvider, String nonce, String protocolParams) {
+        return (TestNodeRoles) Proxy.newProxyInstance(TestNodeRoles.class.getClassLoader(), new Class<?>[]{TestNodeRoles.class},
                 (proxy, method, args) -> switch (method.getName()) {
                     case "getLedgerStateProvider" -> ledgerStateProvider;
                     case "getEpochNonce" -> nonce;
@@ -169,7 +175,7 @@ class EpochResourceProtocolParamsTest {
                         }
                         yield protocolParams;
                     }
-                    case "toString" -> "TestNodeAPI";
+                    case "toString" -> "TestNodeRoles";
                     case "hashCode" -> System.identityHashCode(proxy);
                     case "equals" -> proxy == args[0];
                     default -> defaultValue(method.getReturnType());

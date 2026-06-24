@@ -6,6 +6,7 @@ import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Point;
 import com.bloxbean.cardano.yaci.core.storage.ChainState;
 import com.bloxbean.cardano.yaci.core.storage.ChainTip;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
+import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
 import com.bloxbean.cardano.yano.api.db.RocksDbAccess;
 import com.bloxbean.cardano.yano.api.rollback.RollbackCapableStore;
 import com.bloxbean.cardano.yano.runtime.blockproducer.NonceStateStore;
@@ -43,7 +44,9 @@ import java.util.OptionalLong;
  */
 @Slf4j
 public class DirectRocksDBChainState implements ChainState, AutoCloseable, RocksDbSupplier,
-        NonceStateStore, RocksDbAccess, RollbackCapableStore {
+        NonceStateStore, RocksDbAccess, RollbackCapableStore, ByronEbHeaderStore,
+        OriginRollbackCapable, ChainStateRecovery, ChainStateSnapshots, NearestSlotLookup,
+        BootstrapChainStateWriter, EraMetadataStore, ByronGenesisUtxoMetadataStore {
 
     private static final byte[] TIP_KEY = "tip".getBytes(StandardCharsets.UTF_8);
     private static final byte[] HEADER_TIP_KEY = "header_tip".getBytes(StandardCharsets.UTF_8);
@@ -54,7 +57,7 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
     private static final byte[] EPOCH_NONCE_CHECKPOINT_KEY_PREFIX =
             "epoch_nonce_checkpoint_".getBytes(StandardCharsets.UTF_8);
     private static final long RECOVERY_HEADER_SCAN_LIMIT =
-            Long.getLong("yano.chainstate.recoveryHeaderScanBlocks", 100_000L);
+            Long.getLong(YanoPropertyKeys.Chain.RECOVERY_HEADER_SCAN_BLOCKS, 100_000L);
 
     private RocksDB db;
     private final String dbPath;
@@ -91,8 +94,14 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
             // Determine if tuning is enabled (system property or env override)
             final boolean tuningEnabled = isRocksTuningEnabled();
             // Select write behavior (mutually exclusive when enabled)
-            boolean pipelined = getBool("yano.rocksdb.pipelined_write", "YANO_ROCKSDB_PIPELINED_WRITE", true);
-            boolean atomic = getBool("yano.rocksdb.atomic_flush", "YANO_ROCKSDB_ATOMIC_FLUSH", false);
+            boolean pipelined = getBool(
+                    YanoPropertyKeys.RocksDb.PIPELINED_WRITE,
+                    "YANO_ROCKSDB_PIPELINED_WRITE",
+                    true);
+            boolean atomic = getBool(
+                    YanoPropertyKeys.RocksDb.ATOMIC_FLUSH,
+                    "YANO_ROCKSDB_ATOMIC_FLUSH",
+                    false);
             if (pipelined && atomic) {
                 // Prefer pipelined for throughput unless explicitly disabled
                 log.warn("atomic_flush is incompatible with enable_pipelined_write. Preferring pipelined_write; atomic_flush will be disabled.");
@@ -209,7 +218,7 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
 
     private static boolean isRocksTuningEnabled() {
         try {
-            String prop = System.getProperty("yano.rocksdb.tuning.enabled");
+            String prop = System.getProperty(YanoPropertyKeys.RocksDb.TUNING_ENABLED);
             if (prop != null) return !"false".equalsIgnoreCase(prop);
             String env = System.getenv("YANO_ROCKSDB_TUNING_ENABLED");
             if (env != null) return !"false".equalsIgnoreCase(env);

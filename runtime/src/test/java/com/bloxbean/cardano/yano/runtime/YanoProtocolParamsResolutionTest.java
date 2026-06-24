@@ -1,5 +1,7 @@
 package com.bloxbean.cardano.yano.runtime;
 
+import com.bloxbean.cardano.yano.runtime.internal.RuntimeNode;
+
 import com.bloxbean.cardano.yano.api.account.LedgerStateProvider;
 import com.bloxbean.cardano.yano.api.config.YanoConfig;
 import com.bloxbean.cardano.yano.api.model.ProtocolParamsSnapshot;
@@ -148,7 +150,7 @@ class YanoProtocolParamsResolutionTest {
                 .build();
     }
 
-    private static class TestYano extends Yano {
+    private static class TestYano extends RuntimeNode {
         private final LedgerStateProvider ledgerStateProvider;
         private final String protocolParams;
 

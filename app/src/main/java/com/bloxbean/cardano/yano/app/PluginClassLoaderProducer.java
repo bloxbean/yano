@@ -1,5 +1,6 @@
 package com.bloxbean.cardano.yano.app;
 
+import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
 import jakarta.enterprise.inject.Produces;
 import jakarta.inject.Named;
 import jakarta.inject.Singleton;
@@ -13,6 +14,9 @@ import java.net.URLClassLoader;
 import java.util.ArrayList;
 import java.util.List;
 
+/**
+ * CDI producer for the plugin classloader used by optional runtime plugins.
+ */
 @Singleton
 public class PluginClassLoaderProducer {
 
@@ -25,7 +29,7 @@ public class PluginClassLoaderProducer {
         // Read config programmatically to avoid circular dependency
         // (CDI proxy for ClassLoader + SmallRye Config ServiceLoader = infinite recursion)
         String pluginDirectory = ConfigProvider.getConfig()
-                .getOptionalValue("yaci.plugins.directory", String.class)
+                .getOptionalValue(YanoPropertyKeys.Plugins.DIRECTORY, String.class)
                 .orElse("plugins");
 
         // In GraalVM native image mode, dynamic class loading is not supported
