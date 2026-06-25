@@ -1,6 +1,6 @@
 # ADR-031: Native Yano Testkit For Non-JVM And npm Testing
 
-**Status:** Proposed
+**Status:** Accepted / Implemented
 **Date:** 2026-06-25
 **Related:** ADR-023 (Docker Images And Compose Release), ADR-029 (Devnet Control Toolkit And Testkit SPI), ADR-030 (Yano Testkit For JVM Integration Testing)
 
@@ -35,24 +35,33 @@ public fixture for JavaScript applications.
 ## Decision
 
 Provide a native-process test fixture contract for non-JVM integration tests.
-The first language-specific wrapper should be an npm package for JavaScript and
+The first language-specific wrapper is an npm package for JavaScript and
 TypeScript applications.
 
-The shared contract is the Yano native binary started in a testkit mode. The
-exact command name can evolve during implementation, but the intended shape is:
+The implemented contract starts the existing Yano native binary in the
+foreground with devnet Quarkus/system properties. The npm wrapper owns port
+allocation, temporary directory creation, readiness polling, log capture, and
+cleanup. This intentionally avoids adding a new app command parser or changing
+normal production startup behavior.
+
+The wrapper launches the binary with the equivalent of:
 
 ```bash
-yano testkit devnet start \
-  --json \
-  --http-port 0 \
-  --n2n-port 0 \
-  --storage temp-rocksdb \
-  --block-time-millis 200
+yano \
+  -Dquarkus.profile=devnet \
+  -Dquarkus.http.host=127.0.0.1 \
+  -Dquarkus.http.port=<allocated-http-port> \
+  -Dyano.server.port=<allocated-n2n-port> \
+  -Dyano.remote.protocol-magic=42 \
+  -Dyano.storage.rocksdb=true \
+  -Dyano.storage.path=<work-dir>/chainstate \
+  -Dyano.block-producer.block-time-millis=200 \
+  -Dyano.exit-on-epoch-calc-error=false
 ```
 
-The process should stay in the foreground. Test wrappers spawn it, read a
-machine-readable readiness record from stdout, stream logs for diagnostics, and
-terminate the process when the test finishes.
+A future first-class command such as `yano testkit devnet start --json` can be
+added on top of this same process contract if other language wrappers need a
+CLI-native manifest. It is not required for the initial npm unit-test fixture.
 
 The native fixture must use production-like behavior by default:
 
@@ -71,13 +80,12 @@ in-memory storage. The default storage implementation must be real RocksDB.
 
 ## Readiness Contract
 
-When started with `--json`, the native fixture should emit one newline-delimited
-JSON object after the HTTP server and devnet are ready:
+The npm wrapper returns a typed readiness object after both `/q/health/ready`
+and `/api/v1/node/tip` return successfully:
 
 ```json
 {
   "type": "ready",
-  "version": "0.0.0",
   "pid": 12345,
   "baseUrl": "http://127.0.0.1:43123/",
   "apiBaseUrl": "http://127.0.0.1:43123/api/v1/",
@@ -91,15 +99,14 @@ JSON object after the HTTP server and devnet are ready:
 }
 ```
 
-The wrapper should ignore non-JSON log lines until it sees `type: "ready"`.
-After readiness, the process continues to run until terminated.
+After readiness, the process continues to run until `stop()` terminates it.
+stdout/stderr are retained in a bounded log buffer for failed tests.
 
 The fixture should handle:
 
-- `SIGTERM` and `SIGINT` with graceful shutdown and cleanup;
+- graceful process termination and cleanup from `stop()`;
 - failed startup with a non-zero exit and useful stderr/stdout diagnostics;
-- optional manifest-file output for tools that cannot easily parse stdout;
-- explicit `--work-dir` and `--storage-path` for persistent/debug runs.
+- explicit `workDir` or `storagePath` for persistent/debug runs.
 
 ## npm Package
 
@@ -113,10 +120,10 @@ The package should:
 
 - resolve a Yano native binary for the current OS and architecture;
 - allow `YANO_TESTKIT_BINARY` to point at a local binary;
-- cache downloaded binaries under a user cache directory;
-- verify the binary is executable and reports an expected version;
+- install platform binaries through optional npm packages;
+- verify the binary exists and is executable on Unix-like platforms;
 - spawn the native fixture;
-- parse the readiness JSON;
+- poll the real HTTP endpoints until the fixture is ready;
 - expose a small typed API for lifecycle and connection details;
 - stream or retain logs for failed tests;
 - avoid depending on a specific JavaScript test runner.
@@ -183,36 +190,36 @@ The base npm package should not require Docker.
 
 ## Implementation Plan
 
-1. Add native binary testkit start mode.
-   - Start a local devnet with temp RocksDB storage by default.
-   - Bind HTTP and n2n ports from `0`.
-   - Emit the readiness JSON only after the HTTP API is usable.
+1. Completed: add npm-owned native devnet start mode.
+   - Starts a local devnet with temp RocksDB storage by default.
+   - Allocates HTTP and n2n ports when callers pass `0` or omit them.
+   - Waits until the existing HTTP API is usable before returning readiness.
 
-2. Add lifecycle and cleanup guarantees.
-   - Gracefully stop block production and HTTP on termination.
-   - Remove temp work directories on normal shutdown.
-   - Preserve work directories when persistent storage is requested or startup
-     fails before cleanup ownership is established.
+2. Completed: add lifecycle and cleanup guarantees.
+   - `stop()` terminates the process and removes owned temp directories.
+   - Persistent storage mode keeps its configured work directory.
+   - Startup failures include retained stdout/stderr.
 
-3. Add npm package.
-   - Implement binary resolution, download/cache, spawn, readiness parsing, and
-     stop logic.
-   - Provide TypeScript definitions.
-   - Support env overrides for binary path and version.
+3. Completed: add npm package.
+   - Implements binary resolution from optional platform packages.
+   - Supports `YANO_TESTKIT_BINARY` and `binaryPath` for local/native builds.
+   - Provides TypeScript definitions and a plain Node.js API.
+   - Provides an optional Vitest helper as a peer-only convenience API.
 
-4. Add JavaScript examples and validation tests.
-   - Plain Node.js smoke test querying `/api/v1/node/tip`.
-   - Vitest or Jest example using test lifecycle hooks.
-   - Test that temp RocksDB storage is created and removed.
-   - Test that logs are surfaced when startup fails.
+4. Completed: add JavaScript validation tests and local instructions.
+   - Plain Node unit tests cover readiness, cleanup, persistent storage, platform
+     mapping, passed native properties, and failure diagnostics.
+   - README documents local fake-process checks and real native binary smoke
+     testing.
 
-5. Add optional transaction workflow examples.
-   - Submit through `POST /api/v1/tx/submit`.
-   - Query UTXOs through Blockfrost-compatible endpoints.
-   - Keep wallet/key generation in the application or a JS Cardano library, not
-     in the native fixture.
+5. Completed in documentation: keep transaction workflows HTTP-only.
+   - Applications submit through `POST /api/v1/tx/submit`.
+   - Applications query UTXOs through Blockfrost-compatible endpoints.
+   - Wallet/key generation stays in the application or a JS Cardano library.
 
-6. Consider optional container wrappers after the native contract is stable.
+6. Deferred: optional container wrappers.
+   - Docker/Testcontainers wrappers should be separate packages after the native
+     npm fixture is released.
 
 ## Non-Goals
 
@@ -228,8 +235,8 @@ The base npm package should not require Docker.
 
 The implementation is complete when these checks pass:
 
-- the native fixture starts with `--http-port 0 --n2n-port 0` and emits a valid
-  readiness JSON record;
+- the npm wrapper starts the native fixture with allocated HTTP and n2n ports
+  and returns a valid readiness object;
 - `apiBaseUrl + "node/tip"` returns successfully after readiness;
 - temporary RocksDB storage is used by default;
 - temp directories are removed after `stop()`;
@@ -237,6 +244,18 @@ The implementation is complete when these checks pass:
 - the npm wrapper can start and stop the fixture from a plain Node.js test;
 - failed startup includes enough process output to diagnose the issue;
 - the fixture remains independent of JVM-only testkit types.
+
+Current validation:
+
+- `npm test` runs the plain Node.js fake-process lifecycle tests.
+- `npm run typecheck` validates the JavaScript source and TypeScript
+  definitions.
+- `npm run pack:dry` validates the npm package layout.
+- `.github/workflows/npm-testkit.yml` runs those checks on Linux, macOS, and
+  Windows.
+- `.github/workflows/release-dist.yml` builds native Linux x64, Linux arm64,
+  macOS arm64, and Windows x64 distributions and publishes the matching npm
+  platform packages before publishing `@bloxbean/yano-testkit`.
 
 ## Consequences
 

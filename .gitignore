@@ -175,6 +175,10 @@ rust/jniLibs
 
 # Offchain examples
 offchain-examples/meshjs/node_modules/
+node_modules/
+**/node_modules/
+npm/yano-testkit-*/bin/
+npm/yano-testkit-*/config/
 offchain-examples/pycardano/__pycache__/
 offchain-examples/pycardano/.venv/
 

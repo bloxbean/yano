@@ -1,0 +1,11 @@
+{
+  "private": true,
+  "scripts": {
+    "install:testkit": "npm install --prefix yano-testkit --omit=optional",
+    "test": "npm test --prefix yano-testkit",
+    "typecheck": "npm run typecheck --prefix yano-testkit",
+    "pack:dry": "node scripts/pack-dry.mjs",
+    "populate:local-platform": "node scripts/populate-local-platform-package.mjs",
+    "check:versions": "node scripts/check-package-versions.mjs"
+  }
+}

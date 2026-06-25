@@ -225,6 +225,14 @@ def isLinuxHost = {
     System.getProperty('os.name', '').toLowerCase(java.util.Locale.ROOT).contains('linux')
 }
 
+def isWindowsHost = {
+    System.getProperty('os.name', '').toLowerCase(java.util.Locale.ROOT).contains('windows')
+}
+
+def nativeBinaryFileName = {
+    isWindowsHost() ? 'yano.exe' : 'yano'
+}
+
 def getNativeBuilderImage = {
     def raw = System.getProperty('quarkus.native.builder-image')
     if (raw == null || raw.isBlank()) {
@@ -358,7 +366,7 @@ tasks.register('yanoNativeDistZip', Zip) {
     destinationDirectory = layout.buildDirectory.dir('distributions')
 
     doFirst {
-        def binary = layout.buildDirectory.file('yano').get().asFile
+        def binary = layout.buildDirectory.file(nativeBinaryFileName()).get().asFile
         if (!binary.exists()) {
             throw new GradleException(
                 "Native binary not found at ${binary.path}. The native build may have failed."
@@ -367,11 +375,15 @@ tasks.register('yanoNativeDistZip', Zip) {
     }
 
     into("yano-native-${distVersion}-${platform}") {
-        from(layout.buildDirectory.file('yano')) {
-            filePermissions { unix('755') }
+        from(layout.buildDirectory.file(nativeBinaryFileName())) {
+            if (!isWindowsHost()) {
+                filePermissions { unix('755') }
+            }
         }
-        from('bin/yano.sh') {
-            filePermissions { unix('755') }
+        if (!isWindowsHost()) {
+            from('bin/yano.sh') {
+                filePermissions { unix('755') }
+            }
         }
         from('bin') {
             include '*.md'

@@ -1,0 +1,64 @@
+{
+  "name": "@bloxbean/yano-testkit",
+  "version": "0.1.0-pre6",
+  "description": "Programmatic Yano devnet test fixture for JavaScript and TypeScript tests.",
+  "keywords": [
+    "yano",
+    "cardano",
+    "devnet",
+    "testkit",
+    "integration-test"
+  ],
+  "type": "module",
+  "main": "./src/index.js",
+  "types": "./src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.d.ts",
+      "import": "./src/index.js"
+    },
+    "./vitest": {
+      "types": "./src/vitest.d.ts",
+      "import": "./src/vitest.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "README.md",
+    "src"
+  ],
+  "license": "MIT",
+  "homepage": "https://github.com/bloxbean/yano",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bloxbean/yano.git",
+    "directory": "npm/yano-testkit"
+  },
+  "engines": {
+    "node": ">=20.8.0"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "typecheck": "tsc -p tsconfig.json",
+    "pack:dry": "npm pack --dry-run"
+  },
+  "optionalDependencies": {
+    "@bloxbean/yano-testkit-linux-x64": "0.1.0-pre6",
+    "@bloxbean/yano-testkit-linux-arm64": "0.1.0-pre6",
+    "@bloxbean/yano-testkit-macos-arm64": "0.1.0-pre6",
+    "@bloxbean/yano-testkit-windows-x64": "0.1.0-pre6"
+  },
+  "peerDependencies": {
+    "vitest": ">=1.0.0"
+  },
+  "peerDependenciesMeta": {
+    "vitest": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.8.0",
+    "vitest": "^4.1.9"
+  }
+}
