@@ -3,7 +3,7 @@ package com.bloxbean.cardano.yano.tx;
 import com.bloxbean.cardano.yano.api.config.RuntimeOptions;
 import com.bloxbean.cardano.yano.api.config.YanoConfig;
 import com.bloxbean.cardano.yano.runtime.assembly.YanoAssembly;
-import com.bloxbean.cardano.yano.runtime.assembly.YanoNode;
+import com.bloxbean.cardano.yano.runtime.assembly.Yano;
 import com.bloxbean.cardano.yano.runtime.config.InMemoryDevnetGenesis;
 import com.bloxbean.cardano.yano.runtime.genesis.ShelleyGenesisParser;
 import com.bloxbean.cardano.yano.runtime.tx.TransactionBootstrapOptions;
@@ -34,7 +34,7 @@ class DefaultTransactionServicesFactoryIntegrationTest {
                 "yano.metrics.sample.rocksdb.seconds", 0,
                 "yano.validation.default-validator-enabled", false));
 
-        YanoNode node = YanoAssembly.relay(config)
+        Yano node = YanoAssembly.relay(config)
                 .runtimeOptions(runtimeOptions)
                 .transactionBootstrap(
                         TransactionBootstrapOptions.enabled(false, false, "aiken"),
@@ -70,7 +70,7 @@ class DefaultTransactionServicesFactoryIntegrationTest {
                 "yano.metrics.sample.rocksdb.seconds", 0,
                 "yano.validation.default-validator-enabled", false));
 
-        YanoNode node = YanoAssembly.devnet(config)
+        Yano node = YanoAssembly.devnet(config)
                 .inMemoryGenesis(inMemoryGenesis)
                 .runtimeOptions(runtimeOptions)
                 .transactionBootstrap(
@@ -101,7 +101,7 @@ class DefaultTransactionServicesFactoryIntegrationTest {
                 "yano.metrics.sample.rocksdb.seconds", 0,
                 "yano.validation.default-validator-enabled", false));
 
-        YanoNode node = YanoAssembly.relay(config)
+        Yano node = YanoAssembly.relay(config)
                 .runtimeOptions(runtimeOptions)
                 .transactionBootstrap(
                         TransactionBootstrapOptions.enabled(false, false, "aiken"),

@@ -88,13 +88,13 @@ import com.bloxbean.cardano.yano.api.config.*;
 import com.bloxbean.cardano.yaci.events.api.SubscriptionOptions;
 import com.bloxbean.cardano.yaci.events.api.config.EventsOptions;
 import com.bloxbean.cardano.yano.runtime.assembly.YanoAssembly;
-import com.bloxbean.cardano.yano.runtime.assembly.YanoNode;
+import com.bloxbean.cardano.yano.runtime.assembly.Yano;
 
 EventsOptions ev = new EventsOptions(true, 8192, SubscriptionOptions.Overflow.BLOCK);
 PluginsOptions pl = new PluginsOptions(true, false, java.util.Set.of(), java.util.Set.of(), java.util.Map.of());
 RuntimeOptions rt = new RuntimeOptions(ev, pl, java.util.Map.of());
 
-YanoNode node = YanoAssembly.fromConfig(myNodeConfig)
+Yano node = YanoAssembly.fromConfig(myNodeConfig)
         .runtimeOptions(rt)
         .build();
 node.lifecycle().start();
@@ -102,7 +102,7 @@ node.lifecycle().start();
 
 ### Quarkus app
 
-- `app` maps `application.yml` → options in `YanoProducer`, then builds a `YanoNode`:
+- `app` maps `application.yml` → options in `YanoProducer`, then builds a `Yano`:
   - `yaci.events.enabled`, `yaci.plugins.enabled`, `yaci.plugins.logging.enabled`, etc.
 
 ## Writing a Plugin (ServiceLoader)

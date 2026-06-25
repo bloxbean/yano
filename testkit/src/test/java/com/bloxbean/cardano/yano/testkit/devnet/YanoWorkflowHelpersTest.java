@@ -19,7 +19,7 @@ class YanoWorkflowHelpersTest {
 
     @Test
     void withSnapshotRestoresAfterSuccessfulAction() throws Exception {
-        TestkitFakes.FakeYanoNode node = new TestkitFakes.FakeYanoNode(HEALTHY);
+        TestkitFakes.FakeYano node = new TestkitFakes.FakeYano(HEALTHY);
         try (YanoDevnetTestKit kit = YanoDevnetTestKit.from(node)) {
             String result = kit.snapshots().withSnapshot("baseline", () -> "done");
 
@@ -31,7 +31,7 @@ class YanoWorkflowHelpersTest {
 
     @Test
     void withSnapshotRestoresAfterFailingAction() {
-        TestkitFakes.FakeYanoNode node = new TestkitFakes.FakeYanoNode(HEALTHY);
+        TestkitFakes.FakeYano node = new TestkitFakes.FakeYano(HEALTHY);
         try (YanoDevnetTestKit kit = YanoDevnetTestKit.from(node)) {
             assertThrows(IllegalStateException.class, () -> kit.snapshots().withSnapshot("baseline", () -> {
                 throw new IllegalStateException("boom");
@@ -43,7 +43,7 @@ class YanoWorkflowHelpersTest {
 
     @Test
     void advanceToEpochUsesConfiguredEpochLength() {
-        TestkitFakes.FakeYanoNode node = new TestkitFakes.FakeYanoNode(HEALTHY, List.of(), tip(150, 12));
+        TestkitFakes.FakeYano node = new TestkitFakes.FakeYano(HEALTHY, List.of(), tip(150, 12));
         try (YanoDevnetTestKit kit = YanoDevnetTestKit.from(node)) {
             kit.time().advanceToEpoch(3);
 
@@ -53,7 +53,7 @@ class YanoWorkflowHelpersTest {
 
     @Test
     void crossEpochBoundaryAdvancesToNextEpoch() {
-        TestkitFakes.FakeYanoNode node = new TestkitFakes.FakeYanoNode(HEALTHY, List.of(), tip(150, 12));
+        TestkitFakes.FakeYano node = new TestkitFakes.FakeYano(HEALTHY, List.of(), tip(150, 12));
         try (YanoDevnetTestKit kit = YanoDevnetTestKit.from(node)) {
             kit.time().crossEpochBoundary();
 
@@ -84,7 +84,7 @@ class YanoWorkflowHelpersTest {
 
     @Test
     void submitCopiesCborAndReturnsTxHash() {
-        TestkitFakes.FakeYanoNode node = new TestkitFakes.FakeYanoNode(HEALTHY);
+        TestkitFakes.FakeYano node = new TestkitFakes.FakeYano(HEALTHY);
         node.txGateway.txHash = "submitted";
         try (YanoDevnetTestKit kit = YanoDevnetTestKit.from(node)) {
             byte[] txCbor = new byte[]{1, 2, 3};
@@ -99,7 +99,7 @@ class YanoWorkflowHelpersTest {
 
     @Test
     void submitAndAwaitWaitsForVisibleOutput() {
-        TestkitFakes.FakeYanoNode node = new TestkitFakes.FakeYanoNode(HEALTHY,
+        TestkitFakes.FakeYano node = new TestkitFakes.FakeYano(HEALTHY,
                 List.of(utxo("submitted", 0, "addr_test1", 1_000_000L)));
         node.txGateway.txHash = "submitted";
 
@@ -110,7 +110,7 @@ class YanoWorkflowHelpersTest {
 
     @Test
     void evaluateUsesGatewayWhenAvailable() throws Exception {
-        TestkitFakes.FakeYanoNode node = new TestkitFakes.FakeYanoNode(HEALTHY);
+        TestkitFakes.FakeYano node = new TestkitFakes.FakeYano(HEALTHY);
         node.txEvaluationGateway.available = true;
         node.txEvaluationGateway.results = new java.util.ArrayList<>(
                 List.of(new TxEvaluationResult("spend", 0, 10, 20)));

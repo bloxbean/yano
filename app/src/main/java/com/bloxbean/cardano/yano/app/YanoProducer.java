@@ -17,7 +17,7 @@ import com.bloxbean.cardano.yano.app.bootstrap.BootstrapConfigParser;
 import com.bloxbean.cardano.yano.bootstrap.providers.DefaultBootstrapDataProviderFactory;
 import com.bloxbean.cardano.yano.devnet.YanoDevnetAssembly;
 import com.bloxbean.cardano.yano.runtime.assembly.YanoAssembly;
-import com.bloxbean.cardano.yano.runtime.assembly.YanoNode;
+import com.bloxbean.cardano.yano.runtime.assembly.Yano;
 import com.bloxbean.cardano.yano.runtime.config.DnsCachePolicy;
 import com.bloxbean.cardano.yano.runtime.config.GenesisFileResolver;
 import com.bloxbean.cardano.yano.runtime.config.NetworkGenesisConfig;
@@ -54,7 +54,7 @@ import java.util.Set;
 
 /**
  * Quarkus composition boundary that maps application properties to a
- * role-specific {@link YanoNode}.
+ * role-specific {@link Yano}.
  */
 @ApplicationScoped
 public class YanoProducer {
@@ -345,15 +345,15 @@ public class YanoProducer {
     java.util.Optional<String> protocolParametersFile;
 
     private final ClassLoader pluginClassLoader;
-    private YanoNode yanoNode;
+    private Yano yano;
 
     public YanoProducer(@Named("pluginClassLoader") ClassLoader pluginClassLoader) {
         this.pluginClassLoader = pluginClassLoader;
     }
 
-    private YanoNode ensureYanoNode() {
-        if (yanoNode != null) {
-            return yanoNode;
+    private Yano ensureYano() {
+        if (yano != null) {
+            return yano;
         }
 
         log.info("Creating Yano with network: {}", network);
@@ -544,7 +544,7 @@ public class YanoProducer {
                     .ifPresent(assembly::bootstrapDataProvider);
         }
 
-        yanoNode = assembly.transactionBootstrap(
+        yano = assembly.transactionBootstrap(
                         TransactionBootstrapOptions.of(
                                 txEvaluationEnabled,
                                 YanoAssembly.effectiveDerivedLedgerStateEnabled(yaciConfig, epochParamsTrackingEnabled),
@@ -554,69 +554,69 @@ public class YanoProducer {
                 .build();
         log.info("Yano created successfully");
 
-        return yanoNode;
+        return yano;
     }
 
     @Produces
     @ApplicationScoped
     public NodeLifecycle createNodeLifecycle() {
-        return ensureYanoNode().lifecycle();
+        return ensureYano().lifecycle();
     }
 
     @Produces
     @ApplicationScoped
     public ChainQuery createChainQuery() {
-        return ensureYanoNode().chain();
+        return ensureYano().chain();
     }
 
     @Produces
     @ApplicationScoped
     public LedgerQuery createLedgerQuery() {
-        return ensureYanoNode().ledger();
+        return ensureYano().ledger();
     }
 
     @Produces
     @ApplicationScoped
     public TxGateway createTxGateway() {
-        return ensureYanoNode().txGateway();
+        return ensureYano().txGateway();
     }
 
     @Produces
     @ApplicationScoped
     public TxEvaluationGateway createTxEvaluationGateway() {
-        return ensureYanoNode().txEvaluationGateway();
+        return ensureYano().txEvaluationGateway();
     }
 
     @Produces
     @ApplicationScoped
     public ProducerControl createProducerControl() {
-        return ensureYanoNode().producerControl().orElse(UnavailableProducerControl.INSTANCE);
+        return ensureYano().producerControl().orElse(UnavailableProducerControl.INSTANCE);
     }
 
     @Produces
     @ApplicationScoped
     public DevnetControl createDevnetControl() {
-        return ensureYanoNode().devnetControl().orElse(UnavailableDevnetControl.INSTANCE);
+        return ensureYano().devnetControl().orElse(UnavailableDevnetControl.INSTANCE);
     }
 
     @Produces
     @ApplicationScoped
     public DebugLedgerStateAccess createDebugLedgerStateAccess() {
-        return ensureYanoNode().debugLedgerStateAccess()
+        return ensureYano().debugLedgerStateAccess()
                 .orElseThrow(() -> new IllegalStateException("Debug ledger-state access unavailable"));
     }
 
     @Produces
     @ApplicationScoped
     public NodeKernel createNodeKernel() {
-        return ensureYanoNode().kernel()
+        return ensureYano().kernel()
                 .orElseThrow(() -> new IllegalStateException("Runtime kernel unavailable"));
     }
 
     @Produces
     @ApplicationScoped
     public RuntimeMaintenanceGate createRuntimeMaintenanceGate() {
-        return ensureYanoNode().maintenanceGate()
+        return ensureYano().maintenanceGate()
                 .orElseThrow(() -> new IllegalStateException("Runtime maintenance gate unavailable"));
     }
 
@@ -627,7 +627,7 @@ public class YanoProducer {
         if (autoSyncStart) {
             try {
                 log.info("Auto-starting Yano synchronization...");
-                ensureYanoNode().start();
+                ensureYano().start();
                 log.info("Yano started automatically and syncing with {} network", network);
                 log.info("REST API available at {}/ for manual control", nodeApiBaseUrl());
             } catch (Exception e) {
@@ -665,9 +665,9 @@ public class YanoProducer {
 
     void onStop(@Observes ShutdownEvent event) {
         log.info("Yano application shutting down...");
-        if (yanoNode != null) {
+        if (yano != null) {
             log.info("Stopping Yano...");
-            yanoNode.close();
+            yano.close();
             log.info("Yano stopped");
         }
     }

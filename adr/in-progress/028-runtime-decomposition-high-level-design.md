@@ -2,8 +2,8 @@
 
 This document summarizes the post-ADR-028 runtime shape after the pre-release API
 cleanup. Public construction goes through `YanoAssembly`; consumers use
-`YanoNode` and narrow role interfaces. The old `Yano` and `NodeAPI` public
-surfaces are removed.
+`Yano` and narrow role interfaces. The old broad `Yano` construction surface
+and `NodeAPI` public facade are removed.
 
 ## C4 Context
 
@@ -29,7 +29,7 @@ flowchart LR
 flowchart TB
     Adapter["Application adapter\nYanoProducer or future starter"]
     Assembly["YanoAssembly\ncomposition root"]
-    Node["YanoNode\nrole handle"]
+    Node["Yano\nrole handle"]
     Runtime["runtime.internal.RuntimeNode\ninternal runtime implementation"]
     Kernel["NodeKernel\nlifecycle and health"]
     Roles["Role interfaces\nNodeLifecycle, ChainQuery, LedgerQuery,\nTxGateway, TxEvaluationGateway,\nProducerControl, DevnetControl"]
@@ -81,7 +81,7 @@ flowchart TB
 sequenceDiagram
     participant Host as Host adapter
     participant Assembly as YanoAssembly
-    participant Node as YanoNode
+    participant Node as Yano
     participant Runtime as runtime.internal.RuntimeNode
     participant Sync as SyncSubsystem
     participant Storage as ChainStorageSubsystem
@@ -91,7 +91,7 @@ sequenceDiagram
 
     Host->>Assembly: fromConfig(config).runtimeOptions(options).build()
     Assembly->>Runtime: construct internal runtime and install optional services
-    Assembly-->>Host: YanoNode role handle
+    Assembly-->>Host: Yano role handle
     Host->>Node: lifecycle().start()
     Node->>Runtime: start()
     Runtime->>Storage: start lifecycle-owned pruning/recovery checks
@@ -130,9 +130,10 @@ sequenceDiagram
 
 ## API Boundary Rules
 
-- Embedders construct with `YanoAssembly` and hold `YanoNode`.
+- Embedders construct with `YanoAssembly` and hold `Yano`.
 - App adapters expose only the role beans they need.
-- `NodeAPI`, direct public `Yano` construction, and raw mempool access are gone.
+- `NodeAPI`, the old direct public `Yano` construction path, and raw mempool
+  access are gone.
 - `ChainQuery` exposes tip/block reads and does not leak the raw `ChainState`
   object to adapters or REST resources.
 - Account-state providers receive `ChainBlockReader` for replay/reconciliation

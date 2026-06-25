@@ -2,7 +2,7 @@ package com.bloxbean.cardano.yano.devnet;
 
 import com.bloxbean.cardano.yano.api.config.YanoConfig;
 import com.bloxbean.cardano.yano.runtime.assembly.YanoAssembly;
-import com.bloxbean.cardano.yano.runtime.assembly.YanoNode;
+import com.bloxbean.cardano.yano.runtime.assembly.Yano;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -16,7 +16,7 @@ class YanoDevnetAssemblyTest {
 
     @Test
     void runtimeDevnetRecipeBuildsNodeOnlyWithoutDevnetControl() {
-        YanoNode node = YanoAssembly.devnet(devnetConfig("runtime")).build();
+        Yano node = YanoAssembly.devnet(devnetConfig("runtime")).build();
 
         try {
             assertTrue(node.producerControl().isPresent());
@@ -28,7 +28,7 @@ class YanoDevnetAssemblyTest {
 
     @Test
     void toolkitDevnetRecipeDecoratesNodeWithDevnetControl() {
-        YanoNode node = YanoDevnetAssembly.devnet(devnetConfig("toolkit")).build();
+        Yano node = YanoDevnetAssembly.devnet(devnetConfig("toolkit")).build();
 
         try {
             assertTrue(node.producerControl().isPresent());
@@ -43,7 +43,7 @@ class YanoDevnetAssemblyTest {
         YanoConfig config = devnetConfig("time-travel");
         config.setPastTimeTravelMode(true);
 
-        YanoNode node = YanoDevnetAssembly.devnetTimeTravel(config).build();
+        Yano node = YanoDevnetAssembly.devnetTimeTravel(config).build();
 
         try {
             assertTrue(node.producerControl().isPresent());
@@ -55,7 +55,7 @@ class YanoDevnetAssemblyTest {
 
     @Test
     void toolkitFromConfigDecoratesDevnetAndTimeTravelOnly() {
-        YanoNode devnetNode = YanoDevnetAssembly.fromConfig(devnetConfig("from-config-devnet")).build();
+        Yano devnetNode = YanoDevnetAssembly.fromConfig(devnetConfig("from-config-devnet")).build();
         try {
             assertTrue(devnetNode.devnetControl().isPresent());
         } finally {
@@ -64,7 +64,7 @@ class YanoDevnetAssemblyTest {
 
         YanoConfig timeTravelConfig = devnetConfig("from-config-time-travel");
         timeTravelConfig.setPastTimeTravelMode(true);
-        YanoNode timeTravelNode = YanoDevnetAssembly.fromConfig(timeTravelConfig).build();
+        Yano timeTravelNode = YanoDevnetAssembly.fromConfig(timeTravelConfig).build();
         try {
             assertTrue(timeTravelNode.devnetControl().isPresent());
         } finally {
@@ -73,14 +73,14 @@ class YanoDevnetAssemblyTest {
 
         YanoConfig slotLeaderConfig = devnetConfig("from-config-slot-leader");
         slotLeaderConfig.setSlotLeaderMode(true);
-        YanoNode slotLeaderNode = YanoDevnetAssembly.fromConfig(slotLeaderConfig).build();
+        Yano slotLeaderNode = YanoDevnetAssembly.fromConfig(slotLeaderConfig).build();
         try {
             assertTrue(slotLeaderNode.devnetControl().isEmpty());
         } finally {
             slotLeaderNode.close();
         }
 
-        YanoNode relayNode = YanoDevnetAssembly.fromConfig(YanoConfig.serverOnly(0)).build();
+        Yano relayNode = YanoDevnetAssembly.fromConfig(YanoConfig.serverOnly(0)).build();
         try {
             assertTrue(relayNode.devnetControl().isEmpty());
         } finally {

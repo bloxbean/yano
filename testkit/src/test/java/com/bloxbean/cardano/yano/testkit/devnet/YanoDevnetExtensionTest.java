@@ -61,7 +61,7 @@ class YanoDevnetExtensionTest {
 
     @Test
     void startNodeStartsAndAfterEachClosesStoredKit() {
-        TestkitFakes.FakeYanoNode node = new TestkitFakes.FakeYanoNode(TestkitFakes.status(false, false));
+        TestkitFakes.FakeYano node = new TestkitFakes.FakeYano(TestkitFakes.status(false, false));
         YanoDevnetExtension extension = YanoDevnetExtension
                 .managed(() -> YanoDevnetTestKit.from(node))
                 .startNode();

@@ -8,7 +8,7 @@ import com.bloxbean.cardano.yano.api.model.NodeStatus;
 import com.bloxbean.cardano.yano.api.model.ProtocolParamsSnapshot;
 import com.bloxbean.cardano.yano.api.utxo.UtxoState;
 import com.bloxbean.cardano.yano.api.util.EpochSlotCalc;
-import com.bloxbean.cardano.yano.runtime.assembly.YanoNode;
+import com.bloxbean.cardano.yano.runtime.assembly.Yano;
 
 import java.util.Map;
 import java.util.Objects;
@@ -18,9 +18,9 @@ import java.util.Optional;
  * Convenience read facade over public Yano query roles.
  */
 public final class YanoQueries {
-    private final YanoNode node;
+    private final Yano node;
 
-    YanoQueries(YanoNode node) {
+    YanoQueries(Yano node) {
         this.node = Objects.requireNonNull(node, "node");
     }
 

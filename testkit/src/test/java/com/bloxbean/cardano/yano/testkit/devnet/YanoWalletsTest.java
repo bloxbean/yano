@@ -63,7 +63,7 @@ class YanoWalletsTest {
 
     @Test
     void faucetFundsWalletDefaultAddress() {
-        TestkitFakes.FakeYanoNode node = new TestkitFakes.FakeYanoNode(HEALTHY);
+        TestkitFakes.FakeYano node = new TestkitFakes.FakeYano(HEALTHY);
         try (YanoDevnetTestKit kit = YanoDevnetTestKit.from(node)) {
             TestWallet wallet = kit.wallets().deterministicWallet(0);
 

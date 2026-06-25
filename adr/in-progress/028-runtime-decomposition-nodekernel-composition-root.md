@@ -161,13 +161,13 @@ The composition root is a first-class, testable artifact:
 
 ```java
 // Role presets (each ADR-027 role = one recipe)
-YanoNode node = YanoAssembly.relay(config).build();
-YanoNode node = YanoAssembly.devnet(genesis).build();
-YanoNode node = YanoAssembly.devnetTimeTravel(genesis).build();
+Yano node = YanoAssembly.relay(config).build();
+Yano node = YanoAssembly.devnet(genesis).build();
+Yano node = YanoAssembly.devnetTimeTravel(genesis).build();
 // future: YanoAssembly.verifyingRelay(config), .txGateway(config), .edgeNode(config)
 
 // Targeted overrides for embedders and tests — replace any component, keep the recipe
-YanoNode node = YanoAssembly.relay(config)
+Yano node = YanoAssembly.relay(config)
         .memPool(customMemPool)
         .stakeDataProvider(customProvider)
         .addSubsystem(myMetricsSubsystem)
@@ -181,19 +181,19 @@ YanoNode node = YanoAssembly.relay(config)
   owning subsystem): protocol-params resolution chain, validator/evaluator
   bootstrap, bootstrap-mode derivation, retention config normalization. This is the
   single biggest payoff: every framework gets it for free.
-- `YanoNode` is the new thin handle: `start()`, `stop()`, `close()`, `kernel()`,
+- `Yano` is the new thin handle: `start()`, `stop()`, `close()`, `kernel()`,
   plus typed accessors to the segregated APIs (Decision 6).
 
 ## Decision 5 — Framework integration via thin adapters, config as the contract
 
 The integration contract is: **framework config → `YanoConfig` → `YanoAssembly` →
-expose `YanoNode` (and selected APIs) as beans → bridge lifecycle.** Nothing else.
+expose `Yano` (and selected APIs) as beans → bridge lifecycle.** Nothing else.
 
 | Host | Adapter | Contents (~100–300 lines each) |
 |---|---|---|
 | Plain Java | none needed | `YanoAssembly.relay(cfg).build().start()` |
 | Quarkus | existing `app` module, refactored | thin CDI producer + `StartupEvent`/`ShutdownEvent` bridge; `YanoProducer` shrinks from ~1,160 lines to a config mapper |
-| Spring Boot | new `yano-spring-boot-starter` | `@AutoConfiguration` + `@ConfigurationProperties("yano")` → `YanoConfig`; `SmartLifecycle` bridge; exposes `YanoNode` + segregated API beans |
+| Spring Boot | new `yano-spring-boot-starter` | `@AutoConfiguration` + `@ConfigurationProperties("yano")` → `YanoConfig`; `SmartLifecycle` bridge; exposes `Yano` + segregated API beans |
 | Micronaut | new `yano-micronaut` (on demand) | `@Factory` + `@ConfigurationProperties`; `ApplicationEventListener` lifecycle bridge |
 
 Adapter rules: **zero assembly logic** in adapters; adapters may only (a) map
@@ -238,13 +238,13 @@ when a provider explicitly needs RocksDB handles. It does not receive the mutabl
 `ChainState` implementation, so a future storage engine can supply the same read
 contract without emulating `DirectRocksDBChainState`.
 
-The former public `Yano` construction surface is removed in the same cleanup. The
+The former broad public `Yano` construction surface is removed in the same cleanup. The
 runtime implementation is `runtime.internal.RuntimeNode`, wired by `YanoAssembly`
-and exposed through `YanoNode` plus the role interfaces above. Direct embedders
+and exposed through `Yano` plus the role interfaces above. Direct embedders
 should use:
 
 ```java
-YanoNode node = YanoAssembly.relay(config).build();
+Yano node = YanoAssembly.relay(config).build();
 node.lifecycle().start();
 ```
 
@@ -256,7 +256,7 @@ rewriting the whole runtime:
 - Add `NodeKernel`, `Subsystem`, `SubsystemContext`, `Schedulers`, and typed
   `SubsystemHealth`, with lifecycle tests for ordered start/stop/close and failure
   cleanup.
-- Add `YanoAssembly` and `YanoNode` recipes backed by `RuntimeYanoNode`. This
+- Add `YanoAssembly` and `Yano` recipes backed by `RuntimeYano`. This
   makes the composition root real and testable while keeping construction policy
   out of framework adapters.
 - Split `NodeAPI` into narrow role interfaces and delete the broad umbrella
@@ -963,7 +963,7 @@ subsystems.
    `Schedulers`, and making kernel health the load-bearing readiness source is
    postponed as a follow-up lifecycle stage.
 6. Introduce `YanoAssembly` with `relay`/`devnet`/`devnetTimeTravel` recipes. This
-   is implemented through `RuntimeYanoNode`; the broad facade has been removed.
+   is implemented through `RuntimeYano`; the broad facade has been removed.
 7. Collapse the three producer fields into `ProducerSubsystem` strategies.
    Implemented for the active strategy holder and capability methods; producer
    construction policy is now behind devnet and slot-leader runtime factories.

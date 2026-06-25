@@ -11,7 +11,7 @@ import com.bloxbean.cardano.yano.api.bootstrap.BootstrapDataProvider;
 import com.bloxbean.cardano.yano.api.config.RuntimeOptions;
 import com.bloxbean.cardano.yano.api.config.YanoConfig;
 import com.bloxbean.cardano.yano.runtime.assembly.YanoAssembly;
-import com.bloxbean.cardano.yano.runtime.assembly.YanoNode;
+import com.bloxbean.cardano.yano.runtime.assembly.Yano;
 import com.bloxbean.cardano.yano.runtime.config.InMemoryDevnetGenesis;
 import com.bloxbean.cardano.yano.runtime.debug.DebugLedgerStateAccess;
 import com.bloxbean.cardano.yano.runtime.devnet.spi.DevnetRuntime;
@@ -144,8 +144,8 @@ public final class YanoDevnetAssembly {
          *
          * @return assembled node
          */
-        public YanoNode build() {
-            YanoNode node = delegate.build();
+        public Yano build() {
+            Yano node = delegate.build();
             if (!decorateDevnetControl) {
                 return node;
             }
@@ -153,10 +153,10 @@ public final class YanoDevnetAssembly {
             DevnetRuntime runtime = devnetRuntime(node)
                     .orElseThrow(() -> new IllegalStateException(
                             "Devnet runtime SPI unavailable for toolkit assembly"));
-            return new DevnetYanoNode(node, DevnetToolkit.from(runtime));
+            return new DevnetYano(node, DevnetToolkit.from(runtime));
         }
 
-        private Optional<DevnetRuntime> devnetRuntime(YanoNode node) {
+        private Optional<DevnetRuntime> devnetRuntime(Yano node) {
             if (node instanceof DevnetRuntimeProvider provider) {
                 return provider.devnetRuntime();
             }
@@ -164,11 +164,11 @@ public final class YanoDevnetAssembly {
         }
     }
 
-    private static final class DevnetYanoNode implements YanoNode, DevnetRuntimeProvider {
-        private final YanoNode delegate;
+    private static final class DevnetYano implements Yano, DevnetRuntimeProvider {
+        private final Yano delegate;
         private final DevnetControl devnetControl;
 
-        private DevnetYanoNode(YanoNode delegate, DevnetControl devnetControl) {
+        private DevnetYano(Yano delegate, DevnetControl devnetControl) {
             this.delegate = Objects.requireNonNull(delegate, "delegate");
             this.devnetControl = Objects.requireNonNull(devnetControl, "devnetControl");
         }

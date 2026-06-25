@@ -29,12 +29,12 @@ import java.util.Objects;
 import java.util.Optional;
 
 /**
- * Default {@link YanoNode} implementation returned by {@link YanoAssembly}.
+ * Default {@link Yano} implementation returned by {@link YanoAssembly}.
  *
  * <p>This type binds the role-specific API facets to a lifecycle backed by the
  * runtime kernel.</p>
  */
-final class RuntimeYanoNode implements YanoNode, DevnetRuntimeProvider {
+final class RuntimeYano implements Yano, DevnetRuntimeProvider {
     private final NodeLifecycle nodeLifecycle;
     private final ChainQuery chainQuery;
     private final LedgerQuery ledgerQuery;
@@ -48,16 +48,16 @@ final class RuntimeYanoNode implements YanoNode, DevnetRuntimeProvider {
     private final NodeKernel kernel;
     private final NodeLifecycle lifecycle;
 
-    RuntimeYanoNode(NodeLifecycle nodeLifecycle,
-                    ChainQuery chainQuery,
-                    LedgerQuery ledgerQuery,
-                    TxGateway txGateway,
-                    TxEvaluationGateway txEvaluationGateway,
-                    ProducerControl producerControl,
-                    RuntimeMaintenanceGate maintenanceGate,
-                    DebugLedgerStateAccess debugLedgerStateAccess,
-                    AutoCloseable closeable,
-                    YanoAssembly.Role role) {
+    RuntimeYano(NodeLifecycle nodeLifecycle,
+                ChainQuery chainQuery,
+                LedgerQuery ledgerQuery,
+                TxGateway txGateway,
+                TxEvaluationGateway txEvaluationGateway,
+                ProducerControl producerControl,
+                RuntimeMaintenanceGate maintenanceGate,
+                DebugLedgerStateAccess debugLedgerStateAccess,
+                AutoCloseable closeable,
+                YanoAssembly.Role role) {
         this(nodeLifecycle,
                 chainQuery,
                 ledgerQuery,
@@ -71,17 +71,17 @@ final class RuntimeYanoNode implements YanoNode, DevnetRuntimeProvider {
                 new Schedulers());
     }
 
-    RuntimeYanoNode(NodeLifecycle nodeLifecycle,
-                    ChainQuery chainQuery,
-                    LedgerQuery ledgerQuery,
-                    TxGateway txGateway,
-                    TxEvaluationGateway txEvaluationGateway,
-                    ProducerControl producerControl,
-                    RuntimeMaintenanceGate maintenanceGate,
-                    DebugLedgerStateAccess debugLedgerStateAccess,
-                    AutoCloseable closeable,
-                    YanoAssembly.Role role,
-                    Schedulers schedulers) {
+    RuntimeYano(NodeLifecycle nodeLifecycle,
+                ChainQuery chainQuery,
+                LedgerQuery ledgerQuery,
+                TxGateway txGateway,
+                TxEvaluationGateway txEvaluationGateway,
+                ProducerControl producerControl,
+                RuntimeMaintenanceGate maintenanceGate,
+                DebugLedgerStateAccess debugLedgerStateAccess,
+                AutoCloseable closeable,
+                YanoAssembly.Role role,
+                Schedulers schedulers) {
         this.nodeLifecycle = Objects.requireNonNull(nodeLifecycle, "nodeLifecycle");
         this.chainQuery = Objects.requireNonNull(chainQuery, "chainQuery");
         this.ledgerQuery = Objects.requireNonNull(ledgerQuery, "ledgerQuery");

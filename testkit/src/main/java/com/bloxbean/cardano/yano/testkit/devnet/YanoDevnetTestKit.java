@@ -9,7 +9,7 @@ import com.bloxbean.cardano.yano.api.TxEvaluationGateway;
 import com.bloxbean.cardano.yano.api.TxGateway;
 import com.bloxbean.cardano.yano.api.config.YanoConfig;
 import com.bloxbean.cardano.yano.devnet.YanoDevnetAssembly;
-import com.bloxbean.cardano.yano.runtime.assembly.YanoNode;
+import com.bloxbean.cardano.yano.runtime.assembly.Yano;
 
 import java.util.Objects;
 import java.util.Optional;
@@ -19,7 +19,7 @@ import java.util.Optional;
  * {@link DevnetControl} role.
  */
 public final class YanoDevnetTestKit implements AutoCloseable {
-    private final YanoNode node;
+    private final Yano node;
     private final DevnetControl devnet;
     private final AutoCloseable cleanup;
     private final YanoQueries queries;
@@ -86,7 +86,7 @@ public final class YanoDevnetTestKit implements AutoCloseable {
         return build(config, true);
     }
 
-    static YanoDevnetTestKit from(YanoNode node) {
+    static YanoDevnetTestKit from(Yano node) {
         Objects.requireNonNull(node, "node");
         DevnetControl devnet = node.devnetControl()
                 .orElseThrow(() -> new IllegalArgumentException(
@@ -94,11 +94,11 @@ public final class YanoDevnetTestKit implements AutoCloseable {
         return new YanoDevnetTestKit(node, devnet);
     }
 
-    private YanoDevnetTestKit(YanoNode node, DevnetControl devnet) {
+    private YanoDevnetTestKit(Yano node, DevnetControl devnet) {
         this(node, devnet, null);
     }
 
-    private YanoDevnetTestKit(YanoNode node, DevnetControl devnet, AutoCloseable cleanup) {
+    private YanoDevnetTestKit(Yano node, DevnetControl devnet, AutoCloseable cleanup) {
         this.node = Objects.requireNonNull(node, "node");
         this.devnet = Objects.requireNonNull(devnet, "devnet");
         this.cleanup = cleanup;
@@ -120,7 +120,7 @@ public final class YanoDevnetTestKit implements AutoCloseable {
                 : YanoDevnetAssembly.devnet(config.yanoConfig());
         builder.runtimeOptions(config.runtimeOptions());
         config.inMemoryGenesis().ifPresent(builder::inMemoryGenesis);
-        YanoNode node = null;
+        Yano node = null;
         try {
             node = builder.build();
             return from(node, config);
@@ -130,7 +130,7 @@ public final class YanoDevnetTestKit implements AutoCloseable {
         }
     }
 
-    private static YanoDevnetTestKit from(YanoNode node, AutoCloseable cleanup) {
+    private static YanoDevnetTestKit from(Yano node, AutoCloseable cleanup) {
         Objects.requireNonNull(node, "node");
         DevnetControl devnet = node.devnetControl()
                 .orElseThrow(() -> new IllegalArgumentException(
@@ -138,7 +138,7 @@ public final class YanoDevnetTestKit implements AutoCloseable {
         return new YanoDevnetTestKit(node, devnet, cleanup);
     }
 
-    private static void closeAfterFailedBuild(YanoNode node, AutoCloseable cleanup, Throwable failure) {
+    private static void closeAfterFailedBuild(Yano node, AutoCloseable cleanup, Throwable failure) {
         if (node != null) {
             try {
                 node.close();

@@ -32,7 +32,7 @@ import com.bloxbean.cardano.yano.api.model.TxEvaluationResult;
 import com.bloxbean.cardano.yano.api.utxo.UtxoState;
 import com.bloxbean.cardano.yano.api.utxo.model.AssetAmount;
 import com.bloxbean.cardano.yano.api.utxo.model.Outpoint;
-import com.bloxbean.cardano.yano.runtime.assembly.YanoNode;
+import com.bloxbean.cardano.yano.runtime.assembly.Yano;
 import com.bloxbean.cardano.yano.runtime.kernel.NodeKernel;
 import com.bloxbean.cardano.yano.testkit.ccl.YanoBackendService;
 
@@ -55,7 +55,7 @@ class YanoBackendServiceTest {
         com.bloxbean.cardano.yano.api.utxo.model.Utxo yanoUtxo = yanoUtxo(
                 "tx-1", 0, "addr_test1", 2_000_000L,
                 List.of(new AssetAmount("policy", "746f6b656e", BigInteger.valueOf(7))));
-        try (YanoDevnetTestKit kit = kit(new FakeYanoNode(List.of(yanoUtxo), true))) {
+        try (YanoDevnetTestKit kit = kit(new FakeYano(List.of(yanoUtxo), true))) {
             BackendService backend = YanoBackendService.from(kit);
 
             Result<List<Utxo>> utxos = backend.getUtxoService().getUtxos("addr_test1", 10, 1);
@@ -77,7 +77,7 @@ class YanoBackendServiceTest {
 
     @Test
     void transactionSubmitAndEvaluateUsePublicGateways() throws Exception {
-        FakeYanoNode node = new FakeYanoNode(List.of(), true);
+        FakeYano node = new FakeYano(List.of(), true);
         node.txGateway.txHash = "submitted";
         node.txEvaluationGateway.available = true;
         node.txEvaluationGateway.results = List.of(new TxEvaluationResult("spend", 0, 10, 20));
@@ -101,7 +101,7 @@ class YanoBackendServiceTest {
 
     @Test
     void disabledUtxoStateFailsClearly() {
-        try (YanoDevnetTestKit kit = kit(new FakeYanoNode(List.of(), false))) {
+        try (YanoDevnetTestKit kit = kit(new FakeYano(List.of(), false))) {
             BackendService backend = YanoBackendService.from(kit);
 
             ApiException error = assertThrows(ApiException.class,
@@ -113,7 +113,7 @@ class YanoBackendServiceTest {
 
     @Test
     void unsupportedServicesFailClearly() {
-        try (YanoDevnetTestKit kit = kit(new FakeYanoNode(List.of(), true))) {
+        try (YanoDevnetTestKit kit = kit(new FakeYano(List.of(), true))) {
             BackendService backend = YanoBackendService.from(kit);
 
             UnsupportedOperationException error = assertThrows(UnsupportedOperationException.class,
@@ -130,7 +130,7 @@ class YanoBackendServiceTest {
         config.setByronSlotsPerEpoch(100L);
         config.setFirstNonByronSlot(300L);
 
-        try (YanoDevnetTestKit kit = kit(new FakeYanoNode(List.of(), true, config, "{}"))) {
+        try (YanoDevnetTestKit kit = kit(new FakeYano(List.of(), true, config, "{}"))) {
             BackendService backend = YanoBackendService.from(kit);
 
             Result<EpochContent> byronEpoch = backend.getEpochService().getEpoch(2);
@@ -146,7 +146,7 @@ class YanoBackendServiceTest {
     }
 
     @Test
-    void protocolParametersFallbackParsesYanoNodeJsonWithCclMapping() throws Exception {
+    void protocolParametersFallbackParsesYanoProtocolParamsJsonWithCclMapping() throws Exception {
         String protocolParamsJson = """
                 {
                   "min_fee_a": 44,
@@ -162,7 +162,7 @@ class YanoBackendServiceTest {
                 }
                 """;
 
-        try (YanoDevnetTestKit kit = kit(new FakeYanoNode(List.of(), true,
+        try (YanoDevnetTestKit kit = kit(new FakeYano(List.of(), true,
                 defaultConfig(), protocolParamsJson))) {
             BackendService backend = YanoBackendService.from(kit);
 
@@ -179,7 +179,7 @@ class YanoBackendServiceTest {
         }
     }
 
-    private static YanoDevnetTestKit kit(FakeYanoNode node) {
+    private static YanoDevnetTestKit kit(FakeYano node) {
         return YanoDevnetTestKit.from(node);
     }
 
@@ -208,7 +208,7 @@ class YanoBackendServiceTest {
                 "block");
     }
 
-    private static final class FakeYanoNode implements YanoNode {
+    private static final class FakeYano implements Yano {
         final FakeTxGateway txGateway = new FakeTxGateway();
         final FakeTxEvaluationGateway txEvaluationGateway = new FakeTxEvaluationGateway();
         private final List<com.bloxbean.cardano.yano.api.utxo.model.Utxo> utxos;
@@ -216,11 +216,11 @@ class YanoBackendServiceTest {
         private final YanoConfig config;
         private final String protocolParamsJson;
 
-        private FakeYanoNode(List<com.bloxbean.cardano.yano.api.utxo.model.Utxo> utxos, boolean utxoEnabled) {
+        private FakeYano(List<com.bloxbean.cardano.yano.api.utxo.model.Utxo> utxos, boolean utxoEnabled) {
             this(utxos, utxoEnabled, defaultConfig(), "{}");
         }
 
-        private FakeYanoNode(List<com.bloxbean.cardano.yano.api.utxo.model.Utxo> utxos,
+        private FakeYano(List<com.bloxbean.cardano.yano.api.utxo.model.Utxo> utxos,
                              boolean utxoEnabled,
                              YanoConfig config,
                              String protocolParamsJson) {

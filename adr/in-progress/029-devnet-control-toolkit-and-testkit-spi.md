@@ -279,12 +279,12 @@ DTOs.
 The runtime and toolkit support distinct assembly paths:
 
 ```java
-YanoNode node = YanoAssembly.relay(config).build();
-YanoNode node = YanoAssembly.devnet(config).build();
-YanoNode node = YanoAssembly.devnetTimeTravel(config).build();
+Yano node = YanoAssembly.relay(config).build();
+Yano node = YanoAssembly.devnet(config).build();
+Yano node = YanoAssembly.devnetTimeTravel(config).build();
 
-YanoNode node = YanoDevnetAssembly.devnet(config).build();
-YanoNode node = YanoDevnetAssembly.devnetTimeTravel(config).build();
+Yano node = YanoDevnetAssembly.devnet(config).build();
+Yano node = YanoDevnetAssembly.devnetTimeTravel(config).build();
 ```
 
 `YanoAssembly` remains the runtime composition root. Its `devnet(...)`,

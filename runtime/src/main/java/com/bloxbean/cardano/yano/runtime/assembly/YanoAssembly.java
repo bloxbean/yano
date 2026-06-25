@@ -130,7 +130,7 @@ public final class YanoAssembly {
 
     /**
      * Mutable assembly recipe used to configure optional runtime collaborators
-     * before creating a {@link YanoNode}.
+     * before creating a {@link Yano}.
      */
     public static final class Builder {
         private final Role role;
@@ -178,13 +178,13 @@ public final class YanoAssembly {
             return this;
         }
 
-        public YanoNode build() {
+        public Yano build() {
             validateRole();
             Schedulers schedulers = new Schedulers();
             RuntimeNode runtimeNode = new RuntimeNode(config, runtimeOptions, inMemoryGenesis, producerStartupPlan(), schedulers);
             applyPreStartConfiguration(runtimeNode);
             installTransactionServices(runtimeNode);
-            return new RuntimeYanoNode(
+            return new RuntimeYano(
                     runtimeNode,
                     runtimeNode,
                     runtimeNode,

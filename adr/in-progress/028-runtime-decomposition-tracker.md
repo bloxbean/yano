@@ -46,10 +46,10 @@ those operations through an explicit `DevnetToolkit` implementation of
 debug interface instead of broad `NodeAPI`. The latest Stage E slices moved
 config-derived recipe routing, rollback-retention planning, bootstrap partial-state
 policy, bootstrap-provider selection, bundled genesis resolution/resources, and
-known-network default selection out of app-local logic. The pre-release cleanup removed the old public
-`Yano` class, the broad `NodeAPI` facade, raw `Yano.getMemPool()`, the public
+known-network default selection out of app-local logic. The pre-release cleanup removed the old broad public
+`Yano` construction surface, the `NodeAPI` facade, raw `Yano.getMemPool()`, the public
 `TxSubsystem` mempool accessor, and the unused in-memory devnet genesis setter;
-runtime construction now goes through `YanoAssembly`/`YanoNode` and role
+runtime construction now goes through `YanoAssembly`/`Yano` and role
 interfaces. `ChainQuery` now exposes tip/block reads directly instead of leaking
 raw `ChainState`, account-state providers receive `ChainBlockReader` plus optional
 `RocksDbAccess` instead of mutable chain storage, and the implementation class
@@ -68,8 +68,8 @@ and maintenance-failure signaling were completed under issue #21.
   - `SubsystemHealth`
 - Added explicit assembly entry points:
   - `YanoAssembly`
-  - `YanoNode`
-  - `RuntimeYanoNode`
+  - `Yano`
+  - `RuntimeYano`
 - Split and removed `NodeAPI`; `core-api` now exposes narrow role interfaces:
   - `NodeLifecycle`
   - `ChainQuery`
@@ -87,12 +87,12 @@ and maintenance-failure signaling were completed under issue #21.
 - Fixed lifecycle semantics:
   - `stop()` remains restartable
   - `close()` performs terminal cleanup
-  - app shutdown goes through `YanoNode.close()`
+  - app shutdown goes through `Yano.close()`
 - Scoped devnet controls to devnet assembly recipes through `DevnetToolkit`.
 - Plain slot-leader assemblies no longer advertise `DevnetControl`; devnet
   controls are exposed only for devnet/devnet-time-travel recipes.
 - Moved `RuntimeNode` to `com.bloxbean.cardano.yano.runtime.internal`; native-image
-  metadata and docs now point at `YanoAssembly`/`YanoNode` instead of `new Yano(...)`.
+  metadata and docs now point at `YanoAssembly`/`Yano` instead of `new Yano(...)`.
 - Removed raw `ChainState` from `ChainQuery`; REST resources now use role-level
   tip/block methods.
 - Removed raw `ChainState` from the account-state public SPI;
@@ -148,7 +148,7 @@ and maintenance-failure signaling were completed under issue #21.
   finishes.
 - Switched block producers to receive `Supplier<NodeServer>` so they use the
   current server after restart or snapshot restore.
-- Exposed the maintenance gate through `YanoNode.maintenanceGate()` so the app
+- Exposed the maintenance gate through `Yano.maintenanceGate()` so the app
   layer no longer downcasts directly to the legacy `Yano` facade.
 - Extracted `UtxoSubsystem` around:
   - UTXO store construction
@@ -1247,12 +1247,12 @@ The remaining compatibility cleanup tasks are complete:
 - Removed raw `ChainState` exposure from account-state extension points;
   providers receive `ChainBlockReader` and explicit `RocksDbAccess` only when a
   RocksDB-backed implementation is selected.
-- Removed the old public `Yano` runtime class name; runtime construction goes
-  through `YanoAssembly` and returns `YanoNode`. The internal implementation is
+- Removed the old broad public `Yano` construction surface; runtime construction goes
+  through `YanoAssembly` and returns `Yano`. The internal implementation is
   `com.bloxbean.cardano.yano.runtime.internal.RuntimeNode`.
 - Removed deprecated raw `Yano.getMemPool()`, the public `TxSubsystem` mempool
   accessor, and the unused `setInMemoryDevnetGenesis(...)` compatibility setter.
-- Replaced the app `NodeAPI` CDI producer with internal `YanoNode` caching and
+- Replaced the app `NodeAPI` CDI producer with internal `Yano` caching and
   narrow role producers.
 - Added explicit `DevnetToolkit` as the `DevnetControl` implementation. This
   packaging detail is superseded by ADR-029: `DevnetToolkit` and
@@ -1270,7 +1270,7 @@ snapshot restore, devnet, and sync behavior.
 ### Stage 21A - Kernel Ownership And Scheduler Context
 
 - Implemented shape: assembled `RuntimeNode` now implements `RuntimeKernelProvider`
-  and owns the `NodeKernel` returned by `YanoAssembly`. `RuntimeYanoNode` uses that
+  and owns the `NodeKernel` returned by `YanoAssembly`. `RuntimeYano` uses that
   kernel directly for runtime assemblies instead of wrapping the node in a second
   one-subsystem kernel.
 - Kernel subsystem order is explicit:
@@ -1380,7 +1380,7 @@ Historical rationale for the original deferral:
   `ChainStateSnapshots`, `ProducerSubsystem`, `UtxoStoreWriter`, genesis shift,
   and chain-state rollback/recovery operations.
 - The public API surface is already isolated. `core-api` exposes only the
-  optional `DevnetControl` role, and `YanoNode.devnetControl()` is present only
+  optional `DevnetControl` role, and `Yano.devnetControl()` is present only
   for devnet/devnet-time-travel recipes with dev mode and block production
   enabled. Relay and plain slot-leader assemblies do not expose devnet controls.
 - Keeping the code in `runtime` preserves straightforward Quarkus and plain Java

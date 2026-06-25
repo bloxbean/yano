@@ -23,7 +23,7 @@ import com.bloxbean.cardano.yano.api.model.TxEvaluationResult;
 import com.bloxbean.cardano.yano.api.utxo.UtxoState;
 import com.bloxbean.cardano.yano.api.utxo.model.Outpoint;
 import com.bloxbean.cardano.yano.api.utxo.model.Utxo;
-import com.bloxbean.cardano.yano.runtime.assembly.YanoNode;
+import com.bloxbean.cardano.yano.runtime.assembly.Yano;
 import com.bloxbean.cardano.yano.runtime.kernel.NodeKernel;
 
 import java.util.ArrayList;
@@ -35,19 +35,19 @@ final class TestkitFakes {
     }
 
     static YanoDevnetTestKit kit(NodeStatus status) {
-        return YanoDevnetTestKit.from(new FakeYanoNode(status));
+        return YanoDevnetTestKit.from(new FakeYano(status));
     }
 
     static YanoDevnetTestKit kit(NodeStatus status, List<Utxo> utxos) {
-        return YanoDevnetTestKit.from(new FakeYanoNode(status, utxos));
+        return YanoDevnetTestKit.from(new FakeYano(status, utxos));
     }
 
     static YanoDevnetTestKit kit(NodeStatus status, List<Utxo> utxos, boolean utxoEnabled) {
-        return YanoDevnetTestKit.from(new FakeYanoNode(status, utxos, null, utxoEnabled));
+        return YanoDevnetTestKit.from(new FakeYano(status, utxos, null, utxoEnabled));
     }
 
     static YanoDevnetTestKit kit(NodeStatus status, List<Utxo> utxos, ChainTip tip) {
-        return YanoDevnetTestKit.from(new FakeYanoNode(status, utxos, tip));
+        return YanoDevnetTestKit.from(new FakeYano(status, utxos, tip));
     }
 
     static NodeStatus status(boolean running, boolean degraded) {
@@ -59,7 +59,7 @@ final class TestkitFakes {
                 .build();
     }
 
-    static final class FakeYanoNode implements YanoNode {
+    static final class FakeYano implements Yano {
         final FakeLifecycle lifecycle;
         final FakeDevnetControl devnet = new FakeDevnetControl();
         final FakeTxGateway txGateway = new FakeTxGateway();
@@ -68,19 +68,19 @@ final class TestkitFakes {
         private ChainTip tip;
         private final boolean utxoEnabled;
 
-        FakeYanoNode(NodeStatus status) {
+        FakeYano(NodeStatus status) {
             this(status, List.of());
         }
 
-        FakeYanoNode(NodeStatus status, List<Utxo> utxos) {
+        FakeYano(NodeStatus status, List<Utxo> utxos) {
             this(status, utxos, null);
         }
 
-        FakeYanoNode(NodeStatus status, List<Utxo> utxos, ChainTip tip) {
+        FakeYano(NodeStatus status, List<Utxo> utxos, ChainTip tip) {
             this(status, utxos, tip, true);
         }
 
-        FakeYanoNode(NodeStatus status, List<Utxo> utxos, ChainTip tip, boolean utxoEnabled) {
+        FakeYano(NodeStatus status, List<Utxo> utxos, ChainTip tip, boolean utxoEnabled) {
             this.lifecycle = new FakeLifecycle(status);
             this.utxos = utxos != null ? List.copyOf(utxos) : List.of();
             this.tip = tip;

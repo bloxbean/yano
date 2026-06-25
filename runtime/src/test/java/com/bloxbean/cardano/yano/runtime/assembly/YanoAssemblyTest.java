@@ -46,7 +46,7 @@ class YanoAssemblyTest {
 
     @Test
     void relayRecipeBuildsRoleBasedNode() {
-        YanoNode node = YanoAssembly.relay(YanoConfig.serverOnly(0))
+        Yano node = YanoAssembly.relay(YanoConfig.serverOnly(0))
                 .runtimeOptions(RuntimeOptions.defaults())
                 .build();
 
@@ -67,7 +67,7 @@ class YanoAssemblyTest {
     @Test
     void transactionBootstrapDisabledDoesNotCallFactory() {
         AtomicBoolean called = new AtomicBoolean();
-        YanoNode node = YanoAssembly.relay(YanoConfig.serverOnly(0))
+        Yano node = YanoAssembly.relay(YanoConfig.serverOnly(0))
                 .transactionBootstrap(TransactionBootstrapOptions.disabled(), (context, options) -> {
                     called.set(true);
                     return Optional.empty();
@@ -88,7 +88,7 @@ class YanoAssemblyTest {
         config.setRocksDBPath(tempDir.resolve("chainstate").toString());
         AtomicBoolean called = new AtomicBoolean();
 
-        YanoNode node = YanoAssembly.relay(config)
+        Yano node = YanoAssembly.relay(config)
                 .runtimeOptions(new RuntimeOptions(null, null, Map.of(
                         "yano.utxo.enabled", true,
                         "yano.utxo.prune.schedule.seconds", 60,
@@ -114,7 +114,7 @@ class YanoAssemblyTest {
 
     @Test
     void assembledRuntimeKernelExposesRuntimeSubsystems() {
-        YanoNode node = YanoAssembly.relay(YanoConfig.serverOnly(0))
+        Yano node = YanoAssembly.relay(YanoConfig.serverOnly(0))
                 .runtimeOptions(RuntimeOptions.defaults())
                 .build();
 
@@ -147,7 +147,7 @@ class YanoAssemblyTest {
 
     @Test
     void transactionBootstrapFactoryFailureDoesNotFailAssembly() {
-        YanoNode node = YanoAssembly.relay(YanoConfig.serverOnly(0))
+        Yano node = YanoAssembly.relay(YanoConfig.serverOnly(0))
                 .transactionBootstrap(TransactionBootstrapOptions.enabled(false, false, "scalus"),
                         (context, options) -> {
                             throw new IllegalStateException("boom");
@@ -217,7 +217,7 @@ class YanoAssemblyTest {
                 (proxy, method, args) -> method.getReturnType() == List.class ? List.of() : null);
         AtomicBoolean called = new AtomicBoolean();
 
-        YanoNode node = YanoAssembly.relay(YanoConfig.serverOnly(0))
+        Yano node = YanoAssembly.relay(YanoConfig.serverOnly(0))
                 .adhocRollback(123L, -1)
                 .bootstrapDataProvider(provider)
                 .transactionBootstrap(TransactionBootstrapOptions.enabled(false, false, "scalus"),
@@ -252,7 +252,7 @@ class YanoAssemblyTest {
 
     @Test
     void devnetRecipeInstallsLiveDevnetProducerPlan() {
-        YanoNode node = YanoAssembly.devnet(devnetConfig("devnet")).build();
+        Yano node = YanoAssembly.devnet(devnetConfig("devnet")).build();
 
         try {
             ProducerStartupPlan plan = producerStartupPlan(node);
@@ -270,7 +270,7 @@ class YanoAssemblyTest {
         YanoConfig config = devnetConfig("slot-leader");
         config.setSlotLeaderMode(true);
 
-        YanoNode node = YanoAssembly.slotLeader(config).build();
+        Yano node = YanoAssembly.slotLeader(config).build();
 
         try {
             ProducerStartupPlan plan = producerStartupPlan(node);
@@ -292,7 +292,7 @@ class YanoAssemblyTest {
         YanoConfig config = devnetConfig("from-config-slot-leader");
         config.setSlotLeaderMode(true);
 
-        YanoNode node = YanoAssembly.fromConfig(config).build();
+        Yano node = YanoAssembly.fromConfig(config).build();
 
         try {
             ProducerStartupPlan plan = producerStartupPlan(node);
@@ -306,7 +306,7 @@ class YanoAssemblyTest {
 
     @Test
     void fromConfigRoutesDevnetAndTimeTravelRecipes() {
-        YanoNode devnetNode = YanoAssembly.fromConfig(devnetConfig("from-config-devnet")).build();
+        Yano devnetNode = YanoAssembly.fromConfig(devnetConfig("from-config-devnet")).build();
         try {
             ProducerStartupPlan plan = producerStartupPlan(devnetNode);
             assertEquals(ProducerMode.DEVNET, plan.mode());
@@ -319,7 +319,7 @@ class YanoAssemblyTest {
 
         YanoConfig timeTravelConfig = devnetConfig("from-config-time-travel");
         timeTravelConfig.setPastTimeTravelMode(true);
-        YanoNode timeTravelNode = YanoAssembly.fromConfig(timeTravelConfig).build();
+        Yano timeTravelNode = YanoAssembly.fromConfig(timeTravelConfig).build();
         try {
             ProducerStartupPlan plan = producerStartupPlan(timeTravelNode);
             assertEquals(ProducerMode.DEVNET_TIME_TRAVEL, plan.mode());
@@ -336,7 +336,7 @@ class YanoAssemblyTest {
         YanoConfig config = devnetConfig("isolated-ptt-slot-leader");
         config.setPastTimeTravelSlotLeaderMode(true);
 
-        YanoNode node = YanoAssembly.fromConfig(config).build();
+        Yano node = YanoAssembly.fromConfig(config).build();
 
         try {
             ProducerStartupPlan plan = producerStartupPlan(node);
@@ -352,7 +352,7 @@ class YanoAssemblyTest {
         YanoConfig config = YanoConfig.serverOnly(0);
         config.setEnableBlockProducer(false);
 
-        YanoNode node = YanoAssembly.fromConfig(config).build();
+        Yano node = YanoAssembly.fromConfig(config).build();
 
         try {
             assertTrue(node.producerControl().isEmpty());
@@ -367,7 +367,7 @@ class YanoAssemblyTest {
         YanoConfig config = devnetConfig("devnet-time-travel");
         config.setPastTimeTravelMode(true);
 
-        YanoNode node = YanoAssembly.devnetTimeTravel(config).build();
+        Yano node = YanoAssembly.devnetTimeTravel(config).build();
 
         try {
             ProducerStartupPlan plan = producerStartupPlan(node);
@@ -386,7 +386,7 @@ class YanoAssemblyTest {
         config.setPastTimeTravelMode(true);
         config.setPastTimeTravelSlotLeaderMode(true);
 
-        YanoNode node = YanoAssembly.devnetTimeTravel(config).build();
+        Yano node = YanoAssembly.devnetTimeTravel(config).build();
 
         try {
             ProducerStartupPlan plan = producerStartupPlan(node);
@@ -431,7 +431,7 @@ class YanoAssemblyTest {
                     return defaultValue(method);
                 });
 
-        runtimeYanoNode(nodeApi).close();
+        runtimeYano(nodeApi).close();
 
         assertTrue(closed.get());
     }
@@ -449,10 +449,10 @@ class YanoAssemblyTest {
                     return defaultValue(method);
                 });
 
-        assertTrue(runtimeYanoNode(nodeApi, YanoAssembly.Role.RELAY).devnetControl().isEmpty());
-        assertTrue(runtimeYanoNode(nodeApi, YanoAssembly.Role.DEVNET).devnetControl().isEmpty());
-        assertTrue(runtimeYanoNode(nodeApi, YanoAssembly.Role.SLOT_LEADER).devnetControl().isEmpty());
-        assertTrue(runtimeYanoNode(nodeApi, YanoAssembly.Role.DEVNET_TIME_TRAVEL).devnetControl().isEmpty());
+        assertTrue(runtimeYano(nodeApi, YanoAssembly.Role.RELAY).devnetControl().isEmpty());
+        assertTrue(runtimeYano(nodeApi, YanoAssembly.Role.DEVNET).devnetControl().isEmpty());
+        assertTrue(runtimeYano(nodeApi, YanoAssembly.Role.SLOT_LEADER).devnetControl().isEmpty());
+        assertTrue(runtimeYano(nodeApi, YanoAssembly.Role.DEVNET_TIME_TRAVEL).devnetControl().isEmpty());
     }
 
     @Test
@@ -487,7 +487,7 @@ class YanoAssemblyTest {
                     }
                 });
 
-        RuntimeYanoNode node = runtimeYanoNode(nodeApi);
+        RuntimeYano node = runtimeYano(nodeApi);
         node.start();
         node.stop();
         node.start();
@@ -507,7 +507,7 @@ class YanoAssemblyTest {
                 .runtimeDegradedReason("restart required")
                 .build());
 
-        var health = runtimeYanoNode(nodeApi).kernel().orElseThrow().health();
+        var health = runtimeYano(nodeApi).kernel().orElseThrow().health();
 
         assertEquals(SubsystemHealth.Status.DEGRADED, health.getFirst().status());
         assertEquals("restart required", health.getFirst().message());
@@ -521,7 +521,7 @@ class YanoAssemblyTest {
                 .peerTerminalFailureMessage("peer recovery exhausted")
                 .build());
 
-        var health = runtimeYanoNode(nodeApi).kernel().orElseThrow().health();
+        var health = runtimeYano(nodeApi).kernel().orElseThrow().health();
 
         assertEquals(SubsystemHealth.Status.DOWN, health.getFirst().status());
         assertEquals("peer recovery exhausted", health.getFirst().message());
@@ -549,12 +549,12 @@ class YanoAssemblyTest {
         return config;
     }
 
-    private static RuntimeYanoNode runtimeYanoNode(TestRuntimeNode node) {
-        return runtimeYanoNode(node, YanoAssembly.Role.RELAY);
+    private static RuntimeYano runtimeYano(TestRuntimeNode node) {
+        return runtimeYano(node, YanoAssembly.Role.RELAY);
     }
 
-    private static RuntimeYanoNode runtimeYanoNode(TestRuntimeNode node, YanoAssembly.Role role) {
-        return new RuntimeYanoNode(
+    private static RuntimeYano runtimeYano(TestRuntimeNode node, YanoAssembly.Role role) {
+        return new RuntimeYano(
                 node,
                 node,
                 node,
@@ -567,7 +567,7 @@ class YanoAssemblyTest {
                 role);
     }
 
-    private static ProducerStartupPlan producerStartupPlan(YanoNode node) {
+    private static ProducerStartupPlan producerStartupPlan(Yano node) {
         return (ProducerStartupPlan) field(node.producerControl().orElseThrow(), "producerStartupPlanOverride");
     }
 

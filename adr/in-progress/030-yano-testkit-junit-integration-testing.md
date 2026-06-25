@@ -71,9 +71,9 @@ The testkit should provide:
 - later, optional external-process helpers for Haskell node and Yaci Store
   compatibility tests.
 
-The testkit must not expose `YanoNode`, `RuntimeNode`, concrete `ChainState`
+The testkit must not expose `Yano`, `RuntimeNode`, concrete `ChainState`
 implementations, RocksDB handles, raw runtime maintenance gates, debug ledger
-access, or broad "execute arbitrary runtime code" callbacks. `YanoNode` may be
+access, or broad "execute arbitrary runtime code" callbacks. `Yano` may be
 used internally as the assembly handle, but user-facing testkit APIs should
 expose only public role interfaces and focused helper facades.
 
@@ -91,7 +91,7 @@ The first implementation slices must not add new runtime devnet SPI. They should
 reuse these public roles internally and expose only the role-specific facades
 needed by test code:
 
-- `YanoNode`
+- `Yano`
 - `NodeLifecycle`
 - `ChainQuery`
 - `LedgerQuery`
