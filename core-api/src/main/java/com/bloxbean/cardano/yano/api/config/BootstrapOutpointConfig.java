@@ -9,7 +9,7 @@ import lombok.NoArgsConstructor;
  * Configuration for a specific UTXO to bootstrap by tx hash and output index.
  */
 @Data
-@Builder
+@Builder(toBuilder = true)
 @NoArgsConstructor
 @AllArgsConstructor
 public class BootstrapOutpointConfig {

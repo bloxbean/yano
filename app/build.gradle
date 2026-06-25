@@ -45,6 +45,7 @@ dependencies {
     testImplementation 'io.quarkus:quarkus-junit5'
     testImplementation 'io.rest-assured:rest-assured'
 
+    testImplementation project(':testkit')
     testImplementation libs.cardano.client.lib
     testImplementation libs.cardano.client.backend.blockfrost
     testImplementation libs.cardano.client.quicktx
@@ -83,6 +84,7 @@ tasks.register('e2eTest', Test) {
 }
 
 tasks.register('haskellSyncTest', Test) {
+    dependsOn tasks.named('quarkusBuild')
     useJUnitPlatform {
         includeTags 'haskell-sync'
     }

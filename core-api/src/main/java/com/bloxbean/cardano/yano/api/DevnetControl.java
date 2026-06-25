@@ -35,6 +35,10 @@ public interface DevnetControl {
 
     TimeAdvanceResult advanceTimeBySlots(int slots);
 
+    default TimeAdvanceResult advanceTimeUntilSlot(long targetSlot) {
+        throw new UnsupportedOperationException("advanceTimeUntilSlot not supported by this implementation");
+    }
+
     TimeAdvanceResult advanceTimeBySeconds(int seconds);
 
     default long shiftGenesisAndStartProducer(int epochs) {

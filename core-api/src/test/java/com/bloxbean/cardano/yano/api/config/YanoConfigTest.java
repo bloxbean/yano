@@ -3,6 +3,13 @@ package com.bloxbean.cardano.yano.api.config;
 import com.bloxbean.cardano.yaci.core.common.Constants;
 import org.junit.jupiter.api.Test;
 
+import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Comparator;
+import java.util.List;
+
 import static org.assertj.core.api.Assertions.*;
 
 class YanoConfigTest {
@@ -219,6 +226,114 @@ class YanoConfigTest {
     }
 
     @Test
+    void copyOf_shouldPreserveAllReadablePropertiesAndDeepCopyBootstrapCollections() throws Exception {
+        YanoConfig source = fullyPopulatedConfig();
+        YanoConfig copy = YanoConfig.copyOf(source);
+
+        assertThat(copy).isNotSameAs(source);
+        for (Method getter : readableYanoConfigGetters()) {
+            assertThat(getter.invoke(copy))
+                    .as(getter.getName())
+                    .isEqualTo(getter.invoke(source));
+        }
+
+        assertThat(copy.getBootstrapAddresses()).isNotSameAs(source.getBootstrapAddresses());
+        assertThat(copy.getBootstrapUtxos()).isNotSameAs(source.getBootstrapUtxos());
+        assertThat(copy.getBootstrapUtxos().getFirst()).isNotSameAs(source.getBootstrapUtxos().getFirst());
+
+        source.getBootstrapAddresses().set(0, "changed");
+        source.getBootstrapUtxos().getFirst().setTxHash("changed");
+
+        assertThat(copy.getBootstrapAddresses()).containsExactly("addr1", "addr2");
+        assertThat(copy.getBootstrapUtxos().getFirst().getTxHash()).isEqualTo("tx1");
+
+        copy.getBootstrapAddresses().add("copy-only");
+        copy.getBootstrapUtxos().add(BootstrapOutpointConfig.builder()
+                .txHash("copy-tx")
+                .outputIndex(1)
+                .build());
+
+        assertThat(copy.getBootstrapAddresses()).containsExactly("addr1", "addr2", "copy-only");
+        assertThat(copy.getBootstrapUtxos()).hasSize(2);
+        assertThat(source.getBootstrapAddresses()).containsExactly("changed", "addr2");
+        assertThat(source.getBootstrapUtxos()).hasSize(1);
+    }
+
+    private static List<Method> readableYanoConfigGetters() {
+        return Arrays.stream(YanoConfig.class.getMethods())
+                .filter(method -> method.getParameterCount() == 0)
+                .filter(method -> !Modifier.isStatic(method.getModifiers()))
+                .filter(method -> method.getReturnType() != Void.TYPE)
+                .filter(method -> !method.getName().equals("getClass"))
+                .filter(method -> method.getName().startsWith("get")
+                        || method.getName().startsWith("is"))
+                .sorted(Comparator.comparing(Method::getName))
+                .toList();
+    }
+
+    private static YanoConfig fullyPopulatedConfig() {
+        return YanoConfig.builder()
+                .remoteHost("relay.local")
+                .remotePort(3001)
+                .protocolMagic(764_824_073L)
+                .serverPort(13337)
+                .enableServer(true)
+                .enableClient(true)
+                .useRocksDB(true)
+                .rocksDBPath("chainstate")
+                .fullSyncThreshold(1234)
+                .enablePipelinedSync(true)
+                .headerPipelineDepth(11)
+                .bodyBatchSize(12)
+                .maxParallelBodies(13)
+                .enableSelectiveBodyFetch(true)
+                .selectiveBodyFetchRatio(14)
+                .enableMonitoring(true)
+                .monitoringPort(8081)
+                .syncStartSlot(555)
+                .syncStartBlockHash("sync-hash")
+                .enableBlockProducer(true)
+                .devMode(true)
+                .blockTimeMillis(1000)
+                .lazyBlockProduction(true)
+                .genesisTimestamp(1_710_000_000L)
+                .slotLengthMillis(1000)
+                .shelleyGenesisHash("shelley-hash")
+                .shelleyGenesisFile("shelley.json")
+                .byronGenesisFile("byron.json")
+                .alonzoGenesisFile("alonzo.json")
+                .conwayGenesisFile("conway.json")
+                .protocolParametersFile("protocol-params.json")
+                .txEvaluationEnabled(true)
+                .vrfSkeyFile("vrf.skey")
+                .kesSkeyFile("kes.skey")
+                .opCertFile("opcert.cert")
+                .slotLeaderMode(true)
+                .stakeDataProviderUrl("http://stake.local")
+                .initialEpochNonce("nonce")
+                .initialEpoch(5)
+                .enableBootstrap(true)
+                .bootstrapBlockNumber(99)
+                .bootstrapAddresses(new ArrayList<>(List.of("addr1", "addr2")))
+                .bootstrapUtxos(new ArrayList<>(List.of(BootstrapOutpointConfig.builder()
+                        .txHash("tx1")
+                        .outputIndex(0)
+                        .build())))
+                .bootstrapProvider("koios")
+                .bootstrapBlockfrostApiKey("blockfrost-key")
+                .bootstrapBlockfrostBaseUrl("https://blockfrost.local")
+                .bootstrapKoiosBaseUrl("https://koios.local")
+                .network("preview")
+                .startEpoch(7)
+                .pastTimeTravelMode(true)
+                .pastTimeTravelSlotLeaderMode(true)
+                .epochLength(600L)
+                .byronSlotsPerEpoch(100L)
+                .firstNonByronSlot(300L)
+                .build();
+    }
+
+    @Test
     void validate_pastTimeTravelMode_shouldPassWhenDevModeAndBlockProducerEnabled() {
         YanoConfig config = YanoConfig.builder()
                 .enableClient(false)
@@ -281,6 +396,7 @@ class YanoConfigTest {
         assertThatThrownBy(config::getEpochLength)
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("epochLength must be loaded from Shelley genesis");
+        assertThat(config.getConfiguredEpochLength()).isNull();
         assertThat(config.isEpochParamsInitialized()).isFalse();
     }
 
@@ -297,6 +413,8 @@ class YanoConfigTest {
         assertThatThrownBy(config::getByronSlotsPerEpoch)
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("byronSlotsPerEpoch must be loaded");
+        assertThat(config.getConfiguredEpochLength()).isEqualTo(432000L);
+        assertThat(config.getConfiguredByronSlotsPerEpoch()).isNull();
         assertThat(config.isEpochParamsInitialized()).isFalse();
     }
 
@@ -314,6 +432,9 @@ class YanoConfigTest {
         assertThatThrownBy(config::getFirstNonByronSlot)
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("firstNonByronSlot must be resolved");
+        assertThat(config.getConfiguredEpochLength()).isEqualTo(432000L);
+        assertThat(config.getConfiguredByronSlotsPerEpoch()).isEqualTo(21600L);
+        assertThat(config.getConfiguredFirstNonByronSlot()).isNull();
         assertThat(config.isEpochParamsInitialized()).isFalse();
     }
 

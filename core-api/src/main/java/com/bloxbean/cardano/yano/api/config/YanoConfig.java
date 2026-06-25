@@ -4,15 +4,17 @@ import com.bloxbean.cardano.yaci.core.common.Constants;
 import lombok.Builder;
 import lombok.Data;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Objects;
 
 /**
  * Configuration for Yano.
  * Provides comprehensive configuration options for both client and server modes.
  */
 @Data
-@Builder
+@Builder(toBuilder = true)
 public class YanoConfig implements NodeConfig {
 
     // Remote node configuration (client mode)
@@ -125,12 +127,28 @@ public class YanoConfig implements NodeConfig {
         return epochLength;
     }
 
+    /**
+     * Returns the raw configured epoch length, or null before genesis-derived
+     * epoch parameters are initialized.
+     */
+    public Long getConfiguredEpochLength() {
+        return epochLength;
+    }
+
     @Override
     public long getByronSlotsPerEpoch() {
         if (byronSlotsPerEpoch == null || byronSlotsPerEpoch <= 0) {
             throw new IllegalStateException(
                     "byronSlotsPerEpoch must be loaded from Byron genesis or derived from Shelley securityParam before use");
         }
+        return byronSlotsPerEpoch;
+    }
+
+    /**
+     * Returns the raw configured Byron slots per epoch, or null before
+     * genesis-derived epoch parameters are initialized.
+     */
+    public Long getConfiguredByronSlotsPerEpoch() {
         return byronSlotsPerEpoch;
     }
 
@@ -144,6 +162,14 @@ public class YanoConfig implements NodeConfig {
     }
 
     /**
+     * Returns the raw configured first non-Byron slot, or null before
+     * genesis-derived epoch parameters are initialized.
+     */
+    public Long getConfiguredFirstNonByronSlot() {
+        return firstNonByronSlot;
+    }
+
+    /**
      * Check whether epoch/slot parameters have been loaded from genesis.
      * If false, calling getEpochLength(), getByronSlotsPerEpoch(), or getFirstNonByronSlot() will throw.
      */
@@ -151,6 +177,38 @@ public class YanoConfig implements NodeConfig {
         return epochLength != null && epochLength > 0
                 && byronSlotsPerEpoch != null && byronSlotsPerEpoch > 0
                 && firstNonByronSlot != null && firstNonByronSlot >= 0;
+    }
+
+    /**
+     * Creates an independent copy of a runtime configuration.
+     * <p>
+     * Lombok's generated {@code toBuilder()} preserves future scalar fields, while
+     * the mutable bootstrap collections are explicitly duplicated.
+     *
+     * @param source config to copy
+     * @return copied config
+     */
+    public static YanoConfig copyOf(YanoConfig source) {
+        Objects.requireNonNull(source, "source");
+        return source.toBuilder()
+                .bootstrapAddresses(copyStrings(source.getBootstrapAddresses()))
+                .bootstrapUtxos(copyBootstrapUtxos(source.getBootstrapUtxos()))
+                .build();
+    }
+
+    private static List<String> copyStrings(List<String> source) {
+        return source != null ? new ArrayList<>(source) : null;
+    }
+
+    private static List<BootstrapOutpointConfig> copyBootstrapUtxos(List<BootstrapOutpointConfig> source) {
+        if (source == null) {
+            return null;
+        }
+        List<BootstrapOutpointConfig> copy = new ArrayList<>(source.size());
+        for (BootstrapOutpointConfig outpoint : source) {
+            copy.add(outpoint != null ? outpoint.toBuilder().build() : null);
+        }
+        return copy;
     }
 
     /**

@@ -3,4 +3,7 @@ dependencies {
     api project(':runtime')
     api project(':devnet-toolkit')
     api libs.junit.jupiter.api
+    api libs.cardano.client.core
+    api libs.jackson.databind
+    implementation libs.slf4j.api
 }

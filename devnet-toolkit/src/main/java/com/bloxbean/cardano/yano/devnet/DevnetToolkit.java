@@ -106,6 +106,11 @@ public final class DevnetToolkit implements DevnetControl {
     }
 
     @Override
+    public TimeAdvanceResult advanceTimeUntilSlot(long targetSlot) {
+        return producerExtensions.advanceUntilSlot(targetSlot);
+    }
+
+    @Override
     public TimeAdvanceResult advanceTimeBySeconds(int seconds) {
         return producerExtensions.advanceBySeconds(seconds);
     }
