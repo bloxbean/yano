@@ -1,0 +1,18 @@
+dependencies {
+    api project(':testkit')
+    api libs.cardano.client.backend
+
+    implementation project(':runtime')
+    implementation libs.jackson.databind
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            pom {
+                name = 'Yano Testkit CCL'
+                description = 'Cardano Client Lib BackendService adapters for Yano Testkit'
+            }
+        }
+    }
+}

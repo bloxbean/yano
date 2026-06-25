@@ -38,6 +38,8 @@ jobs:
             label: linux-arm64
           - os: macos-14
             label: macos-arm64
+          - os: windows-latest
+            label: windows-x64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -47,11 +49,20 @@ jobs:
           java-version: '25'
           distribution: 'graalvm'
       - name: Grant execute permission for gradlew
+        if: runner.os != 'Windows'
         run: chmod +x gradlew
       - name: Build native binary
+        if: runner.os != 'Windows'
         run: ./gradlew :app:quarkusBuild -Dquarkus.native.enabled=true -Dquarkus.package.jar.enabled=false -PskipSigning=true
+      - name: Build native binary on Windows
+        if: runner.os == 'Windows'
+        run: .\gradlew.bat :app:quarkusBuild "-Dquarkus.native.enabled=true" "-Dquarkus.package.jar.enabled=false" "-PskipSigning=true"
       - name: Package native distribution
+        if: runner.os != 'Windows'
         run: ./gradlew :app:yanoNativeDistZip -PskipSigning=true
+      - name: Package native distribution on Windows
+        if: runner.os == 'Windows'
+        run: .\gradlew.bat :app:yanoNativeDistZip "-PskipSigning=true"
       - name: Upload native distribution
         uses: actions/upload-artifact@v4
         with:

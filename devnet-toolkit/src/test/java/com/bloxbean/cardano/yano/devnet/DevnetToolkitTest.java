@@ -26,6 +26,7 @@ class DevnetToolkitTest {
         AtomicReference<String> snapshotName = new AtomicReference<>();
         AtomicReference<String> fundedAddress = new AtomicReference<>();
         AtomicReference<Integer> advancedSlots = new AtomicReference<>();
+        AtomicReference<Long> targetSlotRef = new AtomicReference<>();
 
         DevnetChainMutation chain = target -> {
             rollbackTarget.set(target);
@@ -87,6 +88,7 @@ class DevnetToolkitTest {
 
             @Override
             public TimeAdvanceResult advanceUntilSlot(long targetSlot) {
+                targetSlotRef.set(targetSlot);
                 return new TimeAdvanceResult(targetSlot, targetSlot, 0);
             }
 
@@ -126,6 +128,10 @@ class DevnetToolkitTest {
         TimeAdvanceResult advanced = toolkit.advanceTimeBySlots(7);
         assertEquals(new TimeAdvanceResult(7, 7, 7), advanced);
         assertEquals(7, advancedSlots.get());
+
+        TimeAdvanceResult advancedUntilSlot = toolkit.advanceTimeUntilSlot(12);
+        assertEquals(new TimeAdvanceResult(12, 12, 0), advancedUntilSlot);
+        assertEquals(12L, targetSlotRef.get());
 
         assertEquals(1000L, toolkit.shiftGenesisAndStartProducer(1));
         assertEquals(producer.catchUpToWallClock(), toolkit.catchUpToWallClock());

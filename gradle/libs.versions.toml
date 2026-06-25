@@ -15,6 +15,7 @@ cardano-client-common = { module = "com.bloxbean.cardano:cardano-client-common",
 cardano-client-crypto = { module = "com.bloxbean.cardano:cardano-client-crypto", version.ref = "cardano-client-lib" }
 cardano-client-governance = { module = "com.bloxbean.cardano:cardano-client-governance", version.ref = "cardano-client-lib" }
 cardano-client-lib = { module = "com.bloxbean.cardano:cardano-client-lib", version.ref = "cardano-client-lib" }
+cardano-client-backend = { module = "com.bloxbean.cardano:cardano-client-backend", version.ref = "cardano-client-lib" }
 cardano-client-crypto-ext = { module = "com.bloxbean.cardano:cardano-client-crypto-ext", version.ref = "cardano-client-lib" }
 cardano-client-backend-blockfrost = { module = "com.bloxbean.cardano:cardano-client-backend-blockfrost", version.ref = "cardano-client-lib" }
 cardano-client-quicktx = { module = "com.bloxbean.cardano:cardano-client-quicktx", version.ref = "cardano-client-lib" }

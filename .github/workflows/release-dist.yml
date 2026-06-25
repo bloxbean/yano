@@ -10,6 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       is_final: ${{ steps.version.outputs.is_final }}
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
 
@@ -44,6 +45,7 @@ jobs:
           fi
 
           echo "is_final=$IS_FINAL" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
   jar-dist:
     needs: validate
@@ -77,6 +79,8 @@ jobs:
             label: linux-arm64
           - os: macos-14
             label: macos-arm64
+          - os: windows-latest
+            label: windows-x64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -86,19 +90,125 @@ jobs:
           java-version: '25'
           distribution: 'graalvm'
       - name: Grant execute permission for gradlew
+        if: runner.os != 'Windows'
         run: chmod +x gradlew
       - name: Build native binary
+        if: runner.os != 'Windows'
         run: ./gradlew :app:quarkusBuild -Dquarkus.native.enabled=true -Dquarkus.package.jar.enabled=false -PskipSigning=true
+      - name: Build native binary on Windows
+        if: runner.os == 'Windows'
+        run: .\gradlew.bat :app:quarkusBuild "-Dquarkus.native.enabled=true" "-Dquarkus.package.jar.enabled=false" "-PskipSigning=true"
       - name: Package native distribution
+        if: runner.os != 'Windows'
         run: ./gradlew :app:yanoNativeDistZip -PskipSigning=true
+      - name: Package native distribution on Windows
+        if: runner.os == 'Windows'
+        run: .\gradlew.bat :app:yanoNativeDistZip "-PskipSigning=true"
       - name: Upload native distribution
         uses: actions/upload-artifact@v4
         with:
           name: native-dist-${{ matrix.label }}
           path: app/build/distributions/yano-native-*.zip
 
+  npm-publish:
+    needs: [validate, native-dist]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Ensure npm supports trusted publishing
+        run: npm install -g npm@latest
+
+      - name: Download native artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: native-dist-*
+          path: native-artifacts
+
+      - name: Set npm package versions
+        run: node npm/scripts/set-package-version.mjs "${{ needs.validate.outputs.version }}"
+
+      - name: Populate platform npm packages
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          copy_package() {
+            local label="$1"
+            local package_dir="$2"
+            local binary_name="$3"
+            local zip_path
+            zip_path=$(find native-artifacts -name "yano-native-*-${label}.zip" -print -quit)
+            if [[ -z "$zip_path" ]]; then
+              echo "Missing native artifact for ${label}" >&2
+              exit 1
+            fi
+
+            local tmp_dir
+            tmp_dir=$(mktemp -d)
+            unzip -q "$zip_path" -d "$tmp_dir"
+            local dist_root
+            dist_root=$(find "$tmp_dir" -mindepth 1 -maxdepth 1 -type d -print -quit)
+            if [[ -z "$dist_root" ]]; then
+              echo "Native artifact ${zip_path} did not contain a distribution directory" >&2
+              exit 1
+            fi
+
+            rm -rf "npm/${package_dir}/bin" "npm/${package_dir}/config"
+            mkdir -p "npm/${package_dir}/bin"
+            cp "${dist_root}/${binary_name}" "npm/${package_dir}/bin/${binary_name}"
+            cp -R "${dist_root}/config" "npm/${package_dir}/config"
+            chmod +x "npm/${package_dir}/bin/${binary_name}" || true
+          }
+
+          copy_package linux-x64 yano-testkit-linux-x64 yano
+          copy_package linux-arm64 yano-testkit-linux-arm64 yano
+          copy_package macos-arm64 yano-testkit-macos-arm64 yano
+          copy_package windows-x64 yano-testkit-windows-x64 yano.exe
+
+      - name: Validate npm packages
+        working-directory: npm
+        run: |
+          npm run install:testkit
+          npm test
+          npm run typecheck
+          npm run check:versions
+          npm run pack:dry
+
+      - name: Publish npm packages
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VERSION="${{ needs.validate.outputs.version }}"
+          NPM_TAG=latest
+          if [[ "$VERSION" == *"-preview"* ]]; then
+            NPM_TAG=preview
+          elif [[ "$VERSION" == *"-beta"* ]]; then
+            NPM_TAG=beta
+          elif [[ "$VERSION" == *"-pre"* || "$VERSION" == *"-rc"* || "$VERSION" == *"-alpha"* ]]; then
+            NPM_TAG=next
+          fi
+
+          for package_dir in \
+            yano-testkit-linux-x64 \
+            yano-testkit-linux-arm64 \
+            yano-testkit-macos-arm64 \
+            yano-testkit-windows-x64 \
+            yano-testkit; do
+            npm publish "npm/${package_dir}" --access public --provenance --tag "$NPM_TAG"
+          done
+
   release:
-    needs: [validate, jar-dist, native-dist]
+    needs: [validate, jar-dist, native-dist, npm-publish]
     runs-on: ubuntu-latest
     permissions:
       contents: write

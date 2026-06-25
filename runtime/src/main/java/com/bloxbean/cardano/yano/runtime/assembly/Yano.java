@@ -16,7 +16,7 @@ import java.util.Optional;
 /**
  * Thin handle returned by runtime assembly recipes.
  */
-public interface YanoNode extends AutoCloseable {
+public interface Yano extends AutoCloseable {
     NodeLifecycle lifecycle();
 
     ChainQuery chain();

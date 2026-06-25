@@ -1,0 +1,26 @@
+{
+  "name": "@bloxbean/yano-testkit-macos-arm64",
+  "version": "0.1.0-pre6",
+  "description": "macOS arm64 native Yano binary for @bloxbean/yano-testkit.",
+  "main": "./bin/yano",
+  "files": [
+    "bin/yano",
+    "config",
+    "README.md"
+  ],
+  "license": "MIT",
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "engines": {
+    "node": ">=20.8.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bloxbean/yano.git",
+    "directory": "npm/yano-testkit-macos-arm64"
+  }
+}

@@ -1,6 +1,8 @@
 package com.bloxbean.cardano.yano.app.e2e.haskellsync;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import com.bloxbean.cardano.yano.testkit.external.HaskellCardanoNodeProcess;
+import com.bloxbean.cardano.yano.testkit.external.YanoAppProcess;
+import com.bloxbean.cardano.yano.testkit.external.YanoExternalSyncAssertions;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Tag;
@@ -12,8 +14,6 @@ import java.io.IOException;
 import java.nio.file.*;
 import java.util.Comparator;
 
-import static org.junit.jupiter.api.Assertions.assertTrue;
-
 /**
  * Base class for Haskell sync integration tests.
  * Provides Yano + cardano-node lifecycle management and common assertions.
@@ -24,8 +24,8 @@ public abstract class HaskellSyncTestBase {
 
     private static final Logger log = LoggerFactory.getLogger(HaskellSyncTestBase.class);
 
-    protected YanoManager yaci;
-    protected CardanoNodeManager haskell;
+    protected YanoAppProcess yaci;
+    protected HaskellCardanoNodeProcess haskell;
     protected Path tempDir;
     protected Path uberJarPath;
 
@@ -77,42 +77,10 @@ public abstract class HaskellSyncTestBase {
      * Asserts that Yano and Haskell tips are within the given slot tolerance.
      */
     protected void assertTipsSynced(int toleranceSlots) throws Exception {
-        JsonNode yaciTip = yaci.getTip();
-        long yaciSlot = yaciTip.get("slot").asLong();
-        long haskellSlot = haskell.getLatestSyncedSlot();
-        log.info("Tip comparison — Yano slot: {}, Haskell slot: {}", yaciSlot, haskellSlot);
-        assertTrue(Math.abs(yaciSlot - haskellSlot) <= toleranceSlots,
-                "Slot difference between Yano (" + yaciSlot + ") and Haskell (" + haskellSlot
-                        + ") exceeds tolerance of " + toleranceSlots);
+        YanoExternalSyncAssertions.assertTipsSynced(yaci, haskell, toleranceSlots);
     }
 
     private Path locateUberJar() {
-        // Try from system property first
-        String jarPath = System.getProperty("yano.uber.jar");
-        if (jarPath != null && !jarPath.isBlank()) {
-            Path p = Path.of(jarPath);
-            if (Files.exists(p)) {
-                return p;
-            }
-        }
-
-        // Locate relative to the project directory
-        // When running via Gradle, user.dir is typically the project root
-        Path projectRoot = Path.of(System.getProperty("user.dir"));
-
-        // Try app/build/yano.jar
-        Path candidate = projectRoot.resolve("app").resolve("build").resolve("yano.jar");
-        if (Files.exists(candidate)) {
-            return candidate;
-        }
-
-        // If running from app directory
-        candidate = projectRoot.resolve("build").resolve("yano.jar");
-        if (Files.exists(candidate)) {
-            return candidate;
-        }
-
-        throw new RuntimeException(
-                "Uber-jar not found. Run './gradlew :app:quarkusBuild' first, or set -Dyano.uber.jar=<path>");
+        return YanoAppProcess.locateUberJar();
     }
 }

@@ -1,0 +1,51 @@
+name: npm Testkit
+
+on:
+  pull_request:
+    paths:
+      - 'npm/**'
+      - '.github/workflows/npm-testkit.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'npm/**'
+      - '.github/workflows/npm-testkit.yml'
+  workflow_dispatch:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-14
+          - windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install npm testkit dependencies
+        working-directory: npm
+        run: npm run install:testkit
+
+      - name: Run npm testkit unit tests
+        working-directory: npm
+        run: npm test
+
+      - name: Typecheck npm testkit
+        working-directory: npm
+        run: npm run typecheck
+
+      - name: Check npm package versions
+        working-directory: npm
+        run: npm run check:versions
+
+      - name: Dry-run package npm testkit
+        working-directory: npm
+        run: npm run pack:dry

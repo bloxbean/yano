@@ -8,15 +8,19 @@ import com.bloxbean.cardano.yano.runtime.genesis.ConwayGenesisData;
 import com.bloxbean.cardano.yano.runtime.genesis.ShelleyGenesisData;
 import com.bloxbean.cardano.yano.api.genesis.ShelleyGenesisBootstrap;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.nio.file.Path;
 import java.util.Collections;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.*;
 
 class InMemoryDevnetGenesisTest {
+    @TempDir
+    Path tempDir;
 
     private static ShelleyGenesisData testShelley() {
         return new ShelleyGenesisData(
@@ -151,21 +155,35 @@ class InMemoryDevnetGenesisTest {
 
     @Test
     void yaciNode_constructor_acceptsDevnetConfig() {
-        var config = YanoConfig.devnetDefault(0); // port 0 = OS assigns random available port
+        var config = devnetConfig("in-memory-genesis"); // port 0 = OS assigns random available port
         var genesis = new InMemoryDevnetGenesis(testShelley(), null, testConway(), null);
 
         // Should not throw — devMode=true and enableBlockProducer=true
         // Constructor initializes account-state/epoch-params from in-memory genesis
-        assertThatCode(() -> new RuntimeNode(config, null, genesis))
+        assertThatCode(() -> {
+            try (RuntimeNode node = new RuntimeNode(config, null, genesis)) {
+                assertThat(node).isNotNull();
+            }
+        })
                 .doesNotThrowAnyException();
     }
 
     @Test
     void yaciNode_constructor_nullGenesis_acceptedForDevnet() {
-        var config = YanoConfig.devnetDefault(0); // port 0 = OS assigns random available port
+        var config = devnetConfig("file-genesis"); // port 0 = OS assigns random available port
 
         // null in-memory genesis is fine — uses file-based path
-        assertThatCode(() -> new RuntimeNode(config, null, null))
+        assertThatCode(() -> {
+            try (RuntimeNode node = new RuntimeNode(config, null, null)) {
+                assertThat(node).isNotNull();
+            }
+        })
                 .doesNotThrowAnyException();
+    }
+
+    private YanoConfig devnetConfig(String name) {
+        YanoConfig config = YanoConfig.devnetDefault(0);
+        config.setRocksDBPath(tempDir.resolve(name).toString());
+        return config;
     }
 }

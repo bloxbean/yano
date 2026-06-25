@@ -1,5 +1,7 @@
 package com.bloxbean.cardano.yano.app.e2e.haskellsync;
 
+import com.bloxbean.cardano.yano.testkit.external.HaskellCardanoNodeProcess;
+import com.bloxbean.cardano.yano.testkit.external.YanoAppProcess;
 import com.fasterxml.jackson.databind.JsonNode;
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
@@ -20,7 +22,7 @@ public class PastTimeTravelSyncTest extends HaskellSyncTestBase {
     @Test
     void haskellSyncsAfterPastTimeTravel() throws Exception {
         // 1. Start Yano in past-time-travel mode
-        yaci = new YanoManager(tempDir, uberJarPath);
+        yaci = new YanoAppProcess(tempDir, uberJarPath);
         yaci.start(
                 "-Dyano.block-producer.past-time-travel-mode=true",
                 "-Dyano.block-producer.block-time-millis=0"
@@ -60,7 +62,7 @@ public class PastTimeTravelSyncTest extends HaskellSyncTestBase {
         assertTrue(newSlot > newBlockNumber, "After catch-up, slot should exceed blockNumber");
 
         // 6. Start Haskell node and verify full sync from slot 0
-        haskell = new CardanoNodeManager(tempDir);
+        haskell = new HaskellCardanoNodeProcess(tempDir);
         yaci.copyGenesisTo(haskell.getGenesisDir());
         haskell.start(yaci.getN2nPort());
 
