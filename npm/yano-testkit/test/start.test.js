@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { startYanoDevnet } from "../src/index.js";
+import { startYanoDevnet, YanoHttpError } from "../src/index.js";
 import { platformPackage, supportedPlatformKeys } from "../src/platform.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -63,6 +63,179 @@ test("starts devnet, returns readiness details, and cleans temp storage", async 
   await rm(dirname(argsFile), { recursive: true, force: true });
 
   await assert.rejects(() => stat(workDir));
+});
+
+test("funds an address through the devnet faucet endpoint", async () => {
+  const binaryPath = await fakeBinaryPath();
+  const yano = await startYanoDevnet({
+    binaryPath,
+    cwd: here,
+    timeoutMs: 10_000
+  });
+
+  try {
+    const result = await yano.fundAddress("addr_test1qfakeaddress", 12.5);
+
+    assert.deepEqual(result, {
+      tx_hash: "fake-fund-tx-1",
+      index: 0,
+      lovelace: 12_500_000
+    });
+  } finally {
+    await yano.stop();
+  }
+});
+
+test("validates fundAddress inputs before calling the devnet faucet", async () => {
+  const binaryPath = await fakeBinaryPath();
+  const yano = await startYanoDevnet({
+    binaryPath,
+    cwd: here,
+    timeoutMs: 10_000
+  });
+
+  try {
+    await assert.rejects(
+      () => yano.fundAddress("", 10),
+      /address must not be blank/
+    );
+    await assert.rejects(
+      () => yano.fundAddress("addr_test1qfakeaddress", 0),
+      /ada must be positive/
+    );
+  } finally {
+    await yano.stop();
+  }
+});
+
+test("exposes advanced HTTP-backed devnet helpers", async () => {
+  const binaryPath = await fakeBinaryPath();
+  const yano = await startYanoDevnet({
+    binaryPath,
+    cwd: here,
+    timeoutMs: 10_000
+  });
+
+  try {
+    await yano.await.untilReady({ timeoutMs: 1_000 });
+    assert.equal(await yano.queries.currentSlot(), 1);
+    assert.equal(await yano.queries.currentBlockNumber(), 1);
+
+    const firstFund = await yano.faucet.fundAddress("addr_test1qalice", 2);
+    assert.equal(firstFund.lovelace, 2_000_000);
+    const secondFund = await yano.faucet.fundAddressLovelace("addr_test1qalice", 1_500_000n);
+    assert.equal(secondFund.lovelace, 1_500_000);
+    const batchFunds = await yano.faucet.fundAll([
+      { address: "addr_test1qbob", ada: 1 },
+      { address: "addr_test1qbob", lovelace: "2500000" }
+    ]);
+    assert.equal(batchFunds.length, 2);
+
+    assert.equal(await yano.assertions.address("addr_test1qalice").balanceLovelace(), 3_500_000n);
+    await yano.assertions.address("addr_test1qalice").hasAtLeastAda(3.5);
+    assert.equal((await yano.queries.utxo(firstFund.tx_hash, 0)).address, "addr_test1qalice");
+    assert.equal((await yano.queries.utxosByAddressAndAsset("addr_test1qalice", "lovelace")).length, 2);
+    assert.deepEqual(await yano.queries.utxosByPaymentCredential("credential"), []);
+    const currentParams = /** @type {{ min_fee_a: number }} */ (await yano.queries.protocolParameters());
+    const epochParams = /** @type {{ epoch: number }} */ (await yano.queries.protocolParameters(0));
+    assert.equal(currentParams.min_fee_a, 44);
+    assert.equal(epochParams.epoch, 0);
+    assert.equal((await yano.queries.latestBlock()).number, 1);
+    assert.equal((await yano.queries.block("fake-block")).hash, "fake-block");
+
+    const advanced = await yano.time.advanceSlots(4);
+    assert.equal(advanced.new_slot, 5);
+    assert.equal(await yano.queries.currentEpoch(), 0);
+    assert.equal((await yano.time.advanceSeconds(1)).blocks_produced, 1);
+    assert.equal((await yano.time.advanceEpochs(1)).blocks_produced, 10);
+    assert.equal((await yano.time.shiftGenesisAndStartProducer(2)).shift_millis, 20_000);
+    assert.equal((await yano.time.catchUpToWallClock()).blocks_produced, 3);
+
+    await yano.time.advanceToEpoch(1);
+    await yano.await.untilEpochAtLeast(1, { timeoutMs: 1_000 });
+    assert.equal(await yano.queries.epochStartSlot(2), 20);
+
+    await yano.time.crossEpochBoundary();
+    await yano.assertions.epochAtLeast(2);
+
+    const snapshot = await yano.snapshots.create("before");
+    assert.equal(snapshot.name, "before");
+    await yano.assertions.snapshotExists("before");
+    await yano.time.advanceSlots(2);
+    await yano.snapshots.restore("before");
+    const withSnapshotResult = await yano.snapshots.withSnapshot("temp", async () => {
+      await yano.time.advanceSlots(1);
+      return "ok";
+    });
+    assert.equal(withSnapshotResult, "ok");
+    await yano.snapshots.delete("before");
+    await yano.assertions.snapshotMissing("before");
+
+    const rollback = await yano.devnet.rollback({ count: 1 });
+    assert.equal(typeof rollback.slot, "number");
+    assert.equal((await yano.devnet.rollback({ slot: 2 })).slot, 2);
+    assert.equal((await yano.devnet.rollback({ blockNumber: 1 })).block_number, 1);
+    const genesisZip = await yano.devnet.downloadGenesisZip();
+    assert.equal(Buffer.from(genesisZip).toString("utf8"), "fake-zip");
+
+    const txHash = await yano.transactions.submitAndAwait(new Uint8Array([1, 2]), { timeoutMs: 1_000 });
+    assert.equal(txHash, "submitted-tx");
+    assert.equal(await yano.transactions.submitHex("00"), "submitted-tx");
+    assert.equal((await yano.queries.tx(txHash)).hash, "submitted-tx");
+    const evaluation = /** @type {any} */ (await yano.transactions.evaluateHex("00"));
+    assert.equal(evaluation.result.EvaluationResult["spend:0"].memory, 1);
+    const cborEvaluation = /** @type {any} */ (await yano.transactions.evaluateCbor(new Uint8Array([0])));
+    assert.equal(cborEvaluation.result.EvaluationResult["spend:0"].steps, 2);
+
+    await yano.assertions.nodeIsRunning();
+    await yano.assertions.runtimeNotDegraded();
+  } finally {
+    await yano.stop();
+  }
+});
+
+test("HTTP client exposes status and response body on failures", async () => {
+  const binaryPath = await fakeBinaryPath();
+  const yano = await startYanoDevnet({
+    binaryPath,
+    cwd: here,
+    timeoutMs: 10_000
+  });
+
+  try {
+    let failure;
+    try {
+      await yano.client.getJson("missing-route");
+    } catch (error) {
+      failure = error;
+    }
+
+    assert.ok(failure instanceof YanoHttpError);
+    assert.equal(failure.status, 404);
+    assert.match(failure.bodyText, /not found/);
+  } finally {
+    await yano.stop();
+  }
+});
+
+test("await helper times out with an assertion error", async () => {
+  const binaryPath = await fakeBinaryPath();
+  const yano = await startYanoDevnet({
+    binaryPath,
+    cwd: here,
+    timeoutMs: 10_000
+  });
+
+  try {
+    await assert.rejects(
+      () => yano.await.untilSlotAtLeast(999, { timeoutMs: 20, pollIntervalMs: 5 }),
+      (error) => error instanceof Error
+        && error.name === "AssertionError"
+        && /slot >= 999/.test(error.message)
+    );
+  } finally {
+    await yano.stop();
+  }
 });
 
 test("keeps persistent storage work directory", async () => {

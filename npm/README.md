@@ -184,8 +184,10 @@ const yano = await startYanoDevnet({
 });
 
 try {
-  const response = await fetch(new URL("node/tip", yano.apiBaseUrl));
-  console.log(await response.json());
+  await yano.faucet.fundAddress("addr_test1...", 1000);
+  await yano.time.advanceSlots(3);
+
+  console.log(await yano.queries.tip());
 } finally {
   await yano.stop();
 }
@@ -243,5 +245,11 @@ platform package tarball is installed too.
 
 - The default storage mode is real RocksDB in a test-owned temporary directory.
 - The wrapper uses Yano's production HTTP API under `/api/v1`.
+- Use `yano.faucet`, `yano.time`, `yano.snapshots`, `yano.devnet`,
+  `yano.queries`, `yano.transactions`, `yano.await`, and `yano.assertions` for
+  HTTP-backed integration-test helpers.
+- Use `yano.faucet.fundAddress(address, ada)` to fund addresses from the devnet
+  faucet; the package does not expose a default JavaScript wallet or pre-funded
+  account.
 - The wrapper does not expose JVM testkit classes or runtime internals.
 - Platform packages are populated from native distribution zips in release CI.

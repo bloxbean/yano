@@ -5,6 +5,9 @@ Programmatic Yano devnet fixture for JavaScript and TypeScript tests.
 The package starts a local Yano native binary in devnet mode, waits until the
 HTTP API is ready, and returns connection details for your test code.
 
+For a detailed JavaScript developer guide, see
+[JS_USER_GUIDE.md](./JS_USER_GUIDE.md).
+
 ## Install
 
 ```bash
@@ -25,8 +28,10 @@ const yano = await startYanoDevnet({
 });
 
 try {
-  const response = await fetch(new URL("node/tip", yano.apiBaseUrl));
-  const tip = await response.json();
+  await yano.faucet.fundAddress("addr_test1...", 1000);
+  await yano.time.advanceSlots(3);
+
+  const tip = await yano.queries.tip();
   console.log(tip);
 } finally {
   await yano.stop();
@@ -42,6 +47,90 @@ The default fixture uses:
 - a random available HTTP port;
 - a random available node-to-node port;
 - the production Blockfrost-compatible API under `/api/v1/`.
+
+## Funding Test Addresses
+
+Yano devnet exposes a devnet-only faucet endpoint. The wrapper provides a small
+helper so tests do not need to hand-roll the HTTP request:
+
+```js
+const result = await yano.fundAddress("addr_test1...", 1000);
+console.log(result.tx_hash, result.index, result.lovelace);
+```
+
+`yano.fundAddress(address, ada)` is a compatibility alias for
+`yano.faucet.fundAddress(address, ada)`.
+
+The amount is in ADA, matching the HTTP API:
+
+```http
+POST /api/v1/devnet/fund
+{ "address": "addr_test1...", "ada": 1000 }
+```
+
+The response shape is `{ tx_hash, index, lovelace }`.
+
+The npm testkit does not expose a default JavaScript wallet or pre-funded
+account. JS tests should create or load their own test wallet/address using the
+application's normal Cardano library, then call `fundAddress()` before building
+transactions. The devnet's initial funds are owned by the runtime faucet, not by
+an npm-exported mnemonic.
+
+## Advanced Helpers
+
+The returned devnet object includes typed, HTTP-backed helper groups:
+
+```js
+await yano.faucet.fundAddress(address, 1000);
+await yano.faucet.fundAddressLovelace(address, 1_000_000n);
+
+await yano.time.advanceSlots(5);
+await yano.time.advanceToEpoch(1);
+await yano.time.crossEpochBoundary();
+
+await yano.snapshots.create("before-case");
+await yano.snapshots.withSnapshot("case", async () => {
+  await yano.time.advanceSlots(1);
+});
+
+await yano.devnet.rollback({ count: 1 });
+
+const utxos = await yano.queries.utxosByAddress(address);
+const txHash = await yano.transactions.submitAndAwait(signedTxCbor);
+
+await yano.await.untilTxVisible(txHash);
+await yano.assertions.address(address).hasAtLeastAda(1000);
+```
+
+Query helpers and `yano.client` preserve Yano's HTTP response shape, including
+Blockfrost-style snake_case fields such as `tx_hash`, `block_number`, and
+`output_index`. Wrapper request options use normal JavaScript camelCase where a
+convenience method needs an option object.
+
+`advanceToSlot()`, `advanceToEpoch()`, and `crossEpochBoundary()` are
+best-effort helpers. They read current chain state and then ask Yano to advance
+by the computed delta, so a live producer can move the chain while the helper is
+running. Use `await.untilSlotAtLeast()`, `await.untilEpochAtLeast()`, or an
+assertion after advancing when the test needs to verify the final chain state.
+
+ADA assertion helpers such as `hasAtLeastAda(1000)` accept JavaScript numbers
+for convenience. Use the lovelace helpers, for example `hasAtLeast(1_000_000n)`
+or `hasExactly(1_000_000n)`, when exact arithmetic matters.
+
+The low-level `yano.client` helper is available for endpoints that do not need a
+named convenience method:
+
+```js
+const status = await yano.client.getJson("node/status");
+const params = await yano.client.getJson("epochs/latest/parameters");
+```
+
+All mutation helpers call Yano's existing devnet-only HTTP endpoints. They do
+not expose runtime internals or RocksDB handles.
+
+Wallet/key generation and transaction signing stay in your JavaScript
+application or its chosen Cardano library. Yano helpers fund and query addresses
+and submit serialized transactions.
 
 ## Vitest
 
@@ -76,8 +165,10 @@ await fetch(new URL("tx/submit", yano.apiBaseUrl), {
 });
 ```
 
-Query UTXOs through the Blockfrost-compatible endpoints under `yano.apiBaseUrl`.
-Wallet and key generation are intentionally outside this package.
+Use `yano.faucet.fundAddress(address, ada)` to create test UTXOs, then query
+UTXOs through `yano.queries` or the Blockfrost-compatible endpoints under
+`yano.apiBaseUrl`. Wallet and key generation are intentionally outside this
+package.
 
 ## Local Wrapper Testing
 

@@ -1,0 +1,17 @@
+{
+  "name": "yano-testkit-meshjs-transfer-test",
+  "version": "1.0.0",
+  "private": true,
+  "description": "MeshJS transfer example using @bloxbean/yano-testkit.",
+  "type": "module",
+  "scripts": {
+    "test": "node src/meshjs-transfer.mjs"
+  },
+  "dependencies": {
+    "@meshsdk/core": "latest",
+    "xhr2": "^0.2.1"
+  },
+  "devDependencies": {
+    "@bloxbean/yano-testkit": "file:../../npm/yano-testkit"
+  }
+}
