@@ -45,22 +45,20 @@ testing portable across macOS, Linux, and Windows.
 ## 2. Keep Versions In Sync
 
 The npm packages should normally use the same version as `gradle.properties`.
-Release CI does this automatically before publishing, so no manual version edit
-is needed for a normal release.
+Release CI and npm testkit CI sync this automatically before publishing or
+validating packages, so no manual package JSON edit is needed for a normal
+release or PR build.
 
-For local testing after the Gradle version changes, sync the npm package
-manifests and lockfile once:
+For local testing after the Gradle version changes, run the same sync command:
 
 ```bash
-cd /path/to/yano
-node npm/scripts/set-package-version.mjs 0.1.0-pre7
-npm install --prefix npm/yano-testkit --package-lock-only --omit=optional
+cd /path/to/yano/npm
+npm run sync:versions
 ```
 
-Replace `0.1.0-pre7` with the version from `gradle.properties`. Then verify:
+Then verify:
 
 ```bash
-cd npm
 npm run check:versions
 ```
 
