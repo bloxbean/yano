@@ -34,4 +34,18 @@ for (const dir of packageDirs) {
   }
 }
 
+const lockFile = resolve(npmRoot, "yano-testkit", "package-lock.json");
+const lock = JSON.parse(await readFile(lockFile, "utf8"));
+if (lock.version !== version) {
+  throw new Error(`yano-testkit/package-lock.json version ${lock.version} does not match Gradle version ${version}`);
+}
+if (lock.packages?.[""]?.version !== version) {
+  throw new Error(`yano-testkit/package-lock.json root package version ${lock.packages?.[""]?.version} does not match Gradle version ${version}`);
+}
+for (const [name, dependencyVersion] of Object.entries(lock.packages?.[""]?.optionalDependencies ?? {})) {
+  if (dependencyVersion !== version) {
+    throw new Error(`yano-testkit/package-lock.json optional dependency ${name} version ${dependencyVersion} does not match ${version}`);
+  }
+}
+
 console.log(`All npm package versions match Gradle version ${version}`);

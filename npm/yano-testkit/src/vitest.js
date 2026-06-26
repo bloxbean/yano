@@ -34,6 +34,33 @@ export function yanoDevnet(options = {}) {
     get apiBaseUrl() {
       return this.current.apiBaseUrl;
     },
+    get client() {
+      return this.current.client;
+    },
+    get queries() {
+      return this.current.queries;
+    },
+    get faucet() {
+      return this.current.faucet;
+    },
+    get time() {
+      return this.current.time;
+    },
+    get snapshots() {
+      return this.current.snapshots;
+    },
+    get devnet() {
+      return this.current.devnet;
+    },
+    get transactions() {
+      return this.current.transactions;
+    },
+    get await() {
+      return this.current.await;
+    },
+    get assertions() {
+      return this.current.assertions;
+    },
     /** @param {string} path */
     url(path) {
       return this.current.url(path);

@@ -45,22 +45,20 @@ testing portable across macOS, Linux, and Windows.
 ## 2. Keep Versions In Sync
 
 The npm packages should normally use the same version as `gradle.properties`.
-Release CI does this automatically before publishing, so no manual version edit
-is needed for a normal release.
+Release CI and npm testkit CI sync this automatically before publishing or
+validating packages, so no manual package JSON edit is needed for a normal
+release or PR build.
 
-For local testing after the Gradle version changes, sync the npm package
-manifests and lockfile once:
+For local testing after the Gradle version changes, run the same sync command:
 
 ```bash
-cd /path/to/yano
-node npm/scripts/set-package-version.mjs 0.1.0-pre7
-npm install --prefix npm/yano-testkit --package-lock-only --omit=optional
+cd /path/to/yano/npm
+npm run sync:versions
 ```
 
-Replace `0.1.0-pre7` with the version from `gradle.properties`. Then verify:
+Then verify:
 
 ```bash
-cd npm
 npm run check:versions
 ```
 
@@ -184,8 +182,10 @@ const yano = await startYanoDevnet({
 });
 
 try {
-  const response = await fetch(new URL("node/tip", yano.apiBaseUrl));
-  console.log(await response.json());
+  await yano.faucet.fundAddress("addr_test1...", 1000);
+  await yano.time.advanceSlots(3);
+
+  console.log(await yano.queries.tip());
 } finally {
   await yano.stop();
 }
@@ -243,5 +243,11 @@ platform package tarball is installed too.
 
 - The default storage mode is real RocksDB in a test-owned temporary directory.
 - The wrapper uses Yano's production HTTP API under `/api/v1`.
+- Use `yano.faucet`, `yano.time`, `yano.snapshots`, `yano.devnet`,
+  `yano.queries`, `yano.transactions`, `yano.await`, and `yano.assertions` for
+  HTTP-backed integration-test helpers.
+- Use `yano.faucet.fundAddress(address, ada)` to fund addresses from the devnet
+  faucet; the package does not expose a default JavaScript wallet or pre-funded
+  account.
 - The wrapper does not expose JVM testkit classes or runtime internals.
 - Platform packages are populated from native distribution zips in release CI.

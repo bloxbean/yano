@@ -1,6 +1,6 @@
 {
   "name": "@bloxbean/yano-testkit",
-  "version": "0.1.0-pre6",
+  "version": "0.1.0-pre7-ci2",
   "description": "Programmatic Yano devnet test fixture for JavaScript and TypeScript tests.",
   "keywords": [
     "yano",
@@ -25,6 +25,7 @@
   },
   "files": [
     "README.md",
+    "JS_USER_GUIDE.md",
     "src"
   ],
   "license": "MIT",
@@ -43,10 +44,10 @@
     "pack:dry": "npm pack --dry-run"
   },
   "optionalDependencies": {
-    "@bloxbean/yano-testkit-linux-x64": "0.1.0-pre6",
-    "@bloxbean/yano-testkit-linux-arm64": "0.1.0-pre6",
-    "@bloxbean/yano-testkit-macos-arm64": "0.1.0-pre6",
-    "@bloxbean/yano-testkit-windows-x64": "0.1.0-pre6"
+    "@bloxbean/yano-testkit-linux-x64": "0.1.0-pre7-ci2",
+    "@bloxbean/yano-testkit-linux-arm64": "0.1.0-pre7-ci2",
+    "@bloxbean/yano-testkit-macos-arm64": "0.1.0-pre7-ci2",
+    "@bloxbean/yano-testkit-windows-x64": "0.1.0-pre7-ci2"
   },
   "peerDependencies": {
     "vitest": ">=1.0.0"

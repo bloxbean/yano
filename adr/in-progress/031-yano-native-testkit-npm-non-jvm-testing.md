@@ -125,6 +125,8 @@ The package should:
 - spawn the native fixture;
 - poll the real HTTP endpoints until the fixture is ready;
 - expose a small typed API for lifecycle and connection details;
+- expose small HTTP-backed devnet conveniences such as `fundAddress(address,
+  ada)` where they avoid boilerplate without hiding runtime behavior;
 - stream or retain logs for failed tests;
 - avoid depending on a specific JavaScript test runner.
 
@@ -139,6 +141,8 @@ const yano = await startYanoDevnet({
 });
 
 try {
+  await yano.fundAddress("addr_test1...", 1000);
+
   const response = await fetch(new URL("node/tip", yano.apiBaseUrl));
   const tip = await response.json();
   // application test assertions
@@ -163,6 +167,17 @@ usable from plain Node.js.
 The non-JVM fixture should use Yano's real HTTP endpoints. JavaScript
 applications should call those endpoints directly or through their chosen
 Blockfrost-compatible client.
+
+The npm wrapper may provide thin helpers over devnet-only HTTP endpoints. The
+initial helper is `fundAddress(address, ada)`, which calls
+`POST /api/v1/devnet/fund` and returns the HTTP response shape
+`{ tx_hash, index, lovelace }`. The amount is in ADA, matching the endpoint.
+This helper does not create keys, sign transactions, or expose runtime internals.
+
+The npm testkit does not publish a default JavaScript wallet, mnemonic, or
+pre-funded account. JS applications should create or load their own test wallet
+with their normal Cardano library, fund that address through `fundAddress()`,
+and then build/sign transactions through application code.
 
 This is intentionally separate from the embedded Java CCL adapter:
 
@@ -213,6 +228,7 @@ The base npm package should not require Docker.
      testing.
 
 5. Completed in documentation: keep transaction workflows HTTP-only.
+   - `fundAddress(address, ada)` wraps Yano's devnet-only HTTP faucet endpoint.
    - Applications submit through `POST /api/v1/tx/submit`.
    - Applications query UTXOs through Blockfrost-compatible endpoints.
    - Wallet/key generation stays in the application or a JS Cardano library.
@@ -242,6 +258,8 @@ The implementation is complete when these checks pass:
 - temp directories are removed after `stop()`;
 - persistent-storage mode keeps its configured path;
 - the npm wrapper can start and stop the fixture from a plain Node.js test;
+- `fundAddress(address, ada)` calls the devnet HTTP faucet and returns
+  `{ tx_hash, index, lovelace }`;
 - failed startup includes enough process output to diagnose the issue;
 - the fixture remains independent of JVM-only testkit types.
 

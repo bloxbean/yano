@@ -1,6 +1,7 @@
 {
   "private": true,
   "scripts": {
+    "sync:versions": "node scripts/set-package-version.mjs",
     "install:testkit": "npm install --prefix yano-testkit --omit=optional",
     "test": "npm test --prefix yano-testkit",
     "typecheck": "npm run typecheck --prefix yano-testkit",

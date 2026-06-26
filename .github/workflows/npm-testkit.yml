@@ -4,12 +4,14 @@ on:
   pull_request:
     paths:
       - 'npm/**'
+      - 'gradle.properties'
       - '.github/workflows/npm-testkit.yml'
   push:
     branches:
       - main
     paths:
       - 'npm/**'
+      - 'gradle.properties'
       - '.github/workflows/npm-testkit.yml'
   workflow_dispatch:
 
@@ -29,6 +31,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
+
+      - name: Sync npm package versions
+        working-directory: npm
+        run: npm run sync:versions
 
       - name: Install npm testkit dependencies
         working-directory: npm

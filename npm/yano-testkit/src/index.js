@@ -6,6 +6,10 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { resolveYanoBinary, assertBinaryExists } from "./binary.js";
+import { createYanoHttpClient } from "./http.js";
+import { createYanoFacades } from "./facades.js";
+
+export { YanoHttpError } from "./http.js";
 
 const DEFAULT_TIMEOUT_MS = 60_000;
 const DEFAULT_BLOCK_TIME_MS = 200;
@@ -42,10 +46,16 @@ const MAX_LOG_LINES = 500;
  * @property {{ mode: YanoStorageMode, path: string }} storage
  * @property {string} workDir
  *
- * @typedef {YanoReadyInfo & {
+ * @typedef YanoFundResult
+ * @property {string} tx_hash
+ * @property {number} index
+ * @property {number} lovelace
+ *
+ * @typedef {YanoReadyInfo & import("./facades.js").YanoFacades & {
  *   process: import("node:child_process").ChildProcess,
  *   logs: () => string,
  *   url: (path: string) => URL,
+ *   fundAddress: (address: string, ada: number) => Promise<YanoFundResult>,
  *   stop: () => Promise<void>
  * }} YanoDevnet
  */
@@ -134,12 +144,16 @@ export async function startYanoDevnet(options = {}) {
     },
     workDir
   };
+  const client = createYanoHttpClient(apiBaseUrl);
+  const facades = createYanoFacades(client);
 
   return {
     ...ready,
+    ...facades,
     process: child,
     logs: logs.text,
     url: (path) => new URL(path, apiBaseUrl),
+    fundAddress: (address, ada) => /** @type {Promise<YanoFundResult>} */ (facades.faucet.fundAddress(address, ada)),
     stop: async () => {
       await stopProcess(child);
       await cleanup();

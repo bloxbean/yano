@@ -2,3 +2,14 @@ dependencies {
     api project(':core-api')
     api project(':runtime')
 }
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            pom {
+                name = 'Yano Devnet Toolkit'
+                description = 'Devnet control adapter and assembly helpers for Yano tests and local devnet workflows'
+            }
+        }
+    }
+}
