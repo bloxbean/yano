@@ -7,3 +7,14 @@ dependencies {
     api libs.jackson.databind
     implementation libs.slf4j.api
 }
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            pom {
+                name = 'Yano Testkit'
+                description = 'JUnit and JVM integration-test helpers for running Yano devnets'
+            }
+        }
+    }
+}

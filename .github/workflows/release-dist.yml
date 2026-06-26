@@ -190,11 +190,11 @@ jobs:
 
           VERSION="${{ needs.validate.outputs.version }}"
           NPM_TAG=latest
-          if [[ "$VERSION" == *"-preview"* ]]; then
+          if [[ "$VERSION" == *"-preview"* || "$VERSION" == *"-pre"* || "$VERSION" == *"-alpha"* ]]; then
             NPM_TAG=preview
           elif [[ "$VERSION" == *"-beta"* ]]; then
             NPM_TAG=beta
-          elif [[ "$VERSION" == *"-pre"* || "$VERSION" == *"-rc"* || "$VERSION" == *"-alpha"* ]]; then
+          elif [[ "$VERSION" == *"-rc"* ]]; then
             NPM_TAG=next
           fi
 
@@ -204,7 +204,7 @@ jobs:
             yano-testkit-macos-arm64 \
             yano-testkit-windows-x64 \
             yano-testkit; do
-            npm publish "npm/${package_dir}" --access public --provenance --tag "$NPM_TAG"
+            npm publish "./npm/${package_dir}" --access public --provenance --tag "$NPM_TAG"
           done
 
   release:
