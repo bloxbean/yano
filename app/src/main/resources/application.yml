@@ -16,6 +16,10 @@ quarkus:
     category:
       "com.bloxbean.cardano.yaci":
         level: INFO
+      "com.bloxbean.cardano.yaci.core.network.Session":
+        # Peer dial failures are expected with public/discovered relay sets.
+        # Yano logs the selected peer and root cause in one line at the sync layer.
+        level: "OFF"
   smallrye-openapi:
     info-title: "Yano API"
     info-version: "${quarkus.application.version:0.1.0}"
@@ -46,6 +50,13 @@ yano:
     host: preprod-node.world.dev.cardano.org
     port: 30000
     protocol-magic: 1
+  upstream:
+    validation:
+      # Header validation: none | structural | header-signature.
+      # Disabled by default; set to header-signature to enable built-in Shelley+ header checks.
+      level: none
+      # Body validation presets are scaffolded for future validators. Supported now: none.
+      body-level: none
   dns:
     cache:
       # Positive DNS cache TTL in seconds. Defaults to 60 when omitted.

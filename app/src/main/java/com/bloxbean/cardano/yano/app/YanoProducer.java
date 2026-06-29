@@ -11,6 +11,16 @@ import com.bloxbean.cardano.yano.api.TxEvaluationGateway;
 import com.bloxbean.cardano.yano.api.TxGateway;
 import com.bloxbean.cardano.yano.api.config.PluginsOptions;
 import com.bloxbean.cardano.yano.api.config.RuntimeOptions;
+import com.bloxbean.cardano.yano.api.config.ChainSelectionConfig;
+import com.bloxbean.cardano.yano.api.config.UpstreamConfig;
+import com.bloxbean.cardano.yano.api.config.UpstreamDiscoveryConfig;
+import com.bloxbean.cardano.yano.api.config.UpstreamFailoverConfig;
+import com.bloxbean.cardano.yano.api.config.UpstreamGovernorConfig;
+import com.bloxbean.cardano.yano.api.config.UpstreamPeerConfig;
+import com.bloxbean.cardano.yano.api.config.UpstreamPreset;
+import com.bloxbean.cardano.yano.api.config.UpstreamSyncConfig;
+import com.bloxbean.cardano.yano.api.config.UpstreamTxConfig;
+import com.bloxbean.cardano.yano.api.config.UpstreamValidationConfig;
 import com.bloxbean.cardano.yano.api.config.YanoConfig;
 import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
 import com.bloxbean.cardano.yano.app.bootstrap.BootstrapConfigParser;
@@ -48,6 +58,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.HashMap;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -372,6 +383,7 @@ public class YanoProducer {
                 .enableServer(serverEnabled)
                 .remoteHost(remoteHost)
                 .remotePort(remotePort)
+                .upstream(parseUpstreamConfig())
                 .serverPort(serverPort)
                 .protocolMagic(protocolMagic)
                 .useRocksDB(useRocksDB)
@@ -661,6 +673,150 @@ public class YanoProducer {
             prefix = prefix.substring(0, prefix.length() - 1);
         }
         return prefix;
+    }
+
+    UpstreamConfig parseUpstreamConfig() {
+        java.util.Optional<String> mode = appConfig.getOptionalValue(YanoPropertyKeys.Upstream.MODE, String.class);
+        List<UpstreamPeerConfig> peers = parseUpstreamPeers();
+        if (mode.isEmpty() && peers.isEmpty() && !hasExplicitUpstreamProperty()) {
+            return null;
+        }
+        UpstreamPreset upstreamMode = UpstreamPreset.fromConfig(mode.orElse("trusted-single"));
+        boolean discoveryEnabled = configBoolean(YanoPropertyKeys.Upstream.DISCOVERY_ENABLED, false);
+        List<String> peerSnapshotUrls = configStringList(YanoPropertyKeys.Upstream.DISCOVERY_PEER_SNAPSHOT_URLS);
+        if (peerSnapshotUrls.isEmpty()) {
+            peerSnapshotUrls = defaultPeerSnapshotUrls(upstreamMode, discoveryEnabled);
+        }
+
+        return UpstreamConfig.builder()
+                .mode(upstreamMode)
+                .peers(peers)
+                .selection(ChainSelectionConfig.builder()
+                        .policy(configString(YanoPropertyKeys.Upstream.SELECTION_POLICY,
+                                "trusted-or-quorum-within-rollback-window"))
+                        .rollbackWindowSlots(appConfig.getOptionalValue(
+                                        YanoPropertyKeys.Upstream.SELECTION_ROLLBACK_WINDOW_SLOTS, Long.class)
+                                .orElse(0L))
+                        .requireBodyBeforeAdoption(configBoolean(
+                                YanoPropertyKeys.Upstream.SELECTION_REQUIRE_BODY_BEFORE_ADOPTION, true))
+                        .trustPolicy(configString(YanoPropertyKeys.Upstream.SELECTION_TRUST_POLICY, "trusted-only"))
+                        .quorum(configInt(YanoPropertyKeys.Upstream.SELECTION_QUORUM, 2))
+                        .tieBreak(configString(YanoPropertyKeys.Upstream.SELECTION_TIE_BREAK, "deterministic"))
+                        .build())
+                .validation(UpstreamValidationConfig.builder()
+                        .level(configString(YanoPropertyKeys.Upstream.VALIDATION_LEVEL, "none"))
+                        .bodyLevel(configString(YanoPropertyKeys.Upstream.VALIDATION_BODY_LEVEL, "none"))
+                        .build())
+                .sync(UpstreamSyncConfig.builder()
+                        .bulkSource(configString(YanoPropertyKeys.Upstream.SYNC_BULK_SOURCE, "single-trusted"))
+                        .fanInStart(configString(YanoPropertyKeys.Upstream.SYNC_FAN_IN_START, "near-tip"))
+                        .build())
+                .failover(UpstreamFailoverConfig.builder()
+                        .cooldownMs(configLong(YanoPropertyKeys.Upstream.FAILOVER_COOLDOWN_MS, 30_000L))
+                        .maxFailuresBeforeCooldown(configInt(
+                                YanoPropertyKeys.Upstream.FAILOVER_MAX_FAILURES_BEFORE_COOLDOWN, 3))
+                        .build())
+                .tx(UpstreamTxConfig.builder()
+                        .forwarding(configString(YanoPropertyKeys.Upstream.TX_FORWARDING, "active-selected"))
+                        .build())
+                .governor(UpstreamGovernorConfig.builder()
+                        .enabled(configBoolean(YanoPropertyKeys.Upstream.GOVERNOR_ENABLED, false))
+                        .targetCold(configInt(YanoPropertyKeys.Upstream.GOVERNOR_TARGET_COLD, 100))
+                        .targetWarm(configInt(YanoPropertyKeys.Upstream.GOVERNOR_TARGET_WARM, 8))
+                        .targetHot(configInt(YanoPropertyKeys.Upstream.GOVERNOR_TARGET_HOT, 2))
+                        .maxConcurrentDials(configInt(
+                                YanoPropertyKeys.Upstream.GOVERNOR_MAX_CONCURRENT_DIALS, 4))
+                        .build())
+                .discovery(UpstreamDiscoveryConfig.builder()
+                        .enabled(discoveryEnabled)
+                        .peerSharing(configBoolean(YanoPropertyKeys.Upstream.DISCOVERY_PEER_SHARING, false))
+                        .seeds(configStringList(YanoPropertyKeys.Upstream.DISCOVERY_SEEDS))
+                        .peerSnapshotUrls(peerSnapshotUrls)
+                        .peerSnapshotFiles(configStringList(YanoPropertyKeys.Upstream.DISCOVERY_PEER_SNAPSHOT_FILES))
+                        .peerSnapshotLimit(configInt(
+                                YanoPropertyKeys.Upstream.DISCOVERY_PEER_SNAPSHOT_LIMIT, 128))
+                        .allowPrivateAddresses(configBoolean(
+                                YanoPropertyKeys.Upstream.DISCOVERY_ALLOW_PRIVATE_ADDRESSES, false))
+                        .allowlist(configStringList(YanoPropertyKeys.Upstream.DISCOVERY_ALLOWLIST))
+                        .denylist(configStringList(YanoPropertyKeys.Upstream.DISCOVERY_DENYLIST))
+                        .build())
+                .build();
+    }
+
+    private boolean hasExplicitUpstreamProperty() {
+        for (String propertyName : appConfig.getPropertyNames()) {
+            if (propertyName != null && propertyName.startsWith("yano.upstream.")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private List<String> defaultPeerSnapshotUrls(UpstreamPreset upstreamMode, boolean discoveryEnabled) {
+        if (!discoveryEnabled || upstreamMode != UpstreamPreset.P2P_RELAY) {
+            return List.of();
+        }
+        String normalizedNetwork = network != null ? network.trim().toLowerCase(java.util.Locale.ROOT) : "";
+        return switch (normalizedNetwork) {
+            case "mainnet", "preprod", "preview" -> List.of(
+                    "https://book.play.dev.cardano.org/environments/" + normalizedNetwork + "/peer-snapshot.json");
+            default -> List.of();
+        };
+    }
+
+    private List<UpstreamPeerConfig> parseUpstreamPeers() {
+        List<UpstreamPeerConfig> peers = new ArrayList<>();
+        for (int i = 0; i < 512; i++) {
+            String prefix = YanoPropertyKeys.Upstream.PEERS + "[" + i + "]";
+            java.util.Optional<String> host = appConfig.getOptionalValue(prefix + ".host", String.class);
+            if (host.isEmpty()) {
+                if (i == 0) {
+                    continue;
+                }
+                break;
+            }
+            peers.add(UpstreamPeerConfig.builder()
+                    .id(appConfig.getOptionalValue(prefix + ".id", String.class).orElse(null))
+                    .host(host.get())
+                    .port(appConfig.getOptionalValue(prefix + ".port", Integer.class).orElse(remotePort))
+                    .source(appConfig.getOptionalValue(prefix + ".source", String.class).orElse("local-root"))
+                    .priority(appConfig.getOptionalValue(prefix + ".priority", Integer.class).orElse(i))
+                    .trust(appConfig.getOptionalValue(prefix + ".trust", String.class).orElse("trusted"))
+                    .build());
+        }
+        return peers;
+    }
+
+    private String configString(String key, String defaultValue) {
+        return appConfig.getOptionalValue(key, String.class).orElse(defaultValue);
+    }
+
+    private int configInt(String key, int defaultValue) {
+        return appConfig.getOptionalValue(key, Integer.class).orElse(defaultValue);
+    }
+
+    private long configLong(String key, long defaultValue) {
+        return appConfig.getOptionalValue(key, Long.class).orElse(defaultValue);
+    }
+
+    private boolean configBoolean(String key, boolean defaultValue) {
+        return appConfig.getOptionalValue(key, Boolean.class).orElse(defaultValue);
+    }
+
+    private List<String> configStringList(String key) {
+        java.util.Optional<List<String>> listValue = appConfig.getOptionalValues(key, String.class);
+        if (listValue.isPresent()) {
+            return listValue.get().stream()
+                    .map(String::trim)
+                    .filter(item -> !item.isBlank())
+                    .toList();
+        }
+        return appConfig.getOptionalValue(key, String.class)
+                .map(value -> java.util.Arrays.stream(value.split(","))
+                        .map(String::trim)
+                        .filter(item -> !item.isBlank())
+                        .toList())
+                .orElse(List.of());
     }
 
     void onStop(@Observes ShutdownEvent event) {

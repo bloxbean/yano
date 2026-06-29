@@ -220,10 +220,15 @@ public final class PeerSessionSupervisor implements AutoCloseable {
     }
 
     private Optional<PeerRecoveryReason> evaluate(PeerSession session, PeerSessionStatus status, long now) {
-        if (status.state() == PeerSessionState.STOPPED
-                || status.state() == PeerSessionState.STOPPING
+        if (status.state() == PeerSessionState.STOPPING
                 || status.state() == PeerSessionState.RECOVERING) {
             return Optional.empty();
+        }
+
+        if (status.state() == PeerSessionState.STOPPED) {
+            return Optional.of(status.lastRecoveryReason() != null
+                    ? status.lastRecoveryReason()
+                    : PeerRecoveryReason.UNKNOWN);
         }
 
         if (status.state() == PeerSessionState.STARTING) {

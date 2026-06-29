@@ -1,5 +1,7 @@
 package com.bloxbean.cardano.yano.app;
 
+import com.bloxbean.cardano.yano.api.config.UpstreamPreset;
+import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
 import com.bloxbean.cardano.yano.runtime.config.RollbackRetentionGenesisValues;
 import com.bloxbean.cardano.yano.runtime.config.RollbackRetentionPlanner;
 import org.eclipse.microprofile.config.Config;
@@ -12,6 +14,7 @@ import java.util.Map;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 class YanoProducerTest {
 
@@ -48,6 +51,46 @@ class YanoProducerTest {
         assertEquals(864_000, globals.get(RollbackRetentionPlanner.BLOCK_BODY_PRUNE_DEPTH));
     }
 
+    @Test
+    void upstreamValidationOverrideIsHonoredWithLegacyRemoteConfig() {
+        var producer = new YanoProducer(Thread.currentThread().getContextClassLoader());
+        producer.appConfig = new PresentConfig(Map.of(
+                YanoPropertyKeys.Upstream.VALIDATION_LEVEL, "header-signature",
+                YanoPropertyKeys.Upstream.VALIDATION_BODY_LEVEL, "none"));
+
+        var upstream = producer.parseUpstreamConfig();
+
+        assertNotNull(upstream);
+        assertEquals(UpstreamPreset.TRUSTED_SINGLE, upstream.getMode());
+        assertEquals("header-signature", upstream.getValidation().normalizedLevel());
+        assertEquals("none", upstream.getValidation().normalizedBodyLevel());
+    }
+
+    @Test
+    void upstreamSelectionRollbackWindowDefaultsToGenesisDerivedSentinel() {
+        var producer = new YanoProducer(Thread.currentThread().getContextClassLoader());
+        producer.appConfig = new PresentConfig(Map.of(
+                YanoPropertyKeys.Upstream.MODE, "trusted-single"));
+
+        var upstream = producer.parseUpstreamConfig();
+
+        assertNotNull(upstream);
+        assertEquals(0L, upstream.getSelection().getRollbackWindowSlots());
+    }
+
+    @Test
+    void upstreamSelectionRollbackWindowOverrideIsHonored() {
+        var producer = new YanoProducer(Thread.currentThread().getContextClassLoader());
+        producer.appConfig = new PresentConfig(Map.of(
+                YanoPropertyKeys.Upstream.MODE, "trusted-single",
+                YanoPropertyKeys.Upstream.SELECTION_ROLLBACK_WINDOW_SLOTS, "123"));
+
+        var upstream = producer.parseUpstreamConfig();
+
+        assertNotNull(upstream);
+        assertEquals(123L, upstream.getSelection().getRollbackWindowSlots());
+    }
+
     private record PresentConfig(Map<String, String> values) implements Config {
         @Override
         public <T> T getValue(String propertyName, Class<T> propertyType) {
@@ -68,6 +111,9 @@ class YanoProducerTest {
             }
             if (propertyType == String.class) {
                 return Optional.of(propertyType.cast(value));
+            }
+            if (propertyType == Long.class) {
+                return Optional.of(propertyType.cast(Long.valueOf(value)));
             }
             throw new UnsupportedOperationException("Unsupported config type: " + propertyType.getName());
         }

@@ -34,7 +34,9 @@ class ApiPrefixResourceTest {
     public static class CustomApiPrefixProfile implements QuarkusTestProfile {
         @Override
         public Map<String, String> getConfigOverrides() {
-            return Map.of("yano.api-prefix", "/bf");
+            Map<String, String> overrides = new java.util.HashMap<>(new NoAutoStartTestProfile().getConfigOverrides());
+            overrides.put("yano.api-prefix", "/bf");
+            return overrides;
         }
     }
 }

@@ -33,6 +33,10 @@ import com.bloxbean.cardano.yano.runtime.chain.ChainStateRecovery;
 import com.bloxbean.cardano.yano.runtime.chain.EraMetadataStore;
 import com.bloxbean.cardano.yano.runtime.chain.OriginRollbackCapable;
 import com.bloxbean.cardano.yano.runtime.peer.PeerHealth;
+import com.bloxbean.cardano.yano.runtime.sync.validation.BodyValidationContext;
+import com.bloxbean.cardano.yano.runtime.sync.validation.BodyValidationException;
+import com.bloxbean.cardano.yano.runtime.sync.validation.BodyValidationResult;
+import com.bloxbean.cardano.yano.runtime.sync.validation.BodyValidator;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.List;
@@ -91,6 +95,7 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable, Heade
     private final long monitoringIntervalMs;
     private final long tipProximityThreshold;
     private final SyncTipContext syncTipContext;
+    private final BodyValidator bodyValidator;
 
     // State management
     private final AtomicBoolean running = new AtomicBoolean(false);
@@ -151,6 +156,13 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable, Heade
     public BodyFetchManager(PeerClient peerClient, ChainState chainState, EventBus eventBus,
                            long gapThreshold, int maxBatchSize, long monitoringIntervalMs, long tipProximityThreshold,
                            SyncTipContext syncTipContext) {
+        this(peerClient, chainState, eventBus, gapThreshold, maxBatchSize, monitoringIntervalMs,
+                tipProximityThreshold, syncTipContext, BodyValidator.none());
+    }
+
+    public BodyFetchManager(PeerClient peerClient, ChainState chainState, EventBus eventBus,
+                           long gapThreshold, int maxBatchSize, long monitoringIntervalMs, long tipProximityThreshold,
+                           SyncTipContext syncTipContext, BodyValidator bodyValidator) {
         if (peerClient == null) {
             throw new IllegalArgumentException("PeerClient cannot be null");
         }
@@ -178,6 +190,7 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable, Heade
         this.monitoringIntervalMs = monitoringIntervalMs;
         this.tipProximityThreshold = tipProximityThreshold;
         this.syncTipContext = syncTipContext;
+        this.bodyValidator = bodyValidator != null ? bodyValidator : BodyValidator.none();
 
         if (log.isInfoEnabled()) {
             log.info("🏗️ BodyFetchManager created with config: gapThreshold={}, maxBatchSize={}, monitoringInterval={}ms, tipProximityThreshold={}",
@@ -639,6 +652,13 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable, Heade
                 throw new RuntimeException("Invalid block hash hex format: " + hash, e);
             }
 
+            BodyValidationResult validation = validateBody(era, block, transactions, blockBytes, slot, blockNumber, hash);
+            if (!validation.accepted()) {
+                log.warn("Rejected Shelley+ block body at stage {}: {}",
+                        validation.stage(), validation.reason());
+                throw new BodyValidationException(validation);
+            }
+
             // Consensus check — let plugins approve/reject this block
             var consensusEvent = new BlockConsensusEvent(slot, blockNumber, hash, blockBytes);
             eventBus.publish(consensusEvent, recvMeta, PublishOptions.builder().build());
@@ -716,6 +736,9 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable, Heade
             return BlockApplyResult.APPLIED;
 
         } catch (Exception e) {
+            if (e instanceof BodyValidationException validationFailure) {
+                throw validationFailure;
+            }
             if (blockStored) {
                 compensateFailedPostStoreApply(tipBeforeStore, slot, blockNumber, hash, e);
             }
@@ -742,6 +765,31 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable, Heade
                      block != null && block.getHeader() != null && block.getHeader().getHeaderBody() != null ?
                      block.getHeader().getHeaderBody().getBlockHash() : "unknown", e);
             throw e; // Re-throw non-continuity errors
+        }
+    }
+
+    private BodyValidationResult validateBody(Era era,
+                                              Block block,
+                                              List<Transaction> transactions,
+                                              byte[] blockBytes,
+                                              long slot,
+                                              long blockNumber,
+                                              String hash) {
+        try {
+            BodyValidationContext context = new BodyValidationContext(
+                    era, block, transactions, blockBytes, slot, blockNumber, hash);
+            BodyValidationResult result = bodyValidator.validate(context);
+            if (result == null) {
+                return BodyValidationResult.rejected("body-validator", "validator-error", "validator returned null");
+            }
+            return result;
+        } catch (BodyValidationException e) {
+            throw e;
+        } catch (RuntimeException e) {
+            return BodyValidationResult.rejected(
+                    bodyValidator.getClass().getName(),
+                    "validator-error",
+                    e.getMessage() != null ? e.getMessage() : e.getClass().getName());
         }
     }
 

@@ -1,5 +1,7 @@
 package com.bloxbean.cardano.yano.runtime.assembly;
 
+import com.bloxbean.cardano.yaci.core.model.Block;
+import com.bloxbean.cardano.yaci.core.model.Era;
 import com.bloxbean.cardano.yano.api.ChainQuery;
 import com.bloxbean.cardano.yano.api.LedgerQuery;
 import com.bloxbean.cardano.yano.api.NodeLifecycle;
@@ -17,6 +19,9 @@ import com.bloxbean.cardano.yano.runtime.kernel.SubsystemHealth;
 import com.bloxbean.cardano.yano.runtime.maintenance.RuntimeMaintenanceGate;
 import com.bloxbean.cardano.yano.runtime.producer.ProducerMode;
 import com.bloxbean.cardano.yano.runtime.producer.ProducerStartupPlan;
+import com.bloxbean.cardano.yano.runtime.sync.validation.BodyValidationContext;
+import com.bloxbean.cardano.yano.runtime.sync.validation.BodyValidationResult;
+import com.bloxbean.cardano.yano.runtime.sync.validation.BodyValidator;
 import com.bloxbean.cardano.yano.runtime.tx.TransactionBootstrapOptions;
 import com.bloxbean.cardano.yano.runtime.tx.TransactionServices;
 import org.junit.jupiter.api.Test;
@@ -79,6 +84,42 @@ class YanoAssemblyTest {
         } finally {
             node.close();
         }
+    }
+
+    @Test
+    void bodyValidationBuilderInstallsCustomValidator() {
+        AtomicBoolean called = new AtomicBoolean();
+        BodyValidator validator = context -> {
+            called.set(true);
+            return BodyValidationResult.accepted("custom");
+        };
+        Yano node = YanoAssembly.relay(YanoConfig.serverOnly(0))
+                .bodyValidation(v -> v.add(validator))
+                .build();
+
+        try {
+            Object runtimeNode = field(node, "closeable");
+            BodyValidator installed = (BodyValidator) field(runtimeNode, "bodyValidator");
+            BodyValidationResult result = installed.validate(new BodyValidationContext(
+                    Era.Shelley,
+                    Block.builder().build(),
+                    List.of(),
+                    new byte[] {1},
+                    1,
+                    1,
+                    "abcd"));
+            assertTrue(result.accepted());
+            assertTrue(called.get());
+        } finally {
+            node.close();
+        }
+    }
+
+    @Test
+    void unsupportedBodyValidationDefaultPresetFailsFast() {
+        assertThrows(IllegalArgumentException.class,
+                () -> YanoAssembly.relay(YanoConfig.serverOnly(0))
+                        .bodyValidation(v -> v.useDefault("body-integrity")));
     }
 
     @Test

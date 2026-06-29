@@ -113,6 +113,81 @@ public class NodeStatus {
     private final String peerName;
 
     /**
+     * Configured upstream behavior preset.
+     */
+    private final String upstreamMode;
+
+    /**
+     * Number of configured upstream peers.
+     */
+    private final Integer upstreamConfiguredPeerCount;
+
+    /**
+     * Number of upstream peers currently connected/hot.
+     */
+    private final Integer upstreamHotPeerCount;
+
+    /**
+     * Number of non-selected observer upstream peers currently running.
+     */
+    private final Integer upstreamObserverPeerCount;
+
+    /**
+     * Number of known peers in the upstream peer store.
+     */
+    private final Integer upstreamKnownPeerCount;
+
+    /**
+     * Number of candidate headers observed outside canonical state.
+     */
+    private final Integer upstreamCandidateHeaderCount;
+
+    /**
+     * Active selected upstream peer id or endpoint.
+     */
+    private final String upstreamActivePeer;
+
+    /**
+     * Transaction forwarding policy for upstream peers.
+     */
+    private final String upstreamTxForwarding;
+
+    /**
+     * Whether multi-peer upstream support is currently observation-only.
+     */
+    private final Boolean upstreamMultiPeerObservationOnly;
+
+    /**
+     * Whether peer discovery is currently running.
+     */
+    private final Boolean upstreamDiscoveryRunning;
+
+    /**
+     * Configured upstream header validation level.
+     */
+    private final String upstreamValidationLevel;
+
+    /**
+     * Number of upstream Shelley+ headers accepted by validation.
+     */
+    private final Long upstreamValidationAcceptedHeaders;
+
+    /**
+     * Number of upstream Shelley+ headers rejected by validation.
+     */
+    private final Long upstreamValidationRejectedHeaders;
+
+    /**
+     * Last upstream header validation rejection stage.
+     */
+    private final String upstreamValidationLastRejectedStage;
+
+    /**
+     * Last upstream header validation rejection reason.
+     */
+    private final String upstreamValidationLastRejectedReason;
+
+    /**
      * Current upstream peer session state.
      */
     private final String peerState;

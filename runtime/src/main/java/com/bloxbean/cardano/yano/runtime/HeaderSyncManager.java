@@ -12,6 +12,9 @@ import com.bloxbean.cardano.yaci.core.storage.ChainState;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yaci.helper.PeerClient;
 import com.bloxbean.cardano.yano.runtime.chain.ByronEbHeaderStore;
+import com.bloxbean.cardano.yano.runtime.sync.validation.HeaderValidationException;
+import com.bloxbean.cardano.yano.runtime.sync.validation.HeaderValidationResult;
+import com.bloxbean.cardano.yano.runtime.sync.validation.HeaderValidator;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.concurrent.atomic.AtomicLong;
@@ -44,6 +47,7 @@ public class HeaderSyncManager implements ChainSyncAgentListener {
     private final SyncTipContext syncTipContext;
     private final HeaderAppliedSignal headerAppliedSignal;
     private final HeaderAppliedEventPublisher headerAppliedEventPublisher;
+    private final HeaderValidator headerValidator;
     private final AtomicLong headerSignalFailures = new AtomicLong(0);
 
     // Metrics tracking
@@ -79,12 +83,21 @@ public class HeaderSyncManager implements ChainSyncAgentListener {
     public HeaderSyncManager(PeerClient peerClient, ChainState chainState, long maxGapThreshold,
                              SyncTipContext syncTipContext, HeaderAppliedSignal headerAppliedSignal,
                              HeaderAppliedEventPublisher headerAppliedEventPublisher) {
+        this(peerClient, chainState, maxGapThreshold, syncTipContext, headerAppliedSignal,
+                headerAppliedEventPublisher, HeaderValidator.none());
+    }
+
+    public HeaderSyncManager(PeerClient peerClient, ChainState chainState, long maxGapThreshold,
+                             SyncTipContext syncTipContext, HeaderAppliedSignal headerAppliedSignal,
+                             HeaderAppliedEventPublisher headerAppliedEventPublisher,
+                             HeaderValidator headerValidator) {
         this.peerClient = peerClient;
         this.chainState = chainState;
         this.maxGapThreshold = maxGapThreshold;
         this.syncTipContext = syncTipContext;
         this.headerAppliedSignal = headerAppliedSignal;
         this.headerAppliedEventPublisher = headerAppliedEventPublisher;
+        this.headerValidator = headerValidator != null ? headerValidator : HeaderValidator.none();
 
         log.info("HeaderSyncManager initialized - ready for header-only synchronization (gap threshold: {} blocks)", maxGapThreshold);
     }
@@ -103,6 +116,13 @@ public class HeaderSyncManager implements ChainSyncAgentListener {
                         blockHeader != null ? "present" : "null",
                         originalHeaderBytes != null ? originalHeaderBytes.length : "null");
                 return;
+            }
+
+            HeaderValidationResult validation = headerValidator.validateShelley(blockHeader, originalHeaderBytes);
+            if (!validation.accepted()) {
+                log.warn("Rejected Shelley+ header from canonical peer at stage {}: {}",
+                        validation.stage(), validation.reason());
+                throw new HeaderValidationException(validation);
             }
 
             long slot = blockHeader.getHeaderBody().getSlot();

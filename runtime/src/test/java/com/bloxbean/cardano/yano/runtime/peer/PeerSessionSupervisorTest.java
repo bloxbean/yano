@@ -230,6 +230,24 @@ class PeerSessionSupervisorTest {
     }
 
     @Test
+    void stoppedSessionTriggersRecoveryRetryAfterCooldown() {
+        PeerHealth health = runningHealth();
+        TestPeerSession session = new TestPeerSession(health, now);
+        List<PeerRecoveryReason> recoveries = new CopyOnWriteArrayList<>();
+        PeerSessionSupervisor supervisor = supervisor(session, recoveries);
+
+        supervisor.requestRecovery(PeerRecoveryReason.STARTUP_FAILED);
+        health.markState(PeerSessionState.STOPPED);
+
+        now.addAndGet(100);
+        supervisor.checkNow();
+        now.addAndGet(401);
+        supervisor.checkNow();
+
+        assertEquals(List.of(PeerRecoveryReason.STARTUP_FAILED, PeerRecoveryReason.STARTUP_FAILED), recoveries);
+    }
+
+    @Test
     void cooldownPreventsRepeatedRecoveries() {
         PeerHealth health = runningHealth();
         health.recordHeaderProgress(100, 10, now.get() - 2_000);

@@ -49,6 +49,8 @@ public class DefaultEpochParamProvider implements EpochParamProvider {
     private final long shelleyStartSlot;
     private final long securityParam;
     private final double activeSlotsCoeff;
+    private final long maxKESEvolutions;
+    private final long slotsPerKESPeriod;
 
     // Genesis protocol params for reward calculation
     private final int genesisNOpt;
@@ -114,6 +116,8 @@ public class DefaultEpochParamProvider implements EpochParamProvider {
                 firstNonByronSlot,
                 shelley.securityParam(),
                 shelley.activeSlotsCoeff(),
+                shelley.maxKESEvolutions(),
+                shelley.slotsPerKESPeriod(),
                 BigInteger.valueOf(shelley.keyDeposit()),
                 BigInteger.valueOf(shelley.poolDeposit()),
                 shelley.minFeeA(),
@@ -188,6 +192,7 @@ public class DefaultEpochParamProvider implements EpochParamProvider {
 
     private DefaultEpochParamProvider(long epochLength, long byronSlotsPerEpoch, long shelleyStartSlot,
                                       long securityParam, double activeSlotsCoeff,
+                                      long maxKESEvolutions, long slotsPerKESPeriod,
                                       BigInteger keyDeposit, BigInteger poolDeposit,
                                       Integer minFeeA, Integer minFeeB,
                                       Integer maxBlockSize, Integer maxTxSize, Integer maxBlockHeaderSize,
@@ -214,6 +219,8 @@ public class DefaultEpochParamProvider implements EpochParamProvider {
         this.shelleyStartSlot = shelleyStartSlot;
         this.securityParam = securityParam;
         this.activeSlotsCoeff = activeSlotsCoeff;
+        this.maxKESEvolutions = maxKESEvolutions;
+        this.slotsPerKESPeriod = slotsPerKESPeriod;
         this.keyDeposit = keyDeposit;
         this.poolDeposit = poolDeposit;
         this.minFeeA = minFeeA;
@@ -433,6 +440,16 @@ public class DefaultEpochParamProvider implements EpochParamProvider {
     @Override
     public double getActiveSlotsCoeff() {
         return activeSlotsCoeff;
+    }
+
+    @Override
+    public long getSlotsPerKESPeriod() {
+        return slotsPerKESPeriod;
+    }
+
+    @Override
+    public long getMaxKESEvolutions() {
+        return maxKESEvolutions;
     }
 
     @Override

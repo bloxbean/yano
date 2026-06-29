@@ -76,4 +76,25 @@ class YanoAppProcessTest {
         assertThrows(IllegalStateException.class,
                 () -> new YanoAppProcess(tempDir.resolve("work"), jar));
     }
+
+    @Test
+    void devnetPreparationDoesNotCopyOperatorApplicationConfig() throws IOException {
+        Path jar = tempDir.resolve("yano.jar");
+        Files.writeString(jar, "jar");
+        Path config = tempDir.resolve("config-source");
+        Files.createDirectories(config.resolve("network/devnet/pv10"));
+        Files.writeString(config.resolve("application.yml"), "yano:\n  network: preprod\n");
+        Files.writeString(config.resolve("application-preprod.yml"), "yano:\n  network: preprod\n");
+        Files.writeString(config.resolve("network/devnet/shelley-genesis.json"), "{}");
+        Files.writeString(config.resolve("network/devnet/pv10/shelley-genesis.json"), "{}");
+
+        YanoAppProcess process = new YanoAppProcess(
+                tempDir.resolve("work"), jar, config, true, 10_001, 10_002);
+
+        process.prepareConfig();
+
+        assertTrue(Files.notExists(process.configDir().resolve("application.yml")));
+        assertTrue(Files.notExists(process.configDir().resolve("application-preprod.yml")));
+        assertTrue(Files.exists(process.configDir().resolve("network/devnet/shelley-genesis.json")));
+    }
 }

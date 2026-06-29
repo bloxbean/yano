@@ -179,6 +179,12 @@ public interface EpochParamProvider {
     /** Active slots coefficient f. Default: 0.05 (mainnet). */
     default double getActiveSlotsCoeff() { return 0.05; }
 
+    /** Slots in one KES period. Default: 129600 for public Shelley networks. */
+    default long getSlotsPerKESPeriod() { return 129600; }
+
+    /** Maximum KES evolutions allowed by genesis. Default: 62 for public Shelley networks. */
+    default long getMaxKESEvolutions() { return 62; }
+
     /** Randomness stabilisation window = floor(4k/f) slots. */
     default long getRandomnessStabilisationWindow() {
         return Math.round((4.0 * getSecurityParam()) / getActiveSlotsCoeff());

@@ -29,6 +29,53 @@ public final class YanoPropertyKeys {
     }
 
     /**
+     * Upstream peer selection, failover, and future multi-peer relay settings.
+     */
+    public static final class Upstream {
+        public static final String MODE = "yano.upstream.mode";
+        public static final String PEERS = "yano.upstream.peers";
+        public static final String SELECTION_POLICY = "yano.upstream.selection.policy";
+        public static final String SELECTION_ROLLBACK_WINDOW_SLOTS =
+                "yano.upstream.selection.rollback-window-slots";
+        public static final String SELECTION_REQUIRE_BODY_BEFORE_ADOPTION =
+                "yano.upstream.selection.require-body-before-adoption";
+        public static final String SELECTION_TRUST_POLICY =
+                "yano.upstream.selection.trust-policy";
+        public static final String SELECTION_QUORUM = "yano.upstream.selection.quorum";
+        public static final String SELECTION_TIE_BREAK = "yano.upstream.selection.tie-break";
+        public static final String VALIDATION_LEVEL = "yano.upstream.validation.level";
+        public static final String VALIDATION_BODY_LEVEL = "yano.upstream.validation.body-level";
+        public static final String SYNC_BULK_SOURCE = "yano.upstream.sync.bulk-source";
+        public static final String SYNC_FAN_IN_START = "yano.upstream.sync.fan-in-start";
+        public static final String FAILOVER_COOLDOWN_MS = "yano.upstream.failover.cooldown-ms";
+        public static final String FAILOVER_MAX_FAILURES_BEFORE_COOLDOWN =
+                "yano.upstream.failover.max-failures-before-cooldown";
+        public static final String TX_FORWARDING = "yano.upstream.tx.forwarding";
+        public static final String GOVERNOR_ENABLED = "yano.upstream.governor.enabled";
+        public static final String GOVERNOR_TARGET_COLD = "yano.upstream.governor.targets.cold";
+        public static final String GOVERNOR_TARGET_WARM = "yano.upstream.governor.targets.warm";
+        public static final String GOVERNOR_TARGET_HOT = "yano.upstream.governor.targets.hot";
+        public static final String GOVERNOR_MAX_CONCURRENT_DIALS =
+                "yano.upstream.governor.max-concurrent-dials";
+        public static final String DISCOVERY_ENABLED = "yano.upstream.discovery.enabled";
+        public static final String DISCOVERY_PEER_SHARING = "yano.upstream.discovery.peer-sharing";
+        public static final String DISCOVERY_SEEDS = "yano.upstream.discovery.seeds";
+        public static final String DISCOVERY_PEER_SNAPSHOT_URLS =
+                "yano.upstream.discovery.peer-snapshot-urls";
+        public static final String DISCOVERY_PEER_SNAPSHOT_FILES =
+                "yano.upstream.discovery.peer-snapshot-files";
+        public static final String DISCOVERY_PEER_SNAPSHOT_LIMIT =
+                "yano.upstream.discovery.peer-snapshot-limit";
+        public static final String DISCOVERY_ALLOW_PRIVATE_ADDRESSES =
+                "yano.upstream.discovery.allow-private-addresses";
+        public static final String DISCOVERY_ALLOWLIST = "yano.upstream.discovery.allowlist";
+        public static final String DISCOVERY_DENYLIST = "yano.upstream.discovery.denylist";
+
+        private Upstream() {
+        }
+    }
+
+    /**
      * Chain-sync client enablement settings.
      */
     public static final class Client {

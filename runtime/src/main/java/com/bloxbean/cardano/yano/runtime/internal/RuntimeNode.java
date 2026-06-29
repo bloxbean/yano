@@ -112,6 +112,8 @@ import com.bloxbean.cardano.yano.runtime.ledger.LedgerStateSubsystem;
 import com.bloxbean.cardano.yano.runtime.server.ServeSubsystem;
 import com.bloxbean.cardano.yano.runtime.storage.ChainStorageSubsystem;
 import com.bloxbean.cardano.yano.runtime.sync.SyncSubsystem;
+import com.bloxbean.cardano.yano.runtime.sync.UpstreamStatus;
+import com.bloxbean.cardano.yano.runtime.sync.validation.BodyValidator;
 import com.bloxbean.cardano.yano.runtime.db.RocksDbSupplier;
 import com.bloxbean.cardano.yano.runtime.tx.TxSubsystem;
 import com.bloxbean.cardano.yano.runtime.utxo.UtxoSubsystem;
@@ -183,6 +185,7 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
 
     // Events & Plugins
     private final RuntimeOptions runtimeOptions;
+    private final BodyValidator bodyValidator;
     private final EventBus eventBus;
     private PluginManager pluginManager;
     private final UtxoSubsystem utxoSubsystem;
@@ -241,6 +244,15 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                        InMemoryDevnetGenesis inMemoryGenesis,
                        ProducerStartupPlan producerStartupPlan,
                        Schedulers schedulers) {
+        this(config, options, inMemoryGenesis, producerStartupPlan, schedulers, BodyValidator.none());
+    }
+
+    public RuntimeNode(YanoConfig config,
+                       RuntimeOptions options,
+                       InMemoryDevnetGenesis inMemoryGenesis,
+                       ProducerStartupPlan producerStartupPlan,
+                       Schedulers schedulers,
+                       BodyValidator bodyValidator) {
         if (inMemoryGenesis != null && (!config.isDevMode() || !config.isEnableBlockProducer())) {
             throw new IllegalStateException(
                     "In-memory devnet genesis is only valid when devMode=true and enableBlockProducer=true");
@@ -252,6 +264,7 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
         this.inMemoryDevnetGenesis = inMemoryGenesis;
         this.config = config;
         this.runtimeOptions = options != null ? options : RuntimeOptions.defaults();
+        this.bodyValidator = bodyValidator != null ? bodyValidator : BodyValidator.none();
         this.producerStartupPlanOverride = producerStartupPlan;
         this.schedulers = Objects.requireNonNull(schedulers, "schedulers");
         this.scheduler = this.schedulers.scheduled();
@@ -338,7 +351,8 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 remoteCardanoHost,
                 remoteCardanoPort,
                 protocolMagic,
-                log);
+                log,
+                this.bodyValidator);
         this.producerStartupCoordinator = new ProducerStartupCoordinator(producerStartupActions());
         this.devnetRuntime = RuntimeDevnetRuntime.create(
                 this::rollbackDevnet,
@@ -3062,6 +3076,7 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
         ChainTip headerTip = statusHeaderTip();
         PeerSessionStatus peerStatus = currentPeerSessionStatus();
         PeerRecoveryFailureTracker.Snapshot recoveryStatus = syncSubsystem.peerRecoverySnapshot();
+        UpstreamStatus upstreamStatus = syncSubsystem.upstreamStatus();
         RuntimeMaintenanceGate maintenanceGate = chainStorage.maintenanceGate();
         RuntimeMaintenanceGate.Degradation maintenanceDegradation = maintenanceGate.degradation();
 
@@ -3138,6 +3153,21 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 .runtimeDegradedOperation(maintenanceDegradation != null ? maintenanceDegradation.operation() : null)
                 .runtimeDegradedAtMillis(maintenanceDegradation != null ? maintenanceDegradation.timestampMillis() : null)
                 .peerName(peerStatus != null ? peerStatus.peerName() : null)
+                .upstreamMode(upstreamStatus.mode().configValue())
+                .upstreamConfiguredPeerCount(upstreamStatus.configuredPeerCount())
+                .upstreamHotPeerCount(upstreamStatus.hotPeerCount())
+                .upstreamObserverPeerCount(upstreamStatus.observerPeerCount())
+                .upstreamKnownPeerCount(upstreamStatus.knownPeerCount())
+                .upstreamCandidateHeaderCount(upstreamStatus.candidateHeaderCount())
+                .upstreamActivePeer(upstreamStatus.activePeerName())
+                .upstreamTxForwarding(upstreamStatus.txForwarding())
+                .upstreamMultiPeerObservationOnly(upstreamStatus.multiPeerObservationOnly())
+                .upstreamDiscoveryRunning(upstreamStatus.discoveryRunning())
+                .upstreamValidationLevel(upstreamStatus.validationLevel())
+                .upstreamValidationAcceptedHeaders(upstreamStatus.validationAcceptedHeaders())
+                .upstreamValidationRejectedHeaders(upstreamStatus.validationRejectedHeaders())
+                .upstreamValidationLastRejectedStage(upstreamStatus.validationLastRejectedStage())
+                .upstreamValidationLastRejectedReason(upstreamStatus.validationLastRejectedReason())
                 .peerState(peerStatus != null ? peerStatus.state().name() : null)
                 .peerRecoveryReason(peerRecoveryReason(peerStatus, recoveryStatus))
                 .peerRecoveryFailures(recoveryStatus.consecutiveFailures())
