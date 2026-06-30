@@ -114,7 +114,7 @@ class DefaultRelayConnectionManagerTest {
         factory.create(endpoint, Point.ORIGIN);
 
         assertThrows(IllegalStateException.class, () -> factory.create(endpoint, Point.ORIGIN));
-        assertEquals(1, manager.snapshot().failedOutboundConnections());
+        assertEquals(0, manager.snapshot().failedOutboundConnections());
     }
 
     private static DefaultRelayConnectionManager manager(int maxInbound, int maxPerIp) {

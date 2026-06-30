@@ -24,8 +24,12 @@ The implementation keeps the operator surface small and uses the existing
 - Added simple scoring and fixed-delay backoff for non-canonical connection
   failures.
 - Kept canonical active-peer recovery with the existing sync supervisor.
-- Added `PeerStore.replaceAll(...)` so the persisted known set follows the
-  governor bound.
+- Switched peer identity to canonical endpoint keys so discovery records and
+  connection-manager events update the same governed peer.
+- Kept runtime score, hot/warm/backoff state, connection observations, and
+  inbound ephemeral peers in memory only.
+- Restored stable endpoint cache persistence with debounced admission flushes
+  and clean-shutdown flush.
 - Exposed compact governor counts in `NodeStatus`.
 - Pointed relay peer-sharing at `governor.sharablePeers(...)`.
 - Registered the governor as a `RelayConnectionListener`.
@@ -99,3 +103,6 @@ Observed behavior:
 - The governor does not close or replace the canonical sync connection.
 - Scores and backoff are intentionally not persisted; they are relearned after
   restart.
+- The file-backed peer store is a stable endpoint seed/cache format, not a
+  runtime state journal; stable endpoint entries are flushed without persisting
+  runtime scoring/backoff.

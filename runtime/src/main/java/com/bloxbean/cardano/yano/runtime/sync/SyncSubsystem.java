@@ -50,11 +50,13 @@ import com.bloxbean.cardano.yano.runtime.sync.multipeer.InMemoryCandidateHeaderS
 import com.bloxbean.cardano.yano.runtime.sync.multipeer.InMemoryPeerStore;
 import com.bloxbean.cardano.yano.runtime.sync.multipeer.ObserverPeerSession;
 import com.bloxbean.cardano.yano.runtime.sync.multipeer.PeerAddressPolicy;
+import com.bloxbean.cardano.yano.runtime.sync.multipeer.PeerDescriptor;
 import com.bloxbean.cardano.yano.runtime.sync.multipeer.PeerGovernor;
 import com.bloxbean.cardano.yano.runtime.sync.multipeer.PeerGovernorSnapshot;
 import com.bloxbean.cardano.yano.runtime.sync.multipeer.PeerSource;
 import com.bloxbean.cardano.yano.runtime.sync.multipeer.PeerStore;
 import com.bloxbean.cardano.yano.runtime.sync.multipeer.PeerStoreEntry;
+import com.bloxbean.cardano.yano.runtime.sync.multipeer.PeerUse;
 import com.bloxbean.cardano.yano.runtime.sync.multipeer.TrustedOrQuorumCandidateWithinRollbackWindow;
 import com.bloxbean.cardano.yano.runtime.sync.multipeer.YaciPeerDiscoveryService;
 import com.bloxbean.cardano.yano.runtime.sync.validation.BodyValidator;
@@ -990,13 +992,23 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
 
     private void seedPeerStoreFromConfiguredPeers() {
         for (ConfiguredUpstreamPeer peer : upstreamPeers) {
-            peerGovernor.addOrUpdatePeer(new PeerStoreEntry(
+            long now = System.currentTimeMillis();
+            PeerSource source = PeerSource.from(peer.source());
+            peerGovernor.addOrUpdatePeer(new PeerDescriptor(
                     peer.id(),
                     peer.endpoint().host(),
                     peer.endpoint().port(),
+                    source,
                     peer.source(),
                     peer.trusted(),
-                scoreForConfiguredPeer(peer)));
+                    source == PeerSource.LOCAL_ROOT || source == PeerSource.STATIC_UPSTREAM,
+                    source != PeerSource.INBOUND,
+                    1,
+                    1,
+                    now,
+                    now,
+                    null,
+                    scoreForConfiguredPeer(peer)));
         }
     }
 
@@ -1030,8 +1042,8 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
         if (!upstreamPeers.isEmpty()) {
             return;
         }
-        peerGovernor.selectHotPeers(1).stream()
-                .filter(peer -> peerAddressPolicy.allows(PeerSource.from(peer.source()), peer.host(), peer.port()))
+        peerGovernor.hotPeers(PeerUse.CHAIN_SYNC, 1).stream()
+                .filter(peer -> peerAddressPolicy.allows(peer.source(), peer.host(), peer.port()))
                 .findFirst()
                 .ifPresent(this::ensureKnownUpstreamPeer);
     }
@@ -1097,11 +1109,11 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
                 .resolve(name + "-upstream-peers.json");
     }
 
-    private void onDiscoveredPeer(PeerStoreEntry peer) {
-        if (peer == null || !peerAddressPolicy.allows(PeerSource.from(peer.source()), peer.host(), peer.port())) {
+    private void onDiscoveredPeer(PeerDescriptor peer) {
+        if (peer == null || !peerAddressPolicy.allows(peer.source(), peer.host(), peer.port())) {
             return;
         }
-        PeerStoreEntry admitted = peerGovernor.addOrUpdatePeer(peer);
+        PeerDescriptor admitted = peerGovernor.addOrUpdatePeer(peer);
         if (admitted == null) {
             return;
         }
@@ -1114,7 +1126,7 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
                 scheduleDiscoveryBootstrapRetry(0L);
             }
         }
-        if ("peer-snapshot".equals(peer.source())) {
+        if ("peer-snapshot".equals(peer.sourceId())) {
             return;
         }
         if (shouldStartMultiPeerObservers()) {
@@ -1155,7 +1167,8 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
         }
         int observerTarget = Math.max(0, targetHot - 1);
         ConfiguredUpstreamPeer active = activeUpstreamPeer();
-        List<PeerStoreEntry> hotPeers = peerGovernor.selectHotPeers(
+        List<PeerDescriptor> hotPeers = peerGovernor.hotPeers(
+                PeerUse.CHAIN_SYNC,
                 Math.max(targetHot, peerGovernor.snapshot().knownPeerCount()));
         List<String> selectedObserverIds = new ArrayList<>();
 
@@ -1163,23 +1176,23 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
             if (selectedObserverIds.size() >= observerTarget) {
                 return;
             }
-            if (id.equals(active.id()) || observer == null || !observer.isRunning()) {
+            if (observer == null || sameEndpoint(observer.endpoint(), active.endpoint()) || !observer.isRunning()) {
                 return;
             }
             selectedObserverIds.add(id);
         });
 
-        for (PeerStoreEntry entry : hotPeers) {
+        for (PeerDescriptor entry : hotPeers) {
             if (selectedObserverIds.size() >= observerTarget) {
                 break;
             }
-            if (entry.id().equals(active.id())) {
+            if (sameEndpoint(entry.host(), entry.port(), active.endpoint())) {
                 continue;
             }
             if (selectedObserverIds.contains(entry.id())) {
                 continue;
             }
-            if (!peerAddressPolicy.allows(entry.host(), entry.port())) {
+            if (!peerAddressPolicy.allows(entry.source(), entry.host(), entry.port())) {
                 continue;
             }
             if (!observerRetryAllowed(entry.id())) {
@@ -1219,7 +1232,7 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
             }
         }
         observerSessions.forEach((id, observer) -> {
-            if (id.equals(active.id()) || !selectedObserverIds.contains(id)) {
+            if (sameEndpoint(observer.endpoint(), active.endpoint()) || !selectedObserverIds.contains(id)) {
                 observer.close();
                 observerSessions.remove(id);
             }
@@ -1232,6 +1245,7 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
         observerRetryAfterMillis.clear();
         activeUpstreamRetryAfterMillis.clear();
         activeUpstreamFailureCounts.clear();
+        peerGovernor.flushPeerStore();
         peerDiscoveryService.close();
     }
 
@@ -1416,16 +1430,23 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
     }
 
     private ConfiguredUpstreamPeer ensureKnownUpstreamPeer(PeerStoreEntry entry) {
+        return ensureKnownUpstreamPeer(PeerDescriptor.fromStore(entry));
+    }
+
+    private ConfiguredUpstreamPeer ensureKnownUpstreamPeer(PeerDescriptor entry) {
         int existing = upstreamIndex(entry.id());
+        if (existing < 0) {
+            existing = upstreamIndex(entry.host(), entry.port());
+        }
         if (existing >= 0) {
             return upstreamPeers.get(existing);
         }
         ConfiguredUpstreamPeer peer = new ConfiguredUpstreamPeer(
                 entry.id(),
                 new PeerEndpoint(entry.host(), entry.port(), protocolMagic),
-                entry.trusted(),
-                10_000 - entry.score(),
-                entry.source());
+                entry.trustable(),
+                priorityForPeer(entry),
+                entry.source().configValue());
         upstreamPeers.addIfAbsent(peer);
         return peer;
     }
@@ -1541,6 +1562,35 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
         return -1;
     }
 
+    private int upstreamIndex(String host, int port) {
+        if (host == null || upstreamPeers.isEmpty()) {
+            return -1;
+        }
+        for (int i = 0; i < upstreamPeers.size(); i++) {
+            if (sameEndpoint(host, port, upstreamPeers.get(i).endpoint())) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    private static boolean sameEndpoint(PeerEndpoint left, PeerEndpoint right) {
+        return left != null && right != null
+                && sameEndpoint(left.host(), left.port(), right);
+    }
+
+    private static boolean sameEndpoint(String host, int port, PeerEndpoint endpoint) {
+        if (host == null || endpoint == null || port != endpoint.port()) {
+            return false;
+        }
+        try {
+            return PeerDescriptor.endpointId(host, port)
+                    .equals(PeerDescriptor.endpointId(endpoint.host(), endpoint.port()));
+        } catch (RuntimeException e) {
+            return host.trim().equalsIgnoreCase(endpoint.host()) && port == endpoint.port();
+        }
+    }
+
     private String normalizedFanInStart() {
         if (upstreamConfig.getSync() == null || upstreamConfig.getSync().getFanInStart() == null) {
             return "near-tip";
@@ -1558,6 +1608,20 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
     private static int scoreForConfiguredPeer(ConfiguredUpstreamPeer peer) {
         int priorityScore = Math.max(0, 10_000 - peer.priority());
         return peer.trusted() ? priorityScore + 10_000 : priorityScore;
+    }
+
+    private static int priorityForPeer(PeerDescriptor peer) {
+        int score = Math.max(0, peer.score());
+        if (score > 0) {
+            return Math.max(0, 1_000_000 - score);
+        }
+        return switch (peer.source()) {
+            case STATIC_UPSTREAM, LOCAL_ROOT -> 0;
+            case BOOTSTRAP, PUBLIC_ROOT -> 5_000;
+            case LEDGER -> 10_000;
+            case GOSSIP -> 20_000;
+            case INBOUND -> 100_000;
+        };
     }
 
     private UpstreamPreset upstreamMode() {
@@ -1616,9 +1680,10 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
         }
         int before = upstreamPeers.size();
         peerDiscoveryService.start();
-        peerGovernor.selectHotPeers(Math.max(1, peerGovernor.snapshot().knownPeerCount())).stream()
-                .filter(peer -> peerAddressPolicy.allows(PeerSource.from(peer.source()), peer.host(), peer.port()))
+        peerGovernor.hotPeers(PeerUse.CHAIN_SYNC, Math.max(1, peerGovernor.snapshot().knownPeerCount())).stream()
+                .filter(peer -> peerAddressPolicy.allows(peer.source(), peer.host(), peer.port()))
                 .filter(peer -> upstreamIndex(peer.id()) < 0)
+                .filter(peer -> upstreamIndex(peer.host(), peer.port()) < 0)
                 .findFirst()
                 .ifPresent(this::ensureKnownUpstreamPeer);
         if (upstreamPeers.size() > before) {

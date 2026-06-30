@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.runtime.sync.multipeer;
 
 import com.bloxbean.cardano.yano.api.config.UpstreamGovernorConfig;
+import com.bloxbean.cardano.yano.runtime.connection.ConnectionDirection;
 import com.bloxbean.cardano.yano.runtime.connection.ConnectionState;
 import com.bloxbean.cardano.yano.runtime.connection.RelayConnectionEvent;
 import com.bloxbean.cardano.yano.runtime.connection.RelayConnectionListener;
@@ -19,6 +20,7 @@ import java.util.Objects;
  */
 public final class PeerGovernor implements RelayConnectionListener {
     private static final long DEFAULT_BACKOFF_MILLIS = 60_000L;
+    private static final long PERSIST_DEBOUNCE_MILLIS = 5_000L;
 
     private final PeerStore peerStore;
     private final int targetKnown;
@@ -27,6 +29,8 @@ public final class PeerGovernor implements RelayConnectionListener {
     private final Object lock = new Object();
     private final Map<String, GovernedPeer> peers = new LinkedHashMap<>();
     private long lastReconcileAtMillis;
+    private boolean peerStoreDirty;
+    private long lastPeerStoreFlushMillis;
 
     public PeerGovernor(PeerStore peerStore) {
         this(peerStore, UpstreamGovernorConfig.builder().build());
@@ -52,12 +56,25 @@ public final class PeerGovernor implements RelayConnectionListener {
 
     public PeerDescriptor addOrUpdatePeer(PeerDescriptor descriptor) {
         Objects.requireNonNull(descriptor, "descriptor");
+        List<PeerStoreEntry> flushEntries;
+        PeerDescriptor result;
         synchronized (lock) {
             PeerDescriptor admitted = addOrUpdateInternal(descriptor, true);
             reconcileInternal();
-            persistInternal();
-            return peers.containsKey(admitted.id()) ? admitted : null;
+            markPeerStoreDirty();
+            flushEntries = peerStoreFlushEntriesIfDue(false);
+            result = peers.containsKey(admitted.id()) ? admitted : null;
         }
+        flushPeerStoreEntries(flushEntries);
+        return result;
+    }
+
+    public void flushPeerStore() {
+        List<PeerStoreEntry> entries;
+        synchronized (lock) {
+            entries = peerStoreFlushEntriesIfDue(true);
+        }
+        flushPeerStoreEntries(entries);
     }
 
     public List<PeerStoreEntry> selectHotPeers(int targetHot) {
@@ -171,13 +188,17 @@ public final class PeerGovernor implements RelayConnectionListener {
             return;
         }
         synchronized (lock) {
-            GovernedPeer peer = peers.get(endpointId(event.key().host(), event.key().port()));
+            String peerId = endpointId(event.key().host(), event.key().port());
+            GovernedPeer peer = peers.get(peerId);
+            if (peer == null && event.state() == ConnectionState.CLOSED) {
+                return;
+            }
             if (peer == null) {
-                PeerSource source = event.direction() != null && event.direction().name().equals("INBOUND")
+                PeerSource source = event.direction() == ConnectionDirection.INBOUND
                         ? PeerSource.INBOUND
                         : PeerSource.GOSSIP;
                 peer = GovernedPeer.from(new PeerDescriptor(
-                        endpointId(event.key().host(), event.key().port()),
+                        peerId,
                         event.key().host(),
                         event.key().port(),
                         source,
@@ -190,7 +211,7 @@ public final class PeerGovernor implements RelayConnectionListener {
                         event.timestampMillis(),
                         event.timestampMillis(),
                         null,
-                        0));
+                        PeerDescriptor.scoreForSource(source, false)));
                 peers.put(peer.id, peer);
             }
             peer.lastSeenMillis = Math.max(peer.lastSeenMillis, event.timestampMillis());
@@ -199,12 +220,21 @@ public final class PeerGovernor implements RelayConnectionListener {
                 peer.backoffUntilMillis = 0L;
                 peer.score += 25;
             } else if (event.state() == ConnectionState.FAILED) {
-                peer.state = PeerState.BACKOFF;
-                peer.backoffUntilMillis = System.currentTimeMillis() + DEFAULT_BACKOFF_MILLIS;
-                peer.score -= 100;
+                if (event.direction() == ConnectionDirection.INBOUND) {
+                    peers.remove(peer.id);
+                } else {
+                    peer.state = PeerState.BACKOFF;
+                    peer.backoffUntilMillis = System.currentTimeMillis() + DEFAULT_BACKOFF_MILLIS;
+                    peer.score -= 100;
+                }
+            } else if (event.state() == ConnectionState.CLOSED) {
+                if (peer.source == PeerSource.INBOUND || event.direction() == ConnectionDirection.INBOUND) {
+                    peers.remove(peer.id);
+                } else if (peer.state == PeerState.HOT || peer.state == PeerState.WARM) {
+                    peer.state = PeerState.COLD;
+                }
             }
             reconcileInternal();
-            persistInternal();
         }
     }
 
@@ -217,13 +247,15 @@ public final class PeerGovernor implements RelayConnectionListener {
         } else {
             existing.host = descriptor.host();
             existing.port = descriptor.port();
-            existing.source = descriptor.source();
-            existing.sourceId = descriptor.sourceId();
-            existing.trustable = descriptor.trustable();
-            existing.advertise = descriptor.advertise();
-            existing.sharable = descriptor.sharable();
-            existing.hotValency = descriptor.hotValency();
-            existing.warmValency = descriptor.warmValency();
+            if (sourceRank(descriptor.source()) <= sourceRank(existing.source)) {
+                existing.source = descriptor.source();
+                existing.sourceId = descriptor.sourceId();
+            }
+            existing.trustable = existing.trustable || descriptor.trustable();
+            existing.advertise = existing.advertise || descriptor.advertise();
+            existing.sharable = existing.sharable || descriptor.sharable();
+            existing.hotValency = Math.max(existing.hotValency, descriptor.hotValency());
+            existing.warmValency = Math.max(existing.warmValency, descriptor.warmValency());
             existing.firstSeenMillis = Math.min(existing.firstSeenMillis, descriptor.firstSeenMillis());
             existing.lastSeenMillis = Math.max(existing.lastSeenMillis, descriptor.lastSeenMillis());
             existing.expiresAtMillis = descriptor.expiresAtMillis();
@@ -238,16 +270,20 @@ public final class PeerGovernor implements RelayConnectionListener {
     private void reconcileInternal() {
         long now = System.currentTimeMillis();
         lastReconcileAtMillis = now;
+        boolean removedExpired = peers.entrySet().removeIf(entry -> {
+            GovernedPeer peer = entry.getValue();
+            return peer.expiresAtMillis != null && peer.expiresAtMillis > 0
+                    && now >= peer.expiresAtMillis
+                    && peer.state != PeerState.HOT
+                    && peer.source == PeerSource.GOSSIP;
+        });
+        if (removedExpired) {
+            markPeerStoreDirty();
+        }
         for (GovernedPeer peer : peers.values()) {
             if (peer.state == PeerState.BACKOFF && peer.backoffUntilMillis > 0 && now >= peer.backoffUntilMillis) {
                 peer.state = PeerState.COLD;
                 peer.backoffUntilMillis = 0L;
-            }
-            if (peer.expiresAtMillis != null && peer.expiresAtMillis > 0
-                    && now >= peer.expiresAtMillis
-                    && peer.state != PeerState.HOT
-                    && peer.source == PeerSource.GOSSIP) {
-                peer.state = PeerState.QUARANTINED;
             }
         }
 
@@ -280,15 +316,37 @@ public final class PeerGovernor implements RelayConnectionListener {
         }
     }
 
-    private void persistInternal() {
-        peerStore.replaceAll(orderedPeersForPersistence().stream()
+    private void markPeerStoreDirty() {
+        peerStoreDirty = true;
+    }
+
+    private List<PeerStoreEntry> peerStoreFlushEntriesIfDue(boolean force) {
+        if (!peerStoreDirty) {
+            return null;
+        }
+        long now = System.currentTimeMillis();
+        if (!force && lastPeerStoreFlushMillis > 0
+                && now - lastPeerStoreFlushMillis < PERSIST_DEBOUNCE_MILLIS) {
+            return null;
+        }
+        List<PeerStoreEntry> entries = orderedPeersForPersistence().stream()
                 .map(GovernedPeer::toStoreEntry)
-                .toList());
+                .toList();
+        peerStoreDirty = false;
+        lastPeerStoreFlushMillis = now;
+        return entries;
+    }
+
+    private void flushPeerStoreEntries(List<PeerStoreEntry> entries) {
+        if (entries != null) {
+            peerStore.replaceAll(entries);
+        }
     }
 
     private List<GovernedPeer> orderedUsablePeers() {
         return peers.values().stream()
                 .filter(peer -> peer.state != PeerState.BACKOFF && peer.state != PeerState.QUARANTINED)
+                .filter(peer -> peer.source != PeerSource.INBOUND)
                 .sorted(Comparator
                         .comparing(GovernedPeer::trustable).reversed()
                         .thenComparing(Comparator.comparingInt((GovernedPeer peer) -> peer.score).reversed())
@@ -313,7 +371,17 @@ public final class PeerGovernor implements RelayConnectionListener {
     }
 
     private static String endpointId(String host, int port) {
-        return host.trim().toLowerCase(java.util.Locale.ROOT) + ":" + port;
+        return PeerDescriptor.endpointId(host, port);
+    }
+
+    private static int sourceRank(PeerSource source) {
+        return switch (source) {
+            case STATIC_UPSTREAM, LOCAL_ROOT -> 0;
+            case BOOTSTRAP, PUBLIC_ROOT -> 1;
+            case LEDGER -> 2;
+            case GOSSIP -> 3;
+            case INBOUND -> 4;
+        };
     }
 
     private static final class GovernedPeer {
@@ -374,13 +442,7 @@ public final class PeerGovernor implements RelayConnectionListener {
         }
 
         private int sourceRank() {
-            return switch (source) {
-                case STATIC_UPSTREAM, LOCAL_ROOT -> 0;
-                case BOOTSTRAP, PUBLIC_ROOT -> 1;
-                case LEDGER -> 2;
-                case GOSSIP -> 3;
-                case INBOUND -> 4;
-            };
+            return PeerGovernor.sourceRank(source);
         }
 
         private PeerDescriptor descriptor() {

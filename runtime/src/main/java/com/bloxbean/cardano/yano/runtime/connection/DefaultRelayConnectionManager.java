@@ -131,7 +131,6 @@ public final class DefaultRelayConnectionManager implements RelayConnectionManag
         synchronized (lock) {
             String existing = outboundByKey.get(key);
             if (existing != null && isActive(existing)) {
-                failedOutboundConnections.incrementAndGet();
                 throw new IllegalStateException("outbound connection already active: " + key.displayName());
             }
             id = "out-" + sequence.incrementAndGet();

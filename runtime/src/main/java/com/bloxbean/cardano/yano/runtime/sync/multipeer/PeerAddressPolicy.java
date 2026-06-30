@@ -1,12 +1,13 @@
 package com.bloxbean.cardano.yano.runtime.sync.multipeer;
 
 import com.bloxbean.cardano.yano.api.config.UpstreamDiscoveryConfig;
+import com.bloxbean.cardano.yano.runtime.connection.ConnectionKey;
 
 import java.net.InetAddress;
+import java.net.Inet6Address;
 import java.net.UnknownHostException;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
@@ -102,10 +103,19 @@ public final class PeerAddressPolicy {
                     || address.isLoopbackAddress()
                     || address.isLinkLocalAddress()
                     || address.isSiteLocalAddress()
+                    || isUniqueLocalIpv6(address)
                     || address.isMulticastAddress();
         } catch (UnknownHostException e) {
             return true;
         }
+    }
+
+    private static boolean isUniqueLocalIpv6(InetAddress address) {
+        if (!(address instanceof Inet6Address)) {
+            return false;
+        }
+        byte[] bytes = address.getAddress();
+        return bytes.length == 16 && (bytes[0] & 0xfe) == 0xfc;
     }
 
     private static Optional<Integer> parsePort(String portRaw) {
@@ -133,7 +143,7 @@ public final class PeerAddressPolicy {
     }
 
     private static String normalizeHost(String host) {
-        return stripIpv6Brackets(host.trim()).toLowerCase(Locale.ROOT);
+        return ConnectionKey.of(stripIpv6Brackets(host.trim()), 1).host();
     }
 
     private static String stripIpv6Brackets(String value) {
@@ -148,6 +158,6 @@ public final class PeerAddressPolicy {
     }
 
     private static String endpointKey(String host, int port) {
-        return host + ":" + port;
+        return ConnectionKey.of(host, port).displayName();
     }
 }

@@ -71,8 +71,8 @@ Observed behavior:
 - The official preprod snapshot URL
   `https://book.play.dev.cardano.org/environments/preprod/peer-snapshot.json`
   was loaded and accepted with 32 relay entries.
-- Known peers reached 41 after configured peers, persisted peers, and snapshot
-  peers were admitted through the governor.
+- Known peers reached 41 after configured peers, peer-store seed/cache entries,
+  and snapshot peers were admitted through the governor.
 - An invalid static peer did not block discovery-first recovery; Yano selected
   reachable peer `132.226.203.38:6001`.
 - Yano reached `inSync=true` and applied Conway blocks through slot

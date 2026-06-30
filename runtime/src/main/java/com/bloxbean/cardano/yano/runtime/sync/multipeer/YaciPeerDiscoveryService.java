@@ -40,16 +40,17 @@ public final class YaciPeerDiscoveryService implements AutoCloseable {
     private final long protocolMagic;
     private final UpstreamDiscoveryConfig config;
     private final PeerAddressPolicy addressPolicy;
-    private final Consumer<PeerStoreEntry> discoveredPeerConsumer;
+    private final Consumer<PeerDescriptor> discoveredPeerConsumer;
     private final List<PeerDiscovery> runningDiscoveries = new CopyOnWriteArrayList<>();
     private final NodeClientConfig nodeClientConfig;
     private final HttpClient httpClient;
     private final AtomicBoolean peerSnapshotsLoaded = new AtomicBoolean(false);
+    private final AtomicBoolean topologyLoaded = new AtomicBoolean(false);
 
     public YaciPeerDiscoveryService(long protocolMagic,
                                     UpstreamDiscoveryConfig config,
                                     PeerAddressPolicy addressPolicy,
-                                    Consumer<PeerStoreEntry> discoveredPeerConsumer) {
+                                    Consumer<PeerDescriptor> discoveredPeerConsumer) {
         this.protocolMagic = protocolMagic;
         this.config = config;
         this.addressPolicy = Objects.requireNonNull(addressPolicy, "addressPolicy");
@@ -99,6 +100,7 @@ public final class YaciPeerDiscoveryService implements AutoCloseable {
         }
         runningDiscoveries.clear();
         peerSnapshotsLoaded.set(false);
+        topologyLoaded.set(false);
     }
 
     private void loadPeerSnapshotsOnce() {
@@ -169,6 +171,9 @@ public final class YaciPeerDiscoveryService implements AutoCloseable {
     }
 
     private void loadTopologyOnce() {
+        if (!topologyLoaded.compareAndSet(false, true)) {
+            return;
+        }
         String topologyFile = config.getTopologyFile();
         if (topologyFile == null || topologyFile.isBlank()) {
             return;
@@ -269,7 +274,7 @@ public final class YaciPeerDiscoveryService implements AutoCloseable {
                 if (address == null || !addressPolicy.allows(PeerSource.BOOTSTRAP, address, port)) {
                     continue;
                 }
-                String key = address.trim().toLowerCase(java.util.Locale.ROOT) + ":" + port;
+                String key = PeerDescriptor.endpointId(address, port);
                 if (!seen.add(key)) {
                     continue;
                 }
@@ -333,21 +338,21 @@ public final class YaciPeerDiscoveryService implements AutoCloseable {
         if (address == null || !addressPolicy.allows(source, address, port)) {
             return false;
         }
-        String prefix = "peer-snapshot".equals(sourceId) ? "snapshot" : switch (source) {
-            case LOCAL_ROOT -> "local-root";
-            case PUBLIC_ROOT -> "public-root";
-            case BOOTSTRAP -> "bootstrap";
-            case LEDGER -> "ledger";
-            case INBOUND -> "inbound";
-            case STATIC_UPSTREAM -> "static";
-            case GOSSIP -> "discovered";
-        };
-        discoveredPeerConsumer.accept(new PeerStoreEntry(
-                prefix + "-" + address + ":" + port,
+        long now = System.currentTimeMillis();
+        discoveredPeerConsumer.accept(new PeerDescriptor(
+                PeerDescriptor.endpointId(address, port),
                 address,
                 port,
-                source.configValue(),
+                source,
+                sourceId,
                 trusted,
+                source == PeerSource.LOCAL_ROOT || source == PeerSource.STATIC_UPSTREAM,
+                source != PeerSource.INBOUND,
+                1,
+                1,
+                now,
+                now,
+                null,
                 score));
         return true;
     }

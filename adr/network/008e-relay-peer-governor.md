@@ -85,8 +85,8 @@ code still decides which chain, if any, should be adopted.
 | --- | --- |
 | `PeerGovernor` | Extend into the relay peer-governor implementation. It may be renamed later, but there must not be a second live governor with overlapping authority. |
 | `UpstreamGovernorConfig` | Keep as the primary config contract. Existing fields are wired before adding new knobs. |
-| `PeerStore` | Becomes the persistence backend for the bounded known-peer set, not a separate unbounded registry. |
-| `FileBackedPeerStore` | Persists known peers that survive restart. Scores and transient backoff do not need to be persisted. |
+| `PeerStore` | Provides stable seed/cache entries loaded by the governor and flushed from bounded governor output. The governor does not use it as a live runtime-state journal. |
+| `FileBackedPeerStore` | Can load and write stable endpoint entries. Runtime scores, hot/warm/backoff state, and connection events are not persisted. |
 | `PeerAddressPolicy` | Remains the admission and hygiene gate for configured, discovered, and sharable peer addresses. It should be fixed to parse IPv6 endpoints correctly before being used for strict relay admission. |
 | `RelayConnectionManager` | Owns connection lifecycle, connection limits, connection failures, and negotiated capabilities. The governor consumes immutable snapshots and `RelayConnectionListener` events. |
 | `PeerRecoveryFailureTracker` and sync supervisor | Keep canonical active-peer recovery. The governor does not independently close or replace the canonical apply peer. |
@@ -287,12 +287,16 @@ Admission flow:
 1. Normalize and validate the endpoint through `PeerAddressPolicy`.
 2. Add or update the governed peer by normalized endpoint.
 3. Preserve configured and bootstrap peers ahead of gossip during eviction.
-4. Enforce the known-peer target before persisting.
-5. Persist only the known-peer set needed across restart.
+4. Enforce the known-peer target before exposing peers to sync or sharing.
+5. Flush the stable known-endpoint cache on a debounced cadence and on clean
+   shutdown.
+6. Keep runtime score, hot/warm/backoff state, and connection observations
+   in memory only.
 
-The persisted store should not persist volatile score, backoff, or quarantine
-state unless an explicit future requirement needs it. Scores should be relearned
-after restart to avoid stale or poisoned persisted preference.
+The persisted store, when used, should contain only stable endpoint facts. It
+must not persist volatile score, backoff, or quarantine state unless an
+explicit future requirement needs it. Scores should be relearned after restart
+to avoid stale or poisoned persisted preference.
 
 ### Reconcile Loop
 
@@ -454,8 +458,9 @@ A detailed peer table can be exposed later through an admin/debug endpoint.
   **Implemented.**
 - Make the governor the bounded admission path for configured, snapshot, gossip,
   and inbound peers. **Implemented.**
-- Use `PeerStore` as the persistence backend for the known set.
-  **Implemented.**
+- Use `PeerStore` as the stable seed/cache backend for known endpoints.
+  **Implemented with debounced/shutdown flush; the governor does not persist
+  runtime connection state.**
 - Do not change outbound selection yet. **Preserved for compatibility; existing
   relay modes still ask the governor for hot peers.**
 

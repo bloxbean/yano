@@ -1,5 +1,7 @@
 package com.bloxbean.cardano.yano.runtime.sync.multipeer;
 
+import com.bloxbean.cardano.yano.runtime.connection.ConnectionKey;
+
 import java.util.Objects;
 
 /**
@@ -22,11 +24,11 @@ public record PeerDescriptor(
         int score) {
 
     public PeerDescriptor {
-        id = normalizeText(id, "id");
         host = normalizeText(host, "host");
         if (port < 1 || port > 65_535) {
             throw new IllegalArgumentException("port must be between 1 and 65535");
         }
+        id = endpointId(host, port);
         source = source != null ? source : PeerSource.GOSSIP;
         sourceId = sourceId != null ? sourceId : source.configValue();
         firstSeenMillis = firstSeenMillis > 0 ? firstSeenMillis : System.currentTimeMillis();
@@ -53,11 +55,26 @@ public record PeerDescriptor(
                 now,
                 now,
                 null,
-                entry.score());
+                scoreForSource(source, entry.trusted()));
     }
 
     public PeerStoreEntry toStoreEntry() {
-        return new PeerStoreEntry(id, host, port, source.configValue(), trustable, score);
+        return new PeerStoreEntry(id, host, port, source.configValue(), trustable);
+    }
+
+    public static String endpointId(String host, int port) {
+        return ConnectionKey.of(host, port).displayName();
+    }
+
+    static int scoreForSource(PeerSource source, boolean trusted) {
+        int base = switch (source != null ? source : PeerSource.GOSSIP) {
+            case STATIC_UPSTREAM, LOCAL_ROOT -> 20_000;
+            case BOOTSTRAP, PUBLIC_ROOT -> 10_000;
+            case LEDGER -> 8_000;
+            case GOSSIP -> 1_000;
+            case INBOUND -> 0;
+        };
+        return trusted ? base + 10_000 : base;
     }
 
     private static String normalizeText(String value, String field) {
