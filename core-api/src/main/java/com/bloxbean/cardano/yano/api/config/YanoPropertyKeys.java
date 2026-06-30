@@ -66,6 +66,12 @@ public final class YanoPropertyKeys {
                 "yano.upstream.discovery.peer-snapshot-files";
         public static final String DISCOVERY_PEER_SNAPSHOT_LIMIT =
                 "yano.upstream.discovery.peer-snapshot-limit";
+        public static final String DISCOVERY_TOPOLOGY_FILE =
+                "yano.upstream.discovery.topology-file";
+        public static final String DISCOVERY_LEDGER_PEERS =
+                "yano.upstream.discovery.ledger-peers";
+        public static final String DISCOVERY_USE_LEDGER_AFTER_SLOT =
+                "yano.upstream.discovery.use-ledger-after-slot";
         public static final String DISCOVERY_ALLOW_PRIVATE_ADDRESSES =
                 "yano.upstream.discovery.allow-private-addresses";
         public static final String DISCOVERY_ALLOWLIST = "yano.upstream.discovery.allowlist";
@@ -104,6 +110,12 @@ public final class YanoPropertyKeys {
         public static final String ADVERTISED_HOST = "yano.relay.advertised-host";
         public static final String ADVERTISED_PORT = "yano.relay.advertised-port";
         public static final String ALLOW_PRIVATE_ADDRESSES = "yano.relay.allow-private-addresses";
+        public static final String CONNECTION_MAX_INBOUND_CONNECTIONS =
+                "yano.relay.connection.max-inbound-connections";
+        public static final String CONNECTION_MAX_CONNECTIONS_PER_IP =
+                "yano.relay.connection.max-connections-per-ip";
+        public static final String CONNECTION_SOURCE_PORT_REUSE =
+                "yano.relay.connection.source-port-reuse";
 
         private Relay() {
         }

@@ -8,5 +8,11 @@ import java.util.List;
 public interface PeerStore {
     void put(PeerStoreEntry peer);
 
+    default void replaceAll(List<PeerStoreEntry> peers) {
+        if (peers != null) {
+            peers.forEach(this::put);
+        }
+    }
+
     List<PeerStoreEntry> all();
 }

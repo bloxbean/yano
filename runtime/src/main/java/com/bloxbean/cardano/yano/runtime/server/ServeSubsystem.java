@@ -11,6 +11,8 @@ import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.runtime.handlers.YaciTxSubmissionHandler;
 import com.bloxbean.cardano.yano.runtime.kernel.Subsystem;
 import com.bloxbean.cardano.yano.runtime.kernel.SubsystemHealth;
+import com.bloxbean.cardano.yano.runtime.connection.RelayConnectionInfo;
+import com.bloxbean.cardano.yano.runtime.connection.RelayConnectionManager;
 import com.bloxbean.cardano.yano.runtime.sync.multipeer.PeerStoreEntry;
 import com.bloxbean.cardano.yano.runtime.tx.TransactionAdmission;
 import com.bloxbean.cardano.yano.runtime.tx.diffusion.TxDiffusion;
@@ -37,6 +39,7 @@ public final class ServeSubsystem implements Subsystem {
     private final int advertisedPort;
     private final boolean allowPrivateRelayAddresses;
     private final Supplier<List<PeerStoreEntry>> peerStoreSupplier;
+    private final RelayConnectionManager relayConnectionManager;
     private final Logger log;
     private final AtomicBoolean running = new AtomicBoolean(false);
 
@@ -76,6 +79,24 @@ public final class ServeSubsystem implements Subsystem {
                           boolean allowPrivateRelayAddresses,
                           Supplier<List<PeerStoreEntry>> peerStoreSupplier,
                           Logger log) {
+        this(serverPort, protocolMagic, chainState, transactionAdmission, blockProducerMode,
+                txDiffusionSupplier, relayAutoDiscovery, advertisedHost, advertisedPort,
+                allowPrivateRelayAddresses, peerStoreSupplier, null, log);
+    }
+
+    public ServeSubsystem(int serverPort,
+                          long protocolMagic,
+                          ChainState chainState,
+                          TransactionAdmission transactionAdmission,
+                          boolean blockProducerMode,
+                          Supplier<TxDiffusion> txDiffusionSupplier,
+                          boolean relayAutoDiscovery,
+                          String advertisedHost,
+                          int advertisedPort,
+                          boolean allowPrivateRelayAddresses,
+                          Supplier<List<PeerStoreEntry>> peerStoreSupplier,
+                          RelayConnectionManager relayConnectionManager,
+                          Logger log) {
         this.serverPort = serverPort;
         this.protocolMagic = protocolMagic;
         this.chainState = Objects.requireNonNull(chainState, "chainState");
@@ -87,6 +108,7 @@ public final class ServeSubsystem implements Subsystem {
         this.advertisedPort = advertisedPort > 0 ? advertisedPort : serverPort;
         this.allowPrivateRelayAddresses = allowPrivateRelayAddresses;
         this.peerStoreSupplier = peerStoreSupplier != null ? peerStoreSupplier : List::of;
+        this.relayConnectionManager = relayConnectionManager;
         this.log = Objects.requireNonNull(log, "log");
     }
 
@@ -123,6 +145,10 @@ public final class ServeSubsystem implements Subsystem {
                     advertisedPort,
                     allowPrivateRelayAddresses,
                     peerStoreSupplier,
+                    relayConnectionManager != null
+                            ? () -> relayConnectionManager.snapshot().connections()
+                            : List::of,
+                    true,
                     log);
             int peerSharing = relayAutoDiscovery ? 1 : 0;
             NodeServer server = new NodeServer(serverPort,
@@ -133,6 +159,9 @@ public final class ServeSubsystem implements Subsystem {
                     relayAutoDiscovery
                             ? List.of(() -> new PeerSharingServerAgent(peerSharingProvider::peers))
                             : List.of());
+            if (relayConnectionManager != null) {
+                server.setConnectionListener(relayConnectionManager.yaciServerConnectionListener());
+            }
             nodeServer = server;
 
             Thread thread = new Thread(() -> {

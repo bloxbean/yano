@@ -1,0 +1,32 @@
+package com.bloxbean.cardano.yano.runtime.sync.multipeer;
+
+import java.util.List;
+
+public record PeerGovernorSnapshot(
+        int knownPeerCount,
+        int coldPeerCount,
+        int warmPeerCount,
+        int hotPeerCount,
+        int backoffPeerCount,
+        int quarantinedPeerCount,
+        int sharablePeerCount,
+        int inboundPeerCount,
+        int gossipPeerCount,
+        int ledgerPeerCount,
+        int bootstrapPeerCount,
+        int targetKnownPeers,
+        int targetWarmPeers,
+        int targetHotPeers,
+        long lastReconcileAtMillis,
+        List<PeerDescriptor> peers) {
+
+    public PeerGovernorSnapshot {
+        peers = peers != null ? List.copyOf(peers) : List.of();
+    }
+
+    public static PeerGovernorSnapshot empty(int targetKnownPeers, int targetWarmPeers, int targetHotPeers) {
+        return new PeerGovernorSnapshot(
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                targetKnownPeers, targetWarmPeers, targetHotPeers, 0L, List.of());
+    }
+}

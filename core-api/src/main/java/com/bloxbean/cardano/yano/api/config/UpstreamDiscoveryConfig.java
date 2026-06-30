@@ -24,6 +24,12 @@ public class UpstreamDiscoveryConfig {
     @Builder.Default
     private int peerSnapshotLimit = 128;
     @Builder.Default
+    private String topologyFile = "";
+    @Builder.Default
+    private boolean ledgerPeers = false;
+    @Builder.Default
+    private long useLedgerAfterSlot = -1L;
+    @Builder.Default
     private boolean allowPrivateAddresses = false;
     @Builder.Default
     private List<String> allowlist = List.of();
@@ -33,6 +39,9 @@ public class UpstreamDiscoveryConfig {
     public void validate() {
         if (peerSnapshotLimit < 1) {
             throw new IllegalArgumentException("yano.upstream.discovery.peer-snapshot-limit must be positive");
+        }
+        if (ledgerPeers && useLedgerAfterSlot < 0) {
+            throw new IllegalArgumentException("yano.upstream.discovery.use-ledger-after-slot must be non-negative when ledger peers are enabled");
         }
     }
 }

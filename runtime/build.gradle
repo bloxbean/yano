@@ -4,6 +4,8 @@ dependencies {
     api libs.yaci.helper
     api libs.project.reactor.core
 
+    compileOnly libs.netty
+
     implementation libs.rocksdb
 
     // Logging dependencies

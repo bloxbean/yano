@@ -109,15 +109,18 @@ class NodeStatusTest {
                 .build();
         
         assertThat(status.isInSync()).isFalse();
-        
-        status = NodeStatus.builder()
+    }
+
+    @Test
+    void isInSync_shouldReturnTrueWhenLocalTipIsAheadOfRemoteTip() {
+        NodeStatus status = NodeStatus.builder()
                 .running(true)
                 .syncing(true)
                 .localTipSlot(1000L)
                 .remoteTipSlot(980L)
                 .build();
-        
-        assertThat(status.isInSync()).isFalse();
+
+        assertThat(status.isInSync()).isTrue();
     }
 
     @Test

@@ -125,6 +125,15 @@ public class YanoProducer {
     @ConfigProperty(name = YanoPropertyKeys.Relay.ALLOW_PRIVATE_ADDRESSES, defaultValue = "false")
     boolean relayAllowPrivateAddresses;
 
+    @ConfigProperty(name = YanoPropertyKeys.Relay.CONNECTION_MAX_INBOUND_CONNECTIONS, defaultValue = "100")
+    int relayConnectionMaxInboundConnections;
+
+    @ConfigProperty(name = YanoPropertyKeys.Relay.CONNECTION_MAX_CONNECTIONS_PER_IP, defaultValue = "5")
+    int relayConnectionMaxConnectionsPerIp;
+
+    @ConfigProperty(name = YanoPropertyKeys.Relay.CONNECTION_SOURCE_PORT_REUSE, defaultValue = "true")
+    boolean relayConnectionSourcePortReuse;
+
     @ConfigProperty(name = YanoPropertyKeys.Storage.ROCKSDB, defaultValue = "true")
     boolean useRocksDB;
 
@@ -549,6 +558,12 @@ public class YanoProducer {
         globals.put(YanoPropertyKeys.Relay.ADVERTISED_PORT,
                 relayAdvertisedPort > 0 ? relayAdvertisedPort : serverPort);
         globals.put(YanoPropertyKeys.Relay.ALLOW_PRIVATE_ADDRESSES, relayAllowPrivateAddresses);
+        globals.put(YanoPropertyKeys.Relay.CONNECTION_MAX_INBOUND_CONNECTIONS,
+                relayConnectionMaxInboundConnections);
+        globals.put(YanoPropertyKeys.Relay.CONNECTION_MAX_CONNECTIONS_PER_IP,
+                relayConnectionMaxConnectionsPerIp);
+        globals.put(YanoPropertyKeys.Relay.CONNECTION_SOURCE_PORT_REUSE,
+                relayConnectionSourcePortReuse);
         globals.put(YanoPropertyKeys.BlockProducer.TX_EVALUATION, txEvaluationEnabled);
         dnsCacheTtl.ifPresent(value -> globals.put(DnsCachePolicy.DNS_CACHE_TTL_KEY, value));
         dnsCacheNegativeTtl.ifPresent(value -> globals.put(DnsCachePolicy.DNS_CACHE_NEGATIVE_TTL_KEY, value));
@@ -790,6 +805,10 @@ public class YanoProducer {
                         .peerSnapshotFiles(configStringList(YanoPropertyKeys.Upstream.DISCOVERY_PEER_SNAPSHOT_FILES))
                         .peerSnapshotLimit(configInt(
                                 YanoPropertyKeys.Upstream.DISCOVERY_PEER_SNAPSHOT_LIMIT, 128))
+                        .topologyFile(configString(YanoPropertyKeys.Upstream.DISCOVERY_TOPOLOGY_FILE, ""))
+                        .ledgerPeers(configBoolean(YanoPropertyKeys.Upstream.DISCOVERY_LEDGER_PEERS, false))
+                        .useLedgerAfterSlot(configLong(
+                                YanoPropertyKeys.Upstream.DISCOVERY_USE_LEDGER_AFTER_SLOT, -1L))
                         .allowPrivateAddresses(configBoolean(
                                 YanoPropertyKeys.Upstream.DISCOVERY_ALLOW_PRIVATE_ADDRESSES, false))
                         .allowlist(configStringList(YanoPropertyKeys.Upstream.DISCOVERY_ALLOWLIST))

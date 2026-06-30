@@ -112,6 +112,7 @@ public class PipelineDataListener implements BlockChainDataListener {
                     blockHeader.getHeaderBody().getBlockNumber(),
                     System.currentTimeMillis());
         }
+        callbacks.maybeFastTransitionToSteadyState(tip);
 
         //TODO remove this log
 //        log.info("Rollforward to header: {} at slot: {}", blockHeader.getHeaderBody().getBlockNumber(), blockHeader.getHeaderBody().getSlot());
@@ -138,6 +139,7 @@ public class PipelineDataListener implements BlockChainDataListener {
                     byronBlockHead.getConsensusData().getDifficulty().longValue(),
                     System.currentTimeMillis());
         }
+        callbacks.maybeFastTransitionToSteadyState(tip);
 
         // Resume BodyFetchManager if paused and headers are flowing after intersection
         callbacks.resumeBodyFetchOnHeaderFlow();
@@ -161,6 +163,7 @@ public class PipelineDataListener implements BlockChainDataListener {
                     byronEbHead.getConsensusData().getDifficulty().longValue(),
                     System.currentTimeMillis());
         }
+        callbacks.maybeFastTransitionToSteadyState(tip);
 
         // Resume BodyFetchManager if paused and headers are flowing after intersection
         callbacks.resumeBodyFetchOnHeaderFlow();

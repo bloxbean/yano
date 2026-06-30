@@ -24,15 +24,28 @@ public final class DefaultPeerClientFactory implements PeerClientFactory {
         return new DefaultPeerClientFactory(supervisedNodeClientConfig());
     }
 
+    public static DefaultPeerClientFactory supervisedWithLocalBind(String localBindHost, int localBindPort) {
+        return new DefaultPeerClientFactory(supervisedNodeClientConfig(localBindHost, localBindPort));
+    }
+
     public static NodeClientConfig supervisedNodeClientConfig() {
-        return NodeClientConfig.builder()
+        return supervisedNodeClientConfig(null, 0);
+    }
+
+    public static NodeClientConfig supervisedNodeClientConfig(String localBindHost, int localBindPort) {
+        var builder = NodeClientConfig.builder()
                 .autoReconnect(false)
                 .connectionTimeoutMs(SUPERVISED_CONNECT_TIMEOUT_MS)
                 .maxRetryAttempts(0)
                 .propagateStartupFailure(true)
                 .socketAddressResolutionMode(SocketAddressResolutionMode.DNS_ROTATING)
-                .socketAddressFamily(SocketAddressFamily.IPV4_ONLY)
-                .build();
+                .socketAddressFamily(SocketAddressFamily.IPV4_ONLY);
+        if (localBindPort > 0) {
+            builder.localBindHost(localBindHost)
+                    .localBindPort(localBindPort)
+                    .localBindFallbackToEphemeral(true);
+        }
+        return builder.build();
     }
 
     @Override

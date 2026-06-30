@@ -178,6 +178,111 @@ public class NodeStatus {
     private final Integer relayAdvertisedPort;
 
     /**
+     * Number of active inbound relay connections.
+     */
+    private final Integer relayInboundConnectionCount;
+
+    /**
+     * Number of active outbound relay connections.
+     */
+    private final Integer relayOutboundConnectionCount;
+
+    /**
+     * Number of established relay connections.
+     */
+    private final Integer relayEstablishedConnectionCount;
+
+    /**
+     * Number of relay connections currently connecting or handshaking.
+     */
+    private final Integer relayConnectingConnectionCount;
+
+    /**
+     * Number of inbound connections rejected by relay admission policy.
+     */
+    private final Long relayRejectedInboundConnections;
+
+    /**
+     * Number of outbound connection attempts failed or rejected by the connection manager.
+     */
+    private final Long relayFailedOutboundConnections;
+
+    /**
+     * Configured inbound connection limit per remote IP.
+     */
+    private final Integer relayConnectionsPerIpMax;
+
+    /**
+     * Number of peers admitted by the relay peer governor.
+     */
+    private final Integer relayKnownPeerCount;
+
+    /**
+     * Number of cold peers in the relay peer governor.
+     */
+    private final Integer relayColdPeerCount;
+
+    /**
+     * Number of warm peers in the relay peer governor.
+     */
+    private final Integer relayWarmPeerCount;
+
+    /**
+     * Number of hot peers in the relay peer governor.
+     */
+    private final Integer relayHotPeerCount;
+
+    /**
+     * Number of peers currently suppressed by governor backoff.
+     */
+    private final Integer relayBackoffPeerCount;
+
+    /**
+     * Number of peers currently quarantined by the governor.
+     */
+    private final Integer relayQuarantinedPeerCount;
+
+    /**
+     * Number of peers eligible for peer-sharing responses.
+     */
+    private final Integer relaySharablePeerCount;
+
+    /**
+     * Number of inbound peers known by the governor.
+     */
+    private final Integer relayInboundPeerCount;
+
+    /**
+     * Number of gossip peers known by the governor.
+     */
+    private final Integer relayGossipPeerCount;
+
+    /**
+     * Number of ledger peers known by the governor.
+     */
+    private final Integer relayLedgerPeerCount;
+
+    /**
+     * Number of bootstrap peers known by the governor.
+     */
+    private final Integer relayBootstrapPeerCount;
+
+    /**
+     * Configured governor hot peer target.
+     */
+    private final Integer relayGovernorTargetHotPeers;
+
+    /**
+     * Configured governor warm peer target.
+     */
+    private final Integer relayGovernorTargetWarmPeers;
+
+    /**
+     * Last governor reconcile time.
+     */
+    private final Long relayGovernorLastReconcileAtMillis;
+
+    /**
      * Configured upstream header validation level.
      */
     private final String upstreamValidationLevel;
@@ -380,8 +485,12 @@ public class NodeStatus {
      */
     public boolean isInSync() {
         if (localTipSlot != null && remoteTipSlot != null) {
-            // Consider in sync if within 10 slots of remote tip
-            return Math.abs(remoteTipSlot - localTipSlot) <= 10;
+            // A locally applied tip can be ahead of the last advertised peer tip.
+            if (localTipSlot >= remoteTipSlot) {
+                return true;
+            }
+            // Otherwise consider in sync if the local tip is within 10 slots behind the remote tip.
+            return remoteTipSlot - localTipSlot <= 10;
         }
         return false;
     }

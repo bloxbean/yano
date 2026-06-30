@@ -43,6 +43,19 @@ public final class FileBackedPeerStore implements PeerStore {
     }
 
     @Override
+    public synchronized void replaceAll(List<PeerStoreEntry> replacement) {
+        peers.clear();
+        if (replacement != null) {
+            for (PeerStoreEntry peer : replacement) {
+                if (isUsable(peer)) {
+                    peers.put(peer.id(), peer);
+                }
+            }
+        }
+        persist();
+    }
+
+    @Override
     public List<PeerStoreEntry> all() {
         return peers.values().stream()
                 .sorted(Comparator.comparing(PeerStoreEntry::id))

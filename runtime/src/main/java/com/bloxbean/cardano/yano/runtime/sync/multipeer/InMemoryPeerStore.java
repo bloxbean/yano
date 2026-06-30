@@ -17,6 +17,14 @@ public final class InMemoryPeerStore implements PeerStore {
     }
 
     @Override
+    public void replaceAll(List<PeerStoreEntry> replacement) {
+        peers.clear();
+        if (replacement != null) {
+            replacement.forEach(this::put);
+        }
+    }
+
+    @Override
     public List<PeerStoreEntry> all() {
         return peers.values().stream()
                 .sorted(Comparator.comparing(PeerStoreEntry::id))

@@ -26,6 +26,7 @@ import com.bloxbean.cardano.yano.api.SyncPhase;
 import com.bloxbean.cardano.yano.api.TxEvaluationGateway;
 import com.bloxbean.cardano.yano.api.TxGateway;
 import com.bloxbean.cardano.yano.api.config.RuntimeOptions;
+import com.bloxbean.cardano.yano.api.config.UpstreamPeerConfig;
 import com.bloxbean.cardano.yano.api.config.YanoConfig;
 import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
 import com.bloxbean.cardano.yano.api.db.RocksDbAccess;
@@ -89,6 +90,9 @@ import com.bloxbean.cardano.yano.runtime.config.InMemoryDevnetGenesis;
 import com.bloxbean.cardano.yano.runtime.config.NetworkGenesisConfig;
 import com.bloxbean.cardano.yano.runtime.PipelineDataListener;
 import com.bloxbean.cardano.yano.runtime.SlotTimeCalculator;
+import com.bloxbean.cardano.yano.runtime.connection.DefaultRelayConnectionManager;
+import com.bloxbean.cardano.yano.runtime.connection.RelayConnectionManager;
+import com.bloxbean.cardano.yano.runtime.connection.RelayConnectionSnapshot;
 import com.bloxbean.cardano.yano.runtime.debug.DebugLedgerStateAccess;
 import com.bloxbean.cardano.yano.runtime.devnet.DevnetCatchUpService;
 import com.bloxbean.cardano.yano.runtime.devnet.DevnetFaucetService;
@@ -110,8 +114,12 @@ import com.bloxbean.cardano.yano.runtime.kernel.Subsystem;
 import com.bloxbean.cardano.yano.runtime.kernel.SubsystemContext;
 import com.bloxbean.cardano.yano.runtime.kernel.SubsystemHealth;
 import com.bloxbean.cardano.yano.runtime.ledger.LedgerStateSubsystem;
+import com.bloxbean.cardano.yano.runtime.peer.DefaultPeerClientFactory;
+import com.bloxbean.cardano.yano.runtime.peer.LocalBindAddressResolver;
+import com.bloxbean.cardano.yano.runtime.peer.PeerClientFactory;
 import com.bloxbean.cardano.yano.runtime.server.ServeSubsystem;
 import com.bloxbean.cardano.yano.runtime.storage.ChainStorageSubsystem;
+import com.bloxbean.cardano.yano.runtime.sync.multipeer.PeerGovernorSnapshot;
 import com.bloxbean.cardano.yano.runtime.sync.SyncSubsystem;
 import com.bloxbean.cardano.yano.runtime.sync.UpstreamStatus;
 import com.bloxbean.cardano.yano.runtime.sync.multipeer.PeerStoreEntry;
@@ -127,6 +135,8 @@ import lombok.extern.slf4j.Slf4j;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -157,6 +167,7 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
 
     // Server components (for serving other clients)
     private final ServeSubsystem serveSubsystem;
+    private final RelayConnectionManager relayConnectionManager;
     private final int serverPort;
 
     // Block producer (devnet, slot-leader, or time-travel strategy)
@@ -179,6 +190,8 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
      * Cached static protocol-parameter snapshot keyed by the source JSON.
      */
     private record StaticProtocolParamsSnapshotCache(String json, ProtocolParamsSnapshot snapshot) {}
+
+    private record SourcePortProbeTarget(String host, int port) {}
 
     private final Schedulers schedulers;
     private final ScheduledExecutorService scheduler;
@@ -295,6 +308,14 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
         this.txSubsystem = new TxSubsystem(eventBus, scheduler, this.runtimeOptions, this::getUtxoState, log);
         AtomicReference<Supplier<List<PeerStoreEntry>>> peerStoreSupplierRef =
                 new AtomicReference<>(List::of);
+        this.relayConnectionManager = new DefaultRelayConnectionManager(
+                (int) parseLong(
+                        this.runtimeOptions.globals().get(YanoPropertyKeys.Relay.CONNECTION_MAX_INBOUND_CONNECTIONS),
+                        DefaultRelayConnectionManager.DEFAULT_MAX_INBOUND_CONNECTIONS),
+                (int) parseLong(
+                        this.runtimeOptions.globals().get(YanoPropertyKeys.Relay.CONNECTION_MAX_CONNECTIONS_PER_IP),
+                        DefaultRelayConnectionManager.DEFAULT_MAX_CONNECTIONS_PER_IP),
+                log);
         this.serveSubsystem = new ServeSubsystem(
                 serverPort,
                 protocolMagic,
@@ -307,6 +328,7 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 (int) parseLong(this.runtimeOptions.globals().get(YanoPropertyKeys.Relay.ADVERTISED_PORT), serverPort),
                 resolveBoolean(this.runtimeOptions.globals(), YanoPropertyKeys.Relay.ALLOW_PRIVATE_ADDRESSES, false),
                 () -> peerStoreSupplierRef.get().get(),
+                relayConnectionManager,
                 log);
 
         // Register default consensus listener (accept-all placeholder)
@@ -348,6 +370,8 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 new ChronologyService(this.chainState),
                 eventBus,
                 ledgerStateSubsystem);
+        PeerClientFactory peerClientFactory = relayConnectionManager.wrapPeerClientFactory(
+                createPeerClientFactory());
         this.syncSubsystem = new SyncSubsystem(
                 config,
                 chainState,
@@ -365,8 +389,10 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 protocolMagic,
                 log,
                 this.bodyValidator,
-                txSubsystem::txDiffusion);
-        peerStoreSupplierRef.set(this.syncSubsystem::peerStoreEntries);
+                txSubsystem::txDiffusion,
+                peerClientFactory);
+        relayConnectionManager.addListener(this.syncSubsystem.peerGovernorConnectionListener());
+        peerStoreSupplierRef.set(this.syncSubsystem::sharablePeerEntries);
         this.producerStartupCoordinator = new ProducerStartupCoordinator(producerStartupActions());
         this.devnetRuntime = RuntimeDevnetRuntime.create(
                 this::rollbackDevnet,
@@ -3147,6 +3173,8 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
 
         Tip remoteTip = syncSubsystem.remoteTip();
         Point remotePoint = remoteTip != null ? remoteTip.getPoint() : null;
+        RelayConnectionSnapshot relayConnectionSnapshot = relayConnectionManager.snapshot();
+        PeerGovernorSnapshot peerGovernorSnapshot = syncSubsystem.peerGovernorSnapshot();
 
         return NodeStatus.builder()
                 .running(isRunning())
@@ -3181,6 +3209,27 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 .relayAutoDiscovery(serveSubsystem.isRelayAutoDiscoveryEnabled())
                 .relayAdvertisedHost(serveSubsystem.advertisedHost())
                 .relayAdvertisedPort(serveSubsystem.advertisedPort())
+                .relayInboundConnectionCount(relayConnectionSnapshot.inboundConnectionCount())
+                .relayOutboundConnectionCount(relayConnectionSnapshot.outboundConnectionCount())
+                .relayEstablishedConnectionCount(relayConnectionSnapshot.establishedConnectionCount())
+                .relayConnectingConnectionCount(relayConnectionSnapshot.connectingConnectionCount())
+                .relayRejectedInboundConnections(relayConnectionSnapshot.rejectedInboundConnections())
+                .relayFailedOutboundConnections(relayConnectionSnapshot.failedOutboundConnections())
+                .relayConnectionsPerIpMax(relayConnectionSnapshot.connectionsPerIpMax())
+                .relayKnownPeerCount(peerGovernorSnapshot.knownPeerCount())
+                .relayColdPeerCount(peerGovernorSnapshot.coldPeerCount())
+                .relayWarmPeerCount(peerGovernorSnapshot.warmPeerCount())
+                .relayHotPeerCount(peerGovernorSnapshot.hotPeerCount())
+                .relayBackoffPeerCount(peerGovernorSnapshot.backoffPeerCount())
+                .relayQuarantinedPeerCount(peerGovernorSnapshot.quarantinedPeerCount())
+                .relaySharablePeerCount(peerGovernorSnapshot.sharablePeerCount())
+                .relayInboundPeerCount(peerGovernorSnapshot.inboundPeerCount())
+                .relayGossipPeerCount(peerGovernorSnapshot.gossipPeerCount())
+                .relayLedgerPeerCount(peerGovernorSnapshot.ledgerPeerCount())
+                .relayBootstrapPeerCount(peerGovernorSnapshot.bootstrapPeerCount())
+                .relayGovernorTargetHotPeers(peerGovernorSnapshot.targetHotPeers())
+                .relayGovernorTargetWarmPeers(peerGovernorSnapshot.targetWarmPeers())
+                .relayGovernorLastReconcileAtMillis(peerGovernorSnapshot.lastReconcileAtMillis())
                 .upstreamValidationLevel(upstreamStatus.validationLevel())
                 .upstreamValidationAcceptedHeaders(upstreamStatus.validationAcceptedHeaders())
                 .upstreamValidationRejectedHeaders(upstreamStatus.validationRejectedHeaders())
@@ -3362,6 +3411,65 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
      */
     public void maybeFastTransitionToSteadyState(Tip remoteTip) {
         syncSubsystem.maybeFastTransitionToSteadyState(remoteTip);
+    }
+
+    private PeerClientFactory createPeerClientFactory() {
+        boolean sourcePortReuse = resolveBoolean(
+                this.runtimeOptions.globals(),
+                YanoPropertyKeys.Relay.CONNECTION_SOURCE_PORT_REUSE,
+                true);
+        if (!sourcePortReuse) {
+            return DefaultPeerClientFactory.supervised();
+        }
+
+        Optional<String> bindHost = resolveSourcePortReuseBindHost();
+        if (bindHost.isEmpty()) {
+            log.warn("Relay outbound source-port reuse enabled, but no concrete local bind address could be resolved; using normal outbound dials");
+            return DefaultPeerClientFactory.supervised();
+        }
+
+        log.info("Relay outbound source-port reuse enabled: binding upstream dials to {}:{}",
+                bindHost.get(), serverPort);
+        return DefaultPeerClientFactory.supervisedWithLocalBind(bindHost.get(), serverPort);
+    }
+
+    private Optional<String> resolveSourcePortReuseBindHost() {
+        for (SourcePortProbeTarget target : sourcePortProbeTargets()) {
+            Optional<String> localHost = LocalBindAddressResolver.resolveForRemote(target.host(), target.port());
+            if (localHost.isPresent()) {
+                log.debug("Resolved relay source-port bind address {} using route to {}:{}",
+                        localHost.get(), target.host(), target.port());
+                return localHost;
+            }
+        }
+        return Optional.empty();
+    }
+
+    private List<SourcePortProbeTarget> sourcePortProbeTargets() {
+        List<SourcePortProbeTarget> targets = new ArrayList<>();
+        if (config.effectiveUpstream() != null) {
+            for (UpstreamPeerConfig peer : config.effectiveUpstream().orderedPeers()) {
+                addSourcePortProbeTarget(targets, peer.getHost(), peer.getPort());
+            }
+        }
+        addSourcePortProbeTarget(targets, remoteCardanoHost, remoteCardanoPort);
+
+        LinkedHashSet<String> seen = new LinkedHashSet<>();
+        List<SourcePortProbeTarget> deduplicated = new ArrayList<>();
+        for (SourcePortProbeTarget target : targets) {
+            String key = target.host() + "\0" + target.port();
+            if (seen.add(key)) {
+                deduplicated.add(target);
+            }
+        }
+        return deduplicated;
+    }
+
+    private static void addSourcePortProbeTarget(List<SourcePortProbeTarget> targets, String host, int port) {
+        if (host == null || host.isBlank() || port <= 0 || port > 65_535) {
+            return;
+        }
+        targets.add(new SourcePortProbeTarget(host.trim(), port));
     }
 
     private static long parseLong(Object obj, long def) {

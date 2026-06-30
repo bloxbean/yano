@@ -158,6 +158,28 @@ class MultiPeerScaffoldingTest {
     }
 
     @Test
+    void peerGovernorBoundsGossipButPreservesConfiguredPeers() {
+        var store = new InMemoryPeerStore();
+        var governor = new PeerGovernor(store,
+                com.bloxbean.cardano.yano.api.config.UpstreamGovernorConfig.builder()
+                        .targetCold(2)
+                        .targetWarm(0)
+                        .targetHot(1)
+                        .build());
+
+        governor.addOrUpdatePeer(new PeerStoreEntry("configured", "relay-a.example.com", 3001,
+                "local-root", true, 10));
+        governor.addOrUpdatePeer(new PeerStoreEntry("gossip-low", "relay-b.example.com", 3001,
+                "peer-sharing", false, 1));
+        governor.addOrUpdatePeer(new PeerStoreEntry("gossip-high", "relay-c.example.com", 3001,
+                "peer-sharing", false, 100));
+
+        assertThat(governor.peerStoreEntries())
+                .extracting(PeerStoreEntry::id)
+                .containsExactlyInAnyOrder("configured", "gossip-high");
+    }
+
+    @Test
     void fileBackedPeerStoreReloadsPersistedPeers() {
         Path file = tempDir.resolve("upstream-peers.json");
         var store = new FileBackedPeerStore(file);
@@ -198,8 +220,60 @@ class MultiPeerScaffoldingTest {
 
         assertThat(denied.allows("127.0.0.1", 3001)).isFalse();
         assertThat(allowed.allows("127.0.0.1", 3001)).isTrue();
+        assertThat(denied.allows(PeerSource.LOCAL_ROOT, "127.0.0.1", 3001)).isTrue();
+        assertThat(PeerAddressPolicy.parseEndpoint("[::1]:3001", -1))
+                .contains(new PeerAddressPolicy.HostPort("::1", 3001));
         assertThat(PeerAddressPolicy.parseEndpoint("relay.example.com:3001", -1))
                 .contains(new PeerAddressPolicy.HostPort("relay.example.com", 3001));
+    }
+
+    @Test
+    void topologyFileSeedsPeerStoreEntries() throws Exception {
+        Path topology = tempDir.resolve("topology.json");
+        Files.writeString(topology, """
+                {
+                  "localRoots": [
+                    {
+                      "accessPoints": [
+                        { "address": "127.0.0.1", "port": 3001 }
+                      ],
+                      "trustable": true,
+                      "advertise": false,
+                      "hotValency": 1,
+                      "warmValency": 1
+                    }
+                  ],
+                  "publicRoots": [
+                    {
+                      "accessPoints": [
+                        { "address": "relay.example.com", "port": 3002 }
+                      ],
+                      "hotValency": 1,
+                      "warmValency": 1
+                    }
+                  ],
+                  "bootstrapPeers": [
+                    { "address": "bootstrap.example.com", "port": 3003 }
+                  ]
+                }
+                """);
+        var config = UpstreamDiscoveryConfig.builder()
+                .enabled(true)
+                .topologyFile(topology.toString())
+                .build();
+        var discovered = new ArrayList<PeerStoreEntry>();
+
+        try (var service = new YaciPeerDiscoveryService(
+                1,
+                config,
+                new PeerAddressPolicy(config),
+                discovered::add)) {
+            service.start();
+        }
+
+        assertThat(discovered)
+                .extracting(PeerStoreEntry::source)
+                .contains("local-root", "public-root", "bootstrap");
     }
 
     @Test
