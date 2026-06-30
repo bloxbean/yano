@@ -59,6 +59,8 @@ import com.bloxbean.cardano.yano.runtime.sync.validation.BodyValidatorFactory;
 import com.bloxbean.cardano.yano.runtime.sync.validation.HeaderValidationSnapshot;
 import com.bloxbean.cardano.yano.runtime.sync.validation.HeaderValidator;
 import com.bloxbean.cardano.yano.runtime.sync.validation.HeaderValidatorFactory;
+import com.bloxbean.cardano.yano.runtime.tx.diffusion.PeerClass;
+import com.bloxbean.cardano.yano.runtime.tx.diffusion.TxDiffusion;
 import org.slf4j.Logger;
 
 import java.nio.file.Path;
@@ -123,6 +125,7 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
     private final PeerGovernor peerGovernor;
     private final PeerAddressPolicy peerAddressPolicy;
     private final YaciPeerDiscoveryService peerDiscoveryService;
+    private final Supplier<TxDiffusion> txDiffusionSupplier;
     private final Map<String, ObserverPeerSession> observerSessions = new ConcurrentHashMap<>();
     private final Map<String, Long> observerRetryAfterMillis = new ConcurrentHashMap<>();
     private final Map<String, Long> activeUpstreamRetryAfterMillis = new ConcurrentHashMap<>();
@@ -169,7 +172,7 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
         this(config, chainState, eventBus, scheduler, serveSubsystem, ledgerStateSubsystem, chainStorage,
                 runtimeRunning, epochParamProviderSupplier, genesisBootstrapDataSupplier,
                 remoteCardanoHost, remoteCardanoPort, protocolMagic, log, defaultPeerRecoveryExecutor(), true,
-                DefaultPeerClientFactory.supervised(), null);
+                DefaultPeerClientFactory.supervised(), null, null);
     }
 
     public SyncSubsystem(YanoConfig config,
@@ -191,7 +194,7 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
                 runtimeRunning, epochParamProviderSupplier, genesisBootstrapDataSupplier,
                 remoteCardanoHost, remoteCardanoPort, protocolMagic, log,
                 Objects.requireNonNull(peerRecoveryExecutor, "peerRecoveryExecutor"), false,
-                DefaultPeerClientFactory.supervised(), null);
+                DefaultPeerClientFactory.supervised(), null, null);
     }
 
     public SyncSubsystem(YanoConfig config,
@@ -210,11 +213,33 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
                          long protocolMagic,
                          Logger log,
                          BodyValidator bodyValidator) {
+        this(config, chainState, eventBus, scheduler, peerRecoveryExecutor, serveSubsystem, ledgerStateSubsystem,
+                chainStorage, runtimeRunning, epochParamProviderSupplier, genesisBootstrapDataSupplier,
+                remoteCardanoHost, remoteCardanoPort, protocolMagic, log, bodyValidator, null);
+    }
+
+    public SyncSubsystem(YanoConfig config,
+                         ChainState chainState,
+                         EventBus eventBus,
+                         ScheduledExecutorService scheduler,
+                         ExecutorService peerRecoveryExecutor,
+                         ServeSubsystem serveSubsystem,
+                         LedgerStateSubsystem ledgerStateSubsystem,
+                         ChainStorageSubsystem chainStorage,
+                         BooleanSupplier runtimeRunning,
+                         Supplier<EpochParamProvider> epochParamProviderSupplier,
+                         Supplier<GenesisBootstrapData> genesisBootstrapDataSupplier,
+                         String remoteCardanoHost,
+                         int remoteCardanoPort,
+                         long protocolMagic,
+                         Logger log,
+                         BodyValidator bodyValidator,
+                         Supplier<TxDiffusion> txDiffusionSupplier) {
         this(config, chainState, eventBus, scheduler, serveSubsystem, ledgerStateSubsystem, chainStorage,
                 runtimeRunning, epochParamProviderSupplier, genesisBootstrapDataSupplier,
                 remoteCardanoHost, remoteCardanoPort, protocolMagic, log,
                 Objects.requireNonNull(peerRecoveryExecutor, "peerRecoveryExecutor"), false,
-                DefaultPeerClientFactory.supervised(), bodyValidator);
+                DefaultPeerClientFactory.supervised(), bodyValidator, txDiffusionSupplier);
     }
 
     SyncSubsystem(YanoConfig config,
@@ -234,8 +259,29 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
                   PeerClientFactory peerClientFactory) {
         this(config, chainState, eventBus, scheduler, serveSubsystem, ledgerStateSubsystem, chainStorage,
                 runtimeRunning, epochParamProviderSupplier, genesisBootstrapDataSupplier,
+                remoteCardanoHost, remoteCardanoPort, protocolMagic, log, peerClientFactory, null);
+    }
+
+    SyncSubsystem(YanoConfig config,
+                  ChainState chainState,
+                  EventBus eventBus,
+                  ScheduledExecutorService scheduler,
+                  ServeSubsystem serveSubsystem,
+                  LedgerStateSubsystem ledgerStateSubsystem,
+                  ChainStorageSubsystem chainStorage,
+                  BooleanSupplier runtimeRunning,
+                  Supplier<EpochParamProvider> epochParamProviderSupplier,
+                  Supplier<GenesisBootstrapData> genesisBootstrapDataSupplier,
+                  String remoteCardanoHost,
+                  int remoteCardanoPort,
+                  long protocolMagic,
+                  Logger log,
+                  PeerClientFactory peerClientFactory,
+                  Supplier<TxDiffusion> txDiffusionSupplier) {
+        this(config, chainState, eventBus, scheduler, serveSubsystem, ledgerStateSubsystem, chainStorage,
+                runtimeRunning, epochParamProviderSupplier, genesisBootstrapDataSupplier,
                 remoteCardanoHost, remoteCardanoPort, protocolMagic, log, defaultPeerRecoveryExecutor(), true,
-                peerClientFactory, null);
+                peerClientFactory, null, txDiffusionSupplier);
     }
 
     SyncSubsystem(YanoConfig config,
@@ -258,7 +304,7 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
         this(config, chainState, eventBus, scheduler, serveSubsystem, ledgerStateSubsystem, chainStorage,
                 runtimeRunning, epochParamProviderSupplier, genesisBootstrapDataSupplier,
                 remoteCardanoHost, remoteCardanoPort, protocolMagic, log, peerRecoveryExecutor,
-                ownsPeerRecoveryExecutor, peerClientFactory, null);
+                ownsPeerRecoveryExecutor, peerClientFactory, null, null);
     }
 
     SyncSubsystem(YanoConfig config,
@@ -278,7 +324,8 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
                   ExecutorService peerRecoveryExecutor,
                   boolean ownsPeerRecoveryExecutor,
                   PeerClientFactory peerClientFactory,
-                  BodyValidator bodyValidator) {
+                  BodyValidator bodyValidator,
+                  Supplier<TxDiffusion> txDiffusionSupplier) {
         this.config = Objects.requireNonNull(config, "config");
         this.chainState = Objects.requireNonNull(chainState, "chainState");
         this.eventBus = Objects.requireNonNull(eventBus, "eventBus");
@@ -322,6 +369,7 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
         this.peerRecoveryExecutor = Objects.requireNonNull(peerRecoveryExecutor, "peerRecoveryExecutor");
         this.ownsPeerRecoveryExecutor = ownsPeerRecoveryExecutor;
         this.peerClientFactory = Objects.requireNonNull(peerClientFactory, "peerClientFactory");
+        this.txDiffusionSupplier = txDiffusionSupplier != null ? txDiffusionSupplier : TxDiffusion::disabled;
         this.pipelineConfig = createPipelineConfig();
     }
 
@@ -471,14 +519,22 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
             log.debug("Transaction {} upstream forwarding disabled by policy", txHash);
             return;
         }
+        TxDiffusion txDiffusion = txDiffusion();
         PeerSession activeSession = peerSession;
         ConfiguredUpstreamPeer active = activeUpstreamPeer();
         if (activeSession != null && activeSession.isRunning()
                 && ("active-selected".equals(forwarding)
                 || ("all-hot-trusted".equals(forwarding) && active.trusted()))) {
+            PeerClass peerClass = PeerClass.ACTIVE_SELECTED;
             try {
-                activeSession.submitTxBytes(txHash, txCbor, txBodyType);
-                log.debug("Transaction {} forwarded to upstream node", txHash);
+                if (!txDiffusion.isEnabled()
+                        || txDiffusion.reserveLocalSubmitForward(active.id(), peerClass, txHash, txCbor.length)) {
+                    activeSession.submitTxBytes(txHash, txCbor, txBodyType);
+                    txDiffusion.onLocalSubmitForwarded(active.id(), peerClass, txHash, txCbor.length);
+                    log.debug("Transaction {} forwarded to upstream node", txHash);
+                } else {
+                    log.debug("Transaction {} already queued for upstream peer {}", txHash, active.id());
+                }
             } catch (Exception e) {
                 log.warn("Failed to forward transaction {} to upstream node: {}", txHash, e.getMessage());
             }
@@ -488,14 +544,24 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
                 if (!observer.trusted()) {
                     return;
                 }
+                PeerClass peerClass = PeerClass.TRUSTED_HOT;
                 try {
-                    observer.submitTxBytes(txHash, txCbor, txBodyType);
+                    if (!txDiffusion.isEnabled()
+                            || txDiffusion.reserveLocalSubmitForward(observer.peerId(), peerClass, txHash, txCbor.length)) {
+                        observer.submitTxBytes(txHash, txCbor, txBodyType);
+                        txDiffusion.onLocalSubmitForwarded(observer.peerId(), peerClass, txHash, txCbor.length);
+                    }
                 } catch (Exception e) {
                     log.debug("Failed to forward transaction {} to observer upstream {}: {}",
                             txHash, observer.peerId(), e.getMessage());
                 }
             });
         }
+    }
+
+    private TxDiffusion txDiffusion() {
+        TxDiffusion txDiffusion = txDiffusionSupplier.get();
+        return txDiffusion != null ? txDiffusion : TxDiffusion.disabled();
     }
 
     public HeaderSyncManager currentHeaderSyncManager() {
@@ -546,6 +612,10 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
                 validation.rejectedHeaders(),
                 validation.lastRejectedStage(),
                 validation.lastRejectedReason());
+    }
+
+    public List<PeerStoreEntry> peerStoreEntries() {
+        return peerStore.all();
     }
 
     public boolean isSyncing() {

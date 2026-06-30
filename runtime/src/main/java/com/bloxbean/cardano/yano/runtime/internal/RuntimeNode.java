@@ -27,6 +27,7 @@ import com.bloxbean.cardano.yano.api.TxEvaluationGateway;
 import com.bloxbean.cardano.yano.api.TxGateway;
 import com.bloxbean.cardano.yano.api.config.RuntimeOptions;
 import com.bloxbean.cardano.yano.api.config.YanoConfig;
+import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
 import com.bloxbean.cardano.yano.api.db.RocksDbAccess;
 import com.bloxbean.cardano.yano.api.genesis.GenesisBootstrapData;
 import com.bloxbean.cardano.yano.api.listener.NodeEventListener;
@@ -113,9 +114,11 @@ import com.bloxbean.cardano.yano.runtime.server.ServeSubsystem;
 import com.bloxbean.cardano.yano.runtime.storage.ChainStorageSubsystem;
 import com.bloxbean.cardano.yano.runtime.sync.SyncSubsystem;
 import com.bloxbean.cardano.yano.runtime.sync.UpstreamStatus;
+import com.bloxbean.cardano.yano.runtime.sync.multipeer.PeerStoreEntry;
 import com.bloxbean.cardano.yano.runtime.sync.validation.BodyValidator;
 import com.bloxbean.cardano.yano.runtime.db.RocksDbSupplier;
 import com.bloxbean.cardano.yano.runtime.tx.TxSubsystem;
+import com.bloxbean.cardano.yano.runtime.tx.diffusion.TxDiffusionStats;
 import com.bloxbean.cardano.yano.runtime.utxo.UtxoSubsystem;
 import com.bloxbean.cardano.yano.runtime.utxo.UtxoStoreWriter;
 import com.bloxbean.cardano.yano.runtime.validation.DefaultConsensusListener;
@@ -131,6 +134,7 @@ import java.util.Optional;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
 
@@ -289,12 +293,20 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
         EventsOptions ev = this.runtimeOptions.events();
         this.eventBus = ev.enabled() ? new PropagatingEventBus() : new NoopEventBus();
         this.txSubsystem = new TxSubsystem(eventBus, scheduler, this.runtimeOptions, this::getUtxoState, log);
+        AtomicReference<Supplier<List<PeerStoreEntry>>> peerStoreSupplierRef =
+                new AtomicReference<>(List::of);
         this.serveSubsystem = new ServeSubsystem(
                 serverPort,
                 protocolMagic,
                 chainState,
                 txSubsystem,
                 config.isEnableBlockProducer(),
+                txSubsystem::txDiffusion,
+                resolveBoolean(this.runtimeOptions.globals(), YanoPropertyKeys.Relay.AUTO_DISCOVERY, false),
+                resolveString(this.runtimeOptions.globals(), YanoPropertyKeys.Relay.ADVERTISED_HOST, ""),
+                (int) parseLong(this.runtimeOptions.globals().get(YanoPropertyKeys.Relay.ADVERTISED_PORT), serverPort),
+                resolveBoolean(this.runtimeOptions.globals(), YanoPropertyKeys.Relay.ALLOW_PRIVATE_ADDRESSES, false),
+                () -> peerStoreSupplierRef.get().get(),
                 log);
 
         // Register default consensus listener (accept-all placeholder)
@@ -352,7 +364,9 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 remoteCardanoPort,
                 protocolMagic,
                 log,
-                this.bodyValidator);
+                this.bodyValidator,
+                txSubsystem::txDiffusion);
+        peerStoreSupplierRef.set(this.syncSubsystem::peerStoreEntries);
         this.producerStartupCoordinator = new ProducerStartupCoordinator(producerStartupActions());
         this.devnetRuntime = RuntimeDevnetRuntime.create(
                 this::rollbackDevnet,
@@ -3077,6 +3091,7 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
         PeerSessionStatus peerStatus = currentPeerSessionStatus();
         PeerRecoveryFailureTracker.Snapshot recoveryStatus = syncSubsystem.peerRecoverySnapshot();
         UpstreamStatus upstreamStatus = syncSubsystem.upstreamStatus();
+        TxDiffusionStats txDiffusionStats = txSubsystem.txDiffusionStats();
         RuntimeMaintenanceGate maintenanceGate = chainStorage.maintenanceGate();
         RuntimeMaintenanceGate.Degradation maintenanceDegradation = maintenanceGate.degradation();
 
@@ -3163,11 +3178,35 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 .upstreamTxForwarding(upstreamStatus.txForwarding())
                 .upstreamMultiPeerObservationOnly(upstreamStatus.multiPeerObservationOnly())
                 .upstreamDiscoveryRunning(upstreamStatus.discoveryRunning())
+                .relayAutoDiscovery(serveSubsystem.isRelayAutoDiscoveryEnabled())
+                .relayAdvertisedHost(serveSubsystem.advertisedHost())
+                .relayAdvertisedPort(serveSubsystem.advertisedPort())
                 .upstreamValidationLevel(upstreamStatus.validationLevel())
                 .upstreamValidationAcceptedHeaders(upstreamStatus.validationAcceptedHeaders())
                 .upstreamValidationRejectedHeaders(upstreamStatus.validationRejectedHeaders())
                 .upstreamValidationLastRejectedStage(upstreamStatus.validationLastRejectedStage())
                 .upstreamValidationLastRejectedReason(upstreamStatus.validationLastRejectedReason())
+                .mempoolSize(txSubsystem.mempoolSize())
+                .mempoolBytes(txSubsystem.mempoolBytes())
+                .mempoolMaxTxs(txSubsystem.mempoolMaxTxs())
+                .mempoolMaxBytes(txSubsystem.mempoolMaxBytes())
+                .mempoolTtlSeconds(txSubsystem.mempoolTtlSeconds())
+                .mempoolAccepting(txSubsystem.isAccepting())
+                .mempoolValidationAvailable(txSubsystem.transactionValidationService() != null)
+                .mempoolEvaluationAvailable(txSubsystem.isTransactionEvaluationAvailable())
+                .txDiffusionMode(txSubsystem.txDiffusionMode())
+                .txDiffusionEnabled(txSubsystem.txDiffusionEnabled())
+                .txDiffusionPeerCount(txDiffusionStats.peerCount())
+                .txDiffusionAcceptedMempoolEvents(txDiffusionStats.acceptedMempoolEvents())
+                .txDiffusionInboundAccepted(txDiffusionStats.inboundAccepted())
+                .txDiffusionInboundRejected(txDiffusionStats.inboundRejected())
+                .txDiffusionInboundIgnored(txDiffusionStats.inboundIgnored())
+                .txDiffusionOutboundForwarded(txDiffusionStats.outboundForwarded())
+                .txDiffusionOutboundSuppressed(txDiffusionStats.outboundSuppressed())
+                .txDiffusionServedTxs(txDiffusionStats.servedTxs())
+                .txDiffusionServedBytes(txDiffusionStats.servedBytes())
+                .txDiffusionInFlightTxs(txDiffusionStats.inFlightTxs())
+                .txDiffusionInFlightBytes(txDiffusionStats.inFlightBytes())
                 .peerState(peerStatus != null ? peerStatus.state().name() : null)
                 .peerRecoveryReason(peerRecoveryReason(peerStatus, recoveryStatus))
                 .peerRecoveryFailures(recoveryStatus.consecutiveFailures())
@@ -3340,5 +3379,14 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
             try { return Boolean.parseBoolean(String.valueOf(val)); } catch (Exception ignored) {}
         }
         return def;
+    }
+
+    private static String resolveString(Map<String, Object> globals, String key, String def) {
+        Object val = globals != null ? globals.get(key) : null;
+        if (val == null) {
+            return def;
+        }
+        String str = String.valueOf(val).trim();
+        return str.isEmpty() ? def : str;
     }
 }

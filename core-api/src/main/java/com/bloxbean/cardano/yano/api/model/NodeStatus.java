@@ -163,6 +163,21 @@ public class NodeStatus {
     private final Boolean upstreamDiscoveryRunning;
 
     /**
+     * Whether relay-side peer-sharing advertisement is enabled.
+     */
+    private final Boolean relayAutoDiscovery;
+
+    /**
+     * Host advertised through relay peer sharing, if configured.
+     */
+    private final String relayAdvertisedHost;
+
+    /**
+     * Port advertised through relay peer sharing.
+     */
+    private final Integer relayAdvertisedPort;
+
+    /**
      * Configured upstream header validation level.
      */
     private final String upstreamValidationLevel;
@@ -186,6 +201,111 @@ public class NodeStatus {
      * Last upstream header validation rejection reason.
      */
     private final String upstreamValidationLastRejectedReason;
+
+    /**
+     * Current number of transactions in the local mempool.
+     */
+    private final Integer mempoolSize;
+
+    /**
+     * Current total transaction bytes retained by the local mempool.
+     */
+    private final Long mempoolBytes;
+
+    /**
+     * Configured maximum transaction count for the local mempool.
+     */
+    private final Integer mempoolMaxTxs;
+
+    /**
+     * Configured maximum transaction bytes for the local mempool.
+     */
+    private final Long mempoolMaxBytes;
+
+    /**
+     * Configured transaction TTL in seconds for the local mempool.
+     */
+    private final Long mempoolTtlSeconds;
+
+    /**
+     * Whether transaction admission is currently accepting new transactions.
+     */
+    private final Boolean mempoolAccepting;
+
+    /**
+     * Whether transaction validation services are currently available.
+     */
+    private final Boolean mempoolValidationAvailable;
+
+    /**
+     * Whether transaction evaluation services are currently available.
+     */
+    private final Boolean mempoolEvaluationAvailable;
+
+    /**
+     * Configured transaction diffusion mode.
+     */
+    private final String txDiffusionMode;
+
+    /**
+     * Whether transaction diffusion mode is enabled beyond disabled mode.
+     */
+    private final Boolean txDiffusionEnabled;
+
+    /**
+     * Number of peers currently tracked by tx diffusion state.
+     */
+    private final Integer txDiffusionPeerCount;
+
+    /**
+     * Count of accepted mempool events observed by tx diffusion.
+     */
+    private final Long txDiffusionAcceptedMempoolEvents;
+
+    /**
+     * Count of inbound diffused transactions accepted into the mempool.
+     */
+    private final Long txDiffusionInboundAccepted;
+
+    /**
+     * Count of inbound diffused transactions rejected by validation or policy.
+     */
+    private final Long txDiffusionInboundRejected;
+
+    /**
+     * Count of inbound diffused transactions ignored as duplicate, unplanned, or disabled.
+     */
+    private final Long txDiffusionInboundIgnored;
+
+    /**
+     * Count of local transactions forwarded to tx-submission peers.
+     */
+    private final Long txDiffusionOutboundForwarded;
+
+    /**
+     * Count of local transaction forwards suppressed by per-peer state or policy.
+     */
+    private final Long txDiffusionOutboundSuppressed;
+
+    /**
+     * Count of mempool transaction bodies served from diffusion state.
+     */
+    private final Long txDiffusionServedTxs;
+
+    /**
+     * Bytes of mempool transaction bodies served from diffusion state.
+     */
+    private final Long txDiffusionServedBytes;
+
+    /**
+     * Number of inbound transaction bodies currently requested from peers.
+     */
+    private final Long txDiffusionInFlightTxs;
+
+    /**
+     * Bytes of inbound transaction bodies currently requested from peers.
+     */
+    private final Long txDiffusionInFlightBytes;
 
     /**
      * Current upstream peer session state.

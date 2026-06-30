@@ -91,6 +91,34 @@ class YanoProducerTest {
         assertEquals(123L, upstream.getSelection().getRollbackWindowSlots());
     }
 
+    @Test
+    void txDiffusionDisabledOverridesLegacyUpstreamForwarding() {
+        var producer = new YanoProducer(Thread.currentThread().getContextClassLoader());
+        producer.appConfig = new PresentConfig(Map.of(
+                YanoPropertyKeys.Upstream.MODE, "trusted-single",
+                YanoPropertyKeys.Upstream.TX_FORWARDING, "active-selected",
+                YanoPropertyKeys.Tx.DIFFUSION_MODE, "disabled"));
+
+        var upstream = producer.parseUpstreamConfig();
+
+        assertNotNull(upstream);
+        assertEquals("disabled", upstream.getTx().normalizedForwarding());
+    }
+
+    @Test
+    void localSubmitOnlyModeKeepsLegacyTrustedHotForwardingTarget() {
+        var producer = new YanoProducer(Thread.currentThread().getContextClassLoader());
+        producer.appConfig = new PresentConfig(Map.of(
+                YanoPropertyKeys.Upstream.MODE, "p2p-relay",
+                YanoPropertyKeys.Upstream.TX_FORWARDING, "all-hot-trusted",
+                YanoPropertyKeys.Tx.DIFFUSION_MODE, "local-submit-only"));
+
+        var upstream = producer.parseUpstreamConfig();
+
+        assertNotNull(upstream);
+        assertEquals("all-hot-trusted", upstream.getTx().normalizedForwarding());
+    }
+
     private record PresentConfig(Map<String, String> values) implements Config {
         @Override
         public <T> T getValue(String propertyName, Class<T> propertyType) {

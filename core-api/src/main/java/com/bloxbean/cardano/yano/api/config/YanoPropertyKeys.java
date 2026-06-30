@@ -97,6 +97,19 @@ public final class YanoPropertyKeys {
     }
 
     /**
+     * Relay behavior exposed by the node-to-node server.
+     */
+    public static final class Relay {
+        public static final String AUTO_DISCOVERY = "yano.relay.auto-discovery";
+        public static final String ADVERTISED_HOST = "yano.relay.advertised-host";
+        public static final String ADVERTISED_PORT = "yano.relay.advertised-port";
+        public static final String ALLOW_PRIVATE_ADDRESSES = "yano.relay.allow-private-addresses";
+
+        private Relay() {
+        }
+    }
+
+    /**
      * Chain-state storage backend settings.
      */
     public static final class Storage {
@@ -190,6 +203,26 @@ public final class YanoPropertyKeys {
         public static final String SUPPLEMENTARY_RULES_ENABLED = "yano.validation.supplementary-rules-enabled";
 
         private Validation() {
+        }
+    }
+
+    /**
+     * Transaction mempool and transaction diffusion settings.
+     */
+    public static final class Tx {
+        public static final String MEMPOOL_MAX_TXS = "yano.tx.mempool.max-txs";
+        public static final String MEMPOOL_MAX_BYTES = "yano.tx.mempool.max-bytes";
+        public static final String MEMPOOL_TTL_SECONDS = "yano.tx.mempool.ttl-seconds";
+        public static final String DIFFUSION_ENABLED = "yano.tx.diffusion.enabled";
+        public static final String DIFFUSION_MODE = "yano.tx.diffusion.mode";
+        public static final String DIFFUSION_MAX_IN_FLIGHT_TXS_PER_PEER =
+                "yano.tx.diffusion.limits.max-in-flight-txs-per-peer";
+        public static final String DIFFUSION_MAX_IN_FLIGHT_BYTES_PER_PEER =
+                "yano.tx.diffusion.limits.max-in-flight-bytes-per-peer";
+        public static final String DIFFUSION_PEER_COOLDOWN_MS =
+                "yano.tx.diffusion.limits.peer-cooldown-ms";
+
+        private Tx() {
         }
     }
 

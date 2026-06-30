@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.runtime.server;
 
 import com.bloxbean.cardano.yaci.core.network.server.NodeServer;
+import com.bloxbean.cardano.yaci.core.protocol.peersharing.PeerSharingServerAgent;
 import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Point;
 import com.bloxbean.cardano.yaci.core.protocol.handshake.util.N2NVersionTableConstant;
 import com.bloxbean.cardano.yaci.core.protocol.txsubmission.TxSubmissionConfig;
@@ -10,12 +11,16 @@ import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.runtime.handlers.YaciTxSubmissionHandler;
 import com.bloxbean.cardano.yano.runtime.kernel.Subsystem;
 import com.bloxbean.cardano.yano.runtime.kernel.SubsystemHealth;
+import com.bloxbean.cardano.yano.runtime.sync.multipeer.PeerStoreEntry;
 import com.bloxbean.cardano.yano.runtime.tx.TransactionAdmission;
+import com.bloxbean.cardano.yano.runtime.tx.diffusion.TxDiffusion;
 import org.slf4j.Logger;
 
 import java.time.Duration;
+import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Supplier;
 
 /**
  * Owns the N2N server lifecycle and transaction-submission handler.
@@ -26,6 +31,12 @@ public final class ServeSubsystem implements Subsystem {
     private final ChainState chainState;
     private final TransactionAdmission transactionAdmission;
     private final boolean blockProducerMode;
+    private final Supplier<TxDiffusion> txDiffusionSupplier;
+    private final boolean relayAutoDiscovery;
+    private final String advertisedHost;
+    private final int advertisedPort;
+    private final boolean allowPrivateRelayAddresses;
+    private final Supplier<List<PeerStoreEntry>> peerStoreSupplier;
     private final Logger log;
     private final AtomicBoolean running = new AtomicBoolean(false);
 
@@ -39,11 +50,43 @@ public final class ServeSubsystem implements Subsystem {
                           TransactionAdmission transactionAdmission,
                           boolean blockProducerMode,
                           Logger log) {
+        this(serverPort, protocolMagic, chainState, transactionAdmission, blockProducerMode, null, log);
+    }
+
+    public ServeSubsystem(int serverPort,
+                          long protocolMagic,
+                          ChainState chainState,
+                          TransactionAdmission transactionAdmission,
+                          boolean blockProducerMode,
+                          Supplier<TxDiffusion> txDiffusionSupplier,
+                          Logger log) {
+        this(serverPort, protocolMagic, chainState, transactionAdmission, blockProducerMode,
+                txDiffusionSupplier, false, null, 0, false, null, log);
+    }
+
+    public ServeSubsystem(int serverPort,
+                          long protocolMagic,
+                          ChainState chainState,
+                          TransactionAdmission transactionAdmission,
+                          boolean blockProducerMode,
+                          Supplier<TxDiffusion> txDiffusionSupplier,
+                          boolean relayAutoDiscovery,
+                          String advertisedHost,
+                          int advertisedPort,
+                          boolean allowPrivateRelayAddresses,
+                          Supplier<List<PeerStoreEntry>> peerStoreSupplier,
+                          Logger log) {
         this.serverPort = serverPort;
         this.protocolMagic = protocolMagic;
         this.chainState = Objects.requireNonNull(chainState, "chainState");
         this.transactionAdmission = Objects.requireNonNull(transactionAdmission, "transactionAdmission");
         this.blockProducerMode = blockProducerMode;
+        this.txDiffusionSupplier = txDiffusionSupplier;
+        this.relayAutoDiscovery = relayAutoDiscovery;
+        this.advertisedHost = advertisedHost;
+        this.advertisedPort = advertisedPort > 0 ? advertisedPort : serverPort;
+        this.allowPrivateRelayAddresses = allowPrivateRelayAddresses;
+        this.peerStoreSupplier = peerStoreSupplier != null ? peerStoreSupplier : List::of;
         this.log = Objects.requireNonNull(log, "log");
     }
 
@@ -67,17 +110,29 @@ public final class ServeSubsystem implements Subsystem {
             log.info("Protocol magic: {}", protocolMagic);
             logStartTip();
 
-            txSubmissionHandler = new YaciTxSubmissionHandler(transactionAdmission, blockProducerMode);
+            TxDiffusion txDiffusion = txDiffusionSupplier != null ? txDiffusionSupplier.get() : null;
+            txSubmissionHandler = new YaciTxSubmissionHandler(transactionAdmission, blockProducerMode, txDiffusion);
             TxSubmissionConfig txSubmissionConfig = TxSubmissionConfig.builder()
                     .batchSize(10)
                     .useBlockingMode(true)
                     .build();
 
+            RelayPeerSharingProvider peerSharingProvider = new RelayPeerSharingProvider(
+                    relayAutoDiscovery,
+                    advertisedHost,
+                    advertisedPort,
+                    allowPrivateRelayAddresses,
+                    peerStoreSupplier,
+                    log);
+            int peerSharing = relayAutoDiscovery ? 1 : 0;
             NodeServer server = new NodeServer(serverPort,
-                    N2NVersionTableConstant.v11AndAbove(protocolMagic, false, 0, false),
+                    N2NVersionTableConstant.v11AndAbove(protocolMagic, false, peerSharing, false),
                     chainState,
                     txSubmissionHandler,
-                    txSubmissionConfig);
+                    txSubmissionConfig,
+                    relayAutoDiscovery
+                            ? List.of(() -> new PeerSharingServerAgent(peerSharingProvider::peers))
+                            : List.of());
             nodeServer = server;
 
             Thread thread = new Thread(() -> {
@@ -114,6 +169,11 @@ public final class ServeSubsystem implements Subsystem {
 
             log.info("NodeServer started successfully on port {}", serverPort);
             log.info("Server is ready to accept connections from Cardano nodes");
+            if (relayAutoDiscovery) {
+                log.info("Relay peer-sharing enabled (advertised endpoint: {}:{})",
+                        advertisedHost != null && !advertisedHost.isBlank() ? advertisedHost : "<none>",
+                        advertisedPort);
+            }
         } catch (Exception e) {
             running.set(false);
             nodeServer = null;
@@ -172,6 +232,18 @@ public final class ServeSubsystem implements Subsystem {
 
     public boolean isRunning() {
         return running.get();
+    }
+
+    public boolean isRelayAutoDiscoveryEnabled() {
+        return relayAutoDiscovery;
+    }
+
+    public String advertisedHost() {
+        return advertisedHost;
+    }
+
+    public int advertisedPort() {
+        return advertisedPort;
     }
 
     public NodeServer server() {

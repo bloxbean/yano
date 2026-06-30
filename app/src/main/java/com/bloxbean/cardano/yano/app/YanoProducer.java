@@ -61,6 +61,7 @@ import java.util.HashMap;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 
 /**
@@ -111,6 +112,18 @@ public class YanoProducer {
 
     @ConfigProperty(name = YanoPropertyKeys.Server.ENABLED, defaultValue = "true")
     boolean serverEnabled;
+
+    @ConfigProperty(name = YanoPropertyKeys.Relay.AUTO_DISCOVERY, defaultValue = "false")
+    boolean relayAutoDiscovery;
+
+    @ConfigProperty(name = YanoPropertyKeys.Relay.ADVERTISED_HOST)
+    Optional<String> relayAdvertisedHost;
+
+    @ConfigProperty(name = YanoPropertyKeys.Relay.ADVERTISED_PORT, defaultValue = "0")
+    int relayAdvertisedPort;
+
+    @ConfigProperty(name = YanoPropertyKeys.Relay.ALLOW_PRIVATE_ADDRESSES, defaultValue = "false")
+    boolean relayAllowPrivateAddresses;
 
     @ConfigProperty(name = YanoPropertyKeys.Storage.ROCKSDB, defaultValue = "true")
     boolean useRocksDB;
@@ -168,6 +181,30 @@ public class YanoProducer {
     int metricsSampleRocksDbSeconds;
     @ConfigProperty(name = YanoPropertyKeys.Validation.DEFAULT_VALIDATOR_ENABLED, defaultValue = "true")
     boolean defaultValidatorEnabled;
+
+    @ConfigProperty(name = YanoPropertyKeys.Tx.MEMPOOL_MAX_TXS, defaultValue = "10000")
+    int txMempoolMaxTxs;
+
+    @ConfigProperty(name = YanoPropertyKeys.Tx.MEMPOOL_MAX_BYTES, defaultValue = "134217728")
+    long txMempoolMaxBytes;
+
+    @ConfigProperty(name = YanoPropertyKeys.Tx.MEMPOOL_TTL_SECONDS, defaultValue = "10800")
+    long txMempoolTtlSeconds;
+
+    @ConfigProperty(name = YanoPropertyKeys.Tx.DIFFUSION_ENABLED, defaultValue = "true")
+    boolean txDiffusionEnabled = true;
+
+    @ConfigProperty(name = YanoPropertyKeys.Tx.DIFFUSION_MODE)
+    java.util.Optional<String> txDiffusionMode = java.util.Optional.empty();
+
+    @ConfigProperty(name = YanoPropertyKeys.Tx.DIFFUSION_MAX_IN_FLIGHT_TXS_PER_PEER, defaultValue = "100")
+    int txDiffusionMaxInFlightTxsPerPeer;
+
+    @ConfigProperty(name = YanoPropertyKeys.Tx.DIFFUSION_MAX_IN_FLIGHT_BYTES_PER_PEER, defaultValue = "1048576")
+    long txDiffusionMaxInFlightBytesPerPeer;
+
+    @ConfigProperty(name = YanoPropertyKeys.Tx.DIFFUSION_PEER_COOLDOWN_MS, defaultValue = "60000")
+    long txDiffusionPeerCooldownMs;
 
     // CCL "supplementary rules" (GOVCERT/governance/delegatee) layered on top of Scalus validation.
     // Disabled by default — they don't yet account for intra-tx state changes within a single block.
@@ -496,6 +533,22 @@ public class YanoProducer {
         globals.put(YanoPropertyKeys.Metrics.ROCKSDB_SAMPLE_SECONDS, metricsSampleRocksDbSeconds);
         globals.put(YanoPropertyKeys.Validation.DEFAULT_VALIDATOR_ENABLED, defaultValidatorEnabled);
         globals.put(YanoPropertyKeys.Validation.SUPPLEMENTARY_RULES_ENABLED, supplementaryRulesEnabled);
+        globals.put(YanoPropertyKeys.Tx.MEMPOOL_MAX_TXS, txMempoolMaxTxs);
+        globals.put(YanoPropertyKeys.Tx.MEMPOOL_MAX_BYTES, txMempoolMaxBytes);
+        globals.put(YanoPropertyKeys.Tx.MEMPOOL_TTL_SECONDS, txMempoolTtlSeconds);
+        globals.put(YanoPropertyKeys.Tx.DIFFUSION_ENABLED, txDiffusionEnabled);
+        txDiffusionMode.ifPresent(mode -> globals.put(YanoPropertyKeys.Tx.DIFFUSION_MODE, mode));
+        globals.put(YanoPropertyKeys.Tx.DIFFUSION_MAX_IN_FLIGHT_TXS_PER_PEER,
+                txDiffusionMaxInFlightTxsPerPeer);
+        globals.put(YanoPropertyKeys.Tx.DIFFUSION_MAX_IN_FLIGHT_BYTES_PER_PEER,
+                txDiffusionMaxInFlightBytesPerPeer);
+        globals.put(YanoPropertyKeys.Tx.DIFFUSION_PEER_COOLDOWN_MS, txDiffusionPeerCooldownMs);
+        globals.put(YanoPropertyKeys.Relay.AUTO_DISCOVERY, relayAutoDiscovery);
+        globals.put(YanoPropertyKeys.Relay.ADVERTISED_HOST,
+                relayAdvertisedHost.map(String::trim).filter(host -> !host.isBlank()).orElse("auto"));
+        globals.put(YanoPropertyKeys.Relay.ADVERTISED_PORT,
+                relayAdvertisedPort > 0 ? relayAdvertisedPort : serverPort);
+        globals.put(YanoPropertyKeys.Relay.ALLOW_PRIVATE_ADDRESSES, relayAllowPrivateAddresses);
         globals.put(YanoPropertyKeys.BlockProducer.TX_EVALUATION, txEvaluationEnabled);
         dnsCacheTtl.ifPresent(value -> globals.put(DnsCachePolicy.DNS_CACHE_TTL_KEY, value));
         dnsCacheNegativeTtl.ifPresent(value -> globals.put(DnsCachePolicy.DNS_CACHE_NEGATIVE_TTL_KEY, value));
@@ -682,7 +735,8 @@ public class YanoProducer {
             return null;
         }
         UpstreamPreset upstreamMode = UpstreamPreset.fromConfig(mode.orElse("trusted-single"));
-        boolean discoveryEnabled = configBoolean(YanoPropertyKeys.Upstream.DISCOVERY_ENABLED, false);
+        boolean discoveryEnabled = relayAutoDiscovery
+                || configBoolean(YanoPropertyKeys.Upstream.DISCOVERY_ENABLED, false);
         List<String> peerSnapshotUrls = configStringList(YanoPropertyKeys.Upstream.DISCOVERY_PEER_SNAPSHOT_URLS);
         if (peerSnapshotUrls.isEmpty()) {
             peerSnapshotUrls = defaultPeerSnapshotUrls(upstreamMode, discoveryEnabled);
@@ -715,9 +769,9 @@ public class YanoProducer {
                         .cooldownMs(configLong(YanoPropertyKeys.Upstream.FAILOVER_COOLDOWN_MS, 30_000L))
                         .maxFailuresBeforeCooldown(configInt(
                                 YanoPropertyKeys.Upstream.FAILOVER_MAX_FAILURES_BEFORE_COOLDOWN, 3))
-                        .build())
+                .build())
                 .tx(UpstreamTxConfig.builder()
-                        .forwarding(configString(YanoPropertyKeys.Upstream.TX_FORWARDING, "active-selected"))
+                        .forwarding(effectiveUpstreamTxForwarding())
                         .build())
                 .governor(UpstreamGovernorConfig.builder()
                         .enabled(configBoolean(YanoPropertyKeys.Upstream.GOVERNOR_ENABLED, false))
@@ -729,7 +783,8 @@ public class YanoProducer {
                         .build())
                 .discovery(UpstreamDiscoveryConfig.builder()
                         .enabled(discoveryEnabled)
-                        .peerSharing(configBoolean(YanoPropertyKeys.Upstream.DISCOVERY_PEER_SHARING, false))
+                        .peerSharing(relayAutoDiscovery
+                                || configBoolean(YanoPropertyKeys.Upstream.DISCOVERY_PEER_SHARING, false))
                         .seeds(configStringList(YanoPropertyKeys.Upstream.DISCOVERY_SEEDS))
                         .peerSnapshotUrls(peerSnapshotUrls)
                         .peerSnapshotFiles(configStringList(YanoPropertyKeys.Upstream.DISCOVERY_PEER_SNAPSHOT_FILES))
@@ -741,6 +796,37 @@ public class YanoProducer {
                         .denylist(configStringList(YanoPropertyKeys.Upstream.DISCOVERY_DENYLIST))
                         .build())
                 .build();
+    }
+
+    private String effectiveUpstreamTxForwarding() {
+        String legacyForwarding = configString(YanoPropertyKeys.Upstream.TX_FORWARDING, "active-selected");
+        java.util.Optional<String> configuredDiffusionMode = configuredTxDiffusionMode();
+        if (configuredDiffusionMode.isEmpty()) {
+            return txDiffusionEnabled ? "all-hot-trusted" : "disabled";
+        }
+
+        String mode = configuredDiffusionMode.get().trim().toLowerCase(java.util.Locale.ROOT);
+        return switch (mode) {
+            case "disabled" -> "disabled";
+            case "local-submit-only" -> {
+                String normalizedLegacy = legacyForwarding != null
+                        ? legacyForwarding.trim().toLowerCase(java.util.Locale.ROOT)
+                        : "active-selected";
+                yield "all-hot-trusted".equals(normalizedLegacy) ? "all-hot-trusted" : "active-selected";
+            }
+            case "trusted-hot", "all-hot" -> "all-hot-trusted";
+            default -> "disabled";
+        };
+    }
+
+    private java.util.Optional<String> configuredTxDiffusionMode() {
+        if (txDiffusionMode != null && txDiffusionMode.isPresent()) {
+            return txDiffusionMode;
+        }
+        if (appConfig != null) {
+            return appConfig.getOptionalValue(YanoPropertyKeys.Tx.DIFFUSION_MODE, String.class);
+        }
+        return java.util.Optional.empty();
     }
 
     private boolean hasExplicitUpstreamProperty() {

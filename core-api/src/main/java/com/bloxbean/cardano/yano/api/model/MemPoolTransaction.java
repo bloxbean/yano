@@ -7,4 +7,8 @@ public record MemPoolTransaction(long seqId, byte[] txHash, byte[] txBytes, TxBo
     public MemPoolTransaction(long seqId, byte[] txHash, byte[] txBytes, TxBodyType txBodyType) {
         this(seqId, txHash, txBytes, txBodyType, System.currentTimeMillis());
     }
+
+    public int size() {
+        return txBytes != null ? txBytes.length : 0;
+    }
 }

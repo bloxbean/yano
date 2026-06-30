@@ -57,6 +57,29 @@ yano:
       level: none
       # Body validation presets are scaffolded for future validators. Supported now: none.
       body-level: none
+  relay:
+    # Enables relay-style peer-sharing support on the N2N server. Keep disabled
+    # unless the advertised endpoint is intentionally reachable by other nodes.
+    auto-discovery: false
+    # "auto" resolves a local non-loopback interface address. Set an
+    # explicit public DNS/IP for production relay deployments.
+    advertised-host: auto
+    # 0 means use yano.server.port.
+    advertised-port: 0
+    allow-private-addresses: false
+  tx:
+    mempool:
+      max-txs: 10000
+      max-bytes: 134217728
+      ttl-seconds: 10800
+    diffusion:
+      # Simple relay MVP switch. true maps to all-hot transaction diffusion.
+      # Legacy yano.tx.diffusion.mode remains accepted for compatibility.
+      enabled: true
+      limits:
+        max-in-flight-txs-per-peer: 100
+        max-in-flight-bytes-per-peer: 1048576
+        peer-cooldown-ms: 60000
   dns:
     cache:
       # Positive DNS cache TTL in seconds. Defaults to 60 when omitted.

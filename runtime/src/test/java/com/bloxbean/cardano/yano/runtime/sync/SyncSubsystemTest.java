@@ -25,7 +25,11 @@ import com.bloxbean.cardano.yano.runtime.peer.PeerEndpoint;
 import com.bloxbean.cardano.yano.runtime.peer.PeerRecoveryReason;
 import com.bloxbean.cardano.yano.runtime.server.ServeSubsystem;
 import com.bloxbean.cardano.yano.runtime.storage.ChainStorageSubsystem;
+import com.bloxbean.cardano.yano.runtime.chain.DefaultMemPool;
 import com.bloxbean.cardano.yano.runtime.tx.TransactionAdmission;
+import com.bloxbean.cardano.yano.runtime.tx.diffusion.DefaultTxDiffusion;
+import com.bloxbean.cardano.yano.runtime.tx.diffusion.TxDiffusion;
+import com.bloxbean.cardano.yano.runtime.tx.diffusion.TxDiffusionMode;
 import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
 
@@ -672,6 +676,42 @@ class SyncSubsystemTest {
     }
 
     @Test
+    void txDiffusionSuppressesRepeatedLocalSubmitForwardToSamePeer() {
+        YanoConfig config = clientConfig();
+        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+        List<String> headerSyncStarts = Collections.synchronizedList(new ArrayList<>());
+        List<String> txForwards = Collections.synchronizedList(new ArrayList<>());
+        DefaultTxDiffusion diffusion = new DefaultTxDiffusion(
+                TxDiffusionMode.LOCAL_SUBMIT_ONLY,
+                new DefaultMemPool(),
+                100,
+                1_048_576,
+                60_000,
+                LoggerFactory.getLogger(SyncSubsystemTest.class));
+        TestRuntime runtime = new TestRuntime(config, scheduler, () -> true,
+                (endpoint, point) -> new RecordingPeerClient(endpoint, point, headerSyncStarts, txForwards),
+                null,
+                () -> diffusion);
+
+        try {
+            SyncSubsystem sync = runtime.sync(config.getRemoteHost());
+
+            sync.startClientSync();
+            waitForAttempt(headerSyncStarts, "localhost:3001");
+            sync.submitTxBytes("tx-1", new byte[] {1, 2, 3}, TxBodyType.ALONZO);
+            sync.submitTxBytes("tx-1", new byte[] {1, 2, 3}, TxBodyType.ALONZO);
+
+            waitForAttempt(txForwards, "localhost:3001");
+            assertThat(txForwards).containsExactly("localhost:3001");
+            assertThat(diffusion.stats().outboundForwarded()).isEqualTo(1L);
+            assertThat(diffusion.stats().outboundSuppressed()).isEqualTo(1L);
+        } finally {
+            runtime.close();
+            scheduler.shutdownNow();
+        }
+    }
+
+    @Test
     void staticMultiFallsBackWhenPreferredObserverFailsToStart() {
         YanoConfig config = clientConfig().toBuilder()
                 .remoteHost(null)
@@ -815,6 +855,7 @@ class SyncSubsystemTest {
         private final java.util.function.BooleanSupplier running;
         private final com.bloxbean.cardano.yano.runtime.peer.PeerClientFactory peerClientFactory;
         private final Supplier<EpochParamProvider> epochParamProviderSupplier;
+        private final Supplier<TxDiffusion> txDiffusionSupplier;
         private Owned owned;
 
         private TestRuntime(YanoConfig config,
@@ -829,11 +870,21 @@ class SyncSubsystemTest {
                             java.util.function.BooleanSupplier running,
                             com.bloxbean.cardano.yano.runtime.peer.PeerClientFactory peerClientFactory,
                             Supplier<EpochParamProvider> epochParamProviderSupplier) {
+            this(config, scheduler, running, peerClientFactory, epochParamProviderSupplier, null);
+        }
+
+        private TestRuntime(YanoConfig config,
+                            ScheduledExecutorService scheduler,
+                            java.util.function.BooleanSupplier running,
+                            com.bloxbean.cardano.yano.runtime.peer.PeerClientFactory peerClientFactory,
+                            Supplier<EpochParamProvider> epochParamProviderSupplier,
+                            Supplier<TxDiffusion> txDiffusionSupplier) {
             this.config = config;
             this.scheduler = scheduler;
             this.running = running;
             this.peerClientFactory = peerClientFactory;
             this.epochParamProviderSupplier = epochParamProviderSupplier;
+            this.txDiffusionSupplier = txDiffusionSupplier;
         }
 
         private SyncSubsystem sync(String remoteHost) {
@@ -879,7 +930,8 @@ class SyncSubsystemTest {
                     LoggerFactory.getLogger(SyncSubsystemTest.class),
                     peerClientFactory != null ? peerClientFactory
                             : (endpoint, point) -> new com.bloxbean.cardano.yaci.helper.PeerClient(
-                            endpoint.host(), endpoint.port(), endpoint.protocolMagic(), point));
+                            endpoint.host(), endpoint.port(), endpoint.protocolMagic(), point),
+                    txDiffusionSupplier);
             owned = new Owned(sync, ledgerState, serve, chainStorage);
             return sync;
         }
