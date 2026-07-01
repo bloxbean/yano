@@ -49,6 +49,7 @@ class ShelleyHeaderValidatorTest {
         HeaderValidationResult result = validator.validateShelley(fixture.blockHeader(), fixture.wrappedHeaderCbor());
 
         assertThat(result.accepted()).isTrue();
+        assertThat(result.acceptedStages()).containsExactly("structural");
         assertThat(validator.snapshot().acceptedHeaders()).isEqualTo(1);
         assertThat(validator.snapshot().rejectedHeaders()).isZero();
     }
@@ -62,6 +63,7 @@ class ShelleyHeaderValidatorTest {
         HeaderValidationResult result = validator.validateShelley(fixture.blockHeader(), fixture.wrappedHeaderCbor());
 
         assertThat(result.accepted()).isTrue();
+        assertThat(result.acceptedStages()).containsExactly("structural", "kes-signature", "opcert-signature");
         assertThat(validator.snapshot().acceptedHeaders()).isEqualTo(1);
     }
 
@@ -89,6 +91,7 @@ class ShelleyHeaderValidatorTest {
 
         assertThat(result.accepted()).isFalse();
         assertThat(result.stage()).isEqualTo("kes-signature");
+        assertThat(result.acceptedStages()).containsExactly("structural");
     }
 
     @Test
@@ -101,6 +104,7 @@ class ShelleyHeaderValidatorTest {
 
         assertThat(result.accepted()).isFalse();
         assertThat(result.stage()).isEqualTo("opcert-signature");
+        assertThat(result.acceptedStages()).containsExactly("structural", "kes-signature");
     }
 
     private static HeaderFixture validHeader() {

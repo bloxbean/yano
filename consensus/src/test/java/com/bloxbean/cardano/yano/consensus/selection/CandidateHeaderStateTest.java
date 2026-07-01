@@ -46,6 +46,50 @@ class CandidateHeaderStateTest {
         assertThat(store.get("old")).isEmpty();
     }
 
+    @Test
+    void candidateHeaderCarriesValidationEvidenceAndDefensiveVrfOutput() {
+        byte[] vrf = new byte[] {3, 2, 1};
+        var evidence = HeaderValidationEvidence.accepted("header-signature",
+                java.util.List.of("structural", "kes-signature", "opcert-signature"));
+        CandidateHeader header = new CandidateHeader(
+                "peer-a",
+                1000,
+                100,
+                "hash",
+                "prev",
+                false,
+                1,
+                "Babbage",
+                evidence,
+                vrf,
+                true,
+                true);
+
+        vrf[0] = 9;
+        byte[] returned = header.vrfOutput();
+        returned[1] = 9;
+
+        assertThat(header.validationEvidence().producesEvidence()).isTrue();
+        assertThat(header.validationEvidence().includesStage("kes-signature")).isTrue();
+        assertThat(header.era()).isEqualTo("Babbage");
+        assertThat(header.vrfOutput()).containsExactly(3, 2, 1);
+        assertThat(header.bodyValidated()).isTrue();
+    }
+
+    @Test
+    void rejectedValidationEvidenceRecordsStageAndReason() {
+        var evidence = HeaderValidationEvidence.rejected(
+                "structural",
+                java.util.List.of("shape"),
+                "header-hash",
+                "hash mismatch");
+
+        assertThat(evidence.accepted()).isFalse();
+        assertThat(evidence.acceptedStages()).containsExactly("shape");
+        assertThat(evidence.rejectedStage()).isEqualTo("header-hash");
+        assertThat(evidence.rejectionReason()).isEqualTo("hash mismatch");
+    }
+
     private static CandidateHeader candidate(String peerId, long blockNumber, String hash, boolean trusted) {
         return new CandidateHeader(peerId, 1000 + blockNumber, blockNumber, hash, null, trusted, 1);
     }

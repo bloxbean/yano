@@ -44,4 +44,8 @@ public class UpstreamValidationConfig {
                 ? "none"
                 : bodyLevel.trim().toLowerCase(Locale.ROOT);
     }
+
+    public boolean producesHeaderEvidence() {
+        return !"none".equals(normalizedLevel());
+    }
 }

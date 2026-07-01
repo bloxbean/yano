@@ -1,99 +1,88 @@
-# Yano - Override Configuration
-# ------------------------------------
-# Properties here override the defaults bundled in the jar.
-# Quarkus automatically loads this file from the config/ directory.
-
 quarkus:
   http:
-    port: 7070
+    port: 7072
   log:
-    console:
-      format: "%d{yyyy-MM-dd HH:mm:ss,SSS} %-5p [%c{3.}] (%t) %s%e%n"
     file:
       enable: true
-      path: ./yano.log
-      format: "%d{yyyy-MM-dd HH:mm:ss,SSS} %-5p [%c{3.}] (%t) %s%e%n"
+      path: ./logs/yano-preprod-static-multi.log
+    category:
+      "com.bloxbean.cardano.yaci.core.network.Session":
+        level: "OFF"
+      "com.bloxbean.cardano.yano.runtime.sync.validation.HeaderValidationPipeline":
+        level: "DEBUG"
 
 yano:
-  exit-on-epoch-calc-error: false # Auto verify adapot values for all known epochs (for public networks), exit if any mismatch found
-#  rollback-retention-epochs: 20
-#  storage:
-#    path: ./chainstate
-  snapshot-export:
-    enabled: false
-    dir: data
-    stake: false        # large; millions of rows per epoch
-    drep-dist: true
-    adapot: true
-    proposals: true
+  network: preprod
+  auto-sync-start: true
+  client:
+    enabled: true
 
-# =====================================================================
-# Optional Features (uncomment to enable)
-# =====================================================================
+#    remote:
+#      host: preprod-node.world.dev.cardano.org
+#      port: 30000
+#      protocol-magic: 1
 
-# UTXO Storage Filters
-# ---------------------
-# Filter UTXOs before persisting to RocksDB. Only matching outputs are stored.
-# Useful for dApp-specific nodes that only need UTXOs for certain addresses.
-#
-#  filters:
-#    utxo:
-#      enabled: true
-#      addresses:                  # Bech32 addresses to store UTXOs for
-#        - addr_test1wzn5ee2qaqvly3hx7e0nk3vhm240n5muq3plhjcnvx9ppjgf62u6a
-#      payment-credentials:        # Payment credential hashes (28-byte hex)
-#        - 6313d841f3e1d906d5a87ed9104739748a13e50cd23bf103d4883cee
+  server:
+    enabled: true
+    port: 13338
 
-# Block Body Pruning
-# ---------------------
-# Prune old block bodies beyond a retention window to reduce DB size.
-# Headers and indices are preserved so the node can still serve as a relay.
-# Set block-body-prune-depth to 0 to disable (default).
-#
-#  chain:
-#    block-body-prune-depth: 2160       # Blocks to retain (2160 ~ Cardano finality)
-#    block-prune-batch-size: 500000     # Entries per prune pass
-#    block-prune-interval-seconds: 300
+  relay:
+    auto-discovery: true
+    advertised-host: ""
+    advertised-port: 13338
+    allow-private-addresses: true
+    connection:
+      max-inbound-connections: 100
+      max-connections-per-ip: 5
+      source-port-reuse: true
 
-# Script Evaluator
-# ---------------------
-# Choose the script evaluator for the /utils/txs/evaluate endpoint.
-# Options: scalus (default, native image via yano.sh), aiken (JVM/jar)
-#
-#  block-producer:
-#    script-evaluator: scalus
+  storage:
+    rocksdb: true
+    path: ./chainstate-preprod-static-multi
 
-# Bootstrap State Mode
-# ---------------------
-# Skip full chain sync and start from a specific block.
-# Useful for lightweight relay mode (e.g., dApp transaction submission).
-#
-#  bootstrap:
-#    enabled: false
-#    block-number: -1            # Block number (-1 = latest - 100)
-#    addresses:                  # Addresses to fetch UTXOs for
-#      - addr_test1qz...
-#    utxos:                      # Specific UTXOs (format: txHash#outputIndex)
-#      - "abc123...def#0"
-#    provider: blockfrost        # blockfrost or koios
-#    blockfrost:
-#      api-key: ""
-#      base-url: ""              # Auto-detected from network if blank
-#    koios:
-#      base-url: ""              # Auto-detected from network if blank
-
-# Block Producer Mode (Devnet)
-# ---------------------
-# Enable block production for local devnet testing.
-# Requires VRF, KES keys and operational certificate.
-# Use Quarkus profile: -Dquarkus.profile=devnet
-#
-#  block-producer:
-#    enabled: true
-#    block-time-millis: 0
-#    lazy: false
-#    genesis-timestamp: 0
-#    slot-length-millis: 0
-#    vrf-skey-file: config/network/devnet/vrf.skey
-#    kes-skey-file: config/network/devnet/kes.skey
-#    opcert-file: config/network/devnet/opcert.cert
+  upstream:
+    mode: p2p-relay
+    peers:
+      - id: iog-preprod
+        host: preprod-node1.world.dev.cardano.org
+        port: 30000
+        trust: trusted
+        priority: 0
+    sync:
+      fan-in-start: always
+    discovery:
+      enabled: true
+      peer-sharing: true
+      seeds: []
+      topology-file: ""
+      peer-snapshot-urls:
+        - https://book.play.dev.cardano.org/environments/preprod/peer-snapshot.json
+      peer-snapshot-limit: 32
+      ledger-peers: false
+      use-ledger-after-slot: -1
+      allow-private-addresses: false
+    selection:
+      policy: trusted-or-quorum-within-rollback-window
+      quorum: 2
+      tie-break: deterministic
+    validation:
+      level: header-signature
+      body-level: none
+    governor:
+      enabled: true
+      targets:
+        cold: 150
+        warm: 8
+        hot: 3
+      max-concurrent-dials: 4
+  tx:
+    mempool:
+      max-txs: 10000
+      max-bytes: 134217728
+      ttl-seconds: 10800
+    diffusion:
+      enabled: true
+      limits:
+        max-in-flight-txs-per-peer: 100
+        max-in-flight-bytes-per-peer: 1048576
+        peer-cooldown-ms: 60000

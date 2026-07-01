@@ -19,6 +19,9 @@ import com.bloxbean.cardano.yaci.events.api.SubscriptionHandle;
 import com.bloxbean.cardano.yaci.events.api.SubscriptionOptions;
 import com.bloxbean.cardano.yano.runtime.chain.InMemoryChainState;
 import com.bloxbean.cardano.yano.api.events.HeaderAppliedEvent;
+import com.bloxbean.cardano.yano.runtime.sync.validation.HeaderValidationResult;
+import com.bloxbean.cardano.yano.runtime.sync.validation.HeaderValidationSnapshot;
+import com.bloxbean.cardano.yano.runtime.sync.validation.HeaderValidator;
 import com.bloxbean.cardano.yaci.core.storage.ChainTip;
 import com.bloxbean.cardano.yaci.helper.PeerClient;
 import org.junit.jupiter.api.BeforeEach;
@@ -27,6 +30,7 @@ import org.junit.jupiter.api.Test;
 import java.math.BigInteger;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
@@ -245,6 +249,42 @@ class HeaderSyncManagerTest {
         assertEquals(500L, headerTip2.getBlockNumber());
         assertEquals(1, headerSyncManager.getHeadersReceived());
         assertEquals(1, headerSyncManager.getHeaderMetrics().byronEbHeaders);
+    }
+
+    @Test
+    void byronHeadersBypassShelleyHeaderValidator() {
+        AtomicInteger shelleyValidationCalls = new AtomicInteger();
+        HeaderValidator rejectingShelleyValidator = new HeaderValidator() {
+            @Override
+            public HeaderValidationResult validateShelley(BlockHeader blockHeader, byte[] originalHeaderBytes) {
+                shelleyValidationCalls.incrementAndGet();
+                return HeaderValidationResult.rejected("header-signature", "test", "Byron must not use Shelley validation");
+            }
+
+            @Override
+            public HeaderValidationSnapshot snapshot() {
+                return HeaderValidationSnapshot.none();
+            }
+        };
+        HeaderSyncManager manager = new HeaderSyncManager(
+                peerClient,
+                chainState,
+                50000,
+                new SyncTipContext(),
+                null,
+                null,
+                rejectingShelleyValidator);
+        Tip tip = new Tip(new Point(1000, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), 500L);
+
+        manager.rollforwardByronEra(tip,
+                createMockByronMainBlockHead(1000L, 500L, "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"),
+                new byte[]{1, 2, 3});
+        manager.rollforwardByronEra(tip,
+                createMockByronEbBlockHead(1000L, 500L, "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"),
+                new byte[]{4, 5, 6});
+
+        assertEquals(0, shelleyValidationCalls.get());
+        assertEquals(2, manager.getHeadersReceived());
     }
 
     // ================================================================

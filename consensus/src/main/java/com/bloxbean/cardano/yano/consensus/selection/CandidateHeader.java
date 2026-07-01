@@ -12,8 +12,34 @@ public record CandidateHeader(
         String blockHash,
         String previousHash,
         boolean trusted,
-        long receivedAtMillis
+        long receivedAtMillis,
+        String era,
+        HeaderValidationEvidence validationEvidence,
+        byte[] vrfOutput,
+        boolean bodyAvailable,
+        boolean bodyValidated
 ) {
+    public CandidateHeader(String peerId,
+                           long slot,
+                           long blockNumber,
+                           String blockHash,
+                           String previousHash,
+                           boolean trusted,
+                           long receivedAtMillis) {
+        this(peerId,
+                slot,
+                blockNumber,
+                blockHash,
+                previousHash,
+                trusted,
+                receivedAtMillis,
+                null,
+                HeaderValidationEvidence.none(),
+                null,
+                false,
+                false);
+    }
+
     public CandidateHeader {
         Objects.requireNonNull(peerId, "peerId");
         Objects.requireNonNull(blockHash, "blockHash");
@@ -26,5 +52,16 @@ public record CandidateHeader(
         if (slot < 0 || blockNumber < 0) {
             throw new IllegalArgumentException("slot and blockNumber must be non-negative");
         }
+        era = era == null || era.isBlank() ? null : era.trim();
+        validationEvidence = validationEvidence != null ? validationEvidence : HeaderValidationEvidence.none();
+        vrfOutput = vrfOutput != null ? vrfOutput.clone() : null;
+        if (bodyValidated && !bodyAvailable) {
+            throw new IllegalArgumentException("bodyValidated requires bodyAvailable");
+        }
+    }
+
+    @Override
+    public byte[] vrfOutput() {
+        return vrfOutput != null ? vrfOutput.clone() : null;
     }
 }

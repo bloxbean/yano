@@ -7,6 +7,7 @@ import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Tip;
 import com.bloxbean.cardano.yaci.helper.listener.BlockChainDataListener;
 import com.bloxbean.cardano.yano.consensus.selection.CandidateHeader;
 import com.bloxbean.cardano.yano.consensus.selection.HeaderFanIn;
+import com.bloxbean.cardano.yano.consensus.selection.HeaderValidationEvidence;
 import com.bloxbean.cardano.yano.runtime.sync.validation.HeaderValidationResult;
 import com.bloxbean.cardano.yano.runtime.sync.validation.HeaderValidator;
 import org.slf4j.Logger;
@@ -70,7 +71,12 @@ public final class CandidateHeaderListener implements BlockChainDataListener {
                 body.getBlockHash(),
                 body.getPrevHash(),
                 trusted,
-                System.currentTimeMillis()));
+                System.currentTimeMillis(),
+                "shelley+",
+                evidence(validation),
+                null,
+                false,
+                false));
     }
 
     @Override
@@ -86,7 +92,12 @@ public final class CandidateHeaderListener implements BlockChainDataListener {
                 byronBlockHead.getBlockHash(),
                 byronBlockHead.getPrevBlock(),
                 trusted,
-                System.currentTimeMillis()));
+                System.currentTimeMillis(),
+                "byron",
+                HeaderValidationEvidence.none(),
+                null,
+                false,
+                false));
     }
 
     @Override
@@ -102,7 +113,12 @@ public final class CandidateHeaderListener implements BlockChainDataListener {
                 byronEbHead.getBlockHash(),
                 byronEbHead.getPrevBlock(),
                 trusted,
-                System.currentTimeMillis()));
+                System.currentTimeMillis(),
+                "byron",
+                HeaderValidationEvidence.none(),
+                null,
+                false,
+                false));
     }
 
     @Override
@@ -149,5 +165,19 @@ public final class CandidateHeaderListener implements BlockChainDataListener {
             throw new IllegalArgumentException(name + " must not be blank");
         }
         return value;
+    }
+
+    private static HeaderValidationEvidence evidence(HeaderValidationResult result) {
+        if (result == null) {
+            return HeaderValidationEvidence.none();
+        }
+        if (result.accepted()) {
+            return HeaderValidationEvidence.accepted(result.level(), result.acceptedStages());
+        }
+        return HeaderValidationEvidence.rejected(
+                result.level(),
+                result.acceptedStages(),
+                result.stage(),
+                result.reason());
     }
 }

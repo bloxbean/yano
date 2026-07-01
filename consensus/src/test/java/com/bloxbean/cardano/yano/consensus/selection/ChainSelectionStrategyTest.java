@@ -56,6 +56,56 @@ class ChainSelectionStrategyTest {
     }
 
     @Test
+    void trustedOnlyPolicyDoesNotAdoptUntrustedQuorum() {
+        var strategy = new TrustedOrQuorumCandidateWithinRollbackWindow();
+        CandidateHeader a = candidate("peer-a", 101, "same", false);
+        CandidateHeader b = candidate("peer-b", 101, "same", false);
+
+        ChainSelectionDecision decision = strategy.evaluate(new ChainSelectionContext(
+                100,
+                1000,
+                4320,
+                2,
+                "trusted-only",
+                List.of(a, b)));
+
+        assertThat(decision.action()).isEqualTo(ChainSelectionDecision.Action.OBSERVE);
+    }
+
+    @Test
+    void validatedPolicyAdoptsCandidateWithAcceptedEvidence() {
+        var strategy = new TrustedOrQuorumCandidateWithinRollbackWindow();
+        CandidateHeader candidate = candidateWithEvidence("peer-a", 101, "validated");
+
+        ChainSelectionDecision decision = strategy.evaluate(new ChainSelectionContext(
+                100,
+                1000,
+                4320,
+                2,
+                "validated",
+                List.of(candidate)));
+
+        assertThat(decision.action()).isEqualTo(ChainSelectionDecision.Action.ADOPT);
+        assertThat(decision.reason()).contains("validation");
+    }
+
+    @Test
+    void validatedPolicyDoesNotAdoptCandidateWithoutEvidence() {
+        var strategy = new TrustedOrQuorumCandidateWithinRollbackWindow();
+        CandidateHeader candidate = candidate("peer-a", 101, "unvalidated", false);
+
+        ChainSelectionDecision decision = strategy.evaluate(new ChainSelectionContext(
+                100,
+                1000,
+                4320,
+                2,
+                "validated",
+                List.of(candidate)));
+
+        assertThat(decision.action()).isEqualTo(ChainSelectionDecision.Action.OBSERVE);
+    }
+
+    @Test
     void untrustedLongerCandidateDoesNotBlockTrustedCandidate() {
         var strategy = new TrustedOrQuorumCandidateWithinRollbackWindow();
         CandidateHeader trusted = candidate("trusted", 101, "trusted-hash", true);
@@ -96,5 +146,21 @@ class ChainSelectionStrategyTest {
 
     private static CandidateHeader candidate(String peerId, long blockNumber, String hash, boolean trusted) {
         return new CandidateHeader(peerId, 1000 + blockNumber, blockNumber, hash, null, trusted, 1);
+    }
+
+    private static CandidateHeader candidateWithEvidence(String peerId, long blockNumber, String hash) {
+        return new CandidateHeader(
+                peerId,
+                1000 + blockNumber,
+                blockNumber,
+                hash,
+                null,
+                false,
+                1,
+                "shelley+",
+                HeaderValidationEvidence.accepted("structural", List.of("structural")),
+                null,
+                false,
+                false);
     }
 }

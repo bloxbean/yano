@@ -86,7 +86,7 @@ class UpstreamConfigTest {
     }
 
     @Test
-    void structuralValidatedTrustPolicyFailsFast() {
+    void validatedTrustPolicyWithoutValidationFailsFast() {
         YanoConfig config = YanoConfig.builder()
                 .enableClient(true)
                 .enableServer(false)
@@ -175,7 +175,7 @@ class UpstreamConfigTest {
     }
 
     @Test
-    void headerSignatureValidatedTrustPolicyStillFailsFast() {
+    void headerSignatureValidatedTrustPolicyIsAllowed() {
         YanoConfig config = clientConfigWith(UpstreamConfig.builder()
                 .mode(UpstreamPreset.STATIC_MULTI)
                 .peers(List.of(peer("a", "relay-a", 3001), peer("b", "relay-b", 3002)))
@@ -187,9 +187,23 @@ class UpstreamConfigTest {
                         .build())
                 .build());
 
-        assertThatThrownBy(config::validate)
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("validated trust policy");
+        config.validate();
+    }
+
+    @Test
+    void structuralValidatedTrustPolicyIsAllowed() {
+        YanoConfig config = clientConfigWith(UpstreamConfig.builder()
+                .mode(UpstreamPreset.STATIC_MULTI)
+                .peers(List.of(peer("a", "relay-a", 3001), peer("b", "relay-b", 3002)))
+                .validation(UpstreamValidationConfig.builder()
+                        .level("structural")
+                        .build())
+                .selection(ChainSelectionConfig.builder()
+                        .trustPolicy("validated")
+                        .build())
+                .build());
+
+        config.validate();
     }
 
     @Test

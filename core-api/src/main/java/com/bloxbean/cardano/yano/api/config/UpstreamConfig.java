@@ -109,7 +109,10 @@ public class UpstreamConfig {
                 && validation != null
                 && selection != null
                 && "validated".equalsIgnoreCase(selection.getTrustPolicy())) {
-            throw new IllegalArgumentException("validated trust policy requires consensus-lite or full validation");
+            if (!validation.producesHeaderEvidence()) {
+                throw new IllegalArgumentException(
+                        "validated trust policy requires yano.upstream.validation.level other than none");
+            }
         }
     }
 }

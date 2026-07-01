@@ -1292,6 +1292,7 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
                 current.getSlot(),
                 selectionRollbackWindowSlots(),
                 selectionQuorum(),
+                selectionTrustPolicy(),
                 headerFanIn.candidatesAfter(current.getBlockNumber())));
         if (decision.action() != ChainSelectionDecision.Action.ADOPT || decision.selected() == null) {
             if (decision.action() == ChainSelectionDecision.Action.OBSERVE && log.isDebugEnabled()) {
@@ -1530,6 +1531,12 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
         return upstreamConfig.getSelection() != null
                 ? upstreamConfig.getSelection().getQuorum()
                 : 2;
+    }
+
+    private String selectionTrustPolicy() {
+        return upstreamConfig.getSelection() != null
+                ? upstreamConfig.getSelection().getTrustPolicy()
+                : "trusted-only";
     }
 
     private int runningObserverCount() {
