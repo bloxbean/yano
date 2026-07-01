@@ -32,7 +32,7 @@ import com.bloxbean.cardano.yano.runtime.apply.UnrecoverableApplyException;
 import com.bloxbean.cardano.yano.runtime.chain.ChainStateRecovery;
 import com.bloxbean.cardano.yano.runtime.chain.EraMetadataStore;
 import com.bloxbean.cardano.yano.runtime.chain.OriginRollbackCapable;
-import com.bloxbean.cardano.yano.runtime.peer.PeerHealth;
+import com.bloxbean.cardano.yano.p2p.peer.PeerHealth;
 import com.bloxbean.cardano.yano.runtime.sync.validation.BodyValidationContext;
 import com.bloxbean.cardano.yano.runtime.sync.validation.BodyValidationException;
 import com.bloxbean.cardano.yano.runtime.sync.validation.BodyValidationResult;

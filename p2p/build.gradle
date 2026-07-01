@@ -1,0 +1,28 @@
+dependencies {
+    api project(':core-api')
+    api libs.yaci.core
+    api libs.yaci.helper
+
+    compileOnly libs.netty
+
+    implementation libs.jackson.databind
+    implementation libs.slf4j.api
+
+    testImplementation libs.archunit
+}
+
+java {
+    sourceCompatibility = 25
+    targetCompatibility = 25
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            pom {
+                name = 'Yano P2P'
+                description = 'Peer-to-peer networking and relay policy layer for Yano'
+            }
+        }
+    }
+}

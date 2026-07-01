@@ -11,6 +11,7 @@ import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
 import com.bloxbean.cardano.yano.api.events.BlockAppliedEvent;
 import com.bloxbean.cardano.yano.api.events.MemPoolTransactionReceivedEvent;
 import com.bloxbean.cardano.yano.api.events.TransactionValidateEvent;
+import com.bloxbean.cardano.yano.api.model.MemPoolTransaction;
 import com.bloxbean.cardano.yano.api.model.TxEvaluationResult;
 import com.bloxbean.cardano.yano.api.utxo.UtxoState;
 import com.bloxbean.cardano.yano.ledgerrules.TransactionEvaluator;
@@ -24,10 +25,11 @@ import com.bloxbean.cardano.yano.runtime.chain.MemPool;
 import com.bloxbean.cardano.yano.runtime.chain.MempoolEvictionPolicy;
 import com.bloxbean.cardano.yano.runtime.kernel.Subsystem;
 import com.bloxbean.cardano.yano.runtime.kernel.SubsystemHealth;
-import com.bloxbean.cardano.yano.runtime.tx.diffusion.DefaultTxDiffusion;
-import com.bloxbean.cardano.yano.runtime.tx.diffusion.TxDiffusion;
-import com.bloxbean.cardano.yano.runtime.tx.diffusion.TxDiffusionMode;
-import com.bloxbean.cardano.yano.runtime.tx.diffusion.TxDiffusionStats;
+import com.bloxbean.cardano.yano.p2p.tx.diffusion.DefaultTxDiffusion;
+import com.bloxbean.cardano.yano.p2p.tx.diffusion.TxCatalog;
+import com.bloxbean.cardano.yano.p2p.tx.diffusion.TxDiffusion;
+import com.bloxbean.cardano.yano.p2p.tx.diffusion.TxDiffusionMode;
+import com.bloxbean.cardano.yano.p2p.tx.diffusion.TxDiffusionStats;
 import com.bloxbean.cardano.yaci.events.api.support.AnnotationListenerRegistrar;
 import com.bloxbean.cardano.yano.runtime.validation.DefaultTransactionValidatorListener;
 import org.slf4j.Logger;
@@ -128,7 +130,8 @@ public final class TxSubsystem implements Subsystem, TransactionAdmission, Block
         resolveTxConfig();
         txDiffusion = new DefaultTxDiffusion(
                 TxDiffusionMode.fromConfig(txDiffusionMode),
-                memPool,
+                txCatalog(),
+                TransactionUtil::getTxHash,
                 txDiffusionMaxInFlightTxsPerPeer,
                 txDiffusionMaxInFlightBytesPerPeer,
                 txDiffusionPeerCooldownMs,
@@ -339,6 +342,20 @@ public final class TxSubsystem implements Subsystem, TransactionAdmission, Block
 
     public TxDiffusionStats txDiffusionStats() {
         return txDiffusion.stats();
+    }
+
+    private TxCatalog txCatalog() {
+        return new TxCatalog() {
+            @Override
+            public boolean contains(String txHash) {
+                return memPool.contains(txHash);
+            }
+
+            @Override
+            public MemPoolTransaction getTransaction(String txHash) {
+                return memPool.getTransaction(txHash);
+            }
+        };
     }
 
     public int txDiffusionMaxInFlightTxsPerPeer() {

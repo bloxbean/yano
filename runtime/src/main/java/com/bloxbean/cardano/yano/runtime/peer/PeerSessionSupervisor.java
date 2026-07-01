@@ -1,5 +1,8 @@
 package com.bloxbean.cardano.yano.runtime.peer;
 
+import com.bloxbean.cardano.yano.p2p.peer.PeerRecoveryReason;
+import com.bloxbean.cardano.yano.p2p.peer.PeerSessionState;
+import com.bloxbean.cardano.yano.p2p.peer.PeerSessionStatus;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.Objects;

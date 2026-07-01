@@ -5,12 +5,12 @@ import com.bloxbean.cardano.yaci.core.protocol.txsubmission.messges.*;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.runtime.blockproducer.TransactionValidationException;
 import com.bloxbean.cardano.yano.runtime.tx.TransactionAdmission;
-import com.bloxbean.cardano.yano.runtime.tx.diffusion.PeerClass;
-import com.bloxbean.cardano.yano.runtime.tx.diffusion.TxBodyIngressResult;
-import com.bloxbean.cardano.yano.runtime.tx.diffusion.TxBodyServeResult;
-import com.bloxbean.cardano.yano.runtime.tx.diffusion.TxDiffusion;
-import com.bloxbean.cardano.yano.runtime.tx.diffusion.TxIdAndSize;
-import com.bloxbean.cardano.yano.runtime.tx.diffusion.TxRequestPlan;
+import com.bloxbean.cardano.yano.p2p.tx.diffusion.PeerClass;
+import com.bloxbean.cardano.yano.p2p.tx.diffusion.TxBodyIngressResult;
+import com.bloxbean.cardano.yano.p2p.tx.diffusion.TxBodyServeResult;
+import com.bloxbean.cardano.yano.p2p.tx.diffusion.TxDiffusion;
+import com.bloxbean.cardano.yano.p2p.tx.diffusion.TxIdAndSize;
+import com.bloxbean.cardano.yano.p2p.tx.diffusion.TxRequestPlan;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.ArrayList;
@@ -125,7 +125,7 @@ public class YaciTxSubmissionHandler implements TxSubmissionListener, TxSubmissi
                     .map(Tx::getTx)
                     .toList();
             TxBodyIngressResult result = txDiffusion.onPeerTxBodies(
-                    currentPeerId(), PeerClass.DOWNSTREAM, txBodies, transactionAdmission);
+                    currentPeerId(), PeerClass.DOWNSTREAM, txBodies, this::admitDiffusedTransaction);
             txsAccepted += result.accepted();
             txsRejected += result.rejected();
             txsProcessed += result.accepted();
@@ -143,9 +143,7 @@ public class YaciTxSubmissionHandler implements TxSubmissionListener, TxSubmissi
 
             } catch (TransactionValidationException e) {
                 txsRejected++;
-                String errorMsg = e.getErrors().stream()
-                        .map(TransactionValidationException.Error::message)
-                        .collect(Collectors.joining("; "));
+                String errorMsg = validationErrorMessage(e);
                 log.warn("Rejecting invalid N2N tx: {}", !errorMsg.isBlank() ? errorMsg : e.getMessage());
             } catch (Exception e) {
                 txsRejected++;
@@ -258,6 +256,20 @@ public class YaciTxSubmissionHandler implements TxSubmissionListener, TxSubmissi
 
     private boolean diffusionEnabled() {
         return txDiffusion != null && txDiffusion.isEnabled();
+    }
+
+    private String admitDiffusedTransaction(byte[] txCbor, String origin) {
+        try {
+            return transactionAdmission.admitTransaction(txCbor, origin);
+        } catch (TransactionValidationException e) {
+            throw new IllegalArgumentException(validationErrorMessage(e), e);
+        }
+    }
+
+    private static String validationErrorMessage(TransactionValidationException e) {
+        return e.getErrors().stream()
+                .map(TransactionValidationException.Error::message)
+                .collect(Collectors.joining("; "));
     }
 
     /**

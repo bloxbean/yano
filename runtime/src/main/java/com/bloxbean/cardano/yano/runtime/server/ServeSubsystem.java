@@ -11,11 +11,12 @@ import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.runtime.handlers.YaciTxSubmissionHandler;
 import com.bloxbean.cardano.yano.runtime.kernel.Subsystem;
 import com.bloxbean.cardano.yano.runtime.kernel.SubsystemHealth;
-import com.bloxbean.cardano.yano.runtime.connection.RelayConnectionInfo;
-import com.bloxbean.cardano.yano.runtime.connection.RelayConnectionManager;
-import com.bloxbean.cardano.yano.runtime.sync.multipeer.PeerStoreEntry;
+import com.bloxbean.cardano.yano.p2p.connection.RelayConnectionInfo;
+import com.bloxbean.cardano.yano.p2p.connection.RelayConnectionManager;
+import com.bloxbean.cardano.yano.p2p.governor.PeerStoreEntry;
+import com.bloxbean.cardano.yano.p2p.peersharing.RelayPeerSharingProvider;
 import com.bloxbean.cardano.yano.runtime.tx.TransactionAdmission;
-import com.bloxbean.cardano.yano.runtime.tx.diffusion.TxDiffusion;
+import com.bloxbean.cardano.yano.p2p.tx.diffusion.TxDiffusion;
 import org.slf4j.Logger;
 
 import java.time.Duration;

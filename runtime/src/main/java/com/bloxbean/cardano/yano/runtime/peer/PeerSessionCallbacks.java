@@ -2,6 +2,7 @@ package com.bloxbean.cardano.yano.runtime.peer;
 
 import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Point;
 import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Tip;
+import com.bloxbean.cardano.yano.p2p.peer.PeerRecoveryReason;
 
 /**
  * Internal runtime callbacks needed by the active peer session listener.

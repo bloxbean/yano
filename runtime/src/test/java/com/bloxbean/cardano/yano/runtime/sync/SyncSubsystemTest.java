@@ -21,15 +21,15 @@ import com.bloxbean.cardano.yano.api.config.UpstreamTxConfig;
 import com.bloxbean.cardano.yano.api.config.YanoConfig;
 import com.bloxbean.cardano.yano.runtime.kernel.SubsystemHealth;
 import com.bloxbean.cardano.yano.runtime.ledger.LedgerStateSubsystem;
-import com.bloxbean.cardano.yano.runtime.peer.PeerEndpoint;
-import com.bloxbean.cardano.yano.runtime.peer.PeerRecoveryReason;
+import com.bloxbean.cardano.yano.p2p.peer.PeerEndpoint;
+import com.bloxbean.cardano.yano.p2p.peer.PeerRecoveryReason;
 import com.bloxbean.cardano.yano.runtime.server.ServeSubsystem;
 import com.bloxbean.cardano.yano.runtime.storage.ChainStorageSubsystem;
-import com.bloxbean.cardano.yano.runtime.chain.DefaultMemPool;
 import com.bloxbean.cardano.yano.runtime.tx.TransactionAdmission;
-import com.bloxbean.cardano.yano.runtime.tx.diffusion.DefaultTxDiffusion;
-import com.bloxbean.cardano.yano.runtime.tx.diffusion.TxDiffusion;
-import com.bloxbean.cardano.yano.runtime.tx.diffusion.TxDiffusionMode;
+import com.bloxbean.cardano.yano.p2p.tx.diffusion.DefaultTxDiffusion;
+import com.bloxbean.cardano.yano.p2p.tx.diffusion.TxCatalog;
+import com.bloxbean.cardano.yano.p2p.tx.diffusion.TxDiffusion;
+import com.bloxbean.cardano.yano.p2p.tx.diffusion.TxDiffusionMode;
 import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
 
@@ -683,7 +683,8 @@ class SyncSubsystemTest {
         List<String> txForwards = Collections.synchronizedList(new ArrayList<>());
         DefaultTxDiffusion diffusion = new DefaultTxDiffusion(
                 TxDiffusionMode.LOCAL_SUBMIT_ONLY,
-                new DefaultMemPool(),
+                TxCatalog.empty(),
+                txCbor -> "unused",
                 100,
                 1_048_576,
                 60_000,
@@ -853,7 +854,7 @@ class SyncSubsystemTest {
         private final YanoConfig config;
         private final ScheduledExecutorService scheduler;
         private final java.util.function.BooleanSupplier running;
-        private final com.bloxbean.cardano.yano.runtime.peer.PeerClientFactory peerClientFactory;
+        private final com.bloxbean.cardano.yano.p2p.peer.PeerClientFactory peerClientFactory;
         private final Supplier<EpochParamProvider> epochParamProviderSupplier;
         private final Supplier<TxDiffusion> txDiffusionSupplier;
         private Owned owned;
@@ -861,14 +862,14 @@ class SyncSubsystemTest {
         private TestRuntime(YanoConfig config,
                             ScheduledExecutorService scheduler,
                             java.util.function.BooleanSupplier running,
-                            com.bloxbean.cardano.yano.runtime.peer.PeerClientFactory peerClientFactory) {
+                            com.bloxbean.cardano.yano.p2p.peer.PeerClientFactory peerClientFactory) {
             this(config, scheduler, running, peerClientFactory, null);
         }
 
         private TestRuntime(YanoConfig config,
                             ScheduledExecutorService scheduler,
                             java.util.function.BooleanSupplier running,
-                            com.bloxbean.cardano.yano.runtime.peer.PeerClientFactory peerClientFactory,
+                            com.bloxbean.cardano.yano.p2p.peer.PeerClientFactory peerClientFactory,
                             Supplier<EpochParamProvider> epochParamProviderSupplier) {
             this(config, scheduler, running, peerClientFactory, epochParamProviderSupplier, null);
         }
@@ -876,7 +877,7 @@ class SyncSubsystemTest {
         private TestRuntime(YanoConfig config,
                             ScheduledExecutorService scheduler,
                             java.util.function.BooleanSupplier running,
-                            com.bloxbean.cardano.yano.runtime.peer.PeerClientFactory peerClientFactory,
+                            com.bloxbean.cardano.yano.p2p.peer.PeerClientFactory peerClientFactory,
                             Supplier<EpochParamProvider> epochParamProviderSupplier,
                             Supplier<TxDiffusion> txDiffusionSupplier) {
             this.config = config;

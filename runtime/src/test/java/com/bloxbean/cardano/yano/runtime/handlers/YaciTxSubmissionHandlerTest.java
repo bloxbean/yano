@@ -15,9 +15,10 @@ import com.bloxbean.cardano.yaci.events.api.VetoableEvent;
 import com.bloxbean.cardano.yano.runtime.blockproducer.TransactionValidationException;
 import com.bloxbean.cardano.yano.runtime.chain.DefaultMemPool;
 import com.bloxbean.cardano.yano.runtime.tx.TransactionAdmission;
-import com.bloxbean.cardano.yano.runtime.tx.diffusion.DefaultTxDiffusion;
-import com.bloxbean.cardano.yano.runtime.tx.diffusion.TxDiffusion;
-import com.bloxbean.cardano.yano.runtime.tx.diffusion.TxDiffusionMode;
+import com.bloxbean.cardano.yano.p2p.tx.diffusion.DefaultTxDiffusion;
+import com.bloxbean.cardano.yano.p2p.tx.diffusion.TxCatalog;
+import com.bloxbean.cardano.yano.p2p.tx.diffusion.TxDiffusion;
+import com.bloxbean.cardano.yano.p2p.tx.diffusion.TxDiffusionMode;
 import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
 
@@ -117,13 +118,7 @@ class YaciTxSubmissionHandlerTest {
         byte[] txBytes = sampleTxCbor();
         AtomicReference<byte[]> admittedTx = new AtomicReference<>();
         AtomicReference<String> admittedOrigin = new AtomicReference<>();
-        DefaultTxDiffusion diffusion = new DefaultTxDiffusion(
-                TxDiffusionMode.ALL_HOT,
-                new DefaultMemPool(),
-                100,
-                1_048_576,
-                60_000,
-                LoggerFactory.getLogger(YaciTxSubmissionHandlerTest.class));
+        DefaultTxDiffusion diffusion = diffusion(new DefaultMemPool());
         YaciTxSubmissionHandler handler = new YaciTxSubmissionHandler(new TransactionAdmission() {
             @Override
             public String admitTransaction(byte[] txCbor, String origin) {
@@ -155,13 +150,7 @@ class YaciTxSubmissionHandlerTest {
     @Test
     void diffusionIngressIgnoresUnplannedTransactionBodies() {
         AtomicInteger attempts = new AtomicInteger();
-        DefaultTxDiffusion diffusion = new DefaultTxDiffusion(
-                TxDiffusionMode.ALL_HOT,
-                new DefaultMemPool(),
-                100,
-                1_048_576,
-                60_000,
-                LoggerFactory.getLogger(YaciTxSubmissionHandlerTest.class));
+        DefaultTxDiffusion diffusion = diffusion(new DefaultMemPool());
         YaciTxSubmissionHandler handler = new YaciTxSubmissionHandler(new TransactionAdmission() {
             @Override
             public String admitTransaction(byte[] txCbor, String origin) {
@@ -187,6 +176,31 @@ class YaciTxSubmissionHandlerTest {
         ReplyTxs replyTxs = new ReplyTxs();
         replyTxs.addTx(new Tx(null, txBytes));
         return replyTxs;
+    }
+
+    private static DefaultTxDiffusion diffusion(DefaultMemPool memPool) {
+        return new DefaultTxDiffusion(
+                TxDiffusionMode.ALL_HOT,
+                txCatalog(memPool),
+                TransactionUtil::getTxHash,
+                100,
+                1_048_576,
+                60_000,
+                LoggerFactory.getLogger(YaciTxSubmissionHandlerTest.class));
+    }
+
+    private static TxCatalog txCatalog(DefaultMemPool memPool) {
+        return new TxCatalog() {
+            @Override
+            public boolean contains(String txHash) {
+                return memPool.contains(txHash);
+            }
+
+            @Override
+            public com.bloxbean.cardano.yano.api.model.MemPoolTransaction getTransaction(String txHash) {
+                return memPool.getTransaction(txHash);
+            }
+        };
     }
 
     private static byte[] sampleTxCbor() {

@@ -1,5 +1,6 @@
 rootProject.name = 'yano'
 include 'core-api'
+include 'p2p'
 include 'runtime'
 include 'devnet-toolkit'
 include 'testkit'
