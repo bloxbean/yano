@@ -1,0 +1,8 @@
+# Header KES/op-cert signature validation profile.
+
+yano:
+  upstream:
+    validation:
+      level: header-signature
+      body-level: none
+      opcert-counter-mode: none

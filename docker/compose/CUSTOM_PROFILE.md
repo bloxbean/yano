@@ -1,6 +1,7 @@
 # Custom Profiles
 
-The Docker compose distribution can run any Quarkus profile defined in `config/application.yml`.
+The Docker compose distribution can run any Quarkus profile defined in
+`config/application.yml` or in `config/application-<profile>.yml`.
 
 ## Add Network Files
 
@@ -64,6 +65,15 @@ Run the profile by name:
 ./yano.sh start:mydevnet
 ```
 
+Profiles can also be composed. The first profile is treated as the network name
+for chainstate and compose overlay selection, and the full list is passed to
+Quarkus:
+
+```bash
+./yano.sh start:mydevnet,relay
+./yano.sh start:mydevnet,relay,praos-lite
+```
+
 Inspect the resolved compose file first:
 
 ```bash
@@ -76,7 +86,8 @@ Restart the same profile:
 ./yano.sh restart:mydevnet
 ```
 
-Profile names may contain letters, numbers, dot, underscore, and dash.
+Profile names may contain letters, numbers, dot, underscore, and dash. Profile
+lists use commas between profile names.
 
 ## Chainstate
 

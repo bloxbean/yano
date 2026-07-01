@@ -1,7 +1,15 @@
-# Yano - Override Configuration
-# ------------------------------------
+# Yano - Operator Override Configuration
+# -------------------------------------
 # Properties here override the defaults bundled in the jar.
-# Quarkus automatically loads this file from the config/ directory.
+# This base file stays conservative: single trusted upstream/indexer style.
+#
+# Compose profiles by passing a comma-separated Quarkus profile list:
+#
+#   ./yano.sh start:preprod,relay
+#   ./yano.sh start:preprod,relay,praos-lite
+#   ./yano.sh start:mainnet,trusted-peers
+#
+# Profile files live beside this file as application-<profile>.yml.
 
 quarkus:
   http:

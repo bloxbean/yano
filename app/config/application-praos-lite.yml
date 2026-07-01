@@ -1,0 +1,9 @@
+# Praos-lite header validation profile.
+# Checks structural, KES/op-cert signatures, and VRF proof when nonce tracking is available.
+
+yano:
+  upstream:
+    validation:
+      level: praos-lite
+      body-level: none
+      opcert-counter-mode: none

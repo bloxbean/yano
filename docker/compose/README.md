@@ -18,6 +18,8 @@ Network-specific start commands are available:
 
 ```bash
 ./yano.sh start:preprod
+./yano.sh start:preprod,relay
+./yano.sh start:preprod,relay,praos-lite
 ./yano.sh start:mainnet
 ./yano.sh start:preview
 ./yano.sh start:sanchonet
@@ -72,6 +74,9 @@ Network genesis and protocol parameter files are in `config/network`. The compos
 The Docker image also contains an immutable copy of the default network files. On startup, Yano seeds any missing files from that default copy. If you accidentally edit or remove a file, delete the host copy and restart Yano to restore the bundled default.
 
 `YANO_PROFILE` and `YANO_NETWORK` select the bundled profile and network. The launcher sets both when you use `start:<profile>`.
+`YANO_PROFILE` may be a comma-separated Quarkus profile list such as
+`preprod,relay,praos-lite`; `YANO_NETWORK` remains the first profile, such as
+`preprod`.
 
 Each network uses its own chainstate directory by default. The launcher creates the selected directory before Docker Compose starts, so it is owned by the user running `yano.sh`:
 
@@ -98,6 +103,7 @@ For a custom network, add its files under `config/network/<name>` and run with a
 
 ```bash
 ./yano.sh start:<name>
+./yano.sh start:<name>,relay
 ```
 
 See `CUSTOM_PROFILE.md` for the full setup.

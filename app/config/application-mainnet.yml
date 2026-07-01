@@ -1,0 +1,25 @@
+# Cardano mainnet network profile.
+
+yano:
+  network: mainnet
+  remote:
+    host: backbone.cardano.iog.io
+    port: 3001
+    protocol-magic: 764824073
+  genesis:
+    shelley-genesis-file: config/network/mainnet/shelley-genesis.json
+    shelley-genesis-hash: "1a3be38bcbb7911969283716ad7aa550250226b76a61fc51cc9a9a35d9276d81"
+    byron-genesis-file: config/network/mainnet/byron-genesis.json
+    alonzo-genesis-file: config/network/mainnet/alonzo-genesis.json
+    conway-genesis-file: config/network/mainnet/conway-genesis.json
+    protocol-parameters-file: config/network/mainnet/protocol-param.json
+  upstream:
+    discovery:
+      peer-snapshot-urls:
+        - https://book.play.dev.cardano.org/environments/mainnet/peer-snapshot.json
+    validation:
+      start:
+        mode: era
+        era: conway
+        slot: 133660855
+        hash: "9aa420cf998dbcceec1abaf83ab26294d278d25527e779050ab334c1fadab16c"
