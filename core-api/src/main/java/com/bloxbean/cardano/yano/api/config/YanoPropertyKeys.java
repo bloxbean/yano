@@ -45,6 +45,12 @@ public final class YanoPropertyKeys {
         public static final String SELECTION_TIE_BREAK = "yano.upstream.selection.tie-break";
         public static final String VALIDATION_LEVEL = "yano.upstream.validation.level";
         public static final String VALIDATION_BODY_LEVEL = "yano.upstream.validation.body-level";
+        public static final String VALIDATION_OPCERT_COUNTER_MODE =
+                "yano.upstream.validation.opcert-counter-mode";
+        public static final String VALIDATION_START_MODE = "yano.upstream.validation.start.mode";
+        public static final String VALIDATION_START_ERA = "yano.upstream.validation.start.era";
+        public static final String VALIDATION_START_SLOT = "yano.upstream.validation.start.slot";
+        public static final String VALIDATION_START_HASH = "yano.upstream.validation.start.hash";
         public static final String SYNC_BULK_SOURCE = "yano.upstream.sync.bulk-source";
         public static final String SYNC_FAN_IN_START = "yano.upstream.sync.fan-in-start";
         public static final String FAILOVER_COOLDOWN_MS = "yano.upstream.failover.cooldown-ms";

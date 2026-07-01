@@ -13,7 +13,24 @@ public final class ShelleyHeaderValidator implements HeaderValidator {
     private final HeaderValidationPipeline pipeline;
 
     public ShelleyHeaderValidator(String level, long slotsPerKESPeriod, long maxKESEvolutions) {
-        this.pipeline = HeaderValidationPipeline.forProfile(level, slotsPerKESPeriod, maxKESEvolutions);
+        this(level, slotsPerKESPeriod, maxKESEvolutions, HeaderValidationNonceProvider.none());
+    }
+
+    public ShelleyHeaderValidator(String level,
+                                  long slotsPerKESPeriod,
+                                  long maxKESEvolutions,
+                                  HeaderValidationNonceProvider nonceProvider) {
+        this(level, slotsPerKESPeriod, maxKESEvolutions,
+                nonceProvider, HeaderValidationLedgerViewProvider.none());
+    }
+
+    public ShelleyHeaderValidator(String level,
+                                  long slotsPerKESPeriod,
+                                  long maxKESEvolutions,
+                                  HeaderValidationNonceProvider nonceProvider,
+                                  HeaderValidationLedgerViewProvider ledgerViewProvider) {
+        this.pipeline = HeaderValidationPipeline.forProfile(level, slotsPerKESPeriod, maxKESEvolutions,
+                nonceProvider, ledgerViewProvider);
     }
 
     @Override

@@ -3,6 +3,7 @@ package com.bloxbean.cardano.yano.runtime.sync.validation;
 import com.bloxbean.cardano.yano.api.EpochParamProvider;
 import com.bloxbean.cardano.yano.api.config.UpstreamValidationConfig;
 
+import java.util.List;
 import java.util.Locale;
 
 /**
@@ -13,13 +14,49 @@ public final class HeaderValidatorFactory {
     }
 
     public static HeaderValidator from(UpstreamValidationConfig config, EpochParamProvider epochParamProvider) {
+        return from(config, epochParamProvider, HeaderValidationNonceProvider.none());
+    }
+
+    public static HeaderValidator from(UpstreamValidationConfig config,
+                                       EpochParamProvider epochParamProvider,
+                                       HeaderValidationNonceProvider nonceProvider) {
+        return from(config, epochParamProvider, nonceProvider, HeaderValidationLedgerViewProvider.none());
+    }
+
+    public static HeaderValidator from(UpstreamValidationConfig config,
+                                       EpochParamProvider epochParamProvider,
+                                       HeaderValidationNonceProvider nonceProvider,
+                                       HeaderValidationLedgerViewProvider ledgerViewProvider) {
+        return from(config, epochParamProvider, nonceProvider, ledgerViewProvider, List.of());
+    }
+
+    public static HeaderValidator from(UpstreamValidationConfig config,
+                                       EpochParamProvider epochParamProvider,
+                                       HeaderValidationNonceProvider nonceProvider,
+                                       HeaderValidationLedgerViewProvider ledgerViewProvider,
+                                       List<HeaderValidationCustomizer> customizers) {
         String level = config != null ? normalize(config.getLevel()) : "none";
-        if ("none".equals(level)) {
+        List<HeaderValidationCustomizer> effectiveCustomizers = customizers != null ? customizers : List.of();
+        if ("none".equals(level) && effectiveCustomizers.isEmpty()) {
             return HeaderValidator.none();
         }
         long slotsPerKESPeriod = epochParamProvider != null ? epochParamProvider.getSlotsPerKESPeriod() : 129600;
         long maxKESEvolutions = epochParamProvider != null ? epochParamProvider.getMaxKESEvolutions() : 62;
-        return new ShelleyHeaderValidator(level, slotsPerKESPeriod, maxKESEvolutions);
+        HeaderValidationPipeline.Builder builder = HeaderValidationPipeline.builder()
+                .slotsPerKESPeriod(slotsPerKESPeriod)
+                .maxKESEvolutions(maxKESEvolutions)
+                .nonceProvider(nonceProvider)
+                .ledgerViewProvider(ledgerViewProvider)
+                .useProfile(level);
+        if (config == null || !config.opCertCounterModeEnabled()) {
+            builder.disableValidator(HeaderValidationPipeline.STAGE_OPCERT_STATE);
+        }
+        for (HeaderValidationCustomizer customizer : effectiveCustomizers) {
+            if (customizer != null) {
+                customizer.customize(builder);
+            }
+        }
+        return builder.build();
     }
 
     private static String normalize(String value) {

@@ -24,6 +24,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 class DefaultAccountStateStorePoolHistoryTest {
 
     private static final String POOL_HASH = "deadbeef00000000000000000000000000000000000000000000cafe";
+    private static final String FIRST_VRF = "11".repeat(32);
+    private static final String SECOND_VRF = "22".repeat(32);
     private static final long EPOCH_LENGTH = 432000L;
 
     @TempDir
@@ -40,6 +42,7 @@ class DefaultAccountStateStorePoolHistoryTest {
             applyBlockWithCerts(store, 1, epochStartSlot(10),
                     poolRegistration(BigInteger.valueOf(9_000_000_000L),
                             "e06714df177fec0312ca31c8b9aba46ddcf16961d61034ac207e7492e4",
+                            FIRST_VRF,
                             Set.of(
                                     "3f8c946834753e4f20b32394e7eea558ade14b1e5a30c4565b5ce896",
                                     "6714df177fec0312ca31c8b9aba46ddcf16961d61034ac207e7492e4")));
@@ -50,6 +53,7 @@ class DefaultAccountStateStorePoolHistoryTest {
             applyBlockWithCerts(store, 3, epochStartSlot(12),
                     poolRegistration(BigInteger.valueOf(5_000_000_000L),
                             "e06026674ced6bc94ff10deaffc3470d906a43d2522e6f25be796b8fbe",
+                            SECOND_VRF,
                             Set.of("6026674ced6bc94ff10deaffc3470d906a43d2522e6f25be796b8fbe")));
 
             var epoch13 = store.getPoolParams(POOL_HASH, 13).orElseThrow();
@@ -57,20 +61,24 @@ class DefaultAccountStateStorePoolHistoryTest {
 
             assertThat(epoch13.pledge()).isEqualTo(BigInteger.valueOf(9_000_000_000L));
             assertThat(epoch13.rewardAccount()).isEqualTo("e06714df177fec0312ca31c8b9aba46ddcf16961d61034ac207e7492e4");
+            assertThat(epoch13.vrfKeyHash()).isEqualTo(FIRST_VRF);
             assertThat(epoch13.owners()).containsExactlyInAnyOrder(
                     "3f8c946834753e4f20b32394e7eea558ade14b1e5a30c4565b5ce896",
                     "6714df177fec0312ca31c8b9aba46ddcf16961d61034ac207e7492e4");
 
             assertThat(epoch14.pledge()).isEqualTo(BigInteger.valueOf(5_000_000_000L));
             assertThat(epoch14.rewardAccount()).isEqualTo("e06026674ced6bc94ff10deaffc3470d906a43d2522e6f25be796b8fbe");
+            assertThat(epoch14.vrfKeyHash()).isEqualTo(SECOND_VRF);
             assertThat(epoch14.owners()).containsExactly("6026674ced6bc94ff10deaffc3470d906a43d2522e6f25be796b8fbe");
         }
     }
 
-    private static PoolRegistration poolRegistration(BigInteger pledge, String rewardAccount, Set<String> owners) {
+    private static PoolRegistration poolRegistration(BigInteger pledge, String rewardAccount, String vrfKeyHash,
+                                                     Set<String> owners) {
         return PoolRegistration.builder()
                 .poolParams(PoolParams.builder()
                         .operator(POOL_HASH)
+                        .vrfKeyHash(vrfKeyHash)
                         .pledge(pledge)
                         .cost(BigInteger.valueOf(340_000_000L))
                         .rewardAccount(rewardAccount)

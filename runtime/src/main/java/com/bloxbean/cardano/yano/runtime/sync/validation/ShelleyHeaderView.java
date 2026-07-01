@@ -23,6 +23,8 @@ public record ShelleyHeaderView(
         byte[] previousHash,
         byte[] issuerVkey,
         byte[] vrfVkey,
+        byte[] nonceVrfOutput,
+        byte[] nonceVrfProof,
         byte[] leaderVrfOutput,
         byte[] leaderVrfProof,
         long blockBodySize,
@@ -30,7 +32,9 @@ public record ShelleyHeaderView(
         byte[] opcertKesVkey,
         long opcertCounter,
         long opcertKesPeriod,
-        byte[] opcertColdSignature
+        byte[] opcertColdSignature,
+        long protocolMajor,
+        long protocolMinor
 ) {
     private static final int HASH_SIZE = 32;
     private static final int VKEY_SIZE = 32;
@@ -46,6 +50,8 @@ public record ShelleyHeaderView(
         previousHash = previousHash.clone();
         issuerVkey = issuerVkey.clone();
         vrfVkey = vrfVkey.clone();
+        nonceVrfOutput = nonceVrfOutput.clone();
+        nonceVrfProof = nonceVrfProof.clone();
         leaderVrfOutput = leaderVrfOutput.clone();
         leaderVrfProof = leaderVrfProof.clone();
         blockBodyHash = blockBodyHash.clone();
@@ -92,6 +98,8 @@ public record ShelleyHeaderView(
                 body.previousHash(),
                 body.issuerVkey(),
                 body.vrfVkey(),
+                body.nonceVrfOutput(),
+                body.nonceVrfProof(),
                 body.leaderVrfOutput(),
                 body.leaderVrfProof(),
                 body.blockBodySize(),
@@ -99,7 +107,9 @@ public record ShelleyHeaderView(
                 body.opcertKesVkey(),
                 body.opcertCounter(),
                 body.opcertKesPeriod(),
-                body.opcertColdSignature());
+                body.opcertColdSignature(),
+                body.protocolMajor(),
+                body.protocolMinor());
     }
 
     @Override
@@ -133,6 +143,16 @@ public record ShelleyHeaderView(
     }
 
     @Override
+    public byte[] nonceVrfOutput() {
+        return nonceVrfOutput.clone();
+    }
+
+    @Override
+    public byte[] nonceVrfProof() {
+        return nonceVrfProof.clone();
+    }
+
+    @Override
     public byte[] leaderVrfOutput() {
         return leaderVrfOutput.clone();
     }
@@ -155,6 +175,10 @@ public record ShelleyHeaderView(
     @Override
     public byte[] opcertColdSignature() {
         return opcertColdSignature.clone();
+    }
+
+    public boolean hasSeparateNonceVrf() {
+        return nonceVrfOutput.length > 0 || nonceVrfProof.length > 0;
     }
 
     private static HeaderView extractHeader(byte[] originalHeaderBytes) {
@@ -253,7 +277,7 @@ public record ShelleyHeaderView(
         return new VrfCert(output, proof);
     }
 
-    private static void requireProtocolVersion(DataItem major) {
+    private static ProtocolVersionView requireProtocolVersion(DataItem major) {
         if (!(major instanceof Array protocolVersion)) {
             throw new HeaderValidationFailure("protocol-version", "protocol version must be a CBOR array");
         }
@@ -261,12 +285,13 @@ public record ShelleyHeaderView(
         if (items.size() != 2) {
             throw new HeaderValidationFailure("protocol-version", "protocol version must have major and minor");
         }
-        requireProtocolVersion(items.get(0), items.get(1));
+        return requireProtocolVersion(items.get(0), items.get(1));
     }
 
-    private static void requireProtocolVersion(DataItem major, DataItem minor) {
-        uint(major, "protocol major");
-        uint(minor, "protocol minor");
+    private static ProtocolVersionView requireProtocolVersion(DataItem major, DataItem minor) {
+        return new ProtocolVersionView(
+                uint(major, "protocol major"),
+                uint(minor, "protocol minor"));
     }
 
     private record HeaderView(byte[] headerArrayBytes, Array body, byte[] headerBodyBytes, byte[] signature) {
@@ -275,12 +300,17 @@ public record ShelleyHeaderView(
     private record VrfCert(byte[] output, byte[] proof) {
     }
 
+    private record ProtocolVersionView(long major, long minor) {
+    }
+
     private record BodyView(
             long blockNumber,
             long slot,
             byte[] previousHash,
             byte[] issuerVkey,
             byte[] vrfVkey,
+            byte[] nonceVrfOutput,
+            byte[] nonceVrfProof,
             byte[] leaderVrfOutput,
             byte[] leaderVrfProof,
             long blockBodySize,
@@ -288,7 +318,9 @@ public record ShelleyHeaderView(
             byte[] opcertKesVkey,
             long opcertCounter,
             long opcertKesPeriod,
-            byte[] opcertColdSignature
+            byte[] opcertColdSignature,
+            long protocolMajor,
+            long protocolMinor
     ) {
         static BodyView from(Array body) {
             List<DataItem> items = body.getDataItems();
@@ -304,27 +336,31 @@ public record ShelleyHeaderView(
         private static BodyView postBabbage(List<DataItem> items) {
             VrfCert leader = vrfCert(items.get(5), "vrf-result");
             List<DataItem> opcert = opcertItems(items.get(8));
-            requireProtocolVersion(items.get(9));
-            return common(items, 6, 7, opcert, leader);
+            ProtocolVersionView protocolVersion = requireProtocolVersion(items.get(9));
+            return common(items, 6, 7, opcert, null, leader, protocolVersion);
         }
 
         private static BodyView preBabbage(List<DataItem> items) {
-            vrfCert(items.get(5), "nonce-vrf");
+            VrfCert nonce = vrfCert(items.get(5), "nonce-vrf");
             VrfCert leader = vrfCert(items.get(6), "leader-vrf");
-            requireProtocolVersion(items.get(13), items.get(14));
+            ProtocolVersionView protocolVersion = requireProtocolVersion(items.get(13), items.get(14));
             return common(
                     items,
                     7,
                     8,
                     List.of(items.get(9), items.get(10), items.get(11), items.get(12)),
-                    leader);
+                    nonce,
+                    leader,
+                    protocolVersion);
         }
 
         private static BodyView common(List<DataItem> items,
                                        int bodySizeIndex,
                                        int bodyHashIndex,
                                        List<DataItem> opcert,
-                                       VrfCert leaderVrf) {
+                                       VrfCert nonceVrf,
+                                       VrfCert leaderVrf,
+                                       ProtocolVersionView protocolVersion) {
             byte[] previousHash = bytes(items.get(2), "previous hash");
             if (previousHash.length > 0) {
                 requireLength("previous hash", previousHash, HASH_SIZE);
@@ -347,6 +383,8 @@ public record ShelleyHeaderView(
                     previousHash,
                     issuerVkey,
                     vrfVkey,
+                    nonceVrf != null ? nonceVrf.output() : new byte[0],
+                    nonceVrf != null ? nonceVrf.proof() : new byte[0],
                     leaderVrf.output(),
                     leaderVrf.proof(),
                     uint(items.get(bodySizeIndex), "block body size"),
@@ -354,7 +392,9 @@ public record ShelleyHeaderView(
                     opcertKesVkey,
                     uint(opcert.get(1), "opcert counter"),
                     uint(opcert.get(2), "opcert KES period"),
-                    opcertColdSignature);
+                    opcertColdSignature,
+                    protocolVersion.major(),
+                    protocolVersion.minor());
         }
 
         private static List<DataItem> opcertItems(DataItem item) {

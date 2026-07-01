@@ -21,6 +21,7 @@ import com.bloxbean.cardano.yano.api.config.UpstreamPreset;
 import com.bloxbean.cardano.yano.api.config.UpstreamSyncConfig;
 import com.bloxbean.cardano.yano.api.config.UpstreamTxConfig;
 import com.bloxbean.cardano.yano.api.config.UpstreamValidationConfig;
+import com.bloxbean.cardano.yano.api.config.UpstreamValidationStartConfig;
 import com.bloxbean.cardano.yano.api.config.YanoConfig;
 import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
 import com.bloxbean.cardano.yano.app.bootstrap.BootstrapConfigParser;
@@ -775,6 +776,14 @@ public class YanoProducer {
                 .validation(UpstreamValidationConfig.builder()
                         .level(configString(YanoPropertyKeys.Upstream.VALIDATION_LEVEL, "none"))
                         .bodyLevel(configString(YanoPropertyKeys.Upstream.VALIDATION_BODY_LEVEL, "none"))
+                        .opCertCounterMode(configString(
+                                YanoPropertyKeys.Upstream.VALIDATION_OPCERT_COUNTER_MODE, "none"))
+                        .start(UpstreamValidationStartConfig.builder()
+                                .mode(configString(YanoPropertyKeys.Upstream.VALIDATION_START_MODE, "immediate"))
+                                .era(configString(YanoPropertyKeys.Upstream.VALIDATION_START_ERA, "conway"))
+                                .slot(configLong(YanoPropertyKeys.Upstream.VALIDATION_START_SLOT, -1L))
+                                .hash(configString(YanoPropertyKeys.Upstream.VALIDATION_START_HASH, ""))
+                                .build())
                         .build())
                 .sync(UpstreamSyncConfig.builder()
                         .bulkSource(configString(YanoPropertyKeys.Upstream.SYNC_BULK_SOURCE, "single-trusted"))

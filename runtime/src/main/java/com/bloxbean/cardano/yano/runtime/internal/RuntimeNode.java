@@ -78,6 +78,7 @@ import com.bloxbean.cardano.yano.runtime.producer.SlotLeaderSigningComponents;
 import com.bloxbean.cardano.yano.runtime.producer.StakeDataProviderFactory;
 import com.bloxbean.cardano.yano.runtime.plugins.PluginManager;
 import com.bloxbean.cardano.yano.api.account.AccountHistoryProvider;
+import com.bloxbean.cardano.yano.api.account.AccountStateReadStore;
 import com.bloxbean.cardano.yano.api.account.LedgerStateProvider;
 import com.bloxbean.cardano.yano.api.rollback.RollbackCapableStore;
 import com.bloxbean.cardano.yano.ledgerstate.AccountHistoryStore;
@@ -118,6 +119,9 @@ import com.bloxbean.cardano.yano.p2p.peer.DefaultPeerClientFactory;
 import com.bloxbean.cardano.yano.p2p.peer.LocalBindAddressResolver;
 import com.bloxbean.cardano.yano.p2p.peer.PeerClientFactory;
 import com.bloxbean.cardano.yano.runtime.server.ServeSubsystem;
+import com.bloxbean.cardano.yano.runtime.sync.validation.HeaderValidationLedgerViewProvider;
+import com.bloxbean.cardano.yano.runtime.sync.validation.HeaderValidationCustomizer;
+import com.bloxbean.cardano.yano.runtime.sync.validation.LedgerStateHeaderValidationLedgerViewProvider;
 import com.bloxbean.cardano.yano.runtime.storage.ChainStorageSubsystem;
 import com.bloxbean.cardano.yano.p2p.governor.PeerGovernorSnapshot;
 import com.bloxbean.cardano.yano.runtime.sync.SyncSubsystem;
@@ -336,9 +340,15 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
         AnnotationListenerRegistrar.register(eventBus, consensusListener,
                 SubscriptionOptions.builder().build());
 
-        // Initialize plugins (discovery is deferred to start())
+        // Discover/init plugins before sync assembly so validation customizers can
+        // participate in header-validator construction. startAll() still runs at startup.
         if (this.runtimeOptions.plugins().enabled()) {
             pluginManager = new PluginManager(eventBus, scheduler, this.runtimeOptions.plugins().config(), Thread.currentThread().getContextClassLoader());
+            try {
+                pluginManager.discoverAndInit();
+            } catch (Exception e) {
+                log.warn("Plugin discovery/init failed during runtime assembly: {}", e.toString(), e);
+            }
         }
 
         chainStorage.runStartupMigrations();
@@ -390,7 +400,10 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 log,
                 this.bodyValidator,
                 txSubsystem::txDiffusion,
-                peerClientFactory);
+                peerClientFactory,
+                this::epochNonceForHeaderValidation,
+                headerValidationLedgerViewProvider(),
+                headerValidationCustomizers());
         relayConnectionManager.addListener(this.syncSubsystem.peerGovernorConnectionListener());
         peerStoreSupplierRef.set(this.syncSubsystem::sharablePeerEntries);
         this.producerStartupCoordinator = new ProducerStartupCoordinator(producerStartupActions());
@@ -1886,6 +1899,36 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
 
     public EpochNonceState getEpochNonceState() {
         return epochNonceState;
+    }
+
+    private byte[] epochNonceForHeaderValidation(long slot) {
+        EpochNonceState state = epochNonceState;
+        if (state == null) {
+            return null;
+        }
+        try {
+            return state.previewEpochNonceForSlot(slot);
+        } catch (RuntimeException e) {
+            log.debug("Epoch nonce unavailable for header validation at slot {}: {}", slot, e.getMessage());
+            return null;
+        }
+    }
+
+    private HeaderValidationLedgerViewProvider headerValidationLedgerViewProvider() {
+        AccountStateStore store = ledgerStateSubsystem.accountStateStore();
+        EpochParamProvider epochParams = effectiveEpochParamProvider();
+        if (store instanceof AccountStateReadStore readStore && epochParams != null) {
+            boolean strictOpCertCounter = config.effectiveUpstream()
+                    .getValidation()
+                    .strictOpCertCounterMode();
+            return new LedgerStateHeaderValidationLedgerViewProvider(
+                    store, readStore, epochParams, strictOpCertCounter);
+        }
+        return HeaderValidationLedgerViewProvider.none();
+    }
+
+    private List<HeaderValidationCustomizer> headerValidationCustomizers() {
+        return pluginManager != null ? pluginManager.getHeaderValidationCustomizers() : List.of();
     }
 
     @Override

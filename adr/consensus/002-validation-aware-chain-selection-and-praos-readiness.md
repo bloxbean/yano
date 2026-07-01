@@ -2,8 +2,8 @@
 
 ## Status
 
-Accepted. Phases 0 through 4 were implemented on 2026-07-01; Phases 5
-through 8 remain pending.
+Accepted. Phases 0 through 5 were implemented on 2026-07-01; Phase 6 is
+partially implemented; Phases 7 through 8 remain pending.
 
 ## Date
 
@@ -18,8 +18,8 @@ through 8 remain pending.
 | Phase 2: Fragment And Intersection Store | Implemented | Added bounded per-peer candidate fragments, previous-hash continuity checks, canonical intersection checks, and pruning. |
 | Phase 3: Deterministic Cardano-Oriented Comparator | Implemented | Added a comparator with explicit comparison reasons for longer chain, density, validated VRF tie-break, and deterministic fallback. The trusted/quorum strategy now uses this comparator and respects trust policy. |
 | Phase 4: Header Validation Pipeline Refactor | Implemented | `ShelleyHeaderValidator` is now a compatibility facade over a staged `HeaderValidationPipeline` with `structural`, `kes-signature`, and `opcert-signature` stages plus library builder APIs for add/disable/override. |
-| Phase 5: Praos VRF Proof Validation | Pending | Requires nonce-provider wiring and VRF proof verification against era-specific header data. |
-| Phase 6: Ledger-View Praos Validation | Pending | Requires rollback-safe pool VRF key mapping, active stake lookup, leader threshold validation, and op-cert state. |
+| Phase 5: Praos VRF Proof Validation | Implemented | Added `praos-lite` profile with nonce-provider wiring and `vrf-proof` validation for Praos and TPraos header layouts. Live preprod smoke accepted headers with `vrf-proof` evidence and zero validation rejects. |
+| Phase 6: Ledger-View Praos Validation | Partially Implemented | Pool VRF key hashes are persisted in pool registration history, `praos-ledger` is a supported profile, and `leader-threshold` plus `protocol-view` stages are implemented through a ledger-view provider. `opcert-state` is implemented as a transitional soft check: missing counter state is skipped, but present counter evidence rejects inconsistent headers. Strict op-cert counter validation requires ADR-CONSENSUS-003. |
 | Phase 7: Body Integrity Before Adoption | Pending | Requires body hash/size validation and selection gating when body-before-adoption is enabled. |
 | Phase 8: Runtime Controller Integration | Pending | Requires a runtime controller only after validation and selection inputs are complete. |
 
@@ -174,7 +174,9 @@ Yano already has several required building blocks:
 
 Important gaps remain:
 
-- `header-signature` currently does not verify the Praos VRF proof, leader
+- `header-signature` intentionally does not verify the Praos VRF proof, leader
+  threshold, active stake, pool VRF-key registration, or op-cert counter state.
+- `praos-lite` verifies the header VRF proof, but does not verify leader
   threshold, active stake, pool VRF-key registration, or op-cert counter state.
 - Pool registration persistence does not currently retain the pool VRF key hash,
   so Yano cannot map a block header's VRF key to an active pool from its own
@@ -239,10 +241,10 @@ library configuration deliberately overrides them.
 | `structural` | Decode Shelley+ header CBOR, check shape, sizes, decoded fields, and computed header hash. | Implemented. |
 | `kes-signature` | Verify KES signature over the header body and KES period bounds. | Implemented as a named stage inside the `header-signature` profile. |
 | `opcert-signature` | Verify the operational certificate cold-key signature binds the hot KES key. | Implemented as a named stage inside the `header-signature` profile. |
-| `vrf-proof` | Verify the header VRF proof against the VRF verification key and epoch nonce. | Not implemented. Feasible using existing CCL VRF APIs. |
-| `leader-threshold` | Verify the VRF leader value is below the threshold derived from active stake and active slot coefficient. | Not implemented. Requires ledger-view stake and pool/VRF mapping. |
-| `opcert-state` | Verify op-cert sequence/counter and active issuer against ledger state. | Not implemented. Requires rollback-safe ledger-view state. |
-| `protocol-view` | Verify era/protocol-version/header-size constraints against the correct ledger view. | Partially available through epoch params; not wired to header validation. |
+| `vrf-proof` | Verify the header VRF proof against the VRF verification key and epoch nonce. | Implemented in the `praos-lite` profile using CCL VRF APIs. |
+| `leader-threshold` | Verify the VRF leader value is below the threshold derived from active stake and active slot coefficient. | Implemented in `praos-ledger` through `HeaderValidationLedgerViewProvider`. Requires pool VRF key and active-stake ledger evidence. |
+| `opcert-state` | Verify op-cert sequence/counter and active issuer against ledger state. | Stage implemented as a soft transitional check. It skips when op-cert counter state is absent and rejects when present counter evidence conflicts with the header. Strict fail-closed behavior requires rollback-safe op-cert counter state from ADR-CONSENSUS-003. |
+| `protocol-view` | Verify era/protocol-version/header-size constraints against the correct ledger view. | Implemented in `praos-ledger` through epoch protocol params. |
 
 The existing `header-signature` config value remains for compatibility. It means
 `structural + kes-signature + opcert-signature`; it does not imply VRF leader
@@ -267,6 +269,11 @@ yano:
     validation:
       level: none              # none | structural | header-signature | praos-lite | praos-ledger
       body-level: none         # none | body-integrity | ledger-block
+      start:
+        mode: era              # immediate | era | checkpoint
+        era: conway            # currently supported era-gated start
+        slot:                  # optional first trusted validation anchor slot
+        hash:                  # optional first trusted validation anchor hash
 ```
 
 Proposed profile meanings:
@@ -297,6 +304,41 @@ peer can still present headers from an unregistered or stake-less key.
 untrusted relay-style adoption. It must fail fast at startup until all required
 ledger-view providers are implemented.
 
+### Validation Start Policy
+
+Yano supports two practical deployment models for historical data:
+
+- **Trusted historical sync, strict live validation.** A node may sync
+  pre-Conway history from trusted roots, build the ledger view, and start strict
+  header validation when the chain reaches Conway. This is appropriate for
+  indexer and bridge deployments that trust their historical bootstrap source.
+- **Trusted checkpoint, strict validation after the anchor.** A node may start
+  from a known Conway checkpoint and require post-checkpoint headers to satisfy
+  the configured validation profile. This is the stronger model for
+  public-peer relay or bridge operation.
+
+The start policy is intentionally small:
+
+| Mode | Meaning |
+| --- | --- |
+| `immediate` | Apply the configured validation profile to every Shelley+ header. |
+| `era` | Trust history before the configured era. Start validation once the local chain crosses that era boundary. If `slot` and `hash` are configured, they act as a known first-era-block anchor. If they are omitted, Yano starts validation when the era boundary is observed locally. |
+| `checkpoint` | Trust history up to an explicit `slot`/`hash` anchor, then require validation after that point. This mode must fail fast if either field is missing. |
+
+For public packaged profiles, Yano should include verified first Conway block
+anchors where they are available:
+
+| Network | Era | First Conway block slot | First Conway block hash |
+| --- | --- | ---: | --- |
+| `mainnet` | Conway | `133660855` | `9aa420cf998dbcceec1abaf83ab26294d278d25527e779050ab334c1fadab16c` |
+| `preprod` | Conway | `69638426` | `ecde79b23e343becca15618fc26281ba1aaea2eb1b66ab8828d7a127f5dbc30f` |
+| `preview` | Conway | `34905604` | `cbc88c5f633ace6671f6cbb54a0913e4d7c57697869e951bc032e093f6db5f46` |
+
+These are first-block anchors, not necessarily the exact hard-fork epoch-boundary
+slot. There may be no block at the boundary slot itself. Networks without a
+verified packaged anchor must use `mode: era` without `slot`/`hash`, or require
+the operator to provide a checkpoint explicitly.
+
 Library users need a lower-level API:
 
 ```java
@@ -323,6 +365,70 @@ Builder semantics:
 
 The builder API is the right place for custom validators and overrides. The
 application YAML should not become a long list of low-level toggles by default.
+
+### Custom Header Validators
+
+Library embedders can compose custom header validation directly when they use
+the validation components:
+
+```java
+HeaderValidationPipeline pipeline = HeaderValidationPipeline.builder()
+    .useProfile("praos-lite")
+    .addValidator("bridge-policy", context -> {
+        ShelleyHeaderView header = context.shelleyHeader();
+        boolean accepted = customBridgeRule(header);
+        return accepted
+            ? HeaderValidationResult.accepted("bridge-policy")
+            : HeaderValidationResult.rejected(
+                "bridge-policy",
+                "bridge-policy",
+                "custom bridge header policy rejected the header");
+    })
+    .build();
+```
+
+This appends the custom validator after the selected default profile. Component
+users can also replace one default stage with `overrideValidator(id, validator)`
+or remove a default stage with `disableValidator(id)`. Full `RuntimeNode`
+assembly does not yet expose this custom pipeline as a stable constructor
+parameter; add the customizer SPI below before advertising this as a supported
+node-assembly API.
+
+The default Yano distribution plugin system exposes the same hook through a
+small runtime SPI:
+
+```java
+public interface HeaderValidationCustomizer {
+    void customize(HeaderValidationPipeline.Builder builder);
+}
+```
+
+Distribution plugins can implement both `NodePlugin` and
+`HeaderValidationCustomizer`:
+
+```java
+public final class BridgeHeaderPolicyPlugin
+        implements NodePlugin, HeaderValidationCustomizer {
+    @Override
+    public void customize(HeaderValidationPipeline.Builder builder) {
+        builder.addValidator("bridge-policy", context -> {
+            ShelleyHeaderView header = context.shelleyHeader();
+            return customBridgeRule(header)
+                ? HeaderValidationResult.accepted("bridge-policy")
+                : HeaderValidationResult.rejected(
+                    "bridge-policy",
+                    "bridge-policy",
+                    "custom bridge header policy rejected the header");
+        });
+    }
+}
+```
+
+Runtime assembly discovers plugins before `SyncSubsystem` constructs the header
+validator, applies `useProfile(configuredLevel)`, then applies discovered
+customizers in plugin dependency order before `build()`. This preserves the
+operator-selected default profile while allowing plugins to append stages or
+explicitly override named defaults.
 
 ## Chain Selection Requirements
 
@@ -506,6 +612,12 @@ Acceptance:
   persisted nonce checkpoints.
 - Support TPraos/Praos era differences in nonce contribution extraction.
 
+Implementation status: implemented on 2026-07-01. `praos-lite` installs
+`structural`, `kes-signature`, `opcert-signature`, and `vrf-proof`. Runtime
+passes a read-only epoch nonce supplier backed by canonical nonce tracking. The
+stage verifies Babbage+ Praos VRF proofs with `mkInputVrf` and Shelley through
+Alonzo TPraos leader/nonce VRF proofs with `mkSeedLeader` and `mkSeedNonce`.
+
 Acceptance:
 
 - Tampered VRF proof is rejected.
@@ -528,6 +640,18 @@ Acceptance:
 - A header from an unregistered or stake-less VRF key cannot satisfy
   `praos-ledger`.
 - A header whose VRF output is above threshold cannot satisfy `praos-ledger`.
+
+Implementation status: partially implemented on 2026-07-01. Pool registration
+state now retains the registered VRF key hash from Shelley genesis and on-chain
+pool registration certificates. Runtime wires a `HeaderValidationLedgerViewProvider`
+from Yano account-state reads when available. `leader-threshold` verifies the
+registered VRF key, active stake ratio, active slot coefficient, and VRF leader
+value. `protocol-view` checks protocol major/minor and max header size. The
+`opcert-state` stage is present in the `praos-ledger` profile. It currently
+skips when op-cert counter state is absent for backward compatibility with
+existing chain-state databases, and rejects when present counter evidence
+conflicts with the header. Strict Haskell-style counter validation is tracked in
+ADR-CONSENSUS-003 and requires rollback-safe op-cert counter persistence.
 
 ### Phase 7: Body Integrity Before Adoption
 

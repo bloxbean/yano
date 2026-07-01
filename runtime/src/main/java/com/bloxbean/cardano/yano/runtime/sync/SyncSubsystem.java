@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.runtime.sync;
 
 import com.bloxbean.cardano.yaci.core.common.TxBodyType;
+import com.bloxbean.cardano.yaci.core.model.Era;
 import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Point;
 import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Tip;
 import com.bloxbean.cardano.yaci.core.storage.ChainState;
@@ -61,7 +62,11 @@ import com.bloxbean.cardano.yano.consensus.selection.TrustedOrQuorumCandidateWit
 import com.bloxbean.cardano.yano.p2p.discovery.YaciPeerDiscoveryService;
 import com.bloxbean.cardano.yano.runtime.sync.validation.BodyValidator;
 import com.bloxbean.cardano.yano.runtime.sync.validation.BodyValidatorFactory;
+import com.bloxbean.cardano.yano.runtime.sync.validation.HeaderValidationNonceProvider;
+import com.bloxbean.cardano.yano.runtime.sync.validation.HeaderValidationLedgerViewProvider;
 import com.bloxbean.cardano.yano.runtime.sync.validation.HeaderValidationSnapshot;
+import com.bloxbean.cardano.yano.runtime.sync.validation.HeaderValidationStartGate;
+import com.bloxbean.cardano.yano.runtime.sync.validation.HeaderValidationCustomizer;
 import com.bloxbean.cardano.yano.runtime.sync.validation.HeaderValidator;
 import com.bloxbean.cardano.yano.runtime.sync.validation.HeaderValidatorFactory;
 import com.bloxbean.cardano.yano.p2p.tx.diffusion.PeerClass;
@@ -75,6 +80,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.OptionalLong;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
@@ -182,7 +188,8 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
         this(config, chainState, eventBus, scheduler, serveSubsystem, ledgerStateSubsystem, chainStorage,
                 runtimeRunning, epochParamProviderSupplier, genesisBootstrapDataSupplier,
                 remoteCardanoHost, remoteCardanoPort, protocolMagic, log, defaultPeerRecoveryExecutor(), true,
-                DefaultPeerClientFactory.supervised(), null, null);
+                DefaultPeerClientFactory.supervised(), null, null,
+                HeaderValidationNonceProvider.none(), HeaderValidationLedgerViewProvider.none(), List.of());
     }
 
     public SyncSubsystem(YanoConfig config,
@@ -204,7 +211,8 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
                 runtimeRunning, epochParamProviderSupplier, genesisBootstrapDataSupplier,
                 remoteCardanoHost, remoteCardanoPort, protocolMagic, log,
                 Objects.requireNonNull(peerRecoveryExecutor, "peerRecoveryExecutor"), false,
-                DefaultPeerClientFactory.supervised(), null, null);
+                DefaultPeerClientFactory.supervised(), null, null,
+                HeaderValidationNonceProvider.none(), HeaderValidationLedgerViewProvider.none(), List.of());
     }
 
     public SyncSubsystem(YanoConfig config,
@@ -249,7 +257,8 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
                 runtimeRunning, epochParamProviderSupplier, genesisBootstrapDataSupplier,
                 remoteCardanoHost, remoteCardanoPort, protocolMagic, log,
                 Objects.requireNonNull(peerRecoveryExecutor, "peerRecoveryExecutor"), false,
-                DefaultPeerClientFactory.supervised(), bodyValidator, txDiffusionSupplier);
+                DefaultPeerClientFactory.supervised(), bodyValidator, txDiffusionSupplier,
+                HeaderValidationNonceProvider.none(), HeaderValidationLedgerViewProvider.none(), List.of());
     }
 
     public SyncSubsystem(YanoConfig config,
@@ -270,11 +279,90 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
                          BodyValidator bodyValidator,
                          Supplier<TxDiffusion> txDiffusionSupplier,
                          PeerClientFactory peerClientFactory) {
+        this(config, chainState, eventBus, scheduler, peerRecoveryExecutor, serveSubsystem, ledgerStateSubsystem,
+                chainStorage, runtimeRunning, epochParamProviderSupplier, genesisBootstrapDataSupplier,
+                remoteCardanoHost, remoteCardanoPort, protocolMagic, log, bodyValidator, txDiffusionSupplier,
+                peerClientFactory, HeaderValidationNonceProvider.none(), HeaderValidationLedgerViewProvider.none());
+    }
+
+    public SyncSubsystem(YanoConfig config,
+                         ChainState chainState,
+                         EventBus eventBus,
+                         ScheduledExecutorService scheduler,
+                         ExecutorService peerRecoveryExecutor,
+                         ServeSubsystem serveSubsystem,
+                         LedgerStateSubsystem ledgerStateSubsystem,
+                         ChainStorageSubsystem chainStorage,
+                         BooleanSupplier runtimeRunning,
+                         Supplier<EpochParamProvider> epochParamProviderSupplier,
+                         Supplier<GenesisBootstrapData> genesisBootstrapDataSupplier,
+                         String remoteCardanoHost,
+                         int remoteCardanoPort,
+                         long protocolMagic,
+                         Logger log,
+                         BodyValidator bodyValidator,
+                         Supplier<TxDiffusion> txDiffusionSupplier,
+                         PeerClientFactory peerClientFactory,
+                         HeaderValidationNonceProvider headerNonceProvider) {
+        this(config, chainState, eventBus, scheduler, peerRecoveryExecutor, serveSubsystem, ledgerStateSubsystem,
+                chainStorage, runtimeRunning, epochParamProviderSupplier, genesisBootstrapDataSupplier,
+                remoteCardanoHost, remoteCardanoPort, protocolMagic, log, bodyValidator, txDiffusionSupplier,
+                peerClientFactory, headerNonceProvider, HeaderValidationLedgerViewProvider.none());
+    }
+
+    public SyncSubsystem(YanoConfig config,
+                         ChainState chainState,
+                         EventBus eventBus,
+                         ScheduledExecutorService scheduler,
+                         ExecutorService peerRecoveryExecutor,
+                         ServeSubsystem serveSubsystem,
+                         LedgerStateSubsystem ledgerStateSubsystem,
+                         ChainStorageSubsystem chainStorage,
+                         BooleanSupplier runtimeRunning,
+                         Supplier<EpochParamProvider> epochParamProviderSupplier,
+                         Supplier<GenesisBootstrapData> genesisBootstrapDataSupplier,
+                         String remoteCardanoHost,
+                         int remoteCardanoPort,
+                         long protocolMagic,
+                         Logger log,
+                         BodyValidator bodyValidator,
+                         Supplier<TxDiffusion> txDiffusionSupplier,
+                         PeerClientFactory peerClientFactory,
+                         HeaderValidationNonceProvider headerNonceProvider,
+                         HeaderValidationLedgerViewProvider headerLedgerViewProvider) {
+        this(config, chainState, eventBus, scheduler, peerRecoveryExecutor, serveSubsystem, ledgerStateSubsystem,
+                chainStorage, runtimeRunning, epochParamProviderSupplier, genesisBootstrapDataSupplier,
+                remoteCardanoHost, remoteCardanoPort, protocolMagic, log, bodyValidator, txDiffusionSupplier,
+                peerClientFactory, headerNonceProvider, headerLedgerViewProvider, List.of());
+    }
+
+    public SyncSubsystem(YanoConfig config,
+                         ChainState chainState,
+                         EventBus eventBus,
+                         ScheduledExecutorService scheduler,
+                         ExecutorService peerRecoveryExecutor,
+                         ServeSubsystem serveSubsystem,
+                         LedgerStateSubsystem ledgerStateSubsystem,
+                         ChainStorageSubsystem chainStorage,
+                         BooleanSupplier runtimeRunning,
+                         Supplier<EpochParamProvider> epochParamProviderSupplier,
+                         Supplier<GenesisBootstrapData> genesisBootstrapDataSupplier,
+                         String remoteCardanoHost,
+                         int remoteCardanoPort,
+                         long protocolMagic,
+                         Logger log,
+                         BodyValidator bodyValidator,
+                         Supplier<TxDiffusion> txDiffusionSupplier,
+                         PeerClientFactory peerClientFactory,
+                         HeaderValidationNonceProvider headerNonceProvider,
+                         HeaderValidationLedgerViewProvider headerLedgerViewProvider,
+                         List<HeaderValidationCustomizer> headerValidationCustomizers) {
         this(config, chainState, eventBus, scheduler, serveSubsystem, ledgerStateSubsystem, chainStorage,
                 runtimeRunning, epochParamProviderSupplier, genesisBootstrapDataSupplier,
                 remoteCardanoHost, remoteCardanoPort, protocolMagic, log,
                 Objects.requireNonNull(peerRecoveryExecutor, "peerRecoveryExecutor"), false,
-                Objects.requireNonNull(peerClientFactory, "peerClientFactory"), bodyValidator, txDiffusionSupplier);
+                Objects.requireNonNull(peerClientFactory, "peerClientFactory"), bodyValidator, txDiffusionSupplier,
+                headerNonceProvider, headerLedgerViewProvider, headerValidationCustomizers);
     }
 
     SyncSubsystem(YanoConfig config,
@@ -316,7 +404,8 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
         this(config, chainState, eventBus, scheduler, serveSubsystem, ledgerStateSubsystem, chainStorage,
                 runtimeRunning, epochParamProviderSupplier, genesisBootstrapDataSupplier,
                 remoteCardanoHost, remoteCardanoPort, protocolMagic, log, defaultPeerRecoveryExecutor(), true,
-                peerClientFactory, null, txDiffusionSupplier);
+                peerClientFactory, null, txDiffusionSupplier,
+                HeaderValidationNonceProvider.none(), HeaderValidationLedgerViewProvider.none(), List.of());
     }
 
     SyncSubsystem(YanoConfig config,
@@ -339,7 +428,8 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
         this(config, chainState, eventBus, scheduler, serveSubsystem, ledgerStateSubsystem, chainStorage,
                 runtimeRunning, epochParamProviderSupplier, genesisBootstrapDataSupplier,
                 remoteCardanoHost, remoteCardanoPort, protocolMagic, log, peerRecoveryExecutor,
-                ownsPeerRecoveryExecutor, peerClientFactory, null, null);
+                ownsPeerRecoveryExecutor, peerClientFactory, null, null,
+                HeaderValidationNonceProvider.none(), HeaderValidationLedgerViewProvider.none(), List.of());
     }
 
     SyncSubsystem(YanoConfig config,
@@ -360,7 +450,10 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
                   boolean ownsPeerRecoveryExecutor,
                   PeerClientFactory peerClientFactory,
                   BodyValidator bodyValidator,
-                  Supplier<TxDiffusion> txDiffusionSupplier) {
+                  Supplier<TxDiffusion> txDiffusionSupplier,
+                  HeaderValidationNonceProvider headerNonceProvider,
+                  HeaderValidationLedgerViewProvider headerLedgerViewProvider,
+                  List<HeaderValidationCustomizer> headerValidationCustomizers) {
         this.config = Objects.requireNonNull(config, "config");
         this.chainState = Objects.requireNonNull(chainState, "chainState");
         this.eventBus = Objects.requireNonNull(eventBus, "eventBus");
@@ -381,9 +474,16 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
         this.candidateHeaderStore = new InMemoryCandidateHeaderStore();
         this.headerFanIn = new HeaderFanIn(candidateHeaderStore);
         this.chainSelectionStrategy = new TrustedOrQuorumCandidateWithinRollbackWindow();
-        this.headerValidator = HeaderValidatorFactory.from(
+        HeaderValidator rawHeaderValidator = HeaderValidatorFactory.from(
                 this.upstreamConfig.getValidation(),
-                this.epochParamProviderSupplier.get());
+                this.epochParamProviderSupplier.get(),
+                headerNonceProvider,
+                headerLedgerViewProvider,
+                headerValidationCustomizers);
+        this.headerValidator = HeaderValidationStartGate.wrap(
+                rawHeaderValidator,
+                this.upstreamConfig.getValidation(),
+                this::validationEraStartSlot);
         this.bodyValidator = bodyValidator != null
                 ? bodyValidator
                 : BodyValidatorFactory.from(this.upstreamConfig.getValidation());
@@ -406,6 +506,14 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
         this.peerClientFactory = Objects.requireNonNull(peerClientFactory, "peerClientFactory");
         this.txDiffusionSupplier = txDiffusionSupplier != null ? txDiffusionSupplier : TxDiffusion::disabled;
         this.pipelineConfig = createPipelineConfig();
+    }
+
+    private OptionalLong validationEraStartSlot(String era) {
+        if (era == null || !"conway".equalsIgnoreCase(era.trim())) {
+            return OptionalLong.empty();
+        }
+        var eraService = ledgerStateSubsystem.eraService();
+        return eraService != null ? eraService.getStartSlot(Era.Conway) : OptionalLong.empty();
     }
 
     @Override

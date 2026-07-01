@@ -9,6 +9,7 @@ import com.bloxbean.cardano.yano.api.config.UpstreamPreset;
 import com.bloxbean.cardano.yano.api.config.UpstreamSyncConfig;
 import com.bloxbean.cardano.yano.api.config.UpstreamTxConfig;
 import com.bloxbean.cardano.yano.api.config.UpstreamValidationConfig;
+import com.bloxbean.cardano.yano.api.config.UpstreamValidationStartConfig;
 import com.bloxbean.cardano.yano.api.config.YanoConfig;
 import org.junit.jupiter.api.Test;
 
@@ -124,11 +125,114 @@ class UpstreamConfigTest {
     }
 
     @Test
+    void praosLiteValidationLevelIsSupported() {
+        YanoConfig config = clientConfigWith(UpstreamConfig.builder()
+                .mode(UpstreamPreset.STATIC_MULTI)
+                .peers(List.of(peer("a", "relay-a", 3001), peer("b", "relay-b", 3002)))
+                .validation(UpstreamValidationConfig.builder()
+                        .level("praos-lite")
+                        .build())
+                .build());
+
+        config.validate();
+    }
+
+    @Test
+    void praosLedgerValidationLevelIsSupported() {
+        YanoConfig config = clientConfigWith(UpstreamConfig.builder()
+                .mode(UpstreamPreset.STATIC_MULTI)
+                .peers(List.of(peer("a", "relay-a", 3001), peer("b", "relay-b", 3002)))
+                .validation(UpstreamValidationConfig.builder()
+                        .level("praos-ledger")
+                        .build())
+                .build());
+
+        config.validate();
+    }
+
+    @Test
     void validationDefaultsAreDisabled() {
         UpstreamValidationConfig validation = UpstreamValidationConfig.builder().build();
 
         assertThat(validation.normalizedLevel()).isEqualTo("none");
         assertThat(validation.normalizedBodyLevel()).isEqualTo("none");
+        assertThat(validation.normalizedOpCertCounterMode()).isEqualTo("none");
+        assertThat(validation.getStart().normalizedMode()).isEqualTo("immediate");
+    }
+
+    @Test
+    void validationOpCertCounterModeSupportsCompatAndStrict() {
+        YanoConfig config = clientConfigWith(UpstreamConfig.builder()
+                .mode(UpstreamPreset.STATIC_MULTI)
+                .peers(List.of(peer("a", "relay-a", 3001), peer("b", "relay-b", 3002)))
+                .validation(UpstreamValidationConfig.builder()
+                        .level("praos-ledger")
+                        .opCertCounterMode("compat")
+                        .build())
+                .build());
+        YanoConfig strictConfig = clientConfigWith(UpstreamConfig.builder()
+                .mode(UpstreamPreset.STATIC_MULTI)
+                .peers(List.of(peer("a", "relay-a", 3001), peer("b", "relay-b", 3002)))
+                .validation(UpstreamValidationConfig.builder()
+                        .level("praos-ledger")
+                        .opCertCounterMode("strict")
+                        .build())
+                .build());
+
+        config.validate();
+        strictConfig.validate();
+    }
+
+    @Test
+    void invalidValidationOpCertCounterModeFailsFast() {
+        YanoConfig config = clientConfigWith(UpstreamConfig.builder()
+                .mode(UpstreamPreset.STATIC_MULTI)
+                .peers(List.of(peer("a", "relay-a", 3001), peer("b", "relay-b", 3002)))
+                .validation(UpstreamValidationConfig.builder()
+                        .level("praos-ledger")
+                        .opCertCounterMode("unknown")
+                        .build())
+                .build());
+
+        assertThatThrownBy(config::validate)
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("opcert-counter-mode");
+    }
+
+    @Test
+    void conwayEraValidationStartIsSupported() {
+        YanoConfig config = clientConfigWith(UpstreamConfig.builder()
+                .mode(UpstreamPreset.STATIC_MULTI)
+                .peers(List.of(peer("a", "relay-a", 3001), peer("b", "relay-b", 3002)))
+                .validation(UpstreamValidationConfig.builder()
+                        .level("praos-lite")
+                        .start(UpstreamValidationStartConfig.builder()
+                                .mode("era")
+                                .era("conway")
+                                .build())
+                        .build())
+                .build());
+
+        config.validate();
+    }
+
+    @Test
+    void checkpointValidationStartRequiresSlotAndHash() {
+        YanoConfig config = clientConfigWith(UpstreamConfig.builder()
+                .mode(UpstreamPreset.STATIC_MULTI)
+                .peers(List.of(peer("a", "relay-a", 3001), peer("b", "relay-b", 3002)))
+                .validation(UpstreamValidationConfig.builder()
+                        .level("praos-lite")
+                        .start(UpstreamValidationStartConfig.builder()
+                                .mode("checkpoint")
+                                .slot(69638426)
+                                .build())
+                        .build())
+                .build());
+
+        assertThatThrownBy(config::validate)
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("checkpoint validation start");
     }
 
     @Test
