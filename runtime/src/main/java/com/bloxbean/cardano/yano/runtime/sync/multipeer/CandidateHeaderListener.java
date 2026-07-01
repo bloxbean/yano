@@ -5,6 +5,8 @@ import com.bloxbean.cardano.yaci.core.model.byron.ByronBlockHead;
 import com.bloxbean.cardano.yaci.core.model.byron.ByronEbHead;
 import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Tip;
 import com.bloxbean.cardano.yaci.helper.listener.BlockChainDataListener;
+import com.bloxbean.cardano.yano.consensus.selection.CandidateHeader;
+import com.bloxbean.cardano.yano.consensus.selection.HeaderFanIn;
 import com.bloxbean.cardano.yano.runtime.sync.validation.HeaderValidationResult;
 import com.bloxbean.cardano.yano.runtime.sync.validation.HeaderValidator;
 import org.slf4j.Logger;

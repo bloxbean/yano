@@ -1,4 +1,4 @@
-package com.bloxbean.cardano.yano.runtime.sync.multipeer;
+package com.bloxbean.cardano.yano.consensus.selection;
 
 /**
  * Selects whether a candidate chain can be adopted.

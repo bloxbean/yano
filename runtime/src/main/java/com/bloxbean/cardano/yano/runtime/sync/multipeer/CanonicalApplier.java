@@ -1,5 +1,7 @@
 package com.bloxbean.cardano.yano.runtime.sync.multipeer;
 
+import com.bloxbean.cardano.yano.consensus.selection.CandidateHeader;
+
 /**
  * Single selected-chain writer boundary.
  */

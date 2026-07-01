@@ -3,6 +3,8 @@ package com.bloxbean.cardano.yano.runtime.sync.multipeer;
 import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Point;
 import com.bloxbean.cardano.yaci.core.common.TxBodyType;
 import com.bloxbean.cardano.yaci.helper.PeerClient;
+import com.bloxbean.cardano.yano.consensus.selection.CandidateHeader;
+import com.bloxbean.cardano.yano.consensus.selection.HeaderFanIn;
 import com.bloxbean.cardano.yano.p2p.peer.PeerClientFactory;
 import com.bloxbean.cardano.yano.p2p.peer.PeerEndpoint;
 import com.bloxbean.cardano.yano.runtime.sync.validation.HeaderValidator;
