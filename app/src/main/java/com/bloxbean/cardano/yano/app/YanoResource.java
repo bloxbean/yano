@@ -38,6 +38,12 @@ public class YanoResource {
         return Response.ok(nodeLifecycle.getStatus()).build();
     }
 
+    @GET
+    @Path("/peers")
+    public Response getPeers() {
+        return Response.ok(nodeLifecycle.getPeers()).build();
+    }
+
     @POST
     @Path("/start")
     public Response start() {

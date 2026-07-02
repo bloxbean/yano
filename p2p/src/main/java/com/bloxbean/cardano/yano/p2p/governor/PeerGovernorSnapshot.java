@@ -18,15 +18,17 @@ public record PeerGovernorSnapshot(
         int targetWarmPeers,
         int targetHotPeers,
         long lastReconcileAtMillis,
-        List<PeerDescriptor> peers) {
+        List<PeerDescriptor> peers,
+        List<PeerGovernorPeerInfo> peerInfos) {
 
     public PeerGovernorSnapshot {
         peers = peers != null ? List.copyOf(peers) : List.of();
+        peerInfos = peerInfos != null ? List.copyOf(peerInfos) : List.of();
     }
 
     public static PeerGovernorSnapshot empty(int targetKnownPeers, int targetWarmPeers, int targetHotPeers) {
         return new PeerGovernorSnapshot(
                 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                targetKnownPeers, targetWarmPeers, targetHotPeers, 0L, List.of());
+                targetKnownPeers, targetWarmPeers, targetHotPeers, 0L, List.of(), List.of());
     }
 }

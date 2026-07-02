@@ -37,6 +37,7 @@ import com.bloxbean.cardano.yano.api.model.DevnetRollbackTarget;
 import com.bloxbean.cardano.yano.api.model.DevnetRestoreResult;
 import com.bloxbean.cardano.yano.api.model.FundResult;
 import com.bloxbean.cardano.yano.api.model.GenesisParameters;
+import com.bloxbean.cardano.yano.api.model.NodePeers;
 import com.bloxbean.cardano.yano.api.model.NodeStatus;
 import com.bloxbean.cardano.yano.api.model.ProtocolParamsSnapshot;
 import com.bloxbean.cardano.yano.api.model.SnapshotInfo;
@@ -92,6 +93,8 @@ import com.bloxbean.cardano.yano.runtime.config.NetworkGenesisConfig;
 import com.bloxbean.cardano.yano.runtime.PipelineDataListener;
 import com.bloxbean.cardano.yano.runtime.SlotTimeCalculator;
 import com.bloxbean.cardano.yano.p2p.connection.DefaultRelayConnectionManager;
+import com.bloxbean.cardano.yano.p2p.connection.ProtocolCapabilities;
+import com.bloxbean.cardano.yano.p2p.connection.RelayConnectionInfo;
 import com.bloxbean.cardano.yano.p2p.connection.RelayConnectionManager;
 import com.bloxbean.cardano.yano.p2p.connection.RelayConnectionSnapshot;
 import com.bloxbean.cardano.yano.runtime.debug.DebugLedgerStateAccess;
@@ -123,6 +126,8 @@ import com.bloxbean.cardano.yano.runtime.sync.validation.HeaderValidationLedgerV
 import com.bloxbean.cardano.yano.runtime.sync.validation.HeaderValidationCustomizer;
 import com.bloxbean.cardano.yano.runtime.sync.validation.LedgerStateHeaderValidationLedgerViewProvider;
 import com.bloxbean.cardano.yano.runtime.storage.ChainStorageSubsystem;
+import com.bloxbean.cardano.yano.p2p.governor.PeerDescriptor;
+import com.bloxbean.cardano.yano.p2p.governor.PeerGovernorPeerInfo;
 import com.bloxbean.cardano.yano.p2p.governor.PeerGovernorSnapshot;
 import com.bloxbean.cardano.yano.runtime.sync.SyncSubsystem;
 import com.bloxbean.cardano.yano.runtime.sync.UpstreamStatus;
@@ -140,6 +145,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -3313,6 +3320,153 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 .peerBodyFetchInProgressAgeMillis(peerStatus != null ? peerStatus.bodyFetchInProgressAgeMillis() : null)
                 .timestamp(System.currentTimeMillis())
                 .build();
+    }
+
+    @Override
+    public NodePeers getPeers() {
+        UpstreamStatus upstreamStatus = syncSubsystem.upstreamStatus();
+        RelayConnectionSnapshot connectionSnapshot = relayConnectionManager.snapshot();
+        PeerGovernorSnapshot governorSnapshot = syncSubsystem.peerGovernorSnapshot();
+        Map<String, PeerRow> rows = new LinkedHashMap<>();
+
+        for (PeerGovernorPeerInfo peerInfo : governorSnapshot.peerInfos()) {
+            PeerDescriptor descriptor = peerInfo.descriptor();
+            if (descriptor == null) {
+                continue;
+            }
+            rows.computeIfAbsent(descriptor.id(), PeerRow::new).governor = peerInfo;
+        }
+        for (RelayConnectionInfo connection : connectionSnapshot.connections()) {
+            if (connection == null || connection.key() == null) {
+                continue;
+            }
+            String id = PeerDescriptor.endpointId(connection.key().host(), connection.key().port());
+            rows.computeIfAbsent(id, PeerRow::new).connection = connection;
+        }
+
+        List<NodePeers.NodePeer> peers = rows.values().stream()
+                .map(row -> toNodePeer(row, upstreamStatus))
+                .sorted(Comparator
+                        .comparing(NodePeers.NodePeer::active).reversed()
+                        .thenComparing(peer -> stateRank(peer.governorState()))
+                        .thenComparing(peer -> valueOrEmpty(peer.endpoint())))
+                .toList();
+
+        return new NodePeers(
+                System.currentTimeMillis(),
+                upstreamStatus.activePeerId(),
+                upstreamStatus.activePeerName(),
+                governorSnapshot.knownPeerCount(),
+                governorSnapshot.coldPeerCount(),
+                governorSnapshot.warmPeerCount(),
+                governorSnapshot.hotPeerCount(),
+                governorSnapshot.backoffPeerCount(),
+                governorSnapshot.quarantinedPeerCount(),
+                governorSnapshot.sharablePeerCount(),
+                governorSnapshot.inboundPeerCount(),
+                governorSnapshot.gossipPeerCount(),
+                governorSnapshot.ledgerPeerCount(),
+                governorSnapshot.bootstrapPeerCount(),
+                governorSnapshot.targetKnownPeers(),
+                governorSnapshot.targetWarmPeers(),
+                governorSnapshot.targetHotPeers(),
+                connectionSnapshot.inboundConnectionCount(),
+                connectionSnapshot.outboundConnectionCount(),
+                connectionSnapshot.establishedConnectionCount(),
+                connectionSnapshot.connectingConnectionCount(),
+                connectionSnapshot.rejectedInboundConnections(),
+                connectionSnapshot.failedOutboundConnections(),
+                peers);
+    }
+
+    private static NodePeers.NodePeer toNodePeer(PeerRow row, UpstreamStatus upstreamStatus) {
+        PeerGovernorPeerInfo governor = row.governor;
+        PeerDescriptor descriptor = governor != null ? governor.descriptor() : null;
+        RelayConnectionInfo connection = row.connection;
+        String host = descriptor != null
+                ? descriptor.host()
+                : connection != null && connection.key() != null ? connection.key().host() : null;
+        int port = descriptor != null
+                ? descriptor.port()
+                : connection != null && connection.key() != null ? connection.key().port() : 0;
+        String endpoint = host != null && port > 0 ? host + ":" + port : row.id;
+        ProtocolCapabilities capabilities = connection != null ? connection.capabilities() : null;
+        boolean active = isActivePeer(row.id, endpoint, upstreamStatus);
+        return new NodePeers.NodePeer(
+                row.id,
+                host,
+                port,
+                endpoint,
+                descriptor != null ? descriptor.source().configValue() : null,
+                descriptor != null ? descriptor.sourceId() : null,
+                descriptor != null ? descriptor.trustable() : null,
+                descriptor != null ? descriptor.advertise() : null,
+                descriptor != null ? descriptor.sharable() : null,
+                descriptor != null ? descriptor.score() : null,
+                governor != null && governor.state() != null ? governor.state().name() : null,
+                descriptor != null ? descriptor.firstSeenMillis() : null,
+                descriptor != null ? descriptor.lastSeenMillis() : null,
+                descriptor != null ? descriptor.expiresAtMillis() : null,
+                governor != null && governor.backoffUntilMillis() > 0 ? governor.backoffUntilMillis() : null,
+                connection != null ? connection.connectionId() : null,
+                connection != null && connection.direction() != null ? connection.direction().name() : null,
+                connection != null && connection.state() != null ? connection.state().name() : null,
+                connection != null ? connection.reason() : null,
+                connection != null ? connection.createdAtMillis() : null,
+                connection != null ? connection.updatedAtMillis() : null,
+                capabilities != null ? capabilities.negotiatedVersion() : null,
+                capabilities != null ? capabilities.chainSync() : null,
+                capabilities != null ? capabilities.blockFetch() : null,
+                capabilities != null ? capabilities.txSubmission() : null,
+                capabilities != null ? capabilities.keepAlive() : null,
+                capabilities != null ? capabilities.peerSharing() : null,
+                capabilities != null ? capabilities.query() : null,
+                active,
+                connection != null && connection.established());
+    }
+
+    private static boolean isActivePeer(String id, String endpoint, UpstreamStatus upstreamStatus) {
+        if (upstreamStatus == null) {
+            return false;
+        }
+        String activeId = upstreamStatus.activePeerId();
+        String activeName = upstreamStatus.activePeerName();
+        return matchesPeer(id, activeId)
+                || matchesPeer(endpoint, activeId)
+                || matchesPeer(id, activeName)
+                || matchesPeer(endpoint, activeName);
+    }
+
+    private static boolean matchesPeer(String left, String right) {
+        return left != null && right != null && left.equalsIgnoreCase(right);
+    }
+
+    private static int stateRank(String state) {
+        if (state == null) {
+            return 99;
+        }
+        return switch (state) {
+            case "HOT" -> 0;
+            case "WARM" -> 1;
+            case "COLD" -> 2;
+            case "BACKOFF" -> 3;
+            case "QUARANTINED" -> 4;
+            default -> 99;
+        };
+    }
+
+    private static String valueOrEmpty(String value) {
+        return value != null ? value : "";
+    }
+
+    private static final class PeerRow {
+        private final String id;
+        private PeerGovernorPeerInfo governor;
+        private RelayConnectionInfo connection;
+
+        private PeerRow(String id) {
+            this.id = id;
+        }
     }
 
     private ChainTip statusLocalTip() {

@@ -178,6 +178,9 @@ public final class PeerGovernor implements RelayConnectionListener {
                     lastReconcileAtMillis,
                     orderedPeersForPersistence().stream()
                             .map(GovernedPeer::descriptor)
+                            .toList(),
+                    orderedPeersForPersistence().stream()
+                            .map(GovernedPeer::peerInfo)
                             .toList());
         }
     }
@@ -465,6 +468,10 @@ public final class PeerGovernor implements RelayConnectionListener {
 
         private PeerStoreEntry toStoreEntry() {
             return descriptor().toStoreEntry();
+        }
+
+        private PeerGovernorPeerInfo peerInfo() {
+            return new PeerGovernorPeerInfo(descriptor(), state, backoffUntilMillis);
         }
     }
 }

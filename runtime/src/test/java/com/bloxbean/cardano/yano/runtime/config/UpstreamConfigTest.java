@@ -311,6 +311,19 @@ class UpstreamConfigTest {
     }
 
     @Test
+    void allHotTxForwardingPolicyIsAllowed() {
+        YanoConfig config = clientConfigWith(UpstreamConfig.builder()
+                .mode(UpstreamPreset.P2P_RELAY)
+                .peers(List.of(peer("a", "relay-a", 3001), peer("b", "relay-b", 3002)))
+                .tx(UpstreamTxConfig.builder()
+                        .forwarding("all-hot")
+                        .build())
+                .build());
+
+        config.validate();
+    }
+
+    @Test
     void invalidUpstreamPolicyValuesFailFast() {
         assertThatThrownBy(() -> clientConfigWith(UpstreamConfig.builder()
                 .mode(UpstreamPreset.STATIC_MULTI)
@@ -326,7 +339,7 @@ class UpstreamConfigTest {
                 .mode(UpstreamPreset.STATIC_MULTI)
                 .peers(List.of(peer("a", "relay-a", 3001), peer("b", "relay-b", 3002)))
                 .tx(UpstreamTxConfig.builder()
-                        .forwarding("all-hot")
+                        .forwarding("all-peers")
                         .build())
                 .build()).validate())
                 .isInstanceOf(IllegalArgumentException.class)

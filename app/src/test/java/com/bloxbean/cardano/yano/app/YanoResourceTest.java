@@ -30,6 +30,16 @@ public class YanoResourceTest {
     }
 
     @Test
+    public void testGetPeers() {
+        given()
+            .when().get("/api/v1/node/peers")
+            .then()
+                .statusCode(200)
+                .body("peers", notNullValue())
+                .body("knownPeerCount", notNullValue());
+    }
+
+    @Test
     public void testHealthCheck() {
         given()
             .when().get("/q/health/ready")
