@@ -106,6 +106,32 @@ class YanoProducerTest {
     }
 
     @Test
+    void relayTxDiffusionDefaultsToAllHotForwarding() {
+        var producer = new YanoProducer(Thread.currentThread().getContextClassLoader());
+        producer.appConfig = new PresentConfig(Map.of(
+                YanoPropertyKeys.Upstream.MODE, "p2p-relay",
+                YanoPropertyKeys.Tx.DIFFUSION_ENABLED, "true"));
+
+        var upstream = producer.parseUpstreamConfig();
+
+        assertNotNull(upstream);
+        assertEquals("all-hot", upstream.getTx().normalizedForwarding());
+    }
+
+    @Test
+    void allHotDiffusionModeUsesAllHotForwarding() {
+        var producer = new YanoProducer(Thread.currentThread().getContextClassLoader());
+        producer.appConfig = new PresentConfig(Map.of(
+                YanoPropertyKeys.Upstream.MODE, "p2p-relay",
+                YanoPropertyKeys.Tx.DIFFUSION_MODE, "all-hot"));
+
+        var upstream = producer.parseUpstreamConfig();
+
+        assertNotNull(upstream);
+        assertEquals("all-hot", upstream.getTx().normalizedForwarding());
+    }
+
+    @Test
     void localSubmitOnlyModeKeepsLegacyTrustedHotForwardingTarget() {
         var producer = new YanoProducer(Thread.currentThread().getContextClassLoader());
         producer.appConfig = new PresentConfig(Map.of(

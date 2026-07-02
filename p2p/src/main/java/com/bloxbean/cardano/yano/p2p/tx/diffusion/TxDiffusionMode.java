@@ -26,7 +26,14 @@ public enum TxDiffusionMode {
         if (this == DISABLED || peerClass == null) {
             return false;
         }
-        return peerClass == PeerClass.ACTIVE_SELECTED || peerClass == PeerClass.TRUSTED_HOT;
+        return switch (this) {
+            case DISABLED -> false;
+            case LOCAL_SUBMIT_ONLY -> peerClass == PeerClass.ACTIVE_SELECTED || peerClass == PeerClass.TRUSTED_HOT;
+            case TRUSTED_HOT -> peerClass.trusted();
+            case ALL_HOT -> peerClass == PeerClass.ACTIVE_SELECTED
+                    || peerClass == PeerClass.TRUSTED_HOT
+                    || peerClass == PeerClass.UNTRUSTED_HOT;
+        };
     }
 
     public boolean networkIngressAllowed(PeerClass peerClass) {

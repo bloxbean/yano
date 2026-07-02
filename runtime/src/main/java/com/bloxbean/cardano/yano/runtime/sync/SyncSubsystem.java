@@ -665,9 +665,12 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
         TxDiffusion txDiffusion = txDiffusion();
         PeerSession activeSession = peerSession;
         ConfiguredUpstreamPeer active = activeUpstreamPeer();
+        boolean allHot = "all-hot".equals(forwarding);
+        boolean allHotTrusted = "all-hot-trusted".equals(forwarding);
         if (activeSession != null && activeSession.isRunning()
                 && ("active-selected".equals(forwarding)
-                || ("all-hot-trusted".equals(forwarding) && active.trusted()))) {
+                || allHot
+                || (allHotTrusted && active.trusted()))) {
             PeerClass peerClass = PeerClass.ACTIVE_SELECTED;
             try {
                 if (!txDiffusion.isEnabled()
@@ -682,12 +685,12 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
                 log.warn("Failed to forward transaction {} to upstream node: {}", txHash, e.getMessage());
             }
         }
-        if ("all-hot-trusted".equals(forwarding)) {
+        if (allHot || allHotTrusted) {
             observerSessions.values().forEach(observer -> {
-                if (!observer.trusted()) {
+                if (allHotTrusted && !observer.trusted()) {
                     return;
                 }
-                PeerClass peerClass = PeerClass.TRUSTED_HOT;
+                PeerClass peerClass = observer.trusted() ? PeerClass.TRUSTED_HOT : PeerClass.UNTRUSTED_HOT;
                 try {
                     if (!txDiffusion.isEnabled()
                             || txDiffusion.reserveLocalSubmitForward(observer.peerId(), peerClass, txHash, txCbor.length)) {

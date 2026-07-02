@@ -830,7 +830,7 @@ public class YanoProducer {
         String legacyForwarding = configString(YanoPropertyKeys.Upstream.TX_FORWARDING, "active-selected");
         java.util.Optional<String> configuredDiffusionMode = configuredTxDiffusionMode();
         if (configuredDiffusionMode.isEmpty()) {
-            return txDiffusionEnabled ? "all-hot-trusted" : "disabled";
+            return txDiffusionEnabled ? "all-hot" : "disabled";
         }
 
         String mode = configuredDiffusionMode.get().trim().toLowerCase(java.util.Locale.ROOT);
@@ -842,7 +842,8 @@ public class YanoProducer {
                         : "active-selected";
                 yield "all-hot-trusted".equals(normalizedLegacy) ? "all-hot-trusted" : "active-selected";
             }
-            case "trusted-hot", "all-hot" -> "all-hot-trusted";
+            case "trusted-hot" -> "all-hot-trusted";
+            case "all-hot" -> "all-hot";
             default -> "disabled";
         };
     }

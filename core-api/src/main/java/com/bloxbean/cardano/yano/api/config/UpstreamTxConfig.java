@@ -12,7 +12,7 @@ import java.util.Set;
 @Data
 @Builder(toBuilder = true)
 public class UpstreamTxConfig {
-    private static final Set<String> SUPPORTED_FORWARDING = Set.of("active-selected", "all-hot-trusted", "disabled");
+    private static final Set<String> SUPPORTED_FORWARDING = Set.of("active-selected", "all-hot", "all-hot-trusted", "disabled");
 
     @Builder.Default
     private String forwarding = "active-selected";

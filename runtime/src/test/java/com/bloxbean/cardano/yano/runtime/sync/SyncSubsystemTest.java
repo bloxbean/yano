@@ -676,6 +676,59 @@ class SyncSubsystemTest {
     }
 
     @Test
+    void allHotTxForwardingTargetsUntrustedObserverPeers() {
+        YanoConfig config = clientConfig().toBuilder()
+                .remoteHost(null)
+                .remotePort(0)
+                .upstream(UpstreamConfig.builder()
+                        .mode(UpstreamPreset.STATIC_MULTI)
+                        .peers(List.of(
+                                upstreamPeer("peer-a", "peer-a", 3001, 0),
+                                untrustedUpstreamPeer("peer-b", "peer-b", 3002, 1)))
+                        .sync(UpstreamSyncConfig.builder()
+                                .fanInStart("always")
+                                .build())
+                        .governor(UpstreamGovernorConfig.builder()
+                                .targetHot(2)
+                                .build())
+                        .tx(UpstreamTxConfig.builder()
+                                .forwarding("all-hot")
+                                .build())
+                        .build())
+                .build();
+        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+        List<String> headerSyncStarts = Collections.synchronizedList(new ArrayList<>());
+        List<String> txForwards = Collections.synchronizedList(new ArrayList<>());
+        DefaultTxDiffusion diffusion = new DefaultTxDiffusion(
+                TxDiffusionMode.ALL_HOT,
+                TxCatalog.empty(),
+                txCbor -> "unused",
+                100,
+                1_048_576,
+                60_000,
+                LoggerFactory.getLogger(SyncSubsystemTest.class));
+        TestRuntime runtime = new TestRuntime(config, scheduler, () -> true,
+                (endpoint, point) -> new RecordingPeerClient(endpoint, point, headerSyncStarts, txForwards),
+                null,
+                () -> diffusion);
+
+        try {
+            SyncSubsystem sync = runtime.sync(null);
+
+            sync.startClientSync();
+            waitForAttempt(headerSyncStarts, "peer-b:3002");
+            sync.submitTxBytes("tx-1", new byte[] {1, 2, 3}, TxBodyType.ALONZO);
+
+            waitForAttempt(txForwards, "peer-b:3002");
+            assertThat(txForwards).contains("peer-a:3001", "peer-b:3002");
+            assertThat(diffusion.stats().outboundForwarded()).isEqualTo(2L);
+        } finally {
+            runtime.close();
+            scheduler.shutdownNow();
+        }
+    }
+
+    @Test
     void txDiffusionSuppressesRepeatedLocalSubmitForwardToSamePeer() {
         YanoConfig config = clientConfig();
         ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
@@ -796,6 +849,12 @@ class SyncSubsystemTest {
                 .port(port)
                 .priority(priority)
                 .trust("trusted")
+                .build();
+    }
+
+    private static UpstreamPeerConfig untrustedUpstreamPeer(String id, String host, int port, int priority) {
+        return upstreamPeer(id, host, port, priority).toBuilder()
+                .trust("untrusted")
                 .build();
     }
 
