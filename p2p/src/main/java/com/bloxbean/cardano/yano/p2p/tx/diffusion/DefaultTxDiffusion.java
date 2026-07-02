@@ -20,9 +20,12 @@ public final class DefaultTxDiffusion implements TxDiffusion {
     private final Logger log;
     private final ConcurrentHashMap<String, PeerTxState> peers = new ConcurrentHashMap<>();
     private final AtomicLong acceptedMempoolEvents = new AtomicLong();
-    private final AtomicLong inboundAccepted = new AtomicLong();
-    private final AtomicLong inboundRejected = new AtomicLong();
-    private final AtomicLong inboundIgnored = new AtomicLong();
+    private final AtomicLong inboundTxIdsRequested = new AtomicLong();
+    private final AtomicLong inboundTxIdsRejected = new AtomicLong();
+    private final AtomicLong inboundTxIdsIgnored = new AtomicLong();
+    private final AtomicLong inboundTxBodiesAccepted = new AtomicLong();
+    private final AtomicLong inboundTxBodiesRejected = new AtomicLong();
+    private final AtomicLong inboundTxBodiesIgnored = new AtomicLong();
     private final AtomicLong outboundForwarded = new AtomicLong();
     private final AtomicLong outboundSuppressed = new AtomicLong();
     private final AtomicLong servedTxs = new AtomicLong();
@@ -100,8 +103,9 @@ public final class DefaultTxDiffusion implements TxDiffusion {
                 maxInFlightTxsPerPeer,
                 maxInFlightBytesPerPeer,
                 System.currentTimeMillis());
-        inboundIgnored.addAndGet(plan.ignored());
-        inboundRejected.addAndGet(plan.rejected());
+        inboundTxIdsRequested.addAndGet(plan.requested().size());
+        inboundTxIdsIgnored.addAndGet(plan.ignored());
+        inboundTxIdsRejected.addAndGet(plan.rejected());
         return plan;
     }
 
@@ -155,9 +159,9 @@ public final class DefaultTxDiffusion implements TxDiffusion {
                 log.warn("Failed to admit diffused tx from {}: {}", peerId, summarizeFailure(e));
             }
         }
-        inboundAccepted.addAndGet(accepted);
-        inboundRejected.addAndGet(rejected);
-        inboundIgnored.addAndGet(ignored);
+        inboundTxBodiesAccepted.addAndGet(accepted);
+        inboundTxBodiesRejected.addAndGet(rejected);
+        inboundTxBodiesIgnored.addAndGet(ignored);
         return new TxBodyIngressResult(accepted, rejected, ignored, acceptedBytes);
     }
 
@@ -208,9 +212,12 @@ public final class DefaultTxDiffusion implements TxDiffusion {
                 mode.enabled(),
                 peers.size(),
                 acceptedMempoolEvents.get(),
-                inboundAccepted.get(),
-                inboundRejected.get(),
-                inboundIgnored.get(),
+                inboundTxIdsRequested.get(),
+                inboundTxIdsRejected.get(),
+                inboundTxIdsIgnored.get(),
+                inboundTxBodiesAccepted.get(),
+                inboundTxBodiesRejected.get(),
+                inboundTxBodiesIgnored.get(),
                 outboundForwarded.get(),
                 outboundSuppressed.get(),
                 servedTxs.get(),

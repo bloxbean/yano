@@ -499,9 +499,12 @@ planning, and tx body serving exist:
 
 - `txDiffusionPeerCount`
 - `txDiffusionAcceptedMempoolEvents`
-- `txDiffusionInboundAccepted`
-- `txDiffusionInboundRejected`
-- `txDiffusionInboundIgnored`
+- `txDiffusionInboundTxIdsRequested`
+- `txDiffusionInboundTxIdsRejected`
+- `txDiffusionInboundTxIdsIgnored`
+- `txDiffusionInboundTxBodiesAccepted`
+- `txDiffusionInboundTxBodiesRejected`
+- `txDiffusionInboundTxBodiesIgnored`
 - `txDiffusionOutboundForwarded`
 - `txDiffusionOutboundSuppressed`
 - `txDiffusionServedTxs`

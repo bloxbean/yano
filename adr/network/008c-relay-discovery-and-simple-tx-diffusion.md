@@ -243,7 +243,7 @@ Live preprod checks:
   requests it.
 - Submit a simple preprod transaction to the local Haskell node.
 - Confirm Yano accepts the diffused tx through N2N TxSubmission and status
-  increments `txDiffusionInboundAccepted`.
+  increments `txDiffusionInboundTxBodiesAccepted`.
 
 ## Consequences
 

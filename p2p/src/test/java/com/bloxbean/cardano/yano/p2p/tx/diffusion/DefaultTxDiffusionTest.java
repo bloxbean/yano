@@ -36,8 +36,14 @@ class DefaultTxDiffusionTest {
                 .containsExactly(hash(unknownTx1));
         assertThat(plan.ignored()).isEqualTo(1);
         assertThat(plan.rejected()).isEqualTo(1);
-        assertThat(diffusion.stats().inFlightTxs()).isEqualTo(1);
-        assertThat(diffusion.stats().inFlightBytes()).isEqualTo(unknownTx1.length);
+        TxDiffusionStats stats = diffusion.stats();
+        assertThat(stats.inboundTxIdsRequested()).isEqualTo(1);
+        assertThat(stats.inboundTxIdsIgnored()).isEqualTo(1);
+        assertThat(stats.inboundTxIdsRejected()).isEqualTo(1);
+        assertThat(stats.inboundTxBodiesAccepted()).isZero();
+        assertThat(stats.inboundTxBodiesRejected()).isZero();
+        assertThat(stats.inFlightTxs()).isEqualTo(1);
+        assertThat(stats.inFlightBytes()).isEqualTo(unknownTx1.length);
     }
 
     @Test
@@ -96,7 +102,34 @@ class DefaultTxDiffusionTest {
         assertThat(result.ignored()).isZero();
         assertThat(admittedTx.get()).isSameAs(tx);
         assertThat(admittedOrigin.get()).isEqualTo("tx-diffusion:peer-a");
-        assertThat(diffusion.stats().inFlightTxs()).isZero();
+        TxDiffusionStats stats = diffusion.stats();
+        assertThat(stats.inboundTxIdsRequested()).isEqualTo(1);
+        assertThat(stats.inboundTxBodiesAccepted()).isEqualTo(1);
+        assertThat(stats.inboundTxBodiesRejected()).isZero();
+        assertThat(stats.inFlightTxs()).isZero();
+    }
+
+    @Test
+    void admissionFailureIncrementsBodyRejectedWithoutChangingTxIdRejected() {
+        FakeTxCatalog catalog = new FakeTxCatalog();
+        byte[] tx = sampleTx(10);
+        DefaultTxDiffusion diffusion = diffusion(catalog, 10, 1_000_000);
+        String peerId = "peer-a";
+
+        diffusion.onPeerTxIds(peerId, PeerClass.DOWNSTREAM,
+                List.of(new TxIdAndSize(hash(tx), tx.length)));
+        TxBodyIngressResult result = diffusion.onPeerTxBodies(peerId, PeerClass.DOWNSTREAM, List.of(tx),
+                (txCbor, origin) -> {
+                    throw new IllegalArgumentException("blocked");
+                });
+
+        assertThat(result.accepted()).isZero();
+        assertThat(result.rejected()).isEqualTo(1);
+        TxDiffusionStats stats = diffusion.stats();
+        assertThat(stats.inboundTxIdsRequested()).isEqualTo(1);
+        assertThat(stats.inboundTxIdsRejected()).isZero();
+        assertThat(stats.inboundTxBodiesAccepted()).isZero();
+        assertThat(stats.inboundTxBodiesRejected()).isEqualTo(1);
     }
 
     @Test

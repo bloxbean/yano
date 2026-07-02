@@ -510,7 +510,8 @@
           <div>
             <div class="metric"><span>Mode</span><span id="txDiffusionMode" class="mono v">-</span></div>
             <div class="metric"><span>Forwarded / Suppressed</span><span id="txForwarded" class="mono v">-</span></div>
-            <div class="metric"><span>Inbound Accepted</span><span id="txInbound" class="mono v">-</span></div>
+            <div class="metric"><span>Tx IDs</span><span id="txIdsInbound" class="mono v">-</span></div>
+            <div class="metric"><span>Tx Bodies</span><span id="txBodiesInbound" class="mono v">-</span></div>
             <div class="metric"><span>Served</span><span id="txServed" class="mono v">-</span></div>
             <div class="metric"><span>In Flight</span><span id="txInFlight" class="mono v">-</span></div>
           </div>
@@ -1101,7 +1102,7 @@
         const mempoolKb = (s.mempoolBytes ?? 0) / 1024;
         const delta = previousStatus ? {
           forwarded: Math.max(0, (s.txDiffusionOutboundForwarded ?? 0) - (previousStatus.txDiffusionOutboundForwarded ?? 0)),
-          inbound: Math.max(0, (s.txDiffusionInboundAccepted ?? 0) - (previousStatus.txDiffusionInboundAccepted ?? 0)),
+          inbound: Math.max(0, (s.txDiffusionInboundTxBodiesAccepted ?? 0) - (previousStatus.txDiffusionInboundTxBodiesAccepted ?? 0)),
           served: Math.max(0, (s.txDiffusionServedTxs ?? 0) - (previousStatus.txDiffusionServedTxs ?? 0))
         } : { forwarded: 0, inbound: 0, served: 0 };
 
@@ -1142,7 +1143,8 @@
 
         text('txDiffusionMode', `${s.txDiffusionMode ?? '-'} / ${s.upstreamTxForwarding ?? '-'}`);
         text('txForwarded', `${fmt(s.txDiffusionOutboundForwarded)} / ${fmt(s.txDiffusionOutboundSuppressed)}`);
-        text('txInbound', `${fmt(s.txDiffusionInboundAccepted)} accepted, ${fmt(s.txDiffusionInboundRejected)} rejected`);
+        text('txIdsInbound', `${fmt(s.txDiffusionInboundTxIdsRequested)} req / ${fmt(s.txDiffusionInboundTxIdsIgnored)} ignored / ${fmt(s.txDiffusionInboundTxIdsRejected)} skipped`);
+        text('txBodiesInbound', `${fmt(s.txDiffusionInboundTxBodiesAccepted)} admitted / ${fmt(s.txDiffusionInboundTxBodiesRejected)} rejected / ${fmt(s.txDiffusionInboundTxBodiesIgnored)} ignored`);
         text('txServed', `${fmt(s.txDiffusionServedTxs)} / ${bytes(s.txDiffusionServedBytes)}`);
         text('txInFlight', `${fmt(s.txDiffusionInFlightTxs)} / ${bytes(s.txDiffusionInFlightBytes)}`);
 

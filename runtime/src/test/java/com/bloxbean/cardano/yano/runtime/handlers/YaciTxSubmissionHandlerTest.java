@@ -143,7 +143,7 @@ class YaciTxSubmissionHandlerTest {
         assertThat(admittedOrigin.get()).isEqualTo("tx-diffusion:peer-1");
         assertThat(handler.getTxsAccepted()).isEqualTo(1L);
         assertThat(handler.getTxsRejected()).isZero();
-        assertThat(diffusion.stats().inboundAccepted()).isEqualTo(1L);
+        assertThat(diffusion.stats().inboundTxBodiesAccepted()).isEqualTo(1L);
         assertThat(diffusion.stats().inFlightTxs()).isZero();
     }
 
@@ -169,7 +169,7 @@ class YaciTxSubmissionHandlerTest {
 
         assertThat(attempts.get()).isZero();
         assertThat(handler.getTxsAccepted()).isZero();
-        assertThat(diffusion.stats().inboundIgnored()).isEqualTo(1L);
+        assertThat(diffusion.stats().inboundTxBodiesIgnored()).isEqualTo(1L);
     }
 
     private static ReplyTxs replyWith(byte[] txBytes) {

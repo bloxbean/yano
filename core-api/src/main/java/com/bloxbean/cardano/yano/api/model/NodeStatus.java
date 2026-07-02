@@ -368,19 +368,34 @@ public class NodeStatus {
     private final Long txDiffusionAcceptedMempoolEvents;
 
     /**
-     * Count of inbound diffused transactions accepted into the mempool.
+     * Count of inbound transaction ids selected for body request.
      */
-    private final Long txDiffusionInboundAccepted;
+    private final Long txDiffusionInboundTxIdsRequested;
 
     /**
-     * Count of inbound diffused transactions rejected by validation or policy.
+     * Count of inbound transaction ids not requested because of policy, limits, or cooldown.
      */
-    private final Long txDiffusionInboundRejected;
+    private final Long txDiffusionInboundTxIdsRejected;
 
     /**
-     * Count of inbound diffused transactions ignored as duplicate, unplanned, or disabled.
+     * Count of inbound transaction ids ignored because they were already known or already requested.
      */
-    private final Long txDiffusionInboundIgnored;
+    private final Long txDiffusionInboundTxIdsIgnored;
+
+    /**
+     * Count of inbound transaction bodies admitted into the mempool.
+     */
+    private final Long txDiffusionInboundTxBodiesAccepted;
+
+    /**
+     * Count of inbound transaction bodies rejected by parsing, validation, or mempool admission.
+     */
+    private final Long txDiffusionInboundTxBodiesRejected;
+
+    /**
+     * Count of inbound transaction bodies ignored because they were not requested or ingress was disabled.
+     */
+    private final Long txDiffusionInboundTxBodiesIgnored;
 
     /**
      * Count of local transactions forwarded to tx-submission peers.
