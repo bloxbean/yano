@@ -27,6 +27,7 @@ import com.bloxbean.cardano.yano.api.TxEvaluationGateway;
 import com.bloxbean.cardano.yano.api.TxGateway;
 import com.bloxbean.cardano.yano.api.config.RuntimeOptions;
 import com.bloxbean.cardano.yano.api.config.YanoConfig;
+import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
 import com.bloxbean.cardano.yano.api.db.RocksDbAccess;
 import com.bloxbean.cardano.yano.api.genesis.GenesisBootstrapData;
 import com.bloxbean.cardano.yano.api.listener.NodeEventListener;
@@ -1025,6 +1026,14 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 if (getEpochParamProvider() != null) {
                     BlockProducerHelper.setEpochParamProvider(getEpochParamProvider());
                 }
+                boolean processSkippedEpochs = resolveGlobalBoolean(
+                        YanoPropertyKeys.BlockProducer.PROCESS_SKIPPED_EPOCHS, false);
+                if (processSkippedEpochs && !config.isDevMode()) {
+                    log.warn("{} requires dev mode (yano.dev-mode=true); ignoring",
+                            YanoPropertyKeys.BlockProducer.PROCESS_SKIPPED_EPOCHS);
+                    processSkippedEpochs = false;
+                }
+                BlockProducerHelper.setProcessSkippedEpochs(processSkippedEpochs);
             }
 
             @Override
@@ -1320,6 +1329,17 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
         }
 
         initNonceTracking();
+    }
+
+    private boolean resolveGlobalBoolean(String key, boolean def) {
+        Object value = runtimeOptions.globals().get(key);
+        if (value instanceof Boolean bool) {
+            return bool;
+        }
+        if (value != null) {
+            return Boolean.parseBoolean(String.valueOf(value));
+        }
+        return def;
     }
 
     public static boolean shouldInitializeRelayNonceTracking(boolean blockProducerEnabled, boolean bootstrapEnabled) {

@@ -299,6 +299,8 @@ public final class YanoPropertyKeys {
                 "yano.block-producer.past-time-travel-mode";
         public static final String PAST_TIME_TRAVEL_SLOT_LEADER_MODE =
                 "yano.block-producer.past-time-travel-slot-leader-mode";
+        public static final String PROCESS_SKIPPED_EPOCHS =
+                "yano.block-producer.process-skipped-epochs";
 
         private BlockProducer() {
         }

@@ -38,6 +38,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentSkipListMap;
 
 /**
  * Tracks protocol parameter updates and provides epoch-resolved params.
@@ -79,8 +80,17 @@ public class EpochParamTracker implements EpochParamProvider {
     private ColumnFamilyHandle cfEpochParams;
     private volatile EraProvider eraProvider;
 
-    // Accumulated per-epoch resolved params (epoch → full effective snapshot stored as ProtocolParamUpdate)
-    private final ConcurrentHashMap<Integer, ProtocolParamUpdate> epochParams = new ConcurrentHashMap<>();
+    // Accumulated per-epoch resolved params (epoch → full effective snapshot stored as ProtocolParamUpdate).
+    // Sorted so carry-forward lookups can resolve gap epochs via floorEntry.
+    private final ConcurrentSkipListMap<Integer, ProtocolParamUpdate> epochParams = new ConcurrentSkipListMap<>();
+
+    // Carry-forward lookup for epochs without an exact entry (devnet only).
+    // The devnet block producer can jump multiple epochs at once (restart/restore against
+    // wall-clock slots), leaving gap epochs with no finalized entry. Params never change
+    // without a processed boundary, so the nearest earlier snapshot is the correct value.
+    // Must stay off for real networks: a syncing node should not serve stale params for
+    // epochs it has not reached yet.
+    private volatile boolean carryForwardLookup;
 
     // Pending proposals for next epoch (pre-Conway Update mechanism)
     private final ConcurrentHashMap<Integer, ProtocolParamUpdate> pendingUpdates = new ConcurrentHashMap<>();
@@ -130,6 +140,30 @@ public class EpochParamTracker implements EpochParamProvider {
 
     public boolean isEnabled() {
         return enabled;
+    }
+
+    /**
+     * Enable carry-forward resolution for epochs without an exact finalized entry.
+     * Intended for devnet (dev-mode) only — see {@link #resolve(int)}.
+     */
+    public void setCarryForwardLookup(boolean carryForwardLookup) {
+        this.carryForwardLookup = carryForwardLookup;
+    }
+
+    public boolean isCarryForwardLookup() {
+        return carryForwardLookup;
+    }
+
+    /**
+     * Resolve params for an epoch: exact entry first, then (when carry-forward is enabled)
+     * the nearest earlier finalized entry. Never resolves forward — epochs before the first
+     * tracked entry still return null and fall back to the base provider.
+     */
+    private ProtocolParamUpdate resolve(int epoch) {
+        ProtocolParamUpdate exact = epochParams.get(epoch);
+        if (exact != null || !carryForwardLookup) return exact;
+        Map.Entry<Integer, ProtocolParamUpdate> floor = epochParams.floorEntry(epoch);
+        return floor != null ? floor.getValue() : null;
     }
 
     /**
@@ -309,9 +343,11 @@ public class EpochParamTracker implements EpochParamProvider {
 
     /**
      * Get the resolved ProtocolParamUpdate for an epoch, or null if none tracked.
+     * With carry-forward lookup enabled (devnet), gap epochs resolve to the nearest
+     * earlier finalized entry.
      */
     public ProtocolParamUpdate getResolvedParams(int epoch) {
-        return epochParams.get(epoch);
+        return resolve(epoch);
     }
 
     private ProtocolParamUpdate materializeEffectiveParams(int epoch, ProtocolParamUpdate pending) {
@@ -562,11 +598,8 @@ public class EpochParamTracker implements EpochParamProvider {
     }
 
     private ProtocolParamUpdate previousSnapshot(int epoch) {
-        return epochParams.entrySet().stream()
-                .filter(entry -> entry.getKey() < epoch)
-                .max(Map.Entry.comparingByKey())
-                .map(Map.Entry::getValue)
-                .orElse(null);
+        Map.Entry<Integer, ProtocolParamUpdate> lower = epochParams.lowerEntry(epoch);
+        return lower != null ? lower.getValue() : null;
     }
 
     private boolean isEraTransition(int epoch, Era era) {
@@ -682,77 +715,77 @@ public class EpochParamTracker implements EpochParamProvider {
 
     @Override
     public BigInteger getKeyDeposit(long epoch) {
-        var update = epochParams.get((int) epoch);
+        var update = resolve((int) epoch);
         if (update != null) return update.getKeyDeposit();
         return baseProvider.getKeyDeposit(epoch);
     }
 
     @Override
     public BigInteger getPoolDeposit(long epoch) {
-        var update = epochParams.get((int) epoch);
+        var update = resolve((int) epoch);
         if (update != null) return update.getPoolDeposit();
         return baseProvider.getPoolDeposit(epoch);
     }
 
     @Override
     public Integer getMinFeeA(long epoch) {
-        var update = epochParams.get((int) epoch);
+        var update = resolve((int) epoch);
         if (update != null) return update.getMinFeeA();
         return baseProvider.getMinFeeA(epoch);
     }
 
     @Override
     public Integer getMinFeeB(long epoch) {
-        var update = epochParams.get((int) epoch);
+        var update = resolve((int) epoch);
         if (update != null) return update.getMinFeeB();
         return baseProvider.getMinFeeB(epoch);
     }
 
     @Override
     public Integer getMaxBlockSize(long epoch) {
-        var update = epochParams.get((int) epoch);
+        var update = resolve((int) epoch);
         if (update != null) return update.getMaxBlockSize();
         return baseProvider.getMaxBlockSize(epoch);
     }
 
     @Override
     public Integer getMaxTxSize(long epoch) {
-        var update = epochParams.get((int) epoch);
+        var update = resolve((int) epoch);
         if (update != null) return update.getMaxTxSize();
         return baseProvider.getMaxTxSize(epoch);
     }
 
     @Override
     public Integer getMaxBlockHeaderSize(long epoch) {
-        var update = epochParams.get((int) epoch);
+        var update = resolve((int) epoch);
         if (update != null) return update.getMaxBlockHeaderSize();
         return baseProvider.getMaxBlockHeaderSize(epoch);
     }
 
     @Override
     public Integer getMaxEpoch(long epoch) {
-        var update = epochParams.get((int) epoch);
+        var update = resolve((int) epoch);
         if (update != null) return update.getMaxEpoch();
         return baseProvider.getMaxEpoch(epoch);
     }
 
     @Override
     public String getExtraEntropy(long epoch) {
-        var update = epochParams.get((int) epoch);
+        var update = resolve((int) epoch);
         if (update != null) return update.getExtraEntropy() != null ? update.getExtraEntropy()._2 : null;
         return baseProvider.getExtraEntropy(epoch);
     }
 
     @Override
     public BigInteger getMinUtxo(long epoch) {
-        var update = epochParams.get((int) epoch);
+        var update = resolve((int) epoch);
         if (update != null) return update.getMinUtxo();
         return baseProvider.getMinUtxo(epoch);
     }
 
     @Override
     public Map<String, Object> getCostModels(long epoch) {
-        var update = epochParams.get((int) epoch);
+        var update = resolve((int) epoch);
         Map<String, Object> mapped = costModels(update);
         if (update != null) return mapped;
         return baseProvider.getCostModels(epoch);
@@ -760,7 +793,7 @@ public class EpochParamTracker implements EpochParamProvider {
 
     @Override
     public Map<String, Object> getCostModelsRaw(long epoch) {
-        var update = epochParams.get((int) epoch);
+        var update = resolve((int) epoch);
         Map<String, Object> mapped = rawCostModels(update);
         if (update != null) return mapped;
         return baseProvider.getCostModelsRaw(epoch);
@@ -768,70 +801,70 @@ public class EpochParamTracker implements EpochParamProvider {
 
     @Override
     public BigDecimal getPriceMem(long epoch) {
-        var update = epochParams.get((int) epoch);
+        var update = resolve((int) epoch);
         if (update != null) return update.getPriceMem() != null ? update.getPriceMem().safeRatio() : null;
         return baseProvider.getPriceMem(epoch);
     }
 
     @Override
     public BigDecimal getPriceStep(long epoch) {
-        var update = epochParams.get((int) epoch);
+        var update = resolve((int) epoch);
         if (update != null) return update.getPriceStep() != null ? update.getPriceStep().safeRatio() : null;
         return baseProvider.getPriceStep(epoch);
     }
 
     @Override
     public BigInteger getMaxTxExMem(long epoch) {
-        var update = epochParams.get((int) epoch);
+        var update = resolve((int) epoch);
         if (update != null) return update.getMaxTxExMem();
         return baseProvider.getMaxTxExMem(epoch);
     }
 
     @Override
     public BigInteger getMaxTxExSteps(long epoch) {
-        var update = epochParams.get((int) epoch);
+        var update = resolve((int) epoch);
         if (update != null) return update.getMaxTxExSteps();
         return baseProvider.getMaxTxExSteps(epoch);
     }
 
     @Override
     public BigInteger getMaxBlockExMem(long epoch) {
-        var update = epochParams.get((int) epoch);
+        var update = resolve((int) epoch);
         if (update != null) return update.getMaxBlockExMem();
         return baseProvider.getMaxBlockExMem(epoch);
     }
 
     @Override
     public BigInteger getMaxBlockExSteps(long epoch) {
-        var update = epochParams.get((int) epoch);
+        var update = resolve((int) epoch);
         if (update != null) return update.getMaxBlockExSteps();
         return baseProvider.getMaxBlockExSteps(epoch);
     }
 
     @Override
     public BigInteger getMaxValSize(long epoch) {
-        var update = epochParams.get((int) epoch);
+        var update = resolve((int) epoch);
         if (update != null) return update.getMaxValSize() != null ? BigInteger.valueOf(update.getMaxValSize()) : null;
         return baseProvider.getMaxValSize(epoch);
     }
 
     @Override
     public Integer getCollateralPercent(long epoch) {
-        var update = epochParams.get((int) epoch);
+        var update = resolve((int) epoch);
         if (update != null) return update.getCollateralPercent();
         return baseProvider.getCollateralPercent(epoch);
     }
 
     @Override
     public Integer getMaxCollateralInputs(long epoch) {
-        var update = epochParams.get((int) epoch);
+        var update = resolve((int) epoch);
         if (update != null) return update.getMaxCollateralInputs();
         return baseProvider.getMaxCollateralInputs(epoch);
     }
 
     @Override
     public BigInteger getCoinsPerUtxoSize(long epoch) {
-        var update = epochParams.get((int) epoch);
+        var update = resolve((int) epoch);
         if (update != null) {
             return update.getAdaPerUtxoByte() != null && isEraOrLater((int) epoch, Era.Babbage)
                     ? update.getAdaPerUtxoByte()
@@ -842,7 +875,7 @@ public class EpochParamTracker implements EpochParamProvider {
 
     @Override
     public BigInteger getCoinsPerUtxoWord(long epoch) {
-        var update = epochParams.get((int) epoch);
+        var update = resolve((int) epoch);
         if (update != null) {
             return update.getAdaPerUtxoByte() != null && !isEraOrLater((int) epoch, Era.Babbage)
                     ? update.getAdaPerUtxoByte()
@@ -853,7 +886,7 @@ public class EpochParamTracker implements EpochParamProvider {
 
     @Override
     public BigDecimal getMinFeeRefScriptCostPerByte(long epoch) {
-        var update = epochParams.get((int) epoch);
+        var update = resolve((int) epoch);
         if (update != null) {
             return update.getMinFeeRefScriptCostPerByte() != null
                     ? update.getMinFeeRefScriptCostPerByte().safeRatio()
@@ -879,28 +912,28 @@ public class EpochParamTracker implements EpochParamProvider {
 
     @Override
     public BigDecimal getRho(long epoch) {
-        var update = epochParams.get((int) epoch);
+        var update = resolve((int) epoch);
         if (update != null) return update.getExpansionRate() != null ? update.getExpansionRate().safeRatio() : null;
         return baseProvider.getRho(epoch);
     }
 
     @Override
     public BigDecimal getTau(long epoch) {
-        var update = epochParams.get((int) epoch);
+        var update = resolve((int) epoch);
         if (update != null) return update.getTreasuryGrowthRate() != null ? update.getTreasuryGrowthRate().safeRatio() : null;
         return baseProvider.getTau(epoch);
     }
 
     @Override
     public BigDecimal getA0(long epoch) {
-        var update = epochParams.get((int) epoch);
+        var update = resolve((int) epoch);
         if (update != null) return update.getPoolPledgeInfluence() != null ? update.getPoolPledgeInfluence().safeRatio() : null;
         return baseProvider.getA0(epoch);
     }
 
     @Override
     public BigDecimal getDecentralization(long epoch) {
-        var update = epochParams.get((int) epoch);
+        var update = resolve((int) epoch);
         if (update != null) return update.getDecentralisationParam() != null
                 ? update.getDecentralisationParam().safeRatio()
                 : null;
@@ -909,28 +942,28 @@ public class EpochParamTracker implements EpochParamProvider {
 
     @Override
     public int getNOpt(long epoch) {
-        var update = epochParams.get((int) epoch);
+        var update = resolve((int) epoch);
         if (update != null && update.getNOpt() != null) return update.getNOpt();
         return baseProvider.getNOpt(epoch);
     }
 
     @Override
     public BigInteger getMinPoolCost(long epoch) {
-        var update = epochParams.get((int) epoch);
+        var update = resolve((int) epoch);
         if (update != null) return update.getMinPoolCost();
         return baseProvider.getMinPoolCost(epoch);
     }
 
     @Override
     public int getProtocolMajor(long epoch) {
-        var update = epochParams.get((int) epoch);
+        var update = resolve((int) epoch);
         if (update != null && update.getProtocolMajorVer() != null) return update.getProtocolMajorVer();
         return baseProvider.getProtocolMajor(epoch);
     }
 
     @Override
     public int getProtocolMinor(long epoch) {
-        var update = epochParams.get((int) epoch);
+        var update = resolve((int) epoch);
         if (update != null && update.getProtocolMinorVer() != null) return update.getProtocolMinorVer();
         return baseProvider.getProtocolMinor(epoch);
     }
@@ -939,56 +972,56 @@ public class EpochParamTracker implements EpochParamProvider {
 
     @Override
     public int getGovActionLifetime(long epoch) {
-        var update = epochParams.get((int) epoch);
+        var update = resolve((int) epoch);
         if (update != null && update.getGovActionLifetime() != null) return update.getGovActionLifetime();
         return baseProvider.getGovActionLifetime(epoch);
     }
 
     @Override
     public int getDRepActivity(long epoch) {
-        var update = epochParams.get((int) epoch);
+        var update = resolve((int) epoch);
         if (update != null && update.getDrepActivity() != null) return update.getDrepActivity();
         return baseProvider.getDRepActivity(epoch);
     }
 
     @Override
     public BigInteger getGovActionDeposit(long epoch) {
-        var update = epochParams.get((int) epoch);
+        var update = resolve((int) epoch);
         if (update != null) return update.getGovActionDeposit();
         return baseProvider.getGovActionDeposit(epoch);
     }
 
     @Override
     public BigInteger getDRepDeposit(long epoch) {
-        var update = epochParams.get((int) epoch);
+        var update = resolve((int) epoch);
         if (update != null) return update.getDrepDeposit();
         return baseProvider.getDRepDeposit(epoch);
     }
 
     @Override
     public int getCommitteeMinSize(long epoch) {
-        var update = epochParams.get((int) epoch);
+        var update = resolve((int) epoch);
         if (update != null && update.getCommitteeMinSize() != null) return update.getCommitteeMinSize();
         return baseProvider.getCommitteeMinSize(epoch);
     }
 
     @Override
     public int getCommitteeMaxTermLength(long epoch) {
-        var update = epochParams.get((int) epoch);
+        var update = resolve((int) epoch);
         if (update != null && update.getCommitteeMaxTermLength() != null) return update.getCommitteeMaxTermLength();
         return baseProvider.getCommitteeMaxTermLength(epoch);
     }
 
     @Override
     public DrepVoteThresholds getDrepVotingThresholds(long epoch) {
-        var update = epochParams.get((int) epoch);
+        var update = resolve((int) epoch);
         if (update != null) return update.getDrepVotingThresholds();
         return baseProvider.getDrepVotingThresholds(epoch);
     }
 
     @Override
     public PoolVotingThresholds getPoolVotingThresholds(long epoch) {
-        var update = epochParams.get((int) epoch);
+        var update = resolve((int) epoch);
         if (update != null) return update.getPoolVotingThresholds();
         return baseProvider.getPoolVotingThresholds(epoch);
     }
