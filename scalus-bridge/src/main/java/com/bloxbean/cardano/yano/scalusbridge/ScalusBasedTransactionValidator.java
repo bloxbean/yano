@@ -34,7 +34,7 @@ import java.util.function.LongSupplier;
  * {@link TransactionValidator} implementation using Scalus for full Cardano ledger rule validation.
  * Delegates to {@link LedgerBridge} which calls Scalus's CardanoMutator.transit().
  *
- * <p>Scalus v0.16.0 handles all DELEG rules (registration, deregistration, deposit/refund amounts,
+ * <p>Scalus handles all DELEG rules (registration, deregistration, deposit/refund amounts,
  * reward balance checks, withdrawal validation) with proper intra-tx state tracking. CCL supplementary
  * rules run after Scalus for gaps it doesn't cover (GOVCERT, delegatee existence, governance).
  */
@@ -213,7 +213,21 @@ public class ScalusBasedTransactionValidator implements TransactionValidator {
 
             return ValidationResult.success();
 
+        } catch (LinkageError e) {
+            if (ScalusNativeFailures.isBlsUnavailable(e)) {
+                return ValidationResult.failure(new ValidationError(
+                        ScalusNativeFailures.BLS_UNAVAILABLE_RULE,
+                        ScalusNativeFailures.BLS_UNAVAILABLE_MESSAGE,
+                        ValidationError.Phase.PHASE_2));
+            }
+            throw e;
         } catch (Exception e) {
+            if (ScalusNativeFailures.isBlsUnavailable(e)) {
+                return ValidationResult.failure(new ValidationError(
+                        ScalusNativeFailures.BLS_UNAVAILABLE_RULE,
+                        ScalusNativeFailures.BLS_UNAVAILABLE_MESSAGE,
+                        ValidationError.Phase.PHASE_2));
+            }
             return ValidationResult.failure(new ValidationError(
                     "InternalError",
                     "Validation error: " + e.getMessage(),
@@ -339,6 +353,10 @@ public class ScalusBasedTransactionValidator implements TransactionValidator {
     private ValidationError mapError(TransitResult result) {
         String className = result.errorClassName() != null ? result.errorClassName() : "Unknown";
         String message = result.errorMessage();
+
+        if (ScalusNativeFailures.BLS_UNAVAILABLE_RULE.equals(className)) {
+            return new ValidationError(className, message, ValidationError.Phase.PHASE_2);
+        }
 
         ValidationError.Phase phase = className.contains("PlutusScript") || className.contains("Script")
                 ? ValidationError.Phase.PHASE_2

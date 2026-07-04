@@ -86,6 +86,18 @@ class ScalusBasedTransactionValidatorTest {
     }
 
     @Test
+    void validateConvertsBlstLinkageErrorToPhase2Failure() {
+        var validator = new BlstFailingValidator();
+
+        var result = validator.validate(new byte[]{1, 2, 3}, Set.of());
+
+        assertFalse(result.valid());
+        assertEquals(ScalusNativeFailures.BLS_UNAVAILABLE_RULE, result.errors().get(0).rule());
+        assertEquals(ValidationError.Phase.PHASE_2, result.errors().get(0).phase());
+        assertEquals(ScalusNativeFailures.BLS_UNAVAILABLE_MESSAGE, result.errors().get(0).message());
+    }
+
+    @Test
     void runtimeValidatorRejectsWhenLedgerStateProviderIsUnavailable() {
         var validator = new ScalusSuccessValidator(null);
 
@@ -402,6 +414,18 @@ class ScalusBasedTransactionValidatorTest {
     private static class SlotUnavailableValidator extends ScalusSuccessValidator {
         SlotUnavailableValidator(LedgerStateProvider provider) {
             super(provider, () -> -1L);
+        }
+    }
+
+    private static class BlstFailingValidator extends ScalusBasedTransactionValidator {
+        BlstFailingValidator() {
+            super(slot -> new ProtocolParams(), null, new SlotConfig(1000, 0, 0), 0, null);
+        }
+
+        @Override
+        protected TransitResult runScalusValidation(byte[] txCbor, ProtocolParams protocolParams,
+                                                   Set<Utxo> inputUtxos, long currentSlot) {
+            throw new NoClassDefFoundError("Could not initialize class supranational.blst.blstJNI");
         }
     }
 

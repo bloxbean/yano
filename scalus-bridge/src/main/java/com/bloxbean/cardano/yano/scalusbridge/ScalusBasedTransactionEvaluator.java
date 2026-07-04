@@ -69,13 +69,20 @@ public class ScalusBasedTransactionEvaluator implements TransactionEvaluator {
 
         ProtocolParams protocolParams = protocolParamsSupplier.getProtocolParams(resolveCurrentSlot());
         var scalusSlotConfig = SlotConfigAdapters.toScalus(slotConfigSupplier.getSlotConfig());
-        // Create ScalusTransactionEvaluator and evaluate
-        var evaluator = new ScalusTransactionEvaluator(
-                scalusSlotConfig, protocolParams, utxoSupplier, scriptSupplier,
-                EvaluatorMode.EVALUATE_AND_COMPUTE_COST, false);
-
-        Result<List<com.bloxbean.cardano.client.api.model.EvaluationResult>> result =
-                evaluator.evaluateTx(txCbor, inputUtxos);
+        Result<List<com.bloxbean.cardano.client.api.model.EvaluationResult>> result;
+        try {
+            result = evaluateWithScalus(scalusSlotConfig, protocolParams, utxoSupplier, txCbor, inputUtxos);
+        } catch (LinkageError e) {
+            if (ScalusNativeFailures.isBlsUnavailable(e)) {
+                throw new BlsBuiltinsUnavailableException(e);
+            }
+            throw e;
+        } catch (RuntimeException e) {
+            if (ScalusNativeFailures.isBlsUnavailable(e)) {
+                throw new BlsBuiltinsUnavailableException(e);
+            }
+            throw e;
+        }
 
         if (!result.isSuccessful()) {
             throw new Exception("Script evaluation failed: " + result.getResponse());
@@ -89,6 +96,19 @@ public class ScalusBasedTransactionEvaluator implements TransactionEvaluator {
                         er.getExUnits().getMem().longValueExact(),
                         er.getExUnits().getSteps().longValueExact()))
                 .collect(Collectors.toList());
+    }
+
+    protected Result<List<com.bloxbean.cardano.client.api.model.EvaluationResult>> evaluateWithScalus(
+            scalus.cardano.ledger.SlotConfig scalusSlotConfig,
+            ProtocolParams protocolParams,
+            UtxoSupplier utxoSupplier,
+            byte[] txCbor,
+            Set<Utxo> inputUtxos) {
+        var evaluator = new ScalusTransactionEvaluator(
+                scalusSlotConfig, protocolParams, utxoSupplier, scriptSupplier,
+                EvaluatorMode.EVALUATE_AND_COMPUTE_COST, false);
+
+        return evaluator.evaluateTx(txCbor, inputUtxos);
     }
 
     private long resolveCurrentSlot() {
