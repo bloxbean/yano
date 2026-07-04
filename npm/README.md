@@ -17,6 +17,15 @@ For a normal published install, users install only the main package:
 npm install --save-dev @bloxbean/yano-testkit
 ```
 
+Prereleases are published under `preview` and should be installed explicitly:
+
+```bash
+npm install --save-dev @bloxbean/yano-testkit@preview
+```
+
+Keep the `latest` dist-tag reserved for stable releases. Do not promote a
+preview package to `latest` until the first stable npm release is available.
+
 The main package declares the platform packages as optional dependencies. npm
 installs the package that matches the current OS/architecture, and the wrapper
 resolves the native Yano binary from that package automatically. Users do not
@@ -242,6 +251,8 @@ platform package tarball is installed too.
 ## Notes
 
 - The default storage mode is real RocksDB in a test-owned temporary directory.
+- Default temporary runs copy packaged `config/` into that temporary directory
+  and run Yano from the copy.
 - The wrapper uses Yano's production HTTP API under `/api/v1`.
 - Use `yano.faucet`, `yano.time`, `yano.snapshots`, `yano.devnet`,
   `yano.queries`, `yano.transactions`, `yano.await`, and `yano.assertions` for

@@ -33,11 +33,14 @@ test-owned temporary directory. The directory is removed when the fixture closes
 This keeps test behavior close to production storage while still making each
 test isolated.
 
-Explicit alternatives are available:
+Supported storage modes:
 
 - `temporaryRocksDbStorage()`: default, real RocksDB, test-owned cleanup.
 - `persistentRocksDbStorage(path)`: real RocksDB at a caller-owned path.
-- `inMemoryStorage()`: explicit non-production shortcut.
+
+Testkit devnet intentionally does not expose the runtime's in-memory storage
+mode. RocksDB is required for the same ledger-state, epoch-parameter tracking,
+snapshot, and restore behavior used by the regular devnet profile.
 
 Always close `YanoDevnetTestKit` directly or let `YanoDevnetExtension` do it for
 the test.

@@ -14,6 +14,13 @@ For a detailed JavaScript developer guide, see
 npm install --save-dev @bloxbean/yano-testkit
 ```
 
+Preview releases are published under the `preview` tag until the first stable
+release promotes a version to `latest`:
+
+```bash
+npm install --save-dev @bloxbean/yano-testkit@preview
+```
+
 The package resolves a platform-specific native Yano binary from optional npm
 packages. For local development before publishing those packages, set
 `YANO_TESTKIT_BINARY` or pass `binaryPath`.
@@ -44,9 +51,14 @@ Plain Node.js callers must call `await yano.stop()` when the test is done. Use
 The default fixture uses:
 
 - real RocksDB-backed Yano storage in a test-owned temporary directory;
+- a copied `config/` directory inside that temporary directory, so devnet
+  time-travel and genesis rewrites do not mutate installed package files;
 - a random available HTTP port;
 - a random available node-to-node port;
 - the production Blockfrost-compatible API under `/api/v1/`.
+
+The JavaScript testkit is RocksDB-only. It does not expose Yano's in-memory
+runtime storage mode.
 
 ## Funding Test Addresses
 
@@ -124,6 +136,12 @@ named convenience method:
 const status = await yano.client.getJson("node/status");
 const params = await yano.client.getJson("epochs/latest/parameters");
 ```
+
+`yano.queries.protocolParameters()` uses
+`/api/v1/epochs/latest/parameters`. In the default devnet profile this returns
+the epoch-param tracker value for the current epoch. If a test disables tracking
+with `extraArgs: ["-Dyano.epoch-params.tracking-enabled=false"]`, Yano falls
+back to static `protocol-param.json` content.
 
 All mutation helpers call Yano's existing devnet-only HTTP endpoints. They do
 not expose runtime internals or RocksDB handles.
@@ -220,7 +238,7 @@ binary.
 ```js
 await startYanoDevnet({
   binaryPath,          // overrides platform package resolution
-  cwd,                 // process working directory; should contain config/
+  cwd,                 // source directory containing config/
   httpPort: 0,         // 0 or undefined allocates a free port
   n2nPort: 0,          // 0 or undefined allocates a free port
   blockTimeMillis: 200,
@@ -237,7 +255,9 @@ await startYanoDevnet({
 ```
 
 Use `storage: "persistent-rocksdb"` with `workDir` or `storagePath` when a test
-needs to inspect chain state after shutdown.
+needs to inspect chain state after shutdown. Default temporary runs copy
+`cwd/config` or packaged `config` into the temporary `workDir` and run Yano from
+that copy.
 
 ## Environment Variables
 

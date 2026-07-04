@@ -1,6 +1,6 @@
 {
   "name": "@bloxbean/yano-testkit-windows-x64",
-  "version": "0.1.0-pre7-ci2",
+  "version": "0.1.0-pre8",
   "description": "Windows x64 native Yano binary for @bloxbean/yano-testkit.",
   "main": "./bin/yano.exe",
   "files": [

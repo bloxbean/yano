@@ -3,13 +3,19 @@ package com.bloxbean.cardano.yano.runtime;
 import com.bloxbean.cardano.yano.runtime.internal.RuntimeNode;
 
 import com.bloxbean.cardano.yano.api.account.LedgerStateProvider;
+import com.bloxbean.cardano.yano.api.config.RuntimeOptions;
 import com.bloxbean.cardano.yano.api.config.YanoConfig;
+import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
 import com.bloxbean.cardano.yano.api.model.ProtocolParamsSnapshot;
 import com.bloxbean.cardano.yano.runtime.blockproducer.ProtocolParamsMapper;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.lang.reflect.Proxy;
 import java.math.BigInteger;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.Map;
 import java.util.Optional;
 import java.util.function.Function;
 
@@ -36,7 +42,28 @@ class YanoProtocolParamsResolutionTest {
             """;
 
     @Test
-    void ledgerProtocolParamsWinWhenAvailable() {
+    void trackingEnabledUsesLedgerProtocolParamsWhenAvailable(@TempDir Path tempDir) throws Exception {
+        Path protocolParamsFile = tempDir.resolve("protocol-param.json");
+        Files.writeString(protocolParamsFile, STATIC_PROTOCOL_PARAMS);
+        YanoConfig config = testConfig();
+        config.setProtocolParametersFile(protocolParamsFile.toString());
+        RuntimeOptions options = new RuntimeOptions(null, null, Map.of(
+                YanoPropertyKeys.Ledger.EPOCH_PARAMS_TRACKING_ENABLED, true));
+
+        try (RuntimeNode yano = new FileBackedTestYano(
+                provider(epoch -> Optional.of(snapshot(LEDGER_PROTOCOL_PARAMS, epoch))), config, options)) {
+            Optional<ProtocolParamsSnapshot> params = yano.getProtocolParameters(42);
+
+            assertThat(params).isPresent();
+            assertThat(params.orElseThrow().epoch()).isEqualTo(42);
+            assertThat(params.orElseThrow().minFeeA()).isEqualTo(44);
+            assertThat(params.orElseThrow().protocolMajorVer()).isEqualTo(10);
+            assertThat(params.orElseThrow().keyDeposit()).isEqualTo(BigInteger.valueOf(2_000_000));
+        }
+    }
+
+    @Test
+    void staticProtocolParamsWinWhenTrackingIsDisabled() {
         TestYano yano = new TestYano(
                 provider(epoch -> Optional.of(snapshot(LEDGER_PROTOCOL_PARAMS, epoch))),
                 STATIC_PROTOCOL_PARAMS);
@@ -45,9 +72,9 @@ class YanoProtocolParamsResolutionTest {
 
         assertThat(params).isPresent();
         assertThat(params.orElseThrow().epoch()).isEqualTo(42);
-        assertThat(params.orElseThrow().minFeeA()).isEqualTo(44);
-        assertThat(params.orElseThrow().protocolMajorVer()).isEqualTo(10);
-        assertThat(params.orElseThrow().keyDeposit()).isEqualTo(BigInteger.valueOf(2_000_000));
+        assertThat(params.orElseThrow().minFeeA()).isEqualTo(999);
+        assertThat(params.orElseThrow().protocolMajorVer()).isEqualTo(11);
+        assertThat(params.orElseThrow().keyDeposit()).isEqualTo(BigInteger.valueOf(3_000_000));
     }
 
     @Test
@@ -101,6 +128,57 @@ class YanoProtocolParamsResolutionTest {
         TestYano yano = new TestYano(null, STATIC_PROTOCOL_PARAMS);
 
         assertThat(yano.getProtocolParameters(-1)).isEmpty();
+    }
+
+    @Test
+    void trackingEnabledDoesNotUseStaticFileFallbackWhenSnapshotIsUnavailable(@TempDir Path tempDir)
+            throws Exception {
+        Path protocolParamsFile = tempDir.resolve("protocol-param.json");
+        Files.writeString(protocolParamsFile, STATIC_PROTOCOL_PARAMS);
+        YanoConfig config = testConfig();
+        config.setDevMode(true);
+        config.setProtocolParametersFile(protocolParamsFile.toString());
+        RuntimeOptions options = new RuntimeOptions(null, null, Map.of(
+                YanoPropertyKeys.Ledger.EPOCH_PARAMS_TRACKING_ENABLED, true));
+
+        try (RuntimeNode yano = new FileBackedTestYano(
+                provider(epoch -> Optional.empty()), config, options)) {
+            assertThat(yano.getProtocolParameters(45)).isEmpty();
+        }
+    }
+
+    @Test
+    void noEpochProtocolParametersAreStaticOnly(@TempDir Path tempDir) throws Exception {
+        Path protocolParamsFile = tempDir.resolve("protocol-param.json");
+        Files.writeString(protocolParamsFile, STATIC_PROTOCOL_PARAMS);
+        YanoConfig config = testConfig();
+        config.setProtocolParametersFile(protocolParamsFile.toString());
+        RuntimeOptions options = new RuntimeOptions(null, null, Map.of(
+                YanoPropertyKeys.Ledger.EPOCH_PARAMS_TRACKING_ENABLED, true));
+
+        try (RuntimeNode yano = new FileBackedTestYano(
+                provider(epoch -> Optional.of(snapshot(LEDGER_PROTOCOL_PARAMS, epoch))), config, options)) {
+            assertThat(yano.getProtocolParameters()).isNull();
+        }
+    }
+
+    @Test
+    void trackingDisabledUsesStaticFileFallback(@TempDir Path tempDir) throws Exception {
+        Path protocolParamsFile = tempDir.resolve("protocol-param.json");
+        Files.writeString(protocolParamsFile, STATIC_PROTOCOL_PARAMS);
+        YanoConfig config = testConfig();
+        config.setProtocolParametersFile(protocolParamsFile.toString());
+        RuntimeOptions options = new RuntimeOptions(null, null, Map.of(
+                YanoPropertyKeys.Ledger.EPOCH_PARAMS_TRACKING_ENABLED, false));
+
+        try (RuntimeNode yano = new FileBackedTestYano(
+                provider(epoch -> Optional.empty()), config, options)) {
+            Optional<ProtocolParamsSnapshot> params = yano.getProtocolParameters(45);
+
+            assertThat(params).isPresent();
+            assertThat(params.orElseThrow().epoch()).isEqualTo(45);
+            assertThat(params.orElseThrow().protocolMajorVer()).isEqualTo(11);
+        }
     }
 
     private static ProtocolParamsSnapshot snapshot(String json, int epoch) {
@@ -168,6 +246,22 @@ class YanoProtocolParamsResolutionTest {
         @Override
         public String getProtocolParameters() {
             return protocolParams;
+        }
+    }
+
+    private static class FileBackedTestYano extends RuntimeNode {
+        private final LedgerStateProvider ledgerStateProvider;
+
+        private FileBackedTestYano(LedgerStateProvider ledgerStateProvider,
+                                   YanoConfig config,
+                                   RuntimeOptions options) {
+            super(config, options);
+            this.ledgerStateProvider = ledgerStateProvider;
+        }
+
+        @Override
+        public LedgerStateProvider getLedgerStateProvider() {
+            return ledgerStateProvider;
         }
     }
 }

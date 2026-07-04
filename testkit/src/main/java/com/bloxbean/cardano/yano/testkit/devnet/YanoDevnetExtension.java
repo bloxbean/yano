@@ -123,15 +123,6 @@ public final class YanoDevnetExtension implements BeforeEachCallback, AfterEachC
     }
 
     /**
-     * Uses the runtime's in-memory storage implementation.
-     *
-     * @return extension copy
-     */
-    public YanoDevnetExtension withInMemoryStorage() {
-        return withConfigCustomizer(YanoDevnetTestConfig.Builder::inMemoryStorage);
-    }
-
-    /**
      * Configures the devnet block interval.
      *
      * @param blockTimeMillis block interval in milliseconds

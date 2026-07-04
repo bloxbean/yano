@@ -22,20 +22,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 class SnapshotRestoreProtocolParamsTest {
 
-    private static YanoDevnetTestConfig.Builder trackedConfig() {
-        return YanoDevnetTestConfig.builder()
-                .epochLength(30)
-                .runtimeOption(YanoPropertyKeys.AccountState.ENABLED, true)
-                .runtimeOption(YanoPropertyKeys.Ledger.EPOCH_PARAMS_TRACKING_ENABLED, true)
-                .runtimeOption(YanoPropertyKeys.Ledger.ADAPOT_ENABLED, true)
-                .runtimeOption(YanoPropertyKeys.Ledger.REWARDS_ENABLED, true)
-                .runtimeOption(YanoPropertyKeys.Ledger.GOVERNANCE_ENABLED, true)
-                .runtimeOption(YanoPropertyKeys.EpochSnapshot.AMOUNTS_ENABLED, true);
+    private static YanoDevnetTestConfig.Builder defaultProfileConfig() {
+        return YanoDevnetTestConfig.builder().epochLength(30);
     }
 
     @Test
     void protocolParamsAvailableAfterRuntimeSnapshotRestore() {
-        try (YanoDevnetTestKit kit = YanoDevnetTestKit.devnet(trackedConfig().build())) {
+        try (YanoDevnetTestKit kit = YanoDevnetTestKit.devnet(defaultProfileConfig().build())) {
             kit.start();
             kit.await().untilBlockAtLeast(1);
 
@@ -54,7 +47,7 @@ class SnapshotRestoreProtocolParamsTest {
 
     @Test
     void protocolParamsAvailableAfterRestoreToEarlierEpoch() {
-        try (YanoDevnetTestKit kit = YanoDevnetTestKit.devnet(trackedConfig().build())) {
+        try (YanoDevnetTestKit kit = YanoDevnetTestKit.devnet(defaultProfileConfig().build())) {
             kit.start();
             kit.await().untilBlockAtLeast(1);
 
@@ -78,7 +71,7 @@ class SnapshotRestoreProtocolParamsTest {
         Path snapshotCheckpoint;
 
         try (YanoDevnetTestKit kit = YanoDevnetTestKit.devnet(
-                trackedConfig().persistentRocksDbStorage(storage).build())) {
+                defaultProfileConfig().persistentRocksDbStorage(storage).build())) {
             kit.start();
             kit.await().untilBlockAtLeast(1);
 
@@ -97,7 +90,7 @@ class SnapshotRestoreProtocolParamsTest {
 
         // Start the application again on the restored DB
         try (YanoDevnetTestKit kit = YanoDevnetTestKit.devnet(
-                trackedConfig().persistentRocksDbStorage(storage).build())) {
+                defaultProfileConfig().persistentRocksDbStorage(storage).build())) {
             kit.start();
             kit.await().untilRunning();
 
@@ -115,8 +108,8 @@ class SnapshotRestoreProtocolParamsTest {
      */
     @Test
     void protocolParamsAvailableForGapEpochsAfterWallClockJump() throws Exception {
-        // Short wall-clock epochs (5 slots x 1s) so a real sleep spans multiple boundaries
-        try (YanoDevnetTestKit kit = YanoDevnetTestKit.devnet(trackedConfig().epochLength(5).build())) {
+        // Short wall-clock epochs from the devnet slot length so a real sleep spans multiple boundaries.
+        try (YanoDevnetTestKit kit = YanoDevnetTestKit.devnet(defaultProfileConfig().epochLength(5).build())) {
             kit.start();
             kit.await().untilBlockAtLeast(1);
 
@@ -148,7 +141,7 @@ class SnapshotRestoreProtocolParamsTest {
      */
     @Test
     void skippedEpochsFullyProcessedWhenProcessSkippedEpochsEnabled() throws Exception {
-        try (YanoDevnetTestKit kit = YanoDevnetTestKit.devnet(trackedConfig()
+        try (YanoDevnetTestKit kit = YanoDevnetTestKit.devnet(defaultProfileConfig()
                 .epochLength(5)
                 .runtimeOption(YanoPropertyKeys.BlockProducer.PROCESS_SKIPPED_EPOCHS, true)
                 .build())) {

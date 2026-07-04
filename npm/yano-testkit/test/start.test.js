@@ -1,6 +1,6 @@
 // @ts-check
 
-import { chmod, mkdtemp, readFile, stat, writeFile, rm } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, realpath, stat, writeFile, rm } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
@@ -27,13 +27,15 @@ test("platform mapping includes supported npm binary packages", () => {
 test("starts devnet, returns readiness details, and cleans temp storage", async () => {
   const binaryPath = await fakeBinaryPath();
   const argsFile = resolve(await mkdtemp(resolve(tmpdir(), "fake-yano-args-")), "args.json");
+  const infoFile = resolve(dirname(argsFile), "info.json");
   const yano = await startYanoDevnet({
     binaryPath,
     cwd: here,
     blockTimeMillis: 123,
     timeoutMs: 10_000,
     env: {
-      FAKE_YANO_ARGS_FILE: argsFile
+      FAKE_YANO_ARGS_FILE: argsFile,
+      FAKE_YANO_INFO_FILE: infoFile
     }
   });
 
@@ -46,9 +48,12 @@ test("starts devnet, returns readiness details, and cleans temp storage", async 
   assert.equal(response.status, 200);
 
   const workDir = yano.workDir;
+  const args = /** @type {string[]} */ (JSON.parse(await readFile(argsFile, "utf8")));
+  const info = /** @type {{ cwd: string, configProbeExists: boolean }} */ (JSON.parse(await readFile(infoFile, "utf8")));
+  const launchedCwd = await realpath(info.cwd);
+  const canonicalWorkDir = await realpath(workDir);
   await yano.stop();
 
-  const args = /** @type {string[]} */ (JSON.parse(await readFile(argsFile, "utf8")));
   assert.ok(args.includes("-Dquarkus.profile=devnet"));
   assert.ok(args.includes("-Dquarkus.http.host=127.0.0.1"));
   assert.ok(args.includes("-Dyano.storage.rocksdb=true"));
@@ -60,6 +65,8 @@ test("starts devnet, returns readiness details, and cleans temp storage", async 
   assert.equal(n2nPort > 0, true);
   assert.notEqual(httpPort, n2nPort);
   assert.ok(args.includes(`-Dyano.storage.path=${yano.storage.path}`));
+  assert.equal(launchedCwd, canonicalWorkDir);
+  assert.equal(info.configProbeExists, true);
   await rm(dirname(argsFile), { recursive: true, force: true });
 
   await assert.rejects(() => stat(workDir));
@@ -194,6 +201,64 @@ test("exposes advanced HTTP-backed devnet helpers", async () => {
   }
 });
 
+test("protocol parameters remain available after snapshot restore", async () => {
+  const binaryPath = await fakeBinaryPath();
+  const yano = await startYanoDevnet({
+    binaryPath,
+    cwd: here,
+    timeoutMs: 10_000
+  });
+
+  try {
+    const before = /** @type {{ epoch: number, min_fee_a: number, source: string }} */ (
+      await yano.queries.protocolParameters()
+    );
+    assert.equal(before.epoch, 0);
+    assert.equal(before.min_fee_a, 44);
+    assert.equal(before.source, "tracker");
+
+    await yano.snapshots.create("params");
+    await yano.time.crossEpochBoundary();
+    const advanced = /** @type {{ epoch: number, min_fee_a: number, source: string }} */ (
+      await yano.queries.protocolParameters()
+    );
+    assert.equal(advanced.epoch >= 1, true);
+    assert.equal(advanced.source, "tracker");
+
+    await yano.snapshots.restore("params");
+    const restored = /** @type {{ epoch: number, min_fee_a: number, source: string }} */ (
+      await yano.queries.protocolParameters()
+    );
+    assert.equal(restored.epoch, before.epoch);
+    assert.equal(restored.min_fee_a, before.min_fee_a);
+    assert.equal(restored.source, "tracker");
+  } finally {
+    await yano.stop();
+  }
+});
+
+test("protocol parameters use static mode when epoch tracking is disabled", async () => {
+  const binaryPath = await fakeBinaryPath();
+  const yano = await startYanoDevnet({
+    binaryPath,
+    cwd: here,
+    timeoutMs: 10_000,
+    extraArgs: ["-Dyano.epoch-params.tracking-enabled=false"]
+  });
+
+  try {
+    const params = /** @type {{ min_fee_a: number, protocol_major_ver: number, source: string }} */ (
+      await yano.queries.protocolParameters()
+    );
+
+    assert.equal(params.min_fee_a, 999);
+    assert.equal(params.protocol_major_ver, 11);
+    assert.equal(params.source, "static");
+  } finally {
+    await yano.stop();
+  }
+});
+
 test("HTTP client exposes status and response body on failures", async () => {
   const binaryPath = await fakeBinaryPath();
   const yano = await startYanoDevnet({
@@ -310,6 +375,24 @@ test("rejects unsupported storage mode before startup", async () => {
     }),
     /Unsupported Yano storage mode: memory/
   );
+});
+
+test("rejects owned temp startup when config directory is missing", async () => {
+  const binaryPath = await fakeBinaryPath();
+  const cwd = await mkdtemp(resolve(tmpdir(), "fake-yano-no-config-"));
+
+  try {
+    await assert.rejects(
+      () => startYanoDevnet({
+        binaryPath,
+        cwd,
+        timeoutMs: 1_000
+      }),
+      /Yano config directory not found/
+    );
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
 });
 
 async function fakeBinaryPath() {

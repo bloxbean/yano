@@ -5,17 +5,11 @@ import com.bloxbean.cardano.yano.api.model.FundResult;
 import com.bloxbean.cardano.yano.api.model.TimeAdvanceResult;
 import com.bloxbean.cardano.yano.api.utxo.model.Outpoint;
 import com.bloxbean.cardano.yano.api.utxo.model.Utxo;
-import com.bloxbean.cardano.yano.api.genesis.ShelleyGenesisBootstrap;
-import com.bloxbean.cardano.yano.runtime.config.InMemoryDevnetGenesis;
-import com.bloxbean.cardano.yano.runtime.genesis.ConwayGenesisData;
-import com.bloxbean.cardano.yano.runtime.genesis.ShelleyGenesisData;
 import org.junit.jupiter.api.Test;
 
-import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
@@ -120,9 +114,7 @@ class YanoWalletsTest {
 
     @Test
     void realDevnetFundsWalletAdvancesTimeAndRestoresSnapshot() {
-        YanoDevnetTestConfig config = YanoDevnetTestConfig.builder()
-                .inMemoryGenesis(testGenesis())
-                .build();
+        YanoDevnetTestConfig config = YanoDevnetTestConfig.builder().build();
         try (YanoDevnetTestKit kit = YanoDevnetTestKit.devnet(config)) {
             kit.start();
             kit.assertions().nodeIsRunning();
@@ -159,59 +151,6 @@ class YanoWalletsTest {
                 false,
                 0,
                 0,
-                null);
-    }
-
-    private static InMemoryDevnetGenesis testGenesis() {
-        return new InMemoryDevnetGenesis(testShelleyGenesis(), null, testConwayGenesis(), null);
-    }
-
-    private static ShelleyGenesisData testShelleyGenesis() {
-        return new ShelleyGenesisData(
-                Map.of(),
-                42,
-                600,
-                1.0,
-                "2026-01-01T00:00:00Z",
-                45_000_000_000_000_000L,
-                1.0,
-                100,
-                62,
-                129600,
-                5,
-                10,
-                0,
-                new BigDecimal("0.003"),
-                new BigDecimal("0.2"),
-                BigDecimal.ZERO,
-                100,
-                0,
-                2_000_000,
-                500_000_000,
-                BigDecimal.ZERO,
-                44,
-                155381,
-                65536,
-                16384,
-                1100,
-                18,
-                null,
-                1_000_000,
-                ShelleyGenesisBootstrap.empty());
-    }
-
-    private static ConwayGenesisData testConwayGenesis() {
-        return new ConwayGenesisData(
-                30,
-                BigInteger.valueOf(100_000_000_000L),
-                BigInteger.valueOf(500_000_000),
-                20,
-                0,
-                365,
-                null,
-                null,
-                null,
-                null,
                 null);
     }
 }
