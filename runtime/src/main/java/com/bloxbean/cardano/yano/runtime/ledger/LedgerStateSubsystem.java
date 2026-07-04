@@ -547,6 +547,13 @@ public final class LedgerStateSubsystem implements Subsystem {
             defaultStore.setParamTracker(paramTrackerInstance);
             log.info("Epoch param tracker enabled (in-memory only)");
         }
+        if (paramTrackerInstance != null && config.isDevMode()) {
+            // Devnet block producer can jump epochs (restart/restore at wall-clock slots),
+            // leaving gap epochs without finalized entries. Carry-forward resolves them
+            // to the nearest earlier snapshot. Real networks keep exact-match lookups.
+            paramTrackerInstance.setCarryForwardLookup(true);
+            log.info("Epoch param tracker carry-forward lookup enabled (dev mode)");
+        }
         return paramTrackerInstance;
     }
 

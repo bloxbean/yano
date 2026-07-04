@@ -30,6 +30,9 @@ For preview releases:
 npm install --save-dev @bloxbean/yano-testkit@preview
 ```
 
+The `latest` npm tag is reserved for stable releases. Until a stable package is
+promoted, install prereleases explicitly with `@preview`.
+
 The package depends on optional platform packages that contain the native Yano
 binary for the local OS and CPU. You normally do not need to set any binary
 environment variable after installing from npm.
@@ -138,8 +141,7 @@ Common options:
 - `workDir` / `storagePath` - explicit directories for persistent tests.
 - `preserveWorkDir` - keep temporary work directory after `stop()`.
 - `binaryPath` - path to a local Yano binary.
-- `cwd` - working directory for the Yano process. It should contain `config/`
-  when using a local app build.
+- `cwd` - source directory containing `config/` when using a local app build.
 - `env` - extra environment variables for the Yano process.
 - `extraArgs` - extra `-D...` JVM/native image system properties.
 - `onStdout` / `onStderr` - stream Yano logs into your test output.
@@ -155,7 +157,13 @@ const yano = await startYanoDevnet({
 ```
 
 This uses real RocksDB storage in a test-owned temporary directory. The wrapper
-deletes that directory when `stop()` succeeds.
+copies `cwd/config` or the packaged platform `config` into that directory and
+runs Yano from the copy, so devnet time-travel and genesis rewrites do not
+mutate installed package files. The wrapper deletes the directory when `stop()`
+succeeds.
+
+The JavaScript testkit is RocksDB-only. It does not expose an in-memory storage
+mode.
 
 Use persistent storage when you need to inspect chain state after shutdown:
 
@@ -248,6 +256,19 @@ const utxos = await yano.queries.utxosByAddress(address);
 const tx = await yano.queries.tx(txHash);
 const txUtxos = await yano.queries.txUtxos(txHash);
 ```
+
+`protocolParameters()` calls `/api/v1/epochs/latest/parameters`. With the
+default devnet profile, protocol parameters come from Yano's epoch-param
+tracker. If a test disables tracking:
+
+```js
+const yano = await startYanoDevnet({
+  extraArgs: ["-Dyano.epoch-params.tracking-enabled=false"]
+});
+```
+
+then Yano falls back to static `protocol-param.json` content for the
+Blockfrost-compatible parameters endpoint.
 
 Useful derived queries:
 

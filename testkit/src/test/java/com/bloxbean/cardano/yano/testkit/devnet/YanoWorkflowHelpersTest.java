@@ -13,6 +13,7 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class YanoWorkflowHelpersTest {
     private static final NodeStatus HEALTHY = TestkitFakes.status(true, false);
@@ -79,6 +80,60 @@ class YanoWorkflowHelpersTest {
 
             kit.time().crossEpochBoundary();
             kit.assertions().epochAtLeast(1);
+        }
+    }
+
+    @Test
+    void realDevnetFastForwardKeepsProtocolParamsAvailable() {
+        YanoDevnetTestConfig config = YanoDevnetTestConfig.builder()
+                .epochLength(3)
+                .build();
+        try (YanoDevnetTestKit kit = YanoDevnetTestKit.devnet(config)) {
+            kit.start();
+            kit.await().untilBlockAtLeast(1);
+
+            int startEpoch = (int) kit.queries().currentEpoch();
+            assertTrue(kit.queries().protocolParameters(startEpoch).isPresent(),
+                    "protocol params should be available before fast-forward (epoch " + startEpoch + ")");
+
+            long targetEpoch = startEpoch + 2L;
+            var result = kit.time().advanceToEpoch(targetEpoch);
+            assertTrue(result.blocksProduced() > 0);
+            kit.assertions().epochAtLeast(targetEpoch);
+
+            int currentEpoch = (int) kit.queries().currentEpoch();
+            for (int epoch = startEpoch; epoch <= currentEpoch; epoch++) {
+                var params = kit.queries().protocolParameters(epoch);
+                assertTrue(params.isPresent(),
+                        "protocol params should resolve for epoch " + epoch + " after fast-forward");
+                assertEquals(11, params.orElseThrow().protocolMajorVer(),
+                        "devnet protocol major version should come from the tracked protocol params");
+            }
+        }
+    }
+
+    @Test
+    void realDevnetTimeTravelCatchUpKeepsProtocolParamsAvailable() {
+        YanoDevnetTestConfig config = YanoDevnetTestConfig.builder()
+                .timeTravel(true)
+                .epochLength(3)
+                .build();
+        try (YanoDevnetTestKit kit = YanoDevnetTestKit.devnetTimeTravel(config)) {
+            kit.start();
+
+            long shiftMillis = kit.time().shiftGenesisAndStartProducer(2);
+            assertTrue(shiftMillis > 0);
+            assertTrue(kit.queries().protocolParameters(0).isPresent());
+
+            var result = kit.time().catchUpToWallClock();
+            assertTrue(result.blocksProduced() > 0);
+
+            int currentEpoch = (int) kit.queries().currentEpoch();
+            assertTrue(currentEpoch >= 1);
+            for (int epoch = 0; epoch <= currentEpoch; epoch++) {
+                assertTrue(kit.queries().protocolParameters(epoch).isPresent(),
+                        "protocol params should resolve for epoch " + epoch);
+            }
         }
     }
 

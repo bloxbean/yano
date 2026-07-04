@@ -662,7 +662,11 @@ public class EpochBoundaryProcessor {
             throw new IllegalStateException("cfNetworkConfig not available for AdaPot bootstrap at epoch " + newEpoch);
         }
         int shelleyStartEpoch = networkConfig.getShelleyStartEpoch();
-        boolean firstBoundaryAfterGenesisStart = shelleyStartEpoch == 0 && newEpoch == 1;
+        // For a Shelley-start chain (devnet), the first processed boundary may jump
+        // several epochs at once (restart/restore against wall-clock slots), so any
+        // boundary can be the bootstrapping one. The no-existing-pot check below keeps
+        // this idempotent. Networks with shelleyStartEpoch > 0 bootstrap only at that epoch.
+        boolean firstBoundaryAfterGenesisStart = shelleyStartEpoch == 0 && newEpoch >= 1;
         if (newEpoch != shelleyStartEpoch && !firstBoundaryAfterGenesisStart) return;
 
         // Only bootstrap if no AdaPot exists yet for any epoch

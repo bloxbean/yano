@@ -27,6 +27,7 @@ import com.bloxbean.cardano.yano.api.TxEvaluationGateway;
 import com.bloxbean.cardano.yano.api.TxGateway;
 import com.bloxbean.cardano.yano.api.config.RuntimeOptions;
 import com.bloxbean.cardano.yano.api.config.YanoConfig;
+import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
 import com.bloxbean.cardano.yano.api.db.RocksDbAccess;
 import com.bloxbean.cardano.yano.api.genesis.GenesisBootstrapData;
 import com.bloxbean.cardano.yano.api.listener.NodeEventListener;
@@ -1025,6 +1026,14 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 if (getEpochParamProvider() != null) {
                     BlockProducerHelper.setEpochParamProvider(getEpochParamProvider());
                 }
+                boolean processSkippedEpochs = resolveGlobalBoolean(
+                        YanoPropertyKeys.BlockProducer.PROCESS_SKIPPED_EPOCHS, false);
+                if (processSkippedEpochs && !config.isDevMode()) {
+                    log.warn("{} requires dev mode (yano.dev-mode=true); ignoring",
+                            YanoPropertyKeys.BlockProducer.PROCESS_SKIPPED_EPOCHS);
+                    processSkippedEpochs = false;
+                }
+                BlockProducerHelper.setProcessSkippedEpochs(processSkippedEpochs);
             }
 
             @Override
@@ -1320,6 +1329,17 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
         }
 
         initNonceTracking();
+    }
+
+    private boolean resolveGlobalBoolean(String key, boolean def) {
+        Object value = runtimeOptions.globals().get(key);
+        if (value instanceof Boolean bool) {
+            return bool;
+        }
+        if (value != null) {
+            return Boolean.parseBoolean(String.valueOf(value));
+        }
+        return def;
     }
 
     public static boolean shouldInitializeRelayNonceTracking(boolean blockProducerEnabled, boolean bootstrapEnabled) {
@@ -1940,7 +1960,34 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
 
     @Override
     public String getProtocolParameters() {
-        return genesisConfig != null ? genesisConfig.getProtocolParameters() : null;
+        // The no-epoch API returns only static protocol-param.json content. When
+        // epoch-param tracking is enabled, callers must use the epoch-specific
+        // query so they get the tracker-resolved value for that epoch.
+        if (epochParamsTrackingEnabled()) {
+            return null;
+        }
+
+        if (genesisConfig != null && genesisConfig.hasProtocolParameters()) {
+            return genesisConfig.getProtocolParameters();
+        }
+
+        if (inMemoryDevnetGenesis != null
+                && inMemoryDevnetGenesis.protocolParametersJson() != null
+                && !inMemoryDevnetGenesis.protocolParametersJson().isBlank()) {
+            return inMemoryDevnetGenesis.protocolParametersJson();
+        }
+
+        String protocolParamsFile = config.getProtocolParametersFile();
+        if (protocolParamsFile == null || protocolParamsFile.isBlank()) {
+            return null;
+        }
+
+        try {
+            return Files.readString(Path.of(protocolParamsFile));
+        } catch (Exception e) {
+            log.warn("Failed to read protocol parameters file={}: {}", protocolParamsFile, e.toString());
+            return null;
+        }
     }
 
     @Override
@@ -1950,6 +1997,21 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
         }
 
         LedgerStateProvider ledgerStateProvider = getLedgerStateProvider();
+        if (epochParamsTrackingEnabled()) {
+            // With tracking enabled, protocol params are epoch-scoped ledger
+            // state. Do not mask a missing tracker snapshot with static
+            // protocol-param.json; that would hide sync/restore gaps on real
+            // networks and return the wrong value after governance updates.
+            return ledgerStateProvider != null
+                    ? ledgerStateProvider.getProtocolParameters(epoch)
+                    : Optional.empty();
+        }
+
+        Optional<ProtocolParamsSnapshot> staticParams = staticProtocolParamsSnapshot(epoch);
+        if (staticParams.isPresent() || ledgerStateProvider == null) {
+            return staticParams;
+        }
+
         if (ledgerStateProvider != null) {
             Optional<ProtocolParamsSnapshot> ledgerParams = ledgerStateProvider.getProtocolParameters(epoch);
             if (ledgerParams.isPresent()) {
@@ -1957,7 +2019,7 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
             }
         }
 
-        return staticProtocolParamsSnapshot(epoch);
+        return Optional.empty();
     }
 
     private Optional<ProtocolParamsSnapshot> staticProtocolParamsSnapshot(int epoch) {

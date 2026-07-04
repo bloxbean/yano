@@ -3,16 +3,13 @@ package com.bloxbean.cardano.yano.testkit.devnet;
 import com.bloxbean.cardano.yano.api.config.RuntimeOptions;
 import com.bloxbean.cardano.yano.api.config.YanoConfig;
 import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
-import com.bloxbean.cardano.yano.api.genesis.ShelleyGenesisBootstrap;
-import com.bloxbean.cardano.yano.runtime.config.InMemoryDevnetGenesis;
-import com.bloxbean.cardano.yano.runtime.genesis.ConwayGenesisData;
-import com.bloxbean.cardano.yano.runtime.genesis.ShelleyGenesisData;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.UncheckedIOException;
 import java.net.ServerSocket;
-import java.math.BigDecimal;
-import java.math.BigInteger;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Comparator;
@@ -27,21 +24,32 @@ import java.util.stream.Stream;
  * Test-oriented devnet configuration with explicit storage ownership.
  */
 public final class YanoDevnetTestConfig implements AutoCloseable {
+    private static final ObjectMapper JSON = new ObjectMapper();
+    private static final String DEVNET_RESOURCE_DIR = "genesis/devnet";
+    private static final String DEVNET_PROFILE_DIR = "config/network/devnet";
+    private static final List<String> DEVNET_PROFILE_FILES = List.of(
+            "shelley-genesis.json",
+            "byron-genesis.json",
+            "alonzo-genesis.json",
+            "conway-genesis.json",
+            "protocol-param.json",
+            "vrf.skey",
+            "kes.skey",
+            "opcert.cert"
+    );
+
     private final YanoConfig yanoConfig;
-    private final InMemoryDevnetGenesis inMemoryGenesis;
     private final RuntimeOptions runtimeOptions;
     private final Path storageRoot;
     private final boolean cleanupStorage;
     private final boolean timeTravel;
 
     private YanoDevnetTestConfig(YanoConfig yanoConfig,
-                                 InMemoryDevnetGenesis inMemoryGenesis,
                                  RuntimeOptions runtimeOptions,
                                  Path storageRoot,
                                  boolean cleanupStorage,
                                  boolean timeTravel) {
         this.yanoConfig = Objects.requireNonNull(yanoConfig, "yanoConfig");
-        this.inMemoryGenesis = inMemoryGenesis;
         this.runtimeOptions = runtimeOptions != null ? runtimeOptions : defaultRuntimeOptions();
         this.storageRoot = storageRoot;
         this.cleanupStorage = cleanupStorage;
@@ -64,10 +72,6 @@ public final class YanoDevnetTestConfig implements AutoCloseable {
      */
     public YanoConfig yanoConfig() {
         return yanoConfig;
-    }
-
-    Optional<InMemoryDevnetGenesis> inMemoryGenesis() {
-        return Optional.ofNullable(inMemoryGenesis);
     }
 
     /**
@@ -107,6 +111,18 @@ public final class YanoDevnetTestConfig implements AutoCloseable {
         return cleanupStorage;
     }
 
+    /**
+     * Returns the copied devnet profile directory used by file-backed testkit
+     * defaults, when one exists.
+     *
+     * @return copied devnet profile directory
+     */
+    public Optional<Path> devnetProfileDir() {
+        return storageRoot != null
+                ? Optional.of(storageRoot.resolve(DEVNET_PROFILE_DIR))
+                : Optional.empty();
+    }
+
     @Override
     public void close() {
         if (cleanupStorage && storageRoot != null) {
@@ -141,12 +157,11 @@ public final class YanoDevnetTestConfig implements AutoCloseable {
      */
     public static final class Builder {
         private YanoConfig yanoConfig = YanoConfig.devnetDefault(0);
-        private InMemoryDevnetGenesis inMemoryGenesis = defaultInMemoryGenesis();
         private RuntimeOptions runtimeOptions = defaultRuntimeOptions();
         private StorageMode storageMode = StorageMode.TEMPORARY_ROCKSDB;
         private Path persistentStoragePath;
         private boolean timeTravel;
-        private boolean defaultGenesis = true;
+        private Long epochLengthOverride;
 
         private Builder() {
         }
@@ -183,43 +198,6 @@ public final class YanoDevnetTestConfig implements AutoCloseable {
         public Builder persistentRocksDbStorage(Path path) {
             this.storageMode = StorageMode.PERSISTENT_ROCKSDB;
             this.persistentStoragePath = Objects.requireNonNull(path, "path");
-            return this;
-        }
-
-        /**
-         * Uses the runtime's in-memory storage implementation. This is an
-         * explicit non-production shortcut.
-         *
-         * @return this builder
-         */
-        public Builder inMemoryStorage() {
-            this.storageMode = StorageMode.IN_MEMORY;
-            this.persistentStoragePath = null;
-            return this;
-        }
-
-        /**
-         * Configures a deterministic in-memory genesis for the devnet.
-         *
-         * @return this builder
-         */
-        public Builder inMemoryGenesis() {
-            this.inMemoryGenesis = defaultInMemoryGenesis();
-            this.defaultGenesis = true;
-            return this;
-        }
-
-        /**
-         * Configures in-memory genesis data for the devnet. This overload is
-         * package-private to avoid exposing runtime genesis DTOs in the public
-         * testkit API.
-         *
-         * @param inMemoryGenesis genesis data
-         * @return this builder
-         */
-        Builder inMemoryGenesis(InMemoryDevnetGenesis inMemoryGenesis) {
-            this.inMemoryGenesis = Objects.requireNonNull(inMemoryGenesis, "inMemoryGenesis");
-            this.defaultGenesis = false;
             return this;
         }
 
@@ -286,10 +264,11 @@ public final class YanoDevnetTestConfig implements AutoCloseable {
          * @return this builder
          */
         public Builder epochLength(long epochLength) {
-            yanoConfig.setEpochLength(epochLength);
-            if (defaultGenesis) {
-                this.inMemoryGenesis = defaultInMemoryGenesis(epochLength);
+            if (epochLength <= 0) {
+                throw new IllegalArgumentException("epoch length must be greater than 0");
             }
+            yanoConfig.setEpochLength(epochLength);
+            this.epochLengthOverride = epochLength;
             return this;
         }
 
@@ -325,23 +304,24 @@ public final class YanoDevnetTestConfig implements AutoCloseable {
                     cleanupStorage = true;
                 }
                 case PERSISTENT_ROCKSDB -> {
-                    storageRoot = persistentStoragePath;
+                    storageRoot = persistentProfileRoot(persistentStoragePath);
                     runtimeConfig.setUseRocksDB(true);
                     runtimeConfig.setRocksDBPath(persistentStoragePath.toString());
                 }
-                case IN_MEMORY -> {
-                    runtimeConfig.setUseRocksDB(false);
-                    runtimeConfig.setRocksDBPath(null);
-                }
                 default -> throw new IllegalStateException("Unhandled storage mode: " + storageMode);
             }
+
+            Path profileDir = copyDefaultDevnetProfile(storageRoot);
+            if (epochLengthOverride != null) {
+                patchShelleyEpochLength(profileDir.resolve("shelley-genesis.json"), epochLengthOverride);
+            }
+            applyProfilePaths(runtimeConfig, profileDir);
 
             if (runtimeConfig.isEnableServer() && runtimeConfig.getServerPort() == 0) {
                 runtimeConfig.setServerPort(findFreePort());
             }
 
-            return new YanoDevnetTestConfig(runtimeConfig, inMemoryGenesis, runtimeOptions,
-                    storageRoot, cleanupStorage, timeTravel);
+            return new YanoDevnetTestConfig(runtimeConfig, runtimeOptions, storageRoot, cleanupStorage, timeTravel);
         }
 
         private static Path createTempStorageRoot() {
@@ -350,6 +330,16 @@ public final class YanoDevnetTestConfig implements AutoCloseable {
             } catch (IOException e) {
                 throw new UncheckedIOException("Failed to create temporary Yano devnet storage", e);
             }
+        }
+
+        private static Path persistentProfileRoot(Path rocksDbPath) {
+            Objects.requireNonNull(rocksDbPath, "rocksDbPath");
+            Path absolute = rocksDbPath.toAbsolutePath().normalize();
+            Path parent = absolute.getParent();
+            if (parent == null) {
+                return createTempStorageRoot();
+            }
+            return parent;
         }
 
         private static int findFreePort() {
@@ -364,65 +354,97 @@ public final class YanoDevnetTestConfig implements AutoCloseable {
 
     private enum StorageMode {
         TEMPORARY_ROCKSDB,
-        PERSISTENT_ROCKSDB,
-        IN_MEMORY
+        PERSISTENT_ROCKSDB
     }
 
     static RuntimeOptions defaultRuntimeOptions() {
         return new RuntimeOptions(
                 RuntimeOptions.defaults().events(),
                 RuntimeOptions.defaults().plugins(),
-                Map.of(YanoPropertyKeys.Utxo.ENABLED, true));
+                Map.of(
+                        YanoPropertyKeys.Utxo.ENABLED, true,
+                        YanoPropertyKeys.AccountState.ENABLED, true,
+                        YanoPropertyKeys.EpochSnapshot.AMOUNTS_ENABLED, true,
+                        YanoPropertyKeys.Ledger.ADAPOT_ENABLED, true,
+                        YanoPropertyKeys.Ledger.REWARDS_ENABLED, true,
+                        YanoPropertyKeys.Ledger.EPOCH_PARAMS_TRACKING_ENABLED, true,
+                        YanoPropertyKeys.Ledger.GOVERNANCE_ENABLED, true));
     }
 
-    private static InMemoryDevnetGenesis defaultInMemoryGenesis() {
-        return defaultInMemoryGenesis(600);
+    private static Path copyDefaultDevnetProfile(Path storageRoot) {
+        if (storageRoot == null) {
+            throw new IllegalStateException("A storage root is required for file-backed devnet profile resources");
+        }
+        Path targetDir = storageRoot.resolve(DEVNET_PROFILE_DIR);
+        try {
+            Files.createDirectories(targetDir);
+            for (String fileName : DEVNET_PROFILE_FILES) {
+                copyResource(DEVNET_RESOURCE_DIR + "/" + fileName, targetDir.resolve(fileName));
+            }
+            return targetDir;
+        } catch (IOException e) {
+            throw new UncheckedIOException("Failed to copy Yano devnet profile resources to " + targetDir, e);
+        }
     }
 
-    private static InMemoryDevnetGenesis defaultInMemoryGenesis(long epochLength) {
-        ShelleyGenesisData shelley = new ShelleyGenesisData(
-                Map.of(),
-                42,
-                epochLength,
-                1.0,
-                "2026-01-01T00:00:00Z",
-                45_000_000_000_000_000L,
-                1.0,
-                100,
-                62,
-                129600,
-                5,
-                10,
-                0,
-                new BigDecimal("0.003"),
-                new BigDecimal("0.2"),
-                BigDecimal.ZERO,
-                100,
-                0,
-                2_000_000,
-                500_000_000,
-                BigDecimal.ZERO,
-                44,
-                155381,
-                65536,
-                16384,
-                1100,
-                18,
-                null,
-                1_000_000,
-                ShelleyGenesisBootstrap.empty());
-        ConwayGenesisData conway = new ConwayGenesisData(
-                30,
-                BigInteger.valueOf(100_000_000_000L),
-                BigInteger.valueOf(500_000_000),
-                20,
-                0,
-                365,
-                null,
-                null,
-                null,
-                null,
-                null);
-        return new InMemoryDevnetGenesis(shelley, null, conway, null);
+    private static void copyResource(String resource, Path target) throws IOException {
+        if (Files.exists(target)) {
+            return;
+        }
+        try (InputStream in = YanoDevnetTestConfig.class.getClassLoader().getResourceAsStream(resource)) {
+            if (in == null) {
+                throw new IOException("Classpath resource not found: " + resource);
+            }
+            Files.createDirectories(target.getParent());
+            Files.copy(in, target);
+        }
     }
+
+    private static void applyProfilePaths(YanoConfig config, Path profileDir) {
+        if (isBlank(config.getNetwork())) {
+            config.setNetwork("devnet");
+        }
+        if (isBlank(config.getShelleyGenesisFile())) {
+            config.setShelleyGenesisFile(profileDir.resolve("shelley-genesis.json").toString());
+        }
+        if (isBlank(config.getShelleyGenesisHash())) {
+            config.setShelleyGenesisHash("");
+        }
+        if (isBlank(config.getByronGenesisFile())) {
+            config.setByronGenesisFile(profileDir.resolve("byron-genesis.json").toString());
+        }
+        if (isBlank(config.getAlonzoGenesisFile())) {
+            config.setAlonzoGenesisFile(profileDir.resolve("alonzo-genesis.json").toString());
+        }
+        if (isBlank(config.getConwayGenesisFile())) {
+            config.setConwayGenesisFile(profileDir.resolve("conway-genesis.json").toString());
+        }
+        if (isBlank(config.getProtocolParametersFile())) {
+            config.setProtocolParametersFile(profileDir.resolve("protocol-param.json").toString());
+        }
+        if (isBlank(config.getVrfSkeyFile())) {
+            config.setVrfSkeyFile(profileDir.resolve("vrf.skey").toString());
+        }
+        if (isBlank(config.getKesSkeyFile())) {
+            config.setKesSkeyFile(profileDir.resolve("kes.skey").toString());
+        }
+        if (isBlank(config.getOpCertFile())) {
+            config.setOpCertFile(profileDir.resolve("opcert.cert").toString());
+        }
+    }
+
+    private static void patchShelleyEpochLength(Path shelleyGenesisFile, long epochLength) {
+        try {
+            ObjectNode root = (ObjectNode) JSON.readTree(shelleyGenesisFile.toFile());
+            root.put("epochLength", epochLength);
+            JSON.writerWithDefaultPrettyPrinter().writeValue(shelleyGenesisFile.toFile(), root);
+        } catch (IOException e) {
+            throw new UncheckedIOException("Failed to patch epochLength in " + shelleyGenesisFile, e);
+        }
+    }
+
+    private static boolean isBlank(String value) {
+        return value == null || value.isBlank();
+    }
+
 }

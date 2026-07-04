@@ -2,7 +2,7 @@
 
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
-import { mkdtemp, rm } from "node:fs/promises";
+import { cp, mkdtemp, rm, stat } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { resolveYanoBinary, assertBinaryExists } from "./binary.js";
@@ -80,7 +80,16 @@ export async function startYanoDevnet(options = {}) {
     (configuredStoragePath ? dirname(configuredStoragePath) : await mkdtemp(resolve(tmpdir(), "yano-testkit-")))
   );
   const storagePath = configuredStoragePath ?? resolve(workDir, "chainstate");
-  const cwd = resolve(options.cwd ?? inferCwd(binaryPath));
+  const sourceCwd = resolve(options.cwd ?? inferCwd(binaryPath));
+  let cwd;
+  try {
+    cwd = ownsWorkDir ? await copyConfigToWorkDir(sourceCwd, workDir) : sourceCwd;
+  } catch (error) {
+    if (ownsWorkDir && !options.preserveWorkDir) {
+      await rm(workDir, { recursive: true, force: true });
+    }
+    throw error;
+  }
   const timeoutMs = options.timeoutMs ?? readTimeoutFromEnv();
   const baseUrl = `http://127.0.0.1:${httpPort}/`;
   const apiBaseUrl = new URL("api/v1/", baseUrl).toString();
@@ -172,6 +181,35 @@ function validateStorageMode(storageMode, options) {
   if (storageMode === "persistent-rocksdb" && !options.workDir && !options.storagePath) {
     throw new Error("persistent-rocksdb requires workDir or storagePath");
   }
+}
+
+/**
+ * Copy packaged or caller-provided config into the test-owned temp work
+ * directory before startup. Devnet time-travel can rewrite genesis files, so
+ * temp test runs must not execute directly against installed package config.
+ *
+ * @param {string} sourceCwd
+ * @param {string} workDir
+ * @returns {Promise<string>}
+ */
+async function copyConfigToWorkDir(sourceCwd, workDir) {
+  const sourceConfigDir = resolve(sourceCwd, "config");
+  const targetConfigDir = resolve(workDir, "config");
+  let info;
+  try {
+    info = await stat(sourceConfigDir);
+  } catch {
+    throw new Error(
+      `Yano config directory not found at ${sourceConfigDir}. ` +
+      "Set cwd to a directory containing config/ or provide a platform package with config/."
+    );
+  }
+  if (!info.isDirectory()) {
+    throw new Error(`Yano config path is not a directory: ${sourceConfigDir}`);
+  }
+
+  await cp(sourceConfigDir, targetConfigDir, { recursive: true });
+  return workDir;
 }
 
 /**

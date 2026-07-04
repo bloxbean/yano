@@ -267,6 +267,9 @@ public class YanoProducer {
     @ConfigProperty(name = YanoPropertyKeys.BlockProducer.TX_EVALUATION, defaultValue = "true")
     boolean txEvaluationEnabled;
 
+    @ConfigProperty(name = YanoPropertyKeys.BlockProducer.PROCESS_SKIPPED_EPOCHS, defaultValue = "false")
+    boolean blockProducerProcessSkippedEpochs;
+
     @ConfigProperty(name = YanoPropertyKeys.BlockProducer.SCRIPT_EVALUATOR, defaultValue = "scalus")
     String scriptEvaluator;
 
@@ -485,6 +488,7 @@ public class YanoProducer {
         globals.put(YanoPropertyKeys.Validation.DEFAULT_VALIDATOR_ENABLED, defaultValidatorEnabled);
         globals.put(YanoPropertyKeys.Validation.SUPPLEMENTARY_RULES_ENABLED, supplementaryRulesEnabled);
         globals.put(YanoPropertyKeys.BlockProducer.TX_EVALUATION, txEvaluationEnabled);
+        globals.put(YanoPropertyKeys.BlockProducer.PROCESS_SKIPPED_EPOCHS, blockProducerProcessSkippedEpochs);
         dnsCacheTtl.ifPresent(value -> globals.put(DnsCachePolicy.DNS_CACHE_TTL_KEY, value));
         dnsCacheNegativeTtl.ifPresent(value -> globals.put(DnsCachePolicy.DNS_CACHE_NEGATIVE_TTL_KEY, value));
 

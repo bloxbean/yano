@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 
 import { createServer } from "node:http";
+import { existsSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
+import { resolve } from "node:path";
 
 const args = process.argv.slice(2);
 const portArg = args.find((arg) => arg.startsWith("-Dquarkus.http.port="));
@@ -13,9 +15,18 @@ const state = {
   funded: new Map(),
   submittedTxs: new Set()
 };
+const staticProtocolParams = args.includes("-Dyano.epoch-params.tracking-enabled=false");
 
 if (process.env.FAKE_YANO_ARGS_FILE) {
   await writeFile(process.env.FAKE_YANO_ARGS_FILE, JSON.stringify(args, null, 2));
+}
+if (process.env.FAKE_YANO_INFO_FILE) {
+  await writeFile(process.env.FAKE_YANO_INFO_FILE, JSON.stringify({
+    args,
+    cwd: process.cwd(),
+    configProbeExists: existsSync(resolve(process.cwd(), "config/network/devnet/protocol-param.json")),
+    staticProtocolParams
+  }, null, 2));
 }
 
 if (process.env.FAKE_YANO_EXIT_BEFORE_READY === "true") {
@@ -61,7 +72,13 @@ const server = createServer((request, response) => {
   }
 
   if (path === "/api/v1/epochs/latest/parameters") {
-    json(response, { epoch: 0, min_fee_a: 44, min_fee_b: 155381 });
+    json(response, {
+      epoch: currentEpoch(),
+      min_fee_a: staticProtocolParams ? 999 : 44,
+      min_fee_b: 155381,
+      protocol_major_ver: 11,
+      source: staticProtocolParams ? "static" : "tracker"
+    });
     return;
   }
 
@@ -348,6 +365,10 @@ function tip() {
     blockNumber: state.blockNumber,
     blockHash: `fake-block-${state.blockNumber}`
   };
+}
+
+function currentEpoch() {
+  return Math.floor(state.slot / 10);
 }
 
 function json(response, body, status = 200) {

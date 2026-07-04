@@ -1,6 +1,6 @@
 {
   "name": "@bloxbean/yano-testkit-linux-arm64",
-  "version": "0.1.0-pre7-ci2",
+  "version": "0.1.0-pre8",
   "description": "Linux arm64 native Yano binary for @bloxbean/yano-testkit.",
   "main": "./bin/yano",
   "files": [
