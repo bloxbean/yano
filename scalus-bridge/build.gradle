@@ -20,6 +20,7 @@ dependencies {
         exclude group: 'com.bloxbean.cardano'
     }
     api libs.scalus.cardano.ledger
+    api libs.blst.java
 
     testImplementation libs.junit.jupiter.api
     testRuntimeOnly libs.junit.jupiter.engine

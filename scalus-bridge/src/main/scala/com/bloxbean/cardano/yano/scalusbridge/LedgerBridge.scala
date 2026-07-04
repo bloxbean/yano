@@ -120,5 +120,11 @@ object LedgerBridge:
           new TransitResult(false, error.getMessage, error.getClass.getSimpleName)
 
     catch
+      case e: LinkageError if ScalusNativeFailures.isBlsUnavailable(e) =>
+        new TransitResult(false, ScalusNativeFailures.BLS_UNAVAILABLE_MESSAGE,
+          ScalusNativeFailures.BLS_UNAVAILABLE_RULE)
+      case e: RuntimeException if ScalusNativeFailures.isBlsUnavailable(e) =>
+        new TransitResult(false, ScalusNativeFailures.BLS_UNAVAILABLE_MESSAGE,
+          ScalusNativeFailures.BLS_UNAVAILABLE_RULE)
       case e: Exception =>
         new TransitResult(false, "Validation error: " + e.getMessage, e.getClass.getSimpleName)

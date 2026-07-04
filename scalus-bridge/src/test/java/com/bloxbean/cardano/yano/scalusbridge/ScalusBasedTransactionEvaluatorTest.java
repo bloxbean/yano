@@ -1,9 +1,13 @@
 package com.bloxbean.cardano.yano.scalusbridge;
 
+import com.bloxbean.cardano.client.api.UtxoSupplier;
+import com.bloxbean.cardano.client.api.model.Result;
+import com.bloxbean.cardano.client.api.model.Utxo;
 import com.bloxbean.cardano.client.api.model.ProtocolParams;
 import com.bloxbean.cardano.client.common.model.SlotConfig;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -14,6 +18,17 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class ScalusBasedTransactionEvaluatorTest {
 
     private final SlotConfig slotConfig = new SlotConfig(1000, 0, 0);
+
+    @Test
+    void evaluatorConvertsBlstLinkageErrorToExplicitFailure() {
+        var evaluator = new BlstFailingEvaluator();
+
+        var ex = assertThrows(BlsBuiltinsUnavailableException.class,
+                () -> evaluator.evaluate(new byte[]{1, 2, 3}, Set.of()));
+
+        assertEquals(ScalusNativeFailures.BLS_UNAVAILABLE_MESSAGE, ex.getMessage());
+        assertTrue(ex.getCause() instanceof NoClassDefFoundError);
+    }
 
     @Test
     void runtimeEvaluatorRejectsNegativeCurrentSlot() {
@@ -106,5 +121,21 @@ class ScalusBasedTransactionEvaluatorTest {
         assertEquals(1_780_000_000_000L, scalus.zeroTime());
         assertEquals(42L, scalus.zeroSlot());
         assertEquals(2_000L, scalus.slotLength());
+    }
+
+    private class BlstFailingEvaluator extends ScalusBasedTransactionEvaluator {
+        BlstFailingEvaluator() {
+            super(slot -> new ProtocolParams(), null, slotConfig, 0, () -> 123L);
+        }
+
+        @Override
+        protected Result<List<com.bloxbean.cardano.client.api.model.EvaluationResult>> evaluateWithScalus(
+                scalus.cardano.ledger.SlotConfig scalusSlotConfig,
+                ProtocolParams protocolParams,
+                UtxoSupplier utxoSupplier,
+                byte[] txCbor,
+                Set<Utxo> inputUtxos) {
+            throw new NoClassDefFoundError("Could not initialize class supranational.blst.blstJNI");
+        }
     }
 }
