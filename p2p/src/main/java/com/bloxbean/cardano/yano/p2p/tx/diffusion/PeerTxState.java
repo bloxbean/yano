@@ -92,6 +92,10 @@ final class PeerTxState {
         return true;
     }
 
+    synchronized boolean hasRequestedFromPeer(String txHash) {
+        return requestedFromPeer.containsKey(TxIdAndSize.normalizeHash(txHash));
+    }
+
     synchronized void recordRejection(long cooldownMillis, long nowMillis) {
         rejectedCount++;
         if (rejectedCount >= REJECTIONS_BEFORE_COOLDOWN && cooldownMillis > 0) {

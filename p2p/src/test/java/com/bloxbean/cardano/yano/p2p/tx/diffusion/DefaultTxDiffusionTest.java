@@ -44,6 +44,9 @@ class DefaultTxDiffusionTest {
         assertThat(stats.inboundTxBodiesRejected()).isZero();
         assertThat(stats.inFlightTxs()).isEqualTo(1);
         assertThat(stats.inFlightBytes()).isEqualTo(unknownTx1.length);
+        assertThat(diffusion.shouldRequestTransaction(peerId, PeerClass.DOWNSTREAM, hash(knownTx))).isFalse();
+        assertThat(diffusion.shouldRequestTransaction(peerId, PeerClass.DOWNSTREAM, hash(unknownTx1))).isTrue();
+        assertThat(diffusion.shouldRequestTransaction(peerId, PeerClass.DOWNSTREAM, hash(unknownTx2))).isFalse();
     }
 
     @Test
@@ -107,6 +110,7 @@ class DefaultTxDiffusionTest {
         assertThat(stats.inboundTxBodiesAccepted()).isEqualTo(1);
         assertThat(stats.inboundTxBodiesRejected()).isZero();
         assertThat(stats.inFlightTxs()).isZero();
+        assertThat(diffusion.shouldRequestTransaction(peerId, PeerClass.DOWNSTREAM, hash(tx))).isFalse();
     }
 
     @Test

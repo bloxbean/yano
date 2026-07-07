@@ -115,7 +115,7 @@ public final class DefaultTxDiffusion implements TxDiffusion {
             return false;
         }
         String normalized = TxIdAndSize.normalizeHash(txHash);
-        return !txCatalog.contains(normalized);
+        return state(peerId, peerClass).hasRequestedFromPeer(normalized);
     }
 
     @Override

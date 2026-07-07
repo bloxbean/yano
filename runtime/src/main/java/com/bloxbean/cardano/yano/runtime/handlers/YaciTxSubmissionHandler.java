@@ -175,8 +175,16 @@ public class YaciTxSubmissionHandler implements TxSubmissionListener, TxSubmissi
         if (!diffusionEnabled()) {
             return true;
         }
+        if (txId == null) {
+            return false;
+        }
         String txHash = HexUtil.encodeHexString(txId.getTxId());
         return txDiffusion.shouldRequestTransaction(currentPeerId(), PeerClass.DOWNSTREAM, txHash);
+    }
+
+    @Override
+    public boolean shouldRequestTx(TxId txId, int size) {
+        return shouldRequestTransaction(txId);
     }
 
     @Override

@@ -10,6 +10,7 @@ import com.bloxbean.cardano.yaci.core.common.TxBodyType;
 import com.bloxbean.cardano.yaci.core.protocol.txsubmission.messges.ReplyTxs;
 import com.bloxbean.cardano.yaci.core.protocol.txsubmission.messges.ReplyTxIds;
 import com.bloxbean.cardano.yaci.core.protocol.txsubmission.messges.Tx;
+import com.bloxbean.cardano.yaci.core.protocol.txsubmission.messges.TxId;
 import com.bloxbean.cardano.yaci.core.util.CborSerializationUtil;
 import com.bloxbean.cardano.yaci.events.api.VetoableEvent;
 import com.bloxbean.cardano.yano.runtime.blockproducer.TransactionValidationException;
@@ -137,6 +138,8 @@ class YaciTxSubmissionHandlerTest {
         ReplyTxIds txIds = new ReplyTxIds();
         txIds.addTxId(TxBodyType.CONWAY.getEra(), TransactionUtil.getTxHash(txBytes), txBytes.length);
         handler.handleReplyTxIds(txIds);
+        TxId plannedTxId = txIds.getTxIdAndSizeMap().keySet().iterator().next();
+        assertThat(handler.shouldRequestTx(plannedTxId, txBytes.length)).isTrue();
         handler.handleReplyTxs(replyWith(txBytes));
 
         assertThat(admittedTx.get()).isSameAs(txBytes);
@@ -145,6 +148,7 @@ class YaciTxSubmissionHandlerTest {
         assertThat(handler.getTxsRejected()).isZero();
         assertThat(diffusion.stats().inboundTxBodiesAccepted()).isEqualTo(1L);
         assertThat(diffusion.stats().inFlightTxs()).isZero();
+        assertThat(handler.shouldRequestTx(plannedTxId, txBytes.length)).isFalse();
     }
 
     @Test
