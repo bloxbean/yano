@@ -6,6 +6,7 @@ dependencies {
     implementation libs.slf4j.api
 
     testImplementation project(':runtime')
+    testImplementation project(':appchain-client')
 }
 
 java {
