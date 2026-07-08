@@ -308,3 +308,21 @@ Be honest with stakeholders about v1 boundaries (roadmap in ADR 005):
 - **Sub-second global finality guarantees** — finality needs a network
   round-trip to threshold members; tune `block.interval-ms` and threshold to
   your latency budget.
+
+---
+
+## Extension capabilities → use cases
+
+The enterprise extensions (`docs/APP_CHAIN_USER_GUIDE.md` sections 8–17) turn
+several Part B patterns into config-only Part A deployments — `kv-registry`
+and `approvals` cover B1 and B4 without a plugin jar — and add capabilities
+this document's parts don't cover:
+
+| Capability | Use cases it unlocks |
+|---|---|
+| `balances` stdlib machine (guide §9) | B3 micropayment/receipt netting, loyalty points and internal-credit ledgers with zero custom code |
+| `doc-trail` stdlib machine (guide §9) | A3 DPP/supply-chain trails: one provable chained head per product/case verifies the whole trail |
+| `credential-registry` (BBS, guide §17, experimental) | Verifiable credentials on an anchored registry: issuer-signed attribute sets, selective field disclosure |
+| `zk-gate` (guide §17, experimental) | Private policy compliance: prove "amount ≤ limit" / "KYC holds" across orgs without revealing the data |
+| `zk-membership` (guide §17, experimental) | Anonymous-but-authorized submissions: voting, sealed bids, whistleblowing among known members |
+| Evidence export (guide §13) | A1/A5-style audits: one offline-verifiable JSON bundle per record for regulators and counterparties |

@@ -19,9 +19,25 @@ Forestry (MPF) trie, and periodically **anchors the state root to Cardano L1**.
 └──────────────────────────────────────────────┘
 ```
 
-Design/status reference: `adr/app-layer/005-yano-app-chain-framework.md`.
+Design references: `adr/app-layer/005-yano-app-chain-framework.md` (core framework)
+and `adr/app-layer/006-appchain-enterprise-extensions-and-zk.md` (extensions & ZK).
 Wire format specs (for building compatible implementations in other languages):
 yaci `core/src/main/cddl/appmsg/` and yano `core-api/src/main/cddl/appchain/`.
+
+## Published modules
+
+The app-chain core is part of the default distribution (`yano.jar`). Everything
+else is opt-in — a plugin jar on the node or a library in your application
+(group id `com.bloxbean.cardano`):
+
+| Artifact | Repo path | Purpose |
+|---|---|---|
+| `yano-appchain-stdlib` | `appchain/appchain-stdlib` | Ready state machines, selected by id (§9); ships in the distribution |
+| `yano-appchain-client` | `appchain/appchain-client` | Java client SDK: REST + SSE + client-side proof verification (§16) |
+| `yano-appchain-testkit` | `appchain/appchain-testkit` | JUnit 5 `@AppChainCluster` embedded clusters for tests (§16) |
+| `yano-appchain-kafka-sink` | `appchain/extensions/appchain-kafka-sink` | Node plugin: finalized blocks → Kafka topics (§10) |
+| `yano-appchain-zk` | `appchain/extensions/appchain-zk` | Node plugin, EXPERIMENTAL: ZK state machines & verification (§17) |
+| `yano-appchain-spring-boot-starter` | `spring-starters/appchain-spring-boot-starter` | Spring Boot auto-config for the client SDK (§16) |
 
 ---
 
@@ -37,6 +53,8 @@ the app chain with configuration flags only; no code required:
   can obtain an **inclusion proof** that a message was finalized at a given
   position — verifiable against the (anchorable) state root without trusting
   any node.
+- **A standard library of further state machines** — registry, approvals,
+  balances, document trails — selected purely by config (section 9).
 - **REST endpoints** to submit and read messages, browse blocks, and fetch
   proofs (section 4).
 - **Sequencing with real finality**: one configured node (the *sequencer*)
@@ -62,7 +80,7 @@ can prove any record against a public Cardano anchor."
 
 | Term | Meaning |
 |---|---|
-| **Chain id** | Name of your app chain (`yano.app-chain.chain-id`). One group = one chain id. |
+| **Chain id** | Name of your app chain (`yano.app-chain.chain-id`). One group = one chain id. A node can host several chains (section 8). |
 | **Member** | A participant identified by an Ed25519 public key. Only members' messages are accepted; members co-sign blocks. |
 | **Sequencer / proposer** | The one member (by public key) that orders messages into blocks. Fixed, configured. |
 | **Threshold** | How many member signatures a finality certificate needs (e.g. 2 of 2). |
@@ -70,7 +88,7 @@ can prove any record against a public Cardano anchor."
 | **Topic** | Optional sub-stream label inside a chain (routing/filtering). Names starting with `~` are reserved. |
 | **App block** | Ordered batch of messages + post-state MPF root + finality certificate, hash-linked to the previous block. |
 | **State root** | MPF (Aiken-compatible Merkle Patricia Forestry) root after applying a block. Identical on every member, anchorable to L1, provable. |
-| **State machine** | The only component that interprets message bodies. Built-in: `ordered-log`. Custom ones plug in (section 6). |
+| **State machine** | The only component that interprets message bodies. Built-in: `ordered-log` + the standard library (section 9). Custom ones plug in (section 6). |
 
 Trust model: **fail closed**. Envelope signatures, membership, vote
 signatures, and certificate thresholds are cryptographically verified on every
@@ -152,8 +170,9 @@ curl -s http://nodeB:8080/api/v1/app-chain/proof/6d1be691...
 # → MPF inclusion proof for the message against the shared state root
 ```
 
-A ready-made end-to-end regression of exactly this flow (on devnet, with
-anchoring) is the `test-app-chain-cluster` skill under `.claude/skills/`.
+Ready-made end-to-end regressions of this flow (on devnet, with anchoring) are
+the `test-app-chain-cluster` and `test-app-chain-extensions` skills under
+`.claude/skills/`.
 
 > **Devnet tip:** when node B follows a devnet producer for L1, start B with
 > `-Dyano.dev-mode=false -Dyano.block-producer.enabled=false` and give it a
@@ -166,14 +185,35 @@ anchoring) is the `test-app-chain-cluster` skill under `.claude/skills/`.
 
 Base path: `${yano.api-prefix}/app-chain` (default `/api/v1/app-chain`).
 
+Every chain endpoint below is also available **chain-scoped** as
+`/app-chain/chains/{chainId}/...` on a multi-chain node (section 8). The
+chain-less form keeps working while exactly one chain is configured; with
+several chains it returns `400` (ambiguous), and `503` when no chain is
+enabled. When API-key auth is on (section 12), every request needs `X-API-Key`.
+
 | Method & path | Purpose |
 |---|---|
+| `GET /chains` | Hosted chains: `[{chainId, tipHeight, stateRoot}]`. |
 | `POST /messages` | Submit a message. Body: `{"topic": "...", "body": "<text>"}` or `{"topic": "...", "bodyHex": "<hex bytes>"}`. Returns `202` with the content-derived `messageId`. |
 | `GET /messages?limit=100&topic=...` | Recently accepted messages (local + peer), with sender, sequence, body hex, source. |
-| `GET /status` | Chain status: role, tip height, state root, pool size, peer connectivity, counters, anchor status. |
+| `GET /messages/{messageIdHex}` | One finalized message: position (`height`, `index`) + full content (§15). |
+| `GET /messages/by-topic/{topic}?fromHeight=&limit=` | Finalized message refs on a topic, ascending (§15). |
+| `GET /messages/by-sender/{senderHex}?fromHeight=&limit=` | Finalized message refs from a member key, ascending (§15). |
+| `GET /status` | Chain status: role, tip height, state root, pool size, peer connectivity, counters, anchor + sink progress. |
 | `GET /tip` | `{chainId, height, stateRoot}` of the last finalized block. |
 | `GET /blocks/{height}` | Finalized block: hashes, roots, proposer, cert signature count, full message list. |
+| `GET /blocks?from=&limit=` | Paged block summaries, ascending (default: window ending at the tip) (§15). |
 | `GET /proof/{keyHex}` | MPF inclusion proof (wire format) for a state key against the committed root. For `ordered-log` the key **is** the message id; the response includes the value and `finalizedAtHeight`. |
+| `GET /evidence/{messageIdHex}` | Portable, offline-verifiable evidence bundle for a finalized message (§13). |
+| `GET /stream?fromHeight=&topic=` | SSE stream of finalized messages: replay, then live (§10). |
+| `POST /snapshot` | Atomic ledger snapshot for fast member onboarding (§14). Body: `{"path": "<fresh dir>"}`. |
+| `POST /admin/pause` / `POST /admin/resume` | Pause/resume local submissions (§14). |
+| `POST /admin/drain-pool` | Drop all pending (unfinalized) messages (§14). |
+| `POST /admin/force-anchor` | Anchor the current tip now (§14). |
+| `GET /admin/members` | Effective member set + threshold (§14). |
+| `POST /admin/members/add` / `.../remove` | Stage a member key in/out for rotation (§14). Body: `{"publicKey": "..."}`. |
+| `POST /admin/members/reset` | Drop the persisted member override; back to the configured list (§14). |
+| `POST /admin/threshold` | Set the finality threshold (§14). Body: `{"threshold": N}`. |
 
 Submission notes:
 - The node signs your submission with **its own** member key (the REST caller
@@ -225,7 +265,10 @@ Operational notes:
 ## 6. Custom app chains (your own state machine)
 
 The framework never interprets message bodies — a **state machine** does.
-Implement `com.bloxbean.cardano.yano.api.appchain.AppStateMachine`:
+Before writing one, check the standard library (section 9): registry,
+approvals, balances and document-trail machines ship in the distribution.
+For everything else, implement
+`com.bloxbean.cardano.yano.api.appchain.AppStateMachine`:
 
 ```java
 public class OrderBookStateMachine implements AppStateMachine {
@@ -253,7 +296,9 @@ public class OrderBookStateMachine implements AppStateMachine {
 
 Rules: `apply` must be **deterministic** (no wall clock, randomness, or
 external I/O) — every member re-executes it and the resulting state root must
-match the proposer's byte-for-byte, or the block is rejected.
+match the proposer's byte-for-byte, or the block is rejected. Note that
+`validate()` runs at the proposer's admission only — any rule that must hold
+by consensus belongs in `apply()`.
 
 ### 6.1 Deploy as a plugin jar on the default distribution (no rebuild)
 
@@ -277,6 +322,7 @@ match the proposer's byte-for-byte, or the block is rejected.
    Unknown ids fail fast at startup with the list of available machines.
    Compile against the `yano-core-api` artifact (`AppStateMachine`,
    `AppMessage`, `AppStateWriter` live there / in `yaci-core`).
+   A ready Gradle project for this is `scaffolds/plugin-template`.
 
 ### 6.2 Embed programmatically (library mode)
 
@@ -290,18 +336,21 @@ plugin-jar route is the recommended packaging for custom chains.
 
 ## 7. Configuration reference
 
+Flat (single-chain) keys. The same suffixes apply per chain under
+`yano.app-chain.chains[i].` (section 8):
+
 | Property (`yano.app-chain.`) | Default | Description |
 |---|---|---|
-| `enabled` | `false` | Master switch |
+| `enabled` | — | See "Enabling" below |
 | `chain-id` | — | App-chain identity (required) |
-| `signing-key` | — | This member's Ed25519 private seed, hex (required) |
+| `signing-key` | — | This member's Ed25519 private seed, hex, or a `scheme:reference` external-signer spec (§12) |
 | `members` | — | Comma-separated member public keys, hex (required; must include own key) |
 | `peers` | — | Comma-separated app-group peers `host:port` (their N2N server ports) |
 | `sequencer.proposer` | empty | Sequencer's public key. **Empty = diffusion-only mode** (messages replicate, but no blocks/ledger) |
 | `threshold` | `1` | Finality certificate signatures required |
 | `block.interval-ms` | `2000` | Proposer tick (blocks are only made when messages are pending) |
 | `block.max-messages` | `500` | Max messages per block |
-| `state-machine` | `ordered-log` | Built-in id or a plugin provider id |
+| `state-machine` | `ordered-log` | Built-in id, a stdlib id (§9) or a plugin provider id |
 | `max-message-bytes` | `65536` | Max opaque body size |
 | `max-ttl-seconds` | `3600` | Max accepted message TTL |
 | `default-ttl-seconds` | `600` | TTL applied to REST submissions |
@@ -312,56 +361,197 @@ plugin-jar route is the recommended packaging for custom chains.
 | `anchor.metadata-label` | `7014` | Metadata label of anchor txs |
 | `l1.stability-depth` | `0` | Depth of the stable L1 reference in app blocks (0 = off) |
 
-Storage: the app ledger is a separate RocksDB at
-`<yano.storage.path>/app-chain/<chain-id>/` — blocks, state trie and anchor
-markers commit atomically and are independent of the L1 chain state. Back it
-up like any RocksDB directory (node stopped). The app chain is append-only
-after finality; there is no rollback path.
+**Enabling.** Three states, checked in this order:
+
+- An **explicit** `yano.app-chain.enabled: false` always wins: it suppresses
+  the app chain entirely, including `chains[i]` auto-enable (operator kill
+  switch). Leave the key **absent** unless you mean this.
+- Any `chains[i].*` configuration present → the app chain **auto-enables**;
+  no `enabled` key needed (section 8).
+- Flat keys + `enabled: true` → one chain. This is the classic single-chain
+  config and remains fully supported.
+
+Extension settings are documented next to the capability they configure:
+`chains[i].*` (§8), `webhooks` and `sinks.*` (§10), `api.auth.enabled` and
+`api.keys` (§12), `retention.*` (§13), `zk.*` (§17).
+
+Storage: each app ledger is a separate RocksDB at
+`<yano.storage.path>/app-chain/<chain-id>/` — blocks, state trie, indexes and
+anchor markers commit atomically and are independent of the L1 chain state.
+Back it up like any RocksDB directory (node stopped), or use snapshots (§14).
+The app chain is append-only after finality; there is no rollback path.
 
 Events (for `@DomainEventListener` plugins): `AppMessageReceivedEvent`,
 `AppBlockFinalizedEvent`, `AppChainAnchoredEvent`, `AppChainStalledEvent`.
 
 ---
 
-## 7b. Enterprise extensions (ADR 006, Wave 1)
+## 8. Multiple chains per node
 
-All opt-in; a node with none of these configured behaves exactly like v1.
-
-**Multiple chains per node** — indexed config, one ledger/sequencer per chain:
+One Yano node can host several independent app chains — each with its own
+ledger, state machine, member set, sequencer and anchor policy — sharing the
+node's networking and L1 view. Configuration is the same set of keys, indexed:
 
 ```yaml
 yano:
   app-chain:
     chains[0]:
       chain-id: "orders-chain"
-      signing-key: "..."
-      members: "..."
-      # ... any per-chain setting (same suffixes as the flat keys)
+      signing-key: "<seed hex>"
+      members: "<pubA>,<pubB>"
+      peers: "nodeB.example.com:13337"
+      sequencer:
+        proposer: "<pubA>"
+      threshold: 2
+      anchor:
+        enabled: true
+        signing-key: "<anchor seed hex>"
     chains[1]:
       chain-id: "audit-chain"
       state-machine: kv-registry
+      signing-key: "<seed hex>"
+      members: "<pubA>,<pubB>"
+      peers: "nodeB.example.com:13337"
+      sequencer:
+        proposer: "<pubA>"
+      threshold: 2
 ```
 
-Chain-scoped REST: `/app-chain/chains` (list) and
-`/app-chain/chains/{chainId}/...`; the chain-less paths keep working when
-exactly one chain is configured.
+- Every per-chain key uses the same suffixes as the flat config — including
+  `anchor.*`, `webhooks`, `retention.*`, `sinks.*` and `zk.*`. Anchor only
+  the chains that need L1 evidence.
+- Chains are indexed from 0; `chain-id` is required per entry. Presence of
+  any `chains[i]` config auto-enables the app chain (section 7).
+- REST: `GET /app-chain/chains` lists hosted chains; address one with
+  `/app-chain/chains/{chainId}/...`. The chain-less paths keep working when
+  exactly one chain is configured; with several they return `400`.
+- Each chain stores its ledger under `<yano.storage.path>/app-chain/<chain-id>/`.
 
-**Standard-library state machines** (`yano.app-chain.state-machine`):
-`ordered-log` (default), `kv-registry` (per-key ownership registry, provable
-`[owner, value]` entries), `approvals` (k-of-n workflows with deterministic
-deadlines). Command formats are documented on the classes in
-`appchain-stdlib`; each also ships client-side command encoders.
+---
 
-**Push consumption**:
-- SSE: `GET /app-chain/stream?fromHeight=&topic=` — replays finalized
-  messages from a height (default: live-only), then follows; events named
-  `app-message` with id `height:index`, `heartbeat` keepalives.
-- Webhooks: `yano.app-chain.webhooks=https://...` (comma-separated; also per
-  chain). Finalized blocks POSTed as JSON in height order, at-least-once,
-  with a persisted per-sink cursor (`X-App-Chain-Id`/`-Height` headers);
-  progress in `/status` under `webhooks`.
+## 9. Standard-library state machines
 
-**API-key auth** (off by default):
+`yano-appchain-stdlib` ships in the default distribution and is inert until a
+machine is selected by id — `yano.app-chain.state-machine` (or per chain,
+`chains[i].state-machine`). CBOR command formats and client-side command
+encoders are documented on the classes in `appchain/appchain-stdlib`. All
+machines keep the framework guarantees: deterministic apply, provable state
+keys, anchorable roots. All members of a chain must run the same machine id.
+
+**`ordered-log`** (default) — the tamper-evident ordered log of opaque blobs
+described in section 1. No configuration needed.
+
+**`kv-registry`** — a replicated registry with **per-key ownership**: the
+first writer of a key becomes its owner (owner = the authenticated envelope
+sender), and only the owner may update or delete it. Every entry is a provable
+`[owner, value]` pair. Use for token registries, DID documents, allow-lists,
+shared configuration.
+
+```yaml
+yano.app-chain.state-machine: kv-registry
+```
+
+**`approvals`** — k-of-n approval workflows: `propose` / `approve` / `reject`
+commands, deduplicated approvers, a single reject closes an item, deadlines
+derived from the deterministic block timestamp. The full decision trail per
+item is provable. Use for release gates, payment authorization, cross-org
+sign-off.
+
+```yaml
+yano.app-chain.state-machine: approvals
+```
+
+**`balances`** — account balances with `mint` / `transfer` commands: a member
+spends only its own account, non-negativity is enforced deterministically in
+apply (an overdraft is a no-op on every node), and every balance is a provable
+state key. Use for netting, loyalty points, internal credits.
+
+```yaml
+yano.app-chain.state-machine: balances
+```
+
+**`doc-trail`** — append-only per-entity event trails keyed by an external id
+(`productId`, `caseId`, ...): each entry advances a chained head
+`blake2b(prevHead ‖ entryHash ‖ author)`, so one proof of the head verifies
+the whole ordered trail against the anchored root (a `computeHead` verifier is
+provided). Use for DPP/supply-chain trails, case management, evidence chains.
+
+```yaml
+yano.app-chain.state-machine: doc-trail
+```
+
+Each machine also doubles as a reference implementation for custom ones
+(section 6).
+
+---
+
+## 10. Consuming finalized messages (SSE, webhooks, Kafka)
+
+Polling `GET /messages` works, but finalized messages are also pushed.
+
+**SSE** — `GET /app-chain/stream?fromHeight=&topic=` streams finalized
+messages: it replays history from `fromHeight` (default: live-only from the
+current tip), then follows new blocks. Events are named `app-message` with id
+`height:index` (usable as `Last-Event-ID` for resumption); `heartbeat` events
+keep idle connections alive; `topic` filters server-side.
+
+```bash
+curl -N "http://node:8080/api/v1/app-chain/stream?fromHeight=1&topic=orders"
+```
+
+**Webhooks** — `yano.app-chain.webhooks=https://...` (comma-separated; also
+per chain). Finalized blocks are POSTed as JSON in height order, at-least-once,
+with a persisted per-sink cursor — a restart resumes where delivery left off,
+and a failing sink halts and retries rather than skipping blocks. Requests
+carry `X-App-Chain-Id` / `X-App-Chain-Height` headers; delivery progress and
+the last error appear in `/status` under `sinks`.
+
+**Kafka** — drop the `yano-appchain-kafka-sink` plugin jar into the node's
+plugins directory (`yaci.plugins.directory`, default `plugins/`) and
+configure:
+
+```yaml
+yano.app-chain.sinks.kafka.bootstrap-servers: broker:9092
+yano.app-chain.sinks.kafka.topic: my-appchain-blocks
+```
+
+Blocks are produced as JSON keyed by height (partition-stable) with
+synchronous acks, under the same ordered, at-least-once cursor semantics as
+webhooks.
+
+**Custom sinks** — implement the `FinalizedStreamSink` SPI; ordering, cursor
+persistence and at-least-once redelivery come from the framework
+(`yano.app-chain.sinks.<scheme>.*` config is passed through to your sink).
+In-process consumers can instead subscribe to `AppBlockFinalizedEvent`
+(section 7) or `AppChainGateway.subscribeFinalized`.
+
+---
+
+## 11. Typed messages (codec)
+
+The framework stays blob-first — codecs live strictly at the edges, so wire
+format, proofs and anchoring never depend on your object model.
+
+Client side (`yano-appchain-client`):
+
+```java
+record Order(String id, long qty) {}
+CborCodec<Order> codec = CborCodec.of(Order.class);
+client.submitTyped("orders", new Order("o-1", 5), codec::encode);
+client.subscribeTyped(-1, "orders", codec::decode, (order, msg) -> handle(order));
+```
+
+Node side (custom state machines): extend `TypedAppStateMachine<T>` with a
+`MessageCodec<T>` — default `JacksonCborCodec`, in core-api — and implement
+typed validate/apply instead of parsing bytes yourself. The client `CborCodec`
+and the node `JacksonCborCodec` are wire-compatible.
+
+---
+
+## 12. Security (API-key auth, encrypted bodies, external signers/KMS)
+
+**API-key auth** (off by default) protects the whole `/app-chain/*` REST
+surface, admin endpoints included:
 
 ```yaml
 yano:
@@ -373,68 +563,16 @@ yano:
     # yano.app-chain.api.keys: "opsKey123,partnerKey456=orders|invoices"
 ```
 
-Requests to `/app-chain/*` then require `X-API-Key`; reads stay unrestricted
-per key, submissions honor the topic list.
-
-**Metrics** — standard Quarkus Prometheus endpoint `/q/metrics`:
-`yano_appchain_tip_height`, `yano_appchain_pool_size`,
-`yano_appchain_peers_connected` (gauges, per chain),
-`yano_appchain_blocks_finalized_total`,
-`yano_appchain_messages_finalized_total`, `yano_appchain_block_interval`.
-
-**Client SDK** (`com.bloxbean.cardano:yano-appchain-client`) — typed Java
-access with client-side proof verification:
-
-```java
-AppChainClient client = AppChainClient.builder("http://node:8080/api/v1")
-        .chainId("orders-chain").apiKey("...").build();
-var result = client.submitText("orders", "order #1");
-client.subscribe(-1, "orders", msg -> handle(msg));      // SSE, auto-reconnect
-var proof = client.proof(Hex.decode(result.messageId())).orElseThrow();
-boolean ok = ProofVerifier.verify(proof, anchoredRootHex); // don't trust, verify
-```
-
-**Testkit** (`com.bloxbean.cardano:yano-appchain-testkit`, test scope):
-
-```java
-@AppChainCluster(nodes = 3)
-class OrderFlowTest {
-    @Test
-    void replicates(AppChainClusterHandle cluster) throws Exception {
-        String id = cluster.node(1).submit("orders", body);
-        cluster.awaitFinalized(id);
-    }
-}
-```
-
-## 7c. Enterprise extensions (ADR 006, Wave 2)
-
-**More standard-library machines** (`yano.app-chain.state-machine`):
-`balances` (mint/transfer, per-account authorization, non-negativity, provable
-balances) and `doc-trail` (append-only per-entity trails with a provable chained
-head — DPP, supply chain, case management).
-
-**Typed messages** (`appchain-client` + core-api) — work with objects, not
-bytes; the framework stays blob-first:
-
-```java
-record Order(String id, long qty) {}
-CborCodec<Order> codec = CborCodec.of(Order.class);
-client.submitTyped("orders", new Order("o-1", 5), codec::encode);
-client.subscribeTyped(-1, "orders", codec::decode, (order, msg) -> handle(order));
-// server side: extend TypedAppStateMachine<Order> with JacksonCborCodec
-```
-
-**Signed audit export** — a portable, offline-verifiable evidence bundle for any
-finalized message (block(s) + members + L1 anchor reference):
-
-```bash
-curl localhost:8080/api/v1/app-chain/evidence/<messageIdHex> > evidence.json
-# verify offline with core-api's EvidenceVerifier (no node access)
-```
+Requests then require the `X-API-Key` header. A key entry of the form
+`key=topicA|topicB` restricts *submissions* to the listed topics; reads stay
+unrestricted per key. This is the only built-in REST auth today — for
+mTLS/OIDC put the API behind your standard gateway/reverse-proxy.
 
 **Encrypted bodies** — client-side envelope encryption with a group key; the
-chain carries ciphertext (ordering/proofs/anchors all work over it):
+chain carries ciphertext only (ordering, proofs and anchors all work over it),
+and per-topic keys give need-to-know inside one chain. AES-256-GCM with the
+topic as associated data; `GroupCipher` (client SDK) and `BodyCipher`
+(core-api, for state machines) share the wire format:
 
 ```java
 byte[] key = Hex.decode(groupKeyHex);
@@ -442,99 +580,67 @@ client.submit("settlement", GroupCipher.encrypt(key, "settlement", plaintext));
 byte[] plain = GroupCipher.decrypt(key, "settlement", message.body());
 ```
 
-**External signer** (`yano.app-chain.signing-key`) — a `scheme:reference` value
-(e.g. `kms:...`) routes to a `SignerProviderFactory` plugin so the key never
-sits in config; a bare hex seed keeps the default in-config signer.
+**External signers / KMS** — `yano.app-chain.signing-key` accepts a
+`scheme:reference` value (e.g. `kms:...`) that routes signing to a
+`SignerProviderFactory` plugin, so the member key never sits in a config file;
+a bare hex seed keeps the default in-config signer. The SPI is sign-only (no
+key export). No KMS/HSM/Vault plugins ship in the distribution yet — the SPI
+is the supported integration point.
 
-**Retention / pruning** — drop message bodies below the L1 anchor while keeping
-proofs and evidence valid (data-minimization; crypto-shredding with encrypted
-bodies):
+---
+
+## 13. Compliance (audit/evidence export, retention & pruning)
+
+**Evidence export** — one call produces a portable, **offline-verifiable**
+evidence bundle for any finalized message:
+
+```bash
+curl localhost:8080/api/v1/app-chain/evidence/<messageIdHex> > evidence.json
+```
+
+The bundle carries the containing block(s), the member set and threshold in
+effect at that height, and the L1 anchor reference. An auditor verifies it
+with core-api's `EvidenceVerifier` — no node access: block hashes and
+messages-root are recomputed, certificates are checked against the members at
+the chain's full m-of-n threshold, inclusion is confirmed, and the hash chain
+is linked to the anchored block. A message newer than the last confirmed
+anchor yields a finality-only bundle (`anchor: null`) until the next anchor.
+
+**Retention & pruning** — data minimization with proofs preserved:
 
 ```yaml
 yano.app-chain.retention.enabled: true
 yano.app-chain.retention.keep-blocks: 1000
 ```
 
-**Kafka bridge** (plugin `appchain-kafka-sink` on `yano.plugins.directory`):
+Message **bodies** older than `keep-blocks` and below the last confirmed L1
+anchor are stripped; headers, message ids, roots and certificates remain, so
+existing proofs and evidence bundles stay valid. Pruning never runs ahead of
+the slowest configured sink (§10), so at-least-once delivery is unaffected.
+Combined with encrypted bodies (§12), destroying a topic key is
+**crypto-shredding**: content becomes unreadable everywhere while the anchored
+evidence trail survives.
 
-```yaml
-yano.app-chain.sinks.kafka.bootstrap-servers: broker:9092
-yano.app-chain.sinks.kafka.topic: my-appchain-blocks
-```
+---
 
-**Snapshot / fast onboarding** — an atomic ledger snapshot a new member
-restores without replay:
+## 14. Operations (admin API, key rotation runbook, snapshots & onboarding, metrics)
 
-```bash
-curl -XPOST localhost:8080/api/v1/app-chain/snapshot \
-     -H 'content-type: application/json' -d '{"path":"/backups/snap-1"}'
-# copy the directory to the new node's app-chain ledger path, then start it
-```
+### 14.1 Admin API
 
-**Scaffolds** — `scaffolds/docker-compose-cluster` (3-node cluster) and
-`scaffolds/plugin-template` (custom state-machine jar).
+`POST /app-chain[/chains/{id}]/admin/...` — covered by API-key auth when
+enabled (§12):
 
-## 7d. Zero-knowledge extensions (ADR 006, Wave 3 — EXPERIMENTAL)
+- `pause` / `resume` — stop/allow **local** REST submissions (peers and
+  finalized replication are unaffected).
+- `drain-pool` — drop all pending (unfinalized) messages; returns the count.
+- `force-anchor` — anchor the current tip now instead of waiting for cadence.
 
-All ZK ships as one **experimental** T3 plugin `yano-appchain-zk` (depends on
-ZeroJ). Drop it on `yano.plugins.directory`. The node only **verifies** proofs —
-proving happens client-side, where the secrets live. Circuits are chain config:
-each `circuitId → VK hash` is pinned and loaded fail-closed at startup.
+### 14.2 Key rotation runbook
 
-**E7.1 — private-predicate admission (`state-machine=zk-gate`).** Messages carry
-an in-body proof; the node admits only if it verifies (and re-verifies in
-`apply()` for consensus enforcement). The predicate — "amount ≤ limit",
-"age ≥ 18", "KYC holds" — lives entirely in the proof; the chain never sees the
-data.
-
-```yaml
-yano.app-chain.state-machine: zk-gate
-yano.app-chain.zk.circuits[0].id: credit-limit
-yano.app-chain.zk.circuits[0].vk-file: /etc/yano/credit-limit.vk
-yano.app-chain.zk.circuits[0].vk-hash: <blake2b-256 hex of the vk file>
-yano.app-chain.zk.circuits[0].proof-system: groth16     # or plonk
-yano.app-chain.zk.circuits[0].curve: bls12_381
-yano.app-chain.zk.verify-in-apply: true                 # consensus enforcement
-```
-
-**E7.2 — anchored verifiable credentials (`state-machine=credential-registry`).**
-Records are issuer-BBS-signed attribute sets; the chain admits one only if the
-issuer signature verifies (issuers configured, decoupled from membership) and
-records a provable commitment. A holder later discloses selected fields with a
-derived proof, verified against the issuer key and the anchored record.
-
-```yaml
-yano.app-chain.state-machine: credential-registry
-yano.app-chain.zk.bbs.issuers[0].id: hr-dept
-yano.app-chain.zk.bbs.issuers[0].public-key: <BBS G2 public-key hex>
-```
-
-**E7.3 — anonymous-but-authorized submissions (`state-machine=zk-membership`).**
-The author proves membership in the registered set instead of signing with an
-identifiable key; a one-time nullifier prevents double-action (deterministic
-dedup in `apply()`). Anonymous voting, sealed bids, whistleblowing among known
-members. Uses the same `zk.circuits[...]` config as E7.1 for the membership
-circuit.
-
-> Experimental: ZeroJ is unaudited with trusted-setup operational needs; use
-> `plonk` (universal setup) for enterprise deployments. Proving helpers
-> (`BbsCredentials`, proof generation) currently live in the plugin.
-
-## 7e. Operations extensions (ADR 006, Wave 4)
-
-**Admin API** (`POST /app-chain[/chains/{id}]/admin/...`, covered by API-key
-auth when enabled): `pause` / `resume` (local submissions), `drain-pool`
-(drop pending), `force-anchor` (anchor the tip now).
-
-**Query surface**: `GET /blocks?from&limit` (paged summaries),
-`GET /messages/{messageId}` (position + content),
-`GET /messages/by-topic/{topic}?fromHeight&limit`,
-`GET /messages/by-sender/{senderHex}?fromHeight&limit` — topic/sender indexes
-are written atomically with each block (blocks finalized before this upgrade
-are not indexed).
-
-**Key rotation runbook** (staged; run the SAME steps on EVERY node, in this
-order — the rotated state persists and overrides config across restarts):
+Staged and operator-coordinated: run the SAME steps on EVERY node, in this
+order. The rotated state persists and overrides config across restarts
+(`POST /admin/members/reset` drops the override and returns to the configured
+list).
 
 1. **Add the new key everywhere** — on each node:
    `POST /app-chain/admin/members/add {"publicKey":"<newPub>"}`.
@@ -548,16 +654,77 @@ order — the rotated state persists and overrides config across restarts):
 4. **Retire the old key everywhere** —
    `POST /app-chain/admin/members/remove {"publicKey":"<oldPub>"}` on each
    node. Guard rails: the configured proposer can't be removed (rotate the
-   proposer via config + restart until S2 rotation ships) and the set can't
-   drop below the threshold.
+   proposer via config + restart until rotating sequencing ships) and the set
+   can't drop below the threshold.
 
 `GET /app-chain/admin/members` shows the effective set + threshold. This is
 an interim, operator-coordinated mechanism until chain-governed membership
-(ADR-005 D6) makes rotation itself an on-chain action.
+(ADR 005 D6) makes rotation itself an on-chain action.
 
-## 7f. Spring Boot starter (ADR 006, Wave 5)
+### 14.3 Snapshots & member onboarding
 
-`com.bloxbean.cardano:yano-appchain-spring-boot-starter` — the client SDK,
+An atomic ledger snapshot lets a new member start without replaying history:
+
+```bash
+curl -XPOST localhost:8080/api/v1/app-chain/snapshot \
+     -H 'content-type: application/json' -d '{"path":"/backups/snap-1"}'
+# copy the directory to the new node's app-chain ledger path
+# (<yano.storage.path>/app-chain/<chain-id>/), then start it
+```
+
+The restored node verifies ledger integrity at startup and catches up from the
+snapshot height over protocol 103. Snapshots are also the onboarding path past
+a pruning horizon (§13).
+
+### 14.4 Metrics
+
+Standard Quarkus Prometheus endpoint `/q/metrics`, per-chain `chain` tag:
+`yano_appchain_tip_height`, `yano_appchain_pool_size`,
+`yano_appchain_peers_connected` (gauges),
+`yano_appchain_blocks_finalized_total`,
+`yano_appchain_messages_finalized_total`, `yano_appchain_block_interval`.
+
+---
+
+## 15. Query surface
+
+Beyond `/proof` and single-block reads, the finalized ledger is directly
+queryable:
+
+- `GET /blocks?from=&limit=` — paged block summaries (height, timestamp,
+  state root, message count, cert signatures), ascending; default page is the
+  window ending at the tip.
+- `GET /messages/{messageIdHex}` — one finalized message: `height`, `index`,
+  topic, sender and body.
+- `GET /messages/by-topic/{topic}?fromHeight=&limit=` — finalized message
+  refs on a topic, ascending `(height, index)`.
+- `GET /messages/by-sender/{senderHex}?fromHeight=&limit=` — finalized
+  message refs from a member public key, ascending.
+
+Topic and sender indexes are written atomically with each block commit;
+blocks finalized before a node upgraded to this feature are not retro-indexed.
+
+---
+
+## 16. Client libraries (Java SDK, Spring Boot starter, testkit)
+
+**Java SDK** (`com.bloxbean.cardano:yano-appchain-client`) — typed access
+with client-side proof verification, dependency-light:
+
+```java
+AppChainClient client = AppChainClient.builder("http://node:8080/api/v1")
+        .chainId("orders-chain").apiKey("...").build();
+var result = client.submitText("orders", "order #1");
+client.subscribe(-1, "orders", msg -> handle(msg));      // SSE, auto-reconnect
+var proof = client.proof(Hex.decode(result.messageId())).orElseThrow();
+boolean ok = ProofVerifier.verify(proof, anchoredRootHex); // don't trust, verify
+```
+
+The SDK reconnects SSE automatically and dedups replays by `(height, index)`.
+`ProofVerifier` checks an MPF proof against an (anchored) root locally —
+tampered proofs fail closed.
+
+**Spring Boot starter** (`yano-appchain-spring-boot-starter`) — the SDK,
 Spring-shaped:
 
 ```yaml
@@ -585,21 +752,97 @@ class Orders {
 Listener methods take `StreamedMessage`, `byte[]` or `String`; all beans are
 `@ConditionalOnMissingBean`, so anything can be overridden.
 
-## 8. Operations & troubleshooting
+**Testkit** (`com.bloxbean.cardano:yano-appchain-testkit`, test scope) —
+embedded multi-node chains for CI: generated keys, real sockets, temp ledgers:
+
+```java
+@AppChainCluster(nodes = 3)
+class OrderFlowTest {
+    @Test
+    void replicates(AppChainClusterHandle cluster) throws Exception {
+        String id = cluster.node(1).submit("orders", body);
+        cluster.awaitFinalized(id);
+    }
+}
+```
+
+**Scaffolds** — `scaffolds/docker-compose-cluster` (ready 3-node cluster) and
+`scaffolds/plugin-template` (custom state-machine plugin Gradle project).
+
+---
+
+## 17. Zero-knowledge extensions (EXPERIMENTAL)
+
+All ZK ships as one **experimental** plugin, `yano-appchain-zk` (depends on
+ZeroJ). Drop it on `yaci.plugins.directory`. The node only **verifies**
+proofs — proving happens client-side, where the secrets live. Circuits are
+chain configuration: each `circuitId → VK hash` is pinned and loaded
+fail-closed at startup, and every member enforces verification in `apply()`
+(consensus-critical, not just admission).
+
+**Private-predicate admission (`state-machine=zk-gate`).** Messages carry an
+in-body proof; the chain finalizes a message only if it verifies. The
+predicate — "amount ≤ limit", "age ≥ 18", "KYC holds" — lives entirely in the
+proof; the chain (and the other members) never see the underlying data.
+
+```yaml
+yano.app-chain.state-machine: zk-gate
+yano.app-chain.zk.circuits[0].id: credit-limit
+yano.app-chain.zk.circuits[0].vk-file: /etc/yano/credit-limit.vk
+yano.app-chain.zk.circuits[0].vk-hash: <blake2b-256 hex of the vk file>
+yano.app-chain.zk.circuits[0].proof-system: groth16     # or plonk
+yano.app-chain.zk.circuits[0].curve: bls12_381
+```
+
+**Anchored verifiable credentials (`state-machine=credential-registry`).**
+Records are issuer-BBS-signed attribute sets; the chain admits one only if the
+issuer signature verifies (issuers are configured trust anchors, decoupled
+from membership) and records a provable commitment. A holder later discloses
+*selected fields* with a derived proof, verified against the issuer key and
+the anchored record.
+
+```yaml
+yano.app-chain.state-machine: credential-registry
+yano.app-chain.zk.bbs.issuers[0].id: hr-dept
+yano.app-chain.zk.bbs.issuers[0].public-key: <BBS G2 public-key hex>
+```
+
+**Anonymous-but-authorized submissions (`state-machine=zk-membership`).**
+The author proves membership in the registered set instead of signing with an
+identifiable key; a one-time nullifier prevents double-action (deterministic
+dedup in `apply()`, committed in MPF state). Anonymous voting, sealed bids,
+whistleblowing among known members. Uses the same `zk.circuits[...]` config
+for the membership circuit. Note: the transport envelope still carries the
+relaying node's signature — the logical author is anonymous within the member
+set; a fully anonymous transport scheme is a planned follow-up.
+
+> Experimental: ZeroJ is unaudited and Groth16 has trusted-setup operational
+> needs; prefer `plonk` (universal setup) for enterprise deployments. Proving
+> and disclosure helpers (`BbsCredentials`, proof generation) currently live
+> in the plugin.
+
+---
+
+## 18. Troubleshooting
 
 - **`/status` is your dashboard**: `role`, `tipHeight`, `stateRoot`,
-  `poolSize` (pending messages), per-peer connectivity, `anchor` progress.
+  `poolSize` (pending messages), per-peer connectivity, `anchor` progress,
+  sink cursors.
 - **Node won't start**: "public key ... not in the configured member list" —
   fix `members`/`signing-key`; "Unknown app-chain state machine" — wrong
   `state-machine` id or plugin jar not in the plugins directory.
+- **Chain-less REST returns 400**: the node hosts more than one chain — use
+  `/app-chain/chains/{chainId}/...` (section 8).
 - **Messages accepted but no blocks**: check that exactly one node has the
   `sequencer.proposer` key **and is running**, that `threshold` ≤ member
   count, and that enough members are connected to co-sign. A
   `AppChainStalledEvent` (and warning log) fires when a peer's tip is ahead
   with no local progress for 60s.
+- **Submissions return "paused"**: an operator called `/admin/pause` —
+  `/admin/resume` re-opens local submissions (section 14).
 - **Member behind / fresh member joining**: automatic — it catches up over
   protocol 103 from any connected peer, verifying certificates and state
-  roots block by block.
+  roots block by block. For long histories, restore a snapshot first (§14.3).
 - **Sequencer down**: submissions still replicate, but no new blocks finalize
   until it returns (fixed-sequencer v1; rotating sequencer is on the roadmap
   — ADR 005 D2/S2). Restarting the sequencer is safe: vote locks are
@@ -609,13 +852,17 @@ Listener methods take `StreamedMessage`, `byte[]` or `String`; all beans are
   selects it). Run the `test-haskell-sync` skill for the standard L1
   compatibility regression.
 
-## 9. Current limitations (v1)
+## 19. Current limitations
 
 - Fixed sequencer (S1); rotating L1-clocked sequencing is designed (ADR 005)
   but not yet implemented — sequencer availability is an ops concern.
-- Static membership from config; changes need a coordinated config update and
-  restart across members.
-- One chain per node today (`chain-id` is singular in config); the wire
-  protocol and ledger layout already support multiple chains.
+- Membership changes are operator-coordinated: the admin rotation API
+  (section 14) stages key changes at runtime, but every node must be driven
+  through the same steps. Chain-governed membership (ADR 005 D6) is designed,
+  not shipped.
 - Anchoring is metadata-mode; script-anchor (on-chain proof verification
   against an anchor UTxO) is designed but not yet shipped.
+- REST protection is API-key only (section 12); use standard gateway
+  infrastructure for mTLS/OIDC.
+- All ZK extensions are experimental (section 17) and never on a default code
+  path.

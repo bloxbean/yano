@@ -425,3 +425,23 @@ Yano node required.
   chain-governed membership): `adr/app-layer/005-yano-app-chain-framework.md`
 - Wire-format CDDL (build a compatible node in another language):
   yaci `core/src/main/cddl/appmsg/`, yano `core-api/src/main/cddl/appchain/`
+
+---
+
+## Where to go next: enterprise extensions
+
+Everything above is the core framework. The same distribution also ships an
+enterprise extension set — see `docs/APP_CHAIN_USER_GUIDE.md` sections 8–17:
+
+- **Skip writing a state machine** — before building your own (Part 2), check
+  the standard library: `kv-registry` covers this tutorial's KV store out of
+  the box, plus `approvals`, `balances` and `doc-trail` (guide §9). Select one
+  with `yano.app-chain.state-machine` — no jar needed.
+- **Spring Boot clients** — `yano-appchain-spring-boot-starter` gives your
+  application an auto-configured `AppChainTemplate` and `@AppChainListener`
+  over the Java SDK (guide §16) — no curl in production code.
+- **Tests** — `yano-appchain-testkit`: `@AppChainCluster(nodes = 3)` spins an
+  embedded multi-node chain inside a JUnit 5 test (guide §16).
+- **Scaffolds** — `scaffolds/docker-compose-cluster` (ready 3-node cluster)
+  and `scaffolds/plugin-template` (Part 2 of this tutorial as a ready-made
+  Gradle plugin project).
