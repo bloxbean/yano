@@ -106,6 +106,30 @@ public class AppChainResource {
         return singleChain().evidence(messageIdHex);
     }
 
+    @POST
+    @Path("admin/pause")
+    public Response pause() {
+        return singleChain().pause();
+    }
+
+    @POST
+    @Path("admin/resume")
+    public Response resume() {
+        return singleChain().resume();
+    }
+
+    @POST
+    @Path("admin/drain-pool")
+    public Response drainPool() {
+        return singleChain().drainPool();
+    }
+
+    @POST
+    @Path("admin/force-anchor")
+    public Response forceAnchor() {
+        return singleChain().forceAnchor();
+    }
+
     @GET
     @Path("stream")
     @Produces(MediaType.SERVER_SENT_EVENTS)
@@ -276,6 +300,36 @@ public class AppChainResource {
          * core-api's {@code EvidenceVerifier} — no node access needed.
          */
         public record SnapshotRequest(String path) {
+        }
+
+        // --- Admin (ADR 006 E5.4): node-local operability controls ---
+
+        @POST
+        @Path("admin/pause")
+        public Response pause() {
+            gateway.pauseSubmissions();
+            return Response.ok(Map.of("chainId", gateway.chainId(), "submissionsPaused", true)).build();
+        }
+
+        @POST
+        @Path("admin/resume")
+        public Response resume() {
+            gateway.resumeSubmissions();
+            return Response.ok(Map.of("chainId", gateway.chainId(), "submissionsPaused", false)).build();
+        }
+
+        @POST
+        @Path("admin/drain-pool")
+        public Response drainPool() {
+            int dropped = gateway.drainPool();
+            return Response.ok(Map.of("chainId", gateway.chainId(), "dropped", dropped)).build();
+        }
+
+        @POST
+        @Path("admin/force-anchor")
+        public Response forceAnchor() {
+            boolean triggered = gateway.forceAnchor();
+            return Response.ok(Map.of("chainId", gateway.chainId(), "anchorTriggered", triggered)).build();
         }
 
         /**

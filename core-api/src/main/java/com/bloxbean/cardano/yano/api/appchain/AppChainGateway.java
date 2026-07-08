@@ -81,6 +81,34 @@ public interface AppChainGateway {
      */
     long snapshot(String snapshotPath);
 
+    // ------------------------------------------------------------------
+    // Admin operations (ADR app-layer/006 E5.4) — node-local operability
+    // controls; they do not change consensus rules.
+    // ------------------------------------------------------------------
+
+    /** Pause LOCAL submissions (REST/submit()); finalized blocks still apply. */
+    void pauseSubmissions();
+
+    /** Resume local submissions after {@link #pauseSubmissions()}. */
+    void resumeSubmissions();
+
+    /** True when local submissions are paused. */
+    boolean submissionsPaused();
+
+    /**
+     * Drop all pending (unfinalized) messages from this node's pool.
+     * @return number of messages dropped
+     */
+    int drainPool();
+
+    /**
+     * Ask the anchor service to anchor the current tip now, ignoring the
+     * every-blocks/interval schedule. No-op when anchoring is disabled or an
+     * anchor tx is already pending.
+     * @return true if an anchor submission was triggered
+     */
+    boolean forceAnchor();
+
     @FunctionalInterface
     interface FinalizedBlockListener {
         void onFinalized(AppBlock block, byte[] blockHash);

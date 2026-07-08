@@ -451,6 +451,8 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     public String submit(String topic, byte[] body) {
         if (!running.get())
             throw new IllegalStateException("App chain is not running");
+        if (submissionsPaused.get())
+            throw new IllegalStateException("Submissions are paused (admin)");
         Objects.requireNonNull(body, "body");
         if (body.length == 0)
             throw new IllegalArgumentException("body must not be empty");
@@ -514,6 +516,49 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     public Optional<Long> messageHeight(byte[] messageId) {
         AppLedgerStore currentLedger = ledger;
         return currentLedger != null ? currentLedger.messageHeight(messageId) : Optional.empty();
+    }
+
+    // ------------------------------------------------------------------
+    // Admin operations (ADR 006 E5.4) — node-local, no consensus change
+    // ------------------------------------------------------------------
+
+    private final java.util.concurrent.atomic.AtomicBoolean submissionsPaused =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
+
+    @Override
+    public void pauseSubmissions() {
+        if (submissionsPaused.compareAndSet(false, true)) {
+            log.info("App-chain '{}' local submissions PAUSED (admin)", config.chainId());
+        }
+    }
+
+    @Override
+    public void resumeSubmissions() {
+        if (submissionsPaused.compareAndSet(true, false)) {
+            log.info("App-chain '{}' local submissions RESUMED (admin)", config.chainId());
+        }
+    }
+
+    @Override
+    public boolean submissionsPaused() {
+        return submissionsPaused.get();
+    }
+
+    @Override
+    public int drainPool() {
+        int dropped = pool.clear();
+        log.info("App-chain '{}' pool drained: {} pending message(s) dropped (admin)",
+                config.chainId(), dropped);
+        return dropped;
+    }
+
+    @Override
+    public boolean forceAnchor() {
+        AnchorService currentAnchor = anchorService;
+        if (currentAnchor == null) {
+            return false; // anchoring disabled
+        }
+        return currentAnchor.forceAnchorNow();
     }
 
     @Override
@@ -618,6 +663,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             }
         }
         status.put("poolSize", pool.size());
+        status.put("submissionsPaused", submissionsPaused.get());
         status.put("submitted", submittedCount.get());
         status.put("received", receivedCount.get());
         status.put("relayed", relayedCount.get());

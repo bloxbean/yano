@@ -1188,6 +1188,31 @@ public class YanoProducer {
         public long snapshot(String snapshotPath) {
             throw unavailableRole("AppChainGateway");
         }
+
+        @Override
+        public void pauseSubmissions() {
+            throw unavailableRole("AppChainGateway");
+        }
+
+        @Override
+        public void resumeSubmissions() {
+            throw unavailableRole("AppChainGateway");
+        }
+
+        @Override
+        public boolean submissionsPaused() {
+            throw unavailableRole("AppChainGateway");
+        }
+
+        @Override
+        public int drainPool() {
+            throw unavailableRole("AppChainGateway");
+        }
+
+        @Override
+        public boolean forceAnchor() {
+            throw unavailableRole("AppChainGateway");
+        }
     }
 
     private enum UnavailableProducerControl implements ProducerControl {
