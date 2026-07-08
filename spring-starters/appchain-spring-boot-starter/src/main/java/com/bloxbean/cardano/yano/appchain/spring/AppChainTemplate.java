@@ -50,10 +50,18 @@ public class AppChainTemplate {
      * Fetch the inclusion proof for a state key and verify it locally
      * ("don't trust, verify"). Empty when the key has no committed entry.
      *
-     * @return the verified proof, or empty when absent or INVALID
+     * @return the verified proof, or empty when the key is absent
+     * @throws IllegalStateException when the node returned a proof that FAILS
+     *         verification — a tamper signal, deliberately distinct from
+     *         "no entry" so it can be alerted on, never swallowed
      */
     public Optional<AppChainClient.Proof> verifiedProof(byte[] stateKey) {
-        return client.proof(stateKey).filter(ProofVerifier::verify);
+        Optional<AppChainClient.Proof> proof = client.proof(stateKey);
+        if (proof.isPresent() && !ProofVerifier.verify(proof.get())) {
+            throw new IllegalStateException("MPF proof verification FAILED for key "
+                    + Hex.encode(stateKey) + " — the node returned a tampered/invalid proof");
+        }
+        return proof;
     }
 
     /** Convenience: verified proof for a UTF-8 string key. */

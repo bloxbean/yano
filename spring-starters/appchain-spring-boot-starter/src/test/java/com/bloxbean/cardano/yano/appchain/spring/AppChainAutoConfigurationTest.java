@@ -31,10 +31,12 @@ class AppChainAutoConfigurationTest {
             .withConfiguration(AutoConfigurations.of(AppChainAutoConfiguration.class));
 
     private HttpServer server;
+    private java.util.concurrent.ExecutorService serverExecutor;
 
     @AfterEach
     void tearDown() {
         if (server != null) server.stop(0);
+        if (serverExecutor != null) serverExecutor.shutdownNow(); // interrupt held-open SSE handlers
     }
 
     @Test
@@ -79,7 +81,12 @@ class AppChainAutoConfigurationTest {
         });
         // A real executor — the SSE handler holds its connection open, which
         // would wedge the default single dispatch thread and block the REST stub.
-        server.setExecutor(java.util.concurrent.Executors.newCachedThreadPool());
+        serverExecutor = java.util.concurrent.Executors.newCachedThreadPool(r -> {
+            Thread t = new Thread(r);
+            t.setDaemon(true);
+            return t;
+        });
+        server.setExecutor(serverExecutor);
         server.start();
         String baseUrl = "http://localhost:" + server.getAddress().getPort() + "/api/v1";
 
@@ -109,7 +116,16 @@ class AppChainAutoConfigurationTest {
     void invalidListenerSignature_failsStartup() {
         runner.withPropertyValues("yano.appchain.client.base-url=http://localhost:1/api/v1")
                 .withUserConfiguration(BadListenerConfig.class)
-                .run(context -> assertThat(context).hasFailed());
+                .run(context -> {
+                    assertThat(context).hasFailed();
+                    Throwable root = context.getStartupFailure();
+                    while (root.getCause() != null) {
+                        root = root.getCause();
+                    }
+                    assertThat(root.getMessage())
+                            .contains("@AppChainListener")
+                            .contains("exactly one parameter");
+                });
     }
 
     @Configuration

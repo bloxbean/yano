@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.appchain.spring;
 
 import com.bloxbean.cardano.yano.appchain.client.AppChainClient;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -39,9 +40,13 @@ public class AppChainAutoConfiguration {
         return new AppChainTemplate(client);
     }
 
+    // static + ObjectProvider: a BeanPostProcessor must not drag the client
+    // (and any user override's dependency graph) into the BPP-registration
+    // phase — the client is looked up lazily at subscription time.
     @Bean
     @ConditionalOnMissingBean
-    public AppChainListenerProcessor appChainListenerProcessor(AppChainClient client) {
-        return new AppChainListenerProcessor(client);
+    public static AppChainListenerProcessor appChainListenerProcessor(
+            ObjectProvider<AppChainClient> clientProvider) {
+        return new AppChainListenerProcessor(clientProvider);
     }
 }
