@@ -1,0 +1,29 @@
+// Spring Boot starter for Yano app chains (ADR 006 E1.4) — sugar over the
+// appchain-client SDK: auto-configured client/template + @AppChainListener.
+dependencies {
+    api project(':appchain-client')
+
+    compileOnly libs.spring.boot.autoconfigure
+    compileOnly libs.spring.context
+    implementation libs.slf4j.api
+
+    testImplementation libs.spring.boot.autoconfigure
+    testImplementation libs.spring.context
+    testImplementation libs.spring.boot.test
+}
+
+java {
+    sourceCompatibility = 25
+    targetCompatibility = 25
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            pom {
+                name = 'Yano App-Chain Spring Boot Starter'
+                description = 'Auto-configured AppChainClient/AppChainTemplate and @AppChainListener for Yano app chains'
+            }
+        }
+    }
+}
