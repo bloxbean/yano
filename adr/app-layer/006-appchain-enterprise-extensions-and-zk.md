@@ -18,7 +18,7 @@ and merged into the integration branch on completion.
 | **Wave 1** | E5.2 multi-chain, E2.1 kv-registry, E2.2 approvals, E3.1 SSE/webhooks, E4.1 REST auth, E5.1 metrics, E1.2 testkit, E1.1 client SDK | **Done** (2026-07-08, `feat/wave1-extensions` → merged) |
 | **Wave 2** | E2.3 balances, E2.4 doc-trail, E1.3 typed codec, E3.4 audit export, E4.4 retention/pruning, E4.2 encrypted bodies, E4.3 SignerProvider, E3.2 sink SPI + Kafka bridge, E5.3 snapshot/restore, E1.5 scaffolds | **Done** (2026-07-08, `feat/wave2-extensions`) |
 | Wave 2 | E1.3 codecs, E2.3/E2.4 stdlib completion, E3.2 Kafka bridge, E3.4 audit export, E4.2 encrypted bodies, E4.3 KMS signing, E4.4 retention, E5.3 snapshots, E1.5 scaffolds | Not started |
-| Wave 3 (ZK) | E7.1 ZK verification, E7.2 BBS disclosure, then E7.3 zk-membership; E7.4/E7.5 as spikes | **In progress** (`feat/wave3-extensions`; open questions resolved 2026-07-08 — see §7) |
+| Wave 3 (ZK) | E7.1 ZK verification, E7.2 BBS disclosure, E7.3 zk-membership (done); E7.4/E7.5 gated spikes | **E7.1–E7.3 done** (2026-07-08, `feat/wave3-extensions`; open questions resolved — see §7) |
 | Deferred to the end | **E1.4 Spring Boot starter + Quarkus extension** — deprioritized (2026-07-08): pure sugar over the E1.1 client SDK; built once, after all waves, when the SDK surface has stabilized across them | Deferred |
 
 ### Wave 1 delivery notes (2026-07-08)
@@ -420,3 +420,35 @@ proceed independently and are prerequisites only where marked (E7.5).
 **Build order:** E7.1 → E7.2 → E7.3; E7.4/E7.5 as gated spikes. E7.1 is
 verification-only, deterministic, lowest-risk, and exercises the VK-registry /
 plugin seam that E7.3/E7.4 reuse.
+
+### Wave 3 delivery notes (2026-07-08)
+
+All ZK ships as ONE experimental T3 plugin `yano-appchain-zk` (ZeroJ
+0.1.0-pre5), verification-only in consensus; proving is client-side.
+
+- **Config-injection seam** (reused by all three): `AppStateMachineContext` +
+  `AppStateMachineProvider.create(ctx)`; `AppChainConfig.sinkSettings`
+  generalized to `pluginSettings` (carries `sinks.*` + `zk.*`), forwarded by
+  node-app (`forwardDynamicKeys`) and RuntimeNode (union prefix collector,
+  single + multi-chain).
+- **E7.1 `zk-gate`**: in-body `ZkProofBody` `[circuitId, proofSystem, curve,
+  proof, publicInputs]` (CDDL); `ConfigVkRegistry` pins `circuitId → VK hash`
+  and loads fail-closed; `ZkVerificationService` over ZeroJ's
+  `VerifierOrchestrator` (backends via ServiceLoader). Verify at admission +
+  deterministic re-verify in `apply()` (consensus enforcement); verified
+  messages recorded ordered-log style.
+- **E7.2 `credential-registry`**: `CredentialRegistryStateMachine` admits an
+  issuer-BBS-signed `CredentialBody` only if the signature verifies against a
+  configured issuer key (issuers decoupled from membership), records a
+  provable commitment; `BbsCredentials` wraps `zeroj-bbs` for issue / selective
+  disclosure / verify. No trusted setup — full round-trip is hermetically
+  tested.
+- **E7.3 `zk-membership`**: `ZkMembershipStateMachine` — membership proof
+  instead of an identifiable signature, no per-sender seq; per-nullifier dedup
+  applied deterministically in `apply()` against MPF state (rollback-safe);
+  nullifier context is an app policy knob. `MembershipProofBody` + CDDL.
+- *Scope carried forward*: E7.3's transport envelope still uses the relaying
+  node's scheme-0 signature — the logical author is anonymous within the member
+  set, but a fully anonymous transport `authScheme=2` touches the core auth path
+  and is a follow-up. E7.4 (private-balances) / E7.5 (zk-anchor) remain gated
+  spikes; `BbsCredentials` will split into a slim `yano-appchain-client-zk`.
