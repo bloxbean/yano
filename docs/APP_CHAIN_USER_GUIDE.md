@@ -99,6 +99,15 @@ are never finalized; a tampered block fails the state-root re-execution check.
 
 ## 3. Quick start: two-node cluster with the default distribution
 
+This walkthrough uses `java -jar` with `-D` flags (built from source). The
+**official distributions** work the same way — only where config lives differs:
+the release zip (`yano-<ver>.zip`) has a `./yano.sh start:<profile>` launcher
+plus `config/application.yml`; the Docker bundle (`yano-docker-<ver>.zip`)
+mounts `config/application.yml` and a `plugins/` directory into the
+`bloxbean/yano` image; native binaries mirror the zip layout (but cannot load
+plugin jars). See the tutorial's Part 0 for per-distribution instructions;
+releases: https://github.com/bloxbean/yano/releases
+
 ### 3.1 Generate member keys
 
 Each member needs an Ed25519 keypair (32-byte seed). Using the built jar:

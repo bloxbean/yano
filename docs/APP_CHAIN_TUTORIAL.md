@@ -16,11 +16,65 @@ Reference documentation (all config options, REST reference, ops):
 
 ## Part 0 — Get the distribution
 
+Yano ships in three official forms per release
+([github.com/bloxbean/yano/releases](https://github.com/bloxbean/yano/releases)),
+plus building from source. The app chain works identically in all of them —
+only *where the configuration lives* differs.
+
+### Option A — Official zip (JVM)
+
+```bash
+unzip yano-<version>.zip && cd yano-<version>
+./yano.sh start:devnet \
+  -Dyano.app-chain.enabled=true \
+  -Dyano.app-chain.chain-id=tutorial-chain \
+  ...                                   # any -D flag from this tutorial
+```
+
+The zip contains `yano.jar`, the `yano.sh` launcher and a `config/` directory.
+Instead of `-D` flags you can put the same keys under `yano.app-chain.*` in
+`config/application.yml` — the recommended place for a permanent setup. Run
+from the unzipped directory (network genesis files resolve relative to it).
+`JAVA_OPTS` / `YANO_EXTRA_ARGS` env vars are honored.
+
+Native binaries (`yano-native-<version>-<os>-<arch>.zip`) have the same layout
+with a `yano` binary instead of the jar — same flags, same `config/`. Note:
+**plugin jars (Kafka sink, ZK, custom state machines) require the JVM
+distribution**; the native image cannot load them.
+
+### Option B — Docker
+
+```bash
+unzip yano-docker-<version>.zip && cd yano-docker-<version>
+# app-chain settings: edit config/application.yml (mounted read-only into the
+# container) or add -D flags via YANO_EXTRA_ARGS in config/env
+./yano.sh start:devnet          # or start:preprod / start:preview / start
+./yano.sh logs:yano
+```
+
+The compose bundle runs the `bloxbean/yano` image (`-jvm` or `-native`
+flavor), exposes REST on `7070` and N2N on `13337`, and mounts:
+
+| Host path | In container | Use for |
+|---|---|---|
+| `config/application.yml` | `/app/config/application.yml` | `yano.app-chain.*` settings |
+| `plugins/` | `/app/plugins` | T3 plugin jars (`yaci.plugins.directory` is preset) |
+| `chainstate-*/` | `/app/chainstate` | persistent chain + app-chain ledgers |
+
+For the two-node tutorial cluster below, run two copies of the compose bundle
+with distinct `INSTANCE_NAME`, `YANO_HTTP_PORT` and `YANO_N2N_PORT`, and point
+each node's `yano.app-chain.peers` at the other's published N2N port
+(`host.docker.internal:<port>` from inside a container, or put both services
+on one compose network).
+
+### Option C — From source
+
 ```bash
 ./gradlew :app:quarkusBuild        # → app/build/yano.jar (uber-jar)
 ```
 
-Everything below uses this one jar for every node and both parts.
+Everything below uses Option C's `java -jar` form with explicit `-D` flags —
+the flags map 1:1 to `config/application.yml` keys in Options A/B.
 
 ---
 
