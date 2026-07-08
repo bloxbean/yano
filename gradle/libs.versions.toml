@@ -56,6 +56,7 @@ zeroj-verifier-groth16 = "com.bloxbean.cardano:zeroj-verifier-groth16:0.1.0-pre5
 zeroj-verifier-plonk = "com.bloxbean.cardano:zeroj-verifier-plonk:0.1.0-pre5"
 zeroj-patterns = "com.bloxbean.cardano:zeroj-patterns:0.1.0-pre5"
 zeroj-api = "com.bloxbean.cardano:zeroj-api:0.1.0-pre5"
+zeroj-bbs = "com.bloxbean.cardano:zeroj-bbs:0.1.0-pre5"
 archunit = "com.tngtech.archunit:archunit:1.4.1"
 
 rocksdb="org.rocksdb:rocksdbjni:9.11.2"

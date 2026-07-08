@@ -1,1 +1,2 @@
 com.bloxbean.cardano.yano.appchain.zk.ZkGateProvider
+com.bloxbean.cardano.yano.appchain.zk.CredentialRegistryProvider

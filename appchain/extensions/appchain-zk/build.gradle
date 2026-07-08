@@ -7,6 +7,7 @@ dependencies {
 
     api libs.zeroj.api
     api libs.zeroj.verifier.core
+    api libs.zeroj.bbs                         // E7.2 BBS selective disclosure
     // Verifier backends are discovered via ServiceLoader at runtime; ship the
     // ones the deployment needs (or add zeroj-verifier-plonk).
     runtimeOnly libs.zeroj.verifier.groth16
