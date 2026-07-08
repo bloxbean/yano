@@ -434,9 +434,9 @@ All ZK ships as ONE experimental T3 plugin `yano-appchain-zk` (ZeroJ
 - **E7.1 `zk-gate`**: in-body `ZkProofBody` `[circuitId, proofSystem, curve,
   proof, publicInputs]` (CDDL); `ConfigVkRegistry` pins `circuitId → VK hash`
   and loads fail-closed; `ZkVerificationService` over ZeroJ's
-  `VerifierOrchestrator` (backends via ServiceLoader). Verify at admission +
-  deterministic re-verify in `apply()` (consensus enforcement); verified
-  messages recorded ordered-log style.
+  `VerifierOrchestrator` (backends via ServiceLoader). Proofs are verified by
+  **every member in `apply()`** (mandatory consensus enforcement — `validate()`
+  is proposer-only); verified messages recorded via the shared `OrderedLog`.
 - **E7.2 `credential-registry`**: `CredentialRegistryStateMachine` admits an
   issuer-BBS-signed `CredentialBody` only if the signature verifies against a
   configured issuer key (issuers decoupled from membership), records a
@@ -452,3 +452,12 @@ All ZK ships as ONE experimental T3 plugin `yano-appchain-zk` (ZeroJ
   set, but a fully anonymous transport `authScheme=2` touches the core auth path
   and is a follow-up. E7.4 (private-balances) / E7.5 (zk-anchor) remain gated
   spikes; `BbsCredentials` will split into a slim `yano-appchain-client-zk`.
+- **Post-review hardening (Wave 3)** — high-effort review, 8 findings fixed
+  before merge. The critical class: **`validate()` runs only on the proposer;
+  followers re-run only `apply()`** — so a security check placed only in
+  `validate()` is not consensus-enforced. All three machines now verify in
+  `apply()`: credential-registry re-verifies the issuer BBS signature; zk-gate
+  makes apply-time verification mandatory (dropped the optional flag);
+  zk-membership binds the nullifier to a proof public input (blocking
+  replay-with-fresh-nullifier). Config loops tolerate index gaps; the ordered-log
+  record format is shared (`OrderedLog`); dead code removed.
