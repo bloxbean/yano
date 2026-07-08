@@ -211,7 +211,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
      * Envelope authentication: Ed25519 signature by a registered group member.
      * Structural checks (id recompute, size, TTL, chain) already ran in the agent.
      */
-    private AppMsgValidator.Result verifyEnvelope(AppMessage message) {
+    AppMsgValidator.Result verifyEnvelope(AppMessage message) {
         if (message.getAuthScheme() != AuthScheme.ED25519.getValue())
             return AppMsgValidator.Result.reject("unsupported auth scheme: " + message.getAuthScheme());
 
@@ -278,6 +278,20 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         return List.of(gossipFactory, catchUpFactory);
     }
 
+    /** The ledger, or null when sequencing is disabled / not started (manager use). */
+    AppLedgerStore ledgerOrNull() {
+        return ledger;
+    }
+
+    AppChainConfig chainConfig() {
+        return config;
+    }
+
+    /** Transport config for this chain (manager builds shared multi-chain agents). */
+    AppMsgSubmissionConfig chainTransportConfig() {
+        return transportConfig();
+    }
+
     /** Catch-up replies from a peer (protocol 103). */
     private void onCatchUpBlocks(String peerId, List<byte[]> blocks, long serverTipHeight) {
         bestPeerTip = Math.max(bestPeerTip, serverTipHeight);
@@ -321,7 +335,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     }
 
     /** Verified messages arriving from a peer: dedup, route, relay. */
-    private void onInboundMessages(List<AppMessage> messages) {
+    void onInboundMessages(List<AppMessage> messages) {
         for (AppMessage message : messages) {
             if (!seenMessageIds.add(message.getMessageIdHex())) {
                 duplicateCount.incrementAndGet();

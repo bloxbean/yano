@@ -494,6 +494,13 @@ public final class YanoPropertyKeys {
      */
     public static final class AppChain {
         public static final String ENABLED = "yano.app-chain.enabled";
+        /**
+         * Multi-chain config (ADR 006 E5.2): runtime-globals key holding a
+         * List of Maps of suffix-keyed chain settings, populated by adapters
+         * from indexed properties yano.app-chain.chains[i].&lt;suffix&gt;.
+         * When absent, the flat yano.app-chain.* keys define a single chain.
+         */
+        public static final String CHAINS = "yano.app-chain.chains";
         public static final String CHAIN_ID = "yano.app-chain.chain-id";
         /** This member's Ed25519 private key (hex, 32-byte seed). Required when enabled. */
         public static final String SIGNING_KEY = "yano.app-chain.signing-key";

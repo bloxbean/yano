@@ -629,6 +629,12 @@ public class YanoProducer {
         globals.put(YanoPropertyKeys.AppChain.ANCHOR_MAX_INTERVAL_MINUTES, appChainAnchorMaxIntervalMinutes);
         globals.put(YanoPropertyKeys.AppChain.ANCHOR_METADATA_LABEL, appChainAnchorMetadataLabel);
         globals.put(YanoPropertyKeys.AppChain.L1_STABILITY_DEPTH, appChainL1StabilityDepth);
+        java.util.List<java.util.Map<String, Object>> appChainList = parseAppChainChains();
+        if (!appChainList.isEmpty()) {
+            globals.put(YanoPropertyKeys.AppChain.CHAINS, appChainList);
+            globals.put(YanoPropertyKeys.AppChain.ENABLED, true);
+            log.info("App-chain multi-chain config: {} chain(s)", appChainList.size());
+        }
         globals.put(YanoPropertyKeys.Relay.AUTO_DISCOVERY, relayAutoDiscovery);
         globals.put(YanoPropertyKeys.Relay.ADVERTISED_HOST,
                 relayAdvertisedHost.map(String::trim).filter(host -> !host.isBlank()).orElse("auto"));
@@ -760,6 +766,45 @@ public class YanoProducer {
     @ApplicationScoped
     public com.bloxbean.cardano.yano.api.appchain.AppChainGateway createAppChainGateway() {
         return ensureYano().appChain().orElse(UnavailableAppChainGateway.INSTANCE);
+    }
+
+    @Produces
+    @ApplicationScoped
+    public com.bloxbean.cardano.yano.api.appchain.AppChainGateways createAppChainGateways() {
+        return ensureYano().appChains();
+    }
+
+    /**
+     * Multi-chain config (ADR app-layer/006 E5.2): reads indexed properties
+     * yano.app-chain.chains[i].&lt;suffix&gt; into suffix-keyed maps for the runtime.
+     */
+    private java.util.List<java.util.Map<String, Object>> parseAppChainChains() {
+        var config = org.eclipse.microprofile.config.ConfigProvider.getConfig();
+        java.util.List<java.util.Map<String, Object>> chains = new java.util.ArrayList<>();
+        String[] suffixes = {
+                "chain-id", "signing-key", "members", "peers",
+                "sequencer.proposer", "threshold",
+                "block.interval-ms", "block.max-messages",
+                "state-machine",
+                "max-message-bytes", "max-ttl-seconds", "default-ttl-seconds",
+                "anchor.enabled", "anchor.signing-key", "anchor.every-blocks",
+                "anchor.max-interval-minutes", "anchor.metadata-label",
+                "l1.stability-depth"
+        };
+        for (int i = 0; i < 50; i++) {
+            String prefix = "yano.app-chain.chains[" + i + "].";
+            java.util.Optional<String> chainId = config.getOptionalValue(prefix + "chain-id", String.class);
+            if (chainId.isEmpty()) {
+                break;
+            }
+            java.util.Map<String, Object> chain = new java.util.LinkedHashMap<>();
+            for (String suffix : suffixes) {
+                config.getOptionalValue(prefix + suffix, String.class)
+                        .ifPresent(value -> chain.put(suffix, value));
+            }
+            chains.add(chain);
+        }
+        return chains;
     }
 
     @Produces

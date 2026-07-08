@@ -219,6 +219,11 @@ public final class YanoDevnetAssembly {
         }
 
         @Override
+        public com.bloxbean.cardano.yano.api.appchain.AppChainGateways appChains() {
+            return delegate.appChains();
+        }
+
+        @Override
         public Optional<RuntimeMaintenanceGate> maintenanceGate() {
             return delegate.maintenanceGate();
         }

@@ -1,10 +1,24 @@
 # ADR-006: App-Chain Enterprise Extensions & ZK Integration (ZeroJ)
 
 ## Status
-Proposed (analysis + plan; nothing in this ADR is committed work)
+Accepted — implementation in progress
 
 ## Date
 2026-07-08
+
+## Implementation Status
+
+Branch strategy: `feat/app_layer_extensions` (created from `feat/app_layer`)
+is the **integration branch** for all ADR-006 work. Each wave is developed,
+tested and reviewed on its own working branch (`feat/wave1-extensions`, ...)
+and merged into the integration branch on completion.
+
+| Wave | Scope | Status |
+|---|---|---|
+| **Wave 1** | E5.2 multi-chain, E2.1 kv-registry, E2.2 approvals, E3.1 SSE/webhooks, E4.1 REST auth, E5.1 metrics, E1.2 testkit, E1.1 client SDK | **In progress** (`feat/wave1-extensions`) |
+| Wave 2 | E1.3 codecs, E2.3/E2.4 stdlib completion, E3.2 Kafka bridge, E3.4 audit export, E4.2 encrypted bodies, E4.3 KMS signing, E4.4 retention, E5.3 snapshots, E1.5 scaffolds | Not started |
+| Wave 3 (ZK) | E7.1 ZK verification, E7.2 BBS disclosure, then E7.3 zk-membership; E7.4/E7.5 as spikes | Not started |
+| Deferred to the end | **E1.4 Spring Boot starter + Quarkus extension** — deprioritized (2026-07-08): pure sugar over the E1.1 client SDK; built once, after all waves, when the SDK surface has stabilized across them | Deferred |
 
 ## Related
 - `adr/app-layer/005-yano-app-chain-framework.md` — the shipped v1 framework (M1–M6) this ADR extends
