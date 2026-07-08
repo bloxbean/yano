@@ -555,6 +555,36 @@ order — the rotated state persists and overrides config across restarts):
 an interim, operator-coordinated mechanism until chain-governed membership
 (ADR-005 D6) makes rotation itself an on-chain action.
 
+## 7f. Spring Boot starter (ADR 006, Wave 5)
+
+`com.bloxbean.cardano:yano-appchain-spring-boot-starter` — the client SDK,
+Spring-shaped:
+
+```yaml
+yano.appchain.client.base-url: http://node:8080/api/v1
+yano.appchain.client.chain-id: my-chain     # optional (single-chain node)
+yano.appchain.client.api-key: ...           # when the node enables auth
+```
+
+```java
+@Component
+class Orders {
+    private final AppChainTemplate appChain;
+    Orders(AppChainTemplate appChain) { this.appChain = appChain; }
+
+    void place(String order) {
+        String id = appChain.send("orders", order);
+        appChain.verifiedMessageProof(id);   // fetch + verify MPF proof locally
+    }
+
+    @AppChainListener(topic = "orders")     // finalized messages, SSE, auto-reconnect
+    void onOrder(String body) { ... }
+}
+```
+
+Listener methods take `StreamedMessage`, `byte[]` or `String`; all beans are
+`@ConditionalOnMissingBean`, so anything can be overridden.
+
 ## 8. Operations & troubleshooting
 
 - **`/status` is your dashboard**: `role`, `tipHeight`, `stateRoot`,

@@ -18,7 +18,8 @@ and merged into the integration branch on completion.
 | **Wave 1** | E5.2 multi-chain, E2.1 kv-registry, E2.2 approvals, E3.1 SSE/webhooks, E4.1 REST auth, E5.1 metrics, E1.2 testkit, E1.1 client SDK | **Done** (2026-07-08, `feat/wave1-extensions` → merged) |
 | **Wave 2** | E2.3 balances, E2.4 doc-trail, E1.3 typed codec, E3.4 audit export, E4.4 retention/pruning, E4.2 encrypted bodies, E4.3 SignerProvider, E3.2 sink SPI + Kafka bridge, E5.3 snapshot/restore, E1.5 scaffolds | **Done** (2026-07-08, `feat/wave2-extensions` → merged) |
 | **Wave 3 (ZK)** | E7.1 ZK verification, E7.2 BBS disclosure, E7.3 zk-membership; E7.4/E7.5 gated spikes | **E7.1–E7.3 done** (2026-07-08, `feat/wave3-extensions` → merged; open questions resolved — see §7) |
-| **Wave 4 (ops)** | E5.4 admin API, E4.5 key rotation, E3.3 query surface | **Done** (2026-07-08, `feat/wave4-extensions`) |
+| **Wave 4 (ops)** | E5.4 admin API, E4.5 key rotation, E3.3 query surface | **Done** (2026-07-08, `feat/wave4-extensions` → merged) |
+| **Wave 5 (starters)** | E1.4 Spring Boot starter (Quarkus client extension still pending) | **Done** (2026-07-08, `feat/wave5-starters`) |
 | **Pending** | Everything not yet picked up — see the checklist below | Open |
 
 ### PENDING — not yet implemented (2026-07-08; pick up later)
@@ -35,9 +36,12 @@ Full E-items never scheduled into a wave:
   admin API with guard rails, staged runbook in the user guide.
 - [x] **E5.4 Admin API** — done 2026-07-08 (Wave 4): pause/resume local
   submissions, drain pool, force-anchor now.
-- [ ] **E1.4 Spring Boot starter + Quarkus extension** (T4, M): deliberately
-  deferred to the very end (user call, 2026-07-08) — pure sugar over the E1.1
-  client SDK; build once the SDK surface is stable.
+- [x] **E1.4 Spring Boot starter** — done 2026-07-08 (Wave 5,
+  `spring-starters/appchain-spring-boot-starter`): auto-configured
+  `AppChainClient`/`AppChainTemplate` from `yano.appchain.client.*` and
+  `@AppChainListener(topic)` over auto-reconnecting SSE. *Quarkus client
+  extension remains pending* — Quarkus apps are often the node itself; CDI
+  apps can use the plain SDK meanwhile.
 - [ ] **E7.4 Private balances** (T3, L, gated on ZeroJ maturity): Poseidon
   commitments in MPF + `StateTransitionVerifier` proofs; needs a real transfer
   circuit, client-side proving, note-nullifier design, and the dual-commitment
