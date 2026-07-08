@@ -1190,6 +1190,18 @@ public class YanoProducer {
         }
 
         @Override
+        public java.util.List<com.bloxbean.cardano.yano.api.appchain.MessageRef> messagesByTopic(
+                String topic, long fromHeight, int limit) {
+            throw unavailableRole("AppChainGateway");
+        }
+
+        @Override
+        public java.util.List<com.bloxbean.cardano.yano.api.appchain.MessageRef> messagesBySender(
+                byte[] sender, long fromHeight, int limit) {
+            throw unavailableRole("AppChainGateway");
+        }
+
+        @Override
         public void pauseSubmissions() {
             throw unavailableRole("AppChainGateway");
         }

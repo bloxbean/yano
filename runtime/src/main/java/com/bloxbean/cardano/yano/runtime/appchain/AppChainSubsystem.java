@@ -519,6 +519,28 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     }
 
     // ------------------------------------------------------------------
+    // Query surface (ADR 006 E3.3)
+    // ------------------------------------------------------------------
+
+    @Override
+    public List<com.bloxbean.cardano.yano.api.appchain.MessageRef> messagesByTopic(
+            String topic, long fromHeight, int limit) {
+        AppLedgerStore currentLedger = ledger;
+        return currentLedger != null
+                ? currentLedger.messagesByTopic(topic, fromHeight, Math.max(1, Math.min(limit, 1000)))
+                : List.of();
+    }
+
+    @Override
+    public List<com.bloxbean.cardano.yano.api.appchain.MessageRef> messagesBySender(
+            byte[] sender, long fromHeight, int limit) {
+        AppLedgerStore currentLedger = ledger;
+        return currentLedger != null
+                ? currentLedger.messagesBySender(sender, fromHeight, Math.max(1, Math.min(limit, 1000)))
+                : List.of();
+    }
+
+    // ------------------------------------------------------------------
     // Admin operations (ADR 006 E5.4) — node-local, no consensus change
     // ------------------------------------------------------------------
 

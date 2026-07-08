@@ -82,6 +82,20 @@ public interface AppChainGateway {
     long snapshot(String snapshotPath);
 
     // ------------------------------------------------------------------
+    // Query surface (ADR app-layer/006 E3.3)
+    // ------------------------------------------------------------------
+
+    /**
+     * Finalized messages on a topic, ascending by (height, index), starting at
+     * {@code fromHeight}. Indexed from the moment the node runs a build with the
+     * query index (blocks finalized before the upgrade are not indexed).
+     */
+    List<MessageRef> messagesByTopic(String topic, long fromHeight, int limit);
+
+    /** Finalized messages from a sender public key, ascending by (height, index). */
+    List<MessageRef> messagesBySender(byte[] sender, long fromHeight, int limit);
+
+    // ------------------------------------------------------------------
     // Admin operations (ADR app-layer/006 E5.4) — node-local operability
     // controls; they do not change consensus rules.
     // ------------------------------------------------------------------

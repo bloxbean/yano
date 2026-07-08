@@ -106,6 +106,35 @@ public class AppChainResource {
         return singleChain().evidence(messageIdHex);
     }
 
+    @GET
+    @Path("blocks")
+    public Response blocks(@QueryParam("from") @DefaultValue("-1") long from,
+                           @QueryParam("limit") @DefaultValue("20") int limit) {
+        return singleChain().blocks(from, limit);
+    }
+
+    @GET
+    @Path("messages/{messageIdHex}")
+    public Response messageById(@PathParam("messageIdHex") String messageIdHex) {
+        return singleChain().messageById(messageIdHex);
+    }
+
+    @GET
+    @Path("messages/by-topic/{topic}")
+    public Response messagesByTopic(@PathParam("topic") String topic,
+                                    @QueryParam("fromHeight") @DefaultValue("0") long fromHeight,
+                                    @QueryParam("limit") @DefaultValue("100") int limit) {
+        return singleChain().messagesByTopic(topic, fromHeight, limit);
+    }
+
+    @GET
+    @Path("messages/by-sender/{senderHex}")
+    public Response messagesBySender(@PathParam("senderHex") String senderHex,
+                                     @QueryParam("fromHeight") @DefaultValue("0") long fromHeight,
+                                     @QueryParam("limit") @DefaultValue("100") int limit) {
+        return singleChain().messagesBySender(senderHex, fromHeight, limit);
+    }
+
     @POST
     @Path("admin/pause")
     public Response pause() {
@@ -300,6 +329,94 @@ public class AppChainResource {
          * core-api's {@code EvidenceVerifier} — no node access needed.
          */
         public record SnapshotRequest(String path) {
+        }
+
+        // --- Query surface (ADR 006 E3.3) ---
+
+        /** Paged block summaries, ascending from {@code from} (default: tip-window). */
+        @GET
+        @Path("blocks")
+        public Response blocks(@QueryParam("from") @DefaultValue("-1") long from,
+                               @QueryParam("limit") @DefaultValue("20") int limit) {
+            int pageSize = Math.max(1, Math.min(limit, 200));
+            long tip = gateway.tipHeight();
+            long start = from >= 1 ? from : Math.max(1, tip - pageSize + 1);
+            List<Map<String, Object>> page = new ArrayList<>();
+            for (long h = start; h < start + pageSize && h <= tip; h++) {
+                long height = h;
+                gateway.block(height).ifPresent(b -> {
+                    Map<String, Object> summary = new LinkedHashMap<>();
+                    summary.put("height", b.height());
+                    summary.put("timestamp", b.timestamp());
+                    summary.put("stateRoot", HexUtil.encodeHexString(b.stateRoot()));
+                    summary.put("messageCount", b.messages().size());
+                    summary.put("certSignatures", b.cert().signatures().size());
+                    page.add(summary);
+                });
+            }
+            return Response.ok(Map.of("chainId", gateway.chainId(), "tipHeight", tip,
+                    "from", start, "blocks", page)).build();
+        }
+
+        /** Lookup one finalized message by id: position + full content. */
+        @GET
+        @Path("messages/{messageIdHex}")
+        public Response messageById(@PathParam("messageIdHex") String messageIdHex) {
+            byte[] messageId;
+            try {
+                messageId = HexUtil.decodeHexString(messageIdHex);
+            } catch (Exception e) {
+                return badRequest("Invalid messageId hex");
+            }
+            return gateway.messageHeight(messageId)
+                    .flatMap(height -> gateway.block(height).map(b -> {
+                        int index = 0;
+                        for (var m : b.messages()) {
+                            if (m.getMessageIdHex().equals(messageIdHex)) {
+                                Map<String, Object> result = new LinkedHashMap<>();
+                                result.put("messageId", messageIdHex);
+                                result.put("chainId", b.chainId());
+                                result.put("height", height);
+                                result.put("index", index);
+                                result.put("topic", m.getTopic());
+                                result.put("sender", HexUtil.encodeHexString(m.getSender()));
+                                result.put("senderSeq", m.getSenderSeq());
+                                result.put("bodyHex", HexUtil.encodeHexString(m.getBody()));
+                                return Response.ok(result).build();
+                            }
+                            index++;
+                        }
+                        return Response.status(Response.Status.NOT_FOUND)
+                                .entity(Map.of("error", "Message index inconsistent for " + messageIdHex)).build();
+                    }))
+                    .orElse(Response.status(Response.Status.NOT_FOUND)
+                            .entity(Map.of("error", "No finalized message with id " + messageIdHex)).build());
+        }
+
+        /** Finalized message refs on a topic, ascending (height, index). */
+        @GET
+        @Path("messages/by-topic/{topic}")
+        public Response messagesByTopic(@PathParam("topic") String topic,
+                                        @QueryParam("fromHeight") @DefaultValue("0") long fromHeight,
+                                        @QueryParam("limit") @DefaultValue("100") int limit) {
+            return Response.ok(Map.of("chainId", gateway.chainId(), "topic", topic,
+                    "messages", gateway.messagesByTopic(topic, fromHeight, limit))).build();
+        }
+
+        /** Finalized message refs from a sender key, ascending (height, index). */
+        @GET
+        @Path("messages/by-sender/{senderHex}")
+        public Response messagesBySender(@PathParam("senderHex") String senderHex,
+                                         @QueryParam("fromHeight") @DefaultValue("0") long fromHeight,
+                                         @QueryParam("limit") @DefaultValue("100") int limit) {
+            byte[] sender;
+            try {
+                sender = HexUtil.decodeHexString(senderHex);
+            } catch (Exception e) {
+                return badRequest("Invalid sender hex");
+            }
+            return Response.ok(Map.of("chainId", gateway.chainId(), "sender", senderHex,
+                    "messages", gateway.messagesBySender(sender, fromHeight, limit))).build();
         }
 
         // --- Admin (ADR 006 E5.4): node-local operability controls ---

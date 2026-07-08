@@ -28,6 +28,7 @@ final class AppLedgerStore implements AutoCloseable {
     private static final byte[] CF_META = "app_meta".getBytes(StandardCharsets.UTF_8);
     private static final byte[] CF_MSGS = "app_msgs".getBytes(StandardCharsets.UTF_8);
     private static final byte[] CF_MPF_NODES = "mpf_nodes".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] CF_QUERY_INDEX = "app_query_index".getBytes(StandardCharsets.UTF_8);
 
     private static final byte[] KEY_TIP_HEIGHT = "tip_height".getBytes(StandardCharsets.UTF_8);
     private static final byte[] KEY_TIP_HASH = "tip_hash".getBytes(StandardCharsets.UTF_8);
@@ -40,6 +41,7 @@ final class AppLedgerStore implements AutoCloseable {
     private final ColumnFamilyHandle blocksCf;
     private final ColumnFamilyHandle metaCf;
     private final ColumnFamilyHandle msgsCf;
+    private final ColumnFamilyHandle queryIndexCf;
     private final RocksDbNodeStore mpfNodeStore;
     private final Logger log;
 
@@ -58,7 +60,8 @@ final class AppLedgerStore implements AutoCloseable {
                     new ColumnFamilyDescriptor(CF_BLOCKS, defaultCfOptions),
                     new ColumnFamilyDescriptor(CF_META, defaultCfOptions),
                     new ColumnFamilyDescriptor(CF_MSGS, defaultCfOptions),
-                    new ColumnFamilyDescriptor(CF_MPF_NODES, mpfCfOptions));
+                    new ColumnFamilyDescriptor(CF_MPF_NODES, mpfCfOptions),
+                    new ColumnFamilyDescriptor(CF_QUERY_INDEX, defaultCfOptions));
 
             this.dbOptions = new DBOptions()
                     .setCreateIfMissing(true)
@@ -68,6 +71,7 @@ final class AppLedgerStore implements AutoCloseable {
             this.metaCf = cfHandles.get(2);
             this.msgsCf = cfHandles.get(3);
             this.mpfNodeStore = new RocksDbNodeStore(db, cfHandles.get(4));
+            this.queryIndexCf = cfHandles.get(5);
             log.info("App ledger opened at {} (tip height: {})", path, tipHeight());
         } catch (RocksDBException e) {
             throw new RuntimeException("Failed to open app ledger at " + path, e);
@@ -283,8 +287,15 @@ final class AppLedgerStore implements AutoCloseable {
             batch.put(metaCf, KEY_TIP_HASH, blockHash);
             batch.put(metaCf, KEY_STATE_ROOT, newStateRoot);
             byte[] heightBytes = longBytes(block.height());
+            int index = 0;
             for (var message : block.messages()) {
                 batch.put(msgsCf, message.getMessageId(), heightBytes);
+                // Query index (ADR 006 E3.3): topic/sender -> message refs, same atomic batch
+                batch.put(queryIndexCf, topicIndexKey(message.getTopic(), block.height(), index),
+                        message.getMessageId());
+                batch.put(queryIndexCf, senderIndexKey(message.getSender(), block.height(), index),
+                        message.getMessageId());
+                index++;
             }
             try (WriteOptions writeOptions = new WriteOptions().setSync(true)) {
                 db.write(writeOptions, batch);
@@ -296,6 +307,76 @@ final class AppLedgerStore implements AutoCloseable {
         } catch (RocksDBException e) {
             throw new RuntimeException("Failed to commit app block " + block.height(), e);
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Query surface (ADR 006 E3.3): topic/sender secondary indexes
+    // ------------------------------------------------------------------
+
+    /** {@code 't' + topicUtf8 + 0x00 + height(8BE) + index(4BE)} → messageId */
+    private static byte[] topicIndexKey(String topic, long height, int index) {
+        byte[] topicBytes = (topic != null ? topic : "").getBytes(StandardCharsets.UTF_8);
+        ByteBuffer buffer = ByteBuffer.allocate(1 + topicBytes.length + 1 + 8 + 4);
+        buffer.put((byte) 't').put(topicBytes).put((byte) 0).putLong(height).putInt(index);
+        return buffer.array();
+    }
+
+    /** {@code 's' + sender(32B) + height(8BE) + index(4BE)} → messageId */
+    private static byte[] senderIndexKey(byte[] sender, long height, int index) {
+        byte[] senderBytes = sender != null ? sender : new byte[0];
+        ByteBuffer buffer = ByteBuffer.allocate(1 + senderBytes.length + 8 + 4);
+        buffer.put((byte) 's').put(senderBytes).putLong(height).putInt(index);
+        return buffer.array();
+    }
+
+    List<com.bloxbean.cardano.yano.api.appchain.MessageRef> messagesByTopic(
+            String topic, long fromHeight, int limit) {
+        byte[] topicBytes = (topic != null ? topic : "").getBytes(StandardCharsets.UTF_8);
+        ByteBuffer prefixBuffer = ByteBuffer.allocate(1 + topicBytes.length + 1);
+        prefixBuffer.put((byte) 't').put(topicBytes).put((byte) 0);
+        return scanIndex(prefixBuffer.array(), fromHeight, limit);
+    }
+
+    List<com.bloxbean.cardano.yano.api.appchain.MessageRef> messagesBySender(
+            byte[] sender, long fromHeight, int limit) {
+        ByteBuffer prefixBuffer = ByteBuffer.allocate(1 + sender.length);
+        prefixBuffer.put((byte) 's').put(sender);
+        return scanIndex(prefixBuffer.array(), fromHeight, limit);
+    }
+
+    private List<com.bloxbean.cardano.yano.api.appchain.MessageRef> scanIndex(
+            byte[] prefix, long fromHeight, int limit) {
+        List<com.bloxbean.cardano.yano.api.appchain.MessageRef> refs = new ArrayList<>();
+        // Seek directly to (prefix, fromHeight) — height is big-endian, so
+        // iteration order is ascending height/index.
+        ByteBuffer seekBuffer = ByteBuffer.allocate(prefix.length + 8);
+        seekBuffer.put(prefix).putLong(Math.max(0, fromHeight));
+        try (RocksIterator iterator = db.newIterator(queryIndexCf)) {
+            for (iterator.seek(seekBuffer.array()); iterator.isValid() && refs.size() < limit; iterator.next()) {
+                byte[] key = iterator.key();
+                if (!hasPrefix(key, prefix)) {
+                    break;
+                }
+                ByteBuffer tail = ByteBuffer.wrap(key, prefix.length, 12);
+                long height = tail.getLong();
+                int index = tail.getInt();
+                refs.add(new com.bloxbean.cardano.yano.api.appchain.MessageRef(height, index,
+                        com.bloxbean.cardano.yaci.core.util.HexUtil.encodeHexString(iterator.value())));
+            }
+        }
+        return refs;
+    }
+
+    private static boolean hasPrefix(byte[] key, byte[] prefix) {
+        if (key.length < prefix.length + 12) {
+            return false;
+        }
+        for (int i = 0; i < prefix.length; i++) {
+            if (key[i] != prefix[i]) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /** Generic long-valued meta entry (anchor markers etc.). */
