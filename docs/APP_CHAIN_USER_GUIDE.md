@@ -323,6 +323,90 @@ Events (for `@DomainEventListener` plugins): `AppMessageReceivedEvent`,
 
 ---
 
+## 7b. Enterprise extensions (ADR 006, Wave 1)
+
+All opt-in; a node with none of these configured behaves exactly like v1.
+
+**Multiple chains per node** — indexed config, one ledger/sequencer per chain:
+
+```yaml
+yano:
+  app-chain:
+    chains[0]:
+      chain-id: "orders-chain"
+      signing-key: "..."
+      members: "..."
+      # ... any per-chain setting (same suffixes as the flat keys)
+    chains[1]:
+      chain-id: "audit-chain"
+      state-machine: kv-registry
+```
+
+Chain-scoped REST: `/app-chain/chains` (list) and
+`/app-chain/chains/{chainId}/...`; the chain-less paths keep working when
+exactly one chain is configured.
+
+**Standard-library state machines** (`yano.app-chain.state-machine`):
+`ordered-log` (default), `kv-registry` (per-key ownership registry, provable
+`[owner, value]` entries), `approvals` (k-of-n workflows with deterministic
+deadlines). Command formats are documented on the classes in
+`appchain-stdlib`; each also ships client-side command encoders.
+
+**Push consumption**:
+- SSE: `GET /app-chain/stream?fromHeight=&topic=` — replays finalized
+  messages from a height (default: live-only), then follows; events named
+  `app-message` with id `height:index`, `heartbeat` keepalives.
+- Webhooks: `yano.app-chain.webhooks=https://...` (comma-separated; also per
+  chain). Finalized blocks POSTed as JSON in height order, at-least-once,
+  with a persisted per-sink cursor (`X-App-Chain-Id`/`-Height` headers);
+  progress in `/status` under `webhooks`.
+
+**API-key auth** (off by default):
+
+```yaml
+yano:
+  app-chain:
+    api:
+      auth:
+        enabled: true
+    # full-access key + a key limited to submitting on two topics:
+    # yano.app-chain.api.keys: "opsKey123,partnerKey456=orders|invoices"
+```
+
+Requests to `/app-chain/*` then require `X-API-Key`; reads stay unrestricted
+per key, submissions honor the topic list.
+
+**Metrics** — standard Quarkus Prometheus endpoint `/q/metrics`:
+`yano_appchain_tip_height`, `yano_appchain_pool_size`,
+`yano_appchain_peers_connected` (gauges, per chain),
+`yano_appchain_blocks_finalized_total`,
+`yano_appchain_messages_finalized_total`, `yano_appchain_block_interval`.
+
+**Client SDK** (`com.bloxbean.cardano:yano-appchain-client`) — typed Java
+access with client-side proof verification:
+
+```java
+AppChainClient client = AppChainClient.builder("http://node:8080/api/v1")
+        .chainId("orders-chain").apiKey("...").build();
+var result = client.submitText("orders", "order #1");
+client.subscribe(-1, "orders", msg -> handle(msg));      // SSE, auto-reconnect
+var proof = client.proof(Hex.decode(result.messageId())).orElseThrow();
+boolean ok = ProofVerifier.verify(proof, anchoredRootHex); // don't trust, verify
+```
+
+**Testkit** (`com.bloxbean.cardano:yano-appchain-testkit`, test scope):
+
+```java
+@AppChainCluster(nodes = 3)
+class OrderFlowTest {
+    @Test
+    void replicates(AppChainClusterHandle cluster) throws Exception {
+        String id = cluster.node(1).submit("orders", body);
+        cluster.awaitFinalized(id);
+    }
+}
+```
+
 ## 8. Operations & troubleshooting
 
 - **`/status` is your dashboard**: `role`, `tipHeight`, `stateRoot`,
