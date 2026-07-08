@@ -148,7 +148,8 @@ class AppChainMultiChainIntegrationTest {
                 100,
                 AppChainConfig.DEFAULT_STATE_MACHINE,
                 null,
-                null, 0, java.util.List.of());
+                null, 0, java.util.List.of(),
+                false, 0, java.util.Map.of());
         return new AppChainSubsystem(config, MAGIC, null, null,
                 tempDir.resolve("ledger-" + name).toString(), null, log);
     }

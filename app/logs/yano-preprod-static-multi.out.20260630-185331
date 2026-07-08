@@ -1,0 +1,256 @@
+ __   __
+ \ \ / /__ _  _ __    ___
+  \ V // _` || '_ \  / _ \
+   | || (_| || | | || (_) |
+   |_| \__,_||_| |_| \___/
+
+  ⚙️  Yano — Yaci-powered Java Cardano Data Node 🚀
+
+
+                          Powered by Quarkus 3.25.0
+2026-06-30 13:11:17,897 WARN  [io.qua.config] (main) Unrecognized configuration file /Users/satya/work/bloxbean/yano/app/config/application.yml.bak found; Please, check if your are providing the proper extension to load the file
+2026-06-30 13:11:17,897 WARN  [io.qua.config] (main) Unrecognized configuration file /Users/satya/work/bloxbean/yano/app/config/application.yml.working found; Please, check if your are providing the proper extension to load the file
+2026-06-30 13:11:17,924 INFO  [com.blo.car.yan.app.YanoProducer] (main) Yano application starting up...
+2026-06-30 13:11:17,924 INFO  [com.blo.car.yan.app.YanoProducer] (main) Auto-sync-start enabled: true
+2026-06-30 13:11:17,924 INFO  [com.blo.car.yan.app.YanoProducer] (main) Auto-starting Yano synchronization...
+2026-06-30 13:11:17,924 INFO  [com.blo.car.yan.app.YanoProducer] (main) Creating Yano with network: preprod
+2026-06-30 13:11:17,932 INFO  [com.blo.car.yan.run.con.DnsCachePolicy] (main) Configured JVM DNS cache policy: yano.dns.cache.ttl=60s, yano.dns.cache.negative.ttl=10s
+2026-06-30 13:11:18,356 WARN  [com.blo.car.yan.run.cha.DirectRocksDBChainState] (main) RocksDB SliceTransform fixed prefix not available; proceeding without prefix extractor
+2026-06-30 13:11:18,357 WARN  [com.blo.car.yan.run.cha.DirectRocksDBChainState] (main) RocksDB SliceTransform fixed prefix not available; proceeding without prefix extractor
+2026-06-30 13:11:18,357 INFO  [com.blo.car.yan.run.cha.DirectRocksDBChainState] (main) RocksDB CF tuning: utxo_unspent/utxo_spent => point-lookup (ZSTD, bloom≈10bpk, whole-key, pin L0, partitioned filters)
+2026-06-30 13:11:18,357 INFO  [com.blo.car.yan.run.cha.DirectRocksDBChainState] (main) RocksDB CF tuning: utxo_addr => prefix-scan (ZSTD, prefixExtractor=28, memtablePrefixBloom≈0.10, bloom≈10bpk, pin L0, partitioned filters)
+2026-06-30 13:11:18,357 INFO  [com.blo.car.yan.run.cha.DirectRocksDBChainState] (main) RocksDB CF tuning: utxo_block_delta => sequential (ZSTD)
+2026-06-30 13:11:18,358 INFO  [com.blo.car.yan.run.cha.DirectRocksDBChainState] (main) RocksDB CF tuning: account_history => prefix-scan (ZSTD, prefixExtractor=30)
+2026-06-30 13:11:18,422 INFO  [com.blo.car.yan.run.cha.DirectRocksDBChainState] (main) RocksDB initialized at: ./chainstate-preprod-static-multi (tuningEnabled=true, pipelinedWrite=true, atomicFlush=false, parallelism=16)
+2026-06-30 13:11:18,422 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) Yano initialized
+2026-06-30 13:11:18,422 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) Remote: preprod-node.world.dev.cardano.org:30000 (magic: 1)
+2026-06-30 13:11:18,422 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) Server port: 13338
+2026-06-30 13:11:18,423 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) Storage: RocksDB
+2026-06-30 13:11:18,434 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) DefaultUtxoStore initialized (enabled=true)
+2026-06-30 13:11:18,434 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) UTXO store initialized; reconciliation deferred until startup recovery
+2026-06-30 13:11:18,435 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) UTXO store initialized (default); UtxoEventHandler registered
+2026-06-30 13:11:18,452 INFO  [com.blo.car.yan.run.gen.ShelleyGenesisParser] (main) Parsed shelley genesis: networkMagic=1, initialFunds=0 entries, epochLength=432000, systemStart=2022-06-01T00:00:00Z, activeSlotsCoeff=0.05, protocolVersion=2.0, rho=0.003, tau=0.2, a0=0.3, nOpt=150, stakingPools=0, stakingDelegations=0
+2026-06-30 13:11:18,453 INFO  [com.blo.car.yan.run.gen.ByronGenesisParser] (main) Parsed byron genesis: nonAvvmBalances=1 entries, avvmBalances=0 entries, startTime=1654041600, protocolMagic=1, slotDuration=20s, k=2160
+2026-06-30 13:11:18,466 INFO  [com.blo.car.yan.run.gen.AlonzoGenesisParser] (main) Parsed alonzo genesis: costModels=1, maxTxExMem=10000000, maxBlockExMem=50000000, coinsPerUtxoWord=34482
+2026-06-30 13:11:18,468 INFO  [com.blo.car.yan.run.gen.ConwayGenesisParser] (main) Parsed conway genesis: govActionLifetime=6, govActionDeposit=100000000000, dRepDeposit=500000000, dRepActivity=20, committeeMinSize=7, committeeMaxTermLength=146, minFeeRefScriptCostPerByte=15, drepVotingThresholds=present, poolVotingThresholds=present, costModels=[PlutusV3]
+2026-06-30 13:11:18,468 INFO  [com.blo.car.yan.run.con.NetworkGenesisConfig] (main) NetworkGenesisConfig loaded: magic=1, epochLength=432000, securityParam=2160, byronK=2160, alonzo=available, conway=available
+2026-06-30 13:11:18,468 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) Using configured shelley-genesis-hash: 162d29c4e1cf6b8a84f2d692e67a3ac6bc7851bc3e6e4afe64d15778bed8bd86
+2026-06-30 13:11:18,469 INFO  [com.blo.car.yan.run.con.DefaultEpochParamProvider] (main) DefaultEpochParamProvider built from genesis: epochLength=432000, byronSlotsPerEpoch=21600, firstNonByronSlot=86400, securityParam=2160, nOpt=150, conway=available
+2026-06-30 13:11:18,469 INFO  [com.blo.car.yan.run.acc.AccountStateStoreDiscovery] (main) AccountStateStore provider: rocksdb (priority=0)
+2026-06-30 13:11:18,472 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) Account state store initialized; reconciliation deferred until startup recovery
+2026-06-30 13:11:18,472 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) Epoch stake snapshot amounts enabled (balance-mode=full-scan)
+2026-06-30 13:11:18,472 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) AdaPot tracker enabled (maxLovelaceSupply=45000000000000000)
+2026-06-30 13:11:18,510 INFO  [com.blo.car.yan.led.EpochParamTracker] (main) Loaded 295 finalized epoch params from RocksDB (epochs 4-298)
+2026-06-30 13:11:18,510 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) Epoch param tracker enabled (with RocksDB persistence)
+2026-06-30 13:11:18,511 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) Epoch reward calculator enabled
+2026-06-30 13:11:18,511 INFO  [com.blo.car.yan.run.con.NetworkGenesisValuesFactory] (main) NetworkGenesisValues built: magic=1, epochLength=432000, shelleyStartEpoch=4, initialReserves=15000000000000000, initialTreasury=0, initialUtxo=30000000000000000, allegraEpoch=5, vasilEpoch=12, bootstrapAmount=0
+2026-06-30 13:11:18,512 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) CF NetworkConfig built from genesis
+2026-06-30 13:11:18,512 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) firstConwayEpoch resolved: 163
+2026-06-30 13:11:18,513 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) Epoch boundary processor wired (adapot=true, rewards=true, params=true, exitOnCalcError=false)
+2026-06-30 13:11:18,516 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) Governance subsystem enabled (block processor + epoch processor)
+2026-06-30 13:11:18,656 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) Account state store initialized (DefaultAccountStateStore); event handler registered
+2026-06-30 13:11:18,659 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) Using file-backed upstream peer store at /Users/satya/work/bloxbean/yano/app/./chainstate-preprod-static-multi-upstream-peers.json
+2026-06-30 13:11:18,664 INFO  [com.blo.car.yan.run.syn.mul.FileBackedPeerStore] (main) Loaded 33 upstream peer-store entries from /Users/satya/work/bloxbean/yano/app/./chainstate-preprod-static-multi-upstream-peers.json
+2026-06-30 13:11:18,727 INFO  [com.blo.car.yan.run.gen.ShelleyGenesisParser] (main) Parsed shelley genesis: networkMagic=1, initialFunds=0 entries, epochLength=432000, systemStart=2022-06-01T00:00:00Z, activeSlotsCoeff=0.05, protocolVersion=2.0, rho=0.003, tau=0.2, a0=0.3, nOpt=150, stakingPools=0, stakingDelegations=0
+2026-06-30 13:11:18,727 INFO  [com.blo.car.yan.run.gen.ByronGenesisParser] (main) Parsed byron genesis: nonAvvmBalances=1 entries, avvmBalances=0 entries, startTime=1654041600, protocolMagic=1, slotDuration=20s, k=2160
+2026-06-30 13:11:18,728 INFO  [com.blo.car.yan.tx.TransactionProtocolParamsResolver] (main) Transaction protocol params source: effective-ledger
+2026-06-30 13:11:18,729 INFO  [com.blo.car.yan.tx.DefaultTransactionServicesFactory] (main) Yano transaction slot config: slotLengthMillis=1000, zeroSlot=0, zeroTimeMillis=1654041600000
+2026-06-30 13:11:18,730 INFO  [com.blo.car.yan.sca.ScalusBasedTransactionValidator] (main) CCL supplementary rules disabled (yano.validation.supplementary-rules-enabled=false). Scalus validation will run without GOVCERT/governance/delegatee gap rules.
+2026-06-30 13:11:18,730 INFO  [com.blo.car.yan.tx.DefaultTransactionServicesFactory] (main) Transaction validator created (networkId=0, protocolParams=effective-ledger, supplementaryRules=false)
+2026-06-30 13:11:18,731 INFO  [com.blo.car.yan.tx.DefaultTransactionServicesFactory] (main) Script evaluator created (networkId=0, evaluator=scalus)
+2026-06-30 13:11:18,731 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) Default transaction validator listener registered (order=100)
+2026-06-30 13:11:18,731 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) Transaction evaluator set
+2026-06-30 13:11:18,731 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) Script evaluator set for /utils/txs/evaluate endpoint
+2026-06-30 13:11:18,732 INFO  [com.blo.car.yan.app.YanoProducer] (main) Yano created successfully
+2026-06-30 13:11:18,732 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) Starting Yano...
+2026-06-30 13:11:18,734 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) Mempool eviction policy initialized (ttl=10800s, maxTxs=10000, maxBytes=134217728, txDiffusionMode=all-hot)
+2026-06-30 13:11:18,735 INFO  [com.blo.car.yan.run.gen.ShelleyGenesisParser] (main) Parsed shelley genesis: networkMagic=1, initialFunds=0 entries, epochLength=432000, systemStart=2022-06-01T00:00:00Z, activeSlotsCoeff=0.05, protocolVersion=2.0, rho=0.003, tau=0.2, a0=0.3, nOpt=150, stakingPools=0, stakingDelegations=0
+2026-06-30 13:11:18,735 INFO  [com.blo.car.yan.run.gen.ByronGenesisParser] (main) Parsed byron genesis: nonAvvmBalances=1 entries, avvmBalances=0 entries, startTime=1654041600, protocolMagic=1, slotDuration=20s, k=2160
+2026-06-30 13:11:18,735 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) Genesis config loaded (protocolParams=none, shelleyData=available)
+2026-06-30 13:11:18,735 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) 🔍 Validating chain state integrity...
+2026-06-30 13:11:18,736 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) ✅ Chain state integrity validated - no corruption detected
+2026-06-30 13:11:18,736 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) UTXO reconciliation complete at startup
+2026-06-30 13:11:18,736 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) Account state reconciliation complete at startup
+2026-06-30 13:11:18,736 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) UTXO prune service started (interval=5s)
+2026-06-30 13:11:18,737 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) Block body pruning disabled (block-body-prune-depth=0)
+2026-06-30 13:11:18,737 INFO  [com.blo.car.yan.run.chr.ChronologyService] (main) SlotTimeCalculator initialized: networkStart=1654041600, byronSlotDuration=20s, shelleySlotLength=1.0s
+2026-06-30 13:11:18,738 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) Starting NodeServer on port 13338...
+2026-06-30 13:11:18,738 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) Protocol magic: 1
+2026-06-30 13:11:18,738 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) Server starting with tip: slot=127112918, blockNumber=4880923, hash=42a059d29338c3cdfcd8b8dbc17944095e2aa640126fd993be7e084b0b571fcd
+2026-06-30 13:11:18,739 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) First block available: [slot=0, hash='9ad7ff320c9cf74e0f5ee78d22a85ce42bb0a487d0506bf60cfb5a91ea4497d2']
+2026-06-30 13:11:18,742 INFO  [com.blo.car.yac.cor.net.ser.NodeServer] (YanoServer) Initializing NodeServer on port 13338
+2026-06-30 13:11:18,744 INFO  [com.blo.car.yac.cor.net.ser.NodeServer] (YanoServer) Binding to port 13338
+2026-06-30 13:11:18,764 INFO  [com.blo.car.yac.cor.net.ser.NodeServer] (nioEventLoopGroup-2-1) NodeServer successfully bound to port 13338
+2026-06-30 13:11:18,764 INFO  [com.blo.car.yac.cor.net.ser.NodeServer] (YanoServer) NodeServer is now listening on port 13338 and waiting for connections
+2026-06-30 13:11:18,764 INFO  [com.blo.car.yac.cor.net.ser.NodeServer] (YanoServer) Server socket address: /[0:0:0:0:0:0:0:0]:13338
+2026-06-30 13:11:20,752 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) NodeServer started successfully on port 13338
+2026-06-30 13:11:20,753 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) Server is ready to accept connections from Cardano nodes
+2026-06-30 13:11:20,753 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) Relay peer-sharing enabled (advertised endpoint: 127.0.0.1:13338)
+2026-06-30 13:11:20,756 INFO  [com.blo.car.yan.run.blo.EpochNonceState] (main) Shelley start slot set: 86400 (from block at slot 86400)
+2026-06-30 13:11:20,757 INFO  [com.blo.car.yan.run.pro.NonceEvolutionListenerFactory] (main) Nonce tracking wired with EpochParamTracker
+2026-06-30 13:11:20,757 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) Using configured shelley-genesis-hash: 162d29c4e1cf6b8a84f2d692e67a3ac6bc7851bc3e6e4afe64d15778bed8bd86
+2026-06-30 13:11:20,758 INFO  [com.blo.car.yan.run.blo.EpochNonceState] (main) Epoch nonce state restored: epoch=298
+2026-06-30 13:11:20,760 INFO  [com.blo.car.yan.run.blo.NonceReplayService] (main) Nonce state restored at body tip: block=4880923, slot=127112918, reason=startup
+2026-06-30 13:11:20,762 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) Epoch nonce tracking initialized for relay mode (epochLength=432000, k=2160, f=0.05)
+2026-06-30 13:11:20,762 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) Starting pipelined client sync with preprod-node1.world.dev.cardano.org:30000...
+2026-06-30 13:11:20,764 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) Local header_tip: ChainTip{slot=127112918, blockHash=42a059d29338c3cdfcd8b8dbc17944095e2aa640126fd993be7e084b0b571fcd, blockNumber=4880923}, body_tip: ChainTip{slot=127112918, blockHash=42a059d29338c3cdfcd8b8dbc17944095e2aa640126fd993be7e084b0b571fcd, blockNumber=4880923}, mode=pipelined, using: slot 127112918 for sync
+2026-06-30 13:11:20,764 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) Local tip found at slot 127112918, starting sync from there
+2026-06-30 13:11:20,764 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) Starting client sync from point: [slot=127112918, hash='42a059d29338c3cdfcd8b8dbc17944095e2aa640126fd993be7e084b0b571fcd']
+2026-06-30 13:11:20,774 INFO  [com.blo.car.yan.run.pee.PeerSessionSupervisor] (main) Peer session supervisor started: Policy[checkIntervalMillis=30000, noProgressTimeoutMillis=600000, keepAliveTimeoutMillis=120000, missingKeepAliveNoProgressTimeoutMillis=600000, bodyFetchStuckTimeoutMillis=300000, disconnectGraceMillis=30000, startupTimeoutMillis=60000, recoveryCooldownMillis=30000, recoveryJitterMillis=5000, fastDisconnectRecoveryAttempts=2, fastDisconnectRecoveryCooldownMillis=0, fastDisconnectResetMillis=300000]
+2026-06-30 13:11:20,775 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) ChainSync agent started - reset to INITIAL_SYNC phase
+2026-06-30 13:11:20,775 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) BULK PIPELINED SYNC: remote tip unavailable until ChainSync intersection
+2026-06-30 13:11:20,778 INFO  [com.blo.car.yan.run.BodyFetchManager] (main) 🏗️ BodyFetchManager created with config: gapThreshold=100, maxBatchSize=5000, monitoringInterval=500ms, tipProximityThreshold=1000
+2026-06-30 13:11:20,779 INFO  [com.blo.car.yan.run.pee.PeerSession] (main) 📦 BodyFetchManager created with gapThreshold=100, maxBatchSize=5000
+2026-06-30 13:11:20,780 INFO  [com.blo.car.yan.run.HeaderSyncManager] (main) HeaderSyncManager initialized - ready for header-only synchronization (gap threshold: 50000 blocks)
+2026-06-30 13:11:20,780 INFO  [com.blo.car.yan.run.pee.PeerSession] (main) 📋 HeaderSyncManager created
+2026-06-30 13:11:20,780 INFO  [com.blo.car.yan.run.BodyFetchManager] (main) BodyFetchManager: previousEpoch initialized to 298
+2026-06-30 13:11:20,780 INFO  [com.blo.car.yan.run.pee.PeerSession] (main) 🔗 Pipeline managers initialized and ready
+2026-06-30 13:11:20,780 INFO  [com.blo.car.yan.run.pee.PeerSession] (main) ℹ️  HeaderSyncManager will receive headers through ChainSync protocol
+2026-06-30 13:11:20,780 INFO  [com.blo.car.yan.run.pee.PeerSession] (main) ℹ️  BodyFetchManager will monitor for gaps and fetch ranges automatically
+2026-06-30 13:11:20,782 INFO  [com.blo.car.yan.run.pee.PeerSession] (main) 🧾 LedgerApplyProcessor started for generation 1
+2026-06-30 13:11:20,782 INFO  [com.blo.car.yan.run.PipelineDataListener] (main) PipelineDataListener initialized for parallel header/body processing
+2026-06-30 13:11:20,786 INFO  [com.blo.car.yac.cor.pro.cha.n2n.ChainsyncAgent] (main) Trying to find the point [slot=127112918, hash='42a059d29338c3cdfcd8b8dbc17944095e2aa640126fd993be7e084b0b571fcd']
+2026-06-30 13:11:20,795 INFO  [com.blo.car.yan.run.pee.PeerSession] (main) Stopping PeerClient...
+2026-06-30 13:11:20,795 INFO  [com.blo.car.yac.cor.net.NodeClient] (main) Shutdown connection !!!
+2026-06-30 13:11:20,886 WARN  [com.blo.car.yan.run.int.RuntimeNode] (main) Initial upstream peer session start failed; supervisor will retry: Peer recovery failed 1/10 times; last reason=STARTUP_FAILED: Failed to start node client; NodeClientException: Failed to start node client; cause=UnknownHostException: preprod-node1.world.dev.cardano.org: nodename nor servname provided, or not known
+2026-06-30 13:11:23,140 INFO  [com.blo.car.yan.run.syn.mul.YaciPeerDiscoveryService] (main) Peer snapshot https://book.play.dev.cardano.org/environments/preprod/peer-snapshot.json accepted 32 relay entries
+2026-06-30 13:11:23,142 INFO  [com.blo.car.yan.run.syn.mul.YaciPeerDiscoveryService] (main) Loaded 32 peer-snapshot relay entries
+2026-06-30 13:11:23,146 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) Added 32 discovered upstream peer(s) for active failover
+2026-06-30 13:11:23,147 WARN  [com.blo.car.yan.run.int.RuntimeNode] (main) Switching active upstream after failure: reason=STARTUP_FAILED, from=preprod-node1.world.dev.cardano.org:30000, to=relay.preprod.staging.wingriders.com:3001, error=Failed to start node client
+2026-06-30 13:11:23,156 WARN  [com.blo.car.yan.run.pee.PeerSessionSupervisor] (main) Requesting peer session recovery: reason=STARTUP_FAILED, status=PeerSessionStatus[peerName=preprod-node1.world.dev.cardano.org:30000, state=STOPPED, createdAtMillis=1782796280766, lastHeaderReceivedAtMillis=0, lastBodyReceivedAtMillis=0, lastBodyAppliedAtMillis=0, lastKeepAliveResponseAtMillis=0, lastDisconnectAtMillis=0, lastFailedWriteAtMillis=0, lastHeaderSlot=-1, lastHeaderBlockNumber=-1, lastBodyReceivedSlot=-1, lastBodyReceivedBlockNumber=-1, lastBodyAppliedSlot=-1, lastBodyAppliedBlockNumber=-1, bodyFetchInProgress=false, bodyFetchStartedAtMillis=0, recoveryAttempts=2, lastRecoveryReason=STARTUP_FAILED, terminalFailureMessage=null, nowMillis=1782796283147, applicationProgressAgeMillis=-1, keepAliveAgeMillis=-1, bodyFetchInProgressAgeMillis=-1]
+2026-06-30 13:11:23,156 WARN  [com.blo.car.yan.run.int.RuntimeNode] (YanoKernelTask-0) Recovering upstream peer session: reason=STARTUP_FAILED
+2026-06-30 13:11:23,157 INFO  [com.blo.car.yan.run.pee.PeerSession] (YanoKernelTask-0) Stopping PeerClient...
+2026-06-30 13:11:23,157 INFO  [com.blo.car.yac.cor.net.NodeClient] (YanoKernelTask-0) Shutdown connection !!!
+2026-06-30 13:11:23,157 INFO  [com.blo.car.yan.run.plu.PluginManager] (main) Discovered plugin: com.bloxbean.cardano.yaci.plugins.logging:1.0.0
+2026-06-30 13:11:23,157 INFO  [com.blo.car.yan.run.pee.PeerSession] (YanoKernelTask-0) Stopping PeerClient...
+2026-06-30 13:11:23,157 INFO  [com.blo.car.yan.run.plu.PluginManager] (main) LoggingPlugin disabled via yaci.plugins.logging.enabled=false
+2026-06-30 13:11:23,157 INFO  [com.blo.car.yac.cor.net.NodeClient] (YanoKernelTask-0) Shutdown connection !!!
+2026-06-30 13:11:23,158 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) UTXO storage filtering disabled
+2026-06-30 13:11:23,158 INFO  [com.blo.car.yan.run.int.RuntimeNode] (YanoKernelTask-0) Local tip found at slot 127112918, starting sync from there
+2026-06-30 13:11:23,158 INFO  [com.blo.car.yan.run.int.RuntimeNode] (YanoKernelTask-0) Restarting upstream sync from point: [slot=127112918, hash='42a059d29338c3cdfcd8b8dbc17944095e2aa640126fd993be7e084b0b571fcd']
+2026-06-30 13:11:23,158 WARN  [com.blo.car.yan.run.int.RuntimeNode] (YanoKernelTask-0) Remote tip unavailable during peer recovery; ChainSync intersection will refresh it
+2026-06-30 13:11:23,158 INFO  [com.blo.car.yan.run.int.RuntimeNode] (YanoKernelTask-0) ChainSync agent started - reset to INITIAL_SYNC phase
+2026-06-30 13:11:23,158 INFO  [com.blo.car.yan.run.int.RuntimeNode] (YanoKernelTask-0) BULK PIPELINED SYNC: remote tip unavailable until ChainSync intersection
+2026-06-30 13:11:23,158 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoKernelTask-0) 🏗️ BodyFetchManager created with config: gapThreshold=100, maxBatchSize=5000, monitoringInterval=500ms, tipProximityThreshold=1000
+2026-06-30 13:11:23,158 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) Yano started successfully
+2026-06-30 13:11:23,158 INFO  [com.blo.car.yan.run.pee.PeerSession] (YanoKernelTask-0) 📦 BodyFetchManager created with gapThreshold=100, maxBatchSize=5000
+2026-06-30 13:11:23,158 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) ═══════════════════════════════════════════════════════════
+2026-06-30 13:11:23,159 INFO  [com.blo.car.yan.run.HeaderSyncManager] (YanoKernelTask-0) HeaderSyncManager initialized - ready for header-only synchronization (gap threshold: 50000 blocks)
+2026-06-30 13:11:23,159 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) 🚀 YACI NODE STARTUP STATUS
+2026-06-30 13:11:23,159 INFO  [com.blo.car.yan.run.pee.PeerSession] (YanoKernelTask-0) 📋 HeaderSyncManager created
+2026-06-30 13:11:23,159 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) ═══════════════════════════════════════════════════════════
+2026-06-30 13:11:23,159 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoKernelTask-0) BodyFetchManager: previousEpoch initialized to 298
+2026-06-30 13:11:23,159 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) 📡 CLIENT MODE: ENABLED
+2026-06-30 13:11:23,159 INFO  [com.blo.car.yan.run.pee.PeerSession] (YanoKernelTask-0) 🔗 Pipeline managers initialized and ready
+2026-06-30 13:11:23,159 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main)    └─ Remote: preprod-node.world.dev.cardano.org:30000
+2026-06-30 13:11:23,159 INFO  [com.blo.car.yan.run.pee.PeerSession] (YanoKernelTask-0) ℹ️  HeaderSyncManager will receive headers through ChainSync protocol
+2026-06-30 13:11:23,159 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main)    └─ Syncing: YES
+2026-06-30 13:11:23,159 INFO  [com.blo.car.yan.run.pee.PeerSession] (YanoKernelTask-0) ℹ️  BodyFetchManager will monitor for gaps and fetch ranges automatically
+2026-06-30 13:11:23,159 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main)    └─ Blocks processed: 0
+2026-06-30 13:11:23,159 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main)    └─ Last slot: 0
+2026-06-30 13:11:23,159 INFO  [com.blo.car.yan.run.pee.PeerSession] (YanoKernelTask-0) 🧾 LedgerApplyProcessor started for generation 1
+2026-06-30 13:11:23,159 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) 🌐 SERVER MODE: ENABLED
+2026-06-30 13:11:23,159 INFO  [com.blo.car.yan.run.PipelineDataListener] (YanoKernelTask-0) PipelineDataListener initialized for parallel header/body processing
+2026-06-30 13:11:23,159 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main)    └─ Port: 13338
+2026-06-30 13:11:23,160 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main)    └─ Running: YES
+2026-06-30 13:11:23,160 INFO  [com.blo.car.yac.cor.pro.cha.n2n.ChainsyncAgent] (YanoKernelTask-0) Trying to find the point [slot=127112918, hash='42a059d29338c3cdfcd8b8dbc17944095e2aa640126fd993be7e084b0b571fcd']
+2026-06-30 13:11:23,160 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main)    └─ Protocol magic: 1
+2026-06-30 13:11:23,160 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) 💾 CHAIN STATE: HAS DATA
+2026-06-30 13:11:23,160 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main)    └─ Tip slot: 127112918
+2026-06-30 13:11:23,160 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main)    └─ Tip block: 4880923
+2026-06-30 13:11:23,160 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main)    └─ Storage: RocksDB
+2026-06-30 13:11:23,160 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) 🎯 READY TO SERVE: YES ✅
+2026-06-30 13:11:23,160 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) ═══════════════════════════════════════════════════════════
+2026-06-30 13:11:23,160 INFO  [com.blo.car.yan.app.YanoProducer] (main) Yano started automatically and syncing with preprod network
+2026-06-30 13:11:23,160 INFO  [com.blo.car.yan.app.YanoProducer] (main) REST API available at http://localhost:7072/api/v1/node/ for manual control
+2026-06-30 13:11:23,182 INFO  [io.quarkus] (main) yano 0.1.0-pre8 on JVM (powered by Quarkus 3.25.0) started in 5.733s. Listening on: http://0.0.0.0:7072
+2026-06-30 13:11:23,182 INFO  [io.quarkus] (main) Profile prod activated. 
+2026-06-30 13:11:23,182 INFO  [io.quarkus] (main) Installed features: [cdi, config-yaml, resteasy, resteasy-jackson, smallrye-context-propagation, smallrye-health, smallrye-openapi, swagger-ui, vertx]
+2026-06-30 13:11:23,528 INFO  [com.blo.car.yan.run.pee.PeerSession] (YanoKernelTask-0) Stopping PeerClient...
+2026-06-30 13:11:23,529 INFO  [com.blo.car.yac.cor.net.NodeClient] (YanoKernelTask-0) Shutdown connection !!!
+2026-06-30 13:11:23,590 WARN  [com.blo.car.yan.run.int.RuntimeNode] (YanoKernelTask-0) Upstream peer session recovery failed; supervisor will retry after cooldown: Peer recovery failed 2/10 times; last reason=STARTUP_FAILED: Failed to start node client; NodeClientException: Failed to start node client; cause=ConnectException: Connection refused
+2026-06-30 13:11:23,593 WARN  [com.blo.car.yan.run.int.RuntimeNode] (YanoKernelTask-0) Switching active upstream after failure: reason=STARTUP_FAILED, from=relay.preprod.staging.wingriders.com:3001, to=relay.preprod.wingriders.com:3002, error=Failed to start node client
+2026-06-30 13:11:23,594 INFO  [com.blo.car.yan.run.int.RuntimeNode] (YanoKernelTask-0) Retrying active upstream immediately after failover switch: reason=STARTUP_FAILED
+2026-06-30 13:11:23,595 WARN  [com.blo.car.yan.run.int.RuntimeNode] (YanoKernelTask-1) Recovering upstream peer session: reason=STARTUP_FAILED
+2026-06-30 13:11:23,595 INFO  [com.blo.car.yan.run.pee.PeerSession] (YanoKernelTask-1) Stopping PeerClient...
+2026-06-30 13:11:23,595 INFO  [com.blo.car.yac.cor.net.NodeClient] (YanoKernelTask-1) Shutdown connection !!!
+2026-06-30 13:11:23,595 INFO  [com.blo.car.yan.run.pee.PeerSession] (YanoKernelTask-1) Stopping PeerClient...
+2026-06-30 13:11:23,595 INFO  [com.blo.car.yac.cor.net.NodeClient] (YanoKernelTask-1) Shutdown connection !!!
+2026-06-30 13:11:23,596 INFO  [com.blo.car.yan.run.int.RuntimeNode] (YanoKernelTask-1) Local tip found at slot 127112918, starting sync from there
+2026-06-30 13:11:23,596 INFO  [com.blo.car.yan.run.int.RuntimeNode] (YanoKernelTask-1) Restarting upstream sync from point: [slot=127112918, hash='42a059d29338c3cdfcd8b8dbc17944095e2aa640126fd993be7e084b0b571fcd']
+2026-06-30 13:11:23,596 WARN  [com.blo.car.yan.run.int.RuntimeNode] (YanoKernelTask-1) Remote tip unavailable during peer recovery; ChainSync intersection will refresh it
+2026-06-30 13:11:23,596 INFO  [com.blo.car.yan.run.int.RuntimeNode] (YanoKernelTask-1) ChainSync agent started - reset to INITIAL_SYNC phase
+2026-06-30 13:11:23,596 INFO  [com.blo.car.yan.run.int.RuntimeNode] (YanoKernelTask-1) BULK PIPELINED SYNC: remote tip unavailable until ChainSync intersection
+2026-06-30 13:11:23,596 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoKernelTask-1) 🏗️ BodyFetchManager created with config: gapThreshold=100, maxBatchSize=5000, monitoringInterval=500ms, tipProximityThreshold=1000
+2026-06-30 13:11:23,597 INFO  [com.blo.car.yan.run.pee.PeerSession] (YanoKernelTask-1) 📦 BodyFetchManager created with gapThreshold=100, maxBatchSize=5000
+2026-06-30 13:11:23,597 INFO  [com.blo.car.yan.run.HeaderSyncManager] (YanoKernelTask-1) HeaderSyncManager initialized - ready for header-only synchronization (gap threshold: 50000 blocks)
+2026-06-30 13:11:23,597 INFO  [com.blo.car.yan.run.pee.PeerSession] (YanoKernelTask-1) 📋 HeaderSyncManager created
+2026-06-30 13:11:23,597 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoKernelTask-1) BodyFetchManager: previousEpoch initialized to 298
+2026-06-30 13:11:23,597 INFO  [com.blo.car.yan.run.pee.PeerSession] (YanoKernelTask-1) 🔗 Pipeline managers initialized and ready
+2026-06-30 13:11:23,597 INFO  [com.blo.car.yan.run.pee.PeerSession] (YanoKernelTask-1) ℹ️  HeaderSyncManager will receive headers through ChainSync protocol
+2026-06-30 13:11:23,597 INFO  [com.blo.car.yan.run.pee.PeerSession] (YanoKernelTask-1) ℹ️  BodyFetchManager will monitor for gaps and fetch ranges automatically
+2026-06-30 13:11:23,597 INFO  [com.blo.car.yan.run.pee.PeerSession] (YanoKernelTask-1) 🧾 LedgerApplyProcessor started for generation 1
+2026-06-30 13:11:23,598 INFO  [com.blo.car.yan.run.PipelineDataListener] (YanoKernelTask-1) PipelineDataListener initialized for parallel header/body processing
+2026-06-30 13:11:23,598 INFO  [com.blo.car.yac.cor.pro.cha.n2n.ChainsyncAgent] (YanoKernelTask-1) Trying to find the point [slot=127112918, hash='42a059d29338c3cdfcd8b8dbc17944095e2aa640126fd993be7e084b0b571fcd']
+2026-06-30 13:11:23,601 INFO  [com.blo.car.yan.run.pee.PeerSession] (YanoKernelTask-1) Stopping PeerClient...
+2026-06-30 13:11:23,601 INFO  [com.blo.car.yac.cor.net.NodeClient] (YanoKernelTask-1) Shutdown connection !!!
+2026-06-30 13:11:23,702 WARN  [com.blo.car.yan.run.int.RuntimeNode] (YanoKernelTask-1) Upstream peer session recovery failed; supervisor will retry after cooldown: Peer recovery failed 3/10 times; last reason=STARTUP_FAILED: Failed to start node client; NodeClientException: Failed to start node client; cause=UnknownHostException: relay.preprod.wingriders.com
+2026-06-30 13:11:23,705 WARN  [com.blo.car.yan.run.int.RuntimeNode] (YanoKernelTask-1) Switching active upstream after failure: reason=STARTUP_FAILED, from=relay.preprod.wingriders.com:3002, to=132.226.203.38:6001, error=Failed to start node client
+2026-06-30 13:11:23,705 INFO  [com.blo.car.yan.run.int.RuntimeNode] (YanoKernelTask-1) Retrying active upstream immediately after failover switch: reason=STARTUP_FAILED
+2026-06-30 13:11:23,705 WARN  [com.blo.car.yan.run.int.RuntimeNode] (YanoKernelTask-2) Recovering upstream peer session: reason=STARTUP_FAILED
+2026-06-30 13:11:23,706 INFO  [com.blo.car.yan.run.pee.PeerSession] (YanoKernelTask-2) Stopping PeerClient...
+2026-06-30 13:11:23,706 INFO  [com.blo.car.yac.cor.net.NodeClient] (YanoKernelTask-2) Shutdown connection !!!
+2026-06-30 13:11:23,706 INFO  [com.blo.car.yan.run.pee.PeerSession] (YanoKernelTask-2) Stopping PeerClient...
+2026-06-30 13:11:23,706 INFO  [com.blo.car.yac.cor.net.NodeClient] (YanoKernelTask-2) Shutdown connection !!!
+2026-06-30 13:11:23,706 INFO  [com.blo.car.yan.run.int.RuntimeNode] (YanoKernelTask-2) Local tip found at slot 127112918, starting sync from there
+2026-06-30 13:11:23,707 INFO  [com.blo.car.yan.run.int.RuntimeNode] (YanoKernelTask-2) Restarting upstream sync from point: [slot=127112918, hash='42a059d29338c3cdfcd8b8dbc17944095e2aa640126fd993be7e084b0b571fcd']
+2026-06-30 13:11:23,707 WARN  [com.blo.car.yan.run.int.RuntimeNode] (YanoKernelTask-2) Remote tip unavailable during peer recovery; ChainSync intersection will refresh it
+2026-06-30 13:11:23,707 INFO  [com.blo.car.yan.run.int.RuntimeNode] (YanoKernelTask-2) ChainSync agent started - reset to INITIAL_SYNC phase
+2026-06-30 13:11:23,707 INFO  [com.blo.car.yan.run.int.RuntimeNode] (YanoKernelTask-2) BULK PIPELINED SYNC: remote tip unavailable until ChainSync intersection
+2026-06-30 13:11:23,707 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoKernelTask-2) 🏗️ BodyFetchManager created with config: gapThreshold=100, maxBatchSize=5000, monitoringInterval=500ms, tipProximityThreshold=1000
+2026-06-30 13:11:23,707 INFO  [com.blo.car.yan.run.pee.PeerSession] (YanoKernelTask-2) 📦 BodyFetchManager created with gapThreshold=100, maxBatchSize=5000
+2026-06-30 13:11:23,707 INFO  [com.blo.car.yan.run.HeaderSyncManager] (YanoKernelTask-2) HeaderSyncManager initialized - ready for header-only synchronization (gap threshold: 50000 blocks)
+2026-06-30 13:11:23,707 INFO  [com.blo.car.yan.run.pee.PeerSession] (YanoKernelTask-2) 📋 HeaderSyncManager created
+2026-06-30 13:11:23,708 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoKernelTask-2) BodyFetchManager: previousEpoch initialized to 298
+2026-06-30 13:11:23,708 INFO  [com.blo.car.yan.run.pee.PeerSession] (YanoKernelTask-2) 🔗 Pipeline managers initialized and ready
+2026-06-30 13:11:23,708 INFO  [com.blo.car.yan.run.pee.PeerSession] (YanoKernelTask-2) ℹ️  HeaderSyncManager will receive headers through ChainSync protocol
+2026-06-30 13:11:23,708 INFO  [com.blo.car.yan.run.pee.PeerSession] (YanoKernelTask-2) ℹ️  BodyFetchManager will monitor for gaps and fetch ranges automatically
+2026-06-30 13:11:23,708 INFO  [com.blo.car.yan.run.pee.PeerSession] (YanoKernelTask-2) 🧾 LedgerApplyProcessor started for generation 1
+2026-06-30 13:11:23,708 INFO  [com.blo.car.yan.run.PipelineDataListener] (YanoKernelTask-2) PipelineDataListener initialized for parallel header/body processing
+2026-06-30 13:11:23,708 INFO  [com.blo.car.yac.cor.pro.cha.n2n.ChainsyncAgent] (YanoKernelTask-2) Trying to find the point [slot=127112918, hash='42a059d29338c3cdfcd8b8dbc17944095e2aa640126fd993be7e084b0b571fcd']
+2026-06-30 13:11:23,885 INFO  [com.blo.car.yan.run.PipelineDataListener] (YanoKernelTask-2) Ignoring startup reset disconnect before first sync progress: generation=1
+2026-06-30 13:11:23,885 INFO  [com.blo.car.yac.hel.N2NPeerFetcher] (YanoKernelTask-2) ChainSync agent disconnected - resetting handshake flag
+2026-06-30 13:11:23,885 INFO  [com.blo.car.yac.cor.pro.cha.n2n.ChainsyncAgent] (YanoKernelTask-2) 💔 Connection lost, currentPoint: null
+2026-06-30 13:11:23,885 INFO  [com.blo.car.yan.run.PipelineDataListener] (YanoKernelTask-2) Ignoring startup reset disconnect before first sync progress: generation=1
+2026-06-30 13:11:23,886 INFO  [com.blo.car.yac.cor.net.NodeClient] (nioEventLoopGroup-7-1) Connected !!!
+2026-06-30 13:11:24,075 INFO  [com.blo.car.yac.cor.pro.han.HandshakeAgent] (nioEventLoopGroup-7-1) Handshake Ok!!! AcceptVersion(versionNumber=15, versionData=N2NVersionData(initiatorOnlyDiffusionMode=true, peerSharing=0, query=false))
+2026-06-30 13:11:24,076 INFO  [com.blo.car.yac.cor.pro.cha.n2n.ChainsyncAgent] (nioEventLoopGroup-7-1) 🔗 Connection established, currentPoint: null
+2026-06-30 13:11:24,077 INFO  [com.blo.car.yac.hel.N2NPeerFetcher] (nioEventLoopGroup-7-1) Reconnection handshake completed. Resuming chain sync...
+2026-06-30 13:11:24,077 INFO  [com.blo.car.yac.cor.pro.cha.n2n.ChainsyncAgent] (nioEventLoopGroup-7-1) FindIntersect for point: [slot=127112918, hash='42a059d29338c3cdfcd8b8dbc17944095e2aa640126fd993be7e084b0b571fcd']
+2026-06-30 13:11:24,111 INFO  [com.blo.car.yac.hel.N2NPeerFetcher] (YanoKernelTask-2) Started ChainSync-only mode from point: [slot=127112918, hash='42a059d29338c3cdfcd8b8dbc17944095e2aa640126fd993be7e084b0b571fcd']
+2026-06-30 13:11:24,111 INFO  [com.blo.car.yan.run.pee.PeerSession] (YanoKernelTask-2) 🔗 ==> Header sync started with pipelining enabled
+2026-06-30 13:11:24,112 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoKernelTask-2) 📊 Starting INITIAL_SYNC: header-body gap=0 slots, network distance=unknown slots (threshold=1000)
+2026-06-30 13:11:24,112 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoKernelTask-2) 📊 Will log every 100 blocks during initial sync, every block when near tip
+2026-06-30 13:11:24,112 INFO  [com.blo.car.yan.run.BodyFetchManager] (BodyFetchManager-Monitor) 📊 BodyFetchManager monitoring thread started
+2026-06-30 13:11:24,112 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoKernelTask-2) 🚀 BodyFetchManager started with monitoring thread: BodyFetchManager-Monitor
+2026-06-30 13:11:24,113 INFO  [com.blo.car.yan.run.pee.PeerSession] (YanoKernelTask-2) 📦 ==> Body fetch manager started for range-based fetching
+2026-06-30 13:11:24,113 INFO  [com.blo.car.yan.run.pee.PeerSession] (YanoKernelTask-2) 🚀 Pipeline startup complete - HeaderSync and BodyFetch active
+2026-06-30 13:11:24,117 INFO  [com.blo.car.yac.cor.pro.cha.n2n.ChainsyncAgent] (YanoKernelTask-2) Trying to find the point [slot=127112918, hash='42a059d29338c3cdfcd8b8dbc17944095e2aa640126fd993be7e084b0b571fcd']
+2026-06-30 13:11:24,120 WARN  [com.blo.car.yan.run.int.RuntimeNode] (YanoKernelTask-2) Failed to start observer upstream peer iog-preprod at preprod-node1.world.dev.cardano.org:30000: NodeClientException: Failed to start node client; cause=UnknownHostException: preprod-node1.world.dev.cardano.org
+2026-06-30 13:11:24,120 INFO  [com.blo.car.yac.cor.net.NodeClient] (YanoKernelTask-2) Shutdown connection !!!
+2026-06-30 13:11:24,121 INFO  [com.blo.car.yac.cor.pro.cha.n2n.ChainsyncAgent] (YanoKernelTask-2) Trying to find the point [slot=127112918, hash='42a059d29338c3cdfcd8b8dbc17944095e2aa640126fd993be7e084b0b571fcd']
+Intersect found at slot: 127112918 - hash: 42a059d29338c3cdfcd8b8dbc17944095e2aa640126fd993be7e084b0b571fcd - tip: 127113047 - tipHash: d51a42f75bac3f1e2022e2682353639fb479b3d279d7e81284c71027b7c32611
+2026-06-30 13:11:24,258 INFO  [com.blo.car.yac.cor.pro.cha.n2n.ChainsyncAgent] (nioEventLoopGroup-7-1) Intersect found at slot: 127112918 - hash: 42a059d29338c3cdfcd8b8dbc17944095e2aa640126fd993be7e084b0b571fcd
+2026-06-30 13:11:24,259 INFO  [com.blo.car.yac.hel.PeerClient] (nioEventLoopGroup-7-1) Starting keep alive thread for peer: 132.226.203.38:6001
+2026-06-30 13:11:24,260 INFO  [com.blo.car.yan.run.HeaderSyncManager] (nioEventLoopGroup-7-1) 📄 Header intersection found at: [slot=127112918, hash='42a059d29338c3cdfcd8b8dbc17944095e2aa640126fd993be7e084b0b571fcd'] (tip: Tip(point=[slot=127113047, hash='d51a42f75bac3f1e2022e2682353639fb479b3d279d7e81284c71027b7c32611'], block=4880929))
+2026-06-30 13:11:24,260 INFO  [com.blo.car.yan.run.int.RuntimeNode] (nioEventLoopGroup-7-1) Transitioned to INTERSECT_PHASE - expect rollback to intersection
+2026-06-30 13:11:24,260 INFO  [com.blo.car.yan.run.int.RuntimeNode] (nioEventLoopGroup-7-1) NEAR-TIP FAST PATH: remote-local distance=129 slots <= 1000, transitioned to STEADY_STATE
+2026-06-30 13:11:24,499 WARN  [com.blo.car.yan.run.int.RuntimeNode] (YanoKernelTask-2) Failed to start observer upstream peer snapshot-relay.preprod.staging.wingriders.com:3001 at relay.preprod.staging.wingriders.com:3001: NodeClientException: Failed to start node client; cause=ConnectException: Connection refused
+2026-06-30 13:11:24,499 INFO  [com.blo.car.yac.cor.net.NodeClient] (YanoKernelTask-2) Shutdown connection !!!
+2026-06-30 13:11:24,500 INFO  [com.blo.car.yac.cor.pro.cha.n2n.ChainsyncAgent] (nioEventLoopGroup-7-1) Trying to find the point [slot=127112918, hash='42a059d29338c3cdfcd8b8dbc17944095e2aa640126fd993be7e084b0b571fcd']
+2026-06-30 13:11:24,500 INFO  [com.blo.car.yac.cor.pro.cha.n2n.ChainsyncAgent] (YanoKernelTask-2) Trying to find the point [slot=127112918, hash='42a059d29338c3cdfcd8b8dbc17944095e2aa640126fd993be7e084b0b571fcd']
+2026-06-30 13:11:24,504 WARN  [com.blo.car.yan.run.int.RuntimeNode] (YanoKernelTask-2) Failed to start observer upstream peer snapshot-relay.preprod.wingriders.com:3002 at relay.preprod.wingriders.com:3002: NodeClientException: Failed to start node client; cause=UnknownHostException: relay.preprod.wingriders.com
+2026-06-30 13:11:24,504 INFO  [com.blo.car.yac.cor.net.NodeClient] (YanoKernelTask-2) Shutdown connection !!!
+2026-06-30 13:11:24,505 INFO  [com.blo.car.yac.cor.pro.cha.n2n.ChainsyncAgent] (YanoKernelTask-2) Trying to find the point [slot=127112918, hash='42a059d29338c3cdfcd8b8dbc17944095e2aa640126fd993be7e084b0b571fcd']
+2026-06-30 13:11:24,845 WARN  [com.blo.car.yan.run.int.RuntimeNode] (nioEventLoopGroup-7-1) Failed to start observer upstream peer snapshot-relay.preprod.staging.wingriders.com:3001 at relay.preprod.staging.wingriders.com:3001: NodeClientException: Failed to start node client; cause=ConnectException: Connection refused
+2026-06-30 13:11:24,845 INFO  [com.blo.car.yac.cor.net.NodeClient] (nioEventLoopGroup-7-1) Shutdown connection !!!

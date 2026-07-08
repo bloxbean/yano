@@ -47,8 +47,9 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     private final long protocolMagic;
     private final EventBus eventBus;
     private final Logger log;
+    private final ClassLoader pluginClassLoader;
 
-    private final AppMessageSigner signer;
+    private final com.bloxbean.cardano.yano.api.appchain.signer.SignerProvider signer;
     private final Set<String> memberKeys;
     private final AtomicLong senderSeq = new AtomicLong(0);
 
@@ -85,6 +86,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
 
     private final AtomicBoolean running = new AtomicBoolean(false);
     private volatile ScheduledExecutorService scheduler;
+    private volatile ScheduledExecutorService sinkScheduler;
 
     public AppChainSubsystem(AppChainConfig config, long protocolMagic, EventBus eventBus, Logger log) {
         this(config, protocolMagic, eventBus, null, null, log);
@@ -114,7 +116,8 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         this.protocolMagic = protocolMagic;
         this.eventBus = eventBus;
         this.log = Objects.requireNonNull(log, "log");
-        this.signer = new AppMessageSigner(config.signingKeyHex());
+        this.pluginClassLoader = pluginClassLoader;
+        this.signer = SignerProviders.resolve(config.signingKeyHex(), pluginClassLoader, log);
         this.memberKeys = normalizeMemberKeys(config.memberKeysHex());
         this.seenMessageIds = boundedSet(SEEN_IDS_LIMIT);
         this.pool = new AppMsgPool(10_000);
@@ -506,6 +509,69 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     }
 
     @Override
+    public long snapshot(String snapshotPath) {
+        AppLedgerStore currentLedger = ledger;
+        if (currentLedger == null) {
+            throw new IllegalStateException("App chain has no ledger (sequencing disabled)");
+        }
+        currentLedger.createSnapshot(snapshotPath);
+        return currentLedger.tipHeight();
+    }
+
+    @Override
+    public Optional<com.bloxbean.cardano.yano.api.appchain.evidence.EvidenceBundle> evidence(byte[] messageId) {
+        AppLedgerStore currentLedger = ledger;
+        if (currentLedger == null) {
+            return Optional.empty();
+        }
+        Optional<Long> heightOpt = currentLedger.messageHeight(messageId);
+        if (heightOpt.isEmpty()) {
+            return Optional.empty();
+        }
+        long messageHeight = heightOpt.get();
+
+        List<String> members = new ArrayList<>(memberKeys);
+        long anchoredHeight = currentLedger.metaLong("anchor_last_height", 0L);
+        byte[] anchoredBlockHash = currentLedger.metaBytes("anchor_last_block_hash");
+        String anchorTx = currentLedger.metaString("anchor_last_tx");
+        long anchorSlot = currentLedger.metaLong("anchor_last_slot", 0L);
+
+        List<AppBlock> blocks = new ArrayList<>();
+        com.bloxbean.cardano.yano.api.appchain.evidence.EvidenceBundle.AnchorRef anchorRef = null;
+
+        // Include the anchor's prev-hash chain only when the anchor covers this
+        // message AND the chain is bounded — an old message under a far-advanced
+        // anchor would otherwise materialize a huge bundle (guard against OOM).
+        // The record still verifies as finalized; it just isn't L1-linked here.
+        boolean haveAnchor = anchoredHeight >= messageHeight
+                && anchoredBlockHash != null && anchoredBlockHash.length > 0
+                && anchorTx != null && !anchorTx.isBlank();
+        boolean anchored = haveAnchor && (anchoredHeight - messageHeight) <= MAX_EVIDENCE_CHAIN_BLOCKS;
+        if (haveAnchor && !anchored) {
+            log.debug("Evidence for message at height {} omits anchor chain: gap {} exceeds {}",
+                    messageHeight, anchoredHeight - messageHeight, MAX_EVIDENCE_CHAIN_BLOCKS);
+        }
+        long toHeight = anchored ? anchoredHeight : messageHeight;
+        for (long h = messageHeight; h <= toHeight; h++) {
+            Optional<AppBlock> block = currentLedger.block(h);
+            if (block.isEmpty()) {
+                return Optional.empty();
+            }
+            blocks.add(block.get());
+        }
+        if (anchored) {
+            anchorRef = new com.bloxbean.cardano.yano.api.appchain.evidence.EvidenceBundle.AnchorRef(
+                    anchoredHeight, HexUtil.encodeHexString(anchoredBlockHash), anchorTx, anchorSlot);
+        }
+
+        return Optional.of(new com.bloxbean.cardano.yano.api.appchain.evidence.EvidenceBundle(
+                config.chainId(), HexUtil.encodeHexString(messageId), blocks, members,
+                config.threshold(), anchorRef));
+    }
+
+    private static final long MAX_EVIDENCE_CHAIN_BLOCKS = 4096;
+
+    @Override
     public Map<String, Object> status() {
         Map<String, Object> status = new LinkedHashMap<>();
         status.put("chainId", config.chainId());
@@ -523,18 +589,25 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         if (currentAnchor != null) {
             status.put("anchor", currentAnchor.status());
         }
-        if (!webhookSinks.isEmpty()) {
-            Map<String, Object> webhooks = new LinkedHashMap<>();
-            for (WebhookStreamSink sink : webhookSinks) {
+        if (!sinkRunners.isEmpty()) {
+            Map<String, Object> sinks = new LinkedHashMap<>();
+            Map<String, Object> webhooks = new LinkedHashMap<>(); // back-compat (keyed by URL)
+            for (SinkRunner runner : sinkRunners) {
                 Map<String, Object> sinkStatus = new LinkedHashMap<>();
-                sinkStatus.put("cursor", sink.cursor());
-                sinkStatus.put("delivered", sink.deliveredCount());
-                if (sink.lastError() != null) {
-                    sinkStatus.put("lastError", sink.lastError());
+                sinkStatus.put("cursor", runner.cursor());
+                sinkStatus.put("delivered", runner.deliveredCount());
+                if (runner.lastError() != null) {
+                    sinkStatus.put("lastError", runner.lastError());
                 }
-                webhooks.put(sink.url(), sinkStatus);
+                sinks.put(runner.id(), sinkStatus);
+                if (runner.id().startsWith("webhook:")) {
+                    webhooks.put(runner.id().substring("webhook:".length()), sinkStatus);
+                }
             }
-            status.put("webhooks", webhooks);
+            status.put("sinks", sinks);
+            if (!webhooks.isEmpty()) {
+                status.put("webhooks", webhooks); // pre-Wave-2 consumers
+            }
         }
         status.put("poolSize", pool.size());
         status.put("submitted", submittedCount.get());
@@ -571,6 +644,12 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         if (config.sequencingEnabled()) {
             AppLedgerStore ledgerStore = new AppLedgerStore(ledgerPath, log);
             this.ledger = ledgerStore;
+            // Integrity check catches a corrupt/partial restore (E5.3) at startup.
+            if (!ledgerStore.verifyIntegrity()) {
+                throw new IllegalStateException("App-chain ledger integrity check failed for '"
+                        + config.chainId() + "' — tip state-root does not match the committed MPF root "
+                        + "(corrupt or partial snapshot?)");
+            }
             AppChainEngine chainEngine = new AppChainEngine(
                     config,
                     ledgerStore,
@@ -605,9 +684,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                             log);
                 }
             }
-            for (String url : config.webhookUrls()) {
-                webhookSinks.add(new WebhookStreamSink(url, config.chainId(), ledgerStore, log));
-            }
+            buildSinks(ledgerStore);
             subscribeL1Events();
         }
 
@@ -632,9 +709,19 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         if (currentEngine != null) {
             exec.scheduleWithFixedDelay(this::catchUpTick, 5, 5, TimeUnit.SECONDS);
         }
-        if (!webhookSinks.isEmpty()) {
-            exec.scheduleWithFixedDelay(this::webhookTick, 5, 5, TimeUnit.SECONDS);
-            log.info("App-chain webhook sinks enabled: {}", config.webhookUrls());
+        if (!sinkRunners.isEmpty()) {
+            // Sinks run on their OWN thread — a slow/blocked sink (e.g. an
+            // unreachable Kafka broker) must never stall proposeTick / catch-up
+            // / anchoring on the main scheduler.
+            ScheduledExecutorService sinkExec = Executors.newSingleThreadScheduledExecutor(r -> {
+                Thread t = new Thread(r, "app-chain-sinks-" + config.chainId());
+                t.setDaemon(true);
+                return t;
+            });
+            this.sinkScheduler = sinkExec;
+            sinkExec.scheduleWithFixedDelay(this::sinkTick, 5, 5, TimeUnit.SECONDS);
+            log.info("App-chain finalized-stream sinks enabled: {}",
+                    sinkRunners.stream().map(SinkRunner::id).toList());
         }
         AnchorService currentAnchor = anchorService;
         if (currentAnchor != null) {
@@ -642,6 +729,34 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             log.info("App-chain L1 anchoring enabled (address: {}, every {} blocks, label {})",
                     currentAnchor.anchorAddress(), config.anchor().everyBlocks(),
                     config.anchor().metadataLabel());
+        }
+        if (config.retentionEnabled()) {
+            exec.scheduleWithFixedDelay(this::retentionTick, 30, 30, TimeUnit.SECONDS);
+            log.info("App-chain retention enabled: bodies pruned below L1_FINAL anchor "
+                    + "(keeping the most-recent {} block(s))", config.retentionKeepBlocks());
+        }
+    }
+
+    /** Prune message bodies below the L1_FINAL anchor horizon (E4.4). */
+    private void retentionTick() {
+        AppLedgerStore currentLedger = ledger;
+        if (!running.get() || currentLedger == null) {
+            return;
+        }
+        long anchored = currentLedger.metaLong("anchor_last_height", 0L);
+        long horizon = anchored - config.retentionKeepBlocks();
+        // Never prune ahead of a sink that hasn't delivered those blocks yet —
+        // otherwise the sink would later deliver bodies already stripped (data
+        // loss). Cap the horizon at the slowest sink cursor.
+        for (SinkRunner runner : sinkRunners) {
+            horizon = Math.min(horizon, runner.cursor());
+        }
+        if (horizon > currentLedger.pruneCursor()) {
+            try {
+                currentLedger.pruneBodiesBelow(horizon);
+            } catch (Exception e) {
+                log.warn("App-chain retention tick failed: {}", e.toString());
+            }
         }
     }
 
@@ -725,8 +840,51 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
 
     private final List<FinalizedBlockListener> finalizedListeners =
             new java.util.concurrent.CopyOnWriteArrayList<>();
-    private final List<WebhookStreamSink> webhookSinks =
+    private final List<SinkRunner> sinkRunners =
             new java.util.concurrent.CopyOnWriteArrayList<>();
+
+    /** Build finalized-stream sinks: built-in webhooks + ServiceLoader plugins (E3.2). */
+    private void buildSinks(AppLedgerStore ledgerStore) {
+        for (String url : config.webhookUrls()) {
+            sinkRunners.add(new SinkRunner(new WebhookSink(url, config.chainId(), log), ledgerStore, log));
+        }
+        // Plugin sinks (e.g. Kafka) via ServiceLoader on the plugin classloader.
+        ClassLoader[] classLoaders = pluginClassLoader != null
+                ? new ClassLoader[]{pluginClassLoader}
+                : new ClassLoader[]{Thread.currentThread().getContextClassLoader()};
+        for (ClassLoader classLoader : classLoaders) {
+            for (com.bloxbean.cardano.yano.api.appchain.sink.FinalizedStreamSinkFactory factory :
+                    java.util.ServiceLoader.load(
+                            com.bloxbean.cardano.yano.api.appchain.sink.FinalizedStreamSinkFactory.class,
+                            classLoader)) {
+                java.util.Map<String, String> sinkConfig = sinkConfigFor(factory.scheme());
+                if (sinkConfig.isEmpty()) {
+                    continue;
+                }
+                try {
+                    for (var sink : factory.create(config.chainId(), sinkConfig)) {
+                        sinkRunners.add(new SinkRunner(sink, ledgerStore, log));
+                        log.info("App-chain sink '{}' registered via {} plugin",
+                                sink.id(), factory.scheme());
+                    }
+                } catch (Exception e) {
+                    log.error("Failed to build '{}' sink(s): {}", factory.scheme(), e.toString());
+                }
+            }
+        }
+    }
+
+    /** Config sub-map for a sink scheme: yano.app-chain.sinks.<scheme>.* → stripped keys. */
+    private java.util.Map<String, String> sinkConfigFor(String scheme) {
+        java.util.Map<String, String> result = new java.util.LinkedHashMap<>();
+        String prefix = "sinks." + scheme + ".";
+        for (var entry : config.sinkSettings().entrySet()) {
+            if (entry.getKey().startsWith(prefix)) {
+                result.put(entry.getKey().substring(prefix.length()), entry.getValue());
+            }
+        }
+        return result;
+    }
 
     @Override
     public AutoCloseable subscribeFinalized(FinalizedBlockListener listener) {
@@ -774,14 +932,14 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         }
     }
 
-    private void webhookTick() {
+    private void sinkTick() {
         if (!running.get())
             return;
-        for (WebhookStreamSink sink : webhookSinks) {
+        for (SinkRunner runner : sinkRunners) {
             try {
-                sink.deliveryTick();
+                runner.deliveryTick();
             } catch (Exception e) {
-                log.warn("Webhook delivery tick failed for {}: {}", sink.url(), e.toString());
+                log.warn("Sink delivery tick failed for {}: {}", runner.id(), e.toString());
             }
         }
     }
@@ -798,16 +956,24 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             }
         }
         eventSubscriptions.clear();
-        // Webhook sinks hold the ledger that is about to close and are re-created
-        // by start(); drop them so a restart doesn't tick stale sinks against a
-        // closed RocksDB handle (or double-deliver). External finalizedListeners
-        // (SSE, metrics) are NOT cleared — they must survive a restart.
-        webhookSinks.clear();
+        // Sink runners hold the ledger that is about to close and are re-created
+        // by start(); close + drop them so a restart doesn't tick stale sinks
+        // against a closed RocksDB handle (or double-deliver). External
+        // finalizedListeners (SSE, metrics) are NOT cleared — they survive a restart.
+        for (SinkRunner runner : sinkRunners) {
+            runner.close();
+        }
+        sinkRunners.clear();
         anchorService = null;
         ScheduledExecutorService exec = scheduler;
         scheduler = null;
         if (exec != null) {
             exec.shutdownNow();
+        }
+        ScheduledExecutorService sinkExec = sinkScheduler;
+        sinkScheduler = null;
+        if (sinkExec != null) {
+            sinkExec.shutdownNow();
         }
         for (AppPeerClient peerClient : peerClients) {
             peerClient.shutdown();

@@ -407,6 +407,73 @@ class OrderFlowTest {
 }
 ```
 
+## 7c. Enterprise extensions (ADR 006, Wave 2)
+
+**More standard-library machines** (`yano.app-chain.state-machine`):
+`balances` (mint/transfer, per-account authorization, non-negativity, provable
+balances) and `doc-trail` (append-only per-entity trails with a provable chained
+head — DPP, supply chain, case management).
+
+**Typed messages** (`appchain-client` + core-api) — work with objects, not
+bytes; the framework stays blob-first:
+
+```java
+record Order(String id, long qty) {}
+CborCodec<Order> codec = CborCodec.of(Order.class);
+client.submitTyped("orders", new Order("o-1", 5), codec::encode);
+client.subscribeTyped(-1, "orders", codec::decode, (order, msg) -> handle(order));
+// server side: extend TypedAppStateMachine<Order> with JacksonCborCodec
+```
+
+**Signed audit export** — a portable, offline-verifiable evidence bundle for any
+finalized message (block(s) + members + L1 anchor reference):
+
+```bash
+curl localhost:8080/api/v1/app-chain/evidence/<messageIdHex> > evidence.json
+# verify offline with core-api's EvidenceVerifier (no node access)
+```
+
+**Encrypted bodies** — client-side envelope encryption with a group key; the
+chain carries ciphertext (ordering/proofs/anchors all work over it):
+
+```java
+byte[] key = Hex.decode(groupKeyHex);
+client.submit("settlement", GroupCipher.encrypt(key, "settlement", plaintext));
+byte[] plain = GroupCipher.decrypt(key, "settlement", message.body());
+```
+
+**External signer** (`yano.app-chain.signing-key`) — a `scheme:reference` value
+(e.g. `kms:...`) routes to a `SignerProviderFactory` plugin so the key never
+sits in config; a bare hex seed keeps the default in-config signer.
+
+**Retention / pruning** — drop message bodies below the L1 anchor while keeping
+proofs and evidence valid (data-minimization; crypto-shredding with encrypted
+bodies):
+
+```yaml
+yano.app-chain.retention.enabled: true
+yano.app-chain.retention.keep-blocks: 1000
+```
+
+**Kafka bridge** (plugin `appchain-kafka-sink` on `yano.plugins.directory`):
+
+```yaml
+yano.app-chain.sinks.kafka.bootstrap-servers: broker:9092
+yano.app-chain.sinks.kafka.topic: my-appchain-blocks
+```
+
+**Snapshot / fast onboarding** — an atomic ledger snapshot a new member
+restores without replay:
+
+```bash
+curl -XPOST localhost:8080/api/v1/app-chain/snapshot \
+     -H 'content-type: application/json' -d '{"path":"/backups/snap-1"}'
+# copy the directory to the new node's app-chain ledger path, then start it
+```
+
+**Scaffolds** — `scaffolds/docker-compose-cluster` (3-node cluster) and
+`scaffolds/plugin-template` (custom state-machine jar).
+
 ## 8. Operations & troubleshooting
 
 - **`/status` is your dashboard**: `role`, `tipHeight`, `stateRoot`,

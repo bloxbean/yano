@@ -119,6 +119,113 @@ final class AppLedgerStore implements AutoCloseable {
         return blocks;
     }
 
+    private static final String PRUNE_CURSOR = "prune_body_cursor";
+
+    long pruneCursor() {
+        return metaLong(PRUNE_CURSOR, 0L);
+    }
+
+    /**
+     * Atomic snapshot of the app ledger via RocksDB Checkpoint (hard links —
+     * fast, space-efficient), for fast member onboarding (ADR 006 E5.3). Copy
+     * the resulting directory to a new node's ledger path; it restores the full
+     * state (blocks, MPF trie, message index) with no replay. The new member
+     * then catches up any blocks after the snapshot over protocol 103.
+     *
+     * @param snapshotPath directory to create the checkpoint in (must not exist)
+     */
+    void createSnapshot(String snapshotPath) {
+        try (org.rocksdb.Checkpoint checkpoint = org.rocksdb.Checkpoint.create(db)) {
+            checkpoint.createCheckpoint(snapshotPath);
+            log.info("App-chain ledger snapshot created at {} (tip height {})", snapshotPath, tipHeight());
+        } catch (RocksDBException e) {
+            throw new RuntimeException("Failed to snapshot app ledger to " + snapshotPath, e);
+        }
+    }
+
+    /**
+     * Integrity check after a restore: the tip block's recorded state-root must
+     * equal the committed MPF root. A mismatch means a corrupt/partial snapshot.
+     */
+    boolean verifyIntegrity() {
+        long tip = tipHeight();
+        if (tip == 0) {
+            return true; // empty ledger
+        }
+        byte[] committedRoot = stateRoot();
+        byte[] tipBlockRoot = block(tip).map(AppBlock::stateRoot).orElse(null);
+        return committedRoot != null && tipBlockRoot != null
+                && java.util.Arrays.equals(committedRoot, tipBlockRoot);
+    }
+
+    /**
+     * Strip message BODIES from finalized blocks in (pruneCursor, toHeight]
+     * (retention / data-minimization, ADR 006 E4.4). Headers, message ids,
+     * messages-root, state-root and finality certs are kept, so block hashes,
+     * the prev-hash chain, inclusion proofs and evidence remain verifiable —
+     * only the (large / possibly sensitive) payloads are dropped. With encrypted
+     * bodies this is crypto-shredding.
+     * <p>
+     * Note: from-genesis catch-up past the prune horizon is no longer possible
+     * (replay needs bodies) — new members onboard from a snapshot (E5.3).
+     *
+     * @return number of blocks pruned
+     */
+    int pruneBodiesBelow(long toHeight) {
+        long from = pruneCursor() + 1;
+        int pruned = 0;
+        try {
+            for (long h = from; h <= toHeight; h++) {
+                byte[] bytes = db.get(blocksCf, heightKey(h));
+                if (bytes == null) {
+                    continue;
+                }
+                AppBlock block = AppBlockCodec.deserialize(bytes);
+                boolean hasBodies = block.messages().stream().anyMatch(m -> m.getSize() > 0);
+                if (hasBodies) {
+                    AppBlock stripped = stripBodies(block);
+                    try (WriteBatch batch = new WriteBatch();
+                         WriteOptions writeOptions = new WriteOptions()) {
+                        batch.put(blocksCf, heightKey(h), AppBlockCodec.serialize(stripped));
+                        batch.put(metaCf, PRUNE_CURSOR.getBytes(StandardCharsets.UTF_8), longBytes(h));
+                        db.write(writeOptions, batch);
+                    }
+                    pruned++;
+                } else {
+                    metaPutLong(PRUNE_CURSOR, h);
+                }
+            }
+        } catch (RocksDBException e) {
+            throw new RuntimeException("Failed to prune app block bodies up to " + toHeight, e);
+        }
+        if (pruned > 0) {
+            log.info("Pruned bodies from {} app block(s) up to height {}", pruned, toHeight);
+        }
+        return pruned;
+    }
+
+    private static AppBlock stripBodies(AppBlock block) {
+        List<com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage> stripped =
+                new ArrayList<>(block.messages().size());
+        for (var message : block.messages()) {
+            stripped.add(com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage.builder()
+                    .version(message.getVersion())
+                    .messageId(message.getMessageId())   // keep id → messages-root + inclusion still verify
+                    .chainId(message.getChainId())
+                    .topic(message.getTopic())
+                    .sender(message.getSender())
+                    .senderSeq(message.getSenderSeq())
+                    .expiresAt(message.getExpiresAt())
+                    .body(new byte[0])                    // drop the payload
+                    .authScheme(message.getAuthScheme())
+                    .authProof(new byte[0])
+                    .build());
+        }
+        return new AppBlock(block.version(), block.chainId(), block.height(), block.prevHash(),
+                block.l1Slot(), block.l1BlockHash(), block.timestamp(), block.messagesRoot(),
+                block.stateRoot(), stripped, block.proposer(), block.cert());
+    }
+
     /** Height the message id was finalized at, or empty if never included. */
     Optional<Long> messageHeight(byte[] messageId) {
         try {
@@ -203,6 +310,28 @@ final class AppLedgerStore implements AutoCloseable {
         } catch (RocksDBException e) {
             throw new RuntimeException("Failed to write app ledger meta " + key, e);
         }
+    }
+
+    /** Generic byte[] / UTF-8 string meta entries (anchor records etc.). */
+    byte[] metaBytes(String key) {
+        return getMeta(key.getBytes(StandardCharsets.UTF_8));
+    }
+
+    void metaPutBytes(String key, byte[] value) {
+        try {
+            db.put(metaCf, key.getBytes(StandardCharsets.UTF_8), value);
+        } catch (RocksDBException e) {
+            throw new RuntimeException("Failed to write app ledger meta " + key, e);
+        }
+    }
+
+    String metaString(String key) {
+        byte[] value = metaBytes(key);
+        return value != null ? new String(value, StandardCharsets.UTF_8) : null;
+    }
+
+    void metaPutString(String key, String value) {
+        metaPutBytes(key, value.getBytes(StandardCharsets.UTF_8));
     }
 
     private byte[] getMeta(byte[] key) {

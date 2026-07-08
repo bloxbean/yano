@@ -481,24 +481,29 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
             return null;
         }
 
+        // Each chain: (suffix getter, prefix collector for plugin sub-maps like sinks.*)
         List<java.util.function.Function<String, Object>> chainLookups = new java.util.ArrayList<>();
+        List<java.util.function.Function<String, Map<String, String>>> chainCollectors =
+                new java.util.ArrayList<>();
         Object chainList = globals.get(YanoPropertyKeys.AppChain.CHAINS);
         if (chainList instanceof List<?> entries && !entries.isEmpty()) {
             for (Object entry : entries) {
                 if (entry instanceof Map<?, ?> chainMap) {
                     chainLookups.add(suffix -> chainMap.get(suffix));
+                    chainCollectors.add(prefix -> collectPrefixed(chainMap, "", prefix));
                 }
             }
         } else {
             // Flat single-chain config: full keys are "yano.app-chain." + suffix
             chainLookups.add(suffix -> globals.get("yano.app-chain." + suffix));
+            chainCollectors.add(prefix -> collectPrefixed(globals, "yano.app-chain.", prefix));
         }
 
         String rocksPath = config.getRocksDBPath() != null ? config.getRocksDBPath() : "./chainstate";
         List<com.bloxbean.cardano.yano.runtime.appchain.AppChainSubsystem> subsystems =
                 new java.util.ArrayList<>();
-        for (java.util.function.Function<String, Object> lookup : chainLookups) {
-            var appChainConfig = buildAppChainConfig(lookup);
+        for (int i = 0; i < chainLookups.size(); i++) {
+            var appChainConfig = buildAppChainConfig(chainLookups.get(i), chainCollectors.get(i));
             log.info("App chain enabled: {} ({} members, {} peers, sequencing: {}, anchoring: {})",
                     appChainConfig.chainId(), appChainConfig.memberKeysHex().size(),
                     appChainConfig.peers().size(), appChainConfig.sequencingEnabled(),
@@ -512,9 +517,23 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
         return new com.bloxbean.cardano.yano.runtime.appchain.AppChainManager(subsystems, log);
     }
 
+    /** Collect config entries whose full key starts with base+prefix, keyed by (key minus base). */
+    private static Map<String, String> collectPrefixed(Map<?, ?> source, String base, String prefix) {
+        Map<String, String> result = new java.util.LinkedHashMap<>();
+        String full = base + prefix;
+        for (Map.Entry<?, ?> entry : source.entrySet()) {
+            String key = String.valueOf(entry.getKey());
+            if (key.startsWith(full) && entry.getValue() != null) {
+                result.put(key.substring(base.length()), String.valueOf(entry.getValue()));
+            }
+        }
+        return result;
+    }
+
     /** Builds one chain's config from suffix-keyed lookups (e.g. "chain-id", "sequencer.proposer"). */
     private com.bloxbean.cardano.yano.api.appchain.AppChainConfig buildAppChainConfig(
-            java.util.function.Function<String, Object> get) {
+            java.util.function.Function<String, Object> get,
+            java.util.function.Function<String, Map<String, String>> collectPrefixed) {
         java.util.Set<String> memberKeys = new java.util.HashSet<>();
         for (String member : stringOf(get.apply("members"), "").split(",")) {
             if (!member.isBlank()) memberKeys.add(member.trim());
@@ -558,7 +577,10 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                                 parseLong(get.apply("anchor.metadata-label"), 7014))
                         : null,
                 (int) parseLong(get.apply("l1.stability-depth"), 0),
-                webhookUrls);
+                webhookUrls,
+                booleanOf(get.apply("retention.enabled"), false),
+                (int) parseLong(get.apply("retention.keep-blocks"), 0),
+                collectPrefixed.apply("sinks."));
     }
 
     private static String stringOf(Object value, String def) {

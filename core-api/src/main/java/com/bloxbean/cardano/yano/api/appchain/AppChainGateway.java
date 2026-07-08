@@ -63,6 +63,24 @@ public interface AppChainGateway {
      */
     AutoCloseable subscribeFinalized(FinalizedBlockListener listener);
 
+    /**
+     * Build a portable, offline-verifiable evidence bundle for a finalized
+     * message (ADR app-layer/006 E3.4): its block(s), the member key set, and —
+     * when anchored — the L1 anchor reference and prev-hash chain to it. Empty
+     * if the message id is unknown/not finalized.
+     */
+    java.util.Optional<com.bloxbean.cardano.yano.api.appchain.evidence.EvidenceBundle> evidence(byte[] messageId);
+
+    /**
+     * Create an atomic ledger snapshot for fast member onboarding
+     * (ADR app-layer/006 E5.3). Copy the resulting directory to a new node's
+     * app-chain ledger path to restore full state without replay.
+     *
+     * @param snapshotPath a fresh (non-existent) directory
+     * @return the tip height captured in the snapshot
+     */
+    long snapshot(String snapshotPath);
+
     @FunctionalInterface
     interface FinalizedBlockListener {
         void onFinalized(AppBlock block, byte[] blockHash);

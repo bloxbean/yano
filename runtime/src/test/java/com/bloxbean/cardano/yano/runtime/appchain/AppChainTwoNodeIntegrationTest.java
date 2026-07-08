@@ -157,7 +157,8 @@ class AppChainTwoNodeIntegrationTest {
                 AppChainConfig.DEFAULT_MAX_BLOCK_MESSAGES,
                 AppChainConfig.DEFAULT_STATE_MACHINE,
                 null,
-                null, 0, java.util.List.of());
+                null, 0, java.util.List.of(),
+                false, 0, java.util.Map.of());
         AppChainSubsystem subsystem = new AppChainSubsystem(config, MAGIC, null, log);
         subsystems.add(subsystem);
 

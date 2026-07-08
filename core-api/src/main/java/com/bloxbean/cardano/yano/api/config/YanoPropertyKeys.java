@@ -529,6 +529,10 @@ public final class YanoPropertyKeys {
         public static final String L1_STABILITY_DEPTH = "yano.app-chain.l1.stability-depth";
         /** Comma-separated webhook URLs receiving finalized blocks (at-least-once, cursored). */
         public static final String WEBHOOKS = "yano.app-chain.webhooks";
+        /** Prune message bodies below the L1_FINAL anchor (proofs stay valid). */
+        public static final String RETENTION_ENABLED = "yano.app-chain.retention.enabled";
+        /** Keep bodies of at least this many most-recent blocks regardless of anchor. */
+        public static final String RETENTION_KEEP_BLOCKS = "yano.app-chain.retention.keep-blocks";
         /** Opt-in API-key authentication for the /app-chain REST surface. */
         public static final String API_AUTH_ENABLED = "yano.app-chain.api.auth.enabled";
         /**

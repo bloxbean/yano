@@ -1,0 +1,42 @@
+// Standalone Gradle project template for a custom Yano app-chain state-machine
+// plugin (ADR app-layer/006 E1.5). Build a jar, drop it on the node's
+// yano.plugins.directory, and select it via yano.app-chain.state-machine.
+plugins {
+    id 'java'
+}
+
+group = 'com.example'
+version = '0.1.0'
+
+repositories {
+    mavenLocal()   // resolves locally-published yano artifacts
+    mavenCentral()
+}
+
+dependencies {
+    // The node provides these at runtime — compile against them only.
+    compileOnly 'com.bloxbean.cardano:yano-node-api:0.1.0-pre1-SNAPSHOT'
+    compileOnly 'com.bloxbean.cardano:cardano-client-crypto:0.7.0-beta2'
+
+    testImplementation 'com.bloxbean.cardano:yano-node-api:0.1.0-pre1-SNAPSHOT'
+    testImplementation platform('org.junit:junit-bom:5.10.2')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testImplementation 'org.assertj:assertj-core:3.25.3'
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(25)
+    }
+}
+
+test {
+    useJUnitPlatform()
+}
+
+// Produces build/libs/appchain-plugin-<version>.jar — copy it to the node's
+// plugins directory. If your plugin has extra runtime deps, shade them or
+// place them alongside the jar.
+jar {
+    archiveBaseName = 'appchain-plugin'
+}

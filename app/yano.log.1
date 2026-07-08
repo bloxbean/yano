@@ -1,0 +1,523 @@
+2026-07-08 08:35:48,449 WARN  [io.qua.config] (main) Unrecognized configuration file /Users/satya/work/bloxbean/yano/app/config/application.yml.bak found; Please, check if your are providing the proper extension to load the file
+2026-07-08 08:35:48,449 WARN  [io.qua.config] (main) Unrecognized configuration file /Users/satya/work/bloxbean/yano/app/config/application.yml.working found; Please, check if your are providing the proper extension to load the file
+2026-07-08 08:35:48,476 INFO  [com.blo.car.yan.app.YanoProducer] (main) Yano application starting up...
+2026-07-08 08:35:48,476 INFO  [com.blo.car.yan.app.YanoProducer] (main) Auto-sync-start enabled: true
+2026-07-08 08:35:48,476 INFO  [com.blo.car.yan.app.YanoProducer] (main) Auto-starting Yano synchronization...
+2026-07-08 08:35:48,476 INFO  [com.blo.car.yan.app.YanoProducer] (main) Creating Yano with network: devnet
+2026-07-08 08:35:48,484 INFO  [com.blo.car.yan.run.con.DnsCachePolicy] (main) Configured JVM DNS cache policy: yano.dns.cache.ttl=60s, yano.dns.cache.negative.ttl=10s
+2026-07-08 08:35:48,723 WARN  [com.blo.car.yan.run.cha.DirectRocksDBChainState] (main) RocksDB SliceTransform fixed prefix not available; proceeding without prefix extractor
+2026-07-08 08:35:48,723 WARN  [com.blo.car.yan.run.cha.DirectRocksDBChainState] (main) RocksDB SliceTransform fixed prefix not available; proceeding without prefix extractor
+2026-07-08 08:35:48,723 INFO  [com.blo.car.yan.run.cha.DirectRocksDBChainState] (main) RocksDB CF tuning: utxo_unspent/utxo_spent => point-lookup (ZSTD, bloom≈10bpk, whole-key, pin L0, partitioned filters)
+2026-07-08 08:35:48,723 INFO  [com.blo.car.yan.run.cha.DirectRocksDBChainState] (main) RocksDB CF tuning: utxo_addr => prefix-scan (ZSTD, prefixExtractor=28, memtablePrefixBloom≈0.10, bloom≈10bpk, pin L0, partitioned filters)
+2026-07-08 08:35:48,724 INFO  [com.blo.car.yan.run.cha.DirectRocksDBChainState] (main) RocksDB CF tuning: utxo_block_delta => sequential (ZSTD)
+2026-07-08 08:35:48,724 INFO  [com.blo.car.yan.run.cha.DirectRocksDBChainState] (main) RocksDB CF tuning: account_history => prefix-scan (ZSTD, prefixExtractor=30)
+2026-07-08 08:35:48,929 INFO  [com.blo.car.yan.run.cha.DirectRocksDBChainState] (main) RocksDB initialized at: /tmp/appchain-demo/chainstate-b (tuningEnabled=true, pipelinedWrite=true, atomicFlush=false, parallelism=16)
+2026-07-08 08:35:48,930 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) Yano initialized
+2026-07-08 08:35:48,930 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) Remote: localhost:13337 (magic: 42)
+2026-07-08 08:35:48,930 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) Server port: 13338
+2026-07-08 08:35:48,930 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) Storage: RocksDB
+2026-07-08 08:35:48,937 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) App chain enabled: demo-chain (2 members, 1 peers, sequencing: true, anchoring: false)
+2026-07-08 08:35:48,962 INFO  [com.blo.car.yan.run.plu.PluginManager] (main) Discovered plugin: com.bloxbean.cardano.yaci.plugins.logging:1.0.0
+2026-07-08 08:35:48,963 INFO  [com.blo.car.yan.run.plu.PluginManager] (main) LoggingPlugin disabled via yaci.plugins.logging.enabled=false
+2026-07-08 08:35:48,964 INFO  [com.blo.car.yan.run.mig.StartupMigrationRunner] (main) Startup migration 'stake-balance-index' started
+2026-07-08 08:35:48,964 INFO  [com.blo.car.yan.run.utx.StakeBalanceIndexRebuilder] (main) Stake balance index rebuild: clearing existing aggregate
+2026-07-08 08:35:48,966 INFO  [com.blo.car.yan.run.utx.StakeBalanceIndexRebuilder] (main) Stake balance index rebuild: cleared 0 aggregate entries
+2026-07-08 08:35:48,966 INFO  [com.blo.car.yan.run.utx.StakeBalanceIndexRebuilder] (main) Stake balance index scan complete: scanned_utxos=0, skipped_utxos=0, credentials=0
+2026-07-08 08:35:48,966 INFO  [com.blo.car.yan.run.utx.StakeBalanceIndexRebuilder] (main) Stake balance index rebuild: wrote 0 aggregate entries
+2026-07-08 08:35:48,966 INFO  [com.blo.car.yan.run.utx.StakeBalanceIndexRebuilder] (main) Stake balance index rebuild complete: cleared_entries=0, scanned_utxos=0, skipped_utxos=0, credentials=0, written_entries=0, total_lovelace=0, elapsed_ms=2
+2026-07-08 08:35:48,967 INFO  [com.blo.car.yan.run.mig.StartupMigrationRunner] (main) Startup migration 'stake-balance-index' completed in 3 ms: rebuilt stake-balance index: scanned_utxos=0, skipped_utxos=0, credentials=0, total_lovelace=0
+2026-07-08 08:35:48,971 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) DefaultUtxoStore initialized (enabled=true)
+2026-07-08 08:35:48,971 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) UTXO store initialized; reconciliation deferred until startup recovery
+2026-07-08 08:35:48,972 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) UTXO store initialized (default); UtxoEventHandler registered
+2026-07-08 08:35:48,989 INFO  [com.blo.car.yan.run.gen.ShelleyGenesisParser] (main) Parsed shelley genesis: networkMagic=42, initialFunds=25 entries, epochLength=500, systemStart=2026-07-08T00:35:44Z, activeSlotsCoeff=1.0, protocolVersion=11.0, rho=0.003, tau=0.2, a0=0.0, nOpt=100, stakingPools=1, stakingDelegations=1
+2026-07-08 08:35:48,990 INFO  [com.blo.car.yan.run.gen.ByronGenesisParser] (main) Parsed byron genesis: nonAvvmBalances=0 entries, avvmBalances=0 entries, startTime=1704067200, protocolMagic=42, slotDuration=1s, k=60
+2026-07-08 08:35:49,002 INFO  [com.blo.car.yan.run.gen.AlonzoGenesisParser] (main) Parsed alonzo genesis: costModels=2, maxTxExMem=16500000, maxBlockExMem=72000000, coinsPerUtxoWord=34482
+2026-07-08 08:35:49,003 INFO  [com.blo.car.yan.run.gen.ConwayGenesisParser] (main) Parsed conway genesis: govActionLifetime=6, govActionDeposit=1000000000, dRepDeposit=500000000, dRepActivity=20, committeeMinSize=0, committeeMaxTermLength=146, minFeeRefScriptCostPerByte=15, drepVotingThresholds=present, poolVotingThresholds=present, costModels=[PlutusV3]
+2026-07-08 08:35:49,003 INFO  [com.blo.car.yan.run.con.NetworkGenesisConfig] (main) NetworkGenesisConfig loaded: magic=42, epochLength=500, securityParam=100, byronK=60, alonzo=available, conway=available
+2026-07-08 08:35:49,004 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) Derived shelley-genesis hash from file: a8425a733574a30a283c4fb432673bb0c708c62d47681db4d42b38947dc0ea9a
+2026-07-08 08:35:49,004 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) Genesis bootstrap payload ready: hash=a8425a733574a30a283c4fb432673bb0c708c62d47681db4d42b38947dc0ea9a, pools=1, delegations=1
+2026-07-08 08:35:49,004 INFO  [com.blo.car.yan.run.con.DefaultEpochParamProvider] (main) DefaultEpochParamProvider built from genesis: epochLength=500, byronSlotsPerEpoch=600, firstNonByronSlot=0, securityParam=100, nOpt=100, conway=available
+2026-07-08 08:35:49,005 INFO  [com.blo.car.yan.run.acc.AccountStateStoreDiscovery] (main) AccountStateStore provider: rocksdb (priority=0)
+2026-07-08 08:35:49,007 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) Account state store initialized; reconciliation deferred until startup recovery
+2026-07-08 08:35:49,008 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) Epoch stake snapshot amounts enabled (balance-mode=full-scan)
+2026-07-08 08:35:49,008 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) AdaPot tracker enabled (maxLovelaceSupply=45000000000000000)
+2026-07-08 08:35:49,009 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) Epoch param tracker enabled (with RocksDB persistence)
+2026-07-08 08:35:49,009 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) Epoch reward calculator enabled
+2026-07-08 08:35:49,010 INFO  [com.blo.car.yan.run.con.NetworkGenesisValuesFactory] (main) NetworkGenesisValues built: magic=42, epochLength=500, shelleyStartEpoch=0, initialReserves=35989500000000000, initialTreasury=0, initialUtxo=9010500000000000, allegraEpoch=2147483647, vasilEpoch=2147483647, bootstrapAmount=0
+2026-07-08 08:35:49,010 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) CF NetworkConfig built from genesis
+2026-07-08 08:35:49,010 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) firstConwayEpoch resolved: null
+2026-07-08 08:35:49,012 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) Epoch boundary processor wired (adapot=true, rewards=true, params=true, exitOnCalcError=false)
+2026-07-08 08:35:49,015 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) Governance subsystem enabled (block processor + epoch processor)
+2026-07-08 08:35:49,016 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) Account state store initialized (DefaultAccountStateStore); event handler registered
+2026-07-08 08:35:49,025 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) Relay outbound source-port reuse enabled: binding upstream dials to 127.0.0.1:13338
+2026-07-08 08:35:49,090 INFO  [com.blo.car.yan.run.gen.ShelleyGenesisParser] (main) Parsed shelley genesis: networkMagic=42, initialFunds=25 entries, epochLength=500, systemStart=2026-07-08T00:35:44Z, activeSlotsCoeff=1.0, protocolVersion=11.0, rho=0.003, tau=0.2, a0=0.0, nOpt=100, stakingPools=1, stakingDelegations=1
+2026-07-08 08:35:49,090 INFO  [com.blo.car.yan.run.gen.ByronGenesisParser] (main) Parsed byron genesis: nonAvvmBalances=0 entries, avvmBalances=0 entries, startTime=1704067200, protocolMagic=42, slotDuration=1s, k=60
+2026-07-08 08:35:49,091 INFO  [com.blo.car.yan.tx.TransactionProtocolParamsResolver] (main) Transaction protocol params source: effective-ledger
+2026-07-08 08:35:49,092 INFO  [com.blo.car.yan.tx.DefaultTransactionServicesFactory] (main) Yano transaction slot config: slotLengthMillis=200, zeroSlot=0, zeroTimeMillis=1783470944000
+2026-07-08 08:35:49,094 INFO  [com.blo.car.yan.sca.ScalusBasedTransactionValidator] (main) CCL supplementary rules disabled (yano.validation.supplementary-rules-enabled=false). Scalus validation will run without GOVCERT/governance/delegatee gap rules.
+2026-07-08 08:35:49,094 INFO  [com.blo.car.yan.tx.DefaultTransactionServicesFactory] (main) Transaction validator created (networkId=0, protocolParams=effective-ledger, supplementaryRules=false)
+2026-07-08 08:35:49,094 INFO  [com.blo.car.yan.tx.DefaultTransactionServicesFactory] (main) Script evaluator created (networkId=0, evaluator=scalus)
+2026-07-08 08:35:49,095 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) Default transaction validator listener registered (order=100)
+2026-07-08 08:35:49,095 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) Transaction evaluator set
+2026-07-08 08:35:49,095 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) Script evaluator set for /utils/txs/evaluate endpoint
+2026-07-08 08:35:49,095 INFO  [com.blo.car.yan.app.YanoProducer] (main) Yano created successfully
+2026-07-08 08:35:49,096 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) Starting Yano...
+2026-07-08 08:35:49,098 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) Mempool eviction policy initialized (ttl=10800s, maxTxs=10000, maxBytes=134217728, txDiffusionMode=all-hot)
+2026-07-08 08:35:49,099 INFO  [com.blo.car.yan.run.gen.ShelleyGenesisParser] (main) Parsed shelley genesis: networkMagic=42, initialFunds=25 entries, epochLength=500, systemStart=2026-07-08T00:35:44Z, activeSlotsCoeff=1.0, protocolVersion=11.0, rho=0.003, tau=0.2, a0=0.0, nOpt=100, stakingPools=1, stakingDelegations=1
+2026-07-08 08:35:49,099 INFO  [com.blo.car.yan.run.gen.ByronGenesisParser] (main) Parsed byron genesis: nonAvvmBalances=0 entries, avvmBalances=0 entries, startTime=1704067200, protocolMagic=42, slotDuration=1s, k=60
+2026-07-08 08:35:49,099 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) Genesis config loaded (protocolParams=none, shelleyData=available)
+2026-07-08 08:35:49,099 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) Initializing genesis UTXOs...
+2026-07-08 08:35:49,099 INFO  [com.blo.car.yan.run.gen.ShelleyGenesisParser] (main) Parsed shelley genesis: networkMagic=42, initialFunds=25 entries, epochLength=500, systemStart=2026-07-08T00:35:44Z, activeSlotsCoeff=1.0, protocolVersion=11.0, rho=0.003, tau=0.2, a0=0.0, nOpt=100, stakingPools=1, stakingDelegations=1
+2026-07-08 08:35:49,099 INFO  [com.blo.car.yan.run.gen.ByronGenesisParser] (main) Parsed byron genesis: nonAvvmBalances=0 entries, avvmBalances=0 entries, startTime=1704067200, protocolMagic=42, slotDuration=1s, k=60
+2026-07-08 08:35:49,109 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) Stored 25 Shelley genesis UTXOs (tx_hash = blake2b(address), outputIndex=0)
+2026-07-08 08:35:49,109 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) Genesis UTXOs stored: 25 shelley + 0 byron fund entries
+2026-07-08 08:35:49,109 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) 🔍 Validating chain state integrity...
+2026-07-08 08:35:49,109 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) ✅ Chain state integrity validated - no corruption detected
+2026-07-08 08:35:49,109 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) UTXO reconciliation complete at startup
+2026-07-08 08:35:49,110 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) Account state reconciliation complete at startup
+2026-07-08 08:35:49,110 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) UTXO prune service started (interval=5s)
+2026-07-08 08:35:49,111 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) Block body pruning disabled (block-body-prune-depth=0)
+2026-07-08 08:35:49,111 INFO  [com.blo.car.yan.run.chr.ChronologyService] (main) SlotTimeCalculator initialized: networkStart=1704067200, byronSlotDuration=1s, shelleySlotLength=0.2s
+2026-07-08 08:35:49,111 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) Starting NodeServer on port 13338...
+2026-07-08 08:35:49,111 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) Protocol magic: 42
+2026-07-08 08:35:49,111 ERROR [com.blo.car.yan.run.int.RuntimeNode] (main) CRITICAL: Server starting with empty chain state (no tip)
+2026-07-08 08:35:49,111 ERROR [com.blo.car.yan.run.int.RuntimeNode] (main) Real Cardano nodes will not connect to an empty server
+2026-07-08 08:35:49,111 ERROR [com.blo.car.yan.run.int.RuntimeNode] (main) Yano must sync some blockchain data first before serving
+2026-07-08 08:35:49,112 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) App-layer server agents enabled (2 factory/factories)
+2026-07-08 08:35:49,113 INFO  [com.blo.car.yac.cor.net.ser.NodeServer] (YanoServer) Initializing NodeServer on port 13338
+2026-07-08 08:35:49,116 INFO  [com.blo.car.yac.cor.net.ser.NodeServer] (YanoServer) Binding to port 13338
+2026-07-08 08:35:49,132 INFO  [com.blo.car.yac.cor.net.ser.NodeServer] (nioEventLoopGroup-2-1) NodeServer successfully bound to port 13338
+2026-07-08 08:35:49,132 INFO  [com.blo.car.yac.cor.net.ser.NodeServer] (YanoServer) NodeServer is now listening on port 13338 and waiting for connections
+2026-07-08 08:35:49,133 INFO  [com.blo.car.yac.cor.net.ser.NodeServer] (YanoServer) Server socket address: /[0:0:0:0:0:0:0:0]:13338
+2026-07-08 08:35:51,115 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) NodeServer started successfully on port 13338
+2026-07-08 08:35:51,115 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) Server is ready to accept connections from Cardano nodes
+2026-07-08 08:35:51,116 INFO  [com.blo.car.yan.run.blo.EpochNonceState] (main) Shelley start slot set: 0 (from block at slot 0)
+2026-07-08 08:35:51,116 INFO  [com.blo.car.yan.run.pro.NonceEvolutionListenerFactory] (main) Nonce tracking wired with EpochParamTracker
+2026-07-08 08:35:51,116 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) Derived shelley-genesis hash from file: a8425a733574a30a283c4fb432673bb0c708c62d47681db4d42b38947dc0ea9a
+2026-07-08 08:35:51,117 INFO  [com.blo.car.yan.run.blo.EpochNonceState] (main) Epoch nonce initialized from pre-computed genesis hash, epoch=0, preConwayStabilityWindow=300, conwayStabilityWindow=400
+2026-07-08 08:35:51,118 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) Epoch nonce tracking initialized for relay mode (epochLength=500, k=100, f=1.0)
+2026-07-08 08:35:51,118 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) Starting pipelined client sync with localhost:13337...
+2026-07-08 08:35:51,118 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) Local header_tip: null, body_tip: null, mode=pipelined, using: genesis for sync
+2026-07-08 08:35:51,118 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) No local tip found, starting from genesis
+2026-07-08 08:35:51,119 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) Starting client sync from point: [slot=0, hash='null']
+2026-07-08 08:35:51,126 INFO  [com.blo.car.yan.run.pee.PeerSessionSupervisor] (main) Peer session supervisor started: Policy[checkIntervalMillis=30000, noProgressTimeoutMillis=600000, keepAliveTimeoutMillis=120000, missingKeepAliveNoProgressTimeoutMillis=600000, bodyFetchStuckTimeoutMillis=300000, disconnectGraceMillis=30000, startupTimeoutMillis=60000, recoveryCooldownMillis=30000, recoveryJitterMillis=5000, fastDisconnectRecoveryAttempts=2, fastDisconnectRecoveryCooldownMillis=0, fastDisconnectResetMillis=300000]
+2026-07-08 08:35:51,126 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) ChainSync agent started - reset to INITIAL_SYNC phase
+2026-07-08 08:35:51,126 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) BULK PIPELINED SYNC: remote tip unavailable until ChainSync intersection
+2026-07-08 08:35:51,129 INFO  [com.blo.car.yan.run.BodyFetchManager] (main) 🏗️ BodyFetchManager created with config: gapThreshold=100, maxBatchSize=5000, monitoringInterval=500ms, tipProximityThreshold=1000
+2026-07-08 08:35:51,129 INFO  [com.blo.car.yan.run.pee.PeerSession] (main) 📦 BodyFetchManager created with gapThreshold=100, maxBatchSize=5000
+2026-07-08 08:35:51,130 INFO  [com.blo.car.yan.run.HeaderSyncManager] (main) HeaderSyncManager initialized - ready for header-only synchronization (gap threshold: 50000 blocks)
+2026-07-08 08:35:51,130 INFO  [com.blo.car.yan.run.pee.PeerSession] (main) 📋 HeaderSyncManager created
+2026-07-08 08:35:51,130 INFO  [com.blo.car.yan.run.pee.PeerSession] (main) 🔗 Pipeline managers initialized and ready
+2026-07-08 08:35:51,130 INFO  [com.blo.car.yan.run.pee.PeerSession] (main) ℹ️  HeaderSyncManager will receive headers through ChainSync protocol
+2026-07-08 08:35:51,130 INFO  [com.blo.car.yan.run.pee.PeerSession] (main) ℹ️  BodyFetchManager will monitor for gaps and fetch ranges automatically
+2026-07-08 08:35:51,131 INFO  [com.blo.car.yan.run.pee.PeerSession] (main) 🧾 LedgerApplyProcessor started for generation 1
+2026-07-08 08:35:51,131 INFO  [com.blo.car.yan.run.PipelineDataListener] (main) PipelineDataListener initialized for parallel header/body processing
+2026-07-08 08:35:51,134 INFO  [com.blo.car.yac.cor.pro.cha.n2n.ChainsyncAgent] (main) Trying to find the point [slot=0, hash='null']
+2026-07-08 08:35:51,144 INFO  [com.blo.car.yan.run.PipelineDataListener] (main) Ignoring startup reset disconnect before first sync progress: generation=1
+2026-07-08 08:35:51,144 INFO  [com.blo.car.yac.hel.N2NPeerFetcher] (main) ChainSync agent disconnected - resetting handshake flag
+2026-07-08 08:35:51,144 INFO  [com.blo.car.yac.cor.pro.cha.n2n.ChainsyncAgent] (main) 💔 Connection lost, currentPoint: null
+2026-07-08 08:35:51,144 INFO  [com.blo.car.yan.run.PipelineDataListener] (main) Ignoring startup reset disconnect before first sync progress: generation=1
+2026-07-08 08:35:51,145 INFO  [com.blo.car.yac.cor.net.NodeClient] (nioEventLoopGroup-4-1) Connected !!!
+2026-07-08 08:35:51,157 INFO  [com.blo.car.yac.cor.pro.han.HandshakeAgent] (nioEventLoopGroup-4-1) Handshake Ok!!! AcceptVersion(versionNumber=15, versionData=N2NVersionData(initiatorOnlyDiffusionMode=true, peerSharing=0, query=false))
+2026-07-08 08:35:51,158 INFO  [com.blo.car.yac.cor.pro.cha.n2n.ChainsyncAgent] (nioEventLoopGroup-4-1) 🔗 Connection established, currentPoint: null
+2026-07-08 08:35:51,158 INFO  [com.blo.car.yac.hel.N2NPeerFetcher] (nioEventLoopGroup-4-1) Reconnection handshake completed. Resuming chain sync...
+2026-07-08 08:35:51,158 INFO  [com.blo.car.yac.cor.pro.cha.n2n.ChainsyncAgent] (nioEventLoopGroup-4-1) FindIntersect for point: [slot=0, hash='null']
+2026-07-08 08:35:51,161 INFO  [com.blo.car.yac.cor.pro.cha.n2n.ChainsyncAgent] (nioEventLoopGroup-4-1) Intersect found at slot: 0 - hash: null
+2026-07-08 08:35:51,161 INFO  [com.blo.car.yac.hel.PeerClient] (nioEventLoopGroup-4-1) Starting keep alive thread for peer: localhost:13337
+2026-07-08 08:35:51,162 INFO  [com.blo.car.yan.run.HeaderSyncManager] (nioEventLoopGroup-4-1) 📄 Header intersection found at: [slot=0, hash='null'] (tip: Tip(point=[slot=34, hash='70e0c3f92a18d0a06dd685d7f2a5e8ef9ce5cd092df52b93bdcc4f53837eb7d5'], block=32))
+2026-07-08 08:35:51,162 INFO  [com.blo.car.yan.run.int.RuntimeNode] (nioEventLoopGroup-4-1) Transitioned to INTERSECT_PHASE - expect rollback to intersection
+2026-07-08 08:35:51,162 INFO  [com.blo.car.yan.run.PipelineDataListener] (nioEventLoopGroup-4-1) Intersection found at point: [slot=0, hash='null'] - notified both header manager and Yano
+2026-07-08 08:35:51,236 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 🔄 Rollback detected to point: [slot=0, hash='null']
+2026-07-08 08:35:51,257 INFO  [com.blo.car.yac.hel.N2NPeerFetcher] (main) Started ChainSync-only mode from point: [slot=0, hash='null']
+2026-07-08 08:35:51,257 INFO  [com.blo.car.yac.cor.pro.cha.n2n.ChainsyncAgent] (main) FindIntersect for point: [slot=0, hash='null']
+2026-07-08 08:35:51,257 INFO  [com.blo.car.yan.run.pee.PeerSession] (main) 🔗 ==> Header sync started with pipelining enabled
+2026-07-08 08:35:51,257 INFO  [com.blo.car.yan.run.BodyFetchManager] (main) 📊 Starting INITIAL_SYNC: header-body gap=0 slots, network distance=unknown slots (threshold=1000)
+2026-07-08 08:35:51,257 INFO  [com.blo.car.yan.run.BodyFetchManager] (main) 📊 Will log every 100 blocks during initial sync, every block when near tip
+2026-07-08 08:35:51,257 INFO  [com.blo.car.yan.run.BodyFetchManager] (main) 🚀 BodyFetchManager started with monitoring thread: BodyFetchManager-Monitor
+2026-07-08 08:35:51,257 INFO  [com.blo.car.yan.run.BodyFetchManager] (BodyFetchManager-Monitor) 📊 BodyFetchManager monitoring thread started
+2026-07-08 08:35:51,257 INFO  [com.blo.car.yan.run.pee.PeerSession] (main) 📦 ==> Body fetch manager started for range-based fetching
+2026-07-08 08:35:51,257 INFO  [com.blo.car.yan.run.pee.PeerSession] (main) 🚀 Pipeline startup complete - HeaderSync and BodyFetch active
+2026-07-08 08:35:51,258 INFO  [com.blo.car.yan.run.int.RuntimeNode] (YanoLedgerApply) BodyFetchManager paused for rollback to slot 0
+2026-07-08 08:35:51,258 WARN  [com.blo.car.yan.run.int.RuntimeNode] (YanoLedgerApply) Rollback requested to genesis (slot 0)
+2026-07-08 08:35:51,258 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) UTXO storage filtering disabled
+2026-07-08 08:35:51,258 INFO  [com.blo.car.yan.run.int.RuntimeNode] (YanoLedgerApply) Rollback during INTERSECT_PHASE phase - skipping server notification
+2026-07-08 08:35:51,258 INFO  [com.blo.car.yan.run.cha.DirectRocksDBChainState] (YanoLedgerApply) Rollback to origin requested on empty chain state; treating as no-op
+2026-07-08 08:35:51,258 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) Yano started successfully
+2026-07-08 08:35:51,258 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) ═══════════════════════════════════════════════════════════
+2026-07-08 08:35:51,258 WARN  [com.blo.car.yan.run.blo.NonceEvolutionListener] (YanoLedgerApply) No in-memory nonce checkpoint found for rollback to slot 0; repairing from durable state
+2026-07-08 08:35:51,258 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) 🚀 YACI NODE STARTUP STATUS
+2026-07-08 08:35:51,258 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) ═══════════════════════════════════════════════════════════
+2026-07-08 08:35:51,258 INFO  [com.blo.car.yan.run.blo.EpochNonceState] (YanoLedgerApply) Epoch nonce initialized from pre-computed genesis hash, epoch=0, preConwayStabilityWindow=300, conwayStabilityWindow=400
+2026-07-08 08:35:51,258 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) 📡 CLIENT MODE: ENABLED
+2026-07-08 08:35:51,258 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main)    └─ Remote: localhost:13337
+2026-07-08 08:35:51,258 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main)    └─ Syncing: YES
+2026-07-08 08:35:51,258 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main)    └─ Blocks processed: 0
+2026-07-08 08:35:51,258 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main)    └─ Last slot: 0
+2026-07-08 08:35:51,259 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) 🌐 SERVER MODE: ENABLED
+2026-07-08 08:35:51,259 INFO  [com.blo.car.yan.run.int.RuntimeNode] (YanoLedgerApply) Account state rolled back to slot 0
+2026-07-08 08:35:51,259 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main)    └─ Port: 13338
+2026-07-08 08:35:51,259 INFO  [com.blo.car.yan.run.int.RuntimeNode] (YanoLedgerApply) ROLLBACK_EVENT: slot=0, type=RECONNECTION, phase=INTERSECT_PHASE, serverNotified=false
+2026-07-08 08:35:51,259 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main)    └─ Running: YES
+2026-07-08 08:35:51,259 INFO  [com.blo.car.yan.run.int.RuntimeNode] (YanoLedgerApply) Rollback to slot: 0 (from tip: null) - Type: RECONNECTION
+2026-07-08 08:35:51,259 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main)    └─ Protocol magic: 42
+2026-07-08 08:35:51,259 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) BodyFetchManager: previousEpoch initialized to 0
+2026-07-08 08:35:51,259 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) 💾 CHAIN STATE: EMPTY
+2026-07-08 08:35:51,259 INFO  [com.blo.car.yan.run.int.RuntimeNode] (YanoLedgerApply) BodyFetchManager resumed after rollback - will detect and handle gaps automatically
+2026-07-08 08:35:51,259 WARN  [com.blo.car.yan.run.int.RuntimeNode] (main)    └─ ⚠️  NO BLOCKCHAIN DATA - Server cannot serve requests
+2026-07-08 08:35:51,259 INFO  [com.blo.car.yan.run.PipelineDataListener] (YanoLedgerApply) Rollback to point: [slot=0, hash='null'] - delegated to runtime callbacks for coordination
+2026-07-08 08:35:51,259 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) 🎯 READY TO SERVE: NO ❌
+2026-07-08 08:35:51,259 WARN  [com.blo.car.yan.run.int.RuntimeNode] (main) ⚠️  DIAGNOSTIC: Real Cardano nodes will not connect because:
+2026-07-08 08:35:51,259 WARN  [com.blo.car.yan.run.int.RuntimeNode] (main)    • Server has no blockchain data to serve
+2026-07-08 08:35:51,259 INFO  [com.blo.car.yac.hel.N2NPeerFetcher] (nioEventLoopGroup-4-1) Rollback to point: [slot=0, hash='null']
+2026-07-08 08:35:51,259 WARN  [com.blo.car.yan.run.int.RuntimeNode] (main)    • Wait for client sync to download blocks first
+2026-07-08 08:35:51,259 INFO  [com.blo.car.yac.cor.pro.cha.n2n.ChainsyncAgent] (nioEventLoopGroup-4-1) FindIntersect for point: [slot=0, hash='null']
+2026-07-08 08:35:51,259 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) ═══════════════════════════════════════════════════════════
+2026-07-08 08:35:51,259 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) Starting app chain 'demo-chain' (member: 8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394, members: 2, peers: [localhost:13337], sequencing: true)
+2026-07-08 08:35:51,260 INFO  [com.blo.car.yac.cor.pro.cha.n2n.ChainsyncAgent] (nioEventLoopGroup-4-1) Intersect found at slot: 0 - hash: null
+2026-07-08 08:35:51,260 INFO  [com.blo.car.yan.run.HeaderSyncManager] (nioEventLoopGroup-4-1) 📄 Header intersection found at: [slot=0, hash='null'] (tip: Tip(point=[slot=35, hash='540ce68c4706062866e852709919add96340e3debe18251794000f7b8ecde90c'], block=33))
+2026-07-08 08:35:51,260 INFO  [com.blo.car.yan.run.int.RuntimeNode] (nioEventLoopGroup-4-1) Transitioned to INTERSECT_PHASE - expect rollback to intersection
+2026-07-08 08:35:51,261 INFO  [com.blo.car.yan.run.PipelineDataListener] (nioEventLoopGroup-4-1) Intersection found at point: [slot=0, hash='null'] - notified both header manager and Yano
+2026-07-08 08:35:51,273 INFO  [com.blo.car.yac.cor.pro.cha.n2n.ChainsyncAgent] (nioEventLoopGroup-4-1) Intersect found at slot: 0 - hash: null
+2026-07-08 08:35:51,273 INFO  [com.blo.car.yan.run.HeaderSyncManager] (nioEventLoopGroup-4-1) 📄 Header intersection found at: [slot=0, hash='null'] (tip: Tip(point=[slot=35, hash='540ce68c4706062866e852709919add96340e3debe18251794000f7b8ecde90c'], block=33))
+2026-07-08 08:35:51,273 INFO  [com.blo.car.yan.run.int.RuntimeNode] (nioEventLoopGroup-4-1) Transitioned to INTERSECT_PHASE - expect rollback to intersection
+2026-07-08 08:35:51,274 INFO  [com.blo.car.yan.run.PipelineDataListener] (nioEventLoopGroup-4-1) Intersection found at point: [slot=0, hash='null'] - notified both header manager and Yano
+2026-07-08 08:35:51,276 INFO  [com.blo.car.yan.run.syn.val.HeaderValidationStartGate] (nioEventLoopGroup-4-1) Shelley+ header validation deferred until checkpoint slot 69638426
+2026-07-08 08:35:51,281 INFO  [com.blo.car.yan.run.cha.DirectRocksDBChainState] (nioEventLoopGroup-4-1) 📍 Storing genesis/first header #1
+2026-07-08 08:35:51,349 INFO  [com.blo.car.yan.run.int.RuntimeNode] (main) App ledger opened at /tmp/appchain-demo/chainstate-b/app-chain/demo-chain (tip height: 0)
+2026-07-08 08:35:51,350 INFO  [com.blo.car.yan.app.YanoProducer] (main) Yano started automatically and syncing with devnet network
+2026-07-08 08:35:51,351 INFO  [com.blo.car.yan.app.YanoProducer] (main) REST API available at http://localhost:7071/api/v1/node/ for manual control
+2026-07-08 08:35:51,354 INFO  [com.blo.car.yac.cor.net.NodeClient] (nioEventLoopGroup-5-1) Connected !!!
+2026-07-08 08:35:51,356 INFO  [com.blo.car.yac.cor.pro.han.HandshakeAgent] (nioEventLoopGroup-5-1) Handshake Ok!!! AcceptVersion(versionNumber=100, versionData=N2NVersionData(initiatorOnlyDiffusionMode=false, peerSharing=0, query=false))
+2026-07-08 08:35:51,356 INFO  [com.blo.car.yan.run.int.RuntimeNode] (nioEventLoopGroup-5-1) App-peer handshake OK: localhost:13337 — activating app message protocol
+2026-07-08 08:35:51,370 INFO  [io.quarkus] (main) yano 0.1.0-pre8 on JVM (powered by Quarkus 3.25.0) started in 3.376s. Listening on: http://0.0.0.0:7071
+2026-07-08 08:35:51,370 INFO  [io.quarkus] (main) Profile devnet activated. 
+2026-07-08 08:35:51,370 INFO  [io.quarkus] (main) Installed features: [cdi, config-yaml, resteasy, resteasy-jackson, smallrye-context-propagation, smallrye-health, smallrye-openapi, swagger-ui, vertx]
+2026-07-08 08:35:51,464 INFO  [com.blo.car.yan.run.int.RuntimeNode] (app-chain-demo-chain) App-peer connection started: localhost:13337
+2026-07-08 08:35:51,465 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionAgent] (nioEventLoopGroup-5-1) App chains negotiated with peer: [demo-chain]
+2026-07-08 08:35:51,889 INFO  [com.blo.car.yan.run.cha.DirectRocksDBChainState] (YanoLedgerApply) Stored era 7 start slot: 0
+2026-07-08 08:35:51,891 INFO  [com.blo.car.yan.run.int.RuntimeNode] (YanoLedgerApply) Genesis initial mark snapshot seeded: snapshotKey=-1, delegations=1, fundedCredentials=21
+2026-07-08 08:35:51,891 INFO  [com.blo.car.yan.run.int.RuntimeNode] (YanoLedgerApply) Genesis staking bootstrapped: pools=1, delegations=1, deposits=502000000, totalDeposited=502000000
+2026-07-08 08:35:51,910 INFO  [com.blo.car.yan.led.EpochParamTracker] (YanoLedgerApply) Bootstrapped genesis protocol params for epoch 0
+2026-07-08 08:35:51,911 INFO  [com.blo.car.yan.run.cha.DirectRocksDBChainState] (YanoLedgerApply) Persisted Shelley-start UTXO total: 9010500000000000
+2026-07-08 08:35:51,911 INFO  [com.blo.car.yan.run.int.RuntimeNode] (YanoLedgerApply) Captured Shelley-start UTXO total at era transition: 9010500000000000 lovelace
+2026-07-08 08:35:51,912 INFO  [com.blo.car.yan.run.gen.ShelleyGenesisParser] (YanoLedgerApply) Parsed shelley genesis: networkMagic=42, initialFunds=25 entries, epochLength=500, systemStart=2026-07-08T00:35:44Z, activeSlotsCoeff=1.0, protocolVersion=11.0, rho=0.003, tau=0.2, a0=0.0, nOpt=100, stakingPools=1, stakingDelegations=1
+2026-07-08 08:35:51,912 INFO  [com.blo.car.yan.run.gen.ByronGenesisParser] (YanoLedgerApply) Parsed byron genesis: nonAvvmBalances=0 entries, avvmBalances=0 entries, startTime=1704067200, protocolMagic=42, slotDuration=1s, k=60
+2026-07-08 08:35:51,912 INFO  [com.blo.car.yan.run.gen.ConwayGenesisParser] (YanoLedgerApply) Parsed conway genesis: govActionLifetime=6, govActionDeposit=1000000000, dRepDeposit=500000000, dRepActivity=20, committeeMinSize=0, committeeMaxTermLength=146, minFeeRefScriptCostPerByte=15, drepVotingThresholds=present, poolVotingThresholds=present, costModels=[PlutusV3]
+2026-07-08 08:35:51,912 INFO  [com.blo.car.yan.run.con.NetworkGenesisConfig] (YanoLedgerApply) NetworkGenesisConfig loaded: magic=42, epochLength=500, securityParam=100, byronK=60, alonzo=none, conway=available
+2026-07-08 08:35:51,912 INFO  [com.blo.car.yan.run.con.NetworkGenesisValuesFactory] (YanoLedgerApply) NetworkGenesisValues built: magic=42, epochLength=500, shelleyStartEpoch=0, initialReserves=35989500000000000, initialTreasury=0, initialUtxo=9010500000000000, allegraEpoch=2147483647, vasilEpoch=2147483647, bootstrapAmount=0
+2026-07-08 08:35:51,912 INFO  [com.blo.car.yan.run.int.RuntimeNode] (YanoLedgerApply) Lazily built cfNetConfig after boundary capture for unknown+Byron network
+2026-07-08 08:35:51,913 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 0, Slot: 0 (Conway)
+2026-07-08 08:35:51,913 INFO  [com.blo.car.yan.run.cha.DirectRocksDBChainState] (YanoLedgerApply) 📍 Storing genesis/first block #1
+2026-07-08 08:35:51,913 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 1, Slot: 1 (Conway)
+2026-07-08 08:35:51,914 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 2, Slot: 2 (Conway)
+2026-07-08 08:35:51,914 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 3, Slot: 3 (Conway)
+2026-07-08 08:35:51,914 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 4, Slot: 4 (Conway)
+2026-07-08 08:35:51,915 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 5, Slot: 5 (Conway)
+2026-07-08 08:35:51,915 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 6, Slot: 6 (Conway)
+2026-07-08 08:35:51,915 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 7, Slot: 7 (Conway)
+2026-07-08 08:35:51,915 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 8, Slot: 8 (Conway)
+2026-07-08 08:35:51,916 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 9, Slot: 9 (Conway)
+2026-07-08 08:35:51,916 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 10, Slot: 11 (Conway)
+2026-07-08 08:35:51,916 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 11, Slot: 12 (Conway)
+2026-07-08 08:35:51,917 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 12, Slot: 13 (Conway)
+2026-07-08 08:35:51,917 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 13, Slot: 14 (Conway)
+2026-07-08 08:35:51,917 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 14, Slot: 15 (Conway)
+2026-07-08 08:35:51,917 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 15, Slot: 16 (Conway)
+2026-07-08 08:35:51,917 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 16, Slot: 17 (Conway)
+2026-07-08 08:35:51,918 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 17, Slot: 18 (Conway)
+2026-07-08 08:35:51,918 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 18, Slot: 19 (Conway)
+2026-07-08 08:35:51,918 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 19, Slot: 20 (Conway)
+2026-07-08 08:35:51,918 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 20, Slot: 21 (Conway)
+2026-07-08 08:35:51,918 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 21, Slot: 22 (Conway)
+2026-07-08 08:35:51,919 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 22, Slot: 23 (Conway)
+2026-07-08 08:35:51,919 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 23, Slot: 24 (Conway)
+2026-07-08 08:35:51,919 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 24, Slot: 25 (Conway)
+2026-07-08 08:35:51,919 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 25, Slot: 26 (Conway)
+2026-07-08 08:35:51,920 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 26, Slot: 27 (Conway)
+2026-07-08 08:35:51,920 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 27, Slot: 29 (Conway)
+2026-07-08 08:35:51,920 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 28, Slot: 30 (Conway)
+2026-07-08 08:35:51,920 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 29, Slot: 31 (Conway)
+2026-07-08 08:35:51,920 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 30, Slot: 32 (Conway)
+2026-07-08 08:35:51,921 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 31, Slot: 33 (Conway)
+2026-07-08 08:35:51,921 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 32, Slot: 34 (Conway)
+2026-07-08 08:35:51,921 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 33, Slot: 35 (Conway)
+2026-07-08 08:35:51,921 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 34, Slot: 36 (Conway)
+2026-07-08 08:35:51,921 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 35, Slot: 37 (Conway)
+2026-07-08 08:35:52,030 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 36, Slot: 38 (Conway)
+2026-07-08 08:35:52,078 INFO  [com.blo.car.yan.run.int.RuntimeNode] (nioEventLoopGroup-4-1) NEAR-TIP FAST PATH: remote-local distance=1 slots <= 1000, transitioned to STEADY_STATE
+2026-07-08 08:35:52,141 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 37, Slot: 39 (Conway)
+2026-07-08 08:35:52,358 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 38, Slot: 40 (Conway)
+2026-07-08 08:35:52,360 INFO  [com.blo.car.yac.cor.net.ser.NodeServer] (nioEventLoopGroup-3-1) New connection from: /127.0.0.1:60659
+2026-07-08 08:35:52,360 INFO  [com.blo.car.yac.cor.net.ser.NodeServer] (nioEventLoopGroup-3-1) Local address: /127.0.0.1:13338
+2026-07-08 08:35:52,364 INFO  [com.blo.car.yac.cor.pro.txs.TxSubmissionServerAgent] (nioEventLoopGroup-3-1) 
+2026-07-08 08:35:52,364 INFO  [com.blo.car.yac.cor.net.ser.NodeServerSession] (nioEventLoopGroup-3-1) Added app-layer agent: AppMsgSubmissionServerAgent (protocol 100)
+2026-07-08 08:35:52,365 INFO  [com.blo.car.yac.cor.net.ser.NodeServerSession] (nioEventLoopGroup-3-1) Added app-layer agent: AppChainSyncServerAgent (protocol 103)
+2026-07-08 08:35:52,365 INFO  [com.blo.car.yac.cor.net.ser.NodeServer] (nioEventLoopGroup-3-1) Created session for client: /127.0.0.1:60659
+2026-07-08 08:35:52,365 INFO  [com.blo.car.yac.cor.net.ser.han.MiniProtoServerInboundHandler] (nioEventLoopGroup-3-1) Client connected: /127.0.0.1:60659
+2026-07-08 08:35:52,367 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionServerAgent] (nioEventLoopGroup-3-1) Received MsgInit from client (chains: [demo-chain], shared: [demo-chain])
+2026-07-08 08:35:52,367 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionServerAgent] (nioEventLoopGroup-3-1) Sending initial blocking request: ack=0, req=10
+2026-07-08 08:35:52,367 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionServerAgent] (nioEventLoopGroup-3-1) Sending MsgRequestMessageIds
+2026-07-08 08:35:52,575 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 39, Slot: 41 (Conway)
+2026-07-08 08:35:52,781 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 40, Slot: 42 (Conway)
+2026-07-08 08:35:53,000 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 41, Slot: 43 (Conway)
+2026-07-08 08:35:53,214 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 42, Slot: 44 (Conway)
+2026-07-08 08:35:53,428 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 43, Slot: 45 (Conway)
+2026-07-08 08:35:53,529 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 44, Slot: 46 (Conway)
+2026-07-08 08:35:53,849 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 45, Slot: 47 (Conway)
+2026-07-08 08:35:53,954 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 46, Slot: 48 (Conway)
+2026-07-08 08:35:54,164 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 47, Slot: 49 (Conway)
+2026-07-08 08:35:54,381 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 48, Slot: 50 (Conway)
+2026-07-08 08:35:54,587 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 49, Slot: 51 (Conway)
+2026-07-08 08:35:54,807 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 50, Slot: 53 (Conway)
+2026-07-08 08:35:55,019 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 51, Slot: 54 (Conway)
+2026-07-08 08:35:55,238 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 52, Slot: 55 (Conway)
+2026-07-08 08:35:55,457 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 53, Slot: 56 (Conway)
+2026-07-08 08:35:55,675 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 54, Slot: 57 (Conway)
+2026-07-08 08:35:55,880 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 55, Slot: 58 (Conway)
+2026-07-08 08:35:56,093 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 56, Slot: 59 (Conway)
+2026-07-08 08:35:56,309 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 57, Slot: 60 (Conway)
+2026-07-08 08:35:56,521 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 58, Slot: 61 (Conway)
+2026-07-08 08:35:56,733 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 59, Slot: 62 (Conway)
+2026-07-08 08:35:56,954 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 60, Slot: 63 (Conway)
+2026-07-08 08:35:57,175 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 61, Slot: 64 (Conway)
+2026-07-08 08:35:57,391 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 62, Slot: 65 (Conway)
+2026-07-08 08:35:57,600 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 63, Slot: 66 (Conway)
+2026-07-08 08:35:57,701 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 64, Slot: 67 (Conway)
+2026-07-08 08:35:57,912 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 65, Slot: 68 (Conway)
+2026-07-08 08:35:58,123 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 66, Slot: 69 (Conway)
+2026-07-08 08:35:58,336 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 67, Slot: 70 (Conway)
+2026-07-08 08:35:58,553 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 68, Slot: 71 (Conway)
+2026-07-08 08:35:58,770 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 69, Slot: 72 (Conway)
+2026-07-08 08:35:58,987 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 70, Slot: 73 (Conway)
+2026-07-08 08:35:59,193 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 71, Slot: 74 (Conway)
+2026-07-08 08:35:59,412 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 72, Slot: 75 (Conway)
+2026-07-08 08:35:59,627 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 73, Slot: 76 (Conway)
+2026-07-08 08:35:59,837 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 74, Slot: 78 (Conway)
+2026-07-08 08:36:00,049 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 75, Slot: 79 (Conway)
+2026-07-08 08:36:00,266 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 76, Slot: 80 (Conway)
+2026-07-08 08:36:00,476 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 77, Slot: 81 (Conway)
+2026-07-08 08:36:00,690 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 78, Slot: 82 (Conway)
+2026-07-08 08:36:00,908 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 79, Slot: 83 (Conway)
+2026-07-08 08:36:01,125 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 80, Slot: 84 (Conway)
+2026-07-08 08:36:01,337 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 81, Slot: 85 (Conway)
+2026-07-08 08:36:01,439 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 82, Slot: 86 (Conway)
+2026-07-08 08:36:01,650 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 83, Slot: 87 (Conway)
+2026-07-08 08:36:01,959 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 84, Slot: 88 (Conway)
+2026-07-08 08:36:02,163 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionServerAgent] (nioEventLoopGroup-3-1) Received ReplyMessageIds with 1 IDs
+2026-07-08 08:36:02,163 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionServerAgent] (nioEventLoopGroup-3-1) Requesting 1 message bodies
+2026-07-08 08:36:02,163 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionServerAgent] (nioEventLoopGroup-3-1) Sending MsgRequestMessages
+2026-07-08 08:36:02,163 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 85, Slot: 89 (Conway)
+2026-07-08 08:36:02,165 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionServerAgent] (nioEventLoopGroup-3-1) Received ReplyMessages with 1 messages
+2026-07-08 08:36:02,170 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionAgent] (nioEventLoopGroup-3-1) Message enqueued: c78fdf2618802597d723805fe3f81ab7de2dc1ecce10bf6648163e106a7fda22, total in queue: 1
+2026-07-08 08:36:02,170 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionServerAgent] (nioEventLoopGroup-3-1) Message reply processed, sending next blocking request
+2026-07-08 08:36:02,170 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionServerAgent] (nioEventLoopGroup-3-1) Sending next blocking request: ack=1, req=10
+2026-07-08 08:36:02,170 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionServerAgent] (nioEventLoopGroup-3-1) Sending MsgRequestMessageIds
+2026-07-08 08:36:02,170 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionAgent] (nioEventLoopGroup-5-1) Sending 1 message ID(s) to peer
+2026-07-08 08:36:02,171 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionAgent] (nioEventLoopGroup-5-1) Sending 1 message(s) to peer
+2026-07-08 08:36:02,176 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionAgent] (nioEventLoopGroup-5-1) Peer acknowledged 1 message(s), remaining in queue: 0
+2026-07-08 08:36:02,375 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 86, Slot: 90 (Conway)
+2026-07-08 08:36:02,544 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionServerAgent] (nioEventLoopGroup-3-1) Received ReplyMessageIds with 1 IDs
+2026-07-08 08:36:02,544 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionServerAgent] (nioEventLoopGroup-3-1) Requesting 1 message bodies
+2026-07-08 08:36:02,544 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionServerAgent] (nioEventLoopGroup-3-1) Sending MsgRequestMessages
+2026-07-08 08:36:02,544 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionServerAgent] (nioEventLoopGroup-3-1) Received ReplyMessages with 1 messages
+2026-07-08 08:36:02,545 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionAgent] (nioEventLoopGroup-3-1) Message enqueued: 23d8a5ec9e67e98abcf5d8bffd395cc28b631740ad80d5016b394fcc59c7944c, total in queue: 1
+2026-07-08 08:36:02,545 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionServerAgent] (nioEventLoopGroup-3-1) Message reply processed, sending next blocking request
+2026-07-08 08:36:02,545 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionServerAgent] (nioEventLoopGroup-3-1) Sending next blocking request: ack=1, req=10
+2026-07-08 08:36:02,545 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionServerAgent] (nioEventLoopGroup-3-1) Sending MsgRequestMessageIds
+2026-07-08 08:36:02,545 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionAgent] (nioEventLoopGroup-5-1) Sending 1 message ID(s) to peer
+2026-07-08 08:36:02,546 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionAgent] (nioEventLoopGroup-5-1) Sending 1 message(s) to peer
+2026-07-08 08:36:02,546 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionAgent] (nioEventLoopGroup-5-1) Peer acknowledged 1 message(s), remaining in queue: 0
+2026-07-08 08:36:02,550 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionAgent] (app-chain-engine-demo-chain) Message enqueued: ea68824c73425d8e75ed85059b70cc58b2c00f8e73cbcec97b5b4e9d0084beac, total in queue: 1
+2026-07-08 08:36:02,550 INFO  [com.blo.car.yan.run.int.RuntimeNode] (app-chain-engine-demo-chain) Voted for app block: height=1, hash=5aa5575e46d983f090b89e44ebb5123fc089a8c72493efd8821ad34800450e8a
+2026-07-08 08:36:02,550 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionAgent] (nioEventLoopGroup-5-1) Sending 1 message ID(s) to peer
+2026-07-08 08:36:02,550 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionAgent] (nioEventLoopGroup-5-1) Sending 1 message(s) to peer
+2026-07-08 08:36:02,551 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionAgent] (nioEventLoopGroup-5-1) Peer acknowledged 1 message(s), remaining in queue: 0
+2026-07-08 08:36:02,551 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionServerAgent] (nioEventLoopGroup-3-1) Received ReplyMessageIds with 1 IDs
+2026-07-08 08:36:02,551 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionServerAgent] (nioEventLoopGroup-3-1) Requesting 1 message bodies
+2026-07-08 08:36:02,551 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionServerAgent] (nioEventLoopGroup-3-1) Sending MsgRequestMessages
+2026-07-08 08:36:02,551 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionServerAgent] (nioEventLoopGroup-3-1) Received ReplyMessages with 1 messages
+2026-07-08 08:36:02,552 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionServerAgent] (nioEventLoopGroup-3-1) Message reply processed, sending next blocking request
+2026-07-08 08:36:02,553 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionServerAgent] (nioEventLoopGroup-3-1) Sending next blocking request: ack=1, req=10
+2026-07-08 08:36:02,553 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionServerAgent] (nioEventLoopGroup-3-1) Sending MsgRequestMessageIds
+2026-07-08 08:36:02,571 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionServerAgent] (nioEventLoopGroup-3-1) Received ReplyMessageIds with 1 IDs
+2026-07-08 08:36:02,571 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionServerAgent] (nioEventLoopGroup-3-1) Requesting 1 message bodies
+2026-07-08 08:36:02,571 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionServerAgent] (nioEventLoopGroup-3-1) Sending MsgRequestMessages
+2026-07-08 08:36:02,571 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionServerAgent] (nioEventLoopGroup-3-1) Received ReplyMessages with 1 messages
+2026-07-08 08:36:02,571 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionAgent] (nioEventLoopGroup-3-1) Message enqueued: 67b6b44a74c903f17621c08e91fbe4680f5064b3f26212228f5b0f7f4d739cf3, total in queue: 1
+2026-07-08 08:36:02,571 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionServerAgent] (nioEventLoopGroup-3-1) Message reply processed, sending next blocking request
+2026-07-08 08:36:02,571 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionServerAgent] (nioEventLoopGroup-3-1) Sending next blocking request: ack=1, req=10
+2026-07-08 08:36:02,571 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionServerAgent] (nioEventLoopGroup-3-1) Sending MsgRequestMessageIds
+2026-07-08 08:36:02,571 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionAgent] (nioEventLoopGroup-5-1) Sending 1 message ID(s) to peer
+2026-07-08 08:36:02,572 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionAgent] (nioEventLoopGroup-5-1) Sending 1 message(s) to peer
+2026-07-08 08:36:02,572 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionAgent] (nioEventLoopGroup-5-1) Peer acknowledged 1 message(s), remaining in queue: 0
+2026-07-08 08:36:02,579 INFO  [com.blo.car.yan.run.int.RuntimeNode] (app-chain-engine-demo-chain) App block committed: height=1, hash=5aa5575e46d983f090b89e44ebb5123fc089a8c72493efd8821ad34800450e8a, msgs=1, stateRoot=be3bc4671ca96a442251495a7f74102f2dfed087a24a86c4ac8fea0003542340
+2026-07-08 08:36:02,594 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 87, Slot: 91 (Conway)
+2026-07-08 08:36:02,807 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 88, Slot: 92 (Conway)
+2026-07-08 08:36:03,010 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 89, Slot: 93 (Conway)
+2026-07-08 08:36:03,222 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 90, Slot: 94 (Conway)
+2026-07-08 08:36:03,437 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 91, Slot: 95 (Conway)
+2026-07-08 08:36:03,652 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 92, Slot: 96 (Conway)
+2026-07-08 08:36:03,864 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 93, Slot: 97 (Conway)
+2026-07-08 08:36:03,967 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 94, Slot: 98 (Conway)
+2026-07-08 08:36:04,177 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 95, Slot: 99 (Conway)
+2026-07-08 08:36:04,391 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 96, Slot: 101 (Conway)
+2026-07-08 08:36:04,713 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 97, Slot: 102 (Conway)
+2026-07-08 08:36:04,813 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 98, Slot: 103 (Conway)
+2026-07-08 08:36:05,130 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 99, Slot: 104 (Conway)
+2026-07-08 08:36:05,197 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionAgent] (executor-thread-1) Message enqueued: ece18e0e669fe6fb16c75b096c1315bb4f142649826d87da036ece22e7a9aac4, total in queue: 1
+2026-07-08 08:36:05,197 INFO  [com.blo.car.yan.run.int.RuntimeNode] (executor-thread-1) App message submitted: id=ece18e0e669fe6fb16c75b096c1315bb4f142649826d87da036ece22e7a9aac4, chain=demo-chain, topic=orders, seq=2
+2026-07-08 08:36:05,197 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionAgent] (nioEventLoopGroup-5-1) Sending 1 message ID(s) to peer
+2026-07-08 08:36:05,197 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionAgent] (nioEventLoopGroup-5-1) Sending 1 message(s) to peer
+2026-07-08 08:36:05,198 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionAgent] (nioEventLoopGroup-5-1) Peer acknowledged 1 message(s), remaining in queue: 0
+2026-07-08 08:36:05,198 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionServerAgent] (nioEventLoopGroup-3-1) Received ReplyMessageIds with 1 IDs
+2026-07-08 08:36:05,198 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionServerAgent] (nioEventLoopGroup-3-1) Requesting 1 message bodies
+2026-07-08 08:36:05,198 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionServerAgent] (nioEventLoopGroup-3-1) Sending MsgRequestMessages
+2026-07-08 08:36:05,199 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionServerAgent] (nioEventLoopGroup-3-1) Received ReplyMessages with 1 messages
+2026-07-08 08:36:05,199 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionServerAgent] (nioEventLoopGroup-3-1) Message reply processed, sending next blocking request
+2026-07-08 08:36:05,199 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionServerAgent] (nioEventLoopGroup-3-1) Sending next blocking request: ack=1, req=10
+2026-07-08 08:36:05,199 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionServerAgent] (nioEventLoopGroup-3-1) Sending MsgRequestMessageIds
+2026-07-08 08:36:05,230 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 100, Slot: 105 (Conway)
+2026-07-08 08:36:05,551 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 101, Slot: 106 (Conway)
+2026-07-08 08:36:05,570 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionServerAgent] (nioEventLoopGroup-3-1) Received ReplyMessageIds with 1 IDs
+2026-07-08 08:36:05,570 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionServerAgent] (nioEventLoopGroup-3-1) Requesting 1 message bodies
+2026-07-08 08:36:05,570 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionServerAgent] (nioEventLoopGroup-3-1) Sending MsgRequestMessages
+2026-07-08 08:36:05,570 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionServerAgent] (nioEventLoopGroup-3-1) Received ReplyMessages with 1 messages
+2026-07-08 08:36:05,571 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionAgent] (nioEventLoopGroup-3-1) Message enqueued: c8c3d07433e7f0f99f6303182a85234397c3718ad82b97d725e6f44ff85476a7, total in queue: 1
+2026-07-08 08:36:05,571 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionServerAgent] (nioEventLoopGroup-3-1) Message reply processed, sending next blocking request
+2026-07-08 08:36:05,571 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionServerAgent] (nioEventLoopGroup-3-1) Sending next blocking request: ack=1, req=10
+2026-07-08 08:36:05,571 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionServerAgent] (nioEventLoopGroup-3-1) Sending MsgRequestMessageIds
+2026-07-08 08:36:05,571 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionAgent] (nioEventLoopGroup-5-1) Sending 1 message ID(s) to peer
+2026-07-08 08:36:05,571 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionAgent] (nioEventLoopGroup-5-1) Sending 1 message(s) to peer
+2026-07-08 08:36:05,572 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionAgent] (nioEventLoopGroup-5-1) Peer acknowledged 1 message(s), remaining in queue: 0
+2026-07-08 08:36:05,572 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionAgent] (app-chain-engine-demo-chain) Message enqueued: e3e095e6a6971e459c03a5e20e89fe7f8ee84a89a6c79f6a02fd36ee963e5b7f, total in queue: 1
+2026-07-08 08:36:05,572 INFO  [com.blo.car.yan.run.int.RuntimeNode] (app-chain-engine-demo-chain) Voted for app block: height=2, hash=4a0963af968c8cd5664212e30cfae99bac36f72b424a963df862e6aa494c6ed5
+2026-07-08 08:36:05,572 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionAgent] (nioEventLoopGroup-5-1) Sending 1 message ID(s) to peer
+2026-07-08 08:36:05,572 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionAgent] (nioEventLoopGroup-5-1) Sending 1 message(s) to peer
+2026-07-08 08:36:05,573 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionAgent] (nioEventLoopGroup-5-1) Peer acknowledged 1 message(s), remaining in queue: 0
+2026-07-08 08:36:05,573 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionServerAgent] (nioEventLoopGroup-3-1) Received ReplyMessageIds with 1 IDs
+2026-07-08 08:36:05,573 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionServerAgent] (nioEventLoopGroup-3-1) Requesting 1 message bodies
+2026-07-08 08:36:05,573 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionServerAgent] (nioEventLoopGroup-3-1) Sending MsgRequestMessages
+2026-07-08 08:36:05,573 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionServerAgent] (nioEventLoopGroup-3-1) Received ReplyMessages with 1 messages
+2026-07-08 08:36:05,574 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionServerAgent] (nioEventLoopGroup-3-1) Message reply processed, sending next blocking request
+2026-07-08 08:36:05,574 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionServerAgent] (nioEventLoopGroup-3-1) Sending next blocking request: ack=1, req=10
+2026-07-08 08:36:05,574 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionServerAgent] (nioEventLoopGroup-3-1) Sending MsgRequestMessageIds
+2026-07-08 08:36:05,579 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionServerAgent] (nioEventLoopGroup-3-1) Received ReplyMessageIds with 1 IDs
+2026-07-08 08:36:05,579 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionServerAgent] (nioEventLoopGroup-3-1) Requesting 1 message bodies
+2026-07-08 08:36:05,579 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionServerAgent] (nioEventLoopGroup-3-1) Sending MsgRequestMessages
+2026-07-08 08:36:05,580 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionServerAgent] (nioEventLoopGroup-3-1) Received ReplyMessages with 1 messages
+2026-07-08 08:36:05,580 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionAgent] (nioEventLoopGroup-3-1) Message enqueued: 9840fcd15cee80dc050a188adbe11a9beccbd53f093d89024d762d31ff4b10f5, total in queue: 1
+2026-07-08 08:36:05,580 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionServerAgent] (nioEventLoopGroup-3-1) Message reply processed, sending next blocking request
+2026-07-08 08:36:05,580 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionServerAgent] (nioEventLoopGroup-3-1) Sending next blocking request: ack=1, req=10
+2026-07-08 08:36:05,580 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionServerAgent] (nioEventLoopGroup-3-1) Sending MsgRequestMessageIds
+2026-07-08 08:36:05,580 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionAgent] (nioEventLoopGroup-5-1) Sending 1 message ID(s) to peer
+2026-07-08 08:36:05,580 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionAgent] (nioEventLoopGroup-5-1) Sending 1 message(s) to peer
+2026-07-08 08:36:05,581 INFO  [com.blo.car.yac.cor.pro.app.n2n.AppMsgSubmissionAgent] (nioEventLoopGroup-5-1) Peer acknowledged 1 message(s), remaining in queue: 0
+2026-07-08 08:36:05,585 INFO  [com.blo.car.yan.run.int.RuntimeNode] (app-chain-engine-demo-chain) App block committed: height=2, hash=4a0963af968c8cd5664212e30cfae99bac36f72b424a963df862e6aa494c6ed5, msgs=1, stateRoot=1ddde3084ca1622bc79dba331007110d37b355c47deef00971695dc183dec1c0
+2026-07-08 08:36:05,762 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 102, Slot: 107 (Conway)
+2026-07-08 08:36:05,973 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 103, Slot: 108 (Conway)
+2026-07-08 08:36:06,074 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 104, Slot: 109 (Conway)
+2026-07-08 08:36:06,285 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 105, Slot: 110 (Conway)
+2026-07-08 08:36:06,497 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 106, Slot: 111 (Conway)
+2026-07-08 08:36:06,814 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 107, Slot: 112 (Conway)
+2026-07-08 08:36:07,018 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 108, Slot: 113 (Conway)
+2026-07-08 08:36:07,233 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 109, Slot: 114 (Conway)
+2026-07-08 08:36:07,446 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 110, Slot: 115 (Conway)
+2026-07-08 08:36:07,548 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 111, Slot: 116 (Conway)
+2026-07-08 08:36:07,758 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 112, Slot: 117 (Conway)
+2026-07-08 08:36:08,075 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 113, Slot: 118 (Conway)
+2026-07-08 08:36:08,179 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 114, Slot: 119 (Conway)
+2026-07-08 08:36:08,391 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 115, Slot: 121 (Conway)
+2026-07-08 08:36:08,600 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 116, Slot: 122 (Conway)
+2026-07-08 08:36:08,820 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 117, Slot: 123 (Conway)
+2026-07-08 08:36:09,035 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 118, Slot: 124 (Conway)
+2026-07-08 08:36:09,249 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 119, Slot: 125 (Conway)
+2026-07-08 08:36:09,466 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 120, Slot: 126 (Conway)
+2026-07-08 08:36:09,667 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 121, Slot: 127 (Conway)
+2026-07-08 08:36:09,884 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 122, Slot: 128 (Conway)
+2026-07-08 08:36:10,103 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 123, Slot: 129 (Conway)
+2026-07-08 08:36:10,319 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 124, Slot: 130 (Conway)
+2026-07-08 08:36:10,532 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 125, Slot: 131 (Conway)
+2026-07-08 08:36:10,749 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 126, Slot: 132 (Conway)
+2026-07-08 08:36:10,966 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 127, Slot: 133 (Conway)
+2026-07-08 08:36:11,178 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 128, Slot: 134 (Conway)
+2026-07-08 08:36:11,398 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 129, Slot: 135 (Conway)
+2026-07-08 08:36:11,614 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 130, Slot: 136 (Conway)
+2026-07-08 08:36:11,825 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 131, Slot: 137 (Conway)
+2026-07-08 08:36:12,036 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 132, Slot: 138 (Conway)
+2026-07-08 08:36:12,242 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 133, Slot: 139 (Conway)
+2026-07-08 08:36:12,456 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 134, Slot: 140 (Conway)
+2026-07-08 08:36:12,560 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 135, Slot: 141 (Conway)
+2026-07-08 08:36:12,774 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 136, Slot: 142 (Conway)
+2026-07-08 08:36:12,979 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 137, Slot: 143 (Conway)
+2026-07-08 08:36:13,196 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 138, Slot: 145 (Conway)
+2026-07-08 08:36:13,413 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 139, Slot: 146 (Conway)
+2026-07-08 08:36:13,616 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 140, Slot: 147 (Conway)
+2026-07-08 08:36:13,826 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 141, Slot: 148 (Conway)
+2026-07-08 08:36:14,043 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 142, Slot: 149 (Conway)
+2026-07-08 08:36:14,257 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 143, Slot: 150 (Conway)
+2026-07-08 08:36:14,477 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 144, Slot: 151 (Conway)
+2026-07-08 08:36:14,696 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 145, Slot: 152 (Conway)
+2026-07-08 08:36:14,913 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 146, Slot: 153 (Conway)
+2026-07-08 08:36:15,133 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 147, Slot: 154 (Conway)
+2026-07-08 08:36:15,351 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 148, Slot: 155 (Conway)
+2026-07-08 08:36:15,564 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 149, Slot: 156 (Conway)
+2026-07-08 08:36:15,772 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 150, Slot: 157 (Conway)
+2026-07-08 08:36:15,980 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 151, Slot: 158 (Conway)
+2026-07-08 08:36:16,193 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 152, Slot: 159 (Conway)
+2026-07-08 08:36:16,413 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 153, Slot: 160 (Conway)
+2026-07-08 08:36:16,623 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 154, Slot: 161 (Conway)
+2026-07-08 08:36:16,836 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 155, Slot: 162 (Conway)
+2026-07-08 08:36:16,937 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 156, Slot: 163 (Conway)
+2026-07-08 08:36:17,150 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 157, Slot: 164 (Conway)
+2026-07-08 08:36:17,364 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 158, Slot: 165 (Conway)
+2026-07-08 08:36:17,579 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 159, Slot: 166 (Conway)
+2026-07-08 08:36:17,793 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 160, Slot: 168 (Conway)
+2026-07-08 08:36:18,010 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 161, Slot: 169 (Conway)
+2026-07-08 08:36:18,230 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 162, Slot: 170 (Conway)
+2026-07-08 08:36:18,444 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 163, Slot: 171 (Conway)
+2026-07-08 08:36:18,661 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 164, Slot: 172 (Conway)
+2026-07-08 08:36:18,875 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 165, Slot: 173 (Conway)
+2026-07-08 08:36:19,087 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 166, Slot: 174 (Conway)
+2026-07-08 08:36:19,304 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 167, Slot: 175 (Conway)
+2026-07-08 08:36:19,523 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 168, Slot: 176 (Conway)
+2026-07-08 08:36:19,736 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 169, Slot: 177 (Conway)
+2026-07-08 08:36:19,951 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 170, Slot: 178 (Conway)
+2026-07-08 08:36:20,171 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 171, Slot: 179 (Conway)
+2026-07-08 08:36:20,378 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 172, Slot: 180 (Conway)
+2026-07-08 08:36:20,587 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 173, Slot: 181 (Conway)
+2026-07-08 08:36:20,794 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 174, Slot: 182 (Conway)
+2026-07-08 08:36:21,007 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 175, Slot: 183 (Conway)
+2026-07-08 08:36:21,224 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 176, Slot: 184 (Conway)
+2026-07-08 08:36:21,437 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 177, Slot: 185 (Conway)
+2026-07-08 08:36:21,539 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 178, Slot: 186 (Conway)
+2026-07-08 08:36:21,849 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 179, Slot: 187 (Conway)
+2026-07-08 08:36:22,065 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 180, Slot: 188 (Conway)
+2026-07-08 08:36:22,167 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 181, Slot: 189 (Conway)
+2026-07-08 08:36:22,376 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 182, Slot: 190 (Conway)
+2026-07-08 08:36:22,580 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 183, Slot: 192 (Conway)
+2026-07-08 08:36:22,790 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 184, Slot: 193 (Conway)
+2026-07-08 08:36:23,001 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 185, Slot: 194 (Conway)
+2026-07-08 08:36:23,213 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 186, Slot: 195 (Conway)
+2026-07-08 08:36:23,417 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 187, Slot: 196 (Conway)
+2026-07-08 08:36:23,627 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 188, Slot: 197 (Conway)
+2026-07-08 08:36:23,842 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 189, Slot: 198 (Conway)
+2026-07-08 08:36:24,057 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 190, Slot: 199 (Conway)
+2026-07-08 08:36:24,260 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 191, Slot: 200 (Conway)
+2026-07-08 08:36:24,469 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 192, Slot: 201 (Conway)
+2026-07-08 08:36:24,685 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 193, Slot: 202 (Conway)
+2026-07-08 08:36:24,895 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 194, Slot: 203 (Conway)
+2026-07-08 08:36:25,115 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 195, Slot: 204 (Conway)
+2026-07-08 08:36:25,329 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 196, Slot: 205 (Conway)
+2026-07-08 08:36:25,548 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 197, Slot: 206 (Conway)
+2026-07-08 08:36:25,754 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 198, Slot: 207 (Conway)
+2026-07-08 08:36:25,969 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 199, Slot: 208 (Conway)
+2026-07-08 08:36:26,183 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 200, Slot: 209 (Conway)
+2026-07-08 08:36:26,395 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 201, Slot: 210 (Conway)
+2026-07-08 08:36:26,615 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 202, Slot: 211 (Conway)
+2026-07-08 08:36:26,829 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 203, Slot: 212 (Conway)
+2026-07-08 08:36:27,039 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 204, Slot: 213 (Conway)
+2026-07-08 08:36:27,140 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 205, Slot: 214 (Conway)
+2026-07-08 08:36:27,456 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 206, Slot: 215 (Conway)
+2026-07-08 08:36:27,666 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 207, Slot: 216 (Conway)
+2026-07-08 08:36:27,877 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 208, Slot: 217 (Conway)
+2026-07-08 08:36:27,980 INFO  [com.blo.car.yan.run.BodyFetchManager] (YanoLedgerApply) 📦 Block: 209, Slot: 218 (Conway)

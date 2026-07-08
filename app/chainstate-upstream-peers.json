@@ -1,0 +1,373 @@
+[ {
+  "id" : "132.226.203.38:6001",
+  "host" : "132.226.203.38",
+  "port" : 6001,
+  "source" : "bootstrap",
+  "trusted" : false
+}, {
+  "id" : "141.145.210.204:3003",
+  "host" : "141.145.210.204",
+  "port" : 3003,
+  "source" : "bootstrap",
+  "trusted" : false
+}, {
+  "id" : "144.24.168.10:3003",
+  "host" : "144.24.168.10",
+  "port" : 3003,
+  "source" : "bootstrap",
+  "trusted" : false
+}, {
+  "id" : "146.190.20.214:6000",
+  "host" : "146.190.20.214",
+  "port" : 6000,
+  "source" : "bootstrap",
+  "trusted" : false
+}, {
+  "id" : "152.53.81.245:5501",
+  "host" : "152.53.81.245",
+  "port" : 5501,
+  "source" : "bootstrap",
+  "trusted" : false
+}, {
+  "id" : "157.173.126.241:3001",
+  "host" : "157.173.126.241",
+  "port" : 3001,
+  "source" : "bootstrap",
+  "trusted" : false
+}, {
+  "id" : "161.97.136.104:3000",
+  "host" : "161.97.136.104",
+  "port" : 3000,
+  "source" : "bootstrap",
+  "trusted" : false
+}, {
+  "id" : "168.138.37.117:6003",
+  "host" : "168.138.37.117",
+  "port" : 6003,
+  "source" : "bootstrap",
+  "trusted" : false
+}, {
+  "id" : "170.187.201.55:6000",
+  "host" : "170.187.201.55",
+  "port" : 6000,
+  "source" : "bootstrap",
+  "trusted" : false
+}, {
+  "id" : "18.222.164.102:3001",
+  "host" : "18.222.164.102",
+  "port" : 3001,
+  "source" : "bootstrap",
+  "trusted" : false
+}, {
+  "id" : "204.216.213.96:6000",
+  "host" : "204.216.213.96",
+  "port" : 6000,
+  "source" : "bootstrap",
+  "trusted" : false
+}, {
+  "id" : "62.169.19.81:6000",
+  "host" : "62.169.19.81",
+  "port" : 6000,
+  "source" : "bootstrap",
+  "trusted" : false
+}, {
+  "id" : "66.42.94.80:6000",
+  "host" : "66.42.94.80",
+  "port" : 6000,
+  "source" : "bootstrap",
+  "trusted" : false
+}, {
+  "id" : "73.222.122.247:13001",
+  "host" : "73.222.122.247",
+  "port" : 13001,
+  "source" : "bootstrap",
+  "trusted" : false
+}, {
+  "id" : "73.54.73.48:7000",
+  "host" : "73.54.73.48",
+  "port" : 7000,
+  "source" : "bootstrap",
+  "trusted" : false
+}, {
+  "id" : "8.tcp.eu.ngrok.io:28965",
+  "host" : "8.tcp.eu.ngrok.io",
+  "port" : 28965,
+  "source" : "bootstrap",
+  "trusted" : false
+}, {
+  "id" : "81.174.170.134:6001",
+  "host" : "81.174.170.134",
+  "port" : 6001,
+  "source" : "bootstrap",
+  "trusted" : false
+}, {
+  "id" : "adaboy-preprod-2b.gleeze.com:3002",
+  "host" : "adaboy-preprod-2b.gleeze.com",
+  "port" : 3002,
+  "source" : "bootstrap",
+  "trusted" : false
+}, {
+  "id" : "adaboy-preprod-3b.gleeze.com:3000",
+  "host" : "adaboy-preprod-3b.gleeze.com",
+  "port" : 3000,
+  "source" : "bootstrap",
+  "trusted" : false
+}, {
+  "id" : "adact.preprod.relay1.adacapital.io:3001",
+  "host" : "adact.preprod.relay1.adacapital.io",
+  "port" : 3001,
+  "source" : "bootstrap",
+  "trusted" : false
+}, {
+  "id" : "alpha.stake-cardano-pool.com:7001",
+  "host" : "alpha.stake-cardano-pool.com",
+  "port" : 7001,
+  "source" : "bootstrap",
+  "trusted" : false
+}, {
+  "id" : "c-pp-rn01.liv.io:30000",
+  "host" : "c-pp-rn01.liv.io",
+  "port" : 30000,
+  "source" : "bootstrap",
+  "trusted" : false
+}, {
+  "id" : "c-pp-rn02.liv.io:30000",
+  "host" : "c-pp-rn02.liv.io",
+  "port" : 30000,
+  "source" : "bootstrap",
+  "trusted" : false
+}, {
+  "id" : "cf1r1.preprod.pool.cardanofoundation.org:30000",
+  "host" : "cf1r1.preprod.pool.cardanofoundation.org",
+  "port" : 30000,
+  "source" : "bootstrap",
+  "trusted" : false
+}, {
+  "id" : "cf1r2.preprod.pool.cardanofoundation.org:30000",
+  "host" : "cf1r2.preprod.pool.cardanofoundation.org",
+  "port" : 30000,
+  "source" : "bootstrap",
+  "trusted" : false
+}, {
+  "id" : "d.fluxpool.cc:3010",
+  "host" : "d.fluxpool.cc",
+  "port" : 3010,
+  "source" : "bootstrap",
+  "trusted" : false
+}, {
+  "id" : "dyn.derksen-it.nl:4001",
+  "host" : "dyn.derksen-it.nl",
+  "port" : 4001,
+  "source" : "bootstrap",
+  "trusted" : false
+}, {
+  "id" : "gateway2.adavault.com:4062",
+  "host" : "gateway2.adavault.com",
+  "port" : 4062,
+  "source" : "bootstrap",
+  "trusted" : false
+}, {
+  "id" : "logicalmechanism.asuscomm.com:6004",
+  "host" : "logicalmechanism.asuscomm.com",
+  "port" : 6004,
+  "source" : "bootstrap",
+  "trusted" : false
+}, {
+  "id" : "mbb3.cardano.gratis:6603",
+  "host" : "mbb3.cardano.gratis",
+  "port" : 6603,
+  "source" : "bootstrap",
+  "trusted" : false
+}, {
+  "id" : "node1.cardano.gratis:6601",
+  "host" : "node1.cardano.gratis",
+  "port" : 6601,
+  "source" : "bootstrap",
+  "trusted" : false
+}, {
+  "id" : "node1.testnet.epiknode.com:6000",
+  "host" : "node1.testnet.epiknode.com",
+  "port" : 6000,
+  "source" : "bootstrap",
+  "trusted" : false
+}, {
+  "id" : "node2.cardano.gratis:6602",
+  "host" : "node2.cardano.gratis",
+  "port" : 6602,
+  "source" : "bootstrap",
+  "trusted" : false
+}, {
+  "id" : "pp-relay1.apexpool.info:4001",
+  "host" : "pp-relay1.apexpool.info",
+  "port" : 4001,
+  "source" : "bootstrap",
+  "trusted" : false
+}, {
+  "id" : "pp-relays.digitalfortress.online:6001",
+  "host" : "pp-relays.digitalfortress.online",
+  "port" : 6001,
+  "source" : "bootstrap",
+  "trusted" : false
+}, {
+  "id" : "pre-prod1.xstakepool.com:3001",
+  "host" : "pre-prod1.xstakepool.com",
+  "port" : 3001,
+  "source" : "bootstrap",
+  "trusted" : false
+}, {
+  "id" : "preprod-node.pool.milkomeda.com:3002",
+  "host" : "preprod-node.pool.milkomeda.com",
+  "port" : 3002,
+  "source" : "bootstrap",
+  "trusted" : false
+}, {
+  "id" : "preprod-node.world.dev.cardano.org:30000",
+  "host" : "preprod-node.world.dev.cardano.org",
+  "port" : 30000,
+  "source" : "local-root",
+  "trusted" : true
+}, {
+  "id" : "preprod-node1.world.dev.cardano.org:30000",
+  "host" : "preprod-node1.world.dev.cardano.org",
+  "port" : 30000,
+  "source" : "local-root",
+  "trusted" : true
+}, {
+  "id" : "preprod-relay1.angelstakepool.net:3001",
+  "host" : "preprod-relay1.angelstakepool.net",
+  "port" : 3001,
+  "source" : "bootstrap",
+  "trusted" : false
+}, {
+  "id" : "preprod-relays.onyxstakepool.com:3001",
+  "host" : "preprod-relays.onyxstakepool.com",
+  "port" : 3001,
+  "source" : "bootstrap",
+  "trusted" : false
+}, {
+  "id" : "preprod.altzpool.com:7001",
+  "host" : "preprod.altzpool.com",
+  "port" : 7001,
+  "source" : "bootstrap",
+  "trusted" : false
+}, {
+  "id" : "preprod.canadastakes.ca:4002",
+  "host" : "preprod.canadastakes.ca",
+  "port" : 4002,
+  "source" : "bootstrap",
+  "trusted" : false
+}, {
+  "id" : "preprod.happystaking.io:3002",
+  "host" : "preprod.happystaking.io",
+  "port" : 3002,
+  "source" : "bootstrap",
+  "trusted" : false
+}, {
+  "id" : "preprod1-node.play.dev.cardano.org:3001",
+  "host" : "preprod1-node.play.dev.cardano.org",
+  "port" : 3001,
+  "source" : "bootstrap",
+  "trusted" : false
+}, {
+  "id" : "preprod1.volcyada.com:6003",
+  "host" : "preprod1.volcyada.com",
+  "port" : 6003,
+  "source" : "bootstrap",
+  "trusted" : false
+}, {
+  "id" : "preprod2-node.play.dev.cardano.org:3001",
+  "host" : "preprod2-node.play.dev.cardano.org",
+  "port" : 3001,
+  "source" : "bootstrap",
+  "trusted" : false
+}, {
+  "id" : "preprod2.volcyada.com:6007",
+  "host" : "preprod2.volcyada.com",
+  "port" : 6007,
+  "source" : "bootstrap",
+  "trusted" : false
+}, {
+  "id" : "preprod3-node.play.dev.cardano.org:3001",
+  "host" : "preprod3-node.play.dev.cardano.org",
+  "port" : 3001,
+  "source" : "bootstrap",
+  "trusted" : false
+}, {
+  "id" : "preprod3.volcyada.com:4001",
+  "host" : "preprod3.volcyada.com",
+  "port" : 4001,
+  "source" : "bootstrap",
+  "trusted" : false
+}, {
+  "id" : "r1.pp.mrbee.io:3001",
+  "host" : "r1.pp.mrbee.io",
+  "port" : 3001,
+  "source" : "bootstrap",
+  "trusted" : false
+}, {
+  "id" : "relay-s.wotapool.net:5501",
+  "host" : "relay-s.wotapool.net",
+  "port" : 5501,
+  "source" : "bootstrap",
+  "trusted" : false
+}, {
+  "id" : "relay.preprod.cardanostakehouse.com:9000",
+  "host" : "relay.preprod.cardanostakehouse.com",
+  "port" : 9000,
+  "source" : "bootstrap",
+  "trusted" : false
+}, {
+  "id" : "relay.preprod.staging.wingriders.com:3001",
+  "host" : "relay.preprod.staging.wingriders.com",
+  "port" : 3001,
+  "source" : "bootstrap",
+  "trusted" : false
+}, {
+  "id" : "relay.preprod.wingriders.com:3002",
+  "host" : "relay.preprod.wingriders.com",
+  "port" : 3002,
+  "source" : "bootstrap",
+  "trusted" : false
+}, {
+  "id" : "relay0-preprod.adanet.io:7001",
+  "host" : "relay0-preprod.adanet.io",
+  "port" : 7001,
+  "source" : "bootstrap",
+  "trusted" : false
+}, {
+  "id" : "relay1.hunadapool.com:3002",
+  "host" : "relay1.hunadapool.com",
+  "port" : 3002,
+  "source" : "bootstrap",
+  "trusted" : false
+}, {
+  "id" : "relay1.preprod.pool.cardano.services:30000",
+  "host" : "relay1.preprod.pool.cardano.services",
+  "port" : 30000,
+  "source" : "bootstrap",
+  "trusted" : false
+}, {
+  "id" : "relay1.preprod.stakepool.quebec:5000",
+  "host" : "relay1.preprod.stakepool.quebec",
+  "port" : 5000,
+  "source" : "bootstrap",
+  "trusted" : false
+}, {
+  "id" : "relay2.preprod.pool.cardano.services:30000",
+  "host" : "relay2.preprod.pool.cardano.services",
+  "port" : 30000,
+  "source" : "bootstrap",
+  "trusted" : false
+}, {
+  "id" : "test.smaug.pool.pm:3002",
+  "host" : "test.smaug.pool.pm",
+  "port" : 3002,
+  "source" : "bootstrap",
+  "trusted" : false
+}, {
+  "id" : "tn-preprod.psilobyte.io:4101",
+  "host" : "tn-preprod.psilobyte.io",
+  "port" : 4101,
+  "source" : "bootstrap",
+  "trusted" : false
+} ]

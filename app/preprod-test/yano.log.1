@@ -1,0 +1,130 @@
+2026-04-18 10:36:09,912 WARN  [io.qua.config] (main) Unrecognized configuration file /Users/satya/work/bloxbean/yano/node-app/preprod-test/config/application.yml.working found; Please, check if your are providing the proper extension to load the file
+2026-04-18 10:36:09,953 INFO  [com.blo.car.yan.app.YaciNodeProducer] (main) Yaci Node Application starting up...
+2026-04-18 10:36:09,953 INFO  [com.blo.car.yan.app.YaciNodeProducer] (main) Auto-sync-start enabled: true
+2026-04-18 10:36:09,953 INFO  [com.blo.car.yan.app.YaciNodeProducer] (main) Auto-starting Yaci Node synchronization...
+2026-04-18 10:36:09,953 INFO  [com.blo.car.yan.app.YaciNodeProducer] (main) Creating Yaci Node with network: preprod
+2026-04-18 10:36:10,235 WARN  [com.blo.car.yan.run.cha.DirectRocksDBChainState] (main) RocksDB SliceTransform fixed prefix not available; proceeding without prefix extractor
+2026-04-18 10:36:10,235 INFO  [com.blo.car.yan.run.cha.DirectRocksDBChainState] (main) RocksDB CF tuning: utxo_unspent/utxo_spent => point-lookup (ZSTD, bloom≈10bpk, whole-key, pin L0, partitioned filters)
+2026-04-18 10:36:10,235 INFO  [com.blo.car.yan.run.cha.DirectRocksDBChainState] (main) RocksDB CF tuning: utxo_addr => prefix-scan (ZSTD, prefixExtractor=28, memtablePrefixBloom≈0.10, bloom≈10bpk, pin L0, partitioned filters)
+2026-04-18 10:36:10,235 INFO  [com.blo.car.yan.run.cha.DirectRocksDBChainState] (main) RocksDB CF tuning: utxo_block_delta => sequential (ZSTD)
+2026-04-18 10:36:10,406 INFO  [com.blo.car.yan.run.cha.DirectRocksDBChainState] (main) RocksDB initialized at: ./chainstate (tuningEnabled=true, pipelinedWrite=true, atomicFlush=false, parallelism=16)
+2026-04-18 10:36:10,407 INFO  [com.blo.car.yan.run.YaciNode] (main) Yaci Node initialized
+2026-04-18 10:36:10,407 INFO  [com.blo.car.yan.run.YaciNode] (main) Remote: localhost:31001 (magic: 1)
+2026-04-18 10:36:10,407 INFO  [com.blo.car.yan.run.YaciNode] (main) Server port: 13329
+2026-04-18 10:36:10,407 INFO  [com.blo.car.yan.run.YaciNode] (main) Storage: RocksDB
+2026-04-18 10:36:10,408 INFO  [com.blo.car.yan.run.YaciNode] (main) Pipeline config: PipelineConfig(headerPipelineDepth=200, bodyBatchSize=200, maxParallelBodies=50, batchTimeout=PT2S, enableSelectiveBodyFetch=false, headerBufferSize=1000, enableParallelProcessing=true, processingThreads=4)
+2026-04-18 10:36:10,413 INFO  [com.blo.car.yan.run.YaciNode] (main) DefaultUtxoStore initialized (enabled=true)
+2026-04-18 10:36:10,413 INFO  [com.blo.car.yan.run.YaciNode] (main) UTXO reconciliation complete at startup
+2026-04-18 10:36:10,414 INFO  [com.blo.car.yan.run.YaciNode] (main) UTXO store initialized (default); UtxoEventHandler registered
+2026-04-18 10:36:10,414 INFO  [com.blo.car.yan.run.YaciNode] (main) UTXO prune service started (interval=5s)
+2026-04-18 10:36:10,421 INFO  [com.blo.car.yan.run.gen.ShelleyGenesisParser] (main) Parsed shelley genesis: networkMagic=1, initialFunds=0 entries, epochLength=432000, systemStart=2022-06-01T00:00:00Z, activeSlotsCoeff=0.05, protocolVersion=2.0, rho=0.003, tau=0.2, a0=0.3, nOpt=150
+2026-04-18 10:36:10,422 INFO  [com.blo.car.yan.run.gen.ByronGenesisParser] (main) Parsed byron genesis: nonAvvmBalances=1 entries, avvmBalances=0 entries, startTime=1654041600, protocolMagic=1, slotDuration=20s, k=2160
+2026-04-18 10:36:10,425 INFO  [com.blo.car.yan.run.gen.ConwayGenesisParser] (main) Parsed conway genesis: govActionLifetime=6, govActionDeposit=100000000000, dRepDeposit=500000000, dRepActivity=20, committeeMinSize=7, committeeMaxTermLength=146, drepVotingThresholds=present, poolVotingThresholds=present
+2026-04-18 10:36:10,425 INFO  [com.blo.car.yan.run.con.NetworkGenesisConfig] (main) NetworkGenesisConfig loaded: magic=1, epochLength=432000, securityParam=2160, byronK=2160, conway=available
+2026-04-18 10:36:10,426 INFO  [com.blo.car.yan.run.con.DefaultEpochParamProvider] (main) DefaultEpochParamProvider built from genesis: epochLength=432000, byronSlotsPerEpoch=21600, firstNonByronSlot=86400, securityParam=2160, nOpt=150, conway=available
+2026-04-18 10:36:10,427 INFO  [com.blo.car.yan.run.acc.AccountStateStoreDiscovery] (main) AccountStateStore provider: rocksdb (priority=0)
+2026-04-18 10:36:10,428 INFO  [com.blo.car.yan.run.YaciNode] (main) Account state reconciliation complete at startup
+2026-04-18 10:36:10,428 INFO  [com.blo.car.yan.run.YaciNode] (main) Epoch stake snapshot amounts enabled (balance-mode=full-scan)
+2026-04-18 10:36:10,429 INFO  [com.blo.car.yan.run.YaciNode] (main) AdaPot tracker enabled (maxLovelaceSupply=45000000000000000)
+2026-04-18 10:36:10,429 INFO  [com.blo.car.yan.run.YaciNode] (main) Epoch param tracker enabled (with RocksDB persistence)
+2026-04-18 10:36:10,430 INFO  [com.blo.car.yan.run.YaciNode] (main) Epoch reward calculator enabled
+2026-04-18 10:36:10,430 INFO  [com.blo.car.yan.run.con.NetworkGenesisValuesFactory] (main) NetworkGenesisValues built: magic=1, epochLength=432000, shelleyStartEpoch=4, initialReserves=15000000000000000, initialTreasury=0, initialUtxo=30000000000000000, allegraEpoch=5, vasilEpoch=12, bootstrapAmount=0
+2026-04-18 10:36:10,431 INFO  [com.blo.car.yan.run.YaciNode] (main) CF NetworkConfig built from genesis
+2026-04-18 10:36:10,431 INFO  [com.blo.car.yan.run.YaciNode] (main) firstConwayEpoch resolved: null
+2026-04-18 10:36:10,432 INFO  [com.blo.car.yan.run.YaciNode] (main) Epoch boundary processor wired (adapot=true, rewards=true, params=true, exitOnCalcError=true)
+2026-04-18 10:36:10,435 INFO  [com.blo.car.yan.run.YaciNode] (main) Governance subsystem enabled (block processor + epoch processor)
+2026-04-18 10:36:10,436 INFO  [com.blo.car.yan.exp.ParquetEpochSnapshotExporter] (main) Export types configured: stake=false, drep-dist=true, adapot=true, proposals=true
+2026-04-18 10:36:10,436 INFO  [com.blo.car.yan.run.YaciNode] (main) Epoch snapshot export enabled: ParquetEpochSnapshotExporter → data
+2026-04-18 10:36:10,437 INFO  [com.blo.car.yan.run.YaciNode] (main) Account state store initialized (DefaultAccountStateStore); event handler registered
+2026-04-18 10:36:10,437 INFO  [com.blo.car.yan.run.YaciNode] (main) Block body pruning disabled (block-body-prune-depth=0)
+2026-04-18 10:36:10,437 INFO  [com.blo.car.yan.app.YaciNodeProducer] (main) Yaci Node created successfully
+2026-04-18 10:36:10,438 INFO  [com.blo.car.yan.run.gen.ShelleyGenesisParser] (main) Parsed shelley genesis: networkMagic=1, initialFunds=0 entries, epochLength=432000, systemStart=2022-06-01T00:00:00Z, activeSlotsCoeff=0.05, protocolVersion=2.0, rho=0.003, tau=0.2, a0=0.3, nOpt=150
+2026-04-18 10:36:10,438 INFO  [com.blo.car.yan.run.gen.ByronGenesisParser] (main) Parsed byron genesis: nonAvvmBalances=1 entries, avvmBalances=0 entries, startTime=1654041600, protocolMagic=1, slotDuration=20s, k=2160
+2026-04-18 10:36:10,440 INFO  [com.blo.car.yan.run.blo.GenesisConfig] (main) Loaded protocol parameters from config/network/preprod/protocol-param.json
+2026-04-18 10:36:10,463 INFO  [com.blo.car.yan.app.YaciNodeProducer] (main) Yaci Node slot config: com.bloxbean.cardano.client.common.model.SlotConfig@1c9055e0
+2026-04-18 10:36:10,466 INFO  [com.blo.car.yan.run.YaciNode] (main) Default transaction validator listener registered (order=100)
+2026-04-18 10:36:10,467 INFO  [com.blo.car.yan.run.YaciNode] (main) Transaction evaluator set
+2026-04-18 10:36:10,467 INFO  [com.blo.car.yan.app.YaciNodeProducer] (main) Transaction validator initialized (networkId=0)
+2026-04-18 10:36:10,467 INFO  [com.blo.car.yan.run.YaciNode] (main) Script evaluator set for /utils/txs/evaluate endpoint
+2026-04-18 10:36:10,467 INFO  [com.blo.car.yan.app.YaciNodeProducer] (main) Script evaluator initialized (networkId=0, evaluator=scalus)
+2026-04-18 10:36:10,467 INFO  [com.blo.car.yan.run.YaciNode] (main) Starting Yaci Node...
+2026-04-18 10:36:10,467 INFO  [com.blo.car.yan.run.YaciNode] (main) Starting NodeServer on port 13329...
+2026-04-18 10:36:10,467 INFO  [com.blo.car.yan.run.YaciNode] (main) Protocol magic: 1
+2026-04-18 10:36:10,467 ERROR [com.blo.car.yan.run.YaciNode] (main) CRITICAL: Server starting with empty chain state (no tip)
+2026-04-18 10:36:10,467 ERROR [com.blo.car.yan.run.YaciNode] (main) Real Cardano nodes will not connect to an empty server
+2026-04-18 10:36:10,467 ERROR [com.blo.car.yan.run.YaciNode] (main) Yaci Node must sync some blockchain data first before serving
+2026-04-18 10:36:10,469 INFO  [com.blo.car.yac.cor.net.ser.NodeServer] (YaciNodeServer) Initializing NodeServer on port 13329
+2026-04-18 10:36:10,472 INFO  [com.blo.car.yac.cor.net.ser.NodeServer] (YaciNodeServer) Binding to port 13329
+2026-04-18 10:36:10,493 INFO  [com.blo.car.yac.cor.net.ser.NodeServer] (nioEventLoopGroup-2-1) NodeServer successfully bound to port 13329
+2026-04-18 10:36:10,493 INFO  [com.blo.car.yac.cor.net.ser.NodeServer] (YaciNodeServer) NodeServer is now listening on port 13329 and waiting for connections
+2026-04-18 10:36:10,494 INFO  [com.blo.car.yac.cor.net.ser.NodeServer] (YaciNodeServer) Server socket address: /[0:0:0:0:0:0:0:0]:13329
+2026-04-18 10:36:12,471 INFO  [com.blo.car.yan.run.YaciNode] (main) NodeServer started successfully on port 13329
+2026-04-18 10:36:12,472 INFO  [com.blo.car.yan.run.YaciNode] (main) Server is ready to accept connections from Cardano nodes
+2026-04-18 10:36:12,472 INFO  [com.blo.car.yan.run.gen.ShelleyGenesisParser] (main) Parsed shelley genesis: networkMagic=1, initialFunds=0 entries, epochLength=432000, systemStart=2022-06-01T00:00:00Z, activeSlotsCoeff=0.05, protocolVersion=2.0, rho=0.003, tau=0.2, a0=0.3, nOpt=150
+2026-04-18 10:36:12,472 INFO  [com.blo.car.yan.run.gen.ByronGenesisParser] (main) Parsed byron genesis: nonAvvmBalances=1 entries, avvmBalances=0 entries, startTime=1654041600, protocolMagic=1, slotDuration=20s, k=2160
+2026-04-18 10:36:12,473 INFO  [com.blo.car.yan.run.blo.GenesisConfig] (main) Loaded protocol parameters from config/network/preprod/protocol-param.json
+2026-04-18 10:36:12,473 INFO  [com.blo.car.yan.run.YaciNode] (main) Genesis config loaded (protocolParams=available, shelleyData=available)
+2026-04-18 10:36:12,474 INFO  [com.blo.car.yan.run.YaciNode] (main) Using configured shelley-genesis-hash: 162d29c4e1cf6b8a84f2d692e67a3ac6bc7851bc3e6e4afe64d15778bed8bd86
+2026-04-18 10:36:12,474 INFO  [com.blo.car.yan.run.blo.EpochNonceState] (main) Epoch nonce initialized from pre-computed genesis hash, epoch=0, preConwayStabilityWindow=129600, conwayStabilityWindow=172800
+2026-04-18 10:36:12,475 INFO  [com.blo.car.yan.run.YaciNode] (main) Epoch nonce tracking initialized for relay mode (epochLength=432000, k=2160, f=0.05)
+2026-04-18 10:36:12,475 INFO  [com.blo.car.yan.run.YaciNode] (main) SlotTimeCalculator initialized: networkStart=1654041600, byronSlotDuration=20s, shelleySlotLength=1.0s
+2026-04-18 10:36:12,475 INFO  [com.blo.car.yan.run.YaciNode] (main) Mempool eviction policy initialized (maxAge=30min, maxSize=10000)
+2026-04-18 10:36:12,475 INFO  [com.blo.car.yan.run.YaciNode] (main) Initializing genesis UTXOs...
+2026-04-18 10:36:12,476 INFO  [com.blo.car.yan.run.gen.ShelleyGenesisParser] (main) Parsed shelley genesis: networkMagic=1, initialFunds=0 entries, epochLength=432000, systemStart=2022-06-01T00:00:00Z, activeSlotsCoeff=0.05, protocolVersion=2.0, rho=0.003, tau=0.2, a0=0.3, nOpt=150
+2026-04-18 10:36:12,476 INFO  [com.blo.car.yan.run.gen.ByronGenesisParser] (main) Parsed byron genesis: nonAvvmBalances=1 entries, avvmBalances=0 entries, startTime=1654041600, protocolMagic=1, slotDuration=20s, k=2160
+2026-04-18 10:36:12,476 INFO  [com.blo.car.yan.run.blo.GenesisConfig] (main) Loaded protocol parameters from config/network/preprod/protocol-param.json
+2026-04-18 10:36:12,482 INFO  [com.blo.car.yan.run.YaciNode] (main) Stored 1 Byron genesis UTXOs (tx_hash = blake2b(Base58.decode(address)), outputIndex=0)
+2026-04-18 10:36:12,483 INFO  [com.blo.car.yan.run.cha.DirectRocksDBChainState] (main) Persisted 1 Byron genesis UTXO outpoint keys (34 bytes)
+2026-04-18 10:36:12,483 INFO  [com.blo.car.yan.run.YaciNode] (main) Genesis UTXOs stored: 0 shelley + 1 byron fund entries
+2026-04-18 10:36:12,483 INFO  [com.blo.car.yan.run.YaciNode] (main) 🔍 Validating chain state integrity...
+2026-04-18 10:36:12,483 INFO  [com.blo.car.yan.run.YaciNode] (main) ✅ Chain state integrity validated - no corruption detected
+2026-04-18 10:36:12,483 INFO  [com.blo.car.yan.run.YaciNode] (main) Starting pipelined client sync with localhost:31001...
+2026-04-18 10:36:12,483 INFO  [com.blo.car.yan.run.YaciNode] (main) Local header_tip: null, body_tip: null, using: genesis for sync
+2026-04-18 10:36:12,483 INFO  [com.blo.car.yan.run.YaciNode] (main) No local tip found, starting from genesis
+2026-04-18 10:36:12,484 INFO  [com.blo.car.yan.run.YaciNode] (main) Starting pipelined sync from point: [slot=0, hash='null']
+2026-04-18 10:36:12,487 INFO  [com.blo.car.yac.cor.pro.cha.n2n.ChainsyncAgent] (main) Trying to find the point [slot=0, hash='null']
+2026-04-18 10:36:12,525 ERROR [com.blo.car.yac.cor.net.Session] (main) Connection failed: io.netty.channel.AbstractChannel$AnnotatedConnectException: Connection refused: localhost/127.0.0.1:31001
+	Suppressed: java.lang.RuntimeException: Rethrowing promise failure cause
+		at io.netty.util.concurrent.DefaultPromise.rethrowIfFailed(DefaultPromise.java:685)
+		at io.netty.util.concurrent.DefaultPromise.sync(DefaultPromise.java:419)
+		at io.netty.channel.DefaultChannelPromise.sync(DefaultChannelPromise.java:119)
+		at io.netty.channel.DefaultChannelPromise.sync(DefaultChannelPromise.java:30)
+		at com.bloxbean.cardano.yaci.core.network.Session.start(Session.java:75)
+		at com.bloxbean.cardano.yaci.core.network.NodeClient.start(NodeClient.java:103)
+		at com.bloxbean.cardano.yaci.helper.TipFinder.lambda$find$0(TipFinder.java:169)
+		at reactor.core.publisher.MonoCreate.subscribe(MonoCreate.java:61)
+		at reactor.core.publisher.Mono.subscribe(Mono.java:4576)
+		at reactor.core.publisher.Mono.block(Mono.java:1806)
+		at com.bloxbean.cardano.yano.runtime.YaciNode.startClientSync(YaciNode.java:2616)
+		at com.bloxbean.cardano.yano.runtime.YaciNode.start(YaciNode.java:798)
+		at com.bloxbean.cardano.yano.app.YaciNodeProducer.onStart(YaciNodeProducer.java:449)
+		at com.bloxbean.cardano.yano.app.YaciNodeProducer_Observer_onStart_DNZSpKIpfG0hYzRNuLdEy3cwC2Q.notify(Unknown Source)
+		at io.quarkus.arc.impl.EventImpl$Notifier.notifyObservers(EventImpl.java:365)
+		at io.quarkus.arc.impl.EventImpl$Notifier.notify(EventImpl.java:347)
+		at io.quarkus.arc.impl.EventImpl.fire(EventImpl.java:81)
+		at io.quarkus.arc.runtime.ArcRecorder.fireLifecycleEvent(ArcRecorder.java:163)
+		at io.quarkus.arc.runtime.ArcRecorder.handleLifecycleEvents(ArcRecorder.java:114)
+		at io.quarkus.runner.recorded.LifecycleEventsBuildStep$startupEvent1144526294.deploy_0(Unknown Source)
+		at io.quarkus.runner.recorded.LifecycleEventsBuildStep$startupEvent1144526294.deploy(Unknown Source)
+		at io.quarkus.runner.ApplicationImpl.doStart(Unknown Source)
+		at io.quarkus.runtime.Application.start(Application.java:101)
+		at io.quarkus.runtime.ApplicationLifecycleManager.run(ApplicationLifecycleManager.java:119)
+		at io.quarkus.runtime.Quarkus.run(Quarkus.java:80)
+		at io.quarkus.runtime.Quarkus.run(Quarkus.java:51)
+		at io.quarkus.runtime.Quarkus.run(Quarkus.java:144)
+		at io.quarkus.runner.GeneratedMain.main(Unknown Source)
+Caused by: java.net.ConnectException: Connection refused
+	at java.base/sun.nio.ch.Net.pollConnect(Native Method)
+	at java.base/sun.nio.ch.Net.pollConnectNow(Net.java:639)
+	at java.base/sun.nio.ch.SocketChannelImpl.finishConnect(SocketChannelImpl.java:1046)
+	at io.netty.channel.socket.nio.NioSocketChannel.doFinishConnect(NioSocketChannel.java:336)
+	at io.netty.channel.nio.AbstractNioChannel$AbstractNioUnsafe.finishConnect(AbstractNioChannel.java:339)
+	at io.netty.channel.nio.NioEventLoop.processSelectedKey(NioEventLoop.java:784)
+	at io.netty.channel.nio.NioEventLoop.processSelectedKeysPlain(NioEventLoop.java:697)
+	at io.netty.channel.nio.NioEventLoop.processSelectedKeys(NioEventLoop.java:660)
+	at io.netty.channel.nio.NioEventLoop.run(NioEventLoop.java:562)
+	at io.netty.util.concurrent.SingleThreadEventExecutor$4.run(SingleThreadEventExecutor.java:998)
+	at io.netty.util.internal.ThreadExecutorMap$2.run(ThreadExecutorMap.java:74)
+	at io.netty.util.concurrent.FastThreadLocalRunnable.run(FastThreadLocalRunnable.java:30)
+	at java.base/java.lang.Thread.run(Thread.java:1474)
+

@@ -4,15 +4,18 @@ import com.bloxbean.cardano.client.crypto.KeyGenUtil;
 import com.bloxbean.cardano.client.crypto.api.SigningProvider;
 import com.bloxbean.cardano.client.crypto.config.CryptoConfiguration;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
+import com.bloxbean.cardano.yano.api.appchain.signer.SignerProvider;
 
 import java.util.Objects;
 
 /**
- * Ed25519 signing identity of this app-chain member (envelope auth scheme 0).
- * The private key is a 32-byte seed; the public key is derived from it and is
- * the member identity carried in the envelope's {@code sender} field.
+ * Default in-config {@link SignerProvider}: the Ed25519 signing identity of an
+ * app-chain member from a 32-byte seed (envelope auth scheme 0). The public key
+ * is derived from the seed and is the member identity in the envelope's
+ * {@code sender} field. Custom backends (KMS/HSM) plug in via
+ * {@link com.bloxbean.cardano.yano.api.appchain.signer.SignerProviderFactory}.
  */
-final class AppMessageSigner {
+final class AppMessageSigner implements SignerProvider {
     private final byte[] privateKey;
     private final byte[] publicKey;
     private final SigningProvider signingProvider;
@@ -27,15 +30,18 @@ final class AppMessageSigner {
         this.signingProvider = CryptoConfiguration.INSTANCE.getSigningProvider();
     }
 
-    byte[] publicKey() {
+    @Override
+    public byte[] publicKey() {
         return publicKey;
     }
 
-    String publicKeyHex() {
+    @Override
+    public String publicKeyHex() {
         return HexUtil.encodeHexString(publicKey);
     }
 
-    byte[] sign(byte[] message) {
+    @Override
+    public byte[] sign(byte[] message) {
         return signingProvider.sign(message, privateKey);
     }
 
