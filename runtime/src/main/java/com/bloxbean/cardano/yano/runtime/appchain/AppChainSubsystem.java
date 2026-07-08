@@ -506,6 +506,16 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     }
 
     @Override
+    public long snapshot(String snapshotPath) {
+        AppLedgerStore currentLedger = ledger;
+        if (currentLedger == null) {
+            throw new IllegalStateException("App chain has no ledger (sequencing disabled)");
+        }
+        currentLedger.createSnapshot(snapshotPath);
+        return currentLedger.tipHeight();
+    }
+
+    @Override
     public Optional<com.bloxbean.cardano.yano.api.appchain.evidence.EvidenceBundle> evidence(byte[] messageId) {
         AppLedgerStore currentLedger = ledger;
         if (currentLedger == null) {
@@ -610,6 +620,12 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         if (config.sequencingEnabled()) {
             AppLedgerStore ledgerStore = new AppLedgerStore(ledgerPath, log);
             this.ledger = ledgerStore;
+            // Integrity check catches a corrupt/partial restore (E5.3) at startup.
+            if (!ledgerStore.verifyIntegrity()) {
+                throw new IllegalStateException("App-chain ledger integrity check failed for '"
+                        + config.chainId() + "' — tip state-root does not match the committed MPF root "
+                        + "(corrupt or partial snapshot?)");
+            }
             AppChainEngine chainEngine = new AppChainEngine(
                     config,
                     ledgerStore,

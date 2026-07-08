@@ -1160,6 +1160,11 @@ public class YanoProducer {
                 evidence(byte[] messageId) {
             throw unavailableRole("AppChainGateway");
         }
+
+        @Override
+        public long snapshot(String snapshotPath) {
+            throw unavailableRole("AppChainGateway");
+        }
     }
 
     private enum UnavailableProducerControl implements ProducerControl {

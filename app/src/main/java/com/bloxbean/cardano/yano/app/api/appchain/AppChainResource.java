@@ -275,6 +275,33 @@ public class AppChainResource {
          * (ADR 006 E3.4): block(s) + members + L1 anchor reference. Verify with
          * core-api's {@code EvidenceVerifier} — no node access needed.
          */
+        public record SnapshotRequest(String path) {
+        }
+
+        /**
+         * Create an atomic ledger snapshot for fast member onboarding
+         * (ADR 006 E5.3). Copy the resulting directory to a new node's
+         * app-chain ledger path. Admin action.
+         */
+        @POST
+        @Path("snapshot")
+        public Response snapshot(SnapshotRequest request) {
+            if (request == null || isBlank(request.path())) {
+                return badRequest("'path' (a fresh directory) is required");
+            }
+            try {
+                long height = gateway.snapshot(request.path());
+                return Response.ok(Map.of("chainId", gateway.chainId(),
+                        "snapshotPath", request.path(), "height", height)).build();
+            } catch (IllegalStateException e) {
+                return Response.status(Response.Status.SERVICE_UNAVAILABLE)
+                        .entity(Map.of("error", e.getMessage())).build();
+            } catch (Exception e) {
+                return Response.status(Response.Status.INTERNAL_SERVER_ERROR)
+                        .entity(Map.of("error", e.getMessage())).build();
+            }
+        }
+
         @GET
         @Path("evidence/{messageIdHex}")
         public Response evidence(@PathParam("messageIdHex") String messageIdHex) {

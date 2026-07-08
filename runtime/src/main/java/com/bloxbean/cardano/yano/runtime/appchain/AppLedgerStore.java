@@ -126,6 +126,39 @@ final class AppLedgerStore implements AutoCloseable {
     }
 
     /**
+     * Atomic snapshot of the app ledger via RocksDB Checkpoint (hard links —
+     * fast, space-efficient), for fast member onboarding (ADR 006 E5.3). Copy
+     * the resulting directory to a new node's ledger path; it restores the full
+     * state (blocks, MPF trie, message index) with no replay. The new member
+     * then catches up any blocks after the snapshot over protocol 103.
+     *
+     * @param snapshotPath directory to create the checkpoint in (must not exist)
+     */
+    void createSnapshot(String snapshotPath) {
+        try (org.rocksdb.Checkpoint checkpoint = org.rocksdb.Checkpoint.create(db)) {
+            checkpoint.createCheckpoint(snapshotPath);
+            log.info("App-chain ledger snapshot created at {} (tip height {})", snapshotPath, tipHeight());
+        } catch (RocksDBException e) {
+            throw new RuntimeException("Failed to snapshot app ledger to " + snapshotPath, e);
+        }
+    }
+
+    /**
+     * Integrity check after a restore: the tip block's recorded state-root must
+     * equal the committed MPF root. A mismatch means a corrupt/partial snapshot.
+     */
+    boolean verifyIntegrity() {
+        long tip = tipHeight();
+        if (tip == 0) {
+            return true; // empty ledger
+        }
+        byte[] committedRoot = stateRoot();
+        byte[] tipBlockRoot = block(tip).map(AppBlock::stateRoot).orElse(null);
+        return committedRoot != null && tipBlockRoot != null
+                && java.util.Arrays.equals(committedRoot, tipBlockRoot);
+    }
+
+    /**
      * Strip message BODIES from finalized blocks in (pruneCursor, toHeight]
      * (retention / data-minimization, ADR 006 E4.4). Headers, message ids,
      * messages-root, state-root and finality certs are kept, so block hashes,
