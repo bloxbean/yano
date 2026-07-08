@@ -1,0 +1,28 @@
+// Client SDK for applications talking to a Yano app chain over REST/SSE.
+// Deliberately light: no yaci/runtime dependencies — just JSON and the MPF
+// verifier for client-side ("don't trust, verify") proof checks.
+dependencies {
+    implementation libs.jackson.databind
+    api libs.cardano.client.mpf
+
+    testImplementation libs.junit.jupiter.api
+    testRuntimeOnly libs.junit.jupiter.engine
+    testRuntimeOnly libs.junit.platform.launcher
+    testImplementation libs.assertj.core
+}
+
+java {
+    sourceCompatibility = 21
+    targetCompatibility = 21
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            pom {
+                name = 'Yano App-Chain Client'
+                description = 'Java client SDK for Yano app chains: typed REST/SSE access and client-side MPF proof verification'
+            }
+        }
+    }
+}
