@@ -474,6 +474,52 @@ curl -XPOST localhost:8080/api/v1/app-chain/snapshot \
 **Scaffolds** — `scaffolds/docker-compose-cluster` (3-node cluster) and
 `scaffolds/plugin-template` (custom state-machine jar).
 
+## 7d. Zero-knowledge extensions (ADR 006, Wave 3 — EXPERIMENTAL)
+
+All ZK ships as one **experimental** T3 plugin `yano-appchain-zk` (depends on
+ZeroJ). Drop it on `yano.plugins.directory`. The node only **verifies** proofs —
+proving happens client-side, where the secrets live. Circuits are chain config:
+each `circuitId → VK hash` is pinned and loaded fail-closed at startup.
+
+**E7.1 — private-predicate admission (`state-machine=zk-gate`).** Messages carry
+an in-body proof; the node admits only if it verifies (and re-verifies in
+`apply()` for consensus enforcement). The predicate — "amount ≤ limit",
+"age ≥ 18", "KYC holds" — lives entirely in the proof; the chain never sees the
+data.
+
+```yaml
+yano.app-chain.state-machine: zk-gate
+yano.app-chain.zk.circuits[0].id: credit-limit
+yano.app-chain.zk.circuits[0].vk-file: /etc/yano/credit-limit.vk
+yano.app-chain.zk.circuits[0].vk-hash: <blake2b-256 hex of the vk file>
+yano.app-chain.zk.circuits[0].proof-system: groth16     # or plonk
+yano.app-chain.zk.circuits[0].curve: bls12_381
+yano.app-chain.zk.verify-in-apply: true                 # consensus enforcement
+```
+
+**E7.2 — anchored verifiable credentials (`state-machine=credential-registry`).**
+Records are issuer-BBS-signed attribute sets; the chain admits one only if the
+issuer signature verifies (issuers configured, decoupled from membership) and
+records a provable commitment. A holder later discloses selected fields with a
+derived proof, verified against the issuer key and the anchored record.
+
+```yaml
+yano.app-chain.state-machine: credential-registry
+yano.app-chain.zk.bbs.issuers[0].id: hr-dept
+yano.app-chain.zk.bbs.issuers[0].public-key: <BBS G2 public-key hex>
+```
+
+**E7.3 — anonymous-but-authorized submissions (`state-machine=zk-membership`).**
+The author proves membership in the registered set instead of signing with an
+identifiable key; a one-time nullifier prevents double-action (deterministic
+dedup in `apply()`). Anonymous voting, sealed bids, whistleblowing among known
+members. Uses the same `zk.circuits[...]` config as E7.1 for the membership
+circuit.
+
+> Experimental: ZeroJ is unaudited with trusted-setup operational needs; use
+> `plonk` (universal setup) for enterprise deployments. Proving helpers
+> (`BbsCredentials`, proof generation) currently live in the plugin.
+
 ## 8. Operations & troubleshooting
 
 - **`/status` is your dashboard**: `role`, `tipHeight`, `stateRoot`,
