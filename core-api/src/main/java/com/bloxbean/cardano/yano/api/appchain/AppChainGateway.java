@@ -145,6 +145,13 @@ public interface AppChainGateway {
     /** Stage 2: adjust the finality threshold within [1, members]. */
     void setThreshold(int threshold);
 
+    /**
+     * Re-adopt the static config as a new membership epoch (escape hatch when a
+     * persisted rotation must yield to a config change). History is preserved,
+     * so previously finalized blocks keep verifying.
+     */
+    void resetMembers();
+
     @FunctionalInterface
     interface FinalizedBlockListener {
         void onFinalized(AppBlock block, byte[] blockHash);

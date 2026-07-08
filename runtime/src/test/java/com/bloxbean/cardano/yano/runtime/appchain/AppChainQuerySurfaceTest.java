@@ -56,10 +56,13 @@ class AppChainQuerySurfaceTest {
                 tempDir.resolve("ledger").toString(), null, log);
         node.start();
 
-        // 3 messages on "orders", 2 on "audit"
+        // 3 messages on "orders" (awaited so each lands in its own block), 2 on "audit"
         List<String> orderIds = new ArrayList<>();
         for (int i = 1; i <= 3; i++) {
-            orderIds.add(node.submit("orders", ("o-" + i).getBytes(StandardCharsets.UTF_8)));
+            String id = node.submit("orders", ("o-" + i).getBytes(StandardCharsets.UTF_8));
+            orderIds.add(id);
+            awaitTrue("o-" + i + " finalized",
+                    () -> node.messageHeight(HexUtil.decodeHexString(id)).isPresent());
         }
         node.submit("audit", "a-1".getBytes(StandardCharsets.UTF_8));
         node.submit("audit", "a-2".getBytes(StandardCharsets.UTF_8));
@@ -76,14 +79,13 @@ class AppChainQuerySurfaceTest {
             assertThat(curr).isGreaterThan(prev);
         }
 
-        // Paging via fromHeight: everything strictly after the first ref's height-1
+        // Paging via fromHeight: only refs at/after the second message's height
         MessageRef second = orders.get(1);
         List<MessageRef> page = node.messagesByTopic("orders", second.height(), 100);
+        assertThat(page).allMatch(r -> r.height() >= second.height());
         assertThat(page).extracting(MessageRef::messageIdHex)
-                .containsExactlyElementsOf(orderIds.subList(1, 3).size() == page.size()
-                        ? orderIds.subList(orderIds.size() - page.size(), orderIds.size())
-                        : orderIds); // page starts at second.height()
-        assertThat(page.get(0).height()).isGreaterThanOrEqualTo(second.height());
+                .doesNotContain(orderIds.get(0))   // first message paged out
+                .contains(orderIds.get(1), orderIds.get(2));
 
         // Limit respected
         assertThat(node.messagesByTopic("orders", 0, 2)).hasSize(2);

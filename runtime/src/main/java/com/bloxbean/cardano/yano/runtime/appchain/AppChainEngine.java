@@ -171,14 +171,14 @@ final class AppChainEngine implements AutoCloseable {
         }
         for (AppMessage message : block.messages()) {
             // No TTL check here: these messages were finalized before expiry
-            if (!message.hasValidMessageId() || !verifyMemberSignature(message)) {
+            if (!message.hasValidMessageId() || !verifyMemberSignature(message, block.height())) {
                 log.warn("Catch-up block contains invalid message {} — rejecting",
                         message.getMessageIdHex());
                 return false;
             }
         }
         byte[] blockHash = AppBlockCodec.blockHash(block);
-        if (!verifyCert(block.cert(), blockHash)) {
+        if (!verifyCert(block.cert(), blockHash, block.height())) {
             log.warn("Catch-up block cert verification FAILED at height {} — rejecting", block.height());
             return false;
         }
@@ -346,7 +346,7 @@ final class AppChainEngine implements AutoCloseable {
         long now = System.currentTimeMillis() / 1000;
         for (AppMessage message : block.messages()) {
             if (!message.hasValidMessageId() || message.isExpired(now)
-                    || !verifyMemberSignature(message)) {
+                    || !verifyMemberSignature(message, block.height())) {
                 log.warn("Proposal contains invalid message {} — rejecting block",
                         message.getMessageIdHex());
                 return;
@@ -395,7 +395,7 @@ final class AppChainEngine implements AutoCloseable {
             return; // stale/mismatched vote
         }
         String voterHex = HexUtil.encodeHexString(envelope.getSender()).toLowerCase(Locale.ROOT);
-        if (!group.contains(voterHex)) {
+        if (!group.containsAt(voterHex, pendingRound.block.height())) {
             log.warn("Vote from non-member {} — ignoring", voterHex);
             return;
         }
@@ -410,7 +410,14 @@ final class AppChainEngine implements AutoCloseable {
     }
 
     private void maybeFinalize() {
-        if (pendingRound == null || pendingRound.votes.size() < group.threshold()) {
+        if (pendingRound == null) {
+            return;
+        }
+        // Count only votes from members of the epoch at this block's height —
+        // a mid-round rotation must not let a removed member's vote finalize.
+        long height = pendingRound.block.height();
+        pendingRound.votes.keySet().removeIf(voter -> !group.containsAt(voter, height));
+        if (pendingRound.votes.size() < group.thresholdAt(height)) {
             return;
         }
         List<FinalityCert.Signature> signatures = new ArrayList<>();
@@ -439,7 +446,7 @@ final class AppChainEngine implements AutoCloseable {
             return;
         }
         FinalityCert cert = AppBlockCodec.deserializeCert(notice.certBytes());
-        if (!verifyCert(cert, pendingRound.blockHash)) {
+        if (!verifyCert(cert, pendingRound.blockHash, pendingRound.block.height())) {
             log.warn("Cert verification FAILED for height {} — rejecting", notice.height());
             return;
         }
@@ -447,7 +454,7 @@ final class AppChainEngine implements AutoCloseable {
     }
 
     /** Verifies threshold, member uniqueness and every signature. Never trust-by-mode. */
-    private boolean verifyCert(FinalityCert cert, byte[] blockHash) {
+    private boolean verifyCert(FinalityCert cert, byte[] blockHash, long height) {
         if (cert.scheme() != FinalityCert.SCHEME_ED25519) {
             return false;
         }
@@ -455,14 +462,14 @@ final class AppChainEngine implements AutoCloseable {
         int valid = 0;
         for (FinalityCert.Signature signature : cert.signatures()) {
             String signerHex = HexUtil.encodeHexString(signature.signer()).toLowerCase(Locale.ROOT);
-            if (!group.contains(signerHex) || !seen.add(signerHex)) {
+            if (!group.containsAt(signerHex, height) || !seen.add(signerHex)) {
                 continue;
             }
             if (AppMessageSigner.verify(signature.signature(), blockHash, signature.signer())) {
                 valid++;
             }
         }
-        return valid >= group.threshold();
+        return valid >= group.thresholdAt(height);
     }
 
     private void commitRound(FinalityCert cert) {
@@ -523,9 +530,9 @@ final class AppChainEngine implements AutoCloseable {
         }
     }
 
-    private boolean verifyMemberSignature(AppMessage message) {
+    private boolean verifyMemberSignature(AppMessage message, long height) {
         String senderHex = HexUtil.encodeHexString(message.getSender()).toLowerCase(Locale.ROOT);
-        return group.contains(senderHex)
+        return group.containsAt(senderHex, height)
                 && message.getAuthProof() != null
                 && AppMessageSigner.verify(message.getAuthProof(), message.signedBodyBytes(), message.getSender());
     }

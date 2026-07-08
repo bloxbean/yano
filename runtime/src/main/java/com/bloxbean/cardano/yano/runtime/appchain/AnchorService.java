@@ -115,6 +115,7 @@ final class AnchorService {
      * @return true if an anchor submission was triggered
      */
     boolean forceAnchorNow() {
+        synchronized (anchorLock) {
         if (pending != null) {
             return false;
         }
@@ -126,10 +127,14 @@ final class AnchorService {
         log.info("Force-anchor requested: anchoring app blocks {}..{}", lastAnchored + 1, tip);
         submitAnchor(lastAnchored + 1, tip);
         return pending != null; // submitAnchor sets pending on success
+        }
     }
+
+    private final Object anchorLock = new Object();
 
     /** Periodic tick from the subsystem scheduler. */
     void tick() {
+        synchronized (anchorLock) {
         try {
             PendingAnchor current = pending;
             if (current != null) {
@@ -157,6 +162,7 @@ final class AnchorService {
         } catch (Exception e) {
             lastError = e.toString();
             log.warn("Anchor tick failed: {}", e.toString());
+        }
         }
     }
 

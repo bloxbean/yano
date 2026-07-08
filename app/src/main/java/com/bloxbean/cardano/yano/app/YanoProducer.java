@@ -1250,6 +1250,11 @@ public class YanoProducer {
         public void setThreshold(int threshold) {
             throw unavailableRole("AppChainGateway");
         }
+
+        @Override
+        public void resetMembers() {
+            throw unavailableRole("AppChainGateway");
+        }
     }
 
     private enum UnavailableProducerControl implements ProducerControl {

@@ -368,13 +368,14 @@ public class AppChainResource {
             } catch (Exception e) {
                 return badRequest("Invalid messageId hex");
             }
+            String normalizedId = HexUtil.encodeHexString(messageId); // canonical lowercase
             return gateway.messageHeight(messageId)
                     .flatMap(height -> gateway.block(height).map(b -> {
                         int index = 0;
                         for (var m : b.messages()) {
-                            if (m.getMessageIdHex().equals(messageIdHex)) {
+                            if (m.getMessageIdHex().equalsIgnoreCase(normalizedId)) {
                                 Map<String, Object> result = new LinkedHashMap<>();
-                                result.put("messageId", messageIdHex);
+                                result.put("messageId", m.getMessageIdHex());
                                 result.put("chainId", b.chainId());
                                 result.put("height", height);
                                 result.put("index", index);
@@ -414,6 +415,9 @@ public class AppChainResource {
                 sender = HexUtil.decodeHexString(senderHex);
             } catch (Exception e) {
                 return badRequest("Invalid sender hex");
+            }
+            if (sender.length != 32) {
+                return badRequest("sender must be a 32-byte (64 hex chars) Ed25519 public key");
             }
             return Response.ok(Map.of("chainId", gateway.chainId(), "sender", senderHex,
                     "messages", gateway.messagesBySender(sender, fromHeight, limit))).build();
@@ -459,6 +463,17 @@ public class AppChainResource {
                 gateway.removeMember(request.publicKey());
                 return listMembers();
             } catch (IllegalArgumentException e) {
+                return badRequest(e.getMessage());
+            }
+        }
+
+        @POST
+        @Path("admin/members/reset")
+        public Response resetMembers() {
+            try {
+                gateway.resetMembers();
+                return listMembers();
+            } catch (IllegalStateException | IllegalArgumentException e) {
                 return badRequest(e.getMessage());
             }
         }
