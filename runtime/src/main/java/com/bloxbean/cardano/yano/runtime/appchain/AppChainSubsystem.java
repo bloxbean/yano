@@ -682,6 +682,28 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                     currentAnchor.anchorAddress(), config.anchor().everyBlocks(),
                     config.anchor().metadataLabel());
         }
+        if (config.retentionEnabled()) {
+            exec.scheduleWithFixedDelay(this::retentionTick, 30, 30, TimeUnit.SECONDS);
+            log.info("App-chain retention enabled: bodies pruned below L1_FINAL anchor "
+                    + "(keeping the most-recent {} block(s))", config.retentionKeepBlocks());
+        }
+    }
+
+    /** Prune message bodies below the L1_FINAL anchor horizon (E4.4). */
+    private void retentionTick() {
+        AppLedgerStore currentLedger = ledger;
+        if (!running.get() || currentLedger == null) {
+            return;
+        }
+        long anchored = currentLedger.metaLong("anchor_last_height", 0L);
+        long horizon = anchored - config.retentionKeepBlocks();
+        if (horizon > currentLedger.pruneCursor()) {
+            try {
+                currentLedger.pruneBodiesBelow(horizon);
+            } catch (Exception e) {
+                log.warn("App-chain retention tick failed: {}", e.toString());
+            }
+        }
     }
 
     /** Track applied L1 blocks: stable-depth reference for proposals + anchor confirmation. */

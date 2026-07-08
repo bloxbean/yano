@@ -261,6 +261,12 @@ public class YanoProducer {
     @ConfigProperty(name = YanoPropertyKeys.AppChain.WEBHOOKS)
     java.util.Optional<String> appChainWebhooks;
 
+    @ConfigProperty(name = YanoPropertyKeys.AppChain.RETENTION_ENABLED, defaultValue = "false")
+    boolean appChainRetentionEnabled;
+
+    @ConfigProperty(name = YanoPropertyKeys.AppChain.RETENTION_KEEP_BLOCKS, defaultValue = "0")
+    int appChainRetentionKeepBlocks;
+
     @ConfigProperty(name = YanoPropertyKeys.AppChain.MAX_TTL_SECONDS, defaultValue = "3600")
     long appChainMaxTtlSeconds;
 
@@ -640,6 +646,8 @@ public class YanoProducer {
         globals.put(YanoPropertyKeys.AppChain.ANCHOR_METADATA_LABEL, appChainAnchorMetadataLabel);
         globals.put(YanoPropertyKeys.AppChain.L1_STABILITY_DEPTH, appChainL1StabilityDepth);
         appChainWebhooks.ifPresent(v -> globals.put(YanoPropertyKeys.AppChain.WEBHOOKS, v));
+        globals.put(YanoPropertyKeys.AppChain.RETENTION_ENABLED, appChainRetentionEnabled);
+        globals.put(YanoPropertyKeys.AppChain.RETENTION_KEEP_BLOCKS, appChainRetentionKeepBlocks);
         if (!appChainList.isEmpty() && appChainEnabled) {
             globals.put(YanoPropertyKeys.AppChain.CHAINS, appChainList);
             log.info("App-chain multi-chain config: {} chain(s)", appChainList.size());
@@ -800,7 +808,8 @@ public class YanoProducer {
                 "max-message-bytes", "max-ttl-seconds", "default-ttl-seconds",
                 "anchor.enabled", "anchor.signing-key", "anchor.every-blocks",
                 "anchor.max-interval-minutes", "anchor.metadata-label",
-                "l1.stability-depth", "webhooks"
+                "l1.stability-depth", "webhooks",
+                "retention.enabled", "retention.keep-blocks"
         };
         for (int i = 0; i < 50; i++) {
             String prefix = "yano.app-chain.chains[" + i + "].";

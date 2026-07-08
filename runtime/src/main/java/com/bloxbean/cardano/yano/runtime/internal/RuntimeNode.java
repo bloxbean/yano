@@ -558,7 +558,9 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                                 parseLong(get.apply("anchor.metadata-label"), 7014))
                         : null,
                 (int) parseLong(get.apply("l1.stability-depth"), 0),
-                webhookUrls);
+                webhookUrls,
+                booleanOf(get.apply("retention.enabled"), false),
+                (int) parseLong(get.apply("retention.keep-blocks"), 0));
     }
 
     private static String stringOf(Object value, String def) {

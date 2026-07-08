@@ -31,6 +31,10 @@ import java.util.Set;
  *                          app blocks; 0 = no L1 reference
  * @param webhookUrls       webhook sinks receiving finalized blocks
  *                          (at-least-once, ordered, per-sink persisted cursor)
+ * @param retentionEnabled  prune message bodies below the last L1_FINAL anchor
+ *                          (headers/roots/certs/ids kept — proofs stay valid)
+ * @param retentionKeepBlocks keep bodies of at least this many most-recent
+ *                          blocks regardless of the anchor horizon
  */
 public record AppChainConfig(String chainId,
                              String signingKeyHex,
@@ -47,7 +51,9 @@ public record AppChainConfig(String chainId,
                              String ledgerPath,
                              AnchorConfig anchor,
                              int l1StabilityDepth,
-                             List<String> webhookUrls) {
+                             List<String> webhookUrls,
+                             boolean retentionEnabled,
+                             int retentionKeepBlocks) {
 
     public static final int DEFAULT_MAX_MESSAGE_BYTES = 65536;
     public static final long DEFAULT_MAX_TTL_SECONDS = 3600;
@@ -79,6 +85,8 @@ public record AppChainConfig(String chainId,
         if (stateMachineId == null || stateMachineId.isBlank())
             stateMachineId = DEFAULT_STATE_MACHINE;
         webhookUrls = webhookUrls != null ? List.copyOf(webhookUrls) : List.of();
+        if (retentionKeepBlocks < 0)
+            retentionKeepBlocks = 0;
     }
 
     public static Builder builder(String chainId) {
@@ -103,6 +111,8 @@ public record AppChainConfig(String chainId,
         private AnchorConfig anchor;
         private int l1StabilityDepth;
         private List<String> webhookUrls = List.of();
+        private boolean retentionEnabled;
+        private int retentionKeepBlocks;
 
         private Builder(String chainId) {
             this.chainId = chainId;
@@ -123,12 +133,15 @@ public record AppChainConfig(String chainId,
         public Builder anchor(AnchorConfig value) { this.anchor = value; return this; }
         public Builder l1StabilityDepth(int value) { this.l1StabilityDepth = value; return this; }
         public Builder webhookUrls(List<String> value) { this.webhookUrls = value; return this; }
+        public Builder retentionEnabled(boolean value) { this.retentionEnabled = value; return this; }
+        public Builder retentionKeepBlocks(int value) { this.retentionKeepBlocks = value; return this; }
 
         public AppChainConfig build() {
             return new AppChainConfig(chainId, signingKeyHex, memberKeysHex, peers,
                     maxMessageBytes, maxTtlSeconds, defaultTtlSeconds, proposerKeyHex,
                     threshold, blockIntervalMs, maxBlockMessages, stateMachineId,
-                    ledgerPath, anchor, l1StabilityDepth, webhookUrls);
+                    ledgerPath, anchor, l1StabilityDepth, webhookUrls,
+                    retentionEnabled, retentionKeepBlocks);
         }
     }
 

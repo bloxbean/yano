@@ -1,0 +1,695 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>DRep Expiry &amp; Dormant Epoch Tracking</title>
+  <style>
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    code{white-space: pre-wrap;}
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: min(4vw, 1.5em);}
+    div.column{flex: auto; overflow-x: auto;}
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+    .display.math{display: block; text-align: center; margin: 0.5rem auto;}
+    /* CSS for syntax highlighting */
+    html { -webkit-text-size-adjust: 100%; }
+    pre > code.sourceCode { white-space: pre; position: relative; }
+    pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+    pre > code.sourceCode > span:empty { height: 1.2em; }
+    .sourceCode { overflow: visible; }
+    code.sourceCode > span { color: inherit; text-decoration: inherit; }
+    div.sourceCode { margin: 1em 0; }
+    pre.sourceCode { margin: 0; }
+    @media screen {
+    div.sourceCode { overflow: auto; }
+    }
+    @media print {
+    pre > code.sourceCode { white-space: pre-wrap; }
+    pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+    }
+    pre.numberSource code
+      { counter-reset: source-line 0; }
+    pre.numberSource code > span
+      { position: relative; left: -4em; counter-increment: source-line; }
+    pre.numberSource code > span > a:first-child::before
+      { content: counter(source-line);
+        position: relative; left: -1em; text-align: right; vertical-align: baseline;
+        border: none; display: inline-block;
+        -webkit-touch-callout: none; -webkit-user-select: none;
+        -khtml-user-select: none; -moz-user-select: none;
+        -ms-user-select: none; user-select: none;
+        padding: 0 4px; width: 4em;
+        color: #aaaaaa;
+      }
+    pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa;  padding-left: 4px; }
+    div.sourceCode
+      {   }
+    @media screen {
+    pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+    }
+    code span.al { color: #ff0000; font-weight: bold; } /* Alert */
+    code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } /* Annotation */
+    code span.at { color: #7d9029; } /* Attribute */
+    code span.bn { color: #40a070; } /* BaseN */
+    code span.bu { color: #008000; } /* BuiltIn */
+    code span.cf { color: #007020; font-weight: bold; } /* ControlFlow */
+    code span.ch { color: #4070a0; } /* Char */
+    code span.cn { color: #880000; } /* Constant */
+    code span.co { color: #60a0b0; font-style: italic; } /* Comment */
+    code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } /* CommentVar */
+    code span.do { color: #ba2121; font-style: italic; } /* Documentation */
+    code span.dt { color: #902000; } /* DataType */
+    code span.dv { color: #40a070; } /* DecVal */
+    code span.er { color: #ff0000; font-weight: bold; } /* Error */
+    code span.ex { } /* Extension */
+    code span.fl { color: #40a070; } /* Float */
+    code span.fu { color: #06287e; } /* Function */
+    code span.im { color: #008000; font-weight: bold; } /* Import */
+    code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } /* Information */
+    code span.kw { color: #007020; font-weight: bold; } /* Keyword */
+    code span.op { color: #666666; } /* Operator */
+    code span.ot { color: #007020; } /* Other */
+    code span.pp { color: #bc7a00; } /* Preprocessor */
+    code span.sc { color: #4070a0; } /* SpecialChar */
+    code span.ss { color: #bb6688; } /* SpecialString */
+    code span.st { color: #4070a0; } /* String */
+    code span.va { color: #19177c; } /* Variable */
+    code span.vs { color: #4070a0; } /* VerbatimString */
+    code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } /* Warning */
+  </style>
+  <link rel="stylesheet" href="data:text/css,body{font-family:system-ui,sans-serif;max-width:900px;margin:auto;padding:2em;line-height:1.6;color:%23333}h1,h2,h3{color:%23222}table{border-collapse:collapse;width:100%;margin:1em 0}th,td{border:1px solid %23ddd;padding:8px;text-align:left}th{background:%23f5f5f5}code{background:%23f4f4f4;padding:2px 5px;border-radius:3px}pre{background:%23f4f4f4;padding:1em;overflow-x:auto;border-radius:5px}" />
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">DRep Expiry &amp; Dormant Epoch Tracking</h1>
+</header>
+<h1 id="drep-expiry-dormant-epoch-tracking">DRep Expiry &amp; Dormant
+Epoch Tracking</h1>
+<h2 id="overview">Overview</h2>
+<p>In the Cardano Conway era, Delegated Representatives (DReps) have an
+<strong>expiry epoch</strong> that determines whether they are “active”
+for governance voting. If a DRep’s expiry has passed, they are excluded
+from the ratification tally — their delegated stake does not count.</p>
+<p>The expiry extends whenever a DRep interacts with the chain
+(registers, votes, or updates their metadata). Additionally, during
+<strong>dormant periods</strong> (epochs with no active governance
+proposals), all DRep expiries are effectively extended so that DReps are
+not punished for inactivity when there is nothing to vote on.</p>
+<p>This document covers how DRep expiry is tracked across four
+implementations: <strong>Haskell</strong> (canonical reference),
+<strong>Amaru</strong> (Rust), <strong>Yano</strong> (Java node), and
+<strong>Yaci Store</strong> (Java indexer).</p>
+<hr />
+<h2 id="key-concepts">Key Concepts</h2>
+<h3 id="drep-activity-parameter">DRep Activity Parameter</h3>
+<p>The protocol parameter <code>drepActivity</code> (typically 20 on
+mainnet) defines how many epochs a DRep stays active after their last
+interaction. If a DRep registers at epoch 520 with
+<code>drepActivity = 20</code>, their initial expiry is epoch 540.</p>
+<h3 id="dormant-epochs">Dormant Epochs</h3>
+<p>An epoch is <strong>dormant</strong> when there are no active
+governance proposals remaining after ratification processing at its
+boundary. During dormant epochs, DReps cannot vote (nothing to vote on),
+so their expiry should not tick down.</p>
+<h3 id="conway-phases">Conway Phases</h3>
+<p>Conway governance has two phases, determined by the protocol
+version:</p>
+<table>
+<colgroup>
+<col style="width: 18%" />
+<col style="width: 45%" />
+<col style="width: 35%" />
+</colgroup>
+<thead>
+<tr>
+<th>Phase</th>
+<th>Protocol Version</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Bootstrap (V9)</strong></td>
+<td>Major version 9</td>
+<td>Initial Conway era. DRep voting thresholds for most actions are
+effectively 0 (SPOs and Constitutional Committee decide). DRep
+registration and voting exist but DRep votes don’t drive ratification
+for most proposal types.</td>
+</tr>
+<tr>
+<td><strong>Post-Bootstrap (V10+)</strong></td>
+<td>Major version 10+</td>
+<td>Full Conway governance. DRep votes actively determine ratification
+outcomes. DRep expiry handling becomes more precise — the dormant
+counter is subtracted at registration/vote/update time.</td>
+</tr>
+</tbody>
+</table>
+<p>The transition from V9 to V10 happens via a hard fork initiation
+proposal that is itself ratified under V9 rules.</p>
+<hr />
+<h2 id="initial-expiry-at-registration">1. Initial Expiry at
+Registration</h2>
+<p>When a DRep registers, they receive an initial expiry epoch.</p>
+<h3 id="v9-bootstrap-phase">V9 (Bootstrap Phase)</h3>
+<p>All implementations agree:</p>
+<pre><code>initialExpiry = registrationEpoch + drepActivity</code></pre>
+<p>Example: DRep registers at epoch 520, <code>drepActivity = 20</code>
+-&gt; expiry = 540.</p>
+<p>The dormant counter is <strong>not</strong> subtracted. This is
+because in V9, the dormant counter handling at epoch boundaries (via
+flush or on-the-fly addition) will extend the expiry implicitly.</p>
+<h3 id="v10-post-bootstrap-phase">V10+ (Post-Bootstrap Phase)</h3>
+<pre><code>initialExpiry = registrationEpoch + drepActivity - numDormantEpochs</code></pre>
+<p>The subtraction of <code>numDormantEpochs</code> compensates for the
+fact that at ratification time, <code>numDormantEpochs</code> will be
+added back. Without this subtraction, a DRep registering during a
+dormant period would get a double benefit.</p>
+<p><strong>Example</strong>: DRep registers at epoch 560 when
+<code>numDormantEpochs = 5</code>, <code>drepActivity = 20</code>: -
+Stored expiry = 560 + 20 - 5 = 575 - At ratification, effective expiry =
+575 + 5 = 580 - Net effect: 560 + 20 = 580 (same as intended)</p>
+<table>
+<colgroup>
+<col style="width: 37%" />
+<col style="width: 30%" />
+<col style="width: 32%" />
+</colgroup>
+<thead>
+<tr>
+<th>Implementation</th>
+<th>V9 Formula</th>
+<th>V10 Formula</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Haskell</td>
+<td><code>epoch + drepActivity</code></td>
+<td><code>epoch + drepActivity</code> (V10 subtraction not in local
+checkout — may be in newer branch)</td>
+</tr>
+<tr>
+<td>Amaru</td>
+<td><code>epoch + drepActivity</code></td>
+<td><code>epoch + drepActivity - consecutive_dormant_epochs</code></td>
+</tr>
+<tr>
+<td>Yano</td>
+<td><code>epoch + drepActivity</code></td>
+<td><code>epoch + drepActivity - numDormantEpochs</code></td>
+</tr>
+<tr>
+<td>Yaci Store</td>
+<td>Computed post-hoc from history</td>
+<td>Computed post-hoc from history</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="dormant-epoch-counter">2. Dormant Epoch Counter</h2>
+<p>Each implementation tracks whether epochs are dormant and maintains a
+counter.</p>
+<h3 id="when-is-an-epoch-dormant">When is an epoch dormant?</h3>
+<p>At each epoch boundary (N -&gt; N+1), after ratification and expiry
+processing: - Count the <strong>remaining active proposals</strong>
+(proposals that were not ratified or expired at this boundary) - If
+remaining count = 0 -&gt; the epoch is <strong>dormant</strong> - If
+remaining count &gt; 0 -&gt; the epoch is <strong>not
+dormant</strong></p>
+<p><strong>Important</strong>: The Conway first epoch (epoch 507 on
+mainnet) is always dormant because no proposals can exist before
+governance bootstraps.</p>
+<h3 id="counter-behavior-by-implementation">Counter behavior by
+implementation</h3>
+<table>
+<colgroup>
+<col style="width: 31%" />
+<col style="width: 18%" />
+<col style="width: 22%" />
+<col style="width: 27%" />
+</colgroup>
+<thead>
+<tr>
+<th>Implementation</th>
+<th>Storage</th>
+<th>Increment</th>
+<th>Reset/Flush</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Haskell</strong></td>
+<td><code>vsNumDormantEpochs</code> (single integer in VState)</td>
+<td>+1 at EPOCH rule when previous epoch had empty proposal
+snapshot</td>
+<td>Reset to 0 when a transaction containing a new proposal triggers the
+CERTS flush</td>
+</tr>
+<tr>
+<td><strong>Amaru</strong></td>
+<td><code>consecutive_dormant_epochs</code> (persisted integer)</td>
+<td>+1 at epoch boundary when no active proposals remain</td>
+<td><strong>Never resets</strong>. The counter monotonically increases.
+V10 registration subtracts it, and reads add it back.</td>
+</tr>
+<tr>
+<td><strong>Yano</strong></td>
+<td><code>numDormantEpochs</code> (RocksDB key 0x6E)</td>
+<td>+1 at epoch boundary when <code>!epochHadActiveProposals</code></td>
+<td>Reset to 0 during flush at epoch boundary (when proposals exist and
+counter &gt; 0)</td>
+</tr>
+<tr>
+<td><strong>Yaci Store</strong></td>
+<td><code>gov_epoch_activity.dormant_epoch_count</code> (DB table)</td>
+<td>+1 when current epoch is dormant</td>
+<td>Resets to 0 on any non-dormant epoch</td>
+</tr>
+</tbody>
+</table>
+<h3 id="example-mainnet-epochs-507-511">Example: Mainnet epochs
+507-511</h3>
+<table>
+<colgroup>
+<col style="width: 9%" />
+<col style="width: 28%" />
+<col style="width: 21%" />
+<col style="width: 19%" />
+<col style="width: 20%" />
+</colgroup>
+<thead>
+<tr>
+<th>Epoch</th>
+<th>Proposals remaining?</th>
+<th>Haskell counter</th>
+<th>Yano counter</th>
+<th>Amaru counter</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>507 (Conway start)</td>
+<td>0 (no proposals yet)</td>
+<td>0 -&gt; 1</td>
+<td>0 -&gt; 1</td>
+<td>0 -&gt; 1</td>
+</tr>
+<tr>
+<td>508</td>
+<td>Yes (first proposals submitted)</td>
+<td>1 -&gt; 0 (flush)</td>
+<td>1 -&gt; 0 (flush)</td>
+<td>1 (stays, never resets)</td>
+</tr>
+<tr>
+<td>509</td>
+<td>Yes</td>
+<td>0</td>
+<td>0</td>
+<td>1</td>
+</tr>
+<tr>
+<td>510</td>
+<td>Yes</td>
+<td>0</td>
+<td>0</td>
+<td>1</td>
+</tr>
+<tr>
+<td>511</td>
+<td>Yes</td>
+<td>0</td>
+<td>0</td>
+<td>1</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="stored-expiry-modification-at-epoch-boundaries">3. Stored Expiry
+Modification at Epoch Boundaries</h2>
+<p>This is where the implementations diverge most significantly in their
+internal mechanics, while producing equivalent results.</p>
+<h3 id="haskell-flush-on-proposal-in-certs-rule">Haskell:
+Flush-on-proposal (in CERTS rule)</h3>
+<p>Haskell does <strong>not</strong> flush at the epoch boundary.
+Instead, the flush happens during <strong>transaction
+processing</strong> in the CERTS rule:</p>
+<div class="sourceCode" id="cb3"><pre
+class="sourceCode haskell"><code class="sourceCode haskell"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="co">-- When a transaction contains governance proposals AND numDormantEpochs &gt; 0:</span></span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a><span class="kw">if</span> hasProposals <span class="op">&amp;&amp;</span> isNumDormantEpochsNonZero</span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a>  <span class="kw">then</span></span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a>    <span class="co">-- Add numDormantEpochs to EVERY DRep&#39;s stored drepExpiry</span></span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a>    certState <span class="op">&amp;</span> vsDRepsL <span class="op">%~</span> (<span class="op">&lt;&amp;&gt;</span> (drepExpiryL <span class="op">%~</span> (<span class="op">+</span> numDormantEpochs)))</span>
+<span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a>    <span class="co">-- Reset counter to 0</span></span>
+<span id="cb3-7"><a href="#cb3-7" aria-hidden="true" tabindex="-1"></a>    <span class="op">&amp;</span> vsNumDormantEpochsL <span class="op">.~</span> <span class="dv">0</span></span></code></pre></div>
+<p>After the flush, <code>drepExpiry</code> contains the fully
+materialized value. The ratification check is simply
+<code>currentEpoch &gt; drepExpiry</code>.</p>
+<p><strong>Key detail</strong>: The flush iterates ALL registered DReps
+(the entire <code>vsDReps</code> map), regardless of whether they are
+expired or active. There is no non-revival guard — an expired DRep gets
+bumped but may still be expired after the bump.</p>
+<h3 id="yano-flush-at-boundary-in-governanceepochprocessor">Yano:
+Flush-at-boundary (in GovernanceEpochProcessor)</h3>
+<p>Yano flushes at the <strong>epoch boundary</strong> rather than
+during transaction processing:</p>
+<div class="sourceCode" id="cb4"><pre
+class="sourceCode java"><code class="sourceCode java"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="cf">if</span> <span class="op">(</span>epochHadActiveProposals <span class="op">&amp;&amp;</span> numDormant <span class="op">&gt;</span> <span class="dv">0</span><span class="op">)</span> <span class="op">{</span></span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a>    <span class="co">// FLUSH: bump every registered DRep&#39;s stored expiry</span></span>
+<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a>    <span class="cf">for</span> <span class="op">(</span>DRepStateRecord state <span class="op">:</span> allDRepStates<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb4-4"><a href="#cb4-4" aria-hidden="true" tabindex="-1"></a>        <span class="co">// Skip deregistered tombstone records</span></span>
+<span id="cb4-5"><a href="#cb4-5" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> <span class="op">(</span><span class="fu">isDeregistered</span><span class="op">(</span>state<span class="op">))</span> <span class="cf">continue</span><span class="op">;</span></span>
+<span id="cb4-6"><a href="#cb4-6" aria-hidden="true" tabindex="-1"></a>        </span>
+<span id="cb4-7"><a href="#cb4-7" aria-hidden="true" tabindex="-1"></a>        <span class="dt">int</span> bumped <span class="op">=</span> state<span class="op">.</span><span class="fu">expiryEpoch</span><span class="op">()</span> <span class="op">+</span> numDormant<span class="op">;</span></span>
+<span id="cb4-8"><a href="#cb4-8" aria-hidden="true" tabindex="-1"></a>        <span class="co">// Non-revival guard: don&#39;t write bumped value if still expired</span></span>
+<span id="cb4-9"><a href="#cb4-9" aria-hidden="true" tabindex="-1"></a>        <span class="dt">int</span> newExpiry <span class="op">=</span> <span class="op">(</span>bumped <span class="op">&lt;</span> newEpoch<span class="op">)</span> <span class="op">?</span> state<span class="op">.</span><span class="fu">expiryEpoch</span><span class="op">()</span> <span class="op">:</span> bumped<span class="op">;</span></span>
+<span id="cb4-10"><a href="#cb4-10" aria-hidden="true" tabindex="-1"></a>        <span class="dt">boolean</span> active <span class="op">=</span> newExpiry <span class="op">&gt;=</span> newEpoch<span class="op">;</span></span>
+<span id="cb4-11"><a href="#cb4-11" aria-hidden="true" tabindex="-1"></a>        <span class="fu">store</span><span class="op">(</span>newExpiry<span class="op">,</span> active<span class="op">);</span></span>
+<span id="cb4-12"><a href="#cb4-12" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb4-13"><a href="#cb4-13" aria-hidden="true" tabindex="-1"></a>    <span class="fu">resetCounter</span><span class="op">(</span><span class="dv">0</span><span class="op">);</span></span>
+<span id="cb4-14"><a href="#cb4-14" aria-hidden="true" tabindex="-1"></a>    </span>
+<span id="cb4-15"><a href="#cb4-15" aria-hidden="true" tabindex="-1"></a><span class="op">}</span> <span class="cf">else</span> <span class="cf">if</span> <span class="op">(!</span>epochHadActiveProposals<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb4-16"><a href="#cb4-16" aria-hidden="true" tabindex="-1"></a>    <span class="fu">incrementCounter</span><span class="op">(</span>numDormant <span class="op">+</span> <span class="dv">1</span><span class="op">);</span></span>
+<span id="cb4-17"><a href="#cb4-17" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p><strong>Yano’s non-revival guard</strong>: If
+<code>bumped &lt; newEpoch</code>, the DRep’s stored expiry is left
+unchanged. This prevents writing a higher (but still expired) value.
+This is an optimization — the DRep stays expired either way, but Yano
+avoids unnecessary writes.</p>
+<p><strong>Timing equivalence</strong>: Yano flushes at the epoch
+boundary before ratification. Haskell flushes when the first
+proposal-bearing transaction arrives (which is within the same epoch
+boundary processing). Since both flush before ratification runs, the
+effective expiry during tally is identical.</p>
+<h3 id="amaru-never-flush-compute-on-the-fly">Amaru: Never flush
+(compute-on-the-fly)</h3>
+<p>Amaru never modifies stored <code>valid_until</code> at epoch
+boundaries. Instead, it adds the counter at read time:</p>
+<div class="sourceCode" id="cb5"><pre
+class="sourceCode rust"><code class="sourceCode rust"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="co">// When building governance summary for ratification:</span></span>
+<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a>DRepState <span class="op">{</span></span>
+<span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a>    valid_until<span class="op">:</span> <span class="cn">Some</span>(stored_valid_until <span class="op">+</span> consecutive_dormant_epochs)<span class="op">,</span></span>
+<span id="cb5-4"><a href="#cb5-4" aria-hidden="true" tabindex="-1"></a>    <span class="op">...</span></span>
+<span id="cb5-5"><a href="#cb5-5" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>Since <code>consecutive_dormant_epochs</code> monotonically increases
+and V10 registration subtracts it, the math works out: - Stored value =
+<code>regEpoch + activity - D_at_registration</code> - Effective =
+stored + D_current =
+<code>regEpoch + activity + (D_current - D_at_registration)</code> -
+<code>(D_current - D_at_registration)</code> = dormant epochs
+accumulated since registration</p>
+<h3 id="yaci-store-full-recomputation-each-epoch">Yaci Store: Full
+recomputation each epoch</h3>
+<p>Yaci Store doesn’t maintain live state. At each epoch boundary, it
+recomputes every DRep’s expiry from the full history (registration
+epoch, last vote/update epoch, dormant epoch set, V9 bonus). This is
+expensive but trivially correct and rollback-safe.</p>
+<hr />
+<h2 id="effective-expiry-for-ratification">4. Effective Expiry for
+Ratification</h2>
+<p>At ratification time, each implementation determines which DReps are
+“active” (their delegated stake counts in the tally).</p>
+<table>
+<colgroup>
+<col style="width: 42%" />
+<col style="width: 37%" />
+<col style="width: 20%" />
+</colgroup>
+<thead>
+<tr>
+<th>Implementation</th>
+<th>Active check</th>
+<th>Where</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Haskell</strong></td>
+<td><code>currentEpoch &gt; drepExpiry</code> -&gt; expired
+(excluded)</td>
+<td><code>Ratify.hs: dRepAcceptedRatio</code></td>
+</tr>
+<tr>
+<td><strong>Amaru</strong></td>
+<td><code>valid_until &gt; Some(epoch)</code> -&gt; active</td>
+<td><code>dreps.rs: is_active()</code></td>
+</tr>
+<tr>
+<td><strong>Yano</strong></td>
+<td><code>effectiveExpiry &gt;= newEpoch</code> -&gt; active, where
+<code>effectiveExpiry = storedExpiry + numDormantEpochs</code></td>
+<td><code>GovernanceEpochProcessor: buildActiveDRepKeys()</code></td>
+</tr>
+<tr>
+<td><strong>Yaci Store</strong></td>
+<td>Checks computed <code>active_until</code> column</td>
+<td><code>DRepExpiryService</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="boundary-semantics">Boundary semantics</h3>
+<p>The exact boundary condition matters: - <strong>Haskell</strong>:
+<code>currentEpoch &gt; drepExpiry</code> means a DRep with
+<code>drepExpiry = 540</code> is active at epoch 540, expired at epoch
+541. - <strong>Yano</strong>:
+<code>effectiveExpiry &gt;= newEpoch</code> means a DRep with
+<code>effectiveExpiry = 540</code> is active at epoch 540, expired at
+epoch 541. - <strong>Amaru</strong>:
+<code>valid_until &gt; Some(epoch)</code> means a DRep with
+<code>valid_until = 540</code> is active at epoch 539, expired at epoch
+540.</p>
+<p>Amaru’s boundary is off-by-one relative to Haskell/Yano: it uses
+strict <code>&gt;</code> while the others use <code>&gt;=</code>
+(Haskell) / <code>&gt;=</code> (Yano). This is compensated by Amaru
+computing <code>valid_until</code> differently (likely 1 higher in
+practice).</p>
+<hr />
+<h2 id="expiry-refresh-on-vote-and-update">5. Expiry Refresh on Vote and
+Update</h2>
+<p>When a DRep votes or updates their metadata, their expiry is
+refreshed.</p>
+<h3 id="v9-bootstrap-phase-1">V9 (Bootstrap Phase)</h3>
+<table>
+<colgroup>
+<col style="width: 42%" />
+<col style="width: 25%" />
+<col style="width: 31%" />
+</colgroup>
+<thead>
+<tr>
+<th>Implementation</th>
+<th>On Vote</th>
+<th>On Update</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Haskell</strong></td>
+<td><code>drepExpiry = currentEpoch + drepActivity</code></td>
+<td><code>drepExpiry = currentEpoch + drepActivity</code></td>
+</tr>
+<tr>
+<td><strong>Yano</strong></td>
+<td>Only <code>lastInteractionEpoch</code> updated (expiry recalculated
+at boundary)</td>
+<td>Only <code>lastInteractionEpoch</code> updated</td>
+</tr>
+<tr>
+<td><strong>Amaru</strong></td>
+<td>No explicit expiry refresh visible</td>
+<td>No explicit expiry refresh visible</td>
+</tr>
+<tr>
+<td><strong>Yaci Store</strong></td>
+<td>Records interaction; expiry recomputed at next boundary</td>
+<td>Records interaction; expiry recomputed at next boundary</td>
+</tr>
+</tbody>
+</table>
+<p>In V9, Haskell directly sets the stored expiry on vote/update. Yano
+tracks the interaction epoch and lets the epoch boundary recalculate.
+The result is equivalent because the V9 expiry formula is
+<code>max(regEpoch, lastInteractionEpoch) + drepActivity + dormantCount</code>.</p>
+<h3 id="v10-post-bootstrap-phase-1">V10+ (Post-Bootstrap Phase)</h3>
+<table>
+<colgroup>
+<col style="width: 42%" />
+<col style="width: 25%" />
+<col style="width: 31%" />
+</colgroup>
+<thead>
+<tr>
+<th>Implementation</th>
+<th>On Vote</th>
+<th>On Update</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Haskell</strong></td>
+<td><code>drepExpiry = currentEpoch + drepActivity</code></td>
+<td><code>drepExpiry = currentEpoch + drepActivity</code></td>
+</tr>
+<tr>
+<td><strong>Yano</strong></td>
+<td><code>storedExpiry = currentEpoch + drepActivity - numDormantEpochs</code></td>
+<td><code>storedExpiry = currentEpoch + drepActivity - numDormantEpochs</code></td>
+</tr>
+<tr>
+<td><strong>Amaru</strong></td>
+<td>No explicit refresh visible</td>
+<td>No explicit refresh visible</td>
+</tr>
+</tbody>
+</table>
+<p>In V10, Yano subtracts the pending dormant counter (same as
+registration). Haskell does NOT subtract because in Haskell, the flush
+has already materialized all dormant epochs into the stored value —
+there is no pending counter to subtract.</p>
+<hr />
+<h2 id="the-v9-bonus-bootstrap-compatibility">6. The V9 Bonus (Bootstrap
+Compatibility)</h2>
+<p>DReps that registered during the initial dormant bootstrapping period
+of Conway (before any proposals existed) have a special case. In
+Haskell, when the first proposal arrives and triggers a flush, ALL DReps
+get <code>numDormantEpochs</code> added to their stored expiry. This
+includes DReps registered during the dormant period — they effectively
+get a “bonus” extension.</p>
+<p>For example, on mainnet: - Conway starts at epoch 507 (dormant — no
+proposals) - First proposal submitted in epoch 508 block -&gt; triggers
+flush with counter=1 - A DRep registered at epoch 507 with
+<code>drepActivity=20</code>: - Initial stored expiry: 507 + 20 = 527 -
+After flush: 527 + 1 = 528 - Net effect: as if registered at epoch
+508</p>
+<p>Yaci Store and the older Yano code explicitly computed this as a “V9
+bonus” to replicate the Haskell behavior. In the current Yano
+counter-based approach, the bonus emerges naturally from the flush — no
+special handling needed.</p>
+<hr />
+<h2 id="dbsync-active_until-convention">7. DBSync
+<code>active_until</code> Convention</h2>
+<p>DBSync’s <code>drep_distr.active_until</code> column represents the
+<strong>effective expiry at snapshot time</strong>, which is
+<code>drepExpiry + vsNumDormantEpochs</code> (Haskell’s on-the-fly
+computation). It is NOT the raw stored <code>drepExpiry</code>.</p>
+<p>This means: - <code>active_until</code> changes across epochs even if
+the DRep does nothing, because <code>vsNumDormantEpochs</code>
+accumulates - It jumps when dormant epochs are flushed (the flush
+materializes into <code>drepExpiry</code>, then
+<code>vsNumDormantEpochs</code> resets) - Direct comparison with Yano’s
+<code>stored_expiry</code> is not meaningful — they use different
+internal representations</p>
+<p>For correctness verification, compare: - <strong>DRep counts</strong>
+(should match exactly) - <strong>Delegated amounts</strong> (should
+match within staking reward timing tolerance) - <strong>Ratification
+outcomes</strong> (the definitive test — same proposals
+ratified/rejected at same boundaries)</p>
+<hr />
+<h2 id="correctness-assessment">8. Correctness Assessment</h2>
+<h3 id="is-yanos-implementation-correct-according-to-haskell">Is Yano’s
+implementation correct according to Haskell?</h3>
+<p><strong>Yes, with high confidence.</strong> The mathematical
+equivalence holds:</p>
+<ol type="1">
+<li><p><strong>Registration formula</strong>: V9
+<code>epoch + drepActivity</code> matches Haskell. V10
+<code>epoch + drepActivity - numDormant</code> compensates correctly for
+the pending counter.</p></li>
+<li><p><strong>Flush semantics</strong>: Yano flushes at epoch boundary;
+Haskell flushes on first proposal-bearing transaction. Both happen
+before ratification, so the effective expiry during tally is
+identical.</p></li>
+<li><p><strong>Counter tracking</strong>: Yano increments on dormant
+epochs, resets on flush — same as Haskell’s
+<code>vsNumDormantEpochs</code>.</p></li>
+<li><p><strong>Active check</strong>:
+<code>effectiveExpiry &gt;= newEpoch</code> produces the same result as
+Haskell’s <code>currentEpoch &gt; drepExpiry</code> (both: DRep with
+expiry=540 is active at 540, expired at 541).</p></li>
+<li><p><strong>Flush scope</strong>: Yano iterates ALL registered DReps
+(<code>getAllDRepStates()</code>), skipping only deregistered
+tombstones. This matches Haskell which iterates the full
+<code>vsDReps</code> map (deregistered DReps are removed from Haskell’s
+map entirely).</p></li>
+<li><p><strong>Non-revival guard</strong>: Yano has an explicit guard
+(<code>bumped &lt; newEpoch ? oldExpiry : bumped</code>). Haskell does
+not need one because the ratification check
+(<code>currentEpoch &gt; drepExpiry</code>) handles it implicitly — a
+DRep that is still expired after the bump is simply excluded from the
+tally.</p></li>
+</ol>
+<h3 id="what-matters-ratification-outcome">What matters: ratification
+outcome</h3>
+<p>The ultimate test is not whether intermediate stored values match
+(they can’t — different internal representations), but whether the
+<strong>ratification tally at each epoch boundary produces the same set
+of active DReps with the same effective expiry</strong>. This is what
+determines whether proposals get ratified or rejected.</p>
+<p>Verification at epoch 575 (the critical boundary for the -12T
+treasury fix) will confirm this.</p>
+<hr />
+<h2 id="appendix-file-references">Appendix: File References</h2>
+<h3 id="haskell-cardano-ledger">Haskell (cardano-ledger)</h3>
+<ul>
+<li><code>libs/cardano-ledger-core/src/Cardano/Ledger/DRepDistr.hs</code>
+— <code>DRepState</code> record</li>
+<li><code>libs/cardano-ledger-core/src/Cardano/Ledger/CertState.hs</code>
+— <code>VState</code>, <code>vsNumDormantEpochs</code></li>
+<li><code>eras/conway/impl/src/Cardano/Ledger/Conway/Rules/GovCert.hs</code>
+— registration/update rules</li>
+<li><code>eras/conway/impl/src/Cardano/Ledger/Conway/Rules/Certs.hs</code>
+— flush on proposal + vote expiry refresh</li>
+<li><code>eras/conway/impl/src/Cardano/Ledger/Conway/Rules/Epoch.hs</code>
+— <code>updateNumDormantEpochs</code></li>
+<li><code>eras/conway/impl/src/Cardano/Ledger/Conway/Rules/Ratify.hs</code>
+— <code>dRepAcceptedRatio</code></li>
+</ul>
+<h3 id="amaru-rust">Amaru (Rust)</h3>
+<ul>
+<li><code>crates/amaru-ledger/src/summary/governance.rs</code> —
+<code>GovernanceSummary</code>, effective expiry computation</li>
+<li><code>crates/amaru-ledger/src/rules/transaction/phase_one/certificates.rs</code>
+— V9/V10 registration</li>
+<li><code>crates/amaru-ledger/src/state.rs</code> — dormant counter
+increment</li>
+<li><code>crates/amaru-ledger/src/governance/ratification/dreps.rs</code>
+— <code>is_active()</code> check</li>
+</ul>
+<h3 id="yano-java">Yano (Java)</h3>
+<ul>
+<li><code>ledger-state/.../governance/epoch/GovernanceEpochProcessor.java</code>
+— <code>updateDRepExpiry()</code>,
+<code>buildActiveDRepKeys()</code></li>
+<li><code>ledger-state/.../governance/GovernanceBlockProcessor.java</code>
+— <code>processDRepRegistration()</code>, vote/update refresh</li>
+<li><code>ledger-state/.../governance/GovernanceStateStore.java</code> —
+<code>getNumDormantEpochs()</code>,
+<code>storeNumDormantEpochs()</code></li>
+<li><code>ledger-state/.../governance/model/DRepStateRecord.java</code>
+— stored record</li>
+</ul>
+<h3 id="yaci-store-java">Yaci Store (Java)</h3>
+<ul>
+<li><code>aggregates/governance-aggr/.../util/DRepExpiryUtil.java</code>
+— full expiry calculation</li>
+<li><code>aggregates/governance-aggr/.../service/DRepExpiryService.java</code>
+— epoch boundary computation</li>
+<li><code>aggregates/governance-aggr/.../processor/GovEpochActivityProcessor.java</code>
+— dormant tracking</li>
+</ul>
+</body>
+</html>

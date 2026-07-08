@@ -119,6 +119,80 @@ final class AppLedgerStore implements AutoCloseable {
         return blocks;
     }
 
+    private static final String PRUNE_CURSOR = "prune_body_cursor";
+
+    long pruneCursor() {
+        return metaLong(PRUNE_CURSOR, 0L);
+    }
+
+    /**
+     * Strip message BODIES from finalized blocks in (pruneCursor, toHeight]
+     * (retention / data-minimization, ADR 006 E4.4). Headers, message ids,
+     * messages-root, state-root and finality certs are kept, so block hashes,
+     * the prev-hash chain, inclusion proofs and evidence remain verifiable —
+     * only the (large / possibly sensitive) payloads are dropped. With encrypted
+     * bodies this is crypto-shredding.
+     * <p>
+     * Note: from-genesis catch-up past the prune horizon is no longer possible
+     * (replay needs bodies) — new members onboard from a snapshot (E5.3).
+     *
+     * @return number of blocks pruned
+     */
+    int pruneBodiesBelow(long toHeight) {
+        long from = pruneCursor() + 1;
+        int pruned = 0;
+        try {
+            for (long h = from; h <= toHeight; h++) {
+                byte[] bytes = db.get(blocksCf, heightKey(h));
+                if (bytes == null) {
+                    continue;
+                }
+                AppBlock block = AppBlockCodec.deserialize(bytes);
+                boolean hasBodies = block.messages().stream().anyMatch(m -> m.getSize() > 0);
+                if (hasBodies) {
+                    AppBlock stripped = stripBodies(block);
+                    try (WriteBatch batch = new WriteBatch();
+                         WriteOptions writeOptions = new WriteOptions()) {
+                        batch.put(blocksCf, heightKey(h), AppBlockCodec.serialize(stripped));
+                        batch.put(metaCf, PRUNE_CURSOR.getBytes(StandardCharsets.UTF_8), longBytes(h));
+                        db.write(writeOptions, batch);
+                    }
+                    pruned++;
+                } else {
+                    metaPutLong(PRUNE_CURSOR, h);
+                }
+            }
+        } catch (RocksDBException e) {
+            throw new RuntimeException("Failed to prune app block bodies up to " + toHeight, e);
+        }
+        if (pruned > 0) {
+            log.info("Pruned bodies from {} app block(s) up to height {}", pruned, toHeight);
+        }
+        return pruned;
+    }
+
+    private static AppBlock stripBodies(AppBlock block) {
+        List<com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage> stripped =
+                new ArrayList<>(block.messages().size());
+        for (var message : block.messages()) {
+            stripped.add(com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage.builder()
+                    .version(message.getVersion())
+                    .messageId(message.getMessageId())   // keep id → messages-root + inclusion still verify
+                    .chainId(message.getChainId())
+                    .topic(message.getTopic())
+                    .sender(message.getSender())
+                    .senderSeq(message.getSenderSeq())
+                    .expiresAt(message.getExpiresAt())
+                    .body(new byte[0])                    // drop the payload
+                    .authScheme(message.getAuthScheme())
+                    .authProof(new byte[0])
+                    .build());
+        }
+        return new AppBlock(block.version(), block.chainId(), block.height(), block.prevHash(),
+                block.l1Slot(), block.l1BlockHash(), block.timestamp(), block.messagesRoot(),
+                block.stateRoot(), stripped, block.proposer(), block.cert());
+    }
+
     /** Height the message id was finalized at, or empty if never included. */
     Optional<Long> messageHeight(byte[] messageId) {
         try {
