@@ -1,0 +1,13 @@
+; E7.1 in-body ZK proof envelope (ADR app-layer/006).
+; Rides inside the opaque app-message body as an application convention — the
+; framework never parses it; only the appchain-zk plugin (state-machine=zk-gate)
+; does. The message-id (blake2b over the signed body) covers this proof, so it
+; is tamper-evident and provable/anchorable like any other message content.
+
+zk-proof-body = [
+    circuit-id   : tstr,        ; matches a pinned yano.app-chain.zk.circuits[i].id
+    proof-system : tstr,        ; "groth16" | "plonk"
+    curve        : tstr,        ; e.g. "bls12_381"
+    proof        : bstr,        ; the proof bytes (canonical backend encoding)
+    public-inputs: [* bstr],    ; each a big-endian unsigned field element
+]

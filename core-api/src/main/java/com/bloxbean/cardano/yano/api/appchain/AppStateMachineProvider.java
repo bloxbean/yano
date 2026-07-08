@@ -15,4 +15,14 @@ public interface AppStateMachineProvider {
 
     /** Create a fresh state machine instance for a chain. */
     AppStateMachine create();
+
+    /**
+     * Create a state machine with access to its chain's config (ADR
+     * app-layer/006). Config-driven plugins (e.g. the ZK verifier, which needs a
+     * circuit → VK registry) override this; the default ignores the context so
+     * existing no-config providers keep working unchanged.
+     */
+    default AppStateMachine create(AppStateMachineContext context) {
+        return create();
+    }
 }

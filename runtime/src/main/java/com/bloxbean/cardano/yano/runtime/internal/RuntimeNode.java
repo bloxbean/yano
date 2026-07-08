@@ -580,7 +580,17 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 webhookUrls,
                 booleanOf(get.apply("retention.enabled"), false),
                 (int) parseLong(get.apply("retention.keep-blocks"), 0),
-                collectPrefixed.apply("sinks."));
+                pluginSettings(collectPrefixed, "sinks.", "zk."));
+    }
+
+    /** Union of the dynamic plugin config sub-maps under the given prefixes. */
+    private static Map<String, String> pluginSettings(
+            java.util.function.Function<String, Map<String, String>> collectPrefixed, String... prefixes) {
+        Map<String, String> merged = new java.util.LinkedHashMap<>();
+        for (String prefix : prefixes) {
+            merged.putAll(collectPrefixed.apply(prefix));
+        }
+        return merged;
     }
 
     private static String stringOf(Object value, String def) {
