@@ -648,10 +648,11 @@ public class YanoProducer {
         appChainWebhooks.ifPresent(v -> globals.put(YanoPropertyKeys.AppChain.WEBHOOKS, v));
         globals.put(YanoPropertyKeys.AppChain.RETENTION_ENABLED, appChainRetentionEnabled);
         globals.put(YanoPropertyKeys.AppChain.RETENTION_KEEP_BLOCKS, appChainRetentionKeepBlocks);
-        // Sink plugin config (yano.app-chain.sinks.<scheme>.*) is dynamic — copy
-        // every such property verbatim so FinalizedStreamSinkFactory plugins
-        // (e.g. Kafka) can be enabled from node-app config, not only in tests.
+        // Dynamic plugin config (yano.app-chain.sinks.* and yano.app-chain.zk.*)
+        // is copied verbatim so sink factories and the ZK verifier plugin can be
+        // enabled from node-app config, not only in tests.
         forwardDynamicKeys("yano.app-chain.sinks.", globals);
+        forwardDynamicKeys("yano.app-chain.zk.", globals);
         if (!appChainList.isEmpty() && appChainEnabled) {
             globals.put(YanoPropertyKeys.AppChain.CHAINS, appChainList);
             log.info("App-chain multi-chain config: {} chain(s)", appChainList.size());
@@ -826,9 +827,9 @@ public class YanoProducer {
                 config.getOptionalValue(prefix + suffix, String.class)
                         .ifPresent(value -> chain.put(suffix, value));
             }
-            // Dynamic sink-plugin keys: chains[i].sinks.<scheme>.* -> suffix "sinks..."
+            // Dynamic plugin keys: chains[i].sinks.* and chains[i].zk.* -> suffix
             for (String property : config.getPropertyNames()) {
-                if (property.startsWith(prefix + "sinks.")) {
+                if (property.startsWith(prefix + "sinks.") || property.startsWith(prefix + "zk.")) {
                     config.getOptionalValue(property, String.class)
                             .ifPresent(value -> chain.put(property.substring(prefix.length()), value));
                 }

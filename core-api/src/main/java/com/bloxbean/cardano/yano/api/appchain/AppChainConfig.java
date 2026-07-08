@@ -55,7 +55,7 @@ public record AppChainConfig(String chainId,
                              List<String> webhookUrls,
                              boolean retentionEnabled,
                              int retentionKeepBlocks,
-                             Map<String, String> sinkSettings) {
+                             Map<String, String> pluginSettings) {
 
     public static final int DEFAULT_MAX_MESSAGE_BYTES = 65536;
     public static final long DEFAULT_MAX_TTL_SECONDS = 3600;
@@ -89,7 +89,7 @@ public record AppChainConfig(String chainId,
         webhookUrls = webhookUrls != null ? List.copyOf(webhookUrls) : List.of();
         if (retentionKeepBlocks < 0)
             retentionKeepBlocks = 0;
-        sinkSettings = sinkSettings != null ? Map.copyOf(sinkSettings) : Map.of();
+        pluginSettings = pluginSettings != null ? Map.copyOf(pluginSettings) : Map.of();
     }
 
     public static Builder builder(String chainId) {
@@ -116,7 +116,7 @@ public record AppChainConfig(String chainId,
         private List<String> webhookUrls = List.of();
         private boolean retentionEnabled;
         private int retentionKeepBlocks;
-        private Map<String, String> sinkSettings = Map.of();
+        private Map<String, String> pluginSettings = Map.of();
 
         private Builder(String chainId) {
             this.chainId = chainId;
@@ -139,14 +139,14 @@ public record AppChainConfig(String chainId,
         public Builder webhookUrls(List<String> value) { this.webhookUrls = value; return this; }
         public Builder retentionEnabled(boolean value) { this.retentionEnabled = value; return this; }
         public Builder retentionKeepBlocks(int value) { this.retentionKeepBlocks = value; return this; }
-        public Builder sinkSettings(Map<String, String> value) { this.sinkSettings = value; return this; }
+        public Builder pluginSettings(Map<String, String> value) { this.pluginSettings = value; return this; }
 
         public AppChainConfig build() {
             return new AppChainConfig(chainId, signingKeyHex, memberKeysHex, peers,
                     maxMessageBytes, maxTtlSeconds, defaultTtlSeconds, proposerKeyHex,
                     threshold, blockIntervalMs, maxBlockMessages, stateMachineId,
                     ledgerPath, anchor, l1StabilityDepth, webhookUrls,
-                    retentionEnabled, retentionKeepBlocks, sinkSettings);
+                    retentionEnabled, retentionKeepBlocks, pluginSettings);
         }
     }
 

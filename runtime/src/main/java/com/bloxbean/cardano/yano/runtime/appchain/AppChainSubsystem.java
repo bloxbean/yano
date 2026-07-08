@@ -123,7 +123,13 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         this.pool = new AppMsgPool(10_000);
         this.stateMachine = stateMachine != null
                 ? stateMachine
-                : resolveStateMachine(config.stateMachineId(), pluginClassLoader, log);
+                : resolveStateMachine(config.stateMachineId(), pluginClassLoader,
+                        new com.bloxbean.cardano.yano.api.appchain.AppStateMachineContext() {
+                            @Override public String chainId() { return config.chainId(); }
+                            @Override public java.util.Map<String, String> settings() {
+                                return config.pluginSettings();
+                            }
+                        }, log);
         this.ledgerPath = (ledgerPath != null ? ledgerPath : "./app-chain") + "/" + config.chainId();
 
         if (!memberKeys.contains(signer.publicKeyHex())) {
@@ -155,7 +161,9 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
      * ServiceLoader on the plugin classloader (custom app chains deployed as
      * plugin jars on a stock yano distribution) and the context classloader.
      */
-    private static AppStateMachine resolveStateMachine(String id, ClassLoader pluginClassLoader, Logger log) {
+    private static AppStateMachine resolveStateMachine(String id, ClassLoader pluginClassLoader,
+                                                       com.bloxbean.cardano.yano.api.appchain.AppStateMachineContext ctx,
+                                                       Logger log) {
         if (OrderedLogStateMachine.ID.equals(id)) {
             return new OrderedLogStateMachine();
         }
@@ -173,7 +181,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                     if (id.equals(provider.id())) {
                         log.info("App-chain state machine '{}' loaded via provider {}",
                                 id, provider.getClass().getName());
-                        return provider.create();
+                        return provider.create(ctx);
                     }
                     available.add(provider.id());
                 }
@@ -878,7 +886,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     private java.util.Map<String, String> sinkConfigFor(String scheme) {
         java.util.Map<String, String> result = new java.util.LinkedHashMap<>();
         String prefix = "sinks." + scheme + ".";
-        for (var entry : config.sinkSettings().entrySet()) {
+        for (var entry : config.pluginSettings().entrySet()) {
             if (entry.getKey().startsWith(prefix)) {
                 result.put(entry.getKey().substring(prefix.length()), entry.getValue());
             }
