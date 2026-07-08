@@ -62,6 +62,13 @@ final class AppMsgPool {
         pending.values().removeIf(m -> m.isExpired(now));
     }
 
+    /** Drop everything pending (admin drain, ADR 006 E5.4). @return dropped count */
+    synchronized int clear() {
+        int dropped = pending.size();
+        pending.clear();
+        return dropped;
+    }
+
     synchronized int size() {
         return pending.size();
     }

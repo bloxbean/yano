@@ -1188,6 +1188,73 @@ public class YanoProducer {
         public long snapshot(String snapshotPath) {
             throw unavailableRole("AppChainGateway");
         }
+
+        @Override
+        public java.util.List<com.bloxbean.cardano.yano.api.appchain.MessageRef> messagesByTopic(
+                String topic, long fromHeight, int limit) {
+            throw unavailableRole("AppChainGateway");
+        }
+
+        @Override
+        public java.util.List<com.bloxbean.cardano.yano.api.appchain.MessageRef> messagesBySender(
+                byte[] sender, long fromHeight, int limit) {
+            throw unavailableRole("AppChainGateway");
+        }
+
+        @Override
+        public void pauseSubmissions() {
+            throw unavailableRole("AppChainGateway");
+        }
+
+        @Override
+        public void resumeSubmissions() {
+            throw unavailableRole("AppChainGateway");
+        }
+
+        @Override
+        public boolean submissionsPaused() {
+            throw unavailableRole("AppChainGateway");
+        }
+
+        @Override
+        public int drainPool() {
+            throw unavailableRole("AppChainGateway");
+        }
+
+        @Override
+        public boolean forceAnchor() {
+            throw unavailableRole("AppChainGateway");
+        }
+
+        @Override
+        public java.util.Set<String> members() {
+            throw unavailableRole("AppChainGateway");
+        }
+
+        @Override
+        public int effectiveThreshold() {
+            throw unavailableRole("AppChainGateway");
+        }
+
+        @Override
+        public void addMember(String publicKeyHex) {
+            throw unavailableRole("AppChainGateway");
+        }
+
+        @Override
+        public void removeMember(String publicKeyHex) {
+            throw unavailableRole("AppChainGateway");
+        }
+
+        @Override
+        public void setThreshold(int threshold) {
+            throw unavailableRole("AppChainGateway");
+        }
+
+        @Override
+        public void resetMembers() {
+            throw unavailableRole("AppChainGateway");
+        }
     }
 
     private enum UnavailableProducerControl implements ProducerControl {

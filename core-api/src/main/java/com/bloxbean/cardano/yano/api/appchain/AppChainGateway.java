@@ -81,6 +81,77 @@ public interface AppChainGateway {
      */
     long snapshot(String snapshotPath);
 
+    // ------------------------------------------------------------------
+    // Query surface (ADR app-layer/006 E3.3)
+    // ------------------------------------------------------------------
+
+    /**
+     * Finalized messages on a topic, ascending by (height, index), starting at
+     * {@code fromHeight}. Indexed from the moment the node runs a build with the
+     * query index (blocks finalized before the upgrade are not indexed).
+     */
+    List<MessageRef> messagesByTopic(String topic, long fromHeight, int limit);
+
+    /** Finalized messages from a sender public key, ascending by (height, index). */
+    List<MessageRef> messagesBySender(byte[] sender, long fromHeight, int limit);
+
+    // ------------------------------------------------------------------
+    // Admin operations (ADR app-layer/006 E5.4) — node-local operability
+    // controls; they do not change consensus rules.
+    // ------------------------------------------------------------------
+
+    /** Pause LOCAL submissions (REST/submit()); finalized blocks still apply. */
+    void pauseSubmissions();
+
+    /** Resume local submissions after {@link #pauseSubmissions()}. */
+    void resumeSubmissions();
+
+    /** True when local submissions are paused. */
+    boolean submissionsPaused();
+
+    /**
+     * Drop all pending (unfinalized) messages from this node's pool.
+     * @return number of messages dropped
+     */
+    int drainPool();
+
+    /**
+     * Ask the anchor service to anchor the current tip now, ignoring the
+     * every-blocks/interval schedule. No-op when anchoring is disabled or an
+     * anchor tx is already pending.
+     * @return true if an anchor submission was triggered
+     */
+    boolean forceAnchor();
+
+    // ------------------------------------------------------------------
+    // Key rotation (ADR app-layer/006 E4.5) — staged member-key rotation.
+    // Operator-coordinated: apply the SAME steps on EVERY node, in the runbook
+    // order (add everywhere → switch signer → re-threshold → retire everywhere).
+    // Rotated state persists and overrides the static config across restarts.
+    // ------------------------------------------------------------------
+
+    /** The effective member set (config or rotated override). */
+    java.util.Set<String> members();
+
+    /** The effective finality threshold (config or rotated override). */
+    int effectiveThreshold();
+
+    /** Stage 1: accept a new member key (idempotent). */
+    void addMember(String publicKeyHex);
+
+    /** Stage 3: retire a key. Rejects removing the proposer or dropping below threshold. */
+    void removeMember(String publicKeyHex);
+
+    /** Stage 2: adjust the finality threshold within [1, members]. */
+    void setThreshold(int threshold);
+
+    /**
+     * Re-adopt the static config as a new membership epoch (escape hatch when a
+     * persisted rotation must yield to a config change). History is preserved,
+     * so previously finalized blocks keep verifying.
+     */
+    void resetMembers();
+
     @FunctionalInterface
     interface FinalizedBlockListener {
         void onFinalized(AppBlock block, byte[] blockHash);
