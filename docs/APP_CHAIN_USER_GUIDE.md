@@ -520,6 +520,41 @@ circuit.
 > `plonk` (universal setup) for enterprise deployments. Proving helpers
 > (`BbsCredentials`, proof generation) currently live in the plugin.
 
+## 7e. Operations extensions (ADR 006, Wave 4)
+
+**Admin API** (`POST /app-chain[/chains/{id}]/admin/...`, covered by API-key
+auth when enabled): `pause` / `resume` (local submissions), `drain-pool`
+(drop pending), `force-anchor` (anchor the tip now).
+
+**Query surface**: `GET /blocks?from&limit` (paged summaries),
+`GET /messages/{messageId}` (position + content),
+`GET /messages/by-topic/{topic}?fromHeight&limit`,
+`GET /messages/by-sender/{senderHex}?fromHeight&limit` — topic/sender indexes
+are written atomically with each block (blocks finalized before this upgrade
+are not indexed).
+
+**Key rotation runbook** (staged; run the SAME steps on EVERY node, in this
+order — the rotated state persists and overrides config across restarts):
+
+1. **Add the new key everywhere** — on each node:
+   `POST /app-chain/admin/members/add {"publicKey":"<newPub>"}`.
+   Both old and new keys are now accepted; nothing breaks if nodes are
+   momentarily out of step, because the union is accepted during this stage.
+2. **Switch the rotating member's signer** — update that node's
+   `yano.app-chain.signing-key` to the new seed and restart it. It now signs
+   with the new key, which every node already accepts.
+3. **(Optional) re-threshold** — `POST /app-chain/admin/threshold
+   {"threshold":N}` on every node if the effective member count changed.
+4. **Retire the old key everywhere** —
+   `POST /app-chain/admin/members/remove {"publicKey":"<oldPub>"}` on each
+   node. Guard rails: the configured proposer can't be removed (rotate the
+   proposer via config + restart until S2 rotation ships) and the set can't
+   drop below the threshold.
+
+`GET /app-chain/admin/members` shows the effective set + threshold. This is
+an interim, operator-coordinated mechanism until chain-governed membership
+(ADR-005 D6) makes rotation itself an on-chain action.
+
 ## 8. Operations & troubleshooting
 
 - **`/status` is your dashboard**: `role`, `tipHeight`, `stateRoot`,

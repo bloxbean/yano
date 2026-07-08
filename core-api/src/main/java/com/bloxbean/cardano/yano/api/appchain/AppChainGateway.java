@@ -123,6 +123,28 @@ public interface AppChainGateway {
      */
     boolean forceAnchor();
 
+    // ------------------------------------------------------------------
+    // Key rotation (ADR app-layer/006 E4.5) — staged member-key rotation.
+    // Operator-coordinated: apply the SAME steps on EVERY node, in the runbook
+    // order (add everywhere → switch signer → re-threshold → retire everywhere).
+    // Rotated state persists and overrides the static config across restarts.
+    // ------------------------------------------------------------------
+
+    /** The effective member set (config or rotated override). */
+    java.util.Set<String> members();
+
+    /** The effective finality threshold (config or rotated override). */
+    int effectiveThreshold();
+
+    /** Stage 1: accept a new member key (idempotent). */
+    void addMember(String publicKeyHex);
+
+    /** Stage 3: retire a key. Rejects removing the proposer or dropping below threshold. */
+    void removeMember(String publicKeyHex);
+
+    /** Stage 2: adjust the finality threshold within [1, members]. */
+    void setThreshold(int threshold);
+
     @FunctionalInterface
     interface FinalizedBlockListener {
         void onFinalized(AppBlock block, byte[] blockHash);

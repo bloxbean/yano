@@ -419,6 +419,64 @@ public class AppChainResource {
                     "messages", gateway.messagesBySender(sender, fromHeight, limit))).build();
         }
 
+        // --- Key rotation (ADR 006 E4.5): staged, operator-coordinated ---
+
+        public record MemberRequest(String publicKey) {
+        }
+
+        public record ThresholdRequest(int threshold) {
+        }
+
+        @GET
+        @Path("admin/members")
+        public Response listMembers() {
+            return Response.ok(Map.of("chainId", gateway.chainId(),
+                    "members", new ArrayList<>(gateway.members()),
+                    "threshold", gateway.effectiveThreshold())).build();
+        }
+
+        @POST
+        @Path("admin/members/add")
+        public Response addMember(MemberRequest request) {
+            if (request == null || isBlank(request.publicKey())) {
+                return badRequest("'publicKey' is required");
+            }
+            try {
+                gateway.addMember(request.publicKey());
+                return listMembers();
+            } catch (IllegalArgumentException e) {
+                return badRequest(e.getMessage());
+            }
+        }
+
+        @POST
+        @Path("admin/members/remove")
+        public Response removeMember(MemberRequest request) {
+            if (request == null || isBlank(request.publicKey())) {
+                return badRequest("'publicKey' is required");
+            }
+            try {
+                gateway.removeMember(request.publicKey());
+                return listMembers();
+            } catch (IllegalArgumentException e) {
+                return badRequest(e.getMessage());
+            }
+        }
+
+        @POST
+        @Path("admin/threshold")
+        public Response setThreshold(ThresholdRequest request) {
+            if (request == null) {
+                return badRequest("'threshold' is required");
+            }
+            try {
+                gateway.setThreshold(request.threshold());
+                return listMembers();
+            } catch (IllegalArgumentException e) {
+                return badRequest(e.getMessage());
+            }
+        }
+
         // --- Admin (ADR 006 E5.4): node-local operability controls ---
 
         @POST

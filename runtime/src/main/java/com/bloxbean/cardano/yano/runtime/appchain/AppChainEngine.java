@@ -39,8 +39,7 @@ final class AppChainEngine implements AutoCloseable {
     private final AppMsgPool pool;
     private final AppStateMachine stateMachine;
     private final com.bloxbean.cardano.yano.api.appchain.signer.SignerProvider signer;
-    private final Set<String> memberKeys;
-    private final int threshold;
+    private final MemberGroup group;
     private final byte[] proposerKey;
     private final boolean isProposer;
     private final long roundTimeoutMs;
@@ -71,8 +70,7 @@ final class AppChainEngine implements AutoCloseable {
                    AppMsgPool pool,
                    AppStateMachine stateMachine,
                    com.bloxbean.cardano.yano.api.appchain.signer.SignerProvider signer,
-                   Set<String> memberKeys,
-                   int threshold,
+                   MemberGroup group,
                    byte[] proposerKey,
                    long roundTimeoutMs,
                    int maxBlockMessages,
@@ -84,8 +82,7 @@ final class AppChainEngine implements AutoCloseable {
         this.pool = pool;
         this.stateMachine = stateMachine;
         this.signer = signer;
-        this.memberKeys = memberKeys;
-        this.threshold = Math.max(1, threshold);
+        this.group = group;
         this.proposerKey = proposerKey;
         this.isProposer = Arrays.equals(proposerKey, signer.publicKey());
         this.roundTimeoutMs = roundTimeoutMs;
@@ -99,7 +96,7 @@ final class AppChainEngine implements AutoCloseable {
             return t;
         });
         stateMachine.init(new CommittedStateReader(), new AppChainInfo(
-                config.chainId(), signer.publicKeyHex(), memberKeys.size()));
+                config.chainId(), signer.publicKeyHex(), group.size()));
     }
 
     void setOnBlockFinalized(BiConsumer<AppBlock, byte[]> callback) {
@@ -224,7 +221,7 @@ final class AppChainEngine implements AutoCloseable {
             if (pendingRound != null) {
                 if (System.currentTimeMillis() - pendingRound.startedAt > roundTimeoutMs) {
                     log.warn("App-chain round at height {} timed out ({} of {} votes) — re-proposing",
-                            pendingRound.block.height(), pendingRound.votes.size(), threshold);
+                            pendingRound.block.height(), pendingRound.votes.size(), group.threshold());
                     discardRound();
                 } else {
                     return; // round in flight
@@ -398,7 +395,7 @@ final class AppChainEngine implements AutoCloseable {
             return; // stale/mismatched vote
         }
         String voterHex = HexUtil.encodeHexString(envelope.getSender()).toLowerCase(Locale.ROOT);
-        if (!memberKeys.contains(voterHex)) {
+        if (!group.contains(voterHex)) {
             log.warn("Vote from non-member {} — ignoring", voterHex);
             return;
         }
@@ -408,12 +405,12 @@ final class AppChainEngine implements AutoCloseable {
         }
         pendingRound.votes.put(voterHex, vote.signature());
         log.info("Vote received for height {} from {} ({}/{})",
-                vote.height(), voterHex, pendingRound.votes.size(), threshold);
+                vote.height(), voterHex, pendingRound.votes.size(), group.threshold());
         maybeFinalize();
     }
 
     private void maybeFinalize() {
-        if (pendingRound == null || pendingRound.votes.size() < threshold) {
+        if (pendingRound == null || pendingRound.votes.size() < group.threshold()) {
             return;
         }
         List<FinalityCert.Signature> signatures = new ArrayList<>();
@@ -458,14 +455,14 @@ final class AppChainEngine implements AutoCloseable {
         int valid = 0;
         for (FinalityCert.Signature signature : cert.signatures()) {
             String signerHex = HexUtil.encodeHexString(signature.signer()).toLowerCase(Locale.ROOT);
-            if (!memberKeys.contains(signerHex) || !seen.add(signerHex)) {
+            if (!group.contains(signerHex) || !seen.add(signerHex)) {
                 continue;
             }
             if (AppMessageSigner.verify(signature.signature(), blockHash, signature.signer())) {
                 valid++;
             }
         }
-        return valid >= threshold;
+        return valid >= group.threshold();
     }
 
     private void commitRound(FinalityCert cert) {
@@ -528,7 +525,7 @@ final class AppChainEngine implements AutoCloseable {
 
     private boolean verifyMemberSignature(AppMessage message) {
         String senderHex = HexUtil.encodeHexString(message.getSender()).toLowerCase(Locale.ROOT);
-        return memberKeys.contains(senderHex)
+        return group.contains(senderHex)
                 && message.getAuthProof() != null
                 && AppMessageSigner.verify(message.getAuthProof(), message.signedBodyBytes(), message.getSender());
     }

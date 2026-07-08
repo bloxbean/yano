@@ -1225,6 +1225,31 @@ public class YanoProducer {
         public boolean forceAnchor() {
             throw unavailableRole("AppChainGateway");
         }
+
+        @Override
+        public java.util.Set<String> members() {
+            throw unavailableRole("AppChainGateway");
+        }
+
+        @Override
+        public int effectiveThreshold() {
+            throw unavailableRole("AppChainGateway");
+        }
+
+        @Override
+        public void addMember(String publicKeyHex) {
+            throw unavailableRole("AppChainGateway");
+        }
+
+        @Override
+        public void removeMember(String publicKeyHex) {
+            throw unavailableRole("AppChainGateway");
+        }
+
+        @Override
+        public void setThreshold(int threshold) {
+            throw unavailableRole("AppChainGateway");
+        }
     }
 
     private enum UnavailableProducerControl implements ProducerControl {

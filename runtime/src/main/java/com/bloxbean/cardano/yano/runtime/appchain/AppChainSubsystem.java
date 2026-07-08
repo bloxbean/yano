@@ -50,7 +50,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     private final ClassLoader pluginClassLoader;
 
     private final com.bloxbean.cardano.yano.api.appchain.signer.SignerProvider signer;
-    private final Set<String> memberKeys;
+    private final MemberGroup group;
     private final AtomicLong senderSeq = new AtomicLong(0);
 
     private final Set<String> seenMessageIds;
@@ -118,7 +118,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         this.log = Objects.requireNonNull(log, "log");
         this.pluginClassLoader = pluginClassLoader;
         this.signer = SignerProviders.resolve(config.signingKeyHex(), pluginClassLoader, log);
-        this.memberKeys = normalizeMemberKeys(config.memberKeysHex());
+        this.group = new MemberGroup(normalizeMemberKeys(config.memberKeysHex()), config.threshold());
         this.seenMessageIds = boundedSet(SEEN_IDS_LIMIT);
         this.pool = new AppMsgPool(10_000);
         this.stateMachine = stateMachine != null
@@ -132,20 +132,20 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                         }, log);
         this.ledgerPath = (ledgerPath != null ? ledgerPath : "./app-chain") + "/" + config.chainId();
 
-        if (!memberKeys.contains(signer.publicKeyHex())) {
+        if (!group.contains(signer.publicKeyHex())) {
             throw new IllegalArgumentException(
                     "This node's app-chain public key " + signer.publicKeyHex()
                             + " is not in the configured member list (yano.app-chain.members)");
         }
         if (config.sequencingEnabled()) {
             String proposer = config.proposerKeyHex().toLowerCase(Locale.ROOT);
-            if (!memberKeys.contains(proposer)) {
+            if (!group.contains(proposer)) {
                 throw new IllegalArgumentException(
                         "Configured proposer " + proposer + " is not in the member list");
             }
-            if (config.threshold() > memberKeys.size()) {
+            if (config.threshold() > group.size()) {
                 throw new IllegalArgumentException("Finality threshold " + config.threshold()
-                        + " exceeds member count " + memberKeys.size());
+                        + " exceeds member count " + group.size());
             }
         }
         AppPeerClient.CatchUpHandler catchUpHandler =
@@ -231,7 +231,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             return AppMsgValidator.Result.reject("invalid sender key length");
 
         String senderHex = HexUtil.encodeHexString(sender).toLowerCase(Locale.ROOT);
-        if (!memberKeys.contains(senderHex))
+        if (!group.contains(senderHex))
             return AppMsgValidator.Result.reject("sender not in app-chain member list: " + senderHex);
 
         byte[] proof = message.getAuthProof();
@@ -541,6 +541,98 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     }
 
     // ------------------------------------------------------------------
+    // Key rotation (ADR 006 E4.5): staged member add / re-threshold / retire.
+    // Operator-coordinated: apply the same steps on EVERY node (runbook in the
+    // user guide). Rotated state persists in ledger meta and wins over config.
+    // ------------------------------------------------------------------
+
+    private static final String META_MEMBERS_OVERRIDE = "members_override";
+    private static final String META_THRESHOLD_OVERRIDE = "threshold_override";
+
+    private void loadMemberOverride(AppLedgerStore ledgerStore) {
+        String membersCsv = ledgerStore.metaString(META_MEMBERS_OVERRIDE);
+        if (membersCsv == null || membersCsv.isBlank()) {
+            return;
+        }
+        Set<String> members = new HashSet<>();
+        for (String key : membersCsv.split(",")) {
+            if (!key.isBlank()) members.add(key.trim().toLowerCase(Locale.ROOT));
+        }
+        long threshold = ledgerStore.metaLong(META_THRESHOLD_OVERRIDE, group.threshold());
+        group.update(members, (int) threshold);
+        log.info("App-chain '{}' member override loaded: {} member(s), threshold {} "
+                + "(rotated state overrides config)", config.chainId(), members.size(), threshold);
+        if (!group.contains(signer.publicKeyHex())) {
+            log.warn("This node's key {} is NOT in the rotated member set — it can observe but "
+                    + "its submissions/votes will be rejected by peers", signer.publicKeyHex());
+        }
+    }
+
+    private void persistMemberOverride() {
+        AppLedgerStore currentLedger = ledger;
+        if (currentLedger != null) {
+            currentLedger.metaPutString(META_MEMBERS_OVERRIDE, String.join(",", group.members()));
+            currentLedger.metaPutLong(META_THRESHOLD_OVERRIDE, group.threshold());
+        }
+    }
+
+    @Override
+    public Set<String> members() {
+        return group.members();
+    }
+
+    @Override
+    public int effectiveThreshold() {
+        return group.threshold();
+    }
+
+    @Override
+    public void addMember(String publicKeyHex) {
+        String normalized = normalizeMemberKeys(Set.of(publicKeyHex)).iterator().next();
+        Set<String> updated = new HashSet<>(group.members());
+        if (!updated.add(normalized)) {
+            return; // already a member — idempotent
+        }
+        group.update(updated, group.threshold());
+        persistMemberOverride();
+        log.info("App-chain '{}' member ADDED: {} ({} member(s), threshold {})",
+                config.chainId(), normalized, group.size(), group.threshold());
+    }
+
+    @Override
+    public void removeMember(String publicKeyHex) {
+        String normalized = publicKeyHex.trim().toLowerCase(Locale.ROOT);
+        if (normalized.equals(config.proposerKeyHex().toLowerCase(Locale.ROOT))) {
+            throw new IllegalArgumentException("Cannot remove the configured proposer "
+                    + "(rotate the proposer key via config + restart, or wait for S2 rotation)");
+        }
+        Set<String> updated = new HashSet<>(group.members());
+        if (!updated.remove(normalized)) {
+            throw new IllegalArgumentException("Not a member: " + normalized);
+        }
+        if (updated.size() < group.threshold()) {
+            throw new IllegalArgumentException("Removing " + normalized + " would leave "
+                    + updated.size() + " member(s), below threshold " + group.threshold()
+                    + " — lower the threshold first");
+        }
+        group.update(updated, group.threshold());
+        persistMemberOverride();
+        log.info("App-chain '{}' member RETIRED: {} ({} member(s), threshold {})",
+                config.chainId(), normalized, group.size(), group.threshold());
+    }
+
+    @Override
+    public void setThreshold(int threshold) {
+        if (threshold < 1 || threshold > group.size()) {
+            throw new IllegalArgumentException("Threshold must be in [1, " + group.size() + "]");
+        }
+        group.update(group.members(), threshold);
+        persistMemberOverride();
+        log.info("App-chain '{}' threshold set to {} ({} member(s))",
+                config.chainId(), threshold, group.size());
+    }
+
+    // ------------------------------------------------------------------
     // Admin operations (ADR 006 E5.4) — node-local, no consensus change
     // ------------------------------------------------------------------
 
@@ -605,7 +697,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         }
         long messageHeight = heightOpt.get();
 
-        List<String> members = new ArrayList<>(memberKeys);
+        List<String> members = new ArrayList<>(group.members());
         long anchoredHeight = currentLedger.metaLong("anchor_last_height", 0L);
         byte[] anchoredBlockHash = currentLedger.metaBytes("anchor_last_block_hash");
         String anchorTx = currentLedger.metaString("anchor_last_tx");
@@ -641,7 +733,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
 
         return Optional.of(new com.bloxbean.cardano.yano.api.appchain.evidence.EvidenceBundle(
                 config.chainId(), HexUtil.encodeHexString(messageId), blocks, members,
-                config.threshold(), anchorRef));
+                group.threshold(), anchorRef));
     }
 
     private static final long MAX_EVIDENCE_CHAIN_BLOCKS = 4096;
@@ -651,7 +743,8 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         Map<String, Object> status = new LinkedHashMap<>();
         status.put("chainId", config.chainId());
         status.put("memberKey", signer.publicKeyHex());
-        status.put("members", memberKeys.size());
+        status.put("members", group.size());
+        status.put("threshold", group.threshold());
         status.put("running", running.get());
         status.put("sequencing", config.sequencingEnabled());
         if (config.sequencingEnabled()) {
@@ -714,7 +807,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             return;
 
         log.info("Starting app chain '{}' (member: {}, members: {}, peers: {}, sequencing: {})",
-                config.chainId(), signer.publicKeyHex(), memberKeys.size(), config.peers(),
+                config.chainId(), signer.publicKeyHex(), group.size(), config.peers(),
                 config.sequencingEnabled());
 
         if (config.sequencingEnabled()) {
@@ -726,14 +819,17 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                         + config.chainId() + "' — tip state-root does not match the committed MPF root "
                         + "(corrupt or partial snapshot?)");
             }
+            // Apply a persisted member-rotation override (E4.5) before wiring
+            // the engine — rotated membership survives restarts and wins over
+            // the static config.
+            loadMemberOverride(ledgerStore);
             AppChainEngine chainEngine = new AppChainEngine(
                     config,
                     ledgerStore,
                     pool,
                     stateMachine,
                     signer,
-                    memberKeys,
-                    config.threshold(),
+                    group,
                     HexUtil.decodeHexString(config.proposerKeyHex()),
                     Math.max(config.blockIntervalMs() * 5, 10_000),
                     config.maxBlockMessages(),
