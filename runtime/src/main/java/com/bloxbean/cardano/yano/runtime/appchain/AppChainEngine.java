@@ -38,7 +38,7 @@ final class AppChainEngine implements AutoCloseable {
     private final AppLedgerStore ledger;
     private final AppMsgPool pool;
     private final AppStateMachine stateMachine;
-    private final AppMessageSigner signer;
+    private final com.bloxbean.cardano.yano.api.appchain.signer.SignerProvider signer;
     private final Set<String> memberKeys;
     private final int threshold;
     private final byte[] proposerKey;
@@ -70,7 +70,7 @@ final class AppChainEngine implements AutoCloseable {
                    AppLedgerStore ledger,
                    AppMsgPool pool,
                    AppStateMachine stateMachine,
-                   AppMessageSigner signer,
+                   com.bloxbean.cardano.yano.api.appchain.signer.SignerProvider signer,
                    Set<String> memberKeys,
                    int threshold,
                    byte[] proposerKey,

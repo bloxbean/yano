@@ -48,7 +48,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     private final EventBus eventBus;
     private final Logger log;
 
-    private final AppMessageSigner signer;
+    private final com.bloxbean.cardano.yano.api.appchain.signer.SignerProvider signer;
     private final Set<String> memberKeys;
     private final AtomicLong senderSeq = new AtomicLong(0);
 
@@ -114,7 +114,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         this.protocolMagic = protocolMagic;
         this.eventBus = eventBus;
         this.log = Objects.requireNonNull(log, "log");
-        this.signer = new AppMessageSigner(config.signingKeyHex());
+        this.signer = SignerProviders.resolve(config.signingKeyHex(), pluginClassLoader, log);
         this.memberKeys = normalizeMemberKeys(config.memberKeysHex());
         this.seenMessageIds = boundedSet(SEEN_IDS_LIMIT);
         this.pool = new AppMsgPool(10_000);
