@@ -36,4 +36,28 @@ public final class StdlibStateMachineProviders {
             return new ApprovalsStateMachine();
         }
     }
+
+    public static final class BalancesProvider implements AppStateMachineProvider {
+        @Override
+        public String id() {
+            return BalancesStateMachine.ID;
+        }
+
+        @Override
+        public AppStateMachine create() {
+            return new BalancesStateMachine();
+        }
+    }
+
+    public static final class DocTrailProvider implements AppStateMachineProvider {
+        @Override
+        public String id() {
+            return DocTrailStateMachine.ID;
+        }
+
+        @Override
+        public AppStateMachine create() {
+            return new DocTrailStateMachine();
+        }
+    }
 }
