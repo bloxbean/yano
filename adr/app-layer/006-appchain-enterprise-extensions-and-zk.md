@@ -16,10 +16,65 @@ and merged into the integration branch on completion.
 | Wave | Scope | Status |
 |---|---|---|
 | **Wave 1** | E5.2 multi-chain, E2.1 kv-registry, E2.2 approvals, E3.1 SSE/webhooks, E4.1 REST auth, E5.1 metrics, E1.2 testkit, E1.1 client SDK | **Done** (2026-07-08, `feat/wave1-extensions` → merged) |
-| **Wave 2** | E2.3 balances, E2.4 doc-trail, E1.3 typed codec, E3.4 audit export, E4.4 retention/pruning, E4.2 encrypted bodies, E4.3 SignerProvider, E3.2 sink SPI + Kafka bridge, E5.3 snapshot/restore, E1.5 scaffolds | **Done** (2026-07-08, `feat/wave2-extensions`) |
-| Wave 2 | E1.3 codecs, E2.3/E2.4 stdlib completion, E3.2 Kafka bridge, E3.4 audit export, E4.2 encrypted bodies, E4.3 KMS signing, E4.4 retention, E5.3 snapshots, E1.5 scaffolds | Not started |
-| Wave 3 (ZK) | E7.1 ZK verification, E7.2 BBS disclosure, E7.3 zk-membership (done); E7.4/E7.5 gated spikes | **E7.1–E7.3 done** (2026-07-08, `feat/wave3-extensions`; open questions resolved — see §7) |
-| Deferred to the end | **E1.4 Spring Boot starter + Quarkus extension** — deprioritized (2026-07-08): pure sugar over the E1.1 client SDK; built once, after all waves, when the SDK surface has stabilized across them | Deferred |
+| **Wave 2** | E2.3 balances, E2.4 doc-trail, E1.3 typed codec, E3.4 audit export, E4.4 retention/pruning, E4.2 encrypted bodies, E4.3 SignerProvider, E3.2 sink SPI + Kafka bridge, E5.3 snapshot/restore, E1.5 scaffolds | **Done** (2026-07-08, `feat/wave2-extensions` → merged) |
+| **Wave 3 (ZK)** | E7.1 ZK verification, E7.2 BBS disclosure, E7.3 zk-membership; E7.4/E7.5 gated spikes | **E7.1–E7.3 done** (2026-07-08, `feat/wave3-extensions` → merged; open questions resolved — see §7) |
+| **Pending** | Everything not yet picked up — see the checklist below | Open |
+
+### PENDING — not yet implemented (2026-07-08; pick up later)
+
+Full E-items never scheduled into a wave:
+
+- [ ] **E3.3 Query surface** (T1/T2, M): paged block-range REST API, message
+  lookup by id (height + block position) as a public endpoint, sender/topic
+  secondary indexes via a `StateQueryIndex`. Today only `blocks/{height}`,
+  `messages` (recent), and proof/evidence lookups exist.
+- [ ] **E4.5 Key rotation runbook + tooling** (T1, M): staged member-key
+  rotation (add new key → re-threshold → retire old) as an admin API — interim
+  measure until chain-governed membership (005 D6) ships.
+- [ ] **E5.4 Admin API** (T1, S): pause/resume submissions, drain pool,
+  force-anchor now.
+- [ ] **E1.4 Spring Boot starter + Quarkus extension** (T4, M): deliberately
+  deferred to the very end (user call, 2026-07-08) — pure sugar over the E1.1
+  client SDK; build once the SDK surface is stable.
+- [ ] **E7.4 Private balances** (T3, L, gated on ZeroJ maturity): Poseidon
+  commitments in MPF + `StateTransitionVerifier` proofs; needs a real transfer
+  circuit, client-side proving, note-nullifier design, and the dual-commitment
+  (Blake2b + optional Poseidon) structure. Value-bearing — gated on ZeroJ
+  ADR-0026 production criteria.
+- [ ] **E7.5 ZK-verified script anchor** (L/exploratory, needs 005 D2/D4 script
+  anchors): first milestone = on-chain Groth16 (julc) verification of a
+  threshold-cert proof at the anchor validator; batch-validity (zk-rollup-lite)
+  remains research-grade (Poseidon-MPF circuit too large per ZeroJ status).
+
+Partial gaps inside shipped items:
+
+- [ ] E4.1: only API-key auth shipped; **mTLS / OIDC** via Quarkus security not
+  wired.
+- [ ] E4.3: the `SignerProvider` SPI + in-config default shipped; **actual
+  KMS/HSM/Vault plugin jars** (PKCS#11, AWS KMS, Vault) not built.
+- [ ] E5.1: metrics shipped; the **Grafana dashboard template** was not made.
+- [ ] E3.2: Kafka bridge ships block JSON; the **optional per-record MPF proof
+  attachment** was not implemented.
+- [ ] E1.5: docker-compose + Gradle plugin template shipped; a **Maven
+  archetype** was not made.
+
+Follow-ups recorded in delivery notes:
+
+- [ ] Split proving/disclosure helpers (`BbsCredentials`) into a slim
+  **`yano-appchain-client-zk`** so clients don't pull the node-side plugin.
+- [ ] **Fully anonymous transport (`authScheme=2`)** for E7.3: today the
+  logical author is anonymous but the transport envelope still carries the
+  relaying node's scheme-0 signature; promoting anonymity to the transport
+  touches the core yaci auth path.
+- [ ] VK / membership-root distribution moves from config into **chain-governed
+  parameter blocks** when 005 D6 lands (per §7 resolutions).
+
+Base-roadmap prerequisites (ADR-005 scope, tracked there, blocking items above):
+
+- [ ] **S2 rotating sequencer** (liveness beyond the fixed proposer).
+- [ ] **Chain-governed membership (005 D6)** — supersedes E4.5, unblocks
+  governed VK distribution.
+- [ ] **Script anchors (005 D2/D4)** — prerequisite for E7.5.
 
 ### Wave 1 delivery notes (2026-07-08)
 
@@ -53,6 +108,18 @@ and merged into the integration branch on completion.
   against (anchored) roots — fails closed on tampering.
 - *Learning*: `AppChainConfig` grew a fluent `Builder` after three rounds of
   constructor churn; new fields go through the builder from now on.
+- **Post-review hardening (Wave 1)** (high-effort multi-agent review, 9 confirmed
+  defects fixed before merge): auth topic-ACL now scopes by matched
+  `ResourceInfo` (not URL substring — closes trailing-slash/matrix-param
+  bypass); the shared multi-chain inbound agent re-enforces each chain's own
+  size/TTL in `verifyByChain` (union limits were too permissive); SSE JSON is
+  built with Jackson (unescaped topic no longer wedges subscribers); explicit
+  `enabled=false` is honored over `chains[i]` presence (`Optional<Boolean>`);
+  `stop()` clears webhook sinks bound to the closing ledger; the SDK dedups on
+  SSE reconnect by `(height,index)`; `AppChainManager.start()` rolls back
+  already-started chains on partial failure; disabled/ambiguous REST responses
+  keep the `{"error":...}` JSON body; the client SDK dropped its dependency on
+  the MPF library's internal `TestNodeStore`.
 
 ### Wave 2 delivery notes (2026-07-08)
 
@@ -109,19 +176,6 @@ and merged into the integration branch on completion.
   normal deployment path); the evidence bundle caps its anchor chain length
   (old messages under a far anchor could OOM); webhook HTTP non-2xx surfaces as
   `lastError`; `status()` keeps a back-compat `webhooks` map.
-
-- **Post-review hardening** (high-effort multi-agent review, 9 confirmed
-  defects fixed before merge): auth topic-ACL now scopes by matched
-  `ResourceInfo` (not URL substring — closes trailing-slash/matrix-param
-  bypass); the shared multi-chain inbound agent re-enforces each chain's own
-  size/TTL in `verifyByChain` (union limits were too permissive); SSE JSON is
-  built with Jackson (unescaped topic no longer wedges subscribers); explicit
-  `enabled=false` is honored over `chains[i]` presence (`Optional<Boolean>`);
-  `stop()` clears webhook sinks bound to the closing ledger; the SDK dedups on
-  SSE reconnect by `(height,index)`; `AppChainManager.start()` rolls back
-  already-started chains on partial failure; disabled/ambiguous REST responses
-  keep the `{"error":...}` JSON body; the client SDK dropped its dependency on
-  the MPF library's internal `TestNodeStore`.
 
 ## Related
 - `adr/app-layer/005-yano-app-chain-framework.md` — the shipped v1 framework (M1–M6) this ADR extends
