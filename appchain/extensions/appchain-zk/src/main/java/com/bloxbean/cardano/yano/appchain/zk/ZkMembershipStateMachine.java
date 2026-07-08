@@ -55,17 +55,31 @@ public final class ZkMembershipStateMachine implements AppStateMachine {
 
     @Override
     public AdmissionResult validate(AppMessage message) {
+        // Proposer-side fast-fail only; the authoritative checks are in apply().
         MembershipProofBody body;
         try {
             body = MembershipProofBody.decode(message.getBody());
         } catch (Exception e) {
             return AdmissionResult.reject("not a membership proof body: " + e.getMessage());
         }
+        if (!nullifierBoundToProof(body)) {
+            return AdmissionResult.reject("nullifier is not bound to the proof (not a public input)");
+        }
         String rejection = verifier.verify(body.proofBody());
         if (rejection != null) {
             return AdmissionResult.reject("membership proof failed: " + rejection);
         }
         return AdmissionResult.accept();
+    }
+
+    /**
+     * The nullifier MUST be one of the proof's public inputs — otherwise it is
+     * an attacker-controlled field unbound to the proof, and replaying a valid
+     * proof with a fresh nullifier would forge a second anonymous action.
+     */
+    private static boolean nullifierBoundToProof(MembershipProofBody body) {
+        java.math.BigInteger nullifier = new java.math.BigInteger(1, body.nullifier());
+        return body.publicInputs().contains(nullifier);
     }
 
     @Override
@@ -77,8 +91,9 @@ public final class ZkMembershipStateMachine implements AppStateMachine {
             } catch (Exception e) {
                 continue;
             }
-            // Consensus-critical re-verification (deterministic across members).
-            if (verifier.verify(body.proofBody()) != null) {
+            // MANDATORY consensus checks (every member; followers skip validate):
+            // the nullifier must be bound to the proof, and the proof must verify.
+            if (!nullifierBoundToProof(body) || verifier.verify(body.proofBody()) != null) {
                 continue;
             }
             byte[] nullifierKey = concat(NULLIFIER_PREFIX, body.nullifier());

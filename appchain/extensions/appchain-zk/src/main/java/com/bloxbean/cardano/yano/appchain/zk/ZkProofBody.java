@@ -54,30 +54,9 @@ public record ZkProofBody(String circuitId,
         root.add(new ByteString(proof));
         Array inputs = new Array();
         for (BigInteger input : publicInputs) {
-            inputs.add(new ByteString(toUnsignedBytes(input)));
+            inputs.add(new ByteString(ZkBytes.toUnsigned(input)));
         }
         root.add(inputs);
         return CborSerializationUtil.serialize(root);
-    }
-
-    /** True if the body plausibly is a zk proof envelope (cheap pre-check). */
-    public static boolean looksLikeProof(byte[] body) {
-        try {
-            decode(body);
-            return true;
-        } catch (Exception e) {
-            return false;
-        }
-    }
-
-    private static byte[] toUnsignedBytes(BigInteger value) {
-        byte[] bytes = value.toByteArray();
-        // strip a leading sign byte if present
-        if (bytes.length > 1 && bytes[0] == 0) {
-            byte[] trimmed = new byte[bytes.length - 1];
-            System.arraycopy(bytes, 1, trimmed, 0, trimmed.length);
-            return trimmed;
-        }
-        return bytes;
     }
 }

@@ -65,7 +65,7 @@ class ZkGateStateMachineTest {
         VerifierRegistry verifierRegistry = VerifierRegistry.empty();
         verifierRegistry.register(new StubZkVerifier());
         ZkVerificationService service = new ZkVerificationService(vkRegistry, verifierRegistry);
-        ZkGateStateMachine machine = new ZkGateStateMachine(service, true);
+        ZkGateStateMachine machine = new ZkGateStateMachine(service);
 
         String pubA = HexUtil.encodeHexString(KeyGenUtil.getPublicKeyFromPrivateKey(KEY_A));
         AppChainConfig config = AppChainConfig.builder("zk-chain")

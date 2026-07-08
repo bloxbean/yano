@@ -39,7 +39,7 @@ final class ConfigVkRegistry implements VerificationKeyRegistry {
             String base = "zk.circuits[" + i + "].";
             String id = settings.get(base + "id");
             if (id == null || id.isBlank()) {
-                break;
+                continue; // tolerate index gaps (e.g. circuits[0] and circuits[2])
             }
             String vkFile = require(settings, base + "vk-file", id);
             String pinnedHashHex = require(settings, base + "vk-hash", id);

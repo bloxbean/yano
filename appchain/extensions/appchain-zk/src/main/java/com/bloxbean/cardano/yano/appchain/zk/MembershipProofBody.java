@@ -65,22 +65,12 @@ public record MembershipProofBody(String circuitId,
         root.add(new ByteString(proof));
         Array inputs = new Array();
         for (BigInteger input : publicInputs) {
-            inputs.add(new ByteString(toUnsigned(input)));
+            inputs.add(new ByteString(ZkBytes.toUnsigned(input)));
         }
         root.add(inputs);
         root.add(new ByteString(nullifier));
         root.add(new ByteString(context != null ? context : new byte[0]));
         root.add(new ByteString(payload != null ? payload : new byte[0]));
         return CborSerializationUtil.serialize(root);
-    }
-
-    private static byte[] toUnsigned(BigInteger value) {
-        byte[] bytes = value.toByteArray();
-        if (bytes.length > 1 && bytes[0] == 0) {
-            byte[] trimmed = new byte[bytes.length - 1];
-            System.arraycopy(bytes, 1, trimmed, 0, trimmed.length);
-            return trimmed;
-        }
-        return bytes;
     }
 }

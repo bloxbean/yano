@@ -113,8 +113,11 @@ class ZkMembershipStateMachineTest {
     }
 
     private static byte[] membershipBody(String proof, byte[] nullifier, byte[] context, byte[] payload) {
+        // The nullifier must be bound to the proof (a public input) — the circuit
+        // exposes it, so replaying a proof with a different nullifier is rejected.
         return new MembershipProofBody("membership", "groth16", "bls12381",
-                proof.getBytes(StandardCharsets.UTF_8), List.of(), nullifier, context, payload).encode();
+                proof.getBytes(StandardCharsets.UTF_8),
+                List.of(new java.math.BigInteger(1, nullifier)), nullifier, context, payload).encode();
     }
 
     private static void awaitTrue(String what, BooleanSupplier condition) throws InterruptedException {

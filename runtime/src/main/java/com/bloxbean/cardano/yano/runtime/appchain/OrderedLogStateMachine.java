@@ -33,16 +33,9 @@ public final class OrderedLogStateMachine implements AppStateMachine {
     public void apply(AppBlock block, AppStateWriter writer) {
         int index = 0;
         for (AppMessage message : block.messages()) {
-            Array position = new Array();
-            position.add(new UnsignedInteger(block.height()));
-            position.add(new UnsignedInteger(index));
-            position.add(new UnicodeString(message.getTopic() != null ? message.getTopic() : ""));
-            position.add(new ByteString(message.getSender()));
-            writer.put(message.getMessageId(), CborSerializationUtil.serialize(position));
-            index++;
+            com.bloxbean.cardano.yano.api.appchain.OrderedLog.recordMessage(
+                    writer, block.height(), index++, message);
         }
-        // Chain tip marker: latest height under a fixed key for cheap lookups/proofs
-        writer.put("~tip".getBytes(StandardCharsets.UTF_8),
-                CborSerializationUtil.serialize(new UnsignedInteger(block.height())));
+        com.bloxbean.cardano.yano.api.appchain.OrderedLog.recordTip(writer, block.height());
     }
 }

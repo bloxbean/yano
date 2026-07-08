@@ -42,7 +42,7 @@ public final class CredentialRegistryProvider implements AppStateMachineProvider
             String base = "zk.bbs.issuers[" + i + "].";
             String id = context.settings().get(base + "id");
             if (id == null || id.isBlank()) {
-                break;
+                continue; // tolerate index gaps
             }
             String pkHex = context.settings().get(base + "public-key");
             if (pkHex == null || pkHex.isBlank()) {

@@ -32,10 +32,6 @@ final class ZkVerificationService {
         this.orchestrator = new VerifierOrchestrator(verifierRegistry, vkRegistry);
     }
 
-    java.util.List<String> knownCircuits() {
-        return vkRegistry.circuitIds();
-    }
-
     /**
      * @return a short rejection reason, or null when the proof is cryptographically
      *         valid and accepted.

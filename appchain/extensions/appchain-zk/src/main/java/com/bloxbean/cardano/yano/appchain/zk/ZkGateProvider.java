@@ -16,9 +16,10 @@ import org.slf4j.LoggerFactory;
  *   yano.app-chain.zk.circuits[0].vk-hash      = &lt;blake2b-256 hex of the vk file&gt;
  *   yano.app-chain.zk.circuits[0].proof-system = groth16      # or plonk
  *   yano.app-chain.zk.circuits[0].curve        = bls12_381
- *   yano.app-chain.zk.verify-in-apply          = true         # consensus enforcement (default)
  *   yano.app-chain.zk.max-proofs-per-block     = 200          # advisory; bound via block.max-messages
  * </pre>
+ * Proofs are verified by every member in {@code apply()} (consensus enforcement),
+ * not merely at the proposer's mempool.
  */
 public final class ZkGateProvider implements AppStateMachineProvider {
 
@@ -43,11 +44,10 @@ public final class ZkGateProvider implements AppStateMachineProvider {
             throw new IllegalStateException("state-machine=zk-gate but no circuits are configured "
                     + "(yano.app-chain.zk.circuits[0].id ...) for chain '" + context.chainId() + "'");
         }
-        boolean verifyInApply = Boolean.parseBoolean(
-                context.settings().getOrDefault("zk.verify-in-apply", "true"));
         String maxProofs = context.settings().getOrDefault("zk.max-proofs-per-block", "(bounded by block.max-messages)");
-        log.info("ZK gate enabled for chain '{}': circuits={}, verify-in-apply={}, max-proofs/block={}",
-                context.chainId(), vkRegistry.circuitIds(), verifyInApply, maxProofs);
-        return new ZkGateStateMachine(new ZkVerificationService(vkRegistry), verifyInApply);
+        log.info("ZK gate enabled for chain '{}': circuits={}, max-proofs/block={} "
+                        + "(proofs verified by every member in apply())",
+                context.chainId(), vkRegistry.circuitIds(), maxProofs);
+        return new ZkGateStateMachine(new ZkVerificationService(vkRegistry));
     }
 }

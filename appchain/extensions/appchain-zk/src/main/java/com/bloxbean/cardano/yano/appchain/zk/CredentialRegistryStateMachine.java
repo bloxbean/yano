@@ -68,6 +68,14 @@ public final class CredentialRegistryStateMachine implements AppStateMachine {
             } catch (Exception e) {
                 continue;
             }
+            // MANDATORY consensus check — every member re-verifies the issuer's
+            // BBS signature here (followers never run validate()). A credential
+            // from an unknown issuer or with a bad signature is recorded by no
+            // one, so a forged/unissued credential can never be anchored.
+            BbsPublicKey issuerKey = issuers.get(credential.issuerId());
+            if (issuerKey == null || !BbsCredentials.verifyCredential(issuerKey, credential)) {
+                continue;
+            }
             byte[] key = ("cred/" + credential.credentialId()).getBytes(StandardCharsets.UTF_8);
             Array entry = new Array();
             entry.add(new UnicodeString(credential.issuerId()));
