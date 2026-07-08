@@ -204,8 +204,11 @@ public class YanoProducer {
     @ConfigProperty(name = YanoPropertyKeys.Tx.DIFFUSION_ENABLED, defaultValue = "true")
     boolean txDiffusionEnabled = true;
 
-    @ConfigProperty(name = YanoPropertyKeys.AppChain.ENABLED, defaultValue = "false")
-    boolean appChainEnabled;
+    // Optional so we can tell an EXPLICIT enabled=false from the default:
+    // multi-chain config (chains[i]) enables the app chain unless the operator
+    // explicitly set enabled=false.
+    @ConfigProperty(name = YanoPropertyKeys.AppChain.ENABLED)
+    java.util.Optional<Boolean> appChainEnabledOpt;
 
     @ConfigProperty(name = YanoPropertyKeys.AppChain.CHAIN_ID)
     java.util.Optional<String> appChainId;
@@ -613,6 +616,10 @@ public class YanoProducer {
         globals.put(YanoPropertyKeys.Tx.DIFFUSION_MAX_IN_FLIGHT_BYTES_PER_PEER,
                 txDiffusionMaxInFlightBytesPerPeer);
         globals.put(YanoPropertyKeys.Tx.DIFFUSION_PEER_COOLDOWN_MS, txDiffusionPeerCooldownMs);
+        java.util.List<java.util.Map<String, Object>> appChainList = parseAppChainChains();
+        // Effective enablement: explicit flag wins; otherwise presence of a
+        // multi-chain list enables. An explicit enabled=false always disables.
+        boolean appChainEnabled = appChainEnabledOpt.orElse(!appChainList.isEmpty());
         globals.put(YanoPropertyKeys.AppChain.ENABLED, appChainEnabled);
         appChainId.ifPresent(v -> globals.put(YanoPropertyKeys.AppChain.CHAIN_ID, v));
         appChainSigningKey.ifPresent(v -> globals.put(YanoPropertyKeys.AppChain.SIGNING_KEY, v));
@@ -633,11 +640,11 @@ public class YanoProducer {
         globals.put(YanoPropertyKeys.AppChain.ANCHOR_METADATA_LABEL, appChainAnchorMetadataLabel);
         globals.put(YanoPropertyKeys.AppChain.L1_STABILITY_DEPTH, appChainL1StabilityDepth);
         appChainWebhooks.ifPresent(v -> globals.put(YanoPropertyKeys.AppChain.WEBHOOKS, v));
-        java.util.List<java.util.Map<String, Object>> appChainList = parseAppChainChains();
-        if (!appChainList.isEmpty()) {
+        if (!appChainList.isEmpty() && appChainEnabled) {
             globals.put(YanoPropertyKeys.AppChain.CHAINS, appChainList);
-            globals.put(YanoPropertyKeys.AppChain.ENABLED, true);
             log.info("App-chain multi-chain config: {} chain(s)", appChainList.size());
+        } else if (!appChainList.isEmpty()) {
+            log.info("App-chain multi-chain config present but yano.app-chain.enabled=false — not started");
         }
         globals.put(YanoPropertyKeys.Relay.AUTO_DISCOVERY, relayAutoDiscovery);
         globals.put(YanoPropertyKeys.Relay.ADVERTISED_HOST,

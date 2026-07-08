@@ -798,6 +798,11 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             }
         }
         eventSubscriptions.clear();
+        // Webhook sinks hold the ledger that is about to close and are re-created
+        // by start(); drop them so a restart doesn't tick stale sinks against a
+        // closed RocksDB handle (or double-deliver). External finalizedListeners
+        // (SSE, metrics) are NOT cleared — they must survive a restart.
+        webhookSinks.clear();
         anchorService = null;
         ScheduledExecutorService exec = scheduler;
         scheduler = null;

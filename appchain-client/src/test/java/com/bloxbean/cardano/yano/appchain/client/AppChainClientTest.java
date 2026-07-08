@@ -1,7 +1,7 @@
 package com.bloxbean.cardano.yano.appchain.client;
 
+import com.bloxbean.cardano.vds.core.api.NodeStore;
 import com.bloxbean.cardano.vds.mpf.MpfTrie;
-import com.bloxbean.cardano.vds.mpf.internal.TestNodeStore;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -126,10 +126,30 @@ class AppChainClientTest {
         assertThat(received.get(1).height()).isEqualTo(2);
     }
 
+    /** In-memory store for building a trie in tests (no dependency on MPF internals). */
+    private static final class MapNodeStore implements NodeStore {
+        private final java.util.Map<String, byte[]> map = new java.util.HashMap<>();
+
+        @Override
+        public byte[] get(byte[] hash) {
+            return map.get(Hex.encode(hash));
+        }
+
+        @Override
+        public void put(byte[] hash, byte[] nodeBytes) {
+            map.put(Hex.encode(hash), nodeBytes);
+        }
+
+        @Override
+        public void delete(byte[] hash) {
+            map.remove(Hex.encode(hash));
+        }
+    }
+
     @Test
     void proofVerification_realMpfProof_noNodeInvolved() {
         // Build a real trie locally (playing the role of the node's state)
-        MpfTrie trie = new MpfTrie(new TestNodeStore());
+        MpfTrie trie = new MpfTrie(new MapNodeStore());
         byte[] key = "order-123".getBytes(StandardCharsets.UTF_8);
         byte[] value = "approved".getBytes(StandardCharsets.UTF_8);
         trie.put(key, value);

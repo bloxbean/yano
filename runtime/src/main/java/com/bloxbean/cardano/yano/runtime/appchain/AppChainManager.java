@@ -121,6 +121,20 @@ public final class AppChainManager implements Subsystem, AppChainGateways {
         if (subsystem == null) {
             return AppMsgValidator.Result.reject("chain not hosted: " + message.getChainId());
         }
+        // The shared inbound agent enforces structural limits against the UNION
+        // (most permissive) config, so re-apply this chain's own size/TTL bounds
+        // here — otherwise a stricter chain would accept messages a single-chain
+        // deployment of it would reject.
+        var config = subsystem.chainConfig();
+        if (message.getSize() > config.maxMessageBytes()) {
+            return AppMsgValidator.Result.reject("body exceeds chain max size ("
+                    + message.getSize() + " > " + config.maxMessageBytes() + ")");
+        }
+        long now = System.currentTimeMillis() / 1000;
+        if (config.maxTtlSeconds() > 0 && message.getExpiresAt() > now + config.maxTtlSeconds()) {
+            return AppMsgValidator.Result.reject("expiresAt too far in the future (chain max TTL "
+                    + config.maxTtlSeconds() + "s)");
+        }
         return subsystem.verifyEnvelope(message);
     }
 
@@ -153,8 +167,25 @@ public final class AppChainManager implements Subsystem, AppChainGateways {
 
     @Override
     public void start() {
-        for (AppChainSubsystem subsystem : chains.values()) {
-            subsystem.start();
+        List<AppChainSubsystem> started = new ArrayList<>();
+        try {
+            for (AppChainSubsystem subsystem : chains.values()) {
+                subsystem.start();
+                started.add(subsystem);
+            }
+        } catch (RuntimeException | Error e) {
+            // Roll back the chains we already started so a partial failure never
+            // leaves orphan chains running (the kernel won't call our stop() —
+            // the manager wasn't in its started list yet).
+            for (int i = started.size() - 1; i >= 0; i--) {
+                try {
+                    started.get(i).stop();
+                } catch (Exception stopError) {
+                    log.warn("Error rolling back app chain {}: {}",
+                            started.get(i).chainId(), stopError.toString());
+                }
+            }
+            throw e;
         }
     }
 

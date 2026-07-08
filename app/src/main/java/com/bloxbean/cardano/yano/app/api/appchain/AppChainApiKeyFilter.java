@@ -6,7 +6,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.container.ContainerRequestContext;
 import jakarta.ws.rs.container.ContainerRequestFilter;
-import jakarta.ws.rs.core.HttpHeaders;
+import jakarta.ws.rs.container.ResourceInfo;
+import jakarta.ws.rs.core.Context;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
 import jakarta.ws.rs.ext.Provider;
@@ -21,10 +22,16 @@ import java.util.Set;
 /**
  * Opt-in API-key authentication for the app-chain REST surface
  * (ADR app-layer/006 E4.1). Disabled by default — when
- * {@code yano.app-chain.api.auth.enabled=true}, every {@code /app-chain}
- * request must carry a configured key in the {@code X-API-Key} header.
- * A key entry of the form {@code key=topicA|topicB} additionally restricts
- * message submission to the listed topics (reads stay unrestricted).
+ * {@code yano.app-chain.api.auth.enabled=true}, every request matched to an
+ * app-chain resource method must carry a configured key in the
+ * {@code X-API-Key} header. A key entry of the form {@code key=topicA|topicB}
+ * additionally restricts message submission to the listed topics (reads stay
+ * unrestricted).
+ * <p>
+ * Scoping is by the <em>matched resource class</em> ({@link ResourceInfo}), not
+ * a URL substring — renaming or re-rooting the resource cannot silently
+ * un-protect it, and URI variants (trailing slash, matrix params) cannot slip
+ * past the submit-topic check.
  */
 @Provider
 public class AppChainApiKeyFilter implements ContainerRequestFilter {
@@ -40,15 +47,14 @@ public class AppChainApiKeyFilter implements ContainerRequestFilter {
     @Inject
     ObjectMapper objectMapper;
 
+    @Context
+    ResourceInfo resourceInfo;
+
     private volatile Map<String, Set<String>> parsedKeys;
 
     @Override
     public void filter(ContainerRequestContext requestContext) {
-        if (!authEnabled) {
-            return;
-        }
-        String path = requestContext.getUriInfo().getPath();
-        if (!path.contains("app-chain")) {
+        if (!authEnabled || !isAppChainResource()) {
             return;
         }
 
@@ -62,11 +68,24 @@ public class AppChainApiKeyFilter implements ContainerRequestFilter {
         }
 
         Set<String> allowedTopics = keys.get(apiKey);
-        if (!allowedTopics.isEmpty()
-                && "POST".equalsIgnoreCase(requestContext.getMethod())
-                && path.endsWith("/messages")) {
+        if (!allowedTopics.isEmpty() && isSubmit(requestContext)) {
             enforceTopicRestriction(requestContext, allowedTopics);
         }
+    }
+
+    /** True when the matched resource class is one of the app-chain resources. */
+    private boolean isAppChainResource() {
+        Class<?> resourceClass = resourceInfo != null ? resourceInfo.getResourceClass() : null;
+        return resourceClass == AppChainResource.class
+                || resourceClass == AppChainResource.ChainScopedResource.class;
+    }
+
+    /** True for the message-submission endpoint, independent of URL form. */
+    private boolean isSubmit(ContainerRequestContext requestContext) {
+        java.lang.reflect.Method method = resourceInfo != null ? resourceInfo.getResourceMethod() : null;
+        return method != null
+                && "submit".equals(method.getName())
+                && "POST".equalsIgnoreCase(requestContext.getMethod());
     }
 
     private void enforceTopicRestriction(ContainerRequestContext requestContext, Set<String> allowedTopics) {
@@ -75,7 +94,7 @@ public class AppChainApiKeyFilter implements ContainerRequestFilter {
             // restore the entity for the resource method
             requestContext.setEntityStream(new ByteArrayInputStream(body));
             JsonNode json = objectMapper.readTree(body);
-            String topic = json.hasNonNull("topic") ? json.get("topic").asText() : "";
+            String topic = json != null && json.hasNonNull("topic") ? json.get("topic").asText() : "";
             if (!allowedTopics.contains(topic)) {
                 requestContext.abortWith(Response.status(Response.Status.FORBIDDEN)
                         .type(MediaType.APPLICATION_JSON)
@@ -114,10 +133,5 @@ public class AppChainApiKeyFilter implements ContainerRequestFilter {
         }
         parsedKeys = parsed;
         return parsed;
-    }
-
-    /** Test hook. */
-    void resetCache() {
-        parsedKeys = null;
     }
 }

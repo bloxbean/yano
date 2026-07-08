@@ -78,6 +78,18 @@ class AppChainApiKeyFilterTest {
     }
 
     @Test
+    void restrictedKey_trailingSlash_cannotBypassTopicCheck() {
+        // URI variant that still routes to submit() must not skip the topic ACL
+        given()
+                .header("X-API-Key", "restricted-key")
+                .contentType("application/json")
+                .body("{\"topic\":\"secrets\",\"body\":\"hello\"}")
+                .when().post("/api/v1/app-chain/messages/")
+                .then()
+                .statusCode(403);
+    }
+
+    @Test
     void restrictedKey_readsAreUnrestricted() {
         given()
                 .header("X-API-Key", "restricted-key")

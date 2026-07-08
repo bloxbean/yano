@@ -148,7 +148,12 @@ public final class AppChainClient {
 
     private void runSseLoop(long fromHeight, String topic,
                             Consumer<StreamedMessage> consumer, AtomicBoolean closed) {
+        // Resume from the last block we saw (inclusive server replay), but track
+        // the last delivered (height, index) so a reconnect that replays that
+        // block does not re-deliver messages the consumer already processed.
         long nextFromHeight = fromHeight;
+        long lastHeight = -1;
+        int lastIndex = -1;
         while (!closed.get()) {
             try {
                 StringBuilder path = new StringBuilder(chainPath("/stream"))
@@ -175,8 +180,15 @@ public final class AppChainClient {
                             if ("app-message".equals(eventName) && data.length() > 0) {
                                 JsonNode json = objectMapper.readTree(data.toString());
                                 StreamedMessage message = StreamedMessage.from(json);
-                                nextFromHeight = Math.max(nextFromHeight, message.height());
-                                consumer.accept(message);
+                                if (message.height() < lastHeight
+                                        || (message.height() == lastHeight && message.index() <= lastIndex)) {
+                                    // already delivered before a reconnect — skip
+                                } else {
+                                    lastHeight = message.height();
+                                    lastIndex = message.index();
+                                    nextFromHeight = Math.max(nextFromHeight, message.height());
+                                    consumer.accept(message);
+                                }
                             }
                             eventName = null;
                             data.setLength(0);

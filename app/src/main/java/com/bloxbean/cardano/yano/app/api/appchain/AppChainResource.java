@@ -4,6 +4,8 @@ import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.appchain.AppChainGateway;
 import com.bloxbean.cardano.yano.api.appchain.AppChainGateways;
 import com.bloxbean.cardano.yano.api.appchain.ReceivedAppMessage;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.*;
 import jakarta.ws.rs.core.MediaType;
@@ -53,7 +55,7 @@ public class AppChainResource {
     @Path("chains/{chainId}")
     public ChainScopedResource chain(@PathParam("chainId") String chainId) {
         AppChainGateway gateway = appChainGateways.byId(chainId)
-                .orElseThrow(() -> new NotFoundException("Unknown app chain: " + chainId));
+                .orElseThrow(() -> jsonError(Response.Status.NOT_FOUND, "Unknown app chain: " + chainId));
         return new ChainScopedResource(gateway);
     }
 
@@ -111,12 +113,21 @@ public class AppChainResource {
     private ChainScopedResource singleChain() {
         int count = appChainGateways.all().size();
         if (count == 0) {
-            throw new ServiceUnavailableException("App chain is not enabled on this node");
+            throw jsonError(Response.Status.SERVICE_UNAVAILABLE,
+                    "App chain is not enabled on this node");
         }
         return appChainGateways.single()
                 .map(ChainScopedResource::new)
-                .orElseThrow(() -> new BadRequestException(
+                .orElseThrow(() -> jsonError(Response.Status.BAD_REQUEST,
                         count + " app chains are hosted — use /app-chain/chains/{chainId}/..."));
+    }
+
+    /** WebApplicationException carrying the {@code {"error": ...}} JSON contract. */
+    private static WebApplicationException jsonError(Response.Status status, String message) {
+        return new WebApplicationException(Response.status(status)
+                .type(MediaType.APPLICATION_JSON)
+                .entity(Map.of("error", message))
+                .build());
     }
 
     /**
@@ -352,6 +363,8 @@ public class AppChainResource {
             });
         }
 
+        private static final ObjectMapper SSE_MAPPER = new ObjectMapper();
+
         private void emitBlock(jakarta.ws.rs.sse.Sse sse, jakarta.ws.rs.sse.SseEventSink sink,
                                com.bloxbean.cardano.yano.api.appchain.AppBlock block, String topicFilter) {
             int index = 0;
@@ -360,18 +373,23 @@ public class AppChainResource {
                 if (topicFilter != null && !topicFilter.equals(message.getTopic())) {
                     continue;
                 }
-                String json = "{\"chainId\":\"" + block.chainId()
-                        + "\",\"height\":" + block.height()
-                        + ",\"index\":" + messageIndex
-                        + ",\"messageId\":\"" + message.getMessageIdHex()
-                        + "\",\"topic\":\"" + message.getTopic()
-                        + "\",\"sender\":\"" + HexUtil.encodeHexString(message.getSender())
-                        + "\",\"senderSeq\":" + message.getSenderSeq()
-                        + ",\"bodyHex\":\"" + HexUtil.encodeHexString(message.getBody()) + "\"}";
+                // Build JSON with the mapper so user-controlled fields (topic,
+                // chainId) are correctly escaped — raw concatenation would let a
+                // topic containing a quote produce malformed JSON and wedge the
+                // subscriber in a reconnect loop.
+                ObjectNode json = SSE_MAPPER.createObjectNode();
+                json.put("chainId", block.chainId());
+                json.put("height", block.height());
+                json.put("index", messageIndex);
+                json.put("messageId", message.getMessageIdHex());
+                json.put("topic", message.getTopic());
+                json.put("sender", HexUtil.encodeHexString(message.getSender()));
+                json.put("senderSeq", message.getSenderSeq());
+                json.put("bodyHex", HexUtil.encodeHexString(message.getBody()));
                 sink.send(sse.newEventBuilder()
                         .name("app-message")
                         .id(block.height() + ":" + messageIndex)
-                        .data(json)
+                        .data(json.toString())
                         .build());
             }
         }
