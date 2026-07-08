@@ -168,6 +168,14 @@ final class RuntimeYano implements Yano, DevnetRuntimeProvider {
     }
 
     @Override
+    public Optional<com.bloxbean.cardano.yano.api.appchain.AppChainGateway> appChain() {
+        if (nodeLifecycle instanceof com.bloxbean.cardano.yano.runtime.internal.RuntimeNode runtimeNode) {
+            return Optional.ofNullable(runtimeNode.appChainGateway());
+        }
+        return Optional.empty();
+    }
+
+    @Override
     public Optional<RuntimeMaintenanceGate> maintenanceGate() {
         return Optional.of(maintenanceGate);
     }

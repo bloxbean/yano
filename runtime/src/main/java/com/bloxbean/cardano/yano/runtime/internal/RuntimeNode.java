@@ -178,6 +178,7 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
 
     // Server components (for serving other clients)
     private final ServeSubsystem serveSubsystem;
+    private final com.bloxbean.cardano.yano.runtime.appchain.AppChainSubsystem appChainSubsystem;
     private final RelayConnectionManager relayConnectionManager;
     private final int serverPort;
 
@@ -342,6 +343,11 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 relayConnectionManager,
                 log);
 
+        this.appChainSubsystem = buildAppChainSubsystem();
+        if (appChainSubsystem != null) {
+            serveSubsystem.enableAppLayer(appChainSubsystem.serverAgentFactories());
+        }
+
         // Register default consensus listener (accept-all placeholder)
         var consensusListener = new DefaultConsensusListener();
         AnnotationListenerRegistrar.register(eventBus, consensusListener,
@@ -455,7 +461,80 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
     }
 
     private List<Subsystem> runtimeKernelSubsystems() {
-        return RuntimeKernelStages.create(runtimeKernelActions());
+        List<Subsystem> subsystems = new java.util.ArrayList<>(RuntimeKernelStages.create(runtimeKernelActions()));
+        if (appChainSubsystem != null) {
+            subsystems.add(appChainSubsystem);
+        }
+        return List.copyOf(subsystems);
+    }
+
+    /**
+     * Builds the app-chain subsystem from runtime globals when enabled
+     * (see adr/app-layer/005). Returns null when disabled.
+     */
+    private com.bloxbean.cardano.yano.runtime.appchain.AppChainSubsystem buildAppChainSubsystem() {
+        Map<String, Object> globals = this.runtimeOptions.globals();
+        if (!resolveBoolean(globals, YanoPropertyKeys.AppChain.ENABLED, false)) {
+            return null;
+        }
+        String chainId = resolveString(globals, YanoPropertyKeys.AppChain.CHAIN_ID, "");
+        String signingKey = resolveString(globals, YanoPropertyKeys.AppChain.SIGNING_KEY, "");
+        String members = resolveString(globals, YanoPropertyKeys.AppChain.MEMBERS, "");
+        String peers = resolveString(globals, YanoPropertyKeys.AppChain.PEERS, "");
+
+        java.util.Set<String> memberKeys = new java.util.HashSet<>();
+        for (String member : members.split(",")) {
+            if (!member.isBlank()) memberKeys.add(member.trim());
+        }
+        List<com.bloxbean.cardano.yano.api.appchain.AppChainConfig.AppPeer> appPeers = new java.util.ArrayList<>();
+        for (String peer : peers.split(",")) {
+            if (!peer.isBlank())
+                appPeers.add(com.bloxbean.cardano.yano.api.appchain.AppChainConfig.AppPeer.parse(peer.trim()));
+        }
+
+        var appChainConfig = new com.bloxbean.cardano.yano.api.appchain.AppChainConfig(
+                chainId,
+                signingKey,
+                memberKeys,
+                appPeers,
+                (int) parseLong(globals.get(YanoPropertyKeys.AppChain.MAX_MESSAGE_BYTES),
+                        com.bloxbean.cardano.yano.api.appchain.AppChainConfig.DEFAULT_MAX_MESSAGE_BYTES),
+                parseLong(globals.get(YanoPropertyKeys.AppChain.MAX_TTL_SECONDS),
+                        com.bloxbean.cardano.yano.api.appchain.AppChainConfig.DEFAULT_MAX_TTL_SECONDS),
+                parseLong(globals.get(YanoPropertyKeys.AppChain.DEFAULT_TTL_SECONDS),
+                        com.bloxbean.cardano.yano.api.appchain.AppChainConfig.DEFAULT_DEFAULT_TTL_SECONDS),
+                resolveString(globals, YanoPropertyKeys.AppChain.SEQUENCER_PROPOSER, ""),
+                (int) parseLong(globals.get(YanoPropertyKeys.AppChain.THRESHOLD), 1),
+                parseLong(globals.get(YanoPropertyKeys.AppChain.BLOCK_INTERVAL_MS),
+                        com.bloxbean.cardano.yano.api.appchain.AppChainConfig.DEFAULT_BLOCK_INTERVAL_MS),
+                (int) parseLong(globals.get(YanoPropertyKeys.AppChain.BLOCK_MAX_MESSAGES),
+                        com.bloxbean.cardano.yano.api.appchain.AppChainConfig.DEFAULT_MAX_BLOCK_MESSAGES),
+                resolveString(globals, YanoPropertyKeys.AppChain.STATE_MACHINE,
+                        com.bloxbean.cardano.yano.api.appchain.AppChainConfig.DEFAULT_STATE_MACHINE),
+                null,
+                resolveBoolean(globals, YanoPropertyKeys.AppChain.ANCHOR_ENABLED, false)
+                        ? new com.bloxbean.cardano.yano.api.appchain.AppChainConfig.AnchorConfig(
+                                true,
+                                resolveString(globals, YanoPropertyKeys.AppChain.ANCHOR_SIGNING_KEY, ""),
+                                parseLong(globals.get(YanoPropertyKeys.AppChain.ANCHOR_EVERY_BLOCKS), 10),
+                                parseLong(globals.get(YanoPropertyKeys.AppChain.ANCHOR_MAX_INTERVAL_MINUTES), 60),
+                                parseLong(globals.get(YanoPropertyKeys.AppChain.ANCHOR_METADATA_LABEL), 7014))
+                        : null,
+                (int) parseLong(globals.get(YanoPropertyKeys.AppChain.L1_STABILITY_DEPTH), 0));
+        log.info("App chain enabled: {} ({} members, {} peers, sequencing: {}, anchoring: {})",
+                chainId, memberKeys.size(), appPeers.size(), appChainConfig.sequencingEnabled(),
+                appChainConfig.anchoringEnabled());
+        String rocksPath = config.getRocksDBPath() != null ? config.getRocksDBPath() : "./chainstate";
+        var subsystem = new com.bloxbean.cardano.yano.runtime.appchain.AppChainSubsystem(
+                appChainConfig, protocolMagic, eventBus, null, rocksPath + "/app-chain",
+                Thread.currentThread().getContextClassLoader(), log);
+        subsystem.wireL1(this::submitTransaction, this::getUtxoState);
+        return subsystem;
+    }
+
+    /** App-chain gateway, or null when the app chain is disabled. */
+    public com.bloxbean.cardano.yano.api.appchain.AppChainGateway appChainGateway() {
+        return appChainSubsystem;
     }
 
     private SubsystemHealth runtimeHealth(String name) {

@@ -102,6 +102,34 @@ yano:
         max-in-flight-txs-per-peer: 100
         max-in-flight-bytes-per-peer: 1048576
         peer-cooldown-ms: 60000
+  # App chain (parallel application ledger over the appmsg protocol).
+  # See adr/app-layer/005-yano-app-chain-framework.md. Disabled by default.
+  app-chain:
+    enabled: false
+    # chain-id: "my-app-chain"
+    # signing-key: "<hex 32-byte Ed25519 seed>"           # this member's private key
+    # members: "<hex pubkey1>,<hex pubkey2>"              # group member public keys
+    # peers: "host1:13337,host2:13337"                    # app-group peers
+    # max-message-bytes: 65536
+    # max-ttl-seconds: 3600
+    # default-ttl-seconds: 600
+    # Sequenced ledger (omit sequencer.proposer for diffusion-only mode):
+    # sequencer:
+    #   proposer: "<hex pubkey of the fixed sequencer>"
+    # threshold: 2                                        # finality cert n-of-members
+    # block:
+    #   interval-ms: 2000
+    #   max-messages: 500
+    # state-machine: ordered-log                          # built-in default app
+    # L1 anchoring (metadata mode; anchor wallet must be funded):
+    # anchor:
+    #   enabled: true
+    #   signing-key: "<hex 32-byte Ed25519 seed>"         # anchor wallet payment key
+    #   every-blocks: 10
+    #   max-interval-minutes: 60
+    #   metadata-label: 7014
+    # l1:
+    #   stability-depth: 36                               # L1 ref depth in app blocks
   dns:
     cache:
       # Positive DNS cache TTL in seconds. Defaults to 60 when omitted.

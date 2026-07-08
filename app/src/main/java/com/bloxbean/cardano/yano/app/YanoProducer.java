@@ -204,6 +204,63 @@ public class YanoProducer {
     @ConfigProperty(name = YanoPropertyKeys.Tx.DIFFUSION_ENABLED, defaultValue = "true")
     boolean txDiffusionEnabled = true;
 
+    @ConfigProperty(name = YanoPropertyKeys.AppChain.ENABLED, defaultValue = "false")
+    boolean appChainEnabled;
+
+    @ConfigProperty(name = YanoPropertyKeys.AppChain.CHAIN_ID)
+    java.util.Optional<String> appChainId;
+
+    @ConfigProperty(name = YanoPropertyKeys.AppChain.SIGNING_KEY)
+    java.util.Optional<String> appChainSigningKey;
+
+    @ConfigProperty(name = YanoPropertyKeys.AppChain.MEMBERS)
+    java.util.Optional<String> appChainMembers;
+
+    @ConfigProperty(name = YanoPropertyKeys.AppChain.PEERS)
+    java.util.Optional<String> appChainPeers;
+
+    @ConfigProperty(name = YanoPropertyKeys.AppChain.MAX_MESSAGE_BYTES, defaultValue = "65536")
+    int appChainMaxMessageBytes;
+
+    @ConfigProperty(name = YanoPropertyKeys.AppChain.SEQUENCER_PROPOSER)
+    java.util.Optional<String> appChainProposer;
+
+    @ConfigProperty(name = YanoPropertyKeys.AppChain.THRESHOLD, defaultValue = "1")
+    int appChainThreshold;
+
+    @ConfigProperty(name = YanoPropertyKeys.AppChain.BLOCK_INTERVAL_MS, defaultValue = "2000")
+    long appChainBlockIntervalMs;
+
+    @ConfigProperty(name = YanoPropertyKeys.AppChain.BLOCK_MAX_MESSAGES, defaultValue = "500")
+    int appChainBlockMaxMessages;
+
+    @ConfigProperty(name = YanoPropertyKeys.AppChain.STATE_MACHINE, defaultValue = "ordered-log")
+    String appChainStateMachine;
+
+    @ConfigProperty(name = YanoPropertyKeys.AppChain.ANCHOR_ENABLED, defaultValue = "false")
+    boolean appChainAnchorEnabled;
+
+    @ConfigProperty(name = YanoPropertyKeys.AppChain.ANCHOR_SIGNING_KEY)
+    java.util.Optional<String> appChainAnchorSigningKey;
+
+    @ConfigProperty(name = YanoPropertyKeys.AppChain.ANCHOR_EVERY_BLOCKS, defaultValue = "10")
+    long appChainAnchorEveryBlocks;
+
+    @ConfigProperty(name = YanoPropertyKeys.AppChain.ANCHOR_MAX_INTERVAL_MINUTES, defaultValue = "60")
+    long appChainAnchorMaxIntervalMinutes;
+
+    @ConfigProperty(name = YanoPropertyKeys.AppChain.ANCHOR_METADATA_LABEL, defaultValue = "7014")
+    long appChainAnchorMetadataLabel;
+
+    @ConfigProperty(name = YanoPropertyKeys.AppChain.L1_STABILITY_DEPTH, defaultValue = "0")
+    int appChainL1StabilityDepth;
+
+    @ConfigProperty(name = YanoPropertyKeys.AppChain.MAX_TTL_SECONDS, defaultValue = "3600")
+    long appChainMaxTtlSeconds;
+
+    @ConfigProperty(name = YanoPropertyKeys.AppChain.DEFAULT_TTL_SECONDS, defaultValue = "600")
+    long appChainDefaultTtlSeconds;
+
     @ConfigProperty(name = YanoPropertyKeys.Tx.DIFFUSION_MODE)
     java.util.Optional<String> txDiffusionMode = java.util.Optional.empty();
 
@@ -553,6 +610,25 @@ public class YanoProducer {
         globals.put(YanoPropertyKeys.Tx.DIFFUSION_MAX_IN_FLIGHT_BYTES_PER_PEER,
                 txDiffusionMaxInFlightBytesPerPeer);
         globals.put(YanoPropertyKeys.Tx.DIFFUSION_PEER_COOLDOWN_MS, txDiffusionPeerCooldownMs);
+        globals.put(YanoPropertyKeys.AppChain.ENABLED, appChainEnabled);
+        appChainId.ifPresent(v -> globals.put(YanoPropertyKeys.AppChain.CHAIN_ID, v));
+        appChainSigningKey.ifPresent(v -> globals.put(YanoPropertyKeys.AppChain.SIGNING_KEY, v));
+        appChainMembers.ifPresent(v -> globals.put(YanoPropertyKeys.AppChain.MEMBERS, v));
+        appChainPeers.ifPresent(v -> globals.put(YanoPropertyKeys.AppChain.PEERS, v));
+        globals.put(YanoPropertyKeys.AppChain.MAX_MESSAGE_BYTES, appChainMaxMessageBytes);
+        globals.put(YanoPropertyKeys.AppChain.MAX_TTL_SECONDS, appChainMaxTtlSeconds);
+        globals.put(YanoPropertyKeys.AppChain.DEFAULT_TTL_SECONDS, appChainDefaultTtlSeconds);
+        appChainProposer.ifPresent(v -> globals.put(YanoPropertyKeys.AppChain.SEQUENCER_PROPOSER, v));
+        globals.put(YanoPropertyKeys.AppChain.THRESHOLD, appChainThreshold);
+        globals.put(YanoPropertyKeys.AppChain.BLOCK_INTERVAL_MS, appChainBlockIntervalMs);
+        globals.put(YanoPropertyKeys.AppChain.BLOCK_MAX_MESSAGES, appChainBlockMaxMessages);
+        globals.put(YanoPropertyKeys.AppChain.STATE_MACHINE, appChainStateMachine);
+        globals.put(YanoPropertyKeys.AppChain.ANCHOR_ENABLED, appChainAnchorEnabled);
+        appChainAnchorSigningKey.ifPresent(v -> globals.put(YanoPropertyKeys.AppChain.ANCHOR_SIGNING_KEY, v));
+        globals.put(YanoPropertyKeys.AppChain.ANCHOR_EVERY_BLOCKS, appChainAnchorEveryBlocks);
+        globals.put(YanoPropertyKeys.AppChain.ANCHOR_MAX_INTERVAL_MINUTES, appChainAnchorMaxIntervalMinutes);
+        globals.put(YanoPropertyKeys.AppChain.ANCHOR_METADATA_LABEL, appChainAnchorMetadataLabel);
+        globals.put(YanoPropertyKeys.AppChain.L1_STABILITY_DEPTH, appChainL1StabilityDepth);
         globals.put(YanoPropertyKeys.Relay.AUTO_DISCOVERY, relayAutoDiscovery);
         globals.put(YanoPropertyKeys.Relay.ADVERTISED_HOST,
                 relayAdvertisedHost.map(String::trim).filter(host -> !host.isBlank()).orElse("auto"));
@@ -678,6 +754,12 @@ public class YanoProducer {
     @ApplicationScoped
     public DevnetControl createDevnetControl() {
         return ensureYano().devnetControl().orElse(UnavailableDevnetControl.INSTANCE);
+    }
+
+    @Produces
+    @ApplicationScoped
+    public com.bloxbean.cardano.yano.api.appchain.AppChainGateway createAppChainGateway() {
+        return ensureYano().appChain().orElse(UnavailableAppChainGateway.INSTANCE);
     }
 
     @Produces
@@ -947,6 +1029,63 @@ public class YanoProducer {
      * Placeholder for CDI injection sites when producer control is not available
      * for the assembled node role.
      */
+    /**
+     * Placeholder for CDI injection sites when the app chain is disabled.
+     */
+    private enum UnavailableAppChainGateway implements com.bloxbean.cardano.yano.api.appchain.AppChainGateway {
+        INSTANCE;
+
+        @Override
+        public String chainId() {
+            throw unavailableRole("AppChainGateway");
+        }
+
+        @Override
+        public String submit(String topic, byte[] body) {
+            throw unavailableRole("AppChainGateway");
+        }
+
+        @Override
+        public java.util.List<com.bloxbean.cardano.yano.api.appchain.ReceivedAppMessage> recentMessages(int limit) {
+            throw unavailableRole("AppChainGateway");
+        }
+
+        @Override
+        public java.util.Map<String, Object> status() {
+            throw unavailableRole("AppChainGateway");
+        }
+
+        @Override
+        public long tipHeight() {
+            throw unavailableRole("AppChainGateway");
+        }
+
+        @Override
+        public java.util.Optional<com.bloxbean.cardano.yano.api.appchain.AppBlock> block(long height) {
+            throw unavailableRole("AppChainGateway");
+        }
+
+        @Override
+        public byte[] stateRoot() {
+            throw unavailableRole("AppChainGateway");
+        }
+
+        @Override
+        public java.util.Optional<byte[]> stateValue(byte[] key) {
+            throw unavailableRole("AppChainGateway");
+        }
+
+        @Override
+        public java.util.Optional<byte[]> stateProof(byte[] key) {
+            throw unavailableRole("AppChainGateway");
+        }
+
+        @Override
+        public java.util.Optional<Long> messageHeight(byte[] messageId) {
+            throw unavailableRole("AppChainGateway");
+        }
+    }
+
     private enum UnavailableProducerControl implements ProducerControl {
         INSTANCE;
 

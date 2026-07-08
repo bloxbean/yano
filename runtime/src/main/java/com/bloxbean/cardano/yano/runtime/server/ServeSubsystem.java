@@ -1,6 +1,8 @@
 package com.bloxbean.cardano.yano.runtime.server;
 
+import com.bloxbean.cardano.yaci.core.network.server.AgentFactory;
 import com.bloxbean.cardano.yaci.core.network.server.NodeServer;
+import com.bloxbean.cardano.yaci.core.protocol.handshake.messages.VersionTable;
 import com.bloxbean.cardano.yaci.core.protocol.peersharing.PeerSharingServerAgent;
 import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Point;
 import com.bloxbean.cardano.yaci.core.protocol.handshake.util.N2NVersionTableConstant;
@@ -20,6 +22,7 @@ import com.bloxbean.cardano.yano.p2p.tx.diffusion.TxDiffusion;
 import org.slf4j.Logger;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -47,6 +50,7 @@ public final class ServeSubsystem implements Subsystem {
     private volatile NodeServer nodeServer;
     private volatile YaciTxSubmissionHandler txSubmissionHandler;
     private volatile Thread serverThread;
+    private volatile List<AgentFactory> appLayerAgentFactories = List.of();
 
     public ServeSubsystem(int serverPort,
                           long protocolMagic,
@@ -118,6 +122,16 @@ public final class ServeSubsystem implements Subsystem {
         return "serve";
     }
 
+    /**
+     * Install app-layer (protocol 100+) server agent factories. When set, the
+     * server also advertises the app-layer handshake version (V100) so app-chain
+     * peers can negotiate it; plain Cardano peers are unaffected. Must be called
+     * before {@link #start()}.
+     */
+    public void enableAppLayer(List<AgentFactory> agentFactories) {
+        this.appLayerAgentFactories = agentFactories != null ? List.copyOf(agentFactories) : List.of();
+    }
+
     @Override
     public synchronized void start() {
         if (running.get()) {
@@ -152,14 +166,24 @@ public final class ServeSubsystem implements Subsystem {
                     true,
                     log);
             int peerSharing = relayAutoDiscovery ? 1 : 0;
+            List<AgentFactory> appFactories = appLayerAgentFactories;
+            VersionTable versionTable = appFactories.isEmpty()
+                    ? N2NVersionTableConstant.v11AndAbove(protocolMagic, false, peerSharing, false)
+                    : N2NVersionTableConstant.v11AndAboveWithAppLayer(protocolMagic, false, peerSharing, false);
+            List<AgentFactory> agentFactories = new ArrayList<>();
+            if (relayAutoDiscovery) {
+                agentFactories.add(() -> new PeerSharingServerAgent(peerSharingProvider::peers));
+            }
+            agentFactories.addAll(appFactories);
+            if (!appFactories.isEmpty()) {
+                log.info("App-layer server agents enabled ({} factory/factories)", appFactories.size());
+            }
             NodeServer server = new NodeServer(serverPort,
-                    N2NVersionTableConstant.v11AndAbove(protocolMagic, false, peerSharing, false),
+                    versionTable,
                     chainState,
                     txSubmissionHandler,
                     txSubmissionConfig,
-                    relayAutoDiscovery
-                            ? List.of(() -> new PeerSharingServerAgent(peerSharingProvider::peers))
-                            : List.of());
+                    agentFactories);
             if (relayConnectionManager != null) {
                 server.setConnectionListener(relayConnectionManager.yaciServerConnectionListener());
             }

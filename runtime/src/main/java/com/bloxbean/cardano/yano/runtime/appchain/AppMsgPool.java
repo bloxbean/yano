@@ -1,0 +1,68 @@
+package com.bloxbean.cardano.yano.runtime.appchain;
+
+import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
+
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
+/**
+ * Pending verified app messages awaiting sequencing (FIFO by arrival).
+ * Dedup against the pool itself is by message id; dedup against finalized
+ * history is the caller's job (ledger message index). TTL expiry is swept
+ * on drain and on a periodic tick.
+ */
+final class AppMsgPool {
+    private final LinkedHashMap<String, AppMessage> pending = new LinkedHashMap<>();
+    private final int maxSize;
+
+    AppMsgPool(int maxSize) {
+        this.maxSize = Math.max(1, maxSize);
+    }
+
+    synchronized boolean add(AppMessage message) {
+        if (pending.size() >= maxSize) {
+            return false;
+        }
+        return pending.putIfAbsent(message.getMessageIdHex(), message) == null;
+    }
+
+    synchronized boolean contains(String messageIdHex) {
+        return pending.containsKey(messageIdHex);
+    }
+
+    /** Oldest-first snapshot of up to {@code maxMessages}/{@code maxBytes}, skipping expired. */
+    synchronized List<AppMessage> drainCandidates(int maxMessages, long maxBytes) {
+        sweepExpired();
+        List<AppMessage> selected = new ArrayList<>();
+        long bytes = 0;
+        for (AppMessage message : pending.values()) {
+            if (selected.size() >= maxMessages) {
+                break;
+            }
+            if (bytes + message.getSize() > maxBytes && !selected.isEmpty()) {
+                break;
+            }
+            selected.add(message);
+            bytes += message.getSize();
+        }
+        return selected;
+    }
+
+    /** Remove finalized messages (called after a block commits). */
+    synchronized void remove(List<AppMessage> messages) {
+        for (AppMessage message : messages) {
+            pending.remove(message.getMessageIdHex());
+        }
+    }
+
+    synchronized void sweepExpired() {
+        long now = System.currentTimeMillis() / 1000;
+        pending.values().removeIf(m -> m.isExpired(now));
+    }
+
+    synchronized int size() {
+        return pending.size();
+    }
+}

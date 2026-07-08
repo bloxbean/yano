@@ -487,4 +487,41 @@ public final class YanoPropertyKeys {
         private RocksDb() {
         }
     }
+
+    /**
+     * App-chain (parallel application ledger over the appmsg protocol) settings.
+     * See adr/app-layer/005-yano-app-chain-framework.md.
+     */
+    public static final class AppChain {
+        public static final String ENABLED = "yano.app-chain.enabled";
+        public static final String CHAIN_ID = "yano.app-chain.chain-id";
+        /** This member's Ed25519 private key (hex, 32-byte seed). Required when enabled. */
+        public static final String SIGNING_KEY = "yano.app-chain.signing-key";
+        /** Comma-separated hex Ed25519 public keys of group members. */
+        public static final String MEMBERS = "yano.app-chain.members";
+        /** Comma-separated app-group peers as host:port. */
+        public static final String PEERS = "yano.app-chain.peers";
+        public static final String MAX_MESSAGE_BYTES = "yano.app-chain.max-message-bytes";
+        public static final String MAX_TTL_SECONDS = "yano.app-chain.max-ttl-seconds";
+        public static final String DEFAULT_TTL_SECONDS = "yano.app-chain.default-ttl-seconds";
+        /** Fixed sequencer's Ed25519 public key (hex). Empty = diffusion-only (no ledger). */
+        public static final String SEQUENCER_PROPOSER = "yano.app-chain.sequencer.proposer";
+        /** Finality certificate signature threshold (n of members). */
+        public static final String THRESHOLD = "yano.app-chain.threshold";
+        public static final String BLOCK_INTERVAL_MS = "yano.app-chain.block.interval-ms";
+        public static final String BLOCK_MAX_MESSAGES = "yano.app-chain.block.max-messages";
+        /** Built-in state machine id; default "ordered-log". */
+        public static final String STATE_MACHINE = "yano.app-chain.state-machine";
+        public static final String ANCHOR_ENABLED = "yano.app-chain.anchor.enabled";
+        /** Anchor wallet Ed25519 payment key (hex, 32-byte seed). */
+        public static final String ANCHOR_SIGNING_KEY = "yano.app-chain.anchor.signing-key";
+        public static final String ANCHOR_EVERY_BLOCKS = "yano.app-chain.anchor.every-blocks";
+        public static final String ANCHOR_MAX_INTERVAL_MINUTES = "yano.app-chain.anchor.max-interval-minutes";
+        public static final String ANCHOR_METADATA_LABEL = "yano.app-chain.anchor.metadata-label";
+        /** Depth (L1 blocks) of the stable L1 reference in app blocks; 0 = disabled. */
+        public static final String L1_STABILITY_DEPTH = "yano.app-chain.l1.stability-depth";
+
+        private AppChain() {
+        }
+    }
 }

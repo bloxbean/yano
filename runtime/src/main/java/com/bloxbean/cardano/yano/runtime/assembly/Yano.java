@@ -33,6 +33,11 @@ public interface Yano extends AutoCloseable {
 
     Optional<NodeKernel> kernel();
 
+    /** App-chain gateway (adr/app-layer/005); empty when the app chain is disabled. */
+    default Optional<com.bloxbean.cardano.yano.api.appchain.AppChainGateway> appChain() {
+        return Optional.empty();
+    }
+
     default Optional<RuntimeMaintenanceGate> maintenanceGate() {
         return Optional.empty();
     }

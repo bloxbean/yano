@@ -1,0 +1,245 @@
+package com.bloxbean.cardano.yano.runtime.appchain;
+
+import com.bloxbean.cardano.vds.mpf.MpfTrie;
+import com.bloxbean.cardano.vds.mpf.rocksdb.RocksDbNodeStore;
+import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.codec.AppBlockCodec;
+import org.rocksdb.*;
+import org.slf4j.Logger;
+
+import java.io.File;
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Objects;
+import java.util.Optional;
+
+/**
+ * Durable app-chain ledger: hash-linked blocks, tip metadata, per-height vote
+ * locks, an included-message index, and the MPF state trie — all in one
+ * RocksDB instance so a finalized block commits in a single atomic WriteBatch
+ * (block + tip + message index + trie nodes + state root). The ledger is
+ * append-only after APP_FINAL: there is no rollback path by construction
+ * (ADR app-layer/005, risk table).
+ */
+final class AppLedgerStore implements AutoCloseable {
+    private static final byte[] CF_BLOCKS = "app_blocks".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] CF_META = "app_meta".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] CF_MSGS = "app_msgs".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] CF_MPF_NODES = "mpf_nodes".getBytes(StandardCharsets.UTF_8);
+
+    private static final byte[] KEY_TIP_HEIGHT = "tip_height".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] KEY_TIP_HASH = "tip_hash".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] KEY_STATE_ROOT = "state_root".getBytes(StandardCharsets.UTF_8);
+    private static final String KEY_VOTE_LOCK_PREFIX = "vote_lock_";
+
+    private final RocksDB db;
+    private final DBOptions dbOptions;
+    private final List<ColumnFamilyHandle> cfHandles = new ArrayList<>();
+    private final ColumnFamilyHandle blocksCf;
+    private final ColumnFamilyHandle metaCf;
+    private final ColumnFamilyHandle msgsCf;
+    private final RocksDbNodeStore mpfNodeStore;
+    private final Logger log;
+
+    AppLedgerStore(String path, Logger log) {
+        this.log = Objects.requireNonNull(log, "log");
+        try {
+            RocksDB.loadLibrary();
+            new File(path).mkdirs();
+
+            ColumnFamilyOptions defaultCfOptions = new ColumnFamilyOptions();
+            ColumnFamilyOptions mpfCfOptions = new ColumnFamilyOptions()
+                    .useFixedLengthPrefixExtractor(1); // namespace prefix used by RocksDbNodeStore
+
+            List<ColumnFamilyDescriptor> descriptors = List.of(
+                    new ColumnFamilyDescriptor(RocksDB.DEFAULT_COLUMN_FAMILY, defaultCfOptions),
+                    new ColumnFamilyDescriptor(CF_BLOCKS, defaultCfOptions),
+                    new ColumnFamilyDescriptor(CF_META, defaultCfOptions),
+                    new ColumnFamilyDescriptor(CF_MSGS, defaultCfOptions),
+                    new ColumnFamilyDescriptor(CF_MPF_NODES, mpfCfOptions));
+
+            this.dbOptions = new DBOptions()
+                    .setCreateIfMissing(true)
+                    .setCreateMissingColumnFamilies(true);
+            this.db = RocksDB.open(dbOptions, path, descriptors, cfHandles);
+            this.blocksCf = cfHandles.get(1);
+            this.metaCf = cfHandles.get(2);
+            this.msgsCf = cfHandles.get(3);
+            this.mpfNodeStore = new RocksDbNodeStore(db, cfHandles.get(4));
+            log.info("App ledger opened at {} (tip height: {})", path, tipHeight());
+        } catch (RocksDBException e) {
+            throw new RuntimeException("Failed to open app ledger at " + path, e);
+        }
+    }
+
+    RocksDbNodeStore mpfNodeStore() {
+        return mpfNodeStore;
+    }
+
+    /** Committed state root, or null before the first block. */
+    byte[] stateRoot() {
+        return getMeta(KEY_STATE_ROOT);
+    }
+
+    long tipHeight() {
+        byte[] value = getMeta(KEY_TIP_HEIGHT);
+        return value != null ? ByteBuffer.wrap(value).getLong() : 0L;
+    }
+
+    byte[] tipHash() {
+        byte[] value = getMeta(KEY_TIP_HASH);
+        return value != null ? value : AppBlock.GENESIS_PREV_HASH;
+    }
+
+    Optional<AppBlock> block(long height) {
+        try {
+            byte[] bytes = db.get(blocksCf, heightKey(height));
+            return bytes != null ? Optional.of(AppBlockCodec.deserialize(bytes)) : Optional.empty();
+        } catch (RocksDBException e) {
+            throw new RuntimeException("Failed to read app block " + height, e);
+        }
+    }
+
+    /** Raw block CBOR for a height range (inclusive), for catch-up serving. */
+    List<byte[]> blockBytesRange(long fromHeight, long toHeight) {
+        List<byte[]> blocks = new ArrayList<>();
+        try {
+            for (long h = fromHeight; h <= toHeight; h++) {
+                byte[] bytes = db.get(blocksCf, heightKey(h));
+                if (bytes == null) {
+                    break;
+                }
+                blocks.add(bytes);
+            }
+        } catch (RocksDBException e) {
+            throw new RuntimeException("Failed to read app block range", e);
+        }
+        return blocks;
+    }
+
+    /** Height the message id was finalized at, or empty if never included. */
+    Optional<Long> messageHeight(byte[] messageId) {
+        try {
+            byte[] value = db.get(msgsCf, messageId);
+            return value != null ? Optional.of(ByteBuffer.wrap(value).getLong()) : Optional.empty();
+        } catch (RocksDBException e) {
+            throw new RuntimeException("Failed to read message index", e);
+        }
+    }
+
+    /** Read a key from the committed state trie. */
+    Optional<byte[]> stateGet(byte[] key) {
+        byte[] root = stateRoot();
+        if (root == null) {
+            return Optional.empty();
+        }
+        MpfTrie trie = new MpfTrie(mpfNodeStore, root);
+        return Optional.ofNullable(trie.get(key));
+    }
+
+    /** MPF inclusion proof (wire format) for a key against the committed root. */
+    Optional<byte[]> stateProofWire(byte[] key) {
+        byte[] root = stateRoot();
+        if (root == null) {
+            return Optional.empty();
+        }
+        return new MpfTrie(mpfNodeStore, root).getProofWire(key);
+    }
+
+    /**
+     * Persisted vote lock: the block hash this member voted for at the given
+     * height. Guarantees at-most-one vote per height across restarts.
+     */
+    Optional<byte[]> voteLock(long height) {
+        return Optional.ofNullable(getMeta(voteLockKey(height)));
+    }
+
+    void putVoteLock(long height, byte[] blockHash) {
+        try {
+            db.put(metaCf, voteLockKey(height), blockHash);
+        } catch (RocksDBException e) {
+            throw new RuntimeException("Failed to persist vote lock at height " + height, e);
+        }
+    }
+
+    /**
+     * Atomically commit a finalized block: block bytes (with cert), tip, message
+     * index and everything already staged in {@code batch} (MPF nodes + state
+     * writes from apply).
+     */
+    void commitBlock(AppBlock block, byte[] blockHash, byte[] newStateRoot, WriteBatch batch) {
+        try {
+            batch.put(blocksCf, heightKey(block.height()), AppBlockCodec.serialize(block));
+            batch.put(metaCf, KEY_TIP_HEIGHT, longBytes(block.height()));
+            batch.put(metaCf, KEY_TIP_HASH, blockHash);
+            batch.put(metaCf, KEY_STATE_ROOT, newStateRoot);
+            byte[] heightBytes = longBytes(block.height());
+            for (var message : block.messages()) {
+                batch.put(msgsCf, message.getMessageId(), heightBytes);
+            }
+            try (WriteOptions writeOptions = new WriteOptions().setSync(true)) {
+                db.write(writeOptions, batch);
+            }
+            log.info("App block committed: height={}, hash={}, msgs={}, stateRoot={}",
+                    block.height(), com.bloxbean.cardano.yaci.core.util.HexUtil.encodeHexString(blockHash),
+                    block.messages().size(),
+                    com.bloxbean.cardano.yaci.core.util.HexUtil.encodeHexString(newStateRoot));
+        } catch (RocksDBException e) {
+            throw new RuntimeException("Failed to commit app block " + block.height(), e);
+        }
+    }
+
+    /** Generic long-valued meta entry (anchor markers etc.). */
+    long metaLong(String key, long defaultValue) {
+        byte[] value = getMeta(key.getBytes(StandardCharsets.UTF_8));
+        return value != null ? ByteBuffer.wrap(value).getLong() : defaultValue;
+    }
+
+    void metaPutLong(String key, long value) {
+        try {
+            db.put(metaCf, key.getBytes(StandardCharsets.UTF_8), longBytes(value));
+        } catch (RocksDBException e) {
+            throw new RuntimeException("Failed to write app ledger meta " + key, e);
+        }
+    }
+
+    private byte[] getMeta(byte[] key) {
+        try {
+            return db.get(metaCf, key);
+        } catch (RocksDBException e) {
+            throw new RuntimeException("Failed to read app ledger meta", e);
+        }
+    }
+
+    private static byte[] voteLockKey(long height) {
+        return (KEY_VOTE_LOCK_PREFIX + height).getBytes(StandardCharsets.UTF_8);
+    }
+
+    private static byte[] heightKey(long height) {
+        return longBytes(height);
+    }
+
+    private static byte[] longBytes(long value) {
+        return ByteBuffer.allocate(8).putLong(value).array();
+    }
+
+    @Override
+    public void close() {
+        for (ColumnFamilyHandle handle : cfHandles) {
+            try {
+                handle.close();
+            } catch (Exception ignored) {
+            }
+        }
+        try {
+            db.close();
+        } catch (Exception ignored) {
+        }
+        try {
+            dbOptions.close();
+        } catch (Exception ignored) {
+        }
+    }
+}
