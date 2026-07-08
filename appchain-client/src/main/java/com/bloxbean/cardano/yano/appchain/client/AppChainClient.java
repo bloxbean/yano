@@ -81,6 +81,34 @@ public final class AppChainClient {
         return submit(topic, body.getBytes(StandardCharsets.UTF_8));
     }
 
+    /**
+     * Submit a typed payload with an encode function (ADR 006 E1.3). Pass a
+     * method reference to any codec — e.g. {@code codec::encode} for a
+     * core-api {@code JacksonCborCodec}, or {@link CborCodec}.
+     */
+    public <T> SubmitResult submitTyped(String topic, T payload,
+                                        java.util.function.Function<T, byte[]> encoder) {
+        return submit(topic, encoder.apply(payload));
+    }
+
+    /**
+     * Subscribe to finalized messages decoded to a typed payload. Messages that
+     * fail to decode are skipped (they belong to a different schema/topic).
+     */
+    public <T> AutoCloseable subscribeTyped(long fromHeight, String topic,
+                                            java.util.function.Function<byte[], T> decoder,
+                                            java.util.function.BiConsumer<T, StreamedMessage> consumer) {
+        return subscribe(fromHeight, topic, message -> {
+            T payload;
+            try {
+                payload = decoder.apply(message.body());
+            } catch (Exception e) {
+                return; // not our type — skip
+            }
+            consumer.accept(payload, message);
+        });
+    }
+
     /** Recently accepted messages, optionally filtered by topic. */
     public List<Message> messages(int limit, String topic) {
         StringBuilder path = new StringBuilder(chainPath("/messages")).append("?limit=").append(limit);

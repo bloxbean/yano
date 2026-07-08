@@ -3,6 +3,7 @@
 // verifier for client-side ("don't trust, verify") proof checks.
 dependencies {
     implementation libs.jackson.databind
+    implementation libs.jackson.dataformat.cbor
     api libs.cardano.client.mpf
 
     testImplementation libs.junit.jupiter.api
