@@ -128,7 +128,7 @@ class AppChainCatchUpIntegrationTest {
                 AppChainConfig.DEFAULT_STATE_MACHINE,
                 null,
                 null, 0, java.util.List.of(),
-                false, 0);
+                false, 0, java.util.Map.of());
         AppChainSubsystem subsystem = new AppChainSubsystem(config, MAGIC, null, null,
                 tempDir.resolve("ledger-" + name).toString(), log);
         subsystems.add(subsystem);

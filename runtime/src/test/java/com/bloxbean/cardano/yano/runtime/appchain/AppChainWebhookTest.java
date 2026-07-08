@@ -78,7 +78,7 @@ class AppChainWebhookTest {
                 AppChainConfig.DEFAULT_STATE_MACHINE,
                 null, null, 0,
                 List.of(hookUrl),
-                false, 0);
+                false, 0, java.util.Map.of());
         node = new AppChainSubsystem(config, 42, null, null,
                 tempDir.resolve("ledger").toString(), null, log);
 

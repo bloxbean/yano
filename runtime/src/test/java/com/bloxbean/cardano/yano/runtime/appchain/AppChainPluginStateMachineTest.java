@@ -58,7 +58,7 @@ class AppChainPluginStateMachineTest {
                 TestKvStateMachineProvider.ID,   // NOT a built-in — resolved via ServiceLoader
                 null,
                 null, 0, java.util.List.of(),
-                false, 0);
+                false, 0, java.util.Map.of());
 
         node = new AppChainSubsystem(config, 42, null, null,
                 tempDir.resolve("ledger").toString(), null, log);
@@ -81,7 +81,7 @@ class AppChainPluginStateMachineTest {
         AppChainConfig badConfig = new AppChainConfig(
                 "bad-chain", HexUtil.encodeHexString(KEY_A), Set.of(pubA), List.of(),
                 65536, 3600, 600, pubA, 1, 300, 100, "no-such-machine", null, null, 0, java.util.List.of(),
-                false, 0);
+                false, 0, java.util.Map.of());
         org.assertj.core.api.Assertions.assertThatThrownBy(() ->
                         new AppChainSubsystem(badConfig, 42, null, null,
                                 tempDir.resolve("ledger2").toString(), null, log))
