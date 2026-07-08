@@ -205,6 +205,28 @@ final class AppLedgerStore implements AutoCloseable {
         }
     }
 
+    /** Generic byte[] / UTF-8 string meta entries (anchor records etc.). */
+    byte[] metaBytes(String key) {
+        return getMeta(key.getBytes(StandardCharsets.UTF_8));
+    }
+
+    void metaPutBytes(String key, byte[] value) {
+        try {
+            db.put(metaCf, key.getBytes(StandardCharsets.UTF_8), value);
+        } catch (RocksDBException e) {
+            throw new RuntimeException("Failed to write app ledger meta " + key, e);
+        }
+    }
+
+    String metaString(String key) {
+        byte[] value = metaBytes(key);
+        return value != null ? new String(value, StandardCharsets.UTF_8) : null;
+    }
+
+    void metaPutString(String key, String value) {
+        metaPutBytes(key, value.getBytes(StandardCharsets.UTF_8));
+    }
+
     private byte[] getMeta(byte[] key) {
         try {
             return db.get(metaCf, key);

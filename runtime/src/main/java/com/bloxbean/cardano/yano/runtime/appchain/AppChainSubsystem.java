@@ -506,6 +506,45 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     }
 
     @Override
+    public Optional<com.bloxbean.cardano.yano.api.appchain.evidence.EvidenceBundle> evidence(byte[] messageId) {
+        AppLedgerStore currentLedger = ledger;
+        if (currentLedger == null) {
+            return Optional.empty();
+        }
+        Optional<Long> heightOpt = currentLedger.messageHeight(messageId);
+        if (heightOpt.isEmpty()) {
+            return Optional.empty();
+        }
+        long messageHeight = heightOpt.get();
+
+        List<String> members = new ArrayList<>(memberKeys);
+        long anchoredHeight = currentLedger.metaLong("anchor_last_height", 0L);
+        byte[] anchoredBlockHash = currentLedger.metaBytes("anchor_last_block_hash");
+        String anchorTx = currentLedger.metaString("anchor_last_tx");
+        long anchorSlot = currentLedger.metaLong("anchor_last_slot", 0L);
+
+        List<AppBlock> blocks = new ArrayList<>();
+        com.bloxbean.cardano.yano.api.appchain.evidence.EvidenceBundle.AnchorRef anchorRef = null;
+
+        boolean anchored = anchoredHeight >= messageHeight && anchoredBlockHash != null && anchorTx != null;
+        long toHeight = anchored ? anchoredHeight : messageHeight;
+        for (long h = messageHeight; h <= toHeight; h++) {
+            Optional<AppBlock> block = currentLedger.block(h);
+            if (block.isEmpty()) {
+                return Optional.empty();
+            }
+            blocks.add(block.get());
+        }
+        if (anchored) {
+            anchorRef = new com.bloxbean.cardano.yano.api.appchain.evidence.EvidenceBundle.AnchorRef(
+                    anchoredHeight, HexUtil.encodeHexString(anchoredBlockHash), anchorTx, anchorSlot);
+        }
+
+        return Optional.of(new com.bloxbean.cardano.yano.api.appchain.evidence.EvidenceBundle(
+                config.chainId(), HexUtil.encodeHexString(messageId), blocks, members, anchorRef));
+    }
+
+    @Override
     public Map<String, Object> status() {
         Map<String, Object> status = new LinkedHashMap<>();
         status.put("chainId", config.chainId());

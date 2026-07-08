@@ -101,6 +101,12 @@ public class AppChainResource {
     }
 
     @GET
+    @Path("evidence/{messageIdHex}")
+    public Response evidence(@PathParam("messageIdHex") String messageIdHex) {
+        return singleChain().evidence(messageIdHex);
+    }
+
+    @GET
     @Path("stream")
     @Produces(MediaType.SERVER_SENT_EVENTS)
     public void stream(@QueryParam("fromHeight") @DefaultValue("-1") long fromHeight,
@@ -264,6 +270,28 @@ public class AppChainResource {
          * app the key is the message id; the proof verifies the message's finalized
          * position against the (anchorable) state root.
          */
+        /**
+         * Portable, offline-verifiable evidence bundle for a finalized message
+         * (ADR 006 E3.4): block(s) + members + L1 anchor reference. Verify with
+         * core-api's {@code EvidenceVerifier} — no node access needed.
+         */
+        @GET
+        @Path("evidence/{messageIdHex}")
+        public Response evidence(@PathParam("messageIdHex") String messageIdHex) {
+            byte[] messageId;
+            try {
+                messageId = HexUtil.decodeHexString(messageIdHex);
+            } catch (Exception e) {
+                return badRequest("Invalid messageId hex");
+            }
+            return gateway.evidence(messageId)
+                    .map(bundle -> Response.ok(
+                            com.bloxbean.cardano.yano.api.appchain.evidence.EvidenceBundleCodec.toJson(bundle))
+                            .build())
+                    .orElse(Response.status(Response.Status.NOT_FOUND)
+                            .entity(Map.of("error", "No finalized message with id " + messageIdHex)).build());
+        }
+
         @GET
         @Path("proof/{keyHex}")
         public Response proof(@PathParam("keyHex") String keyHex) {

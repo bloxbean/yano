@@ -1145,6 +1145,12 @@ public class YanoProducer {
         public AutoCloseable subscribeFinalized(FinalizedBlockListener listener) {
             throw unavailableRole("AppChainGateway");
         }
+
+        @Override
+        public java.util.Optional<com.bloxbean.cardano.yano.api.appchain.evidence.EvidenceBundle>
+                evidence(byte[] messageId) {
+            throw unavailableRole("AppChainGateway");
+        }
     }
 
     private enum UnavailableProducerControl implements ProducerControl {

@@ -41,6 +41,9 @@ final class AnchorService {
     private static final long RESUBMIT_AFTER_MS = 120_000;
 
     private static final String META_LAST_ANCHORED = "anchor_last_height";
+    private static final String META_ANCHOR_BLOCK_HASH = "anchor_last_block_hash";
+    private static final String META_ANCHOR_TX = "anchor_last_tx";
+    private static final String META_ANCHOR_SLOT = "anchor_last_slot";
 
     private final String chainId;
     private final AppChainConfig.AnchorConfig anchorConfig;
@@ -227,6 +230,14 @@ final class AnchorService {
         }
         pending = null;
         ledger.metaPutLong(META_LAST_ANCHORED, current.toHeight);
+        // Persist the confirmed-anchor record so evidence bundles can reference
+        // the anchored block hash + L1 tx (audit export, ADR 006 E3.4).
+        AppBlock anchoredBlock = blockByHeight.apply(current.toHeight);
+        if (anchoredBlock != null) {
+            ledger.metaPutBytes(META_ANCHOR_BLOCK_HASH, AppBlockCodec.blockHash(anchoredBlock));
+        }
+        ledger.metaPutString(META_ANCHOR_TX, current.txHash);
+        ledger.metaPutLong(META_ANCHOR_SLOT, slot);
         anchoredCount++;
         lastAnchoredL1Slot = slot;
         lastAnchorTxHash = current.txHash;
