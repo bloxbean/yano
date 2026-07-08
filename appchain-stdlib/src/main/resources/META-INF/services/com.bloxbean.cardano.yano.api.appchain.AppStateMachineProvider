@@ -1,0 +1,2 @@
+com.bloxbean.cardano.yano.appchain.stdlib.StdlibStateMachineProviders$KvRegistryProvider
+com.bloxbean.cardano.yano.appchain.stdlib.StdlibStateMachineProviders$ApprovalsProvider

@@ -53,4 +53,18 @@ public interface AppChainGateway {
 
     /** Height at which a message id was finalized, if it was. */
     java.util.Optional<Long> messageHeight(byte[] messageId);
+
+    /**
+     * Subscribe to finalized blocks (APP_FINAL). The listener is invoked once
+     * per block, in height order, on a framework thread — keep it fast and
+     * never block; offload heavy work. Close the returned handle to
+     * unsubscribe. Used by SSE streaming, webhook sinks and connectors
+     * (ADR app-layer/006 E3.1).
+     */
+    AutoCloseable subscribeFinalized(FinalizedBlockListener listener);
+
+    @FunctionalInterface
+    interface FinalizedBlockListener {
+        void onFinalized(AppBlock block, byte[] blockHash);
+    }
 }

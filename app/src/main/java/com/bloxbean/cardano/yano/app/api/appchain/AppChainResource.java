@@ -2,7 +2,10 @@ package com.bloxbean.cardano.yano.app.api.appchain;
 
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.appchain.AppChainGateway;
+import com.bloxbean.cardano.yano.api.appchain.AppChainGateways;
 import com.bloxbean.cardano.yano.api.appchain.ReceivedAppMessage;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.*;
 import jakarta.ws.rs.core.MediaType;
@@ -15,7 +18,10 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * REST surface for the app chain (M1: authenticated diffusion).
+ * REST surface for the app chain(s). Chain-scoped paths
+ * ({@code /app-chain/chains/{chainId}/...}) address a specific chain; the
+ * legacy chain-less paths ({@code /app-chain/...}) keep working when exactly
+ * one chain is configured (ADR app-layer/006 E5.2).
  * The message body is an opaque application payload; it can be supplied as
  * hex ({@code bodyHex}) or plain text ({@code body}).
  */
@@ -25,159 +31,376 @@ import java.util.Map;
 public class AppChainResource {
 
     @Inject
-    AppChainGateway appChainGateway;
+    AppChainGateways appChainGateways;
 
-    public record SubmitRequest(String topic, String body, String bodyHex) {
+    // ------------------------------------------------------------------
+    // Multi-chain surface
+    // ------------------------------------------------------------------
+
+    @GET
+    @Path("chains")
+    public Response chains() {
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (AppChainGateway gateway : appChainGateways.all()) {
+            Map<String, Object> entry = new LinkedHashMap<>();
+            entry.put("chainId", gateway.chainId());
+            entry.put("tipHeight", gateway.tipHeight());
+            entry.put("stateRoot", HexUtil.encodeHexString(gateway.stateRoot()));
+            result.add(entry);
+        }
+        return Response.ok(result).build();
     }
+
+    /** Chain-scoped subresource: /app-chain/chains/{chainId}/... */
+    @Path("chains/{chainId}")
+    public ChainScopedResource chain(@PathParam("chainId") String chainId) {
+        AppChainGateway gateway = appChainGateways.byId(chainId)
+                .orElseThrow(() -> jsonError(Response.Status.NOT_FOUND, "Unknown app chain: " + chainId));
+        return new ChainScopedResource(gateway);
+    }
+
+    // ------------------------------------------------------------------
+    // Legacy chain-less surface (single-chain deployments)
+    // ------------------------------------------------------------------
 
     @POST
     @Path("messages")
-    public Response submit(SubmitRequest request) {
-        if (request == null || (isBlank(request.body()) && isBlank(request.bodyHex()))) {
-            return badRequest("Either 'body' (text) or 'bodyHex' (hex bytes) is required");
-        }
-        byte[] body;
-        try {
-            body = !isBlank(request.bodyHex())
-                    ? HexUtil.decodeHexString(request.bodyHex().trim())
-                    : request.body().getBytes(StandardCharsets.UTF_8);
-        } catch (Exception e) {
-            return badRequest("Invalid bodyHex: " + e.getMessage());
-        }
-
-        try {
-            String messageId = appChainGateway.submit(request.topic(), body);
-            Map<String, Object> result = new LinkedHashMap<>();
-            result.put("messageId", messageId);
-            result.put("chainId", appChainGateway.chainId());
-            result.put("topic", request.topic() != null ? request.topic() : "");
-            return Response.accepted(result).build();
-        } catch (IllegalStateException e) {
-            return Response.status(Response.Status.SERVICE_UNAVAILABLE)
-                    .entity(Map.of("error", e.getMessage())).build();
-        } catch (IllegalArgumentException e) {
-            return badRequest(e.getMessage());
-        }
+    public Response submit(ChainScopedResource.SubmitRequest request) {
+        return singleChain().submit(request);
     }
 
     @GET
     @Path("messages")
     public Response messages(@QueryParam("limit") @DefaultValue("100") int limit,
                              @QueryParam("topic") String topic) {
-        try {
-            List<Map<String, Object>> result = new ArrayList<>();
-            for (ReceivedAppMessage message : appChainGateway.recentMessages(limit)) {
-                if (topic != null && !topic.equals(message.topic())) {
-                    continue;
-                }
-                Map<String, Object> entry = new LinkedHashMap<>();
-                entry.put("messageId", message.messageIdHex());
-                entry.put("chainId", message.chainId());
-                entry.put("topic", message.topic());
-                entry.put("sender", message.senderHex());
-                entry.put("senderSeq", message.senderSeq());
-                entry.put("expiresAt", message.expiresAt());
-                entry.put("bodyHex", HexUtil.encodeHexString(message.body()));
-                entry.put("receivedAt", message.receivedAt());
-                entry.put("source", message.source().name());
-                result.add(entry);
-            }
-            return Response.ok(result).build();
-        } catch (IllegalStateException e) {
-            return Response.status(Response.Status.SERVICE_UNAVAILABLE)
-                    .entity(Map.of("error", e.getMessage())).build();
-        }
+        return singleChain().messages(limit, topic);
     }
 
     @GET
     @Path("status")
     public Response status() {
-        try {
-            return Response.ok(appChainGateway.status()).build();
-        } catch (IllegalStateException e) {
-            return Response.status(Response.Status.SERVICE_UNAVAILABLE)
-                    .entity(Map.of("error", e.getMessage())).build();
-        }
+        return singleChain().status();
     }
 
     @GET
     @Path("tip")
     public Response tip() {
-        long height = appChainGateway.tipHeight();
-        Map<String, Object> result = new LinkedHashMap<>();
-        result.put("chainId", appChainGateway.chainId());
-        result.put("height", height);
-        result.put("stateRoot", HexUtil.encodeHexString(appChainGateway.stateRoot()));
-        return Response.ok(result).build();
+        return singleChain().tip();
     }
 
     @GET
     @Path("blocks/{height}")
     public Response block(@PathParam("height") long height) {
-        return appChainGateway.block(height)
-                .map(b -> {
-                    Map<String, Object> result = new LinkedHashMap<>();
-                    result.put("height", b.height());
-                    result.put("chainId", b.chainId());
-                    result.put("prevHash", HexUtil.encodeHexString(b.prevHash()));
-                    result.put("timestamp", b.timestamp());
-                    result.put("messagesRoot", HexUtil.encodeHexString(b.messagesRoot()));
-                    result.put("stateRoot", HexUtil.encodeHexString(b.stateRoot()));
-                    result.put("proposer", HexUtil.encodeHexString(b.proposer()));
-                    result.put("certSignatures", b.cert().signatures().size());
-                    List<Map<String, Object>> msgs = new ArrayList<>();
-                    for (var m : b.messages()) {
-                        Map<String, Object> entry = new LinkedHashMap<>();
-                        entry.put("messageId", m.getMessageIdHex());
-                        entry.put("topic", m.getTopic());
-                        entry.put("sender", HexUtil.encodeHexString(m.getSender()));
-                        entry.put("senderSeq", m.getSenderSeq());
-                        entry.put("bodyHex", HexUtil.encodeHexString(m.getBody()));
-                        msgs.add(entry);
-                    }
-                    result.put("messages", msgs);
-                    return Response.ok(result).build();
-                })
-                .orElse(Response.status(Response.Status.NOT_FOUND)
-                        .entity(Map.of("error", "No app block at height " + height)).build());
+        return singleChain().block(height);
     }
 
-    /**
-     * MPF inclusion proof for a state key (hex). For the built-in ordered-log
-     * app the key is the message id; the proof verifies the message's finalized
-     * position against the (anchorable) state root.
-     */
     @GET
     @Path("proof/{keyHex}")
     public Response proof(@PathParam("keyHex") String keyHex) {
-        byte[] key;
-        try {
-            key = HexUtil.decodeHexString(keyHex);
-        } catch (Exception e) {
-            return badRequest("Invalid key hex");
-        }
-        var proof = appChainGateway.stateProof(key);
-        if (proof.isEmpty()) {
-            return Response.status(Response.Status.NOT_FOUND)
-                    .entity(Map.of("error", "No state entry for key")).build();
-        }
-        Map<String, Object> result = new LinkedHashMap<>();
-        result.put("key", keyHex);
-        result.put("stateRoot", HexUtil.encodeHexString(appChainGateway.stateRoot()));
-        result.put("proofWireHex", HexUtil.encodeHexString(proof.get()));
-        appChainGateway.stateValue(key)
-                .ifPresent(v -> result.put("valueHex", HexUtil.encodeHexString(v)));
-        appChainGateway.messageHeight(key)
-                .ifPresent(h -> result.put("finalizedAtHeight", h));
-        return Response.ok(result).build();
+        return singleChain().proof(keyHex);
     }
 
-    private static boolean isBlank(String value) {
-        return value == null || value.isBlank();
+    @GET
+    @Path("stream")
+    @Produces(MediaType.SERVER_SENT_EVENTS)
+    public void stream(@QueryParam("fromHeight") @DefaultValue("-1") long fromHeight,
+                       @QueryParam("topic") String topic,
+                       @jakarta.ws.rs.core.Context jakarta.ws.rs.sse.Sse sse,
+                       @jakarta.ws.rs.core.Context jakarta.ws.rs.sse.SseEventSink sink) {
+        singleChain().stream(fromHeight, topic, sse, sink);
     }
 
-    private static Response badRequest(String message) {
-        return Response.status(Response.Status.BAD_REQUEST)
-                .entity(Map.of("error", message)).build();
+    private ChainScopedResource singleChain() {
+        int count = appChainGateways.all().size();
+        if (count == 0) {
+            throw jsonError(Response.Status.SERVICE_UNAVAILABLE,
+                    "App chain is not enabled on this node");
+        }
+        return appChainGateways.single()
+                .map(ChainScopedResource::new)
+                .orElseThrow(() -> jsonError(Response.Status.BAD_REQUEST,
+                        count + " app chains are hosted — use /app-chain/chains/{chainId}/..."));
+    }
+
+    /** WebApplicationException carrying the {@code {"error": ...}} JSON contract. */
+    private static WebApplicationException jsonError(Response.Status status, String message) {
+        return new WebApplicationException(Response.status(status)
+                .type(MediaType.APPLICATION_JSON)
+                .entity(Map.of("error", message))
+                .build());
+    }
+
+    /**
+     * Endpoints for one chain; used both as a JAX-RS subresource and behind
+     * the legacy chain-less paths.
+     */
+    @Produces(MediaType.APPLICATION_JSON)
+    @Consumes(MediaType.APPLICATION_JSON)
+    public static class ChainScopedResource {
+
+        private final AppChainGateway gateway;
+
+        ChainScopedResource(AppChainGateway gateway) {
+            this.gateway = gateway;
+        }
+
+        public record SubmitRequest(String topic, String body, String bodyHex) {
+        }
+
+        @POST
+        @Path("messages")
+        public Response submit(SubmitRequest request) {
+            if (request == null || (isBlank(request.body()) && isBlank(request.bodyHex()))) {
+                return badRequest("Either 'body' (text) or 'bodyHex' (hex bytes) is required");
+            }
+            byte[] body;
+            try {
+                body = !isBlank(request.bodyHex())
+                        ? HexUtil.decodeHexString(request.bodyHex().trim())
+                        : request.body().getBytes(StandardCharsets.UTF_8);
+            } catch (Exception e) {
+                return badRequest("Invalid bodyHex: " + e.getMessage());
+            }
+
+            try {
+                String messageId = gateway.submit(request.topic(), body);
+                Map<String, Object> result = new LinkedHashMap<>();
+                result.put("messageId", messageId);
+                result.put("chainId", gateway.chainId());
+                result.put("topic", request.topic() != null ? request.topic() : "");
+                return Response.accepted(result).build();
+            } catch (IllegalStateException e) {
+                return Response.status(Response.Status.SERVICE_UNAVAILABLE)
+                        .entity(Map.of("error", e.getMessage())).build();
+            } catch (IllegalArgumentException e) {
+                return badRequest(e.getMessage());
+            }
+        }
+
+        @GET
+        @Path("messages")
+        public Response messages(@QueryParam("limit") @DefaultValue("100") int limit,
+                                 @QueryParam("topic") String topic) {
+            try {
+                List<Map<String, Object>> result = new ArrayList<>();
+                for (ReceivedAppMessage message : gateway.recentMessages(limit)) {
+                    if (topic != null && !topic.equals(message.topic())) {
+                        continue;
+                    }
+                    Map<String, Object> entry = new LinkedHashMap<>();
+                    entry.put("messageId", message.messageIdHex());
+                    entry.put("chainId", message.chainId());
+                    entry.put("topic", message.topic());
+                    entry.put("sender", message.senderHex());
+                    entry.put("senderSeq", message.senderSeq());
+                    entry.put("expiresAt", message.expiresAt());
+                    entry.put("bodyHex", HexUtil.encodeHexString(message.body()));
+                    entry.put("receivedAt", message.receivedAt());
+                    entry.put("source", message.source().name());
+                    result.add(entry);
+                }
+                return Response.ok(result).build();
+            } catch (IllegalStateException e) {
+                return Response.status(Response.Status.SERVICE_UNAVAILABLE)
+                        .entity(Map.of("error", e.getMessage())).build();
+            }
+        }
+
+        @GET
+        @Path("status")
+        public Response status() {
+            try {
+                return Response.ok(gateway.status()).build();
+            } catch (IllegalStateException e) {
+                return Response.status(Response.Status.SERVICE_UNAVAILABLE)
+                        .entity(Map.of("error", e.getMessage())).build();
+            }
+        }
+
+        @GET
+        @Path("tip")
+        public Response tip() {
+            long height = gateway.tipHeight();
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("chainId", gateway.chainId());
+            result.put("height", height);
+            result.put("stateRoot", HexUtil.encodeHexString(gateway.stateRoot()));
+            return Response.ok(result).build();
+        }
+
+        @GET
+        @Path("blocks/{height}")
+        public Response block(@PathParam("height") long height) {
+            return gateway.block(height)
+                    .map(b -> {
+                        Map<String, Object> result = new LinkedHashMap<>();
+                        result.put("height", b.height());
+                        result.put("chainId", b.chainId());
+                        result.put("prevHash", HexUtil.encodeHexString(b.prevHash()));
+                        result.put("timestamp", b.timestamp());
+                        result.put("messagesRoot", HexUtil.encodeHexString(b.messagesRoot()));
+                        result.put("stateRoot", HexUtil.encodeHexString(b.stateRoot()));
+                        result.put("proposer", HexUtil.encodeHexString(b.proposer()));
+                        result.put("certSignatures", b.cert().signatures().size());
+                        List<Map<String, Object>> msgs = new ArrayList<>();
+                        for (var m : b.messages()) {
+                            Map<String, Object> entry = new LinkedHashMap<>();
+                            entry.put("messageId", m.getMessageIdHex());
+                            entry.put("topic", m.getTopic());
+                            entry.put("sender", HexUtil.encodeHexString(m.getSender()));
+                            entry.put("senderSeq", m.getSenderSeq());
+                            entry.put("bodyHex", HexUtil.encodeHexString(m.getBody()));
+                            msgs.add(entry);
+                        }
+                        result.put("messages", msgs);
+                        return Response.ok(result).build();
+                    })
+                    .orElse(Response.status(Response.Status.NOT_FOUND)
+                            .entity(Map.of("error", "No app block at height " + height)).build());
+        }
+
+        /**
+         * MPF inclusion proof for a state key (hex). For the built-in ordered-log
+         * app the key is the message id; the proof verifies the message's finalized
+         * position against the (anchorable) state root.
+         */
+        @GET
+        @Path("proof/{keyHex}")
+        public Response proof(@PathParam("keyHex") String keyHex) {
+            byte[] key;
+            try {
+                key = HexUtil.decodeHexString(keyHex);
+            } catch (Exception e) {
+                return badRequest("Invalid key hex");
+            }
+            var proof = gateway.stateProof(key);
+            if (proof.isEmpty()) {
+                return Response.status(Response.Status.NOT_FOUND)
+                        .entity(Map.of("error", "No state entry for key")).build();
+            }
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("key", keyHex);
+            result.put("chainId", gateway.chainId());
+            result.put("stateRoot", HexUtil.encodeHexString(gateway.stateRoot()));
+            result.put("proofWireHex", HexUtil.encodeHexString(proof.get()));
+            gateway.stateValue(key)
+                    .ifPresent(v -> result.put("valueHex", HexUtil.encodeHexString(v)));
+            gateway.messageHeight(key)
+                    .ifPresent(h -> result.put("finalizedAtHeight", h));
+            return Response.ok(result).build();
+        }
+
+        /**
+         * SSE stream of finalized messages (ADR 006 E3.1): replays from
+         * {@code fromHeight} (default: live-only from the current tip), then
+         * follows new blocks. Event name "app-message", id "height:index";
+         * "heartbeat" events keep idle connections alive.
+         */
+        @GET
+        @Path("stream")
+        @Produces(MediaType.SERVER_SENT_EVENTS)
+        public void stream(@QueryParam("fromHeight") @DefaultValue("-1") long fromHeight,
+                           @QueryParam("topic") String topic,
+                           @jakarta.ws.rs.core.Context jakarta.ws.rs.sse.Sse sse,
+                           @jakarta.ws.rs.core.Context jakarta.ws.rs.sse.SseEventSink sink) {
+            final AppChainGateway chainGateway = this.gateway;
+            Thread.ofVirtual().name("app-chain-sse").start(() -> {
+                java.util.concurrent.BlockingQueue<com.bloxbean.cardano.yano.api.appchain.AppBlock> liveBlocks =
+                        new java.util.concurrent.LinkedBlockingQueue<>(1024);
+                AutoCloseable subscription = null;
+                try (sink) {
+                    // Subscribe BEFORE replay so no block is missed in between
+                    subscription = chainGateway.subscribeFinalized(
+                            (block, hash) -> liveBlocks.offer(block));
+
+                    long tip = chainGateway.tipHeight();
+                    long nextHeight = fromHeight >= 0 ? Math.max(1, fromHeight) : tip + 1;
+                    long lastSent = nextHeight - 1;
+
+                    // Replay finalized history
+                    for (long h = nextHeight; h <= tip && !sink.isClosed(); h++) {
+                        var block = chainGateway.block(h);
+                        if (block.isEmpty()) {
+                            break;
+                        }
+                        emitBlock(sse, sink, block.get(), topic);
+                        lastSent = h;
+                    }
+
+                    // Live phase
+                    while (!sink.isClosed()) {
+                        var block = liveBlocks.poll(15, java.util.concurrent.TimeUnit.SECONDS);
+                        if (sink.isClosed()) {
+                            break;
+                        }
+                        if (block == null) {
+                            sink.send(sse.newEventBuilder().name("heartbeat")
+                                    .data(String.valueOf(chainGateway.tipHeight())).build());
+                            continue;
+                        }
+                        if (block.height() <= lastSent) {
+                            continue; // already replayed
+                        }
+                        // Fill any gap (queue overflow / bursts) from the ledger
+                        for (long h = lastSent + 1; h < block.height() && !sink.isClosed(); h++) {
+                            chainGateway.block(h).ifPresent(missed -> emitBlock(sse, sink, missed, topic));
+                        }
+                        emitBlock(sse, sink, block, topic);
+                        lastSent = block.height();
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                } catch (Exception ignored) {
+                    // client disconnects surface as send failures — normal termination
+                } finally {
+                    if (subscription != null) {
+                        try {
+                            subscription.close();
+                        } catch (Exception ignored) {
+                        }
+                    }
+                }
+            });
+        }
+
+        private static final ObjectMapper SSE_MAPPER = new ObjectMapper();
+
+        private void emitBlock(jakarta.ws.rs.sse.Sse sse, jakarta.ws.rs.sse.SseEventSink sink,
+                               com.bloxbean.cardano.yano.api.appchain.AppBlock block, String topicFilter) {
+            int index = 0;
+            for (var message : block.messages()) {
+                int messageIndex = index++;
+                if (topicFilter != null && !topicFilter.equals(message.getTopic())) {
+                    continue;
+                }
+                // Build JSON with the mapper so user-controlled fields (topic,
+                // chainId) are correctly escaped — raw concatenation would let a
+                // topic containing a quote produce malformed JSON and wedge the
+                // subscriber in a reconnect loop.
+                ObjectNode json = SSE_MAPPER.createObjectNode();
+                json.put("chainId", block.chainId());
+                json.put("height", block.height());
+                json.put("index", messageIndex);
+                json.put("messageId", message.getMessageIdHex());
+                json.put("topic", message.getTopic());
+                json.put("sender", HexUtil.encodeHexString(message.getSender()));
+                json.put("senderSeq", message.getSenderSeq());
+                json.put("bodyHex", HexUtil.encodeHexString(message.getBody()));
+                sink.send(sse.newEventBuilder()
+                        .name("app-message")
+                        .id(block.height() + ":" + messageIndex)
+                        .data(json.toString())
+                        .build());
+            }
+        }
+
+        private static boolean isBlank(String value) {
+            return value == null || value.isBlank();
+        }
+
+        private static Response badRequest(String message) {
+            return Response.status(Response.Status.BAD_REQUEST)
+                    .entity(Map.of("error", message)).build();
+        }
     }
 }

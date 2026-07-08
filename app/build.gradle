@@ -33,6 +33,14 @@ dependencies {
     implementation(project(':epoch-export')) {
         exclude group: 'io.netty', module: 'netty-all'
     }
+    // App-chain standard library (kv-registry, approvals, ...) — T2 optional,
+    // activated only by selecting a machine id via yano.app-chain.state-machine
+    implementation(project(':appchain-stdlib')) {
+        exclude group: 'io.netty', module: 'netty-all'
+    }
+
+    // App-chain metrics (ADR 006 E5.1); Prometheus endpoint at /q/metrics
+    implementation 'io.quarkus:quarkus-micrometer-registry-prometheus'
 
     implementation("com.google.auto.service:auto-service:1.1.1")
 

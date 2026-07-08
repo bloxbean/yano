@@ -211,7 +211,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
      * Envelope authentication: Ed25519 signature by a registered group member.
      * Structural checks (id recompute, size, TTL, chain) already ran in the agent.
      */
-    private AppMsgValidator.Result verifyEnvelope(AppMessage message) {
+    AppMsgValidator.Result verifyEnvelope(AppMessage message) {
         if (message.getAuthScheme() != AuthScheme.ED25519.getValue())
             return AppMsgValidator.Result.reject("unsupported auth scheme: " + message.getAuthScheme());
 
@@ -278,6 +278,20 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         return List.of(gossipFactory, catchUpFactory);
     }
 
+    /** The ledger, or null when sequencing is disabled / not started (manager use). */
+    AppLedgerStore ledgerOrNull() {
+        return ledger;
+    }
+
+    AppChainConfig chainConfig() {
+        return config;
+    }
+
+    /** Transport config for this chain (manager builds shared multi-chain agents). */
+    AppMsgSubmissionConfig chainTransportConfig() {
+        return transportConfig();
+    }
+
     /** Catch-up replies from a peer (protocol 103). */
     private void onCatchUpBlocks(String peerId, List<byte[]> blocks, long serverTipHeight) {
         bestPeerTip = Math.max(bestPeerTip, serverTipHeight);
@@ -321,7 +335,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     }
 
     /** Verified messages arriving from a peer: dedup, route, relay. */
-    private void onInboundMessages(List<AppMessage> messages) {
+    void onInboundMessages(List<AppMessage> messages) {
         for (AppMessage message : messages) {
             if (!seenMessageIds.add(message.getMessageIdHex())) {
                 duplicateCount.incrementAndGet();
@@ -509,6 +523,19 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         if (currentAnchor != null) {
             status.put("anchor", currentAnchor.status());
         }
+        if (!webhookSinks.isEmpty()) {
+            Map<String, Object> webhooks = new LinkedHashMap<>();
+            for (WebhookStreamSink sink : webhookSinks) {
+                Map<String, Object> sinkStatus = new LinkedHashMap<>();
+                sinkStatus.put("cursor", sink.cursor());
+                sinkStatus.put("delivered", sink.deliveredCount());
+                if (sink.lastError() != null) {
+                    sinkStatus.put("lastError", sink.lastError());
+                }
+                webhooks.put(sink.url(), sinkStatus);
+            }
+            status.put("webhooks", webhooks);
+        }
         status.put("poolSize", pool.size());
         status.put("submitted", submittedCount.get());
         status.put("received", receivedCount.get());
@@ -578,6 +605,9 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                             log);
                 }
             }
+            for (String url : config.webhookUrls()) {
+                webhookSinks.add(new WebhookStreamSink(url, config.chainId(), ledgerStore, log));
+            }
             subscribeL1Events();
         }
 
@@ -601,6 +631,10 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         }
         if (currentEngine != null) {
             exec.scheduleWithFixedDelay(this::catchUpTick, 5, 5, TimeUnit.SECONDS);
+        }
+        if (!webhookSinks.isEmpty()) {
+            exec.scheduleWithFixedDelay(this::webhookTick, 5, 5, TimeUnit.SECONDS);
+            log.info("App-chain webhook sinks enabled: {}", config.webhookUrls());
         }
         AnchorService currentAnchor = anchorService;
         if (currentAnchor != null) {
@@ -689,8 +723,27 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         return null;
     }
 
+    private final List<FinalizedBlockListener> finalizedListeners =
+            new java.util.concurrent.CopyOnWriteArrayList<>();
+    private final List<WebhookStreamSink> webhookSinks =
+            new java.util.concurrent.CopyOnWriteArrayList<>();
+
+    @Override
+    public AutoCloseable subscribeFinalized(FinalizedBlockListener listener) {
+        Objects.requireNonNull(listener, "listener");
+        finalizedListeners.add(listener);
+        return () -> finalizedListeners.remove(listener);
+    }
+
     private void onBlockFinalized(AppBlock block, byte[] blockHash) {
         lastProgressAt = System.currentTimeMillis();
+        for (FinalizedBlockListener listener : finalizedListeners) {
+            try {
+                listener.onFinalized(block, blockHash);
+            } catch (Exception e) {
+                log.warn("Finalized-block listener failed: {}", e.toString());
+            }
+        }
         if (eventBus != null) {
             try {
                 eventBus.publish(new AppBlockFinalizedEvent(block, blockHash),
@@ -721,6 +774,18 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         }
     }
 
+    private void webhookTick() {
+        if (!running.get())
+            return;
+        for (WebhookStreamSink sink : webhookSinks) {
+            try {
+                sink.deliveryTick();
+            } catch (Exception e) {
+                log.warn("Webhook delivery tick failed for {}: {}", sink.url(), e.toString());
+            }
+        }
+    }
+
     @Override
     public synchronized void stop() {
         if (!running.getAndSet(false))
@@ -733,6 +798,11 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             }
         }
         eventSubscriptions.clear();
+        // Webhook sinks hold the ledger that is about to close and are re-created
+        // by start(); drop them so a restart doesn't tick stale sinks against a
+        // closed RocksDB handle (or double-deliver). External finalizedListeners
+        // (SSE, metrics) are NOT cleared — they must survive a restart.
+        webhookSinks.clear();
         anchorService = null;
         ScheduledExecutorService exec = scheduler;
         scheduler = null;

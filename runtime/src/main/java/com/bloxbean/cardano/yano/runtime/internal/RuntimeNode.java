@@ -178,7 +178,7 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
 
     // Server components (for serving other clients)
     private final ServeSubsystem serveSubsystem;
-    private final com.bloxbean.cardano.yano.runtime.appchain.AppChainSubsystem appChainSubsystem;
+    private final com.bloxbean.cardano.yano.runtime.appchain.AppChainManager appChainManager;
     private final RelayConnectionManager relayConnectionManager;
     private final int serverPort;
 
@@ -343,9 +343,9 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 relayConnectionManager,
                 log);
 
-        this.appChainSubsystem = buildAppChainSubsystem();
-        if (appChainSubsystem != null) {
-            serveSubsystem.enableAppLayer(appChainSubsystem.serverAgentFactories());
+        this.appChainManager = buildAppChainManager();
+        if (appChainManager != null) {
+            serveSubsystem.enableAppLayer(appChainManager.serverAgentFactories());
         }
 
         // Register default consensus listener (accept-all placeholder)
@@ -462,79 +462,125 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
 
     private List<Subsystem> runtimeKernelSubsystems() {
         List<Subsystem> subsystems = new java.util.ArrayList<>(RuntimeKernelStages.create(runtimeKernelActions()));
-        if (appChainSubsystem != null) {
-            subsystems.add(appChainSubsystem);
+        if (appChainManager != null) {
+            subsystems.add(appChainManager);
         }
         return List.copyOf(subsystems);
     }
 
     /**
-     * Builds the app-chain subsystem from runtime globals when enabled
-     * (see adr/app-layer/005). Returns null when disabled.
+     * Builds the app-chain manager from runtime globals when enabled
+     * (adr/app-layer/005; multi-chain per adr/app-layer/006 E5.2).
+     * Chains come from the indexed list (yano.app-chain.chains) when present,
+     * otherwise from the flat yano.app-chain.* keys (single chain).
+     * Returns null when disabled.
      */
-    private com.bloxbean.cardano.yano.runtime.appchain.AppChainSubsystem buildAppChainSubsystem() {
+    private com.bloxbean.cardano.yano.runtime.appchain.AppChainManager buildAppChainManager() {
         Map<String, Object> globals = this.runtimeOptions.globals();
         if (!resolveBoolean(globals, YanoPropertyKeys.AppChain.ENABLED, false)) {
             return null;
         }
-        String chainId = resolveString(globals, YanoPropertyKeys.AppChain.CHAIN_ID, "");
-        String signingKey = resolveString(globals, YanoPropertyKeys.AppChain.SIGNING_KEY, "");
-        String members = resolveString(globals, YanoPropertyKeys.AppChain.MEMBERS, "");
-        String peers = resolveString(globals, YanoPropertyKeys.AppChain.PEERS, "");
 
+        List<java.util.function.Function<String, Object>> chainLookups = new java.util.ArrayList<>();
+        Object chainList = globals.get(YanoPropertyKeys.AppChain.CHAINS);
+        if (chainList instanceof List<?> entries && !entries.isEmpty()) {
+            for (Object entry : entries) {
+                if (entry instanceof Map<?, ?> chainMap) {
+                    chainLookups.add(suffix -> chainMap.get(suffix));
+                }
+            }
+        } else {
+            // Flat single-chain config: full keys are "yano.app-chain." + suffix
+            chainLookups.add(suffix -> globals.get("yano.app-chain." + suffix));
+        }
+
+        String rocksPath = config.getRocksDBPath() != null ? config.getRocksDBPath() : "./chainstate";
+        List<com.bloxbean.cardano.yano.runtime.appchain.AppChainSubsystem> subsystems =
+                new java.util.ArrayList<>();
+        for (java.util.function.Function<String, Object> lookup : chainLookups) {
+            var appChainConfig = buildAppChainConfig(lookup);
+            log.info("App chain enabled: {} ({} members, {} peers, sequencing: {}, anchoring: {})",
+                    appChainConfig.chainId(), appChainConfig.memberKeysHex().size(),
+                    appChainConfig.peers().size(), appChainConfig.sequencingEnabled(),
+                    appChainConfig.anchoringEnabled());
+            var subsystem = new com.bloxbean.cardano.yano.runtime.appchain.AppChainSubsystem(
+                    appChainConfig, protocolMagic, eventBus, null, rocksPath + "/app-chain",
+                    Thread.currentThread().getContextClassLoader(), log);
+            subsystem.wireL1(this::submitTransaction, this::getUtxoState);
+            subsystems.add(subsystem);
+        }
+        return new com.bloxbean.cardano.yano.runtime.appchain.AppChainManager(subsystems, log);
+    }
+
+    /** Builds one chain's config from suffix-keyed lookups (e.g. "chain-id", "sequencer.proposer"). */
+    private com.bloxbean.cardano.yano.api.appchain.AppChainConfig buildAppChainConfig(
+            java.util.function.Function<String, Object> get) {
         java.util.Set<String> memberKeys = new java.util.HashSet<>();
-        for (String member : members.split(",")) {
+        for (String member : stringOf(get.apply("members"), "").split(",")) {
             if (!member.isBlank()) memberKeys.add(member.trim());
         }
         List<com.bloxbean.cardano.yano.api.appchain.AppChainConfig.AppPeer> appPeers = new java.util.ArrayList<>();
-        for (String peer : peers.split(",")) {
+        for (String peer : stringOf(get.apply("peers"), "").split(",")) {
             if (!peer.isBlank())
                 appPeers.add(com.bloxbean.cardano.yano.api.appchain.AppChainConfig.AppPeer.parse(peer.trim()));
         }
-
-        var appChainConfig = new com.bloxbean.cardano.yano.api.appchain.AppChainConfig(
-                chainId,
-                signingKey,
+        boolean anchorEnabled = booleanOf(get.apply("anchor.enabled"), false);
+        List<String> webhookUrls = new java.util.ArrayList<>();
+        for (String url : stringOf(get.apply("webhooks"), "").split(",")) {
+            if (!url.isBlank()) webhookUrls.add(url.trim());
+        }
+        return new com.bloxbean.cardano.yano.api.appchain.AppChainConfig(
+                stringOf(get.apply("chain-id"), ""),
+                stringOf(get.apply("signing-key"), ""),
                 memberKeys,
                 appPeers,
-                (int) parseLong(globals.get(YanoPropertyKeys.AppChain.MAX_MESSAGE_BYTES),
+                (int) parseLong(get.apply("max-message-bytes"),
                         com.bloxbean.cardano.yano.api.appchain.AppChainConfig.DEFAULT_MAX_MESSAGE_BYTES),
-                parseLong(globals.get(YanoPropertyKeys.AppChain.MAX_TTL_SECONDS),
+                parseLong(get.apply("max-ttl-seconds"),
                         com.bloxbean.cardano.yano.api.appchain.AppChainConfig.DEFAULT_MAX_TTL_SECONDS),
-                parseLong(globals.get(YanoPropertyKeys.AppChain.DEFAULT_TTL_SECONDS),
+                parseLong(get.apply("default-ttl-seconds"),
                         com.bloxbean.cardano.yano.api.appchain.AppChainConfig.DEFAULT_DEFAULT_TTL_SECONDS),
-                resolveString(globals, YanoPropertyKeys.AppChain.SEQUENCER_PROPOSER, ""),
-                (int) parseLong(globals.get(YanoPropertyKeys.AppChain.THRESHOLD), 1),
-                parseLong(globals.get(YanoPropertyKeys.AppChain.BLOCK_INTERVAL_MS),
+                stringOf(get.apply("sequencer.proposer"), ""),
+                (int) parseLong(get.apply("threshold"), 1),
+                parseLong(get.apply("block.interval-ms"),
                         com.bloxbean.cardano.yano.api.appchain.AppChainConfig.DEFAULT_BLOCK_INTERVAL_MS),
-                (int) parseLong(globals.get(YanoPropertyKeys.AppChain.BLOCK_MAX_MESSAGES),
+                (int) parseLong(get.apply("block.max-messages"),
                         com.bloxbean.cardano.yano.api.appchain.AppChainConfig.DEFAULT_MAX_BLOCK_MESSAGES),
-                resolveString(globals, YanoPropertyKeys.AppChain.STATE_MACHINE,
+                stringOf(get.apply("state-machine"),
                         com.bloxbean.cardano.yano.api.appchain.AppChainConfig.DEFAULT_STATE_MACHINE),
                 null,
-                resolveBoolean(globals, YanoPropertyKeys.AppChain.ANCHOR_ENABLED, false)
+                anchorEnabled
                         ? new com.bloxbean.cardano.yano.api.appchain.AppChainConfig.AnchorConfig(
                                 true,
-                                resolveString(globals, YanoPropertyKeys.AppChain.ANCHOR_SIGNING_KEY, ""),
-                                parseLong(globals.get(YanoPropertyKeys.AppChain.ANCHOR_EVERY_BLOCKS), 10),
-                                parseLong(globals.get(YanoPropertyKeys.AppChain.ANCHOR_MAX_INTERVAL_MINUTES), 60),
-                                parseLong(globals.get(YanoPropertyKeys.AppChain.ANCHOR_METADATA_LABEL), 7014))
+                                stringOf(get.apply("anchor.signing-key"), ""),
+                                parseLong(get.apply("anchor.every-blocks"), 10),
+                                parseLong(get.apply("anchor.max-interval-minutes"), 60),
+                                parseLong(get.apply("anchor.metadata-label"), 7014))
                         : null,
-                (int) parseLong(globals.get(YanoPropertyKeys.AppChain.L1_STABILITY_DEPTH), 0));
-        log.info("App chain enabled: {} ({} members, {} peers, sequencing: {}, anchoring: {})",
-                chainId, memberKeys.size(), appPeers.size(), appChainConfig.sequencingEnabled(),
-                appChainConfig.anchoringEnabled());
-        String rocksPath = config.getRocksDBPath() != null ? config.getRocksDBPath() : "./chainstate";
-        var subsystem = new com.bloxbean.cardano.yano.runtime.appchain.AppChainSubsystem(
-                appChainConfig, protocolMagic, eventBus, null, rocksPath + "/app-chain",
-                Thread.currentThread().getContextClassLoader(), log);
-        subsystem.wireL1(this::submitTransaction, this::getUtxoState);
-        return subsystem;
+                (int) parseLong(get.apply("l1.stability-depth"), 0),
+                webhookUrls);
     }
 
-    /** App-chain gateway, or null when the app chain is disabled. */
+    private static String stringOf(Object value, String def) {
+        return value != null && !String.valueOf(value).isBlank() ? String.valueOf(value).trim() : def;
+    }
+
+    private static boolean booleanOf(Object value, boolean def) {
+        if (value == null) return def;
+        if (value instanceof Boolean b) return b;
+        return Boolean.parseBoolean(String.valueOf(value));
+    }
+
+    /** Single app-chain gateway (back-compat), or null when disabled or multiple chains. */
     public com.bloxbean.cardano.yano.api.appchain.AppChainGateway appChainGateway() {
-        return appChainSubsystem;
+        return appChainManager != null ? appChainManager.single().orElse(null) : null;
+    }
+
+    /** All hosted app chains; empty registry when disabled. */
+    public com.bloxbean.cardano.yano.api.appchain.AppChainGateways appChainGateways() {
+        return appChainManager != null
+                ? appChainManager
+                : com.bloxbean.cardano.yano.api.appchain.AppChainGateways.empty();
     }
 
     private SubsystemHealth runtimeHealth(String name) {

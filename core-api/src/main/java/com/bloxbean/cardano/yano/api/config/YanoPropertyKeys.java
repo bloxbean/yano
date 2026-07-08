@@ -494,6 +494,13 @@ public final class YanoPropertyKeys {
      */
     public static final class AppChain {
         public static final String ENABLED = "yano.app-chain.enabled";
+        /**
+         * Multi-chain config (ADR 006 E5.2): runtime-globals key holding a
+         * List of Maps of suffix-keyed chain settings, populated by adapters
+         * from indexed properties yano.app-chain.chains[i].&lt;suffix&gt;.
+         * When absent, the flat yano.app-chain.* keys define a single chain.
+         */
+        public static final String CHAINS = "yano.app-chain.chains";
         public static final String CHAIN_ID = "yano.app-chain.chain-id";
         /** This member's Ed25519 private key (hex, 32-byte seed). Required when enabled. */
         public static final String SIGNING_KEY = "yano.app-chain.signing-key";
@@ -520,6 +527,15 @@ public final class YanoPropertyKeys {
         public static final String ANCHOR_METADATA_LABEL = "yano.app-chain.anchor.metadata-label";
         /** Depth (L1 blocks) of the stable L1 reference in app blocks; 0 = disabled. */
         public static final String L1_STABILITY_DEPTH = "yano.app-chain.l1.stability-depth";
+        /** Comma-separated webhook URLs receiving finalized blocks (at-least-once, cursored). */
+        public static final String WEBHOOKS = "yano.app-chain.webhooks";
+        /** Opt-in API-key authentication for the /app-chain REST surface. */
+        public static final String API_AUTH_ENABLED = "yano.app-chain.api.auth.enabled";
+        /**
+         * Comma-separated API keys; an entry is either {@code key} (full access)
+         * or {@code key=topicA|topicB} (submissions restricted to those topics).
+         */
+        public static final String API_KEYS = "yano.app-chain.api.keys";
 
         private AppChain() {
         }

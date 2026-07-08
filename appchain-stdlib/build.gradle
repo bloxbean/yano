@@ -1,0 +1,25 @@
+dependencies {
+    api project(':core-api')
+
+    implementation libs.cbor
+    implementation libs.cardano.client.crypto
+    implementation libs.slf4j.api
+
+    testImplementation project(':runtime')
+}
+
+java {
+    sourceCompatibility = 25
+    targetCompatibility = 25
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            pom {
+                name = 'Yano App-Chain Standard Library'
+                description = 'Ready-to-use app-chain state machines (kv-registry, approvals, ...) for Yano'
+            }
+        }
+    }
+}

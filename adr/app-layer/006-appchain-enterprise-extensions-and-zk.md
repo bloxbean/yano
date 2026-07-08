@@ -1,10 +1,69 @@
 # ADR-006: App-Chain Enterprise Extensions & ZK Integration (ZeroJ)
 
 ## Status
-Proposed (analysis + plan; nothing in this ADR is committed work)
+Accepted — implementation in progress
 
 ## Date
 2026-07-08
+
+## Implementation Status
+
+Branch strategy: `feat/app_layer_extensions` (created from `feat/app_layer`)
+is the **integration branch** for all ADR-006 work. Each wave is developed,
+tested and reviewed on its own working branch (`feat/wave1-extensions`, ...)
+and merged into the integration branch on completion.
+
+| Wave | Scope | Status |
+|---|---|---|
+| **Wave 1** | E5.2 multi-chain, E2.1 kv-registry, E2.2 approvals, E3.1 SSE/webhooks, E4.1 REST auth, E5.1 metrics, E1.2 testkit, E1.1 client SDK | **Done** (2026-07-08, `feat/wave1-extensions` → merged) |
+| Wave 2 | E1.3 codecs, E2.3/E2.4 stdlib completion, E3.2 Kafka bridge, E3.4 audit export, E4.2 encrypted bodies, E4.3 KMS signing, E4.4 retention, E5.3 snapshots, E1.5 scaffolds | Not started |
+| Wave 3 (ZK) | E7.1 ZK verification, E7.2 BBS disclosure, then E7.3 zk-membership; E7.4/E7.5 as spikes | Not started |
+| Deferred to the end | **E1.4 Spring Boot starter + Quarkus extension** — deprioritized (2026-07-08): pure sugar over the E1.1 client SDK; built once, after all waves, when the SDK surface has stabilized across them | Deferred |
+
+### Wave 1 delivery notes (2026-07-08)
+
+- **E5.2 multi-chain**: `AppChainManager` hosts one subsystem per chain behind
+  ONE shared gossip + ONE catch-up server agent per inbound session (protocol
+  ids are shared — per-chain agents would collide in the mux); dispatch by
+  envelope chain-id, per-chain auth via the owning subsystem. Config:
+  `yano.app-chain.chains[i].<suffix>` (auto-enables) or the flat keys for a
+  single chain. `Yano.appChains()`/`AppChainGateways` registry; REST gains
+  `/app-chain/chains/{chainId}/...` with legacy paths intact for single-chain.
+- **E2.1/E2.2 stdlib** (`appchain-stdlib`, in the default distribution,
+  selected by machine id): `kv-registry` (first-writer ownership, provable
+  `[owner, value]` entries) and `approvals` (k-of-n, dedup'd approvers,
+  single-reject, deterministic block-timestamp deadlines). CBOR command
+  formats + client-side encoders documented in the classes.
+- **E3.1 push**: `AppChainGateway.subscribeFinalized`; SSE
+  `/stream?fromHeight&topic` (replay → live with ledger gap backfill,
+  heartbeats, virtual threads); `WebhookStreamSink` with per-sink cursor in
+  the ledger meta CF (ordered, at-least-once, halts on failure, resumes).
+- **E4.1 auth**: opt-in `X-API-Key` filter for `/app-chain/*`;
+  `key=topicA|topicB` entries restrict submissions per key (body-sniffing
+  in the filter, entity stream restored). QuarkusTest-covered.
+- **E5.1 metrics**: Micrometer via `quarkus-micrometer-registry-prometheus`
+  (`/q/metrics`): per-chain tip/pool/peers gauges, finalized blocks/messages
+  counters, block-interval timer.
+- **E1.2 testkit** (`appchain-testkit`): `@AppChainCluster(nodes=N)` JUnit 5
+  extension — generated keys, full-mesh sockets, temp ledgers, injected
+  `AppChainClusterHandle` with await helpers.
+- **E1.1 client SDK** (`appchain-client`, dependency-light): typed
+  REST + reconnecting SSE + `ProofVerifier` for client-side MPF verification
+  against (anchored) roots — fails closed on tampering.
+- *Learning*: `AppChainConfig` grew a fluent `Builder` after three rounds of
+  constructor churn; new fields go through the builder from now on.
+- **Post-review hardening** (high-effort multi-agent review, 9 confirmed
+  defects fixed before merge): auth topic-ACL now scopes by matched
+  `ResourceInfo` (not URL substring — closes trailing-slash/matrix-param
+  bypass); the shared multi-chain inbound agent re-enforces each chain's own
+  size/TTL in `verifyByChain` (union limits were too permissive); SSE JSON is
+  built with Jackson (unescaped topic no longer wedges subscribers); explicit
+  `enabled=false` is honored over `chains[i]` presence (`Optional<Boolean>`);
+  `stop()` clears webhook sinks bound to the closing ledger; the SDK dedups on
+  SSE reconnect by `(height,index)`; `AppChainManager.start()` rolls back
+  already-started chains on partial failure; disabled/ambiguous REST responses
+  keep the `{"error":...}` JSON body; the client SDK dropped its dependency on
+  the MPF library's internal `TestNodeStore`.
 
 ## Related
 - `adr/app-layer/005-yano-app-chain-framework.md` — the shipped v1 framework (M1–M6) this ADR extends
