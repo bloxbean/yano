@@ -18,7 +18,7 @@ and merged into the integration branch on completion.
 | **Wave 1** | E5.2 multi-chain, E2.1 kv-registry, E2.2 approvals, E3.1 SSE/webhooks, E4.1 REST auth, E5.1 metrics, E1.2 testkit, E1.1 client SDK | **Done** (2026-07-08, `feat/wave1-extensions` → merged) |
 | **Wave 2** | E2.3 balances, E2.4 doc-trail, E1.3 typed codec, E3.4 audit export, E4.4 retention/pruning, E4.2 encrypted bodies, E4.3 SignerProvider, E3.2 sink SPI + Kafka bridge, E5.3 snapshot/restore, E1.5 scaffolds | **Done** (2026-07-08, `feat/wave2-extensions`) |
 | Wave 2 | E1.3 codecs, E2.3/E2.4 stdlib completion, E3.2 Kafka bridge, E3.4 audit export, E4.2 encrypted bodies, E4.3 KMS signing, E4.4 retention, E5.3 snapshots, E1.5 scaffolds | Not started |
-| Wave 3 (ZK) | E7.1 ZK verification, E7.2 BBS disclosure, then E7.3 zk-membership; E7.4/E7.5 as spikes | Not started |
+| Wave 3 (ZK) | E7.1 ZK verification, E7.2 BBS disclosure, then E7.3 zk-membership; E7.4/E7.5 as spikes | **In progress** (`feat/wave3-extensions`; open questions resolved 2026-07-08 — see §7) |
 | Deferred to the end | **E1.4 Spring Boot starter + Quarkus extension** — deprioritized (2026-07-08): pure sugar over the E1.1 client SDK; built once, after all waves, when the SDK surface has stabilized across them | Deferred |
 
 ### Wave 1 delivery notes (2026-07-08)
@@ -367,11 +367,56 @@ proceed independently and are prerequisites only where marked (E7.5).
 | Key-management plugins widen the attack surface | `SignerProvider` is sign-only (no key export); default remains unchanged |
 | Client SDK drift vs. node REST | SDK and REST versioned together; contract tests in CI reuse the testkit |
 
-## 7. Open questions
+## 7. Open questions — resolved (2026-07-08, pre-Wave-3)
 
-1. Should `yano-appchain-stdlib` be in the default distribution (T2, config-selected) or a separate download? *Leaning T2 — it is pure Java, small, and the out-of-box story is the point.*
-2. Proof envelope placement for E7.1: inside the opaque body (application convention, zero framework change) vs. a first-class optional envelope field (framework-visible, enables generic caps/metrics). *Leaning: start as body convention in the plugin; promote to envelope field if usage proves it.*
-3. zk-membership (E7.3) vs. per-sender sequence numbers: replace with per-nullifier dedup, or keep an "anonymous senders have no seq" rule? Needs a small design note before implementation.
-4. VK distribution: config files first; move into chain-governed parameter blocks when 005 D6 membership governance lands?
-5. Does the BBS issuer role need to be a chain member, or any configured issuer key set? (Affects E7.2 config shape.)
-6. Naming: `yano-appchain-zk` as one plugin vs. split verification/BBS plugins — one jar is simpler; ZeroJ's BOM keeps the dependency tree manageable either way.
+1. **stdlib distribution → T2 (confirmed, already shipped).** `yano-appchain-stdlib`
+   ships in the default distribution, ServiceLoader-discovered, inert unless
+   `yano.app-chain.state-machine` selects a machine. Pure Java (cbor +
+   cardano-client-crypto), so it doesn't compromise the clean core.
+   *Refinement:* ZK-flavored stdlib machines (E7.4 `private-balances`) do NOT go
+   in the T2 jar — they carry heavy zeroj deps. Rule: **non-ZK stdlib = T2;
+   ZK stdlib machines = T3 plugin.**
+2. **E7.1 proof placement → body convention.** The `[circuitId, proof,
+   publicInputs]` envelope lives inside the opaque body, parsed by the plugin's
+   `ZkMessageValidator`; ship a CDDL for it in the plugin. Rationale: a
+   first-class envelope field is a protocol change (yaci core, CDDL, all peers)
+   and must not be forced by an experimental T3 feature; caps/metrics are done
+   plugin-side; in-body proofs are already covered by the message-id hash and
+   MPF/anchoring. The envelope's `authScheme`/`authProof` are for *authorization*
+   proofs (E7.3) — E7.1 proves message *content*, which belongs with the payload.
+   **Promotion trigger:** only promote to an optional envelope field if multiple
+   plugins must share proof semantics, or the framework must gate admission on
+   proof presence generically.
+3. **E7.3 anonymity → no seq + per-nullifier dedup applied in `apply()`.**
+   Anonymous senders (`authScheme=2`, MembershipVerifier over a member-key Merkle
+   root) have no per-sender sequence. Dedup moves to nullifiers, and the
+   authoritative consumed-nullifier set lives in the **MPF state** (committed,
+   rollback-safe, agreed via re-execution) — admission-time checks are only an
+   optimization. Nullifier **context is a per-topic policy knob**:
+   `hash(chainId, topic, epoch)` = one action per member per epoch (voting,
+   sealed bids); per-message tag = many anonymous messages, replay-only. Envelope:
+   `authScheme=2`, `authProof` = membership proof + nullifier + public inputs,
+   `sender` blinded/empty, message-id hashing unchanged. Mixed-mode per topic via
+   `auth-mode`. Membership root static in config now; D6-governed later with a
+   grace window.
+4. **VK distribution → config now (hash-pinned), governed later.** Pin
+   `circuitId → VK hash` in config; load the VK file; verify loaded-hash ==
+   pinned-hash at startup, fail-closed (VK mismatch is a config error, not a
+   runtime divergence). Decouple the agreed hash (small → config/governance) from
+   the VK bytes (file/URL, verified against the hash). Migrates unchanged into
+   the D6 governed parameter block.
+5. **BBS issuer → any configured issuer key set (decoupled from membership).**
+   Issuers (HR, bank, certifier) are credential trust anchors, not consensus
+   participants, and often aren't chain members. Config: `issuers = { id → BBS
+   public key }` independent of the member set; records reference an issuer key;
+   disclosure verified client-side. Issuer-is-member is just a coinciding key.
+6. **Naming → one node plugin `yano-appchain-zk`** (E7.1 verify + E7.3
+   membership/nullifier + E7.2 BBS node-side) via `zeroj-bom-all`; experimental
+   labels travel together. Proving lives client-side, so a companion
+   **`yano-appchain-client-zk`** carries proving helpers. The meaningful split is
+   node/verify vs client/prove — not verify vs BBS; split BBS out only if its
+   maturity/footprint diverges (the BOM makes that cheap).
+
+**Build order:** E7.1 → E7.2 → E7.3; E7.4/E7.5 as gated spikes. E7.1 is
+verification-only, deterministic, lowest-risk, and exercises the VK-registry /
+plugin seam that E7.3/E7.4 reuse.
