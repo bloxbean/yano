@@ -48,8 +48,11 @@ public final class EvidenceVerifier {
             return Result.fail("messages-root mismatch in target block");
         }
 
-        // 2. Every block is validly finalized: cert signatures over the block
-        //    hash from distinct members, and the prev-hash chain is intact.
+        // 2. Every block is validly finalized: at least `threshold` distinct
+        //    valid member signatures over the block hash, and the prev-hash
+        //    chain is intact. Enforcing the m-of-n threshold (not merely >=1)
+        //    is what makes the bundle unforgeable by a single member.
+        int threshold = Math.max(1, bundle.threshold());
         byte[] previousHash = null;
         int minCertSignatures = Integer.MAX_VALUE;
         for (AppBlock block : blocks) {
@@ -58,8 +61,9 @@ public final class EvidenceVerifier {
                 return Result.fail("prev-hash chain broken at height " + block.height());
             }
             int validSignatures = countValidSignatures(block.cert(), blockHash, members);
-            if (validSignatures == 0) {
-                return Result.fail("no valid member signatures on block " + block.height());
+            if (validSignatures < threshold) {
+                return Result.fail("block " + block.height() + " has " + validSignatures
+                        + " valid member signature(s), below threshold " + threshold);
             }
             minCertSignatures = Math.min(minCertSignatures, validSignatures);
             previousHash = blockHash;

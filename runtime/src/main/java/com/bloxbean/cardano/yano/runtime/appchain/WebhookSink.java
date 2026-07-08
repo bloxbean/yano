@@ -1,14 +1,18 @@
 package com.bloxbean.cardano.yano.runtime.appchain;
 
+import com.bloxbean.cardano.client.crypto.Blake2bUtil;
+import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
 import com.bloxbean.cardano.yano.api.appchain.sink.AppBlockJson;
 import com.bloxbean.cardano.yano.api.appchain.sink.FinalizedStreamSink;
 import org.slf4j.Logger;
 
+import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 
 /**
@@ -38,28 +42,30 @@ final class WebhookSink implements FinalizedStreamSink {
         return "webhook:" + url;
     }
 
+    /**
+     * Cursor key used by the pre-Wave-2 WebhookStreamSink, so an in-place
+     * upgrade resumes delivery instead of skipping undelivered blocks.
+     */
     @Override
-    public boolean deliver(AppBlock block) {
-        try {
-            HttpRequest request = HttpRequest.newBuilder(URI.create(url))
-                    .timeout(REQUEST_TIMEOUT)
-                    .header("Content-Type", "application/json")
-                    .header("X-App-Chain-Id", chainId)
-                    .header("X-App-Chain-Height", Long.toString(block.height()))
-                    .POST(HttpRequest.BodyPublishers.ofString(AppBlockJson.toJson(block)))
-                    .build();
-            HttpResponse<Void> response = httpClient.send(request, HttpResponse.BodyHandlers.discarding());
-            if (response.statusCode() >= 200 && response.statusCode() < 300) {
-                return true;
-            }
-            log.warn("Webhook {} rejected block {}: HTTP {}", url, block.height(), response.statusCode());
-            return false;
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            return false;
-        } catch (Exception e) {
-            log.warn("Webhook {} delivery of block {} failed: {}", url, block.height(), e.toString());
-            return false;
+    public String legacyCursorKey() {
+        return "webhook_cursor_" + HexUtil.encodeHexString(
+                Blake2bUtil.blake2bHash224(url.getBytes(StandardCharsets.UTF_8)));
+    }
+
+    @Override
+    public boolean deliver(AppBlock block) throws IOException, InterruptedException {
+        HttpRequest request = HttpRequest.newBuilder(URI.create(url))
+                .timeout(REQUEST_TIMEOUT)
+                .header("Content-Type", "application/json")
+                .header("X-App-Chain-Id", chainId)
+                .header("X-App-Chain-Height", Long.toString(block.height()))
+                .POST(HttpRequest.BodyPublishers.ofString(AppBlockJson.toJson(block)))
+                .build();
+        HttpResponse<Void> response = httpClient.send(request, HttpResponse.BodyHandlers.discarding());
+        if (response.statusCode() >= 200 && response.statusCode() < 300) {
+            return true;
         }
+        // Throw so SinkRunner records the HTTP status as lastError and retries.
+        throw new IOException("HTTP " + response.statusCode());
     }
 }

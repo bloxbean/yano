@@ -18,17 +18,23 @@ import java.util.List;
  *                      When not anchored, a single block (the one containing
  *                      the message)
  * @param memberKeysHex the group's member public keys (to verify the certs)
+ * @param threshold     the chain's finality threshold (m-of-n); a bundle is
+ *                      only valid if each block carries at least this many
+ *                      distinct valid member signatures
  * @param anchor        the L1 anchor reference, or null when not yet anchored
  */
 public record EvidenceBundle(String chainId,
                              String messageIdHex,
                              List<AppBlock> blocks,
                              List<String> memberKeysHex,
+                             int threshold,
                              AnchorRef anchor) {
 
     public EvidenceBundle {
         blocks = blocks != null ? List.copyOf(blocks) : List.of();
         memberKeysHex = memberKeysHex != null ? List.copyOf(memberKeysHex) : List.of();
+        if (threshold < 1)
+            threshold = 1;
     }
 
     /**

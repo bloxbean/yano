@@ -30,10 +30,14 @@ final class SinkRunner implements AutoCloseable {
         this.log = log;
         this.cursorKey = "sink_cursor_" + HexUtil.encodeHexString(
                 Blake2bUtil.blake2bHash224(sink.id().getBytes(StandardCharsets.UTF_8)));
-        // First registration starts at the current tip: sinks receive NEW blocks;
-        // history is available via catch-up/REST if a consumer needs it.
         if (ledger.metaLong(cursorKey, -1L) < 0) {
-            ledger.metaPutLong(cursorKey, ledger.tipHeight());
+            // No cursor yet. Migrate a previous implementation's cursor if this
+            // sink names one (in-place upgrade keeps at-least-once); otherwise
+            // start at the current tip — sinks receive NEW blocks (history is
+            // available via catch-up/REST if a consumer needs it).
+            String legacyKey = sink.legacyCursorKey();
+            long legacy = legacyKey != null ? ledger.metaLong(legacyKey, -1L) : -1L;
+            ledger.metaPutLong(cursorKey, legacy >= 0 ? legacy : ledger.tipHeight());
         }
     }
 

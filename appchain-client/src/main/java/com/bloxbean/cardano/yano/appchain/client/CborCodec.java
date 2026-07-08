@@ -9,7 +9,15 @@ import java.io.UncheckedIOException;
 
 /**
  * Client-side CBOR codec for typed message payloads (ADR app-layer/006 E1.3),
- * wire-compatible with the node-side {@code JacksonCborCodec}. Use with
+ * wire-compatible with the node-side {@code JacksonCborCodec}.
+ * <p>
+ * This is an intentional near-duplicate of core-api's {@code JacksonCborCodec}:
+ * the client SDK deliberately does NOT depend on core-api (which pulls in yaci
+ * and the full node stack), so the small codec is copied rather than shared.
+ * The two MUST stay byte-compatible — any change to the Jackson mapper config
+ * here must be mirrored in {@code JacksonCborCodec} (and vice versa).
+ * <p>
+ * Use with
  * {@link AppChainClient#submitTyped} / {@link AppChainClient#subscribeTyped}:
  *
  * <pre>

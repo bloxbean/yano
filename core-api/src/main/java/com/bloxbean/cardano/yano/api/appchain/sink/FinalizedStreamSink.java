@@ -15,11 +15,21 @@ public interface FinalizedStreamSink extends AutoCloseable {
 
     /**
      * Deliver one finalized block. Return {@code true} on success (cursor
-     * advances) or {@code false}/throw to retry the same block next tick.
+     * advances) or {@code false}/throw to retry the same block next tick — a
+     * thrown exception's message is surfaced as the sink's {@code lastError}.
      * Must be idempotent-friendly: the same block may be delivered again after
      * a crash between the write and the cursor commit.
      */
-    boolean deliver(AppBlock block);
+    boolean deliver(AppBlock block) throws Exception;
+
+    /**
+     * Optional cursor key used by a previous implementation of this sink, so an
+     * in-place upgrade can migrate persisted delivery progress instead of
+     * restarting from the tip. Return {@code null} when there is no legacy key.
+     */
+    default String legacyCursorKey() {
+        return null;
+    }
 
     @Override
     default void close() {

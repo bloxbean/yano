@@ -95,6 +95,20 @@ and merged into the integration branch on completion.
 - *Learning*: the SDK's zero-coupling-to-core-api rule shaped E1.3 (functions,
   not the `MessageCodec` type) and E4.2 (a duplicated `GroupCipher` with a
   shared wire format) — worth keeping as the SDK grows.
+- **Post-review hardening (Wave 2)** — high-effort multi-agent review, 9
+  confirmed defects fixed before merge: `EvidenceVerifier` now enforces the
+  chain's m-of-n threshold (was accepting a single member signature —
+  forgeable evidence); retention never prunes ahead of the slowest sink cursor
+  (was stripping bodies a lagging sink would later deliver); `SinkRunner`
+  migrates a sink's legacy cursor key on upgrade (was orphaning webhook
+  progress); anchor-record meta is cleared on L1 rollback (was emitting an
+  anchor ref that failed offline verification); sink delivery runs on its own
+  executor and the Kafka producer bounds send/ack (a broker outage was stalling
+  proposeTick/catch-up/anchor on the single scheduler thread); node-app forwards
+  the dynamic `yano.app-chain.sinks.*` config (the Kafka bridge was dead via the
+  normal deployment path); the evidence bundle caps its anchor chain length
+  (old messages under a far anchor could OOM); webhook HTTP non-2xx surfaces as
+  `lastError`; `status()` keeps a back-compat `webhooks` map.
 
 - **Post-review hardening** (high-effort multi-agent review, 9 confirmed
   defects fixed before merge): auth topic-ACL now scopes by matched

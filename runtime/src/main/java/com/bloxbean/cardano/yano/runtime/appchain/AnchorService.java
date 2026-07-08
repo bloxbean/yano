@@ -254,6 +254,12 @@ final class AnchorService {
             // Roll the marker back so the range re-anchors on the next tick
             long from = ledger.metaLong(META_LAST_ANCHORED, 0L);
             ledger.metaPutLong(META_LAST_ANCHORED, Math.max(0, from - anchorConfig.everyBlocks()));
+            // Clear the confirmed-anchor record too — otherwise evidence() would
+            // emit an AnchorRef pointing at the rolled-back (now-invalid) block
+            // hash, which an offline auditor would reject. Evidence stays valid
+            // as finality-only until the next anchor confirms.
+            ledger.metaPutBytes(META_ANCHOR_BLOCK_HASH, new byte[0]);
+            ledger.metaPutString(META_ANCHOR_TX, "");
             lastAnchorTxHash = null;
             lastAnchoredL1Slot = 0;
         }

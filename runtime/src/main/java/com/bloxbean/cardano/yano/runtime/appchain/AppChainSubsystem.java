@@ -86,6 +86,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
 
     private final AtomicBoolean running = new AtomicBoolean(false);
     private volatile ScheduledExecutorService scheduler;
+    private volatile ScheduledExecutorService sinkScheduler;
 
     public AppChainSubsystem(AppChainConfig config, long protocolMagic, EventBus eventBus, Logger log) {
         this(config, protocolMagic, eventBus, null, null, log);
@@ -538,7 +539,18 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         List<AppBlock> blocks = new ArrayList<>();
         com.bloxbean.cardano.yano.api.appchain.evidence.EvidenceBundle.AnchorRef anchorRef = null;
 
-        boolean anchored = anchoredHeight >= messageHeight && anchoredBlockHash != null && anchorTx != null;
+        // Include the anchor's prev-hash chain only when the anchor covers this
+        // message AND the chain is bounded — an old message under a far-advanced
+        // anchor would otherwise materialize a huge bundle (guard against OOM).
+        // The record still verifies as finalized; it just isn't L1-linked here.
+        boolean haveAnchor = anchoredHeight >= messageHeight
+                && anchoredBlockHash != null && anchoredBlockHash.length > 0
+                && anchorTx != null && !anchorTx.isBlank();
+        boolean anchored = haveAnchor && (anchoredHeight - messageHeight) <= MAX_EVIDENCE_CHAIN_BLOCKS;
+        if (haveAnchor && !anchored) {
+            log.debug("Evidence for message at height {} omits anchor chain: gap {} exceeds {}",
+                    messageHeight, anchoredHeight - messageHeight, MAX_EVIDENCE_CHAIN_BLOCKS);
+        }
         long toHeight = anchored ? anchoredHeight : messageHeight;
         for (long h = messageHeight; h <= toHeight; h++) {
             Optional<AppBlock> block = currentLedger.block(h);
@@ -553,8 +565,11 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         }
 
         return Optional.of(new com.bloxbean.cardano.yano.api.appchain.evidence.EvidenceBundle(
-                config.chainId(), HexUtil.encodeHexString(messageId), blocks, members, anchorRef));
+                config.chainId(), HexUtil.encodeHexString(messageId), blocks, members,
+                config.threshold(), anchorRef));
     }
+
+    private static final long MAX_EVIDENCE_CHAIN_BLOCKS = 4096;
 
     @Override
     public Map<String, Object> status() {
@@ -576,6 +591,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         }
         if (!sinkRunners.isEmpty()) {
             Map<String, Object> sinks = new LinkedHashMap<>();
+            Map<String, Object> webhooks = new LinkedHashMap<>(); // back-compat (keyed by URL)
             for (SinkRunner runner : sinkRunners) {
                 Map<String, Object> sinkStatus = new LinkedHashMap<>();
                 sinkStatus.put("cursor", runner.cursor());
@@ -584,8 +600,14 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                     sinkStatus.put("lastError", runner.lastError());
                 }
                 sinks.put(runner.id(), sinkStatus);
+                if (runner.id().startsWith("webhook:")) {
+                    webhooks.put(runner.id().substring("webhook:".length()), sinkStatus);
+                }
             }
             status.put("sinks", sinks);
+            if (!webhooks.isEmpty()) {
+                status.put("webhooks", webhooks); // pre-Wave-2 consumers
+            }
         }
         status.put("poolSize", pool.size());
         status.put("submitted", submittedCount.get());
@@ -688,7 +710,16 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             exec.scheduleWithFixedDelay(this::catchUpTick, 5, 5, TimeUnit.SECONDS);
         }
         if (!sinkRunners.isEmpty()) {
-            exec.scheduleWithFixedDelay(this::sinkTick, 5, 5, TimeUnit.SECONDS);
+            // Sinks run on their OWN thread — a slow/blocked sink (e.g. an
+            // unreachable Kafka broker) must never stall proposeTick / catch-up
+            // / anchoring on the main scheduler.
+            ScheduledExecutorService sinkExec = Executors.newSingleThreadScheduledExecutor(r -> {
+                Thread t = new Thread(r, "app-chain-sinks-" + config.chainId());
+                t.setDaemon(true);
+                return t;
+            });
+            this.sinkScheduler = sinkExec;
+            sinkExec.scheduleWithFixedDelay(this::sinkTick, 5, 5, TimeUnit.SECONDS);
             log.info("App-chain finalized-stream sinks enabled: {}",
                     sinkRunners.stream().map(SinkRunner::id).toList());
         }
@@ -714,6 +745,12 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         }
         long anchored = currentLedger.metaLong("anchor_last_height", 0L);
         long horizon = anchored - config.retentionKeepBlocks();
+        // Never prune ahead of a sink that hasn't delivered those blocks yet —
+        // otherwise the sink would later deliver bodies already stripped (data
+        // loss). Cap the horizon at the slowest sink cursor.
+        for (SinkRunner runner : sinkRunners) {
+            horizon = Math.min(horizon, runner.cursor());
+        }
         if (horizon > currentLedger.pruneCursor()) {
             try {
                 currentLedger.pruneBodiesBelow(horizon);
@@ -932,6 +969,11 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         scheduler = null;
         if (exec != null) {
             exec.shutdownNow();
+        }
+        ScheduledExecutorService sinkExec = sinkScheduler;
+        sinkScheduler = null;
+        if (sinkExec != null) {
+            sinkExec.shutdownNow();
         }
         for (AppPeerClient peerClient : peerClients) {
             peerClient.shutdown();

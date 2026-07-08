@@ -44,6 +44,10 @@ public final class KafkaSinkFactory implements FinalizedStreamSinkFactory {
         props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
         props.put(ProducerConfig.ACKS_CONFIG, config.getOrDefault("acks", "all"));
         props.put(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, "true");
+        // Bound send()/delivery so a broker outage can't block the sink thread
+        // beyond the SinkRunner's expectations (KafkaStreamSink also caps get()).
+        props.put(ProducerConfig.MAX_BLOCK_MS_CONFIG, config.getOrDefault("max-block-ms", "15000"));
+        props.put(ProducerConfig.DELIVERY_TIMEOUT_MS_CONFIG, config.getOrDefault("delivery-timeout-ms", "30000"));
         log.info("Kafka app-chain sink: chain '{}' -> topic '{}' on {}", chainId, topic, bootstrap);
         return List.of(new KafkaStreamSink(chainId, topic, new KafkaProducer<>(props)));
     }

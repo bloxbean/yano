@@ -36,6 +36,7 @@ public final class EvidenceBundleCodec {
         }
         ArrayNode members = root.putArray("members");
         bundle.memberKeysHex().forEach(members::add);
+        root.put("threshold", bundle.threshold());
 
         if (bundle.anchor() != null) {
             ObjectNode anchor = root.putObject("anchor");
@@ -72,7 +73,8 @@ public final class EvidenceBundleCodec {
                         a.path("l1Slot").asLong());
             }
             return new EvidenceBundle(root.path("chainId").asText(),
-                    root.path("messageId").asText(), blocks, members, anchor);
+                    root.path("messageId").asText(), blocks, members,
+                    root.path("threshold").asInt(1), anchor);
         } catch (IOException e) {
             throw new UncheckedIOException("Evidence bundle JSON decode failed", e);
         }

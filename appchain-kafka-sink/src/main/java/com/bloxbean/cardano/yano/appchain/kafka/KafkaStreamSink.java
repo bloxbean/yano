@@ -8,6 +8,7 @@ import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
 
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 /**
  * {@link FinalizedStreamSink} that produces a finalized block's JSON to a Kafka
@@ -17,6 +18,8 @@ import java.util.concurrent.Future;
  * (get on the ack) makes each delivery durable before the cursor advances.
  */
 public final class KafkaStreamSink implements FinalizedStreamSink {
+
+    private static final long ACK_TIMEOUT_SECONDS = 30;
 
     private final String id;
     private final String topic;
@@ -39,7 +42,9 @@ public final class KafkaStreamSink implements FinalizedStreamSink {
             ProducerRecord<String, String> record = new ProducerRecord<>(
                     topic, Long.toString(block.height()), AppBlockJson.toJson(block));
             Future<RecordMetadata> ack = producer.send(record);
-            ack.get(); // durable before the cursor advances (at-least-once)
+            // Bounded wait — durable before the cursor advances (at-least-once)
+            // but never blocks the sink thread indefinitely on a broker outage.
+            ack.get(ACK_TIMEOUT_SECONDS, TimeUnit.SECONDS);
             return true;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();

@@ -87,8 +87,14 @@ class AppChainEvidenceTest {
 
         // Tamper detection: a wrong member set fails the cert check
         EvidenceBundle wrongMembers = new EvidenceBundle(bundle.chainId(), bundle.messageIdHex(),
-                bundle.blocks(), List.of(pubB), null);
+                bundle.blocks(), List.of(pubB), 1, null);
         assertThat(EvidenceVerifier.verify(wrongMembers).valid()).isFalse();
+
+        // Threshold enforcement: a bundle claiming a threshold above the actual
+        // signature count is rejected (a single member can't forge evidence).
+        EvidenceBundle overThreshold = new EvidenceBundle(bundle.chainId(), bundle.messageIdHex(),
+                bundle.blocks(), bundle.memberKeysHex(), 2, null);
+        assertThat(EvidenceVerifier.verify(overThreshold).valid()).isFalse();
     }
 
     @Test
@@ -125,7 +131,7 @@ class AppChainEvidenceTest {
         }
         byte[] anchoredHash = AppBlockCodec.blockHash(chain.get(chain.size() - 1));
         EvidenceBundle bundle = new EvidenceBundle("anchor-evidence-chain",
-                id1, chain, List.of(pubA),
+                id1, chain, List.of(pubA), 1,
                 new EvidenceBundle.AnchorRef(anchorHeight, HexUtil.encodeHexString(anchoredHash),
                         "deadbeefTxHash", 12345L));
 
@@ -135,7 +141,7 @@ class AppChainEvidenceTest {
         assertThat(result.anchorTxHash()).isEqualTo("deadbeefTxHash");
 
         // A broken anchor hash fails
-        EvidenceBundle badAnchor = new EvidenceBundle("anchor-evidence-chain", id1, chain, List.of(pubA),
+        EvidenceBundle badAnchor = new EvidenceBundle("anchor-evidence-chain", id1, chain, List.of(pubA), 1,
                 new EvidenceBundle.AnchorRef(anchorHeight, HexUtil.encodeHexString(new byte[32]),
                         "deadbeefTxHash", 12345L));
         assertThat(EvidenceVerifier.verify(badAnchor).valid()).isFalse();
