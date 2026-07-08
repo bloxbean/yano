@@ -105,7 +105,8 @@ yano:
   # App chain (parallel application ledger over the appmsg protocol).
   # See adr/app-layer/005-yano-app-chain-framework.md. Disabled by default.
   app-chain:
-    enabled: false
+    # enabled: false        # absent = disabled; an EXPLICIT false also suppresses
+    #                       # chains[i] auto-enable (operator override)
     # chain-id: "my-app-chain"
     # signing-key: "<hex 32-byte Ed25519 seed>"           # this member's private key
     # members: "<hex pubkey1>,<hex pubkey2>"              # group member public keys

@@ -45,10 +45,15 @@ public class AppChainMetrics {
     @ConfigProperty(name = YanoPropertyKeys.AppChain.ENABLED, defaultValue = "false")
     boolean appChainEnabled;
 
+    // Multi-chain config (chains[0].chain-id) auto-enables the app chain without
+    // the flat enabled flag — the metrics gate must see that too.
+    @ConfigProperty(name = "yano.app-chain.chains[0].chain-id")
+    java.util.Optional<String> firstChainId;
+
     private final Map<String, Long> lastBlockAtMillis = new ConcurrentHashMap<>();
 
     void onStart(@Observes StartupEvent event) {
-        if (!appChainEnabled) {
+        if (!appChainEnabled && firstChainId.isEmpty()) {
             return;
         }
         try {
