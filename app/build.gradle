@@ -39,6 +39,9 @@ dependencies {
         exclude group: 'io.netty', module: 'netty-all'
     }
 
+    // App-chain metrics (ADR 006 E5.1); Prometheus endpoint at /q/metrics
+    implementation 'io.quarkus:quarkus-micrometer-registry-prometheus'
+
     implementation("com.google.auto.service:auto-service:1.1.1")
 
     annotationProcessor libs.yaci.events.processor
