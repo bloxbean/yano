@@ -29,6 +29,8 @@ import java.util.Set;
  * @param anchor            L1 anchoring policy; null = anchoring disabled
  * @param l1StabilityDepth  minimum depth (blocks) of the L1 reference carried in
  *                          app blocks; 0 = no L1 reference
+ * @param webhookUrls       webhook sinks receiving finalized blocks
+ *                          (at-least-once, ordered, per-sink persisted cursor)
  */
 public record AppChainConfig(String chainId,
                              String signingKeyHex,
@@ -44,7 +46,8 @@ public record AppChainConfig(String chainId,
                              String stateMachineId,
                              String ledgerPath,
                              AnchorConfig anchor,
-                             int l1StabilityDepth) {
+                             int l1StabilityDepth,
+                             List<String> webhookUrls) {
 
     public static final int DEFAULT_MAX_MESSAGE_BYTES = 65536;
     public static final long DEFAULT_MAX_TTL_SECONDS = 3600;
@@ -75,6 +78,58 @@ public record AppChainConfig(String chainId,
             maxBlockMessages = DEFAULT_MAX_BLOCK_MESSAGES;
         if (stateMachineId == null || stateMachineId.isBlank())
             stateMachineId = DEFAULT_STATE_MACHINE;
+        webhookUrls = webhookUrls != null ? List.copyOf(webhookUrls) : List.of();
+    }
+
+    public static Builder builder(String chainId) {
+        return new Builder(chainId);
+    }
+
+    /** Fluent builder — preferred over the canonical constructor for source stability. */
+    public static final class Builder {
+        private final String chainId;
+        private String signingKeyHex;
+        private Set<String> memberKeysHex = Set.of();
+        private List<AppPeer> peers = List.of();
+        private int maxMessageBytes = DEFAULT_MAX_MESSAGE_BYTES;
+        private long maxTtlSeconds = DEFAULT_MAX_TTL_SECONDS;
+        private long defaultTtlSeconds = DEFAULT_DEFAULT_TTL_SECONDS;
+        private String proposerKeyHex = "";
+        private int threshold = 1;
+        private long blockIntervalMs = DEFAULT_BLOCK_INTERVAL_MS;
+        private int maxBlockMessages = DEFAULT_MAX_BLOCK_MESSAGES;
+        private String stateMachineId = DEFAULT_STATE_MACHINE;
+        private String ledgerPath;
+        private AnchorConfig anchor;
+        private int l1StabilityDepth;
+        private List<String> webhookUrls = List.of();
+
+        private Builder(String chainId) {
+            this.chainId = chainId;
+        }
+
+        public Builder signingKeyHex(String value) { this.signingKeyHex = value; return this; }
+        public Builder memberKeysHex(Set<String> value) { this.memberKeysHex = value; return this; }
+        public Builder peers(List<AppPeer> value) { this.peers = value; return this; }
+        public Builder maxMessageBytes(int value) { this.maxMessageBytes = value; return this; }
+        public Builder maxTtlSeconds(long value) { this.maxTtlSeconds = value; return this; }
+        public Builder defaultTtlSeconds(long value) { this.defaultTtlSeconds = value; return this; }
+        public Builder proposerKeyHex(String value) { this.proposerKeyHex = value; return this; }
+        public Builder threshold(int value) { this.threshold = value; return this; }
+        public Builder blockIntervalMs(long value) { this.blockIntervalMs = value; return this; }
+        public Builder maxBlockMessages(int value) { this.maxBlockMessages = value; return this; }
+        public Builder stateMachineId(String value) { this.stateMachineId = value; return this; }
+        public Builder ledgerPath(String value) { this.ledgerPath = value; return this; }
+        public Builder anchor(AnchorConfig value) { this.anchor = value; return this; }
+        public Builder l1StabilityDepth(int value) { this.l1StabilityDepth = value; return this; }
+        public Builder webhookUrls(List<String> value) { this.webhookUrls = value; return this; }
+
+        public AppChainConfig build() {
+            return new AppChainConfig(chainId, signingKeyHex, memberKeysHex, peers,
+                    maxMessageBytes, maxTtlSeconds, defaultTtlSeconds, proposerKeyHex,
+                    threshold, blockIntervalMs, maxBlockMessages, stateMachineId,
+                    ledgerPath, anchor, l1StabilityDepth, webhookUrls);
+        }
     }
 
     /** Sequencing enabled when a proposer is configured. */

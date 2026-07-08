@@ -144,7 +144,7 @@ class StdlibStateMachinesTest {
                 100,
                 stateMachineId,
                 null,
-                null, 0);
+                null, 0, java.util.List.of());
         AppChainSubsystem node = new AppChainSubsystem(config, 42, null, null,
                 tempDir.resolve("ledger-" + name).toString(), null, log);
         nodes.add(node);

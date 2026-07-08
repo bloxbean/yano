@@ -523,6 +523,19 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         if (currentAnchor != null) {
             status.put("anchor", currentAnchor.status());
         }
+        if (!webhookSinks.isEmpty()) {
+            Map<String, Object> webhooks = new LinkedHashMap<>();
+            for (WebhookStreamSink sink : webhookSinks) {
+                Map<String, Object> sinkStatus = new LinkedHashMap<>();
+                sinkStatus.put("cursor", sink.cursor());
+                sinkStatus.put("delivered", sink.deliveredCount());
+                if (sink.lastError() != null) {
+                    sinkStatus.put("lastError", sink.lastError());
+                }
+                webhooks.put(sink.url(), sinkStatus);
+            }
+            status.put("webhooks", webhooks);
+        }
         status.put("poolSize", pool.size());
         status.put("submitted", submittedCount.get());
         status.put("received", receivedCount.get());
@@ -592,6 +605,9 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                             log);
                 }
             }
+            for (String url : config.webhookUrls()) {
+                webhookSinks.add(new WebhookStreamSink(url, config.chainId(), ledgerStore, log));
+            }
             subscribeL1Events();
         }
 
@@ -615,6 +631,10 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         }
         if (currentEngine != null) {
             exec.scheduleWithFixedDelay(this::catchUpTick, 5, 5, TimeUnit.SECONDS);
+        }
+        if (!webhookSinks.isEmpty()) {
+            exec.scheduleWithFixedDelay(this::webhookTick, 5, 5, TimeUnit.SECONDS);
+            log.info("App-chain webhook sinks enabled: {}", config.webhookUrls());
         }
         AnchorService currentAnchor = anchorService;
         if (currentAnchor != null) {
@@ -703,8 +723,27 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         return null;
     }
 
+    private final List<FinalizedBlockListener> finalizedListeners =
+            new java.util.concurrent.CopyOnWriteArrayList<>();
+    private final List<WebhookStreamSink> webhookSinks =
+            new java.util.concurrent.CopyOnWriteArrayList<>();
+
+    @Override
+    public AutoCloseable subscribeFinalized(FinalizedBlockListener listener) {
+        Objects.requireNonNull(listener, "listener");
+        finalizedListeners.add(listener);
+        return () -> finalizedListeners.remove(listener);
+    }
+
     private void onBlockFinalized(AppBlock block, byte[] blockHash) {
         lastProgressAt = System.currentTimeMillis();
+        for (FinalizedBlockListener listener : finalizedListeners) {
+            try {
+                listener.onFinalized(block, blockHash);
+            } catch (Exception e) {
+                log.warn("Finalized-block listener failed: {}", e.toString());
+            }
+        }
         if (eventBus != null) {
             try {
                 eventBus.publish(new AppBlockFinalizedEvent(block, blockHash),
@@ -732,6 +771,18 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             return;
         for (AppPeerClient peerClient : peerClients) {
             peerClient.keepAliveTick();
+        }
+    }
+
+    private void webhookTick() {
+        if (!running.get())
+            return;
+        for (WebhookStreamSink sink : webhookSinks) {
+            try {
+                sink.deliveryTick();
+            } catch (Exception e) {
+                log.warn("Webhook delivery tick failed for {}: {}", sink.url(), e.toString());
+            }
         }
     }
 

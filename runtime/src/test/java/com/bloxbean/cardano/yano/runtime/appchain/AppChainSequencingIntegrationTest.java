@@ -165,7 +165,7 @@ class AppChainSequencingIntegrationTest {
                 100,
                 AppChainConfig.DEFAULT_STATE_MACHINE,
                 null,
-                null, 0);
+                null, 0, java.util.List.of());
         AppChainSubsystem subsystem = new AppChainSubsystem(config, MAGIC, null, null,
                 tempDir.resolve("ledger-" + name).toString(), log);
         subsystems.add(subsystem);

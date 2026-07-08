@@ -525,6 +525,10 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 appPeers.add(com.bloxbean.cardano.yano.api.appchain.AppChainConfig.AppPeer.parse(peer.trim()));
         }
         boolean anchorEnabled = booleanOf(get.apply("anchor.enabled"), false);
+        List<String> webhookUrls = new java.util.ArrayList<>();
+        for (String url : stringOf(get.apply("webhooks"), "").split(",")) {
+            if (!url.isBlank()) webhookUrls.add(url.trim());
+        }
         return new com.bloxbean.cardano.yano.api.appchain.AppChainConfig(
                 stringOf(get.apply("chain-id"), ""),
                 stringOf(get.apply("signing-key"), ""),
@@ -553,7 +557,8 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                                 parseLong(get.apply("anchor.max-interval-minutes"), 60),
                                 parseLong(get.apply("anchor.metadata-label"), 7014))
                         : null,
-                (int) parseLong(get.apply("l1.stability-depth"), 0));
+                (int) parseLong(get.apply("l1.stability-depth"), 0),
+                webhookUrls);
     }
 
     private static String stringOf(Object value, String def) {

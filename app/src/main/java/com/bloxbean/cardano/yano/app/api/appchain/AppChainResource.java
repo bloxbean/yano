@@ -98,6 +98,16 @@ public class AppChainResource {
         return singleChain().proof(keyHex);
     }
 
+    @GET
+    @Path("stream")
+    @Produces(MediaType.SERVER_SENT_EVENTS)
+    public void stream(@QueryParam("fromHeight") @DefaultValue("-1") long fromHeight,
+                       @QueryParam("topic") String topic,
+                       @jakarta.ws.rs.core.Context jakarta.ws.rs.sse.Sse sse,
+                       @jakarta.ws.rs.core.Context jakarta.ws.rs.sse.SseEventSink sink) {
+        singleChain().stream(fromHeight, topic, sse, sink);
+    }
+
     private ChainScopedResource singleChain() {
         int count = appChainGateways.all().size();
         if (count == 0) {
@@ -267,6 +277,103 @@ public class AppChainResource {
             gateway.messageHeight(key)
                     .ifPresent(h -> result.put("finalizedAtHeight", h));
             return Response.ok(result).build();
+        }
+
+        /**
+         * SSE stream of finalized messages (ADR 006 E3.1): replays from
+         * {@code fromHeight} (default: live-only from the current tip), then
+         * follows new blocks. Event name "app-message", id "height:index";
+         * "heartbeat" events keep idle connections alive.
+         */
+        @GET
+        @Path("stream")
+        @Produces(MediaType.SERVER_SENT_EVENTS)
+        public void stream(@QueryParam("fromHeight") @DefaultValue("-1") long fromHeight,
+                           @QueryParam("topic") String topic,
+                           @jakarta.ws.rs.core.Context jakarta.ws.rs.sse.Sse sse,
+                           @jakarta.ws.rs.core.Context jakarta.ws.rs.sse.SseEventSink sink) {
+            final AppChainGateway chainGateway = this.gateway;
+            Thread.ofVirtual().name("app-chain-sse").start(() -> {
+                java.util.concurrent.BlockingQueue<com.bloxbean.cardano.yano.api.appchain.AppBlock> liveBlocks =
+                        new java.util.concurrent.LinkedBlockingQueue<>(1024);
+                AutoCloseable subscription = null;
+                try (sink) {
+                    // Subscribe BEFORE replay so no block is missed in between
+                    subscription = chainGateway.subscribeFinalized(
+                            (block, hash) -> liveBlocks.offer(block));
+
+                    long tip = chainGateway.tipHeight();
+                    long nextHeight = fromHeight >= 0 ? Math.max(1, fromHeight) : tip + 1;
+                    long lastSent = nextHeight - 1;
+
+                    // Replay finalized history
+                    for (long h = nextHeight; h <= tip && !sink.isClosed(); h++) {
+                        var block = chainGateway.block(h);
+                        if (block.isEmpty()) {
+                            break;
+                        }
+                        emitBlock(sse, sink, block.get(), topic);
+                        lastSent = h;
+                    }
+
+                    // Live phase
+                    while (!sink.isClosed()) {
+                        var block = liveBlocks.poll(15, java.util.concurrent.TimeUnit.SECONDS);
+                        if (sink.isClosed()) {
+                            break;
+                        }
+                        if (block == null) {
+                            sink.send(sse.newEventBuilder().name("heartbeat")
+                                    .data(String.valueOf(chainGateway.tipHeight())).build());
+                            continue;
+                        }
+                        if (block.height() <= lastSent) {
+                            continue; // already replayed
+                        }
+                        // Fill any gap (queue overflow / bursts) from the ledger
+                        for (long h = lastSent + 1; h < block.height() && !sink.isClosed(); h++) {
+                            chainGateway.block(h).ifPresent(missed -> emitBlock(sse, sink, missed, topic));
+                        }
+                        emitBlock(sse, sink, block, topic);
+                        lastSent = block.height();
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                } catch (Exception ignored) {
+                    // client disconnects surface as send failures — normal termination
+                } finally {
+                    if (subscription != null) {
+                        try {
+                            subscription.close();
+                        } catch (Exception ignored) {
+                        }
+                    }
+                }
+            });
+        }
+
+        private void emitBlock(jakarta.ws.rs.sse.Sse sse, jakarta.ws.rs.sse.SseEventSink sink,
+                               com.bloxbean.cardano.yano.api.appchain.AppBlock block, String topicFilter) {
+            int index = 0;
+            for (var message : block.messages()) {
+                int messageIndex = index++;
+                if (topicFilter != null && !topicFilter.equals(message.getTopic())) {
+                    continue;
+                }
+                String json = "{\"chainId\":\"" + block.chainId()
+                        + "\",\"height\":" + block.height()
+                        + ",\"index\":" + messageIndex
+                        + ",\"messageId\":\"" + message.getMessageIdHex()
+                        + "\",\"topic\":\"" + message.getTopic()
+                        + "\",\"sender\":\"" + HexUtil.encodeHexString(message.getSender())
+                        + "\",\"senderSeq\":" + message.getSenderSeq()
+                        + ",\"bodyHex\":\"" + HexUtil.encodeHexString(message.getBody()) + "\"}";
+                sink.send(sse.newEventBuilder()
+                        .name("app-message")
+                        .id(block.height() + ":" + messageIndex)
+                        .data(json)
+                        .build());
+            }
         }
 
         private static boolean isBlank(String value) {

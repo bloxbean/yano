@@ -527,6 +527,8 @@ public final class YanoPropertyKeys {
         public static final String ANCHOR_METADATA_LABEL = "yano.app-chain.anchor.metadata-label";
         /** Depth (L1 blocks) of the stable L1 reference in app blocks; 0 = disabled. */
         public static final String L1_STABILITY_DEPTH = "yano.app-chain.l1.stability-depth";
+        /** Comma-separated webhook URLs receiving finalized blocks (at-least-once, cursored). */
+        public static final String WEBHOOKS = "yano.app-chain.webhooks";
 
         private AppChain() {
         }

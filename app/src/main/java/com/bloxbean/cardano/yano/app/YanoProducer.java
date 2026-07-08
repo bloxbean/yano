@@ -255,6 +255,9 @@ public class YanoProducer {
     @ConfigProperty(name = YanoPropertyKeys.AppChain.L1_STABILITY_DEPTH, defaultValue = "0")
     int appChainL1StabilityDepth;
 
+    @ConfigProperty(name = YanoPropertyKeys.AppChain.WEBHOOKS)
+    java.util.Optional<String> appChainWebhooks;
+
     @ConfigProperty(name = YanoPropertyKeys.AppChain.MAX_TTL_SECONDS, defaultValue = "3600")
     long appChainMaxTtlSeconds;
 
@@ -629,6 +632,7 @@ public class YanoProducer {
         globals.put(YanoPropertyKeys.AppChain.ANCHOR_MAX_INTERVAL_MINUTES, appChainAnchorMaxIntervalMinutes);
         globals.put(YanoPropertyKeys.AppChain.ANCHOR_METADATA_LABEL, appChainAnchorMetadataLabel);
         globals.put(YanoPropertyKeys.AppChain.L1_STABILITY_DEPTH, appChainL1StabilityDepth);
+        appChainWebhooks.ifPresent(v -> globals.put(YanoPropertyKeys.AppChain.WEBHOOKS, v));
         java.util.List<java.util.Map<String, Object>> appChainList = parseAppChainChains();
         if (!appChainList.isEmpty()) {
             globals.put(YanoPropertyKeys.AppChain.CHAINS, appChainList);
@@ -789,7 +793,7 @@ public class YanoProducer {
                 "max-message-bytes", "max-ttl-seconds", "default-ttl-seconds",
                 "anchor.enabled", "anchor.signing-key", "anchor.every-blocks",
                 "anchor.max-interval-minutes", "anchor.metadata-label",
-                "l1.stability-depth"
+                "l1.stability-depth", "webhooks"
         };
         for (int i = 0; i < 50; i++) {
             String prefix = "yano.app-chain.chains[" + i + "].";
@@ -1127,6 +1131,11 @@ public class YanoProducer {
 
         @Override
         public java.util.Optional<Long> messageHeight(byte[] messageId) {
+            throw unavailableRole("AppChainGateway");
+        }
+
+        @Override
+        public AutoCloseable subscribeFinalized(FinalizedBlockListener listener) {
             throw unavailableRole("AppChainGateway");
         }
     }
