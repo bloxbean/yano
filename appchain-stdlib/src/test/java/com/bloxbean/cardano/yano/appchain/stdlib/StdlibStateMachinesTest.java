@@ -132,19 +132,14 @@ class StdlibStateMachinesTest {
 
     private AppChainSubsystem startNode(String name, String stateMachineId) {
         String pubA = HexUtil.encodeHexString(KeyGenUtil.getPublicKeyFromPrivateKey(KEY_A));
-        AppChainConfig config = new AppChainConfig(
-                "stdlib-" + name,
-                HexUtil.encodeHexString(KEY_A),
-                Set.of(pubA),
-                List.of(),
-                65536, 3600, 600,
-                pubA,   // self-proposing single member
-                1,
-                300,
-                100,
-                stateMachineId,
-                null,
-                null, 0, java.util.List.of());
+        AppChainConfig config = AppChainConfig.builder("stdlib-" + name)
+                .signingKeyHex(HexUtil.encodeHexString(KEY_A))
+                .memberKeysHex(Set.of(pubA))
+                .proposerKeyHex(pubA)   // self-proposing single member
+                .threshold(1)
+                .blockIntervalMs(300)
+                .stateMachineId(stateMachineId)
+                .build();
         AppChainSubsystem node = new AppChainSubsystem(config, 42, null, null,
                 tempDir.resolve("ledger-" + name).toString(), null, log);
         nodes.add(node);

@@ -16,6 +16,7 @@ and merged into the integration branch on completion.
 | Wave | Scope | Status |
 |---|---|---|
 | **Wave 1** | E5.2 multi-chain, E2.1 kv-registry, E2.2 approvals, E3.1 SSE/webhooks, E4.1 REST auth, E5.1 metrics, E1.2 testkit, E1.1 client SDK | **Done** (2026-07-08, `feat/wave1-extensions` → merged) |
+| **Wave 2** | E2.3 balances, E2.4 doc-trail, E1.3 typed codec, E3.4 audit export, E4.4 retention/pruning, E4.2 encrypted bodies, E4.3 SignerProvider, E3.2 sink SPI + Kafka bridge, E5.3 snapshot/restore, E1.5 scaffolds | **Done** (2026-07-08, `feat/wave2-extensions`) |
 | Wave 2 | E1.3 codecs, E2.3/E2.4 stdlib completion, E3.2 Kafka bridge, E3.4 audit export, E4.2 encrypted bodies, E4.3 KMS signing, E4.4 retention, E5.3 snapshots, E1.5 scaffolds | Not started |
 | Wave 3 (ZK) | E7.1 ZK verification, E7.2 BBS disclosure, then E7.3 zk-membership; E7.4/E7.5 as spikes | Not started |
 | Deferred to the end | **E1.4 Spring Boot starter + Quarkus extension** — deprioritized (2026-07-08): pure sugar over the E1.1 client SDK; built once, after all waves, when the SDK surface has stabilized across them | Deferred |
@@ -52,6 +53,49 @@ and merged into the integration branch on completion.
   against (anchored) roots — fails closed on tampering.
 - *Learning*: `AppChainConfig` grew a fluent `Builder` after three rounds of
   constructor churn; new fields go through the builder from now on.
+
+### Wave 2 delivery notes (2026-07-08)
+
+- **E2.3/E2.4 stdlib**: `balances` (mint/transfer, a member spends only its own
+  account, non-negativity enforced in `apply()` as a deterministic no-op, every
+  balance provable) and `doc-trail` (append-only per-entity trails; a chained
+  head `blake2b(prevHead ‖ entryHash ‖ author)` proves the whole ordered trail
+  against the anchored root, with a `computeHead` verifier). Registered via the
+  ServiceLoader.
+- **E1.3 typed codec**: `MessageCodec<T>` SPI + `TypedAppStateMachine<T>` base +
+  `JacksonCborCodec` default (core-api); the client SDK's `submitTyped`/
+  `subscribeTyped` take encode/decode functions (keeps the SDK decoupled from
+  core-api) with a wire-compatible `CborCodec`. Framework stays blob-first.
+- **E3.4 audit export**: `EvidenceBundle`/`EvidenceVerifier`/`EvidenceBundleCodec`
+  — a portable proof (block(s) + members + L1 anchor ref) verified offline:
+  recompute block hashes + messages-root, verify certs against members, confirm
+  inclusion, and (when anchored) that the prev-hash chain links to the anchored
+  block. `AnchorService` persists its confirmed-anchor record. REST
+  `/evidence/{messageId}`.
+- **E4.4 retention**: `pruneBodiesBelow` strips message bodies below the
+  L1_FINAL anchor while keeping headers, ids, roots and certs — proofs and
+  evidence stay valid (with encrypted bodies, crypto-shredding). Companion to
+  E5.3 for onboarding past the prune horizon.
+- **E4.2 encrypted bodies**: `BodyCipher` (core-api) + `GroupCipher` (SDK),
+  identical AES-256-GCM wire format with the topic as AAD; chain carries
+  ciphertext, never the plaintext or key. Encrypt/decrypt at the edges.
+- **E4.3 SignerProvider**: sign-only SPI + ServiceLoader factory; a bare hex
+  seed uses the default in-config signer, a `scheme:reference` spec routes to a
+  KMS/HSM/Vault plugin (the node never holds the key). Cloud backends are
+  intended plugins; none ship in the distro.
+- **E3.2 sinks**: `FinalizedStreamSink` SPI + `SinkRunner` (ordering + persisted
+  cursor + at-least-once); webhook is now a sink; `appchain-kafka-sink` T3
+  plugin produces blocks keyed by height (partition-stable), sync-acked. Config
+  `yano.app-chain.sinks.<scheme>.*`.
+- **E5.3 snapshot**: RocksDB Checkpoint export for fast member onboarding
+  (restore = drop the dir, no replay), `verifyIntegrity()` on start, REST
+  `POST /snapshot`.
+- **E1.5 scaffolds**: docker-compose 3-node cluster + a custom-state-machine
+  plugin Gradle template.
+- *Learning*: the SDK's zero-coupling-to-core-api rule shaped E1.3 (functions,
+  not the `MessageCodec` type) and E4.2 (a duplicated `GroupCipher` with a
+  shared wire format) — worth keeping as the SDK grows.
+
 - **Post-review hardening** (high-effort multi-agent review, 9 confirmed
   defects fixed before merge): auth topic-ACL now scopes by matched
   `ResourceInfo` (not URL substring — closes trailing-slash/matrix-param
