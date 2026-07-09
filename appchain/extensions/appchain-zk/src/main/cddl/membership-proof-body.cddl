@@ -10,7 +10,7 @@
 membership-proof-body = [
     circuit-id    : tstr,       ; membership circuit; VK pinned in zk.circuits config
     proof-system  : tstr,       ; "groth16" | "plonk"
-    curve         : tstr,       ; e.g. "bls12_381"
+    curve         : tstr,       ; e.g. "bls12381"
     proof         : bstr,       ; the membership proof
     public-inputs : [* bstr],   ; incl. the member-set Merkle root commitment
     nullifier     : bstr,       ; one-time tag; second use is a no-op

@@ -800,7 +800,7 @@ yano.app-chain.zk.circuits[0].id: credit-limit
 yano.app-chain.zk.circuits[0].vk-file: /etc/yano/credit-limit.vk
 yano.app-chain.zk.circuits[0].vk-hash: <blake2b-256 hex of the vk file>
 yano.app-chain.zk.circuits[0].proof-system: groth16     # or plonk
-yano.app-chain.zk.circuits[0].curve: bls12_381
+yano.app-chain.zk.circuits[0].curve: bls12381
 ```
 
 **Anchored verifiable credentials (`state-machine=credential-registry`).**

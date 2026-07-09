@@ -7,7 +7,7 @@
 zk-proof-body = [
     circuit-id   : tstr,        ; matches a pinned yano.app-chain.zk.circuits[i].id
     proof-system : tstr,        ; "groth16" | "plonk"
-    curve        : tstr,        ; e.g. "bls12_381"
+    curve        : tstr,        ; e.g. "bls12381"
     proof        : bstr,        ; the proof bytes (canonical backend encoding)
     public-inputs: [* bstr],    ; each a big-endian unsigned field element
 ]

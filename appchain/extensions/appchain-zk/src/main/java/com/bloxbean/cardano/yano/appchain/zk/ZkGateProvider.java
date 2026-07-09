@@ -15,7 +15,7 @@ import org.slf4j.LoggerFactory;
  *   yano.app-chain.zk.circuits[0].vk-file      = /etc/yano/credit-limit.vk
  *   yano.app-chain.zk.circuits[0].vk-hash      = &lt;blake2b-256 hex of the vk file&gt;
  *   yano.app-chain.zk.circuits[0].proof-system = groth16      # or plonk
- *   yano.app-chain.zk.circuits[0].curve        = bls12_381
+ *   yano.app-chain.zk.circuits[0].curve        = bls12381
  *   yano.app-chain.zk.max-proofs-per-block     = 200          # advisory; bound via block.max-messages
  * </pre>
  * Proofs are verified by every member in {@code apply()} (consensus enforcement),

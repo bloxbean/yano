@@ -1,5 +1,5 @@
 // Kafka bridge for finalized app blocks (ADR 006 E3.2), packaged as a T3
-// plugin jar: drop it on yano.plugins.directory and configure
+// plugin jar: drop it on yaci.plugins.directory and configure
 // yano.app-chain.sinks.kafka.* — discovered via ServiceLoader.
 dependencies {
     compileOnly project(':core-api')          // provided by the node at runtime

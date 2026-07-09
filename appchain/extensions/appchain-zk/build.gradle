@@ -1,6 +1,6 @@
 // ZK verification plugin (ADR 006 E7.1/E7.2/E7.3), packaged as a T3 plugin jar.
 // EXPERIMENTAL — depends on ZeroJ (experimental, unaudited, trusted-setup ops).
-// Drop on yano.plugins.directory and select via yano.app-chain.state-machine=zk-gate.
+// Drop on yaci.plugins.directory and select via yano.app-chain.state-machine=zk-gate.
 // Proof GENERATION lives client-side (yano-appchain-client-zk); the node only verifies.
 dependencies {
     compileOnly project(':core-api')          // provided by the node at runtime
