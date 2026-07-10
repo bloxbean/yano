@@ -17,15 +17,26 @@ final class AppMsgPool {
     private final LinkedHashMap<String, AppMessage> pending = new LinkedHashMap<>();
     private final int maxSize;
 
+    /** Outcome of {@link #add} — callers surface FULL (backpressure) vs DUPLICATE. */
+    enum AddResult { ADDED, FULL, DUPLICATE }
+
     AppMsgPool(int maxSize) {
         this.maxSize = Math.max(1, maxSize);
     }
 
-    synchronized boolean add(AppMessage message) {
-        if (pending.size() >= maxSize) {
-            return false;
+    synchronized AddResult add(AppMessage message) {
+        if (pending.containsKey(message.getMessageIdHex())) {
+            return AddResult.DUPLICATE;
         }
-        return pending.putIfAbsent(message.getMessageIdHex(), message) == null;
+        if (pending.size() >= maxSize) {
+            return AddResult.FULL;
+        }
+        pending.put(message.getMessageIdHex(), message);
+        return AddResult.ADDED;
+    }
+
+    int capacity() {
+        return maxSize;
     }
 
     synchronized boolean contains(String messageIdHex) {

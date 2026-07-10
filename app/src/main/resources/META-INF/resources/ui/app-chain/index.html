@@ -1,0 +1,881 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Yano · App Chain</title>
+    <script>
+      (function applyInitialTheme() {
+        const saved = localStorage.getItem('yano-status-theme');
+        document.documentElement.classList.toggle('dark', saved !== 'light');
+        try {
+          const noanim = new URLSearchParams(location.search).get('noanim') === '1';
+          const reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+          if (!noanim && !reduced) document.documentElement.classList.add('anim');
+        } catch (e) { /* animations stay off */ }
+      })();
+    </script>
+    <style>
+      /* Same design tokens as /ui/status (keep in sync) */
+      :root {
+        --bg: #f2f5fb;
+        --bg-glow: radial-gradient(1100px 600px at 18% -12%, rgba(59, 130, 246, 0.10), transparent 60%),
+                   radial-gradient(900px 500px at 85% 0%, rgba(139, 92, 246, 0.08), transparent 60%);
+        --topbar-bg: rgba(242, 245, 251, 0.78);
+        --card: rgba(255, 255, 255, 0.74);
+        --card-hover: rgba(255, 255, 255, 0.9);
+        --hairline: rgba(15, 23, 42, 0.07);
+        --hairline-strong: rgba(15, 23, 42, 0.12);
+        --text: #0f172a;
+        --text-dim: #5b6b83;
+        --chip-bg: rgba(15, 23, 42, 0.045);
+        --track: rgba(15, 23, 42, 0.08);
+        --shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 8px 24px -12px rgba(15, 23, 42, 0.12);
+        --shadow-hover: 0 2px 4px rgba(15, 23, 42, 0.05), 0 16px 40px -12px rgba(37, 99, 235, 0.18);
+        --ok: #047857;    --ok-bg: rgba(16, 185, 129, 0.10);  --ok-bd: rgba(16, 185, 129, 0.35);
+        --warn: #b45309;  --warn-bg: rgba(245, 158, 11, 0.12); --warn-bd: rgba(245, 158, 11, 0.40);
+        --bad: #be123c;   --bad-bg: rgba(244, 63, 94, 0.10);  --bad-bd: rgba(244, 63, 94, 0.35);
+        --flash: rgba(37, 99, 235, 0.16);
+        --blob1: rgba(34, 211, 238, 0.14);
+        --blob2: rgba(139, 92, 246, 0.12);
+        --blob3: rgba(59, 130, 246, 0.12);
+      }
+      html.dark {
+        --bg: #05070f;
+        --bg-glow: radial-gradient(1100px 650px at 18% -12%, rgba(37, 99, 235, 0.16), transparent 60%),
+                   radial-gradient(900px 550px at 85% 0%, rgba(124, 58, 237, 0.10), transparent 60%);
+        --topbar-bg: rgba(5, 7, 15, 0.68);
+        --card: rgba(13, 20, 38, 0.62);
+        --card-hover: rgba(17, 26, 48, 0.78);
+        --hairline: rgba(148, 163, 184, 0.10);
+        --hairline-strong: rgba(148, 163, 184, 0.18);
+        --text: #e6ecf7;
+        --text-dim: #8b9cb8;
+        --chip-bg: rgba(148, 163, 184, 0.08);
+        --track: rgba(148, 163, 184, 0.12);
+        --shadow: 0 1px 2px rgba(0, 0, 0, 0.35), 0 12px 32px -16px rgba(0, 0, 0, 0.55);
+        --shadow-hover: 0 2px 6px rgba(0, 0, 0, 0.4), 0 18px 48px -16px rgba(56, 189, 248, 0.16);
+        --ok: #34d399;    --ok-bg: rgba(16, 185, 129, 0.12);  --ok-bd: rgba(52, 211, 153, 0.32);
+        --warn: #fbbf24;  --warn-bg: rgba(245, 158, 11, 0.12); --warn-bd: rgba(251, 191, 36, 0.32);
+        --bad: #fb7185;   --bad-bg: rgba(244, 63, 94, 0.13);  --bad-bd: rgba(251, 113, 133, 0.32);
+        --flash: rgba(56, 189, 248, 0.22);
+        --blob1: rgba(34, 211, 238, 0.13);
+        --blob2: rgba(139, 92, 246, 0.12);
+        --blob3: rgba(59, 130, 246, 0.12);
+      }
+
+      * { box-sizing: border-box; }
+      html, body { min-height: 100%; }
+      body {
+        margin: 0;
+        background: var(--bg);
+        background-image: var(--bg-glow);
+        background-attachment: fixed;
+        color: var(--text);
+        font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, "Helvetica Neue", sans-serif;
+        -webkit-font-smoothing: antialiased;
+        transition: background-color 0.35s ease, color 0.35s ease;
+      }
+      .mono { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; font-variant-numeric: tabular-nums; }
+      .muted { color: var(--text-dim); }
+      ::selection { background: rgba(59, 130, 246, 0.3); }
+
+      .aurora { position: fixed; inset: 0; z-index: 0; overflow: hidden; pointer-events: none; }
+      .blob { position: absolute; border-radius: 50%; filter: blur(70px); will-change: transform; }
+      .b1 { width: 46vw; height: 46vw; top: -14vw; left: -6vw;  background: radial-gradient(circle, var(--blob1), transparent 70%); }
+      .b2 { width: 40vw; height: 40vw; top: -8vw;  right: -10vw; background: radial-gradient(circle, var(--blob2), transparent 70%); }
+      .b3 { width: 52vw; height: 52vw; bottom: -24vw; left: 26vw; background: radial-gradient(circle, var(--blob3), transparent 70%); }
+      html.anim .b1 { animation: drift1 30s ease-in-out infinite alternate; }
+      html.anim .b2 { animation: drift2 38s ease-in-out infinite alternate; }
+      html.anim .b3 { animation: drift3 46s ease-in-out infinite alternate; }
+      @keyframes drift1 { from { transform: translate(-4%, -3%) scale(1); }   to { transform: translate(7%, 6%) scale(1.12); } }
+      @keyframes drift2 { from { transform: translate(3%, -5%) scale(1.08); } to { transform: translate(-6%, 4%) scale(0.95); } }
+      @keyframes drift3 { from { transform: translate(-5%, 4%) scale(0.95); } to { transform: translate(5%, -5%) scale(1.1); } }
+
+      .topbar {
+        position: sticky; top: 0; z-index: 30;
+        background: var(--topbar-bg);
+        backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+        border-bottom: 1px solid var(--hairline);
+      }
+      .topbar-inner {
+        max-width: 1280px; margin: 0 auto; padding: 12px 20px;
+        display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+      }
+      .brand { display: flex; align-items: center; gap: 12px; }
+      .brand-mark {
+        width: 36px; height: 36px; border-radius: 11px; flex-shrink: 0; overflow: hidden;
+        border: 1px solid var(--hairline-strong);
+        box-shadow: 0 0 18px rgba(139, 92, 246, 0.35);
+      }
+      .brand-mark svg { width: 100%; height: 100%; display: block; }
+      .brand h1 { margin: 0; font-size: 17px; font-weight: 700; letter-spacing: -0.01em; line-height: 1.15; }
+      .brand h1 .grad {
+        background: linear-gradient(90deg, #22d3ee, #60a5fa, #a78bfa);
+        -webkit-background-clip: text; background-clip: text; color: transparent;
+      }
+      .brand-sub { font-size: 11px; color: var(--text-dim); letter-spacing: 0.02em; }
+      .controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 12px; }
+      .chip {
+        display: inline-flex; align-items: center; border-radius: 7px; padding: 3px 9px;
+        font-size: 11px; background: var(--chip-bg); border: 1px solid var(--hairline-strong);
+        color: var(--text-dim);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-variant-numeric: tabular-nums;
+      }
+      select.chain-select {
+        border-radius: 9px; border: 1px solid var(--hairline-strong);
+        background: var(--chip-bg); color: var(--text); padding: 5px 10px; font-size: 12px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+      .icon-btn {
+        width: 32px; height: 32px; display: grid; place-items: center; cursor: pointer;
+        border-radius: 9px; border: 1px solid var(--hairline-strong);
+        background: var(--chip-bg); color: var(--text-dim); text-decoration: none;
+        transition: color 0.2s, border-color 0.2s, transform 0.2s, background 0.2s;
+      }
+      .icon-btn:hover { color: var(--text); border-color: var(--text-dim); transform: scale(1.06); }
+      .icon-btn svg { width: 16px; height: 16px; }
+      html.dark .i-moon { display: none; }
+      html:not(.dark) .i-sun { display: none; }
+
+      .pill {
+        display: inline-flex; align-items: center; gap: 6px;
+        border-radius: 999px; padding: 3px 11px;
+        font-size: 10.5px; font-weight: 700; letter-spacing: 0.08em;
+        border: 1px solid var(--hairline-strong); color: var(--text-dim); background: var(--chip-bg);
+      }
+      .pill-ok   { color: var(--ok);   background: var(--ok-bg);   border-color: var(--ok-bd); }
+      .pill-warn { color: var(--warn); background: var(--warn-bg); border-color: var(--warn-bd); }
+      .pill-bad  { color: var(--bad);  background: var(--bad-bg);  border-color: var(--bad-bd); }
+      .pill-role { color: #a78bfa; background: rgba(139, 92, 246, 0.12); border-color: rgba(139, 92, 246, 0.35); }
+      .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; position: relative; flex-shrink: 0; }
+      html.anim .dot.pulse::after {
+        content: ''; position: absolute; inset: -4px; border-radius: 50%;
+        border: 1.5px solid currentColor; opacity: 0.7;
+        animation: ping 2s cubic-bezier(0, 0, 0.2, 1) infinite;
+      }
+      @keyframes ping { 70%, 100% { transform: scale(2.1); opacity: 0; } }
+      .badge {
+        display: inline-flex; align-items: center; border-radius: 6px; padding: 2px 8px;
+        font-size: 10.5px; font-weight: 600; letter-spacing: 0.04em;
+        border: 1px solid var(--hairline-strong); color: var(--text-dim); background: var(--chip-bg);
+        white-space: nowrap;
+      }
+      .b-ok   { color: var(--ok);   background: var(--ok-bg);   border-color: var(--ok-bd); }
+      .b-warn { color: var(--warn); background: var(--warn-bg); border-color: var(--warn-bd); }
+      .b-bad  { color: var(--bad);  background: var(--bad-bg);  border-color: var(--bad-bd); }
+
+      .status-shell { position: relative; z-index: 1; max-width: 1280px; margin: 0 auto; padding: 20px 20px 44px; }
+      .grid { display: grid; gap: 16px; }
+      .grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      @media (max-width: 1180px) { .grid-3 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+      @media (max-width: 720px) {
+        .grid-2, .grid-3 { grid-template-columns: 1fr; }
+        .hero-top { flex-direction: column; align-items: flex-start; }
+      }
+      .sec-label {
+        margin: 28px 2px 12px; display: flex; align-items: center; gap: 12px;
+        font-size: 10.5px; font-weight: 700; letter-spacing: 0.16em; text-transform: uppercase;
+        color: var(--text-dim);
+      }
+      .sec-label::after { content: ''; height: 1px; flex: 1; background: linear-gradient(90deg, var(--hairline-strong), transparent); }
+
+      .card {
+        position: relative; border-radius: 16px; border: 1px solid var(--hairline);
+        background: var(--card);
+        backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+        box-shadow: var(--shadow); padding: 16px 18px;
+        transition: transform 0.25s ease, box-shadow 0.25s ease, border-color 0.25s ease, background 0.25s ease;
+      }
+      .card::before {
+        content: ''; position: absolute; top: 0; left: 12%; right: 12%; height: 1px;
+        background: linear-gradient(90deg, transparent, var(--ac, rgba(148, 163, 184, 0.35)), transparent);
+        opacity: 0.55;
+      }
+      .card:hover { transform: translateY(-2px); border-color: var(--hairline-strong); background: var(--card-hover); box-shadow: var(--shadow-hover); }
+      html.anim .card { opacity: 0; animation: rise 0.55s cubic-bezier(0.22, 1, 0.36, 1) forwards; animation-delay: calc(var(--i, 0) * 45ms); }
+      @keyframes rise { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: none; } }
+      .card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+      .card-title { display: flex; align-items: center; gap: 9px; min-width: 0; }
+      .card-title h2 { margin: 0; font-size: 13.5px; font-weight: 650; letter-spacing: 0.01em; }
+      .icon {
+        width: 28px; height: 28px; border-radius: 9px; flex-shrink: 0;
+        display: grid; place-items: center;
+        color: var(--ac, var(--text-dim)); background: var(--ac-bg, var(--chip-bg));
+        border: 1px solid var(--hairline);
+      }
+      .icon svg { width: 15px; height: 15px; }
+
+      .ac-blue    { --ac: #3b82f6; --ac-bg: rgba(59, 130, 246, 0.11); }
+      .ac-cyan    { --ac: #06b6d4; --ac-bg: rgba(6, 182, 212, 0.11); }
+      .ac-violet  { --ac: #8b5cf6; --ac-bg: rgba(139, 92, 246, 0.11); }
+      .ac-amber   { --ac: #f59e0b; --ac-bg: rgba(245, 158, 11, 0.11); }
+      .ac-emerald { --ac: #10b981; --ac-bg: rgba(16, 185, 129, 0.11); }
+      .ac-rose    { --ac: #f43f5e; --ac-bg: rgba(244, 63, 94, 0.10); }
+
+      .metric {
+        display: flex; justify-content: space-between; align-items: baseline; gap: 1rem;
+        padding: 6.5px 0; font-size: 13px; border-bottom: 1px solid var(--hairline);
+      }
+      .metric:last-child { border-bottom: none; }
+      .metric > span:first-child { color: var(--text-dim); flex-shrink: 0; }
+      .metric > span:last-child { text-align: right; overflow-wrap: anywhere; font-weight: 500; }
+      .v { border-radius: 5px; padding: 0 3px; margin: 0 -3px; }
+      .v.flash { animation: valueFlash 0.9s ease-out; }
+      @keyframes valueFlash { 0% { background-color: var(--flash); } 100% { background-color: transparent; } }
+
+      .hero { margin-top: 4px; padding: 20px 22px; }
+      .hero-top { display: flex; align-items: flex-end; justify-content: space-between; gap: 18px; margin-bottom: 10px; flex-wrap: wrap; }
+      .hero-label { font-size: 10.5px; font-weight: 700; letter-spacing: 0.16em; text-transform: uppercase; color: var(--text-dim); margin-bottom: 4px; }
+      .hero-pct {
+        font-size: clamp(30px, 4vw, 42px); font-weight: 800; letter-spacing: -0.02em; line-height: 1;
+        font-variant-numeric: tabular-nums;
+        background: linear-gradient(90deg, #22d3ee, #60a5fa, #a78bfa);
+        -webkit-background-clip: text; background-clip: text; color: transparent;
+      }
+      .hero-stats { display: flex; gap: 28px; flex-wrap: wrap; }
+      .hero-stat { display: flex; flex-direction: column; gap: 2px; }
+      .hs-label { font-size: 10.5px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-dim); }
+      .hs-value { font-size: 19px; font-weight: 650; }
+      .hero-summary {
+        margin-top: 12px; font-size: 12px; color: var(--text-dim); overflow-wrap: anywhere;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+      .progress { height: 8px; border-radius: 999px; background: var(--track); overflow: hidden; position: relative; margin-top: 6px; }
+      .progress-fill {
+        height: 100%; width: 0%; border-radius: 999px;
+        background: linear-gradient(90deg, #06b6d4, #3b82f6, #8b5cf6);
+        box-shadow: 0 0 14px rgba(59, 130, 246, 0.45);
+        transition: width 0.8s cubic-bezier(0.22, 1, 0.36, 1);
+      }
+
+      canvas.chart { width: 100%; height: 120px; display: block; }
+
+      .table-wrap { overflow-x: auto; margin: 0 -6px; }
+      table { width: 100%; border-collapse: collapse; font-size: 12.5px; text-align: left; }
+      thead th {
+        padding: 8px 10px; font-size: 10px; font-weight: 700;
+        letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-dim);
+        border-bottom: 1px solid var(--hairline-strong); white-space: nowrap;
+      }
+      tbody td { padding: 9px 10px; border-bottom: 1px solid var(--hairline); vertical-align: middle; }
+      tbody tr:last-child td { border-bottom: none; }
+      tbody tr:hover { background: var(--chip-bg); }
+      .empty { padding: 18px 10px; color: var(--text-dim); text-align: center; }
+      .live-dot {
+        display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+        background: var(--ok); margin-right: 8px; vertical-align: 1px;
+      }
+      html.anim .live-dot { animation: livePulse 2s ease-in-out infinite; }
+      @keyframes livePulse { 0%, 100% { box-shadow: 0 0 0 0 var(--ok-bd); } 50% { box-shadow: 0 0 0 4px transparent; } }
+      .feed { max-height: 260px; overflow-y: auto; font-size: 12px; }
+      .feed-row { display: flex; gap: 10px; padding: 5px 2px; border-bottom: 1px solid var(--hairline); align-items: baseline; }
+      .feed-row:last-child { border-bottom: none; }
+      .feed-pos { color: var(--text-dim); flex-shrink: 0; min-width: 64px; }
+      .feed-topic { flex-shrink: 0; }
+
+      .foot {
+        margin-top: 30px; text-align: center; font-size: 11.5px; color: var(--text-dim);
+        display: flex; align-items: center; justify-content: center; gap: 8px; flex-wrap: wrap;
+      }
+      .foot .sep { opacity: 0.5; }
+    </style>
+  </head>
+  <body>
+    <div class="aurora" aria-hidden="true">
+      <div class="blob b1"></div><div class="blob b2"></div><div class="blob b3"></div>
+    </div>
+
+    <header class="topbar">
+      <div class="topbar-inner">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true">
+            <svg viewBox="100 80 220 220">
+              <defs>
+                <linearGradient id="logo-t" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#7fe5ff"/><stop offset="100%" stop-color="#1e5cff"/></linearGradient>
+                <linearGradient id="logo-b" x1="0" y1="0" x2="0.5" y2="1"><stop offset="0%" stop-color="#3a7bff"/><stop offset="100%" stop-color="#5b2bff"/></linearGradient>
+                <linearGradient id="logo-r" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#5b2bff"/><stop offset="100%" stop-color="#ff3b8a"/></linearGradient>
+              </defs>
+              <rect width="400" height="400" fill="#0e1230"/>
+              <g transform="translate(90 90) scale(1.05)">
+                <path d="M 110 30 L 200 90 L 130 110 L 110 80 Z" fill="url(#logo-t)"/>
+                <path d="M 110 30 L 30 100 L 90 100 L 110 80 Z" fill="url(#logo-t)" opacity="0.85"/>
+                <path d="M 110 80 L 130 110 L 90 160 L 70 130 Z" fill="url(#logo-b)"/>
+                <path d="M 130 110 L 200 90 L 150 150 Z" fill="url(#logo-r)" opacity="0.95"/>
+                <path d="M 110 30 L 110 80 L 90 160" stroke="rgba(255,255,255,0.55)" stroke-width="2.5" fill="none"/>
+              </g>
+            </svg>
+          </div>
+          <div>
+            <h1><span class="grad">Yano</span> App Chain</h1>
+            <div class="brand-sub">Permissioned L1-anchored application ledger</div>
+          </div>
+        </div>
+        <div class="controls">
+          <select id="chainSelect" class="chain-select" title="Chain"></select>
+          <span id="updatedAt" class="muted">-</span>
+          <span id="reqMs" class="chip">- ms</span>
+          <span id="rolePill" class="pill">-</span>
+          <span id="healthPill" class="pill">-</span>
+          <button id="keyBtn" type="button" class="icon-btn" aria-label="API key" title="Set API key (X-API-Key)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="7.5" cy="15.5" r="4.5"/><path d="M10.7 12.3L21 2M15 8l3 3"/></svg>
+          </button>
+          <a class="icon-btn" href="../status/" title="L1 node status" aria-label="L1 node status">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 12h6"/><path d="M15 7h2a5 5 0 010 10h-2"/><path d="M9 17H7A5 5 0 017 7h2"/></svg>
+          </a>
+          <button id="themeToggle" type="button" class="icon-btn" aria-label="Toggle theme" title="Toggle theme">
+            <svg class="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="4.5"/>
+              <path d="M12 2v2.5M12 19.5V22M4.93 4.93l1.77 1.77M17.3 17.3l1.77 1.77M2 12h2.5M19.5 12H22M4.93 19.07l1.77-1.77M17.3 6.7l1.77-1.77"/>
+            </svg>
+            <svg class="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <main class="status-shell">
+      <section class="card hero ac-violet" style="--i: 0">
+        <div class="hero-top">
+          <div>
+            <div class="hero-label">Finalized Tip</div>
+            <div class="hero-pct" id="heroTip">-</div>
+          </div>
+          <div class="hero-stats">
+            <div class="hero-stat"><span class="hs-label">Members</span><span id="heroMembers" class="hs-value mono v">-</span></div>
+            <div class="hero-stat"><span class="hs-label">State Machine</span><span id="heroMachine" class="hs-value mono v">-</span></div>
+            <div class="hero-stat"><span class="hs-label">Block Interval</span><span id="heroInterval" class="hs-value mono v">-</span></div>
+            <div class="hero-stat"><span class="hs-label">Last Block</span><span id="heroLastBlock" class="hs-value mono v">-</span></div>
+          </div>
+        </div>
+        <div id="heroRoot" class="hero-summary">Loading...</div>
+      </section>
+
+      <div class="sec-label">Consensus &amp; Traffic</div>
+      <div class="grid grid-3">
+        <section class="card ac-violet" style="--i: 1">
+          <div class="card-head">
+            <div class="card-title">
+              <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="8.5" y="14" width="7" height="7" rx="1.5"/><path d="M6.5 10v2a2 2 0 002 2M17.5 10v2a2 2 0 01-2 2"/></svg></span>
+              <h2>Consensus</h2>
+            </div>
+            <span id="stallPill" class="pill">-</span>
+          </div>
+          <div>
+            <div class="metric"><span>Tip Height</span><span id="tipHeight" class="mono v">-</span></div>
+            <div class="metric"><span>Threshold</span><span id="threshold" class="mono v">-</span></div>
+            <div class="metric"><span>Cert Signatures (tip)</span><span id="certSigs" class="mono v">-</span></div>
+            <div class="metric"><span>Sequencing</span><span id="sequencing" class="mono v">-</span></div>
+            <div class="metric"><span>L1 Ref Deferrals</span><span id="l1Deferrals" class="mono v">-</span></div>
+          </div>
+        </section>
+
+        <section class="card ac-amber" style="--i: 2">
+          <div class="card-head">
+            <div class="card-title">
+              <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11L2 12v6a2 2 0 002 2h16a2 2 0 002-2v-6l-3.45-6.89A2 2 0 0016.76 4H7.24a2 2 0 00-1.79 1.11z"/></svg></span>
+              <h2>Pool</h2>
+            </div>
+            <span id="pausedBadge" class="badge" style="display:none">PAUSED</span>
+          </div>
+          <div>
+            <div class="metric"><span>Pending</span><span id="poolSize" class="mono v">-</span></div>
+            <div class="metric"><span>Capacity</span><span id="poolCapacity" class="mono v">-</span></div>
+            <div id="dropsList"></div>
+          </div>
+          <div class="progress"><div id="poolBar" class="progress-fill"></div></div>
+        </section>
+
+        <section class="card ac-cyan" style="--i: 3">
+          <div class="card-head">
+            <div class="card-title">
+              <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 2l4 4-4 4"/><path d="M3 11V9a4 4 0 014-4h14"/><path d="M7 22l-4-4 4-4"/><path d="M21 13v2a4 4 0 01-4 4H3"/></svg></span>
+              <h2>Traffic</h2>
+            </div>
+          </div>
+          <div>
+            <div class="metric"><span>Submitted</span><span id="submitted" class="mono v">-</span></div>
+            <div class="metric"><span>Received</span><span id="received" class="mono v">-</span></div>
+            <div class="metric"><span>Relayed</span><span id="relayed" class="mono v">-</span></div>
+            <div class="metric"><span>Duplicates</span><span id="duplicates" class="mono v">-</span></div>
+            <div class="metric"><span>Messages (finalized)</span><span id="storedMessages" class="mono v">-</span></div>
+          </div>
+        </section>
+      </div>
+
+      <div class="sec-label">Anchoring &amp; Delivery</div>
+      <div class="grid grid-3">
+        <section class="card ac-emerald" style="--i: 4">
+          <div class="card-head">
+            <div class="card-title">
+              <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="5" r="3"/><path d="M12 8v13M5 12H2a10 10 0 0020 0h-3"/></svg></span>
+              <h2>L1 Anchor</h2>
+            </div>
+            <span id="anchorBadge" class="badge">-</span>
+          </div>
+          <div>
+            <div class="metric"><span>Last Anchored Height</span><span id="anchorHeight" class="mono v">-</span></div>
+            <div class="metric"><span>Lag (blocks)</span><span id="anchorLag" class="mono v">-</span></div>
+            <div class="metric"><span>Anchors Confirmed</span><span id="anchorCount" class="mono v">-</span></div>
+            <div class="metric"><span>Pending Tx</span><span id="anchorPending" class="mono v">-</span></div>
+            <div class="metric"><span>Last Tx</span><span id="anchorLastTx" class="mono v">-</span></div>
+            <div class="metric"><span>Error</span><span id="anchorError" class="mono v">-</span></div>
+          </div>
+        </section>
+
+        <section class="card ac-blue" style="--i: 5">
+          <div class="card-head">
+            <div class="card-title">
+              <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg></span>
+              <h2>Sinks</h2>
+            </div>
+          </div>
+          <div id="sinksList"><div class="empty">No sinks configured</div></div>
+        </section>
+
+        <section class="card ac-rose" style="--i: 6">
+          <div class="card-head">
+            <div class="card-title">
+              <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="12" r="2.5"/><circle cx="19" cy="5" r="2.5"/><circle cx="19" cy="19" r="2.5"/><path d="M7.3 10.9l9.4-4.7M7.3 13.1l9.4 4.7"/></svg></span>
+              <h2>App Peers</h2>
+            </div>
+          </div>
+          <div id="peersList"><div class="empty">No peers configured</div></div>
+        </section>
+      </div>
+
+      <div class="sec-label">Trends</div>
+      <div class="grid grid-2">
+        <section class="card ac-violet" style="--i: 7">
+          <div class="card-head"><div class="card-title"><h2>Tip growth (blocks/min)</h2></div></div>
+          <canvas id="chartTip" class="chart"></canvas>
+        </section>
+        <section class="card ac-amber" style="--i: 8">
+          <div class="card-head"><div class="card-title"><h2>Pool size</h2></div></div>
+          <canvas id="chartPool" class="chart"></canvas>
+        </section>
+        <section class="card ac-cyan" style="--i: 9">
+          <div class="card-head"><div class="card-title"><h2>Block interval (ms)</h2></div></div>
+          <canvas id="chartInterval" class="chart"></canvas>
+        </section>
+        <section class="card ac-emerald" style="--i: 10">
+          <div class="card-head"><div class="card-title"><h2>Anchor lag (blocks)</h2></div></div>
+          <canvas id="chartAnchor" class="chart"></canvas>
+        </section>
+      </div>
+
+      <div class="sec-label">Live Messages</div>
+      <section class="card ac-cyan" style="--i: 11">
+        <div class="card-head">
+          <div class="card-title"><h2>Finalized message stream</h2></div>
+          <span id="streamPill" class="pill">CONNECTING</span>
+        </div>
+        <div id="feed" class="feed"><div class="empty">Waiting for finalized messages…</div></div>
+      </section>
+
+      <div class="sec-label">Recent Blocks</div>
+      <section class="card ac-blue" style="--i: 12">
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Height</th><th>Age</th><th>Messages</th><th>Cert Sigs</th><th>State Root</th></tr></thead>
+            <tbody id="blocksBody"><tr><td colspan="5" class="empty">Loading…</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+
+      <div class="foot">
+        <span>Auto-refresh every <span id="pollSecs">5</span>s</span>
+        <span class="sep">·</span>
+        <span class="mono" id="apiBase">/api/v1</span>
+        <span class="sep">·</span>
+        <a href="../status/" style="color: inherit">L1 node status</a>
+      </div>
+    </main>
+
+    <script>
+      // ------------------------------ setup ------------------------------
+      const params = new URLSearchParams(location.search);
+      const apiPrefix = (params.get('api') || '/api/v1').replace(/\/$/, '');
+      const pollMs = Math.max(1000, Number(params.get('poll')) || 5000);
+      document.getElementById('pollSecs').textContent = Math.round(pollMs / 1000);
+      document.getElementById('apiBase').textContent = apiPrefix;
+
+      const $ = id => document.getElementById(id);
+      const fmt = n => n == null ? '-' : Number(n).toLocaleString('en-US');
+      const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+      const shortHex = (h, n = 12) => h && h.length > n ? h.slice(0, n) + '…' : (h || '-');
+      const age = ms => {
+        if (!ms) return '-';
+        const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
+        return s < 60 ? s + 's' : s < 3600 ? Math.round(s / 60) + 'm' : Math.round(s / 3600) + 'h';
+      };
+
+      let firstRender = true;
+      function text(id, value) {
+        const el = $(id);
+        if (!el) return;
+        const str = value == null ? '-' : String(value);
+        if (el.textContent !== str) {
+          el.textContent = str;
+          if (!firstRender && el.classList.contains('v')) {
+            el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash');
+          }
+        }
+      }
+      function pill(id, label, kind, pulse) {
+        const el = $(id);
+        el.className = 'pill' + (kind ? ' pill-' + kind : '');
+        el.innerHTML = '<span class="dot' + (pulse ? ' pulse' : '') + '"></span>' + esc(label);
+      }
+
+      function apiKey() { return localStorage.getItem('yano-appchain-key') || ''; }
+      function headers() { return apiKey() ? { 'X-API-Key': apiKey() } : {}; }
+      $('keyBtn').addEventListener('click', () => {
+        const value = prompt('X-API-Key for the app-chain API (stored locally):', apiKey());
+        if (value !== null) {
+          value ? localStorage.setItem('yano-appchain-key', value)
+                : localStorage.removeItem('yano-appchain-key');
+          refresh(); restartStream();
+        }
+      });
+
+      $('themeToggle').addEventListener('click', () => {
+        const dark = !document.documentElement.classList.contains('dark');
+        document.documentElement.classList.toggle('dark', dark);
+        localStorage.setItem('yano-status-theme', dark ? 'dark' : 'light');
+        redrawCharts();
+      });
+
+      let unauthorized = false;
+      async function jsonOrNull(path) {
+        try {
+          const res = await fetch(apiPrefix + path, { cache: 'no-store', headers: headers() });
+          if (res.status === 401 || res.status === 403) { unauthorized = true; return null; }
+          if (!res.ok) return null;
+          return await res.json();
+        } catch (e) { return null; }
+      }
+
+      // ------------------------------ chain selection ------------------------------
+      let chains = [];
+      let selectedChain = localStorage.getItem('yano-appchain-selected') || '';
+      const chainSelect = $('chainSelect');
+      chainSelect.addEventListener('change', () => {
+        selectedChain = chainSelect.value;
+        localStorage.setItem('yano-appchain-selected', selectedChain);
+        firstRender = true;
+        resetHistory();
+        refresh();
+        restartStream();
+      });
+      function chainBase() {
+        return selectedChain ? '/app-chain/chains/' + encodeURIComponent(selectedChain) : '/app-chain';
+      }
+      function syncChainOptions(list) {
+        const ids = list.map(c => c.chainId);
+        if (ids.join('|') === Array.from(chainSelect.options).map(o => o.value).join('|')) return;
+        chainSelect.innerHTML = '';
+        for (const id of ids) {
+          const option = document.createElement('option');
+          option.value = id; option.textContent = id;
+          chainSelect.appendChild(option);
+        }
+        if (!ids.includes(selectedChain)) selectedChain = ids[0] || '';
+        chainSelect.value = selectedChain;
+      }
+
+      // ------------------------------ history + charts ------------------------------
+      const maxPoints = 72;
+      let hist = {};
+      function resetHistory() {
+        hist = { time: [], tipRate: [], pool: [], interval: [], anchorLag: [], lastTip: null, lastPollAt: null };
+      }
+      resetHistory();
+      function push(list, value) { list.push(value); if (list.length > maxPoints) list.shift(); }
+
+      const chartDefs = [
+        { id: 'chartTip', series: () => [hist.tipRate], colors: ['#8b5cf6'] },
+        { id: 'chartPool', series: () => [hist.pool], colors: ['#f59e0b'] },
+        { id: 'chartInterval', series: () => [hist.interval], colors: ['#06b6d4'] },
+        { id: 'chartAnchor', series: () => [hist.anchorLag], colors: ['#10b981'] },
+      ];
+      function rgba(hex, a) {
+        const v = parseInt(hex.slice(1), 16);
+        return `rgba(${(v >> 16) & 255}, ${(v >> 8) & 255}, ${v & 255}, ${a})`;
+      }
+      function drawLines(canvasId, seriesList, colors) {
+        const canvas = $(canvasId);
+        const ctx = canvas.getContext('2d');
+        const dpr = window.devicePixelRatio || 1;
+        const w = canvas.clientWidth, h = canvas.clientHeight;
+        if (canvas.width !== w * dpr) { canvas.width = w * dpr; canvas.height = h * dpr; }
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, w, h);
+        const style = getComputedStyle(document.documentElement);
+        ctx.strokeStyle = style.getPropertyValue('--hairline-strong') || 'rgba(148,163,184,0.18)';
+        ctx.lineWidth = 1;
+        for (const frac of [0.25, 0.5, 0.75]) {
+          ctx.beginPath(); ctx.moveTo(0, h * frac); ctx.lineTo(w, h * frac); ctx.stroke();
+        }
+        const all = seriesList.flat().filter(v => v != null && isFinite(v));
+        if (all.length < 2) {
+          ctx.fillStyle = style.getPropertyValue('--text-dim');
+          ctx.font = '11px ui-monospace, Menlo, monospace';
+          ctx.fillText('collecting data…', 10, h / 2);
+          return;
+        }
+        const min = Math.min(...all, 0), max = Math.max(...all) || 1;
+        const range = max - min || 1;
+        seriesList.forEach((series, si) => {
+          if (series.length < 2) return;
+          const step = w / (maxPoints - 1);
+          const x = i => w - (series.length - 1 - i) * step;
+          const y = v => h - 6 - ((v - min) / range) * (h - 16);
+          if (si === 0) {
+            const grad = ctx.createLinearGradient(0, 0, 0, h);
+            grad.addColorStop(0, rgba(colors[si], 0.22)); grad.addColorStop(1, rgba(colors[si], 0));
+            ctx.beginPath(); ctx.moveTo(x(0), h);
+            series.forEach((v, i) => ctx.lineTo(x(i), y(v)));
+            ctx.lineTo(x(series.length - 1), h); ctx.closePath();
+            ctx.fillStyle = grad; ctx.fill();
+          }
+          ctx.beginPath();
+          series.forEach((v, i) => i === 0 ? ctx.moveTo(x(i), y(v)) : ctx.lineTo(x(i), y(v)));
+          ctx.strokeStyle = colors[si]; ctx.lineWidth = 2;
+          ctx.lineJoin = 'round'; ctx.lineCap = 'round'; ctx.stroke();
+          const lastV = series[series.length - 1];
+          ctx.beginPath(); ctx.arc(x(series.length - 1), y(lastV), 3, 0, Math.PI * 2);
+          ctx.fillStyle = colors[si]; ctx.fill();
+        });
+      }
+      function redrawCharts() { for (const def of chartDefs) drawLines(def.id, def.series(), def.colors); }
+      window.addEventListener('resize', redrawCharts);
+
+      // ------------------------------ live message feed (SSE over fetch) ------------------------------
+      let streamAbort = null;
+      const feedSeen = new Set();
+      function restartStream() {
+        if (streamAbort) { streamAbort.abort(); streamAbort = null; }
+        if (!selectedChain && chains.length !== 1) { pill('streamPill', 'IDLE', '', false); return; }
+        streamAbort = new AbortController();
+        streamLoop(streamAbort.signal);
+      }
+      async function streamLoop(signal) {
+        while (!signal.aborted) {
+          try {
+            pill('streamPill', 'CONNECTING', 'warn', false);
+            const res = await fetch(apiPrefix + chainBase() + '/stream?fromHeight=-1',
+                { headers: { ...headers(), 'Accept': 'text/event-stream' }, signal, cache: 'no-store' });
+            if (!res.ok || !res.body) throw new Error('stream http ' + res.status);
+            pill('streamPill', 'LIVE', 'ok', true);
+            const reader = res.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+            for (;;) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              buffer += decoder.decode(value, { stream: true });
+              let idx;
+              while ((idx = buffer.indexOf('\n\n')) >= 0) {
+                handleSseEvent(buffer.slice(0, idx));
+                buffer = buffer.slice(idx + 2);
+              }
+            }
+            throw new Error('stream ended');
+          } catch (e) {
+            if (signal.aborted) return;
+            pill('streamPill', 'RETRYING', 'bad', false);
+            await new Promise(resolve => setTimeout(resolve, 3000));
+          }
+        }
+      }
+      function handleSseEvent(raw) {
+        let event = 'message', data = '';
+        for (const line of raw.split('\n')) {
+          if (line.startsWith('event:')) event = line.slice(6).trim();
+          else if (line.startsWith('data:')) data += line.slice(5).trim();
+        }
+        if (event !== 'app-message' || !data) return;
+        try {
+          const msg = JSON.parse(data);
+          const key = msg.height + ':' + msg.index;
+          if (feedSeen.has(key)) return;
+          feedSeen.add(key);
+          if (feedSeen.size > 500) feedSeen.clear();
+          const feed = $('feed');
+          if (feed.firstElementChild && feed.firstElementChild.classList.contains('empty')) feed.innerHTML = '';
+          const row = document.createElement('div');
+          row.className = 'feed-row';
+          const bytes = msg.bodyHex ? Math.round(msg.bodyHex.length / 2) : 0;
+          row.innerHTML = '<span class="feed-pos mono">' + esc(key) + '</span>'
+              + '<span class="feed-topic badge">' + esc(msg.topic || 'default') + '</span>'
+              + '<span class="mono muted">' + esc(shortHex(msg.sender, 10)) + '</span>'
+              + '<span class="mono" style="margin-left:auto">' + bytes + ' B</span>';
+          feed.prepend(row);
+          while (feed.children.length > 50) feed.removeChild(feed.lastChild);
+        } catch (e) { /* skip malformed */ }
+      }
+      document.addEventListener('visibilitychange', () => {
+        if (document.hidden) { if (streamAbort) { streamAbort.abort(); streamAbort = null; } }
+        else restartStream();
+      });
+
+      // ------------------------------ render ------------------------------
+      function renderStatus(s, latestBlock) {
+        pill('rolePill', (s.role || (s.sequencing ? 'member' : 'gossip')).toUpperCase(), 'role', s.role === 'proposer');
+        const stalled = s.stalled === true;
+        const paused = s.submissionsPaused === true;
+        if (!s.running) pill('healthPill', 'STOPPED', 'bad', false);
+        else if (stalled) pill('healthPill', 'STALLED', 'warn', true);
+        else if (paused) pill('healthPill', 'PAUSED', 'warn', false);
+        else pill('healthPill', 'RUNNING', 'ok', false);
+        pill('stallPill', stalled ? 'STALLED' : 'IN STEP', stalled ? 'warn' : 'ok', stalled);
+
+        text('heroTip', fmt(s.tipHeight));
+        text('heroMembers', s.threshold + '-of-' + s.members);
+        text('heroMachine', s.stateMachine || '-');
+        text('heroInterval', s.blockIntervalMs ? fmt(s.blockIntervalMs) + ' ms' : '-');
+        text('heroLastBlock', s.lastBlockAtMillis ? age(s.lastBlockAtMillis) + ' ago' : '-');
+        $('heroRoot').textContent = 'chain ' + (s.chainId || '-') + ' · state root ' + (s.stateRoot || '-');
+
+        text('tipHeight', fmt(s.tipHeight));
+        text('threshold', s.threshold + ' of ' + s.members);
+        text('certSigs', latestBlock ? latestBlock.certSignatures : '-');
+        text('sequencing', s.sequencing ? 'enabled' : 'diffusion-only');
+        text('l1Deferrals', s.l1RefDeferrals != null ? fmt(s.l1RefDeferrals) : 'n/a');
+
+        text('poolSize', fmt(s.poolSize));
+        text('poolCapacity', fmt(s.poolCapacity));
+        $('pausedBadge').style.display = paused ? '' : 'none';
+        $('pausedBadge').className = 'badge b-warn';
+        const capacity = Number(s.poolCapacity) || 1;
+        $('poolBar').style.width = Math.min(100, (Number(s.poolSize) || 0) / capacity * 100) + '%';
+        const drops = s.drops || {};
+        const dropKeys = Object.keys(drops);
+        $('dropsList').innerHTML = dropKeys.length
+            ? dropKeys.map(k => '<div class="metric"><span>Dropped · ' + esc(k) + '</span>'
+                + '<span class="mono">' + fmt(drops[k]) + '</span></div>').join('')
+            : '<div class="metric"><span>Dropped</span><span class="mono">0</span></div>';
+
+        text('submitted', fmt(s.submitted));
+        text('received', fmt(s.received));
+        text('relayed', fmt(s.relayed));
+        text('duplicates', fmt(s.duplicates));
+        text('storedMessages', fmt(s.storedMessages));
+
+        const anchor = s.anchor;
+        if (anchor && anchor.enabled) {
+          $('anchorBadge').textContent = 'ENABLED';
+          $('anchorBadge').className = 'badge b-ok';
+          text('anchorHeight', fmt(anchor.lastAnchoredHeight));
+          text('anchorLag', fmt(anchor.lagBlocks));
+          text('anchorCount', fmt(anchor.anchoredCount));
+          text('anchorPending', anchor.pendingTx ? shortHex(anchor.pendingTx, 16) : 'none');
+          text('anchorLastTx', anchor.lastAnchorTx ? shortHex(anchor.lastAnchorTx, 16) : '-');
+          text('anchorError', anchor.lastError ? anchor.lastError : 'none');
+          $('anchorError').style.color = anchor.lastError ? 'var(--bad)' : '';
+        } else {
+          $('anchorBadge').textContent = 'DISABLED';
+          $('anchorBadge').className = 'badge';
+          for (const id of ['anchorHeight', 'anchorLag', 'anchorCount', 'anchorPending', 'anchorLastTx', 'anchorError'])
+            text(id, '-');
+        }
+
+        const sinks = s.sinks || {};
+        const sinkIds = Object.keys(sinks);
+        $('sinksList').innerHTML = sinkIds.length
+            ? sinkIds.map(id => {
+                const sink = sinks[id];
+                const err = sink.lastError
+                    ? '<div class="metric"><span style="color:var(--bad)">error</span>'
+                      + '<span style="color:var(--bad)">' + esc(String(sink.lastError).slice(0, 60)) + '</span></div>'
+                    : '';
+                return '<div class="metric"><span>' + esc(shortHex(id, 28)) + '</span>'
+                    + '<span class="mono">cursor ' + fmt(sink.cursor) + ' · lag ' + fmt(sink.lagBlocks)
+                    + ' · sent ' + fmt(sink.delivered) + '</span></div>' + err;
+              }).join('')
+            : '<div class="empty">No sinks configured</div>';
+
+        const peers = s.peers || {};
+        const peerIds = Object.keys(peers);
+        $('peersList').innerHTML = peerIds.length
+            ? peerIds.map(p => '<div class="metric"><span>'
+                + (peers[p] ? '<span class="live-dot"></span>' : '') + esc(p) + '</span>'
+                + '<span class="' + (peers[p] ? '' : 'muted') + '">'
+                + (peers[p] ? 'connected' : 'disconnected') + '</span></div>').join('')
+            : '<div class="empty">No peers configured</div>';
+      }
+
+      function renderBlocks(data) {
+        const body = $('blocksBody');
+        if (!data || !data.blocks || !data.blocks.length) {
+          body.innerHTML = '<tr><td colspan="5" class="empty">No finalized blocks yet</td></tr>';
+          return;
+        }
+        const rows = [...data.blocks].reverse().map(b =>
+            '<tr><td class="mono">' + fmt(b.height) + '</td>'
+            + '<td class="mono muted">' + age(b.timestamp) + '</td>'
+            + '<td class="mono">' + fmt(b.messageCount) + '</td>'
+            + '<td class="mono">' + fmt(b.certSignatures) + '</td>'
+            + '<td class="mono muted">' + esc(shortHex(b.stateRoot, 20)) + '</td></tr>');
+        body.innerHTML = rows.join('');
+      }
+
+      // ------------------------------ refresh loop ------------------------------
+      async function refresh() {
+        const started = performance.now();
+        unauthorized = false;
+        try {
+          const chainList = await jsonOrNull('/app-chain/chains');
+          if (chainList) { chains = chainList; syncChainOptions(chainList); }
+          if (unauthorized) {
+            pill('healthPill', 'AUTH REQUIRED', 'bad', false);
+            $('updatedAt').textContent = 'set the API key (key button)';
+            return;
+          }
+          if (!chains.length) {
+            pill('healthPill', 'NO CHAINS', 'warn', false);
+            $('updatedAt').textContent = 'no app chains enabled on this node';
+            return;
+          }
+          const [status, blocks] = await Promise.all([
+            jsonOrNull(chainBase() + '/status'),
+            jsonOrNull(chainBase() + '/blocks?limit=12'),
+          ]);
+          if (unauthorized) { pill('healthPill', 'AUTH REQUIRED', 'bad', false); return; }
+          if (status) {
+            const latest = blocks && blocks.blocks && blocks.blocks.length
+                ? blocks.blocks[blocks.blocks.length - 1] : null;
+            renderStatus(status, latest);
+
+            const now = Date.now();
+            if (hist.lastTip != null && hist.lastPollAt) {
+              const minutes = (now - hist.lastPollAt) / 60000;
+              push(hist.tipRate, minutes > 0 ? (status.tipHeight - hist.lastTip) / minutes : 0);
+            }
+            hist.lastTip = status.tipHeight; hist.lastPollAt = now;
+            push(hist.pool, Number(status.poolSize) || 0);
+            push(hist.interval, Number(status.blockIntervalMs) || 0);
+            push(hist.anchorLag, status.anchor ? Number(status.anchor.lagBlocks) || 0 : 0);
+            redrawCharts();
+          }
+          if (blocks) renderBlocks(blocks);
+          $('updatedAt').textContent = new Date().toLocaleTimeString();
+          firstRender = false;
+        } catch (e) {
+          pill('healthPill', 'ERROR', 'bad', false);
+          $('updatedAt').textContent = 'fetch failed: ' + e.message;
+        } finally {
+          $('reqMs').textContent = Math.round(performance.now() - started) + ' ms';
+        }
+      }
+
+      refresh().then(restartStream);
+      setInterval(refresh, pollMs);
+    </script>
+  </body>
+</html>

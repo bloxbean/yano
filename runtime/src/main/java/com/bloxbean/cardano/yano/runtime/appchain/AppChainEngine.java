@@ -9,8 +9,9 @@ import org.rocksdb.WriteBatch;
 import org.slf4j.Logger;
 
 import java.util.*;
-import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.function.BiConsumer;
 
 /**
@@ -49,7 +50,7 @@ final class AppChainEngine implements AutoCloseable {
     private final BiConsumer<String, byte[]> broadcast;
     private final Logger log;
 
-    private final ExecutorService executor;
+    private final ScheduledExecutorService executor;
 
     /** In-flight round at height tip+1 (proposer and follower views). */
     private PendingRound pendingRound;
@@ -57,12 +58,36 @@ final class AppChainEngine implements AutoCloseable {
     private volatile BiConsumer<AppBlock, byte[]> onBlockFinalized;
     /** Stable L1 reference for proposals; null supplier or null value = no L1 ref (zeros). */
     private volatile java.util.function.Supplier<L1Ref> l1RefSupplier;
+    /** Follower-side check of a proposed L1 ref against this node's own L1 view (I1.3). */
+    private volatile L1RefValidator l1RefValidator;
+    /** Proposals deferred because their l1-ref is ahead of the local L1 view: id → first deferral time. */
+    private final Map<String, Long> deferredProposals = new HashMap<>();
 
     record L1Ref(long slot, byte[] blockHash) {
     }
 
+    /** Verdict of checking a proposed (slot, hash) against the local L1 view. */
+    enum L1RefVerdict {
+        /** Present in the local stable window with the same hash. */
+        OK,
+        /** Slot known locally with a DIFFERENT hash, or in-window slot absent — fabricated/rolled-back ref. */
+        MISMATCH,
+        /** Beyond the local view (or not yet deep enough) — retry after the local L1 advances. */
+        AHEAD,
+        /** Older than the local window (restart) — fall back to monotonicity only. */
+        UNKNOWN
+    }
+
+    interface L1RefValidator {
+        L1RefVerdict check(long slot, byte[] blockHash);
+    }
+
     void setL1RefSupplier(java.util.function.Supplier<L1Ref> supplier) {
         this.l1RefSupplier = supplier;
+    }
+
+    void setL1RefValidator(L1RefValidator validator) {
+        this.l1RefValidator = validator;
     }
 
     AppChainEngine(AppChainConfig config,
@@ -90,7 +115,7 @@ final class AppChainEngine implements AutoCloseable {
         this.maxBlockBytes = maxBlockBytes;
         this.broadcast = broadcast;
         this.log = log;
-        this.executor = Executors.newSingleThreadExecutor(r -> {
+        this.executor = Executors.newSingleThreadScheduledExecutor(r -> {
             Thread t = new Thread(r, "app-chain-engine-" + config.chainId());
             t.setDaemon(true);
             return t;
@@ -169,6 +194,9 @@ final class AppChainEngine implements AutoCloseable {
             log.warn("Catch-up block messages-root mismatch — rejecting");
             return false;
         }
+        if (!verifyCatchUpL1Ref(block)) {
+            return false;
+        }
         for (AppMessage message : block.messages()) {
             // No TTL check here: these messages were finalized before expiry
             if (!message.hasValidMessageId() || !verifyMemberSignature(message, block.height())) {
@@ -176,6 +204,9 @@ final class AppChainEngine implements AutoCloseable {
                         message.getMessageIdHex());
                 return false;
             }
+        }
+        if (!verifySenderSeqs(block, "Catch-up block")) {
+            return false;
         }
         byte[] blockHash = AppBlockCodec.blockHash(block);
         if (!verifyCert(block.cert(), blockHash, block.height())) {
@@ -284,6 +315,28 @@ final class AppChainEngine implements AutoCloseable {
         List<AppMessage> candidates = pool.drainCandidates(maxBlockMessages, maxBlockBytes);
         // Exclude anything already finalized (re-gossip after restart)
         candidates.removeIf(m -> ledger.messageHeight(m.getMessageId()).isPresent());
+        // Sender-seq replay floor (I1.2): drop stale seqs; with enforcement on,
+        // also keep per-sender seqs strictly increasing WITHIN the block so an
+        // honest proposer never builds a block enforcing followers would reject
+        Map<String, Long> senderFloor = new HashMap<>();
+        candidates.removeIf(m -> {
+            if (m.getSenderSeq() <= 0) {
+                return false;
+            }
+            String senderHex = HexUtil.encodeHexString(m.getSender());
+            long floor = senderFloor.computeIfAbsent(senderHex,
+                    h -> ledger.senderSeq(m.getSender()));
+            if (m.getSenderSeq() <= floor) {
+                log.info("Message {} dropped: stale sender-seq {} (floor {})",
+                        m.getMessageIdHex(), m.getSenderSeq(), floor);
+                pool.remove(List.of(m));
+                return true;
+            }
+            if (config.enforceSenderSeq()) {
+                senderFloor.put(senderHex, m.getSenderSeq());
+            }
+            return false;
+        });
         // Application-level admission
         candidates.removeIf(m -> {
             AppStateMachine.AdmissionResult result = stateMachine.validate(m);
@@ -342,6 +395,9 @@ final class AppChainEngine implements AutoCloseable {
             log.warn("Proposal messages-root mismatch — rejecting");
             return;
         }
+        if (!verifyProposalL1Ref(envelope, block)) {
+            return;
+        }
         // Every message inside the block must be a valid, member-signed envelope
         long now = System.currentTimeMillis() / 1000;
         for (AppMessage message : block.messages()) {
@@ -351,6 +407,9 @@ final class AppChainEngine implements AutoCloseable {
                         message.getMessageIdHex());
                 return;
             }
+        }
+        if (!verifySenderSeqs(block, "Proposal")) {
+            return;
         }
 
         byte[] blockHash = AppBlockCodec.blockHash(block);
@@ -475,6 +534,7 @@ final class AppChainEngine implements AutoCloseable {
     private void commitRound(FinalityCert cert) {
         PendingRound round = pendingRound;
         pendingRound = null;
+        deferredProposals.clear(); // height advances — held l1-ref deferrals are moot
         AppBlock finalBlock = round.block.withCert(cert);
         ledger.commitBlock(finalBlock, round.blockHash, finalBlock.stateRoot(), round.applied.batch);
         round.applied.closeBatchOnly();
@@ -535,6 +595,133 @@ final class AppChainEngine implements AutoCloseable {
         return group.containsAt(senderHex, height)
                 && message.getAuthProof() != null
                 && AppMessageSigner.verify(message.getAuthProof(), message.signedBodyBytes(), message.getSender());
+    }
+
+    /**
+     * Catch-up variant of the L1 ref check: certified blocks are already final,
+     * so only monotonicity (always) and local hash consistency (when the slot
+     * is within our observed window) are enforced. A ref ahead of the local L1
+     * view stops the batch — the next catch-up tick retries after L1 advances.
+     */
+    private boolean verifyCatchUpL1Ref(AppBlock block) {
+        if (config.l1StabilityDepth() <= 0 || block.l1Slot() <= 0) {
+            return true; // refs unused, or a block from a pre-l1-ref era
+        }
+        long prevSlot = ledger.block(ledger.tipHeight()).map(AppBlock::l1Slot).orElse(0L);
+        if (block.l1Slot() < prevSlot) {
+            log.warn("Catch-up block L1 ref moves backwards ({} < {}) at height {} — rejecting",
+                    block.l1Slot(), prevSlot, block.height());
+            return false;
+        }
+        L1RefValidator validator = l1RefValidator;
+        if (validator == null) {
+            return true;
+        }
+        L1RefVerdict verdict = validator.check(block.l1Slot(), block.l1BlockHash());
+        if (verdict == L1RefVerdict.MISMATCH) {
+            log.warn("Catch-up block L1 ref (slot {}) does not match our own L1 view at height {} — rejecting",
+                    block.l1Slot(), block.height());
+            return false;
+        }
+        if (verdict == L1RefVerdict.AHEAD) {
+            log.info("Catch-up block L1 ref (slot {}) ahead of local L1 view — pausing catch-up at height {}",
+                    block.l1Slot(), block.height());
+            return false;
+        }
+        return true;
+    }
+
+    /**
+     * Follower-side L1 reference verification (ADR 008.1 I1.3), active when
+     * {@code l1.stability-depth > 0}: the proposed {@code (l1Slot, l1BlockHash)}
+     * must be monotonic vs the previous block and present in this node's OWN
+     * stable L1 window. A ref ahead of the local view defers the proposal
+     * (bounded retry — the proposer may be slightly ahead); a hash mismatch or
+     * an in-window absent slot is a fabricated/rolled-back ref and is rejected.
+     *
+     * @return true to continue proposal processing; false = rejected or deferred
+     */
+    private boolean verifyProposalL1Ref(AppMessage envelope, AppBlock block) {
+        if (config.l1StabilityDepth() <= 0) {
+            return true; // chain runs without L1 refs
+        }
+        if (block.l1Slot() <= 0) {
+            log.warn("Proposal at height {} carries no L1 ref while l1.stability-depth={} — rejecting",
+                    block.height(), config.l1StabilityDepth());
+            return false;
+        }
+        long prevSlot = ledger.block(ledger.tipHeight()).map(AppBlock::l1Slot).orElse(0L);
+        if (block.l1Slot() < prevSlot) {
+            log.warn("Proposal L1 ref moves backwards ({} < {}) at height {} — rejecting",
+                    block.l1Slot(), prevSlot, block.height());
+            return false;
+        }
+        L1RefValidator validator = l1RefValidator;
+        L1RefVerdict verdict = validator != null
+                ? validator.check(block.l1Slot(), block.l1BlockHash())
+                : L1RefVerdict.UNKNOWN;
+        switch (verdict) {
+            case OK -> deferredProposals.remove(envelope.getMessageIdHex());
+            case MISMATCH -> {
+                log.warn("Proposal L1 ref (slot {}) does not match our own L1 view at height {} — "
+                        + "rejecting (fabricated or rolled-back reference)", block.l1Slot(), block.height());
+                deferredProposals.remove(envelope.getMessageIdHex());
+                return false;
+            }
+            case AHEAD -> {
+                long waitMs = Math.max(config.blockIntervalMs() * 2, 5_000);
+                long firstDeferred = deferredProposals.computeIfAbsent(
+                        envelope.getMessageIdHex(), id -> System.currentTimeMillis());
+                if (System.currentTimeMillis() - firstDeferred < waitMs) {
+                    log.debug("Proposal L1 ref (slot {}) ahead of local L1 view — deferring height {}",
+                            block.l1Slot(), block.height());
+                    executor.schedule(() -> doHandleConsensusMessage(envelope), 500, TimeUnit.MILLISECONDS);
+                } else {
+                    log.warn("Proposal L1 ref (slot {}) still ahead of local L1 view after {} ms — "
+                            + "giving up at height {} (proposer will re-propose)",
+                            block.l1Slot(), waitMs, block.height());
+                    deferredProposals.remove(envelope.getMessageIdHex());
+                }
+                return false;
+            }
+            case UNKNOWN -> {
+                log.warn("Proposal L1 ref (slot {}) is older than our observed L1 window — accepting on "
+                        + "monotonicity only (restart window caveat)", block.l1Slot());
+                deferredProposals.remove(envelope.getMessageIdHex());
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Consensus-visible sender-seq rule (ADR 008.1 I1.2, behind
+     * {@code message.enforce-sender-seq}): within a block, each sender's seqs
+     * must be strictly increasing and stay above the sender's finalized floor
+     * as of the parent block. Deterministic — every honest member re-derives
+     * the same floors from its own ledger.
+     */
+    private boolean verifySenderSeqs(AppBlock block, String context) {
+        if (!config.enforceSenderSeq()) {
+            return true;
+        }
+        Map<String, Long> senderFloor = new HashMap<>();
+        for (AppMessage message : block.messages()) {
+            if (message.getSenderSeq() <= 0) {
+                log.warn("{} contains message {} without a sender-seq — rejecting (enforcement on)",
+                        context, message.getMessageIdHex());
+                return false;
+            }
+            String senderHex = HexUtil.encodeHexString(message.getSender());
+            long floor = senderFloor.computeIfAbsent(senderHex,
+                    h -> ledger.senderSeq(message.getSender()));
+            if (message.getSenderSeq() <= floor) {
+                log.warn("{} contains stale/duplicate sender-seq {} from {} (floor {}) — rejecting",
+                        context, message.getSenderSeq(), senderHex, floor);
+                return false;
+            }
+            senderFloor.put(senderHex, message.getSenderSeq());
+        }
+        return true;
     }
 
     @Override

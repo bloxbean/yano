@@ -255,6 +255,12 @@ public class YanoProducer {
     @ConfigProperty(name = YanoPropertyKeys.AppChain.ANCHOR_METADATA_LABEL, defaultValue = "7014")
     long appChainAnchorMetadataLabel;
 
+    @ConfigProperty(name = YanoPropertyKeys.AppChain.ANCHOR_VALIDITY_SLOTS, defaultValue = "7200")
+    long appChainAnchorValiditySlots;
+
+    @ConfigProperty(name = YanoPropertyKeys.AppChain.ANCHOR_FALLBACK_FEE_LOVELACE, defaultValue = "300000")
+    long appChainAnchorFallbackFeeLovelace;
+
     @ConfigProperty(name = YanoPropertyKeys.AppChain.L1_STABILITY_DEPTH, defaultValue = "0")
     int appChainL1StabilityDepth;
 
@@ -266,6 +272,12 @@ public class YanoProducer {
 
     @ConfigProperty(name = YanoPropertyKeys.AppChain.RETENTION_KEEP_BLOCKS, defaultValue = "0")
     int appChainRetentionKeepBlocks;
+
+    @ConfigProperty(name = YanoPropertyKeys.AppChain.POOL_MAX_MESSAGES, defaultValue = "10000")
+    int appChainPoolMaxMessages;
+
+    @ConfigProperty(name = YanoPropertyKeys.AppChain.MESSAGE_ENFORCE_SENDER_SEQ, defaultValue = "false")
+    boolean appChainEnforceSenderSeq;
 
     @ConfigProperty(name = YanoPropertyKeys.AppChain.MAX_TTL_SECONDS, defaultValue = "3600")
     long appChainMaxTtlSeconds;
@@ -644,15 +656,21 @@ public class YanoProducer {
         globals.put(YanoPropertyKeys.AppChain.ANCHOR_EVERY_BLOCKS, appChainAnchorEveryBlocks);
         globals.put(YanoPropertyKeys.AppChain.ANCHOR_MAX_INTERVAL_MINUTES, appChainAnchorMaxIntervalMinutes);
         globals.put(YanoPropertyKeys.AppChain.ANCHOR_METADATA_LABEL, appChainAnchorMetadataLabel);
+        globals.put(YanoPropertyKeys.AppChain.ANCHOR_VALIDITY_SLOTS, appChainAnchorValiditySlots);
+        globals.put(YanoPropertyKeys.AppChain.ANCHOR_FALLBACK_FEE_LOVELACE, appChainAnchorFallbackFeeLovelace);
         globals.put(YanoPropertyKeys.AppChain.L1_STABILITY_DEPTH, appChainL1StabilityDepth);
         appChainWebhooks.ifPresent(v -> globals.put(YanoPropertyKeys.AppChain.WEBHOOKS, v));
         globals.put(YanoPropertyKeys.AppChain.RETENTION_ENABLED, appChainRetentionEnabled);
         globals.put(YanoPropertyKeys.AppChain.RETENTION_KEEP_BLOCKS, appChainRetentionKeepBlocks);
-        // Dynamic plugin config (yano.app-chain.sinks.* and yano.app-chain.zk.*)
-        // is copied verbatim so sink factories and the ZK verifier plugin can be
-        // enabled from node-app config, not only in tests.
+        globals.put(YanoPropertyKeys.AppChain.POOL_MAX_MESSAGES, appChainPoolMaxMessages);
+        globals.put(YanoPropertyKeys.AppChain.MESSAGE_ENFORCE_SENDER_SEQ, appChainEnforceSenderSeq);
+        // Dynamic plugin config (yano.app-chain.sinks.*, yano.app-chain.zk.* and
+        // yano.app-chain.machines.*) is copied verbatim so sink factories, the ZK
+        // verifier plugin and stdlib machine settings can be enabled from node-app
+        // config, not only in tests.
         forwardDynamicKeys("yano.app-chain.sinks.", globals);
         forwardDynamicKeys("yano.app-chain.zk.", globals);
+        forwardDynamicKeys("yano.app-chain.machines.", globals);
         if (!appChainList.isEmpty() && appChainEnabled) {
             globals.put(YanoPropertyKeys.AppChain.CHAINS, appChainList);
             log.info("App-chain multi-chain config: {} chain(s)", appChainList.size());
@@ -813,8 +831,10 @@ public class YanoProducer {
                 "max-message-bytes", "max-ttl-seconds", "default-ttl-seconds",
                 "anchor.enabled", "anchor.signing-key", "anchor.every-blocks",
                 "anchor.max-interval-minutes", "anchor.metadata-label",
+                "anchor.validity-slots", "anchor.fallback-fee-lovelace",
                 "l1.stability-depth", "webhooks",
-                "retention.enabled", "retention.keep-blocks"
+                "retention.enabled", "retention.keep-blocks",
+                "pool.max-messages", "message.enforce-sender-seq"
         };
         for (int i = 0; i < 50; i++) {
             String prefix = "yano.app-chain.chains[" + i + "].";
@@ -827,9 +847,10 @@ public class YanoProducer {
                 config.getOptionalValue(prefix + suffix, String.class)
                         .ifPresent(value -> chain.put(suffix, value));
             }
-            // Dynamic plugin keys: chains[i].sinks.* and chains[i].zk.* -> suffix
+            // Dynamic plugin keys: chains[i].{sinks,zk,machines}.* -> suffix
             for (String property : config.getPropertyNames()) {
-                if (property.startsWith(prefix + "sinks.") || property.startsWith(prefix + "zk.")) {
+                if (property.startsWith(prefix + "sinks.") || property.startsWith(prefix + "zk.")
+                        || property.startsWith(prefix + "machines.")) {
                     config.getOptionalValue(property, String.class)
                             .ifPresent(value -> chain.put(property.substring(prefix.length()), value));
                 }

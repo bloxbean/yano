@@ -525,6 +525,10 @@ public final class YanoPropertyKeys {
         public static final String ANCHOR_EVERY_BLOCKS = "yano.app-chain.anchor.every-blocks";
         public static final String ANCHOR_MAX_INTERVAL_MINUTES = "yano.app-chain.anchor.max-interval-minutes";
         public static final String ANCHOR_METADATA_LABEL = "yano.app-chain.anchor.metadata-label";
+        /** Anchor tx TTL: current L1 slot + this many slots (008.1 I1.5). */
+        public static final String ANCHOR_VALIDITY_SLOTS = "yano.app-chain.anchor.validity-slots";
+        /** Anchor tx fee when protocol parameters are unavailable. */
+        public static final String ANCHOR_FALLBACK_FEE_LOVELACE = "yano.app-chain.anchor.fallback-fee-lovelace";
         /** Depth (L1 blocks) of the stable L1 reference in app blocks; 0 = disabled. */
         public static final String L1_STABILITY_DEPTH = "yano.app-chain.l1.stability-depth";
         /** Comma-separated webhook URLs receiving finalized blocks (at-least-once, cursored). */
@@ -533,6 +537,10 @@ public final class YanoPropertyKeys {
         public static final String RETENTION_ENABLED = "yano.app-chain.retention.enabled";
         /** Keep bodies of at least this many most-recent blocks regardless of anchor. */
         public static final String RETENTION_KEEP_BLOCKS = "yano.app-chain.retention.keep-blocks";
+        /** Pending-pool capacity; full pool = 429 on submit, counted drops inbound. */
+        public static final String POOL_MAX_MESSAGES = "yano.app-chain.pool.max-messages";
+        /** Consensus-visible sender-seq enforcement (008.1 I1.2); default false. */
+        public static final String MESSAGE_ENFORCE_SENDER_SEQ = "yano.app-chain.message.enforce-sender-seq";
         /** Opt-in API-key authentication for the /app-chain REST surface. */
         public static final String API_AUTH_ENABLED = "yano.app-chain.api.auth.enabled";
         /**

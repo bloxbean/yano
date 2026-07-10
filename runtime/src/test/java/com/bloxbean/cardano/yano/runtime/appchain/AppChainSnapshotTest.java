@@ -92,9 +92,88 @@ class AppChainSnapshotTest {
             // Blocks are byte-identical
             assertThat(restored.block(sourceTip).orElseThrow().stateRoot())
                     .isEqualTo(source.block(sourceTip).orElseThrow().stateRoot());
+
+            // Manifest was verified pre-open and marked (008.1 I1.7)
+            assertThat(restoreBase.resolve("snap-chain").resolve(SnapshotManifest.VERIFIED_MARKER))
+                    .exists();
         } finally {
             restored.stop();
         }
+    }
+
+    @Test
+    void tamperedSnapshot_refusesToStart() throws Exception {
+        AppChainConfig config = startSourceAndFinalize();
+        Path snapshotDir = tempDir.resolve("snapshot-t");
+        source.snapshot(snapshotDir.toString());
+
+        Path restoreBase = tempDir.resolve("restore-t");
+        java.nio.file.Files.createDirectories(restoreBase);
+        Path ledgerDir = restoreBase.resolve("snap-chain");
+        copyDir(snapshotDir, ledgerDir);
+
+        // Flip one byte in the first sst/log file covered by the manifest
+        Path victim = java.nio.file.Files.walk(ledgerDir)
+                .filter(java.nio.file.Files::isRegularFile)
+                .filter(p -> !p.getFileName().toString().startsWith("snapshot-manifest"))
+                .findFirst().orElseThrow();
+        byte[] bytes = java.nio.file.Files.readAllBytes(victim);
+        bytes[bytes.length / 2] ^= 0x01;
+        java.nio.file.Files.write(victim, bytes);
+
+        AppChainSubsystem restored = new AppChainSubsystem(config, 42, null, null,
+                restoreBase.toString(), null, log);
+        org.assertj.core.api.Assertions.assertThatThrownBy(restored::start)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("do not match the manifest");
+    }
+
+    @Test
+    void manifestSignedByNonMember_refusesToStart() throws Exception {
+        AppChainConfig config = startSourceAndFinalize();
+        Path snapshotDir = tempDir.resolve("snapshot-n");
+        source.snapshot(snapshotDir.toString());
+
+        Path restoreBase = tempDir.resolve("restore-n");
+        java.nio.file.Files.createDirectories(restoreBase);
+        Path ledgerDir = restoreBase.resolve("snap-chain");
+        copyDir(snapshotDir, ledgerDir);
+
+        // Re-sign the manifest with a key that is NOT in the member set
+        byte[] rogueSeed = seed(151);
+        AppMessageSigner rogue = new AppMessageSigner(HexUtil.encodeHexString(rogueSeed));
+        byte[] manifestBytes = java.nio.file.Files.readAllBytes(
+                ledgerDir.resolve(SnapshotManifest.MANIFEST_FILE));
+        String rogueManifest = new String(manifestBytes, StandardCharsets.UTF_8)
+                .replaceAll("\"signerKey\" : \"[0-9a-f]+\"",
+                        "\"signerKey\" : \"" + rogue.publicKeyHex() + "\"");
+        byte[] rogueBytes = rogueManifest.getBytes(StandardCharsets.UTF_8);
+        java.nio.file.Files.write(ledgerDir.resolve(SnapshotManifest.MANIFEST_FILE), rogueBytes);
+        java.nio.file.Files.writeString(ledgerDir.resolve(SnapshotManifest.SIG_FILE),
+                HexUtil.encodeHexString(rogue.sign(rogueBytes)));
+
+        AppChainSubsystem restored = new AppChainSubsystem(config, 42, null, null,
+                restoreBase.toString(), null, log);
+        org.assertj.core.api.Assertions.assertThatThrownBy(restored::start)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("not a trusted member key");
+    }
+
+    private AppChainConfig startSourceAndFinalize() throws Exception {
+        String pubA = HexUtil.encodeHexString(KeyGenUtil.getPublicKeyFromPrivateKey(KEY_A));
+        AppChainConfig config = AppChainConfig.builder("snap-chain")
+                .signingKeyHex(HexUtil.encodeHexString(KEY_A))
+                .memberKeysHex(Set.of(pubA))
+                .proposerKeyHex(pubA)
+                .threshold(1)
+                .blockIntervalMs(300)
+                .build();
+        source = new AppChainSubsystem(config, 42, null, null,
+                tempDir.resolve("source").toString(), null, log);
+        source.start();
+        String id = source.submit("t", "data".getBytes(StandardCharsets.UTF_8));
+        awaitTrue("finalized", () -> source.messageHeight(HexUtil.decodeHexString(id)).isPresent());
+        return config;
     }
 
     private static void copyDir(Path src, Path dest) throws Exception {

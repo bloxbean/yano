@@ -13,8 +13,18 @@ import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
  * <p>
  * Determinism contract: {@link #apply} is invoked exactly once per finalized
  * block, in height order, on every member node, and must produce identical
- * writes everywhere (no wall-clock, randomness, or external I/O). All writes
- * commit atomically with the block and the state root.
+ * writes everywhere. All writes commit atomically with the block and the
+ * state root.
+ * <p>
+ * <b>Forbidden inside {@code apply()}</b> — a nondeterministic machine stalls
+ * its chain (followers reject the state root): wall-clock time
+ * ({@code System.currentTimeMillis}, {@code Instant.now} — use
+ * {@code block.timestamp()}), randomness, network or file I/O,
+ * environment/system-property reads, iteration over unordered collections
+ * ({@code HashMap}/{@code HashSet} — use ordered ones), and locale/charset
+ * dependent or library-default serialization. Verify custom machines with the
+ * conformance harness ({@code StateMachineConformance} in yano-runtime)
+ * before deploying (ADR app-layer/008.1 I1.6).
  */
 public interface AppStateMachine {
 
