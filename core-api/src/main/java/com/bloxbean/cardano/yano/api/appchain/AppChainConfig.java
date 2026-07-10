@@ -36,6 +36,15 @@ import java.util.Set;
  *                          (headers/roots/certs/ids kept — proofs stay valid)
  * @param retentionKeepBlocks keep bodies of at least this many most-recent
  *                          blocks regardless of the anchor horizon
+ * @param poolMaxMessages   capacity of the pending-message pool; a full pool
+ *                          rejects local submissions (429) and drops inbound
+ *                          gossip (counted) — ADR app-layer/008.1 I1.1
+ * @param enforceSenderSeq  consensus-visible sender-seq enforcement (ADR
+ *                          app-layer/008.1 I1.2): followers reject blocks whose
+ *                          per-sender seqs are not strictly increasing above the
+ *                          finalized floor. Default false this release (old
+ *                          ledgers/catch-up stay compatible); admission-side
+ *                          replay rejection is always on
  */
 public record AppChainConfig(String chainId,
                              String signingKeyHex,
@@ -55,6 +64,8 @@ public record AppChainConfig(String chainId,
                              List<String> webhookUrls,
                              boolean retentionEnabled,
                              int retentionKeepBlocks,
+                             int poolMaxMessages,
+                             boolean enforceSenderSeq,
                              Map<String, String> pluginSettings) {
 
     public static final int DEFAULT_MAX_MESSAGE_BYTES = 65536;
@@ -63,6 +74,22 @@ public record AppChainConfig(String chainId,
     public static final long DEFAULT_BLOCK_INTERVAL_MS = 2000;
     public static final int DEFAULT_MAX_BLOCK_MESSAGES = 500;
     public static final String DEFAULT_STATE_MACHINE = "ordered-log";
+    public static final int DEFAULT_POOL_MAX_MESSAGES = 10_000;
+
+    /** Pre-008.1 signature (no pool capacity / seq enforcement) — kept for source compatibility. */
+    public AppChainConfig(String chainId, String signingKeyHex, Set<String> memberKeysHex,
+                          List<AppPeer> peers, int maxMessageBytes, long maxTtlSeconds,
+                          long defaultTtlSeconds, String proposerKeyHex, int threshold,
+                          long blockIntervalMs, int maxBlockMessages, String stateMachineId,
+                          String ledgerPath, AnchorConfig anchor, int l1StabilityDepth,
+                          List<String> webhookUrls, boolean retentionEnabled,
+                          int retentionKeepBlocks, Map<String, String> pluginSettings) {
+        this(chainId, signingKeyHex, memberKeysHex, peers, maxMessageBytes, maxTtlSeconds,
+                defaultTtlSeconds, proposerKeyHex, threshold, blockIntervalMs, maxBlockMessages,
+                stateMachineId, ledgerPath, anchor, l1StabilityDepth, webhookUrls,
+                retentionEnabled, retentionKeepBlocks, DEFAULT_POOL_MAX_MESSAGES, false,
+                pluginSettings);
+    }
 
     public AppChainConfig {
         Objects.requireNonNull(chainId, "chainId");
@@ -89,6 +116,11 @@ public record AppChainConfig(String chainId,
         webhookUrls = webhookUrls != null ? List.copyOf(webhookUrls) : List.of();
         if (retentionKeepBlocks < 0)
             retentionKeepBlocks = 0;
+        if (poolMaxMessages <= 0)
+            poolMaxMessages = DEFAULT_POOL_MAX_MESSAGES;
+        if (poolMaxMessages < maxBlockMessages)
+            throw new IllegalArgumentException("pool.max-messages (" + poolMaxMessages
+                    + ") must be >= block.max-messages (" + maxBlockMessages + ")");
         pluginSettings = pluginSettings != null ? Map.copyOf(pluginSettings) : Map.of();
     }
 
@@ -116,6 +148,8 @@ public record AppChainConfig(String chainId,
         private List<String> webhookUrls = List.of();
         private boolean retentionEnabled;
         private int retentionKeepBlocks;
+        private int poolMaxMessages = DEFAULT_POOL_MAX_MESSAGES;
+        private boolean enforceSenderSeq;
         private Map<String, String> pluginSettings = Map.of();
 
         private Builder(String chainId) {
@@ -139,6 +173,8 @@ public record AppChainConfig(String chainId,
         public Builder webhookUrls(List<String> value) { this.webhookUrls = value; return this; }
         public Builder retentionEnabled(boolean value) { this.retentionEnabled = value; return this; }
         public Builder retentionKeepBlocks(int value) { this.retentionKeepBlocks = value; return this; }
+        public Builder poolMaxMessages(int value) { this.poolMaxMessages = value; return this; }
+        public Builder enforceSenderSeq(boolean value) { this.enforceSenderSeq = value; return this; }
         public Builder pluginSettings(Map<String, String> value) { this.pluginSettings = value; return this; }
 
         public AppChainConfig build() {
@@ -146,7 +182,8 @@ public record AppChainConfig(String chainId,
                     maxMessageBytes, maxTtlSeconds, defaultTtlSeconds, proposerKeyHex,
                     threshold, blockIntervalMs, maxBlockMessages, stateMachineId,
                     ledgerPath, anchor, l1StabilityDepth, webhookUrls,
-                    retentionEnabled, retentionKeepBlocks, pluginSettings);
+                    retentionEnabled, retentionKeepBlocks, poolMaxMessages, enforceSenderSeq,
+                    pluginSettings);
         }
     }
 
@@ -167,12 +204,27 @@ public record AppChainConfig(String chainId,
      * @param everyBlocks        anchor when this many new app blocks finalized
      * @param maxIntervalMinutes anchor at least this often while blocks are pending
      * @param metadataLabel      tx metadata label (default 7014)
+     * @param validitySlots      anchor tx TTL: current L1 slot + this (008.1 I1.5)
+     * @param fallbackFeeLovelace fee used when protocol parameters are unavailable
      */
     public record AnchorConfig(boolean enabled,
                                String signingKeyHex,
                                long everyBlocks,
                                long maxIntervalMinutes,
-                               long metadataLabel) {
+                               long metadataLabel,
+                               long validitySlots,
+                               long fallbackFeeLovelace) {
+
+        public static final long DEFAULT_VALIDITY_SLOTS = 7_200;
+        public static final long DEFAULT_FALLBACK_FEE_LOVELACE = 300_000;
+
+        /** Pre-008.1 signature — kept for source compatibility. */
+        public AnchorConfig(boolean enabled, String signingKeyHex, long everyBlocks,
+                            long maxIntervalMinutes, long metadataLabel) {
+            this(enabled, signingKeyHex, everyBlocks, maxIntervalMinutes, metadataLabel,
+                    DEFAULT_VALIDITY_SLOTS, DEFAULT_FALLBACK_FEE_LOVELACE);
+        }
+
         public AnchorConfig {
             if (enabled && (signingKeyHex == null || signingKeyHex.isBlank()))
                 throw new IllegalArgumentException(
@@ -183,6 +235,10 @@ public record AppChainConfig(String chainId,
                 maxIntervalMinutes = 60;
             if (metadataLabel <= 0)
                 metadataLabel = 7014;
+            if (validitySlots <= 0)
+                validitySlots = DEFAULT_VALIDITY_SLOTS;
+            if (fallbackFeeLovelace <= 0)
+                fallbackFeeLovelace = DEFAULT_FALLBACK_FEE_LOVELACE;
         }
     }
 

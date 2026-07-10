@@ -57,7 +57,12 @@ public final class BalancesStateMachine implements AppStateMachine {
     }
 
     public BalancesStateMachine(String minterHex) {
-        this.minterHex = minterHex != null ? minterHex.toLowerCase() : "";
+        String normalized = minterHex != null ? minterHex.trim().toLowerCase() : "";
+        if (!normalized.isEmpty() && !normalized.matches("[0-9a-f]{64}")) {
+            throw new IllegalArgumentException(
+                    "machines.balances.minter must be a 32-byte hex Ed25519 member public key: " + minterHex);
+        }
+        this.minterHex = normalized;
     }
 
     @Override

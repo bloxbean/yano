@@ -27,6 +27,11 @@ import java.util.Optional;
  * <p>
  * State entry (CBOR): {@code key → [owner(bstr .size 32), value(bstr)]}.
  * <p>
+ * Optional value-format check (ADR app-layer/008.1 I1.4, config
+ * {@code machines.kv-registry.value-format = raw | cbor | utf8}): a PUT whose
+ * value does not conform is rejected at admission and is a deterministic
+ * no-op in {@link #apply} (consensus-enforced, same posture as ownership).
+ * <p>
  * Use cases: token/metadata registries, DID documents, allow/deny lists,
  * shared configuration.
  */
@@ -37,6 +42,38 @@ public final class KvRegistryStateMachine implements AppStateMachine {
     public static final int OP_DELETE = 1;
 
     private static final Logger log = LoggerFactory.getLogger(KvRegistryStateMachine.class);
+
+    /** Optional structural constraint on PUT values. */
+    public enum ValueFormat {
+        /** No constraint (default). */
+        RAW,
+        /** Value must be a single well-formed CBOR item. */
+        CBOR,
+        /** Value must be valid UTF-8 text. */
+        UTF8;
+
+        public static ValueFormat parse(String value) {
+            if (value == null || value.isBlank()) {
+                return RAW;
+            }
+            try {
+                return valueOf(value.trim().toUpperCase(java.util.Locale.ROOT));
+            } catch (IllegalArgumentException e) {
+                throw new IllegalArgumentException(
+                        "machines.kv-registry.value-format must be raw, cbor or utf8: " + value);
+            }
+        }
+    }
+
+    private final ValueFormat valueFormat;
+
+    public KvRegistryStateMachine() {
+        this(ValueFormat.RAW);
+    }
+
+    public KvRegistryStateMachine(ValueFormat valueFormat) {
+        this.valueFormat = valueFormat != null ? valueFormat : ValueFormat.RAW;
+    }
 
     @Override
     public String id() {
@@ -50,10 +87,36 @@ public final class KvRegistryStateMachine implements AppStateMachine {
             if (command.op() == OP_PUT && (command.value() == null || command.value().length == 0)) {
                 return AdmissionResult.reject("PUT requires a value");
             }
+            if (command.op() == OP_PUT && !conforms(command.value())) {
+                return AdmissionResult.reject("PUT value does not conform to value-format " + valueFormat);
+            }
             return AdmissionResult.accept();
         } catch (Exception e) {
             return AdmissionResult.reject("Malformed kv-registry command: expected cbor [op, key, value]");
         }
+    }
+
+    private boolean conforms(byte[] value) {
+        return switch (valueFormat) {
+            case RAW -> true;
+            case CBOR -> {
+                try {
+                    CborSerializationUtil.deserializeOne(value);
+                    yield true;
+                } catch (Exception e) {
+                    yield false;
+                }
+            }
+            case UTF8 -> {
+                try {
+                    java.nio.charset.StandardCharsets.UTF_8.newDecoder()
+                            .decode(java.nio.ByteBuffer.wrap(value));
+                    yield true;
+                } catch (java.nio.charset.CharacterCodingException e) {
+                    yield false;
+                }
+            }
+        };
     }
 
     @Override
@@ -77,6 +140,11 @@ public final class KvRegistryStateMachine implements AppStateMachine {
                 }
             }
             if (command.op() == OP_PUT) {
+                if (!conforms(command.value())) {
+                    log.debug("kv-registry: non-conforming value rejected (block {}, format {})",
+                            block.height(), valueFormat);
+                    continue; // deterministic no-op — consensus-enforced format check
+                }
                 writer.put(command.key(), encodeEntry(sender, command.value()));
             } else if (command.op() == OP_DELETE && existing.isPresent()) {
                 writer.delete(command.key());

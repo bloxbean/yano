@@ -85,8 +85,9 @@ class AppChainKeyRotationTest {
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("proposer");
         // Guard: can't drop below threshold (3 members, threshold 2 → removing ok;
-        // then removing another would leave 1 < 2)
-        node.removeMember(pubB);
+        // then removing another would leave 1 < 2). Whitespace/case variants
+        // normalize like addMember (ADR 008.1 I1.4).
+        node.removeMember("  " + pubB.toUpperCase(java.util.Locale.ROOT) + "  ");
         assertThat(node.members()).containsExactlyInAnyOrder(pubA, pubC);
         assertThatThrownBy(() -> node.removeMember(pubC))
                 .isInstanceOf(IllegalArgumentException.class)
@@ -95,6 +96,10 @@ class AppChainKeyRotationTest {
         assertThatThrownBy(() -> node.removeMember(pubB))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("Not a member");
+        // Guard: malformed key rejected with the same validation as addMember
+        assertThatThrownBy(() -> node.removeMember("zz11"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("32-byte hex");
 
         // Back to a workable single-node setup and prove the chain still runs
         node.setThreshold(1);

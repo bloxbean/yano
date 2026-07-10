@@ -512,6 +512,7 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                     appChainConfig, protocolMagic, eventBus, null, rocksPath + "/app-chain",
                     Thread.currentThread().getContextClassLoader(), log);
             subsystem.wireL1(this::submitTransaction, this::getUtxoState);
+            subsystem.wireAnchorFees(this::anchorFeeParams);
             subsystems.add(subsystem);
         }
         return new com.bloxbean.cardano.yano.runtime.appchain.AppChainManager(subsystems, log);
@@ -574,13 +575,40 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                                 stringOf(get.apply("anchor.signing-key"), ""),
                                 parseLong(get.apply("anchor.every-blocks"), 10),
                                 parseLong(get.apply("anchor.max-interval-minutes"), 60),
-                                parseLong(get.apply("anchor.metadata-label"), 7014))
+                                parseLong(get.apply("anchor.metadata-label"), 7014),
+                                parseLong(get.apply("anchor.validity-slots"),
+                                        com.bloxbean.cardano.yano.api.appchain.AppChainConfig.AnchorConfig.DEFAULT_VALIDITY_SLOTS),
+                                parseLong(get.apply("anchor.fallback-fee-lovelace"),
+                                        com.bloxbean.cardano.yano.api.appchain.AppChainConfig.AnchorConfig.DEFAULT_FALLBACK_FEE_LOVELACE))
                         : null,
                 (int) parseLong(get.apply("l1.stability-depth"), 0),
                 webhookUrls,
                 booleanOf(get.apply("retention.enabled"), false),
                 (int) parseLong(get.apply("retention.keep-blocks"), 0),
-                pluginSettings(collectPrefixed, "sinks.", "zk."));
+                (int) parseLong(get.apply("pool.max-messages"),
+                        com.bloxbean.cardano.yano.api.appchain.AppChainConfig.DEFAULT_POOL_MAX_MESSAGES),
+                booleanOf(get.apply("message.enforce-sender-seq"), false),
+                pluginSettings(collectPrefixed, "sinks.", "zk.", "machines."));
+    }
+
+    /**
+     * Current linear-fee protocol params for anchor tx pricing (ADR 008.1
+     * I1.5); null when unavailable (the anchor falls back to its configured
+     * fee). Resolves the ledger-tracked params for the current epoch, or the
+     * static/genesis params on nodes without epoch-param tracking.
+     */
+    private com.bloxbean.cardano.yano.runtime.appchain.AppChainSubsystem.AnchorFeeParams anchorFeeParams() {
+        try {
+            int epoch = epochNonceState != null ? epochNonceState.getCurrentEpoch() : 0;
+            var params = getProtocolParameters(Math.max(epoch, 0)).orElse(null);
+            if (params != null && params.minFeeA() != null && params.minFeeB() != null) {
+                return new com.bloxbean.cardano.yano.runtime.appchain.AppChainSubsystem.AnchorFeeParams(
+                        params.minFeeA(), params.minFeeB());
+            }
+        } catch (Exception e) {
+            log.debug("Anchor fee params unavailable: {}", e.toString());
+        }
+        return null;
     }
 
     /** Union of the dynamic plugin config sub-maps under the given prefixes. */
@@ -3382,6 +3410,11 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
         Point remotePoint = remoteTip != null ? remoteTip.getPoint() : null;
         RelayConnectionSnapshot relayConnectionSnapshot = relayConnectionManager.snapshot();
         PeerGovernorSnapshot peerGovernorSnapshot = syncSubsystem.peerGovernorSnapshot();
+        // With client sync disabled (e.g. a standalone devnet block producer) the
+        // configured default remote is never contacted — reporting it as the
+        // "active peer" is misleading (status page showed the preprod relay on a
+        // devnet). Report the mode explicitly and no active peer instead.
+        boolean clientSyncEnabled = config.isClientEnabled();
 
         return NodeStatus.builder()
                 .running(isRunning())
@@ -3403,13 +3436,15 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 .runtimeDegradedOperation(maintenanceDegradation != null ? maintenanceDegradation.operation() : null)
                 .runtimeDegradedAtMillis(maintenanceDegradation != null ? maintenanceDegradation.timestampMillis() : null)
                 .peerName(peerStatus != null ? peerStatus.peerName() : null)
-                .upstreamMode(upstreamStatus.mode().configValue())
+                .upstreamMode(clientSyncEnabled
+                        ? upstreamStatus.mode().configValue()
+                        : "disabled (local producer)")
                 .upstreamConfiguredPeerCount(upstreamStatus.configuredPeerCount())
                 .upstreamHotPeerCount(upstreamStatus.hotPeerCount())
                 .upstreamObserverPeerCount(upstreamStatus.observerPeerCount())
                 .upstreamKnownPeerCount(upstreamStatus.knownPeerCount())
                 .upstreamCandidateHeaderCount(upstreamStatus.candidateHeaderCount())
-                .upstreamActivePeer(upstreamStatus.activePeerName())
+                .upstreamActivePeer(clientSyncEnabled ? upstreamStatus.activePeerName() : null)
                 .upstreamTxForwarding(upstreamStatus.txForwarding())
                 .upstreamMultiPeerObservationOnly(upstreamStatus.multiPeerObservationOnly())
                 .upstreamDiscoveryRunning(upstreamStatus.discoveryRunning())

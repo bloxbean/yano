@@ -36,14 +36,23 @@ import java.util.function.Supplier;
  * anchor back in pending — the app chain itself never rolls back.
  */
 final class AnchorService {
-    private static final long ANCHOR_FEE_LOVELACE = 300_000;
-    private static final long MIN_INPUT_LOVELACE = 1_500_000;
+    private static final long MIN_INPUT_LOVELACE = 1_000_000;
+    /** Change output must stay above the L1 min-UTxO for a plain ADA output. */
+    private static final long MIN_CHANGE_LOVELACE = 1_000_000;
+    private static final int MAX_INPUTS = 10;
+    /** Same CBOR uint width class as any realistic final fee (4-byte). */
+    private static final long FEE_PLACEHOLDER = 1_000_000;
     private static final long RESUBMIT_AFTER_MS = 120_000;
 
     private static final String META_LAST_ANCHORED = "anchor_last_height";
     private static final String META_ANCHOR_BLOCK_HASH = "anchor_last_block_hash";
     private static final String META_ANCHOR_TX = "anchor_last_tx";
     private static final String META_ANCHOR_SLOT = "anchor_last_slot";
+    private static final String META_ANCHOR_FROM = "anchor_last_from_height";
+
+    /** Linear fee parameters from the node's current protocol params (I1.5). */
+    record FeeParams(long minFeeA, long minFeeB) {
+    }
 
     private final String chainId;
     private final AppChainConfig.AnchorConfig anchorConfig;
@@ -52,6 +61,10 @@ final class AnchorService {
     private final Supplier<UtxoState> utxoStateSupplier;
     private final LongFunction<AppBlock> blockByHeight;
     private final Supplier<Long> tipHeightSupplier;
+    /** Current linear-fee params; null (or null value) = use the configured fallback fee. */
+    private volatile Supplier<FeeParams> feeParamsSupplier;
+    /** Newest observed L1 slot for the tx validity interval; null/0 = no TTL. */
+    private volatile Supplier<Long> currentSlotSupplier;
     private final Network network;
     private final SecretKey anchorKey;
     private final Address anchorAddress;
@@ -98,6 +111,11 @@ final class AnchorService {
         }
         this.log = log;
         log.info("App-chain anchor wallet address: {}", anchorAddress.getAddress());
+    }
+
+    void wireFees(Supplier<FeeParams> feeParams, Supplier<Long> currentSlot) {
+        this.feeParamsSupplier = feeParams;
+        this.currentSlotSupplier = currentSlot;
     }
 
     String anchorAddress() {
@@ -190,15 +208,65 @@ final class AnchorService {
         }
     }
 
+    /**
+     * Production-grade anchor tx construction (ADR 008.1 I1.5): linear fee from
+     * the node's protocol parameters (size-based, two-pass — the configured
+     * fallback fee applies only when params are unavailable), multi-input
+     * selection until fee + min-change is covered, a min-UTxO guard on the
+     * change output, and a validity interval so a resubmitted anchor can never
+     * race a late-landing original.
+     */
     private Transaction buildAnchorTx(long fromHeight, long toHeight,
                                       byte[] blockHash, byte[] stateRoot) throws Exception {
         UtxoState utxoState = utxoStateSupplier.get();
         if (utxoState == null) {
             throw new IllegalStateException("UTXO state unavailable — cannot select anchor inputs");
         }
-        com.bloxbean.cardano.yano.api.utxo.model.Utxo input = selectInput(utxoState);
-        long inputLovelace = input.lovelace().longValue();
+        List<com.bloxbean.cardano.yano.api.utxo.model.Utxo> candidates = usableUtxos(utxoState);
+        if (candidates.isEmpty()) {
+            throw new IllegalStateException("No usable UTxO (pure ADA, >= " + MIN_INPUT_LOVELACE
+                    + " lovelace) at anchor address " + anchorAddress.getAddress()
+                    + " — fund the anchor wallet");
+        }
 
+        Supplier<FeeParams> paramsSupplier = feeParamsSupplier;
+        FeeParams feeParams = paramsSupplier != null ? paramsSupplier.get() : null;
+        Supplier<Long> slotSupplier = currentSlotSupplier;
+        Long currentSlot = slotSupplier != null ? slotSupplier.get() : null;
+        long ttl = currentSlot != null && currentSlot > 0
+                ? currentSlot + anchorConfig.validitySlots() : 0;
+
+        // Grow the input set until (size-based) fee + min-change is covered
+        for (int count = 1; count <= Math.min(MAX_INPUTS, candidates.size()); count++) {
+            List<com.bloxbean.cardano.yano.api.utxo.model.Utxo> inputs = candidates.subList(0, count);
+            long sum = inputs.stream().mapToLong(u -> u.lovelace().longValue()).sum();
+
+            long fee;
+            if (feeParams != null) {
+                // Pass 1: measure the signed tx with a placeholder fee of the
+                // same CBOR width class, then price it linearly
+                Transaction draft = assembleAnchorTx(inputs, sum, FEE_PLACEHOLDER, ttl,
+                        fromHeight, toHeight, blockHash, stateRoot);
+                int size = draft.serialize().length;
+                fee = feeParams.minFeeA() * size + feeParams.minFeeB();
+            } else {
+                fee = anchorConfig.fallbackFeeLovelace();
+            }
+
+            if (sum >= fee + MIN_CHANGE_LOVELACE) {
+                return assembleAnchorTx(inputs, sum, fee, ttl,
+                        fromHeight, toHeight, blockHash, stateRoot);
+            }
+        }
+        throw new IllegalStateException("Anchor wallet balance cannot cover the anchor fee plus a "
+                + "min-UTxO change output (need fee + " + MIN_CHANGE_LOVELACE + " lovelace across <= "
+                + MAX_INPUTS + " inputs) at " + anchorAddress.getAddress() + " — fund the anchor wallet");
+    }
+
+    private Transaction assembleAnchorTx(List<com.bloxbean.cardano.yano.api.utxo.model.Utxo> inputs,
+                                         long inputSum, long fee, long ttl,
+                                         long fromHeight, long toHeight,
+                                         byte[] blockHash, byte[] stateRoot) throws Exception {
         CBORMetadataMap payload = new CBORMetadataMap();
         payload.put("v", BigInteger.ONE);
         payload.put("chain", chainId);
@@ -212,14 +280,17 @@ final class AnchorService {
         AuxiliaryData auxiliaryData = AuxiliaryData.builder().metadata(metadata).build();
 
         TransactionBody body = TransactionBody.builder()
-                .inputs(List.of(new TransactionInput(input.outpoint().txHash(), input.outpoint().index())))
+                .inputs(inputs.stream()
+                        .map(u -> new TransactionInput(u.outpoint().txHash(), u.outpoint().index()))
+                        .toList())
                 .outputs(List.of(TransactionOutput.builder()
                         .address(anchorAddress.getAddress())
                         .value(Value.builder()
-                                .coin(BigInteger.valueOf(inputLovelace - ANCHOR_FEE_LOVELACE))
+                                .coin(BigInteger.valueOf(inputSum - fee))
                                 .build())
                         .build()))
-                .fee(BigInteger.valueOf(ANCHOR_FEE_LOVELACE))
+                .fee(BigInteger.valueOf(fee))
+                .ttl(ttl)
                 .auxiliaryDataHash(auxiliaryData.getAuxiliaryDataHash())
                 .build();
 
@@ -231,17 +302,12 @@ final class AnchorService {
         return TransactionSigner.INSTANCE.sign(tx, anchorKey);
     }
 
-    private com.bloxbean.cardano.yano.api.utxo.model.Utxo selectInput(UtxoState utxoState) {
-        List<com.bloxbean.cardano.yano.api.utxo.model.Utxo> utxos =
-                utxoState.getUtxosByAddress(anchorAddress.getAddress(), 1, 50);
-        return utxos.stream()
+    private List<com.bloxbean.cardano.yano.api.utxo.model.Utxo> usableUtxos(UtxoState utxoState) {
+        return utxoState.getUtxosByAddress(anchorAddress.getAddress(), 1, 50).stream()
                 .filter(u -> u.lovelace() != null && u.lovelace().longValue() >= MIN_INPUT_LOVELACE)
                 // pure-lovelace outputs only; the anchor wallet is expected to hold ADA only
                 .filter(u -> u.assets() == null || u.assets().isEmpty())
-                .findFirst()
-                .orElseThrow(() -> new IllegalStateException(
-                        "No usable UTxO (>= " + MIN_INPUT_LOVELACE + " lovelace) at anchor address "
-                                + anchorAddress.getAddress() + " — fund the anchor wallet"));
+                .toList();
     }
 
     /**
@@ -256,6 +322,9 @@ final class AnchorService {
         }
         pending = null;
         ledger.metaPutLong(META_LAST_ANCHORED, current.toHeight);
+        // Range start of the last confirmed anchor — the precise rewind target
+        // when an L1 rollback un-confirms it (008.1 I1.5)
+        ledger.metaPutLong(META_ANCHOR_FROM, current.fromHeight);
         // Persist the confirmed-anchor record so evidence bundles can reference
         // the anchored block hash + L1 tx (audit export, ADR 006 E3.4).
         AppBlock anchoredBlock = blockByHeight.apply(current.toHeight);
@@ -277,9 +346,10 @@ final class AnchorService {
         if (lastAnchoredL1Slot > rollbackToSlot && lastAnchorTxHash != null) {
             log.warn("L1 rollback to slot {} un-confirmed anchor tx {} — will re-anchor",
                     rollbackToSlot, lastAnchorTxHash);
-            // Roll the marker back so the range re-anchors on the next tick
-            long from = ledger.metaLong(META_LAST_ANCHORED, 0L);
-            ledger.metaPutLong(META_LAST_ANCHORED, Math.max(0, from - anchorConfig.everyBlocks()));
+            // Rewind precisely to the start of the rolled-back anchor's range so
+            // the FULL range re-anchors, however many intervals it spanned
+            long anchorFrom = ledger.metaLong(META_ANCHOR_FROM, 0L);
+            ledger.metaPutLong(META_LAST_ANCHORED, Math.max(0, anchorFrom - 1));
             // Clear the confirmed-anchor record too — otherwise evidence() would
             // emit an AnchorRef pointing at the rolled-back (now-invalid) block
             // hash, which an offline auditor would reject. Evidence stays valid

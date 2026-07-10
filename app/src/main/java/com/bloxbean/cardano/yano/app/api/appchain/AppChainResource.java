@@ -228,6 +228,10 @@ public class AppChainResource {
                 result.put("chainId", gateway.chainId());
                 result.put("topic", request.topic() != null ? request.topic() : "");
                 return Response.accepted(result).build();
+            } catch (com.bloxbean.cardano.yano.api.appchain.PoolFullException e) {
+                // Backpressure (ADR 008.1 I1.1): the message was NOT retained/relayed
+                return Response.status(429)
+                        .entity(Map.of("error", e.getMessage())).build();
             } catch (IllegalStateException e) {
                 return Response.status(Response.Status.SERVICE_UNAVAILABLE)
                         .entity(Map.of("error", e.getMessage())).build();
