@@ -187,9 +187,13 @@ public record AppChainConfig(String chainId,
         }
     }
 
-    /** Sequencing enabled when a proposer is configured. */
+    /**
+     * Sequencing enabled when a fixed proposer is configured (v1) or a
+     * sequencer mode is selected (ADR 008.2 — e.g. {@code sequencer.mode:
+     * rotating} needs no fixed proposer).
+     */
     public boolean sequencingEnabled() {
-        return !proposerKeyHex.isEmpty();
+        return !proposerKeyHex.isEmpty() || pluginSettings.containsKey("sequencer.mode");
     }
 
     public boolean anchoringEnabled() {

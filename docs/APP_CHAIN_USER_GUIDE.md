@@ -387,8 +387,12 @@ Flat (single-chain) keys. The same suffixes apply per chain under
 | `signing-key` | — | This member's Ed25519 private seed, hex, or a `scheme:reference` external-signer spec (§12) |
 | `members` | — | Comma-separated member public keys, hex (required; must include own key) |
 | `peers` | — | Comma-separated app-group peers `host:port` (their N2N server ports) |
-| `sequencer.proposer` | empty | Sequencer's public key. **Empty = diffusion-only mode** (messages replicate, but no blocks/ledger) |
+| `sequencer.proposer` | empty | Fixed sequencer's public key (implies `sequencer.mode: fixed`). No proposer AND no mode = diffusion-only (messages replicate, but no blocks/ledger) |
+| `sequencer.mode` | `fixed` | Consensus mode: `fixed` (ADR-005 S1), `rotating` (S2 — proposership rotates over L1-slot windows; needs no fixed proposer), or a plugin `SequencerModeProvider` id. **Must match on all members.** Finality (threshold certs, one-vote-per-height) is identical in every mode |
+| `sequencer.window-slots` | `60` | `rotating` only: L1 slots per proposer window. Rotating mode requires an L1 feed and prefers thresholds like 2-of-3 over all-of-n (see the rotation runbook in ADR 008.2) |
 | `threshold` | `1` | Finality certificate signatures required |
+| `membership.mode` | `static` | `governed` = membership changes are finalized chain transactions requiring threshold-many identical member commands (§14.2, ADR 008.3). **Must match on all members** |
+| `membership.approval-window-blocks` | `600` | `governed` only: blocks a half-approved command stays pending before expiring |
 | `block.interval-ms` | `2000` | Proposer tick (blocks are only made when messages are pending) |
 | `block.max-messages` | `500` | Max messages per block |
 | `state-machine` | `ordered-log` | Built-in id, a stdlib id (§9) or a plugin provider id |
@@ -692,12 +696,28 @@ enabled (§12):
 - `drain-pool` — drop all pending (unfinalized) messages; returns the count.
 - `force-anchor` — anchor the current tip now instead of waiting for cadence.
 
-### 14.2 Key rotation runbook
+### 14.2 Membership changes
 
-Staged and operator-coordinated: run the SAME steps on EVERY node, in this
-order. The rotated state persists and overrides config across restarts
-(`POST /admin/members/reset` drops the override and returns to the configured
-list).
+**Governed mode (recommended, ADR 008.3)** — with
+`yano.app-chain.membership.mode: governed`, membership changes are **chain
+transactions**: the same admin endpoints *submit* a governance command on the
+reserved `~governance/membership` topic instead of mutating the local node. A
+change activates once **threshold-many members submit the identical command**
+(each operator runs ONE call on their own node) and takes effect a few blocks
+later, identically on every node. No runbook ordering, no way to be
+inconsistent — late joiners and catch-up derive the full membership history
+from replay. A half-approved command quietly expires after
+`membership.approval-window-blocks` (default 600). Guard rails (below-threshold
+removals, invalid thresholds, removing a fixed proposer) void deterministically.
+The config member list is the **genesis epoch only**; a member added later
+starts with the original genesis list and derives its own membership from the
+chain. `POST /admin/members/reset` remains the break-glass local override
+(loudly logged as a trust-model deviation).
+
+**Static mode runbook (default)** — staged and operator-coordinated: run the
+SAME steps on EVERY node, in this order. The rotated state persists and
+overrides config across restarts (`POST /admin/members/reset` drops the
+override and returns to the configured list).
 
 1. **Add the new key everywhere** — on each node:
    `POST /app-chain/admin/members/add {"publicKey":"<newPub>"}`.

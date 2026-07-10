@@ -115,14 +115,15 @@ class AppChainL1RefTest {
         feedL1(busB, 1, 6, 0);
 
         nodes[0].submit("t", "patience".getBytes(StandardCharsets.UTF_8));
-        Thread.sleep(1_500); // proposal arrives at B and gets deferred
+        // B cannot verify a ref at slot 8 while it has only observed 1..6 — the
+        // proposal MUST defer, whenever it arrives. Wait for the evidence.
+        awaitTrue("B deferred the ahead-of-view proposal",
+                () -> deferrals(nodes[1]) >= 1);
 
-        feedL1(busB, 7, 10, 0); // B's L1 catches up within the deferral window
+        feedL1(busB, 7, 10, 0); // B's L1 catches up; the deferred retry now votes
         awaitTrue("deferred proposal finalized on both",
                 () -> nodes[0].tipHeight() >= 1 && nodes[1].tipHeight() >= 1);
-
-        Object deferrals = nodes[1].status().get("l1RefDeferrals");
-        assertThat((Long) deferrals).isGreaterThanOrEqualTo(1L);
+        assertThat(deferrals(nodes[1])).isGreaterThanOrEqualTo(1L);
     }
 
     @Test
@@ -137,6 +138,11 @@ class AppChainL1RefTest {
     }
 
     // ------------------------------------------------------------------
+
+    private static long deferrals(AppChainSubsystem node) {
+        Object value = node.status().get("l1RefDeferrals");
+        return value instanceof Number n ? n.longValue() : 0L;
+    }
 
     /** Publish synthetic applied L1 blocks; hash = f(slot + hashOffset). */
     private static void feedL1(EventBus bus, long fromSlot, long toSlot, int hashOffset) {

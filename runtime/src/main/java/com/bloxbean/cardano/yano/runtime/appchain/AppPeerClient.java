@@ -89,22 +89,55 @@ final class AppPeerClient {
         return c != null && c.isRunning();
     }
 
-    /** Queue a message for diffusion to this peer. */
-    synchronized void enqueue(AppMessage message) {
+    /**
+     * Queue a message for diffusion to this peer. Deliberately NOT on the
+     * object monitor: {@link #ensureConnected()} holds that through a blocking
+     * connect attempt (with retry sleeps), and a dead peer must never stall
+     * submitters/relayers (ADR 008.2 delivery note — found by the rotation
+     * partial-round test).
+     */
+    void enqueue(AppMessage message) {
         if (shutdown)
             return;
         AppMsgSubmissionAgent a = agent;
         if (a != null && isConnected()) {
             a.enqueueMessage(message);
         } else {
-            if (replayQueue.size() >= REPLAY_QUEUE_LIMIT) {
-                replayQueue.pollFirst();
+            synchronized (replayQueue) {
+                if (replayQueue.size() >= REPLAY_QUEUE_LIMIT) {
+                    replayQueue.pollFirst();
+                }
+                replayQueue.addLast(message);
             }
-            replayQueue.addLast(message);
         }
     }
 
-    /** Connect if not connected; called periodically by the subsystem. */
+    private final java.util.concurrent.atomic.AtomicBoolean connecting =
+            new java.util.concurrent.atomic.AtomicBoolean();
+
+    /**
+     * Non-blocking connect: the underlying client start RETRIES an unreachable
+     * peer in a sleep loop, which must never run on the shared subsystem
+     * scheduler — with one dead peer it wedged proposer/anchor/catch-up ticks
+     * entirely (found by the 008.2 partial-round test). Attempts run on their
+     * own daemon thread, one at a time.
+     */
+    void ensureConnectedAsync() {
+        if (shutdown || isConnected() || !connecting.compareAndSet(false, true)) {
+            return;
+        }
+        Thread connector = new Thread(() -> {
+            try {
+                ensureConnected();
+            } finally {
+                connecting.set(false);
+            }
+        }, "app-peer-connect-" + peer);
+        connector.setDaemon(true);
+        connector.start();
+    }
+
+    /** Connect if not connected; blocking — use {@link #ensureConnectedAsync()}. */
     synchronized void ensureConnected() {
         if (shutdown || isConnected())
             return;
@@ -161,8 +194,15 @@ final class AppPeerClient {
                             handshakeAgent, newAgent, newKeepAlive, newSyncAgent)
                     : new TCPNodeClient(peer.host(), peer.port(),
                             handshakeAgent, newAgent, newKeepAlive);
-            newClient.start();
+            // Publish the client BEFORE start(): start() retries an unreachable
+            // peer indefinitely, and shutdown() must be able to reach and close
+            // the in-progress client to break that loop (008.2 fix)
             this.client = newClient;
+            newClient.start();
+            if (shutdown) {
+                disposeClient();
+                return;
+            }
             this.agent = newAgent;
             this.keepAliveAgent = newKeepAlive;
             this.syncAgent = newSyncAgent;
@@ -176,10 +216,16 @@ final class AppPeerClient {
         }
     }
 
-    private synchronized void drainReplayQueue(AppMsgSubmissionAgent target) {
+    private void drainReplayQueue(AppMsgSubmissionAgent target) {
         long now = System.currentTimeMillis() / 1000;
-        AppMessage queued;
-        while ((queued = replayQueue.pollFirst()) != null) {
+        while (true) {
+            AppMessage queued;
+            synchronized (replayQueue) {
+                queued = replayQueue.pollFirst();
+            }
+            if (queued == null) {
+                return;
+            }
             if (!queued.isExpired(now)) {
                 target.enqueueMessage(queued);
             }
@@ -198,10 +244,18 @@ final class AppPeerClient {
         }
     }
 
-    synchronized void shutdown() {
+    /**
+     * Deliberately NOT on the object monitor: a connector thread can hold that
+     * monitor indefinitely while retrying a dead peer inside
+     * {@link #ensureConnected()} — shutdown must still proceed (it closes the
+     * published in-progress client, which breaks the retry loop).
+     */
+    void shutdown() {
         shutdown = true;
         disposeClient();
-        replayQueue.clear();
+        synchronized (replayQueue) {
+            replayQueue.clear();
+        }
     }
 
     private void disposeClient() {

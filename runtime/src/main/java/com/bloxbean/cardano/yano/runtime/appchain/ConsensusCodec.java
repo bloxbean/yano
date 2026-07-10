@@ -3,7 +3,9 @@ package com.bloxbean.cardano.yano.runtime.appchain;
 import co.nstant.in.cbor.model.Array;
 import co.nstant.in.cbor.model.ByteString;
 import co.nstant.in.cbor.model.DataItem;
+import co.nstant.in.cbor.model.UnicodeString;
 import co.nstant.in.cbor.model.UnsignedInteger;
+import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yaci.core.util.CborSerializationUtil;
 
 import java.util.List;
@@ -61,5 +63,42 @@ final class ConsensusCodec {
     }
 
     record CertNotice(long height, byte[] blockHash, byte[] certBytes) {
+    }
+
+    // ------------------------------------------------------------------
+    // Locked-proposal envelope persistence (ADR 008.2 §2.3): a member that
+    // voted stores the ORIGINAL proposer-signed envelope so it can re-gossip
+    // the partial round after timeouts/restarts. Full envelope v2 fields —
+    // authenticity survives (receivers re-verify the proposer's signature).
+    // ------------------------------------------------------------------
+
+    static byte[] encodeEnvelope(AppMessage m) {
+        Array arr = new Array();
+        arr.add(new UnsignedInteger(m.getVersion()));
+        arr.add(new ByteString(m.getMessageId()));
+        arr.add(new UnicodeString(m.getChainId()));
+        arr.add(new UnicodeString(m.getTopic() != null ? m.getTopic() : ""));
+        arr.add(new ByteString(m.getSender()));
+        arr.add(new UnsignedInteger(m.getSenderSeq()));
+        arr.add(new UnsignedInteger(m.getExpiresAt()));
+        arr.add(new ByteString(m.getBody()));
+        arr.add(new UnsignedInteger(m.getAuthScheme()));
+        arr.add(new ByteString(m.getAuthProof()));
+        return CborSerializationUtil.serialize(arr);
+    }
+
+    static AppMessage decodeEnvelope(byte[] bytes) {
+        List<DataItem> items = ((Array) CborSerializationUtil.deserializeOne(bytes)).getDataItems();
+        return new AppMessage(
+                ((UnsignedInteger) items.get(0)).getValue().intValue(),
+                ((ByteString) items.get(1)).getBytes(),
+                ((UnicodeString) items.get(2)).getString(),
+                ((UnicodeString) items.get(3)).getString(),
+                ((ByteString) items.get(4)).getBytes(),
+                ((UnsignedInteger) items.get(5)).getValue().longValue(),
+                ((UnsignedInteger) items.get(6)).getValue().longValue(),
+                ((ByteString) items.get(7)).getBytes(),
+                ((UnsignedInteger) items.get(8)).getValue().intValue(),
+                ((ByteString) items.get(9)).getBytes());
     }
 }

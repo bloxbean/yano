@@ -293,12 +293,46 @@ final class AppLedgerStore implements AutoCloseable {
     }
 
     /**
+     * The original proposer-signed proposal ENVELOPE this member voted for
+     * (ADR 008.2 §2.3) — re-gossiped to finish partial rounds after timeouts
+     * or restarts. Stored alongside the vote-lock hash.
+     */
+    void putVoteLockEnvelope(long height, byte[] envelopeCbor) {
+        try {
+            db.put(metaCf, voteLockEnvelopeKey(height), envelopeCbor);
+        } catch (RocksDBException e) {
+            throw new RuntimeException("Failed to persist locked proposal at height " + height, e);
+        }
+    }
+
+    Optional<byte[]> voteLockEnvelope(long height) {
+        return Optional.ofNullable(getMeta(voteLockEnvelopeKey(height)));
+    }
+
+    private static byte[] voteLockEnvelopeKey(long height) {
+        return (KEY_VOTE_LOCK_PREFIX + "env_" + height).getBytes(StandardCharsets.UTF_8);
+    }
+
+    /**
      * Atomically commit a finalized block: block bytes (with cert), tip, message
      * index and everything already staged in {@code batch} (MPF nodes + state
      * writes from apply).
      */
     void commitBlock(AppBlock block, byte[] blockHash, byte[] newStateRoot, WriteBatch batch) {
+        commitBlock(block, blockHash, newStateRoot, batch, List.of());
+    }
+
+    /**
+     * Commit with extra meta writes in the SAME atomic batch — used by
+     * chain-governed membership (ADR 008.3): pending-approval state and
+     * membership epochs commit atomically with the block that changed them.
+     */
+    void commitBlock(AppBlock block, byte[] blockHash, byte[] newStateRoot, WriteBatch batch,
+                     List<GovernedMembership.MetaWrite> metaWrites) {
         try {
+            for (GovernedMembership.MetaWrite write : metaWrites) {
+                batch.put(metaCf, write.key().getBytes(StandardCharsets.UTF_8), write.value());
+            }
             batch.put(blocksCf, heightKey(block.height()), AppBlockCodec.serialize(block));
             batch.put(metaCf, KEY_TIP_HEIGHT, longBytes(block.height()));
             batch.put(metaCf, KEY_TIP_HASH, blockHash);

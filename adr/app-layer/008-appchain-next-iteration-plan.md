@@ -15,9 +15,9 @@ integration branch at iteration end.
 
 | Sub-ADR | Scope | Branch | Status |
 |---|---|---|---|
-| `008.1-iteration1-correctness-operator-safety.md` | Iteration 1 (I1.1–I1.9 incl. status page) | `feat/adr008-iteration1` | **Implemented** (2026-07-10) — pending devnet regression + merge |
-| 008.2 (planned) | S2 rotating sequencer | — | Not started |
-| 008.3 (planned) | Chain-governed membership (005 D6) | — | Not started |
+| `008.1-iteration1-correctness-operator-safety.md` | Iteration 1 (I1.1–I1.9 incl. status page) | `feat/adr008-iteration1` | **Merged** (2026-07-10, `2c444b5`) — devnet regressions + 300/1000-msg load test passed |
+| `008.2-rotating-sequencer.md` | S2 rotating sequencer (I2.1) + dedup hardening (I2.3) | `feat/adr008-iteration2` | **Merged** (2026-07-10) — devnet gate passed (rotation across windows on live devnet) |
+| `008.3-chain-governed-membership.md` | Chain-governed membership, 005 D6 (I2.2) | `feat/adr008-iteration2` | **Merged** (2026-07-10) — devnet gate passed (governed add activated identically on both nodes) |
 | 008.4 (planned) | Script anchors + L1View (005 D2/D4/D5) | — | Not started |
 | 008.5 (planned) | DX track (typed queries, SDK verification loop, security scopes, packaging) | — | Not started |
 

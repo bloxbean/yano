@@ -5,6 +5,7 @@ import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.appchain.*;
 import com.bloxbean.cardano.yano.api.appchain.codec.AppBlockCodec;
+import com.bloxbean.cardano.yano.api.appchain.sequencer.SequencerMode;
 import org.rocksdb.WriteBatch;
 import org.slf4j.Logger;
 
@@ -13,6 +14,8 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BiConsumer;
+import java.util.function.BiFunction;
+import java.util.function.Consumer;
 
 /**
  * S1 fixed-sequencer engine (ADR app-layer/005 D2): a single configured
@@ -41,13 +44,15 @@ final class AppChainEngine implements AutoCloseable {
     private final AppStateMachine stateMachine;
     private final com.bloxbean.cardano.yano.api.appchain.signer.SignerProvider signer;
     private final MemberGroup group;
-    private final byte[] proposerKey;
-    private final boolean isProposer;
+    private final SequencerMode sequencerMode;
     private final long roundTimeoutMs;
+    /** Partial rounds observed competing with our lock (008.2 §0 residual case). */
+    private final java.util.concurrent.atomic.AtomicLong splitVotesObserved =
+            new java.util.concurrent.atomic.AtomicLong();
     private final int maxBlockMessages;
     private final long maxBlockBytes;
     /** Sends a body on a system topic to the group (via the subsystem's diffusion). */
-    private final BiConsumer<String, byte[]> broadcast;
+    private final BiFunction<String, byte[], AppMessage> broadcast;
     private final Logger log;
 
     private final ScheduledExecutorService executor;
@@ -96,11 +101,11 @@ final class AppChainEngine implements AutoCloseable {
                    AppStateMachine stateMachine,
                    com.bloxbean.cardano.yano.api.appchain.signer.SignerProvider signer,
                    MemberGroup group,
-                   byte[] proposerKey,
+                   SequencerMode sequencerMode,
                    long roundTimeoutMs,
                    int maxBlockMessages,
                    long maxBlockBytes,
-                   BiConsumer<String, byte[]> broadcast,
+                   BiFunction<String, byte[], AppMessage> broadcast,
                    Logger log) {
         this.config = config;
         this.ledger = ledger;
@@ -108,8 +113,7 @@ final class AppChainEngine implements AutoCloseable {
         this.stateMachine = stateMachine;
         this.signer = signer;
         this.group = group;
-        this.proposerKey = proposerKey;
-        this.isProposer = Arrays.equals(proposerKey, signer.publicKey());
+        this.sequencerMode = sequencerMode;
         this.roundTimeoutMs = roundTimeoutMs;
         this.maxBlockMessages = maxBlockMessages;
         this.maxBlockBytes = maxBlockBytes;
@@ -128,8 +132,13 @@ final class AppChainEngine implements AutoCloseable {
         this.onBlockFinalized = callback;
     }
 
-    boolean isProposer() {
-        return isProposer;
+    /** Mode-specific observability (window/proposer/etc.). */
+    Map<String, Object> sequencerStatus() {
+        return sequencerMode.status();
+    }
+
+    long splitVotesObserved() {
+        return splitVotesObserved.get();
     }
 
     long tipHeight() {
@@ -186,8 +195,12 @@ final class AppChainEngine implements AutoCloseable {
             log.warn("Catch-up block prev-hash mismatch at height {} — rejecting", block.height());
             return false;
         }
-        if (!Arrays.equals(block.proposer(), proposerKey)) {
-            log.warn("Catch-up block not from the configured proposer — rejecting");
+        // Certified history is mode-independent (ADR 008.2 §2.4): the threshold
+        // cert is the legitimacy proof; the proposer just has to be a member at
+        // that height. Live window rules were enforced by the voters back then.
+        String catchUpProposerHex = HexUtil.encodeHexString(block.proposer()).toLowerCase(Locale.ROOT);
+        if (!group.containsAt(catchUpProposerHex, block.height())) {
+            log.warn("Catch-up block proposer is not a member at height {} — rejecting", block.height());
             return false;
         }
         if (!Arrays.equals(block.messagesRoot(), AppBlockCodec.messagesRoot(block.messages()))) {
@@ -225,7 +238,8 @@ final class AppChainEngine implements AutoCloseable {
             applied.close();
             return false;
         }
-        ledger.commitBlock(block, blockHash, block.stateRoot(), applied.batch);
+        ledger.commitBlock(block, blockHash, block.stateRoot(), applied.batch,
+                governanceWrites(block));
         applied.closeBatchOnly();
         pool.remove(block.messages());
         BiConsumer<AppBlock, byte[]> callback = onBlockFinalized;
@@ -245,13 +259,10 @@ final class AppChainEngine implements AutoCloseable {
     // ------------------------------------------------------------------
 
     private void doProposeTick() {
-        if (!isProposer) {
-            return;
-        }
         try {
             if (pendingRound != null) {
                 if (System.currentTimeMillis() - pendingRound.startedAt > roundTimeoutMs) {
-                    log.warn("App-chain round at height {} timed out ({} of {} votes) — re-proposing",
+                    log.warn("App-chain round at height {} timed out ({} of {} votes)",
                             pendingRound.block.height(), pendingRound.votes.size(), group.threshold());
                     discardRound();
                 } else {
@@ -259,12 +270,26 @@ final class AppChainEngine implements AutoCloseable {
                 }
             }
 
+            long height = ledger.tipHeight() + 1;
+
+            // Partial-round recovery (ANY member, any mode — ADR 008.2 §2.3):
+            // once we voted at this height our one vote is spent; keep
+            // re-gossiping the locked original proposal (+ our vote) until it
+            // finalizes, and never propose a competing block.
+            Optional<byte[]> existingLock = ledger.voteLock(height);
+            if (existingLock.isPresent()) {
+                regossipLockedProposal(height, existingLock.get());
+                return;
+            }
+
+            if (!sequencerMode.shouldProposeNow(height)) {
+                return;
+            }
+
             List<AppMessage> candidates = selectMessages();
             if (candidates.isEmpty()) {
                 return;
             }
-
-            long height = ledger.tipHeight() + 1;
             java.util.function.Supplier<L1Ref> refSupplier = l1RefSupplier;
             L1Ref l1Ref = refSupplier != null ? refSupplier.get() : null;
             AppBlock candidate = new AppBlock(
@@ -286,13 +311,6 @@ final class AppChainEngine implements AutoCloseable {
             byte[] blockHash = AppBlockCodec.blockHash(block);
 
             // Vote lock for our own proposal, then self-vote
-            Optional<byte[]> lock = ledger.voteLock(height);
-            if (lock.isPresent() && !Arrays.equals(lock.get(), blockHash)) {
-                log.warn("Vote lock exists for height {} with a different hash — not re-proposing differently; "
-                        + "re-broadcasting locked proposal is required (restart artifact)", height);
-                applied.close();
-                return;
-            }
             ledger.putVoteLock(height, blockHash);
 
             byte[] selfSignature = signer.sign(blockHash);
@@ -300,7 +318,12 @@ final class AppChainEngine implements AutoCloseable {
             round.votes.put(signer.publicKeyHex(), selfSignature);
             pendingRound = round;
 
-            broadcast.accept(ConsensusCodec.TOPIC_PROPOSE, AppBlockCodec.serialize(block));
+            AppMessage proposalEnvelope =
+                    broadcast.apply(ConsensusCodec.TOPIC_PROPOSE, AppBlockCodec.serialize(block));
+            if (proposalEnvelope != null) {
+                // Enables re-gossip of the partial round across timeouts/restarts
+                ledger.putVoteLockEnvelope(height, ConsensusCodec.encodeEnvelope(proposalEnvelope));
+            }
             log.info("Proposed app block: height={}, msgs={}, hash={}",
                     height, block.messages().size(), HexUtil.encodeHexString(blockHash));
 
@@ -337,8 +360,14 @@ final class AppChainEngine implements AutoCloseable {
             }
             return false;
         });
-        // Application-level admission
+        // Application-level admission — framework system topics (~governance/*)
+        // bypass it: state machines must not veto governance commands (008.3);
+        // they skip these opaque bodies deterministically in apply()
         candidates.removeIf(m -> {
+            String topic = m.getTopic() != null ? m.getTopic() : "";
+            if (topic.startsWith("~")) {
+                return false;
+            }
             AppStateMachine.AdmissionResult result = stateMachine.validate(m);
             if (!result.isAccepted()) {
                 log.info("Message {} rejected by state machine: {}", m.getMessageIdHex(), result.reason());
@@ -368,9 +397,6 @@ final class AppChainEngine implements AutoCloseable {
     }
 
     private void handleProposal(AppMessage envelope) {
-        if (isProposer) {
-            return; // we propose, we don't follow proposals
-        }
         AppBlock block = AppBlockCodec.deserialize(envelope.getBody());
         long expectedHeight = ledger.tipHeight() + 1;
 
@@ -378,14 +404,36 @@ final class AppChainEngine implements AutoCloseable {
             return; // already finalized
         }
         if (block.height() != expectedHeight) {
-            log.warn("Proposal at height {} but expected {} — ignoring (catch-up arrives in M4)",
-                    block.height(), expectedHeight);
+            // Ahead of our tip: our commit of height-1 may simply be in flight.
+            // The transport never re-delivers an acked message id in a session,
+            // so dropping here would lose the proposal PERMANENTLY (catch-up
+            // cannot fetch unfinalized heights) — defer and retry instead.
+            deferProposal(envelope, block, "ahead of local tip (expected " + expectedHeight + ")");
             return;
         }
-        if (!Arrays.equals(block.proposer(), proposerKey)
-                || !Arrays.equals(envelope.getSender(), proposerKey)) {
-            log.warn("Proposal not from the configured proposer — rejecting");
+        if (pendingRound != null
+                && Arrays.equals(pendingRound.blockHash, AppBlockCodec.blockHash(block))) {
+            return; // already tracking this exact round (own proposal / re-gossip echo)
+        }
+        // Authenticity: the envelope must be signed by the block's claimed
+        // proposer — nobody can inject a block in another member's name
+        if (!Arrays.equals(block.proposer(), envelope.getSender())) {
+            log.warn("Proposal envelope sender does not match the block proposer — rejecting");
             return;
+        }
+        // Sequencer-mode eligibility (ADR 008.2): fixed = the configured key;
+        // rotating = scheduled within the lookback window range
+        switch (sequencerMode.checkProposal(block.proposer(), block.height())) {
+            case REJECT -> {
+                log.warn("Proposal at height {} from a proposer not eligible under sequencer mode "
+                        + "'{}' — rejecting", block.height(), sequencerMode.id());
+                return;
+            }
+            case DEFER -> {
+                deferProposal(envelope, block, "sequencer clock not ready");
+                return;
+            }
+            case ACCEPT -> { /* continue */ }
         }
         if (!Arrays.equals(block.prevHash(), ledger.tipHash())) {
             log.warn("Proposal prev-hash mismatch at height {} — rejecting", block.height());
@@ -415,7 +463,11 @@ final class AppChainEngine implements AutoCloseable {
         byte[] blockHash = AppBlockCodec.blockHash(block);
         Optional<byte[]> lock = ledger.voteLock(block.height());
         if (lock.isPresent() && !Arrays.equals(lock.get(), blockHash)) {
-            log.warn("Refusing to vote: already voted for a different block at height {} (vote lock)",
+            // Competing valid proposal at a height we already voted — the split
+            // is visible and counted (ADR 008.2 §0 residual case + runbook)
+            splitVotesObserved.incrementAndGet();
+            log.warn("Refusing to vote: already voted for a different block at height {} (vote lock). "
+                    + "Competing proposal observed — split votes possible, see the rotation runbook",
                     block.height());
             return;
         }
@@ -435,17 +487,103 @@ final class AppChainEngine implements AutoCloseable {
         }
 
         ledger.putVoteLock(block.height(), blockHash);
+        // Persist the original proposer-signed envelope for partial-round
+        // re-gossip (ADR 008.2 §2.3)
+        ledger.putVoteLockEnvelope(block.height(), ConsensusCodec.encodeEnvelope(envelope));
         pendingRound = new PendingRound(block, blockHash, applied);
 
         byte[] signature = signer.sign(blockHash);
-        broadcast.accept(ConsensusCodec.TOPIC_VOTE,
+        // Record our own vote locally too — any member holding the round may
+        // aggregate to a cert (dead proposers can't sink collected votes)
+        pendingRound.votes.put(signer.publicKeyHex(), signature);
+        broadcast.apply(ConsensusCodec.TOPIC_VOTE,
                 ConsensusCodec.encodeVote(block.height(), blockHash, signature));
         log.info("Voted for app block: height={}, hash={}", block.height(),
                 HexUtil.encodeHexString(blockHash));
+        maybeFinalize();
+    }
+
+    /**
+     * Re-gossip the locked original proposal (+ our vote) until the height
+     * finalizes (ADR 008.2 §2.3) — rate-limited to once per round timeout.
+     * Only works while the original envelope is TTL-valid; past that the
+     * partial round is a runbook case (documented residual).
+     */
+    private long lastRegossipAt;
+
+    private void regossipLockedProposal(long height, byte[] lockedHash) {
+        if (System.currentTimeMillis() - lastRegossipAt < roundTimeoutMs) {
+            return;
+        }
+        lastRegossipAt = System.currentTimeMillis();
+        Optional<byte[]> stored = ledger.voteLockEnvelope(height);
+        if (stored.isEmpty()) {
+            return; // pre-008.2 lock — nothing to re-gossip (legacy restart artifact)
+        }
+        AppMessage envelope = ConsensusCodec.decodeEnvelope(stored.get());
+        if (envelope.isExpired(System.currentTimeMillis() / 1000)) {
+            log.warn("Locked proposal at height {} has expired — partial round cannot be "
+                    + "re-gossiped (see the rotation runbook)", height);
+            return;
+        }
+        Consumer<AppMessage> relay = envelopeRelay;
+        if (relay != null) {
+            relay.accept(envelope);
+        }
+        // Re-broadcast our vote (votes are ephemeral) and rebuild our own
+        // pending round so we can aggregate replies
+        broadcast.apply(ConsensusCodec.TOPIC_VOTE,
+                ConsensusCodec.encodeVote(height, lockedHash, signer.sign(lockedHash)));
+        doHandleConsensusMessage(envelope);
+        log.info("Re-gossiped locked proposal at height {} (partial-round recovery)", height);
+    }
+
+    private volatile Consumer<AppMessage> envelopeRelay;
+
+    void setEnvelopeRelay(Consumer<AppMessage> relay) {
+        this.envelopeRelay = relay;
+    }
+
+    /** Chain-governed membership handler (ADR 008.3); null = static mode. */
+    private volatile GovernedMembership governance;
+
+    void setGovernance(GovernedMembership governance) {
+        this.governance = governance;
+    }
+
+    /** Deterministic governance processing, atomic with the block commit. */
+    private List<GovernedMembership.MetaWrite> governanceWrites(AppBlock block) {
+        GovernedMembership current = governance;
+        if (current == null) {
+            return List.of();
+        }
+        GovernedMembership.Result result = current.processBlock(block);
+        for (GovernedMembership.EpochEffect effect : result.effects()) {
+            log.info("Governed membership epoch: from height {}, {} member(s), threshold {}",
+                    effect.fromHeight(), effect.members().size(), effect.threshold());
+        }
+        return result.writes();
+    }
+
+    /** Bounded retry for proposals we cannot judge yet (tip/clock/l1 not ready). */
+    private void deferProposal(AppMessage envelope, AppBlock block, String reason) {
+        long waitMs = Math.max(config.blockIntervalMs() * 4, 15_000);
+        long firstDeferred = deferredProposals.computeIfAbsent(
+                envelope.getMessageIdHex(), id -> System.currentTimeMillis());
+        if (System.currentTimeMillis() - firstDeferred < waitMs) {
+            log.debug("Proposal at height {} deferred: {}", block.height(), reason);
+            executor.schedule(() -> doHandleConsensusMessage(envelope), 500, TimeUnit.MILLISECONDS);
+        } else {
+            log.warn("Proposal at height {} still undecidable after {} ms ({}) — dropping",
+                    block.height(), waitMs, reason);
+            deferredProposals.remove(envelope.getMessageIdHex());
+        }
     }
 
     private void handleVote(AppMessage envelope) {
-        if (!isProposer || pendingRound == null) {
+        // ANY member holding the round aggregates votes and may form the cert —
+        // a dead proposer can no longer sink already-collected votes (008.2)
+        if (pendingRound == null) {
             return;
         }
         ConsensusCodec.Vote vote = ConsensusCodec.decodeVote(envelope.getBody());
@@ -487,7 +625,7 @@ final class AppChainEngine implements AutoCloseable {
         FinalityCert cert = new FinalityCert(FinalityCert.SCHEME_ED25519, signatures);
         commitRound(cert);
         AppBlock committed = ledger.block(ledger.tipHeight()).orElseThrow();
-        broadcast.accept(ConsensusCodec.TOPIC_CERT,
+        broadcast.apply(ConsensusCodec.TOPIC_CERT,
                 ConsensusCodec.encodeCertNotice(committed.height(),
                         AppBlockCodec.blockHash(committed),
                         AppBlockCodec.serializeCert(cert)));
@@ -536,7 +674,8 @@ final class AppChainEngine implements AutoCloseable {
         pendingRound = null;
         deferredProposals.clear(); // height advances — held l1-ref deferrals are moot
         AppBlock finalBlock = round.block.withCert(cert);
-        ledger.commitBlock(finalBlock, round.blockHash, finalBlock.stateRoot(), round.applied.batch);
+        ledger.commitBlock(finalBlock, round.blockHash, finalBlock.stateRoot(), round.applied.batch,
+                governanceWrites(finalBlock));
         round.applied.closeBatchOnly();
         pool.remove(finalBlock.messages());
         BiConsumer<AppBlock, byte[]> callback = onBlockFinalized;
