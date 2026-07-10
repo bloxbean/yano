@@ -579,7 +579,12 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                                 parseLong(get.apply("anchor.validity-slots"),
                                         com.bloxbean.cardano.yano.api.appchain.AppChainConfig.AnchorConfig.DEFAULT_VALIDITY_SLOTS),
                                 parseLong(get.apply("anchor.fallback-fee-lovelace"),
-                                        com.bloxbean.cardano.yano.api.appchain.AppChainConfig.AnchorConfig.DEFAULT_FALLBACK_FEE_LOVELACE))
+                                        com.bloxbean.cardano.yano.api.appchain.AppChainConfig.AnchorConfig.DEFAULT_FALLBACK_FEE_LOVELACE),
+                                stringOf(get.apply("anchor.mode"),
+                                        com.bloxbean.cardano.yano.api.appchain.AppChainConfig.AnchorConfig.MODE_METADATA),
+                                new com.bloxbean.cardano.yano.api.appchain.AppChainConfig.AnchorScriptConfig(
+                                        stringOf(get.apply("anchor.script.validator"), ""),
+                                        stringOf(get.apply("anchor.script.thread-policy"), "")))
                         : null,
                 (int) parseLong(get.apply("l1.stability-depth"), 0),
                 webhookUrls,
@@ -589,7 +594,7 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                         com.bloxbean.cardano.yano.api.appchain.AppChainConfig.DEFAULT_POOL_MAX_MESSAGES),
                 booleanOf(get.apply("message.enforce-sender-seq"), false),
                 pluginSettings(collectPrefixed, "sinks.", "zk.", "machines.", "sequencer.",
-                        "membership."));
+                        "membership.", "observers."));
     }
 
     /**
@@ -603,8 +608,16 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
             int epoch = epochNonceState != null ? epochNonceState.getCurrentEpoch() : 0;
             var params = getProtocolParameters(Math.max(epoch, 0)).orElse(null);
             if (params != null && params.minFeeA() != null && params.minFeeB() != null) {
+                // Script-anchor pricing (008.4): ex-unit prices + PlutusV3 cost
+                // model; null fields fall back to Conway defaults in the anchor
+                long[] costModelV3 = null;
+                if (params.costModelsRaw() != null && params.costModelsRaw().get("PlutusV3") != null) {
+                    costModelV3 = params.costModelsRaw().get("PlutusV3").stream()
+                            .mapToLong(Long::longValue).toArray();
+                }
                 return new com.bloxbean.cardano.yano.runtime.appchain.AppChainSubsystem.AnchorFeeParams(
-                        params.minFeeA(), params.minFeeB());
+                        params.minFeeA(), params.minFeeB(),
+                        params.priceMem(), params.priceStep(), costModelV3);
             }
         } catch (Exception e) {
             log.debug("Anchor fee params unavailable: {}", e.toString());

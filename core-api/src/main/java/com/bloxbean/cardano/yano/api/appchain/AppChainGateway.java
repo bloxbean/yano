@@ -123,6 +123,17 @@ public interface AppChainGateway {
      */
     boolean forceAnchor();
 
+    /**
+     * Bootstrap the script anchor (ADR app-layer/008.4, admin action): mint
+     * the one-shot state-thread NFT and lock the initial datum at the anchor
+     * validator. Only valid on the anchor leader with {@code anchor.mode:
+     * script}. Idempotent once bootstrapped.
+     * @return identity/tx info (threadPolicyId, scriptHash, scriptAddress, txHash)
+     */
+    default java.util.Map<String, Object> bootstrapScriptAnchor() {
+        throw new IllegalStateException("Script anchoring is not supported by this node");
+    }
+
     // ------------------------------------------------------------------
     // Key rotation (ADR app-layer/006 E4.5) — staged member-key rotation.
     // Operator-coordinated: apply the SAME steps on EVERY node, in the runbook

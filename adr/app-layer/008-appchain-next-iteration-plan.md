@@ -18,8 +18,12 @@ integration branch at iteration end.
 | `008.1-iteration1-correctness-operator-safety.md` | Iteration 1 (I1.1–I1.9 incl. status page) | `feat/adr008-iteration1` | **Merged** (2026-07-10, `2c444b5`) — devnet regressions + 300/1000-msg load test passed |
 | `008.2-rotating-sequencer.md` | S2 rotating sequencer (I2.1) + dedup hardening (I2.3) | `feat/adr008-iteration2` | **Merged** (2026-07-10) — devnet gate passed (rotation across windows on live devnet) |
 | `008.3-chain-governed-membership.md` | Chain-governed membership, 005 D6 (I2.2) | `feat/adr008-iteration2` | **Merged** (2026-07-10) — devnet gate passed (governed add activated identically on both nodes) |
-| 008.4 (planned) | Script anchors + L1View (005 D2/D4/D5) | — | Not started |
+| `008.4-script-anchors-l1view.md` | Script anchors + L1View (005 D4-A2/D5) — julc-default validator, Aiken opt-in, one shared ABI | `feat/adr008-iteration3` | **Devnet-gated** (2026-07-10) — 26 conformance vectors × 2 impls; live gate: bootstrap + 2 co-signed advances on L1, zero-config follower adoption, observations finalized on both nodes |
 | 008.5 (planned) | DX track (typed queries, SDK verification loop, security scopes, packaging) | — | Not started |
+
+Deferred-with-intent items across all iterations are collected in
+**`adr/app-layer/pending-tasks.md`** (with ADR references and revive
+triggers) — update it whenever an iteration defers something.
 
 ## Inputs
 - `adr/app-layer/005-yano-app-chain-framework.md` — the shipped v1 framework (M1–M6)
@@ -276,16 +280,38 @@ seam analysis:
 
 ### Iteration 3 — L1 integration depth
 
-**I3.1 Script anchors — 005 D4/A2 (L).**
-- Aiken/Plutus V3 anchor validator holding one UTxO per chain; inline datum
+**I3.1 Script anchors — 005 D4/A2 (L).** *(Validator strategy decided
+2026-07-10, pre-008.4: julc-default, Aiken opt-in.)*
+- Plutus V3 anchor validator holding one UTxO per chain; inline datum
   `[chain-id, height, block-hash, state-root]`; spend requires monotonic height
   and an n-of-m member signature check; validator + off-chain builder shipped
   together, e2e devnet test (the MPF on-chain verifier already exists in ccl).
+- **Two interchangeable implementations of ONE on-chain ABI** (datum/redeemer
+  CDDL in `core-api/src/main/cddl/appchain/` — the contract of the contract):
+  - **julc (Java → UPLC) is the default**: julc `0.1.0-pre14` is already in
+    the version catalog (used by `ledger-rules`), it completes the Java-first
+    story (state machines, ZK circuits AND the validator in Java), and
+    `julc-vm-java` lets CI **execute the compiled validator in unit tests**
+    (non-monotonic spend fails, sub-threshold sigs fail, happy path passes) —
+    no devnet required. julc is a **build/test-time dependency only**; the
+    distribution ships the compiled UPLC artifact + script hash, no new
+    runtime deps (T-tier discipline holds).
+  - **Aiken source lives in-repo as the opt-in alternative** — the
+    auditor-familiar reference implementation and the escape hatch if julc
+    codegen busts practical budgets.
+- Everything downstream keys off the **configured compiled UPLC artifact**
+  (bundled julc build by default; file/hex override for the Aiken build or
+  any custom build) — script hash and address are always derived from it.
+  A conformance test runs identical vectors against BOTH artifacts via
+  `julc-vm-java`; 008.4 must include an **ex-units/size budget measurement**
+  for both as an acceptance criterion (julc codegen is typically larger than
+  hand-written Aiken).
 - `AnchorService` gains mode A2 behind the existing `AnchorPolicy` config;
   metadata mode stays default.
-- This is the prerequisite for E7.5 (ZK-verified anchors) and for any
-  on-chain-enforced bridge story; until it ships, keep positioning anchors as
-  "commitment notarization" (ADR-007's language).
+- This is the prerequisite for E7.5 (ZK-verified anchors — same julc
+  toolchain, which is exactly why julc-at-the-anchor converges the tracks)
+  and for any on-chain-enforced bridge story; until it ships, keep
+  positioning anchors as "commitment notarization" (ADR-007's language).
 
 **I3.2 `L1View` + `~l1` observation injection — 005 D5 (M).**
 - Expose the deterministic read API (`utxosAt`, `txMetadataByLabel`, evaluated

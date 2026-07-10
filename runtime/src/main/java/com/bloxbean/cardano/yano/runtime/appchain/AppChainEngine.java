@@ -65,6 +65,8 @@ final class AppChainEngine implements AutoCloseable {
     private volatile java.util.function.Supplier<L1Ref> l1RefSupplier;
     /** Follower-side check of a proposed L1 ref against this node's own L1 view (I1.3). */
     private volatile L1RefValidator l1RefValidator;
+    /** Follower-side check of proposed ~l1/* observations (008.4 I3.2); null = accept. */
+    private volatile ObservationValidator observationValidator;
     /** Proposals deferred because their l1-ref is ahead of the local L1 view: id → first deferral time. */
     private final Map<String, Long> deferredProposals = new HashMap<>();
 
@@ -87,12 +89,25 @@ final class AppChainEngine implements AutoCloseable {
         L1RefVerdict check(long slot, byte[] blockHash);
     }
 
+    /**
+     * Follower-side check of one proposed {@code ~l1/*} observation message
+     * against this node's own recomputed observations (008.4 I3.2). Same
+     * verdict semantics as {@link L1RefValidator}.
+     */
+    interface ObservationValidator {
+        L1RefVerdict check(AppMessage message);
+    }
+
     void setL1RefSupplier(java.util.function.Supplier<L1Ref> supplier) {
         this.l1RefSupplier = supplier;
     }
 
     void setL1RefValidator(L1RefValidator validator) {
         this.l1RefValidator = validator;
+    }
+
+    void setObservationValidator(ObservationValidator validator) {
+        this.observationValidator = validator;
     }
 
     AppChainEngine(AppChainConfig config,
@@ -208,6 +223,9 @@ final class AppChainEngine implements AutoCloseable {
             return false;
         }
         if (!verifyCatchUpL1Ref(block)) {
+            return false;
+        }
+        if (!verifyCatchUpObservations(block)) {
             return false;
         }
         for (AppMessage message : block.messages()) {
@@ -444,6 +462,9 @@ final class AppChainEngine implements AutoCloseable {
             return;
         }
         if (!verifyProposalL1Ref(envelope, block)) {
+            return;
+        }
+        if (!verifyProposalObservations(envelope, block)) {
             return;
         }
         // Every message inside the block must be a valid, member-signed envelope
@@ -766,6 +787,117 @@ final class AppChainEngine implements AutoCloseable {
             log.info("Catch-up block L1 ref (slot {}) ahead of local L1 view — pausing catch-up at height {}",
                     block.l1Slot(), block.height());
             return false;
+        }
+        return true;
+    }
+
+    /**
+     * Follower-side verification of proposed {@code ~l1/*} observation
+     * messages (008.4 I3.2), consensus-critical and fail-closed: each
+     * observation must match this node's OWN recomputation from its L1
+     * stream. MISMATCH rejects the proposal; an observation ahead of the
+     * local L1 view defers it (same machinery as l1-refs); observations
+     * older than the local window are accepted (the certified chain
+     * vouches). Without a validator (no observers configured) any {@code
+     * ~l1/*} message is rejected — a chain that doesn't observe cannot
+     * verify, so it must not finalize observations.
+     *
+     * @return true to continue proposal processing; false = rejected or deferred
+     */
+    private boolean verifyProposalObservations(AppMessage envelope, AppBlock block) {
+        ObservationValidator validator = observationValidator;
+        for (AppMessage message : block.messages()) {
+            String topic = message.getTopic() != null ? message.getTopic() : "";
+            if (!topic.startsWith(com.bloxbean.cardano.yano.api.appchain.l1view.L1Observation.TOPIC_PREFIX)) {
+                continue;
+            }
+            if (validator == null) {
+                log.warn("Proposal at height {} contains observation {} but this node has no "
+                        + "observers configured — rejecting (configure the same observers on "
+                        + "every member)", block.height(), message.getMessageIdHex());
+                return false;
+            }
+            // ADR 008.4 §3.1 REQUIRED: observation slot <= the block's stable
+            // l1-ref slot — a fact may only finalize once it is stability-deep
+            // (the app chain never rolls back). Fail-closed on undecodable.
+            var observation = com.bloxbean.cardano.yano.api.appchain.l1view.L1Observation
+                    .decode(message.getBody());
+            if (observation == null || observation.slot() > block.l1Slot()) {
+                log.warn("Proposal observation {} at height {} is undecodable or not yet "
+                        + "stability-deep (obs slot {} > block l1-ref {}) — rejecting",
+                        message.getMessageIdHex(), block.height(),
+                        observation != null ? observation.slot() : -1, block.l1Slot());
+                deferredProposals.remove(envelope.getMessageIdHex());
+                return false;
+            }
+            L1RefVerdict verdict = validator.check(message);
+            switch (verdict) {
+                case OK, UNKNOWN -> { /* verified, or below window: chain vouches */ }
+                case MISMATCH -> {
+                    log.warn("Proposal observation {} does not match our own L1 recomputation at "
+                            + "height {} — rejecting (fail-closed)",
+                            message.getMessageIdHex(), block.height());
+                    deferredProposals.remove(envelope.getMessageIdHex());
+                    return false;
+                }
+                case AHEAD -> {
+                    long waitMs = Math.max(config.blockIntervalMs() * 2, 5_000);
+                    long firstDeferred = deferredProposals.computeIfAbsent(
+                            envelope.getMessageIdHex(), id -> System.currentTimeMillis());
+                    if (System.currentTimeMillis() - firstDeferred < waitMs) {
+                        log.debug("Proposal observation ahead of local L1 view — deferring height {}",
+                                block.height());
+                        executor.schedule(() -> doHandleConsensusMessage(envelope), 500,
+                                TimeUnit.MILLISECONDS);
+                    } else {
+                        log.warn("Proposal observation still ahead of local L1 view after {} ms — "
+                                + "giving up at height {} (proposer will re-propose)",
+                                waitMs, block.height());
+                        deferredProposals.remove(envelope.getMessageIdHex());
+                    }
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Catch-up variant of the observation check: MISMATCH still rejects
+     * (fail-closed); AHEAD pauses the batch until the local L1 advances;
+     * UNKNOWN (older than the window — the common case during catch-up)
+     * accepts on the certificate.
+     */
+    private boolean verifyCatchUpObservations(AppBlock block) {
+        ObservationValidator validator = observationValidator;
+        for (AppMessage message : block.messages()) {
+            String topic = message.getTopic() != null ? message.getTopic() : "";
+            if (!topic.startsWith(com.bloxbean.cardano.yano.api.appchain.l1view.L1Observation.TOPIC_PREFIX)) {
+                continue;
+            }
+            if (validator == null) {
+                log.warn("Catch-up block at height {} contains observation {} but this node has no "
+                        + "observers configured — rejecting", block.height(), message.getMessageIdHex());
+                return false;
+            }
+            var observation = com.bloxbean.cardano.yano.api.appchain.l1view.L1Observation
+                    .decode(message.getBody());
+            if (observation == null || observation.slot() > block.l1Slot()) {
+                log.warn("Catch-up observation {} at height {} is undecodable or exceeds the block "
+                        + "l1-ref — rejecting", message.getMessageIdHex(), block.height());
+                return false;
+            }
+            L1RefVerdict verdict = validator.check(message);
+            if (verdict == L1RefVerdict.MISMATCH) {
+                log.warn("Catch-up observation {} does not match our own L1 recomputation at height {} "
+                        + "— rejecting", message.getMessageIdHex(), block.height());
+                return false;
+            }
+            if (verdict == L1RefVerdict.AHEAD) {
+                log.info("Catch-up observation ahead of local L1 view — pausing catch-up at height {}",
+                        block.height());
+                return false;
+            }
         }
         return true;
     }

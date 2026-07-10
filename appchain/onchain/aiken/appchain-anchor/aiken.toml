@@ -1,0 +1,16 @@
+name = "bloxbean/appchain_anchor"
+version = "1.0.0"
+compiler = "v1.1.21"
+plutus = "v3"
+license = "MIT"
+description = "Yano app-chain script anchor — opt-in Aiken implementation (ADR app-layer/008.4)"
+
+[repository]
+user = "bloxbean"
+project = "yano"
+platform = "github"
+
+[[dependencies]]
+name = "aiken-lang/stdlib"
+version = "v2.2.0"
+source = "github"

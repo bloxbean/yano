@@ -261,6 +261,15 @@ public class YanoProducer {
     @ConfigProperty(name = YanoPropertyKeys.AppChain.ANCHOR_FALLBACK_FEE_LOVELACE, defaultValue = "300000")
     long appChainAnchorFallbackFeeLovelace;
 
+    @ConfigProperty(name = YanoPropertyKeys.AppChain.ANCHOR_MODE, defaultValue = "metadata")
+    String appChainAnchorMode;
+
+    @ConfigProperty(name = YanoPropertyKeys.AppChain.ANCHOR_SCRIPT_VALIDATOR)
+    java.util.Optional<String> appChainAnchorScriptValidator;
+
+    @ConfigProperty(name = YanoPropertyKeys.AppChain.ANCHOR_SCRIPT_THREAD_POLICY)
+    java.util.Optional<String> appChainAnchorScriptThreadPolicy;
+
     @ConfigProperty(name = YanoPropertyKeys.AppChain.L1_STABILITY_DEPTH, defaultValue = "0")
     int appChainL1StabilityDepth;
 
@@ -658,6 +667,11 @@ public class YanoProducer {
         globals.put(YanoPropertyKeys.AppChain.ANCHOR_METADATA_LABEL, appChainAnchorMetadataLabel);
         globals.put(YanoPropertyKeys.AppChain.ANCHOR_VALIDITY_SLOTS, appChainAnchorValiditySlots);
         globals.put(YanoPropertyKeys.AppChain.ANCHOR_FALLBACK_FEE_LOVELACE, appChainAnchorFallbackFeeLovelace);
+        globals.put(YanoPropertyKeys.AppChain.ANCHOR_MODE, appChainAnchorMode);
+        appChainAnchorScriptValidator.ifPresent(
+                v -> globals.put(YanoPropertyKeys.AppChain.ANCHOR_SCRIPT_VALIDATOR, v));
+        appChainAnchorScriptThreadPolicy.ifPresent(
+                v -> globals.put(YanoPropertyKeys.AppChain.ANCHOR_SCRIPT_THREAD_POLICY, v));
         globals.put(YanoPropertyKeys.AppChain.L1_STABILITY_DEPTH, appChainL1StabilityDepth);
         appChainWebhooks.ifPresent(v -> globals.put(YanoPropertyKeys.AppChain.WEBHOOKS, v));
         globals.put(YanoPropertyKeys.AppChain.RETENTION_ENABLED, appChainRetentionEnabled);
@@ -673,6 +687,7 @@ public class YanoProducer {
         forwardDynamicKeys("yano.app-chain.machines.", globals);
         forwardDynamicKeys("yano.app-chain.sequencer.", globals);
         forwardDynamicKeys("yano.app-chain.membership.", globals);
+        forwardDynamicKeys("yano.app-chain.observers.", globals);
         if (!appChainList.isEmpty() && appChainEnabled) {
             globals.put(YanoPropertyKeys.AppChain.CHAINS, appChainList);
             log.info("App-chain multi-chain config: {} chain(s)", appChainList.size());
@@ -834,6 +849,7 @@ public class YanoProducer {
                 "anchor.enabled", "anchor.signing-key", "anchor.every-blocks",
                 "anchor.max-interval-minutes", "anchor.metadata-label",
                 "anchor.validity-slots", "anchor.fallback-fee-lovelace",
+                "anchor.mode", "anchor.script.validator", "anchor.script.thread-policy",
                 "l1.stability-depth", "webhooks",
                 "retention.enabled", "retention.keep-blocks",
                 "pool.max-messages", "message.enforce-sender-seq"
@@ -854,7 +870,8 @@ public class YanoProducer {
                 if (property.startsWith(prefix + "sinks.") || property.startsWith(prefix + "zk.")
                         || property.startsWith(prefix + "machines.")
                         || property.startsWith(prefix + "sequencer.")
-                        || property.startsWith(prefix + "membership.")) {
+                        || property.startsWith(prefix + "membership.")
+                        || property.startsWith(prefix + "observers.")) {
                     config.getOptionalValue(property, String.class)
                             .ifPresent(value -> chain.put(property.substring(prefix.length()), value));
                 }
