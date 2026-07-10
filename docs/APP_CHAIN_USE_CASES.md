@@ -237,12 +237,14 @@ convert *stable* L1 observations into app messages (e.g.
 Every member can re-check the claimed L1 facts against its own node before
 co-signing — that's the semi-trusted bridge pattern.
 
-**Caveat (important).** Framework-enforced, deterministic L1 reads
-(`L1View` with strict follower verification of the block's `l1-ref`) are on
-the roadmap (ADR 005 D5); today the cross-checking discipline lives in your
-members' processes. Suitable for semi-trusted groups; not yet for adversarial
-bridge settings — and on-chain enforcement of withdrawals needs script
-anchors (also roadmap).
+**Caveat (important).** With `l1.stability-depth > 0`, followers now verify
+each block's `l1-ref` against their own L1 view (ADR 008.1 I1.3) — a
+fabricated or rolled-back reference is rejected fail-closed. The framework
+`L1View` read API (deterministic reads evaluated at `l1-ref`, ADR 005 D5) is
+still on the roadmap, so the *content* of L1-derived claims must still be
+cross-checked in your members' processes. Suitable for semi-trusted groups;
+not yet for adversarial bridge settings — and on-chain enforcement of
+withdrawals needs script anchors (also roadmap).
 
 ### C3. Custom distributions / appliances
 

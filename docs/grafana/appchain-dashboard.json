@@ -1,0 +1,105 @@
+{
+  "__comment": "Yano App-Chain dashboard (ADR app-layer/008.1 I1.8). Import into Grafana >= 10 and point the 'datasource' variable at the Prometheus instance scraping the node's /q/metrics.",
+  "title": "Yano App Chain",
+  "uid": "yano-appchain",
+  "tags": ["yano", "app-chain"],
+  "schemaVersion": 39,
+  "editable": true,
+  "time": { "from": "now-6h", "to": "now" },
+  "refresh": "30s",
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "type": "datasource",
+        "query": "prometheus",
+        "label": "Data source"
+      },
+      {
+        "name": "chain",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "${datasource}" },
+        "query": "label_values(yano_appchain_tip_height, chain)",
+        "label": "Chain",
+        "includeAll": true,
+        "multi": true,
+        "refresh": 2
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1, "type": "stat", "title": "Tip height",
+      "gridPos": { "h": 5, "w": 4, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [{ "expr": "yano_appchain_tip_height{chain=~\"$chain\"}", "legendFormat": "{{chain}}" }]
+    },
+    {
+      "id": 2, "type": "stat", "title": "Stalled",
+      "gridPos": { "h": 5, "w": 4, "x": 4, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [{ "expr": "yano_appchain_stalled{chain=~\"$chain\"}", "legendFormat": "{{chain}}" }],
+      "fieldConfig": { "defaults": { "thresholds": { "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 1 } ] } }, "overrides": [] }
+    },
+    {
+      "id": 3, "type": "stat", "title": "Peers connected",
+      "gridPos": { "h": 5, "w": 4, "x": 8, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [{ "expr": "yano_appchain_peers_connected{chain=~\"$chain\"}", "legendFormat": "{{chain}}" }]
+    },
+    {
+      "id": 4, "type": "stat", "title": "Anchor lag (blocks)",
+      "gridPos": { "h": 5, "w": 4, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [{ "expr": "yano_appchain_anchor_lag_blocks{chain=~\"$chain\"}", "legendFormat": "{{chain}}" }]
+    },
+    {
+      "id": 5, "type": "stat", "title": "Pool size",
+      "gridPos": { "h": 5, "w": 4, "x": 16, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [{ "expr": "yano_appchain_pool_size{chain=~\"$chain\"}", "legendFormat": "{{chain}}" }]
+    },
+    {
+      "id": 6, "type": "stat", "title": "Block interval p95 (s)",
+      "gridPos": { "h": 5, "w": 4, "x": 20, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [{ "expr": "histogram_quantile(0.95, sum(rate(yano_appchain_block_interval_seconds_bucket{chain=~\"$chain\"}[10m])) by (le, chain))", "legendFormat": "{{chain}}" }]
+    },
+    {
+      "id": 7, "type": "timeseries", "title": "Finalized blocks / min",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 5 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [{ "expr": "rate(yano_appchain_blocks_finalized_total{chain=~\"$chain\"}[5m]) * 60", "legendFormat": "{{chain}}" }]
+    },
+    {
+      "id": 8, "type": "timeseries", "title": "Finalized messages / min",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 5 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [{ "expr": "rate(yano_appchain_messages_finalized_total{chain=~\"$chain\"}[5m]) * 60", "legendFormat": "{{chain}}" }]
+    },
+    {
+      "id": 9, "type": "timeseries", "title": "Dropped messages / min (by reason)",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 13 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [{ "expr": "rate(yano_appchain_messages_dropped_total{chain=~\"$chain\"}[5m]) * 60", "legendFormat": "{{chain}} {{reason}}" }]
+    },
+    {
+      "id": 10, "type": "timeseries", "title": "Sink lag (blocks)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 13 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [{ "expr": "yano_appchain_sink_lag_blocks{chain=~\"$chain\"}", "legendFormat": "{{chain}} {{sink}}" }]
+    },
+    {
+      "id": 11, "type": "timeseries", "title": "Pool size over time",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 21 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [{ "expr": "yano_appchain_pool_size{chain=~\"$chain\"}", "legendFormat": "{{chain}}" }]
+    },
+    {
+      "id": 12, "type": "timeseries", "title": "Anchor lag over time",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 21 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [{ "expr": "yano_appchain_anchor_lag_blocks{chain=~\"$chain\"}", "legendFormat": "{{chain}}" }]
+    }
+  ]
+}

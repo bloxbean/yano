@@ -231,6 +231,21 @@ Submission notes:
 - Limits: `max-message-bytes` (default 64 KB), TTL `default-ttl-seconds`
   (default 600) — an unfinalized message expires out of the pool after that.
 - Topics starting with `~` are reserved (consensus/system traffic).
+- **Backpressure**: when the pending pool (`pool.max-messages`, default
+  10 000) is full, `POST /messages` returns **429** and the message is
+  neither stored nor relayed — back off and retry. Inbound gossip dropped by
+  a full pool is counted in `GET /status` under `drops.pool_full`
+  (never an error: the sender's own node already holds the message).
+- **Replay protection (sender-seq)**: every envelope carries a per-sender
+  sequence number. A message whose seq is at or below the sender's last
+  *finalized* seq is a replay — rejected at admission on every ledger node
+  (counted as `drops.stale_seq`). Gaps are allowed and meaningless (seqs are
+  wall-clock-seeded so restarts never reuse one); the seq does **not** define
+  ordering — the sequencer does. With `message.enforce-sender-seq: true`
+  the rule also becomes consensus-visible: followers reject any block whose
+  per-sender seqs are not strictly increasing above the finalized floor
+  (default off this release for compatibility; all members must agree on
+  this flag, like the state machine id).
 
 ---
 
@@ -303,11 +318,28 @@ public class OrderBookStateMachine implements AppStateMachine {
 }
 ```
 
-Rules: `apply` must be **deterministic** (no wall clock, randomness, or
-external I/O) — every member re-executes it and the resulting state root must
-match the proposer's byte-for-byte, or the block is rejected. Note that
-`validate()` runs at the proposer's admission only — any rule that must hold
-by consensus belongs in `apply()`.
+Rules: `apply` must be **deterministic** — every member re-executes it and
+the resulting state root must match the proposer's byte-for-byte, or the block
+is rejected (and your chain stalls at that height). Forbidden inside
+`apply()`: wall-clock time (use `block.timestamp()`), randomness, network or
+file I/O, environment reads, iteration over unordered collections
+(`HashMap`/`HashSet` — use ordered ones), and locale/charset-dependent or
+library-default serialization. Note that `validate()` runs at the proposer's
+admission only — any rule that must hold by consensus belongs in `apply()`.
+
+**Verify before deploying** with the conformance harness (in `yano-runtime`,
+ADR 008.1 I1.6) — it applies one identical block corpus through the real
+ledger commit path in N independent runs plus a kill-and-reopen replay, and
+asserts byte-identical roots at every height:
+
+```java
+StateMachineConformance.builder(new MyStateMachineProvider())
+        .blocks(50).messagesPerBlock(5).seed(42)
+        .bodyGenerator((height, index, random) -> myRealisticCommand(random))
+        .assertDeterministic();   // AssertionError with the exact divergence height
+```
+
+The plugin template ships this test pre-wired (`CounterConformanceTest`).
 
 ### 6.1 Deploy as a plugin jar on the default distribution (no rebuild)
 
@@ -368,7 +400,11 @@ Flat (single-chain) keys. The same suffixes apply per chain under
 | `anchor.every-blocks` | `10` | Anchor after this many new app blocks |
 | `anchor.max-interval-minutes` | `60` | Anchor at least this often while blocks pend |
 | `anchor.metadata-label` | `7014` | Metadata label of anchor txs |
-| `l1.stability-depth` | `0` | Depth of the stable L1 reference in app blocks (0 = off) |
+| `anchor.validity-slots` | `7200` | Anchor tx TTL = current L1 slot + this; a resubmitted anchor can never race a late-landing original |
+| `anchor.fallback-fee-lovelace` | `300000` | Anchor tx fee when protocol parameters are unavailable; normally the fee is computed from the node's current params by tx size |
+| `l1.stability-depth` | `0` | Depth of the stable L1 reference in app blocks (0 = off). When > 0, followers verify each proposal's L1 ref against their **own** L1 view (monotonic, hash-matched at depth; brief proposer lead is retried, a fabricated ref is rejected fail-closed) and the node refuses to start without an L1 event feed |
+| `pool.max-messages` | `10000` | Pending-pool capacity; a full pool returns 429 on submit and drops (counted) inbound gossip (§4) |
+| `message.enforce-sender-seq` | `false` | Consensus-visible sender-seq rule: followers reject blocks with stale/duplicate per-sender seqs (§4). Must match on all members |
 
 **Enabling.** Three states, checked in this order:
 
@@ -458,6 +494,10 @@ shared configuration.
 
 ```yaml
 yano.app-chain.state-machine: kv-registry
+# Optional structural check on PUT values (raw | cbor | utf8, default raw).
+# A non-conforming PUT is rejected at admission and is a deterministic no-op
+# in apply on every member.
+yano.app-chain.machines.kv-registry.value-format: cbor
 ```
 
 **`approvals`** — k-of-n approval workflows: `propose` / `approve` / `reject`
@@ -477,7 +517,15 @@ state key. Use for netting, loyalty points, internal credits.
 
 ```yaml
 yano.app-chain.state-machine: balances
+# Optional: restrict minting to one member (32-byte hex Ed25519 key).
+# Unset = any member may mint (open mode) — set this for production chains.
+yano.app-chain.machines.balances.minter: aa11...
 ```
+
+Machine settings live under `yano.app-chain.machines.<machine-id>.*` (per
+chain: `chains[i].machines.<machine-id>.*`) and must be identical on every
+member — they are part of the deterministic apply logic, like the machine id
+itself.
 
 **`doc-trail`** — append-only per-entity event trails keyed by an external id
 (`productId`, `caseId`, ...): each entry advances a chained head
@@ -681,17 +729,54 @@ curl -XPOST localhost:8080/api/v1/app-chain/snapshot \
 # (<yano.storage.path>/app-chain/<chain-id>/), then start it
 ```
 
-The restored node verifies ledger integrity at startup and catches up from the
-snapshot height over protocol 103. Snapshots are also the onboarding path past
-a pruning horizon (§13).
+Every snapshot carries a **signed manifest** (`snapshot-manifest.json` +
+`.sig`): the snapshotting member signs the chain id, height, tip block hash,
+state root, membership-epoch hash, last confirmed anchor and a sha256 of every
+file. On first start after a restore the node verifies — *before opening the
+database* — that the manifest is signed by a configured member key and that
+every file hash matches, then binds the opened ledger to the attested tip
+(height, block hash, state root, membership). Any mismatch refuses to start.
+A `.manifest-verified` marker skips re-verification on later restarts; legacy
+snapshots without a manifest still restore (integrity checks only).
 
-### 14.4 Metrics
+Independently of manifests, **every** start now recomputes the tip block hash
+and verifies the tip's finality certificate against membership-at-height — a
+ledger whose stored values merely agree with each other no longer passes.
+
+The restored node catches up from the snapshot height over protocol 103.
+Snapshots are also the onboarding path past a pruning horizon (§13).
+
+### 14.4 Metrics & health
 
 Standard Quarkus Prometheus endpoint `/q/metrics`, per-chain `chain` tag:
 `yano_appchain_tip_height`, `yano_appchain_pool_size`,
-`yano_appchain_peers_connected` (gauges),
+`yano_appchain_peers_connected`, `yano_appchain_stalled` (0/1),
+`yano_appchain_anchor_lag_blocks`, `yano_appchain_sink_lag_blocks{sink}`
+(gauges), `yano_appchain_messages_dropped_total{reason}`,
 `yano_appchain_blocks_finalized_total`,
-`yano_appchain_messages_finalized_total`, `yano_appchain_block_interval`.
+`yano_appchain_messages_finalized_total` (counters),
+`yano_appchain_block_interval` (timer).
+
+A ready-made Grafana dashboard ships at `docs/grafana/appchain-dashboard.json`.
+
+**Status page**: a built-in dashboard is served at **`/ui/app-chain/`**
+(sibling of the L1 node page at `/ui/status/`, cross-linked): chain selector
+(multi-chain), role/health pills, tip + membership hero, consensus/pool/
+traffic/anchor/sinks/peers panels, four trend charts, a live SSE message feed
+and a recent-blocks table. Query params: `?api=` (API prefix), `?poll=` (ms),
+`?noanim=1`. When API-key auth is enabled, set the key via the key button
+(stored in the browser; the live feed uses fetch-streaming so the key applies
+there too).
+
+`GET /status` also reports `lastBlockAtMillis`, `blockIntervalMs` (rolling
+average), `stalled`, `drops` (by reason), `anchor.lagBlocks` and per-sink
+`lagBlocks`.
+
+**Health**: `/q/health/ready` gates only on the subsystem running (peer
+connectivity is deliberately excluded — a two-node bootstrap would deadlock).
+For operational alerting use the **health group**
+`GET /q/health/group/appchain`: DOWN on stall, anchor error, sink delivery
+error, or paused submissions, with per-chain data fields.
 
 ---
 
