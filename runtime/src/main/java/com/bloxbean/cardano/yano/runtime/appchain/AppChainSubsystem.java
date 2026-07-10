@@ -43,6 +43,8 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     private static final long KEEPALIVE_INTERVAL_SECONDS = 20;
     private static final String SYSTEM_TOPIC_PREFIX = "~";
     private static final String CONSENSUS_TOPIC_PREFIX = "~consensus/";
+    /** Script-anchor co-signing (008.4): diffusion-only, never pooled/sequenced. */
+    private static final String ANCHOR_TOPIC_PREFIX = "~anchor/";
 
     private final AppChainConfig config;
     private final long protocolMagic;
@@ -75,6 +77,12 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
 
     // M3: L1 anchoring + stable L1 reference tracking
     private volatile AnchorService anchorService;
+    /** Script anchors (008.4). Every ledger member gets one (co-sign verifier);
+     *  only the anchor.enabled node runs it in leader mode. */
+    private volatile ScriptAnchorService scriptAnchorService;
+    /** L1 observations (008.4 I3.2): all members recompute; the scheduled
+     *  proposer injects. Null when no observers are configured. */
+    private volatile L1ObservationService observationService;
     private volatile java.util.function.Function<byte[], String> txSubmitter;
     private volatile java.util.function.Supplier<com.bloxbean.cardano.yano.api.utxo.UtxoState> utxoStateSupplier;
     private final java.util.concurrent.ConcurrentLinkedDeque<AppChainEngine.L1Ref> recentL1Points =
@@ -380,8 +388,20 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
      * anchor input selection). Called by the runtime before start; optional —
      * without it, anchoring is unavailable even when configured.
      */
-    /** Current linear-fee protocol parameters for anchor tx pricing (008.1 I1.5). */
-    public record AnchorFeeParams(long minFeeA, long minFeeB) {
+    /**
+     * Current protocol parameters for anchor tx pricing: linear fee (008.1
+     * I1.5) plus, for script anchors (008.4), the ex-unit prices and the
+     * PlutusV3 cost model (script-data-hash language views). The script
+     * fields may be null — the script anchor falls back to Conway defaults.
+     */
+    public record AnchorFeeParams(long minFeeA, long minFeeB,
+                                  java.math.BigDecimal priceMem,
+                                  java.math.BigDecimal priceStep,
+                                  long[] costModelV3) {
+        /** Pre-008.4 signature — linear fee only. */
+        public AnchorFeeParams(long minFeeA, long minFeeB) {
+            this(minFeeA, minFeeB, null, null, null);
+        }
     }
 
     private volatile java.util.function.Supplier<AnchorFeeParams> anchorFeeParamsSupplier;
@@ -519,6 +539,17 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                 continue;
             }
             receivedCount.incrementAndGet();
+            // ~anchor/* (008.4): diffusion-only co-signing traffic — relayed
+            // but never pooled/sequenced; the leader re-diffuses each tick, so
+            // first-sighting delivery is enough
+            if (topic.startsWith(ANCHOR_TOPIC_PREFIX)) {
+                relay(message);
+                ScriptAnchorService currentScriptAnchor = scriptAnchorService;
+                if (currentScriptAnchor != null) {
+                    currentScriptAnchor.onAnchorMessage(message);
+                }
+                continue;
+            }
             route(message, ReceivedAppMessage.Source.PEER);
             relay(message);
         }
@@ -643,6 +674,45 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         AppMessage message = buildSigned(topic, body, ttlSeconds);
         relay(message);
         return message;
+    }
+
+    /** Is this node the currently-scheduled proposer (fixed or rotating)? */
+    private boolean isScheduledProposer() {
+        AppChainEngine currentEngine = engine;
+        if (currentEngine == null) {
+            return false;
+        }
+        Map<String, Object> sequencer = currentEngine.sequencerStatus();
+        String scheduled = String.valueOf(
+                sequencer.getOrDefault("currentProposer", sequencer.get("proposer")));
+        return signer.publicKeyHex().equalsIgnoreCase(scheduled);
+    }
+
+    /**
+     * Inject an L1 observation into the pool for sequencing (008.4 I3.2) —
+     * the internal path for the reserved {@code ~l1/*} topics ({@link #submit}
+     * rejects them for external callers). Best-effort: a full pool drops the
+     * observation (counted); the proposer re-observes nothing — the fact is
+     * simply not sequenced until an operator inspects the drop counters.
+     */
+    private void injectObservation(com.bloxbean.cardano.yano.api.appchain.l1view.L1Observation observation) {
+        try {
+            AppMessage message = buildSigned(observation.topic(), observation.encode(),
+                    config.defaultTtlSeconds());
+            AppMsgPool.AddResult added = pool.add(message);
+            if (added == AppMsgPool.AddResult.ADDED) {
+                relay(message);
+                record(message, ReceivedAppMessage.Source.LOCAL);
+                log.info("L1 observation injected: topic={}, l1Slot={}, id={}",
+                        observation.topic(), observation.slot(), message.getMessageIdHex());
+            } else if (added == AppMsgPool.AddResult.FULL) {
+                countDrop("pool_full");
+                log.warn("L1 observation dropped — pool full (topic {}, l1Slot {})",
+                        observation.topic(), observation.slot());
+            }
+        } catch (Exception e) {
+            log.warn("L1 observation injection failed: {}", e.toString());
+        }
     }
 
     // ------------------------------------------------------------------
@@ -938,11 +1008,31 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
 
     @Override
     public boolean forceAnchor() {
+        ScriptAnchorService currentScriptAnchor = scriptAnchorService;
+        if (currentScriptAnchor != null && config.anchoringEnabled()
+                && config.anchor() != null && config.anchor().scriptMode()) {
+            return currentScriptAnchor.forceAnchorNow();
+        }
         AnchorService currentAnchor = anchorService;
         if (currentAnchor == null) {
             return false; // anchoring disabled
         }
         return currentAnchor.forceAnchorNow();
+    }
+
+    /**
+     * Bootstrap the script anchor (ADR 008.4 §2.5, admin action): mint the
+     * one-shot thread NFT and lock the initial datum at the anchor validator.
+     * Only valid on the anchor leader with {@code anchor.mode: script}.
+     */
+    public Map<String, Object> bootstrapScriptAnchor() {
+        ScriptAnchorService currentScriptAnchor = scriptAnchorService;
+        if (currentScriptAnchor == null)
+            throw new IllegalStateException("Script-anchor service is not available on this node");
+        if (!config.anchoringEnabled() || config.anchor() == null || !config.anchor().scriptMode())
+            throw new IllegalStateException("Script anchoring is not enabled for this chain "
+                    + "(set anchor.enabled: true and anchor.mode: script)");
+        return currentScriptAnchor.bootstrap();
     }
 
     @Override
@@ -1054,11 +1144,25 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             status.put("stateMachine", stateMachine.id());
         }
         AnchorService currentAnchor = anchorService;
+        ScriptAnchorService currentScriptAnchor = scriptAnchorService;
         if (currentAnchor != null) {
             Map<String, Object> anchorStatus = currentAnchor.status();
             anchorStatus.put("lagBlocks",
                     Math.max(0, tipHeight() - currentAnchor.lastAnchoredHeight()));
             status.put("anchor", anchorStatus);
+        } else if (currentScriptAnchor != null
+                && ((config.anchoringEnabled() && config.anchor() != null && config.anchor().scriptMode())
+                        || currentScriptAnchor.bootstrapped())) {
+            // Script mode (008.4): leader always; followers once they adopt
+            // the anchor identity from a verified sign request
+            Map<String, Object> anchorStatus = currentScriptAnchor.status();
+            anchorStatus.put("lagBlocks",
+                    Math.max(0, tipHeight() - currentScriptAnchor.lastAnchoredHeight()));
+            status.put("anchor", anchorStatus);
+        }
+        L1ObservationService currentObservations = observationService;
+        if (currentObservations != null) {
+            status.put("observers", currentObservations.status());
         }
         if (!sinkRunners.isEmpty()) {
             Map<String, Object> sinks = new LinkedHashMap<>();
@@ -1208,6 +1312,23 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             chainEngine.setOnBlockFinalized(this::onBlockFinalized);
             chainEngine.setL1RefSupplier(this::stableL1Ref);
             chainEngine.setL1RefValidator(this::checkL1Ref);
+            // L1 observations (008.4 I3.2) — misconfiguration fails start:
+            // observers are consensus-critical and must match on all members
+            this.observationService = L1ObservationService.fromConfig(
+                    config.pluginSettings(), Math.max(config.l1StabilityDepth(), 1) + 64,
+                    pluginClassLoader, log);
+            if (observationService != null) {
+                if (config.l1StabilityDepth() <= 0) {
+                    // Injection is gated on the stable L1 ref — without it a
+                    // reorg-able fact could finalize into a chain that never
+                    // rolls back (ADR 008.4 §3.1: slot <= block l1-ref REQUIRED)
+                    throw new IllegalArgumentException("L1 observers require l1.stability-depth > 0 "
+                            + "(observations are injected only once stability-deep — rollback safety)");
+                }
+                chainEngine.setObservationValidator(observationService::verify);
+                log.info("App-chain '{}' L1 observers configured: {}",
+                        config.chainId(), observationService.status().keySet());
+            }
             chainEngine.setEnvelopeRelay(this::relay);
             if (governedMode()) {
                 GovernedMembership governed = new GovernedMembership(
@@ -1229,7 +1350,12 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                 chainEngine.onConsensusMessage(early);
             }
 
-            if (config.anchoringEnabled()) {
+            boolean anchorScriptMode = config.anchor() != null && config.anchor().scriptMode();
+            java.util.function.Supplier<Long> anchorSlotSupplier = () -> {
+                AppChainEngine.L1Ref last = recentL1Points.peekLast();
+                return last != null ? last.slot() : 0L;
+            };
+            if (config.anchoringEnabled() && !anchorScriptMode) {
                 if (txSubmitter == null || utxoStateSupplier == null) {
                     log.warn("App-chain anchoring configured but L1 access is not wired — anchoring disabled");
                 } else {
@@ -1251,10 +1377,47 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                                         ? new AnchorService.FeeParams(params.minFeeA(), params.minFeeB())
                                         : null;
                             },
+                            anchorSlotSupplier);
+                }
+            }
+            // Script anchors (008.4): EVERY ledger member runs the co-sign
+            // verifier (zero follower config — sign requests are verified
+            // against this node's own ledger + L1 view); the node with
+            // anchor.enabled + anchor.mode=script leads bootstrap/advances.
+            if (txSubmitter != null && utxoStateSupplier != null) {
+                boolean scriptLeader = config.anchoringEnabled() && anchorScriptMode;
+                try {
+                    var scriptConfig = config.anchor() != null && config.anchor().script() != null
+                            ? config.anchor().script()
+                            : com.bloxbean.cardano.yano.api.appchain.AppChainConfig.AnchorScriptConfig.defaults();
+                    var anchorCfg = config.anchor() != null ? config.anchor()
+                            : new com.bloxbean.cardano.yano.api.appchain.AppChainConfig.AnchorConfig(
+                                    false, "", 0, 0, 0);
+                    ScriptAnchorService scriptService = new ScriptAnchorService(
+                            config.chainId(),
+                            anchorCfg,
+                            ledgerStore,
+                            txSubmitter,
+                            utxoStateSupplier,
+                            h -> ledgerStore.block(h).orElse(null),
+                            ledgerStore::tipHeight,
+                            new AnchorScriptArtifacts(scriptConfig),
+                            signer,
+                            group::members,
+                            group::threshold,
+                            (topic, body) -> buildAndDiffuse(topic, body, 120),
+                            scriptLeader,
+                            protocolMagic,
+                            log);
+                    scriptService.wireFees(
                             () -> {
-                                AppChainEngine.L1Ref last = recentL1Points.peekLast();
-                                return last != null ? last.slot() : 0L;
-                            });
+                                var supplier = anchorFeeParamsSupplier;
+                                return supplier != null ? supplier.get() : null;
+                            },
+                            anchorSlotSupplier);
+                    this.scriptAnchorService = scriptService;
+                } catch (Exception e) {
+                    log.warn("Script-anchor service unavailable: {}", e.toString());
                 }
             }
             buildSinks(ledgerStore);
@@ -1311,6 +1474,13 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             log.info("App-chain L1 anchoring enabled (address: {}, every {} blocks, label {})",
                     currentAnchor.anchorAddress(), config.anchor().everyBlocks(),
                     config.anchor().metadataLabel());
+        }
+        ScriptAnchorService currentScriptAnchor = scriptAnchorService;
+        if (currentScriptAnchor != null && config.anchoringEnabled()
+                && config.anchor() != null && config.anchor().scriptMode()) {
+            exec.scheduleWithFixedDelay(currentScriptAnchor::tick, 10, 10, TimeUnit.SECONDS);
+            log.info("App-chain L1 SCRIPT anchoring enabled (008.4): wallet={}, every {} blocks",
+                    currentScriptAnchor.anchorAddress(), config.anchor().everyBlocks());
         }
         if (config.retentionEnabled()) {
             exec.scheduleWithFixedDelay(this::retentionTick, 30, 30, TimeUnit.SECONDS);
@@ -1404,13 +1574,39 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             while (recentL1Points.size() > Math.max(config.l1StabilityDepth(), 1) + 64) {
                 recentL1Points.pollFirst();
             }
+            // L1 observations (008.4 I3.2): EVERY member recomputes (feeds the
+            // verification window). Injection is STABILITY-GATED for rollback
+            // safety — the app chain never rolls back, so a fact may only be
+            // sequenced once it is l1.stability-depth confirmations old. All
+            // members drain at the same L1 block; the scheduled proposer
+            // injects (the message then replicates via the shared pool).
+            L1ObservationService currentObservations = observationService;
+            if (currentObservations != null && event.block() != null) {
+                currentObservations.onL1Block(event.slot(),
+                        HexUtil.decodeHexString(event.blockHash()), event.block());
+                AppChainEngine.L1Ref stable = stableL1Ref();
+                if (stable != null) {
+                    List<com.bloxbean.cardano.yano.api.appchain.l1view.L1Observation> ready =
+                            currentObservations.drainInjectable(stable.slot());
+                    if (!ready.isEmpty() && isScheduledProposer()) {
+                        for (var observation : ready) {
+                            injectObservation(observation);
+                        }
+                    }
+                }
+            }
             AnchorService currentAnchor = anchorService;
-            if (currentAnchor != null && event.block() != null
+            ScriptAnchorService currentScriptAnchor = scriptAnchorService;
+            if ((currentAnchor != null || currentScriptAnchor != null) && event.block() != null
                     && event.block().getTransactionBodies() != null) {
                 List<String> txHashes = event.block().getTransactionBodies().stream()
                         .map(com.bloxbean.cardano.yaci.core.model.TransactionBody::getTxHash)
                         .toList();
-                AnchorService.ConfirmedAnchor confirmed = currentAnchor.onL1Block(event.slot(), txHashes);
+                AnchorService.ConfirmedAnchor confirmed = currentAnchor != null
+                        ? currentAnchor.onL1Block(event.slot(), txHashes) : null;
+                if (confirmed == null && currentScriptAnchor != null) {
+                    confirmed = currentScriptAnchor.onL1Block(event.slot(), txHashes);
+                }
                 if (confirmed != null && eventBus != null) {
                     eventBus.publish(new com.bloxbean.cardano.yano.api.events.AppChainAnchoredEvent(
                                     config.chainId(), confirmed.fromHeight(), confirmed.toHeight(),
@@ -1430,6 +1626,14 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             AnchorService currentAnchor = anchorService;
             if (currentAnchor != null) {
                 currentAnchor.onL1Rollback(targetSlot);
+            }
+            ScriptAnchorService currentScriptAnchor = scriptAnchorService;
+            if (currentScriptAnchor != null) {
+                currentScriptAnchor.onL1Rollback(targetSlot);
+            }
+            L1ObservationService currentObservations = observationService;
+            if (currentObservations != null) {
+                currentObservations.onL1Rollback(targetSlot);
             }
         } catch (Exception e) {
             log.warn("App-chain L1 rollback handling failed: {}", e.toString());

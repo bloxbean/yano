@@ -159,6 +159,12 @@ public class AppChainResource {
         return singleChain().forceAnchor();
     }
 
+    @POST
+    @Path("admin/anchor/bootstrap")
+    public Response bootstrapScriptAnchor() {
+        return singleChain().bootstrapScriptAnchor();
+    }
+
     @GET
     @Path("stream")
     @Produces(MediaType.SERVER_SENT_EVENTS)
@@ -524,6 +530,23 @@ public class AppChainResource {
         public Response forceAnchor() {
             boolean triggered = gateway.forceAnchor();
             return Response.ok(Map.of("chainId", gateway.chainId(), "anchorTriggered", triggered)).build();
+        }
+
+        /**
+         * Bootstrap the script anchor (ADR 008.4): mint the thread NFT and
+         * lock the initial datum at the anchor validator. Admin action;
+         * anchor leader with {@code anchor.mode: script} only.
+         */
+        @POST
+        @Path("admin/anchor/bootstrap")
+        public Response bootstrapScriptAnchor() {
+            try {
+                Map<String, Object> result = new java.util.LinkedHashMap<>(gateway.bootstrapScriptAnchor());
+                result.put("chainId", gateway.chainId());
+                return Response.accepted(result).build();
+            } catch (IllegalStateException e) {
+                throw jsonError(Response.Status.CONFLICT, e.getMessage());
+            }
         }
 
         /**

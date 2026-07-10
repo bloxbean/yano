@@ -201,15 +201,18 @@ public record AppChainConfig(String chainId,
     }
 
     /**
-     * L1 anchoring policy (metadata mode, ADR app-layer/005 D4).
+     * L1 anchoring policy (metadata mode A1, ADR app-layer/005 D4; script
+     * mode A2, ADR app-layer/008.4).
      *
      * @param enabled            anchor at all
      * @param signingKeyHex      anchor wallet Ed25519 payment key (hex 32-byte seed)
      * @param everyBlocks        anchor when this many new app blocks finalized
      * @param maxIntervalMinutes anchor at least this often while blocks are pending
-     * @param metadataLabel      tx metadata label (default 7014)
+     * @param metadataLabel      tx metadata label (default 7014, metadata mode)
      * @param validitySlots      anchor tx TTL: current L1 slot + this (008.1 I1.5)
      * @param fallbackFeeLovelace fee used when protocol parameters are unavailable
+     * @param mode               {@code metadata} (default) or {@code script} (008.4)
+     * @param script             script-mode artifact refs; null unless mode=script
      */
     public record AnchorConfig(boolean enabled,
                                String signingKeyHex,
@@ -217,16 +220,28 @@ public record AppChainConfig(String chainId,
                                long maxIntervalMinutes,
                                long metadataLabel,
                                long validitySlots,
-                               long fallbackFeeLovelace) {
+                               long fallbackFeeLovelace,
+                               String mode,
+                               AnchorScriptConfig script) {
 
         public static final long DEFAULT_VALIDITY_SLOTS = 7_200;
         public static final long DEFAULT_FALLBACK_FEE_LOVELACE = 300_000;
+        public static final String MODE_METADATA = "metadata";
+        public static final String MODE_SCRIPT = "script";
 
         /** Pre-008.1 signature — kept for source compatibility. */
         public AnchorConfig(boolean enabled, String signingKeyHex, long everyBlocks,
                             long maxIntervalMinutes, long metadataLabel) {
             this(enabled, signingKeyHex, everyBlocks, maxIntervalMinutes, metadataLabel,
                     DEFAULT_VALIDITY_SLOTS, DEFAULT_FALLBACK_FEE_LOVELACE);
+        }
+
+        /** Pre-008.4 signature (metadata mode) — kept for source compatibility. */
+        public AnchorConfig(boolean enabled, String signingKeyHex, long everyBlocks,
+                            long maxIntervalMinutes, long metadataLabel,
+                            long validitySlots, long fallbackFeeLovelace) {
+            this(enabled, signingKeyHex, everyBlocks, maxIntervalMinutes, metadataLabel,
+                    validitySlots, fallbackFeeLovelace, MODE_METADATA, null);
         }
 
         public AnchorConfig {
@@ -243,6 +258,46 @@ public record AppChainConfig(String chainId,
                 validitySlots = DEFAULT_VALIDITY_SLOTS;
             if (fallbackFeeLovelace <= 0)
                 fallbackFeeLovelace = DEFAULT_FALLBACK_FEE_LOVELACE;
+            if (mode == null || mode.isBlank())
+                mode = MODE_METADATA;
+            if (!MODE_METADATA.equals(mode) && !MODE_SCRIPT.equals(mode))
+                throw new IllegalArgumentException(
+                        "yano.app-chain.anchor.mode must be 'metadata' or 'script', got: " + mode);
+            if (MODE_SCRIPT.equals(mode) && script == null)
+                script = AnchorScriptConfig.defaults();
+        }
+
+        public boolean scriptMode() {
+            return MODE_SCRIPT.equals(mode);
+        }
+    }
+
+    /**
+     * Script-anchor (A2) artifact references (ADR app-layer/008.4 §2.4). Each
+     * ref selects a compiled Plutus V3 UPLC artifact; script hash and address
+     * are ALWAYS derived from the resolved artifact, never from source:
+     * <ul>
+     *   <li>{@code builtin:julc} — the bundled julc-compiled artifact</li>
+     *   <li>{@code file:/path} — a .plutus.json blueprint or raw double-CBOR hex file</li>
+     *   <li>{@code hex:...} — inline double-CBOR UPLC hex</li>
+     * </ul>
+     *
+     * @param validatorRef    parameterized anchor spending validator artifact
+     * @param threadPolicyRef parameterized one-shot thread NFT policy artifact
+     */
+    public record AnchorScriptConfig(String validatorRef, String threadPolicyRef) {
+
+        public static final String BUILTIN_JULC = "builtin:julc";
+
+        public static AnchorScriptConfig defaults() {
+            return new AnchorScriptConfig(BUILTIN_JULC, BUILTIN_JULC);
+        }
+
+        public AnchorScriptConfig {
+            if (validatorRef == null || validatorRef.isBlank())
+                validatorRef = BUILTIN_JULC;
+            if (threadPolicyRef == null || threadPolicyRef.isBlank())
+                threadPolicyRef = BUILTIN_JULC;
         }
     }
 

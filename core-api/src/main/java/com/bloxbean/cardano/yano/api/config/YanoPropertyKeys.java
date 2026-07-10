@@ -529,6 +529,12 @@ public final class YanoPropertyKeys {
         public static final String ANCHOR_VALIDITY_SLOTS = "yano.app-chain.anchor.validity-slots";
         /** Anchor tx fee when protocol parameters are unavailable. */
         public static final String ANCHOR_FALLBACK_FEE_LOVELACE = "yano.app-chain.anchor.fallback-fee-lovelace";
+        /** Anchor mode: metadata (default, A1) or script (A2, ADR 008.4). */
+        public static final String ANCHOR_MODE = "yano.app-chain.anchor.mode";
+        /** Script-anchor validator artifact ref: builtin:julc | file:/path | hex:... */
+        public static final String ANCHOR_SCRIPT_VALIDATOR = "yano.app-chain.anchor.script.validator";
+        /** Script-anchor thread-policy artifact ref (same forms as the validator). */
+        public static final String ANCHOR_SCRIPT_THREAD_POLICY = "yano.app-chain.anchor.script.thread-policy";
         /** Depth (L1 blocks) of the stable L1 reference in app blocks; 0 = disabled. */
         public static final String L1_STABILITY_DEPTH = "yano.app-chain.l1.stability-depth";
         /** Comma-separated webhook URLs receiving finalized blocks (at-least-once, cursored). */

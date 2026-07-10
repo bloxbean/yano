@@ -122,15 +122,31 @@ yano:
     #   interval-ms: 2000
     #   max-messages: 500
     # state-machine: ordered-log                          # built-in default app
-    # L1 anchoring (metadata mode; anchor wallet must be funded):
+    # L1 anchoring (anchor wallet must be funded):
     # anchor:
     #   enabled: true
     #   signing-key: "<hex 32-byte Ed25519 seed>"         # anchor wallet payment key
     #   every-blocks: 10
     #   max-interval-minutes: 60
-    #   metadata-label: 7014
+    #   metadata-label: 7014                              # metadata mode (A1) only
+    #   mode: metadata                                    # metadata (default) | script (ADR 008.4)
+    #   script:                                           # script mode (A2): threshold-signed anchor UTxO
+    #     validator: builtin:julc                         # builtin:julc | file:/path | hex:...
+    #     thread-policy: builtin:julc
+    #   # Script mode: bootstrap once via POST /app-chain/admin/anchor/bootstrap;
+    #   # followers need NO anchor config — they verify + co-sign automatically.
     # l1:
     #   stability-depth: 36                               # L1 ref depth in app blocks
+    # L1 observers (ADR 008.4 I3.2): deterministic L1-fact injection on ~l1/<id>.
+    # MUST be configured identically on EVERY member (followers verify each
+    # observation against their own recomputation before voting — fail-closed):
+    # observers:
+    #   deposits:
+    #     type: address-deposit                           # watch payments to an address
+    #     address: "addr_test1..."
+    #   registry:
+    #     type: metadata-label                            # watch a tx metadata label
+    #     label: 7014
   dns:
     cache:
       # Positive DNS cache TTL in seconds. Defaults to 60 when omitted.
