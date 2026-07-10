@@ -588,7 +588,8 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 (int) parseLong(get.apply("pool.max-messages"),
                         com.bloxbean.cardano.yano.api.appchain.AppChainConfig.DEFAULT_POOL_MAX_MESSAGES),
                 booleanOf(get.apply("message.enforce-sender-seq"), false),
-                pluginSettings(collectPrefixed, "sinks.", "zk.", "machines."));
+                pluginSettings(collectPrefixed, "sinks.", "zk.", "machines.", "sequencer.",
+                        "membership."));
     }
 
     /**

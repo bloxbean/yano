@@ -671,6 +671,8 @@ public class YanoProducer {
         forwardDynamicKeys("yano.app-chain.sinks.", globals);
         forwardDynamicKeys("yano.app-chain.zk.", globals);
         forwardDynamicKeys("yano.app-chain.machines.", globals);
+        forwardDynamicKeys("yano.app-chain.sequencer.", globals);
+        forwardDynamicKeys("yano.app-chain.membership.", globals);
         if (!appChainList.isEmpty() && appChainEnabled) {
             globals.put(YanoPropertyKeys.AppChain.CHAINS, appChainList);
             log.info("App-chain multi-chain config: {} chain(s)", appChainList.size());
@@ -847,10 +849,12 @@ public class YanoProducer {
                 config.getOptionalValue(prefix + suffix, String.class)
                         .ifPresent(value -> chain.put(suffix, value));
             }
-            // Dynamic plugin keys: chains[i].{sinks,zk,machines}.* -> suffix
+            // Dynamic plugin keys: chains[i].{sinks,zk,machines,sequencer,membership}.* -> suffix
             for (String property : config.getPropertyNames()) {
                 if (property.startsWith(prefix + "sinks.") || property.startsWith(prefix + "zk.")
-                        || property.startsWith(prefix + "machines.")) {
+                        || property.startsWith(prefix + "machines.")
+                        || property.startsWith(prefix + "sequencer.")
+                        || property.startsWith(prefix + "membership.")) {
                     config.getOptionalValue(property, String.class)
                             .ifPresent(value -> chain.put(property.substring(prefix.length()), value));
                 }

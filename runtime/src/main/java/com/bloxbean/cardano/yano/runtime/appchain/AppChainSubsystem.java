@@ -38,10 +38,11 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     private static final int RECENT_MESSAGES_LIMIT = 1000;
-    private static final int SEEN_IDS_LIMIT = 100_000;
+    private static final int SEEN_IDS_HARD_CAP = 200_000;
     private static final long CONNECT_INTERVAL_SECONDS = 5;
     private static final long KEEPALIVE_INTERVAL_SECONDS = 20;
     private static final String SYSTEM_TOPIC_PREFIX = "~";
+    private static final String CONSENSUS_TOPIC_PREFIX = "~consensus/";
 
     private final AppChainConfig config;
     private final long protocolMagic;
@@ -59,7 +60,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
      */
     private final AtomicLong senderSeq = new AtomicLong(System.currentTimeMillis());
 
-    private final Set<String> seenMessageIds;
+    private final SeenMessageIds seenMessageIds;
     private final ConcurrentLinkedDeque<ReceivedAppMessage> recentMessages = new ConcurrentLinkedDeque<>();
     private final List<AppPeerClient> peerClients = new ArrayList<>();
 
@@ -68,6 +69,8 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     private volatile AppLedgerStore ledger;
     private volatile AppChainEngine engine;
     private final AppStateMachine stateMachine;
+    /** Consensus mode (008.2): fixed | rotating | plugin-provided; null = diffusion-only. */
+    private final com.bloxbean.cardano.yano.api.appchain.sequencer.SequencerMode sequencerMode;
     private final String ledgerPath;
 
     // M3: L1 anchoring + stable L1 reference tracking
@@ -133,7 +136,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         this.pluginClassLoader = pluginClassLoader;
         this.signer = SignerProviders.resolve(config.signingKeyHex(), pluginClassLoader, log);
         this.group = new MemberGroup(normalizeMemberKeys(config.memberKeysHex()), config.threshold());
-        this.seenMessageIds = boundedSet(SEEN_IDS_LIMIT);
+        this.seenMessageIds = new SeenMessageIds(SEEN_IDS_HARD_CAP);
         this.pool = new AppMsgPool(config.poolMaxMessages());
         this.stateMachine = stateMachine != null
                 ? stateMachine
@@ -147,13 +150,22 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         this.ledgerPath = (ledgerPath != null ? ledgerPath : "./app-chain") + "/" + config.chainId();
 
         if (!group.contains(signer.publicKeyHex())) {
-            throw new IllegalArgumentException(
-                    "This node's app-chain public key " + signer.publicKeyHex()
-                            + " is not in the configured member list (yano.app-chain.members)");
+            if (governedMode()) {
+                // Governed bootstrap (008.3): a late-added member starts with
+                // the chain's ORIGINAL genesis list (which predates it) and
+                // becomes a member via the derived governance epochs
+                log.warn("App-chain '{}': this node's key {} is not in the GENESIS member list — "
+                        + "expecting chain-governed epochs to include it (catch-up will derive them)",
+                        config.chainId(), signer.publicKeyHex());
+            } else {
+                throw new IllegalArgumentException(
+                        "This node's app-chain public key " + signer.publicKeyHex()
+                                + " is not in the configured member list (yano.app-chain.members)");
+            }
         }
         if (config.sequencingEnabled()) {
             String proposer = config.proposerKeyHex().toLowerCase(Locale.ROOT);
-            if (!group.contains(proposer)) {
+            if (!proposer.isEmpty() && !group.contains(proposer)) {
                 throw new IllegalArgumentException(
                         "Configured proposer " + proposer + " is not in the member list");
             }
@@ -161,12 +173,107 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                 throw new IllegalArgumentException("Finality threshold " + config.threshold()
                         + " exceeds member count " + group.size());
             }
+            // Fail fast on an unknown/misconfigured sequencer mode (008.2)
+            this.sequencerMode = resolveSequencerMode();
+        } else {
+            this.sequencerMode = null;
         }
         AppPeerClient.CatchUpHandler catchUpHandler =
                 config.sequencingEnabled() ? this::onCatchUpBlocks : null;
         for (AppChainConfig.AppPeer peer : config.peers()) {
             peerClients.add(new AppPeerClient(peer, protocolMagic, transportConfig(), catchUpHandler, log));
         }
+    }
+
+    /** Chain-governed membership selected (ADR 008.3)? Default: static. */
+    private boolean governedMode() {
+        return "governed".equalsIgnoreCase(
+                config.pluginSettings().getOrDefault("membership.mode", "static"));
+    }
+
+    private long parseLongSetting(String key, long defaultValue) {
+        String value = config.pluginSettings().get(key);
+        return value != null && !value.isBlank() ? Long.parseLong(value.trim()) : defaultValue;
+    }
+
+    /**
+     * Submit a membership governance command as this member (008.3). Internal
+     * path — the public submit() rejects reserved {@code ~} topics.
+     */
+    private String submitGovernance(byte[] commandBody) {
+        if (!running.get())
+            throw new IllegalStateException("App chain is not running");
+        AppMessage message = buildSigned(GovernedMembership.TOPIC, commandBody,
+                config.defaultTtlSeconds());
+        AppMsgPool.AddResult added = pool.add(message);
+        if (added == AppMsgPool.AddResult.FULL) {
+            countDrop("pool_full");
+            throw new PoolFullException("App-chain '" + config.chainId()
+                    + "' pending pool is full — governance command not submitted");
+        }
+        relay(message);
+        record(message, ReceivedAppMessage.Source.LOCAL);
+        log.info("Governance command submitted: id={}, chain={} — activates once {} distinct "
+                + "member(s) submit the identical command", message.getMessageIdHex(),
+                config.chainId(), group.threshold());
+        return message.getMessageIdHex();
+    }
+
+    /**
+     * Resolve the sequencer mode (ADR 008.2 §2.7): built-ins {@code fixed} /
+     * {@code rotating}, then {@code SequencerModeProvider} plugins via
+     * ServiceLoader. Selected by {@code sequencer.mode}; a bare
+     * {@code sequencer.proposer} keeps meaning {@code fixed} (v1 compat).
+     */
+    private com.bloxbean.cardano.yano.api.appchain.sequencer.SequencerMode resolveSequencerMode() {
+        Map<String, String> settings = new LinkedHashMap<>(config.pluginSettings());
+        if (!config.proposerKeyHex().isEmpty()) {
+            settings.putIfAbsent("sequencer.proposer", config.proposerKeyHex());
+        }
+        String modeId = settings.getOrDefault("sequencer.mode",
+                !config.proposerKeyHex().isEmpty() ? FixedSequencerMode.ID : "")
+                .trim().toLowerCase(Locale.ROOT);
+        if (modeId.isEmpty()) {
+            throw new IllegalArgumentException("App-chain '" + config.chainId()
+                    + "': sequencing requires sequencer.proposer (fixed) or sequencer.mode");
+        }
+
+        var context = new com.bloxbean.cardano.yano.api.appchain.sequencer.SequencerContext() {
+            @Override public String chainId() { return config.chainId(); }
+            @Override public String selfKeyHex() {
+                return signer.publicKeyHex().toLowerCase(Locale.ROOT);
+            }
+            @Override public List<String> membersAt(long height) {
+                List<String> sorted = new ArrayList<>(group.membersAt(height));
+                java.util.Collections.sort(sorted);
+                return sorted;
+            }
+            @Override public long currentL1Slot() {
+                AppChainEngine.L1Ref last = recentL1Points.peekLast();
+                return last != null ? last.slot() : 0L;
+            }
+            @Override public Map<String, String> settings() { return settings; }
+        };
+
+        com.bloxbean.cardano.yano.api.appchain.sequencer.SequencerMode mode = switch (modeId) {
+            case FixedSequencerMode.ID -> new FixedSequencerMode();
+            case RotatingSequencerMode.ID -> new RotatingSequencerMode();
+            default -> {
+                ClassLoader loader = pluginClassLoader != null
+                        ? pluginClassLoader : Thread.currentThread().getContextClassLoader();
+                for (var provider : java.util.ServiceLoader.load(
+                        com.bloxbean.cardano.yano.api.appchain.sequencer.SequencerModeProvider.class, loader)) {
+                    if (modeId.equals(provider.id())) {
+                        yield provider.create(context);
+                    }
+                }
+                throw new IllegalArgumentException("App-chain '" + config.chainId()
+                        + "': unknown sequencer mode '" + modeId
+                        + "' (built-ins: fixed, rotating; plugins via SequencerModeProvider)");
+            }
+        };
+        mode.init(context);
+        return mode;
     }
 
     /**
@@ -387,7 +494,27 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     /** Verified messages arriving from a peer: dedup, route, relay. */
     void onInboundMessages(List<AppMessage> messages) {
         for (AppMessage message : messages) {
-            if (!seenMessageIds.add(message.getMessageIdHex())) {
+            boolean firstSighting =
+                    seenMessageIds.markSeen(message.getMessageIdHex(), message.getExpiresAt());
+            String topic = message.getTopic() != null ? message.getTopic() : "";
+            // Only ~consensus/* gets the engine fast-path; other system topics
+            // (~governance/*) are SEQUENCED like ordinary messages (008.3)
+            if (topic.startsWith(CONSENSUS_TOPIC_PREFIX)) {
+                // Consensus/system messages: relay only on first sighting (loop
+                // control) but ALWAYS route — the engine is idempotent (round
+                // guards, vote locks), and partial-round re-gossip (008.2) must
+                // reach it even when the first copy raced engine wiring; wire
+                // dedup once dropped such a proposal permanently.
+                if (firstSighting) {
+                    receivedCount.incrementAndGet();
+                    relay(message);
+                } else {
+                    duplicateCount.incrementAndGet();
+                }
+                route(message, ReceivedAppMessage.Source.PEER);
+                continue;
+            }
+            if (!firstSighting) {
                 duplicateCount.incrementAndGet();
                 continue;
             }
@@ -397,15 +524,30 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         }
     }
 
+    /**
+     * Consensus messages that arrived before the engine finished wiring
+     * (peers connect to the server the moment it binds, while start() is
+     * still opening the ledger) — drained into the engine at start. Without
+     * this, a proposal delivered during the race is LOST for the whole
+     * session: the transport never re-delivers an acked message id (008.2).
+     */
+    private final java.util.concurrent.ConcurrentLinkedQueue<AppMessage> earlyConsensus =
+            new java.util.concurrent.ConcurrentLinkedQueue<>();
+    private static final int EARLY_CONSENSUS_LIMIT = 256;
+
     private void route(AppMessage message, ReceivedAppMessage.Source source) {
         String topic = message.getTopic() != null ? message.getTopic() : "";
-        if (topic.startsWith(SYSTEM_TOPIC_PREFIX)) {
+        if (topic.startsWith(CONSENSUS_TOPIC_PREFIX)) {
             AppChainEngine currentEngine = engine;
             if (currentEngine != null) {
                 currentEngine.onConsensusMessage(message);
+            } else if (earlyConsensus.size() < EARLY_CONSENSUS_LIMIT) {
+                earlyConsensus.add(message);
             }
             return;
         }
+        // ~governance/* and ordinary messages continue to the pool below —
+        // governance commands are finalized chain transactions (008.3)
         // Ordinary app message: pool for sequencing + observability surface
         AppLedgerStore currentLedger = ledger;
         if (currentLedger != null && currentLedger.messageHeight(message.getMessageId()).isPresent()) {
@@ -492,7 +634,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                 .authProof(signature)
                 .build();
 
-        seenMessageIds.add(message.getMessageIdHex());
+        seenMessageIds.markSeen(message.getMessageIdHex(), expiresAt);
         return message;
     }
 
@@ -669,6 +811,14 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
 
     @Override
     public void addMember(String publicKeyHex) {
+        if (governedMode()) {
+            // Governed mode (008.3): this call SUBMITS a governance command —
+            // the change activates once threshold-many members do the same
+            String normalized = normalizeMemberKeys(Set.of(publicKeyHex)).iterator().next();
+            submitGovernance(GovernedMembership.encodeCommand(GovernedMembership.OP_ADD,
+                    HexUtil.decodeHexString(normalized), 0, GovernedMembership.DEFAULT_ACTIVATION_LAG));
+            return;
+        }
         synchronized (rotationLock) {
             AppLedgerStore ledgerStore = requireLedgerForRotation();
             String normalized = normalizeMemberKeys(Set.of(publicKeyHex)).iterator().next();
@@ -684,6 +834,12 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
 
     @Override
     public void removeMember(String publicKeyHex) {
+        if (governedMode()) {
+            String normalized = normalizeMemberKeys(Set.of(publicKeyHex)).iterator().next();
+            submitGovernance(GovernedMembership.encodeCommand(GovernedMembership.OP_REMOVE,
+                    HexUtil.decodeHexString(normalized), 0, GovernedMembership.DEFAULT_ACTIVATION_LAG));
+            return;
+        }
         synchronized (rotationLock) {
             AppLedgerStore ledgerStore = requireLedgerForRotation();
             String normalized = normalizeMemberKeys(Set.of(publicKeyHex)).iterator().next();
@@ -709,6 +865,14 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
 
     @Override
     public void setThreshold(int threshold) {
+        if (governedMode()) {
+            if (threshold < 1) {
+                throw new IllegalArgumentException("Threshold must be >= 1");
+            }
+            submitGovernance(GovernedMembership.encodeCommand(GovernedMembership.OP_SET_THRESHOLD,
+                    null, threshold, GovernedMembership.DEFAULT_ACTIVATION_LAG));
+            return;
+        }
         synchronized (rotationLock) {
             AppLedgerStore ledgerStore = requireLedgerForRotation();
             if (threshold < 1 || threshold > group.size()) {
@@ -722,6 +886,11 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
 
     @Override
     public void resetMembers() {
+        if (governedMode()) {
+            log.warn("App-chain '{}': BREAK-GLASS membership reset on a GOVERNED chain — this "
+                    + "node-local override deviates from chain-derived membership until the next "
+                    + "governed change (ADR 008.3 §2.4)", config.chainId());
+        }
         synchronized (rotationLock) {
             AppLedgerStore ledgerStore = requireLedgerForRotation();
             // Re-adopt the static config as a NEW epoch (history preserved so
@@ -869,7 +1038,17 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         status.put("running", running.get());
         status.put("sequencing", config.sequencingEnabled());
         if (config.sequencingEnabled()) {
-            status.put("role", engine != null && engine.isProposer() ? "proposer" : "member");
+            AppChainEngine currentEngine = engine;
+            Map<String, Object> sequencer = currentEngine != null
+                    ? new LinkedHashMap<>(currentEngine.sequencerStatus()) : new LinkedHashMap<>();
+            String scheduledProposer = String.valueOf(
+                    sequencer.getOrDefault("currentProposer", sequencer.get("proposer")));
+            status.put("role", signer.publicKeyHex().equalsIgnoreCase(scheduledProposer)
+                    ? "proposer" : "member");
+            if (currentEngine != null) {
+                sequencer.put("splitVotesObserved", currentEngine.splitVotesObserved());
+            }
+            status.put("sequencer", sequencer);
             status.put("tipHeight", tipHeight());
             status.put("stateRoot", HexUtil.encodeHexString(stateRoot()));
             status.put("stateMachine", stateMachine.id());
@@ -909,6 +1088,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         status.put("received", receivedCount.get());
         status.put("relayed", relayedCount.get());
         status.put("duplicates", duplicateCount.get());
+        status.put("seenIds", seenMessageIds.size());
         Map<String, Long> drops = new LinkedHashMap<>();
         for (var dropEntry : dropCounters.entrySet()) {
             drops.put(dropEntry.getKey(), dropEntry.getValue().get());
@@ -966,6 +1146,11 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                     + "(EventBus is null) — refusing to start with a silent L1 linkage "
                     + "(set l1.stability-depth: 0 and disable anchoring for L1-less chains)");
         }
+        // Rotating proposership is clocked by observed L1 slots (008.2 §2.1)
+        if (sequencerMode instanceof RotatingSequencerMode && eventBus == null) {
+            throw new IllegalStateException("App-chain '" + config.chainId()
+                    + "': sequencer.mode=rotating requires an L1 event feed (the window clock)");
+        }
 
         if (config.sequencingEnabled()) {
             // Pre-open manifest verification (008.1 I1.7): a freshly restored
@@ -1014,7 +1199,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                     stateMachine,
                     signer,
                     group,
-                    HexUtil.decodeHexString(config.proposerKeyHex()),
+                    sequencerMode,
                     Math.max(config.blockIntervalMs() * 5, 10_000),
                     config.maxBlockMessages(),
                     config.maxMessageBytes() * 64L,
@@ -1023,7 +1208,26 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             chainEngine.setOnBlockFinalized(this::onBlockFinalized);
             chainEngine.setL1RefSupplier(this::stableL1Ref);
             chainEngine.setL1RefValidator(this::checkL1Ref);
+            chainEngine.setEnvelopeRelay(this::relay);
+            if (governedMode()) {
+                GovernedMembership governed = new GovernedMembership(
+                        group,
+                        config.proposerKeyHex(),
+                        parseLongSetting("membership.approval-window-blocks",
+                                GovernedMembership.DEFAULT_APPROVAL_WINDOW_BLOCKS),
+                        log);
+                governed.restore(ledgerStore);
+                chainEngine.setGovernance(governed);
+                log.info("App-chain '{}' membership mode: governed (approval = {} identical "
+                        + "member commands on {})", config.chainId(), group.threshold(),
+                        GovernedMembership.TOPIC);
+            }
             this.engine = chainEngine;
+            // Deliver consensus messages that raced engine wiring (see route())
+            AppMessage early;
+            while ((early = earlyConsensus.poll()) != null) {
+                chainEngine.onConsensusMessage(early);
+            }
 
             if (config.anchoringEnabled()) {
                 if (txSubmitter == null || utxoStateSupplier == null) {
@@ -1068,14 +1272,23 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         exec.scheduleWithFixedDelay(this::connectTick, 0, CONNECT_INTERVAL_SECONDS, TimeUnit.SECONDS);
         exec.scheduleWithFixedDelay(this::keepAliveTick,
                 KEEPALIVE_INTERVAL_SECONDS, KEEPALIVE_INTERVAL_SECONDS, TimeUnit.SECONDS);
-        exec.scheduleWithFixedDelay(pool::sweepExpired, 30, 30, TimeUnit.SECONDS);
+        exec.scheduleWithFixedDelay(() -> {
+            pool.sweepExpired();
+            int capEvicted = seenMessageIds.sweep(System.currentTimeMillis() / 1000);
+            if (capEvicted > 0) {
+                log.warn("App-chain '{}' seen-ids hard cap hit — evicted {} unexpired entries "
+                        + "(dedup degraded to best-effort under this load)", config.chainId(), capEvicted);
+            }
+        }, 30, 30, TimeUnit.SECONDS);
         AppChainEngine currentEngine = engine;
-        if (currentEngine != null && currentEngine.isProposer()) {
+        if (currentEngine != null) {
+            // EVERY member ticks (008.2): the tick self-gates through the
+            // sequencer mode (fixed = configured proposer only; rotating = the
+            // member scheduled for the current window) and drives partial-round
+            // re-gossip for locked heights on all members.
             exec.scheduleWithFixedDelay(currentEngine::proposeTick,
                     config.blockIntervalMs(), config.blockIntervalMs(), TimeUnit.MILLISECONDS);
-            log.info("This node is the app-chain sequencer (proposer) for '{}'", config.chainId());
-        }
-        if (currentEngine != null) {
+            log.info("App-chain '{}' sequencer mode: {}", config.chainId(), sequencerMode.id());
             exec.scheduleWithFixedDelay(this::catchUpTick, 5, 5, TimeUnit.SECONDS);
         }
         if (!sinkRunners.isEmpty()) {
@@ -1380,7 +1593,9 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             return;
         for (AppPeerClient peerClient : peerClients) {
             try {
-                peerClient.ensureConnected();
+                // Async: an unreachable peer must never wedge this scheduler
+                // (proposer/anchor/catch-up ticks share it) — 008.2 fix
+                peerClient.ensureConnectedAsync();
             } catch (Exception e) {
                 log.debug("App-peer connect attempt failed for {}: {}", peerClient.peerId(), e.toString());
             }
@@ -1463,13 +1678,4 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                 : SubsystemHealth.down(name(), "stopped");
     }
 
-    private static Set<String> boundedSet(int maxSize) {
-        return Collections.synchronizedSet(Collections.newSetFromMap(
-                new LinkedHashMap<String, Boolean>(1024, 0.75f, false) {
-                    @Override
-                    protected boolean removeEldestEntry(Map.Entry<String, Boolean> eldest) {
-                        return size() > maxSize;
-                    }
-                }));
-    }
 }
