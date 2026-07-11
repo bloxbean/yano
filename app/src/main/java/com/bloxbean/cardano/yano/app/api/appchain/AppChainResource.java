@@ -159,6 +159,18 @@ public class AppChainResource {
         return singleChain().forceAnchor();
     }
 
+    @POST
+    @Path("admin/anchor/bootstrap")
+    public Response bootstrapScriptAnchor() {
+        return singleChain().bootstrapScriptAnchor();
+    }
+
+    @POST
+    @Path("admin/unlock-stale-round")
+    public Response unlockStaleRound() {
+        return singleChain().unlockStaleRound();
+    }
+
     @GET
     @Path("stream")
     @Produces(MediaType.SERVER_SENT_EVENTS)
@@ -228,6 +240,10 @@ public class AppChainResource {
                 result.put("chainId", gateway.chainId());
                 result.put("topic", request.topic() != null ? request.topic() : "");
                 return Response.accepted(result).build();
+            } catch (com.bloxbean.cardano.yano.api.appchain.PoolFullException e) {
+                // Backpressure (ADR 008.1 I1.1): the message was NOT retained/relayed
+                return Response.status(429)
+                        .entity(Map.of("error", e.getMessage())).build();
             } catch (IllegalStateException e) {
                 return Response.status(Response.Status.SERVICE_UNAVAILABLE)
                         .entity(Map.of("error", e.getMessage())).build();
@@ -520,6 +536,40 @@ public class AppChainResource {
         public Response forceAnchor() {
             boolean triggered = gateway.forceAnchor();
             return Response.ok(Map.of("chainId", gateway.chainId(), "anchorTriggered", triggered)).build();
+        }
+
+        /**
+         * Bootstrap the script anchor (ADR 008.4): mint the thread NFT and
+         * lock the initial datum at the anchor validator. Admin action;
+         * anchor leader with {@code anchor.mode: script} only.
+         */
+        @POST
+        @Path("admin/anchor/bootstrap")
+        public Response bootstrapScriptAnchor() {
+            try {
+                Map<String, Object> result = new java.util.LinkedHashMap<>(gateway.bootstrapScriptAnchor());
+                result.put("chainId", gateway.chainId());
+                return Response.accepted(result).build();
+            } catch (IllegalStateException e) {
+                throw jsonError(Response.Status.CONFLICT, e.getMessage());
+            }
+        }
+
+        /**
+         * Operator escape hatch (stale-lock runbook, ADR 008.2/I4.2): clear
+         * this member's vote lock at the pending height when the locked
+         * proposal is unrecoverable. Run ONLY after confirming no conflicting
+         * certificate exists on any member.
+         */
+        @POST
+        @Path("admin/unlock-stale-round")
+        public Response unlockStaleRound() {
+            try {
+                boolean unlocked = gateway.unlockStaleRound();
+                return Response.ok(Map.of("chainId", gateway.chainId(), "unlocked", unlocked)).build();
+            } catch (IllegalStateException e) {
+                throw jsonError(Response.Status.CONFLICT, e.getMessage());
+            }
         }
 
         /**

@@ -230,6 +230,23 @@ final class AppLedgerStore implements AutoCloseable {
                 block.stateRoot(), stripped, block.proposer(), block.cert());
     }
 
+    private static final byte[] SENDER_SEQ_PREFIX = "sender_seq_".getBytes(StandardCharsets.UTF_8);
+
+    /**
+     * Highest finalized sender-seq for a member key — the replay floor
+     * (ADR app-layer/008.1 I1.2). 0 = sender never finalized a message.
+     */
+    long senderSeq(byte[] sender) {
+        byte[] value = getMeta(senderSeqKey(sender));
+        return value != null ? ByteBuffer.wrap(value).getLong() : 0L;
+    }
+
+    private static byte[] senderSeqKey(byte[] sender) {
+        ByteBuffer buffer = ByteBuffer.allocate(SENDER_SEQ_PREFIX.length + sender.length);
+        buffer.put(SENDER_SEQ_PREFIX).put(sender);
+        return buffer.array();
+    }
+
     /** Height the message id was finalized at, or empty if never included. */
     Optional<Long> messageHeight(byte[] messageId) {
         try {
@@ -276,18 +293,70 @@ final class AppLedgerStore implements AutoCloseable {
     }
 
     /**
+     * The original proposer-signed proposal ENVELOPE this member voted for
+     * (ADR 008.2 §2.3) — re-gossiped to finish partial rounds after timeouts
+     * or restarts. Stored alongside the vote-lock hash.
+     */
+    void putVoteLockEnvelope(long height, byte[] envelopeCbor) {
+        try {
+            db.put(metaCf, voteLockEnvelopeKey(height), envelopeCbor);
+        } catch (RocksDBException e) {
+            throw new RuntimeException("Failed to persist locked proposal at height " + height, e);
+        }
+    }
+
+    Optional<byte[]> voteLockEnvelope(long height) {
+        return Optional.ofNullable(getMeta(voteLockEnvelopeKey(height)));
+    }
+
+    /**
+     * Operator escape hatch (stale-lock runbook, Iteration 4): clear the vote
+     * lock + stored envelope at a height so this member may vote once more
+     * there. Callers must ensure the locked round is UNRECOVERABLE (expired
+     * proposal) — this consciously trades the at-most-one-vote guarantee for
+     * liveness under operator supervision.
+     */
+    void removeVoteLock(long height) {
+        try {
+            db.delete(metaCf, voteLockKey(height));
+            db.delete(metaCf, voteLockEnvelopeKey(height));
+        } catch (RocksDBException e) {
+            throw new RuntimeException("Failed to clear vote lock at height " + height, e);
+        }
+    }
+
+    private static byte[] voteLockEnvelopeKey(long height) {
+        return (KEY_VOTE_LOCK_PREFIX + "env_" + height).getBytes(StandardCharsets.UTF_8);
+    }
+
+    /**
      * Atomically commit a finalized block: block bytes (with cert), tip, message
      * index and everything already staged in {@code batch} (MPF nodes + state
      * writes from apply).
      */
     void commitBlock(AppBlock block, byte[] blockHash, byte[] newStateRoot, WriteBatch batch) {
+        commitBlock(block, blockHash, newStateRoot, batch, List.of());
+    }
+
+    /**
+     * Commit with extra meta writes in the SAME atomic batch — used by
+     * chain-governed membership (ADR 008.3): pending-approval state and
+     * membership epochs commit atomically with the block that changed them.
+     */
+    void commitBlock(AppBlock block, byte[] blockHash, byte[] newStateRoot, WriteBatch batch,
+                     List<GovernedMembership.MetaWrite> metaWrites) {
         try {
+            for (GovernedMembership.MetaWrite write : metaWrites) {
+                batch.put(metaCf, write.key().getBytes(StandardCharsets.UTF_8), write.value());
+            }
             batch.put(blocksCf, heightKey(block.height()), AppBlockCodec.serialize(block));
             batch.put(metaCf, KEY_TIP_HEIGHT, longBytes(block.height()));
             batch.put(metaCf, KEY_TIP_HASH, blockHash);
             batch.put(metaCf, KEY_STATE_ROOT, newStateRoot);
             byte[] heightBytes = longBytes(block.height());
             int index = 0;
+            java.util.Map<String, Long> senderMaxSeq = new java.util.LinkedHashMap<>();
+            java.util.Map<String, byte[]> senderKeys = new java.util.LinkedHashMap<>();
             for (var message : block.messages()) {
                 batch.put(msgsCf, message.getMessageId(), heightBytes);
                 // Query index (ADR 006 E3.3): topic/sender -> message refs, same atomic batch
@@ -295,7 +364,22 @@ final class AppLedgerStore implements AutoCloseable {
                         message.getMessageId());
                 batch.put(queryIndexCf, senderIndexKey(message.getSender(), block.height(), index),
                         message.getMessageId());
+                byte[] sender = message.getSender();
+                if (sender != null && sender.length > 0 && message.getSenderSeq() > 0) {
+                    String senderHex = com.bloxbean.cardano.yaci.core.util.HexUtil.encodeHexString(sender);
+                    senderKeys.putIfAbsent(senderHex, sender);
+                    senderMaxSeq.merge(senderHex, message.getSenderSeq(), Math::max);
+                }
                 index++;
+            }
+            // Per-sender replay floor (ADR 008.1 I1.2), same atomic batch. Max with
+            // the committed value so the floor never regresses (db.get sees only
+            // committed state — one write per sender per block avoids the
+            // WriteBatch read-visibility trap).
+            for (var seqEntry : senderMaxSeq.entrySet()) {
+                byte[] sender = senderKeys.get(seqEntry.getKey());
+                long floor = Math.max(senderSeq(sender), seqEntry.getValue());
+                batch.put(metaCf, senderSeqKey(sender), longBytes(floor));
             }
             try (WriteOptions writeOptions = new WriteOptions().setSync(true)) {
                 db.write(writeOptions, batch);

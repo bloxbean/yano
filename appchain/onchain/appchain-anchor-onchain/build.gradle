@@ -1,0 +1,45 @@
+// App-chain script anchor — on-chain validators written in Java, compiled to
+// Plutus V3 UPLC by julc AT BUILD TIME (ADR app-layer/008.4 §2.4). The jar
+// carries only the validator classes + the compiled artifacts under
+// META-INF/plutus/ — the runtime consumes the ARTIFACTS (cborHex), so julc's
+// authoring stack never leaks into the node runtime.
+plugins {
+    id 'java-library'
+    id 'com.bloxbean.cardano.julc' version '0.1.0-pre14'
+}
+
+description = 'Yano app-chain anchor validators (julc/Java default implementation, ADR 008.4)'
+
+dependencies {
+    // compileOnly: julc's authoring stack is needed to COMPILE the validators
+    // (and the processor turns them into UPLC artifacts), but consumers of this
+    // jar only read META-INF/plutus/*.json — the validator classes are never
+    // loaded at runtime, so julc never reaches the node runtime classpath.
+    compileOnly "com.bloxbean.cardano:julc-stdlib:${libs.versions.julc.get()}"
+    compileOnly "com.bloxbean.cardano:julc-ledger-api:${libs.versions.julc.get()}"
+    annotationProcessor "com.bloxbean.cardano:julc-annotation-processor:${libs.versions.julc.get()}"
+
+    testImplementation "com.bloxbean.cardano:julc-stdlib:${libs.versions.julc.get()}"
+    testImplementation "com.bloxbean.cardano:julc-ledger-api:${libs.versions.julc.get()}"
+    testImplementation "com.bloxbean.cardano:julc-testkit:${libs.versions.julc.get()}"
+    testImplementation "com.bloxbean.cardano:julc-compiler:${libs.versions.julc.get()}"
+    testRuntimeOnly "com.bloxbean.cardano:julc-vm-java:${libs.versions.julc.get()}"
+    testImplementation libs.junit.jupiter.api
+    testImplementation libs.assertj.core
+    testRuntimeOnly libs.junit.jupiter.engine
+}
+
+test {
+    useJUnitPlatform()
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            pom {
+                name = 'Yano App-Chain Anchor Validators (on-chain)'
+                description = 'Plutus V3 anchor validator + one-shot thread policy, authored in Java (julc)'
+            }
+        }
+    }
+}

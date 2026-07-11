@@ -111,6 +111,104 @@ class AppChainMultiChainIntegrationTest {
         assertThat(nodeA.single()).isEmpty(); // ambiguous with two chains
     }
 
+    /**
+     * Block-bytes fix regression (multi-chain path). A proposal carries the whole
+     * block as its body on the reserved {@code ~consensus/propose} topic. Behind
+     * the shared inbound agents, {@link AppChainManager#verifyByChain} re-applies
+     * each chain's size bound; if it capped consensus proposals at
+     * {@code max-message-bytes} (as it did before the fix) a multi-message block
+     * would be silently rejected by the follower and the round would stall at
+     * 1-of-2 votes forever. Here a batch far exceeds {@code max-message-bytes} but
+     * fits {@code block.max-bytes}: the follower must accept the proposal and both
+     * nodes must finalize every message.
+     */
+    @Test
+    void largeProposal_exceedsMaxMessageBytes_stillFinalizesAcrossNodes() throws Exception {
+        String pubA = pubHex(KEY_A);
+        String pubB = pubHex(KEY_B);
+        Set<String> members = Set.of(pubA, pubB);
+
+        int portA = freePort();
+        int portB = freePort();
+
+        // max-message-bytes deliberately tiny (2 KB) vs block.max-bytes (64 KB):
+        // each message fits the per-message bound, but a batched block does not.
+        int maxMessageBytes = 2048;
+        long blockMaxBytes = 65536;
+        AppChainManager nodeA = startBytesNode("a", KEY_A, members, pubA, portA, portB,
+                maxMessageBytes, blockMaxBytes);
+        AppChainManager nodeB = startBytesNode("b", KEY_B, members, pubA, portB, portA,
+                maxMessageBytes, blockMaxBytes);
+
+        awaitTrue("all peers connected on both nodes",
+                () -> allConnected(nodeA) && allConnected(nodeB));
+
+        AppChainGateway chainOnA = nodeA.byId(CHAIN_1).orElseThrow();
+        AppChainGateway chainOnB = nodeB.byId(CHAIN_1).orElseThrow();
+
+        // Submit a batch whose combined block body (≈ 40 × ~500 B ≈ 20 KB) far
+        // exceeds max-message-bytes (2 KB) but stays under block.max-bytes (64 KB),
+        // so the leader packs them into one proposal. Each body (< 2 KB) is legal.
+        int count = 40;
+        byte[] pad = new byte[400];
+        Arrays.fill(pad, (byte) 'y');
+        List<byte[]> ids = new ArrayList<>();
+        for (int i = 0; i < count; i++) {
+            byte[] body = (i + ":" + new String(pad, StandardCharsets.UTF_8))
+                    .getBytes(StandardCharsets.UTF_8);
+            assertThat(body.length).isLessThan(maxMessageBytes); // each message is legal
+            ids.add(HexUtil.decodeHexString(chainOnA.submit("orders", body)));
+        }
+
+        // Every message must finalize on BOTH nodes — only possible if the
+        // follower accepted the oversized-vs-max-message-bytes proposal and voted.
+        awaitTrue("all messages finalized on both nodes",
+                () -> ids.stream().allMatch(id ->
+                        chainOnA.messageHeight(id).isPresent()
+                                && chainOnB.messageHeight(id).isPresent()));
+
+        awaitTrue("chain tips equal across nodes",
+                () -> chainOnA.tipHeight() == chainOnB.tipHeight() && chainOnA.tipHeight() >= 1);
+        assertThat(chainOnB.stateRoot()).isEqualTo(chainOnA.stateRoot());
+    }
+
+    /** Starts a node hosting ONE chain (custom size bounds) behind shared agents. */
+    private AppChainManager startBytesNode(String name, byte[] signingKey, Set<String> members,
+                                           String proposerHex, int serverPort, int peerPort,
+                                           int maxMessageBytes, long blockMaxBytes) throws Exception {
+        AppChainConfig config = AppChainConfig.builder(CHAIN_1)
+                .signingKeyHex(HexUtil.encodeHexString(signingKey))
+                .memberKeysHex(members)
+                .peers(List.of(new AppChainConfig.AppPeer("localhost", peerPort)))
+                .proposerKeyHex(proposerHex)
+                .threshold(2)
+                .blockIntervalMs(500)
+                .maxMessageBytes(maxMessageBytes)
+                .blockMaxBytes(blockMaxBytes)
+                .maxBlockMessages(500)
+                .poolMaxMessages(1000)
+                .ledgerPath(tempDir.resolve("ledger-bytes-" + name).toString())
+                .build();
+        AppChainSubsystem chain = new AppChainSubsystem(config, MAGIC, null, null,
+                tempDir.resolve("ledger-bytes-" + name).toString(), null, log);
+        AppChainManager manager = new AppChainManager(List.of(chain), log);
+        managers.add(manager);
+
+        NodeServer server = new NodeServer(serverPort,
+                N2NVersionTableConstant.v11AndAboveWithAppLayer(MAGIC, false, 0, false),
+                new MinimalChainState(),
+                null, null,
+                manager.serverAgentFactories());
+        servers.add(server);
+        Thread thread = new Thread(server::start);
+        thread.setDaemon(true);
+        thread.start();
+        Thread.sleep(800);
+
+        manager.start();
+        return manager;
+    }
+
     /** Starts a node hosting BOTH chains behind one NodeServer (shared agents). */
     private AppChainManager startNode(String name, byte[] signingKey, Set<String> members,
                                       String proposerHex, int serverPort, int peerPort) throws Exception {

@@ -125,10 +125,20 @@ public final class AppChainManager implements Subsystem, AppChainGateways {
         // (most permissive) config, so re-apply this chain's own size/TTL bounds
         // here — otherwise a stricter chain would accept messages a single-chain
         // deployment of it would reject.
+        //
+        // Size is capped by topic (block-bytes fix): a framework message on a
+        // reserved '~' topic — notably a ~consensus/propose proposal, whose body
+        // IS the whole serialized block — may legitimately be up to block.max-bytes
+        // (the engine re-checks the block against that authoritative cap, and each
+        // message inside it against max-message-bytes). Ordinary user messages stay
+        // bound by the per-chain max-message-bytes payload limit.
         var config = subsystem.chainConfig();
-        if (message.getSize() > config.maxMessageBytes()) {
+        String topic = message.getTopic();
+        boolean systemTopic = topic != null && topic.startsWith("~");
+        long sizeCap = systemTopic ? config.blockMaxBytes() : config.maxMessageBytes();
+        if (message.getSize() > sizeCap) {
             return AppMsgValidator.Result.reject("body exceeds chain max size ("
-                    + message.getSize() + " > " + config.maxMessageBytes() + ")");
+                    + message.getSize() + " > " + sizeCap + ")");
         }
         long now = System.currentTimeMillis() / 1000;
         if (config.maxTtlSeconds() > 0 && message.getExpiresAt() > now + config.maxTtlSeconds()) {

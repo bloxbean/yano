@@ -403,6 +403,9 @@
           <span id="updatedAt" class="muted">-</span>
           <span id="reqMs" class="chip">- ms</span>
           <span id="healthPill" class="pill">-</span>
+          <a class="icon-btn" href="../app-chain/" title="App-chain status" aria-label="App-chain status">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="8.5" y="14" width="7" height="7" rx="1.5"/><path d="M6.5 10v2a2 2 0 002 2M17.5 10v2a2 2 0 01-2 2"/></svg>
+          </a>
           <button id="themeToggle" type="button" class="icon-btn" aria-label="Toggle theme" title="Toggle theme">
             <svg class="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <circle cx="12" cy="12" r="4.5"/>
@@ -1106,17 +1109,36 @@
           served: Math.max(0, (s.txDiffusionServedTxs ?? 0) - (previousStatus.txDiffusionServedTxs ?? 0))
         } : { forwarded: 0, inbound: 0, served: 0 };
 
-        const pct = s.inSync ? 100 : (remoteBlock > 0 ? Math.min(100, (localBlock / remoteBlock) * 100) : 0);
-        text('syncPct', `${pct.toFixed(1)}%`);
-        $('syncBar').style.width = `${pct}%`;
-        text('heroLocal', fmt(localBlock));
-        text('heroRemote', fmt(remoteBlock));
-        text('heroGap', fmt(gap));
+        // Local-producer mode (client sync disabled, e.g. devnet BP): there is
+        // no remote to sync against — show block production instead of a
+        // meaningless sync percentage.
+        const localProducer = !s.upstreamActivePeer
+            && typeof s.upstreamMode === 'string' && s.upstreamMode.startsWith('disabled');
+        if (localProducer) {
+          document.querySelector('.hero-label').textContent = 'Local Producer';
+          text('syncPct', fmt(localBlock));
+          $('syncBar').style.width = '100%';
+          text('heroLocal', fmt(localBlock));
+          text('heroRemote', 'n/a');
+          text('heroGap', 'n/a');
+        } else {
+          document.querySelector('.hero-label').textContent = 'Sync Progress';
+          const pct = s.inSync ? 100 : (remoteBlock > 0 ? Math.min(100, (localBlock / remoteBlock) * 100) : 0);
+          text('syncPct', `${pct.toFixed(1)}%`);
+          $('syncBar').style.width = `${pct}%`;
+          text('heroLocal', fmt(localBlock));
+          text('heroRemote', fmt(remoteBlock));
+          text('heroGap', fmt(gap));
+        }
 
         text('summary', s.statusMessage || s.statusSummary || '-');
         const healthy = s.running && !s.runtimeDegraded;
         pill('healthPill', healthy ? 'RUNNING' : 'DEGRADED', healthy ? 'ok' : 'bad', true);
-        pill('syncPill', s.inSync ? 'IN SYNC' : 'SYNCING', s.inSync ? 'ok' : 'warn', !s.inSync);
+        if (localProducer) {
+          pill('syncPill', 'PRODUCING', 'ok', true);
+        } else {
+          pill('syncPill', s.inSync ? 'IN SYNC' : 'SYNCING', s.inSync ? 'ok' : 'warn', !s.inSync);
+        }
         text('syncMode', `${s.syncMode ?? '-'} / ${s.initialSyncComplete ? 'steady' : 'initial'}`);
         text('localTip', `${fmt(s.localTipBlockNumber)} / slot ${fmt(s.localTipSlot)}`);
         text('remoteTip', `${fmt(s.remoteTipBlockNumber)} / slot ${fmt(s.remoteTipSlot)}`);

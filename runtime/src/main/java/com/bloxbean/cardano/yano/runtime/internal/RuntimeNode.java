@@ -512,6 +512,8 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                     appChainConfig, protocolMagic, eventBus, null, rocksPath + "/app-chain",
                     Thread.currentThread().getContextClassLoader(), log);
             subsystem.wireL1(this::submitTransaction, this::getUtxoState);
+            subsystem.wireAnchorFees(this::anchorFeeParams);
+            subsystem.wireAnchorProtocolParams(this::anchorCclProtocolParams);
             subsystems.add(subsystem);
         }
         return new com.bloxbean.cardano.yano.runtime.appchain.AppChainManager(subsystems, log);
@@ -565,6 +567,8 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                         com.bloxbean.cardano.yano.api.appchain.AppChainConfig.DEFAULT_BLOCK_INTERVAL_MS),
                 (int) parseLong(get.apply("block.max-messages"),
                         com.bloxbean.cardano.yano.api.appchain.AppChainConfig.DEFAULT_MAX_BLOCK_MESSAGES),
+                parseLong(get.apply("block.max-bytes"),
+                        com.bloxbean.cardano.yano.api.appchain.AppChainConfig.DEFAULT_BLOCK_MAX_BYTES),
                 stringOf(get.apply("state-machine"),
                         com.bloxbean.cardano.yano.api.appchain.AppChainConfig.DEFAULT_STATE_MACHINE),
                 null,
@@ -574,13 +578,106 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                                 stringOf(get.apply("anchor.signing-key"), ""),
                                 parseLong(get.apply("anchor.every-blocks"), 10),
                                 parseLong(get.apply("anchor.max-interval-minutes"), 60),
-                                parseLong(get.apply("anchor.metadata-label"), 7014))
+                                parseLong(get.apply("anchor.metadata-label"), 7014),
+                                parseLong(get.apply("anchor.validity-slots"),
+                                        com.bloxbean.cardano.yano.api.appchain.AppChainConfig.AnchorConfig.DEFAULT_VALIDITY_SLOTS),
+                                parseLong(get.apply("anchor.fallback-fee-lovelace"),
+                                        com.bloxbean.cardano.yano.api.appchain.AppChainConfig.AnchorConfig.DEFAULT_FALLBACK_FEE_LOVELACE),
+                                stringOf(get.apply("anchor.mode"),
+                                        com.bloxbean.cardano.yano.api.appchain.AppChainConfig.AnchorConfig.MODE_METADATA),
+                                new com.bloxbean.cardano.yano.api.appchain.AppChainConfig.AnchorScriptConfig(
+                                        stringOf(get.apply("anchor.script.validator"), ""),
+                                        stringOf(get.apply("anchor.script.thread-policy"), "")))
                         : null,
                 (int) parseLong(get.apply("l1.stability-depth"), 0),
                 webhookUrls,
                 booleanOf(get.apply("retention.enabled"), false),
                 (int) parseLong(get.apply("retention.keep-blocks"), 0),
-                pluginSettings(collectPrefixed, "sinks.", "zk."));
+                (int) parseLong(get.apply("pool.max-messages"),
+                        com.bloxbean.cardano.yano.api.appchain.AppChainConfig.DEFAULT_POOL_MAX_MESSAGES),
+                booleanOf(get.apply("message.enforce-sender-seq"), false),
+                pluginSettings(collectPrefixed, "sinks.", "zk.", "machines.", "sequencer.",
+                        "membership.", "observers."));
+    }
+
+    /**
+     * Current linear-fee protocol params for anchor tx pricing (ADR 008.1
+     * I1.5); null when unavailable (the anchor falls back to its configured
+     * fee). Resolves the ledger-tracked params for the current epoch, or the
+     * static/genesis params on nodes without epoch-param tracking.
+     */
+    private com.bloxbean.cardano.yano.runtime.appchain.AppChainSubsystem.AnchorFeeParams anchorFeeParams() {
+        try {
+            int epoch = epochNonceState != null ? epochNonceState.getCurrentEpoch() : 0;
+            var params = getProtocolParameters(Math.max(epoch, 0)).orElse(null);
+            if (params != null && params.minFeeA() != null && params.minFeeB() != null) {
+                // Script-anchor pricing (008.4): ex-unit prices + PlutusV3 cost
+                // model; null fields fall back to Conway defaults in the anchor
+                long[] costModelV3 = null;
+                if (params.costModelsRaw() != null && params.costModelsRaw().get("PlutusV3") != null) {
+                    costModelV3 = params.costModelsRaw().get("PlutusV3").stream()
+                            .mapToLong(Long::longValue).toArray();
+                }
+                return new com.bloxbean.cardano.yano.runtime.appchain.AppChainSubsystem.AnchorFeeParams(
+                        params.minFeeA(), params.minFeeB(),
+                        params.priceMem(), params.priceStep(), costModelV3);
+            }
+        } catch (Exception e) {
+            log.debug("Anchor fee params unavailable: {}", e.toString());
+        }
+        return null;
+    }
+
+    /** Memoized parse of the configured static protocol-param.json for the anchor fallback. */
+    private volatile com.bloxbean.cardano.client.api.model.ProtocolParams anchorStaticCclParams;
+    private volatile boolean anchorStaticCclParamsLoaded;
+
+    /**
+     * Current protocol parameters as the cardano-client-lib model, for
+     * QuickTx-based anchor tx construction (Iteration 4). Tracked / L1-derived
+     * params for the current epoch are primary; when those are unavailable
+     * (epoch-param tracking disabled or not yet resolved), fall back to the
+     * configured static {@code protocol-param.json}
+     * ({@code yano.genesis.protocol-parameters-file}). Returns {@code null} only
+     * when neither source is available — the anchor then fails closed.
+     */
+    private com.bloxbean.cardano.client.api.model.ProtocolParams anchorCclProtocolParams() {
+        try {
+            int epoch = Math.max(epochNonceState != null ? epochNonceState.getCurrentEpoch() : 0, 0);
+            var ccl = ProtocolParamsMapper.toCardanoClient(getProtocolParameters(epoch).orElse(null));
+            if (ccl != null) {
+                return ccl;
+            }
+            return anchorStaticCclParams(epoch);
+        } catch (Exception e) {
+            log.debug("Anchor protocol params unavailable: {}", e.toString());
+            return null;
+        }
+    }
+
+    /**
+     * The configured static {@code protocol-param.json} mapped to the CCL model
+     * (with the full raw PlutusV3 cost model), read directly regardless of
+     * epoch-param tracking mode and memoized. {@code null} when no file is
+     * configured.
+     */
+    private com.bloxbean.cardano.client.api.model.ProtocolParams anchorStaticCclParams(int epoch) {
+        if (anchorStaticCclParamsLoaded) {
+            return anchorStaticCclParams;
+        }
+        com.bloxbean.cardano.client.api.model.ProtocolParams result = null;
+        String file = config.getProtocolParametersFile();
+        if (file != null && !file.isBlank()) {
+            try {
+                String json = Files.readString(Path.of(file));
+                result = ProtocolParamsMapper.fromNodeProtocolParamToCardanoClient(json, epoch);
+            } catch (Exception e) {
+                log.debug("Anchor static protocol params unavailable from {}: {}", file, e.toString());
+            }
+        }
+        anchorStaticCclParams = result;
+        anchorStaticCclParamsLoaded = true;
+        return result;
     }
 
     /** Union of the dynamic plugin config sub-maps under the given prefixes. */
@@ -3382,6 +3479,11 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
         Point remotePoint = remoteTip != null ? remoteTip.getPoint() : null;
         RelayConnectionSnapshot relayConnectionSnapshot = relayConnectionManager.snapshot();
         PeerGovernorSnapshot peerGovernorSnapshot = syncSubsystem.peerGovernorSnapshot();
+        // With client sync disabled (e.g. a standalone devnet block producer) the
+        // configured default remote is never contacted — reporting it as the
+        // "active peer" is misleading (status page showed the preprod relay on a
+        // devnet). Report the mode explicitly and no active peer instead.
+        boolean clientSyncEnabled = config.isClientEnabled();
 
         return NodeStatus.builder()
                 .running(isRunning())
@@ -3403,13 +3505,15 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 .runtimeDegradedOperation(maintenanceDegradation != null ? maintenanceDegradation.operation() : null)
                 .runtimeDegradedAtMillis(maintenanceDegradation != null ? maintenanceDegradation.timestampMillis() : null)
                 .peerName(peerStatus != null ? peerStatus.peerName() : null)
-                .upstreamMode(upstreamStatus.mode().configValue())
+                .upstreamMode(clientSyncEnabled
+                        ? upstreamStatus.mode().configValue()
+                        : "disabled (local producer)")
                 .upstreamConfiguredPeerCount(upstreamStatus.configuredPeerCount())
                 .upstreamHotPeerCount(upstreamStatus.hotPeerCount())
                 .upstreamObserverPeerCount(upstreamStatus.observerPeerCount())
                 .upstreamKnownPeerCount(upstreamStatus.knownPeerCount())
                 .upstreamCandidateHeaderCount(upstreamStatus.candidateHeaderCount())
-                .upstreamActivePeer(upstreamStatus.activePeerName())
+                .upstreamActivePeer(clientSyncEnabled ? upstreamStatus.activePeerName() : null)
                 .upstreamTxForwarding(upstreamStatus.txForwarding())
                 .upstreamMultiPeerObservationOnly(upstreamStatus.multiPeerObservationOnly())
                 .upstreamDiscoveryRunning(upstreamStatus.discoveryRunning())

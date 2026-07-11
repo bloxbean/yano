@@ -17,22 +17,46 @@ final class AppMsgPool {
     private final LinkedHashMap<String, AppMessage> pending = new LinkedHashMap<>();
     private final int maxSize;
 
+    /** Outcome of {@link #add} — callers surface FULL (backpressure) vs DUPLICATE. */
+    enum AddResult { ADDED, FULL, DUPLICATE }
+
     AppMsgPool(int maxSize) {
         this.maxSize = Math.max(1, maxSize);
     }
 
-    synchronized boolean add(AppMessage message) {
-        if (pending.size() >= maxSize) {
-            return false;
+    synchronized AddResult add(AppMessage message) {
+        if (pending.containsKey(message.getMessageIdHex())) {
+            return AddResult.DUPLICATE;
         }
-        return pending.putIfAbsent(message.getMessageIdHex(), message) == null;
+        if (pending.size() >= maxSize) {
+            return AddResult.FULL;
+        }
+        pending.put(message.getMessageIdHex(), message);
+        return AddResult.ADDED;
+    }
+
+    int capacity() {
+        return maxSize;
     }
 
     synchronized boolean contains(String messageIdHex) {
         return pending.containsKey(messageIdHex);
     }
 
-    /** Oldest-first snapshot of up to {@code maxMessages}/{@code maxBytes}, skipping expired. */
+    /**
+     * Per-message serialized-envelope overhead beyond the body (message-id 32B,
+     * sender 32B, auth proof 64B, chain-id, topic, seqs, CBOR framing). Used to
+     * ESTIMATE the serialized block size so selection tracks the wire size, not
+     * just summed bodies. The engine still serializes-and-trims for the exact
+     * guarantee (block-bytes fix).
+     */
+    static final int ENVELOPE_OVERHEAD_BYTES = 220;
+
+    /**
+     * Oldest-first snapshot of up to {@code maxMessages} messages whose estimated
+     * serialized size (body + envelope overhead) stays within {@code maxBytes},
+     * skipping expired.
+     */
     synchronized List<AppMessage> drainCandidates(int maxMessages, long maxBytes) {
         sweepExpired();
         List<AppMessage> selected = new ArrayList<>();
@@ -41,11 +65,12 @@ final class AppMsgPool {
             if (selected.size() >= maxMessages) {
                 break;
             }
-            if (bytes + message.getSize() > maxBytes && !selected.isEmpty()) {
+            long cost = message.getSize() + ENVELOPE_OVERHEAD_BYTES;
+            if (bytes + cost > maxBytes && !selected.isEmpty()) {
                 break;
             }
             selected.add(message);
-            bytes += message.getSize();
+            bytes += cost;
         }
         return selected;
     }
