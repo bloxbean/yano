@@ -15,12 +15,39 @@ also point every node at a **public network** as a relay.
 
 ## Prerequisites
 
-- A Yano build in `app/build/`:
+- A Yano binary (jar or native) — either a local build **or** a released tree
+  (see below).
   - uber-jar: `./gradlew :app:quarkusBuild` → `app/build/yano.jar`, **or**
   - native: `./gradlew :app:build -Dquarkus.native.enabled=true` → `app/build/yano`
 - `jq`, `python3`, `curl` on `PATH` (all standard).
 - For clusters **larger than 16 nodes**, python's `cryptography` package (used to
   derive extra member keys); 1–16 nodes need nothing extra.
+
+### Running a released build (no local compile)
+
+Nothing needs to be built if you have a released Yano tree. Point `YANO_HOME` at
+the tree that holds `config/` (the app resolves `config/*` — chain defs + network
+genesis — relative to it), and the jar/native is auto-detected under it (at the
+root or `build/`), or set an explicit path:
+
+```bash
+# a released tree:  /opt/yano/{yano.jar, config/...}
+YANO_HOME=/opt/yano ./cluster.sh start 3
+
+# binary and config in different places
+YANO_HOME=/data/yano YANO_JAR=/downloads/yano.jar ./cluster.sh start 3
+YANO_NATIVE=/downloads/yano YANO_HOME=/data/yano ./cluster.sh start 3
+```
+
+| Env var | Meaning | Default |
+|---|---|---|
+| `YANO_HOME` | tree holding `config/` (nodes launch with cwd = here) | the repo's `app/` |
+| `YANO_JAR` | explicit uber-jar path (any location) | auto-detect under `YANO_HOME` |
+| `YANO_NATIVE` | explicit native-binary path | auto-detect under `YANO_HOME` |
+
+`loadtest.sh` and `soaktest.sh` need **no binary at all** — they only hit the
+running cluster's HTTP ports, so they work against any running Yano regardless of
+how it was started.
 
 ## Quick start
 
@@ -211,8 +238,12 @@ Start options: `--network <net>`, `--jar` | `--native`, `--threshold <t>`,
 - **A node won't become ready** — check its log: `./cluster.sh logs <i>`.
   First-boot followers can briefly wedge on L1 header continuity; `./cluster.sh
   stop` then `start` again recovers.
-- **`no Yano build found`** — build the jar (`./gradlew :app:quarkusBuild`) or
-  native binary first.
+- **`no Yano binary found under …`** — build the jar (`./gradlew
+  :app:quarkusBuild`) or native binary, **or** point `YANO_JAR` / `YANO_NATIVE`
+  at a released binary and `YANO_HOME` at its config tree (see *Running a
+  released build* above).
+- **`config not found …`** — `YANO_HOME` must contain
+  `config/application-appchain.yml` and `config/network/<net>/…` genesis.
 - **Consistency shows MISMATCH** — give it a few seconds (`status` again); a
   fresh cluster needs a moment for all nodes to connect and catch up.
 - **Ports busy** — another cluster or process holds 7070+/13337+. `./cluster.sh

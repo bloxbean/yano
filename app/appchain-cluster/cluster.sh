@@ -18,9 +18,19 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-APP_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"          # app/ — holds build/ and config/
+APP_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"          # app/ (dev layout): holds build/ + config/
 REPO_DIR="$(cd "$APP_DIR/.." && pwd)"
-CONFIG_FILE="$APP_DIR/config/application-appchain.yml"
+
+# Yano "home" = the tree that holds config/ (application-appchain.yml + the
+# network genesis referenced by relative paths). Nodes launch with cwd = HOME so
+# the app resolves ./config/*. Defaults to the repo's app/ for local-dev use;
+# override to run a RELEASED tree on a machine with no build:
+#   YANO_HOME=/opt/yano ./cluster.sh start 3          # /opt/yano/config/... + a binary
+# The binary is auto-detected under HOME (build/yano.jar, build/quarkus-app, or a
+# release-root yano.jar / yano), or pointed at explicitly — anywhere on disk:
+#   YANO_JAR=/downloads/yano.jar    YANO_NATIVE=/downloads/yano
+YANO_HOME="${YANO_HOME:-$APP_DIR}"
+CONFIG_FILE="$YANO_HOME/config/application-appchain.yml"
 
 # --- Tunables (override via env) ---------------------------------------------
 CLUSTER_DIR="${YANO_CLUSTER_DIR:-/tmp/yano-appchain-cluster}"
@@ -91,17 +101,28 @@ PY
 # Emits the launch prefix to stdout; nodes run with cwd = APP_DIR.
 JAR=""; NATIVE=""
 resolve_runtime() {
-  NATIVE="$APP_DIR/build/yano"
-  if   [ -f "$APP_DIR/build/yano.jar" ]; then JAR="$APP_DIR/build/yano.jar"
-  elif [ -f "$APP_DIR/build/quarkus-app/quarkus-run.jar" ]; then JAR="$APP_DIR/build/quarkus-app/quarkus-run.jar"
+  # Explicit path overrides win (a released binary anywhere on disk); otherwise
+  # auto-detect under YANO_HOME — dev layout (build/…) or a release-root binary.
+  NATIVE="${YANO_NATIVE:-}"
+  if [ -z "$NATIVE" ]; then
+    if   [ -x "$YANO_HOME/build/yano" ]; then NATIVE="$YANO_HOME/build/yano"
+    elif [ -x "$YANO_HOME/yano" ];       then NATIVE="$YANO_HOME/yano"
+    fi
+  fi
+  JAR="${YANO_JAR:-}"
+  if [ -z "$JAR" ]; then
+    if   [ -f "$YANO_HOME/build/yano.jar" ];                    then JAR="$YANO_HOME/build/yano.jar"
+    elif [ -f "$YANO_HOME/build/quarkus-app/quarkus-run.jar" ]; then JAR="$YANO_HOME/build/quarkus-app/quarkus-run.jar"
+    elif [ -f "$YANO_HOME/yano.jar" ];                          then JAR="$YANO_HOME/yano.jar"
+    fi
   fi
   case "$RUNTIME" in
-    native) [ -x "$NATIVE" ] || die "native binary not found ($NATIVE). Build: ./gradlew :app:build -Dquarkus.native.enabled=true";;
-    jar)    [ -n "$JAR" ]    || die "jar not found. Build: ./gradlew :app:quarkusBuild";;
+    native) [ -n "$NATIVE" ] && [ -x "$NATIVE" ] || die "native binary not found — set YANO_NATIVE=/path/to/yano, or build: ./gradlew :app:build -Dquarkus.native.enabled=true";;
+    jar)    [ -n "$JAR" ] && [ -f "$JAR" ]       || die "jar not found — set YANO_JAR=/path/to/yano.jar, or build: ./gradlew :app:quarkusBuild";;
     auto)
-      if   [ -n "$JAR" ];       then RUNTIME="jar"
-      elif [ -x "$NATIVE" ];    then RUNTIME="native"
-      else die "no Yano build found. Build the jar (./gradlew :app:quarkusBuild) or native (-Dquarkus.native.enabled=true)"; fi;;
+      if   [ -n "$JAR" ] && [ -f "$JAR" ];          then RUNTIME="jar"
+      elif [ -n "$NATIVE" ] && [ -x "$NATIVE" ];    then RUNTIME="native"
+      else die "no Yano binary found under $YANO_HOME. Build it (./gradlew :app:quarkusBuild), or point YANO_JAR=/path/to/yano.jar (or YANO_NATIVE) at a released binary and YANO_HOME at its config tree."; fi;;
     *) die "unknown runtime: $RUNTIME";;
   esac
 }
@@ -207,9 +228,9 @@ launch_node() {
 
   local log; log="$(log_file "$i")"
   if [ "$RUNTIME" = "native" ]; then
-    ( cd "$APP_DIR" && exec "$NATIVE" "${args[@]}" ${YANO_EXTRA_ARGS:-} ) >"$log" 2>&1 &
+    ( cd "$YANO_HOME" && exec "$NATIVE" "${args[@]}" ${YANO_EXTRA_ARGS:-} ) >"$log" 2>&1 &
   else
-    ( cd "$APP_DIR" && exec java ${JAVA_OPTS:-} "${args[@]}" -jar "$JAR" ${YANO_EXTRA_ARGS:-} ) >"$log" 2>&1 &
+    ( cd "$YANO_HOME" && exec java ${JAVA_OPTS:-} "${args[@]}" -jar "$JAR" ${YANO_EXTRA_ARGS:-} ) >"$log" 2>&1 &
   fi
   echo "$!" > "$(pid_file "$i")"
 }
@@ -259,7 +280,7 @@ cmd_start() {
   local n="${1:-3}"
   [[ "$n" =~ ^[0-9]+$ && "$n" -ge 1 ]] || die "node count must be a positive integer"
   resolve_runtime
-  [ -f "$CONFIG_FILE" ] || die "config not found: $CONFIG_FILE"
+  [ -f "$CONFIG_FILE" ] || die "config not found: $CONFIG_FILE (set YANO_HOME to a tree containing config/application-appchain.yml)"
   local -a cids=(); while IFS= read -r c; do cids+=("$c"); done < <(chain_ids)
   [ "${#cids[@]}" -ge 1 ] || die "no chains defined in $CONFIG_FILE"
 
@@ -272,7 +293,8 @@ cmd_start() {
   mkdir -p "$CLUSTER_DIR"
 
   c_grn "Starting $n-node app-chain cluster"
-  echo  "  runtime : $RUNTIME"
+  echo  "  runtime : $RUNTIME ($([ "$RUNTIME" = native ] && echo "$NATIVE" || echo "$JAR"))"
+  echo  "  home    : $YANO_HOME"
   echo  "  network : $NETWORK"
   echo  "  chains  : ${cids[*]}"
   echo  "  members : $n   threshold: ${THRESHOLD:-$(default_threshold "$n")}"
@@ -283,9 +305,9 @@ cmd_start() {
     # Node 0 (dev-mode) shifts + persists the genesis systemStart in place;
     # followers must reuse node 0's shifted copy, so we copy AFTER it is ready.
     mkdir -p "$(node_dir 0)"
-    jq '.epochLength = 500' "$APP_DIR/config/network/devnet/shelley-genesis.json" \
+    jq '.epochLength = 500' "$YANO_HOME/config/network/devnet/shelley-genesis.json" \
         > "$(node_dir 0)/shelley-genesis.json" 2>/dev/null \
-        || cp "$APP_DIR/config/network/devnet/shelley-genesis.json" "$(node_dir 0)/shelley-genesis.json"
+        || cp "$YANO_HOME/config/network/devnet/shelley-genesis.json" "$(node_dir 0)/shelley-genesis.json"
   fi
 
   printf 'node 0 (%s) ... ' "$([ "$NETWORK" = devnet ] && echo 'L1 producer + member' || echo 'relay + member')"
@@ -480,8 +502,23 @@ start options:
   --http-base <p>   node i HTTP port = p + i (default: $HTTP_BASE)
   --server-base <p> node i n2n  port = p + i (default: $SERVER_BASE)
 
-Chains come from app/config/application-appchain.yml — edit it to add/remove
-app chains or change their state machine / sequencer. See ./README.md.
+Chains come from \$YANO_HOME/config/application-appchain.yml — edit it to add/
+remove app chains or change their state machine / sequencer. See ./README.md.
+
+Environment (run a RELEASED build with no local compile):
+  YANO_HOME     tree holding config/ (application-appchain.yml + network
+                genesis). Nodes launch with cwd=HOME. Default: the repo's app/.
+  YANO_JAR      path to a yano uber-jar (overrides auto-detect; any location).
+  YANO_NATIVE   path to a yano native binary (overrides auto-detect).
+  Examples:
+    # local dev (auto): uses app/build/yano.jar + app/config
+    ./cluster.sh start 3
+    # released tree: /opt/yano/{yano.jar, config/...}
+    YANO_HOME=/opt/yano ./cluster.sh start 3
+    # binary and config in different places
+    YANO_HOME=/data/yano YANO_JAR=/downloads/yano.jar ./cluster.sh start 3
+  (loadtest.sh / soaktest.sh need no binary — they just hit the running
+  cluster's HTTP ports, so they work against any running Yano.)
 EOF
 }
 
