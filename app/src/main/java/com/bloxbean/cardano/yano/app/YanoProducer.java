@@ -234,8 +234,11 @@ public class YanoProducer {
     @ConfigProperty(name = YanoPropertyKeys.AppChain.BLOCK_INTERVAL_MS, defaultValue = "2000")
     long appChainBlockIntervalMs;
 
-    @ConfigProperty(name = YanoPropertyKeys.AppChain.BLOCK_MAX_MESSAGES, defaultValue = "500")
+    @ConfigProperty(name = YanoPropertyKeys.AppChain.BLOCK_MAX_MESSAGES, defaultValue = "5000")
     int appChainBlockMaxMessages;
+
+    @ConfigProperty(name = YanoPropertyKeys.AppChain.BLOCK_MAX_BYTES, defaultValue = "4194304")
+    long appChainBlockMaxBytes;
 
     @ConfigProperty(name = YanoPropertyKeys.AppChain.STATE_MACHINE, defaultValue = "ordered-log")
     String appChainStateMachine;
@@ -659,6 +662,7 @@ public class YanoProducer {
         globals.put(YanoPropertyKeys.AppChain.THRESHOLD, appChainThreshold);
         globals.put(YanoPropertyKeys.AppChain.BLOCK_INTERVAL_MS, appChainBlockIntervalMs);
         globals.put(YanoPropertyKeys.AppChain.BLOCK_MAX_MESSAGES, appChainBlockMaxMessages);
+        globals.put(YanoPropertyKeys.AppChain.BLOCK_MAX_BYTES, appChainBlockMaxBytes);
         globals.put(YanoPropertyKeys.AppChain.STATE_MACHINE, appChainStateMachine);
         globals.put(YanoPropertyKeys.AppChain.ANCHOR_ENABLED, appChainAnchorEnabled);
         appChainAnchorSigningKey.ifPresent(v -> globals.put(YanoPropertyKeys.AppChain.ANCHOR_SIGNING_KEY, v));
@@ -843,7 +847,7 @@ public class YanoProducer {
         String[] suffixes = {
                 "chain-id", "signing-key", "members", "peers",
                 "sequencer.proposer", "threshold",
-                "block.interval-ms", "block.max-messages",
+                "block.interval-ms", "block.max-messages", "block.max-bytes",
                 "state-machine",
                 "max-message-bytes", "max-ttl-seconds", "default-ttl-seconds",
                 "anchor.enabled", "anchor.signing-key", "anchor.every-blocks",

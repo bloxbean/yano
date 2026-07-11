@@ -49,6 +49,9 @@ final class AppChainEngine implements AutoCloseable {
     /** Partial rounds observed competing with our lock (008.2 §0 residual case). */
     private final java.util.concurrent.atomic.AtomicLong splitVotesObserved =
             new java.util.concurrent.atomic.AtomicLong();
+    /** Proposals rejected for exceeding block.max-bytes (block-bytes fix). */
+    private final java.util.concurrent.atomic.AtomicLong oversizedProposalsRejected =
+            new java.util.concurrent.atomic.AtomicLong();
     private final int maxBlockMessages;
     private final long maxBlockBytes;
     /** Sends a body on a system topic to the group (via the subsystem's diffusion). */
@@ -161,6 +164,10 @@ final class AppChainEngine implements AutoCloseable {
 
     long splitVotesObserved() {
         return splitVotesObserved.get();
+    }
+
+    long oversizedProposalsRejected() {
+        return oversizedProposalsRejected.get();
     }
 
     long tipHeight() {
@@ -331,19 +338,24 @@ final class AppChainEngine implements AutoCloseable {
             }
             java.util.function.Supplier<L1Ref> refSupplier = l1RefSupplier;
             L1Ref l1Ref = refSupplier != null ? refSupplier.get() : null;
-            AppBlock candidate = new AppBlock(
-                    AppBlock.BLOCK_VERSION,
-                    config.chainId(),
-                    height,
-                    ledger.tipHash(),
-                    l1Ref != null ? l1Ref.slot() : 0L,
-                    l1Ref != null ? l1Ref.blockHash() : new byte[0],
-                    System.currentTimeMillis(),
-                    AppBlockCodec.messagesRoot(candidates),
-                    new byte[32],                    // placeholder until applied
-                    candidates,
-                    signer.publicKey(),
-                    FinalityCert.empty());
+            byte[] prevHash = ledger.tipHash();
+            long timestamp = System.currentTimeMillis();
+
+            AppBlock candidate = buildCandidateBlock(height, prevHash, l1Ref, timestamp, candidates);
+            // Trim so the serialized block (which a proposal carries whole over
+            // the app-message transport) fits block.max-bytes — otherwise the
+            // proposal exceeds the transport limit and followers silently drop
+            // it, stalling the height. Deferred messages stay pooled for the
+            // next block (block-bytes fix).
+            if (AppBlockCodec.serialize(candidate).length > maxBlockBytes) {
+                candidates = fitToBlockBytes(height, prevHash, l1Ref, timestamp, candidates);
+                if (candidates.isEmpty()) {
+                    log.warn("App-chain '{}': cannot fit even one message under block.max-bytes ({}) "
+                            + "at height {} — skipping this round", config.chainId(), maxBlockBytes, height);
+                    return;
+                }
+                candidate = buildCandidateBlock(height, prevHash, l1Ref, timestamp, candidates);
+            }
 
             AppliedBlock applied = applyBlock(candidate);
             AppBlock block = applied.block;
@@ -428,6 +440,49 @@ final class AppChainEngine implements AutoCloseable {
         return candidates;
     }
 
+    /** Build an unapplied candidate block (state-root placeholder) for the given messages. */
+    private AppBlock buildCandidateBlock(long height, byte[] prevHash, L1Ref l1Ref,
+                                         long timestamp, List<AppMessage> messages) {
+        return new AppBlock(
+                AppBlock.BLOCK_VERSION,
+                config.chainId(),
+                height,
+                prevHash,
+                l1Ref != null ? l1Ref.slot() : 0L,
+                l1Ref != null ? l1Ref.blockHash() : new byte[0],
+                timestamp,
+                AppBlockCodec.messagesRoot(messages),
+                new byte[32],                    // placeholder until applied
+                messages,
+                signer.publicKey(),
+                FinalityCert.empty());
+    }
+
+    /**
+     * Drop trailing messages until the serialized block fits {@code maxBlockBytes}.
+     * Drops proportionally to the overflow so it converges in a couple of passes;
+     * the removed messages remain in the pool for the next block.
+     */
+    private List<AppMessage> fitToBlockBytes(long height, byte[] prevHash, L1Ref l1Ref,
+                                             long timestamp, List<AppMessage> candidates) {
+        List<AppMessage> list = new ArrayList<>(candidates);
+        while (list.size() > 1) {
+            int size = AppBlockCodec.serialize(
+                    buildCandidateBlock(height, prevHash, l1Ref, timestamp, list)).length;
+            if (size <= maxBlockBytes) {
+                break;
+            }
+            int drop = Math.max(1, (int) ((long) list.size() * (size - maxBlockBytes) / size));
+            list = new ArrayList<>(list.subList(0, list.size() - drop));
+        }
+        if (list.size() < candidates.size()) {
+            log.info("App-chain '{}': proposal trimmed to fit block.max-bytes — {} of {} messages "
+                    + "(the rest stay pooled for the next block)",
+                    config.chainId(), list.size(), candidates.size());
+        }
+        return list;
+    }
+
     // ------------------------------------------------------------------
     // Message handling (proposer + follower)
     // ------------------------------------------------------------------
@@ -492,6 +547,17 @@ final class AppChainEngine implements AutoCloseable {
             log.warn("Proposal messages-root mismatch — rejecting");
             return;
         }
+        // Size guard (block-bytes fix): a well-behaved leader trims proposals to
+        // fit block.max-bytes. Reject an oversized proposal loudly (a bug or a
+        // misbehaving proposer) — do not silently drop it as the transport did.
+        // The proposal envelope body IS the serialized block.
+        if (envelope.getBody().length > maxBlockBytes) {
+            oversizedProposalsRejected.incrementAndGet();
+            log.warn("Proposal at height {} exceeds block.max-bytes ({} > {}) — rejecting "
+                    + "(the proposer must cap the block; the round will re-propose or rotate)",
+                    block.height(), envelope.getBody().length, maxBlockBytes);
+            return;
+        }
         if (!verifyProposalL1Ref(envelope, block)) {
             return;
         }
@@ -499,12 +565,20 @@ final class AppChainEngine implements AutoCloseable {
             return;
         }
         // Every message inside the block must be a valid, member-signed envelope
+        // whose body is within the per-message limit (the DoS guard now lives
+        // here so the transport frame limit can be relaxed for whole-block
+        // proposals — block-bytes fix).
         long now = System.currentTimeMillis() / 1000;
         for (AppMessage message : block.messages()) {
             if (!message.hasValidMessageId() || message.isExpired(now)
                     || !verifyMemberSignature(message, block.height())) {
                 log.warn("Proposal contains invalid message {} — rejecting block",
                         message.getMessageIdHex());
+                return;
+            }
+            if (message.getBody() != null && message.getBody().length > config.maxMessageBytes()) {
+                log.warn("Proposal contains an over-limit message {} ({} > {}) — rejecting block",
+                        message.getMessageIdHex(), message.getBody().length, config.maxMessageBytes());
                 return;
             }
         }

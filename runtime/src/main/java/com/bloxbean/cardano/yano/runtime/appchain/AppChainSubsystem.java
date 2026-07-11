@@ -335,13 +335,23 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         return Set.copyOf(normalized);
     }
 
+    /**
+     * Transport frame limit: a consensus proposal carries a whole block, so the
+     * transport must accept messages up to {@code block.max-bytes} plus a small
+     * envelope margin (single source of truth with the engine's block-bytes cap;
+     * block-bytes fix). Ordinary user messages stay capped at
+     * {@code maxMessageBytes} by the submit() gate and the follower's
+     * per-message verify, so relaxing the frame limit only benefits proposals.
+     */
+    private static final int TRANSPORT_ENVELOPE_MARGIN = 65536;
+
     /** Transport config shared by inbound (server) and outbound (client) agents. */
     private AppMsgSubmissionConfig transportConfig() {
+        long limit = config.blockMaxBytes() + TRANSPORT_ENVELOPE_MARGIN;
+        int maxSize = (int) Math.min(Integer.MAX_VALUE, Math.max(config.maxMessageBytes(), limit));
         return AppMsgSubmissionConfig.builder()
                 .chainIds(Set.of(config.chainId()))
-                .maxMessageSize(Math.max(config.maxMessageBytes(),
-                        // consensus proposals carry whole blocks — allow headroom
-                        config.maxMessageBytes() * Math.max(1, Math.min(config.maxBlockMessages(), 64)) + 8192))
+                .maxMessageSize(maxSize)
                 .maxTtlSeconds(config.maxTtlSeconds())
                 .validator(this::verifyEnvelope)
                 .build();
@@ -1331,7 +1341,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                     sequencerMode,
                     Math.max(config.blockIntervalMs() * 5, 10_000),
                     config.maxBlockMessages(),
-                    config.maxMessageBytes() * 64L,
+                    config.blockMaxBytes(),
                     (topic, body) -> buildAndDiffuse(topic, body, Math.max(60, config.maxTtlSeconds() / 6)),
                     log);
             chainEngine.setOnBlockFinalized(this::onBlockFinalized);

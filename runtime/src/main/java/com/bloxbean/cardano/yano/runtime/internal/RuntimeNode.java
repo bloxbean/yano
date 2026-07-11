@@ -567,6 +567,8 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                         com.bloxbean.cardano.yano.api.appchain.AppChainConfig.DEFAULT_BLOCK_INTERVAL_MS),
                 (int) parseLong(get.apply("block.max-messages"),
                         com.bloxbean.cardano.yano.api.appchain.AppChainConfig.DEFAULT_MAX_BLOCK_MESSAGES),
+                parseLong(get.apply("block.max-bytes"),
+                        com.bloxbean.cardano.yano.api.appchain.AppChainConfig.DEFAULT_BLOCK_MAX_BYTES),
                 stringOf(get.apply("state-machine"),
                         com.bloxbean.cardano.yano.api.appchain.AppChainConfig.DEFAULT_STATE_MACHINE),
                 null,
