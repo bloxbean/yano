@@ -20,6 +20,7 @@ integration branch at iteration end.
 | `008.3-chain-governed-membership.md` | Chain-governed membership, 005 D6 (I2.2) | `feat/adr008-iteration2` | **Merged** (2026-07-10) — devnet gate passed (governed add activated identically on both nodes) |
 | `008.4-script-anchors-l1view.md` | Script anchors + L1View (005 D4-A2/D5) — julc-default validator, Aiken opt-in, one shared ABI | `feat/adr008-iteration3` | **Devnet-gated** (2026-07-10) — 26 conformance vectors × 2 impls; live gate: bootstrap + 2 co-signed advances on L1, zero-config follower adoption, observations finalized on both nodes |
 | 008.5 (planned) | DX track (typed queries, SDK verification loop, security scopes, packaging) | — | Not started |
+| _(robustness/tooling)_ | Cluster toolkit (`app/appchain-cluster/`: n-node start/submit/loadtest) + **block-bytes fix** — `block.max-bytes` proposal cap, leader trim-to-fit, verifier reject, topic-aware inbound size cap (proposals sized by `block.max-bytes`, user messages by `max-message-bytes`) | `feat/adr008-block-bytes` | **Devnet-gated** (2026-07-11) — toolkit found a multi-chain consensus stall (proposals capped at `max-message-bytes`); fixed; 3-node cluster now finalizes 2000/1500-msg loads with no stall, blocks up to 1300 msgs, identical state roots. See struck entry in `pending-tasks.md` |
 
 Deferred-with-intent items across all iterations are collected in
 **`adr/app-layer/pending-tasks.md`** (with ADR references and revive

@@ -517,6 +517,8 @@ public final class YanoPropertyKeys {
         public static final String THRESHOLD = "yano.app-chain.threshold";
         public static final String BLOCK_INTERVAL_MS = "yano.app-chain.block.interval-ms";
         public static final String BLOCK_MAX_MESSAGES = "yano.app-chain.block.max-messages";
+        /** Primary block-size cap in bytes (serialized block/proposal). */
+        public static final String BLOCK_MAX_BYTES = "yano.app-chain.block.max-bytes";
         /** Built-in state machine id; default "ordered-log". */
         public static final String STATE_MACHINE = "yano.app-chain.state-machine";
         public static final String ANCHOR_ENABLED = "yano.app-chain.anchor.enabled";

@@ -24,13 +24,11 @@ yano:
     chains[0]:
       chain-id: "orders-chain"
       state-machine: ordered-log        # built-in: append-only log (default)
-      # Raised so a full block's PROPOSAL (which carries all its messages) fits
-      # the inbound message-size limit — else large batches would be rejected by
-      # followers. Keep >= block.max-messages * (avg message size + ~180B).
-      max-message-bytes: 1048576        # 1 MiB
       block:
         interval-ms: 1000               # propose a block every ~1s
-        max-messages: 500               # up to 500 msgs/block (throughput demo)
+        # block.max-bytes (default 4 MiB) is the primary size cap; the proposer
+        # trims each block to fit it. max-messages (default 5000) is a safety
+        # backstop against tiny-message floods. Tune either for throughput.
       # No sequencer.mode → fixed proposer; the launcher injects
       # sequencer.proposer = node 0's member key. To rotate instead, add:
       #   sequencer:
@@ -41,7 +39,6 @@ yano:
     chains[1]:
       chain-id: "registry-chain"
       state-machine: kv-registry        # built-in: owner-guarded K/V registry
-      max-message-bytes: 1048576        # 1 MiB (see orders-chain note)
       block:
         interval-ms: 2000
       sequencer:

@@ -57,6 +57,7 @@ public record AppChainConfig(String chainId,
                              int threshold,
                              long blockIntervalMs,
                              int maxBlockMessages,
+                             long blockMaxBytes,
                              String stateMachineId,
                              String ledgerPath,
                              AnchorConfig anchor,
@@ -72,7 +73,19 @@ public record AppChainConfig(String chainId,
     public static final long DEFAULT_MAX_TTL_SECONDS = 3600;
     public static final long DEFAULT_DEFAULT_TTL_SECONDS = 600;
     public static final long DEFAULT_BLOCK_INTERVAL_MS = 2000;
-    public static final int DEFAULT_MAX_BLOCK_MESSAGES = 500;
+    /**
+     * Primary block-size cap: the serialized block (a proposal carries the whole
+     * block over the app-message transport) must fit this. 4 MiB by default —
+     * the app-message transport auto-segments larger messages, but this bounds
+     * proposal size and reassembly memory (ADR app-layer/008; block-bytes fix).
+     */
+    public static final long DEFAULT_BLOCK_MAX_BYTES = 4L * 1024 * 1024;
+    /**
+     * Message-count cap: a safety backstop against verification-work floods
+     * (each message costs a signature verify), NOT the primary throughput knob —
+     * {@code block.max-bytes} is. Sized so bytes bind first for normal messages.
+     */
+    public static final int DEFAULT_MAX_BLOCK_MESSAGES = 5000;
     public static final String DEFAULT_STATE_MACHINE = "ordered-log";
     public static final int DEFAULT_POOL_MAX_MESSAGES = 10_000;
 
@@ -86,9 +99,9 @@ public record AppChainConfig(String chainId,
                           int retentionKeepBlocks, Map<String, String> pluginSettings) {
         this(chainId, signingKeyHex, memberKeysHex, peers, maxMessageBytes, maxTtlSeconds,
                 defaultTtlSeconds, proposerKeyHex, threshold, blockIntervalMs, maxBlockMessages,
-                stateMachineId, ledgerPath, anchor, l1StabilityDepth, webhookUrls,
-                retentionEnabled, retentionKeepBlocks, DEFAULT_POOL_MAX_MESSAGES, false,
-                pluginSettings);
+                DEFAULT_BLOCK_MAX_BYTES, stateMachineId, ledgerPath, anchor, l1StabilityDepth,
+                webhookUrls, retentionEnabled, retentionKeepBlocks, DEFAULT_POOL_MAX_MESSAGES,
+                false, pluginSettings);
     }
 
     public AppChainConfig {
@@ -111,6 +124,11 @@ public record AppChainConfig(String chainId,
             blockIntervalMs = DEFAULT_BLOCK_INTERVAL_MS;
         if (maxBlockMessages <= 0)
             maxBlockMessages = DEFAULT_MAX_BLOCK_MESSAGES;
+        if (blockMaxBytes <= 0)
+            blockMaxBytes = DEFAULT_BLOCK_MAX_BYTES;
+        // A block must hold at least one full-size message.
+        if (blockMaxBytes < maxMessageBytes)
+            blockMaxBytes = maxMessageBytes;
         if (stateMachineId == null || stateMachineId.isBlank())
             stateMachineId = DEFAULT_STATE_MACHINE;
         webhookUrls = webhookUrls != null ? List.copyOf(webhookUrls) : List.of();
@@ -141,6 +159,7 @@ public record AppChainConfig(String chainId,
         private int threshold = 1;
         private long blockIntervalMs = DEFAULT_BLOCK_INTERVAL_MS;
         private int maxBlockMessages = DEFAULT_MAX_BLOCK_MESSAGES;
+        private long blockMaxBytes = DEFAULT_BLOCK_MAX_BYTES;
         private String stateMachineId = DEFAULT_STATE_MACHINE;
         private String ledgerPath;
         private AnchorConfig anchor;
@@ -166,6 +185,7 @@ public record AppChainConfig(String chainId,
         public Builder threshold(int value) { this.threshold = value; return this; }
         public Builder blockIntervalMs(long value) { this.blockIntervalMs = value; return this; }
         public Builder maxBlockMessages(int value) { this.maxBlockMessages = value; return this; }
+        public Builder blockMaxBytes(long value) { this.blockMaxBytes = value; return this; }
         public Builder stateMachineId(String value) { this.stateMachineId = value; return this; }
         public Builder ledgerPath(String value) { this.ledgerPath = value; return this; }
         public Builder anchor(AnchorConfig value) { this.anchor = value; return this; }
@@ -180,7 +200,7 @@ public record AppChainConfig(String chainId,
         public AppChainConfig build() {
             return new AppChainConfig(chainId, signingKeyHex, memberKeysHex, peers,
                     maxMessageBytes, maxTtlSeconds, defaultTtlSeconds, proposerKeyHex,
-                    threshold, blockIntervalMs, maxBlockMessages, stateMachineId,
+                    threshold, blockIntervalMs, maxBlockMessages, blockMaxBytes, stateMachineId,
                     ledgerPath, anchor, l1StabilityDepth, webhookUrls,
                     retentionEnabled, retentionKeepBlocks, poolMaxMessages, enforceSenderSeq,
                     pluginSettings);
