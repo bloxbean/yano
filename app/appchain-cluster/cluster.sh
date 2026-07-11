@@ -181,6 +181,16 @@ launch_node() {
     "-Dquarkus.http.port=$(http_port "$i")"
     "-Dyano.server.port=$(server_port "$i")"
     "-Dyano.storage.path=$dir/chainstate"
+    # Relay source-port reuse binds every upstream dial to the node's own server
+    # port — a NAT-traversal aid for real relays, but on a localhost cluster all
+    # followers dialing node 0 (plus app-peers) collide on the 4-tuple and wedge
+    # L1 sync. Off for cluster nodes; real relay deployments keep the default.
+    "-Dyano.relay.connection.source-port-reuse=false"
+    # Every cluster node shares 127.0.0.1, and each pair holds several sockets
+    # (L1 chain-sync + app-peer gossip + catch-up). The default per-IP cap (5)
+    # is a real-deployment guard (distinct IPs) that a localhost cluster blows
+    # past around the 3rd node — node 0 then drops later followers. Raise it.
+    "-Dyano.relay.connection.max-connections-per-ip=500"
   )
   if [ "$NETWORK" = "devnet" ]; then
     args+=("-Dyano.genesis.shelley-genesis-file=$dir/shelley-genesis.json")
@@ -214,6 +224,34 @@ wait_ready() {
     fi
     sleep 2
   done
+}
+
+# Non-fatal readiness poll: returns 0 when ready, 1 on timeout/exit. $2=timeout(s).
+wait_ready_soft() {
+  local i="$1" secs="${2:-90}" port; port="$(http_port "$i")"
+  local deadline=$(( $(date +%s) + secs ))
+  until curl -sf "http://localhost:$port/q/health/ready" >/dev/null 2>&1; do
+    [ "$(date +%s)" -gt "$deadline" ] && return 1
+    kill -0 "$(cat "$(pid_file "$i")" 2>/dev/null)" 2>/dev/null || return 1
+    sleep 2
+  done
+  return 0
+}
+
+# Start a follower, tolerating the known devnet first-boot chain-sync wedge
+# (a follower that connects during the producer's earliest blocks can hang
+# short of readiness). Restart it by PID up to $CLUSTER_FOLLOWER_TRIES times.
+start_follower_resilient() {
+  local n="$1" i="$2" tries="${CLUSTER_FOLLOWER_TRIES:-3}" a=1
+  while [ "$a" -le "$tries" ]; do
+    launch_node "$n" "$i"
+    if wait_ready_soft "$i" 90; then return 0; fi
+    [ "$a" -lt "$tries" ] && printf '(retry %d) ' "$a"
+    kill -9 "$(cat "$(pid_file "$i")" 2>/dev/null)" 2>/dev/null
+    sleep 2
+    a=$(( a + 1 ))
+  done
+  die "node $i not ready after $tries attempts (see $(log_file "$i"))"
 }
 
 # --- Commands ----------------------------------------------------------------
@@ -253,6 +291,15 @@ cmd_start() {
   printf 'node 0 (%s) ... ' "$([ "$NETWORK" = devnet ] && echo 'L1 producer + member' || echo 'relay + member')"
   launch_node "$n" 0; wait_ready 0; c_grn "ready (http $(http_port 0), n2n $(server_port 0))"
 
+  # Let the producer build a few blocks before followers connect — avoids the
+  # devnet first-boot chain-sync wedge (a follower joining during node 0's
+  # earliest blocks can hang). Skipped for relay networks and single-node.
+  if [ "$NETWORK" = "devnet" ] && [ "$n" -gt 1 ]; then
+    local warmup="${CLUSTER_WARMUP:-25}"
+    printf 'warming up producer %ss before followers join ... ' "$warmup"
+    sleep "$warmup"; c_grn "go"
+  fi
+
   local i
   for ((i=1;i<n;i++)); do
     if [ "$NETWORK" = "devnet" ]; then
@@ -260,7 +307,7 @@ cmd_start() {
       cp "$(node_dir 0)/shelley-genesis.json" "$(node_dir "$i")/shelley-genesis.json"
     fi
     printf 'node %d (follower + member) ... ' "$i"
-    launch_node "$n" "$i"; wait_ready "$i"; c_grn "ready (http $(http_port "$i"), n2n $(server_port "$i"))"
+    start_follower_resilient "$n" "$i"; c_grn "ready (http $(http_port "$i"), n2n $(server_port "$i"))"
   done
 
   echo; c_grn "Cluster up."
