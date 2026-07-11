@@ -415,6 +415,19 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         this.anchorFeeParamsSupplier = supplier;
     }
 
+    private volatile java.util.function.Supplier<com.bloxbean.cardano.client.api.model.ProtocolParams>
+            anchorProtocolParamsSupplier;
+
+    /**
+     * Wire the node's full protocol parameters (cardano-client-lib model) for
+     * QuickTx-based script-anchor tx construction (Iteration 4). Optional —
+     * without it the script anchor uses Conway defaults.
+     */
+    public void wireAnchorProtocolParams(
+            java.util.function.Supplier<com.bloxbean.cardano.client.api.model.ProtocolParams> supplier) {
+        this.anchorProtocolParamsSupplier = supplier;
+    }
+
     public void wireL1(java.util.function.Function<byte[], String> txSubmitter,
                        java.util.function.Supplier<com.bloxbean.cardano.yano.api.utxo.UtxoState> utxoStateSupplier) {
         this.txSubmitter = txSubmitter;
@@ -1036,6 +1049,18 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     }
 
     @Override
+    public boolean unlockStaleRound() {
+        AppChainEngine currentEngine = engine;
+        if (currentEngine == null)
+            throw new IllegalStateException("Sequencing is not enabled on this node");
+        try {
+            return currentEngine.clearStaleVoteLock();
+        } catch (Exception e) {
+            throw new IllegalStateException("Stale-lock unlock failed: " + e.getMessage(), e);
+        }
+    }
+
+    @Override
     public long snapshot(String snapshotPath) {
         AppLedgerStore currentLedger = ledger;
         if (currentLedger == null) {
@@ -1409,9 +1434,9 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                             scriptLeader,
                             protocolMagic,
                             log);
-                    scriptService.wireFees(
+                    scriptService.wireTxPricing(
                             () -> {
-                                var supplier = anchorFeeParamsSupplier;
+                                var supplier = anchorProtocolParamsSupplier;
                                 return supplier != null ? supplier.get() : null;
                             },
                             anchorSlotSupplier);

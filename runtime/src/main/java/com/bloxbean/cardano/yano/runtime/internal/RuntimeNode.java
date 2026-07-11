@@ -513,6 +513,7 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                     Thread.currentThread().getContextClassLoader(), log);
             subsystem.wireL1(this::submitTransaction, this::getUtxoState);
             subsystem.wireAnchorFees(this::anchorFeeParams);
+            subsystem.wireAnchorProtocolParams(this::anchorCclProtocolParams);
             subsystems.add(subsystem);
         }
         return new com.bloxbean.cardano.yano.runtime.appchain.AppChainManager(subsystems, log);
@@ -623,6 +624,58 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
             log.debug("Anchor fee params unavailable: {}", e.toString());
         }
         return null;
+    }
+
+    /** Memoized parse of the configured static protocol-param.json for the anchor fallback. */
+    private volatile com.bloxbean.cardano.client.api.model.ProtocolParams anchorStaticCclParams;
+    private volatile boolean anchorStaticCclParamsLoaded;
+
+    /**
+     * Current protocol parameters as the cardano-client-lib model, for
+     * QuickTx-based anchor tx construction (Iteration 4). Tracked / L1-derived
+     * params for the current epoch are primary; when those are unavailable
+     * (epoch-param tracking disabled or not yet resolved), fall back to the
+     * configured static {@code protocol-param.json}
+     * ({@code yano.genesis.protocol-parameters-file}). Returns {@code null} only
+     * when neither source is available — the anchor then fails closed.
+     */
+    private com.bloxbean.cardano.client.api.model.ProtocolParams anchorCclProtocolParams() {
+        try {
+            int epoch = Math.max(epochNonceState != null ? epochNonceState.getCurrentEpoch() : 0, 0);
+            var ccl = ProtocolParamsMapper.toCardanoClient(getProtocolParameters(epoch).orElse(null));
+            if (ccl != null) {
+                return ccl;
+            }
+            return anchorStaticCclParams(epoch);
+        } catch (Exception e) {
+            log.debug("Anchor protocol params unavailable: {}", e.toString());
+            return null;
+        }
+    }
+
+    /**
+     * The configured static {@code protocol-param.json} mapped to the CCL model
+     * (with the full raw PlutusV3 cost model), read directly regardless of
+     * epoch-param tracking mode and memoized. {@code null} when no file is
+     * configured.
+     */
+    private com.bloxbean.cardano.client.api.model.ProtocolParams anchorStaticCclParams(int epoch) {
+        if (anchorStaticCclParamsLoaded) {
+            return anchorStaticCclParams;
+        }
+        com.bloxbean.cardano.client.api.model.ProtocolParams result = null;
+        String file = config.getProtocolParametersFile();
+        if (file != null && !file.isBlank()) {
+            try {
+                String json = Files.readString(Path.of(file));
+                result = ProtocolParamsMapper.fromNodeProtocolParamToCardanoClient(json, epoch);
+            } catch (Exception e) {
+                log.debug("Anchor static protocol params unavailable from {}: {}", file, e.toString());
+            }
+        }
+        anchorStaticCclParams = result;
+        anchorStaticCclParamsLoaded = true;
+        return result;
     }
 
     /** Union of the dynamic plugin config sub-maps under the given prefixes. */
