@@ -28,6 +28,7 @@ import java.util.Optional;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Full A2 loop without an L1 (ADR 008.4): leader bootstraps the thread NFT,
@@ -39,6 +40,31 @@ class ScriptAnchorServiceTest {
 
     private static final Logger log = LoggerFactory.getLogger(ScriptAnchorServiceTest.class);
     private static final String CHAIN_ID = "test-chain";
+
+    /**
+     * Real protocol params (full PlutusV3 cost model) from the devnet
+     * protocol-param.json — the same static-params file the node uses, loaded
+     * through the shared mapper. Exercises the actual pricing/evaluation path.
+     */
+    private static final com.bloxbean.cardano.client.api.model.ProtocolParams DEVNET_PARAMS =
+            loadDevnetParams();
+
+    private static com.bloxbean.cardano.client.api.model.ProtocolParams loadDevnetParams() {
+        try {
+            return com.bloxbean.cardano.yano.runtime.blockproducer.ProtocolParamsMapper
+                    .fromNodeProtocolParamToCardanoClient(
+                            java.nio.file.Files.readString(
+                                    testPath("app/config/network/devnet/protocol-param.json")), 0);
+        } catch (Exception e) {
+            throw new IllegalStateException("Cannot load devnet protocol params for test", e);
+        }
+    }
+
+    /** Resolve a repo-relative path whether tests run from repo root or the module dir. */
+    private static Path testPath(String path) {
+        Path direct = Path.of(path);
+        return java.nio.file.Files.exists(direct) ? direct : Path.of("..").resolve(path);
+    }
 
     @TempDir
     Path tempDir;
@@ -85,7 +111,8 @@ class ScriptAnchorServiceTest {
                 leaderSigner, () -> members, () -> 2,
                 (topic, body) -> deliver(this.follower, leaderSigner.publicKey(), topic, body),
                 true, 42, log);
-        leader.wireFees(() -> null, () -> 500L);
+        leader.wireTxPricing(() -> DEVNET_PARAMS, () -> 500L);
+        wallet = leader.anchorAddress(); // pre-bootstrap: the wallet address
 
         follower = new ScriptAnchorService(CHAIN_ID, followerConfig, followerLedger,
                 cbor -> {
@@ -96,8 +123,10 @@ class ScriptAnchorServiceTest {
                 followerSigner, () -> members, () -> 2,
                 (topic, body) -> deliver(this.leader, followerSigner.publicKey(), topic, body),
                 false, 42, log);
-        follower.wireFees(() -> null, () -> 500L);
+        follower.wireTxPricing(() -> DEVNET_PARAMS, () -> 500L);
     }
+
+    private String wallet;
 
     @AfterEach
     void tearDown() {
@@ -150,9 +179,8 @@ class ScriptAnchorServiceTest {
         String scriptAddress = (String) boot.get("scriptAddress");
         String policyIdHex = (String) boot.get("threadPolicyId");
 
-        // Structure: output 0 locks the NFT + inline datum at the script
-        TransactionOutput anchorOut = bootstrapTx.getBody().getOutputs().get(0);
-        assertThat(anchorOut.getAddress()).isEqualTo(scriptAddress);
+        // Structure: one output locks the NFT + inline datum at the script
+        TransactionOutput anchorOut = outputTo(bootstrapTx, scriptAddress);
         assertThat(anchorOut.getInlineDatum()).isNotNull();
         AnchorDatumCodec.AnchorDatum datum0 = AnchorDatumCodec.decode(anchorOut.getInlineDatum());
         assertThat(datum0.chainId()).isEqualTo(CHAIN_ID);
@@ -161,6 +189,8 @@ class ScriptAnchorServiceTest {
         assertThat(datum0.memberKeys()).hasSize(2);
         assertThat(bootstrapTx.getBody().getMint().get(0).getPolicyId()).isEqualTo(policyIdHex);
         assertThat(bootstrapTx.getWitnessSet().getPlutusV3Scripts()).hasSize(1);
+        // buildAndSign regression guard: the wallet key must witness its inputs
+        assertThat(bootstrapTx.getWitnessSet().getVkeyWitnesses()).hasSize(1);
 
         // Idempotence while pending: no double-submit
         assertThat(leader.bootstrap()).containsKey("pendingTx");
@@ -171,10 +201,14 @@ class ScriptAnchorServiceTest {
         assertThat(leader.bootstrapped()).isTrue();
         assertThat(leader.anchorAddress()).isEqualTo(scriptAddress);
 
-        utxoState.put(scriptAddress, List.of(anchorUtxo(bootstrapHash, 0, anchorOut, policyIdHex)));
+        int anchorOutIndex = bootstrapTx.getBody().getOutputs().indexOf(anchorOut);
+        utxoState.put(scriptAddress, List.of(
+                anchorUtxo(bootstrapHash, anchorOutIndex, anchorOut, policyIdHex)));
         // Wallet change becomes the fee input for the advance
-        long change = bootstrapTx.getBody().getOutputs().get(1).getValue().getCoin().longValue();
-        utxoState.put(walletAddressOf(bootstrapTx), List.of(walletUtxo(bootstrapHash, 1, change)));
+        TransactionOutput changeOut = outputTo(bootstrapTx, wallet);
+        int changeIndex = bootstrapTx.getBody().getOutputs().indexOf(changeOut);
+        utxoState.put(wallet, List.of(walletUtxo(bootstrapHash, changeIndex,
+                changeOut.getValue().getCoin().longValue())));
 
         // --- Advance: chain has moved; leader starts a co-sign round.
         // The follower (no anchor config at all) adopts the identity from the
@@ -187,8 +221,7 @@ class ScriptAnchorServiceTest {
         Transaction advanceTx = Transaction.deserialize(submitted.get(1));
 
         // Datum advanced to the follower-verified tip
-        TransactionOutput nextOut = advanceTx.getBody().getOutputs().get(0);
-        assertThat(nextOut.getAddress()).isEqualTo(scriptAddress);
+        TransactionOutput nextOut = outputTo(advanceTx, scriptAddress);
         AnchorDatumCodec.AnchorDatum next = AnchorDatumCodec.decode(nextOut.getInlineDatum());
         assertThat(next.height()).isEqualTo(9);
         assertThat(next.blockHash()).isEqualTo(
@@ -223,10 +256,14 @@ class ScriptAnchorServiceTest {
         String scriptAddress = (String) boot.get("scriptAddress");
         String policyIdHex = (String) boot.get("threadPolicyId");
         leader.onL1Block(100, List.of(bootstrapHash));
-        TransactionOutput anchorOut = bootstrapTx.getBody().getOutputs().get(0);
-        utxoState.put(scriptAddress, List.of(anchorUtxo(bootstrapHash, 0, anchorOut, policyIdHex)));
-        long change = bootstrapTx.getBody().getOutputs().get(1).getValue().getCoin().longValue();
-        utxoState.put(walletAddressOf(bootstrapTx), List.of(walletUtxo(bootstrapHash, 1, change)));
+        TransactionOutput anchorOut = outputTo(bootstrapTx, scriptAddress);
+        int anchorOutIndex = bootstrapTx.getBody().getOutputs().indexOf(anchorOut);
+        utxoState.put(scriptAddress, List.of(
+                anchorUtxo(bootstrapHash, anchorOutIndex, anchorOut, policyIdHex)));
+        TransactionOutput changeOut = outputTo(bootstrapTx, wallet);
+        utxoState.put(wallet, List.of(walletUtxo(bootstrapHash,
+                bootstrapTx.getBody().getOutputs().indexOf(changeOut),
+                changeOut.getValue().getCoin().longValue())));
 
         // Follower's ledger DISAGREES about block 9 (different state root)
         ScriptAnchorService divergentFollower = new ScriptAnchorService(CHAIN_ID,
@@ -256,15 +293,31 @@ class ScriptAnchorServiceTest {
         assertThat(leader.status().toString()).contains("cosignPending");
     }
 
+    @Test
+    void bootstrap_failsClosed_whenNoProtocolParams() {
+        // No protocol params source (tracked or configured file) → the anchor
+        // must NOT silently price against a hardcoded default (wrong cost model
+        // = wrong script-integrity hash). It fails closed with a clear message.
+        leader.wireTxPricing(() -> null, () -> 500L);
+        utxoState.put(leader.anchorAddress(), List.of(walletUtxo("cc".repeat(32), 0, 100_000_000)));
+
+        assertThatThrownBy(leader::bootstrap)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("requires protocol parameters");
+        assertThat(submitted).isEmpty();
+    }
+
     // ------------------------------------------------------------------
 
-    private String walletAddressOf(Transaction bootstrapTx) throws Exception {
-        // Change output address == leader wallet address
-        return bootstrapTx.getBody().getOutputs().get(1).getAddress();
+    /** The single output paying the given address (order-independent). */
+    private static TransactionOutput outputTo(Transaction tx, String address) {
+        return tx.getBody().getOutputs().stream()
+                .filter(o -> address.equals(o.getAddress()))
+                .findFirst().orElseThrow();
     }
 
     private Utxo walletUtxo(String txHash, int index, long lovelace) {
-        return new Utxo(new Outpoint(txHash, index), "wallet", BigInteger.valueOf(lovelace),
+        return new Utxo(new Outpoint(txHash, index), wallet, BigInteger.valueOf(lovelace),
                 List.of(), null, null, null, null, false, 0, 0, null);
     }
 
@@ -291,7 +344,9 @@ class ScriptAnchorServiceTest {
 
         @Override
         public List<Utxo> getUtxosByAddress(String bech32OrHexAddress, int page, int pageSize) {
-            return byAddress.getOrDefault(bech32OrHexAddress, List.of());
+            // Page-aware: everything on page 1 — further pages are empty, or
+            // QuickTx's selection would see infinite duplicate pages
+            return page <= 1 ? byAddress.getOrDefault(bech32OrHexAddress, List.of()) : List.of();
         }
 
         @Override
@@ -301,7 +356,11 @@ class ScriptAnchorServiceTest {
 
         @Override
         public Optional<Utxo> getUtxo(Outpoint outpoint) {
-            return Optional.empty();
+            // Input resolution for QuickTx balancing + the julc evaluator
+            return byAddress.values().stream()
+                    .flatMap(List::stream)
+                    .filter(u -> u.outpoint().equals(outpoint))
+                    .findFirst();
         }
 
         @Override

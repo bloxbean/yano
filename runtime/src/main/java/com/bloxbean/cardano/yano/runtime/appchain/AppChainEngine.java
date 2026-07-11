@@ -149,7 +149,14 @@ final class AppChainEngine implements AutoCloseable {
 
     /** Mode-specific observability (window/proposer/etc.). */
     Map<String, Object> sequencerStatus() {
-        return sequencerMode.status();
+        Map<String, Object> status = new java.util.LinkedHashMap<>(sequencerMode.status());
+        long stale = staleLockedHeight;
+        if (stale > ledger.tipHeight()) {
+            // Wedge visibility (I4.2): this member's vote at tip+1 is spent on
+            // an unrecoverable proposal — see the stale-lock runbook
+            status.put("staleLockedHeight", stale);
+        }
+        return status;
     }
 
     long splitVotesObserved() {
@@ -293,11 +300,25 @@ final class AppChainEngine implements AutoCloseable {
             // Partial-round recovery (ANY member, any mode — ADR 008.2 §2.3):
             // once we voted at this height our one vote is spent; keep
             // re-gossiping the locked original proposal (+ our vote) until it
-            // finalizes, and never propose a competing block.
+            // finalizes, and never VOTE for a competing block.
             Optional<byte[]> existingLock = ledger.voteLock(height);
+            boolean staleLock = false;
             if (existingLock.isPresent()) {
-                regossipLockedProposal(height, existingLock.get());
-                return;
+                if (!lockedProposalUnrecoverable(height)) {
+                    regossipLockedProposal(height, existingLock.get());
+                    return;
+                }
+                // STALE lock (I4.2, found by the Iteration-3 gate): the locked
+                // proposal expired (crash-restart past its TTL) — it can never
+                // certify again, because every honest member rejects expired
+                // messages at proposal verification. Move the chain on around
+                // our spent vote: propose a FRESH block but never self-vote at
+                // this height (the at-most-one-vote guarantee stands). The
+                // round then needs `threshold` votes from OTHER members; if
+                // the threshold is unreachable without us (e.g. 2-of-2), the
+                // operator unlock runbook applies (admin/unlock-stale-round).
+                staleLock = true;
+                staleLockedHeight = height;
             }
 
             if (!sequencerMode.shouldProposeNow(height)) {
@@ -328,22 +349,32 @@ final class AppChainEngine implements AutoCloseable {
             AppBlock block = applied.block;
             byte[] blockHash = AppBlockCodec.blockHash(block);
 
-            // Vote lock for our own proposal, then self-vote
-            ledger.putVoteLock(height, blockHash);
-
-            byte[] selfSignature = signer.sign(blockHash);
             PendingRound round = new PendingRound(block, blockHash, applied);
-            round.votes.put(signer.publicKeyHex(), selfSignature);
+            if (!staleLock) {
+                // Vote lock for our own proposal, then self-vote
+                ledger.putVoteLock(height, blockHash);
+                round.votes.put(signer.publicKeyHex(), signer.sign(blockHash));
+            }
             pendingRound = round;
 
             AppMessage proposalEnvelope =
                     broadcast.apply(ConsensusCodec.TOPIC_PROPOSE, AppBlockCodec.serialize(block));
-            if (proposalEnvelope != null) {
-                // Enables re-gossip of the partial round across timeouts/restarts
+            if (!staleLock && proposalEnvelope != null) {
+                // Enables re-gossip of the partial round across timeouts/restarts.
+                // A stale-locked proposer must NOT clobber the stored envelope —
+                // the lock still documents the block we actually voted for.
                 ledger.putVoteLockEnvelope(height, ConsensusCodec.encodeEnvelope(proposalEnvelope));
             }
-            log.info("Proposed app block: height={}, msgs={}, hash={}",
-                    height, block.messages().size(), HexUtil.encodeHexString(blockHash));
+            if (staleLock) {
+                log.warn("Proposed app block AROUND a stale vote lock: height={}, msgs={}, hash={} — "
+                        + "not self-voting (needs {} votes from other members; "
+                        + "see the stale-lock runbook if the threshold is unreachable)",
+                        height, block.messages().size(), HexUtil.encodeHexString(blockHash),
+                        group.thresholdAt(height));
+            } else {
+                log.info("Proposed app block: height={}, msgs={}, hash={}",
+                        height, block.messages().size(), HexUtil.encodeHexString(blockHash));
+            }
 
             maybeFinalize();
         } catch (Exception e) {
@@ -525,10 +556,61 @@ final class AppChainEngine implements AutoCloseable {
     }
 
     /**
+     * A locked round that can never complete: the stored proposal envelope is
+     * missing (legacy lock) or its messages EXPIRED (crash-restart past the
+     * TTL) — every honest member rejects expired messages at proposal
+     * verification, so the locked block is permanently un-certifiable and the
+     * proposer may move the chain on around its spent vote (I4.2).
+     */
+    private boolean lockedProposalUnrecoverable(long height) {
+        Optional<byte[]> stored = ledger.voteLockEnvelope(height);
+        if (stored.isEmpty()) {
+            return true; // pre-008.2 lock — nothing to re-gossip
+        }
+        return ConsensusCodec.decodeEnvelope(stored.get())
+                .isExpired(System.currentTimeMillis() / 1000);
+    }
+
+    /** Wedge visibility (I4.2): tip+1 locked on an unrecoverable proposal. */
+    private volatile long staleLockedHeight;
+
+    /**
+     * Operator escape hatch (stale-lock runbook, I4.2): clear THIS member's
+     * vote lock at tip+1 so it may vote once more there. Refused while the
+     * locked round is still recoverable — this consciously trades the
+     * at-most-one-vote guarantee for liveness, so it must only run after the
+     * operator confirmed no conflicting certificate exists on any member.
+     *
+     * @return true if a stale lock was cleared
+     */
+    boolean clearStaleVoteLock() throws Exception {
+        return executor.submit(() -> {
+            long height = ledger.tipHeight() + 1;
+            Optional<byte[]> lock = ledger.voteLock(height);
+            if (lock.isEmpty()) {
+                return false;
+            }
+            if (!lockedProposalUnrecoverable(height)) {
+                log.warn("Refusing operator unlock at height {} — the locked round is still "
+                        + "recoverable (proposal not expired)", height);
+                return false;
+            }
+            ledger.removeVoteLock(height);
+            if (pendingRound != null && pendingRound.block.height() == height) {
+                discardRound();
+            }
+            staleLockedHeight = 0;
+            log.warn("Vote lock at height {} CLEARED by operator (stale-lock runbook) — this "
+                    + "member may vote once more at this height", height);
+            return true;
+        }).get(5, TimeUnit.SECONDS);
+    }
+
+    /**
      * Re-gossip the locked original proposal (+ our vote) until the height
      * finalizes (ADR 008.2 §2.3) — rate-limited to once per round timeout.
      * Only works while the original envelope is TTL-valid; past that the
-     * partial round is a runbook case (documented residual).
+     * proposer proposes around the stale lock instead (I4.2).
      */
     private long lastRegossipAt;
 

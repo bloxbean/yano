@@ -309,6 +309,22 @@ final class AppLedgerStore implements AutoCloseable {
         return Optional.ofNullable(getMeta(voteLockEnvelopeKey(height)));
     }
 
+    /**
+     * Operator escape hatch (stale-lock runbook, Iteration 4): clear the vote
+     * lock + stored envelope at a height so this member may vote once more
+     * there. Callers must ensure the locked round is UNRECOVERABLE (expired
+     * proposal) — this consciously trades the at-most-one-vote guarantee for
+     * liveness under operator supervision.
+     */
+    void removeVoteLock(long height) {
+        try {
+            db.delete(metaCf, voteLockKey(height));
+            db.delete(metaCf, voteLockEnvelopeKey(height));
+        } catch (RocksDBException e) {
+            throw new RuntimeException("Failed to clear vote lock at height " + height, e);
+        }
+    }
+
     private static byte[] voteLockEnvelopeKey(long height) {
         return (KEY_VOTE_LOCK_PREFIX + "env_" + height).getBytes(StandardCharsets.UTF_8);
     }

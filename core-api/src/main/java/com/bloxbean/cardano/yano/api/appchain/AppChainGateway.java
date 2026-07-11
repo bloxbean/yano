@@ -134,6 +134,19 @@ public interface AppChainGateway {
         throw new IllegalStateException("Script anchoring is not supported by this node");
     }
 
+    /**
+     * Operator escape hatch (stale-lock runbook, ADR 008.2/I4.2): clear THIS
+     * member's vote lock at the pending height so it may vote once more
+     * there. Refused while the locked round is still recoverable. Run only
+     * after confirming no conflicting certificate exists on ANY member — the
+     * at-most-one-vote guarantee is consciously overridden under operator
+     * supervision.
+     * @return true if a stale lock was cleared
+     */
+    default boolean unlockStaleRound() {
+        throw new IllegalStateException("Sequencing is not enabled on this node");
+    }
+
     // ------------------------------------------------------------------
     // Key rotation (ADR app-layer/006 E4.5) — staged member-key rotation.
     // Operator-coordinated: apply the SAME steps on EVERY node, in the runbook

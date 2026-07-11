@@ -7,33 +7,31 @@ import co.nstant.in.cbor.model.UnsignedInteger;
 import com.bloxbean.cardano.client.address.Address;
 import com.bloxbean.cardano.client.address.AddressProvider;
 import com.bloxbean.cardano.client.address.Credential;
+import com.bloxbean.cardano.client.api.TransactionProcessor;
+import com.bloxbean.cardano.client.api.model.Amount;
+import com.bloxbean.cardano.client.api.model.EvaluationResult;
+import com.bloxbean.cardano.client.api.model.ProtocolParams;
+import com.bloxbean.cardano.client.api.model.Result;
 import com.bloxbean.cardano.client.common.cbor.CborSerializationUtil;
 import com.bloxbean.cardano.client.common.model.Network;
 import com.bloxbean.cardano.client.crypto.Blake2bUtil;
 import com.bloxbean.cardano.client.crypto.KeyGenUtil;
 import com.bloxbean.cardano.client.crypto.SecretKey;
 import com.bloxbean.cardano.client.crypto.VerificationKey;
-import com.bloxbean.cardano.client.plutus.spec.CostMdls;
-import com.bloxbean.cardano.client.plutus.spec.CostModel;
-import com.bloxbean.cardano.client.plutus.spec.ExUnits;
-import com.bloxbean.cardano.client.plutus.spec.Language;
+import com.bloxbean.cardano.client.function.helper.SignerProviders;
 import com.bloxbean.cardano.client.plutus.spec.PlutusV3Script;
-import com.bloxbean.cardano.client.plutus.spec.Redeemer;
-import com.bloxbean.cardano.client.plutus.spec.RedeemerTag;
 import com.bloxbean.cardano.client.plutus.spec.BigIntPlutusData;
-import com.bloxbean.cardano.client.plutus.util.ScriptDataHashGenerator;
+import com.bloxbean.cardano.client.quicktx.QuickTxBuilder;
+import com.bloxbean.cardano.client.quicktx.ScriptTx;
 import com.bloxbean.cardano.client.spec.Era;
-import com.bloxbean.cardano.client.transaction.TransactionSigner;
 import com.bloxbean.cardano.client.transaction.spec.Asset;
-import com.bloxbean.cardano.client.transaction.spec.MultiAsset;
 import com.bloxbean.cardano.client.transaction.spec.Transaction;
 import com.bloxbean.cardano.client.transaction.spec.TransactionBody;
-import com.bloxbean.cardano.client.transaction.spec.TransactionInput;
 import com.bloxbean.cardano.client.transaction.spec.TransactionOutput;
-import com.bloxbean.cardano.client.transaction.spec.TransactionWitnessSet;
 import com.bloxbean.cardano.client.transaction.spec.Value;
 import com.bloxbean.cardano.client.transaction.spec.VkeyWitness;
 import com.bloxbean.cardano.client.transaction.util.TransactionUtil;
+import com.bloxbean.cardano.julc.clientlib.eval.JulcTransactionEvaluator;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
@@ -44,9 +42,7 @@ import com.bloxbean.cardano.yano.api.utxo.UtxoState;
 import com.bloxbean.cardano.yano.api.utxo.model.Utxo;
 import org.slf4j.Logger;
 
-import java.math.BigDecimal;
 import java.math.BigInteger;
-import java.math.RoundingMode;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -92,22 +88,23 @@ final class ScriptAnchorService {
     static final String TOPIC_SIG = "~anchor/sig";
 
     private static final long MIN_INPUT_LOVELACE = 1_000_000;
-    private static final long MIN_CHANGE_LOVELACE = 1_000_000;
-    private static final int MAX_INPUTS = 10;
-    private static final long FEE_PLACEHOLDER = 1_000_000;
     private static final long RESUBMIT_AFTER_MS = 120_000;
     /** Co-sign round deadline before falling back to the responsive subset. */
     private static final long COSIGN_ROUND_TIMEOUT_MS = 30_000;
-    /** Lovelace locked at the script with the thread NFT (covers min-UTxO). */
-    private static final long LOCKED_LOVELACE = 3_000_000;
-    /** Collateral percent of fee (Conway default 150). */
-    private static final long COLLATERAL_PERCENT = 150;
 
-    /** Ex-unit ceilings with headroom over measured budgets (I3.1a). */
-    private static final ExUnits MINT_EXUNITS = ExUnits.builder()
-            .steps(BigInteger.valueOf(200_000_000L)).mem(BigInteger.valueOf(600_000L)).build();
-    private static final ExUnits SPEND_EXUNITS = ExUnits.builder()
-            .steps(BigInteger.valueOf(800_000_000L)).mem(BigInteger.valueOf(3_000_000L)).build();
+    /** Tx construction never submits through cardano-client-lib. */
+    private static final TransactionProcessor NO_SUBMIT = new TransactionProcessor() {
+        @Override
+        public Result<String> submitTransaction(byte[] cborData) {
+            throw new UnsupportedOperationException("Anchor txs submit through the node's own tx path");
+        }
+
+        @Override
+        public Result<List<EvaluationResult>> evaluateTx(byte[] cbor,
+                java.util.Set<com.bloxbean.cardano.client.api.model.Utxo> inputUtxos) {
+            throw new UnsupportedOperationException("Ex-units come from the julc evaluator");
+        }
+    };
 
     // Confirmation meta (same keys as metadata mode — one anchor mode per chain)
     private static final String META_LAST_ANCHORED = "anchor_last_height";
@@ -142,8 +139,11 @@ final class ScriptAnchorService {
     private final Address walletAddress;
     private final Logger log;
 
-    private volatile Supplier<AppChainSubsystem.AnchorFeeParams> feeParamsSupplier;
+    /** Node-tracked protocol params (CCL model); null values → Conway defaults. */
+    private volatile Supplier<ProtocolParams> protocolParamsSupplier;
     private volatile Supplier<Long> currentSlotSupplier;
+    /** QuickTx sees the node's own UTxO store — we ARE the backend. */
+    private final NodeUtxoSupplier cclUtxoSupplier;
 
     private final Object anchorLock = new Object();
     private volatile PendingBootstrap pendingBootstrap;
@@ -186,6 +186,7 @@ final class ScriptAnchorService {
         this.network = protocolMagic == 764824073L
                 ? new Network(1, protocolMagic)
                 : new Network(0, protocolMagic);
+        this.cclUtxoSupplier = new NodeUtxoSupplier(utxoStateSupplier);
         this.log = log;
         if (leader) {
             byte[] seed = HexUtil.decodeHexString(anchorConfig.signingKeyHex().trim());
@@ -206,8 +207,8 @@ final class ScriptAnchorService {
         }
     }
 
-    void wireFees(Supplier<AppChainSubsystem.AnchorFeeParams> feeParams, Supplier<Long> currentSlot) {
-        this.feeParamsSupplier = feeParams;
+    void wireTxPricing(Supplier<ProtocolParams> protocolParams, Supplier<Long> currentSlot) {
+        this.protocolParamsSupplier = protocolParams;
         this.currentSlotSupplier = currentSlot;
     }
 
@@ -292,94 +293,19 @@ final class ScriptAnchorService {
         Address scriptAddress = AnchorScriptArtifacts.scriptAddress(validator, network);
 
         AnchorDatumCodec.AnchorDatum datum = datumAtTip();
-        Redeemer mintRedeemer = Redeemer.builder()
-                .tag(RedeemerTag.Mint)
-                .index(BigInteger.ZERO)
-                .data(BigIntPlutusData.of(0))
-                .exUnits(MINT_EXUNITS)
-                .build();
 
-        AppChainSubsystem.AnchorFeeParams feeParams = currentFeeParams();
-        long ttl = txTtl();
-
-        for (int count = 1; count <= Math.min(MAX_INPUTS, candidates.size()); count++) {
-            List<Utxo> inputs = candidates.subList(0, count);
-            long sum = inputs.stream().mapToLong(u -> u.lovelace().longValue()).sum();
-
-            long fee = estimateFee(feeParams, MINT_EXUNITS, 0, () -> assembleBootstrapTx(
-                    inputs, sum, FEE_PLACEHOLDER, ttl, policy, policyId, scriptAddress, datum,
-                    mintRedeemer, feeParams));
-            long collateral = collateralAmount(fee);
-            if (sum >= fee + LOCKED_LOVELACE + MIN_CHANGE_LOVELACE
-                    && inputs.get(0).lovelace().longValue() >= collateral + MIN_CHANGE_LOVELACE) {
-                Transaction tx = assembleBootstrapTx(inputs, sum, fee, ttl, policy, policyId,
-                        scriptAddress, datum, mintRedeemer, feeParams);
-                return new BuiltBootstrap(tx.serialize(), policyId, scriptHash, scriptAddress.getAddress());
-            }
-        }
-        throw new IllegalStateException("Anchor wallet balance cannot cover bootstrap (fee + "
-                + LOCKED_LOVELACE + " locked + change) at " + walletAddress.getAddress());
-    }
-
-    private Transaction assembleBootstrapTx(List<Utxo> inputs, long inputSum, long fee, long ttl,
-                                            PlutusV3Script policy, byte[] policyId,
-                                            Address scriptAddress, AnchorDatumCodec.AnchorDatum datum,
-                                            Redeemer mintRedeemer,
-                                            AppChainSubsystem.AnchorFeeParams feeParams) {
-        try {
-            List<TransactionInput> txInputs = sortedInputs(inputs.stream()
-                    .map(u -> new TransactionInput(u.outpoint().txHash(), (int) u.outpoint().index()))
-                    .toList());
-
-            TransactionOutput anchorOut = TransactionOutput.builder()
-                    .address(scriptAddress.getAddress())
-                    .value(valueWithThreadToken(LOCKED_LOVELACE, policyId))
-                    .inlineDatum(AnchorDatumCodec.encode(datum))
-                    .build();
-            TransactionOutput change = TransactionOutput.builder()
-                    .address(walletAddress.getAddress())
-                    .value(Value.builder().coin(BigInteger.valueOf(inputSum - fee - LOCKED_LOVELACE)).build())
-                    .build();
-
-            long collateralAmount = collateralAmount(fee);
-            Utxo collateralUtxo = inputs.get(0);
-            TransactionOutput collateralReturn = TransactionOutput.builder()
-                    .address(walletAddress.getAddress())
-                    .value(Value.builder().coin(BigInteger.valueOf(
-                            collateralUtxo.lovelace().longValue() - collateralAmount)).build())
-                    .build();
-
-            byte[] scriptDataHash = ScriptDataHashGenerator.generate(Era.Conway,
-                    List.of(mintRedeemer), List.of(), costMdls(feeParams));
-
-            TransactionBody body = TransactionBody.builder()
-                    .inputs(txInputs)
-                    .outputs(List.of(anchorOut, change))
-                    .fee(BigInteger.valueOf(fee))
-                    .ttl(ttl)
-                    .mint(List.of(new MultiAsset(HexUtil.encodeHexString(policyId),
-                            new ArrayList<>(List.of(threadAsset())))))
-                    .scriptDataHash(scriptDataHash)
-                    .collateral(new ArrayList<>(List.of(new TransactionInput(
-                            collateralUtxo.outpoint().txHash(), (int) collateralUtxo.outpoint().index()))))
-                    .collateralReturn(collateralReturn)
-                    .totalCollateral(BigInteger.valueOf(collateralAmount))
-                    .build();
-
-            TransactionWitnessSet witnessSet = new TransactionWitnessSet();
-            witnessSet.setPlutusV3Scripts(new ArrayList<>(List.of(policy)));
-            witnessSet.setRedeemers(new ArrayList<>(List.of(mintRedeemer)));
-            Transaction tx = Transaction.builder()
-                    .era(Era.Conway)
-                    .body(body)
-                    .witnessSet(witnessSet)
-                    .build();
-            return TransactionSigner.INSTANCE.sign(tx, walletKey);
-        } catch (RuntimeException e) {
-            throw e;
-        } catch (Exception e) {
-            throw new IllegalStateException("Bootstrap tx assembly failed", e);
-        }
+        // Consume the seed (one-shot identity), mint the thread NFT straight
+        // to the validator with the inline genesis datum; QuickTx balances
+        // fees/collateral/change and the julc evaluator prices exact ex-units
+        ScriptTx scriptTx = new ScriptTx()
+                .collectFrom(NodeUtxoSupplier.toCcl(seed))
+                .mintAsset(policy,
+                        List.of(Asset.builder().name("0x").value(BigInteger.ONE).build()),
+                        BigIntPlutusData.of(0),
+                        scriptAddress.getAddress(),
+                        AnchorDatumCodec.encode(datum));
+        Transaction tx = txContext(scriptTx, 0).buildAndSign();
+        return new BuiltBootstrap(tx.serialize(), policyId, scriptHash, scriptAddress.getAddress());
     }
 
     // ------------------------------------------------------------------
@@ -590,117 +516,77 @@ final class ScriptAnchorService {
             return null;
 
         PlutusV3Script validator = artifacts.validator(policyId);
+        Address scriptAddress = AddressProvider.getEntAddress(
+                Credential.fromScript(scriptHash), network);
 
-        List<Utxo> feeCandidates = usableWalletUtxos();
-        if (feeCandidates.isEmpty())
-            throw new IllegalStateException("No usable fee UTxO at anchor wallet "
-                    + walletAddress.getAddress() + " — fund the wallet");
-
-        AppChainSubsystem.AnchorFeeParams feeParams = currentFeeParams();
-        long ttl = txTtl();
-        List<byte[]> requiredSigners = signersHex.stream()
+        // Required signers are body-fixed BEFORE co-signing: the members'
+        // witnesses attach later, so additionalSignersCount prices them in
+        byte[][] requiredSigners = signersHex.stream()
                 .map(hex -> Blake2bUtil.blake2bHash224(HexUtil.decodeHexString(hex)))
                 .sorted(Comparator.comparing(HexUtil::encodeHexString))
-                .toList();
+                .toArray(byte[][]::new);
 
-        for (int count = 1; count <= Math.min(MAX_INPUTS, feeCandidates.size()); count++) {
-            List<Utxo> feeInputs = feeCandidates.subList(0, count);
-            long feeSum = feeInputs.stream().mapToLong(u -> u.lovelace().longValue()).sum();
+        // Continuing output: same lovelace + thread NFT, next inline datum
+        List<Amount> continuing = new ArrayList<>();
+        continuing.add(Amount.lovelace(anchorUtxo.lovelace()));
+        continuing.add(Amount.asset(HexUtil.encodeHexString(policyId), BigInteger.ONE));
 
-            long fee = estimateFee(feeParams, SPEND_EXUNITS, signersHex.size(), () -> assembleAdvanceTx(
-                    anchorUtxo, prev, next, feeInputs, feeSum, FEE_PLACEHOLDER, ttl, validator,
-                    policyId, requiredSigners, feeParams));
-            long collateral = collateralAmount(fee);
-            if (feeSum >= fee + MIN_CHANGE_LOVELACE
-                    && feeInputs.get(0).lovelace().longValue() >= collateral + MIN_CHANGE_LOVELACE) {
-                Transaction tx = assembleAdvanceTx(anchorUtxo, prev, next, feeInputs, feeSum, fee,
-                        ttl, validator, policyId, requiredSigners, feeParams);
-                byte[] bodyBytes = CborSerializationUtil.serialize(tx.getBody().serialize(Era.Conway));
-                byte[] bodyHash = Blake2bUtil.blake2bHash256(bodyBytes);
-                byte[] requestBody = encodeSignRequest(bodyBytes, policyId, scriptHash);
-                return new BuiltAdvance(tx, bodyBytes, bodyHash, requestBody,
-                        prev.height() + 1, next.height());
-            }
-        }
-        throw new IllegalStateException("Anchor wallet balance cannot cover the advance fee at "
-                + walletAddress.getAddress());
+        ScriptTx scriptTx = new ScriptTx()
+                .collectFrom(NodeUtxoSupplier.toCcl(anchorUtxo), BigIntPlutusData.of(0))
+                .attachSpendingValidator(validator)
+                .payToContract(scriptAddress.getAddress(), continuing, AnchorDatumCodec.encode(next));
+        Transaction tx = txContext(scriptTx, signersHex.size())
+                .withRequiredSigners(requiredSigners)
+                .buildAndSign();
+
+        byte[] bodyBytes = CborSerializationUtil.serialize(tx.getBody().serialize(Era.Conway));
+        byte[] bodyHash = Blake2bUtil.blake2bHash256(bodyBytes);
+        byte[] requestBody = encodeSignRequest(bodyBytes, policyId, scriptHash);
+        return new BuiltAdvance(tx, bodyBytes, bodyHash, requestBody,
+                prev.height() + 1, next.height());
     }
 
-    private Transaction assembleAdvanceTx(Utxo anchorUtxo, AnchorDatumCodec.AnchorDatum prev,
-                                          AnchorDatumCodec.AnchorDatum next,
-                                          List<Utxo> feeInputs, long feeSum, long fee, long ttl,
-                                          PlutusV3Script validator, byte[] policyId,
-                                          List<byte[]> requiredSigners,
-                                          AppChainSubsystem.AnchorFeeParams feeParams) {
-        try {
-            TransactionInput anchorInput = new TransactionInput(
-                    anchorUtxo.outpoint().txHash(), (int) anchorUtxo.outpoint().index());
-            List<TransactionInput> allInputs = new ArrayList<>();
-            allInputs.add(anchorInput);
-            for (Utxo u : feeInputs) {
-                allInputs.add(new TransactionInput(u.outpoint().txHash(), (int) u.outpoint().index()));
-            }
-            List<TransactionInput> sorted = sortedInputs(allInputs);
-            int scriptInputIndex = sorted.indexOf(anchorInput);
-
-            Redeemer spendRedeemer = Redeemer.builder()
-                    .tag(RedeemerTag.Spend)
-                    .index(BigInteger.valueOf(scriptInputIndex))
-                    .data(BigIntPlutusData.of(0))
-                    .exUnits(SPEND_EXUNITS)
-                    .build();
-
-            long anchorLovelace = anchorUtxo.lovelace().longValue();
-            Address scriptAddress = AddressProvider.getEntAddress(
-                    Credential.fromScript(AnchorScriptArtifacts.scriptHash(validator)), network);
-            TransactionOutput anchorOut = TransactionOutput.builder()
-                    .address(scriptAddress.getAddress())
-                    .value(valueWithThreadToken(anchorLovelace, policyId))
-                    .inlineDatum(AnchorDatumCodec.encode(next))
-                    .build();
-            TransactionOutput change = TransactionOutput.builder()
-                    .address(walletAddress.getAddress())
-                    .value(Value.builder().coin(BigInteger.valueOf(feeSum - fee)).build())
-                    .build();
-
-            long collateralAmount = collateralAmount(fee);
-            Utxo collateralUtxo = feeInputs.get(0);
-            TransactionOutput collateralReturn = TransactionOutput.builder()
-                    .address(walletAddress.getAddress())
-                    .value(Value.builder().coin(BigInteger.valueOf(
-                            collateralUtxo.lovelace().longValue() - collateralAmount)).build())
-                    .build();
-
-            byte[] scriptDataHash = ScriptDataHashGenerator.generate(Era.Conway,
-                    List.of(spendRedeemer), List.of(), costMdls(feeParams));
-
-            TransactionBody body = TransactionBody.builder()
-                    .inputs(sorted)
-                    .outputs(List.of(anchorOut, change))
-                    .fee(BigInteger.valueOf(fee))
-                    .ttl(ttl)
-                    .scriptDataHash(scriptDataHash)
-                    .requiredSigners(new ArrayList<>(requiredSigners))
-                    .collateral(new ArrayList<>(List.of(new TransactionInput(
-                            collateralUtxo.outpoint().txHash(), (int) collateralUtxo.outpoint().index()))))
-                    .collateralReturn(collateralReturn)
-                    .totalCollateral(BigInteger.valueOf(collateralAmount))
-                    .build();
-
-            TransactionWitnessSet witnessSet = new TransactionWitnessSet();
-            witnessSet.setPlutusV3Scripts(new ArrayList<>(List.of(validator)));
-            witnessSet.setRedeemers(new ArrayList<>(List.of(spendRedeemer)));
-            Transaction tx = Transaction.builder()
-                    .era(Era.Conway)
-                    .body(body)
-                    .witnessSet(witnessSet)
-                    .build();
-            return TransactionSigner.INSTANCE.sign(tx, walletKey);
-        } catch (RuntimeException e) {
-            throw e;
-        } catch (Exception e) {
-            throw new IllegalStateException("Advance tx assembly failed", e);
+    /**
+     * Common QuickTx context: the anchor wallet pays fees and collateral,
+     * ex-units come from the local julc evaluator, and witnesses that attach
+     * AFTER the body is fixed (co-signed members) are priced via
+     * {@code additionalSignersCount} — the exact mechanism the hand-rolled
+     * fee sizing got wrong before the Iteration-3 gate caught it.
+     */
+    private QuickTxBuilder.TxContext txContext(ScriptTx scriptTx, int pendingCosigners) {
+        QuickTxBuilder builder = new QuickTxBuilder(
+                cclUtxoSupplier, this::effectiveProtocolParams, NO_SUBMIT);
+        QuickTxBuilder.TxContext context = builder.compose(scriptTx)
+                .feePayer(walletAddress.getAddress())
+                .collateralPayer(walletAddress.getAddress())
+                .additionalSignersCount(pendingCosigners)
+                .withTxEvaluator(new JulcTransactionEvaluator(
+                        cclUtxoSupplier, this::effectiveProtocolParams, scriptHash -> java.util.Optional.empty()))
+                .withSigner(SignerProviders.signerFrom(walletKey));
+        long ttl = txTtl();
+        if (ttl > 0) {
+            context = context.validTo(ttl);
         }
+        return context;
+    }
+
+    /**
+     * The protocol parameters that price this anchor tx: the node's tracked /
+     * L1-derived params, or the configured static {@code protocol-param.json}
+     * fallback ({@code yano.genesis.protocol-parameters-file}) — both carry the
+     * full PlutusV3 cost model. Fails closed if neither source is available:
+     * an anchor tx must be priced against the SAME cost model the L1 ledger
+     * enforces, so a hardcoded default would risk a wrong script-integrity hash.
+     */
+    private ProtocolParams effectiveProtocolParams() {
+        Supplier<ProtocolParams> supplier = protocolParamsSupplier;
+        ProtocolParams params = supplier != null ? supplier.get() : null;
+        if (params == null) {
+            throw new IllegalStateException("Script anchoring requires protocol parameters — enable "
+                    + "epoch-param tracking (yano.epoch-params.tracking-enabled) or set "
+                    + "yano.genesis.protocol-parameters-file");
+        }
+        return params;
     }
 
     // ------------------------------------------------------------------
@@ -1050,83 +936,11 @@ final class ScriptAnchorService {
                 .toList();
     }
 
-    private AppChainSubsystem.AnchorFeeParams currentFeeParams() {
-        Supplier<AppChainSubsystem.AnchorFeeParams> supplier = feeParamsSupplier;
-        return supplier != null ? supplier.get() : null;
-    }
-
     private long txTtl() {
         Supplier<Long> slotSupplier = currentSlotSupplier;
         Long currentSlot = slotSupplier != null ? slotSupplier.get() : null;
         return currentSlot != null && currentSlot > 0
                 ? currentSlot + anchorConfig.validitySlots() : 0;
-    }
-
-    private interface TxAssembly {
-        Transaction assemble() throws Exception;
-    }
-
-    /** CBOR bytes one Ed25519 vkey witness adds to the final tx (with margin). */
-    private static final int VKEY_WITNESS_BYTES = 110;
-
-    /**
-     * Linear size fee + ex-unit fee; the configured fallback when params are
-     * missing. {@code pendingWitnesses} prices witnesses that are NOT in the
-     * draft yet — the co-signed member witnesses are collected AFTER the body
-     * (and its fee) is fixed, so the draft must be billed as if they were
-     * already attached or the final tx lands under the ledger minimum.
-     */
-    private long estimateFee(AppChainSubsystem.AnchorFeeParams feeParams, ExUnits exUnits,
-                             int pendingWitnesses, TxAssembly draftAssembly) throws Exception {
-        if (feeParams == null)
-            return anchorConfig.fallbackFeeLovelace() + scriptFee(null, exUnits);
-        Transaction draft = draftAssembly.assemble();
-        int size = draft.serialize().length + pendingWitnesses * VKEY_WITNESS_BYTES;
-        return feeParams.minFeeA() * size + feeParams.minFeeB() + scriptFee(feeParams, exUnits);
-    }
-
-    private long scriptFee(AppChainSubsystem.AnchorFeeParams feeParams, ExUnits exUnits) {
-        BigDecimal priceMem = feeParams != null && feeParams.priceMem() != null
-                ? feeParams.priceMem() : new BigDecimal("0.0577");
-        BigDecimal priceStep = feeParams != null && feeParams.priceStep() != null
-                ? feeParams.priceStep() : new BigDecimal("0.0000721");
-        return priceMem.multiply(new BigDecimal(exUnits.getMem()))
-                .add(priceStep.multiply(new BigDecimal(exUnits.getSteps())))
-                .setScale(0, RoundingMode.CEILING)
-                .longValueExact();
-    }
-
-    private long collateralAmount(long fee) {
-        return (fee * COLLATERAL_PERCENT + 99) / 100;
-    }
-
-    private CostMdls costMdls(AppChainSubsystem.AnchorFeeParams feeParams) {
-        long[] costs = feeParams != null && feeParams.costModelV3() != null
-                ? feeParams.costModelV3()
-                : com.bloxbean.cardano.client.api.util.CostModelUtil.PlutusV3CostModel.getCosts();
-        CostMdls costMdls = new CostMdls();
-        costMdls.add(new CostModel(Language.PLUTUS_V3, costs));
-        return costMdls;
-    }
-
-    private static List<TransactionInput> sortedInputs(List<TransactionInput> inputs) {
-        List<TransactionInput> sorted = new ArrayList<>(inputs);
-        sorted.sort(Comparator.comparing(TransactionInput::getTransactionId)
-                .thenComparingInt(TransactionInput::getIndex));
-        return sorted;
-    }
-
-    private static Value valueWithThreadToken(long lovelace, byte[] policyId) {
-        return Value.builder()
-                .coin(BigInteger.valueOf(lovelace))
-                .multiAssets(new ArrayList<>(List.of(new MultiAsset(
-                        HexUtil.encodeHexString(policyId),
-                        new ArrayList<>(List.of(threadAsset()))))))
-                .build();
-    }
-
-    private static Asset threadAsset() {
-        return Asset.builder().name("0x").value(BigInteger.ONE).build();
     }
 
     private static boolean carriesThreadToken(Value value, byte[] policyId) {

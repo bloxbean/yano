@@ -165,6 +165,12 @@ public class AppChainResource {
         return singleChain().bootstrapScriptAnchor();
     }
 
+    @POST
+    @Path("admin/unlock-stale-round")
+    public Response unlockStaleRound() {
+        return singleChain().unlockStaleRound();
+    }
+
     @GET
     @Path("stream")
     @Produces(MediaType.SERVER_SENT_EVENTS)
@@ -544,6 +550,23 @@ public class AppChainResource {
                 Map<String, Object> result = new java.util.LinkedHashMap<>(gateway.bootstrapScriptAnchor());
                 result.put("chainId", gateway.chainId());
                 return Response.accepted(result).build();
+            } catch (IllegalStateException e) {
+                throw jsonError(Response.Status.CONFLICT, e.getMessage());
+            }
+        }
+
+        /**
+         * Operator escape hatch (stale-lock runbook, ADR 008.2/I4.2): clear
+         * this member's vote lock at the pending height when the locked
+         * proposal is unrecoverable. Run ONLY after confirming no conflicting
+         * certificate exists on any member.
+         */
+        @POST
+        @Path("admin/unlock-stale-round")
+        public Response unlockStaleRound() {
+            try {
+                boolean unlocked = gateway.unlockStaleRound();
+                return Response.ok(Map.of("chainId", gateway.chainId(), "unlocked", unlocked)).build();
             } catch (IllegalStateException e) {
                 throw jsonError(Response.Status.CONFLICT, e.getMessage());
             }
