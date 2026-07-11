@@ -1,0 +1,51 @@
+# Static multi-peer profile for controlled relay testing with configured peers.
+# Combine with a network profile and add yano.upstream.peers for each trusted relay.
+
+yano:
+  upstream:
+    mode: static-multi
+    # Required for useful static-multi operation. Configure at least two
+    # trusted/static upstreams on the selected network.
+    #
+    # peers:
+    #   - id: relay-a
+    #     host: relay-a.example.com
+    #     port: 3001
+    #     trust: trusted
+    #     priority: 0
+    #     source: static-upstream
+    #   - id: relay-b
+    #     host: relay-b.example.com
+    #     port: 3001
+    #     trust: trusted
+    #     priority: 10
+    #     source: static-upstream
+    #   - id: relay-c
+    #     host: relay-c.example.com
+    #     port: 3001
+    #     trust: trusted
+    #     priority: 20
+    #     source: static-upstream
+    sync:
+      bulk-source: single-trusted
+      fan-in-start: near-tip
+    discovery:
+      enabled: false
+      peer-sharing: false
+      peer-snapshot-urls: []
+      peer-snapshot-files: []
+      seeds: []
+    selection:
+      policy: trusted-or-quorum-within-rollback-window
+      quorum: 2
+      tie-break: deterministic
+    governor:
+      enabled: true
+      targets:
+        cold: 32
+        warm: 4
+        hot: 3
+      max-concurrent-dials: 2
+  tx:
+    diffusion:
+      enabled: true

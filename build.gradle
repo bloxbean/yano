@@ -30,6 +30,7 @@ dependencies {
 
 test {
     useJUnitPlatform()
+    jvmArgs '--add-opens=java.base/java.lang=ALL-UNNAMED'
 }
 
 // Make all tests use JUnit 5
@@ -230,6 +231,7 @@ subprojects {
     // Make all tests use JUnit 5 (for all modules including application)
     tasks.withType(Test) {
         useJUnitPlatform()
+        jvmArgs '--add-opens=java.base/java.lang=ALL-UNNAMED'
         testLogging {
             events "started", "passed", "skipped", "failed"
             exceptionFormat "full"

@@ -4,10 +4,10 @@
 # Auto-detects JAR vs native mode and supports Quarkus profiles.
 #
 # Usage:
-#   ./yano.sh start                # Default (preprod relay)
-#   ./yano.sh start:preprod        # Preprod relay
+#   ./yano.sh start                # Default preprod profile
+#   ./yano.sh start:preprod,relay  # Preprod with relay upstream profile
 #   ./yano.sh start:mainnet        # Mainnet relay alias
-#   ./yano.sh start:<profile>      # Custom Quarkus profile alias
+#   ./yano.sh start:<profiles>     # Custom comma-separated Quarkus profiles
 #
 
 set -e
@@ -17,11 +17,12 @@ cd "$SCRIPT_DIR"
 
 usage() {
     cat <<EOF
-Usage: ./yano.sh [start|start:<profile>|help] [args...]
+Usage: ./yano.sh [start|start:<profiles>|help] [args...]
 
 Examples:
   ./yano.sh start
-  ./yano.sh start:preprod
+  ./yano.sh start:preprod,relay
+  ./yano.sh start:preprod,relay,praos-lite
   ./yano.sh start:mainnet
   ./yano.sh start:preview
   ./yano.sh start:sanchonet
@@ -43,6 +44,25 @@ validate_profile_name() {
             exit 1
             ;;
     esac
+}
+
+validate_profile_list() {
+    local profile_list="$1"
+    local old_ifs="$IFS"
+    local profile
+    case "$profile_list" in
+        ''|*,|,*|*,,*)
+            echo "Invalid profile list: $profile_list" >&2
+            echo "Use comma-separated profile names without empty segments." >&2
+            exit 1
+            ;;
+    esac
+    IFS=','
+    read -ra profiles <<< "$profile_list"
+    IFS="$old_ifs"
+    for profile in "${profiles[@]}"; do
+        validate_profile_name "$profile"
+    done
 }
 
 if [ "$#" -eq 0 ]; then
@@ -105,7 +125,7 @@ done
 # Build profile system property if set
 PROFILE_PROP=""
 if [ -n "$PROFILE" ]; then
-    validate_profile_name "$PROFILE"
+    validate_profile_list "$PROFILE"
     PROFILE_PROP="-Dquarkus.profile=${PROFILE}"
 fi
 

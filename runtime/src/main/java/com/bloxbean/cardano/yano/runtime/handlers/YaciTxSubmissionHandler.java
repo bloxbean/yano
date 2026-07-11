@@ -5,8 +5,16 @@ import com.bloxbean.cardano.yaci.core.protocol.txsubmission.messges.*;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.runtime.blockproducer.TransactionValidationException;
 import com.bloxbean.cardano.yano.runtime.tx.TransactionAdmission;
+import com.bloxbean.cardano.yano.p2p.tx.diffusion.PeerClass;
+import com.bloxbean.cardano.yano.p2p.tx.diffusion.TxBodyIngressResult;
+import com.bloxbean.cardano.yano.p2p.tx.diffusion.TxBodyServeResult;
+import com.bloxbean.cardano.yano.p2p.tx.diffusion.TxDiffusion;
+import com.bloxbean.cardano.yano.p2p.tx.diffusion.TxIdAndSize;
+import com.bloxbean.cardano.yano.p2p.tx.diffusion.TxRequestPlan;
 import lombok.extern.slf4j.Slf4j;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -25,6 +33,7 @@ public class YaciTxSubmissionHandler implements TxSubmissionListener, TxSubmissi
 
     private final TransactionAdmission transactionAdmission;
     private final boolean blockProducerMode;
+    private final TxDiffusion txDiffusion;
     private final Set<String> knownTxIds = ConcurrentHashMap.newKeySet();
     private final Map<String, String> clientConnections = new ConcurrentHashMap<>();
 
@@ -40,17 +49,32 @@ public class YaciTxSubmissionHandler implements TxSubmissionListener, TxSubmissi
     }
 
     public YaciTxSubmissionHandler(TransactionAdmission transactionAdmission, boolean blockProducerMode) {
+        this(transactionAdmission, blockProducerMode, null);
+    }
+
+    public YaciTxSubmissionHandler(TransactionAdmission transactionAdmission,
+                                   boolean blockProducerMode,
+                                   TxDiffusion txDiffusion) {
         this.transactionAdmission = Objects.requireNonNull(transactionAdmission, "transactionAdmission");
         this.blockProducerMode = blockProducerMode;
+        this.txDiffusion = txDiffusion;
     }
 
     // TxSubmissionListener implementation (for server-side handling)
 
     @Override
     public void handleRequestTxs(RequestTxs requestTxs) {
-        // This is called when acting as a client - not used in server mode
-        log.debug("Received RequestTxs message (not applicable in server mode): {} tx IDs",
-                requestTxs.getTxIds().size());
+        if (!diffusionEnabled()) {
+            log.debug("Received RequestTxs message (not applicable in server mode): {} tx IDs",
+                    requestTxs.getTxIds().size());
+            return;
+        }
+        List<String> txHashes = requestTxs.getTxIds().stream()
+                .map(txId -> HexUtil.encodeHexString(txId.getTxId()))
+                .toList();
+        TxBodyServeResult result = txDiffusion.onPeerRequestedTxs(currentPeerId(), PeerClass.DOWNSTREAM, txHashes);
+        log.debug("Received RequestTxs from {}; served={}, missing={}",
+                currentPeerId(), result.transactions().size(), result.missing());
     }
 
     @Override
@@ -74,14 +98,20 @@ public class YaciTxSubmissionHandler implements TxSubmissionListener, TxSubmissi
         log.info("Received {} transaction IDs from client",
                 replyTxIds.getTxIdAndSizeMap().size());
 
-        // Track the transaction IDs we've seen
+        List<TxIdAndSize> announced = new ArrayList<>(replyTxIds.getTxIdAndSizeMap().size());
         replyTxIds.getTxIdAndSizeMap().forEach((txId, size) -> {
             String txIdStr = HexUtil.encodeHexString(txId.getTxId());
             knownTxIds.add(txIdStr);
+            announced.add(new TxIdAndSize(txIdStr, size));
             if (log.isDebugEnabled()) {
                 log.debug("TX ID: {} (size: {} bytes)", txIdStr, size);
             }
         });
+        if (diffusionEnabled()) {
+            TxRequestPlan plan = txDiffusion.onPeerTxIds(currentPeerId(), PeerClass.DOWNSTREAM, announced);
+            log.debug("Planned tx body requests from {}: requested={}, ignored={}, rejected={}",
+                    currentPeerId(), plan.requested().size(), plan.ignored(), plan.rejected());
+        }
     }
 
     @Override
@@ -89,6 +119,20 @@ public class YaciTxSubmissionHandler implements TxSubmissionListener, TxSubmissi
         txsReceived += replyTxs.getTxns().size();
 
         log.info("Received {} transactions from client", replyTxs.getTxns().size());
+
+        if (diffusionEnabled()) {
+            List<byte[]> txBodies = replyTxs.getTxns().stream()
+                    .map(Tx::getTx)
+                    .toList();
+            TxBodyIngressResult result = txDiffusion.onPeerTxBodies(
+                    currentPeerId(), PeerClass.DOWNSTREAM, txBodies, this::admitDiffusedTransaction);
+            txsAccepted += result.accepted();
+            txsRejected += result.rejected();
+            txsProcessed += result.accepted();
+            log.debug("Processed diffused tx bodies from {}: accepted={}, rejected={}, ignored={}",
+                    currentPeerId(), result.accepted(), result.rejected(), result.ignored());
+            return;
+        }
 
         for (Tx tx : replyTxs.getTxns()) {
             try {
@@ -99,9 +143,7 @@ public class YaciTxSubmissionHandler implements TxSubmissionListener, TxSubmissi
 
             } catch (TransactionValidationException e) {
                 txsRejected++;
-                String errorMsg = e.getErrors().stream()
-                        .map(TransactionValidationException.Error::message)
-                        .collect(Collectors.joining("; "));
+                String errorMsg = validationErrorMessage(e);
                 log.warn("Rejecting invalid N2N tx: {}", !errorMsg.isBlank() ? errorMsg : e.getMessage());
             } catch (Exception e) {
                 txsRejected++;
@@ -130,13 +172,27 @@ public class YaciTxSubmissionHandler implements TxSubmissionListener, TxSubmissi
 
     @Override
     public boolean shouldRequestTransaction(TxId txId) {
-        // In blocking mode, we request all transactions announced
-        return true;
+        if (!diffusionEnabled()) {
+            return true;
+        }
+        if (txId == null) {
+            return false;
+        }
+        String txHash = HexUtil.encodeHexString(txId.getTxId());
+        return txDiffusion.shouldRequestTransaction(currentPeerId(), PeerClass.DOWNSTREAM, txHash);
+    }
+
+    @Override
+    public boolean shouldRequestTx(TxId txId, int size) {
+        return shouldRequestTransaction(txId);
     }
 
     @Override
     public void onClientConnected(String clientId) {
         clientConnections.put(clientId, clientId);
+        if (diffusionEnabled()) {
+            txDiffusion.onPeerConnected(clientId, PeerClass.DOWNSTREAM);
+        }
         log.info("TxSubmission client connected: {}", clientId);
         log.debug("Client connected - will request transactions once handshake completes");
     }
@@ -144,6 +200,9 @@ public class YaciTxSubmissionHandler implements TxSubmissionListener, TxSubmissi
     @Override
     public void onClientDisconnected(String clientId) {
         clientConnections.remove(clientId);
+        if (diffusionEnabled()) {
+            txDiffusion.onPeerDisconnected(clientId);
+        }
         log.info("TxSubmission client disconnected: {}", clientId);
     }
 
@@ -203,6 +262,24 @@ public class YaciTxSubmissionHandler implements TxSubmissionListener, TxSubmissi
         return transactionAdmission.mempoolSize();
     }
 
+    private boolean diffusionEnabled() {
+        return txDiffusion != null && txDiffusion.isEnabled();
+    }
+
+    private String admitDiffusedTransaction(byte[] txCbor, String origin) {
+        try {
+            return transactionAdmission.admitTransaction(txCbor, origin);
+        } catch (TransactionValidationException e) {
+            throw new IllegalArgumentException(validationErrorMessage(e), e);
+        }
+    }
+
+    private static String validationErrorMessage(TransactionValidationException e) {
+        return e.getErrors().stream()
+                .map(TransactionValidationException.Error::message)
+                .collect(Collectors.joining("; "));
+    }
+
     /**
      * Get summary statistics for monitoring
      */
@@ -222,5 +299,12 @@ public class YaciTxSubmissionHandler implements TxSubmissionListener, TxSubmissi
         txsProcessed = 0;
         knownTxIds.clear();
         clientConnections.clear();
+    }
+
+    private String currentPeerId() {
+        if (clientConnections.size() == 1) {
+            return clientConnections.keySet().iterator().next();
+        }
+        return "txsubmission";
     }
 }

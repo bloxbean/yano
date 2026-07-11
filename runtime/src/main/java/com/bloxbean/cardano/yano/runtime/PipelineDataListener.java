@@ -14,11 +14,11 @@ import com.bloxbean.cardano.yaci.helper.listener.BlockChainDataListener;
 import com.bloxbean.cardano.yaci.helper.model.Transaction;
 import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
 import com.bloxbean.cardano.yano.runtime.apply.LedgerApplyProcessor;
-import com.bloxbean.cardano.yano.runtime.peer.PeerHealth;
-import com.bloxbean.cardano.yano.runtime.peer.PeerRecoveryReason;
+import com.bloxbean.cardano.yano.p2p.peer.PeerHealth;
+import com.bloxbean.cardano.yano.p2p.peer.PeerRecoveryReason;
 import com.bloxbean.cardano.yano.runtime.peer.PeerSessionCallbacks;
-import com.bloxbean.cardano.yano.runtime.peer.PeerSessionState;
-import com.bloxbean.cardano.yano.runtime.peer.PeerSessionStatus;
+import com.bloxbean.cardano.yano.p2p.peer.PeerSessionState;
+import com.bloxbean.cardano.yano.p2p.peer.PeerSessionStatus;
 import lombok.extern.slf4j.Slf4j;
 
 import java.time.Duration;
@@ -112,6 +112,7 @@ public class PipelineDataListener implements BlockChainDataListener {
                     blockHeader.getHeaderBody().getBlockNumber(),
                     System.currentTimeMillis());
         }
+        callbacks.maybeFastTransitionToSteadyState(tip);
 
         //TODO remove this log
 //        log.info("Rollforward to header: {} at slot: {}", blockHeader.getHeaderBody().getBlockNumber(), blockHeader.getHeaderBody().getSlot());
@@ -138,6 +139,7 @@ public class PipelineDataListener implements BlockChainDataListener {
                     byronBlockHead.getConsensusData().getDifficulty().longValue(),
                     System.currentTimeMillis());
         }
+        callbacks.maybeFastTransitionToSteadyState(tip);
 
         // Resume BodyFetchManager if paused and headers are flowing after intersection
         callbacks.resumeBodyFetchOnHeaderFlow();
@@ -161,6 +163,7 @@ public class PipelineDataListener implements BlockChainDataListener {
                     byronEbHead.getConsensusData().getDifficulty().longValue(),
                     System.currentTimeMillis());
         }
+        callbacks.maybeFastTransitionToSteadyState(tip);
 
         // Resume BodyFetchManager if paused and headers are flowing after intersection
         callbacks.resumeBodyFetchOnHeaderFlow();

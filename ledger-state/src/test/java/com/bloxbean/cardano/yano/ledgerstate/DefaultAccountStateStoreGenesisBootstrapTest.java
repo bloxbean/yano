@@ -31,6 +31,7 @@ class DefaultAccountStateStoreGenesisBootstrapTest {
     private static final String UNKNOWN_POOL_HASH = "cc".repeat(28);
     private static final String STAKE_HASH = "295b987135610616f3c74e11c94d77b6ced5ccc93a7d719cfb135062";
     private static final String REWARD_HASH = "11a14edf73b08a0a27cb98b2c57eb37c780df18fcfcf6785ed5df84a";
+    private static final String VRF_KEY_HASH = "c2b62ffa92ad18ffc117ea3abeb161a68885000a466f9c71db5e4731d6630061";
     private static final String GENESIS_HASH = "aa".repeat(32);
     private static final String ISSUER_VKEY = "113ea03b671f4920210598831952efa2b1709bfd1dd06639c3efab3630ef7257";
     private static final String FUNDED_STAKE_ADDRESS =
@@ -54,8 +55,10 @@ class DefaultAccountStateStoreGenesisBootstrapTest {
             assertThat(store.getPoolParams(POOL_HASH, 0))
                     .isPresent()
                     .get()
-                    .extracting(params -> params.deposit())
-                    .isEqualTo(BigInteger.valueOf(500));
+                    .satisfies(params -> {
+                        assertThat(params.deposit()).isEqualTo(BigInteger.valueOf(500));
+                        assertThat(params.vrfKeyHash()).isEqualTo(VRF_KEY_HASH);
+                    });
 
             assertThat(store.isStakeCredentialRegistered(GenesisDelegation.KEY_HASH, STAKE_HASH)).isTrue();
             assertThat(store.getStakeDeposit(GenesisDelegation.KEY_HASH, STAKE_HASH))
@@ -222,7 +225,7 @@ class DefaultAccountStateStoreGenesisBootstrapTest {
     private static GenesisBootstrapData payload(String genesisHash, String delegationPoolHash) {
         var pool = new GenesisPool(
                 POOL_HASH,
-                "c2b62ffa92ad18ffc117ea3abeb161a68885000a466f9c71db5e4731d6630061",
+                VRF_KEY_HASH,
                 BigInteger.ZERO,
                 BigInteger.valueOf(340),
                 BigInteger.ZERO,

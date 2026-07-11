@@ -1,0 +1,8 @@
+# Header structural validation profile.
+
+yano:
+  upstream:
+    validation:
+      level: structural
+      body-level: none
+      opcert-counter-mode: none

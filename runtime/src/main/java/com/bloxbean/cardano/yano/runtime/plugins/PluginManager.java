@@ -4,6 +4,7 @@ import com.bloxbean.cardano.yaci.events.api.EventBus;
 import com.bloxbean.cardano.yano.api.plugin.NodePlugin;
 import com.bloxbean.cardano.yano.api.plugin.PluginContext;
 import com.bloxbean.cardano.yano.api.plugin.StorageFilter;
+import com.bloxbean.cardano.yano.runtime.sync.validation.HeaderValidationCustomizer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -52,8 +53,10 @@ public final class PluginManager implements AutoCloseable {
 
     // Shared storage filters list — plugins add to this via PluginContext
     private final List<StorageFilter> storageFilters = new CopyOnWriteArrayList<>();
+    private final List<HeaderValidationCustomizer> headerValidationCustomizers = new CopyOnWriteArrayList<>();
 
     // Track lifecycle state
+    private boolean initialized = false;
     private boolean started = false;
 
     public PluginManager(EventBus eventBus, ScheduledExecutorService scheduler, Map<String, Object> config, ClassLoader cl) {
@@ -64,6 +67,9 @@ public final class PluginManager implements AutoCloseable {
     }
 
     public void discoverAndInit() {
+        if (initialized) {
+            return;
+        }
         ServiceLoader<NodePlugin> loader = ServiceLoader.load(NodePlugin.class, classLoader);
         for (NodePlugin p : loader) {
             try {
@@ -76,6 +82,8 @@ public final class PluginManager implements AutoCloseable {
             }
         }
         orderPluginsByDependencies();
+        refreshHeaderValidationCustomizers();
+        initialized = true;
     }
 
     private void orderPluginsByDependencies() {
@@ -89,6 +97,15 @@ public final class PluginManager implements AutoCloseable {
         for (NodePlugin p : plugins) visit(p, byId, ordered, temp, perm);
         plugins.clear();
         plugins.addAll(ordered);
+    }
+
+    private void refreshHeaderValidationCustomizers() {
+        headerValidationCustomizers.clear();
+        for (NodePlugin plugin : plugins) {
+            if (plugin instanceof HeaderValidationCustomizer customizer) {
+                headerValidationCustomizers.add(customizer);
+            }
+        }
     }
 
     private void visit(NodePlugin p, Map<String, NodePlugin> byId, List<NodePlugin> ordered,
@@ -136,6 +153,8 @@ public final class PluginManager implements AutoCloseable {
             try { p.close(); } catch (Throwable ignored) {}
         }
         plugins.clear();
+        headerValidationCustomizers.clear();
+        initialized = false;
     }
 
     /**
@@ -144,6 +163,13 @@ public final class PluginManager implements AutoCloseable {
      */
     public List<StorageFilter> getStorageFilters() {
         return storageFilters;
+    }
+
+    /**
+     * Returns header validation customizers registered by discovered plugins.
+     */
+    public List<HeaderValidationCustomizer> getHeaderValidationCustomizers() {
+        return List.copyOf(headerValidationCustomizers);
     }
 
     private static String safeId(NodePlugin p) {

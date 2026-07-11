@@ -11,6 +11,7 @@ public class DefaultMemPool implements MemPool {
     // LinkedHashMap preserves insertion order for efficient oldest-first iteration
     private final LinkedHashMap<String, MemPoolTransaction> txIndex;
     private final AtomicLong cursor = new AtomicLong(0);
+    private long byteSize;
 
     public DefaultMemPool() {
         this.txIndex = new LinkedHashMap<>();
@@ -26,6 +27,7 @@ public class DefaultMemPool implements MemPool {
         long txSeqId = cursor.incrementAndGet();
         var memPoolTransaction = new MemPoolTransaction(txSeqId, HexUtil.decodeHexString(txHash), txBytes, TxBodyType.CONWAY);
         txIndex.put(txHash, memPoolTransaction);
+        byteSize += memPoolTransaction.size();
         return memPoolTransaction;
     }
 
@@ -35,6 +37,7 @@ public class DefaultMemPool implements MemPool {
         if (!it.hasNext()) return null;
         var entry = it.next();
         it.remove();
+        byteSize -= entry.getValue().size();
         return entry.getValue();
     }
 
@@ -49,20 +52,57 @@ public class DefaultMemPool implements MemPool {
     }
 
     @Override
+    public synchronized long byteSize() {
+        return byteSize;
+    }
+
+    @Override
     public synchronized boolean contains(String txHash) {
         return txIndex.containsKey(txHash);
     }
 
     @Override
+    public synchronized MemPoolTransaction getTransaction(String txHash) {
+        return txIndex.get(txHash);
+    }
+
+    @Override
+    public synchronized List<MemPoolTransaction> snapshotTransactions(int maxCount, long maxBytes) {
+        if (maxCount <= 0 || maxBytes < 0) {
+            return List.of();
+        }
+        List<MemPoolTransaction> snapshot = new ArrayList<>(Math.min(maxCount, txIndex.size()));
+        long selectedBytes = 0;
+        for (MemPoolTransaction transaction : txIndex.values()) {
+            int size = transaction.size();
+            if (!snapshot.isEmpty() && selectedBytes + size > maxBytes) {
+                break;
+            }
+            if (size > maxBytes && snapshot.isEmpty()) {
+                break;
+            }
+            snapshot.add(transaction);
+            selectedBytes += size;
+            if (snapshot.size() >= maxCount) {
+                break;
+            }
+        }
+        return List.copyOf(snapshot);
+    }
+
+    @Override
     public synchronized void clear() {
         txIndex.clear();
+        byteSize = 0;
     }
 
     @Override
     public synchronized int removeByTxHashes(Set<String> txHashes) {
         int removed = 0;
         for (String hash : txHashes) {
-            if (txIndex.remove(hash) != null) {
+            MemPoolTransaction transaction = txIndex.remove(hash);
+            if (transaction != null) {
+                byteSize -= transaction.size();
                 removed++;
             }
         }
@@ -74,8 +114,25 @@ public class DefaultMemPool implements MemPool {
         int evicted = 0;
         var it = txIndex.entrySet().iterator();
         while (it.hasNext() && evicted < count) {
-            it.next();
+            var entry = it.next();
             it.remove();
+            byteSize -= entry.getValue().size();
+            evicted++;
+        }
+        return evicted;
+    }
+
+    @Override
+    public synchronized int evictOldestUntilBytesAtMost(long maxBytes) {
+        if (maxBytes < 0) {
+            maxBytes = 0;
+        }
+        int evicted = 0;
+        var it = txIndex.entrySet().iterator();
+        while (it.hasNext() && byteSize > maxBytes) {
+            var entry = it.next();
+            it.remove();
+            byteSize -= entry.getValue().size();
             evicted++;
         }
         return evicted;
@@ -89,6 +146,7 @@ public class DefaultMemPool implements MemPool {
             var entry = it.next();
             if (entry.getValue().insertedAt() < beforeEpochMillis) {
                 it.remove();
+                byteSize -= entry.getValue().size();
                 removed++;
             } else {
                 // LinkedHashMap is insertion-ordered, so once we hit a newer entry, stop

@@ -318,6 +318,8 @@ tasks.register('yanoDistZip', Zip) {
         }
         from('config') {
             into 'config'
+            include 'application.yml', 'application.yaml', 'application-*.yml', 'application-*.yaml', 'network/**'
+            exclude '**/*.bak', '**/*.working'
         }
         into('plugins') {
             from({ [] }) // empty directory
@@ -390,6 +392,8 @@ tasks.register('yanoNativeDistZip', Zip) {
         }
         from('config') {
             into 'config'
+            include 'application.yml', 'application.yaml', 'application-*.yml', 'application-*.yaml', 'network/**'
+            exclude '**/*.bak', '**/*.working'
         }
         into('plugins') {
             from({ [] }) // empty directory
@@ -517,11 +521,16 @@ tasks.register('yanoDockerDistZip', Zip) {
         }
         from(rootProject.file('docker/config')) {
             into 'config'
-            include 'application.yml', 'env'
+            include 'env'
+        }
+        from('config') {
+            into 'config'
+            include 'application.yml', 'application.yaml', 'application-*.yml', 'application-*.yaml'
+            exclude '**/*.bak', '**/*.working'
         }
         from('config/network') {
             into 'config/network'
-            exclude '**/*.working'
+            exclude '**/*.bak', '**/*.working'
         }
         from(dockerRuntimeDirsRoot) {
             include dockerRuntimeDirs.collect { "${it}/**" }

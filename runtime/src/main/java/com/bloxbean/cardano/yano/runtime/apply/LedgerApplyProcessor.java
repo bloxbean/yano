@@ -2,7 +2,7 @@ package com.bloxbean.cardano.yano.runtime.apply;
 
 import com.bloxbean.cardano.yaci.core.storage.ChainState;
 import com.bloxbean.cardano.yaci.core.storage.ChainTip;
-import com.bloxbean.cardano.yano.runtime.peer.PeerRecoveryReason;
+import com.bloxbean.cardano.yano.p2p.peer.PeerRecoveryReason;
 import lombok.extern.slf4j.Slf4j;
 
 import java.time.Duration;

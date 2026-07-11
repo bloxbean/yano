@@ -11,6 +11,17 @@ import com.bloxbean.cardano.yano.api.TxEvaluationGateway;
 import com.bloxbean.cardano.yano.api.TxGateway;
 import com.bloxbean.cardano.yano.api.config.PluginsOptions;
 import com.bloxbean.cardano.yano.api.config.RuntimeOptions;
+import com.bloxbean.cardano.yano.api.config.ChainSelectionConfig;
+import com.bloxbean.cardano.yano.api.config.UpstreamConfig;
+import com.bloxbean.cardano.yano.api.config.UpstreamDiscoveryConfig;
+import com.bloxbean.cardano.yano.api.config.UpstreamFailoverConfig;
+import com.bloxbean.cardano.yano.api.config.UpstreamGovernorConfig;
+import com.bloxbean.cardano.yano.api.config.UpstreamPeerConfig;
+import com.bloxbean.cardano.yano.api.config.UpstreamPreset;
+import com.bloxbean.cardano.yano.api.config.UpstreamSyncConfig;
+import com.bloxbean.cardano.yano.api.config.UpstreamTxConfig;
+import com.bloxbean.cardano.yano.api.config.UpstreamValidationConfig;
+import com.bloxbean.cardano.yano.api.config.UpstreamValidationStartConfig;
 import com.bloxbean.cardano.yano.api.config.YanoConfig;
 import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
 import com.bloxbean.cardano.yano.app.bootstrap.BootstrapConfigParser;
@@ -48,8 +59,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.HashMap;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 
 /**
@@ -100,6 +113,27 @@ public class YanoProducer {
 
     @ConfigProperty(name = YanoPropertyKeys.Server.ENABLED, defaultValue = "true")
     boolean serverEnabled;
+
+    @ConfigProperty(name = YanoPropertyKeys.Relay.AUTO_DISCOVERY, defaultValue = "false")
+    boolean relayAutoDiscovery;
+
+    @ConfigProperty(name = YanoPropertyKeys.Relay.ADVERTISED_HOST)
+    Optional<String> relayAdvertisedHost;
+
+    @ConfigProperty(name = YanoPropertyKeys.Relay.ADVERTISED_PORT, defaultValue = "0")
+    int relayAdvertisedPort;
+
+    @ConfigProperty(name = YanoPropertyKeys.Relay.ALLOW_PRIVATE_ADDRESSES, defaultValue = "false")
+    boolean relayAllowPrivateAddresses;
+
+    @ConfigProperty(name = YanoPropertyKeys.Relay.CONNECTION_MAX_INBOUND_CONNECTIONS, defaultValue = "100")
+    int relayConnectionMaxInboundConnections;
+
+    @ConfigProperty(name = YanoPropertyKeys.Relay.CONNECTION_MAX_CONNECTIONS_PER_IP, defaultValue = "5")
+    int relayConnectionMaxConnectionsPerIp;
+
+    @ConfigProperty(name = YanoPropertyKeys.Relay.CONNECTION_SOURCE_PORT_REUSE, defaultValue = "true")
+    boolean relayConnectionSourcePortReuse;
 
     @ConfigProperty(name = YanoPropertyKeys.Storage.ROCKSDB, defaultValue = "true")
     boolean useRocksDB;
@@ -157,6 +191,30 @@ public class YanoProducer {
     int metricsSampleRocksDbSeconds;
     @ConfigProperty(name = YanoPropertyKeys.Validation.DEFAULT_VALIDATOR_ENABLED, defaultValue = "true")
     boolean defaultValidatorEnabled;
+
+    @ConfigProperty(name = YanoPropertyKeys.Tx.MEMPOOL_MAX_TXS, defaultValue = "10000")
+    int txMempoolMaxTxs;
+
+    @ConfigProperty(name = YanoPropertyKeys.Tx.MEMPOOL_MAX_BYTES, defaultValue = "134217728")
+    long txMempoolMaxBytes;
+
+    @ConfigProperty(name = YanoPropertyKeys.Tx.MEMPOOL_TTL_SECONDS, defaultValue = "10800")
+    long txMempoolTtlSeconds;
+
+    @ConfigProperty(name = YanoPropertyKeys.Tx.DIFFUSION_ENABLED, defaultValue = "true")
+    boolean txDiffusionEnabled = true;
+
+    @ConfigProperty(name = YanoPropertyKeys.Tx.DIFFUSION_MODE)
+    java.util.Optional<String> txDiffusionMode = java.util.Optional.empty();
+
+    @ConfigProperty(name = YanoPropertyKeys.Tx.DIFFUSION_MAX_IN_FLIGHT_TXS_PER_PEER, defaultValue = "100")
+    int txDiffusionMaxInFlightTxsPerPeer;
+
+    @ConfigProperty(name = YanoPropertyKeys.Tx.DIFFUSION_MAX_IN_FLIGHT_BYTES_PER_PEER, defaultValue = "1048576")
+    long txDiffusionMaxInFlightBytesPerPeer;
+
+    @ConfigProperty(name = YanoPropertyKeys.Tx.DIFFUSION_PEER_COOLDOWN_MS, defaultValue = "60000")
+    long txDiffusionPeerCooldownMs;
 
     // CCL "supplementary rules" (GOVCERT/governance/delegatee) layered on top of Scalus validation.
     // Disabled by default — they don't yet account for intra-tx state changes within a single block.
@@ -375,6 +433,7 @@ public class YanoProducer {
                 .enableServer(serverEnabled)
                 .remoteHost(remoteHost)
                 .remotePort(remotePort)
+                .upstream(parseUpstreamConfig())
                 .serverPort(serverPort)
                 .protocolMagic(protocolMagic)
                 .useRocksDB(useRocksDB)
@@ -487,6 +546,28 @@ public class YanoProducer {
         globals.put(YanoPropertyKeys.Metrics.ROCKSDB_SAMPLE_SECONDS, metricsSampleRocksDbSeconds);
         globals.put(YanoPropertyKeys.Validation.DEFAULT_VALIDATOR_ENABLED, defaultValidatorEnabled);
         globals.put(YanoPropertyKeys.Validation.SUPPLEMENTARY_RULES_ENABLED, supplementaryRulesEnabled);
+        globals.put(YanoPropertyKeys.Tx.MEMPOOL_MAX_TXS, txMempoolMaxTxs);
+        globals.put(YanoPropertyKeys.Tx.MEMPOOL_MAX_BYTES, txMempoolMaxBytes);
+        globals.put(YanoPropertyKeys.Tx.MEMPOOL_TTL_SECONDS, txMempoolTtlSeconds);
+        globals.put(YanoPropertyKeys.Tx.DIFFUSION_ENABLED, txDiffusionEnabled);
+        txDiffusionMode.ifPresent(mode -> globals.put(YanoPropertyKeys.Tx.DIFFUSION_MODE, mode));
+        globals.put(YanoPropertyKeys.Tx.DIFFUSION_MAX_IN_FLIGHT_TXS_PER_PEER,
+                txDiffusionMaxInFlightTxsPerPeer);
+        globals.put(YanoPropertyKeys.Tx.DIFFUSION_MAX_IN_FLIGHT_BYTES_PER_PEER,
+                txDiffusionMaxInFlightBytesPerPeer);
+        globals.put(YanoPropertyKeys.Tx.DIFFUSION_PEER_COOLDOWN_MS, txDiffusionPeerCooldownMs);
+        globals.put(YanoPropertyKeys.Relay.AUTO_DISCOVERY, relayAutoDiscovery);
+        globals.put(YanoPropertyKeys.Relay.ADVERTISED_HOST,
+                relayAdvertisedHost.map(String::trim).filter(host -> !host.isBlank()).orElse("auto"));
+        globals.put(YanoPropertyKeys.Relay.ADVERTISED_PORT,
+                relayAdvertisedPort > 0 ? relayAdvertisedPort : serverPort);
+        globals.put(YanoPropertyKeys.Relay.ALLOW_PRIVATE_ADDRESSES, relayAllowPrivateAddresses);
+        globals.put(YanoPropertyKeys.Relay.CONNECTION_MAX_INBOUND_CONNECTIONS,
+                relayConnectionMaxInboundConnections);
+        globals.put(YanoPropertyKeys.Relay.CONNECTION_MAX_CONNECTIONS_PER_IP,
+                relayConnectionMaxConnectionsPerIp);
+        globals.put(YanoPropertyKeys.Relay.CONNECTION_SOURCE_PORT_REUSE,
+                relayConnectionSourcePortReuse);
         globals.put(YanoPropertyKeys.BlockProducer.TX_EVALUATION, txEvaluationEnabled);
         globals.put(YanoPropertyKeys.BlockProducer.PROCESS_SKIPPED_EPOCHS, blockProducerProcessSkippedEpochs);
         dnsCacheTtl.ifPresent(value -> globals.put(DnsCachePolicy.DNS_CACHE_TTL_KEY, value));
@@ -665,6 +746,196 @@ public class YanoProducer {
             prefix = prefix.substring(0, prefix.length() - 1);
         }
         return prefix;
+    }
+
+    UpstreamConfig parseUpstreamConfig() {
+        java.util.Optional<String> mode = appConfig.getOptionalValue(YanoPropertyKeys.Upstream.MODE, String.class);
+        List<UpstreamPeerConfig> peers = parseUpstreamPeers();
+        if (mode.isEmpty() && peers.isEmpty() && !hasExplicitUpstreamProperty()) {
+            return null;
+        }
+        UpstreamPreset upstreamMode = UpstreamPreset.fromConfig(mode.orElse("trusted-single"));
+        boolean discoveryEnabled = relayAutoDiscovery
+                || configBoolean(YanoPropertyKeys.Upstream.DISCOVERY_ENABLED, false);
+        List<String> peerSnapshotUrls = configStringList(YanoPropertyKeys.Upstream.DISCOVERY_PEER_SNAPSHOT_URLS);
+        if (peerSnapshotUrls.isEmpty()) {
+            peerSnapshotUrls = defaultPeerSnapshotUrls(upstreamMode, discoveryEnabled);
+        }
+
+        return UpstreamConfig.builder()
+                .mode(upstreamMode)
+                .peers(peers)
+                .selection(ChainSelectionConfig.builder()
+                        .policy(configString(YanoPropertyKeys.Upstream.SELECTION_POLICY,
+                                "trusted-or-quorum-within-rollback-window"))
+                        .rollbackWindowSlots(appConfig.getOptionalValue(
+                                        YanoPropertyKeys.Upstream.SELECTION_ROLLBACK_WINDOW_SLOTS, Long.class)
+                                .orElse(0L))
+                        .requireBodyBeforeAdoption(configBoolean(
+                                YanoPropertyKeys.Upstream.SELECTION_REQUIRE_BODY_BEFORE_ADOPTION, true))
+                        .trustPolicy(configString(YanoPropertyKeys.Upstream.SELECTION_TRUST_POLICY, "trusted-only"))
+                        .quorum(configInt(YanoPropertyKeys.Upstream.SELECTION_QUORUM, 2))
+                        .tieBreak(configString(YanoPropertyKeys.Upstream.SELECTION_TIE_BREAK, "deterministic"))
+                        .build())
+                .validation(UpstreamValidationConfig.builder()
+                        .level(configString(YanoPropertyKeys.Upstream.VALIDATION_LEVEL, "none"))
+                        .bodyLevel(configString(YanoPropertyKeys.Upstream.VALIDATION_BODY_LEVEL, "none"))
+                        .opCertCounterMode(configString(
+                                YanoPropertyKeys.Upstream.VALIDATION_OPCERT_COUNTER_MODE, "none"))
+                        .start(UpstreamValidationStartConfig.builder()
+                                .mode(configString(YanoPropertyKeys.Upstream.VALIDATION_START_MODE, "immediate"))
+                                .era(configString(YanoPropertyKeys.Upstream.VALIDATION_START_ERA, "conway"))
+                                .slot(configLong(YanoPropertyKeys.Upstream.VALIDATION_START_SLOT, -1L))
+                                .hash(configString(YanoPropertyKeys.Upstream.VALIDATION_START_HASH, ""))
+                                .build())
+                        .build())
+                .sync(UpstreamSyncConfig.builder()
+                        .bulkSource(configString(YanoPropertyKeys.Upstream.SYNC_BULK_SOURCE, "single-trusted"))
+                        .fanInStart(configString(YanoPropertyKeys.Upstream.SYNC_FAN_IN_START, "near-tip"))
+                        .build())
+                .failover(UpstreamFailoverConfig.builder()
+                        .cooldownMs(configLong(YanoPropertyKeys.Upstream.FAILOVER_COOLDOWN_MS, 30_000L))
+                        .maxFailuresBeforeCooldown(configInt(
+                                YanoPropertyKeys.Upstream.FAILOVER_MAX_FAILURES_BEFORE_COOLDOWN, 3))
+                .build())
+                .tx(UpstreamTxConfig.builder()
+                        .forwarding(effectiveUpstreamTxForwarding())
+                        .build())
+                .governor(UpstreamGovernorConfig.builder()
+                        .enabled(configBoolean(YanoPropertyKeys.Upstream.GOVERNOR_ENABLED, false))
+                        .targetCold(configInt(YanoPropertyKeys.Upstream.GOVERNOR_TARGET_COLD, 100))
+                        .targetWarm(configInt(YanoPropertyKeys.Upstream.GOVERNOR_TARGET_WARM, 8))
+                        .targetHot(configInt(YanoPropertyKeys.Upstream.GOVERNOR_TARGET_HOT, 2))
+                        .maxConcurrentDials(configInt(
+                                YanoPropertyKeys.Upstream.GOVERNOR_MAX_CONCURRENT_DIALS, 4))
+                        .build())
+                .discovery(UpstreamDiscoveryConfig.builder()
+                        .enabled(discoveryEnabled)
+                        .peerSharing(relayAutoDiscovery
+                                || configBoolean(YanoPropertyKeys.Upstream.DISCOVERY_PEER_SHARING, false))
+                        .seeds(configStringList(YanoPropertyKeys.Upstream.DISCOVERY_SEEDS))
+                        .peerSnapshotUrls(peerSnapshotUrls)
+                        .peerSnapshotFiles(configStringList(YanoPropertyKeys.Upstream.DISCOVERY_PEER_SNAPSHOT_FILES))
+                        .peerSnapshotLimit(configInt(
+                                YanoPropertyKeys.Upstream.DISCOVERY_PEER_SNAPSHOT_LIMIT, 128))
+                        .topologyFile(configString(YanoPropertyKeys.Upstream.DISCOVERY_TOPOLOGY_FILE, ""))
+                        .ledgerPeers(configBoolean(YanoPropertyKeys.Upstream.DISCOVERY_LEDGER_PEERS, false))
+                        .useLedgerAfterSlot(configLong(
+                                YanoPropertyKeys.Upstream.DISCOVERY_USE_LEDGER_AFTER_SLOT, -1L))
+                        .allowPrivateAddresses(configBoolean(
+                                YanoPropertyKeys.Upstream.DISCOVERY_ALLOW_PRIVATE_ADDRESSES, false))
+                        .allowlist(configStringList(YanoPropertyKeys.Upstream.DISCOVERY_ALLOWLIST))
+                        .denylist(configStringList(YanoPropertyKeys.Upstream.DISCOVERY_DENYLIST))
+                        .build())
+                .build();
+    }
+
+    private String effectiveUpstreamTxForwarding() {
+        String legacyForwarding = configString(YanoPropertyKeys.Upstream.TX_FORWARDING, "active-selected");
+        java.util.Optional<String> configuredDiffusionMode = configuredTxDiffusionMode();
+        if (configuredDiffusionMode.isEmpty()) {
+            return txDiffusionEnabled ? "all-hot" : "disabled";
+        }
+
+        String mode = configuredDiffusionMode.get().trim().toLowerCase(java.util.Locale.ROOT);
+        return switch (mode) {
+            case "disabled" -> "disabled";
+            case "local-submit-only" -> {
+                String normalizedLegacy = legacyForwarding != null
+                        ? legacyForwarding.trim().toLowerCase(java.util.Locale.ROOT)
+                        : "active-selected";
+                yield "all-hot-trusted".equals(normalizedLegacy) ? "all-hot-trusted" : "active-selected";
+            }
+            case "trusted-hot" -> "all-hot-trusted";
+            case "all-hot" -> "all-hot";
+            default -> "disabled";
+        };
+    }
+
+    private java.util.Optional<String> configuredTxDiffusionMode() {
+        if (txDiffusionMode != null && txDiffusionMode.isPresent()) {
+            return txDiffusionMode;
+        }
+        if (appConfig != null) {
+            return appConfig.getOptionalValue(YanoPropertyKeys.Tx.DIFFUSION_MODE, String.class);
+        }
+        return java.util.Optional.empty();
+    }
+
+    private boolean hasExplicitUpstreamProperty() {
+        for (String propertyName : appConfig.getPropertyNames()) {
+            if (propertyName != null && propertyName.startsWith("yano.upstream.")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private List<String> defaultPeerSnapshotUrls(UpstreamPreset upstreamMode, boolean discoveryEnabled) {
+        if (!discoveryEnabled || upstreamMode != UpstreamPreset.P2P_RELAY) {
+            return List.of();
+        }
+        String normalizedNetwork = network != null ? network.trim().toLowerCase(java.util.Locale.ROOT) : "";
+        return switch (normalizedNetwork) {
+            case "mainnet", "preprod", "preview" -> List.of(
+                    "https://book.play.dev.cardano.org/environments/" + normalizedNetwork + "/peer-snapshot.json");
+            default -> List.of();
+        };
+    }
+
+    private List<UpstreamPeerConfig> parseUpstreamPeers() {
+        List<UpstreamPeerConfig> peers = new ArrayList<>();
+        for (int i = 0; i < 512; i++) {
+            String prefix = YanoPropertyKeys.Upstream.PEERS + "[" + i + "]";
+            java.util.Optional<String> host = appConfig.getOptionalValue(prefix + ".host", String.class);
+            if (host.isEmpty()) {
+                if (i == 0) {
+                    continue;
+                }
+                break;
+            }
+            peers.add(UpstreamPeerConfig.builder()
+                    .id(appConfig.getOptionalValue(prefix + ".id", String.class).orElse(null))
+                    .host(host.get())
+                    .port(appConfig.getOptionalValue(prefix + ".port", Integer.class).orElse(remotePort))
+                    .source(appConfig.getOptionalValue(prefix + ".source", String.class).orElse("local-root"))
+                    .priority(appConfig.getOptionalValue(prefix + ".priority", Integer.class).orElse(i))
+                    .trust(appConfig.getOptionalValue(prefix + ".trust", String.class).orElse("trusted"))
+                    .build());
+        }
+        return peers;
+    }
+
+    private String configString(String key, String defaultValue) {
+        return appConfig.getOptionalValue(key, String.class).orElse(defaultValue);
+    }
+
+    private int configInt(String key, int defaultValue) {
+        return appConfig.getOptionalValue(key, Integer.class).orElse(defaultValue);
+    }
+
+    private long configLong(String key, long defaultValue) {
+        return appConfig.getOptionalValue(key, Long.class).orElse(defaultValue);
+    }
+
+    private boolean configBoolean(String key, boolean defaultValue) {
+        return appConfig.getOptionalValue(key, Boolean.class).orElse(defaultValue);
+    }
+
+    private List<String> configStringList(String key) {
+        java.util.Optional<List<String>> listValue = appConfig.getOptionalValues(key, String.class);
+        if (listValue.isPresent()) {
+            return listValue.get().stream()
+                    .map(String::trim)
+                    .filter(item -> !item.isBlank())
+                    .toList();
+        }
+        return appConfig.getOptionalValue(key, String.class)
+                .map(value -> java.util.Arrays.stream(value.split(","))
+                        .map(String::trim)
+                        .filter(item -> !item.isBlank())
+                        .toList())
+                .orElse(List.of());
     }
 
     void onStop(@Observes ShutdownEvent event) {

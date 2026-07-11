@@ -9,15 +9,21 @@ import com.bloxbean.cardano.yano.runtime.config.InMemoryDevnetGenesis;
 import com.bloxbean.cardano.yano.runtime.kernel.Schedulers;
 import com.bloxbean.cardano.yano.runtime.producer.ProducerMode;
 import com.bloxbean.cardano.yano.runtime.producer.ProducerStartupPlan;
+import com.bloxbean.cardano.yano.runtime.sync.validation.BodyValidationPipeline;
+import com.bloxbean.cardano.yano.runtime.sync.validation.BodyValidator;
 import com.bloxbean.cardano.yano.runtime.tx.TransactionBootstrapOptions;
 import com.bloxbean.cardano.yano.runtime.tx.TransactionServices;
 import com.bloxbean.cardano.yano.runtime.tx.TransactionServicesFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.function.Consumer;
 
 /**
  * Explicit runtime composition root.
@@ -139,6 +145,7 @@ public final class YanoAssembly {
         private InMemoryDevnetGenesis inMemoryGenesis;
         private TransactionBootstrapOptions transactionBootstrapOptions = TransactionBootstrapOptions.disabled();
         private TransactionServicesFactory transactionServicesFactory;
+        private BodyValidator bodyValidator = BodyValidator.none();
         private BootstrapDataProvider bootstrapDataProvider;
         private boolean adhocRollbackConfigured;
         private long adhocRollbackToSlot = -1;
@@ -178,10 +185,20 @@ public final class YanoAssembly {
             return this;
         }
 
+        public Builder bodyValidation(Consumer<BodyValidationBuilder> customizer) {
+            BodyValidationBuilder builder = new BodyValidationBuilder();
+            if (customizer != null) {
+                customizer.accept(builder);
+            }
+            this.bodyValidator = builder.build();
+            return this;
+        }
+
         public Yano build() {
             validateRole();
             Schedulers schedulers = new Schedulers();
-            RuntimeNode runtimeNode = new RuntimeNode(config, runtimeOptions, inMemoryGenesis, producerStartupPlan(), schedulers);
+            RuntimeNode runtimeNode = new RuntimeNode(
+                    config, runtimeOptions, inMemoryGenesis, producerStartupPlan(), schedulers, bodyValidator);
             applyPreStartConfiguration(runtimeNode);
             installTransactionServices(runtimeNode);
             return new RuntimeYano(
@@ -282,6 +299,54 @@ public final class YanoAssembly {
                                 : ProducerMode.DEVNET_TIME_TRAVEL,
                         true);
             };
+        }
+    }
+
+    /**
+     * Builder for future block-body validation presets and custom validators.
+     */
+    public static final class BodyValidationBuilder {
+        private final List<BodyValidator> validators = new ArrayList<>();
+        private boolean disabled;
+
+        public BodyValidationBuilder useDefault(String preset) {
+            String normalized = preset == null || preset.isBlank()
+                    ? "none"
+                    : preset.trim().toLowerCase(Locale.ROOT);
+            if (!"none".equals(normalized)) {
+                throw new IllegalArgumentException("Unsupported body validation default preset: " + preset
+                        + " (supported now: none)");
+            }
+            disabled = false;
+            return this;
+        }
+
+        public BodyValidationBuilder add(BodyValidator validator) {
+            Objects.requireNonNull(validator, "validator");
+            disabled = false;
+            validators.add(validator);
+            return this;
+        }
+
+        public BodyValidationBuilder replaceDefault(BodyValidator validator) {
+            Objects.requireNonNull(validator, "validator");
+            disabled = false;
+            validators.clear();
+            validators.add(validator);
+            return this;
+        }
+
+        public BodyValidationBuilder disabled() {
+            disabled = true;
+            validators.clear();
+            return this;
+        }
+
+        private BodyValidator build() {
+            if (disabled || validators.isEmpty()) {
+                return BodyValidator.none();
+            }
+            return BodyValidationPipeline.of(validators);
         }
     }
 }

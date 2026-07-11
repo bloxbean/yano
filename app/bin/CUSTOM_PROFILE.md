@@ -1,6 +1,7 @@
 # Custom Profiles
 
-Yano distributions can run any Quarkus profile defined in `config/application.yml`.
+Yano distributions can run any Quarkus profile defined in `config/application.yml`
+or in `config/application-<profile>.yml`.
 
 ## Add Network Files
 
@@ -64,6 +65,14 @@ Run the profile by name:
 ./yano.sh start:mydevnet
 ```
 
+Profiles can also be composed. The first profile is treated as the network name
+by the launcher, and the full list is passed to Quarkus:
+
+```bash
+./yano.sh start:mydevnet,relay
+./yano.sh start:mydevnet,relay,praos-lite
+```
+
 This is equivalent to:
 
 ```bash
@@ -72,7 +81,8 @@ This is equivalent to:
 
 `--profile=mydevnet` remains supported, but `start:mydevnet` is the preferred command form.
 
-Profile names may contain letters, numbers, dot, underscore, and dash.
+Profile names may contain letters, numbers, dot, underscore, and dash. Profile
+lists use commas between profile names.
 
 ## Chainstate
 

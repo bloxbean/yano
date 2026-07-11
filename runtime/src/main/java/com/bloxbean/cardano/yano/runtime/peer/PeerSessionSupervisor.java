@@ -1,5 +1,8 @@
 package com.bloxbean.cardano.yano.runtime.peer;
 
+import com.bloxbean.cardano.yano.p2p.peer.PeerRecoveryReason;
+import com.bloxbean.cardano.yano.p2p.peer.PeerSessionState;
+import com.bloxbean.cardano.yano.p2p.peer.PeerSessionStatus;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.Objects;
@@ -220,10 +223,15 @@ public final class PeerSessionSupervisor implements AutoCloseable {
     }
 
     private Optional<PeerRecoveryReason> evaluate(PeerSession session, PeerSessionStatus status, long now) {
-        if (status.state() == PeerSessionState.STOPPED
-                || status.state() == PeerSessionState.STOPPING
+        if (status.state() == PeerSessionState.STOPPING
                 || status.state() == PeerSessionState.RECOVERING) {
             return Optional.empty();
+        }
+
+        if (status.state() == PeerSessionState.STOPPED) {
+            return Optional.of(status.lastRecoveryReason() != null
+                    ? status.lastRecoveryReason()
+                    : PeerRecoveryReason.UNKNOWN);
         }
 
         if (status.state() == PeerSessionState.STARTING) {

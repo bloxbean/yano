@@ -11,6 +11,7 @@ import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
 import com.bloxbean.cardano.yano.api.events.BlockAppliedEvent;
 import com.bloxbean.cardano.yano.api.events.MemPoolTransactionReceivedEvent;
 import com.bloxbean.cardano.yano.api.events.TransactionValidateEvent;
+import com.bloxbean.cardano.yano.api.model.MemPoolTransaction;
 import com.bloxbean.cardano.yano.api.model.TxEvaluationResult;
 import com.bloxbean.cardano.yano.api.utxo.UtxoState;
 import com.bloxbean.cardano.yano.ledgerrules.TransactionEvaluator;
@@ -24,6 +25,11 @@ import com.bloxbean.cardano.yano.runtime.chain.MemPool;
 import com.bloxbean.cardano.yano.runtime.chain.MempoolEvictionPolicy;
 import com.bloxbean.cardano.yano.runtime.kernel.Subsystem;
 import com.bloxbean.cardano.yano.runtime.kernel.SubsystemHealth;
+import com.bloxbean.cardano.yano.p2p.tx.diffusion.DefaultTxDiffusion;
+import com.bloxbean.cardano.yano.p2p.tx.diffusion.TxCatalog;
+import com.bloxbean.cardano.yano.p2p.tx.diffusion.TxDiffusion;
+import com.bloxbean.cardano.yano.p2p.tx.diffusion.TxDiffusionMode;
+import com.bloxbean.cardano.yano.p2p.tx.diffusion.TxDiffusionStats;
 import com.bloxbean.cardano.yaci.events.api.support.AnnotationListenerRegistrar;
 import com.bloxbean.cardano.yano.runtime.validation.DefaultTransactionValidatorListener;
 import org.slf4j.Logger;
@@ -44,6 +50,15 @@ import java.util.function.Supplier;
  * admission event flow.
  */
 public final class TxSubsystem implements Subsystem, TransactionAdmission, BlockTransactionSelector {
+    private static final int DEFAULT_MEMPOOL_MAX_TXS = 10_000;
+    private static final long DEFAULT_MEMPOOL_MAX_BYTES = 128L * 1024L * 1024L;
+    private static final long DEFAULT_MEMPOOL_TTL_SECONDS = 10_800L;
+    private static final boolean DEFAULT_TX_DIFFUSION_ENABLED = true;
+    private static final String DEFAULT_TX_DIFFUSION_MODE = "all-hot";
+    private static final int DEFAULT_MAX_IN_FLIGHT_TXS_PER_PEER = 100;
+    private static final long DEFAULT_MAX_IN_FLIGHT_BYTES_PER_PEER = 1L * 1024L * 1024L;
+    private static final long DEFAULT_PEER_COOLDOWN_MS = 60_000L;
+
     private final EventBus eventBus;
     private final ScheduledExecutorService scheduler;
     private final RuntimeOptions runtimeOptions;
@@ -57,11 +72,20 @@ public final class TxSubsystem implements Subsystem, TransactionAdmission, Block
     private volatile TransactionEvaluationService transactionEvaluationService;
     private MempoolEvictionPolicy mempoolEvictionPolicy;
     private SubscriptionHandle mempoolEvictionSubscription;
+    private SubscriptionHandle txDiffusionSubscription;
     private ScheduledFuture<?> mempoolEvictionTask;
     private List<SubscriptionHandle> validatorListenerSubscriptions = List.of();
     private boolean validatorListenerRegistered;
     private volatile boolean accepting;
     private volatile boolean closed;
+    private volatile int mempoolMaxTxs = DEFAULT_MEMPOOL_MAX_TXS;
+    private volatile long mempoolMaxBytes = DEFAULT_MEMPOOL_MAX_BYTES;
+    private volatile long mempoolTtlSeconds = DEFAULT_MEMPOOL_TTL_SECONDS;
+    private volatile String txDiffusionMode = DEFAULT_TX_DIFFUSION_MODE;
+    private volatile int txDiffusionMaxInFlightTxsPerPeer = DEFAULT_MAX_IN_FLIGHT_TXS_PER_PEER;
+    private volatile long txDiffusionMaxInFlightBytesPerPeer = DEFAULT_MAX_IN_FLIGHT_BYTES_PER_PEER;
+    private volatile long txDiffusionPeerCooldownMs = DEFAULT_PEER_COOLDOWN_MS;
+    private volatile TxDiffusion txDiffusion = TxDiffusion.disabled();
 
     public TxSubsystem(EventBus eventBus,
                        ScheduledExecutorService scheduler,
@@ -103,12 +127,24 @@ public final class TxSubsystem implements Subsystem, TransactionAdmission, Block
             return;
         }
 
-        long maxAgeMillis = 30 * 60 * 1000L;
-        int maxSize = 10_000;
-        mempoolEvictionPolicy = new DefaultMempoolEvictionPolicy(memPool, maxAgeMillis, maxSize);
+        resolveTxConfig();
+        txDiffusion = new DefaultTxDiffusion(
+                TxDiffusionMode.fromConfig(txDiffusionMode),
+                txCatalog(),
+                TransactionUtil::getTxHash,
+                txDiffusionMaxInFlightTxsPerPeer,
+                txDiffusionMaxInFlightBytesPerPeer,
+                txDiffusionPeerCooldownMs,
+                log);
+        long maxAgeMillis = TimeUnit.SECONDS.toMillis(mempoolTtlSeconds);
+        mempoolEvictionPolicy = new DefaultMempoolEvictionPolicy(
+                memPool, maxAgeMillis, mempoolMaxTxs, mempoolMaxBytes);
 
         mempoolEvictionSubscription = eventBus.subscribe(BlockAppliedEvent.class, ctx ->
                         mempoolEvictionPolicy.onBlockApplied(ctx.event()),
+                SubscriptionOptions.builder().build());
+        txDiffusionSubscription = eventBus.subscribe(MemPoolTransactionReceivedEvent.class,
+                ctx -> txDiffusion.onTransactionAccepted(ctx.event().transaction()),
                 SubscriptionOptions.builder().build());
 
         mempoolEvictionTask = scheduler.scheduleAtFixedRate(() -> {
@@ -120,7 +156,8 @@ public final class TxSubsystem implements Subsystem, TransactionAdmission, Block
         }, 30, 30, TimeUnit.SECONDS);
 
         enableAdmission();
-        log.info("Mempool eviction policy initialized (maxAge=30min, maxSize={})", maxSize);
+        log.info("Mempool eviction policy initialized (ttl={}s, maxTxs={}, maxBytes={}, txDiffusionMode={})",
+                mempoolTtlSeconds, mempoolMaxTxs, mempoolMaxBytes, txDiffusionMode);
     }
 
     @Override
@@ -155,6 +192,12 @@ public final class TxSubsystem implements Subsystem, TransactionAdmission, Block
             mempoolEvictionSubscription.close();
             mempoolEvictionSubscription = null;
         }
+        if (txDiffusionSubscription != null) {
+            txDiffusionSubscription.close();
+            txDiffusionSubscription = null;
+        }
+        txDiffusion.close();
+        txDiffusion = TxDiffusion.disabled();
         for (SubscriptionHandle subscription : validatorListenerSubscriptions) {
             subscription.close();
         }
@@ -269,6 +312,64 @@ public final class TxSubsystem implements Subsystem, TransactionAdmission, Block
         return memPool.size();
     }
 
+    public long mempoolBytes() {
+        return memPool.byteSize();
+    }
+
+    public int mempoolMaxTxs() {
+        return mempoolMaxTxs;
+    }
+
+    public long mempoolMaxBytes() {
+        return mempoolMaxBytes;
+    }
+
+    public long mempoolTtlSeconds() {
+        return mempoolTtlSeconds;
+    }
+
+    public String txDiffusionMode() {
+        return txDiffusionMode;
+    }
+
+    public boolean txDiffusionEnabled() {
+        return !"disabled".equals(txDiffusionMode);
+    }
+
+    public TxDiffusion txDiffusion() {
+        return txDiffusion;
+    }
+
+    public TxDiffusionStats txDiffusionStats() {
+        return txDiffusion.stats();
+    }
+
+    private TxCatalog txCatalog() {
+        return new TxCatalog() {
+            @Override
+            public boolean contains(String txHash) {
+                return memPool.contains(txHash);
+            }
+
+            @Override
+            public MemPoolTransaction getTransaction(String txHash) {
+                return memPool.getTransaction(txHash);
+            }
+        };
+    }
+
+    public int txDiffusionMaxInFlightTxsPerPeer() {
+        return txDiffusionMaxInFlightTxsPerPeer;
+    }
+
+    public long txDiffusionMaxInFlightBytesPerPeer() {
+        return txDiffusionMaxInFlightBytesPerPeer;
+    }
+
+    public long txDiffusionPeerCooldownMs() {
+        return txDiffusionPeerCooldownMs;
+    }
+
     @Override
     public boolean hasPendingTransactions() {
         return blockTransactionSelector.hasPendingTransactions();
@@ -295,11 +396,43 @@ public final class TxSubsystem implements Subsystem, TransactionAdmission, Block
 
     @Override
     public synchronized SubsystemHealth health() {
-        return new SubsystemHealth(name(), SubsystemHealth.Status.UP, null, Map.of(
-                "mempoolSize", memPool.size(),
-                "accepting", accepting,
-                "validationAvailable", transactionValidationService != null,
-                "evaluationAvailable", transactionEvaluationService != null));
+        return new SubsystemHealth(name(), SubsystemHealth.Status.UP, null, Map.ofEntries(
+                Map.entry("mempoolSize", memPool.size()),
+                Map.entry("mempoolBytes", memPool.byteSize()),
+                Map.entry("mempoolMaxTxs", mempoolMaxTxs),
+                Map.entry("mempoolMaxBytes", mempoolMaxBytes),
+                Map.entry("mempoolTtlSeconds", mempoolTtlSeconds),
+                Map.entry("accepting", accepting),
+                Map.entry("validationAvailable", transactionValidationService != null),
+                Map.entry("evaluationAvailable", transactionEvaluationService != null),
+                Map.entry("txDiffusionMode", txDiffusionMode),
+                Map.entry("txDiffusionEnabled", txDiffusionEnabled()),
+                Map.entry("txDiffusionMaxInFlightTxsPerPeer", txDiffusionMaxInFlightTxsPerPeer),
+                Map.entry("txDiffusionMaxInFlightBytesPerPeer", txDiffusionMaxInFlightBytesPerPeer),
+                Map.entry("txDiffusionPeerCooldownMs", txDiffusionPeerCooldownMs)));
+    }
+
+    private void resolveTxConfig() {
+        Map<String, Object> globals = runtimeOptions.globals();
+        mempoolMaxTxs = Math.max(1, resolveInt(
+                globals, YanoPropertyKeys.Tx.MEMPOOL_MAX_TXS, DEFAULT_MEMPOOL_MAX_TXS));
+        mempoolMaxBytes = Math.max(0L, resolveLong(
+                globals, YanoPropertyKeys.Tx.MEMPOOL_MAX_BYTES, DEFAULT_MEMPOOL_MAX_BYTES));
+        mempoolTtlSeconds = Math.max(0L, resolveLong(
+                globals, YanoPropertyKeys.Tx.MEMPOOL_TTL_SECONDS, DEFAULT_MEMPOOL_TTL_SECONDS));
+        txDiffusionMode = resolveTxDiffusionMode(globals);
+        txDiffusionMaxInFlightTxsPerPeer = Math.max(1, resolveInt(
+                globals,
+                YanoPropertyKeys.Tx.DIFFUSION_MAX_IN_FLIGHT_TXS_PER_PEER,
+                DEFAULT_MAX_IN_FLIGHT_TXS_PER_PEER));
+        txDiffusionMaxInFlightBytesPerPeer = Math.max(0L, resolveLong(
+                globals,
+                YanoPropertyKeys.Tx.DIFFUSION_MAX_IN_FLIGHT_BYTES_PER_PEER,
+                DEFAULT_MAX_IN_FLIGHT_BYTES_PER_PEER));
+        txDiffusionPeerCooldownMs = Math.max(0L, resolveLong(
+                globals,
+                YanoPropertyKeys.Tx.DIFFUSION_PEER_COOLDOWN_MS,
+                DEFAULT_PEER_COOLDOWN_MS));
     }
 
     private static boolean resolveBoolean(Map<String, Object> globals, String key, boolean def) {
@@ -307,6 +440,59 @@ public final class TxSubsystem implements Subsystem, TransactionAdmission, Block
         if (value instanceof Boolean b) return b;
         if (value instanceof String s) return Boolean.parseBoolean(s);
         return def;
+    }
+
+    private static int resolveInt(Map<String, Object> globals, String key, int def) {
+        Object value = globals != null ? globals.get(key) : null;
+        if (value instanceof Number n) return n.intValue();
+        if (value instanceof String s && !s.isBlank()) {
+            try {
+                return Integer.parseInt(s.trim());
+            } catch (NumberFormatException ignored) {
+                return def;
+            }
+        }
+        return def;
+    }
+
+    private static long resolveLong(Map<String, Object> globals, String key, long def) {
+        Object value = globals != null ? globals.get(key) : null;
+        if (value instanceof Number n) return n.longValue();
+        if (value instanceof String s && !s.isBlank()) {
+            try {
+                return Long.parseLong(s.trim());
+            } catch (NumberFormatException ignored) {
+                return def;
+            }
+        }
+        return def;
+    }
+
+    private static String resolveString(Map<String, Object> globals, String key, String def) {
+        Object value = globals != null ? globals.get(key) : null;
+        if (value instanceof String s && !s.isBlank()) {
+            return s.trim();
+        }
+        return def;
+    }
+
+    private static String resolveTxDiffusionMode(Map<String, Object> globals) {
+        String configuredMode = resolveString(globals, YanoPropertyKeys.Tx.DIFFUSION_MODE, null);
+        if (configuredMode != null && !configuredMode.isBlank()) {
+            return normalizeTxDiffusionMode(configuredMode);
+        }
+        boolean enabled = resolveBoolean(globals,
+                YanoPropertyKeys.Tx.DIFFUSION_ENABLED,
+                DEFAULT_TX_DIFFUSION_ENABLED);
+        return enabled ? TxDiffusionMode.ALL_HOT.configValue() : TxDiffusionMode.DISABLED.configValue();
+    }
+
+    private static String normalizeTxDiffusionMode(String mode) {
+        String normalized = mode != null ? mode.trim().toLowerCase(java.util.Locale.ROOT) : "";
+        return switch (normalized) {
+            case "local-submit-only", "trusted-hot", "all-hot" -> normalized;
+            default -> TxDiffusionMode.DISABLED.configValue();
+        };
     }
 
     private static String normalizeOrigin(String origin) {

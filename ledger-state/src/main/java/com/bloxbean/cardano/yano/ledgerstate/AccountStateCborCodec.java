@@ -82,11 +82,17 @@ public final class AccountStateCborCodec {
         return new DRepDelegationRecord(drepType, drepHash, slot, txIdx, certIdx);
     }
 
-    // --- Pool Registration (prefix 0x10): {0: deposit, 1: marginNum, 2: marginDen, 3: cost, 4: pledge, 5: rewardAccount(bstr), 6: owners(array of bstr)} ---
+    // --- Pool Registration (prefix 0x10): {0: deposit, 1: marginNum, 2: marginDen, 3: cost, 4: pledge, 5: rewardAccount(bstr), 6: owners(array of bstr), 7: vrfKeyHash(bstr)} ---
     // Backward-compatible: old format had only {0: deposit}.
 
     public record PoolRegistrationData(BigInteger deposit, BigInteger marginNum, BigInteger marginDen,
-                                BigInteger cost, BigInteger pledge, String rewardAccount, Set<String> owners) {}
+                                BigInteger cost, BigInteger pledge, String rewardAccount, Set<String> owners,
+                                String vrfKeyHash) {
+        public PoolRegistrationData(BigInteger deposit, BigInteger marginNum, BigInteger marginDen,
+                                    BigInteger cost, BigInteger pledge, String rewardAccount, Set<String> owners) {
+            this(deposit, marginNum, marginDen, cost, pledge, rewardAccount, owners, null);
+        }
+    }
 
     static byte[] encodePoolRegistration(PoolRegistrationData data) {
         Map map = new Map();
@@ -104,6 +110,9 @@ public final class AccountStateCborCodec {
                 ownersArr.add(new ByteString(HexUtil.decodeHexString(owner)));
             }
             map.put(new UnsignedInteger(6), ownersArr);
+        }
+        if (data.vrfKeyHash() != null && !data.vrfKeyHash().isBlank()) {
+            map.put(new UnsignedInteger(7), new ByteString(HexUtil.decodeHexString(data.vrfKeyHash())));
         }
         return CborSerializationUtil.serialize(map, true);
     }
@@ -137,7 +146,11 @@ public final class AccountStateCborCodec {
                 }
             }
         }
-        return new PoolRegistrationData(deposit, marginNum, marginDen, cost, pledge, rewardAccount, owners);
+        DataItem vrfDi = map.get(new UnsignedInteger(7));
+        String vrfKeyHash = (vrfDi instanceof ByteString bs)
+                ? HexUtil.encodeHexString(bs.getBytes()) : null;
+        return new PoolRegistrationData(deposit, marginNum, marginDen, cost, pledge,
+                rewardAccount, owners, vrfKeyHash);
     }
 
     /** Legacy decode: returns only the deposit from pool registration data (backward-compatible). */
@@ -353,5 +366,43 @@ public final class AccountStateCborCodec {
         int earnedEpoch = CborSerializationUtil.toInt(map.get(new UnsignedInteger(1)));
         long slot = CborSerializationUtil.toLong(map.get(new UnsignedInteger(2)));
         return new RewardRest(amount, earnedEpoch, slot);
+    }
+
+    // --- Operational Certificate Counter (prefix 0x5a):
+    // {0: version(uint), 1: counter(uint), 2: lastUpdatedSlot(uint),
+    //  3: lastUpdatedBlockNumber(uint), 4: lastUpdatedBlockHash(bstr)}
+
+    static final int OPCERT_COUNTER_VERSION = 1;
+
+    public record OpCertCounterData(long counter,
+                                    long lastUpdatedSlot,
+                                    long lastUpdatedBlockNumber,
+                                    String lastUpdatedBlockHash) {}
+
+    static byte[] encodeOpCertCounter(OpCertCounterData data) {
+        Map map = new Map();
+        map.put(new UnsignedInteger(0), new UnsignedInteger(OPCERT_COUNTER_VERSION));
+        map.put(new UnsignedInteger(1), new UnsignedInteger(data.counter()));
+        map.put(new UnsignedInteger(2), new UnsignedInteger(data.lastUpdatedSlot()));
+        map.put(new UnsignedInteger(3), new UnsignedInteger(data.lastUpdatedBlockNumber()));
+        if (data.lastUpdatedBlockHash() != null && !data.lastUpdatedBlockHash().isBlank()) {
+            map.put(new UnsignedInteger(4), new ByteString(HexUtil.decodeHexString(data.lastUpdatedBlockHash())));
+        }
+        return CborSerializationUtil.serialize(map, true);
+    }
+
+    static OpCertCounterData decodeOpCertCounter(byte[] bytes) {
+        Map map = (Map) CborSerializationUtil.deserializeOne(bytes);
+        int version = CborSerializationUtil.toInt(map.get(new UnsignedInteger(0)));
+        if (version != OPCERT_COUNTER_VERSION) {
+            throw new IllegalArgumentException("Unsupported op-cert counter version: " + version);
+        }
+        DataItem hashDi = map.get(new UnsignedInteger(4));
+        String blockHash = hashDi instanceof ByteString bs ? HexUtil.encodeHexString(bs.getBytes()) : null;
+        return new OpCertCounterData(
+                CborSerializationUtil.toLong(map.get(new UnsignedInteger(1))),
+                CborSerializationUtil.toLong(map.get(new UnsignedInteger(2))),
+                CborSerializationUtil.toLong(map.get(new UnsignedInteger(3))),
+                blockHash);
     }
 }

@@ -12,6 +12,7 @@ import java.util.stream.Collectors;
  * 1. Block confirmation — remove txs that appear in a confirmed block
  * 2. TTL expiry — remove txs older than maxAgeMillis
  * 3. Max size cap — evict oldest when mempool exceeds maxSize
+ * 4. Max byte cap — evict oldest when mempool exceeds maxBytes
  */
 @Slf4j
 public class DefaultMempoolEvictionPolicy implements MempoolEvictionPolicy {
@@ -19,11 +20,17 @@ public class DefaultMempoolEvictionPolicy implements MempoolEvictionPolicy {
     private final MemPool memPool;
     private final long maxAgeMillis;
     private final int maxSize;
+    private final long maxBytes;
 
     public DefaultMempoolEvictionPolicy(MemPool memPool, long maxAgeMillis, int maxSize) {
+        this(memPool, maxAgeMillis, maxSize, 0);
+    }
+
+    public DefaultMempoolEvictionPolicy(MemPool memPool, long maxAgeMillis, int maxSize, long maxBytes) {
         this.memPool = memPool;
         this.maxAgeMillis = maxAgeMillis;
         this.maxSize = maxSize;
+        this.maxBytes = maxBytes;
     }
 
     @Override
@@ -63,6 +70,15 @@ public class DefaultMempoolEvictionPolicy implements MempoolEvictionPolicy {
             if (excess > 0) {
                 int evicted = memPool.evictOldest(excess);
                 log.info("Evicted {} txs from mempool (exceeded max size {})", evicted, maxSize);
+            }
+        }
+
+        // Max byte cap
+        if (maxBytes > 0) {
+            long excess = memPool.byteSize() - maxBytes;
+            if (excess > 0) {
+                int evicted = memPool.evictOldestUntilBytesAtMost(maxBytes);
+                log.info("Evicted {} txs from mempool (exceeded max bytes {})", evicted, maxBytes);
             }
         }
     }

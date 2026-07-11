@@ -1,194 +1,1295 @@
 <!doctype html>
-<html lang="en" class="h-full">
+<html lang="en" class="dark">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Yano Status</title>
-    <script src="https://cdn.tailwindcss.com"></script>
+    <title>Yano · Node Status</title>
     <script>
-      tailwind.config = { darkMode: 'media' };
+      (function applyInitialTheme() {
+        const saved = localStorage.getItem('yano-status-theme');
+        document.documentElement.classList.toggle('dark', saved !== 'light');
+        try {
+          const noanim = new URLSearchParams(location.search).get('noanim') === '1';
+          const reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+          if (!noanim && !reduced) document.documentElement.classList.add('anim');
+        } catch (e) { /* animations stay off */ }
+      })();
     </script>
     <style>
-      html, body { height: 100%; }
-      #bg { position: fixed; inset: 0; z-index: 0; pointer-events: none; }
-      .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-    </style>
-    <script src="https://unpkg.com/three@0.158.0/build/three.min.js"></script>
-  </head>
-  <body class="h-full bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-slate-100">
-    <canvas id="bg"></canvas>
-    <div class="relative z-10 container mx-auto px-4 py-6">
-      <div class="flex items-center justify-between mb-6">
-        <h1 class="text-2xl font-semibold tracking-tight">Yano Status</h1>
-        <div class="flex items-center gap-3 text-sm">
-          <span id="updatedAt" class="text-slate-500 dark:text-slate-400">—</span>
-          <span id="reqMs" class="px-2 py-0.5 rounded bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200">— ms</span>
-        </div>
-      </div>
-
-      <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-        <div class="rounded-xl border border-slate-200 dark:border-slate-800 bg-white/70 dark:bg-slate-800/60 backdrop-blur p-4">
-          <div class="font-medium mb-2">Chain Tip</div>
-          <div class="space-y-1 text-sm">
-            <div>Block: <span id="tipBlock" class="mono">-</span></div>
-            <div>Slot: <span id="tipSlot" class="mono">-</span></div>
-            <div>Hash: <span id="tipHash" class="mono break-all">-</span></div>
-          </div>
-        </div>
-
-        <div class="rounded-xl border border-slate-200 dark:border-slate-800 bg-white/70 dark:bg-slate-800/60 backdrop-blur p-4">
-          <div class="font-medium mb-2">UTXO</div>
-          <div class="space-y-1 text-sm">
-            <div>Enabled: <span id="utxoEnabled" class="px-2 py-0.5 rounded-full text-xs">-</span></div>
-            <div>Store: <span id="utxoStore" class="mono">-</span></div>
-            <div>Last Applied: <span id="lastApplied" class="mono">-</span></div>
-          </div>
-        </div>
-
-        <div class="rounded-xl border border-slate-200 dark:border-slate-800 bg-white/70 dark:bg-slate-800/60 backdrop-blur p-4">
-          <div class="font-medium mb-2">Lag</div>
-          <div id="lag" class="text-3xl font-bold">-</div>
-          <canvas id="lagChart" class="mt-2 w-full" style="height: 120px"></canvas>
-        </div>
-
-        <div class="rounded-xl border border-slate-200 dark:border-slate-800 bg-white/70 dark:bg-slate-800/60 backdrop-blur p-4 md:col-span-2 xl:col-span-1">
-          <div class="font-medium mb-2">Prune</div>
-          <div class="grid grid-cols-2 gap-2 text-sm">
-            <div>Depth: <span id="pruneDepth" class="mono">-</span></div>
-            <div>RollbackWindow: <span id="rollbackWindow" class="mono">-</span></div>
-            <div>BatchSize: <span id="pruneBatch" class="mono">-</span></div>
-            <div>Delta Cursor: <span id="deltaCursor" class="mono break-all">-</span></div>
-            <div>Spent Cursor: <span id="spentCursor" class="mono break-all">-</span></div>
-          </div>
-        </div>
-
-        <div class="rounded-xl border border-slate-200 dark:border-slate-800 bg-white/70 dark:bg-slate-800/60 backdrop-blur p-4">
-          <div class="font-medium mb-2">Apply Latency</div>
-          <div class="text-sm">avg: <span id="applyAvg" class="mono">-</span> ms &nbsp; p95: <span id="applyP95" class="mono">-</span> ms</div>
-          <div class="text-sm mt-1">created: <span id="applyCreated" class="mono">-</span> &nbsp; spent: <span id="applySpent" class="mono">-</span></div>
-        </div>
-
-        <div class="rounded-xl border border-slate-200 dark:border-slate-800 bg-white/70 dark:bg-slate-800/60 backdrop-blur p-4">
-          <div class="font-medium mb-2">Throughput</div>
-          <div class="text-sm">blocks/sec: <span id="bps" class="mono">-</span></div>
-        </div>
-
-        <div class="rounded-xl border border-slate-200 dark:border-slate-800 bg-white/70 dark:bg-slate-800/60 backdrop-blur p-4">
-          <div class="font-medium mb-2">Block Size</div>
-          <div class="text-sm">last: <span id="blockSizeLast" class="mono">-</span> B</div>
-          <div class="text-sm">avg: <span id="blockSizeAvg" class="mono">-</span> B</div>
-        </div>
-
-        <div class="rounded-xl border border-slate-200 dark:border-slate-800 bg-white/70 dark:bg-slate-800/60 backdrop-blur p-4 md:col-span-2">
-          <div class="font-medium mb-2">CF Estimates (sampled)</div>
-          <pre id="cfEstimates" class="mono text-xs whitespace-pre-wrap">-</pre>
-        </div>
-      </div>
-    </div>
-
-    <script>
-      // --------- Three.js subtle animated background ----------
-      (function(){
-        const params = new URLSearchParams(location.search);
-        const noanim = params.get('noanim') === '1';
-        const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-        if (noanim || reduce) return; // respect reduce motion
-        const canvas = document.getElementById('bg');
-        const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
-        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.8));
-        const scene = new THREE.Scene();
-        const camera = new THREE.PerspectiveCamera(55, 2, 0.1, 100);
-        camera.position.set(0, 0, 6);
-        const g = new THREE.IcosahedronGeometry(2.4, 1);
-        const m = new THREE.MeshBasicMaterial({ color: 0x3b82f6, wireframe: true, opacity: 0.18, transparent: true });
-        const mesh = new THREE.Mesh(g, m);
-        scene.add(mesh);
-        const resize = () => {
-          const w = window.innerWidth, h = window.innerHeight;
-          renderer.setSize(w, h, false);
-          camera.aspect = w / h; camera.updateProjectionMatrix();
-        };
-        resize();
-        window.addEventListener('resize', resize);
-        let raf;
-        const animate = (t) => {
-          mesh.rotation.x += 0.0008 * (16.7);
-          mesh.rotation.y += 0.0012 * (16.7);
-          renderer.render(scene, camera);
-          raf = requestAnimationFrame(animate);
-        };
-        raf = requestAnimationFrame(animate);
-        window.addEventListener('blur', ()=> cancelAnimationFrame(raf), { once: false });
-        window.addEventListener('focus', ()=> { if (!reduce && !noanim) raf = requestAnimationFrame(animate); });
-      })();
-
-      // --------- Status fetching & UI binding ----------
-      const lagHistory = [];
-      const maxPoints = 50;
-
-      function drawLag() {
-        const c = document.getElementById('lagChart');
-        const ctx = c.getContext('2d');
-        const w = c.width = c.clientWidth;
-        const h = c.height = 120;
-        ctx.clearRect(0,0,w,h);
-        if (lagHistory.length < 2) return;
-        const max = Math.max(...lagHistory, 1);
-        ctx.strokeStyle = '#3b82f6';
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        lagHistory.forEach((v, i) => {
-          const x = (i / (maxPoints - 1)) * (w-8) + 4;
-          const y = h - (v / max) * (h-20) - 10;
-          if (i === 0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
-        });
-        ctx.stroke();
+      /* ---------------------------------- tokens ---------------------------------- */
+      :root {
+        --bg: #f2f5fb;
+        --bg-glow: radial-gradient(1100px 600px at 18% -12%, rgba(59, 130, 246, 0.10), transparent 60%),
+                   radial-gradient(900px 500px at 85% 0%, rgba(139, 92, 246, 0.08), transparent 60%);
+        --topbar-bg: rgba(242, 245, 251, 0.78);
+        --card: rgba(255, 255, 255, 0.74);
+        --card-hover: rgba(255, 255, 255, 0.9);
+        --hairline: rgba(15, 23, 42, 0.07);
+        --hairline-strong: rgba(15, 23, 42, 0.12);
+        --text: #0f172a;
+        --text-dim: #5b6b83;
+        --chip-bg: rgba(15, 23, 42, 0.045);
+        --track: rgba(15, 23, 42, 0.08);
+        --shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 8px 24px -12px rgba(15, 23, 42, 0.12);
+        --shadow-hover: 0 2px 4px rgba(15, 23, 42, 0.05), 0 16px 40px -12px rgba(37, 99, 235, 0.18);
+        --ok: #047857;    --ok-bg: rgba(16, 185, 129, 0.10);  --ok-bd: rgba(16, 185, 129, 0.35);
+        --warn: #b45309;  --warn-bg: rgba(245, 158, 11, 0.12); --warn-bd: rgba(245, 158, 11, 0.40);
+        --bad: #be123c;   --bad-bg: rgba(244, 63, 94, 0.10);  --bad-bd: rgba(244, 63, 94, 0.35);
+        --flash: rgba(37, 99, 235, 0.16);
+        --tip-bg: rgba(255, 255, 255, 0.95);
+        --blob1: rgba(34, 211, 238, 0.14);
+        --blob2: rgba(139, 92, 246, 0.12);
+        --blob3: rgba(59, 130, 246, 0.12);
+      }
+      html.dark {
+        --bg: #05070f;
+        --bg-glow: radial-gradient(1100px 650px at 18% -12%, rgba(37, 99, 235, 0.16), transparent 60%),
+                   radial-gradient(900px 550px at 85% 0%, rgba(124, 58, 237, 0.10), transparent 60%);
+        --topbar-bg: rgba(5, 7, 15, 0.68);
+        --card: rgba(13, 20, 38, 0.62);
+        --card-hover: rgba(17, 26, 48, 0.78);
+        --hairline: rgba(148, 163, 184, 0.10);
+        --hairline-strong: rgba(148, 163, 184, 0.18);
+        --text: #e6ecf7;
+        --text-dim: #8b9cb8;
+        --chip-bg: rgba(148, 163, 184, 0.08);
+        --track: rgba(148, 163, 184, 0.12);
+        --shadow: 0 1px 2px rgba(0, 0, 0, 0.35), 0 12px 32px -16px rgba(0, 0, 0, 0.55);
+        --shadow-hover: 0 2px 6px rgba(0, 0, 0, 0.4), 0 18px 48px -16px rgba(56, 189, 248, 0.16);
+        --ok: #34d399;    --ok-bg: rgba(16, 185, 129, 0.12);  --ok-bd: rgba(52, 211, 153, 0.32);
+        --warn: #fbbf24;  --warn-bg: rgba(245, 158, 11, 0.12); --warn-bd: rgba(251, 191, 36, 0.32);
+        --bad: #fb7185;   --bad-bg: rgba(244, 63, 94, 0.13);  --bad-bd: rgba(251, 113, 133, 0.32);
+        --flash: rgba(56, 189, 248, 0.22);
+        --tip-bg: rgba(13, 20, 38, 0.95);
+        --blob1: rgba(34, 211, 238, 0.13);
+        --blob2: rgba(139, 92, 246, 0.12);
+        --blob3: rgba(59, 130, 246, 0.12);
       }
 
-      async function fetchStatus() {
-        const t0 = performance.now();
-        try {
-          const res = await fetch('/api/v1/status');
-          const t1 = performance.now();
-          document.getElementById('reqMs').textContent = `${Math.round(t1 - t0)} ms`;
-          const data = await res.json();
-          const chain = data.chain || {}; const utxo = data.utxo || {}; const cf = data.cfEstimates || {};
-          document.getElementById('tipBlock').textContent = chain.blockNumber ?? '-';
-          document.getElementById('tipSlot').textContent = chain.slot ?? '-';
-          document.getElementById('tipHash').textContent = chain.blockHash ?? '-';
-          const enabled = !!utxo.enabled;
-          const enabledEl = document.getElementById('utxoEnabled');
-          enabledEl.textContent = enabled ? 'ENABLED' : 'DISABLED';
-          enabledEl.className = `px-2 py-0.5 rounded-full text-xs ${enabled ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-200' : 'bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-200'}`;
-          document.getElementById('utxoStore').textContent = utxo.store ?? '-';
-          document.getElementById('lastApplied').textContent = `${utxo.lastAppliedBlock ?? '-'} / ${utxo.lastAppliedSlot ?? '-'}`;
-          const lag = utxo.lagBlocks ?? 0;
-          document.getElementById('lag').textContent = lag;
-          lagHistory.push(lag); if (lagHistory.length > maxPoints) lagHistory.shift(); drawLag();
-          const pr = utxo.prune || {};
-          document.getElementById('pruneDepth').textContent = pr.pruneDepth ?? '-';
-          document.getElementById('rollbackWindow').textContent = pr.rollbackWindow ?? '-';
-          document.getElementById('pruneBatch').textContent = pr.pruneBatchSize ?? '-';
-          document.getElementById('deltaCursor').textContent = pr.deltaCursorKey ?? '-';
-          document.getElementById('spentCursor').textContent = pr.spentCursorKey ?? '-';
-          const mx = utxo.metrics || {};
-          document.getElementById('applyAvg').textContent = (mx['apply.ms.avg']?.toFixed?.(2)) ?? (mx['apply.ms.avg'] ?? '-');
-          document.getElementById('applyP95').textContent = (mx['apply.ms.p95']?.toFixed?.(2)) ?? (mx['apply.ms.p95'] ?? '-');
-          document.getElementById('applyCreated').textContent = mx['apply.created.last'] ?? '-';
-          document.getElementById('applySpent').textContent = mx['apply.spent.last'] ?? '-';
-          document.getElementById('bps').textContent = (mx['throughput.blocksPerSec']?.toFixed?.(2)) ?? (mx['throughput.blocksPerSec'] ?? '-');
-          document.getElementById('blockSizeLast').textContent = mx['block.size.last'] ?? '-';
-          document.getElementById('blockSizeAvg').textContent = mx['block.size.avg'] ?? '-';
-          const est = utxo.cfEstimates || {};
-          document.getElementById('cfEstimates').textContent = Object.entries(est).map(([k,v]) => `${k}: ${v}`).join('\n') || '-';
-          document.getElementById('updatedAt').textContent = new Date().toLocaleTimeString();
-        } catch (e) {
-          console.error(e);
+      /* ---------------------------------- base ---------------------------------- */
+      * { box-sizing: border-box; }
+      html, body { min-height: 100%; }
+      body {
+        margin: 0;
+        background: var(--bg);
+        background-image: var(--bg-glow);
+        background-attachment: fixed;
+        color: var(--text);
+        font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, "Helvetica Neue", sans-serif;
+        -webkit-font-smoothing: antialiased;
+        transition: background-color 0.35s ease, color 0.35s ease;
+      }
+      .mono {
+        font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+        font-variant-numeric: tabular-nums;
+      }
+      .muted { color: var(--text-dim); }
+      ::selection { background: rgba(59, 130, 246, 0.3); }
+      html.dark ::-webkit-scrollbar { width: 10px; height: 10px; }
+      html.dark ::-webkit-scrollbar-thumb { background: rgba(148, 163, 184, 0.18); border-radius: 6px; }
+      html.dark ::-webkit-scrollbar-track { background: transparent; }
+
+      /* ---------------------------------- background layers ---------------------------------- */
+      .aurora { position: fixed; inset: 0; z-index: 0; overflow: hidden; pointer-events: none; }
+      .blob { position: absolute; border-radius: 50%; filter: blur(70px); will-change: transform; }
+      .b1 { width: 46vw; height: 46vw; top: -14vw; left: -6vw;  background: radial-gradient(circle, var(--blob1), transparent 70%); }
+      .b2 { width: 40vw; height: 40vw; top: -8vw;  right: -10vw; background: radial-gradient(circle, var(--blob2), transparent 70%); }
+      .b3 { width: 52vw; height: 52vw; bottom: -24vw; left: 26vw; background: radial-gradient(circle, var(--blob3), transparent 70%); }
+      html.anim .b1 { animation: drift1 30s ease-in-out infinite alternate; }
+      html.anim .b2 { animation: drift2 38s ease-in-out infinite alternate; }
+      html.anim .b3 { animation: drift3 46s ease-in-out infinite alternate; }
+      @keyframes drift1 { from { transform: translate(-4%, -3%) scale(1); }   to { transform: translate(7%, 6%) scale(1.12); } }
+      @keyframes drift2 { from { transform: translate(3%, -5%) scale(1.08); } to { transform: translate(-6%, 4%) scale(0.95); } }
+      @keyframes drift3 { from { transform: translate(-5%, 4%) scale(0.95); } to { transform: translate(5%, -5%) scale(1.1); } }
+      #bg { position: fixed; inset: 0; z-index: 0; pointer-events: none; }
+
+      /* ---------------------------------- topbar ---------------------------------- */
+      .topbar {
+        position: sticky; top: 0; z-index: 30;
+        background: var(--topbar-bg);
+        backdrop-filter: blur(16px);
+        -webkit-backdrop-filter: blur(16px);
+        border-bottom: 1px solid var(--hairline);
+      }
+      .topbar-inner {
+        max-width: 1280px; margin: 0 auto; padding: 12px 20px;
+        display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+      }
+      .brand { display: flex; align-items: center; gap: 12px; }
+      .brand-mark {
+        width: 36px; height: 36px; border-radius: 11px; flex-shrink: 0;
+        overflow: hidden;
+        border: 1px solid var(--hairline-strong);
+        box-shadow: 0 0 18px rgba(59, 130, 246, 0.35);
+      }
+      .brand-mark svg { width: 100%; height: 100%; display: block; }
+      .brand h1 { margin: 0; font-size: 17px; font-weight: 700; letter-spacing: -0.01em; line-height: 1.15; }
+      .brand h1 .grad {
+        background: linear-gradient(90deg, #22d3ee, #60a5fa, #a78bfa);
+        -webkit-background-clip: text; background-clip: text; color: transparent;
+      }
+      .brand-sub { font-size: 11px; color: var(--text-dim); letter-spacing: 0.02em; }
+      .controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 12px; }
+      .chip {
+        display: inline-flex; align-items: center; border-radius: 7px; padding: 3px 9px;
+        font-size: 11px; background: var(--chip-bg); border: 1px solid var(--hairline-strong);
+        color: var(--text-dim);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-variant-numeric: tabular-nums;
+      }
+      .icon-btn {
+        width: 32px; height: 32px; display: grid; place-items: center; cursor: pointer;
+        border-radius: 9px; border: 1px solid var(--hairline-strong);
+        background: var(--chip-bg); color: var(--text-dim);
+        transition: color 0.2s, border-color 0.2s, transform 0.2s, background 0.2s;
+      }
+      .icon-btn:hover { color: var(--text); border-color: var(--text-dim); transform: scale(1.06); }
+      .icon-btn svg { width: 16px; height: 16px; }
+      html.dark .i-moon { display: none; }
+      html:not(.dark) .i-sun { display: none; }
+
+      /* ---------------------------------- pills, badges, dots ---------------------------------- */
+      .pill {
+        display: inline-flex; align-items: center; gap: 6px;
+        border-radius: 999px; padding: 3px 11px;
+        font-size: 10.5px; font-weight: 700; letter-spacing: 0.08em;
+        border: 1px solid var(--hairline-strong); color: var(--text-dim); background: var(--chip-bg);
+      }
+      .pill-ok   { color: var(--ok);   background: var(--ok-bg);   border-color: var(--ok-bd); }
+      .pill-warn { color: var(--warn); background: var(--warn-bg); border-color: var(--warn-bd); }
+      .pill-bad  { color: var(--bad);  background: var(--bad-bg);  border-color: var(--bad-bd); }
+      .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; position: relative; flex-shrink: 0; }
+      html.anim .dot.pulse::after {
+        content: ''; position: absolute; inset: -4px; border-radius: 50%;
+        border: 1.5px solid currentColor; opacity: 0.7;
+        animation: ping 2s cubic-bezier(0, 0, 0.2, 1) infinite;
+      }
+      @keyframes ping { 70%, 100% { transform: scale(2.1); opacity: 0; } }
+      .badge {
+        display: inline-flex; align-items: center; border-radius: 6px; padding: 2px 8px;
+        font-size: 10.5px; font-weight: 600; letter-spacing: 0.04em;
+        border: 1px solid var(--hairline-strong); color: var(--text-dim); background: var(--chip-bg);
+        white-space: nowrap;
+      }
+      .b-ok   { color: var(--ok);   background: var(--ok-bg);   border-color: var(--ok-bd); }
+      .b-warn { color: var(--warn); background: var(--warn-bg); border-color: var(--warn-bd); }
+      .b-bad  { color: var(--bad);  background: var(--bad-bg);  border-color: var(--bad-bd); }
+      .b-hot  { color: #f97316; background: rgba(249, 115, 22, 0.12); border-color: rgba(249, 115, 22, 0.35); }
+      .b-warm { color: var(--warn); background: var(--warn-bg); border-color: var(--warn-bd); }
+      .b-cold { color: #38bdf8; background: rgba(56, 189, 248, 0.10); border-color: rgba(56, 189, 248, 0.32); }
+      .b-out  { color: #60a5fa; background: rgba(96, 165, 250, 0.10); border-color: rgba(96, 165, 250, 0.32); }
+      .b-in   { color: #a78bfa; background: rgba(167, 139, 250, 0.10); border-color: rgba(167, 139, 250, 0.32); }
+      .b-dim  { }
+
+      /* ---------------------------------- layout ---------------------------------- */
+      .status-shell { position: relative; z-index: 1; max-width: 1280px; margin: 0 auto; padding: 20px 20px 44px; }
+      .grid { display: grid; gap: 16px; }
+      .grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .grid-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+      .grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .span-2 { grid-column: span 2; }
+      @media (max-width: 1180px) {
+        .grid-3, .grid-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      }
+      @media (max-width: 720px) {
+        .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; }
+        .span-2 { grid-column: auto; }
+        .hero-top { flex-direction: column; align-items: flex-start; }
+      }
+      .sec-label {
+        margin: 28px 2px 12px; display: flex; align-items: center; gap: 12px;
+        font-size: 10.5px; font-weight: 700; letter-spacing: 0.16em; text-transform: uppercase;
+        color: var(--text-dim);
+      }
+      .sec-label::after { content: ''; height: 1px; flex: 1; background: linear-gradient(90deg, var(--hairline-strong), transparent); }
+
+      /* ---------------------------------- cards ---------------------------------- */
+      .card {
+        position: relative;
+        border-radius: 16px;
+        border: 1px solid var(--hairline);
+        background: var(--card);
+        backdrop-filter: blur(16px);
+        -webkit-backdrop-filter: blur(16px);
+        box-shadow: var(--shadow);
+        padding: 16px 18px;
+        transition: transform 0.25s ease, box-shadow 0.25s ease, border-color 0.25s ease, background 0.25s ease;
+      }
+      .card::before {
+        content: ''; position: absolute; top: 0; left: 12%; right: 12%; height: 1px;
+        background: linear-gradient(90deg, transparent, var(--ac, rgba(148, 163, 184, 0.35)), transparent);
+        opacity: 0.55;
+      }
+      .card:hover {
+        transform: translateY(-2px);
+        border-color: var(--hairline-strong);
+        background: var(--card-hover);
+        box-shadow: var(--shadow-hover);
+      }
+      html.anim .card {
+        opacity: 0;
+        animation: rise 0.55s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+        animation-delay: calc(var(--i, 0) * 45ms);
+      }
+      @keyframes rise {
+        from { opacity: 0; transform: translateY(16px); }
+        to { opacity: 1; transform: none; }
+      }
+      .card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+      .card-title { display: flex; align-items: center; gap: 9px; min-width: 0; }
+      .card-title h2 { margin: 0; font-size: 13.5px; font-weight: 650; letter-spacing: 0.01em; }
+      .icon {
+        width: 28px; height: 28px; border-radius: 9px; flex-shrink: 0;
+        display: grid; place-items: center;
+        color: var(--ac, var(--text-dim));
+        background: var(--ac-bg, var(--chip-bg));
+        border: 1px solid var(--hairline);
+      }
+      .icon svg { width: 15px; height: 15px; }
+      .hint { font-size: 11px; color: var(--text-dim); display: inline-flex; align-items: center; gap: 8px; }
+      .legend { display: inline-flex; align-items: center; gap: 9px; font-size: 11px; color: var(--text-dim); }
+      .legend i { width: 8px; height: 8px; border-radius: 3px; display: inline-block; background: var(--c); margin-right: 4px; vertical-align: -1px; }
+      .legend span { white-space: nowrap; }
+
+      .ac-blue    { --ac: #3b82f6; --ac-bg: rgba(59, 130, 246, 0.11); }
+      .ac-cyan    { --ac: #06b6d4; --ac-bg: rgba(6, 182, 212, 0.11); }
+      .ac-sky     { --ac: #0ea5e9; --ac-bg: rgba(14, 165, 233, 0.11); }
+      .ac-violet  { --ac: #8b5cf6; --ac-bg: rgba(139, 92, 246, 0.11); }
+      .ac-amber   { --ac: #f59e0b; --ac-bg: rgba(245, 158, 11, 0.11); }
+      .ac-emerald { --ac: #10b981; --ac-bg: rgba(16, 185, 129, 0.11); }
+      .ac-rose    { --ac: #f43f5e; --ac-bg: rgba(244, 63, 94, 0.10); }
+
+      /* ---------------------------------- metrics ---------------------------------- */
+      .metric {
+        display: flex; justify-content: space-between; align-items: baseline; gap: 1rem;
+        padding: 6.5px 0; font-size: 13px;
+        border-bottom: 1px solid var(--hairline);
+      }
+      .metric:last-child { border-bottom: none; }
+      .metric > span:first-child { color: var(--text-dim); flex-shrink: 0; }
+      .metric > span:last-child { text-align: right; overflow-wrap: anywhere; font-weight: 500; }
+      .v { border-radius: 5px; padding: 0 3px; margin: 0 -3px; }
+      .v.flash { animation: valueFlash 0.9s ease-out; }
+      @keyframes valueFlash { 0% { background-color: var(--flash); } 100% { background-color: transparent; } }
+      .big-value { font-size: 24px; font-weight: 700; letter-spacing: -0.01em; }
+      .scroll-box { max-height: 150px; overflow: auto; }
+
+      /* ---------------------------------- hero ---------------------------------- */
+      .hero { margin-top: 4px; padding: 20px 22px; }
+      .hero-top { display: flex; align-items: flex-end; justify-content: space-between; gap: 18px; margin-bottom: 14px; flex-wrap: wrap; }
+      .hero-label { font-size: 10.5px; font-weight: 700; letter-spacing: 0.16em; text-transform: uppercase; color: var(--text-dim); margin-bottom: 4px; }
+      .hero-pct {
+        font-size: clamp(30px, 4vw, 42px); font-weight: 800; letter-spacing: -0.02em; line-height: 1;
+        font-variant-numeric: tabular-nums;
+        background: linear-gradient(90deg, #22d3ee, #60a5fa, #a78bfa);
+        -webkit-background-clip: text; background-clip: text; color: transparent;
+      }
+      .hero-stats { display: flex; gap: 28px; flex-wrap: wrap; }
+      .hero-stat { display: flex; flex-direction: column; gap: 2px; }
+      .hs-label { font-size: 10.5px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-dim); }
+      .hs-value { font-size: 19px; font-weight: 650; }
+      .progress { height: 10px; border-radius: 999px; background: var(--track); overflow: hidden; position: relative; }
+      .progress-fill {
+        height: 100%; width: 0%; border-radius: 999px; position: relative;
+        background: linear-gradient(90deg, #06b6d4, #3b82f6, #8b5cf6);
+        box-shadow: 0 0 14px rgba(59, 130, 246, 0.45);
+        transition: width 0.8s cubic-bezier(0.22, 1, 0.36, 1);
+      }
+      html.anim .progress-fill::after {
+        content: ''; position: absolute; inset: 0;
+        background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.35), transparent);
+        transform: translateX(-100%);
+        animation: shimmer 2.4s ease-in-out infinite;
+      }
+      @keyframes shimmer { to { transform: translateX(100%); } }
+      .hero-summary {
+        margin-top: 12px; font-size: 12px; color: var(--text-dim); overflow-wrap: anywhere;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+
+      /* ---------------------------------- charts ---------------------------------- */
+      canvas.chart { width: 100%; height: 120px; display: block; cursor: crosshair; }
+      .chart-tip {
+        position: fixed; z-index: 60; pointer-events: none; min-width: 130px;
+        padding: 8px 11px; border-radius: 10px;
+        background: var(--tip-bg);
+        border: 1px solid var(--hairline-strong);
+        box-shadow: var(--shadow-hover);
+        backdrop-filter: blur(10px);
+        -webkit-backdrop-filter: blur(10px);
+        font-size: 11.5px;
+      }
+      .chart-tip .tip-time {
+        color: var(--text-dim); font-size: 10px; font-weight: 600;
+        letter-spacing: 0.08em; margin-bottom: 5px;
+        font-variant-numeric: tabular-nums;
+      }
+      .chart-tip .tip-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 1.5px 0; }
+      .chart-tip .tip-row > span:first-child { color: var(--text-dim); }
+      .chart-tip .tip-row i {
+        width: 8px; height: 8px; border-radius: 3px; display: inline-block;
+        background: var(--c); margin-right: 6px; vertical-align: -1px;
+      }
+      .chart-tip .tip-row > span:last-child { font-weight: 600; }
+
+      /* ---------------------------------- peers table ---------------------------------- */
+      .table-wrap { overflow-x: auto; margin: 0 -6px; }
+      table { width: 100%; border-collapse: collapse; font-size: 12.5px; text-align: left; }
+      thead th {
+        padding: 8px 10px; font-size: 10px; font-weight: 700;
+        letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-dim);
+        border-bottom: 1px solid var(--hairline-strong); white-space: nowrap;
+      }
+      tbody td { padding: 9px 10px; border-bottom: 1px solid var(--hairline); vertical-align: middle; }
+      tbody tr:last-child td { border-bottom: none; }
+      tbody tr { transition: background 0.15s ease; }
+      tbody tr:hover { background: var(--chip-bg); }
+      tr.row-active { box-shadow: inset 2.5px 0 0 var(--ok); }
+      .cell-endpoint { font-weight: 600; white-space: nowrap; }
+      .live-dot {
+        display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+        background: var(--ok); margin-right: 8px; vertical-align: 1px; position: relative;
+      }
+      html.anim .live-dot { animation: livePulse 2s ease-in-out infinite; }
+      @keyframes livePulse {
+        0%, 100% { box-shadow: 0 0 0 0 var(--ok-bd); }
+        50% { box-shadow: 0 0 0 4px transparent; }
+      }
+      .chip-xs { padding: 1px 6px; font-size: 10px; margin-right: 4px; border-radius: 5px; }
+      .empty { padding: 18px 10px; color: var(--text-dim); text-align: center; }
+
+      /* ---------------------------------- footer ---------------------------------- */
+      .foot {
+        margin-top: 30px; text-align: center; font-size: 11.5px; color: var(--text-dim);
+        display: flex; align-items: center; justify-content: center; gap: 8px; flex-wrap: wrap;
+      }
+      .foot .sep { opacity: 0.5; }
+    </style>
+  </head>
+  <body>
+    <div class="aurora" aria-hidden="true">
+      <div class="blob b1"></div>
+      <div class="blob b2"></div>
+      <div class="blob b3"></div>
+    </div>
+    <canvas id="bg" aria-hidden="true"></canvas>
+
+    <header class="topbar">
+      <div class="topbar-inner">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true">
+            <svg viewBox="100 80 220 220">
+              <defs>
+                <linearGradient id="logo-t" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#7fe5ff"/><stop offset="100%" stop-color="#1e5cff"/></linearGradient>
+                <linearGradient id="logo-b" x1="0" y1="0" x2="0.5" y2="1"><stop offset="0%" stop-color="#3a7bff"/><stop offset="100%" stop-color="#5b2bff"/></linearGradient>
+                <linearGradient id="logo-r" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#5b2bff"/><stop offset="100%" stop-color="#ff3b8a"/></linearGradient>
+              </defs>
+              <rect width="400" height="400" fill="#0e1230"/>
+              <g transform="translate(90 90) scale(1.05)">
+                <path d="M 110 30 L 200 90 L 130 110 L 110 80 Z" fill="url(#logo-t)"/>
+                <path d="M 110 30 L 30 100 L 90 100 L 110 80 Z" fill="url(#logo-t)" opacity="0.85"/>
+                <path d="M 110 80 L 130 110 L 90 160 L 70 130 Z" fill="url(#logo-b)"/>
+                <path d="M 130 110 L 200 90 L 150 150 Z" fill="url(#logo-r)" opacity="0.95"/>
+                <path d="M 110 30 L 110 80 L 90 160" stroke="rgba(255,255,255,0.55)" stroke-width="2.5" fill="none"/>
+              </g>
+            </svg>
+          </div>
+          <div>
+            <h1><span class="grad">Yano</span> Status</h1>
+            <div class="brand-sub">Cardano node dashboard</div>
+          </div>
+        </div>
+        <div class="controls">
+          <span id="updatedAt" class="muted">-</span>
+          <span id="reqMs" class="chip">- ms</span>
+          <span id="healthPill" class="pill">-</span>
+          <button id="themeToggle" type="button" class="icon-btn" aria-label="Toggle theme" title="Toggle theme">
+            <svg class="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="4.5"/>
+              <path d="M12 2v2.5M12 19.5V22M4.93 4.93l1.77 1.77M17.3 17.3l1.77 1.77M2 12h2.5M19.5 12H22M4.93 19.07l1.77-1.77M17.3 6.7l1.77-1.77"/>
+            </svg>
+            <svg class="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <main class="status-shell">
+      <section class="card hero ac-blue">
+        <div class="hero-top">
+          <div>
+            <div class="hero-label">Sync Progress</div>
+            <div class="hero-pct" id="syncPct">-</div>
+          </div>
+          <div class="hero-stats">
+            <div class="hero-stat"><span class="hs-label">Local Block</span><span id="heroLocal" class="hs-value mono v">-</span></div>
+            <div class="hero-stat"><span class="hs-label">Remote Block</span><span id="heroRemote" class="hs-value mono v">-</span></div>
+            <div class="hero-stat"><span class="hs-label">Gap</span><span id="heroGap" class="hs-value mono v">-</span></div>
+          </div>
+        </div>
+        <div class="progress"><div id="syncBar" class="progress-fill"></div></div>
+        <div id="summary" class="hero-summary">Loading...</div>
+      </section>
+
+      <div class="sec-label">Node</div>
+      <div class="grid grid-3">
+        <section class="card ac-blue">
+          <div class="card-head">
+            <div class="card-title">
+              <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 12h6"/><path d="M15 7h2a5 5 0 010 10h-2"/><path d="M9 17H7A5 5 0 017 7h2"/></svg></span>
+              <h2>Chain</h2>
+            </div>
+            <span id="syncPill" class="pill">-</span>
+          </div>
+          <div>
+            <div class="metric"><span>Mode</span><span id="syncMode" class="mono v">-</span></div>
+            <div class="metric"><span>Local Tip</span><span id="localTip" class="mono v">-</span></div>
+            <div class="metric"><span>Remote Tip</span><span id="remoteTip" class="mono v">-</span></div>
+            <div class="metric"><span>Gap</span><span id="syncGap" class="mono v">-</span></div>
+            <div class="metric"><span>Processed</span><span id="blocksProcessed" class="mono v">-</span></div>
+          </div>
+        </section>
+
+        <section class="card ac-cyan">
+          <div class="card-head">
+            <div class="card-title">
+              <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3c2.7 2.6 2.7 15.4 0 18M12 3c-2.7 2.6-2.7 15.4 0 18"/></svg></span>
+              <h2>Relay</h2>
+            </div>
+          </div>
+          <div>
+            <div class="metric"><span>Mode</span><span id="upstreamMode" class="mono v">-</span></div>
+            <div class="metric"><span>Active Peer</span><span id="activePeer" class="mono v">-</span></div>
+            <div class="metric"><span>Advertised</span><span id="advertisedEndpoint" class="mono v">-</span></div>
+            <div class="metric"><span>Connections</span><span id="connections" class="mono v">-</span></div>
+            <div class="metric"><span>Failures</span><span id="connectionFailures" class="mono v">-</span></div>
+          </div>
+        </section>
+
+        <section class="card ac-violet">
+          <div class="card-head">
+            <div class="card-title">
+              <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="12" r="2.5"/><circle cx="19" cy="5" r="2.5"/><circle cx="19" cy="19" r="2.5"/><path d="M7.3 10.9l9.4-4.7M7.3 13.1l9.4 4.7"/></svg></span>
+              <h2>Governor</h2>
+            </div>
+          </div>
+          <div>
+            <div class="metric"><span>Known</span><span id="knownPeers" class="mono v">-</span></div>
+            <div class="metric"><span>Cold / Warm / Hot</span><span id="peerStates" class="mono v">-</span></div>
+            <div class="metric"><span>Backoff / Quarantine</span><span id="peerSuppression" class="mono v">-</span></div>
+            <div class="metric"><span>Sources</span><span id="peerSources" class="mono v">-</span></div>
+            <div class="metric"><span>Sharable</span><span id="sharablePeers" class="mono v">-</span></div>
+          </div>
+        </section>
+
+        <section class="card ac-amber">
+          <div class="card-head">
+            <div class="card-title">
+              <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11L2 12v6a2 2 0 002 2h16a2 2 0 002-2v-6l-3.45-6.89A2 2 0 0016.76 4H7.24a2 2 0 00-1.79 1.11z"/></svg></span>
+              <h2>Mempool</h2>
+            </div>
+          </div>
+          <div>
+            <div class="metric"><span>Transactions</span><span id="mempoolSize" class="mono v">-</span></div>
+            <div class="metric"><span>Bytes</span><span id="mempoolBytes" class="mono v">-</span></div>
+            <div class="metric"><span>Capacity</span><span id="mempoolCapacity" class="mono v">-</span></div>
+            <div class="metric"><span>TTL</span><span id="mempoolTtl" class="mono v">-</span></div>
+            <div class="metric"><span>Admission</span><span id="mempoolAdmission" class="mono v">-</span></div>
+          </div>
+        </section>
+
+        <section class="card ac-emerald">
+          <div class="card-head">
+            <div class="card-title">
+              <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 2l4 4-4 4"/><path d="M3 11V9a4 4 0 014-4h14"/><path d="M7 22l-4-4 4-4"/><path d="M21 13v2a4 4 0 01-4 4H3"/></svg></span>
+              <h2>Tx Diffusion</h2>
+            </div>
+          </div>
+          <div>
+            <div class="metric"><span>Mode</span><span id="txDiffusionMode" class="mono v">-</span></div>
+            <div class="metric"><span>Forwarded / Suppressed</span><span id="txForwarded" class="mono v">-</span></div>
+            <div class="metric"><span>Tx IDs</span><span id="txIdsInbound" class="mono v">-</span></div>
+            <div class="metric"><span>Tx Bodies</span><span id="txBodiesInbound" class="mono v">-</span></div>
+            <div class="metric"><span>Served</span><span id="txServed" class="mono v">-</span></div>
+            <div class="metric"><span>In Flight</span><span id="txInFlight" class="mono v">-</span></div>
+          </div>
+        </section>
+
+        <section class="card ac-rose">
+          <div class="card-head">
+            <div class="card-title">
+              <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg></span>
+              <h2>Validation &amp; Storage</h2>
+            </div>
+          </div>
+          <div>
+            <div class="metric"><span>Header Validation</span><span id="validationLevel" class="mono v">-</span></div>
+            <div class="metric"><span>Accepted / Rejected</span><span id="validationCounts" class="mono v">-</span></div>
+            <div class="metric"><span>UTXO Store</span><span id="storageUtxoStore" class="mono v">-</span></div>
+            <div class="metric"><span>UTXO Lag</span><span id="storageUtxoLag" class="mono v">-</span></div>
+            <div class="metric"><span>Apply p95</span><span id="storageApplyP95" class="mono v">-</span></div>
+          </div>
+        </section>
+      </div>
+
+      <div class="sec-label">Storage &amp; UTXO</div>
+      <div class="grid grid-4">
+        <section class="card ac-blue">
+          <div class="card-head">
+            <div class="card-title">
+              <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/><path d="M3.27 6.96L12 12.01l8.73-5.05M12 22.08V12"/></svg></span>
+              <h2>Chain Tip</h2>
+            </div>
+          </div>
+          <div>
+            <div class="metric"><span>Block</span><span id="tipBlock" class="mono v">-</span></div>
+            <div class="metric"><span>Slot</span><span id="tipSlot" class="mono v">-</span></div>
+            <div class="metric"><span>Hash</span><span id="tipHash" class="mono v" style="font-size: 11px;">-</span></div>
+          </div>
+        </section>
+
+        <section class="card ac-cyan">
+          <div class="card-head">
+            <div class="card-title">
+              <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg></span>
+              <h2>UTXO</h2>
+            </div>
+            <span id="utxoEnabled" class="badge">-</span>
+          </div>
+          <div>
+            <div class="metric"><span>Store</span><span id="utxoStore" class="mono v">-</span></div>
+            <div class="metric"><span>Last Applied</span><span id="lastApplied" class="mono v">-</span></div>
+          </div>
+        </section>
+
+        <section class="card ac-sky">
+          <div class="card-head">
+            <div class="card-title">
+              <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg></span>
+              <h2>UTXO Lag</h2>
+            </div>
+            <span id="utxoLagLarge" class="mono big-value v">-</span>
+          </div>
+          <canvas id="utxoLagChart" class="chart"></canvas>
+        </section>
+
+        <section class="card ac-violet">
+          <div class="card-head">
+            <div class="card-title">
+              <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 13.5"/></svg></span>
+              <h2>Apply Latency</h2>
+            </div>
+          </div>
+          <div>
+            <div class="metric"><span>Average</span><span id="applyAvg" class="mono v">-</span></div>
+            <div class="metric"><span>p95</span><span id="utxoApplyP95" class="mono v">-</span></div>
+            <div class="metric"><span>Created</span><span id="applyCreated" class="mono v">-</span></div>
+            <div class="metric"><span>Spent</span><span id="applySpent" class="mono v">-</span></div>
+          </div>
+        </section>
+
+        <section class="card span-2 ac-rose">
+          <div class="card-head">
+            <div class="card-title">
+              <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M20 4L8.12 15.88M14.47 14.48L20 20M8.12 8.12L12 12"/></svg></span>
+              <h2>Prune</h2>
+            </div>
+          </div>
+          <div>
+            <div class="metric"><span>Depth</span><span id="pruneDepth" class="mono v">-</span></div>
+            <div class="metric"><span>Rollback Window</span><span id="rollbackWindow" class="mono v">-</span></div>
+            <div class="metric"><span>Batch Size</span><span id="pruneBatch" class="mono v">-</span></div>
+            <div class="metric"><span>Delta Cursor</span><span id="deltaCursor" class="mono v" style="font-size: 11px;">-</span></div>
+            <div class="metric"><span>Spent Cursor</span><span id="spentCursor" class="mono v" style="font-size: 11px;">-</span></div>
+          </div>
+        </section>
+
+        <section class="card ac-amber">
+          <div class="card-head">
+            <div class="card-title">
+              <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg></span>
+              <h2>Throughput</h2>
+            </div>
+          </div>
+          <div>
+            <div class="metric"><span>Blocks/sec</span><span id="bps" class="mono v">-</span></div>
+            <div class="metric"><span>Block Last</span><span id="blockSizeLast" class="mono v">-</span></div>
+            <div class="metric"><span>Block Avg</span><span id="blockSizeAvg" class="mono v">-</span></div>
+          </div>
+        </section>
+
+        <section class="card ac-emerald">
+          <div class="card-head">
+            <div class="card-title">
+              <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg></span>
+              <h2>CF Estimates</h2>
+            </div>
+          </div>
+          <div id="cfEstimates" class="scroll-box">-</div>
+        </section>
+      </div>
+
+      <div class="sec-label">Trends</div>
+      <div class="grid grid-2">
+        <section class="card ac-blue">
+          <div class="card-head">
+            <div class="card-title">
+              <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/></svg></span>
+              <h2>Sync Gap</h2>
+            </div>
+            <span class="legend"><span><i style="--c:#3b82f6"></i>blocks</span></span>
+          </div>
+          <canvas id="gapChart" class="chart"></canvas>
+        </section>
+
+        <section class="card ac-emerald">
+          <div class="card-head">
+            <div class="card-title">
+              <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/></svg></span>
+              <h2>Relay Connections</h2>
+            </div>
+            <span class="legend">
+              <span><i style="--c:#10b981"></i>in</span>
+              <span><i style="--c:#3b82f6"></i>out</span>
+              <span><i style="--c:#f59e0b"></i>hot</span>
+            </span>
+          </div>
+          <canvas id="peerChart" class="chart"></canvas>
+        </section>
+
+        <section class="card ac-violet">
+          <div class="card-head">
+            <div class="card-title">
+              <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/></svg></span>
+              <h2>Mempool</h2>
+            </div>
+            <span class="legend">
+              <span><i style="--c:#8b5cf6"></i>txs</span>
+              <span><i style="--c:#14b8a6"></i>KB</span>
+            </span>
+          </div>
+          <canvas id="mempoolChart" class="chart"></canvas>
+        </section>
+
+        <section class="card ac-amber">
+          <div class="card-head">
+            <div class="card-title">
+              <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/></svg></span>
+              <h2>Tx Diffusion Rate</h2>
+            </div>
+            <span class="legend">
+              <span><i style="--c:#3b82f6"></i>fwd</span>
+              <span><i style="--c:#10b981"></i>in</span>
+              <span><i style="--c:#f59e0b"></i>served</span>
+            </span>
+          </div>
+          <canvas id="txChart" class="chart"></canvas>
+        </section>
+      </div>
+
+      <div class="sec-label">Peers</div>
+      <section class="card ac-cyan">
+        <div class="card-head">
+          <div class="card-title">
+            <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg></span>
+            <h2>Peers</h2>
+          </div>
+          <span id="peerTableSummary" class="hint">-</span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Endpoint</th>
+                <th>Gov</th>
+                <th>Conn</th>
+                <th>Dir</th>
+                <th>Source</th>
+                <th>Trust</th>
+                <th>Caps</th>
+                <th>Seen</th>
+                <th>Reason</th>
+              </tr>
+            </thead>
+            <tbody id="peerRows"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <footer class="foot">
+        <span>Yano node dashboard</span>
+        <span class="sep">·</span>
+        <span>auto-refresh every <span id="pollInfo">5</span>s</span>
+        <span class="sep">·</span>
+        <span class="mono" id="apiInfo">/api/v1</span>
+      </footer>
+    </main>
+
+    <div id="chartTip" class="chart-tip" hidden></div>
+
+    <script>
+      (function animateNetworkBackground() {
+        if (!document.documentElement.classList.contains('anim')) return;
+
+        const canvas = document.getElementById('bg');
+        const ctx = canvas.getContext('2d');
+        const nodes = [];
+        let width = 0;
+        let height = 0;
+        let raf = 0;
+
+        const isDark = () => document.documentElement.classList.contains('dark');
+        const nodeCount = () => Math.max(34, Math.min(96, Math.floor((width * height) / 23000)));
+
+        function resetNodes() {
+          nodes.length = 0;
+          const count = nodeCount();
+          for (let i = 0; i < count; i++) {
+            nodes.push({
+              x: Math.random() * width,
+              y: Math.random() * height,
+              vx: (Math.random() - 0.5) * 0.16,
+              vy: (Math.random() - 0.5) * 0.16,
+              r: 1.1 + Math.random() * 1.7,
+              tw: Math.random() * Math.PI * 2
+            });
+          }
+        }
+
+        function resize() {
+          const scale = Math.min(window.devicePixelRatio || 1, 1.8);
+          width = window.innerWidth;
+          height = window.innerHeight;
+          canvas.width = Math.max(1, Math.floor(width * scale));
+          canvas.height = Math.max(1, Math.floor(height * scale));
+          canvas.style.width = `${width}px`;
+          canvas.style.height = `${height}px`;
+          ctx.setTransform(scale, 0, 0, scale, 0, 0);
+          resetNodes();
+        }
+
+        let tick = 0;
+        function draw() {
+          const dark = isDark();
+          tick += 0.012;
+          ctx.clearRect(0, 0, width, height);
+          const maxDistance = Math.min(180, Math.max(110, width / 8));
+          const lineBase = dark ? '96, 165, 250' : '37, 99, 235';
+          const nodeFill = dark ? '125, 211, 252' : '14, 165, 233';
+
+          for (let i = 0; i < nodes.length; i++) {
+            const a = nodes[i];
+            a.x += a.vx;
+            a.y += a.vy;
+            if (a.x < -20) a.x = width + 20;
+            if (a.x > width + 20) a.x = -20;
+            if (a.y < -20) a.y = height + 20;
+            if (a.y > height + 20) a.y = -20;
+
+            for (let j = i + 1; j < nodes.length; j++) {
+              const b = nodes[j];
+              const dx = a.x - b.x;
+              const dy = a.y - b.y;
+              const distance = Math.sqrt(dx * dx + dy * dy);
+              if (distance > maxDistance) continue;
+              const alpha = (1 - distance / maxDistance) * (dark ? 0.16 : 0.12);
+              ctx.strokeStyle = `rgba(${lineBase}, ${alpha})`;
+              ctx.lineWidth = 1;
+              ctx.beginPath();
+              ctx.moveTo(a.x, a.y);
+              ctx.lineTo(b.x, b.y);
+              ctx.stroke();
+            }
+          }
+
+          for (const node of nodes) {
+            const twinkle = 0.75 + 0.25 * Math.sin(tick + node.tw);
+            ctx.fillStyle = `rgba(${nodeFill}, ${(dark ? 0.38 : 0.32) * twinkle})`;
+            ctx.beginPath();
+            ctx.arc(node.x, node.y, node.r, 0, Math.PI * 2);
+            ctx.fill();
+          }
+
+          raf = requestAnimationFrame(draw);
+        }
+
+        window.addEventListener('resize', resize);
+        window.addEventListener('visibilitychange', () => {
+          if (document.hidden) {
+            cancelAnimationFrame(raf);
+          } else {
+            raf = requestAnimationFrame(draw);
+          }
+        });
+
+        resize();
+        raf = requestAnimationFrame(draw);
+      })();
+
+      const params = new URLSearchParams(location.search);
+      const apiPrefix = (params.get('api') || '/api/v1').replace(/\/$/, '');
+      const pollMs = Math.max(1000, Number(params.get('poll') || 5000));
+      const maxPoints = 72;
+      const history = {
+        ts: [],
+        gap: [],
+        peers: [],
+        mempool: [],
+        tx: [],
+        utxoLag: []
+      };
+      let previousStatus = null;
+      let firstRender = true;
+
+      const $ = (id) => document.getElementById(id);
+      const text = (id, value) => {
+        const el = $(id);
+        const v = value === null || value === undefined ? '-' : String(value);
+        if (el.textContent === v) return;
+        el.textContent = v;
+        if (!firstRender && el.classList.contains('v')) {
+          el.classList.remove('flash');
+          void el.offsetWidth;
+          el.classList.add('flash');
+        }
+      };
+      const fmt = (value) => value === null || value === undefined ? '-' : Number(value).toLocaleString();
+      const fmtMetric = (value, suffix = '') => {
+        if (value === null || value === undefined) return '-';
+        const n = Number(value);
+        if (!Number.isFinite(n)) return String(value);
+        return `${n.toLocaleString(undefined, { maximumFractionDigits: 2 })}${suffix}`;
+      };
+      const bytes = (value) => {
+        if (value === null || value === undefined) return '-';
+        const n = Number(value);
+        if (n >= 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+        if (n >= 1024) return `${(n / 1024).toFixed(1)} KB`;
+        return `${n} B`;
+      };
+      const pill = (id, label, kind, pulse = false) => {
+        const el = $(id);
+        el.className = `pill pill-${kind}`;
+        el.innerHTML = `<span class="dot${pulse ? ' pulse' : ''}"></span>${label}`;
+      };
+      const push = (list, value) => {
+        list.push(value);
+        if (list.length > maxPoints) list.shift();
+      };
+      const rgba = (hex, a) => {
+        const n = parseInt(hex.slice(1), 16);
+        return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${a})`;
+      };
+
+      function setTheme(theme) {
+        const dark = theme !== 'light';
+        document.documentElement.classList.toggle('dark', dark);
+        localStorage.setItem('yano-status-theme', dark ? 'dark' : 'light');
+        redrawCharts();
+      }
+
+      const chartDefs = {
+        gapChart: { series: () => [history.gap], colors: ['#3b82f6'], labels: ['blocks'] },
+        utxoLagChart: { series: () => [history.utxoLag], colors: ['#0ea5e9'], labels: ['lag'] },
+        peerChart: {
+          series: () => [
+            history.peers.map(v => v[0]),
+            history.peers.map(v => v[1]),
+            history.peers.map(v => v[2])
+          ],
+          colors: ['#10b981', '#3b82f6', '#f59e0b'],
+          labels: ['in', 'out', 'hot']
+        },
+        mempoolChart: {
+          series: () => [
+            history.mempool.map(v => v[0]),
+            history.mempool.map(v => v[1])
+          ],
+          colors: ['#8b5cf6', '#14b8a6'],
+          labels: ['txs', 'KB']
+        },
+        txChart: {
+          series: () => [
+            history.tx.map(v => v[0]),
+            history.tx.map(v => v[1]),
+            history.tx.map(v => v[2])
+          ],
+          colors: ['#3b82f6', '#10b981', '#f59e0b'],
+          labels: ['forwarded', 'inbound', 'served']
+        }
+      };
+
+      const chartHover = {};
+      let tipMouse = null;
+
+      function redrawCharts() {
+        for (const [id, def] of Object.entries(chartDefs)) {
+          drawLines(id, def.series(), def.colors);
+        }
+        if (tipMouse && chartHover[tipMouse.id] !== null && chartHover[tipMouse.id] !== undefined) {
+          showChartTip(tipMouse.id, chartHover[tipMouse.id], tipMouse.clientX, tipMouse.clientY);
         }
       }
 
-      fetchStatus();
-      setInterval(fetchStatus, 5000);
+      function showChartTip(id, idx, clientX, clientY) {
+        const def = chartDefs[id];
+        const tip = $('chartTip');
+        const series = def.series();
+        const when = history.ts[idx] ? new Date(history.ts[idx]).toLocaleTimeString() : '';
+        const rows = def.labels.map((label, i) => {
+          const v = series[i] ? series[i][idx] : undefined;
+          const val = Number.isFinite(v) ? Number(v).toLocaleString(undefined, { maximumFractionDigits: 2 }) : '-';
+          return `<div class="tip-row"><span><i style="--c:${def.colors[i]}"></i>${label}</span><span class="mono">${val}</span></div>`;
+        }).join('');
+        tip.innerHTML = `${when ? `<div class="tip-time">${when}</div>` : ''}${rows}`;
+        tip.hidden = false;
+        const rect = tip.getBoundingClientRect();
+        let left = clientX + 14;
+        if (left + rect.width > window.innerWidth - 8) left = clientX - rect.width - 14;
+        let top = clientY - rect.height - 12;
+        if (top < 8) top = clientY + 16;
+        tip.style.left = `${left}px`;
+        tip.style.top = `${top}px`;
+      }
+
+      function hideChartTip() {
+        $('chartTip').hidden = true;
+        tipMouse = null;
+      }
+
+      function attachChartHover(id) {
+        const canvas = $(id);
+        canvas.addEventListener('mousemove', (e) => {
+          const def = chartDefs[id];
+          const series = def.series();
+          const len = Math.max(0, ...series.map(v => v.length));
+          if (len < 2) return;
+          const rect = canvas.getBoundingClientRect();
+          const step = (rect.width - 12) / (maxPoints - 1);
+          const idx = Math.max(0, Math.min(len - 1, Math.round((e.clientX - rect.left - 6) / step)));
+          tipMouse = { id, clientX: e.clientX, clientY: e.clientY };
+          if (chartHover[id] !== idx) {
+            chartHover[id] = idx;
+            drawLines(id, series, def.colors);
+          }
+          showChartTip(id, idx, e.clientX, e.clientY);
+        });
+        canvas.addEventListener('mouseleave', () => {
+          if (chartHover[id] !== null && chartHover[id] !== undefined) {
+            chartHover[id] = null;
+            drawLines(id, chartDefs[id].series(), chartDefs[id].colors);
+          }
+          hideChartTip();
+        });
+      }
+
+      function drawLines(canvasId, series, colors) {
+        const canvas = $(canvasId);
+        if (!canvas) return;
+        const dpr = Math.min(window.devicePixelRatio || 1, 2);
+        const w = Math.max(1, canvas.clientWidth);
+        const h = 120;
+        canvas.width = Math.floor(w * dpr);
+        canvas.height = Math.floor(h * dpr);
+        const ctx = canvas.getContext('2d');
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, w, h);
+        const dark = document.documentElement.classList.contains('dark');
+
+        ctx.strokeStyle = dark ? 'rgba(148, 163, 184, 0.09)' : 'rgba(100, 116, 139, 0.12)';
+        ctx.lineWidth = 1;
+        [0.25, 0.5, 0.75].forEach(f => {
+          const y = Math.round(h * f) + 0.5;
+          ctx.beginPath();
+          ctx.moveTo(4, y);
+          ctx.lineTo(w - 4, y);
+          ctx.stroke();
+        });
+
+        const all = series.flat().filter(v => Number.isFinite(v));
+        if (all.length < 2) {
+          ctx.fillStyle = dark ? 'rgba(148, 163, 184, 0.45)' : 'rgba(100, 116, 139, 0.55)';
+          ctx.font = '12px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText('collecting data…', w / 2, h / 2);
+          return;
+        }
+        const max = Math.max(...all, 1);
+        const min = Math.min(...all, 0);
+        const span = Math.max(1e-9, max - min);
+        const px = (i) => (i / (maxPoints - 1)) * (w - 12) + 6;
+        const py = (v) => h - ((v - min) / span) * (h - 26) - 13;
+
+        series.forEach((values, sIdx) => {
+          if (values.length < 2) return;
+          const color = colors[sIdx % colors.length];
+
+          if (sIdx === 0) {
+            const grad = ctx.createLinearGradient(0, 0, 0, h);
+            grad.addColorStop(0, rgba(color, dark ? 0.26 : 0.18));
+            grad.addColorStop(1, rgba(color, 0));
+            ctx.fillStyle = grad;
+            ctx.beginPath();
+            values.forEach((v, i) => {
+              const x = px(i), y = py(v);
+              if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+            });
+            ctx.lineTo(px(values.length - 1), h - 2);
+            ctx.lineTo(px(0), h - 2);
+            ctx.closePath();
+            ctx.fill();
+          }
+
+          ctx.strokeStyle = color;
+          ctx.lineWidth = 2;
+          ctx.lineJoin = 'round';
+          ctx.lineCap = 'round';
+          ctx.beginPath();
+          values.forEach((v, i) => {
+            const x = px(i), y = py(v);
+            if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+          });
+          ctx.stroke();
+
+          const lx = px(values.length - 1);
+          const ly = py(values[values.length - 1]);
+          ctx.fillStyle = rgba(color, 0.25);
+          ctx.beginPath();
+          ctx.arc(lx, ly, 6, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.fillStyle = color;
+          ctx.beginPath();
+          ctx.arc(lx, ly, 2.8, 0, Math.PI * 2);
+          ctx.fill();
+        });
+
+        const hoverIdx = chartHover[canvasId];
+        if (hoverIdx !== null && hoverIdx !== undefined) {
+          const hx = px(hoverIdx);
+          ctx.strokeStyle = dark ? 'rgba(148, 163, 184, 0.35)' : 'rgba(71, 85, 105, 0.35)';
+          ctx.lineWidth = 1;
+          ctx.setLineDash([3, 3]);
+          ctx.beginPath();
+          ctx.moveTo(hx, 6);
+          ctx.lineTo(hx, h - 6);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          series.forEach((values, sIdx) => {
+            const v = values[hoverIdx];
+            if (!Number.isFinite(v)) return;
+            const color = colors[sIdx % colors.length];
+            const hy = py(v);
+            ctx.fillStyle = color;
+            ctx.beginPath();
+            ctx.arc(hx, hy, 3.5, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = dark ? 'rgba(230, 236, 247, 0.9)' : 'rgba(255, 255, 255, 0.95)';
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            ctx.arc(hx, hy, 3.5, 0, Math.PI * 2);
+            ctx.stroke();
+          });
+        }
+      }
+
+      function renderStatus(s, storageStatus) {
+        const localBlock = s.localTipBlockNumber ?? 0;
+        const remoteBlock = s.remoteTipBlockNumber ?? localBlock;
+        const gap = Math.max(0, remoteBlock - localBlock);
+        const mempoolKb = (s.mempoolBytes ?? 0) / 1024;
+        const delta = previousStatus ? {
+          forwarded: Math.max(0, (s.txDiffusionOutboundForwarded ?? 0) - (previousStatus.txDiffusionOutboundForwarded ?? 0)),
+          inbound: Math.max(0, (s.txDiffusionInboundTxBodiesAccepted ?? 0) - (previousStatus.txDiffusionInboundTxBodiesAccepted ?? 0)),
+          served: Math.max(0, (s.txDiffusionServedTxs ?? 0) - (previousStatus.txDiffusionServedTxs ?? 0))
+        } : { forwarded: 0, inbound: 0, served: 0 };
+
+        const pct = s.inSync ? 100 : (remoteBlock > 0 ? Math.min(100, (localBlock / remoteBlock) * 100) : 0);
+        text('syncPct', `${pct.toFixed(1)}%`);
+        $('syncBar').style.width = `${pct}%`;
+        text('heroLocal', fmt(localBlock));
+        text('heroRemote', fmt(remoteBlock));
+        text('heroGap', fmt(gap));
+
+        text('summary', s.statusMessage || s.statusSummary || '-');
+        const healthy = s.running && !s.runtimeDegraded;
+        pill('healthPill', healthy ? 'RUNNING' : 'DEGRADED', healthy ? 'ok' : 'bad', true);
+        pill('syncPill', s.inSync ? 'IN SYNC' : 'SYNCING', s.inSync ? 'ok' : 'warn', !s.inSync);
+        text('syncMode', `${s.syncMode ?? '-'} / ${s.initialSyncComplete ? 'steady' : 'initial'}`);
+        text('localTip', `${fmt(s.localTipBlockNumber)} / slot ${fmt(s.localTipSlot)}`);
+        text('remoteTip', `${fmt(s.remoteTipBlockNumber)} / slot ${fmt(s.remoteTipSlot)}`);
+        text('syncGap', `${fmt(gap)} blocks`);
+        text('blocksProcessed', fmt(s.blocksProcessed));
+
+        text('upstreamMode', s.upstreamMode);
+        text('activePeer', s.upstreamActivePeer);
+        text('advertisedEndpoint', `${s.relayAdvertisedHost ?? '-'}:${s.relayAdvertisedPort ?? '-'}`);
+        text('connections', `in ${fmt(s.relayInboundConnectionCount)} / out ${fmt(s.relayOutboundConnectionCount)} / est ${fmt(s.relayEstablishedConnectionCount)}`);
+        text('connectionFailures', `failed out ${fmt(s.relayFailedOutboundConnections)} / rejected in ${fmt(s.relayRejectedInboundConnections)}`);
+
+        text('knownPeers', `${fmt(s.relayKnownPeerCount)} / target ${fmt(s.relayGovernorTargetWarmPeers)} warm, ${fmt(s.relayGovernorTargetHotPeers)} hot`);
+        text('peerStates', `${fmt(s.relayColdPeerCount)} / ${fmt(s.relayWarmPeerCount)} / ${fmt(s.relayHotPeerCount)}`);
+        text('peerSuppression', `${fmt(s.relayBackoffPeerCount)} / ${fmt(s.relayQuarantinedPeerCount)}`);
+        text('peerSources', `boot ${fmt(s.relayBootstrapPeerCount)} / gossip ${fmt(s.relayGossipPeerCount)} / ledger ${fmt(s.relayLedgerPeerCount)} / in ${fmt(s.relayInboundPeerCount)}`);
+        text('sharablePeers', fmt(s.relaySharablePeerCount));
+
+        text('mempoolSize', fmt(s.mempoolSize));
+        text('mempoolBytes', bytes(s.mempoolBytes));
+        text('mempoolCapacity', `${fmt(s.mempoolMaxTxs)} tx / ${bytes(s.mempoolMaxBytes)}`);
+        text('mempoolTtl', `${fmt(s.mempoolTtlSeconds)}s`);
+        text('mempoolAdmission', s.mempoolAccepting ? 'accepting' : 'paused');
+
+        text('txDiffusionMode', `${s.txDiffusionMode ?? '-'} / ${s.upstreamTxForwarding ?? '-'}`);
+        text('txForwarded', `${fmt(s.txDiffusionOutboundForwarded)} / ${fmt(s.txDiffusionOutboundSuppressed)}`);
+        text('txIdsInbound', `${fmt(s.txDiffusionInboundTxIdsRequested)} req / ${fmt(s.txDiffusionInboundTxIdsIgnored)} ignored / ${fmt(s.txDiffusionInboundTxIdsRejected)} skipped`);
+        text('txBodiesInbound', `${fmt(s.txDiffusionInboundTxBodiesAccepted)} admitted / ${fmt(s.txDiffusionInboundTxBodiesRejected)} rejected / ${fmt(s.txDiffusionInboundTxBodiesIgnored)} ignored`);
+        text('txServed', `${fmt(s.txDiffusionServedTxs)} / ${bytes(s.txDiffusionServedBytes)}`);
+        text('txInFlight', `${fmt(s.txDiffusionInFlightTxs)} / ${bytes(s.txDiffusionInFlightBytes)}`);
+
+        text('validationLevel', s.upstreamValidationLevel);
+        text('validationCounts', `${fmt(s.upstreamValidationAcceptedHeaders)} / ${fmt(s.upstreamValidationRejectedHeaders)}`);
+
+        const utxo = storageStatus?.utxo || {};
+        const metrics = utxo.metrics || {};
+        const chain = storageStatus?.chain || {};
+        const prune = utxo.prune || {};
+        const cfEstimates = utxo.cfEstimates || storageStatus?.cfEstimates || {};
+        const utxoLag = Number(utxo.lagBlocks ?? 0);
+        const utxoEnabled = !!utxo.enabled;
+
+        text('storageUtxoStore', `${utxoEnabled ? 'enabled' : 'disabled'} / ${utxo.store ?? '-'}`);
+        text('storageUtxoLag', fmt(utxo.lagBlocks));
+        text('storageApplyP95', metrics['apply.ms.p95'] === undefined ? '-' : fmtMetric(metrics['apply.ms.p95'], ' ms'));
+
+        text('tipBlock', fmt(chain.blockNumber));
+        text('tipSlot', fmt(chain.slot));
+        text('tipHash', chain.blockHash || '-');
+        text('utxoStore', utxo.store ?? '-');
+        text('lastApplied', `${fmt(utxo.lastAppliedBlock)} / slot ${fmt(utxo.lastAppliedSlot)}`);
+        text('utxoLagLarge', fmt(utxo.lagBlocks));
+        const enabledEl = $('utxoEnabled');
+        enabledEl.textContent = utxoEnabled ? 'ENABLED' : 'DISABLED';
+        enabledEl.className = `badge ${utxoEnabled ? 'b-ok' : 'b-bad'}`;
+        text('pruneDepth', fmt(prune.pruneDepth));
+        text('rollbackWindow', fmt(prune.rollbackWindow));
+        text('pruneBatch', fmt(prune.pruneBatchSize));
+        text('deltaCursor', prune.deltaCursorKey || '-');
+        text('spentCursor', prune.spentCursorKey || '-');
+        text('applyAvg', metrics['apply.ms.avg'] === undefined ? '-' : fmtMetric(metrics['apply.ms.avg'], ' ms'));
+        text('utxoApplyP95', metrics['apply.ms.p95'] === undefined ? '-' : fmtMetric(metrics['apply.ms.p95'], ' ms'));
+        text('applyCreated', fmtMetric(metrics['apply.created.last']));
+        text('applySpent', fmtMetric(metrics['apply.spent.last']));
+        text('bps', fmtMetric(metrics['throughput.blocksPerSec']));
+        text('blockSizeLast', bytes(metrics['block.size.last']));
+        text('blockSizeAvg', bytes(metrics['block.size.avg']));
+
+        const cfHtml = Object.entries(cfEstimates).map(([k, v]) => {
+          const label = escapeHtml(k.replace(/\.estimateNumKeys$/, ''));
+          const num = Number(v);
+          const val = Number.isFinite(num) ? num.toLocaleString() : escapeHtml(String(v));
+          return `<div class="metric"><span>${label}</span><span class="mono">${val}</span></div>`;
+        }).join('');
+        $('cfEstimates').innerHTML = cfHtml || '<div class="muted">-</div>';
+
+        push(history.ts, Date.now());
+        push(history.gap, gap);
+        push(history.peers, [s.relayInboundConnectionCount ?? 0, s.relayOutboundConnectionCount ?? 0, s.relayHotPeerCount ?? 0]);
+        push(history.mempool, [s.mempoolSize ?? 0, mempoolKb]);
+        push(history.tx, [delta.forwarded, delta.inbound, delta.served]);
+        push(history.utxoLag, utxoLag);
+        redrawCharts();
+        previousStatus = s;
+        firstRender = false;
+      }
+
+      function renderPeers(table) {
+        const peers = table?.peers || [];
+        text('peerTableSummary', `${peers.length} peers · ${fmt(table?.establishedConnectionCount)} established · ${fmt(table?.knownPeerCount)} known`);
+        const badge = (label, cls) => `<span class="badge ${cls}">${escapeHtml(label)}</span>`;
+        const govCls = { HOT: 'b-hot', WARM: 'b-warm', COLD: 'b-cold' };
+        const connCls = { ESTABLISHED: 'b-ok', CONNECTING: 'b-warn', FAILED: 'b-bad' };
+        const html = peers.slice(0, 250).map(peer => {
+          const caps = [
+            peer.chainSync ? 'cs' : null,
+            peer.blockFetch ? 'bf' : null,
+            peer.txSubmission ? 'tx' : null,
+            peer.peerSharing ? 'ps' : null,
+            peer.query ? 'q' : null
+          ].filter(Boolean);
+          const gov = String(peer.governorState ?? '-').toUpperCase();
+          const conn = String(peer.connectionState ?? '-').toUpperCase();
+          const dir = String(peer.direction ?? '').toUpperCase();
+          const dirHtml = dir === 'OUTBOUND' ? badge('OUT ↗', 'b-out')
+            : dir === 'INBOUND' ? badge('IN ↙', 'b-in')
+            : '<span class="muted">-</span>';
+          const trustHtml = peer.trusted === null || peer.trusted === undefined
+            ? '<span class="muted">-</span>'
+            : peer.trusted ? badge('trusted', 'b-ok') : badge('untrusted', 'b-dim');
+          const seen = peer.lastSeenMillis ? new Date(peer.lastSeenMillis).toLocaleTimeString() : '-';
+          return `<tr${peer.active ? ' class="row-active"' : ''}>
+            <td class="mono cell-endpoint">${peer.active ? '<span class="live-dot"></span>' : ''}${escapeHtml(peer.endpoint ?? peer.id ?? '-')}</td>
+            <td>${gov === '-' ? '<span class="muted">-</span>' : badge(gov, govCls[gov] || 'b-dim')}</td>
+            <td>${conn === '-' ? '<span class="muted">-</span>' : badge(conn, connCls[conn] || 'b-dim')}</td>
+            <td>${dirHtml}</td>
+            <td class="mono muted">${escapeHtml(peer.source ?? '-')}</td>
+            <td>${trustHtml}</td>
+            <td>${caps.length ? caps.map(c => `<span class="chip chip-xs">${c}</span>`).join('') : '<span class="muted">-</span>'}</td>
+            <td class="mono muted">${escapeHtml(seen)}</td>
+            <td class="muted">${escapeHtml(peer.connectionReason ?? '')}</td>
+          </tr>`;
+        }).join('');
+        $('peerRows').innerHTML = html || '<tr><td class="empty" colspan="9">No peers reported</td></tr>';
+      }
+
+      function escapeHtml(value) {
+        return String(value ?? '')
+          .replaceAll('&', '&amp;')
+          .replaceAll('<', '&lt;')
+          .replaceAll('>', '&gt;')
+          .replaceAll('"', '&quot;')
+          .replaceAll("'", '&#039;');
+      }
+
+      async function jsonOrNull(path) {
+        const res = await fetch(path, { cache: 'no-store' });
+        if (!res.ok) return null;
+        return await res.json();
+      }
+
+      async function refresh() {
+        const t0 = performance.now();
+        try {
+          const [status, peers, storageStatus] = await Promise.all([
+            jsonOrNull(`${apiPrefix}/node/status`),
+            jsonOrNull(`${apiPrefix}/node/peers`),
+            jsonOrNull(`${apiPrefix}/status`)
+          ]);
+          const t1 = performance.now();
+          text('reqMs', `${Math.round(t1 - t0)} ms`);
+          if (status) renderStatus(status, storageStatus);
+          if (peers) renderPeers(peers);
+          text('updatedAt', `Updated ${new Date().toLocaleTimeString()}`);
+        } catch (error) {
+          console.error(error);
+          text('summary', `Status fetch failed: ${error.message}`);
+          pill('healthPill', 'ERROR', 'bad');
+        }
+      }
+
+      document.querySelectorAll('.card').forEach((el, i) => el.style.setProperty('--i', Math.min(i, 14)));
+      Object.keys(chartDefs).forEach(attachChartHover);
+      text('pollInfo', Math.round(pollMs / 1000));
+      text('apiInfo', apiPrefix);
+
+      $('themeToggle').addEventListener('click', () => {
+        setTheme(document.documentElement.classList.contains('dark') ? 'light' : 'dark');
+      });
+
+      refresh();
+      setInterval(refresh, pollMs);
+      window.addEventListener('resize', redrawCharts);
     </script>
   </body>
-  </html>
+</html>

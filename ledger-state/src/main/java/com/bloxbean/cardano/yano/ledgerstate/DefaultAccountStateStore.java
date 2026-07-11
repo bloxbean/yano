@@ -21,6 +21,7 @@ import com.bloxbean.cardano.yano.api.model.CredentialKey;
 import com.bloxbean.cardano.yano.api.account.AccountStateReadStore;
 import com.bloxbean.cardano.yano.api.account.AccountStateStore;
 import com.bloxbean.cardano.yano.api.account.LedgerStateProvider;
+import com.bloxbean.cardano.yano.api.account.OpCertCounterState;
 import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
 import com.bloxbean.cardano.yano.api.model.ProtocolParamsSnapshot;
 import com.bloxbean.cardano.yano.api.util.CostModelUtil;
@@ -77,6 +78,7 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
     public static final byte PREFIX_REWARD_REST = 0x56;
     static final byte PREFIX_BLOCK_ISSUER = 0x58;      // per-block issuer: [epoch(4)][slot(8)] → poolHash(28)
     static final byte PREFIX_BLOCK_FEE = 0x59;          // per-block fee: [epoch(4)][slot(8)] → fee (CBOR BigInteger)
+    static final byte PREFIX_OPCERT_COUNTER = 0x5A;     // issuer cold-key hash → latest op-cert counter state
 
     /** Default epochs to retain per-block data after reward calculation consumes it.
      *  Data for epoch E is consumed at E+2 boundary. With lag=5, cleared at E+7 boundary. */
@@ -228,6 +230,7 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
     // Optional governance subsystem
     private volatile com.bloxbean.cardano.yano.ledgerstate.governance.GovernanceBlockProcessor governanceBlockProcessor;
     private volatile DefaultAccountStateReadStore readStore;
+    private volatile OpCertCounterTracker opCertCounterTracker;
 
 
     // Supplier for re-initialization after snapshot restore
@@ -267,6 +270,7 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
         this.cfEpochSnapshot = supplier.handle(AccountStateCfNames.EPOCH_DELEG_SNAPSHOT);
         this.pointerAddressResolver = new PointerAddressResolver(db, cfState);
         this.readStore = new DefaultAccountStateReadStore(db, cfEpochSnapshot, () -> governanceBlockProcessor, log);
+        this.opCertCounterTracker = new OpCertCounterTracker(db, cfState);
         this.epochBlockDataRetentionLag = getInt(config,
                 YanoPropertyKeys.AccountState.EPOCH_BLOCK_DATA_RETENTION_LAG,
                 DEFAULT_EPOCH_BLOCK_DATA_RETENTION_LAG);
@@ -425,6 +429,11 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
 
         this.pointerAddressResolver = new PointerAddressResolver(db, cfState);
         this.readStore = new DefaultAccountStateReadStore(db, cfEpochSnapshot, () -> governanceBlockProcessor, log);
+        if (opCertCounterTracker != null) {
+            opCertCounterTracker.reinitialize(db, cfState);
+        } else {
+            opCertCounterTracker = new OpCertCounterTracker(db, cfState);
+        }
         log.info("DefaultAccountStateStore reinitialized after snapshot restore");
     }
 
@@ -744,6 +753,13 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
     // --- LedgerStateProvider reads ---
 
     @Override
+    public Optional<OpCertCounterState> getOpCertCounterState(String issuerKeyHash) {
+        return opCertCounterTracker != null
+                ? opCertCounterTracker.get(issuerKeyHash)
+                : Optional.empty();
+    }
+
+    @Override
     public Optional<BigInteger> getRewardBalance(int credType, String credentialHash) {
         try {
             byte[] val = db.get(cfState, accountKey(credType, credentialHash));
@@ -872,7 +888,7 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
             double margin = UnitIntervalUtil.safeRatio(data.marginNum(), data.marginDen()).doubleValue();
             return new LedgerStateProvider.PoolParams(
                     data.deposit(), margin, data.cost(), data.pledge(),
-                    data.rewardAccount(), data.owners());
+                    data.rewardAccount(), data.owners(), data.vrfKeyHash());
         });
     }
 
@@ -882,7 +898,7 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
             double margin = UnitIntervalUtil.safeRatio(data.marginNum(), data.marginDen()).doubleValue();
             return new LedgerStateProvider.PoolParams(
                     data.deposit(), margin, data.cost(), data.pledge(),
-                    data.rewardAccount(), data.owners());
+                    data.rewardAccount(), data.owners(), data.vrfKeyHash());
         });
     }
 
@@ -2202,7 +2218,8 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                             pool.cost(),
                             pool.pledge(),
                             pool.rewardAccount(),
-                            pool.owners());
+                            pool.owners(),
+                            pool.vrfKeyHash());
                     byte[] encoded = AccountStateCborCodec.encodePoolRegistration(data);
                     batch.put(cfState, poolDepositKey(pool.poolHash()), encoded);
                     batch.put(cfState, poolParamsHistKey(pool.poolHash(), activeEpoch), encoded);
@@ -2569,6 +2586,11 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                 }
             }
 
+            // Track chain-dependent op-cert counters only from canonical block apply.
+            if (opCertCounterTracker != null) {
+                opCertCounterTracker.applyBlock(block, slot, blockNo, event.blockHash(), batch, deltaOps, this);
+            }
+
             // Track per-pool block count and per-epoch fees
             trackBlockCountAndFees(block, currentEpoch, slot, txs, invalidIdx, batch, deltaOps);
 
@@ -2679,10 +2701,11 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                 BigInteger pledge = params.getPledge() != null ? params.getPledge() : BigInteger.ZERO;
                 String rewardAccount = params.getRewardAccount() != null ? params.getRewardAccount() : "";
                 Set<String> owners = params.getPoolOwners() != null ? params.getPoolOwners() : Set.of();
+                String vrfKeyHash = params.getVrfKeyHash();
 
                 var data = new AccountStateCborCodec.PoolRegistrationData(
                         epochParamProvider.getPoolDeposit(0),
-                        marginNum, marginDen, cost, pledge, rewardAccount, owners);
+                        marginNum, marginDen, cost, pledge, rewardAccount, owners, vrfKeyHash);
                 byte[] val = AccountStateCborCodec.encodePoolRegistration(data);
                 batch.put(cfState, key, val);
                 deltaOps.add(new DeltaOp(OP_PUT, key, prev));

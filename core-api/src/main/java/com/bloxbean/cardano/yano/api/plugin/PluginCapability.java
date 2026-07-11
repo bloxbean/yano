@@ -5,6 +5,6 @@ public enum PluginCapability {
     NOTIFIER,
     STORAGE_ADAPTER,
     POLICY,
-    STORAGE_FILTER
+    STORAGE_FILTER,
+    HEADER_VALIDATION
 }
-

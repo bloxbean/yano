@@ -3,6 +3,10 @@ package com.bloxbean.cardano.yano.runtime.peer;
 import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Point;
 import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Tip;
 import com.bloxbean.cardano.yaci.events.impl.SimpleEventBus;
+import com.bloxbean.cardano.yano.p2p.peer.PeerHealth;
+import com.bloxbean.cardano.yano.p2p.peer.PeerRecoveryReason;
+import com.bloxbean.cardano.yano.p2p.peer.PeerSessionState;
+import com.bloxbean.cardano.yano.p2p.peer.PeerSessionStatus;
 import com.bloxbean.cardano.yano.runtime.chain.InMemoryChainState;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -227,6 +231,24 @@ class PeerSessionSupervisorTest {
         supervisor(session, recoveries).checkNow();
 
         assertEquals(List.of(PeerRecoveryReason.KEEPALIVE_STALE), recoveries);
+    }
+
+    @Test
+    void stoppedSessionTriggersRecoveryRetryAfterCooldown() {
+        PeerHealth health = runningHealth();
+        TestPeerSession session = new TestPeerSession(health, now);
+        List<PeerRecoveryReason> recoveries = new CopyOnWriteArrayList<>();
+        PeerSessionSupervisor supervisor = supervisor(session, recoveries);
+
+        supervisor.requestRecovery(PeerRecoveryReason.STARTUP_FAILED);
+        health.markState(PeerSessionState.STOPPED);
+
+        now.addAndGet(100);
+        supervisor.checkNow();
+        now.addAndGet(401);
+        supervisor.checkNow();
+
+        assertEquals(List.of(PeerRecoveryReason.STARTUP_FAILED, PeerRecoveryReason.STARTUP_FAILED), recoveries);
     }
 
     @Test

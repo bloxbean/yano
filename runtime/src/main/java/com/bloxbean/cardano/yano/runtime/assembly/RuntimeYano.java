@@ -10,6 +10,7 @@ import com.bloxbean.cardano.yano.api.TxGateway;
 import com.bloxbean.cardano.yano.api.config.NodeConfig;
 import com.bloxbean.cardano.yano.api.config.YanoConfig;
 import com.bloxbean.cardano.yano.api.listener.NodeEventListener;
+import com.bloxbean.cardano.yano.api.model.NodePeers;
 import com.bloxbean.cardano.yano.api.model.NodeStatus;
 import com.bloxbean.cardano.yano.runtime.debug.DebugLedgerStateAccess;
 import com.bloxbean.cardano.yano.runtime.devnet.spi.DevnetRuntime;
@@ -232,6 +233,11 @@ final class RuntimeYano implements Yano, DevnetRuntimeProvider {
         @Override
         public NodeStatus getStatus() {
             return nodeLifecycle.getStatus();
+        }
+
+        @Override
+        public NodePeers getPeers() {
+            return nodeLifecycle.getPeers();
         }
 
         @Override

@@ -16,6 +16,10 @@ quarkus:
     category:
       "com.bloxbean.cardano.yaci":
         level: INFO
+      "com.bloxbean.cardano.yaci.core.network.Session":
+        # Peer dial failures are expected with public/discovered relay sets.
+        # Yano logs the selected peer and root cause in one line at the sync layer.
+        level: "OFF"
   smallrye-openapi:
     info-title: "Yano API"
     info-version: "${quarkus.application.version:0.1.0}"
@@ -46,6 +50,58 @@ yano:
     host: preprod-node.world.dev.cardano.org
     port: 30000
     protocol-magic: 1
+  upstream:
+    validation:
+      # Header validation: none | structural | header-signature | praos-lite | praos-ledger.
+      # Disabled by default. header-signature checks structure, KES, and opcert signatures.
+      # praos-lite additionally checks the Shelley+ VRF proof when epoch nonce tracking is available.
+      # praos-ledger adds ledger-view checks and uses persisted opcert counters when available.
+      level: none
+      # Body validation presets are scaffolded for future validators. Supported now: none.
+      body-level: none
+      # Op-cert counter state: none | compat | strict.
+      # none disables the op-cert counter stage by default.
+      # compat checks persisted counters when present and skips missing counters for old/checkpointed DBs.
+      # strict applies Haskell-style 0 for registered issuers without stored state.
+      opcert-counter-mode: none
+      # Validation start: immediate | era | checkpoint.
+      # If mode=era and slot/hash are omitted, Yano starts validation when the era boundary is observed locally.
+      # The packaged public-network profiles include verified first-Conway-block anchors where available.
+      start:
+        mode: era
+        era: conway
+        slot: 69638426
+        hash: "ecde79b23e343becca15618fc26281ba1aaea2eb1b66ab8828d7a127f5dbc30f"
+  relay:
+    # Enables relay-style peer-sharing support on the N2N server. Keep disabled
+    # unless the advertised endpoint is intentionally reachable by other nodes.
+    auto-discovery: false
+    # "auto" resolves a local non-loopback interface address. Set an
+    # explicit public DNS/IP for production relay deployments.
+    advertised-host: auto
+    # 0 means use yano.server.port.
+    advertised-port: 0
+    allow-private-addresses: false
+    connection:
+      max-inbound-connections: 100
+      max-connections-per-ip: 5
+      # Bind outbound N2N dials to the local relay port when possible. If the
+      # platform rejects a local bind for one dial, Yano falls back to an
+      # OS-assigned source port for that dial.
+      source-port-reuse: true
+  tx:
+    mempool:
+      max-txs: 10000
+      max-bytes: 134217728
+      ttl-seconds: 10800
+    diffusion:
+      # Simple relay MVP switch. true maps to all-hot transaction diffusion.
+      # Legacy yano.tx.diffusion.mode remains accepted for compatibility.
+      enabled: true
+      limits:
+        max-in-flight-txs-per-peer: 100
+        max-in-flight-bytes-per-peer: 1048576
+        peer-cooldown-ms: 60000
   dns:
     cache:
       # Positive DNS cache TTL in seconds. Defaults to 60 when omitted.
@@ -227,6 +283,13 @@ yano:
 "%mainnet":
   yano:
     network: mainnet
+    upstream:
+      validation:
+        start:
+          mode: era
+          era: conway
+          slot: 133660855
+          hash: "9aa420cf998dbcceec1abaf83ab26294d278d25527e779050ab334c1fadab16c"
     remote:
       host: backbone.cardano.iog.io
       port: 3001
@@ -242,6 +305,13 @@ yano:
 "%preview":
   yano:
     network: preview
+    upstream:
+      validation:
+        start:
+          mode: era
+          era: conway
+          slot: 34905604
+          hash: "cbc88c5f633ace6671f6cbb54a0913e4d7c57697869e951bc032e093f6db5f46"
     remote:
       host: preview-node.play.dev.cardano.org
       port: 3001
@@ -257,6 +327,11 @@ yano:
 "%sanchonet":
   yano:
     network: sanchonet
+    upstream:
+      validation:
+        start:
+          mode: era
+          era: conway
     remote:
       host: sanchonet-node.play.dev.cardano.org
       port: 3001

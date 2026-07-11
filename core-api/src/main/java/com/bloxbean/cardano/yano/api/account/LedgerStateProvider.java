@@ -12,7 +12,7 @@ import java.util.Set;
  *
  * <p>credType: 0 = key hash, 1 = script hash (matches Cardano CBOR encoding).
  */
-public interface LedgerStateProvider {
+public interface LedgerStateProvider extends OpCertCounterProvider {
 
     // --- Delegation / Account State ---
 
@@ -65,7 +65,12 @@ public interface LedgerStateProvider {
     }
 
     record PoolParams(BigInteger deposit, double margin, BigInteger cost, BigInteger pledge,
-                      String rewardAccount, Set<String> owners) {}
+                      String rewardAccount, Set<String> owners, String vrfKeyHash) {
+        public PoolParams(BigInteger deposit, double margin, BigInteger cost, BigInteger pledge,
+                          String rewardAccount, Set<String> owners) {
+            this(deposit, margin, cost, pledge, rewardAccount, owners, null);
+        }
+    }
 
     record PoolDelegation(String poolHash, long slot, int txIdx, int certIdx) {}
 

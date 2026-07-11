@@ -9,8 +9,16 @@ A Cardano node implementation in Java — relay sync, local devnet, and REST API
 Sync from a public Cardano network and re-serve blocks on port 13337.
 
 ```bash
-# Preprod (default)
+# Preprod trusted-single/indexer style (default)
 ./yano.sh start
+# or
+./yano.sh start:preprod
+
+# Preprod relay-style upstream
+./yano.sh start:preprod,relay
+
+# Preprod relay-style upstream with Praos-lite header validation
+./yano.sh start:preprod,relay,praos-lite
 
 # Mainnet
 ./yano.sh start:mainnet
@@ -54,7 +62,7 @@ Run a standalone local blockchain with automatic block production.
 - **Health check** — `http://localhost:8080/q/health/ready`
 - **Cardano N2N server** on port 13337
 - **Plugin system** — drop plugin JARs in the `plugins/` directory
-- **Custom profiles** — `./yano.sh start:<name>`, `./yano.sh --profile=<name>`, or `-Dquarkus.profile=<name>`
+- **Composable profiles** — `./yano.sh start:<network>,<behavior>[,<validation>]`, `./yano.sh --profile=<profiles>`, or `-Dquarkus.profile=<profiles>`
 
 ## Configuration
 
@@ -89,13 +97,27 @@ The `config/` directory contains genesis files and protocol parameters for each 
 
 ```
 config/
-  protocol-param.json
+  application.yml
+  application-preprod.yml
+  application-relay.yml
+  application-praos-lite.yml
   network/
     devnet/
     mainnet/
     preprod/
     preview/
     sanchonet/
+```
+
+The base `application.yml` is conservative single-upstream/indexer style. Use
+comma-separated Quarkus profiles to layer a network, an upstream behavior, and
+optional validation:
+
+```bash
+./yano.sh start:preprod,relay
+./yano.sh start:mainnet,trusted-peers
+./yano.sh start:preview,relay,praos-lite
+./yano.sh start:preprod,relay,praos-ledger
 ```
 
 ## Directory Structure

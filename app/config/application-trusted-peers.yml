@@ -1,0 +1,38 @@
+# Trusted multi-upstream failover profile.
+# Combine with a network profile, for example: preprod,trusted-peers.
+# Add yano.upstream.peers here when you control more than one trusted upstream.
+
+yano:
+  upstream:
+    mode: trusted-failover
+    # Optional static trusted upstreams. If omitted, Yano uses yano.remote.*
+    # from the selected network profile as a synthetic trusted peer.
+    #
+    # peers:
+    #   - id: primary
+    #     host: relay-a.example.com
+    #     port: 3001
+    #     trust: trusted
+    #     priority: 0
+    #     source: static-upstream
+    #   - id: secondary
+    #     host: relay-b.example.com
+    #     port: 3001
+    #     trust: trusted
+    #     priority: 10
+    #     source: static-upstream
+    sync:
+      bulk-source: single-trusted
+      fan-in-start: disabled
+    discovery:
+      enabled: false
+      peer-sharing: false
+      peer-snapshot-urls: []
+      peer-snapshot-files: []
+      seeds: []
+    governor:
+      enabled: false
+    validation:
+      level: none
+      body-level: none
+      opcert-counter-mode: none

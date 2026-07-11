@@ -1,0 +1,19 @@
+dependencies {
+    testImplementation libs.archunit
+}
+
+java {
+    sourceCompatibility = 25
+    targetCompatibility = 25
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            pom {
+                name = 'Yano Consensus'
+                description = 'Consensus-facing chain-selection policy and candidate-header state for Yano'
+            }
+        }
+    }
+}

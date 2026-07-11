@@ -21,6 +21,7 @@ public class YanoConfig implements NodeConfig {
     private String remoteHost;
     private int remotePort;
     private long protocolMagic;
+    private UpstreamConfig upstream;
 
     // Server configuration
     private int serverPort;
@@ -193,6 +194,7 @@ public class YanoConfig implements NodeConfig {
         return source.toBuilder()
                 .bootstrapAddresses(copyStrings(source.getBootstrapAddresses()))
                 .bootstrapUtxos(copyBootstrapUtxos(source.getBootstrapUtxos()))
+                .upstream(copyUpstream(source.getUpstream()))
                 .build();
     }
 
@@ -209,6 +211,26 @@ public class YanoConfig implements NodeConfig {
             copy.add(outpoint != null ? outpoint.toBuilder().build() : null);
         }
         return copy;
+    }
+
+    private static UpstreamConfig copyUpstream(UpstreamConfig source) {
+        if (source == null) {
+            return null;
+        }
+        return source.toBuilder()
+                .peers(source.getPeers() != null
+                        ? source.getPeers().stream()
+                        .map(peer -> peer != null ? peer.toBuilder().build() : null)
+                        .toList()
+                        : null)
+                .selection(source.getSelection() != null ? source.getSelection().toBuilder().build() : null)
+                .validation(source.getValidation() != null ? source.getValidation().toBuilder().build() : null)
+                .sync(source.getSync() != null ? source.getSync().toBuilder().build() : null)
+                .failover(source.getFailover() != null ? source.getFailover().toBuilder().build() : null)
+                .tx(source.getTx() != null ? source.getTx().toBuilder().build() : null)
+                .governor(source.getGovernor() != null ? source.getGovernor().toBuilder().build() : null)
+                .discovery(source.getDiscovery() != null ? source.getDiscovery().toBuilder().build() : null)
+                .build();
     }
 
     /**
@@ -479,10 +501,15 @@ public class YanoConfig implements NodeConfig {
     @Override
     public void validate() {
         if (enableClient) {
-            if (remoteHost == null || remoteHost.trim().isEmpty()) {
+            boolean hasConfiguredUpstreamPeers = upstream != null
+                    && upstream.getPeers() != null
+                    && !upstream.getPeers().isEmpty();
+            boolean hasRemote = remoteHost != null && !remoteHost.trim().isEmpty();
+            boolean discoveryBootstrap = upstream != null && upstream.discoveryBootstrapEnabled();
+            if (!hasConfiguredUpstreamPeers && !hasRemote && !discoveryBootstrap) {
                 throw new IllegalArgumentException("Remote host must be specified when client is enabled");
             }
-            if (remotePort <= 0 || remotePort > 65535) {
+            if (!hasConfiguredUpstreamPeers && hasRemote && (remotePort <= 0 || remotePort > 65535)) {
                 throw new IllegalArgumentException("Remote port must be between 1 and 65535");
             }
         }
@@ -560,6 +587,8 @@ public class YanoConfig implements NodeConfig {
             throw new IllegalArgumentException("RocksDB path must be specified when RocksDB is enabled");
         }
 
+        effectiveUpstream().validate(enableClient, remoteHost, remotePort, protocolMagic);
+
         if (fullSyncThreshold < 0) {
             throw new IllegalArgumentException("Full sync threshold must be non-negative");
         }
@@ -583,6 +612,16 @@ public class YanoConfig implements NodeConfig {
                 throw new IllegalArgumentException("Selective body fetch ratio must be non-negative");
             }
         }
+    }
+
+    public UpstreamConfig effectiveUpstream() {
+        if (upstream != null) {
+            return upstream;
+        }
+        if (remoteHost != null && !remoteHost.isBlank() && remotePort > 0) {
+            return UpstreamConfig.trustedSingleFromRemote(remoteHost, remotePort);
+        }
+        return UpstreamConfig.builder().build();
     }
 
     @Override

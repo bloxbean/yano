@@ -26,6 +26,7 @@ import com.bloxbean.cardano.yano.api.SyncPhase;
 import com.bloxbean.cardano.yano.api.TxEvaluationGateway;
 import com.bloxbean.cardano.yano.api.TxGateway;
 import com.bloxbean.cardano.yano.api.config.RuntimeOptions;
+import com.bloxbean.cardano.yano.api.config.UpstreamPeerConfig;
 import com.bloxbean.cardano.yano.api.config.YanoConfig;
 import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
 import com.bloxbean.cardano.yano.api.db.RocksDbAccess;
@@ -36,6 +37,7 @@ import com.bloxbean.cardano.yano.api.model.DevnetRollbackTarget;
 import com.bloxbean.cardano.yano.api.model.DevnetRestoreResult;
 import com.bloxbean.cardano.yano.api.model.FundResult;
 import com.bloxbean.cardano.yano.api.model.GenesisParameters;
+import com.bloxbean.cardano.yano.api.model.NodePeers;
 import com.bloxbean.cardano.yano.api.model.NodeStatus;
 import com.bloxbean.cardano.yano.api.model.ProtocolParamsSnapshot;
 import com.bloxbean.cardano.yano.api.model.SnapshotInfo;
@@ -62,9 +64,9 @@ import com.bloxbean.cardano.yano.runtime.chronology.ChronologySubsystem;
 import com.bloxbean.cardano.yano.api.events.NodeStartedEvent;
 import com.bloxbean.cardano.yano.api.events.RollbackEvent;
 import com.bloxbean.cardano.yano.runtime.maintenance.RuntimeMaintenanceGate;
-import com.bloxbean.cardano.yano.runtime.peer.PeerRecoveryFailureTracker;
-import com.bloxbean.cardano.yano.runtime.peer.PeerRecoveryReason;
-import com.bloxbean.cardano.yano.runtime.peer.PeerSessionStatus;
+import com.bloxbean.cardano.yano.p2p.peer.PeerRecoveryFailureTracker;
+import com.bloxbean.cardano.yano.p2p.peer.PeerRecoveryReason;
+import com.bloxbean.cardano.yano.p2p.peer.PeerSessionStatus;
 import com.bloxbean.cardano.yano.runtime.producer.DevnetBlockBuilderFactory;
 import com.bloxbean.cardano.yano.runtime.producer.DevnetProducerFactory;
 import com.bloxbean.cardano.yano.runtime.producer.NonceEvolutionListenerFactory;
@@ -77,6 +79,7 @@ import com.bloxbean.cardano.yano.runtime.producer.SlotLeaderSigningComponents;
 import com.bloxbean.cardano.yano.runtime.producer.StakeDataProviderFactory;
 import com.bloxbean.cardano.yano.runtime.plugins.PluginManager;
 import com.bloxbean.cardano.yano.api.account.AccountHistoryProvider;
+import com.bloxbean.cardano.yano.api.account.AccountStateReadStore;
 import com.bloxbean.cardano.yano.api.account.LedgerStateProvider;
 import com.bloxbean.cardano.yano.api.rollback.RollbackCapableStore;
 import com.bloxbean.cardano.yano.ledgerstate.AccountHistoryStore;
@@ -89,6 +92,11 @@ import com.bloxbean.cardano.yano.runtime.config.InMemoryDevnetGenesis;
 import com.bloxbean.cardano.yano.runtime.config.NetworkGenesisConfig;
 import com.bloxbean.cardano.yano.runtime.PipelineDataListener;
 import com.bloxbean.cardano.yano.runtime.SlotTimeCalculator;
+import com.bloxbean.cardano.yano.p2p.connection.DefaultRelayConnectionManager;
+import com.bloxbean.cardano.yano.p2p.connection.ProtocolCapabilities;
+import com.bloxbean.cardano.yano.p2p.connection.RelayConnectionInfo;
+import com.bloxbean.cardano.yano.p2p.connection.RelayConnectionManager;
+import com.bloxbean.cardano.yano.p2p.connection.RelayConnectionSnapshot;
 import com.bloxbean.cardano.yano.runtime.debug.DebugLedgerStateAccess;
 import com.bloxbean.cardano.yano.runtime.devnet.DevnetCatchUpService;
 import com.bloxbean.cardano.yano.runtime.devnet.DevnetFaucetService;
@@ -110,11 +118,24 @@ import com.bloxbean.cardano.yano.runtime.kernel.Subsystem;
 import com.bloxbean.cardano.yano.runtime.kernel.SubsystemContext;
 import com.bloxbean.cardano.yano.runtime.kernel.SubsystemHealth;
 import com.bloxbean.cardano.yano.runtime.ledger.LedgerStateSubsystem;
+import com.bloxbean.cardano.yano.p2p.peer.DefaultPeerClientFactory;
+import com.bloxbean.cardano.yano.p2p.peer.LocalBindAddressResolver;
+import com.bloxbean.cardano.yano.p2p.peer.PeerClientFactory;
 import com.bloxbean.cardano.yano.runtime.server.ServeSubsystem;
+import com.bloxbean.cardano.yano.runtime.sync.validation.HeaderValidationLedgerViewProvider;
+import com.bloxbean.cardano.yano.runtime.sync.validation.HeaderValidationCustomizer;
+import com.bloxbean.cardano.yano.runtime.sync.validation.LedgerStateHeaderValidationLedgerViewProvider;
 import com.bloxbean.cardano.yano.runtime.storage.ChainStorageSubsystem;
+import com.bloxbean.cardano.yano.p2p.governor.PeerDescriptor;
+import com.bloxbean.cardano.yano.p2p.governor.PeerGovernorPeerInfo;
+import com.bloxbean.cardano.yano.p2p.governor.PeerGovernorSnapshot;
 import com.bloxbean.cardano.yano.runtime.sync.SyncSubsystem;
+import com.bloxbean.cardano.yano.runtime.sync.UpstreamStatus;
+import com.bloxbean.cardano.yano.p2p.governor.PeerStoreEntry;
+import com.bloxbean.cardano.yano.runtime.sync.validation.BodyValidator;
 import com.bloxbean.cardano.yano.runtime.db.RocksDbSupplier;
 import com.bloxbean.cardano.yano.runtime.tx.TxSubsystem;
+import com.bloxbean.cardano.yano.p2p.tx.diffusion.TxDiffusionStats;
 import com.bloxbean.cardano.yano.runtime.utxo.UtxoSubsystem;
 import com.bloxbean.cardano.yano.runtime.utxo.UtxoStoreWriter;
 import com.bloxbean.cardano.yano.runtime.validation.DefaultConsensusListener;
@@ -123,6 +144,10 @@ import lombok.extern.slf4j.Slf4j;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -130,6 +155,7 @@ import java.util.Optional;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
 
@@ -152,6 +178,7 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
 
     // Server components (for serving other clients)
     private final ServeSubsystem serveSubsystem;
+    private final RelayConnectionManager relayConnectionManager;
     private final int serverPort;
 
     // Block producer (devnet, slot-leader, or time-travel strategy)
@@ -175,6 +202,8 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
      */
     private record StaticProtocolParamsSnapshotCache(String json, ProtocolParamsSnapshot snapshot) {}
 
+    private record SourcePortProbeTarget(String host, int port) {}
+
     private final Schedulers schedulers;
     private final ScheduledExecutorService scheduler;
     private final NodeKernel kernel;
@@ -184,6 +213,7 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
 
     // Events & Plugins
     private final RuntimeOptions runtimeOptions;
+    private final BodyValidator bodyValidator;
     private final EventBus eventBus;
     private PluginManager pluginManager;
     private final UtxoSubsystem utxoSubsystem;
@@ -242,6 +272,15 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                        InMemoryDevnetGenesis inMemoryGenesis,
                        ProducerStartupPlan producerStartupPlan,
                        Schedulers schedulers) {
+        this(config, options, inMemoryGenesis, producerStartupPlan, schedulers, BodyValidator.none());
+    }
+
+    public RuntimeNode(YanoConfig config,
+                       RuntimeOptions options,
+                       InMemoryDevnetGenesis inMemoryGenesis,
+                       ProducerStartupPlan producerStartupPlan,
+                       Schedulers schedulers,
+                       BodyValidator bodyValidator) {
         if (inMemoryGenesis != null && (!config.isDevMode() || !config.isEnableBlockProducer())) {
             throw new IllegalStateException(
                     "In-memory devnet genesis is only valid when devMode=true and enableBlockProducer=true");
@@ -253,6 +292,7 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
         this.inMemoryDevnetGenesis = inMemoryGenesis;
         this.config = config;
         this.runtimeOptions = options != null ? options : RuntimeOptions.defaults();
+        this.bodyValidator = bodyValidator != null ? bodyValidator : BodyValidator.none();
         this.producerStartupPlanOverride = producerStartupPlan;
         this.schedulers = Objects.requireNonNull(schedulers, "schedulers");
         this.scheduler = this.schedulers.scheduled();
@@ -277,12 +317,29 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
         EventsOptions ev = this.runtimeOptions.events();
         this.eventBus = ev.enabled() ? new PropagatingEventBus() : new NoopEventBus();
         this.txSubsystem = new TxSubsystem(eventBus, scheduler, this.runtimeOptions, this::getUtxoState, log);
+        AtomicReference<Supplier<List<PeerStoreEntry>>> peerStoreSupplierRef =
+                new AtomicReference<>(List::of);
+        this.relayConnectionManager = new DefaultRelayConnectionManager(
+                (int) parseLong(
+                        this.runtimeOptions.globals().get(YanoPropertyKeys.Relay.CONNECTION_MAX_INBOUND_CONNECTIONS),
+                        DefaultRelayConnectionManager.DEFAULT_MAX_INBOUND_CONNECTIONS),
+                (int) parseLong(
+                        this.runtimeOptions.globals().get(YanoPropertyKeys.Relay.CONNECTION_MAX_CONNECTIONS_PER_IP),
+                        DefaultRelayConnectionManager.DEFAULT_MAX_CONNECTIONS_PER_IP),
+                log);
         this.serveSubsystem = new ServeSubsystem(
                 serverPort,
                 protocolMagic,
                 chainState,
                 txSubsystem,
                 config.isEnableBlockProducer(),
+                txSubsystem::txDiffusion,
+                resolveBoolean(this.runtimeOptions.globals(), YanoPropertyKeys.Relay.AUTO_DISCOVERY, false),
+                resolveString(this.runtimeOptions.globals(), YanoPropertyKeys.Relay.ADVERTISED_HOST, ""),
+                (int) parseLong(this.runtimeOptions.globals().get(YanoPropertyKeys.Relay.ADVERTISED_PORT), serverPort),
+                resolveBoolean(this.runtimeOptions.globals(), YanoPropertyKeys.Relay.ALLOW_PRIVATE_ADDRESSES, false),
+                () -> peerStoreSupplierRef.get().get(),
+                relayConnectionManager,
                 log);
 
         // Register default consensus listener (accept-all placeholder)
@@ -290,9 +347,15 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
         AnnotationListenerRegistrar.register(eventBus, consensusListener,
                 SubscriptionOptions.builder().build());
 
-        // Initialize plugins (discovery is deferred to start())
+        // Discover/init plugins before sync assembly so validation customizers can
+        // participate in header-validator construction. startAll() still runs at startup.
         if (this.runtimeOptions.plugins().enabled()) {
             pluginManager = new PluginManager(eventBus, scheduler, this.runtimeOptions.plugins().config(), Thread.currentThread().getContextClassLoader());
+            try {
+                pluginManager.discoverAndInit();
+            } catch (Exception e) {
+                log.warn("Plugin discovery/init failed during runtime assembly: {}", e.toString(), e);
+            }
         }
 
         chainStorage.runStartupMigrations();
@@ -324,6 +387,8 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 new ChronologyService(this.chainState),
                 eventBus,
                 ledgerStateSubsystem);
+        PeerClientFactory peerClientFactory = relayConnectionManager.wrapPeerClientFactory(
+                createPeerClientFactory());
         this.syncSubsystem = new SyncSubsystem(
                 config,
                 chainState,
@@ -339,7 +404,15 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 remoteCardanoHost,
                 remoteCardanoPort,
                 protocolMagic,
-                log);
+                log,
+                this.bodyValidator,
+                txSubsystem::txDiffusion,
+                peerClientFactory,
+                this::epochNonceForHeaderValidation,
+                headerValidationLedgerViewProvider(),
+                headerValidationCustomizers());
+        relayConnectionManager.addListener(this.syncSubsystem.peerGovernorConnectionListener());
+        peerStoreSupplierRef.set(this.syncSubsystem::sharablePeerEntries);
         this.producerStartupCoordinator = new ProducerStartupCoordinator(producerStartupActions());
         this.devnetRuntime = RuntimeDevnetRuntime.create(
                 this::rollbackDevnet,
@@ -1854,6 +1927,36 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
         return epochNonceState;
     }
 
+    private byte[] epochNonceForHeaderValidation(long slot) {
+        EpochNonceState state = epochNonceState;
+        if (state == null) {
+            return null;
+        }
+        try {
+            return state.previewEpochNonceForSlot(slot);
+        } catch (RuntimeException e) {
+            log.debug("Epoch nonce unavailable for header validation at slot {}: {}", slot, e.getMessage());
+            return null;
+        }
+    }
+
+    private HeaderValidationLedgerViewProvider headerValidationLedgerViewProvider() {
+        AccountStateStore store = ledgerStateSubsystem.accountStateStore();
+        EpochParamProvider epochParams = effectiveEpochParamProvider();
+        if (store instanceof AccountStateReadStore readStore && epochParams != null) {
+            boolean strictOpCertCounter = config.effectiveUpstream()
+                    .getValidation()
+                    .strictOpCertCounterMode();
+            return new LedgerStateHeaderValidationLedgerViewProvider(
+                    store, readStore, epochParams, strictOpCertCounter);
+        }
+        return HeaderValidationLedgerViewProvider.none();
+    }
+
+    private List<HeaderValidationCustomizer> headerValidationCustomizers() {
+        return pluginManager != null ? pluginManager.getHeaderValidationCustomizers() : List.of();
+    }
+
     @Override
     public java.util.Map<String, Object> getEpochNonceInfo() {
         if (epochNonceState == null) return null;
@@ -3124,6 +3227,8 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
         ChainTip headerTip = statusHeaderTip();
         PeerSessionStatus peerStatus = currentPeerSessionStatus();
         PeerRecoveryFailureTracker.Snapshot recoveryStatus = syncSubsystem.peerRecoverySnapshot();
+        UpstreamStatus upstreamStatus = syncSubsystem.upstreamStatus();
+        TxDiffusionStats txDiffusionStats = txSubsystem.txDiffusionStats();
         RuntimeMaintenanceGate maintenanceGate = chainStorage.maintenanceGate();
         RuntimeMaintenanceGate.Degradation maintenanceDegradation = maintenanceGate.degradation();
 
@@ -3179,6 +3284,8 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
 
         Tip remoteTip = syncSubsystem.remoteTip();
         Point remotePoint = remoteTip != null ? remoteTip.getPoint() : null;
+        RelayConnectionSnapshot relayConnectionSnapshot = relayConnectionManager.snapshot();
+        PeerGovernorSnapshot peerGovernorSnapshot = syncSubsystem.peerGovernorSnapshot();
 
         return NodeStatus.builder()
                 .running(isRunning())
@@ -3200,6 +3307,69 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 .runtimeDegradedOperation(maintenanceDegradation != null ? maintenanceDegradation.operation() : null)
                 .runtimeDegradedAtMillis(maintenanceDegradation != null ? maintenanceDegradation.timestampMillis() : null)
                 .peerName(peerStatus != null ? peerStatus.peerName() : null)
+                .upstreamMode(upstreamStatus.mode().configValue())
+                .upstreamConfiguredPeerCount(upstreamStatus.configuredPeerCount())
+                .upstreamHotPeerCount(upstreamStatus.hotPeerCount())
+                .upstreamObserverPeerCount(upstreamStatus.observerPeerCount())
+                .upstreamKnownPeerCount(upstreamStatus.knownPeerCount())
+                .upstreamCandidateHeaderCount(upstreamStatus.candidateHeaderCount())
+                .upstreamActivePeer(upstreamStatus.activePeerName())
+                .upstreamTxForwarding(upstreamStatus.txForwarding())
+                .upstreamMultiPeerObservationOnly(upstreamStatus.multiPeerObservationOnly())
+                .upstreamDiscoveryRunning(upstreamStatus.discoveryRunning())
+                .relayAutoDiscovery(serveSubsystem.isRelayAutoDiscoveryEnabled())
+                .relayAdvertisedHost(serveSubsystem.advertisedHost())
+                .relayAdvertisedPort(serveSubsystem.advertisedPort())
+                .relayInboundConnectionCount(relayConnectionSnapshot.inboundConnectionCount())
+                .relayOutboundConnectionCount(relayConnectionSnapshot.outboundConnectionCount())
+                .relayEstablishedConnectionCount(relayConnectionSnapshot.establishedConnectionCount())
+                .relayConnectingConnectionCount(relayConnectionSnapshot.connectingConnectionCount())
+                .relayRejectedInboundConnections(relayConnectionSnapshot.rejectedInboundConnections())
+                .relayFailedOutboundConnections(relayConnectionSnapshot.failedOutboundConnections())
+                .relayConnectionsPerIpMax(relayConnectionSnapshot.connectionsPerIpMax())
+                .relayKnownPeerCount(peerGovernorSnapshot.knownPeerCount())
+                .relayColdPeerCount(peerGovernorSnapshot.coldPeerCount())
+                .relayWarmPeerCount(peerGovernorSnapshot.warmPeerCount())
+                .relayHotPeerCount(peerGovernorSnapshot.hotPeerCount())
+                .relayBackoffPeerCount(peerGovernorSnapshot.backoffPeerCount())
+                .relayQuarantinedPeerCount(peerGovernorSnapshot.quarantinedPeerCount())
+                .relaySharablePeerCount(peerGovernorSnapshot.sharablePeerCount())
+                .relayInboundPeerCount(peerGovernorSnapshot.inboundPeerCount())
+                .relayGossipPeerCount(peerGovernorSnapshot.gossipPeerCount())
+                .relayLedgerPeerCount(peerGovernorSnapshot.ledgerPeerCount())
+                .relayBootstrapPeerCount(peerGovernorSnapshot.bootstrapPeerCount())
+                .relayGovernorTargetHotPeers(peerGovernorSnapshot.targetHotPeers())
+                .relayGovernorTargetWarmPeers(peerGovernorSnapshot.targetWarmPeers())
+                .relayGovernorLastReconcileAtMillis(peerGovernorSnapshot.lastReconcileAtMillis())
+                .upstreamValidationLevel(upstreamStatus.validationLevel())
+                .upstreamValidationAcceptedHeaders(upstreamStatus.validationAcceptedHeaders())
+                .upstreamValidationRejectedHeaders(upstreamStatus.validationRejectedHeaders())
+                .upstreamValidationLastRejectedStage(upstreamStatus.validationLastRejectedStage())
+                .upstreamValidationLastRejectedReason(upstreamStatus.validationLastRejectedReason())
+                .mempoolSize(txSubsystem.mempoolSize())
+                .mempoolBytes(txSubsystem.mempoolBytes())
+                .mempoolMaxTxs(txSubsystem.mempoolMaxTxs())
+                .mempoolMaxBytes(txSubsystem.mempoolMaxBytes())
+                .mempoolTtlSeconds(txSubsystem.mempoolTtlSeconds())
+                .mempoolAccepting(txSubsystem.isAccepting())
+                .mempoolValidationAvailable(txSubsystem.transactionValidationService() != null)
+                .mempoolEvaluationAvailable(txSubsystem.isTransactionEvaluationAvailable())
+                .txDiffusionMode(txSubsystem.txDiffusionMode())
+                .txDiffusionEnabled(txSubsystem.txDiffusionEnabled())
+                .txDiffusionPeerCount(txDiffusionStats.peerCount())
+                .txDiffusionAcceptedMempoolEvents(txDiffusionStats.acceptedMempoolEvents())
+                .txDiffusionInboundTxIdsRequested(txDiffusionStats.inboundTxIdsRequested())
+                .txDiffusionInboundTxIdsRejected(txDiffusionStats.inboundTxIdsRejected())
+                .txDiffusionInboundTxIdsIgnored(txDiffusionStats.inboundTxIdsIgnored())
+                .txDiffusionInboundTxBodiesAccepted(txDiffusionStats.inboundTxBodiesAccepted())
+                .txDiffusionInboundTxBodiesRejected(txDiffusionStats.inboundTxBodiesRejected())
+                .txDiffusionInboundTxBodiesIgnored(txDiffusionStats.inboundTxBodiesIgnored())
+                .txDiffusionOutboundForwarded(txDiffusionStats.outboundForwarded())
+                .txDiffusionOutboundSuppressed(txDiffusionStats.outboundSuppressed())
+                .txDiffusionServedTxs(txDiffusionStats.servedTxs())
+                .txDiffusionServedBytes(txDiffusionStats.servedBytes())
+                .txDiffusionInFlightTxs(txDiffusionStats.inFlightTxs())
+                .txDiffusionInFlightBytes(txDiffusionStats.inFlightBytes())
                 .peerState(peerStatus != null ? peerStatus.state().name() : null)
                 .peerRecoveryReason(peerRecoveryReason(peerStatus, recoveryStatus))
                 .peerRecoveryFailures(recoveryStatus.consecutiveFailures())
@@ -3214,6 +3384,153 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 .peerBodyFetchInProgressAgeMillis(peerStatus != null ? peerStatus.bodyFetchInProgressAgeMillis() : null)
                 .timestamp(System.currentTimeMillis())
                 .build();
+    }
+
+    @Override
+    public NodePeers getPeers() {
+        UpstreamStatus upstreamStatus = syncSubsystem.upstreamStatus();
+        RelayConnectionSnapshot connectionSnapshot = relayConnectionManager.snapshot();
+        PeerGovernorSnapshot governorSnapshot = syncSubsystem.peerGovernorSnapshot();
+        Map<String, PeerRow> rows = new LinkedHashMap<>();
+
+        for (PeerGovernorPeerInfo peerInfo : governorSnapshot.peerInfos()) {
+            PeerDescriptor descriptor = peerInfo.descriptor();
+            if (descriptor == null) {
+                continue;
+            }
+            rows.computeIfAbsent(descriptor.id(), PeerRow::new).governor = peerInfo;
+        }
+        for (RelayConnectionInfo connection : connectionSnapshot.connections()) {
+            if (connection == null || connection.key() == null) {
+                continue;
+            }
+            String id = PeerDescriptor.endpointId(connection.key().host(), connection.key().port());
+            rows.computeIfAbsent(id, PeerRow::new).connection = connection;
+        }
+
+        List<NodePeers.NodePeer> peers = rows.values().stream()
+                .map(row -> toNodePeer(row, upstreamStatus))
+                .sorted(Comparator
+                        .comparing(NodePeers.NodePeer::active).reversed()
+                        .thenComparing(peer -> stateRank(peer.governorState()))
+                        .thenComparing(peer -> valueOrEmpty(peer.endpoint())))
+                .toList();
+
+        return new NodePeers(
+                System.currentTimeMillis(),
+                upstreamStatus.activePeerId(),
+                upstreamStatus.activePeerName(),
+                governorSnapshot.knownPeerCount(),
+                governorSnapshot.coldPeerCount(),
+                governorSnapshot.warmPeerCount(),
+                governorSnapshot.hotPeerCount(),
+                governorSnapshot.backoffPeerCount(),
+                governorSnapshot.quarantinedPeerCount(),
+                governorSnapshot.sharablePeerCount(),
+                governorSnapshot.inboundPeerCount(),
+                governorSnapshot.gossipPeerCount(),
+                governorSnapshot.ledgerPeerCount(),
+                governorSnapshot.bootstrapPeerCount(),
+                governorSnapshot.targetKnownPeers(),
+                governorSnapshot.targetWarmPeers(),
+                governorSnapshot.targetHotPeers(),
+                connectionSnapshot.inboundConnectionCount(),
+                connectionSnapshot.outboundConnectionCount(),
+                connectionSnapshot.establishedConnectionCount(),
+                connectionSnapshot.connectingConnectionCount(),
+                connectionSnapshot.rejectedInboundConnections(),
+                connectionSnapshot.failedOutboundConnections(),
+                peers);
+    }
+
+    private static NodePeers.NodePeer toNodePeer(PeerRow row, UpstreamStatus upstreamStatus) {
+        PeerGovernorPeerInfo governor = row.governor;
+        PeerDescriptor descriptor = governor != null ? governor.descriptor() : null;
+        RelayConnectionInfo connection = row.connection;
+        String host = descriptor != null
+                ? descriptor.host()
+                : connection != null && connection.key() != null ? connection.key().host() : null;
+        int port = descriptor != null
+                ? descriptor.port()
+                : connection != null && connection.key() != null ? connection.key().port() : 0;
+        String endpoint = host != null && port > 0 ? host + ":" + port : row.id;
+        ProtocolCapabilities capabilities = connection != null ? connection.capabilities() : null;
+        boolean active = isActivePeer(row.id, endpoint, upstreamStatus);
+        return new NodePeers.NodePeer(
+                row.id,
+                host,
+                port,
+                endpoint,
+                descriptor != null ? descriptor.source().configValue() : null,
+                descriptor != null ? descriptor.sourceId() : null,
+                descriptor != null ? descriptor.trustable() : null,
+                descriptor != null ? descriptor.advertise() : null,
+                descriptor != null ? descriptor.sharable() : null,
+                descriptor != null ? descriptor.score() : null,
+                governor != null && governor.state() != null ? governor.state().name() : null,
+                descriptor != null ? descriptor.firstSeenMillis() : null,
+                descriptor != null ? descriptor.lastSeenMillis() : null,
+                descriptor != null ? descriptor.expiresAtMillis() : null,
+                governor != null && governor.backoffUntilMillis() > 0 ? governor.backoffUntilMillis() : null,
+                connection != null ? connection.connectionId() : null,
+                connection != null && connection.direction() != null ? connection.direction().name() : null,
+                connection != null && connection.state() != null ? connection.state().name() : null,
+                connection != null ? connection.reason() : null,
+                connection != null ? connection.createdAtMillis() : null,
+                connection != null ? connection.updatedAtMillis() : null,
+                capabilities != null ? capabilities.negotiatedVersion() : null,
+                capabilities != null ? capabilities.chainSync() : null,
+                capabilities != null ? capabilities.blockFetch() : null,
+                capabilities != null ? capabilities.txSubmission() : null,
+                capabilities != null ? capabilities.keepAlive() : null,
+                capabilities != null ? capabilities.peerSharing() : null,
+                capabilities != null ? capabilities.query() : null,
+                active,
+                connection != null && connection.established());
+    }
+
+    private static boolean isActivePeer(String id, String endpoint, UpstreamStatus upstreamStatus) {
+        if (upstreamStatus == null) {
+            return false;
+        }
+        String activeId = upstreamStatus.activePeerId();
+        String activeName = upstreamStatus.activePeerName();
+        return matchesPeer(id, activeId)
+                || matchesPeer(endpoint, activeId)
+                || matchesPeer(id, activeName)
+                || matchesPeer(endpoint, activeName);
+    }
+
+    private static boolean matchesPeer(String left, String right) {
+        return left != null && right != null && left.equalsIgnoreCase(right);
+    }
+
+    private static int stateRank(String state) {
+        if (state == null) {
+            return 99;
+        }
+        return switch (state) {
+            case "HOT" -> 0;
+            case "WARM" -> 1;
+            case "COLD" -> 2;
+            case "BACKOFF" -> 3;
+            case "QUARANTINED" -> 4;
+            default -> 99;
+        };
+    }
+
+    private static String valueOrEmpty(String value) {
+        return value != null ? value : "";
+    }
+
+    private static final class PeerRow {
+        private final String id;
+        private PeerGovernorPeerInfo governor;
+        private RelayConnectionInfo connection;
+
+        private PeerRow(String id) {
+            this.id = id;
+        }
     }
 
     private ChainTip statusLocalTip() {
@@ -3357,6 +3674,65 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
         syncSubsystem.maybeFastTransitionToSteadyState(remoteTip);
     }
 
+    private PeerClientFactory createPeerClientFactory() {
+        boolean sourcePortReuse = resolveBoolean(
+                this.runtimeOptions.globals(),
+                YanoPropertyKeys.Relay.CONNECTION_SOURCE_PORT_REUSE,
+                true);
+        if (!sourcePortReuse) {
+            return DefaultPeerClientFactory.supervised();
+        }
+
+        Optional<String> bindHost = resolveSourcePortReuseBindHost();
+        if (bindHost.isEmpty()) {
+            log.warn("Relay outbound source-port reuse enabled, but no concrete local bind address could be resolved; using normal outbound dials");
+            return DefaultPeerClientFactory.supervised();
+        }
+
+        log.info("Relay outbound source-port reuse enabled: binding upstream dials to {}:{}",
+                bindHost.get(), serverPort);
+        return DefaultPeerClientFactory.supervisedWithLocalBind(bindHost.get(), serverPort);
+    }
+
+    private Optional<String> resolveSourcePortReuseBindHost() {
+        for (SourcePortProbeTarget target : sourcePortProbeTargets()) {
+            Optional<String> localHost = LocalBindAddressResolver.resolveForRemote(target.host(), target.port());
+            if (localHost.isPresent()) {
+                log.debug("Resolved relay source-port bind address {} using route to {}:{}",
+                        localHost.get(), target.host(), target.port());
+                return localHost;
+            }
+        }
+        return Optional.empty();
+    }
+
+    private List<SourcePortProbeTarget> sourcePortProbeTargets() {
+        List<SourcePortProbeTarget> targets = new ArrayList<>();
+        if (config.effectiveUpstream() != null) {
+            for (UpstreamPeerConfig peer : config.effectiveUpstream().orderedPeers()) {
+                addSourcePortProbeTarget(targets, peer.getHost(), peer.getPort());
+            }
+        }
+        addSourcePortProbeTarget(targets, remoteCardanoHost, remoteCardanoPort);
+
+        LinkedHashSet<String> seen = new LinkedHashSet<>();
+        List<SourcePortProbeTarget> deduplicated = new ArrayList<>();
+        for (SourcePortProbeTarget target : targets) {
+            String key = target.host() + "\0" + target.port();
+            if (seen.add(key)) {
+                deduplicated.add(target);
+            }
+        }
+        return deduplicated;
+    }
+
+    private static void addSourcePortProbeTarget(List<SourcePortProbeTarget> targets, String host, int port) {
+        if (host == null || host.isBlank() || port <= 0 || port > 65_535) {
+            return;
+        }
+        targets.add(new SourcePortProbeTarget(host.trim(), port));
+    }
+
     private static long parseLong(Object obj, long def) {
         if (obj instanceof Number n) return n.longValue();
         if (obj != null) {
@@ -3372,5 +3748,14 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
             try { return Boolean.parseBoolean(String.valueOf(val)); } catch (Exception ignored) {}
         }
         return def;
+    }
+
+    private static String resolveString(Map<String, Object> globals, String key, String def) {
+        Object val = globals != null ? globals.get(key) : null;
+        if (val == null) {
+            return def;
+        }
+        String str = String.valueOf(val).trim();
+        return str.isEmpty() ? def : str;
     }
 }

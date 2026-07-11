@@ -10,6 +10,7 @@ import com.bloxbean.cardano.yaci.events.api.EventMetadata;
 import com.bloxbean.cardano.yaci.events.api.PublishOptions;
 import com.bloxbean.cardano.yaci.events.api.SubscriptionOptions;
 import com.bloxbean.cardano.yano.api.config.RuntimeOptions;
+import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
 import com.bloxbean.cardano.yano.api.events.MemPoolTransactionReceivedEvent;
 import com.bloxbean.cardano.yano.api.events.TransactionValidateEvent;
 import com.bloxbean.cardano.yano.api.utxo.UtxoState;
@@ -20,6 +21,7 @@ import com.bloxbean.cardano.yano.ledgerrules.ValidationResult;
 import com.bloxbean.cardano.yano.runtime.blockproducer.TransactionValidationException;
 import com.bloxbean.cardano.yano.runtime.blockproducer.TransactionValidationService;
 import com.bloxbean.cardano.yano.runtime.chain.DefaultMemPool;
+import com.bloxbean.cardano.yano.runtime.chain.DefaultMempoolEvictionPolicy;
 import com.bloxbean.cardano.yano.runtime.events.PropagatingEventBus;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -338,6 +340,96 @@ class TxSubsystemTest {
     }
 
     @Test
+    void startUsesConfiguredMempoolAndDiffusionSettings() {
+        RuntimeOptions options = new RuntimeOptions(null, null, java.util.Map.of(
+                YanoPropertyKeys.Tx.MEMPOOL_MAX_TXS, 2,
+                YanoPropertyKeys.Tx.MEMPOOL_MAX_BYTES, 4096L,
+                YanoPropertyKeys.Tx.MEMPOOL_TTL_SECONDS, 45L,
+                YanoPropertyKeys.Tx.DIFFUSION_MODE, "local-submit-only",
+                YanoPropertyKeys.Tx.DIFFUSION_MAX_IN_FLIGHT_TXS_PER_PEER, 7,
+                YanoPropertyKeys.Tx.DIFFUSION_MAX_IN_FLIGHT_BYTES_PER_PEER, 8192L,
+                YanoPropertyKeys.Tx.DIFFUSION_PEER_COOLDOWN_MS, 12_345L));
+        TxSubsystem subsystem = new TxSubsystem(
+                eventBus, scheduler, options, () -> null,
+                LoggerFactory.getLogger(TxSubsystemTest.class));
+
+        subsystem.start();
+
+        assertThat(subsystem.mempoolMaxTxs()).isEqualTo(2);
+        assertThat(subsystem.mempoolMaxBytes()).isEqualTo(4096L);
+        assertThat(subsystem.mempoolTtlSeconds()).isEqualTo(45L);
+        assertThat(subsystem.txDiffusionMode()).isEqualTo("local-submit-only");
+        assertThat(subsystem.txDiffusionEnabled()).isTrue();
+        assertThat(subsystem.txDiffusionMaxInFlightTxsPerPeer()).isEqualTo(7);
+        assertThat(subsystem.txDiffusionMaxInFlightBytesPerPeer()).isEqualTo(8192L);
+        assertThat(subsystem.txDiffusionPeerCooldownMs()).isEqualTo(12_345L);
+        assertThat(subsystem.health().details())
+                .containsEntry("mempoolMaxTxs", 2)
+                .containsEntry("mempoolMaxBytes", 4096L)
+                .containsEntry("txDiffusionMode", "local-submit-only")
+                .containsEntry("txDiffusionEnabled", true);
+    }
+
+    @Test
+    void mempoolTracksBytesWithoutDuplicatingExistingTransactions() {
+        var memPool = new DefaultMemPool();
+        byte[] txCbor = sampleTxCbor();
+
+        memPool.addTransaction(txCbor);
+        memPool.addTransaction(txCbor);
+
+        assertThat(memPool.size()).isEqualTo(1);
+        assertThat(memPool.byteSize()).isEqualTo(txCbor.length);
+    }
+
+    @Test
+    void txDiffusionObservesAcceptedMempoolEvents() {
+        RuntimeOptions options = new RuntimeOptions(null, null, java.util.Map.of(
+                YanoPropertyKeys.Tx.DIFFUSION_MODE, "local-submit-only"));
+        TxSubsystem subsystem = new TxSubsystem(
+                eventBus, scheduler, options, () -> null,
+                LoggerFactory.getLogger(TxSubsystemTest.class));
+        subsystem.start();
+
+        subsystem.admitTransaction(sampleTxCbor(), "test");
+
+        assertThat(subsystem.txDiffusionStats().enabled()).isTrue();
+        assertThat(subsystem.txDiffusionStats().acceptedMempoolEvents()).isEqualTo(1L);
+    }
+
+    @Test
+    void mempoolEvictsOldestTransactionsToByteCap() {
+        var memPool = new DefaultMemPool();
+        byte[] firstTx = sampleTxCbor(200_000);
+        byte[] secondTx = sampleTxCbor(200_001);
+        memPool.addTransaction(firstTx);
+        memPool.addTransaction(secondTx);
+
+        int evicted = memPool.evictOldestUntilBytesAtMost(secondTx.length);
+
+        assertThat(evicted).isEqualTo(1);
+        assertThat(memPool.size()).isEqualTo(1);
+        assertThat(memPool.byteSize()).isEqualTo(secondTx.length);
+        assertThat(memPool.getNextTransaction().txBytes()).isSameAs(secondTx);
+    }
+
+    @Test
+    void evictionPolicyAppliesByteCap() {
+        var memPool = new DefaultMemPool();
+        byte[] firstTx = sampleTxCbor(200_000);
+        byte[] secondTx = sampleTxCbor(200_001);
+        memPool.addTransaction(firstTx);
+        memPool.addTransaction(secondTx);
+        var policy = new DefaultMempoolEvictionPolicy(memPool, 0, 100, secondTx.length);
+
+        policy.onPeriodicCheck();
+
+        assertThat(memPool.size()).isEqualTo(1);
+        assertThat(memPool.byteSize()).isEqualTo(secondTx.length);
+        assertThat(memPool.getNextTransaction().txBytes()).isSameAs(secondTx);
+    }
+
+    @Test
     void drainForBlockReturnsPendingTransactionsAndClearsMempool() {
         TxSubsystem subsystem = new TxSubsystem(
                 eventBus, scheduler, RuntimeOptions.defaults(), () -> null,
@@ -387,6 +479,10 @@ class TxSubsystemTest {
     }
 
     private static byte[] sampleTxCbor() {
+        return sampleTxCbor(200_000);
+    }
+
+    private static byte[] sampleTxCbor(long fee) {
         Map txBody = new Map();
         Array inputs = new Array();
         Array input = new Array();
@@ -401,7 +497,7 @@ class TxSubsystemTest {
         output.put(new UnsignedInteger(1), new UnsignedInteger(1_000_000));
         outputs.add(output);
         txBody.put(new UnsignedInteger(1), outputs);
-        txBody.put(new UnsignedInteger(2), new UnsignedInteger(200_000));
+        txBody.put(new UnsignedInteger(2), new UnsignedInteger(fee));
 
         Map witnesses = new Map();
 

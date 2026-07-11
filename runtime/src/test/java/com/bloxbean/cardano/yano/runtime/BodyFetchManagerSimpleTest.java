@@ -9,6 +9,8 @@ import com.bloxbean.cardano.yaci.core.storage.ChainTip;
 import com.bloxbean.cardano.yaci.helper.PeerClient;
 import com.bloxbean.cardano.yaci.helper.model.Transaction;
 import com.bloxbean.cardano.yano.runtime.chain.InMemoryChainState;
+import com.bloxbean.cardano.yano.runtime.sync.validation.BodyValidationException;
+import com.bloxbean.cardano.yano.runtime.sync.validation.BodyValidationResult;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.AfterEach;
@@ -17,6 +19,7 @@ import org.junit.jupiter.api.DisplayName;
 import java.lang.reflect.Field;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -293,6 +296,42 @@ class BodyFetchManagerSimpleTest {
         Block blockWithoutCbor = createTestBlockWithoutCbor(1001L, 501L, "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef");
         assertThrows(RuntimeException.class, () -> 
             bodyFetchManager.onBlock(Era.Shelley, blockWithoutCbor, Collections.emptyList()));
+    }
+
+    @Test
+    void customBodyValidatorCanRejectBeforeStorage() {
+        AtomicReference<Long> observedSlot = new AtomicReference<>();
+        chainState.storeBlock(
+                hexToBytes("0000000000000000000000000000000000000000000000000000000000000abf"),
+                500L,
+                1000L,
+                "00".getBytes()
+        );
+        BodyFetchManager validatingManager = new BodyFetchManager(
+                mockPeerClient,
+                chainState,
+                new com.bloxbean.cardano.yaci.events.impl.SimpleEventBus(),
+                GAP_THRESHOLD,
+                MAX_BATCH_SIZE,
+                MONITORING_INTERVAL,
+                1000,
+                null,
+                context -> {
+                    observedSlot.set(context.slot());
+                    return BodyValidationResult.rejected("test-body-validator", "policy", "blocked");
+                });
+
+        Block block = createTestBlock(1001L, 501L,
+                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef");
+
+        BodyValidationException ex = assertThrows(BodyValidationException.class,
+                () -> validatingManager.onBlock(Era.Shelley, block, Collections.emptyList()));
+
+        assertEquals(1001L, observedSlot.get());
+        assertEquals("test-body-validator", ex.result().validatorId());
+        assertEquals("policy", ex.result().stage());
+        assertNull(chainState.getBlockByNumber(501L), "Rejected body should not be stored");
+        assertEquals(500L, chainState.getTip().getBlockNumber(), "Setup tip should remain unchanged");
     }
     
     private Block createTestBlockWithoutCbor(long slot, long blockNumber, String hash) {

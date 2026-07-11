@@ -1,0 +1,9 @@
+# Ledger-view header validation profile.
+# Op-cert counter checking stays in compat mode so old/checkpointed DBs do not fail closed.
+
+yano:
+  upstream:
+    validation:
+      level: praos-ledger
+      body-level: none
+      opcert-counter-mode: compat

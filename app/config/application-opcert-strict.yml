@@ -1,0 +1,7 @@
+# Strict op-cert counter validation profile.
+# Use only with a DB synced with op-cert counter tracking from the validation start point.
+
+yano:
+  upstream:
+    validation:
+      opcert-counter-mode: strict

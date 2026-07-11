@@ -11,7 +11,7 @@ ENV_FILE="$SCRIPT_DIR/compose/.env"
 COMPOSE_DIR="$SCRIPT_DIR/compose"
 
 usage() {
-  echo "Usage: $0 [start|start:<profile>|stop|restart|restart:<profile>|logs|logs:yano|status|config|config:<profile>|pull]"
+  echo "Usage: $0 [start|start:<profiles>|stop|restart|restart:<profiles>|logs|logs:yano|status|config|config:<profiles>|pull]"
 }
 
 require_docker() {
@@ -39,6 +39,53 @@ validate_profile_name() {
       exit 1
       ;;
   esac
+}
+
+validate_profile_list() {
+  profile_list="$1"
+  case "$profile_list" in
+    ''|*,|,*|*,,*)
+      echo "Invalid profile list: $profile_list" >&2
+      echo "Use comma-separated profile names without empty segments." >&2
+      exit 1
+      ;;
+  esac
+
+  rest="$profile_list"
+  while :; do
+    case "$rest" in
+      *,*)
+        profile="${rest%%,*}"
+        rest="${rest#*,}"
+        ;;
+      *)
+        profile="$rest"
+        rest=""
+        ;;
+    esac
+    validate_profile_name "$profile"
+    [ -z "$rest" ] && break
+  done
+}
+
+primary_profile() {
+  profile_list="$1"
+  printf '%s\n' "${profile_list%%,*}"
+}
+
+default_profiles() {
+  if [ -n "${YANO_PROFILE:-}" ]; then
+    printf '%s\n' "$YANO_PROFILE"
+    return
+  fi
+
+  configured_profile="$(strip_optional_quotes "$(env_file_value YANO_PROFILE)")"
+  if [ -n "$configured_profile" ]; then
+    printf '%s\n' "$configured_profile"
+    return
+  fi
+
+  printf '%s\n' preprod
 }
 
 env_file_value() {
@@ -94,15 +141,17 @@ ensure_chainstate_dir() {
   mkdir -p "$chainstate_dir"
 }
 
-prepare_chainstate_for_network() {
-  network="$1"
-  validate_profile_name "$network"
-  ensure_chainstate_dir "$network"
+prepare_chainstate_for_profiles() {
+  profile_list="$1"
+  validate_profile_list "$profile_list"
+  ensure_chainstate_dir "$(primary_profile "$profile_list")"
 }
 
 compose_network() {
-  network="$1"
+  profile_list="$1"
   shift
+  validate_profile_list "$profile_list"
+  network="$(primary_profile "$profile_list")"
   validate_profile_name "$network"
 
   if [ "${1:-}" = "up" ]; then
@@ -111,23 +160,33 @@ compose_network() {
 
   case "$network" in
     preprod)
-      compose "$@"
+      YANO_PROFILE="$profile_list" \
+        YANO_NETWORK="$network" \
+        compose "$@"
       ;;
     mainnet)
-      docker compose -f "$COMPOSE_FILE" -f "$MAINNET_COMPOSE_FILE" --env-file "$ENV_FILE" "$@"
+      YANO_PROFILE="$profile_list" \
+        YANO_NETWORK="$network" \
+        docker compose -f "$COMPOSE_FILE" -f "$MAINNET_COMPOSE_FILE" --env-file "$ENV_FILE" "$@"
       ;;
     preview)
-      docker compose -f "$COMPOSE_FILE" -f "$PREVIEW_COMPOSE_FILE" --env-file "$ENV_FILE" "$@"
+      YANO_PROFILE="$profile_list" \
+        YANO_NETWORK="$network" \
+        docker compose -f "$COMPOSE_FILE" -f "$PREVIEW_COMPOSE_FILE" --env-file "$ENV_FILE" "$@"
       ;;
     sanchonet)
-      docker compose -f "$COMPOSE_FILE" -f "$SANCHONET_COMPOSE_FILE" --env-file "$ENV_FILE" "$@"
+      YANO_PROFILE="$profile_list" \
+        YANO_NETWORK="$network" \
+        docker compose -f "$COMPOSE_FILE" -f "$SANCHONET_COMPOSE_FILE" --env-file "$ENV_FILE" "$@"
       ;;
     devnet)
-      docker compose -f "$COMPOSE_FILE" -f "$DEVNET_COMPOSE_FILE" --env-file "$ENV_FILE" "$@"
+      YANO_PROFILE="$profile_list" \
+        YANO_NETWORK="$network" \
+        docker compose -f "$COMPOSE_FILE" -f "$DEVNET_COMPOSE_FILE" --env-file "$ENV_FILE" "$@"
       ;;
     *)
       custom_chainstate_path="$(chainstate_path_for_profile "$network")"
-      YANO_PROFILE="$network" \
+      YANO_PROFILE="$profile_list" \
         YANO_NETWORK="$network" \
         YANO_CHAINSTATE_PATH="$custom_chainstate_path" \
         docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" "$@"
@@ -149,7 +208,10 @@ fi
 require_docker
 
 case "$ACTION" in
-  start|start:preprod)
+  start)
+    compose_network "$(default_profiles)" up -d
+    ;;
+  start:preprod)
     compose_network preprod up -d
     ;;
   start:mainnet)
@@ -170,36 +232,42 @@ case "$ACTION" in
   stop)
     compose down
     ;;
-  restart|restart:preprod)
-    prepare_chainstate_for_network preprod
+  restart)
+    profiles="$(default_profiles)"
+    prepare_chainstate_for_profiles "$profiles"
+    compose_network "$profiles" down
+    compose_network "$profiles" up -d
+    ;;
+  restart:preprod)
+    prepare_chainstate_for_profiles preprod
     compose_network preprod down
     compose_network preprod up -d
     ;;
   restart:mainnet)
-    prepare_chainstate_for_network mainnet
+    prepare_chainstate_for_profiles mainnet
     compose_network mainnet down
     compose_network mainnet up -d
     ;;
   restart:preview)
-    prepare_chainstate_for_network preview
+    prepare_chainstate_for_profiles preview
     compose_network preview down
     compose_network preview up -d
     ;;
   restart:sanchonet)
-    prepare_chainstate_for_network sanchonet
+    prepare_chainstate_for_profiles sanchonet
     compose_network sanchonet down
     compose_network sanchonet up -d
     ;;
   restart:devnet)
-    prepare_chainstate_for_network devnet
+    prepare_chainstate_for_profiles devnet
     compose_network devnet down
     compose_network devnet up -d
     ;;
   restart:*)
-    profile="${ACTION#restart:}"
-    prepare_chainstate_for_network "$profile"
-    compose_network "$profile" down
-    compose_network "$profile" up -d
+    profiles="${ACTION#restart:}"
+    prepare_chainstate_for_profiles "$profiles"
+    compose_network "$profiles" down
+    compose_network "$profiles" up -d
     ;;
   logs|logs:yano)
     compose logs -f yano
@@ -207,7 +275,10 @@ case "$ACTION" in
   status)
     compose ps
     ;;
-  config|config:preprod)
+  config)
+    compose_network "$(default_profiles)" config
+    ;;
+  config:preprod)
     compose_network preprod config
     ;;
   config:mainnet)

@@ -1,0 +1,50 @@
+# Relay-style upstream profile.
+# Combine with a network profile, for example: preprod,relay.
+
+yano:
+  client:
+    enabled: true
+  server:
+    enabled: true
+    port: 13337
+  relay:
+    auto-discovery: true
+    advertised-host: auto
+    advertised-port: 0
+    allow-private-addresses: false
+    connection:
+      max-inbound-connections: 100
+      max-connections-per-ip: 5
+      source-port-reuse: true
+  upstream:
+    mode: p2p-relay
+    sync:
+      bulk-source: single-trusted
+      fan-in-start: near-tip
+    discovery:
+      enabled: true
+      peer-sharing: true
+      seeds: []
+      topology-file: ""
+      peer-snapshot-limit: 64
+      ledger-peers: false
+      use-ledger-after-slot: -1
+      allow-private-addresses: false
+    selection:
+      policy: trusted-or-quorum-within-rollback-window
+      quorum: 2
+      tie-break: deterministic
+    governor:
+      enabled: true
+      targets:
+        cold: 150
+        warm: 8
+        hot: 3
+      max-concurrent-dials: 4
+  tx:
+    diffusion:
+      enabled: true
+      limits:
+        max-in-flight-txs-per-peer: 100
+        max-in-flight-bytes-per-peer: 1048576
+        peer-cooldown-ms: 60000

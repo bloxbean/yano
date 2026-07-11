@@ -1,0 +1,25 @@
+# Cardano preview network profile.
+
+yano:
+  network: preview
+  remote:
+    host: preview-node.play.dev.cardano.org
+    port: 3001
+    protocol-magic: 2
+  genesis:
+    shelley-genesis-file: config/network/preview/shelley-genesis.json
+    shelley-genesis-hash: "363498d1024f84bb39d3fa9593ce391483cb40d479b87233f868d6e57c3a400d"
+    byron-genesis-file: config/network/preview/byron-genesis.json
+    alonzo-genesis-file: config/network/preview/alonzo-genesis.json
+    conway-genesis-file: config/network/preview/conway-genesis.json
+    protocol-parameters-file: config/network/preview/protocol-param.json
+  upstream:
+    discovery:
+      peer-snapshot-urls:
+        - https://book.play.dev.cardano.org/environments/preview/peer-snapshot.json
+    validation:
+      start:
+        mode: era
+        era: conway
+        slot: 34905604
+        hash: "cbc88c5f633ace6671f6cbb54a0913e4d7c57697869e951bc032e093f6db5f46"

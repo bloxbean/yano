@@ -1,5 +1,7 @@
 package com.bloxbean.cardano.yano.app;
 
+import com.bloxbean.cardano.yano.api.config.UpstreamPreset;
+import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
 import com.bloxbean.cardano.yano.runtime.config.RollbackRetentionGenesisValues;
 import com.bloxbean.cardano.yano.runtime.config.RollbackRetentionPlanner;
 import org.eclipse.microprofile.config.Config;
@@ -12,6 +14,7 @@ import java.util.Map;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 class YanoProducerTest {
 
@@ -48,6 +51,100 @@ class YanoProducerTest {
         assertEquals(864_000, globals.get(RollbackRetentionPlanner.BLOCK_BODY_PRUNE_DEPTH));
     }
 
+    @Test
+    void upstreamValidationOverrideIsHonoredWithLegacyRemoteConfig() {
+        var producer = new YanoProducer(Thread.currentThread().getContextClassLoader());
+        producer.appConfig = new PresentConfig(Map.of(
+                YanoPropertyKeys.Upstream.VALIDATION_LEVEL, "header-signature",
+                YanoPropertyKeys.Upstream.VALIDATION_BODY_LEVEL, "none"));
+
+        var upstream = producer.parseUpstreamConfig();
+
+        assertNotNull(upstream);
+        assertEquals(UpstreamPreset.TRUSTED_SINGLE, upstream.getMode());
+        assertEquals("header-signature", upstream.getValidation().normalizedLevel());
+        assertEquals("none", upstream.getValidation().normalizedBodyLevel());
+    }
+
+    @Test
+    void upstreamSelectionRollbackWindowDefaultsToGenesisDerivedSentinel() {
+        var producer = new YanoProducer(Thread.currentThread().getContextClassLoader());
+        producer.appConfig = new PresentConfig(Map.of(
+                YanoPropertyKeys.Upstream.MODE, "trusted-single"));
+
+        var upstream = producer.parseUpstreamConfig();
+
+        assertNotNull(upstream);
+        assertEquals(0L, upstream.getSelection().getRollbackWindowSlots());
+    }
+
+    @Test
+    void upstreamSelectionRollbackWindowOverrideIsHonored() {
+        var producer = new YanoProducer(Thread.currentThread().getContextClassLoader());
+        producer.appConfig = new PresentConfig(Map.of(
+                YanoPropertyKeys.Upstream.MODE, "trusted-single",
+                YanoPropertyKeys.Upstream.SELECTION_ROLLBACK_WINDOW_SLOTS, "123"));
+
+        var upstream = producer.parseUpstreamConfig();
+
+        assertNotNull(upstream);
+        assertEquals(123L, upstream.getSelection().getRollbackWindowSlots());
+    }
+
+    @Test
+    void txDiffusionDisabledOverridesLegacyUpstreamForwarding() {
+        var producer = new YanoProducer(Thread.currentThread().getContextClassLoader());
+        producer.appConfig = new PresentConfig(Map.of(
+                YanoPropertyKeys.Upstream.MODE, "trusted-single",
+                YanoPropertyKeys.Upstream.TX_FORWARDING, "active-selected",
+                YanoPropertyKeys.Tx.DIFFUSION_MODE, "disabled"));
+
+        var upstream = producer.parseUpstreamConfig();
+
+        assertNotNull(upstream);
+        assertEquals("disabled", upstream.getTx().normalizedForwarding());
+    }
+
+    @Test
+    void relayTxDiffusionDefaultsToAllHotForwarding() {
+        var producer = new YanoProducer(Thread.currentThread().getContextClassLoader());
+        producer.appConfig = new PresentConfig(Map.of(
+                YanoPropertyKeys.Upstream.MODE, "p2p-relay",
+                YanoPropertyKeys.Tx.DIFFUSION_ENABLED, "true"));
+
+        var upstream = producer.parseUpstreamConfig();
+
+        assertNotNull(upstream);
+        assertEquals("all-hot", upstream.getTx().normalizedForwarding());
+    }
+
+    @Test
+    void allHotDiffusionModeUsesAllHotForwarding() {
+        var producer = new YanoProducer(Thread.currentThread().getContextClassLoader());
+        producer.appConfig = new PresentConfig(Map.of(
+                YanoPropertyKeys.Upstream.MODE, "p2p-relay",
+                YanoPropertyKeys.Tx.DIFFUSION_MODE, "all-hot"));
+
+        var upstream = producer.parseUpstreamConfig();
+
+        assertNotNull(upstream);
+        assertEquals("all-hot", upstream.getTx().normalizedForwarding());
+    }
+
+    @Test
+    void localSubmitOnlyModeKeepsLegacyTrustedHotForwardingTarget() {
+        var producer = new YanoProducer(Thread.currentThread().getContextClassLoader());
+        producer.appConfig = new PresentConfig(Map.of(
+                YanoPropertyKeys.Upstream.MODE, "p2p-relay",
+                YanoPropertyKeys.Upstream.TX_FORWARDING, "all-hot-trusted",
+                YanoPropertyKeys.Tx.DIFFUSION_MODE, "local-submit-only"));
+
+        var upstream = producer.parseUpstreamConfig();
+
+        assertNotNull(upstream);
+        assertEquals("all-hot-trusted", upstream.getTx().normalizedForwarding());
+    }
+
     private record PresentConfig(Map<String, String> values) implements Config {
         @Override
         public <T> T getValue(String propertyName, Class<T> propertyType) {
@@ -68,6 +165,9 @@ class YanoProducerTest {
             }
             if (propertyType == String.class) {
                 return Optional.of(propertyType.cast(value));
+            }
+            if (propertyType == Long.class) {
+                return Optional.of(propertyType.cast(Long.valueOf(value)));
             }
             throw new UnsupportedOperationException("Unsupported config type: " + propertyType.getName());
         }

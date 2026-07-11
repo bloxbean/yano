@@ -1,7 +1,7 @@
 services:
   yano:
     environment:
-      YANO_PROFILE: devnet
-      YANO_NETWORK: devnet
+      YANO_PROFILE: ${YANO_PROFILE:-devnet}
+      YANO_NETWORK: ${YANO_NETWORK:-devnet}
     volumes:
       - ${YANO_CHAINSTATE_PATH:-../chainstate-devnet}:/app/chainstate

@@ -1,8 +1,12 @@
 dependencies {
     api project(':core-api')
+    api project(':consensus')
+    api project(':p2p')
     api libs.yaci.core
     api libs.yaci.helper
     api libs.project.reactor.core
+
+    compileOnly libs.netty
 
     implementation libs.rocksdb
 

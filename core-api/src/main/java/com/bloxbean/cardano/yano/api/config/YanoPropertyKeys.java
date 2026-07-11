@@ -29,6 +29,65 @@ public final class YanoPropertyKeys {
     }
 
     /**
+     * Upstream peer selection, failover, and future multi-peer relay settings.
+     */
+    public static final class Upstream {
+        public static final String MODE = "yano.upstream.mode";
+        public static final String PEERS = "yano.upstream.peers";
+        public static final String SELECTION_POLICY = "yano.upstream.selection.policy";
+        public static final String SELECTION_ROLLBACK_WINDOW_SLOTS =
+                "yano.upstream.selection.rollback-window-slots";
+        public static final String SELECTION_REQUIRE_BODY_BEFORE_ADOPTION =
+                "yano.upstream.selection.require-body-before-adoption";
+        public static final String SELECTION_TRUST_POLICY =
+                "yano.upstream.selection.trust-policy";
+        public static final String SELECTION_QUORUM = "yano.upstream.selection.quorum";
+        public static final String SELECTION_TIE_BREAK = "yano.upstream.selection.tie-break";
+        public static final String VALIDATION_LEVEL = "yano.upstream.validation.level";
+        public static final String VALIDATION_BODY_LEVEL = "yano.upstream.validation.body-level";
+        public static final String VALIDATION_OPCERT_COUNTER_MODE =
+                "yano.upstream.validation.opcert-counter-mode";
+        public static final String VALIDATION_START_MODE = "yano.upstream.validation.start.mode";
+        public static final String VALIDATION_START_ERA = "yano.upstream.validation.start.era";
+        public static final String VALIDATION_START_SLOT = "yano.upstream.validation.start.slot";
+        public static final String VALIDATION_START_HASH = "yano.upstream.validation.start.hash";
+        public static final String SYNC_BULK_SOURCE = "yano.upstream.sync.bulk-source";
+        public static final String SYNC_FAN_IN_START = "yano.upstream.sync.fan-in-start";
+        public static final String FAILOVER_COOLDOWN_MS = "yano.upstream.failover.cooldown-ms";
+        public static final String FAILOVER_MAX_FAILURES_BEFORE_COOLDOWN =
+                "yano.upstream.failover.max-failures-before-cooldown";
+        public static final String TX_FORWARDING = "yano.upstream.tx.forwarding";
+        public static final String GOVERNOR_ENABLED = "yano.upstream.governor.enabled";
+        public static final String GOVERNOR_TARGET_COLD = "yano.upstream.governor.targets.cold";
+        public static final String GOVERNOR_TARGET_WARM = "yano.upstream.governor.targets.warm";
+        public static final String GOVERNOR_TARGET_HOT = "yano.upstream.governor.targets.hot";
+        public static final String GOVERNOR_MAX_CONCURRENT_DIALS =
+                "yano.upstream.governor.max-concurrent-dials";
+        public static final String DISCOVERY_ENABLED = "yano.upstream.discovery.enabled";
+        public static final String DISCOVERY_PEER_SHARING = "yano.upstream.discovery.peer-sharing";
+        public static final String DISCOVERY_SEEDS = "yano.upstream.discovery.seeds";
+        public static final String DISCOVERY_PEER_SNAPSHOT_URLS =
+                "yano.upstream.discovery.peer-snapshot-urls";
+        public static final String DISCOVERY_PEER_SNAPSHOT_FILES =
+                "yano.upstream.discovery.peer-snapshot-files";
+        public static final String DISCOVERY_PEER_SNAPSHOT_LIMIT =
+                "yano.upstream.discovery.peer-snapshot-limit";
+        public static final String DISCOVERY_TOPOLOGY_FILE =
+                "yano.upstream.discovery.topology-file";
+        public static final String DISCOVERY_LEDGER_PEERS =
+                "yano.upstream.discovery.ledger-peers";
+        public static final String DISCOVERY_USE_LEDGER_AFTER_SLOT =
+                "yano.upstream.discovery.use-ledger-after-slot";
+        public static final String DISCOVERY_ALLOW_PRIVATE_ADDRESSES =
+                "yano.upstream.discovery.allow-private-addresses";
+        public static final String DISCOVERY_ALLOWLIST = "yano.upstream.discovery.allowlist";
+        public static final String DISCOVERY_DENYLIST = "yano.upstream.discovery.denylist";
+
+        private Upstream() {
+        }
+    }
+
+    /**
      * Chain-sync client enablement settings.
      */
     public static final class Client {
@@ -46,6 +105,25 @@ public final class YanoPropertyKeys {
         public static final String PORT = "yano.server.port";
 
         private Server() {
+        }
+    }
+
+    /**
+     * Relay behavior exposed by the node-to-node server.
+     */
+    public static final class Relay {
+        public static final String AUTO_DISCOVERY = "yano.relay.auto-discovery";
+        public static final String ADVERTISED_HOST = "yano.relay.advertised-host";
+        public static final String ADVERTISED_PORT = "yano.relay.advertised-port";
+        public static final String ALLOW_PRIVATE_ADDRESSES = "yano.relay.allow-private-addresses";
+        public static final String CONNECTION_MAX_INBOUND_CONNECTIONS =
+                "yano.relay.connection.max-inbound-connections";
+        public static final String CONNECTION_MAX_CONNECTIONS_PER_IP =
+                "yano.relay.connection.max-connections-per-ip";
+        public static final String CONNECTION_SOURCE_PORT_REUSE =
+                "yano.relay.connection.source-port-reuse";
+
+        private Relay() {
         }
     }
 
@@ -143,6 +221,26 @@ public final class YanoPropertyKeys {
         public static final String SUPPLEMENTARY_RULES_ENABLED = "yano.validation.supplementary-rules-enabled";
 
         private Validation() {
+        }
+    }
+
+    /**
+     * Transaction mempool and transaction diffusion settings.
+     */
+    public static final class Tx {
+        public static final String MEMPOOL_MAX_TXS = "yano.tx.mempool.max-txs";
+        public static final String MEMPOOL_MAX_BYTES = "yano.tx.mempool.max-bytes";
+        public static final String MEMPOOL_TTL_SECONDS = "yano.tx.mempool.ttl-seconds";
+        public static final String DIFFUSION_ENABLED = "yano.tx.diffusion.enabled";
+        public static final String DIFFUSION_MODE = "yano.tx.diffusion.mode";
+        public static final String DIFFUSION_MAX_IN_FLIGHT_TXS_PER_PEER =
+                "yano.tx.diffusion.limits.max-in-flight-txs-per-peer";
+        public static final String DIFFUSION_MAX_IN_FLIGHT_BYTES_PER_PEER =
+                "yano.tx.diffusion.limits.max-in-flight-bytes-per-peer";
+        public static final String DIFFUSION_PEER_COOLDOWN_MS =
+                "yano.tx.diffusion.limits.peer-cooldown-ms";
+
+        private Tx() {
         }
     }
 

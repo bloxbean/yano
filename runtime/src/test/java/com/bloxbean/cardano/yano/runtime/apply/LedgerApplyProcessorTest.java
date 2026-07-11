@@ -2,7 +2,7 @@ package com.bloxbean.cardano.yano.runtime.apply;
 
 import com.bloxbean.cardano.yaci.core.storage.ChainTip;
 import com.bloxbean.cardano.yano.runtime.chain.InMemoryChainState;
-import com.bloxbean.cardano.yano.runtime.peer.PeerRecoveryReason;
+import com.bloxbean.cardano.yano.p2p.peer.PeerRecoveryReason;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 

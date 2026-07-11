@@ -401,13 +401,14 @@ public final class YanoAppProcess implements AutoCloseable {
         return cmd;
     }
 
-    private void prepareConfig() throws IOException {
+    void prepareConfig() throws IOException {
         Files.createDirectories(workDir);
         Path target = configDir();
         if (!Files.exists(target)) {
             YanoGenesisFiles.copyDirectory(configSourceDir, target);
         }
         if (applyProtocol10Overlay) {
+            removeApplicationConfigOverrides(target);
             boolean applied = YanoGenesisFiles.applyProtocol10Overlay(target);
             if (applied) {
                 log.info("Applied protocol-10 devnet config overlay for Haskell sync compatibility");
@@ -415,6 +416,25 @@ public final class YanoAppProcess implements AutoCloseable {
                 log.warn("Haskell sync protocol-10 devnet config not found at {}",
                         YanoGenesisFiles.devnetGenesisDir(target).resolve("pv10"));
             }
+        }
+    }
+
+    private void removeApplicationConfigOverrides(Path configDir) throws IOException {
+        try (var files = Files.list(configDir)) {
+            files.filter(path -> {
+                        String name = path.getFileName().toString();
+                        return Files.isRegularFile(path)
+                                && (name.startsWith("application.") || name.startsWith("application-"));
+                    })
+                    .forEach(path -> {
+                        try {
+                            Files.deleteIfExists(path);
+                        } catch (IOException e) {
+                            throw new java.io.UncheckedIOException(e);
+                        }
+                    });
+        } catch (java.io.UncheckedIOException e) {
+            throw e.getCause();
         }
     }
 
@@ -498,9 +518,14 @@ public final class YanoAppProcess implements AutoCloseable {
     }
 
     private static int findAvailablePort() throws IOException {
-        try (ServerSocket socket = new ServerSocket(0)) {
-            socket.setReuseAddress(false);
-            return socket.getLocalPort();
+        while (true) {
+            try (ServerSocket socket = new ServerSocket(0)) {
+                socket.setReuseAddress(false);
+                int port = socket.getLocalPort();
+                if (port != 3001) {
+                    return port;
+                }
+            }
         }
     }
 

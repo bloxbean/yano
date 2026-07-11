@@ -1,6 +1,8 @@
 package com.bloxbean.cardano.yano.app.api.devnet;
 
+import com.bloxbean.cardano.yano.app.NoAutoStartTestProfile;
 import io.quarkus.test.junit.QuarkusTest;
+import io.quarkus.test.junit.TestProfile;
 import org.junit.jupiter.api.Test;
 
 import static io.restassured.RestAssured.given;
@@ -12,6 +14,7 @@ import static org.hamcrest.Matchers.*;
  * should return 403. This verifies the guard logic works correctly.
  */
 @QuarkusTest
+@TestProfile(NoAutoStartTestProfile.class)
 public class DevnetResourceTest {
 
     @Test

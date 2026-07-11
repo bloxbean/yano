@@ -15,6 +15,15 @@ import com.bloxbean.cardano.yano.runtime.HeaderSyncManager;
 import com.bloxbean.cardano.yano.runtime.PipelineDataListener;
 import com.bloxbean.cardano.yano.runtime.SyncTipContext;
 import com.bloxbean.cardano.yano.runtime.HeaderAppliedEventPublisher;
+import com.bloxbean.cardano.yano.runtime.sync.validation.BodyValidator;
+import com.bloxbean.cardano.yano.runtime.sync.validation.HeaderValidator;
+import com.bloxbean.cardano.yano.p2p.peer.DefaultPeerClientFactory;
+import com.bloxbean.cardano.yano.p2p.peer.PeerClientFactory;
+import com.bloxbean.cardano.yano.p2p.peer.PeerEndpoint;
+import com.bloxbean.cardano.yano.p2p.peer.PeerHealth;
+import com.bloxbean.cardano.yano.p2p.peer.PeerRecoveryReason;
+import com.bloxbean.cardano.yano.p2p.peer.PeerSessionState;
+import com.bloxbean.cardano.yano.p2p.peer.PeerSessionStatus;
 import lombok.extern.slf4j.Slf4j;
 
 import java.time.Duration;
@@ -38,6 +47,8 @@ public class PeerSession {
     private final PeerHealth peerHealth;
     private final PeerEndpoint endpoint;
     private final PeerClientFactory peerClientFactory;
+    private final HeaderValidator headerValidator;
+    private final BodyValidator bodyValidator;
     private Supplier<GenesisBootstrapData> genesisBootstrapDataSupplier = GenesisBootstrapData::empty;
 
     private PeerClient peerClient;
@@ -60,7 +71,9 @@ public class PeerSession {
                 eventBus,
                 callbacks,
                 epochParamProvider,
-                DefaultPeerClientFactory.supervised());
+                DefaultPeerClientFactory.supervised(),
+                HeaderValidator.none(),
+                BodyValidator.none());
     }
 
     public PeerSession(PeerEndpoint endpoint,
@@ -69,12 +82,37 @@ public class PeerSession {
                        PeerSessionCallbacks callbacks,
                        EpochParamProvider epochParamProvider,
                        PeerClientFactory peerClientFactory) {
+        this(endpoint, chainState, eventBus, callbacks, epochParamProvider, peerClientFactory,
+                HeaderValidator.none(), BodyValidator.none());
+    }
+
+    public PeerSession(PeerEndpoint endpoint,
+                       ChainState chainState,
+                       EventBus eventBus,
+                       PeerSessionCallbacks callbacks,
+                       EpochParamProvider epochParamProvider,
+                       PeerClientFactory peerClientFactory,
+                       HeaderValidator headerValidator) {
+        this(endpoint, chainState, eventBus, callbacks, epochParamProvider, peerClientFactory,
+                headerValidator, BodyValidator.none());
+    }
+
+    public PeerSession(PeerEndpoint endpoint,
+                       ChainState chainState,
+                       EventBus eventBus,
+                       PeerSessionCallbacks callbacks,
+                       EpochParamProvider epochParamProvider,
+                       PeerClientFactory peerClientFactory,
+                       HeaderValidator headerValidator,
+                       BodyValidator bodyValidator) {
         this.endpoint = Objects.requireNonNull(endpoint, "endpoint");
         this.chainState = Objects.requireNonNull(chainState, "chainState");
         this.eventBus = Objects.requireNonNull(eventBus, "eventBus");
         this.callbacks = Objects.requireNonNull(callbacks, "callbacks");
         this.epochParamProvider = epochParamProvider;
         this.peerClientFactory = Objects.requireNonNull(peerClientFactory, "peerClientFactory");
+        this.headerValidator = headerValidator != null ? headerValidator : HeaderValidator.none();
+        this.bodyValidator = bodyValidator != null ? bodyValidator : BodyValidator.none();
         this.peerHealth = new PeerHealth(endpoint.displayName(), System.currentTimeMillis());
     }
 
@@ -300,7 +338,8 @@ public class PeerSession {
                 maxBatchSize,
                 500,
                 1000,
-                syncTipContext
+                syncTipContext,
+                bodyValidator
         );
         bodyFetchManager.setPeerHealth(peerHealth);
         bodyFetchManager.setGenesisBootstrapDataSupplier(genesisBootstrapDataSupplier);
@@ -309,7 +348,7 @@ public class PeerSession {
 
         headerAppliedEventPublisher = new HeaderAppliedEventPublisher(eventBus);
         headerSyncManager = new HeaderSyncManager(peerClient, chainState, 50000, syncTipContext,
-                bodyFetchManager, headerAppliedEventPublisher);
+                bodyFetchManager, headerAppliedEventPublisher, headerValidator);
         log.info("📋 HeaderSyncManager created");
 
         if (epochParamProvider != null) {
@@ -385,9 +424,14 @@ public class PeerSession {
             return;
         }
 
-        long lastKeepAliveResponseTime = peerClient.getLastKeepAliveResponseTime();
-        if (lastKeepAliveResponseTime > 0) {
-            peerHealth.recordKeepAliveResponse(lastKeepAliveResponseTime);
+        try {
+            long lastKeepAliveResponseTime = peerClient.getLastKeepAliveResponseTime();
+            if (lastKeepAliveResponseTime > 0) {
+                peerHealth.recordKeepAliveResponse(lastKeepAliveResponseTime);
+            }
+        } catch (RuntimeException e) {
+            log.debug("Unable to refresh keepalive health for peer {}: {}",
+                    endpoint.displayName(), e.toString());
         }
     }
 

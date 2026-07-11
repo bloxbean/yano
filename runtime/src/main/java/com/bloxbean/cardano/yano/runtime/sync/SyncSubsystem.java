@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.runtime.sync;
 
 import com.bloxbean.cardano.yaci.core.common.TxBodyType;
+import com.bloxbean.cardano.yaci.core.model.Era;
 import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Point;
 import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Tip;
 import com.bloxbean.cardano.yaci.core.storage.ChainState;
@@ -12,6 +13,9 @@ import com.bloxbean.cardano.yaci.events.api.PublishOptions;
 import com.bloxbean.cardano.yaci.helper.PipelineConfig;
 import com.bloxbean.cardano.yano.api.EpochParamProvider;
 import com.bloxbean.cardano.yano.api.SyncPhase;
+import com.bloxbean.cardano.yano.api.config.UpstreamConfig;
+import com.bloxbean.cardano.yano.api.config.UpstreamPeerConfig;
+import com.bloxbean.cardano.yano.api.config.UpstreamPreset;
 import com.bloxbean.cardano.yano.api.config.YanoConfig;
 import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
 import com.bloxbean.cardano.yano.api.events.RollbackEvent;
@@ -25,22 +29,63 @@ import com.bloxbean.cardano.yano.runtime.chain.OriginRollbackCapable;
 import com.bloxbean.cardano.yano.runtime.kernel.Subsystem;
 import com.bloxbean.cardano.yano.runtime.kernel.SubsystemHealth;
 import com.bloxbean.cardano.yano.runtime.ledger.LedgerStateSubsystem;
-import com.bloxbean.cardano.yano.runtime.peer.DefaultPeerClientFactory;
-import com.bloxbean.cardano.yano.runtime.peer.PeerClientFactory;
-import com.bloxbean.cardano.yano.runtime.peer.PeerEndpoint;
-import com.bloxbean.cardano.yano.runtime.peer.PeerRecoveryFailureTracker;
-import com.bloxbean.cardano.yano.runtime.peer.PeerRecoveryReason;
+import com.bloxbean.cardano.yano.p2p.peer.DefaultPeerClientFactory;
+import com.bloxbean.cardano.yano.p2p.peer.PeerClientFactory;
+import com.bloxbean.cardano.yano.p2p.peer.PeerEndpoint;
+import com.bloxbean.cardano.yano.p2p.peer.PeerFailureMessage;
+import com.bloxbean.cardano.yano.p2p.peer.PeerRecoveryFailureTracker;
+import com.bloxbean.cardano.yano.p2p.peer.PeerRecoveryReason;
 import com.bloxbean.cardano.yano.runtime.peer.PeerSession;
 import com.bloxbean.cardano.yano.runtime.peer.PeerSessionCallbacks;
-import com.bloxbean.cardano.yano.runtime.peer.PeerSessionStatus;
+import com.bloxbean.cardano.yano.p2p.peer.PeerSessionStatus;
+import com.bloxbean.cardano.yano.p2p.connection.RelayConnectionListener;
 import com.bloxbean.cardano.yano.runtime.server.ServeSubsystem;
 import com.bloxbean.cardano.yano.runtime.storage.ChainStorageSubsystem;
+import com.bloxbean.cardano.yano.consensus.selection.CandidateHeader;
+import com.bloxbean.cardano.yano.consensus.selection.ChainSelectionContext;
+import com.bloxbean.cardano.yano.consensus.selection.ChainSelectionDecision;
+import com.bloxbean.cardano.yano.consensus.selection.ChainSelectionStrategy;
+import com.bloxbean.cardano.yano.p2p.governor.FileBackedPeerStore;
+import com.bloxbean.cardano.yano.consensus.selection.HeaderFanIn;
+import com.bloxbean.cardano.yano.consensus.selection.InMemoryCandidateHeaderStore;
+import com.bloxbean.cardano.yano.p2p.governor.InMemoryPeerStore;
+import com.bloxbean.cardano.yano.runtime.sync.multipeer.ObserverPeerSession;
+import com.bloxbean.cardano.yano.p2p.governor.PeerAddressPolicy;
+import com.bloxbean.cardano.yano.p2p.governor.PeerDescriptor;
+import com.bloxbean.cardano.yano.p2p.governor.PeerGovernor;
+import com.bloxbean.cardano.yano.p2p.governor.PeerGovernorSnapshot;
+import com.bloxbean.cardano.yano.p2p.governor.PeerSource;
+import com.bloxbean.cardano.yano.p2p.governor.PeerStore;
+import com.bloxbean.cardano.yano.p2p.governor.PeerStoreEntry;
+import com.bloxbean.cardano.yano.p2p.governor.PeerUse;
+import com.bloxbean.cardano.yano.consensus.selection.TrustedOrQuorumCandidateWithinRollbackWindow;
+import com.bloxbean.cardano.yano.p2p.discovery.YaciPeerDiscoveryService;
+import com.bloxbean.cardano.yano.runtime.sync.validation.BodyValidator;
+import com.bloxbean.cardano.yano.runtime.sync.validation.BodyValidatorFactory;
+import com.bloxbean.cardano.yano.runtime.sync.validation.HeaderValidationNonceProvider;
+import com.bloxbean.cardano.yano.runtime.sync.validation.HeaderValidationLedgerViewProvider;
+import com.bloxbean.cardano.yano.runtime.sync.validation.HeaderValidationSnapshot;
+import com.bloxbean.cardano.yano.runtime.sync.validation.HeaderValidationStartGate;
+import com.bloxbean.cardano.yano.runtime.sync.validation.HeaderValidationCustomizer;
+import com.bloxbean.cardano.yano.runtime.sync.validation.HeaderValidator;
+import com.bloxbean.cardano.yano.runtime.sync.validation.HeaderValidatorFactory;
+import com.bloxbean.cardano.yano.p2p.tx.diffusion.PeerClass;
+import com.bloxbean.cardano.yano.p2p.tx.diffusion.TxDiffusion;
 import org.slf4j.Logger;
 
+import java.nio.file.Path;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
+import java.util.OptionalLong;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
@@ -55,6 +100,12 @@ import java.util.function.Supplier;
  */
 public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
     private static final int MAX_PEER_RECOVERY_FAILURES = 10;
+    private static final long DEFAULT_SECURITY_PARAM = 2160L;
+    private static final double DEFAULT_ACTIVE_SLOTS_COEFF = 0.05D;
+    private static final long DEFAULT_SELECTION_ROLLBACK_WINDOW_SLOTS =
+            (long) Math.ceil(DEFAULT_SECURITY_PARAM / DEFAULT_ACTIVE_SLOTS_COEFF);
+    private static final long SELECTION_PROMOTION_MIN_LEAD_BLOCKS = 10L;
+    private static final long SELECTION_PROMOTION_MIN_INTERVAL_MILLIS = 120_000L;
     private static final long HEADER_CONTINUITY_VALIDATION_LIMIT =
             Long.getLong(YanoPropertyKeys.Pipeline.HEADER_CONTINUITY_VALIDATION_BLOCKS, 100_000L);
 
@@ -71,13 +122,31 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
     private final String remoteCardanoHost;
     private final int remoteCardanoPort;
     private final long protocolMagic;
+    private final UpstreamConfig upstreamConfig;
+    private final CopyOnWriteArrayList<ConfiguredUpstreamPeer> upstreamPeers;
+    private final int configuredUpstreamPeerCount;
     private final Logger log;
     private final PeerClientFactory peerClientFactory;
     private final ExecutorService peerRecoveryExecutor;
     private final boolean ownsPeerRecoveryExecutor;
+    private final InMemoryCandidateHeaderStore candidateHeaderStore;
+    private final HeaderFanIn headerFanIn;
+    private final ChainSelectionStrategy chainSelectionStrategy;
+    private final HeaderValidator headerValidator;
+    private final BodyValidator bodyValidator;
+    private final PeerStore peerStore;
+    private final PeerGovernor peerGovernor;
+    private final PeerAddressPolicy peerAddressPolicy;
+    private final YaciPeerDiscoveryService peerDiscoveryService;
+    private final Supplier<TxDiffusion> txDiffusionSupplier;
+    private final Map<String, ObserverPeerSession> observerSessions = new ConcurrentHashMap<>();
+    private final Map<String, Long> observerRetryAfterMillis = new ConcurrentHashMap<>();
+    private final Map<String, Long> activeUpstreamRetryAfterMillis = new ConcurrentHashMap<>();
+    private final Map<String, Integer> activeUpstreamFailureCounts = new ConcurrentHashMap<>();
 
     private final AtomicBoolean isSyncing = new AtomicBoolean(false);
     private final AtomicBoolean rollbackInProgress = new AtomicBoolean(false);
+    private final AtomicBoolean chainSelectionEvaluationInProgress = new AtomicBoolean(false);
     private final AtomicLong syncGeneration = new AtomicLong();
     private final Object peerSessionLock = new Object();
     private final PeerRecoveryFailureTracker peerRecoveryFailureTracker =
@@ -85,12 +154,18 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
 
     private volatile PeerSession peerSession;
     private volatile PeerSessionSupervisorHolder supervisorHolder;
+    private volatile int activeUpstreamIndex;
     private volatile boolean initialSyncComplete;
     private volatile boolean pipelinedMode;
     private volatile Tip remoteTip;
     private volatile SyncPhase syncPhase = SyncPhase.INITIAL_SYNC;
     private volatile boolean closed;
     private volatile ScheduledFuture<?> intersectionTransitionFuture;
+    private volatile ScheduledFuture<?> discoveryBootstrapRetryFuture;
+    private volatile long derivedSelectionRollbackWindowSlots;
+    private volatile String pendingSelectedUpstreamPeerId;
+    private volatile String pendingSelectedUpstreamReason;
+    private volatile long lastSelectedUpstreamSwitchAtMillis;
     private PipelineConfig pipelineConfig;
     private long blocksProcessed;
     private long lastProcessedSlot;
@@ -113,7 +188,8 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
         this(config, chainState, eventBus, scheduler, serveSubsystem, ledgerStateSubsystem, chainStorage,
                 runtimeRunning, epochParamProviderSupplier, genesisBootstrapDataSupplier,
                 remoteCardanoHost, remoteCardanoPort, protocolMagic, log, defaultPeerRecoveryExecutor(), true,
-                DefaultPeerClientFactory.supervised());
+                DefaultPeerClientFactory.supervised(), null, null,
+                HeaderValidationNonceProvider.none(), HeaderValidationLedgerViewProvider.none(), List.of());
     }
 
     public SyncSubsystem(YanoConfig config,
@@ -135,7 +211,158 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
                 runtimeRunning, epochParamProviderSupplier, genesisBootstrapDataSupplier,
                 remoteCardanoHost, remoteCardanoPort, protocolMagic, log,
                 Objects.requireNonNull(peerRecoveryExecutor, "peerRecoveryExecutor"), false,
-                DefaultPeerClientFactory.supervised());
+                DefaultPeerClientFactory.supervised(), null, null,
+                HeaderValidationNonceProvider.none(), HeaderValidationLedgerViewProvider.none(), List.of());
+    }
+
+    public SyncSubsystem(YanoConfig config,
+                         ChainState chainState,
+                         EventBus eventBus,
+                         ScheduledExecutorService scheduler,
+                         ExecutorService peerRecoveryExecutor,
+                         ServeSubsystem serveSubsystem,
+                         LedgerStateSubsystem ledgerStateSubsystem,
+                         ChainStorageSubsystem chainStorage,
+                         BooleanSupplier runtimeRunning,
+                         Supplier<EpochParamProvider> epochParamProviderSupplier,
+                         Supplier<GenesisBootstrapData> genesisBootstrapDataSupplier,
+                         String remoteCardanoHost,
+                         int remoteCardanoPort,
+                         long protocolMagic,
+                         Logger log,
+                         BodyValidator bodyValidator) {
+        this(config, chainState, eventBus, scheduler, peerRecoveryExecutor, serveSubsystem, ledgerStateSubsystem,
+                chainStorage, runtimeRunning, epochParamProviderSupplier, genesisBootstrapDataSupplier,
+                remoteCardanoHost, remoteCardanoPort, protocolMagic, log, bodyValidator, null);
+    }
+
+    public SyncSubsystem(YanoConfig config,
+                         ChainState chainState,
+                         EventBus eventBus,
+                         ScheduledExecutorService scheduler,
+                         ExecutorService peerRecoveryExecutor,
+                         ServeSubsystem serveSubsystem,
+                         LedgerStateSubsystem ledgerStateSubsystem,
+                         ChainStorageSubsystem chainStorage,
+                         BooleanSupplier runtimeRunning,
+                         Supplier<EpochParamProvider> epochParamProviderSupplier,
+                         Supplier<GenesisBootstrapData> genesisBootstrapDataSupplier,
+                         String remoteCardanoHost,
+                         int remoteCardanoPort,
+                         long protocolMagic,
+                         Logger log,
+                         BodyValidator bodyValidator,
+                         Supplier<TxDiffusion> txDiffusionSupplier) {
+        this(config, chainState, eventBus, scheduler, serveSubsystem, ledgerStateSubsystem, chainStorage,
+                runtimeRunning, epochParamProviderSupplier, genesisBootstrapDataSupplier,
+                remoteCardanoHost, remoteCardanoPort, protocolMagic, log,
+                Objects.requireNonNull(peerRecoveryExecutor, "peerRecoveryExecutor"), false,
+                DefaultPeerClientFactory.supervised(), bodyValidator, txDiffusionSupplier,
+                HeaderValidationNonceProvider.none(), HeaderValidationLedgerViewProvider.none(), List.of());
+    }
+
+    public SyncSubsystem(YanoConfig config,
+                         ChainState chainState,
+                         EventBus eventBus,
+                         ScheduledExecutorService scheduler,
+                         ExecutorService peerRecoveryExecutor,
+                         ServeSubsystem serveSubsystem,
+                         LedgerStateSubsystem ledgerStateSubsystem,
+                         ChainStorageSubsystem chainStorage,
+                         BooleanSupplier runtimeRunning,
+                         Supplier<EpochParamProvider> epochParamProviderSupplier,
+                         Supplier<GenesisBootstrapData> genesisBootstrapDataSupplier,
+                         String remoteCardanoHost,
+                         int remoteCardanoPort,
+                         long protocolMagic,
+                         Logger log,
+                         BodyValidator bodyValidator,
+                         Supplier<TxDiffusion> txDiffusionSupplier,
+                         PeerClientFactory peerClientFactory) {
+        this(config, chainState, eventBus, scheduler, peerRecoveryExecutor, serveSubsystem, ledgerStateSubsystem,
+                chainStorage, runtimeRunning, epochParamProviderSupplier, genesisBootstrapDataSupplier,
+                remoteCardanoHost, remoteCardanoPort, protocolMagic, log, bodyValidator, txDiffusionSupplier,
+                peerClientFactory, HeaderValidationNonceProvider.none(), HeaderValidationLedgerViewProvider.none());
+    }
+
+    public SyncSubsystem(YanoConfig config,
+                         ChainState chainState,
+                         EventBus eventBus,
+                         ScheduledExecutorService scheduler,
+                         ExecutorService peerRecoveryExecutor,
+                         ServeSubsystem serveSubsystem,
+                         LedgerStateSubsystem ledgerStateSubsystem,
+                         ChainStorageSubsystem chainStorage,
+                         BooleanSupplier runtimeRunning,
+                         Supplier<EpochParamProvider> epochParamProviderSupplier,
+                         Supplier<GenesisBootstrapData> genesisBootstrapDataSupplier,
+                         String remoteCardanoHost,
+                         int remoteCardanoPort,
+                         long protocolMagic,
+                         Logger log,
+                         BodyValidator bodyValidator,
+                         Supplier<TxDiffusion> txDiffusionSupplier,
+                         PeerClientFactory peerClientFactory,
+                         HeaderValidationNonceProvider headerNonceProvider) {
+        this(config, chainState, eventBus, scheduler, peerRecoveryExecutor, serveSubsystem, ledgerStateSubsystem,
+                chainStorage, runtimeRunning, epochParamProviderSupplier, genesisBootstrapDataSupplier,
+                remoteCardanoHost, remoteCardanoPort, protocolMagic, log, bodyValidator, txDiffusionSupplier,
+                peerClientFactory, headerNonceProvider, HeaderValidationLedgerViewProvider.none());
+    }
+
+    public SyncSubsystem(YanoConfig config,
+                         ChainState chainState,
+                         EventBus eventBus,
+                         ScheduledExecutorService scheduler,
+                         ExecutorService peerRecoveryExecutor,
+                         ServeSubsystem serveSubsystem,
+                         LedgerStateSubsystem ledgerStateSubsystem,
+                         ChainStorageSubsystem chainStorage,
+                         BooleanSupplier runtimeRunning,
+                         Supplier<EpochParamProvider> epochParamProviderSupplier,
+                         Supplier<GenesisBootstrapData> genesisBootstrapDataSupplier,
+                         String remoteCardanoHost,
+                         int remoteCardanoPort,
+                         long protocolMagic,
+                         Logger log,
+                         BodyValidator bodyValidator,
+                         Supplier<TxDiffusion> txDiffusionSupplier,
+                         PeerClientFactory peerClientFactory,
+                         HeaderValidationNonceProvider headerNonceProvider,
+                         HeaderValidationLedgerViewProvider headerLedgerViewProvider) {
+        this(config, chainState, eventBus, scheduler, peerRecoveryExecutor, serveSubsystem, ledgerStateSubsystem,
+                chainStorage, runtimeRunning, epochParamProviderSupplier, genesisBootstrapDataSupplier,
+                remoteCardanoHost, remoteCardanoPort, protocolMagic, log, bodyValidator, txDiffusionSupplier,
+                peerClientFactory, headerNonceProvider, headerLedgerViewProvider, List.of());
+    }
+
+    public SyncSubsystem(YanoConfig config,
+                         ChainState chainState,
+                         EventBus eventBus,
+                         ScheduledExecutorService scheduler,
+                         ExecutorService peerRecoveryExecutor,
+                         ServeSubsystem serveSubsystem,
+                         LedgerStateSubsystem ledgerStateSubsystem,
+                         ChainStorageSubsystem chainStorage,
+                         BooleanSupplier runtimeRunning,
+                         Supplier<EpochParamProvider> epochParamProviderSupplier,
+                         Supplier<GenesisBootstrapData> genesisBootstrapDataSupplier,
+                         String remoteCardanoHost,
+                         int remoteCardanoPort,
+                         long protocolMagic,
+                         Logger log,
+                         BodyValidator bodyValidator,
+                         Supplier<TxDiffusion> txDiffusionSupplier,
+                         PeerClientFactory peerClientFactory,
+                         HeaderValidationNonceProvider headerNonceProvider,
+                         HeaderValidationLedgerViewProvider headerLedgerViewProvider,
+                         List<HeaderValidationCustomizer> headerValidationCustomizers) {
+        this(config, chainState, eventBus, scheduler, serveSubsystem, ledgerStateSubsystem, chainStorage,
+                runtimeRunning, epochParamProviderSupplier, genesisBootstrapDataSupplier,
+                remoteCardanoHost, remoteCardanoPort, protocolMagic, log,
+                Objects.requireNonNull(peerRecoveryExecutor, "peerRecoveryExecutor"), false,
+                Objects.requireNonNull(peerClientFactory, "peerClientFactory"), bodyValidator, txDiffusionSupplier,
+                headerNonceProvider, headerLedgerViewProvider, headerValidationCustomizers);
     }
 
     SyncSubsystem(YanoConfig config,
@@ -155,8 +382,30 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
                   PeerClientFactory peerClientFactory) {
         this(config, chainState, eventBus, scheduler, serveSubsystem, ledgerStateSubsystem, chainStorage,
                 runtimeRunning, epochParamProviderSupplier, genesisBootstrapDataSupplier,
+                remoteCardanoHost, remoteCardanoPort, protocolMagic, log, peerClientFactory, null);
+    }
+
+    SyncSubsystem(YanoConfig config,
+                  ChainState chainState,
+                  EventBus eventBus,
+                  ScheduledExecutorService scheduler,
+                  ServeSubsystem serveSubsystem,
+                  LedgerStateSubsystem ledgerStateSubsystem,
+                  ChainStorageSubsystem chainStorage,
+                  BooleanSupplier runtimeRunning,
+                  Supplier<EpochParamProvider> epochParamProviderSupplier,
+                  Supplier<GenesisBootstrapData> genesisBootstrapDataSupplier,
+                  String remoteCardanoHost,
+                  int remoteCardanoPort,
+                  long protocolMagic,
+                  Logger log,
+                  PeerClientFactory peerClientFactory,
+                  Supplier<TxDiffusion> txDiffusionSupplier) {
+        this(config, chainState, eventBus, scheduler, serveSubsystem, ledgerStateSubsystem, chainStorage,
+                runtimeRunning, epochParamProviderSupplier, genesisBootstrapDataSupplier,
                 remoteCardanoHost, remoteCardanoPort, protocolMagic, log, defaultPeerRecoveryExecutor(), true,
-                peerClientFactory);
+                peerClientFactory, null, txDiffusionSupplier,
+                HeaderValidationNonceProvider.none(), HeaderValidationLedgerViewProvider.none(), List.of());
     }
 
     SyncSubsystem(YanoConfig config,
@@ -176,6 +425,35 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
                   ExecutorService peerRecoveryExecutor,
                   boolean ownsPeerRecoveryExecutor,
                   PeerClientFactory peerClientFactory) {
+        this(config, chainState, eventBus, scheduler, serveSubsystem, ledgerStateSubsystem, chainStorage,
+                runtimeRunning, epochParamProviderSupplier, genesisBootstrapDataSupplier,
+                remoteCardanoHost, remoteCardanoPort, protocolMagic, log, peerRecoveryExecutor,
+                ownsPeerRecoveryExecutor, peerClientFactory, null, null,
+                HeaderValidationNonceProvider.none(), HeaderValidationLedgerViewProvider.none(), List.of());
+    }
+
+    SyncSubsystem(YanoConfig config,
+                  ChainState chainState,
+                  EventBus eventBus,
+                  ScheduledExecutorService scheduler,
+                  ServeSubsystem serveSubsystem,
+                  LedgerStateSubsystem ledgerStateSubsystem,
+                  ChainStorageSubsystem chainStorage,
+                  BooleanSupplier runtimeRunning,
+                  Supplier<EpochParamProvider> epochParamProviderSupplier,
+                  Supplier<GenesisBootstrapData> genesisBootstrapDataSupplier,
+                  String remoteCardanoHost,
+                  int remoteCardanoPort,
+                  long protocolMagic,
+                  Logger log,
+                  ExecutorService peerRecoveryExecutor,
+                  boolean ownsPeerRecoveryExecutor,
+                  PeerClientFactory peerClientFactory,
+                  BodyValidator bodyValidator,
+                  Supplier<TxDiffusion> txDiffusionSupplier,
+                  HeaderValidationNonceProvider headerNonceProvider,
+                  HeaderValidationLedgerViewProvider headerLedgerViewProvider,
+                  List<HeaderValidationCustomizer> headerValidationCustomizers) {
         this.config = Objects.requireNonNull(config, "config");
         this.chainState = Objects.requireNonNull(chainState, "chainState");
         this.eventBus = Objects.requireNonNull(eventBus, "eventBus");
@@ -187,18 +465,55 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
         this.epochParamProviderSupplier = epochParamProviderSupplier != null ? epochParamProviderSupplier : () -> null;
         this.genesisBootstrapDataSupplier = genesisBootstrapDataSupplier != null
                 ? genesisBootstrapDataSupplier : GenesisBootstrapData::empty;
-        if (config.isEnableClient()) {
-            this.remoteCardanoHost = Objects.requireNonNull(remoteCardanoHost, "remoteCardanoHost");
-        } else {
-            this.remoteCardanoHost = remoteCardanoHost != null ? remoteCardanoHost : "localhost";
-        }
-        this.remoteCardanoPort = remoteCardanoPort;
         this.protocolMagic = protocolMagic;
         this.log = Objects.requireNonNull(log, "log");
+        this.upstreamConfig = config.effectiveUpstream();
+        this.upstreamPeers = new CopyOnWriteArrayList<>(
+                buildUpstreamPeers(this.upstreamConfig, remoteCardanoHost, remoteCardanoPort, protocolMagic));
+        this.configuredUpstreamPeerCount = this.upstreamPeers.size();
+        this.candidateHeaderStore = new InMemoryCandidateHeaderStore();
+        this.headerFanIn = new HeaderFanIn(candidateHeaderStore);
+        this.chainSelectionStrategy = new TrustedOrQuorumCandidateWithinRollbackWindow();
+        HeaderValidator rawHeaderValidator = HeaderValidatorFactory.from(
+                this.upstreamConfig.getValidation(),
+                this.epochParamProviderSupplier.get(),
+                headerNonceProvider,
+                headerLedgerViewProvider,
+                headerValidationCustomizers);
+        this.headerValidator = HeaderValidationStartGate.wrap(
+                rawHeaderValidator,
+                this.upstreamConfig.getValidation(),
+                this::validationEraStartSlot);
+        this.bodyValidator = bodyValidator != null
+                ? bodyValidator
+                : BodyValidatorFactory.from(this.upstreamConfig.getValidation());
+        this.peerStore = createPeerStore();
+        this.peerGovernor = new PeerGovernor(peerStore, this.upstreamConfig.getGovernor());
+        this.peerAddressPolicy = new PeerAddressPolicy(this.upstreamConfig.getDiscovery());
+        seedPeerStoreFromConfiguredPeers();
+        this.peerDiscoveryService = new YaciPeerDiscoveryService(
+                protocolMagic,
+                this.upstreamConfig.getDiscovery(),
+                peerAddressPolicy,
+                this::onDiscoveredPeer);
+        ConfiguredUpstreamPeer initialPeer = this.upstreamPeers.isEmpty() ? null : this.upstreamPeers.getFirst();
+        this.remoteCardanoHost = initialPeer != null
+                ? initialPeer.endpoint().host()
+                : remoteCardanoHost != null ? remoteCardanoHost : "localhost";
+        this.remoteCardanoPort = initialPeer != null ? initialPeer.endpoint().port() : remoteCardanoPort;
         this.peerRecoveryExecutor = Objects.requireNonNull(peerRecoveryExecutor, "peerRecoveryExecutor");
         this.ownsPeerRecoveryExecutor = ownsPeerRecoveryExecutor;
         this.peerClientFactory = Objects.requireNonNull(peerClientFactory, "peerClientFactory");
+        this.txDiffusionSupplier = txDiffusionSupplier != null ? txDiffusionSupplier : TxDiffusion::disabled;
         this.pipelineConfig = createPipelineConfig();
+    }
+
+    private OptionalLong validationEraStartSlot(String era) {
+        if (era == null || !"conway".equalsIgnoreCase(era.trim())) {
+            return OptionalLong.empty();
+        }
+        var eraService = ledgerStateSubsystem.eraService();
+        return eraService != null ? eraService.getStartSlot(Era.Conway) : OptionalLong.empty();
     }
 
     @Override
@@ -215,12 +530,18 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
     public void startClientSync() {
         boolean usePipeline = config.isEnablePipelinedSync();
         try {
-            log.info("Starting {} client sync with {}:{}...",
-                    usePipeline ? "pipelined" : "sequential", remoteCardanoHost, remoteCardanoPort);
             syncGeneration.incrementAndGet();
             cancelIntersectionTransition();
             isSyncing.set(true);
             pipelinedMode = usePipeline;
+            if (!ensureInitialUpstreamPeer()) {
+                return;
+            }
+
+            ConfiguredUpstreamPeer activeUpstream = activeUpstreamPeer();
+            log.info("Starting {} client sync with {}:{}...",
+                    usePipeline ? "pipelined" : "sequential",
+                    activeUpstream.endpoint().host(), activeUpstream.endpoint().port());
 
             ClientSyncTips syncTips = prepareClientSyncTips(
                     usePipeline,
@@ -255,12 +576,15 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
                         startSequentialClientSync(startPoint);
                     }
                     peerRecoveryFailureTracker.recordSuccess();
+                    clearActiveUpstreamFailure(activeUpstream.id());
+                    startMultiPeerSupport(startPoint);
                 } catch (Exception e) {
                     PeerRecoveryFailureTracker.Snapshot failure =
                             peerRecoveryFailureTracker.recordFailure(PeerRecoveryReason.STARTUP_FAILED, e);
                     log.warn("Initial upstream peer session start failed; supervisor will retry: {}",
-                            failure.message(), e);
+                            failureMessage(failure, e));
                     markPeerRecoveryFailure(PeerRecoveryReason.STARTUP_FAILED, e, failure);
+                    advanceActiveUpstreamAfterFailure(PeerRecoveryReason.STARTUP_FAILED, e);
                     if (failure.terminal()) {
                         isSyncing.set(false);
                     } else {
@@ -280,6 +604,8 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
         boolean unsafeLedgerApplyWorker = false;
         syncGeneration.incrementAndGet();
         cancelIntersectionTransition();
+        cancelDiscoveryBootstrapRetry();
+        stopMultiPeerSupport();
         if (!isSyncing.get()) {
             return false;
         }
@@ -331,15 +657,57 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
     }
 
     public void submitTxBytes(String txHash, byte[] txCbor, TxBodyType txBodyType) {
+        String forwarding = normalizedTxForwarding();
+        if ("disabled".equals(forwarding)) {
+            log.debug("Transaction {} upstream forwarding disabled by policy", txHash);
+            return;
+        }
+        TxDiffusion txDiffusion = txDiffusion();
         PeerSession activeSession = peerSession;
-        if (activeSession != null && activeSession.isRunning()) {
+        ConfiguredUpstreamPeer active = activeUpstreamPeer();
+        boolean allHot = "all-hot".equals(forwarding);
+        boolean allHotTrusted = "all-hot-trusted".equals(forwarding);
+        if (activeSession != null && activeSession.isRunning()
+                && ("active-selected".equals(forwarding)
+                || allHot
+                || (allHotTrusted && active.trusted()))) {
+            PeerClass peerClass = PeerClass.ACTIVE_SELECTED;
             try {
-                activeSession.submitTxBytes(txHash, txCbor, txBodyType);
-                log.debug("Transaction {} forwarded to upstream node", txHash);
+                if (!txDiffusion.isEnabled()
+                        || txDiffusion.reserveLocalSubmitForward(active.id(), peerClass, txHash, txCbor.length)) {
+                    activeSession.submitTxBytes(txHash, txCbor, txBodyType);
+                    txDiffusion.onLocalSubmitForwarded(active.id(), peerClass, txHash, txCbor.length);
+                    log.debug("Transaction {} forwarded to upstream node", txHash);
+                } else {
+                    log.debug("Transaction {} already queued for upstream peer {}", txHash, active.id());
+                }
             } catch (Exception e) {
                 log.warn("Failed to forward transaction {} to upstream node: {}", txHash, e.getMessage());
             }
         }
+        if (allHot || allHotTrusted) {
+            observerSessions.values().forEach(observer -> {
+                if (allHotTrusted && !observer.trusted()) {
+                    return;
+                }
+                PeerClass peerClass = observer.trusted() ? PeerClass.TRUSTED_HOT : PeerClass.UNTRUSTED_HOT;
+                try {
+                    if (!txDiffusion.isEnabled()
+                            || txDiffusion.reserveLocalSubmitForward(observer.peerId(), peerClass, txHash, txCbor.length)) {
+                        observer.submitTxBytes(txHash, txCbor, txBodyType);
+                        txDiffusion.onLocalSubmitForwarded(observer.peerId(), peerClass, txHash, txCbor.length);
+                    }
+                } catch (Exception e) {
+                    log.debug("Failed to forward transaction {} to observer upstream {}: {}",
+                            txHash, observer.peerId(), e.getMessage());
+                }
+            });
+        }
+    }
+
+    private TxDiffusion txDiffusion() {
+        TxDiffusion txDiffusion = txDiffusionSupplier.get();
+        return txDiffusion != null ? txDiffusion : TxDiffusion.disabled();
     }
 
     public HeaderSyncManager currentHeaderSyncManager() {
@@ -359,6 +727,53 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
 
     public PeerRecoveryFailureTracker.Snapshot peerRecoverySnapshot() {
         return peerRecoveryFailureTracker.snapshot();
+    }
+
+    public UpstreamStatus upstreamStatus() {
+        String txForwarding = upstreamConfig.getTx() != null
+                ? upstreamConfig.getTx().getForwarding()
+                : "active-selected";
+        if (upstreamPeers.isEmpty()) {
+            return UpstreamStatus.idle(upstreamMode(), 0, txForwarding);
+        }
+        ConfiguredUpstreamPeer active = activeUpstreamPeer();
+        PeerSession session = peerSession;
+        int observerCount = runningObserverCount();
+        boolean activeHot = session != null && session.isRunning();
+        HeaderValidationSnapshot validation = headerValidator.snapshot();
+        return new UpstreamStatus(
+                upstreamMode(),
+                configuredUpstreamPeerCount,
+                (activeHot ? 1 : 0) + observerCount,
+                observerCount,
+                peerGovernor.snapshot().knownPeerCount(),
+                candidateHeaderStore.all().size(),
+                active.id(),
+                active.endpoint().displayName(),
+                txForwarding,
+                false,
+                peerDiscoveryService.isRunning(),
+                validation.level(),
+                validation.acceptedHeaders(),
+                validation.rejectedHeaders(),
+                validation.lastRejectedStage(),
+                validation.lastRejectedReason());
+    }
+
+    public List<PeerStoreEntry> peerStoreEntries() {
+        return peerGovernor.peerStoreEntries();
+    }
+
+    public List<PeerStoreEntry> sharablePeerEntries() {
+        return peerGovernor.sharablePeers(Integer.MAX_VALUE);
+    }
+
+    public PeerGovernorSnapshot peerGovernorSnapshot() {
+        return peerGovernor.snapshot();
+    }
+
+    public RelayConnectionListener peerGovernorConnectionListener() {
+        return peerGovernor;
     }
 
     public boolean isSyncing() {
@@ -422,6 +837,7 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
             eventBus.publish(new SyncStatusChangedEvent(prev, syncPhase),
                     EventMetadata.builder().origin("runtime").build(),
                     PublishOptions.builder().build());
+            ensureMultiPeerObserversFromLocalTip();
 
             BodyFetchManager bodyFetchManager = currentBodyFetchManager();
             if (pipelinedMode && bodyFetchManager != null) {
@@ -531,6 +947,7 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
             long distance = Math.max(0, remoteSlot - localTip.getSlot());
             long nearTipThreshold = 1000;
             if (distance <= nearTipThreshold) {
+                boolean transitioned = syncPhase != SyncPhase.STEADY_STATE;
                 syncPhase = SyncPhase.STEADY_STATE;
                 BodyFetchManager bodyFetchManager = currentBodyFetchManager();
                 if (bodyFetchManager != null) {
@@ -539,8 +956,11 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
                         bodyFetchManager.resume();
                     }
                 }
-                log.info("NEAR-TIP FAST PATH: remote-local distance={} slots <= {}, transitioned to STEADY_STATE",
-                        distance, nearTipThreshold);
+                if (transitioned) {
+                    log.info("NEAR-TIP FAST PATH: remote-local distance={} slots <= {}, transitioned to STEADY_STATE",
+                            distance, nearTipThreshold);
+                    ensureMultiPeerObserversFromLocalTip();
+                }
             }
         } catch (Exception e) {
             log.debug("Fast transition near-tip check failed: {}", e.toString());
@@ -681,16 +1101,848 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
         }
     }
 
+    private void seedPeerStoreFromConfiguredPeers() {
+        for (ConfiguredUpstreamPeer peer : upstreamPeers) {
+            long now = System.currentTimeMillis();
+            PeerSource source = PeerSource.from(peer.source());
+            peerGovernor.addOrUpdatePeer(new PeerDescriptor(
+                    peer.id(),
+                    peer.endpoint().host(),
+                    peer.endpoint().port(),
+                    source,
+                    peer.source(),
+                    peer.trusted(),
+                    source == PeerSource.LOCAL_ROOT || source == PeerSource.STATIC_UPSTREAM,
+                    source != PeerSource.INBOUND,
+                    1,
+                    1,
+                    now,
+                    now,
+                    null,
+                    scoreForConfiguredPeer(peer)));
+        }
+    }
+
+    private boolean ensureInitialUpstreamPeer() {
+        if (!upstreamPeers.isEmpty()) {
+            cancelDiscoveryBootstrapRetry();
+            return true;
+        }
+        if (!discoveryBootstrapEnabled()) {
+            isSyncing.set(false);
+            throw new IllegalStateException("No upstream peer is configured");
+        }
+
+        log.info("No configured upstream peer available; starting discovery bootstrap");
+        peerDiscoveryService.start();
+        selectDiscoveredBootstrapPeer();
+        if (!upstreamPeers.isEmpty()) {
+            cancelDiscoveryBootstrapRetry();
+            ConfiguredUpstreamPeer selected = activeUpstreamPeer();
+            log.info("Selected discovery bootstrap upstream peer {} from {}",
+                    selected.endpoint().displayName(), selected.source());
+            return true;
+        }
+
+        log.warn("Discovery bootstrap has not produced an upstream peer yet; will retry");
+        scheduleDiscoveryBootstrapRetry(30_000L);
+        return false;
+    }
+
+    private void selectDiscoveredBootstrapPeer() {
+        if (!upstreamPeers.isEmpty()) {
+            return;
+        }
+        peerGovernor.hotPeers(PeerUse.CHAIN_SYNC, 1).stream()
+                .filter(peer -> peerAddressPolicy.allows(peer.source(), peer.host(), peer.port()))
+                .findFirst()
+                .ifPresent(this::ensureKnownUpstreamPeer);
+    }
+
+    private boolean discoveryBootstrapEnabled() {
+        return upstreamMode().multiPeer()
+                && upstreamConfig.getDiscovery() != null
+                && upstreamConfig.getDiscovery().isEnabled();
+    }
+
+    private void scheduleDiscoveryBootstrapRetry(long delayMillis) {
+        if (!runtimeRunning.getAsBoolean() || !config.isEnableClient()) {
+            return;
+        }
+        ScheduledFuture<?> existing = discoveryBootstrapRetryFuture;
+        if (existing != null && !existing.isDone() && !existing.isCancelled()) {
+            return;
+        }
+        discoveryBootstrapRetryFuture = scheduler.schedule(() -> {
+            discoveryBootstrapRetryFuture = null;
+            if (!runtimeRunning.getAsBoolean() || !config.isEnableClient() || peerSession != null) {
+                return;
+            }
+            try {
+                startClientSync();
+            } catch (Exception e) {
+                log.warn("Discovery bootstrap retry failed: {}", PeerFailureMessage.summarize(e));
+            }
+        }, Math.max(0L, delayMillis), TimeUnit.MILLISECONDS);
+    }
+
+    private void cancelDiscoveryBootstrapRetry() {
+        ScheduledFuture<?> future = discoveryBootstrapRetryFuture;
+        if (future != null) {
+            future.cancel(false);
+            discoveryBootstrapRetryFuture = null;
+        }
+    }
+
+    private PeerStore createPeerStore() {
+        boolean discoveryEnabled = upstreamConfig.getDiscovery() != null
+                && upstreamConfig.getDiscovery().isEnabled();
+        if (!upstreamMode().multiPeer() && !discoveryEnabled) {
+            return new InMemoryPeerStore();
+        }
+        Path path = peerStorePath();
+        if (path == null) {
+            return new InMemoryPeerStore();
+        }
+        log.info("Using file-backed upstream peer store at {}", path);
+        return new FileBackedPeerStore(path);
+    }
+
+    private Path peerStorePath() {
+        String storagePath = config.getRocksDBPath();
+        if (storagePath == null || storagePath.isBlank()) {
+            return null;
+        }
+        Path chainPath = Path.of(storagePath).toAbsolutePath();
+        Path parent = chainPath.getParent();
+        String name = chainPath.getFileName() != null ? chainPath.getFileName().toString() : "chainstate";
+        return (parent != null ? parent : Path.of(".").toAbsolutePath())
+                .resolve(name + "-upstream-peers.json");
+    }
+
+    private void onDiscoveredPeer(PeerDescriptor peer) {
+        if (peer == null || !peerAddressPolicy.allows(peer.source(), peer.host(), peer.port())) {
+            return;
+        }
+        PeerDescriptor admitted = peerGovernor.addOrUpdatePeer(peer);
+        if (admitted == null) {
+            return;
+        }
+        ensureKnownUpstreamPeer(admitted);
+        if (peerSession == null && isSyncing.get() && discoveryBootstrapEnabled()) {
+            ScheduledFuture<?> retry = discoveryBootstrapRetryFuture;
+            if (retry != null && !retry.isDone() && !retry.isCancelled()) {
+                retry.cancel(false);
+                discoveryBootstrapRetryFuture = null;
+                scheduleDiscoveryBootstrapRetry(0L);
+            }
+        }
+        if ("peer-snapshot".equals(peer.sourceId())) {
+            return;
+        }
+        if (shouldStartMultiPeerObservers()) {
+            ensureMultiPeerObserversFromLocalTip();
+        }
+    }
+
+    private void startMultiPeerSupport(Point startPoint) {
+        if (!upstreamMode().multiPeer()) {
+            return;
+        }
+        peerDiscoveryService.start();
+        if (shouldStartMultiPeerObservers()) {
+            ensureMultiPeerObservers(startPoint);
+        }
+    }
+
+    private void ensureMultiPeerObserversFromLocalTip() {
+        if (!upstreamMode().multiPeer() || !shouldStartMultiPeerObservers()) {
+            return;
+        }
+        Point startPoint = observerStartPoint();
+        if (startPoint != null) {
+            ensureMultiPeerObservers(startPoint);
+        }
+    }
+
+    private void ensureMultiPeerObservers(Point startPoint) {
+        if (!runtimeRunning.getAsBoolean() || !config.isEnableClient() || !upstreamMode().multiPeer()) {
+            return;
+        }
+        if (startPoint == null) {
+            return;
+        }
+        int targetHot = targetHotPeers();
+        if (targetHot <= 1) {
+            return;
+        }
+        int observerTarget = Math.max(0, targetHot - 1);
+        ConfiguredUpstreamPeer active = activeUpstreamPeer();
+        List<PeerDescriptor> hotPeers = peerGovernor.hotPeers(
+                PeerUse.CHAIN_SYNC,
+                Math.max(targetHot, peerGovernor.snapshot().knownPeerCount()));
+        List<String> selectedObserverIds = new ArrayList<>();
+
+        observerSessions.forEach((id, observer) -> {
+            if (selectedObserverIds.size() >= observerTarget) {
+                return;
+            }
+            if (observer == null || sameEndpoint(observer.endpoint(), active.endpoint()) || !observer.isRunning()) {
+                return;
+            }
+            selectedObserverIds.add(id);
+        });
+
+        for (PeerDescriptor entry : hotPeers) {
+            if (selectedObserverIds.size() >= observerTarget) {
+                break;
+            }
+            if (sameEndpoint(entry.host(), entry.port(), active.endpoint())) {
+                continue;
+            }
+            if (selectedObserverIds.contains(entry.id())) {
+                continue;
+            }
+            if (!peerAddressPolicy.allows(entry.source(), entry.host(), entry.port())) {
+                continue;
+            }
+            if (!observerRetryAllowed(entry.id())) {
+                continue;
+            }
+            ConfiguredUpstreamPeer peer = ensureKnownUpstreamPeer(entry);
+            observerSessions.compute(peer.id(), (id, existing) -> {
+                if (existing != null && existing.isRunning()) {
+                    return existing;
+                }
+                if (existing != null) {
+                    existing.close();
+                }
+                ObserverPeerSession observer = new ObserverPeerSession(
+                        peer.id(),
+                        peer.endpoint(),
+                        peer.trusted(),
+                        headerFanIn,
+                        peerClientFactory,
+                        this::onCandidateHeader,
+                        headerValidator);
+                try {
+                    observer.start(startPoint);
+                    observerRetryAfterMillis.remove(peer.id());
+                    return observer;
+                } catch (Exception e) {
+                    log.warn("Failed to start observer upstream peer {} at {}: {}",
+                            peer.id(), peer.endpoint().displayName(), PeerFailureMessage.summarize(e));
+                    observerRetryAfterMillis.put(peer.id(), System.currentTimeMillis() + 60_000L);
+                    observer.close();
+                    return null;
+                }
+            });
+            ObserverPeerSession observer = observerSessions.get(peer.id());
+            if (observer != null && observer.isRunning()) {
+                selectedObserverIds.add(peer.id());
+            }
+        }
+        observerSessions.forEach((id, observer) -> {
+            if (sameEndpoint(observer.endpoint(), active.endpoint()) || !selectedObserverIds.contains(id)) {
+                observer.close();
+                observerSessions.remove(id);
+            }
+        });
+    }
+
+    private void stopMultiPeerSupport() {
+        observerSessions.values().forEach(ObserverPeerSession::close);
+        observerSessions.clear();
+        observerRetryAfterMillis.clear();
+        activeUpstreamRetryAfterMillis.clear();
+        activeUpstreamFailureCounts.clear();
+        peerGovernor.flushPeerStore();
+        peerDiscoveryService.close();
+    }
+
+    private void onCandidateHeader(CandidateHeader header) {
+        if (header == null || !upstreamMode().multiPeer()) {
+            return;
+        }
+        candidateHeaderStore.pruneBeforeSlot(Math.max(0L, header.slot() - selectionRollbackWindowSlots()));
+        evaluateChainSelectionAsync();
+    }
+
+    private void evaluateChainSelectionAsync() {
+        if (!chainSelectionEvaluationInProgress.compareAndSet(false, true)) {
+            return;
+        }
+        try {
+            peerRecoveryExecutor.execute(() -> {
+                try {
+                    evaluateChainSelection();
+                } finally {
+                    chainSelectionEvaluationInProgress.set(false);
+                }
+            });
+        } catch (RejectedExecutionException e) {
+            chainSelectionEvaluationInProgress.set(false);
+            log.debug("Skipping chain-selection evaluation because peer recovery executor is closed");
+        }
+    }
+
+    private void evaluateChainSelection() {
+        if (!runtimeRunning.getAsBoolean() || !config.isEnableClient() || !upstreamMode().multiPeer()) {
+            return;
+        }
+        ChainTip current = chainState.getHeaderTip();
+        if (current == null) {
+            current = chainState.getTip();
+        }
+        if (current == null) {
+            return;
+        }
+
+        ChainSelectionDecision decision = chainSelectionStrategy.evaluate(new ChainSelectionContext(
+                current.getBlockNumber(),
+                current.getSlot(),
+                selectionRollbackWindowSlots(),
+                selectionQuorum(),
+                selectionTrustPolicy(),
+                headerFanIn.candidatesAfter(current.getBlockNumber())));
+        if (decision.action() != ChainSelectionDecision.Action.ADOPT || decision.selected() == null) {
+            if (decision.action() == ChainSelectionDecision.Action.OBSERVE && log.isDebugEnabled()) {
+                log.debug("Observed upstream candidate without adoption: peer={}, block={}, reason={}",
+                        decision.selected().peerId(), decision.selected().blockNumber(), decision.reason());
+            }
+            return;
+        }
+
+        CandidateHeader selected = decision.selected();
+        ConfiguredUpstreamPeer active = activeUpstreamPeer();
+        if (active.id().equals(selected.peerId())) {
+            return;
+        }
+        if (!shouldPromoteCandidate(selected, current, active, decision.reason())) {
+            return;
+        }
+        switchSelectedUpstream(selected.peerId(), decision.reason());
+    }
+
+    private boolean shouldPromoteCandidate(CandidateHeader selected,
+                                           ChainTip current,
+                                           ConfiguredUpstreamPeer active,
+                                           String reason) {
+        if (activeUpstreamHasFailure(active)) {
+            return true;
+        }
+
+        long leadBlocks = selected.blockNumber() - current.getBlockNumber();
+        if (leadBlocks < SELECTION_PROMOTION_MIN_LEAD_BLOCKS) {
+            if (log.isDebugEnabled()) {
+                log.debug("Keeping active upstream despite observed candidate lead: active={}, candidatePeer={}, "
+                                + "leadBlocks={}, minLeadBlocks={}, reason={}",
+                        active.endpoint().displayName(),
+                        selected.peerId(),
+                        leadBlocks,
+                        SELECTION_PROMOTION_MIN_LEAD_BLOCKS,
+                        reason);
+            }
+            return false;
+        }
+
+        long lastSwitch = lastSelectedUpstreamSwitchAtMillis;
+        long now = System.currentTimeMillis();
+        if (lastSwitch > 0 && now - lastSwitch < SELECTION_PROMOTION_MIN_INTERVAL_MILLIS) {
+            if (log.isDebugEnabled()) {
+                log.debug("Keeping active upstream because selected-peer switch cooldown is active: active={}, "
+                                + "candidatePeer={}, leadBlocks={}, elapsedMillis={}, cooldownMillis={}, reason={}",
+                        active.endpoint().displayName(),
+                        selected.peerId(),
+                        leadBlocks,
+                        now - lastSwitch,
+                        SELECTION_PROMOTION_MIN_INTERVAL_MILLIS,
+                        reason);
+            }
+            return false;
+        }
+
+        return true;
+    }
+
+    private void switchSelectedUpstream(String peerId, String reason) {
+        synchronized (peerSessionLock) {
+            if (pendingSelectedUpstreamPeerId != null) {
+                return;
+            }
+            int next = upstreamIndex(peerId);
+            if (next < 0 || next == Math.floorMod(activeUpstreamIndex, upstreamPeers.size())) {
+                return;
+            }
+            ConfiguredUpstreamPeer previous = activeUpstreamPeer();
+            ConfiguredUpstreamPeer selected = upstreamPeers.get(next);
+            pendingSelectedUpstreamPeerId = peerId;
+            pendingSelectedUpstreamReason = reason;
+            log.warn("Scheduling selected upstream switch by chain selection: from={}, to={}, reason={}",
+                    previous.endpoint().displayName(), selected.endpoint().displayName(), reason);
+        }
+        scheduleImmediatePeerRecovery(PeerRecoveryReason.MANUAL);
+    }
+
+    private ConfiguredUpstreamPeer applyPendingSelectedUpstreamForRecovery(PeerRecoveryReason recoveryReason) {
+        if (recoveryReason != PeerRecoveryReason.MANUAL) {
+            return null;
+        }
+        synchronized (peerSessionLock) {
+            String peerId = pendingSelectedUpstreamPeerId;
+            if (peerId == null || peerId.isBlank()) {
+                return null;
+            }
+            int next = upstreamIndex(peerId);
+            if (next < 0) {
+                log.warn("Discarding pending selected upstream switch because peer is no longer known: peerId={}",
+                        peerId);
+                pendingSelectedUpstreamPeerId = null;
+                pendingSelectedUpstreamReason = null;
+                return null;
+            }
+            int current = Math.floorMod(activeUpstreamIndex, upstreamPeers.size());
+            if (next == current) {
+                pendingSelectedUpstreamPeerId = null;
+                pendingSelectedUpstreamReason = null;
+                return upstreamPeers.get(next);
+            }
+            ConfiguredUpstreamPeer previous = activeUpstreamPeer();
+            activeUpstreamIndex = next;
+            ConfiguredUpstreamPeer selected = upstreamPeers.get(next);
+            String reason = pendingSelectedUpstreamReason;
+            pendingSelectedUpstreamPeerId = null;
+            pendingSelectedUpstreamReason = null;
+            lastSelectedUpstreamSwitchAtMillis = System.currentTimeMillis();
+            log.warn("Switching selected upstream by chain selection: from={}, to={}, reason={}",
+                    previous.endpoint().displayName(),
+                    selected.endpoint().displayName(),
+                    reason != null ? reason : "manual recovery");
+            return selected;
+        }
+    }
+
+    private void releaseObserverBeforeCanonicalSelection(ConfiguredUpstreamPeer selected) {
+        if (selected == null) {
+            return;
+        }
+        ObserverPeerSession observer = observerSessions.remove(selected.id());
+        if (observer == null) {
+            return;
+        }
+        observerRetryAfterMillis.remove(selected.id());
+        try {
+            observer.close();
+            log.info("Released observer upstream peer {} at {} before canonical selection",
+                    selected.id(), selected.endpoint().displayName());
+        } catch (Exception e) {
+            log.debug("Error releasing observer upstream peer {} before canonical selection",
+                    selected.id(), e);
+        }
+    }
+
+    private ConfiguredUpstreamPeer ensureKnownUpstreamPeer(PeerStoreEntry entry) {
+        return ensureKnownUpstreamPeer(PeerDescriptor.fromStore(entry));
+    }
+
+    private ConfiguredUpstreamPeer ensureKnownUpstreamPeer(PeerDescriptor entry) {
+        int existing = upstreamIndex(entry.id());
+        if (existing < 0) {
+            existing = upstreamIndex(entry.host(), entry.port());
+        }
+        if (existing >= 0) {
+            return upstreamPeers.get(existing);
+        }
+        ConfiguredUpstreamPeer peer = new ConfiguredUpstreamPeer(
+                entry.id(),
+                new PeerEndpoint(entry.host(), entry.port(), protocolMagic),
+                entry.trustable(),
+                priorityForPeer(entry),
+                entry.source().configValue());
+        upstreamPeers.addIfAbsent(peer);
+        return peer;
+    }
+
+    private Point observerStartPoint() {
+        ChainTip headerTip = chainState.getHeaderTip();
+        if (headerTip != null) {
+            return new Point(headerTip.getSlot(), HexUtil.encodeHexString(headerTip.getBlockHash()));
+        }
+        ChainTip bodyTip = chainState.getTip();
+        if (bodyTip != null) {
+            return new Point(bodyTip.getSlot(), HexUtil.encodeHexString(bodyTip.getBlockHash()));
+        }
+        return "always".equals(normalizedFanInStart()) ? Point.ORIGIN : null;
+    }
+
+    private boolean shouldStartMultiPeerObservers() {
+        String fanInStart = normalizedFanInStart();
+        return "always".equals(fanInStart)
+                || initialSyncComplete
+                || syncPhase == SyncPhase.STEADY_STATE;
+    }
+
+    private int targetHotPeers() {
+        if (upstreamConfig.getGovernor() == null) {
+            return Math.min(2, Math.max(1, upstreamPeers.size()));
+        }
+        return Math.max(1, upstreamConfig.getGovernor().getTargetHot());
+    }
+
+    long selectionRollbackWindowSlots() {
+        long configured = upstreamConfig.getSelection() != null
+                ? upstreamConfig.getSelection().getRollbackWindowSlots()
+                : 0L;
+        if (configured > 0) {
+            return configured;
+        }
+        long cached = derivedSelectionRollbackWindowSlots;
+        if (cached > 0) {
+            return cached;
+        }
+        long derived = deriveSelectionRollbackWindowSlots();
+        derivedSelectionRollbackWindowSlots = derived;
+        return derived;
+    }
+
+    private long deriveSelectionRollbackWindowSlots() {
+        long securityParam = DEFAULT_SECURITY_PARAM;
+        double activeSlotsCoeff = DEFAULT_ACTIVE_SLOTS_COEFF;
+
+        try {
+            EpochParamProvider provider = epochParamProviderSupplier.get();
+            if (provider != null) {
+                securityParam = provider.getSecurityParam();
+                activeSlotsCoeff = provider.getActiveSlotsCoeff();
+            }
+        } catch (Exception e) {
+            log.warn("Failed to derive upstream selection rollback window from genesis; using fallback {} slots: {}",
+                    DEFAULT_SELECTION_ROLLBACK_WINDOW_SLOTS, PeerFailureMessage.summarize(e));
+            return DEFAULT_SELECTION_ROLLBACK_WINDOW_SLOTS;
+        }
+
+        if (securityParam <= 0) {
+            securityParam = DEFAULT_SECURITY_PARAM;
+        }
+        if (!Double.isFinite(activeSlotsCoeff) || activeSlotsCoeff <= 0) {
+            activeSlotsCoeff = DEFAULT_ACTIVE_SLOTS_COEFF;
+        }
+
+        double slots = Math.ceil((double) securityParam / activeSlotsCoeff);
+        long rollbackWindowSlots = Double.isFinite(slots) && slots < Long.MAX_VALUE
+                ? Math.max(1L, (long) slots)
+                : DEFAULT_SELECTION_ROLLBACK_WINDOW_SLOTS;
+        log.info("Derived upstream selection rollback window from genesis: securityParam={}, "
+                        + "activeSlotsCoeff={}, rollbackWindowSlots={}",
+                securityParam, activeSlotsCoeff, rollbackWindowSlots);
+        return rollbackWindowSlots;
+    }
+
+    private int selectionQuorum() {
+        return upstreamConfig.getSelection() != null
+                ? upstreamConfig.getSelection().getQuorum()
+                : 2;
+    }
+
+    private String selectionTrustPolicy() {
+        return upstreamConfig.getSelection() != null
+                ? upstreamConfig.getSelection().getTrustPolicy()
+                : "trusted-only";
+    }
+
+    private int runningObserverCount() {
+        return (int) observerSessions.values().stream()
+                .filter(ObserverPeerSession::isRunning)
+                .count();
+    }
+
+    private boolean observerRetryAllowed(String peerId) {
+        Long retryAfter = observerRetryAfterMillis.get(peerId);
+        if (retryAfter == null) {
+            return true;
+        }
+        if (System.currentTimeMillis() >= retryAfter) {
+            observerRetryAfterMillis.remove(peerId);
+            return true;
+        }
+        return false;
+    }
+
+    private int upstreamIndex(String peerId) {
+        if (peerId == null || upstreamPeers.isEmpty()) {
+            return -1;
+        }
+        for (int i = 0; i < upstreamPeers.size(); i++) {
+            if (peerId.equals(upstreamPeers.get(i).id())) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    private int upstreamIndex(String host, int port) {
+        if (host == null || upstreamPeers.isEmpty()) {
+            return -1;
+        }
+        for (int i = 0; i < upstreamPeers.size(); i++) {
+            if (sameEndpoint(host, port, upstreamPeers.get(i).endpoint())) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    private static boolean sameEndpoint(PeerEndpoint left, PeerEndpoint right) {
+        return left != null && right != null
+                && sameEndpoint(left.host(), left.port(), right);
+    }
+
+    private static boolean sameEndpoint(String host, int port, PeerEndpoint endpoint) {
+        if (host == null || endpoint == null || port != endpoint.port()) {
+            return false;
+        }
+        try {
+            return PeerDescriptor.endpointId(host, port)
+                    .equals(PeerDescriptor.endpointId(endpoint.host(), endpoint.port()));
+        } catch (RuntimeException e) {
+            return host.trim().equalsIgnoreCase(endpoint.host()) && port == endpoint.port();
+        }
+    }
+
+    private String normalizedFanInStart() {
+        if (upstreamConfig.getSync() == null || upstreamConfig.getSync().getFanInStart() == null) {
+            return "near-tip";
+        }
+        return upstreamConfig.getSync().getFanInStart().trim().toLowerCase(Locale.ROOT);
+    }
+
+    private String normalizedTxForwarding() {
+        if (upstreamConfig.getTx() == null || upstreamConfig.getTx().getForwarding() == null) {
+            return "active-selected";
+        }
+        return upstreamConfig.getTx().getForwarding().trim().toLowerCase(Locale.ROOT);
+    }
+
+    private static int scoreForConfiguredPeer(ConfiguredUpstreamPeer peer) {
+        int priorityScore = Math.max(0, 10_000 - peer.priority());
+        return peer.trusted() ? priorityScore + 10_000 : priorityScore;
+    }
+
+    private static int priorityForPeer(PeerDescriptor peer) {
+        int score = Math.max(0, peer.score());
+        if (score > 0) {
+            return Math.max(0, 1_000_000 - score);
+        }
+        return switch (peer.source()) {
+            case STATIC_UPSTREAM, LOCAL_ROOT -> 0;
+            case BOOTSTRAP, PUBLIC_ROOT -> 5_000;
+            case LEDGER -> 10_000;
+            case GOSSIP -> 20_000;
+            case INBOUND -> 100_000;
+        };
+    }
+
+    private UpstreamPreset upstreamMode() {
+        return upstreamConfig != null && upstreamConfig.getMode() != null
+                ? upstreamConfig.getMode()
+                : UpstreamPreset.TRUSTED_SINGLE;
+    }
+
+    private ConfiguredUpstreamPeer activeUpstreamPeer() {
+        if (upstreamPeers.isEmpty()) {
+            return new ConfiguredUpstreamPeer(
+                    "remote",
+                    new PeerEndpoint(remoteCardanoHost, remoteCardanoPort, protocolMagic),
+                    true,
+                    0,
+                    "legacy-remote");
+        }
+        int index = Math.floorMod(activeUpstreamIndex, upstreamPeers.size());
+        return upstreamPeers.get(index);
+    }
+
+    private boolean advanceActiveUpstreamAfterFailure(PeerRecoveryReason reason, Exception cause) {
+        if (upstreamMode() == UpstreamPreset.TRUSTED_SINGLE) {
+            return false;
+        }
+        if (upstreamPeers.isEmpty()) {
+            return false;
+        }
+        int previous = Math.floorMod(activeUpstreamIndex, upstreamPeers.size());
+        ConfiguredUpstreamPeer previousPeer = upstreamPeers.get(previous);
+        markActiveUpstreamFailure(previousPeer);
+        ensureDiscoveryFailureFallbackPeers();
+        if (upstreamPeers.size() <= 1) {
+            return false;
+        }
+
+        int next = nextPreferredUpstreamIndex(previous);
+        if (next == previous) {
+            return false;
+        }
+
+        ConfiguredUpstreamPeer nextPeer = upstreamPeers.get(next);
+        releaseObserverBeforeCanonicalSelection(nextPeer);
+        activeUpstreamIndex = next;
+        log.warn("Switching active upstream after failure: reason={}, from={}, to={}, error={}",
+                reason,
+                previousPeer.endpoint().displayName(),
+                nextPeer.endpoint().displayName(),
+                cause != null ? cause.getMessage() : "none");
+        return true;
+    }
+
+    private void ensureDiscoveryFailureFallbackPeers() {
+        if (!discoveryBootstrapEnabled()) {
+            return;
+        }
+        int before = upstreamPeers.size();
+        peerDiscoveryService.start();
+        peerGovernor.hotPeers(PeerUse.CHAIN_SYNC, Math.max(1, peerGovernor.snapshot().knownPeerCount())).stream()
+                .filter(peer -> peerAddressPolicy.allows(peer.source(), peer.host(), peer.port()))
+                .filter(peer -> upstreamIndex(peer.id()) < 0)
+                .filter(peer -> upstreamIndex(peer.host(), peer.port()) < 0)
+                .findFirst()
+                .ifPresent(this::ensureKnownUpstreamPeer);
+        if (upstreamPeers.size() > before) {
+            log.info("Added {} discovered upstream peer(s) for active failover",
+                    upstreamPeers.size() - before);
+        }
+    }
+
+    private int nextPreferredUpstreamIndex(int previous) {
+        int trustedUnfailed = nextPreferredUpstreamIndex(previous, true, false);
+        if (trustedUnfailed >= 0) {
+            return trustedUnfailed;
+        }
+        int unfailed = nextPreferredUpstreamIndex(previous, false, false);
+        if (unfailed >= 0) {
+            return unfailed;
+        }
+        int trustedRetry = nextPreferredUpstreamIndex(previous, true, true);
+        if (trustedRetry >= 0) {
+            return trustedRetry;
+        }
+        int retry = nextPreferredUpstreamIndex(previous, false, true);
+        if (retry >= 0) {
+            return retry;
+        }
+        return (previous + 1) % upstreamPeers.size();
+    }
+
+    private int nextPreferredUpstreamIndex(int previous, boolean trustedOnly, boolean includePreviouslyFailed) {
+        for (int offset = 1; offset < upstreamPeers.size(); offset++) {
+            int candidate = (previous + offset) % upstreamPeers.size();
+            ConfiguredUpstreamPeer peer = upstreamPeers.get(candidate);
+            if (trustedOnly && !peer.trusted()) {
+                continue;
+            }
+            if (!includePreviouslyFailed && activeUpstreamHasFailure(peer)) {
+                continue;
+            }
+            if (activeUpstreamRetryAllowed(peer)) {
+                return candidate;
+            }
+        }
+        return -1;
+    }
+
+    private void markActiveUpstreamFailure(ConfiguredUpstreamPeer peer) {
+        if (peer == null || peer.id() == null) {
+            return;
+        }
+        activeUpstreamFailureCounts.merge(peer.id(), 1, Integer::sum);
+        long cooldownMillis = activeUpstreamFailoverCooldownMillis();
+        if (cooldownMillis <= 0) {
+            return;
+        }
+        activeUpstreamRetryAfterMillis.put(peer.id(), System.currentTimeMillis() + cooldownMillis);
+    }
+
+    private void clearActiveUpstreamFailure(String peerId) {
+        if (peerId != null) {
+            activeUpstreamRetryAfterMillis.remove(peerId);
+            activeUpstreamFailureCounts.remove(peerId);
+        }
+    }
+
+    private boolean activeUpstreamHasFailure(ConfiguredUpstreamPeer peer) {
+        return peer != null
+                && peer.id() != null
+                && activeUpstreamFailureCounts.getOrDefault(peer.id(), 0) > 0;
+    }
+
+    private boolean activeUpstreamRetryAllowed(ConfiguredUpstreamPeer peer) {
+        if (peer == null || peer.id() == null) {
+            return true;
+        }
+        Long retryAfter = activeUpstreamRetryAfterMillis.get(peer.id());
+        if (retryAfter == null) {
+            return true;
+        }
+        if (System.currentTimeMillis() >= retryAfter) {
+            activeUpstreamRetryAfterMillis.remove(peer.id());
+            return true;
+        }
+        return false;
+    }
+
+    private long activeUpstreamFailoverCooldownMillis() {
+        if (upstreamConfig.getFailover() == null) {
+            return 30_000L;
+        }
+        return Math.max(0L, upstreamConfig.getFailover().getCooldownMs());
+    }
+
+    private static List<ConfiguredUpstreamPeer> buildUpstreamPeers(UpstreamConfig upstreamConfig,
+                                                                   String remoteHost,
+                                                                   int remotePort,
+                                                                   long protocolMagic) {
+        UpstreamConfig effective = upstreamConfig;
+        if ((effective == null || effective.getPeers() == null || effective.getPeers().isEmpty())
+                && remoteHost != null && !remoteHost.isBlank() && remotePort > 0
+                && (effective == null || !effective.discoveryBootstrapEnabled())) {
+            effective = UpstreamConfig.trustedSingleFromRemote(remoteHost, remotePort);
+        }
+        if (effective == null || effective.getPeers() == null || effective.getPeers().isEmpty()) {
+            return List.of();
+        }
+
+        List<ConfiguredUpstreamPeer> peers = new ArrayList<>();
+        for (UpstreamPeerConfig peer : effective.orderedPeers()) {
+            if (peer == null) {
+                continue;
+            }
+            peers.add(new ConfiguredUpstreamPeer(
+                    peer.effectiveId(),
+                    new PeerEndpoint(peer.getHost(), peer.getPort(), protocolMagic),
+                    peer.trusted(),
+                    peer.getPriority(),
+                    peer.getSource() != null ? peer.getSource() : "local-root"));
+        }
+        return List.copyOf(peers);
+    }
+
     private PeerSession createPeerSession() {
+        ConfiguredUpstreamPeer activeUpstream = activeUpstreamPeer();
         var session = new PeerSession(
-                new PeerEndpoint(remoteCardanoHost, remoteCardanoPort, protocolMagic),
+                activeUpstream.endpoint(),
                 chainState,
                 eventBus,
                 this,
                 epochParamProviderSupplier.get(),
-                peerClientFactory);
+                peerClientFactory,
+                headerValidator,
+                bodyValidator);
         session.setGenesisBootstrapDataSupplier(genesisBootstrapDataSupplier);
         return session;
+    }
+
+    private record ConfiguredUpstreamPeer(String id,
+                                          PeerEndpoint endpoint,
+                                          boolean trusted,
+                                          int priority,
+                                          String source) {
     }
 
     private void startPeerSessionSupervisor() {
@@ -753,6 +2005,13 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
             }
         }
 
+        ConfiguredUpstreamPeer pendingSelected = applyPendingSelectedUpstreamForRecovery(reason);
+
+        // Observer maintenance can run while a chain-selection promotion is quiescing the old
+        // canonical session. Purge again after the active index is final so the replacement
+        // canonical dial is never racing an observer connection to the same endpoint.
+        releaseObserverBeforeCanonicalSelection(pendingSelected != null ? pendingSelected : activeUpstreamPeer());
+
         synchronized (peerSessionLock) {
             if (!runtimeRunning.getAsBoolean() || !config.isEnableClient()) {
                 return;
@@ -796,18 +2055,25 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
                     startSequentialClientSync(startPoint);
                 }
                 peerRecoveryFailureTracker.recordSuccess();
+                clearActiveUpstreamFailure(activeUpstreamPeer().id());
+                startMultiPeerSupport(startPoint);
                 log.info("Upstream peer session recovered successfully: reason={}", reason);
             } catch (Exception e) {
                 PeerRecoveryFailureTracker.Snapshot failure = peerRecoveryFailureTracker.recordFailure(reason, e);
+                boolean switched = false;
                 if (failure.terminal()) {
                     log.error("Upstream peer session recovery reached terminal failure; automatic retries paused: {}",
-                            failure.message(), e);
+                            failureMessage(failure, e));
                 } else {
                     log.warn("Upstream peer session recovery failed; supervisor will retry after cooldown: {}",
-                            failure.message(), e);
+                            failureMessage(failure, e));
+                    switched = advanceActiveUpstreamAfterFailure(reason, e);
                 }
                 markPeerRecoveryFailure(reason, e, failure);
                 isSyncing.set(!failure.terminal());
+                if (switched && shouldFastRetryAfterActiveUpstreamSwitch(reason)) {
+                    scheduleImmediatePeerRecovery(reason);
+                }
             }
         }
     }
@@ -818,15 +2084,36 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
                 return;
             }
             PeerRecoveryFailureTracker.Snapshot failure = peerRecoveryFailureTracker.recordFailure(reason, e);
+            boolean switched = false;
             if (failure.terminal()) {
                 log.error("Upstream peer session recovery reached terminal failure; automatic retries paused: {}",
-                        failure.message(), e);
+                        failureMessage(failure, e));
             } else {
                 log.warn("Upstream peer session recovery failed; supervisor will retry after cooldown: {}",
-                        failure.message(), e);
+                        failureMessage(failure, e));
+                switched = advanceActiveUpstreamAfterFailure(reason, e);
             }
             markPeerRecoveryFailure(reason, e, failure);
             isSyncing.set(!failure.terminal());
+            if (switched && shouldFastRetryAfterActiveUpstreamSwitch(reason)) {
+                scheduleImmediatePeerRecovery(reason);
+            }
+        }
+    }
+
+    private boolean shouldFastRetryAfterActiveUpstreamSwitch(PeerRecoveryReason reason) {
+        return reason == PeerRecoveryReason.STARTUP_FAILED
+                && !peerRecoveryFailureTracker.isTerminal()
+                && runtimeRunning.getAsBoolean()
+                && config.isEnableClient();
+    }
+
+    private void scheduleImmediatePeerRecovery(PeerRecoveryReason reason) {
+        try {
+            log.info("Retrying active upstream immediately after failover switch: reason={}", reason);
+            peerRecoveryExecutor.execute(() -> recoverPeerSession(reason));
+        } catch (RejectedExecutionException e) {
+            log.warn("Immediate upstream peer recovery submission rejected: reason={}", reason, e);
         }
     }
 
@@ -870,6 +2157,15 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
         failedSession.getPeerHealth().markTerminalFailure(
                 reason != null ? reason : PeerRecoveryReason.UNKNOWN,
                 message);
+    }
+
+    private static String failureMessage(PeerRecoveryFailureTracker.Snapshot failure, Exception e) {
+        String message = failure != null ? failure.message() : null;
+        String detail = PeerFailureMessage.summarize(e);
+        if (message == null || message.isBlank()) {
+            return detail;
+        }
+        return message + "; " + detail;
     }
 
     private void startPipelinedClientSync(ChainTip localTip, Tip remoteTip, Point startPoint) {
