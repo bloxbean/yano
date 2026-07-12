@@ -1,0 +1,141 @@
+package com.bloxbean.cardano.yano.runtime.appchain;
+
+import co.nstant.in.cbor.model.Array;
+import co.nstant.in.cbor.model.ByteString;
+import co.nstant.in.cbor.model.DataItem;
+import co.nstant.in.cbor.model.UnicodeString;
+import co.nstant.in.cbor.model.UnsignedInteger;
+import com.bloxbean.cardano.yaci.core.util.CborSerializationUtil;
+
+import java.util.List;
+
+/**
+ * Node-local execution progress of one effect (ADR app-layer/010 F3, runtime
+ * tier). Never replicated, never in any root; two nodes legitimately disagree
+ * about these values. Wall-clock timestamps are fine — this is the execution
+ * plane.
+ *
+ * @param status          runtime status (see constants)
+ * @param attempts        attempts made on this node
+ * @param nextAttemptAt   epoch millis before which no retry fires (backoff)
+ * @param lastError       last failure, for operators ("" = none)
+ * @param submittedRef    external ref of an in-flight Submitted action
+ * @param externalRef     external ref of the final outcome (DONE)
+ * @param updatedAt       epoch millis of the last transition
+ */
+record FxStatusRecord(int status,
+                      int attempts,
+                      long nextAttemptAt,
+                      String lastError,
+                      byte[] submittedRef,
+                      byte[] externalRef,
+                      long updatedAt) {
+
+    /** Discovered, waiting for gate/dispatch. */
+    static final int PENDING = 0;
+    /** Failed attempt(s); waiting out backoff. */
+    static final int RETRY = 2;
+    /** Long-running action in flight (executor re-polled each tick). */
+    static final int SUBMITTED = 3;
+    /** Locally complete (NONE-policy terminal; CHAIN outcome recorded, result loop in FX-M3). */
+    static final int DONE = 4;
+    /** Poison lane: attempt cap or non-retryable failure; operator requeue/cancel (F9). */
+    static final int PARKED = 5;
+    /** Open effect predating executor enablement; operator must requeue explicitly (F10). */
+    static final int QUARANTINED = 6;
+    /** Operator chose not to execute (rebuild/backfill policy). */
+    static final int SKIPPED = 7;
+
+    FxStatusRecord {
+        lastError = lastError != null ? lastError : "";
+        submittedRef = submittedRef != null ? submittedRef : new byte[0];
+        externalRef = externalRef != null ? externalRef : new byte[0];
+    }
+
+    static FxStatusRecord pending() {
+        return new FxStatusRecord(PENDING, 0, 0, "", null, null, System.currentTimeMillis());
+    }
+
+    boolean locallyTerminal() {
+        return status == DONE || status == SKIPPED;
+    }
+
+    boolean executable() {
+        return status == PENDING || status == RETRY || status == SUBMITTED;
+    }
+
+    /** A REAL failed attempt — the only transition that consumes attempt budget. */
+    FxStatusRecord retry(String error, long nextAt) {
+        return new FxStatusRecord(RETRY, attempts + 1, nextAt, error, submittedRef, null,
+                System.currentTimeMillis());
+    }
+
+    /** Precondition not met (EffectExecution.Retry) — no attempt consumed. */
+    FxStatusRecord deferred(String reason, long nextAt) {
+        return new FxStatusRecord(RETRY, attempts, nextAt, reason, submittedRef, null,
+                System.currentTimeMillis());
+    }
+
+    /** Long-running action started — polling it is not an attempt. */
+    FxStatusRecord submitted(byte[] ref) {
+        return new FxStatusRecord(SUBMITTED, attempts, 0, "", ref, null,
+                System.currentTimeMillis());
+    }
+
+    FxStatusRecord done(byte[] ref) {
+        return new FxStatusRecord(DONE, attempts + 1, 0, "", submittedRef, ref,
+                System.currentTimeMillis());
+    }
+
+    FxStatusRecord parked(String error) {
+        return new FxStatusRecord(PARKED, attempts + 1, 0, error, submittedRef, null,
+                System.currentTimeMillis());
+    }
+
+    FxStatusRecord requeued() {
+        return new FxStatusRecord(PENDING, attempts, 0, lastError, submittedRef, null,
+                System.currentTimeMillis());
+    }
+
+    static FxStatusRecord quarantined() {
+        return new FxStatusRecord(QUARANTINED, 0, 0, "", null, null, System.currentTimeMillis());
+    }
+
+    String statusName() {
+        return switch (status) {
+            case PENDING -> "PENDING";
+            case RETRY -> "RETRY";
+            case SUBMITTED -> "SUBMITTED";
+            case DONE -> "DONE";
+            case PARKED -> "PARKED";
+            case QUARANTINED -> "QUARANTINED";
+            case SKIPPED -> "SKIPPED";
+            default -> "UNKNOWN(" + status + ")";
+        };
+    }
+
+    byte[] encode() {
+        Array arr = new Array();
+        arr.add(new UnsignedInteger(status));
+        arr.add(new UnsignedInteger(attempts));
+        arr.add(new UnsignedInteger(Math.max(0, nextAttemptAt)));
+        arr.add(new UnicodeString(lastError));
+        arr.add(new ByteString(submittedRef));
+        arr.add(new ByteString(externalRef));
+        arr.add(new UnsignedInteger(Math.max(0, updatedAt)));
+        return CborSerializationUtil.serialize(arr);
+    }
+
+    static FxStatusRecord decode(byte[] bytes) {
+        Array arr = (Array) CborSerializationUtil.deserializeOne(bytes);
+        List<DataItem> items = arr.getDataItems();
+        return new FxStatusRecord(
+                ((UnsignedInteger) items.get(0)).getValue().intValue(),
+                ((UnsignedInteger) items.get(1)).getValue().intValue(),
+                ((UnsignedInteger) items.get(2)).getValue().longValue(),
+                ((UnicodeString) items.get(3)).getString(),
+                ((ByteString) items.get(4)).getBytes(),
+                ((ByteString) items.get(5)).getBytes(),
+                ((UnsignedInteger) items.get(6)).getValue().longValue());
+    }
+}

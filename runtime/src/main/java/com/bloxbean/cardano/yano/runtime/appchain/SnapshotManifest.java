@@ -45,6 +45,13 @@ final class SnapshotManifest {
         try {
             Map<String, Object> manifest = new LinkedHashMap<>();
             manifest.put("version", 1);
+            // Ledger format (ADR-010 FX-M2): the CF set this checkpoint carries.
+            // A build that lists fewer CFs cannot open this snapshot (RocksDB
+            // refuses unlisted families) — this field turns that into an
+            // operator-readable diagnostic instead of a bare RocksDB error.
+            manifest.put("ledgerFormat", 2);
+            manifest.put("columnFamilies", java.util.List.of("default", "app_blocks", "app_meta",
+                    "app_msgs", "mpf_nodes", "app_query_index", "app_fx_records", "app_fx_runtime"));
             manifest.put("chainId", chainId);
             manifest.put("height", height);
             manifest.put("blockHash", tipBlockHash != null ? HexUtil.encodeHexString(tipBlockHash) : "");

@@ -116,6 +116,8 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     private final AtomicBoolean running = new AtomicBoolean(false);
     private volatile ScheduledExecutorService scheduler;
     private volatile ScheduledExecutorService sinkScheduler;
+    private volatile ScheduledExecutorService fxScheduler;
+    private volatile EffectRuntime effectRuntime;
 
     public AppChainSubsystem(AppChainConfig config, long protocolMagic, EventBus eventBus, Logger log) {
         this(config, protocolMagic, eventBus, null, null, log);
@@ -917,6 +919,24 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                 : Optional.empty();
     }
 
+    @Override
+    public Map<String, Object> effectStats() {
+        EffectRuntime currentFx = effectRuntime;
+        return currentFx != null ? currentFx.stats() : Map.of();
+    }
+
+    @Override
+    public Optional<Map<String, Object>> effectRuntimeStatus(long height, int ordinal) {
+        EffectRuntime currentFx = effectRuntime;
+        return currentFx != null ? currentFx.statusOf(height, ordinal) : Optional.empty();
+    }
+
+    @Override
+    public boolean requeueEffect(long height, int ordinal) {
+        EffectRuntime currentFx = effectRuntime;
+        return currentFx != null && currentFx.requeue(height, ordinal);
+    }
+
     // ------------------------------------------------------------------
     // Key rotation (ADR 006 E4.5): staged member add / re-threshold / retire.
     // Height-versioned: each change starts a NEW membership epoch effective
@@ -1297,6 +1317,10 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             if (!activations.isEmpty()) {
                 effectsStatus.put("activations", activations);
             }
+            EffectRuntime currentFx = effectRuntime;
+            if (currentFx != null) {
+                effectsStatus.put("executor", currentFx.stats());
+            }
             status.put("effects", effectsStatus);
         }
         if (!sinkRunners.isEmpty()) {
@@ -1559,6 +1583,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                 }
             }
             buildSinks(ledgerStore);
+            buildEffectRuntime(ledgerStore);
             subscribeL1Events();
         }
 
@@ -1625,6 +1650,22 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             log.info("App-chain retention enabled: bodies pruned below L1_FINAL anchor "
                     + "(keeping the most-recent {} block(s))", config.retentionKeepBlocks());
         }
+        EffectRuntime currentFx = effectRuntime;
+        if (currentFx != null) {
+            // Own thread, like sinks: a slow external system must never stall
+            // proposeTick / catch-up / anchoring (ADR-010 F5)
+            long tickMs = currentFx.settings().tickMs();
+            ScheduledExecutorService fxExec = Executors.newSingleThreadScheduledExecutor(r -> {
+                Thread t = new Thread(r, "app-chain-fx-" + config.chainId());
+                t.setDaemon(true);
+                return t;
+            });
+            this.fxScheduler = fxExec;
+            fxExec.scheduleWithFixedDelay(currentFx::tick, tickMs, tickMs, TimeUnit.MILLISECONDS);
+        }
+        if (Boolean.parseBoolean(config.pluginSettings().getOrDefault("effects.enabled", "false"))) {
+            exec.scheduleWithFixedDelay(this::fxRetentionTick, 60, 60, TimeUnit.SECONDS);
+        }
     }
 
     /** Prune message bodies below the L1_FINAL anchor horizon (E4.4). */
@@ -1646,6 +1687,37 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                 currentLedger.pruneBodiesBelow(horizon);
             } catch (Exception e) {
                 log.warn("App-chain retention tick failed: {}", e.toString());
+            }
+        }
+    }
+
+    /**
+     * Effect outbox retention (ADR-010 F3) — independent of body retention
+     * and of anchoring: resolved records prune once older than
+     * {@code effects.retention.keep-blocks} behind the tip, capped at the
+     * executor's intake cursor. The ledger enforces the safety rules (live
+     * obligations and future-expiry records never prune).
+     */
+    private void fxRetentionTick() {
+        AppLedgerStore currentLedger = ledger;
+        if (!running.get() || currentLedger == null) {
+            return;
+        }
+        long keepBlocks = parseLongSetting("effects.retention.keep-blocks", 100_000);
+        long fxHorizon = currentLedger.tipHeight() - keepBlocks;
+        long intakeCursor = currentLedger.fxIntakeCursor(-1);
+        if (intakeCursor >= 0) {
+            fxHorizon = Math.min(fxHorizon, intakeCursor);
+        }
+        if (fxHorizon > 0) {
+            try {
+                int pruned = currentLedger.fxPruneBelow(fxHorizon);
+                if (pruned > 0) {
+                    log.info("App-chain '{}' pruned {} resolved effect record(s) below height {}",
+                            config.chainId(), pruned, fxHorizon);
+                }
+            } catch (Exception e) {
+                log.warn("App-chain effect retention failed: {}", e.toString());
             }
         }
     }
@@ -1880,14 +1952,103 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
 
     /** Config sub-map for a sink scheme: yano.app-chain.sinks.<scheme>.* → stripped keys. */
     private java.util.Map<String, String> sinkConfigFor(String scheme) {
+        return strippedSubMap("sinks." + scheme + ".");
+    }
+
+    /** Config sub-map for an executor scheme: yano.app-chain.effects.executors.<scheme>.* → stripped. */
+    private java.util.Map<String, String> executorConfigFor(String scheme) {
+        return strippedSubMap("effects.executors." + scheme + ".");
+    }
+
+    private java.util.Map<String, String> strippedSubMap(String prefix) {
         java.util.Map<String, String> result = new java.util.LinkedHashMap<>();
-        String prefix = "sinks." + scheme + ".";
         for (var entry : config.pluginSettings().entrySet()) {
             if (entry.getKey().startsWith(prefix)) {
                 result.put(entry.getKey().substring(prefix.length()), entry.getValue());
             }
         }
         return result;
+    }
+
+    /**
+     * Build the Effect Runtime (ADR-010 F5) when this node is an executor:
+     * built-in webhook executor when configured, plus AppEffectExecutorFactory
+     * plugins via ServiceLoader — mirroring buildSinks. OFF by default; at
+     * most one executor node per effect-type partition is the operator's
+     * responsibility (ADR-010 F6), with idempotency as the safety net.
+     */
+    private void buildEffectRuntime(AppLedgerStore ledgerStore) {
+        EffectRuntime.Settings runtimeSettings;
+        try {
+            runtimeSettings = EffectRuntime.Settings.fromSettings(config.pluginSettings());
+        } catch (Exception e) {
+            // Executor settings are node-local — a typo must not take down the chain
+            log.error("App-chain '{}': invalid effects.executor.* settings — continuing without "
+                    + "an executor: {}", config.chainId(), e.toString());
+            return;
+        }
+        if (!runtimeSettings.enabled()) {
+            return;
+        }
+        if (!Boolean.parseBoolean(config.pluginSettings().getOrDefault("effects.enabled", "false"))) {
+            log.warn("App-chain '{}': effects.executor.enabled=true but effects.enabled=false — "
+                    + "executor not started", config.chainId());
+            return;
+        }
+        java.util.List<com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutor> executors =
+                new java.util.ArrayList<>();
+        java.util.Map<String, java.util.Map<String, String>> executorConfigs =
+                new java.util.LinkedHashMap<>();
+        java.util.Map<String, String> webhookConfig = executorConfigFor("webhook");
+        if (!webhookConfig.isEmpty()) {
+            executors.add(new WebhookEffectExecutor(webhookConfig, log));
+            executorConfigs.put("webhook", webhookConfig);
+        }
+        ClassLoader[] classLoaders = pluginClassLoader != null
+                ? new ClassLoader[]{pluginClassLoader}
+                : new ClassLoader[]{Thread.currentThread().getContextClassLoader()};
+        for (ClassLoader classLoader : classLoaders) {
+            for (com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutorFactory factory :
+                    java.util.ServiceLoader.load(
+                            com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutorFactory.class,
+                            classLoader)) {
+                java.util.Map<String, String> executorConfig = executorConfigFor(factory.scheme());
+                if (executorConfig.isEmpty()) {
+                    continue;
+                }
+                try {
+                    for (var executor : factory.create(config.chainId(), executorConfig)) {
+                        executors.add(executor);
+                        executorConfigs.put(executor.id(), executorConfig);
+                        log.info("App-chain effect executor '{}' registered via {} plugin",
+                                executor.id(), factory.scheme());
+                    }
+                } catch (Exception e) {
+                    log.error("Failed to build '{}' effect executor(s): {}",
+                            factory.scheme(), e.toString());
+                }
+            }
+        }
+        if (executors.isEmpty()) {
+            log.warn("App-chain '{}': effects.executor.enabled=true but no executors configured "
+                    + "(set effects.executors.<scheme>.* or drop an AppEffectExecutorFactory plugin)",
+                    config.chainId());
+            return;
+        }
+        try {
+            this.effectRuntime = new EffectRuntime(ledgerStore, config.chainId(), runtimeSettings,
+                    executors, executorConfigs, log);
+        } catch (Exception e) {
+            // The executor is a node-local optional role — a broken executor
+            // setup must not take down sequencing/anchoring/sinks
+            log.error("App-chain '{}': effect runtime failed to start — continuing without an "
+                    + "executor: {}", config.chainId(), e.toString());
+            return;
+        }
+        log.info("App-chain '{}' effect runtime enabled: executors={}, tick={}ms, maxParallel={}",
+                config.chainId(), executors.stream()
+                        .map(com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutor::id).toList(),
+                runtimeSettings.tickMs(), runtimeSettings.maxParallel());
     }
 
     @Override
@@ -1984,6 +2145,27 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             runner.close();
         }
         sinkRunners.clear();
+        // Shutdown ORDER matters (ADR-010 F5 review): stop the tick source and
+        // WAIT for it, then close the runtime (waits for workers), and only
+        // then may the ledger close — nothing may touch RocksDB afterwards.
+        ScheduledExecutorService fxExec = fxScheduler;
+        fxScheduler = null;
+        if (fxExec != null) {
+            fxExec.shutdown();
+            try {
+                if (!fxExec.awaitTermination(3, TimeUnit.SECONDS)) {
+                    fxExec.shutdownNow();
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                fxExec.shutdownNow();
+            }
+        }
+        EffectRuntime currentFx = effectRuntime;
+        effectRuntime = null;
+        if (currentFx != null) {
+            currentFx.close();
+        }
         anchorService = null;
         ScheduledExecutorService exec = scheduler;
         scheduler = null;
