@@ -166,6 +166,18 @@
       .b-warn { color: var(--warn); background: var(--warn-bg); border-color: var(--warn-bd); }
       .b-bad  { color: var(--bad);  background: var(--bad-bg);  border-color: var(--bad-bd); }
 
+      .copyable { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+      .copy-btn {
+        display: inline-grid; place-items: center; width: 20px; height: 20px; padding: 0;
+        border-radius: 5px; border: 1px solid var(--hairline-strong);
+        background: var(--chip-bg); color: var(--text-dim); cursor: pointer; flex-shrink: 0;
+        transition: color 0.15s, border-color 0.15s, transform 0.15s;
+      }
+      .copy-btn:hover { color: var(--text); border-color: var(--text-dim); }
+      .copy-btn:active { transform: scale(0.9); }
+      .copy-btn svg { width: 11px; height: 11px; }
+      .copy-btn.copied { color: var(--ok); border-color: var(--ok-bd); }
+
       .status-shell { position: relative; z-index: 1; max-width: 1280px; margin: 0 auto; padding: 20px 20px 44px; }
       .grid { display: grid; gap: 16px; }
       .grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -251,7 +263,28 @@
         transition: width 0.8s cubic-bezier(0.22, 1, 0.36, 1);
       }
 
-      canvas.chart { width: 100%; height: 120px; display: block; }
+      canvas.chart { width: 100%; height: 120px; display: block; cursor: crosshair; }
+      .chart-tip {
+        position: fixed; z-index: 60; pointer-events: none; min-width: 130px;
+        padding: 8px 11px; border-radius: 10px;
+        background: var(--card-hover);
+        border: 1px solid var(--hairline-strong);
+        box-shadow: var(--shadow-hover);
+        backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+        font-size: 11.5px;
+      }
+      .chart-tip .tip-time {
+        color: var(--text-dim); font-size: 10px; font-weight: 600;
+        letter-spacing: 0.08em; margin-bottom: 5px;
+        font-variant-numeric: tabular-nums;
+      }
+      .chart-tip .tip-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 1.5px 0; }
+      .chart-tip .tip-row > span:first-child { color: var(--text-dim); }
+      .chart-tip .tip-row i {
+        width: 8px; height: 8px; border-radius: 3px; display: inline-block;
+        background: var(--c); margin-right: 6px; vertical-align: -1px;
+      }
+      .chart-tip .tip-row > span:last-child { font-weight: 600; }
 
       .table-wrap { overflow-x: auto; margin: 0 -6px; }
       table { width: 100%; border-collapse: collapse; font-size: 12.5px; text-align: left; }
@@ -417,14 +450,7 @@
             </div>
             <span id="anchorBadge" class="badge">-</span>
           </div>
-          <div>
-            <div class="metric"><span>Last Anchored Height</span><span id="anchorHeight" class="mono v">-</span></div>
-            <div class="metric"><span>Lag (blocks)</span><span id="anchorLag" class="mono v">-</span></div>
-            <div class="metric"><span>Anchors Confirmed</span><span id="anchorCount" class="mono v">-</span></div>
-            <div class="metric"><span>Pending Tx</span><span id="anchorPending" class="mono v">-</span></div>
-            <div class="metric"><span>Last Tx</span><span id="anchorLastTx" class="mono v">-</span></div>
-            <div class="metric"><span>Error</span><span id="anchorError" class="mono v">-</span></div>
-          </div>
+          <div id="anchorList"><div class="empty">-</div></div>
         </section>
 
         <section class="card ac-blue" style="--i: 5">
@@ -487,6 +513,8 @@
         </div>
       </section>
 
+      <div id="chartTip" class="chart-tip" hidden></div>
+
       <div class="foot">
         <span>Auto-refresh every <span id="pollSecs">5</span>s</span>
         <span class="sep">·</span>
@@ -513,6 +541,38 @@
         const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
         return s < 60 ? s + 's' : s < 3600 ? Math.round(s / 60) + 'm' : Math.round(s / 3600) + 'h';
       };
+
+      // ---- copy-to-clipboard for hashes/addresses (full value, not the truncation) ----
+      const copyIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>';
+      const checkIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>';
+      function copyable(value, n = 16) {
+        if (!value) return '-';
+        return '<span class="copyable"><span class="mono" title="' + esc(value) + '">' + esc(shortHex(value, n)) + '</span>'
+            + '<button type="button" class="copy-btn" data-copy="' + esc(value) + '" title="Copy" aria-label="Copy">'
+            + copyIcon + '</button></span>';
+      }
+      document.addEventListener('click', async e => {
+        const btn = e.target.closest('.copy-btn');
+        if (!btn) return;
+        const value = btn.dataset.copy || '';
+        try {
+          await navigator.clipboard.writeText(value);
+        } catch (err) {
+          // Plain-http access (no secure context): textarea fallback
+          const ta = document.createElement('textarea');
+          ta.value = value; ta.style.position = 'fixed'; ta.style.opacity = '0';
+          document.body.appendChild(ta); ta.select();
+          try { document.execCommand('copy'); } catch (e2) { /* give up quietly */ }
+          ta.remove();
+        }
+        btn.innerHTML = checkIcon; btn.classList.add('copied');
+        setTimeout(() => { btn.innerHTML = copyIcon; btn.classList.remove('copied'); }, 1200);
+      });
+      // innerHTML setter that only rewrites on change (keeps copy-button state stable)
+      function setHtml(id, htmlStr) {
+        const el = $(id);
+        if (el && el.dataset.last !== htmlStr) { el.dataset.last = htmlStr; el.innerHTML = htmlStr; }
+      }
 
       let firstRender = true;
       function text(id, value) {
@@ -598,11 +658,13 @@
       function push(list, value) { list.push(value); if (list.length > maxPoints) list.shift(); }
 
       const chartDefs = [
-        { id: 'chartTip', series: () => [hist.tipRate], colors: ['#8b5cf6'] },
-        { id: 'chartPool', series: () => [hist.pool], colors: ['#f59e0b'] },
-        { id: 'chartInterval', series: () => [hist.interval], colors: ['#06b6d4'] },
-        { id: 'chartAnchor', series: () => [hist.anchorLag], colors: ['#10b981'] },
+        { id: 'chartTip', label: 'blocks/min', series: () => [hist.tipRate], colors: ['#8b5cf6'] },
+        { id: 'chartPool', label: 'pool size', series: () => [hist.pool], colors: ['#f59e0b'] },
+        { id: 'chartInterval', label: 'interval (ms)', series: () => [hist.interval], colors: ['#06b6d4'] },
+        { id: 'chartAnchor', label: 'anchor lag', series: () => [hist.anchorLag], colors: ['#10b981'] },
       ];
+      const chartHover = {};       // canvasId -> hovered point index (or null)
+      let tipMouse = null;         // last mouse position while hovering a chart
       function rgba(hex, a) {
         const v = parseInt(hex.slice(1), 16);
         return `rgba(${(v >> 16) & 255}, ${(v >> 8) & 255}, ${v & 255}, ${a})`;
@@ -650,10 +712,86 @@
           const lastV = series[series.length - 1];
           ctx.beginPath(); ctx.arc(x(series.length - 1), y(lastV), 3, 0, Math.PI * 2);
           ctx.fillStyle = colors[si]; ctx.fill();
+
+          // Hover marker: dashed vertical guide + a ringed dot on the point
+          const hoverIdx = chartHover[canvasId];
+          if (hoverIdx != null && hoverIdx >= 0 && hoverIdx < series.length) {
+            const dark = document.documentElement.classList.contains('dark');
+            const hx = x(hoverIdx);
+            ctx.strokeStyle = dark ? 'rgba(148, 163, 184, 0.35)' : 'rgba(71, 85, 105, 0.35)';
+            ctx.lineWidth = 1; ctx.setLineDash([3, 3]);
+            ctx.beginPath(); ctx.moveTo(hx, 6); ctx.lineTo(hx, h - 6); ctx.stroke();
+            ctx.setLineDash([]);
+            const hv = series[hoverIdx];
+            if (hv != null && isFinite(hv)) {
+              ctx.fillStyle = colors[si];
+              ctx.beginPath(); ctx.arc(hx, y(hv), 3.5, 0, Math.PI * 2); ctx.fill();
+              ctx.strokeStyle = dark ? 'rgba(230, 236, 247, 0.9)' : 'rgba(255, 255, 255, 0.95)';
+              ctx.lineWidth = 1.5;
+              ctx.beginPath(); ctx.arc(hx, y(hv), 3.5, 0, Math.PI * 2); ctx.stroke();
+            }
+          }
         });
       }
-      function redrawCharts() { for (const def of chartDefs) drawLines(def.id, def.series(), def.colors); }
+      function redrawCharts() {
+        for (const def of chartDefs) drawLines(def.id, def.series(), def.colors);
+        if (tipMouse && chartHover[tipMouse.id] != null) {
+          showChartTip(tipMouse.id, chartHover[tipMouse.id], tipMouse.clientX, tipMouse.clientY);
+        }
+      }
       window.addEventListener('resize', redrawCharts);
+
+      // ---- chart hover: actual values under the cursor (same UX as /ui/status) ----
+      function showChartTip(id, idx, clientX, clientY) {
+        const def = chartDefs.find(d => d.id === id);
+        if (!def) return;
+        const tip = $('chartTip');
+        const values = def.series()[0];
+        const v = values ? values[idx] : undefined;
+        const val = (v != null && isFinite(v))
+            ? Number(v).toLocaleString(undefined, { maximumFractionDigits: 2 }) : '-';
+        const when = hist.time[idx] ? new Date(hist.time[idx]).toLocaleTimeString() : '';
+        tip.innerHTML = (when ? '<div class="tip-time">' + when + '</div>' : '')
+            + '<div class="tip-row"><span><i style="--c:' + def.colors[0] + '"></i>'
+            + esc(def.label) + '</span><span class="mono">' + val + '</span></div>';
+        tip.hidden = false;
+        const rect = tip.getBoundingClientRect();
+        let left = clientX + 14;
+        if (left + rect.width > window.innerWidth - 8) left = clientX - rect.width - 14;
+        let top = clientY - rect.height - 12;
+        if (top < 8) top = clientY + 16;
+        tip.style.left = left + 'px';
+        tip.style.top = top + 'px';
+      }
+      function hideChartTip() { $('chartTip').hidden = true; tipMouse = null; }
+      function attachChartHover(id) {
+        const canvas = $(id);
+        canvas.addEventListener('mousemove', e => {
+          const def = chartDefs.find(d => d.id === id);
+          const values = def.series()[0];
+          if (!values || values.length < 2) return;
+          const rect = canvas.getBoundingClientRect();
+          // Points are RIGHT-aligned: x(i) = w - (len-1-i)*step (see drawLines)
+          const step = rect.width / (maxPoints - 1);
+          const fromRight = Math.round((rect.right - e.clientX) / step);
+          const idx = Math.max(0, Math.min(values.length - 1, values.length - 1 - fromRight));
+          tipMouse = { id, clientX: e.clientX, clientY: e.clientY };
+          if (chartHover[id] !== idx) {
+            chartHover[id] = idx;
+            drawLines(id, def.series(), def.colors);
+          }
+          showChartTip(id, idx, e.clientX, e.clientY);
+        });
+        canvas.addEventListener('mouseleave', () => {
+          if (chartHover[id] != null) {
+            chartHover[id] = null;
+            const def = chartDefs.find(d => d.id === id);
+            drawLines(id, def.series(), def.colors);
+          }
+          hideChartTip();
+        });
+      }
+      chartDefs.forEach(def => attachChartHover(def.id));
 
       // ------------------------------ live message feed (SSE over fetch) ------------------------------
       let streamAbort = null;
@@ -713,7 +851,7 @@
           const bytes = msg.bodyHex ? Math.round(msg.bodyHex.length / 2) : 0;
           row.innerHTML = '<span class="feed-pos mono">' + esc(key) + '</span>'
               + '<span class="feed-topic badge">' + esc(msg.topic || 'default') + '</span>'
-              + '<span class="mono muted">' + esc(shortHex(msg.sender, 10)) + '</span>'
+              + '<span class="muted">' + (msg.sender ? copyable(msg.sender, 10) : '-') + '</span>'
               + '<span class="mono" style="margin-left:auto">' + bytes + ' B</span>';
           feed.prepend(row);
           while (feed.children.length > 50) feed.removeChild(feed.lastChild);
@@ -740,7 +878,8 @@
         text('heroMachine', s.stateMachine || '-');
         text('heroInterval', s.blockIntervalMs ? fmt(s.blockIntervalMs) + ' ms' : '-');
         text('heroLastBlock', s.lastBlockAtMillis ? age(s.lastBlockAtMillis) + ' ago' : '-');
-        $('heroRoot').textContent = 'chain ' + (s.chainId || '-') + ' · state root ' + (s.stateRoot || '-');
+        setHtml('heroRoot', 'chain ' + esc(s.chainId || '-') + ' · state root '
+            + (s.stateRoot ? copyable(s.stateRoot, 28) : '-'));
 
         text('tipHeight', fmt(s.tipHeight));
         text('threshold', s.threshold + ' of ' + s.members);
@@ -768,21 +907,45 @@
         text('storedMessages', fmt(s.storedMessages));
 
         const anchor = s.anchor;
+        const row = (label, valueHtml) =>
+            '<div class="metric"><span>' + label + '</span><span>' + valueHtml + '</span></div>';
+        const mono = v => '<span class="mono">' + esc(v == null ? '-' : String(v)) + '</span>';
         if (anchor && anchor.enabled) {
-          $('anchorBadge').textContent = 'ENABLED';
+          const mode = (anchor.mode || 'metadata').toUpperCase();
+          $('anchorBadge').textContent = mode;
           $('anchorBadge').className = 'badge b-ok';
-          text('anchorHeight', fmt(anchor.lastAnchoredHeight));
-          text('anchorLag', fmt(anchor.lagBlocks));
-          text('anchorCount', fmt(anchor.anchoredCount));
-          text('anchorPending', anchor.pendingTx ? shortHex(anchor.pendingTx, 16) : 'none');
-          text('anchorLastTx', anchor.lastAnchorTx ? shortHex(anchor.lastAnchorTx, 16) : '-');
-          text('anchorError', anchor.lastError ? anchor.lastError : 'none');
-          $('anchorError').style.color = anchor.lastError ? 'var(--bad)' : '';
+          const rows = [];
+          if (anchor.mode === 'script') {
+            rows.push(row('Bootstrapped', mono(anchor.bootstrapped ? 'yes' : 'no'
+                + (anchor.leader ? ' — POST …/admin/anchor/bootstrap' : ''))));
+            if (anchor.threadPolicyId) rows.push(row('Thread Policy', copyable(anchor.threadPolicyId, 16)));
+            if (anchor.scriptAddress) rows.push(row('Script Address', copyable(anchor.scriptAddress, 18)));
+          }
+          // wallet: new builds expose walletAddress; pre-bootstrap script (or
+          // metadata) builds expose it as `address`
+          const wallet = anchor.walletAddress
+              || (anchor.address && anchor.address !== anchor.scriptAddress ? anchor.address : null);
+          if (wallet) rows.push(row('Wallet (fees)', copyable(wallet, 18)));
+          rows.push(row('Last Anchored Height', mono(fmt(anchor.lastAnchoredHeight))));
+          rows.push(row('Lag (blocks)', mono(fmt(anchor.lagBlocks))));
+          rows.push(row('Anchors Confirmed', mono(fmt(anchor.anchoredCount))));
+          if (anchor.cosignPending)
+            rows.push(row('Co-sign', mono(anchor.cosignPending
+                + (anchor.cosignRange ? ' · blocks ' + anchor.cosignRange : ''))));
+          if (anchor.pendingBootstrapTx) rows.push(row('Bootstrap Tx (pending)', copyable(anchor.pendingBootstrapTx, 16)));
+          rows.push(row('Pending Tx', anchor.pendingTx ? copyable(anchor.pendingTx, 16) : mono('none')));
+          rows.push(row('Last Tx', anchor.lastAnchorTx
+              ? copyable(anchor.lastAnchorTx, 16)
+                + (anchor.lastAnchorL1Slot ? ' <span class="muted mono">@ slot ' + fmt(anchor.lastAnchorL1Slot) + '</span>' : '')
+              : mono('-')));
+          rows.push(row('Error', anchor.lastError
+              ? '<span class="mono" style="color:var(--bad)">' + esc(anchor.lastError) + '</span>'
+              : mono('none')));
+          setHtml('anchorList', rows.join(''));
         } else {
           $('anchorBadge').textContent = 'DISABLED';
           $('anchorBadge').className = 'badge';
-          for (const id of ['anchorHeight', 'anchorLag', 'anchorCount', 'anchorPending', 'anchorLastTx', 'anchorError'])
-            text(id, '-');
+          setHtml('anchorList', '<div class="empty">Anchoring not enabled on this chain</div>');
         }
 
         const sinks = s.sinks || {};
@@ -811,18 +974,17 @@
       }
 
       function renderBlocks(data) {
-        const body = $('blocksBody');
         if (!data || !data.blocks || !data.blocks.length) {
-          body.innerHTML = '<tr><td colspan="5" class="empty">No finalized blocks yet</td></tr>';
+          setHtml('blocksBody', '<tr><td colspan="5" class="empty">No finalized blocks yet</td></tr>');
           return;
         }
-        const rows = [...data.blocks].reverse().map(b =>
+        const rows = data.blocks.slice().reverse().map(b =>
             '<tr><td class="mono">' + fmt(b.height) + '</td>'
             + '<td class="mono muted">' + age(b.timestamp) + '</td>'
             + '<td class="mono">' + fmt(b.messageCount) + '</td>'
             + '<td class="mono">' + fmt(b.certSignatures) + '</td>'
-            + '<td class="mono muted">' + esc(shortHex(b.stateRoot, 20)) + '</td></tr>');
-        body.innerHTML = rows.join('');
+            + '<td class="muted">' + copyable(b.stateRoot, 20) + '</td></tr>');
+        setHtml('blocksBody', rows.join(''));
       }
 
       // ------------------------------ refresh loop ------------------------------
@@ -853,11 +1015,13 @@
             renderStatus(status, latest);
 
             const now = Date.now();
-            if (hist.lastTip != null && hist.lastPollAt) {
-              const minutes = (now - hist.lastPollAt) / 60000;
-              push(hist.tipRate, minutes > 0 ? (status.tipHeight - hist.lastTip) / minutes : 0);
-            }
+            // Push EVERY series every poll (first tip-rate sample = 0) so all
+            // four series stay index-aligned with hist.time for hover lookups.
+            const minutes = hist.lastPollAt ? (now - hist.lastPollAt) / 60000 : 0;
+            push(hist.tipRate, hist.lastTip != null && minutes > 0
+                ? (status.tipHeight - hist.lastTip) / minutes : 0);
             hist.lastTip = status.tipHeight; hist.lastPollAt = now;
+            push(hist.time, now);
             push(hist.pool, Number(status.poolSize) || 0);
             push(hist.interval, Number(status.blockIntervalMs) || 0);
             push(hist.anchorLag, status.anchor ? Number(status.anchor.lagBlocks) || 0 : 0);

@@ -25,7 +25,7 @@ class AppChainStatusPageTest {
                 // key panels the page binds data to
                 .body(Matchers.containsString("id=\"chainSelect\""))
                 .body(Matchers.containsString("id=\"heroTip\""))
-                .body(Matchers.containsString("id=\"anchorLag\""))
+                .body(Matchers.containsString("id=\"anchorList\""))
                 .body(Matchers.containsString("id=\"blocksBody\""))
                 // links back to the L1 page
                 .body(Matchers.containsString("href=\"../status/\""));
