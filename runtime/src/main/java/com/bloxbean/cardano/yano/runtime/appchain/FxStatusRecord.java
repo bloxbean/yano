@@ -96,9 +96,9 @@ record FxStatusRecord(int status,
                 System.currentTimeMillis(), OUTCOME_NONE, injectedAt);
     }
 
-    /** Long-running action started — polling it is not an attempt. */
-    FxStatusRecord submitted(byte[] ref) {
-        return new FxStatusRecord(SUBMITTED, attempts, 0, "", ref, null,
+    /** Long-running action started — polling it is not an attempt; {@code nextAt} paces re-polls. */
+    FxStatusRecord submitted(byte[] ref, long nextAt) {
+        return new FxStatusRecord(SUBMITTED, attempts, nextAt, "", ref, null,
                 System.currentTimeMillis(), OUTCOME_NONE, injectedAt);
     }
 

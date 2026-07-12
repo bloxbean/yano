@@ -21,6 +21,16 @@ public interface EffectExecutionContext {
     /** 1-based attempt number for this effect on this node. */
     int attempt();
 
+    /**
+     * External ref persisted by a prior {@code EffectExecution.Submitted}
+     * (e.g. a submitted tx hash), empty on the first attempt. A re-polled
+     * executor MUST probe the external system by this ref instead of acting
+     * again — re-acting on a re-poll is the double-execution bug.
+     */
+    default byte[] submittedRef() {
+        return new byte[0];
+    }
+
     /** Executor config sub-map ({@code effects.executors.<scheme>.*}, prefix stripped). */
     Map<String, String> settings();
 }

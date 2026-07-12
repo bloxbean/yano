@@ -73,7 +73,15 @@ public class CardanoPaymentExecutor implements AppEffectExecutor {
     }
 
     @Override
-    public EffectExecution execute(EffectExecutionContext ctx, PendingEffect effect) throws Exception {
+    public synchronized EffectExecution execute(EffectExecutionContext ctx, PendingEffect effect)
+            throws Exception {
+        // synchronized: single-flight per payer wallet — parallel payments
+        // from one account coin-select the same UTxOs and collide (M4 review)
+        // Re-poll path (Submitted persisted earlier): probe by tx hash — NEVER
+        // rebuild/resubmit here, that is the double-payment bug (ADR-010 F11)
+        if (ctx.submittedRef().length > 0) {
+            return pollSubmitted(new String(ctx.submittedRef(), StandardCharsets.UTF_8));
+        }
         PaymentCommand command = PaymentCommand.decode(effect.payload());
         if (command == null) {
             return EffectExecution.failed("undecodable cardano.payment payload", false);
@@ -101,17 +109,42 @@ public class CardanoPaymentExecutor implements AppEffectExecutor {
                         effect.effectId().canonical(), status));
 
         if (!submission.isSuccessful()) {
-            String response = String.valueOf(submission.getResponse());
-            // Value/UTxO errors are definitive for THIS payload; transport
-            // errors are retryable
-            boolean definitive = response.contains("ValueNotConserved")
-                    || response.contains("BadInputsUTxO")
-                    || response.contains("OutsideValidityInterval");
-            return EffectExecution.failed("submit failed: " + response, !definitive);
+            // ALL submit failures are retryable (M4 review): UTxO-contention
+            // errors (BadInputsUTxO etc.) succeed on retry with fresh inputs,
+            // and a spurious definitive FAILED would go on-chain for a payment
+            // a later attempt could make. The attempt cap parks true failures
+            // for the operator instead.
+            return EffectExecution.failed("submit failed: " + submission.getResponse(), true);
         }
         String txHash = submission.getValue();
-        log.info("cardano.payment {} submitted: {}", effect.effectId().canonical(), txHash);
+        // completeAndWait returns isSuccessful()=true even when the WAIT timed
+        // out (TxResult.getTxStatus()=TIMEOUT/PENDING, verified against CCL
+        // 0.8.0-pre4) — only CONFIRMED may confirm; anything else re-polls by
+        // hash on later attempts (M4 review: false-confirmation fix)
+        if (submission instanceof com.bloxbean.cardano.client.quicktx.TxResult txResult
+                && txResult.getTxStatus() != com.bloxbean.cardano.client.quicktx.TxStatus.CONFIRMED) {
+            log.info("cardano.payment {} submitted, awaiting confirmation: {}",
+                    effect.effectId().canonical(), txHash);
+            return EffectExecution.submitted(txHash.getBytes(StandardCharsets.UTF_8));
+        }
+        log.info("cardano.payment {} confirmed: {}", effect.effectId().canonical(), txHash);
         return EffectExecution.confirmed(txHash.getBytes(StandardCharsets.UTF_8));
+    }
+
+    /** Probe a previously submitted tx by hash; confirm only on chain presence. */
+    private EffectExecution pollSubmitted(String txHash) {
+        try {
+            var result = backendService.getTransactionService().getTransaction(txHash);
+            if (result != null && result.isSuccessful()) {
+                log.info("cardano.payment confirmed on re-poll: {}", txHash);
+                return EffectExecution.confirmed(txHash.getBytes(StandardCharsets.UTF_8));
+            }
+            // Not on chain yet — keep waiting (deterministic effect expiry is
+            // the eventual escape hatch; we never rebuild a second tx)
+            return EffectExecution.submitted(txHash.getBytes(StandardCharsets.UTF_8));
+        } catch (Exception e) {
+            return EffectExecution.submitted(txHash.getBytes(StandardCharsets.UTF_8));
+        }
     }
 
     Network network() {
