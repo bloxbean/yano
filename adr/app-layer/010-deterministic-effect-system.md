@@ -1079,6 +1079,16 @@ shape (per zk-rollup L2→L1 messaging precedent):
 - Result incorporation is already message-based and deterministic, so it is
   inside the proven transition automatically. Proving *execution* correctness
   (not just emission/incorporation) stays explicitly out of scope.
+- **Mode recommendation:** chains that seriously plan for ZK settlement SHOULD
+  choose `outcome-commitment: per-block` (F8) — per-effect `~fx/done` leaves
+  put one trie update per outcome into the transition witness, while
+  `per-block` keeps outcome commitment at a single leaf per block regardless
+  of volume.
+- Honest caveat: effects inherit — but do not worsen — the base E7.x problem
+  that proving Blake2b-MPF transitions is still research-grade (ZeroJ status);
+  the effect machinery adds one leaf plus a linear hash per block, which is as
+  cheap as commitment gets, but it cannot make the underlying circuit
+  tractable on its own.
 
 ## 14. Alternatives considered (rejected)
 
@@ -1113,6 +1123,20 @@ shape (per zk-rollup L2→L1 messaging precedent):
 | **FX-M3: result loop** | `~fx/result` topic + `ResultInjector` + fail-closed interpreter + `~fx/done` leaves, `onEffectResult` hook, cancellation, approvals payment example end-to-end on the devnet cluster skill. |
 | **FX-M4: executors + external mode** | `appchain-effects-cardano` (payment/metadata with metadata-label idempotency), external claim/report REST, Spring starter properties, backfill quarantine. |
 | **FX-M5: hardening (as needed)** | signer policy enforcement / k-of-n attestation for high-value types, on-chain claim mode (L1-slot leases), effectsRoot → block-field promotion at the next wire bump, ZK_SETTLED gate. |
+
+### Pre-implementation design items
+
+Acknowledged in this ADR but not fully designed; each must be resolved no
+later than the phase it gates:
+
+| Item | Gates | Notes |
+|---|---|---|
+| **Emission-versioning mechanism** (version markers, activation heights, replay selection, conformance coverage) | **blocks FX-M1** | the most dangerous correctness requirement (hard req. #2); deserves a just-in-time sub-ADR (010.1) before the SPI freezes |
+| Result signer proposal-time enforcement (engine path parallel to `verifyProposalObservations`) | FX-M3 | intent specced in F8; code path not |
+| Retention invariant: never prune `fx_records` behind the intake cursor or for open effects (analog of the slowest-sink-cursor rule) | FX-M2 | |
+| Snapshot manifest explicitly names the new CFs in its verification list | FX-M2 | CFs ride the checkpoint automatically; the manifest should say so |
+| Cardano executor mini-design: wallet/key management outside Yano, UTxO selection & fees, metadata-label probe source (L1 view/indexer) | FX-M4 | flagship executor, real funds — own design note |
+| Per-effect retry-policy hints in `EffectIntent` (Temporal-style retry-as-data vs global executor config) | FX-M5 / optional | revisit after FX-M2 operational experience |
 
 Open questions for review:
 1. Should `default-gate` be per-machine (`machines.<id>.effects.default-gate`)
