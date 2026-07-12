@@ -108,18 +108,41 @@ final class FxKernel {
 
         long committedOpen = reader.openCount();
 
-        // 1. Deterministic expiry sweep at this height (FX-M1: the only
-        //    incorporation path; ~fx/result messages join in FX-M3). Every
-        //    swept effect is ResultPolicy.CHAIN by construction — expiry is
-        //    only registrable on CHAIN intents (EffectIntent validation) —
-        //    so |incorporated| decrements the open-CHAIN count one-for-one.
+        // 1. Result incorporation (ADR-010 F8) — BEFORE the sweep and the
+        //    machine transition; results always reference strictly older
+        //    effects. Fail-closed: every invalid case is a deterministic
+        //    audit no-op — a result message can NEVER stall the chain.
         List<EffectResult> incorporated = new ArrayList<>();
+        java.util.Set<Long> closedInBlock = new java.util.HashSet<>();
+        for (com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage message
+                : block.messages()) {
+            if (!com.bloxbean.cardano.yano.api.appchain.effects.FxResultBody.TOPIC
+                    .equals(message.getTopic())) {
+                continue;
+            }
+            EffectResult result = interpretResult(message.getBody(), block, reader, closedInBlock);
+            if (result == null) {
+                continue; // audit no-op (malformed / unknown / dup / out of window)
+            }
+            if (settings.outcomeCommitment() == EffectsSettings.OutcomeCommitment.PER_EFFECT) {
+                trie.put(FxKeys.doneKey(result.effectId()), result.envelopeHash());
+            }
+            closedInBlock.add(positionKey(result.effectId().height(), result.effectId().ordinal()));
+            incorporated.add(result);
+            machine.onEffectResult(block, result, machineWriter);
+        }
+
+        // 2. Deterministic expiry sweep at this height. Every swept effect is
+        //    ResultPolicy.CHAIN by construction — expiry is only registrable
+        //    on CHAIN intents (EffectIntent validation) — so |incorporated|
+        //    decrements the open-CHAIN count one-for-one.
         List<long[]> bucket = reader.expiryBucket(block.height());
         for (long[] entry : bucket) {
             long height = entry[0];
             int ordinal = (int) entry[1];
-            if (reader.closed(height, ordinal)) {
-                continue; // already terminal — nothing to expire
+            if (reader.closed(height, ordinal)
+                    || closedInBlock.contains(positionKey(height, ordinal))) {
+                continue; // already terminal (possibly by a result THIS block)
             }
             EffectRecord record = reader.record(height, ordinal).orElseThrow(() ->
                     // Fail LOUDLY: a bucket entry without its record means the
@@ -138,11 +161,10 @@ final class FxKernel {
             machine.onEffectResult(block, expired, machineWriter);
         }
 
-        // 2. Machine transition with emission.
         BlockEmitter emitter = new BlockEmitter(block, committedOpen, incorporated.size());
         machine.apply(block, machineWriter, emitter);
 
-        // 3. Commitment leaves.
+        // 4. Commitment leaves.
         byte[] effectsRoot = null;
         if (!emitter.emitted.isEmpty()) {
             List<byte[]> hashes = new ArrayList<>(emitter.emitted.size());
@@ -161,7 +183,7 @@ final class FxKernel {
             trie.put(FxKeys.resultsRootKey(block.height()), FxKeys.effectsRoot(outcomeHashes));
         }
 
-        // 4. Merge expiry buckets against committed state HERE (apply time),
+        // 5. Merge expiry buckets against committed state HERE (apply time),
         //    so staging never reads the database (pipelining-safe).
         Map<Long, List<long[]>> bucketAdds = new LinkedHashMap<>();
         for (StagedEffect staged : emitter.emitted) {
@@ -185,6 +207,53 @@ final class FxKernel {
     }
 
     // ------------------------------------------------------------------
+
+    /**
+     * Fail-closed interpretation of one {@code ~fx/result} body (ADR-010 F8).
+     * Returns null (deterministic no-op) for: malformed body, effect outside
+     * the result window (checked BEFORE any CF lookup, so node-local pruning
+     * never influences the verdict), unknown effect, non-CHAIN effect,
+     * already-terminal effect, or a same-block duplicate. First result wins.
+     */
+    /** ~fx/result bodies are tiny ([v,h,ord,outcome,ref≤128,hash≤32]); anything larger is garbage. */
+    private static final int MAX_RESULT_BODY_BYTES = 512;
+
+    private EffectResult interpretResult(byte[] body, AppBlock block, FxReader reader,
+                                         java.util.Set<Long> closedInBlock) {
+        if (body == null || body.length > MAX_RESULT_BODY_BYTES) {
+            // Deterministic pre-decode cap — also excludes deeply-nested CBOR
+            // whose decode could StackOverflow past the Exception catch
+            return null;
+        }
+        com.bloxbean.cardano.yano.api.appchain.effects.FxResultBody parsed;
+        try {
+            parsed = com.bloxbean.cardano.yano.api.appchain.effects.FxResultBody.decode(body);
+        } catch (Exception e) {
+            return null;
+        }
+        long height = parsed.height();
+        int ordinal = parsed.ordinal();
+        if (height <= 0 || height >= block.height() || ordinal < 0) {
+            return null; // results reference strictly older effects
+        }
+        if (block.height() - height > settings.resultWindowBlocks()) {
+            return null; // outside the consensus window — no CF lookup at all
+        }
+        if (closedInBlock.contains(positionKey(height, ordinal))
+                || reader.closed(height, ordinal)) {
+            return null; // first result won
+        }
+        EffectRecord record = reader.record(height, ordinal).orElse(null);
+        if (record == null || record.result() != ResultPolicy.CHAIN) {
+            return null; // unknown effect / operator-only effect
+        }
+        return new EffectResult(record.effectId(), record.type(), record.scope(),
+                parsed.outcome(), parsed.externalRef(), parsed.detailHash(), block.height());
+    }
+
+    private static long positionKey(long height, int ordinal) {
+        return (height << 20) | (ordinal & 0xFFFFF); // ordinal < max-per-block << 2^20
+    }
 
     private AppStateWriter guardedWriter(MpfTrie trie, boolean strict) {
         return new AppStateWriter() {
@@ -253,7 +322,22 @@ final class FxKernel {
             FinalityGate gate = intent.gate() == FinalityGate.CHAIN_DEFAULT
                     ? settings.defaultGate() : intent.gate();
             int ordinal = emitted.size();
-            long expiryHeight = intent.expiryBlocks() > 0 ? block.height() + intent.expiryBlocks() : 0;
+            // CHAIN effects MUST close within the result window (M3 review):
+            // a result arriving after the window is a deterministic no-op, so
+            // an unexpirable CHAIN effect could stay open forever. Expiry is
+            // therefore mandatory for CHAIN, defaulted and capped to the window.
+            long expiryBlocks = intent.expiryBlocks();
+            if (intent.result() == ResultPolicy.CHAIN) {
+                if (expiryBlocks == 0) {
+                    expiryBlocks = Math.min(settings.maxExpiryBlocks(), settings.resultWindowBlocks());
+                } else if (expiryBlocks > settings.resultWindowBlocks()) {
+                    throw new EffectLimitExceededException("CHAIN effect expiry of " + expiryBlocks
+                            + " blocks exceeds effects.result-window-blocks ("
+                            + settings.resultWindowBlocks() + ") — the effect could outlive its "
+                            + "result window");
+                }
+            }
+            long expiryHeight = expiryBlocks > 0 ? block.height() + expiryBlocks : 0;
             EffectRecord record = new EffectRecord(EffectRecord.RECORD_VERSION, block.chainId(),
                     block.height(), ordinal, intent.type(), intent.payload(), intent.scope(),
                     gate, intent.result(), expiryHeight, intent.sourceMessageId());

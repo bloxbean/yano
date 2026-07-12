@@ -22,6 +22,7 @@ record EffectsSettings(boolean enabled,
                        int maxPerBlock,
                        int maxPayloadBytes,
                        long maxExpiryBlocks,
+                       long resultWindowBlocks,
                        FinalityGate defaultGate,
                        OutcomeCommitment outcomeCommitment,
                        boolean strictReservedPrefix) {
@@ -42,7 +43,7 @@ record EffectsSettings(boolean enabled,
                 settings.getOrDefault("effects.strict-reserved-prefix", "true"));
         if (!Boolean.parseBoolean(settings.getOrDefault("effects.enabled", "false"))) {
             // Reserved-prefix enforcement is NOT effects-gated (see class javadoc)
-            return new EffectsSettings(false, 0, 0, 0, FinalityGate.APP_FINAL,
+            return new EffectsSettings(false, 0, 0, 0, 0, FinalityGate.APP_FINAL,
                     OutcomeCommitment.PER_EFFECT, strict);
         }
         FinalityGate defaultGate = switch (
@@ -62,12 +63,21 @@ record EffectsSettings(boolean enabled,
         int maxPerBlock = intSetting(settings, "effects.max-per-block", 256);
         int maxPayloadBytes = intSetting(settings, "effects.max-payload-bytes", 16384);
         long maxExpiryBlocks = longSetting(settings, "effects.max-expiry-blocks", 100_000);
-        if (maxPerBlock <= 0 || maxPayloadBytes <= 0 || maxExpiryBlocks <= 0) {
-            throw new IllegalArgumentException("effects.max-per-block, effects.max-payload-bytes "
-                    + "and effects.max-expiry-blocks must be positive");
+        // The interpreter rejects results for effects older than this window
+        // DETERMINISTICALLY, before any CF lookup — node-local fx pruning can
+        // therefore never influence incorporation (ADR-010 F8; M2 review).
+        long resultWindowBlocks = longSetting(settings, "effects.result-window-blocks", 100_000);
+        if (maxPerBlock <= 0 || maxPayloadBytes <= 0 || maxExpiryBlocks <= 0
+                || resultWindowBlocks <= 0) {
+            throw new IllegalArgumentException("effects.max-per-block, effects.max-payload-bytes, "
+                    + "effects.max-expiry-blocks and effects.result-window-blocks must be positive");
+        }
+        if (maxPerBlock > 1_048_576) {
+            // Ordinals pack into 20 bits in the kernel's in-block dedup key
+            throw new IllegalArgumentException("effects.max-per-block must be <= 1048576");
         }
         return new EffectsSettings(true, maxPerBlock, maxPayloadBytes, maxExpiryBlocks,
-                defaultGate, commitment, strict);
+                resultWindowBlocks, defaultGate, commitment, strict);
     }
 
     private static int intSetting(Map<String, String> settings, String key, int defaultValue) {

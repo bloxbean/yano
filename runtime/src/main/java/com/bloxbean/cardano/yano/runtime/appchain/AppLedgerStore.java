@@ -747,6 +747,24 @@ final class AppLedgerStore implements AutoCloseable {
         }
     }
 
+    /** Runtime status rows in (height, ordinal) order: {@code [height, ordinal, record]}. */
+    List<Object[]> fxRuntimeStatusScan(int limit) {
+        List<Object[]> entries = new ArrayList<>(Math.min(limit, 256));
+        try (RocksIterator iterator = db.newIterator(fxRuntimeCf)) {
+            for (iterator.seek(new byte[]{'s'}); iterator.isValid() && entries.size() < limit;
+                 iterator.next()) {
+                byte[] key = iterator.key();
+                if (key.length != 13 || key[0] != 's') {
+                    break;
+                }
+                ByteBuffer buffer = ByteBuffer.wrap(key, 1, 12);
+                entries.add(new Object[]{buffer.getLong(), buffer.getInt(),
+                        FxStatusRecord.decode(iterator.value())});
+            }
+        }
+        return entries;
+    }
+
     private static byte[] fxRuntimeStatusKey(long height, int ordinal) {
         return ByteBuffer.allocate(13).put((byte) 's').putLong(height).putInt(ordinal).array();
     }

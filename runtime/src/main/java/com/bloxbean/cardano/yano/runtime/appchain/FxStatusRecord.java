@@ -29,7 +29,16 @@ record FxStatusRecord(int status,
                       String lastError,
                       byte[] submittedRef,
                       byte[] externalRef,
-                      long updatedAt) {
+                      long updatedAt,
+                      int outcomeCode,
+                      long injectedAt) {
+
+    /** No local outcome yet. */
+    static final int OUTCOME_NONE = 0;
+    /** External action confirmed — inject CONFIRMED for CHAIN effects (FX-M3). */
+    static final int OUTCOME_CONFIRMED = 1;
+    /** Definitive external failure — inject FAILED for CHAIN effects (FX-M3). */
+    static final int OUTCOME_FAILED = 2;
 
     /** Discovered, waiting for gate/dispatch. */
     static final int PENDING = 0;
@@ -53,7 +62,8 @@ record FxStatusRecord(int status,
     }
 
     static FxStatusRecord pending() {
-        return new FxStatusRecord(PENDING, 0, 0, "", null, null, System.currentTimeMillis());
+        return new FxStatusRecord(PENDING, 0, 0, "", null, null, System.currentTimeMillis(),
+                OUTCOME_NONE, 0);
     }
 
     boolean locallyTerminal() {
@@ -67,38 +77,50 @@ record FxStatusRecord(int status,
     /** A REAL failed attempt — the only transition that consumes attempt budget. */
     FxStatusRecord retry(String error, long nextAt) {
         return new FxStatusRecord(RETRY, attempts + 1, nextAt, error, submittedRef, null,
-                System.currentTimeMillis());
+                System.currentTimeMillis(), OUTCOME_NONE, injectedAt);
     }
 
     /** Precondition not met (EffectExecution.Retry) — no attempt consumed. */
     FxStatusRecord deferred(String reason, long nextAt) {
         return new FxStatusRecord(RETRY, attempts, nextAt, reason, submittedRef, null,
-                System.currentTimeMillis());
+                System.currentTimeMillis(), OUTCOME_NONE, injectedAt);
     }
 
     /** Long-running action started — polling it is not an attempt. */
     FxStatusRecord submitted(byte[] ref) {
         return new FxStatusRecord(SUBMITTED, attempts, 0, "", ref, null,
-                System.currentTimeMillis());
+                System.currentTimeMillis(), OUTCOME_NONE, injectedAt);
     }
 
     FxStatusRecord done(byte[] ref) {
         return new FxStatusRecord(DONE, attempts + 1, 0, "", submittedRef, ref,
-                System.currentTimeMillis());
+                System.currentTimeMillis(), OUTCOME_CONFIRMED, injectedAt);
+    }
+
+    /** Definitive external failure of a CHAIN effect — local terminal, FAILED injectable. */
+    FxStatusRecord doneFailed(String reason) {
+        return new FxStatusRecord(DONE, attempts + 1, 0, reason, submittedRef, null,
+                System.currentTimeMillis(), OUTCOME_FAILED, injectedAt);
     }
 
     FxStatusRecord parked(String error) {
         return new FxStatusRecord(PARKED, attempts + 1, 0, error, submittedRef, null,
-                System.currentTimeMillis());
+                System.currentTimeMillis(), OUTCOME_NONE, injectedAt);
     }
 
     FxStatusRecord requeued() {
         return new FxStatusRecord(PENDING, attempts, 0, lastError, submittedRef, null,
-                System.currentTimeMillis());
+                System.currentTimeMillis(), OUTCOME_NONE, injectedAt);
+    }
+
+    FxStatusRecord injected(long atMillis) {
+        return new FxStatusRecord(status, attempts, nextAttemptAt, lastError, submittedRef,
+                externalRef, updatedAt, outcomeCode, atMillis);
     }
 
     static FxStatusRecord quarantined() {
-        return new FxStatusRecord(QUARANTINED, 0, 0, "", null, null, System.currentTimeMillis());
+        return new FxStatusRecord(QUARANTINED, 0, 0, "", null, null, System.currentTimeMillis(),
+                OUTCOME_NONE, 0);
     }
 
     String statusName() {
@@ -123,6 +145,8 @@ record FxStatusRecord(int status,
         arr.add(new ByteString(submittedRef));
         arr.add(new ByteString(externalRef));
         arr.add(new UnsignedInteger(Math.max(0, updatedAt)));
+        arr.add(new UnsignedInteger(outcomeCode));
+        arr.add(new UnsignedInteger(Math.max(0, injectedAt)));
         return CborSerializationUtil.serialize(arr);
     }
 
@@ -136,6 +160,9 @@ record FxStatusRecord(int status,
                 ((UnicodeString) items.get(3)).getString(),
                 ((ByteString) items.get(4)).getBytes(),
                 ((ByteString) items.get(5)).getBytes(),
-                ((UnsignedInteger) items.get(6)).getValue().longValue());
+                ((UnsignedInteger) items.get(6)).getValue().longValue(),
+                // Lenient on pre-M3 rows (runtime CF is node-local/disposable)
+                items.size() > 7 ? ((UnsignedInteger) items.get(7)).getValue().intValue() : OUTCOME_NONE,
+                items.size() > 8 ? ((UnsignedInteger) items.get(8)).getValue().longValue() : 0);
     }
 }

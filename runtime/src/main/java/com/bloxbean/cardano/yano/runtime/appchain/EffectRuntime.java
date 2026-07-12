@@ -286,7 +286,17 @@ final class EffectRuntime implements AutoCloseable {
                         // the on-chain effect stays open (may still EXPIRE).
                     }
                     case EffectExecution.Failed failed -> {
-                        if (!failed.retryable() || before.attempts() + 1 >= settings.maxAttempts()) {
+                        if (!failed.retryable() && record.result()
+                                == com.bloxbean.cardano.yano.api.appchain.effects.ResultPolicy.CHAIN) {
+                            // Definitive external answer for a CHAIN effect: a
+                            // local terminal whose FAILED outcome gets injected
+                            // as ~fx/result so the application learns of it
+                            ledger.fxRuntimePutStatus(height, ordinal,
+                                    before.doneFailed(failed.reason()));
+                            ledger.fxQueueDelete(height, ordinal);
+                            lastError = failed.reason();
+                        } else if (!failed.retryable()
+                                || before.attempts() + 1 >= settings.maxAttempts()) {
                             ledger.fxRuntimePutStatus(height, ordinal, before.parked(failed.reason()));
                             ledger.fxQueueDelete(height, ordinal);
                             parkedCount.incrementAndGet();
@@ -338,6 +348,51 @@ final class EffectRuntime implements AutoCloseable {
             @Override public int attempt() { return attempt; }
             @Override public Map<String, String> settings() { return config; }
         };
+    }
+
+    /** One injectable outcome: a locally-terminal CHAIN effect not yet chain-closed. */
+    record Injection(long height, int ordinal, boolean confirmed, byte[] externalRef, String reason) {
+    }
+
+    /**
+     * Locally-terminal CHAIN outcomes awaiting {@code ~fx/result} injection
+     * (ADR-010 F8): DONE statuses with an outcome, whose effect is still open
+     * on-chain, throttled by {@code reinjectIntervalMs} so the pool isn't
+     * spammed while a prior injection awaits sequencing. Marks each returned
+     * entry's {@code injectedAt} — first-result-wins absorbs any overlap.
+     */
+    List<Injection> pendingInjections(int limit, long reinjectIntervalMs) {
+        if (closed) {
+            return List.of();
+        }
+        List<Injection> injections = new ArrayList<>();
+        long now = System.currentTimeMillis();
+        for (Object[] entry : ledger.fxRuntimeStatusScan(settings.scanLimit())) {
+            if (injections.size() >= limit) {
+                break;
+            }
+            long height = (long) entry[0];
+            int ordinal = (int) entry[1];
+            FxStatusRecord status = (FxStatusRecord) entry[2];
+            if (status.status() != FxStatusRecord.DONE
+                    || status.outcomeCode() == FxStatusRecord.OUTCOME_NONE
+                    || now - status.injectedAt() < reinjectIntervalMs
+                    || ledger.fxClosed(height, ordinal)) {
+                continue;
+            }
+            EffectRecord record = ledger.fxRecord(height, ordinal).orElse(null);
+            if (record == null || record.result()
+                    != com.bloxbean.cardano.yano.api.appchain.effects.ResultPolicy.CHAIN) {
+                continue;
+            }
+            synchronized (transitionLock) {
+                ledger.fxRuntimePutStatus(height, ordinal, status.injected(now));
+            }
+            injections.add(new Injection(height, ordinal,
+                    status.outcomeCode() == FxStatusRecord.OUTCOME_CONFIRMED,
+                    status.externalRef(), status.lastError()));
+        }
+        return injections;
     }
 
     /**
