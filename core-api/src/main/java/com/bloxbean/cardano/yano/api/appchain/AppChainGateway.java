@@ -130,6 +130,17 @@ public interface AppChainGateway {
         return false;
     }
 
+    /**
+     * Operator cancel (ADR-010 F9): injects a member-signed CANCELLED
+     * {@code ~fx/result} for an OPEN CHAIN effect. Effective only while no
+     * terminal exists; cancel cannot unsend an in-flight execution — a late
+     * result then no-ops against the CANCELLED terminal. False when the
+     * effect is unknown, already closed, or not CHAIN-policy.
+     */
+    default boolean cancelEffect(long height, int ordinal, String reason) {
+        return false;
+    }
+
     // ------------------------------------------------------------------
     // Admin operations (ADR app-layer/006 E5.4) — node-local operability
     // controls; they do not change consensus rules.

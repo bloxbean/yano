@@ -183,6 +183,15 @@ public class AppChainResource {
 
     @POST
     @Operation(hidden = true)
+    @Path("effects/{height}/{ordinal}/cancel")
+    public Response cancelEffect(@PathParam("height") long height,
+                                 @PathParam("ordinal") int ordinal,
+                                 @QueryParam("reason") @DefaultValue("operator-cancel") String reason) {
+        return singleChain().cancelEffect(height, ordinal, reason);
+    }
+
+    @POST
+    @Operation(hidden = true)
     @Path("admin/pause")
     public Response pause() {
         return singleChain().pause();
@@ -518,6 +527,20 @@ public class AppChainResource {
                     : Response.status(Response.Status.CONFLICT)
                             .entity(Map.of("error", "Effect not requeueable (unknown, live, "
                                     + "already terminal, or no executor on this node)")).build();
+        }
+
+        /** Operator cancel of an open CHAIN effect — injects a CANCELLED result (ADR-010 F9). */
+        @POST
+        @Path("effects/{height}/{ordinal}/cancel")
+        public Response cancelEffect(@PathParam("height") long height,
+                                     @PathParam("ordinal") int ordinal,
+                                     @QueryParam("reason") @DefaultValue("operator-cancel") String reason) {
+            boolean cancelled = gateway.cancelEffect(height, ordinal, reason);
+            return cancelled
+                    ? Response.accepted(Map.of("cancelled", true)).build()
+                    : Response.status(Response.Status.CONFLICT)
+                            .entity(Map.of("error", "Effect not cancellable (unknown, closed, "
+                                    + "not CHAIN-policy, or sequencing disabled)")).build();
         }
 
         /** Finalized message refs from a sender key, ascending (height, index). */

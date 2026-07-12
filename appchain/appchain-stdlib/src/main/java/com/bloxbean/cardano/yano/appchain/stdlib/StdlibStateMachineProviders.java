@@ -46,6 +46,14 @@ public final class StdlibStateMachineProviders {
         public AppStateMachine create() {
             return new ApprovalsStateMachine();
         }
+
+        @Override
+        public AppStateMachine create(AppStateMachineContext context) {
+            return new ApprovalsStateMachine(
+                    ApprovalsStateMachine.PaymentsConfig.from(context.settings()),
+                    com.bloxbean.cardano.yano.api.appchain.effects.ActivationSchedule
+                            .from(context.settings(), ApprovalsStateMachine.ID));
+        }
     }
 
     public static final class BalancesProvider implements AppStateMachineProvider {

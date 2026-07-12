@@ -937,6 +937,27 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         return currentFx != null && currentFx.requeue(height, ordinal);
     }
 
+    @Override
+    public boolean cancelEffect(long height, int ordinal, String reason) {
+        AppLedgerStore currentLedger = ledger;
+        if (!running.get() || currentLedger == null || !config.sequencingEnabled()) {
+            return false;
+        }
+        var record = currentLedger.fxRecord(height, ordinal).orElse(null);
+        if (record == null || currentLedger.fxClosed(height, ordinal)
+                || record.result() != com.bloxbean.cardano.yano.api.appchain.effects.ResultPolicy.CHAIN) {
+            return false;
+        }
+        injectFxResult(new com.bloxbean.cardano.yano.api.appchain.effects.FxResultBody(
+                com.bloxbean.cardano.yano.api.appchain.effects.FxResultBody.BODY_VERSION,
+                height, ordinal,
+                com.bloxbean.cardano.yano.api.appchain.effects.EffectOutcome.CANCELLED,
+                truncateReason(reason), null));
+        log.info("App-chain '{}' effect {}/{} CANCELLED by operator ({})",
+                config.chainId(), height, ordinal, reason);
+        return true;
+    }
+
     // ------------------------------------------------------------------
     // Key rotation (ADR 006 E4.5): staged member add / re-threshold / retire.
     // Height-versioned: each change starts a NEW membership epoch effective
@@ -1662,6 +1683,12 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             });
             this.fxScheduler = fxExec;
             fxExec.scheduleWithFixedDelay(currentFx::tick, tickMs, tickMs, TimeUnit.MILLISECONDS);
+            if (config.sequencingEnabled()) {
+                // Result loop (ADR-010 F8): locally-terminal CHAIN outcomes are
+                // injected as member-signed ~fx/result messages until the chain
+                // records the closure (first result wins; re-injection throttled)
+                fxExec.scheduleWithFixedDelay(this::fxResultInjectionTick, 5, 5, TimeUnit.SECONDS);
+            }
         }
         if (Boolean.parseBoolean(config.pluginSettings().getOrDefault("effects.enabled", "false"))) {
             exec.scheduleWithFixedDelay(this::fxRetentionTick, 60, 60, TimeUnit.SECONDS);
@@ -1688,6 +1715,60 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             } catch (Exception e) {
                 log.warn("App-chain retention tick failed: {}", e.toString());
             }
+        }
+    }
+
+    /**
+     * Inject {@code ~fx/result} messages for locally-terminal CHAIN outcomes
+     * (ADR-010 F8) — the same internal member-signed path as governance and
+     * L1 observations; external submit() rejects {@code ~} topics. Repeats
+     * (throttled) until the interpreter's closure is observed; duplicates are
+     * deterministic no-ops (first result wins).
+     */
+    private void fxResultInjectionTick() {
+        EffectRuntime currentFx = effectRuntime;
+        if (!running.get() || currentFx == null) {
+            return;
+        }
+        try {
+            for (EffectRuntime.Injection injection : currentFx.pendingInjections(32, 60_000)) {
+                com.bloxbean.cardano.yano.api.appchain.effects.FxResultBody body =
+                        new com.bloxbean.cardano.yano.api.appchain.effects.FxResultBody(
+                                com.bloxbean.cardano.yano.api.appchain.effects.FxResultBody.BODY_VERSION,
+                                injection.height(), injection.ordinal(),
+                                injection.confirmed()
+                                        ? com.bloxbean.cardano.yano.api.appchain.effects.EffectOutcome.CONFIRMED
+                                        : com.bloxbean.cardano.yano.api.appchain.effects.EffectOutcome.FAILED,
+                                injection.confirmed()
+                                        ? injection.externalRef()
+                                        : truncateReason(injection.reason()),
+                                null);
+                injectFxResult(body);
+            }
+        } catch (Exception e) {
+            log.warn("App-chain '{}' result injection tick failed: {}", config.chainId(), e.toString());
+        }
+    }
+
+    private static byte[] truncateReason(String reason) {
+        byte[] bytes = (reason != null ? reason : "").getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        int max = com.bloxbean.cardano.yano.api.appchain.effects.FxResultBody.MAX_EXTERNAL_REF_BYTES;
+        return bytes.length <= max ? bytes : java.util.Arrays.copyOf(bytes, max);
+    }
+
+    /** Pool + relay a member-signed ~fx/result (internal path, like injectObservation). */
+    private void injectFxResult(com.bloxbean.cardano.yano.api.appchain.effects.FxResultBody body) {
+        AppMessage message = buildSigned(
+                com.bloxbean.cardano.yano.api.appchain.effects.FxResultBody.TOPIC,
+                body.encode(), config.defaultTtlSeconds());
+        AppMsgPool.AddResult added = pool.add(message);
+        if (added == AppMsgPool.AddResult.FULL) {
+            countDrop("pool_full");
+            return; // retried on a later injection tick
+        }
+        if (added == AppMsgPool.AddResult.ADDED) {
+            relay(message);
+            record(message, ReceivedAppMessage.Source.LOCAL);
         }
     }
 
