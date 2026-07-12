@@ -151,6 +151,21 @@ public class AppChainResource {
         return singleChain().messagesBySender(senderHex, fromHeight, limit);
     }
 
+    @GET
+    @Operation(hidden = true)
+    @Path("effects")
+    public Response effects(@QueryParam("fromHeight") @DefaultValue("0") long fromHeight,
+                            @QueryParam("limit") @DefaultValue("100") int limit) {
+        return singleChain().effects(fromHeight, limit);
+    }
+
+    @GET
+    @Operation(hidden = true)
+    @Path("effects/{height}/{ordinal}")
+    public Response effect(@PathParam("height") long height, @PathParam("ordinal") int ordinal) {
+        return singleChain().effect(height, ordinal);
+    }
+
     @POST
     @Operation(hidden = true)
     @Path("admin/pause")
@@ -441,6 +456,26 @@ public class AppChainResource {
                                         @QueryParam("limit") @DefaultValue("100") int limit) {
             return Response.ok(Map.of("chainId", gateway.chainId(), "topic", topic,
                     "messages", gateway.messagesByTopic(topic, fromHeight, limit))).build();
+        }
+
+        /** Emitted effect records, ascending (height, ordinal) — consensus view (ADR-010 F12). */
+        @GET
+        @Path("effects")
+        public Response effects(@QueryParam("fromHeight") @DefaultValue("0") long fromHeight,
+                                @QueryParam("limit") @DefaultValue("100") int limit) {
+            return Response.ok(Map.of("chainId", gateway.chainId(),
+                    "effects", gateway.effects(fromHeight, limit))).build();
+        }
+
+        /** One emitted effect record by chain position. */
+        @GET
+        @Path("effects/{height}/{ordinal}")
+        public Response effect(@PathParam("height") long height,
+                               @PathParam("ordinal") int ordinal) {
+            return gateway.effect(height, ordinal)
+                    .map(view -> Response.ok(view).build())
+                    .orElse(Response.status(Response.Status.NOT_FOUND)
+                            .entity(Map.of("error", "No effect at " + height + "/" + ordinal)).build());
         }
 
         /** Finalized message refs from a sender key, ascending (height, index). */

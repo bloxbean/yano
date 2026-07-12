@@ -1,0 +1,48 @@
+; Effect record — canonical, consensus-derived form of one emitted effect
+; (ADR app-layer/010 F2). Definite-length array, fixed field order; the
+; blake2b-256 of these bytes is a leaf of the block's effectsRoot, committed
+; under the reserved trie key "~fx/root/" || height(8BE).
+;
+; Stored in the app_fx_records column family atomically with the block —
+; NOT an MPF trie leaf (ADR-010 §6, option B+).
+
+fx-record = [
+    version           : uint,          ; = 1
+    chain-id          : tstr,
+    height            : uint,          ; emission block height
+    ordinal           : uint,          ; zero-based emission ordinal in the block
+    type              : tstr,          ; executor routing key, e.g. "cardano.payment"
+    payload           : bstr,          ; opaque executor command (canonical CBOR
+                                       ; recommended); bounded by
+                                       ; effects.max-payload-bytes; never secrets/PII
+    scope             : tstr,          ; app-level idempotency scope ("" = none)
+    gate              : uint,          ; 0 = APP_FINAL, 1 = L1_ANCHORED (resolved;
+                                       ; CHAIN_DEFAULT never stored)
+    result-policy     : uint,          ; 0 = NONE (operator-only), 1 = CHAIN
+    expiry-height     : uint,          ; 0 = never expires; else the height at which
+                                       ; a still-open CHAIN effect turns EXPIRED
+    source-message-id : bstr,          ; provenance link (32-byte message id) or
+                                       ; empty when absent
+]
+
+; Outcome envelope — the consensus-incorporated terminal outcome of a CHAIN
+; effect (ADR-010 F8). Its blake2b-256 is the value of the per-effect
+; "~fx/done/" || idHash trie leaf (outcome-commitment: per-effect), or a leaf
+; of the per-block resultsRoot under "~fx/results/" || height(8BE)
+; (outcome-commitment: per-block).
+
+fx-outcome-envelope = [
+    version       : uint,              ; = 1
+    chain-id      : tstr,
+    height        : uint,              ; emission height of the closed effect
+    ordinal       : uint,              ; emission ordinal of the closed effect
+    outcome       : uint,              ; 1 CONFIRMED / 2 FAILED / 3 CANCELLED / 4 EXPIRED
+    external-ref  : bstr,              ; canonical handle (txHash, CID, resource id)
+                                       ; or failure reason; empty for EXPIRED
+    detail-hash   : bstr,              ; 32-byte commitment to an off-chain detail
+                                       ; document, or empty
+    result-height : uint,              ; height of the block that incorporated it
+]
+
+; Effect id hash (the universal idempotency key, ADR-010 F2):
+;   idHash = blake2b-256("yano-fx-v1" || chain-id-utf8 || height(8BE) || ordinal(4BE))

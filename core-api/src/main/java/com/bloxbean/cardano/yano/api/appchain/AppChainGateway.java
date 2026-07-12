@@ -96,6 +96,26 @@ public interface AppChainGateway {
     List<MessageRef> messagesBySender(byte[] sender, long fromHeight, int limit);
 
     // ------------------------------------------------------------------
+    // Effects (ADR app-layer/010 F12) — consensus-tier read surface
+    // ------------------------------------------------------------------
+
+    /**
+     * Emitted effect records, ascending by (height, ordinal), starting at
+     * {@code fromHeight} (ADR-010 F12). Consensus view — identical on every
+     * node; runtime execution status joins in the Effect Runtime surface.
+     */
+    default List<com.bloxbean.cardano.yano.api.appchain.effects.EffectView> effects(
+            long fromHeight, int limit) {
+        return List.of();
+    }
+
+    /** One emitted effect record, if it exists. */
+    default java.util.Optional<com.bloxbean.cardano.yano.api.appchain.effects.EffectView> effect(
+            long height, int ordinal) {
+        return java.util.Optional.empty();
+    }
+
+    // ------------------------------------------------------------------
     // Admin operations (ADR app-layer/006 E5.4) — node-local operability
     // controls; they do not change consensus rules.
     // ------------------------------------------------------------------

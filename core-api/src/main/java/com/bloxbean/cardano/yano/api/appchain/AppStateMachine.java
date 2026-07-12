@@ -1,6 +1,8 @@
 package com.bloxbean.cardano.yano.api.appchain;
 
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
+import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
+import com.bloxbean.cardano.yano.api.appchain.effects.EffectResult;
 
 /**
  * The developer-facing SPI of the Yano app-chain framework: a deterministic
@@ -49,6 +51,39 @@ public interface AppStateMachine {
      * MPF state commitment whose root is bound into the block.
      */
     void apply(AppBlock block, AppStateWriter writer);
+
+    /**
+     * Deterministic transition WITH effect emission (ADR app-layer/010 F1).
+     * The engine always invokes this overload; the default delegates to the
+     * 2-arg form, so existing machines are untouched. Effect-emitting
+     * machines override this (and may implement the 2-arg form as a plain
+     * delegate — the engine never calls it directly).
+     * <p>
+     * {@code effects.emit(...)} records intent as consensus data — it never
+     * performs I/O. Everything forbidden in {@code apply()} remains forbidden
+     * here; emission must be a pure function of {@code (block, committed
+     * state)}, and emission-logic changes MUST be height-gated
+     * (ADR app-layer/010.1, {@code ActivationSchedule}).
+     * <p>
+     * Callers other than the framework should invoke THIS form. The 2-arg
+     * form is the legacy entry point: on an effect-emitting machine it fails
+     * deterministically at the first {@code emit()} (with earlier writes
+     * already staged) — never catch that and commit.
+     */
+    default void apply(AppBlock block, AppStateWriter writer, AppEffectEmitter effects) {
+        apply(block, writer);
+    }
+
+    /**
+     * Deterministic callback when a consensus-incorporated effect outcome
+     * commits (ADR app-layer/010 F8/F9): a member-attested {@code ~fx/result}
+     * the framework interpreter accepted, or a deterministic EXPIRED
+     * transition from the expiry sweep. Runs inside block application, before
+     * this block's app messages are applied; writes join the same atomic
+     * commit. Same determinism contract as {@code apply()}. Default: no-op.
+     */
+    default void onEffectResult(AppBlock block, EffectResult result, AppStateWriter writer) {
+    }
 
     /** Optional read path exposed via REST {@code /query} and the Java API. */
     default byte[] query(String path, byte[] params) {

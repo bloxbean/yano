@@ -421,10 +421,16 @@ tick. The `n` rows (44 bytes per effectful block) may be kept indefinitely.
 ### F4 — The `effectsRoot` commitment and the reserved trie namespace
 
 ```
-effectsRoot(H) = merkleRoot([effectHash_0 … effectHash_{n-1}])   // ordered; same
-                                                                 // merkleizer as messagesRoot
+effectsRoot(H) = merkleRoot([effectHash_0 … effectHash_{n-1}])   // ordered, blake2b-256
 trie leaf:  key = "~fx/root/" ‖ be64(H)      value = effectsRoot(H)   (only when n > 0)
 ```
+
+The merkleizer promotes an odd node UNCHANGED to the next level (pass-through,
+never duplicated), so lists differing only by a repeated trailing leaf produce
+different roots — the CVE-2012-2459 malleability class is excluded by
+construction. This deliberately differs from the legacy duplicate-promotion in
+`messagesRoot`, which is frozen by the shipped block format; aligning
+`messagesRoot` is deferred to the next block-version bump.
 
 `AppChainEngine.applyBlock()` inserts this leaf **after** `stateMachine.apply`
 returns and **before** `trie.getRootHash()`. Consequences:
@@ -444,14 +450,19 @@ returns and **before** `trie.getRootHash()`. Consequences:
   Additionally the list root gives **completeness**: given the record list, a
   verifier knows no effect was suppressed.
 
-**Reserved trie namespace (required companion change).** The `~` first byte
-(0x7E) is reserved in the *trie keyspace*, mirroring the existing `~` topic
-reservation: `BatchStateWriter.put/delete` deterministically rejects
-application keys beginning with `~fx/`; framework-internal writes bypass the
-guard. One-time audit of stdlib machines (printable prefixes — clean) and a
-release note. For machines using raw 32-byte hash keys the collision
-probability with the 4-byte prefix is 2⁻³²; `effects.strict-reserved-prefix=false`
-is the documented escape hatch for such chains.
+**Reserved trie namespace (required companion change).** The `~fx/` prefix is
+reserved in the *trie keyspace* **from genesis, regardless of whether effects
+are enabled** — mirroring the `~` topic reservation. The machine writer
+deterministically rejects application keys beginning with `~fx/`;
+framework-internal writes bypass the guard. Making the reservation
+unconditional (decided during the FX-M1 review, before any release ships the
+feature) guarantees that enabling effects later can never collide with
+historical application leaves in the append-only trie. One-time audit of
+stdlib machines (printable prefixes — clean) and a release note. For machines
+using raw 32-byte hash keys the collision probability with the 4-byte prefix
+is 2⁻³²; `effects.strict-reserved-prefix=false` is the documented escape hatch
+— note it is **consensus-affecting** (it changes which apply() calls fail) and
+must match on all members like every other effects setting.
 
 ### F5 — Effect Runtime and executor SPI
 
@@ -782,12 +793,16 @@ footprint.
 yano:
   app-chain:
     effects:
-      enabled: false                    # CONSENSUS-AFFECTING: must match on all members
+      enabled: false                    # CONSENSUS-AFFECTING: must match on all members;
+                                        # ONE-WAY: cannot be disabled once effects are open
+                                        # (the expiry sweep only runs while enabled — the
+                                        # engine refuses to start otherwise)
       max-per-block: 256                # consensus parameter
       max-payload-bytes: 16384          # consensus parameter
+      max-expiry-blocks: 100000         # consensus parameter; also the height-overflow guard
       default-gate: app-final           # app-final | l1-anchored
       outcome-commitment: per-effect    # per-effect | per-block (CONSENSUS-AFFECTING; F8)
-      strict-reserved-prefix: true
+      strict-reserved-prefix: true      # CONSENSUS-AFFECTING; active even when enabled=false
       retention:
         keep-blocks: 100000             # prune terminal records/statuses
       gate:
@@ -1054,6 +1069,17 @@ codebase-verified reason:
 - The consensus-plane changes (`effectsRoot` leaf, reserved prefix, consensus
   config caps) are chain-coordination-affecting: enabling effects on an
   existing chain requires the same discipline as a state-machine upgrade.
+- The new `app_fx_records` column family makes app-ledger directories (and
+  RocksDB checkpoint snapshots, which copy every CF) **unopenable by
+  pre-effects builds** — RocksDB refuses to open a DB with unlisted column
+  families. Downgrade after the first post-upgrade open, or restoring a
+  new-build snapshot on an old build, fails at startup. FX-M2 adds the CF
+  list/format version to the snapshot manifest so this fails fast with a
+  manifest-level diagnostic.
+- Retention (E4.4) does not yet cover effect records: payloads derived from
+  since-pruned message bodies persist in `app_fx_records` until fx pruning
+  ships (FX-M2 scope) — until then, chains relying on crypto-shredding should
+  use payload-by-hash for sensitive effect payloads (F11).
 - Result trust is membership trust (until k-of-n attestation ships); this is
   weaker than `~l1` recompute verification and must be understood by
   deployers.

@@ -1,6 +1,5 @@
 package com.bloxbean.cardano.yano.runtime.appchain;
 
-import com.bloxbean.cardano.vds.mpf.MpfTrie;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AuthScheme;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
@@ -10,45 +9,51 @@ import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineContext;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineProvider;
 import com.bloxbean.cardano.yano.api.appchain.AppStateReader;
-import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
 import com.bloxbean.cardano.yano.api.appchain.FinalityCert;
 import com.bloxbean.cardano.yano.api.appchain.codec.AppBlockCodec;
-import org.rocksdb.WriteBatch;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Random;
 
 /**
  * Determinism conformance harness for {@link AppStateMachine} implementations
- * (ADR app-layer/008.1 I1.6). The framework re-executes every block on every
- * member and rejects state-root mismatches — a nondeterministic state machine
- * therefore STALLS its chain in production. This harness catches that before
- * deployment: it applies one identical block corpus through the real ledger
- * commit path (same MPF batching as production) in N independent runs — plus
- * a kill-and-reopen replay run — and asserts byte-identical state roots at
- * every height.
+ * (ADR app-layer/008.1 I1.6; extended for effects by ADR app-layer/010/010.1).
+ * The framework re-executes every block on every member and rejects state-root
+ * mismatches — a nondeterministic state machine therefore STALLS its chain in
+ * production. This harness catches that before deployment: it applies one
+ * identical block corpus through the real ledger commit path (the same
+ * FxKernel pipeline and MPF batching as production) in N independent runs —
+ * plus a kill-and-reopen replay run — and asserts byte-identical state roots
+ * AND ordered effect lists at every height.
  *
  * <pre>
  * StateMachineConformance.builder(new MyProvider())
- *         .settings(Map.of("machines.my-machine.key", "value"))
+ *         .settings(Map.of("machines.my-machine.key", "value", "effects.enabled", "true"))
  *         .blocks(50).messagesPerBlock(5).seed(42)
  *         .bodyGenerator((height, index, random) -> myRealisticCommand(random))
  *         .assertDeterministic();
  * </pre>
  *
- * Forbidden inside {@code apply()} (see the {@link AppStateMachine} contract):
- * wall-clock time, randomness, network/file I/O, environment reads, iteration
- * over unordered collections, and locale/charset-dependent or
- * library-default serialization.
+ * The upgrade replay-matrix (ADR 010.1 §3) verifies that a NEW machine
+ * version replays OLD history byte-identically below its activation height:
+ *
+ * <pre>
+ * StateMachineConformance.upgrade(new MyProviderV1(), new MyProviderV2())
+ *         .settings(commonSettings)
+ *         .activationAt("payment-v2-split", 60)
+ *         .blocks(100)
+ *         .assertReplayStable();
+ * </pre>
  */
 public final class StateMachineConformance {
 
@@ -86,6 +91,12 @@ public final class StateMachineConformance {
         return new Builder(provider);
     }
 
+    /** Entry point for the ADR-010.1 upgrade replay-matrix. */
+    public static UpgradeBuilder upgrade(AppStateMachineProvider oldProvider,
+                                         AppStateMachineProvider newProvider) {
+        return new UpgradeBuilder(oldProvider, newProvider);
+    }
+
     public static final class Builder {
         private final AppStateMachineProvider provider;
         private Map<String, String> settings = Map.of();
@@ -93,8 +104,8 @@ public final class StateMachineConformance {
         private int blocks = 20;
         private int messagesPerBlock = 5;
         private long seed = 42;
-        private BodyGenerator bodyGenerator =
-                (height, index, random) -> ("msg-" + height + "-" + index).getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        private BodyGenerator bodyGenerator = (height, index, random) ->
+                ("msg-" + height + "-" + index).getBytes(StandardCharsets.UTF_8);
         private int runs = 3;
         private long restartAtHeight = -1; // default: mid-corpus
 
@@ -126,8 +137,8 @@ public final class StateMachineConformance {
         }
     }
 
-    /** Per-run, per-height state roots and the first divergence if any. */
-    public record Result(List<Map<Long, String>> rootsPerRun, Divergence divergence) {
+    /** Per-run, per-height outcomes (state root + ordered effect hashes) and the first divergence. */
+    public record Result(List<Map<Long, HeightOutcome>> outcomesPerRun, Divergence divergence) {
 
         public boolean deterministic() {
             return divergence == null;
@@ -137,22 +148,28 @@ public final class StateMachineConformance {
             if (divergence == null) {
                 return "deterministic";
             }
-            return "State machine is NOT deterministic: at height " + divergence.height()
-                    + " run 0 produced root " + divergence.baselineRoot()
-                    + " but run " + divergence.run() + " produced " + divergence.divergentRoot()
+            return "State machine is NOT deterministic (" + divergence.kind() + "): at height "
+                    + divergence.height()
+                    + " run 0 produced " + divergence.baseline()
+                    + " but run " + divergence.run() + " produced " + divergence.divergent()
                     + ". Check the apply() implementation for wall-clock time, randomness, I/O,"
-                    + " or unordered iteration.";
+                    + " unordered iteration — or, for emission diffs, an unguarded emission-logic"
+                    + " change (ADR 010.1).";
         }
     }
 
-    public record Divergence(long height, int run, String baselineRoot, String divergentRoot) {
+    /** State root and the block's ordered effect hashes (hex). */
+    public record HeightOutcome(String root, List<String> effectHashes) {
+    }
+
+    public record Divergence(String kind, long height, int run, String baseline, String divergent) {
     }
 
     // ------------------------------------------------------------------
 
     private Result execute() {
-        List<AppBlock> corpus = buildCorpus();
-        List<Map<Long, String>> rootsPerRun = new ArrayList<>();
+        List<AppBlock> corpus = buildCorpus(chainId, blocks, messagesPerBlock, seed, bodyGenerator);
+        List<Map<Long, HeightOutcome>> outcomesPerRun = new ArrayList<>();
         try {
             Path workDir = Files.createTempDirectory("appchain-conformance");
             for (int run = 0; run < runs; run++) {
@@ -160,27 +177,46 @@ public final class StateMachineConformance {
                 long restartAt = run == runs - 1
                         ? (restartAtHeight > 0 ? restartAtHeight : Math.max(1, blocks / 2))
                         : -1;
-                rootsPerRun.add(applyCorpus(corpus, workDir.resolve("run-" + run), restartAt));
+                outcomesPerRun.add(applyCorpus(provider, settings, chainId, corpus,
+                        workDir.resolve("run-" + run), restartAt));
             }
         } catch (Exception e) {
             throw new RuntimeException("Conformance harness failed", e);
         }
+        return new Result(outcomesPerRun,
+                compare(outcomesPerRun.get(0), outcomesPerRun, 1, blocks, 1));
+    }
 
-        Map<Long, String> baseline = rootsPerRun.get(0);
-        for (int run = 1; run < rootsPerRun.size(); run++) {
-            for (long height = 1; height <= blocks; height++) {
-                String expected = baseline.get(height);
-                String actual = rootsPerRun.get(run).get(height);
-                if (!expected.equals(actual)) {
-                    return new Result(rootsPerRun, new Divergence(height, run, expected, actual));
+    /** Compare runs [firstRun..] against a baseline over heights [1..maxHeight]. */
+    private static Divergence compare(Map<Long, HeightOutcome> baseline,
+                                      List<Map<Long, HeightOutcome>> outcomesPerRun,
+                                      int firstRun, long maxHeight, long fromHeight) {
+        for (int run = firstRun; run < outcomesPerRun.size(); run++) {
+            for (long height = fromHeight; height <= maxHeight; height++) {
+                HeightOutcome expected = baseline.get(height);
+                HeightOutcome actual = outcomesPerRun.get(run).get(height);
+                if (expected == null || actual == null) {
+                    // A hole is itself a failure (a run that never committed
+                    // this height) — never silently pass it
+                    return new Divergence("missing-outcome", height, run,
+                            expected != null ? expected.root() : "<absent>",
+                            actual != null ? actual.root() : "<absent>");
+                }
+                if (!expected.root().equals(actual.root())) {
+                    return new Divergence("state-root", height, run, expected.root(), actual.root());
+                }
+                if (!expected.effectHashes().equals(actual.effectHashes())) {
+                    return new Divergence("effect-emission", height, run,
+                            String.valueOf(expected.effectHashes()), String.valueOf(actual.effectHashes()));
                 }
             }
         }
-        return new Result(rootsPerRun, null);
+        return null;
     }
 
     /** Identical envelopes/blocks for every run: all inputs derive from the seed. */
-    private List<AppBlock> buildCorpus() {
+    private static List<AppBlock> buildCorpus(String chainId, int blocks, int messagesPerBlock,
+                                              long seed, BodyGenerator bodyGenerator) {
         Random random = new Random(seed);
         byte[] sender = new byte[32];
         new Random(seed ^ 0x5EED).nextBytes(sender);
@@ -219,14 +255,14 @@ public final class StateMachineConformance {
         return corpus;
     }
 
-    /** Apply the corpus through the real ledger commit path; returns root per height. */
-    private Map<Long, String> applyCorpus(List<AppBlock> corpus, Path dir, long restartAt)
-            throws Exception {
-        Map<Long, String> roots = new LinkedHashMap<>();
-        AppStateMachine machine = provider.create(new AppStateMachineContext() {
-            @Override public String chainId() { return chainId; }
-            @Override public Map<String, String> settings() { return settings; }
-        });
+    /** Apply the corpus through the real ledger commit path; returns outcome per height. */
+    private static Map<Long, HeightOutcome> applyCorpus(AppStateMachineProvider provider,
+                                                        Map<String, String> settings,
+                                                        String chainId,
+                                                        List<AppBlock> corpus,
+                                                        Path dir, long restartAt) throws Exception {
+        Map<Long, HeightOutcome> outcomes = new LinkedHashMap<>();
+        AppStateMachine machine = provider.create(contextFor(chainId, settings));
         AppLedgerStore store = new AppLedgerStore(dir.toString(), log);
         try {
             machine.init(readerFor(store), new AppChainInfo(chainId, "00".repeat(32), 1));
@@ -235,46 +271,34 @@ public final class StateMachineConformance {
                     // Kill-and-reopen replay: crash recovery must not change roots
                     store.close();
                     store = new AppLedgerStore(dir.toString(), log);
-                    machine = provider.create(new AppStateMachineContext() {
-                        @Override public String chainId() { return chainId; }
-                        @Override public Map<String, String> settings() { return settings; }
-                    });
+                    machine = provider.create(contextFor(chainId, settings));
                     machine.init(readerFor(store), new AppChainInfo(chainId, "00".repeat(32), 1));
                 }
-                roots.put(block.height(), HexUtil.encodeHexString(applyAndCommit(store, machine, block)));
+                outcomes.put(block.height(), applyAndCommit(store, machine, settings, block));
             }
         } finally {
             store.close();
         }
-        return roots;
+        return outcomes;
     }
 
-    /** Mirrors AppChainEngine.applyBlock + commitBlock (same MPF batch staging). */
-    private byte[] applyAndCommit(AppLedgerStore store, AppStateMachine machine, AppBlock block) {
-        WriteBatch batch = new WriteBatch();
-        byte[] committedRoot = store.stateRoot();
-        try {
-            AppStateMachine finalMachine = machine;
-            byte[] newRoot = store.mpfNodeStore().withBatch(batch, () -> {
-                MpfTrie trie = committedRoot != null
-                        ? new MpfTrie(store.mpfNodeStore(), committedRoot)
-                        : new MpfTrie(store.mpfNodeStore());
-                finalMachine.apply(block, writerFor(trie));
-                return trie.getRootHash();
-            });
-            byte[] effectiveRoot = newRoot != null ? newRoot : new byte[32];
-            AppBlock applied = new AppBlock(block.version(), block.chainId(), block.height(),
-                    block.prevHash(), block.l1Slot(), block.l1BlockHash(), block.timestamp(),
-                    block.messagesRoot(), effectiveRoot, block.messages(), block.proposer(),
-                    block.cert());
-            store.commitBlock(applied, AppBlockCodec.blockHash(applied), effectiveRoot, batch);
-            return effectiveRoot;
-        } catch (RuntimeException e) {
-            batch.close();
-            throw e;
-        } finally {
-            batch.close();
+    /** Same pipeline as production, via the shared applier (FxKernel + MPF batch staging). */
+    private static HeightOutcome applyAndCommit(AppLedgerStore store, AppStateMachine machine,
+                                                Map<String, String> settings, AppBlock block) {
+        FxKernel kernel = new FxKernel(EffectsSettings.fromSettings(settings));
+        FxBlockApplier.Applied applied = FxBlockApplier.applyAndCommit(store, kernel, machine, block);
+        List<String> effectHashes = new ArrayList<>(applied.fx().emitted().size());
+        for (FxKernel.StagedEffect staged : applied.fx().emitted()) {
+            effectHashes.add(HexUtil.encodeHexString(staged.effectHash()));
         }
+        return new HeightOutcome(HexUtil.encodeHexString(applied.block().stateRoot()), effectHashes);
+    }
+
+    private static AppStateMachineContext contextFor(String chainId, Map<String, String> settings) {
+        return new AppStateMachineContext() {
+            @Override public String chainId() { return chainId; }
+            @Override public Map<String, String> settings() { return settings; }
+        };
     }
 
     private static AppStateReader readerFor(AppLedgerStore store) {
@@ -287,15 +311,98 @@ public final class StateMachineConformance {
         };
     }
 
-    private static AppStateWriter writerFor(MpfTrie trie) {
-        return new AppStateWriter() {
-            @Override public void put(byte[] key, byte[] value) { trie.put(key, value); }
-            @Override public void delete(byte[] key) { trie.delete(key); }
-            @Override public Optional<byte[]> get(byte[] key) { return Optional.ofNullable(trie.get(key)); }
-            @Override public byte[] stateRoot() {
-                byte[] root = trie.getRootHash();
-                return root != null ? root : new byte[32];
+    // ------------------------------------------------------------------
+    // Upgrade replay-matrix (ADR 010.1 §3)
+    // ------------------------------------------------------------------
+
+    public static final class UpgradeBuilder {
+        private final AppStateMachineProvider oldProvider;
+        private final AppStateMachineProvider newProvider;
+        private Map<String, String> settings = Map.of();
+        private String chainId = "conformance-chain";
+        private String changeName;
+        private long activationHeight;
+        private int blocks = 40;
+        private int messagesPerBlock = 5;
+        private long seed = 42;
+        private BodyGenerator bodyGenerator = (height, index, random) ->
+                ("msg-" + height + "-" + index).getBytes(StandardCharsets.UTF_8);
+        private int runs = 2;
+
+        private UpgradeBuilder(AppStateMachineProvider oldProvider, AppStateMachineProvider newProvider) {
+            this.oldProvider = Objects.requireNonNull(oldProvider, "oldProvider");
+            this.newProvider = Objects.requireNonNull(newProvider, "newProvider");
+        }
+
+        public UpgradeBuilder settings(Map<String, String> value) { this.settings = Map.copyOf(value); return this; }
+        public UpgradeBuilder chainId(String value) { this.chainId = value; return this; }
+        /** The change under test: its name and the height it activates at. */
+        public UpgradeBuilder activationAt(String name, long height) {
+            this.changeName = name;
+            this.activationHeight = height;
+            return this;
+        }
+        public UpgradeBuilder blocks(int value) { this.blocks = value; return this; }
+        public UpgradeBuilder messagesPerBlock(int value) { this.messagesPerBlock = value; return this; }
+        public UpgradeBuilder seed(long value) { this.seed = value; return this; }
+        public UpgradeBuilder bodyGenerator(BodyGenerator value) { this.bodyGenerator = value; return this; }
+        /** Post-activation determinism replays of the NEW version (default 2, plus a restart run). */
+        public UpgradeBuilder runs(int value) { this.runs = Math.max(2, value); return this; }
+
+        /**
+         * ADR-010.1 §3 semantics: (1) baseline with the old version, no
+         * activation configured; (2) N runs + one kill-and-reopen run of the
+         * new version WITH the activation — heights below the activation must
+         * match the baseline byte-for-byte (roots AND effect lists), heights
+         * at/after it must be deterministic across the new version's runs.
+         */
+        public void assertReplayStable() {
+            if (changeName == null || activationHeight <= 0) {
+                throw new IllegalStateException("activationAt(name, height) is required");
             }
-        };
+            if (activationHeight > blocks) {
+                throw new IllegalStateException("activation height " + activationHeight
+                        + " is beyond the corpus (" + blocks + " blocks) — nothing would be tested");
+            }
+            List<AppBlock> corpus = buildCorpus(chainId, blocks, messagesPerBlock, seed, bodyGenerator);
+            Map<String, String> upgraded = new LinkedHashMap<>(settings);
+            upgraded.put("machines." + newProvider.id() + ".activations." + changeName,
+                    String.valueOf(activationHeight));
+            try {
+                Path workDir = Files.createTempDirectory("appchain-upgrade-conformance");
+                Map<Long, HeightOutcome> baseline = applyCorpus(oldProvider, settings, chainId,
+                        corpus, workDir.resolve("baseline"), -1);
+                List<Map<Long, HeightOutcome>> newRuns = new ArrayList<>();
+                for (int run = 0; run < runs; run++) {
+                    long restartAt = run == runs - 1
+                            ? Math.max(1, activationHeight - 1) // reopen across the boundary
+                            : -1;
+                    newRuns.add(applyCorpus(newProvider, upgraded, chainId, corpus,
+                            workDir.resolve("upgraded-" + run), restartAt));
+                }
+                // Replay stability below the activation: new version vs OLD baseline
+                List<Map<Long, HeightOutcome>> vsBaseline = new ArrayList<>();
+                vsBaseline.add(baseline);
+                vsBaseline.addAll(newRuns);
+                Divergence replay = compare(baseline, vsBaseline, 1, activationHeight - 1, 1);
+                if (replay != null) {
+                    throw new AssertionError("Upgrade is NOT replay-stable below activation height "
+                            + activationHeight + " (" + replay.kind() + " at height " + replay.height()
+                            + "): old version produced " + replay.baseline() + ", new version produced "
+                            + replay.divergent() + ". Gate the change on ActivationSchedule (ADR 010.1).");
+                }
+                // Determinism of the new branch at/after the activation
+                Divergence post = compare(newRuns.get(0), newRuns, 1, blocks, activationHeight);
+                if (post != null) {
+                    throw new AssertionError("New version is NOT deterministic at/after its activation ("
+                            + post.kind() + " at height " + post.height() + "): " + post.baseline()
+                            + " vs " + post.divergent());
+                }
+            } catch (AssertionError e) {
+                throw e;
+            } catch (Exception e) {
+                throw new RuntimeException("Upgrade conformance harness failed", e);
+            }
+        }
     }
 }
