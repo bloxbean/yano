@@ -48,6 +48,16 @@ admin audit log, mTLS/OIDC recipes, reference KMS SignerProvider jar,
 Kafka per-record MPF proofs, `stateVersion()` fail-fast (008 §6.3),
 fleet strip + machine-aware panels in the status page (after typed queries).
 
+Docker-compose app-chain cluster (deferred 2026-07-12): the bash cluster
+scripts now ship in the jar/native dist zips (host-run demo), but they are
+process launchers with container-hostile assumptions — followers copy node
+0's SHIFTED devnet genesis via shared filesystem, and all wiring assumes
+localhost ports. A compose-shaped cluster needs N `yano` services (the
+docker dist zip is the vehicle), env-var chain wiring, and a genesis
+distribution mechanism (shared volume, or node 0 serving genesis over HTTP
+devkit-style). Revive for container-native evaluation / real quick-network
+setup.
+
 ## Standing gates (unchanged)
 
 - E7.4 private balances / E7.5 ZK anchors: gated on ZeroJ ADR-0026 production

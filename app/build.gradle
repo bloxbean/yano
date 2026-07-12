@@ -329,6 +329,18 @@ tasks.register('yanoDistZip', Zip) {
             include 'application.yml', 'application.yaml', 'application-*.yml', 'application-*.yaml', 'network/**'
             exclude '**/*.bak', '**/*.working'
         }
+        // App-chain cluster demo/eval scripts: cluster.sh auto-detects this
+        // release layout (yano.jar + config/ beside appchain-cluster/), so an
+        // unzipped dist runs `./appchain-cluster/cluster.sh start 3` directly.
+        from('appchain-cluster') {
+            into 'appchain-cluster'
+            include '*.sh'
+            filePermissions { unix('755') }
+        }
+        from('appchain-cluster') {
+            into 'appchain-cluster'
+            include '*.md'
+        }
         into('plugins') {
             from({ [] }) // empty directory
         }
@@ -402,6 +414,19 @@ tasks.register('yanoNativeDistZip', Zip) {
             into 'config'
             include 'application.yml', 'application.yaml', 'application-*.yml', 'application-*.yaml', 'network/**'
             exclude '**/*.bak', '**/*.working'
+        }
+        // App-chain cluster demo/eval scripts (bash) — cluster.sh auto-detects
+        // the release layout (native `yano` + config/ beside appchain-cluster/).
+        if (!isWindowsHost()) {
+            from('appchain-cluster') {
+                into 'appchain-cluster'
+                include '*.sh'
+                filePermissions { unix('755') }
+            }
+        }
+        from('appchain-cluster') {
+            into 'appchain-cluster'
+            include '*.md'
         }
         into('plugins') {
             from({ [] }) // empty directory
