@@ -29,6 +29,8 @@ final class AppLedgerStore implements AutoCloseable {
     private static final byte[] CF_MSGS = "app_msgs".getBytes(StandardCharsets.UTF_8);
     private static final byte[] CF_MPF_NODES = "mpf_nodes".getBytes(StandardCharsets.UTF_8);
     private static final byte[] CF_QUERY_INDEX = "app_query_index".getBytes(StandardCharsets.UTF_8);
+    /** Effect outbox (ADR app-layer/010 F3): consensus-derived, atomic with the block, NOT in the root. */
+    private static final byte[] CF_FX_RECORDS = "app_fx_records".getBytes(StandardCharsets.UTF_8);
 
     private static final byte[] KEY_TIP_HEIGHT = "tip_height".getBytes(StandardCharsets.UTF_8);
     private static final byte[] KEY_TIP_HASH = "tip_hash".getBytes(StandardCharsets.UTF_8);
@@ -42,6 +44,7 @@ final class AppLedgerStore implements AutoCloseable {
     private final ColumnFamilyHandle metaCf;
     private final ColumnFamilyHandle msgsCf;
     private final ColumnFamilyHandle queryIndexCf;
+    private final ColumnFamilyHandle fxRecordsCf;
     private final RocksDbNodeStore mpfNodeStore;
     private final Logger log;
 
@@ -61,7 +64,8 @@ final class AppLedgerStore implements AutoCloseable {
                     new ColumnFamilyDescriptor(CF_META, defaultCfOptions),
                     new ColumnFamilyDescriptor(CF_MSGS, defaultCfOptions),
                     new ColumnFamilyDescriptor(CF_MPF_NODES, mpfCfOptions),
-                    new ColumnFamilyDescriptor(CF_QUERY_INDEX, defaultCfOptions));
+                    new ColumnFamilyDescriptor(CF_QUERY_INDEX, defaultCfOptions),
+                    new ColumnFamilyDescriptor(CF_FX_RECORDS, defaultCfOptions));
 
             this.dbOptions = new DBOptions()
                     .setCreateIfMissing(true)
@@ -72,6 +76,7 @@ final class AppLedgerStore implements AutoCloseable {
             this.msgsCf = cfHandles.get(3);
             this.mpfNodeStore = new RocksDbNodeStore(db, cfHandles.get(4));
             this.queryIndexCf = cfHandles.get(5);
+            this.fxRecordsCf = cfHandles.get(6);
             log.info("App ledger opened at {} (tip height: {})", path, tipHeight());
         } catch (RocksDBException e) {
             throw new RuntimeException("Failed to open app ledger at " + path, e);
@@ -391,6 +396,165 @@ final class AppLedgerStore implements AutoCloseable {
         } catch (RocksDBException e) {
             throw new RuntimeException("Failed to commit app block " + block.height(), e);
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Effect outbox (ADR app-layer/010 F3): consensus-derived records,
+    // committed atomically with the block; rebuildable by replay.
+    // Key tags: 'r'+h(8BE)+ord(4BE) → record CBOR; 'n'+h(8BE) → count+root;
+    //           'x'+h(8BE) → expiry bucket (12-byte entries);
+    //           'c'+h(8BE)+ord(4BE) → incorporated outcome envelope.
+    // ------------------------------------------------------------------
+
+    private static final String FX_OPEN_COUNT = "fx_open_count";
+
+    /** Stage one block's effect writes into the commit batch (same atomicity as the block). */
+    void stageFx(WriteBatch batch, long height, FxKernel.Result fx) {
+        if (fx == null || fx.isEmpty()) {
+            return;
+        }
+        try {
+            java.util.Map<Long, List<long[]>> expiryAdds = new java.util.LinkedHashMap<>();
+            List<byte[]> hashes = new ArrayList<>(fx.emitted().size());
+            for (var record : fx.emitted()) {
+                batch.put(fxRecordsCf, fxRecordKey(record.height(), record.ordinal()), record.encode());
+                hashes.add(record.effectHash());
+                if (record.expiryHeight() > 0) {
+                    expiryAdds.computeIfAbsent(record.expiryHeight(), h -> new ArrayList<>())
+                            .add(new long[]{record.height(), record.ordinal()});
+                }
+            }
+            if (!fx.emitted().isEmpty() && fx.effectsRoot() != null) {
+                ByteBuffer meta = ByteBuffer.allocate(4 + fx.effectsRoot().length);
+                meta.putInt(fx.emitted().size()).put(fx.effectsRoot());
+                batch.put(fxRecordsCf, fxBlockMetaKey(height), meta.array());
+            }
+            // Merge each future bucket with its COMMITTED value once (grouped
+            // above — the WriteBatch read-visibility trap forbids two writes
+            // to the same bucket key in one batch).
+            for (var bucketEntry : expiryAdds.entrySet()) {
+                List<long[]> merged = fxExpiryBucket(bucketEntry.getKey());
+                merged.addAll(bucketEntry.getValue());
+                batch.put(fxRecordsCf, fxExpiryKey(bucketEntry.getKey()), encodeBucket(merged));
+            }
+            for (var result : fx.incorporated()) {
+                batch.put(fxRecordsCf,
+                        fxClosureKey(result.effectId().height(), result.effectId().ordinal()),
+                        result.encodeEnvelope());
+            }
+            if (fx.consumedExpiryBucket() >= 0) {
+                batch.delete(fxRecordsCf, fxExpiryKey(fx.consumedExpiryBucket()));
+            }
+            batch.put(metaCf, FX_OPEN_COUNT.getBytes(StandardCharsets.UTF_8),
+                    longBytes(fx.newOpenCount()));
+        } catch (RocksDBException e) {
+            throw new RuntimeException("Failed to stage effect writes at height " + height, e);
+        }
+    }
+
+    Optional<com.bloxbean.cardano.yano.api.appchain.effects.EffectRecord> fxRecord(long height, int ordinal) {
+        try {
+            byte[] bytes = db.get(fxRecordsCf, fxRecordKey(height, ordinal));
+            return bytes != null
+                    ? Optional.of(com.bloxbean.cardano.yano.api.appchain.effects.EffectRecord.decode(bytes))
+                    : Optional.empty();
+        } catch (RocksDBException e) {
+            throw new RuntimeException("Failed to read effect record " + height + "/" + ordinal, e);
+        }
+    }
+
+    /** Emission records in (height, ordinal) order starting at fromHeight. */
+    List<com.bloxbean.cardano.yano.api.appchain.effects.EffectRecord> fxRecordsFrom(long fromHeight, int limit) {
+        List<com.bloxbean.cardano.yano.api.appchain.effects.EffectRecord> records = new ArrayList<>();
+        ByteBuffer seek = ByteBuffer.allocate(1 + 8);
+        seek.put((byte) 'r').putLong(Math.max(0, fromHeight));
+        try (RocksIterator iterator = db.newIterator(fxRecordsCf)) {
+            for (iterator.seek(seek.array()); iterator.isValid() && records.size() < limit; iterator.next()) {
+                byte[] key = iterator.key();
+                if (key.length != 13 || key[0] != 'r') {
+                    break;
+                }
+                records.add(com.bloxbean.cardano.yano.api.appchain.effects.EffectRecord.decode(iterator.value()));
+            }
+        }
+        return records;
+    }
+
+    /** Expiry-bucket entries {@code (height, ordinal)} registered at this height. */
+    List<long[]> fxExpiryBucket(long height) {
+        try {
+            return decodeBucket(db.get(fxRecordsCf, fxExpiryKey(height)));
+        } catch (RocksDBException e) {
+            throw new RuntimeException("Failed to read effect expiry bucket " + height, e);
+        }
+    }
+
+    /** True when a terminal outcome for this effect has been incorporated. */
+    boolean fxClosed(long height, int ordinal) {
+        try {
+            return db.get(fxRecordsCf, fxClosureKey(height, ordinal)) != null;
+        } catch (RocksDBException e) {
+            throw new RuntimeException("Failed to read effect closure " + height + "/" + ordinal, e);
+        }
+    }
+
+    /** Incorporated outcome envelope, if any. */
+    Optional<byte[]> fxClosure(long height, int ordinal) {
+        try {
+            return Optional.ofNullable(db.get(fxRecordsCf, fxClosureKey(height, ordinal)));
+        } catch (RocksDBException e) {
+            throw new RuntimeException("Failed to read effect closure " + height + "/" + ordinal, e);
+        }
+    }
+
+    /** Per-block emission meta: {@code count(4BE) + effectsRoot(32)}, if the block emitted. */
+    Optional<byte[]> fxBlockMeta(long height) {
+        try {
+            return Optional.ofNullable(db.get(fxRecordsCf, fxBlockMetaKey(height)));
+        } catch (RocksDBException e) {
+            throw new RuntimeException("Failed to read effect block meta " + height, e);
+        }
+    }
+
+    /** Committed count of open CHAIN effects. */
+    long fxOpenCount() {
+        return metaLong(FX_OPEN_COUNT, 0L);
+    }
+
+    private static byte[] fxRecordKey(long height, int ordinal) {
+        return ByteBuffer.allocate(13).put((byte) 'r').putLong(height).putInt(ordinal).array();
+    }
+
+    private static byte[] fxBlockMetaKey(long height) {
+        return ByteBuffer.allocate(9).put((byte) 'n').putLong(height).array();
+    }
+
+    private static byte[] fxExpiryKey(long height) {
+        return ByteBuffer.allocate(9).put((byte) 'x').putLong(height).array();
+    }
+
+    private static byte[] fxClosureKey(long height, int ordinal) {
+        return ByteBuffer.allocate(13).put((byte) 'c').putLong(height).putInt(ordinal).array();
+    }
+
+    private static byte[] encodeBucket(List<long[]> entries) {
+        ByteBuffer buffer = ByteBuffer.allocate(entries.size() * 12);
+        for (long[] entry : entries) {
+            buffer.putLong(entry[0]).putInt((int) entry[1]);
+        }
+        return buffer.array();
+    }
+
+    private static List<long[]> decodeBucket(byte[] bytes) {
+        if (bytes == null || bytes.length == 0) {
+            return new ArrayList<>();
+        }
+        List<long[]> entries = new ArrayList<>(bytes.length / 12);
+        ByteBuffer buffer = ByteBuffer.wrap(bytes);
+        while (buffer.remaining() >= 12) {
+            entries.add(new long[]{buffer.getLong(), buffer.getInt()});
+        }
+        return entries;
     }
 
     // ------------------------------------------------------------------

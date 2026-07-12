@@ -43,6 +43,12 @@ public abstract class TypedAppStateMachine<T> implements AppStateMachine {
 
     @Override
     public final void apply(AppBlock block, AppStateWriter writer) {
+        apply(block, writer, UNAVAILABLE_EMITTER);
+    }
+
+    @Override
+    public final void apply(AppBlock block, AppStateWriter writer,
+                            com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter effects) {
         for (AppMessage message : block.messages()) {
             T payload;
             try {
@@ -50,7 +56,7 @@ public abstract class TypedAppStateMachine<T> implements AppStateMachine {
             } catch (Exception e) {
                 continue; // filtered at admission; deterministic skip
             }
-            applyMessage(payload, message, block, writer);
+            applyMessage(payload, message, block, writer, effects);
         }
     }
 
@@ -65,4 +71,30 @@ public abstract class TypedAppStateMachine<T> implements AppStateMachine {
      * (the consensus clock — use it instead of wall-clock).
      */
     protected abstract void applyMessage(T payload, AppMessage envelope, AppBlock block, AppStateWriter writer);
+
+    /**
+     * Effect-emitting variant (ADR app-layer/010 F1); the default delegates
+     * to the 4-arg form so existing typed machines are untouched. Override
+     * this one to emit effects.
+     */
+    protected void applyMessage(T payload, AppMessage envelope, AppBlock block, AppStateWriter writer,
+                                com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter effects) {
+        applyMessage(payload, envelope, block, writer);
+    }
+
+    /** Placeholder for the 2-arg legacy path — the engine always calls the 3-arg apply. */
+    private static final com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter UNAVAILABLE_EMITTER =
+            new com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter() {
+                @Override
+                public com.bloxbean.cardano.yano.api.appchain.effects.EffectId emit(
+                        com.bloxbean.cardano.yano.api.appchain.effects.EffectIntent intent) {
+                    throw new IllegalStateException(
+                            "Effects unavailable on the legacy 2-arg apply path");
+                }
+
+                @Override
+                public long pendingCount() {
+                    return 0;
+                }
+            };
 }

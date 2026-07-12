@@ -54,6 +54,9 @@ final class AppChainEngine implements AutoCloseable {
             new java.util.concurrent.atomic.AtomicLong();
     private final int maxBlockMessages;
     private final long maxBlockBytes;
+    private final EffectsSettings effectsSettings;
+    private final FxKernel fxKernel;
+    private final FxKernel.FxReader fxReader;
     /** Sends a body on a system topic to the group (via the subsystem's diffusion). */
     private final BiFunction<String, byte[], AppMessage> broadcast;
     private final Logger log;
@@ -137,6 +140,9 @@ final class AppChainEngine implements AutoCloseable {
         this.maxBlockBytes = maxBlockBytes;
         this.broadcast = broadcast;
         this.log = log;
+        this.effectsSettings = EffectsSettings.from(config);
+        this.fxKernel = new FxKernel(effectsSettings);
+        this.fxReader = new LedgerFxReader();
         this.executor = Executors.newSingleThreadScheduledExecutor(r -> {
             Thread t = new Thread(r, "app-chain-engine-" + config.chainId());
             t.setDaemon(true);
@@ -144,6 +150,12 @@ final class AppChainEngine implements AutoCloseable {
         });
         stateMachine.init(new CommittedStateReader(), new AppChainInfo(
                 config.chainId(), signer.publicKeyHex(), group.size()));
+        if (effectsSettings.enabled()) {
+            log.info("App-chain '{}': effects enabled (max-per-block={}, max-payload-bytes={}, "
+                    + "default-gate={}, outcome-commitment={})", config.chainId(),
+                    effectsSettings.maxPerBlock(), effectsSettings.maxPayloadBytes(),
+                    effectsSettings.defaultGate(), effectsSettings.outcomeCommitment());
+        }
     }
 
     void setOnBlockFinalized(BiConsumer<AppBlock, byte[]> callback) {
@@ -270,6 +282,7 @@ final class AppChainEngine implements AutoCloseable {
             applied.close();
             return false;
         }
+        ledger.stageFx(applied.batch, block.height(), applied.fx);
         ledger.commitBlock(block, blockHash, block.stateRoot(), applied.batch,
                 governanceWrites(block));
         applied.closeBatchOnly();
@@ -851,6 +864,7 @@ final class AppChainEngine implements AutoCloseable {
         pendingRound = null;
         deferredProposals.clear(); // height advances — held l1-ref deferrals are moot
         AppBlock finalBlock = round.block.withCert(cert);
+        ledger.stageFx(round.applied.batch, finalBlock.height(), round.applied.fx);
         ledger.commitBlock(finalBlock, round.blockHash, finalBlock.stateRoot(), round.applied.batch,
                 governanceWrites(finalBlock));
         round.applied.closeBatchOnly();
@@ -886,12 +900,12 @@ final class AppChainEngine implements AutoCloseable {
         WriteBatch batch = new WriteBatch();
         byte[] committedRoot = ledger.stateRoot();
         try {
+            FxKernel.Result[] fxResult = new FxKernel.Result[1];
             byte[] newRoot = ledger.mpfNodeStore().withBatch(batch, () -> {
                 MpfTrie trie = committedRoot != null
                         ? new MpfTrie(ledger.mpfNodeStore(), committedRoot)
                         : new MpfTrie(ledger.mpfNodeStore());
-                BatchStateWriter writer = new BatchStateWriter(trie);
-                stateMachine.apply(block, writer);
+                fxResult[0] = fxKernel.apply(stateMachine, block, trie, fxReader);
                 return trie.getRootHash();
             });
             byte[] effectiveRoot = newRoot != null ? newRoot : new byte[32];
@@ -899,10 +913,34 @@ final class AppChainEngine implements AutoCloseable {
                     block.prevHash(), block.l1Slot(), block.l1BlockHash(), block.timestamp(),
                     block.messagesRoot(), effectiveRoot, block.messages(), block.proposer(),
                     block.cert());
-            return new AppliedBlock(applied, batch);
+            return new AppliedBlock(applied, batch, fxResult[0]);
         } catch (Exception e) {
             batch.close();
             throw new RuntimeException("Failed to apply app block " + block.height(), e);
+        }
+    }
+
+    /** Consensus-tier fx reads for the kernel, backed by the committed outbox CF. */
+    private final class LedgerFxReader implements FxKernel.FxReader {
+        @Override
+        public List<long[]> expiryBucket(long height) {
+            return ledger.fxExpiryBucket(height);
+        }
+
+        @Override
+        public Optional<com.bloxbean.cardano.yano.api.appchain.effects.EffectRecord> record(
+                long height, int ordinal) {
+            return ledger.fxRecord(height, ordinal);
+        }
+
+        @Override
+        public boolean closed(long height, int ordinal) {
+            return ledger.fxClosed(height, ordinal);
+        }
+
+        @Override
+        public long openCount() {
+            return ledger.fxOpenCount();
         }
     }
 
@@ -1178,10 +1216,12 @@ final class AppChainEngine implements AutoCloseable {
     private static final class AppliedBlock implements AutoCloseable {
         final AppBlock block;
         final WriteBatch batch;
+        final FxKernel.Result fx;
 
-        AppliedBlock(AppBlock block, WriteBatch batch) {
+        AppliedBlock(AppBlock block, WriteBatch batch, FxKernel.Result fx) {
             this.block = block;
             this.batch = batch;
+            this.fx = fx;
         }
 
         void closeBatchOnly() {
@@ -1191,35 +1231,6 @@ final class AppChainEngine implements AutoCloseable {
         @Override
         public void close() {
             batch.close();
-        }
-    }
-
-    /** Writer used during apply — reads see committed state, writes go to the trie. */
-    private final class BatchStateWriter implements AppStateWriter {
-        private final MpfTrie trie;
-
-        BatchStateWriter(MpfTrie trie) {
-            this.trie = trie;
-        }
-
-        @Override
-        public void put(byte[] key, byte[] value) {
-            trie.put(key, value);
-        }
-
-        @Override
-        public void delete(byte[] key) {
-            trie.delete(key);
-        }
-
-        @Override
-        public Optional<byte[]> get(byte[] key) {
-            return Optional.ofNullable(trie.get(key));
-        }
-
-        @Override
-        public byte[] stateRoot() {
-            return trie.getRootHash();
         }
     }
 

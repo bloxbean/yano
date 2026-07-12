@@ -894,6 +894,32 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     }
 
     // ------------------------------------------------------------------
+    // Effects (ADR app-layer/010 F12): consensus-tier read surface
+    // ------------------------------------------------------------------
+
+    @Override
+    public List<com.bloxbean.cardano.yano.api.appchain.effects.EffectView> effects(
+            long fromHeight, int limit) {
+        AppLedgerStore currentLedger = ledger;
+        if (currentLedger == null) {
+            return List.of();
+        }
+        return currentLedger.fxRecordsFrom(fromHeight, Math.max(1, Math.min(limit, 1000))).stream()
+                .map(com.bloxbean.cardano.yano.api.appchain.effects.EffectView::of)
+                .toList();
+    }
+
+    @Override
+    public Optional<com.bloxbean.cardano.yano.api.appchain.effects.EffectView> effect(
+            long height, int ordinal) {
+        AppLedgerStore currentLedger = ledger;
+        return currentLedger != null
+                ? currentLedger.fxRecord(height, ordinal)
+                        .map(com.bloxbean.cardano.yano.api.appchain.effects.EffectView::of)
+                : Optional.empty();
+    }
+
+    // ------------------------------------------------------------------
     // Key rotation (ADR 006 E4.5): staged member add / re-threshold / retire.
     // Height-versioned: each change starts a NEW membership epoch effective
     // from tip+1, so historical blocks always verify against the epoch that
@@ -1239,6 +1265,36 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         L1ObservationService currentObservations = observationService;
         if (currentObservations != null) {
             status.put("observers", currentObservations.status());
+        }
+        // Effects (ADR-010 F12 / 010.1 §2.3): consensus-affecting settings and
+        // activation entries, so operators can eyeball-compare members before
+        // an activation height arrives.
+        if (Boolean.parseBoolean(config.pluginSettings().getOrDefault("effects.enabled", "false"))) {
+            Map<String, Object> effectsStatus = new LinkedHashMap<>();
+            effectsStatus.put("enabled", true);
+            effectsStatus.put("maxPerBlock",
+                    config.pluginSettings().getOrDefault("effects.max-per-block", "256"));
+            effectsStatus.put("maxPayloadBytes",
+                    config.pluginSettings().getOrDefault("effects.max-payload-bytes", "16384"));
+            effectsStatus.put("defaultGate",
+                    config.pluginSettings().getOrDefault("effects.default-gate", "app-final"));
+            effectsStatus.put("outcomeCommitment",
+                    config.pluginSettings().getOrDefault("effects.outcome-commitment", "per-effect"));
+            AppLedgerStore currentLedger = ledger;
+            if (currentLedger != null) {
+                effectsStatus.put("openCount", currentLedger.fxOpenCount());
+            }
+            Map<String, Long> activations = new java.util.TreeMap<>();
+            for (var entry : config.pluginSettings().entrySet()) {
+                int idx = entry.getKey().indexOf(".activations.");
+                if (idx > 0) {
+                    activations.put(entry.getKey(), Long.parseLong(entry.getValue().trim()));
+                }
+            }
+            if (!activations.isEmpty()) {
+                effectsStatus.put("activations", activations);
+            }
+            status.put("effects", effectsStatus);
         }
         if (!sinkRunners.isEmpty()) {
             Map<String, Object> sinks = new LinkedHashMap<>();

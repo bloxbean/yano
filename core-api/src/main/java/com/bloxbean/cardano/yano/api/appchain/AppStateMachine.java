@@ -50,6 +50,37 @@ public interface AppStateMachine {
      */
     void apply(AppBlock block, AppStateWriter writer);
 
+    /**
+     * Deterministic transition WITH effect emission (ADR app-layer/010 F1).
+     * The engine always invokes this overload; the default delegates to the
+     * 2-arg form, so existing machines are untouched. Effect-emitting
+     * machines override this (and may implement the 2-arg form as a plain
+     * delegate — the engine never calls it directly).
+     * <p>
+     * {@code effects.emit(...)} records intent as consensus data — it never
+     * performs I/O. Everything forbidden in {@code apply()} remains forbidden
+     * here; emission must be a pure function of {@code (block, committed
+     * state)}, and emission-logic changes MUST be height-gated
+     * (ADR app-layer/010.1, {@code ActivationSchedule}).
+     */
+    default void apply(AppBlock block, AppStateWriter writer,
+                       com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter effects) {
+        apply(block, writer);
+    }
+
+    /**
+     * Deterministic callback when a consensus-incorporated effect outcome
+     * commits (ADR app-layer/010 F8/F9): a member-attested {@code ~fx/result}
+     * the framework interpreter accepted, or a deterministic EXPIRED
+     * transition from the expiry sweep. Runs inside block application, before
+     * this block's app messages are applied; writes join the same atomic
+     * commit. Same determinism contract as {@code apply()}. Default: no-op.
+     */
+    default void onEffectResult(AppBlock block,
+                                com.bloxbean.cardano.yano.api.appchain.effects.EffectResult result,
+                                AppStateWriter writer) {
+    }
+
     /** Optional read path exposed via REST {@code /query} and the Java API. */
     default byte[] query(String path, byte[] params) {
         throw new UnsupportedOperationException("query not supported by " + id());
