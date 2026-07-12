@@ -157,6 +157,90 @@ public final class AppChainClient {
         return getJson(chainPath("/status"), 200);
     }
 
+    // ------------------------------------------------------------------
+    // Effects (ADR app-layer/010 F12): read surface, operator actions, and
+    // the external-executor claim/report loop — everything a Java worker
+    // needs to act as an external effect executor.
+    // ------------------------------------------------------------------
+
+    /** Emitted effect records (consensus view), ascending (height, ordinal). */
+    public JsonNode effects(long fromHeight, int limit) {
+        return getJson(chainPath("/effects?fromHeight=" + fromHeight + "&limit=" + limit), 200);
+    }
+
+    /** One effect: emission record + this node's execution status (when present). */
+    public Optional<JsonNode> effect(long height, int ordinal) {
+        return Optional.ofNullable(getJsonOrNull(chainPath("/effects/" + height + "/" + ordinal)));
+    }
+
+    /** Effect Runtime counters of the connected node. */
+    public JsonNode effectStats() {
+        return getJson(chainPath("/effects/stats"), 200);
+    }
+
+    /** Operator requeue of a PARKED/QUARANTINED effect (ADR-010 F9). */
+    public boolean requeueEffect(long height, int ordinal) {
+        return postForOk(chainPath("/effects/" + height + "/" + ordinal + "/requeue"), "{}");
+    }
+
+    /** Operator cancel of an open CHAIN effect (ADR-010 F9). */
+    public boolean cancelEffect(long height, int ordinal, String reason) {
+        return postForOk(chainPath("/effects/" + height + "/" + ordinal + "/cancel?reason="
+                + java.net.URLEncoder.encode(reason, java.nio.charset.StandardCharsets.UTF_8)), "{}");
+    }
+
+    /**
+     * External-executor claim (ADR-010 F5): lease up to {@code max} eligible
+     * effects of the given types. Requires {@code effects.external.enabled}
+     * on the node. Execute each, then {@link #reportEffect}. At-least-once:
+     * pass each effect's {@code idempotencyKey} to the external system.
+     */
+    public JsonNode claimEffects(String executorId, java.util.List<String> types, int max,
+                                 long leaseSeconds) {
+        var request = objectMapper.createObjectNode();
+        request.put("executorId", executorId);
+        request.put("max", max);
+        request.put("leaseSeconds", leaseSeconds);
+        var typesNode = request.putArray("types");
+        if (types != null) {
+            types.forEach(typesNode::add);
+        }
+        return postJson(chainPath("/effects/claim"), request.toString(), 200);
+    }
+
+    /** External-executor report: the definitive outcome of a claimed effect. */
+    public boolean reportEffect(String executorId, long height, int ordinal, boolean success,
+                                byte[] externalRef, String reason) {
+        var request = objectMapper.createObjectNode();
+        request.put("executorId", executorId);
+        request.put("success", success);
+        if (externalRef != null && externalRef.length > 0) {
+            request.put("externalRefHex", Hex.encode(externalRef));
+        }
+        if (reason != null) {
+            request.put("reason", reason);
+        }
+        return postForOk(chainPath("/effects/" + height + "/" + ordinal + "/report"),
+                request.toString());
+    }
+
+    private boolean postForOk(String url, String body) {
+        try {
+            HttpResponse<String> response = httpClient.send(
+                    requestBuilder(url)
+                            .header("Content-Type", "application/json")
+                            .POST(java.net.http.HttpRequest.BodyPublishers.ofString(body))
+                            .build(),
+                    HttpResponse.BodyHandlers.ofString());
+            return response.statusCode() >= 200 && response.statusCode() < 300;
+        } catch (java.io.IOException e) {
+            throw new java.io.UncheckedIOException(e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException(e);
+        }
+    }
+
     /**
      * Subscribe to finalized messages over SSE. Replays from {@code fromHeight}
      * (-1 = live only), then follows; reconnects automatically from the last

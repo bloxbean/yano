@@ -54,6 +54,8 @@ record FxStatusRecord(int status,
     static final int QUARANTINED = 6;
     /** Operator chose not to execute (rebuild/backfill policy). */
     static final int SKIPPED = 7;
+    /** Claimed by an EXTERNAL executor (FX-M4); lease deadline in nextAttemptAt. */
+    static final int EXTERNAL = 8;
 
     FxStatusRecord {
         lastError = lastError != null ? lastError : "";
@@ -71,7 +73,15 @@ record FxStatusRecord(int status,
     }
 
     boolean executable() {
-        return status == PENDING || status == RETRY || status == SUBMITTED;
+        // An EXTERNAL claim is re-eligible once its lease (nextAttemptAt)
+        // expires — dispatch/claim honor nextAttemptAt before acting
+        return status == PENDING || status == RETRY || status == SUBMITTED || status == EXTERNAL;
+    }
+
+    /** External claim: leased to {@code executorId} until {@code leaseUntilMillis}. */
+    FxStatusRecord external(String executorId, long leaseUntilMillis) {
+        return new FxStatusRecord(EXTERNAL, attempts, leaseUntilMillis, executorId, submittedRef,
+                null, System.currentTimeMillis(), OUTCOME_NONE, injectedAt);
     }
 
     /** A REAL failed attempt — the only transition that consumes attempt budget. */
@@ -86,9 +96,9 @@ record FxStatusRecord(int status,
                 System.currentTimeMillis(), OUTCOME_NONE, injectedAt);
     }
 
-    /** Long-running action started — polling it is not an attempt. */
-    FxStatusRecord submitted(byte[] ref) {
-        return new FxStatusRecord(SUBMITTED, attempts, 0, "", ref, null,
+    /** Long-running action started — polling it is not an attempt; {@code nextAt} paces re-polls. */
+    FxStatusRecord submitted(byte[] ref, long nextAt) {
+        return new FxStatusRecord(SUBMITTED, attempts, nextAt, "", ref, null,
                 System.currentTimeMillis(), OUTCOME_NONE, injectedAt);
     }
 
@@ -132,6 +142,7 @@ record FxStatusRecord(int status,
             case PARKED -> "PARKED";
             case QUARANTINED -> "QUARANTINED";
             case SKIPPED -> "SKIPPED";
+            case EXTERNAL -> "EXTERNAL";
             default -> "UNKNOWN(" + status + ")";
         };
     }

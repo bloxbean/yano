@@ -201,6 +201,9 @@ final class EffectRuntime implements AutoCloseable {
     }
 
     private void dispatch() {
+        if (executors.isEmpty()) {
+            return; // external-only mode: claim()/report() drive the queue
+        }
         long tip = ledger.tipHeight();
         long anchored = ledger.metaLong("anchor_last_height", 0L);
         long now = System.currentTimeMillis();
@@ -263,7 +266,8 @@ final class EffectRuntime implements AutoCloseable {
         try {
             EffectExecution outcome;
             try {
-                outcome = executor.execute(contextFor(before.attempts() + 1, executor),
+                outcome = executor.execute(
+                        contextFor(before.attempts() + 1, executor, before.submittedRef()),
                         PendingEffect.of(record));
             } catch (Exception e) {
                 outcome = EffectExecution.failed(e.toString(), true);
@@ -273,6 +277,16 @@ final class EffectRuntime implements AutoCloseable {
             }
             synchronized (transitionLock) {
                 if (closed) {
+                    return;
+                }
+                // Steal-in-flight fence (M4 review): another actor (external
+                // report racing the dispatch window, operator action) may have
+                // written a terminal while we executed — never overwrite it
+                FxStatusRecord current = ledger.fxRuntimeStatus(height, ordinal).orElse(before);
+                if (current.locallyTerminal() || current.status() == FxStatusRecord.PARKED) {
+                    log.info("App-chain '{}' effect {} outcome dropped — terminal already "
+                            + "recorded by another actor (idempotency absorbs the duplicate "
+                            + "attempt)", chainId, key);
                     return;
                 }
                 switch (outcome) {
@@ -312,8 +326,11 @@ final class EffectRuntime implements AutoCloseable {
                         }
                     }
                     case EffectExecution.Submitted submitted ->
+                            // Pace re-polls: probing an external system every
+                            // tick hammers it for long confirmations
                             ledger.fxRuntimePutStatus(height, ordinal,
-                                    before.submitted(submitted.externalRef()));
+                                    before.submitted(submitted.externalRef(),
+                                            System.currentTimeMillis() + settings.backoffInitialMs()));
                     case EffectExecution.Retry retry ->
                             ledger.fxRuntimePutStatus(height, ordinal,
                                     before.deferred("not ready",
@@ -339,19 +356,126 @@ final class EffectRuntime implements AutoCloseable {
         return null;
     }
 
-    private EffectExecutionContext contextFor(int attempt, AppEffectExecutor executor) {
+    private EffectExecutionContext contextFor(int attempt, AppEffectExecutor executor,
+                                              byte[] submittedRef) {
         Map<String, String> config = executorConfigs.getOrDefault(executor.id(), Map.of());
+        byte[] priorRef = submittedRef != null ? submittedRef : new byte[0];
         return new EffectExecutionContext() {
             @Override public String chainId() { return chainId; }
             @Override public long tipHeight() { return ledger.tipHeight(); }
             @Override public long anchoredHeight() { return ledger.metaLong("anchor_last_height", 0L); }
             @Override public int attempt() { return attempt; }
+            @Override public byte[] submittedRef() { return priorRef; }
             @Override public Map<String, String> settings() { return config; }
         };
     }
 
     /** One injectable outcome: a locally-terminal CHAIN effect not yet chain-closed. */
     record Injection(long height, int ordinal, boolean confirmed, byte[] externalRef, String reason) {
+    }
+
+    /**
+     * External-executor claim (ADR-010 F5, "external" deployment model):
+     * lease eligible queued effects to a named external worker. The lease is
+     * a WALL-CLOCK deadline in this node's runtime tier — purely node-local
+     * work-dispatch, never consensus (ADR-010 F6). An expired lease makes the
+     * effect re-eligible for anyone (in-process dispatch included);
+     * duplicates are absorbed by idempotency + first-result-wins.
+     */
+    List<PendingEffect> claim(String executorId, Set<String> types, int max, long leaseSeconds) {
+        if (closed || executorId == null || executorId.isBlank()) {
+            return List.of();
+        }
+        long tip = ledger.tipHeight();
+        long anchored = ledger.metaLong("anchor_last_height", 0L);
+        long now = System.currentTimeMillis();
+        long leaseUntil = now + Math.max(1, Math.min(leaseSeconds, 3600)) * 1000L;
+        int cap = Math.max(1, Math.min(max, 256));
+        List<PendingEffect> claimed = new ArrayList<>();
+        // Scan + decode LOCK-FREE (a REST poll must not stall worker
+        // terminals); take the lock only per row for revalidate + stamp
+        for (long[] entry : ledger.fxQueueScan(settings.scanLimit())) {
+            if (claimed.size() >= cap) {
+                break;
+            }
+            long height = entry[0];
+            int ordinal = (int) entry[1];
+            if (inFlight.contains(height + "/" + ordinal) || ledger.fxClosed(height, ordinal)) {
+                continue;
+            }
+            EffectRecord record = ledger.fxRecord(height, ordinal).orElse(null);
+            if (record == null
+                    || (types != null && !types.isEmpty() && !types.contains(record.type()))) {
+                continue;
+            }
+            if (record.gate() == FinalityGate.L1_ANCHORED
+                    && height > anchored - settings.anchorMarginBlocks()) {
+                continue;
+            }
+            if (record.expiryHeight() > 0 && record.expiryHeight() <= tip + EXPIRY_SAFETY_BLOCKS) {
+                continue;
+            }
+            synchronized (transitionLock) {
+                FxStatusRecord status = ledger.fxRuntimeStatus(height, ordinal)
+                        .orElse(FxStatusRecord.pending());
+                // SUBMITTED = an in-process long-running action already fired
+                // (M4 review): leasing it out would double-execute
+                if (!status.executable() || status.status() == FxStatusRecord.SUBMITTED
+                        || status.nextAttemptAt() > now
+                        || inFlight.contains(height + "/" + ordinal)) {
+                    continue; // backoff, another live lease, or mid-flight
+                }
+                ledger.fxRuntimePutStatus(height, ordinal, status.external(executorId, leaseUntil));
+                claimed.add(PendingEffect.of(record));
+            }
+        }
+        return claimed;
+    }
+
+    /**
+     * External-executor report: a definitive outcome for a claimed effect
+     * (the external worker owns its own retrying). Lands as the same local
+     * terminal an in-process executor produces — the injection loop then
+     * feeds CHAIN outcomes back on-chain. Reports from a non-holder, or for
+     * an unknown/closed effect, are rejected.
+     */
+    boolean report(String executorId, long height, int ordinal, boolean success,
+                   byte[] externalRef, String reason) {
+        if (closed) {
+            return false;
+        }
+        synchronized (transitionLock) {
+            EffectRecord record = ledger.fxRecord(height, ordinal).orElse(null);
+            if (record == null || ledger.fxClosed(height, ordinal)) {
+                return false;
+            }
+            FxStatusRecord status = ledger.fxRuntimeStatus(height, ordinal).orElse(null);
+            if (status == null || status.status() != FxStatusRecord.EXTERNAL
+                    || !status.lastError().equals(executorId)) {
+                return false; // not claimed here / claimed by someone else
+            }
+            if (inFlight.contains(height + "/" + ordinal)) {
+                // An in-process executor stole the expired lease and is
+                // mid-flight (M4 review): fence the late report — the
+                // in-process outcome will land, duplicates absorbed by
+                // idempotency
+                return false;
+            }
+            if (success) {
+                ledger.fxRuntimePutStatus(height, ordinal, status.done(externalRef));
+                executedCount.incrementAndGet();
+            } else if (record.result()
+                    == com.bloxbean.cardano.yano.api.appchain.effects.ResultPolicy.CHAIN) {
+                ledger.fxRuntimePutStatus(height, ordinal,
+                        status.doneFailed(reason != null ? reason : "external failure"));
+            } else {
+                ledger.fxRuntimePutStatus(height, ordinal,
+                        status.parked(reason != null ? reason : "external failure"));
+                parkedCount.incrementAndGet();
+            }
+            ledger.fxQueueDelete(height, ordinal);
+            return true;
+        }
     }
 
     /**
@@ -458,7 +582,10 @@ final class EffectRuntime implements AutoCloseable {
                 view.put("nextAttemptAt", status.nextAttemptAt());
             }
             if (!status.lastError().isEmpty()) {
-                view.put("lastError", status.lastError());
+                // EXTERNAL reuses the field for the lease holder's id — render
+                // it as such, not as an error (M4 review)
+                view.put(status.status() == FxStatusRecord.EXTERNAL ? "holder" : "lastError",
+                        status.lastError());
             }
             if (status.submittedRef().length > 0) {
                 view.put("submittedRef", HexUtil.encodeHexString(status.submittedRef()));

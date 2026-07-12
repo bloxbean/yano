@@ -543,6 +543,66 @@ public class AppChainResource {
                                     + "not CHAIN-policy, or sequencing disabled)")).build();
         }
 
+        public record ClaimRequest(String executorId, List<String> types, Integer max,
+                                   Long leaseSeconds) {
+        }
+
+        /** External-executor claim: lease eligible effects (effects.external.enabled). */
+        @POST
+        @Path("effects/claim")
+        public Response claimEffects(ClaimRequest request) {
+            if (request == null || request.executorId() == null || request.executorId().isBlank()) {
+                return badRequest("executorId is required");
+            }
+            var claimed = gateway.claimEffects(request.executorId(),
+                    request.types() != null ? java.util.Set.copyOf(request.types()) : java.util.Set.of(),
+                    request.max() != null ? request.max() : 16,
+                    request.leaseSeconds() != null ? request.leaseSeconds() : 60);
+            List<Map<String, Object>> effects = new ArrayList<>(claimed.size());
+            for (var effect : claimed) {
+                Map<String, Object> view = new LinkedHashMap<>();
+                view.put("height", effect.record().height());
+                view.put("ordinal", effect.record().ordinal());
+                view.put("type", effect.type());
+                view.put("scope", effect.scope());
+                view.put("payloadHex", HexUtil.encodeHexString(effect.payload()));
+                view.put("expiryHeight", effect.expiryHeight());
+                view.put("idempotencyKey", HexUtil.encodeHexString(effect.idHash()));
+                view.put("effectId", effect.effectId().canonical());
+                effects.add(view);
+            }
+            return Response.ok(Map.of("chainId", gateway.chainId(), "effects", effects)).build();
+        }
+
+        public record ReportRequest(String executorId, Boolean success, String externalRefHex,
+                                    String reason) {
+        }
+
+        /** External-executor report: definitive outcome for a claimed effect. */
+        @POST
+        @Path("effects/{height}/{ordinal}/report")
+        public Response reportEffect(@PathParam("height") long height,
+                                     @PathParam("ordinal") int ordinal,
+                                     ReportRequest request) {
+            if (request == null || request.executorId() == null || request.success() == null) {
+                return badRequest("executorId and success are required");
+            }
+            byte[] externalRef;
+            try {
+                externalRef = request.externalRefHex() != null
+                        ? HexUtil.decodeHexString(request.externalRefHex()) : new byte[0];
+            } catch (Exception e) {
+                return badRequest("Invalid externalRefHex");
+            }
+            boolean accepted = gateway.reportEffect(request.executorId(), height, ordinal,
+                    request.success(), externalRef, request.reason());
+            return accepted
+                    ? Response.ok(Map.of("reported", true)).build()
+                    : Response.status(Response.Status.CONFLICT)
+                            .entity(Map.of("error", "Report rejected (not claimed by this "
+                                    + "executor, unknown, closed, or external mode disabled)")).build();
+        }
+
         /** Finalized message refs from a sender key, ascending (height, index). */
         @GET
         @Path("messages/by-sender/{senderHex}")

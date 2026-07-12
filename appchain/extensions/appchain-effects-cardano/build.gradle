@@ -1,0 +1,36 @@
+// Cardano payment executor for the effect system (ADR app-layer/010 FX-M4),
+// packaged as a T3 plugin jar: drop it on yaci.plugins.directory and
+// configure yano.app-chain.effects.executors.cardano.* — discovered via
+// ServiceLoader. Kept out of yano-runtime so CCL tx-building/backends stay
+// a plugin concern (mirrors appchain-kafka-sink).
+dependencies {
+    compileOnly project(':core-api')          // provided by the node at runtime
+    implementation libs.cardano.client.lib
+    implementation libs.cardano.client.quicktx
+    implementation libs.cardano.client.backend
+    implementation libs.cardano.client.backend.blockfrost
+    implementation libs.slf4j.api
+
+    testImplementation project(':core-api')
+    testImplementation libs.yaci.core
+    testImplementation libs.junit.jupiter.api
+    testRuntimeOnly libs.junit.jupiter.engine
+    testRuntimeOnly libs.junit.platform.launcher
+    testImplementation libs.assertj.core
+}
+
+java {
+    sourceCompatibility = 25
+    targetCompatibility = 25
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            pom {
+                name = 'Yano App-Chain Cardano Effects'
+                description = 'Cardano payment executor plugin for the app-chain effect system'
+            }
+        }
+    }
+}
