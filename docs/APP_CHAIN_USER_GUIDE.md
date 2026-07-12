@@ -188,6 +188,39 @@ the `test-app-chain-cluster` and `test-app-chain-extensions` skills under
 > copy of A's shelley genesis taken **after** A started (A rewrites
 > `systemStart` into the file it loads).
 
+### 3.5 Or: the one-command demo cluster
+
+The distribution zips ship a ready-made multi-node launcher under
+`appchain-cluster/` — the fastest way to evaluate everything in this guide
+without writing any config:
+
+```bash
+unzip yano-<version>.zip && cd yano-<version>
+./appchain-cluster/cluster.sh start 3        # 3-node devnet: L1 producer + 2 followers,
+                                             # 2 demo chains (ordered-log + kv-registry)
+./appchain-cluster/cluster.sh status         # tips + state-root agreement across nodes
+./appchain-cluster/cluster.sh submit orders-chain demo "hello"
+./appchain-cluster/cluster.sh kv registry-chain set color blue
+./appchain-cluster/loadtest.sh orders-chain -n 2000 -c 20     # throughput test
+./appchain-cluster/loadtest.sh registry-chain --kv -n 2000    # kv chains need --kv
+./appchain-cluster/cluster.sh clean          # stop + wipe
+```
+
+Highlights (full reference: `appchain-cluster/README.md`):
+
+- **Anchoring demo**: `start 3 --anchor` (script mode) then
+  `anchor-bootstrap orders-chain` — funds via the devnet faucet and mints the
+  thread NFT. `--anchor-mode metadata` is the simplest possible anchoring.
+- **Public networks**: `start 3 --network preprod --anchor-mode script
+  --anchor-key $(openssl rand -hex 32)` — every node relays preprod, and you
+  fund the printed wallet address yourself (§5.1). The launcher refuses the
+  built-in demo anchor key on public networks (it is publicly known).
+- Chains come from `config/application-appchain.yml` — add/remove chains
+  there and the launcher auto-discovers them; it injects the per-node keys,
+  members, threshold and peers, so the same file runs at any cluster size.
+- Works against the jar or the native binary (auto-detected), and from a
+  source checkout (`app/appchain-cluster/`) or any unzipped release tree.
+
 ---
 
 ## 4. REST API
@@ -199,6 +232,12 @@ Every chain endpoint below is also available **chain-scoped** as
 chain-less form keeps working while exactly one chain is configured; with
 several chains it returns `400` (ambiguous), and `503` when no chain is
 enabled. When API-key auth is on (section 12), every request needs `X-API-Key`.
+
+**Swagger UI** (`/q/swagger-ui/`) documents the chain-scoped surface only —
+the chain-less aliases are deliberately hidden from the OpenAPI document
+(they can only answer 400 on a multi-chain node). Prefer the
+`chains/{chainId}` paths in new integrations; the chain-less forms remain as
+a single-chain convenience.
 
 | Method & path | Purpose |
 |---|---|
@@ -251,15 +290,51 @@ Submission notes:
 
 ## 5. L1 anchoring
 
-Anchoring commits `[chain-id, from-height, to-height, block-hash, state-root]`
-as transaction metadata (label `7014` by default) to Cardano — through the
-node's own mempool and tx diffusion, confirmed by the node's own L1 sync.
+Anchoring periodically commits the app chain's position — height, block hash
+and **state root** — onto Cardano, through the node's own mempool and tx
+diffusion, confirmed by the node's own L1 sync. Two modes
+(`anchor.mode: metadata | script`):
+
+| | `metadata` (default) | `script` (ADR 008.4) |
+|---|---|---|
+| Anchor tx | plain tx, anchor payload in tx metadata | Plutus V3 **thread-NFT** UTxO; a validator enforces the datum chain on-chain |
+| What L1 enforces | nothing (data-only commitment) | monotonic height, stable chain-id, **m-of-n member signatures** on every advance |
+| Signing | anchor wallet only | wallet + threshold co-signed member witnesses |
+| Setup | fund the wallet — done | fund + one-time `admin/anchor/bootstrap` per chain |
+| Cost | ~0.17–0.2 ADA per anchor | ~0.35 ADA per anchor (script execution) |
+
+Both modes work on the devnet and on public networks (script anchors are
+proven on preprod: real Plutus V3 mint + validator-enforced co-signed
+advances).
+
+### 5.1 The anchor wallet (both modes)
+
+The anchor wallet is a raw **32-byte Ed25519 seed** (`anchor.signing-key`,
+hex); the node derives its **enterprise address** and logs it at startup
+(`anchor wallet address: addr...`) — it is also in `/status` under
+`anchor.walletAddress`. **Fund that address**; on devnet use
+`POST /api/v1/devnet/fund {"address": "...", "ada": 100}`, on a testnet the
+[official faucet](https://docs.cardano.org/cardano-testnets/tools/faucet)
+can send straight to it.
+
+- A CIP-1852 wallet mnemonic (Eternl/Lace/devkit) can **not** be converted
+  into this seed — HD payment keys are extended keys, not seeds. Generate a
+  dedicated seed (`openssl rand -hex 32`) and fund its address instead. This
+  is good ops hygiene anyway: the key sits in plain config on the node box,
+  so treat it as a hot wallet holding fee money only.
+- Only the anchor **leader** needs `anchor.*` config (typically node 0 / the
+  sequencer host). Script-mode members co-sign and adopt the on-chain
+  identity with **zero anchor config** — they verify each advance against
+  their own ledger and L1 view before signing.
+
+### 5.2 Metadata anchors
 
 ```yaml
 yano:
   app-chain:
     anchor:
       enabled: true
+      mode: metadata                                    # default
       signing-key: "<anchor wallet Ed25519 seed hex>"   # separate from member keys
       every-blocks: 10                                  # anchor cadence
       max-interval-minutes: 60
@@ -268,21 +343,122 @@ yano:
       stability-depth: 36        # L1 depth of the l1-ref carried in app blocks
 ```
 
-Operational notes:
-- The anchor wallet is an **enterprise address derived from the configured
-  seed** — the node logs it at startup (`App-chain anchor wallet address: addr...`).
-  **Fund it** (a few ADA goes a long way: one small tx per anchor). On devnet:
-  `POST /api/v1/devnet/fund {"address": "...", "ada": 100}`.
-- Only the node that should pay for anchors needs `anchor.enabled` (typically
-  the sequencer). Anchor progress appears in `/status` under `anchor`
-  (`lastAnchoredHeight`, `anchoredCount`, `lastAnchorTx`, pending state).
-- Unconfirmed anchors are resubmitted; an L1 rollback that undoes an anchor
-  puts it back in pending automatically.
-- **Auditing**: anyone can fetch the anchor tx from Cardano, read the
-  `state_root` from its metadata, and verify any record with the MPF proof
-  from `GET /proof/{key}` — no trust in the nodes required. (The proof wire
-  format is Aiken-MPF compatible, so on-chain verification in a validator is
-  also possible.)
+Commits `[chain-id, from-height, to-height, block-hash, state-root]` as tx
+metadata (label `7014` by default). Anchors start automatically once the
+wallet holds funds. Unconfirmed anchors are resubmitted; an L1 rollback that
+undoes an anchor puts it back in pending automatically.
+
+### 5.3 Script anchors (thread NFT + on-chain validator)
+
+```yaml
+yano:
+  app-chain:
+    anchor:
+      enabled: true
+      mode: script
+      signing-key: "<anchor wallet Ed25519 seed hex>"
+      every-blocks: 30
+      # script.validator / script.thread-policy default to the bundled julc
+      # artifacts; an Aiken twin ships in-repo (same ABI, interchangeable):
+      #   script:
+      #     validator: file:/path/to/anchor-validator.plutus.json
+      #     thread-policy: file:/path/to/thread-policy.plutus.json
+    l1:
+      stability-depth: 36
+```
+
+One-time **bootstrap** per chain (leader only, wallet must be funded):
+
+```bash
+curl -X POST localhost:7070/api/v1/app-chain/chains/<chain-id>/admin/anchor/bootstrap
+```
+
+The bootstrap consumes a seed UTxO from the wallet and mints a **one-shot
+thread NFT** into the anchor validator's script address with the genesis
+datum. That mint defines the chain's permanent on-chain identity:
+
+- **thread policy id** — unique per chain (derived from the consumed seed
+  UTxO; can never be minted again). Burning is forbidden by the policy.
+- **script address** — the validator is parameterized by the policy id, so
+  every chain gets its own address.
+- The NFT's **asset name is the chain-id** (UTF-8, ≤ 32 bytes), so explorers
+  like Cardanoscan show a readable label. Identity and uniqueness come from
+  the policy id, never the name.
+
+From then on the leader runs threshold **co-sign rounds**: it builds the
+advance tx (spending the thread UTxO, writing the next datum), members verify
+the proposed range against their OWN ledger + L1 view and return Ed25519
+witnesses, and at `threshold` signatures the tx is submitted. The on-chain
+validator independently enforces: exactly one continuing thread output,
+monotonic height, unchanged chain-id, ≥ threshold signatures of the datum's
+member set, and no value drain. Membership changes (§14.2) flow into the
+datum, so the on-chain member set tracks the chain's governance.
+
+Watch progress in `/status` under `anchor` (`bootstrapped`, `threadPolicyId`,
+`scriptAddress`, `walletAddress`, `cosignPending`, `lastAnchorTx`,
+`lagBlocks`), or on the `/ui/app-chain/` page's L1 Anchor card. Anchors fire
+when at least one NEW block exists and `every-blocks` accumulated since the
+last anchor (or `max-interval-minutes` elapsed) — an idle chain anchors
+nothing and costs nothing.
+
+### 5.4 Independent verification (auditors, third parties)
+
+The design goal: **prove a record's inclusion without trusting any Yano
+node.** What lives on L1 (readable from any Cardano source — an explorer,
+Koios, db-sync, your own node): the thread UTxO's inline datum with
+`(version, chain-id, height, block-hash, state-root, member-keys,
+threshold)`, and the validator-enforced chain of every advance back to the
+one-shot mint.
+
+**Any message (e.g. an order on an ordered-log chain):**
+
+1. `GET /api/v1/app-chain/chains/{chainId}/evidence/{messageIdHex}` — a
+   self-contained **evidence bundle**: the message's block, every block up to
+   the next anchored one, finality-cert signatures, member set, anchor tx ref.
+2. Verify **offline** with `EvidenceVerifier.verify(bundle)` from
+   `yano-core-api` (no node needed). It checks: message ∈ block via the
+   recomputed messages-root; prev-hash chain intact; every block carries
+   ≥ threshold valid member signatures (m-of-n — unforgeable by one member);
+   the last block hash equals the anchored block hash.
+3. Close the loop on L1: confirm the bundle's anchor tx exists on Cardano and
+   that the bundle's **member set + threshold match the on-chain datum**
+   (take those from L1, not from the bundle).
+
+**Any state entry (e.g. a kv-registry key) against the anchored root:**
+
+`GET /api/v1/app-chain/chains/{chainId}/proof/{keyHex}` returns an **MPF
+inclusion proof** verifiable against the `state-root` in the L1 datum with
+any independent MPF implementation (the `vds-mpf` Java library or Aiken's
+`merkle-patricia-forestry` — same construction, so on-chain verification in
+a validator is also possible).
+
+### 5.5 L1 observations (reacting to L1 events)
+
+The reverse direction — the app chain consuming L1 facts — is handled by
+**observers** (ADR 008.4 §3): each member watches its own L1 view, and an
+observed fact is injected as a framework message on the reserved
+`~l1/<observer-id>` topic only after it is `l1.stability-depth` blocks deep.
+Followers re-derive the claim from their OWN L1 stream before accepting it,
+so a compromised proposer cannot fabricate L1 facts.
+
+```yaml
+yano:
+  app-chain:
+    l1:
+      stability-depth: 36          # observers REQUIRE stability-depth > 0
+    observers:
+      deposits:
+        type: address-deposit      # built-in: watch an address for deposits
+        address: "addr_test1..."
+      papers:
+        type: metadata-label       # built-in: watch a tx metadata label
+        label: "20250712"
+```
+
+Observer config must be **identical on every member** (it is
+consensus-critical). Custom observers implement `L1ObserverProvider`
+(ServiceLoader, same plugin pattern as state machines). Read observations
+like any messages: `GET .../messages/by-topic/~l1%2Fdeposits`.
 
 ---
 
@@ -394,16 +570,21 @@ Flat (single-chain) keys. The same suffixes apply per chain under
 | `membership.mode` | `static` | `governed` = membership changes are finalized chain transactions requiring threshold-many identical member commands (§14.2, ADR 008.3). **Must match on all members** |
 | `membership.approval-window-blocks` | `600` | `governed` only: blocks a half-approved command stays pending before expiring |
 | `block.interval-ms` | `2000` | Proposer tick (blocks are only made when messages are pending) |
-| `block.max-messages` | `500` | Max messages per block |
+| `block.max-bytes` | `4194304` (4 MiB) | Primary block-size cap: the proposer trims each block to fit the serialized size; members reject oversized proposals. Tune for throughput |
+| `block.max-messages` | `5000` | Safety backstop against tiny-message floods (the byte cap above is the primary limit) |
 | `state-machine` | `ordered-log` | Built-in id, a stdlib id (§9) or a plugin provider id |
 | `max-message-bytes` | `65536` | Max opaque body size |
 | `max-ttl-seconds` | `3600` | Max accepted message TTL |
 | `default-ttl-seconds` | `600` | TTL applied to REST submissions |
-| `anchor.enabled` | `false` | L1 anchoring on this node |
-| `anchor.signing-key` | — | Anchor wallet seed, hex (required if anchoring) |
+| `anchor.enabled` | `false` | L1 anchoring on this node (the anchor leader; script-mode members need NO anchor config) |
+| `anchor.mode` | `metadata` | `metadata` (data-only tx) or `script` (thread-NFT + on-chain validator, §5.3) |
+| `anchor.signing-key` | — | Anchor wallet seed, hex, 32 bytes (required if anchoring; §5.1) |
 | `anchor.every-blocks` | `10` | Anchor after this many new app blocks |
 | `anchor.max-interval-minutes` | `60` | Anchor at least this often while blocks pend |
-| `anchor.metadata-label` | `7014` | Metadata label of anchor txs |
+| `anchor.metadata-label` | `7014` | Metadata label of anchor txs (metadata mode) |
+| `anchor.script.validator` | `builtin:julc` | Script mode: anchor validator artifact — `builtin:julc`, `file:/path` (blueprint or raw hex) or `hex:...` |
+| `anchor.script.thread-policy` | `builtin:julc` | Script mode: thread-policy artifact (same forms) |
+| `observers.<id>.type` | — | L1 observer instance (§5.5): `address-deposit`, `metadata-label`, or a plugin provider id. Further `observers.<id>.*` keys are provider settings (e.g. `address`, `label`). Must be identical on all members; requires `l1.stability-depth > 0` |
 | `anchor.validity-slots` | `7200` | Anchor tx TTL = current L1 slot + this; a resubmitted anchor can never race a late-landing original |
 | `anchor.fallback-fee-lovelace` | `300000` | Anchor tx fee when protocol parameters are unavailable; normally the fee is computed from the node's current params by tx size |
 | `l1.stability-depth` | `0` | Depth of the stable L1 reference in app blocks (0 = off). When > 0, followers verify each proposal's L1 ref against their **own** L1 view (monotonic, hash-matched at depth; brief proposer lead is retried, a fabricated ref is rejected fail-closed) and the node refuses to start without an L1 event feed |
