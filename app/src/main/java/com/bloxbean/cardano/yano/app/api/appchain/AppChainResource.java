@@ -10,6 +10,7 @@ import jakarta.inject.Inject;
 import jakarta.ws.rs.*;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
+import org.eclipse.microprofile.openapi.annotations.Operation;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -24,6 +25,10 @@ import java.util.Map;
  * one chain is configured (ADR app-layer/006 E5.2).
  * The message body is an opaque application payload; it can be supplied as
  * hex ({@code bodyHex}) or plain text ({@code body}).
+ * <p>
+ * The chain-less aliases are HIDDEN from the OpenAPI document
+ * ({@code @Operation(hidden = true)}): on a multi-chain node they can only
+ * answer 400, so Swagger UI documents the chain-scoped surface exclusively.
  */
 @Path("app-chain")
 @Produces(MediaType.APPLICATION_JSON)
@@ -64,12 +69,14 @@ public class AppChainResource {
     // ------------------------------------------------------------------
 
     @POST
+    @Operation(hidden = true)
     @Path("messages")
     public Response submit(ChainScopedResource.SubmitRequest request) {
         return singleChain().submit(request);
     }
 
     @GET
+    @Operation(hidden = true)
     @Path("messages")
     public Response messages(@QueryParam("limit") @DefaultValue("100") int limit,
                              @QueryParam("topic") String topic) {
@@ -77,36 +84,42 @@ public class AppChainResource {
     }
 
     @GET
+    @Operation(hidden = true)
     @Path("status")
     public Response status() {
         return singleChain().status();
     }
 
     @GET
+    @Operation(hidden = true)
     @Path("tip")
     public Response tip() {
         return singleChain().tip();
     }
 
     @GET
+    @Operation(hidden = true)
     @Path("blocks/{height}")
     public Response block(@PathParam("height") long height) {
         return singleChain().block(height);
     }
 
     @GET
+    @Operation(hidden = true)
     @Path("proof/{keyHex}")
     public Response proof(@PathParam("keyHex") String keyHex) {
         return singleChain().proof(keyHex);
     }
 
     @GET
+    @Operation(hidden = true)
     @Path("evidence/{messageIdHex}")
     public Response evidence(@PathParam("messageIdHex") String messageIdHex) {
         return singleChain().evidence(messageIdHex);
     }
 
     @GET
+    @Operation(hidden = true)
     @Path("blocks")
     public Response blocks(@QueryParam("from") @DefaultValue("-1") long from,
                            @QueryParam("limit") @DefaultValue("20") int limit) {
@@ -114,12 +127,14 @@ public class AppChainResource {
     }
 
     @GET
+    @Operation(hidden = true)
     @Path("messages/{messageIdHex}")
     public Response messageById(@PathParam("messageIdHex") String messageIdHex) {
         return singleChain().messageById(messageIdHex);
     }
 
     @GET
+    @Operation(hidden = true)
     @Path("messages/by-topic/{topic}")
     public Response messagesByTopic(@PathParam("topic") String topic,
                                     @QueryParam("fromHeight") @DefaultValue("0") long fromHeight,
@@ -128,6 +143,7 @@ public class AppChainResource {
     }
 
     @GET
+    @Operation(hidden = true)
     @Path("messages/by-sender/{senderHex}")
     public Response messagesBySender(@PathParam("senderHex") String senderHex,
                                      @QueryParam("fromHeight") @DefaultValue("0") long fromHeight,
@@ -136,42 +152,49 @@ public class AppChainResource {
     }
 
     @POST
+    @Operation(hidden = true)
     @Path("admin/pause")
     public Response pause() {
         return singleChain().pause();
     }
 
     @POST
+    @Operation(hidden = true)
     @Path("admin/resume")
     public Response resume() {
         return singleChain().resume();
     }
 
     @POST
+    @Operation(hidden = true)
     @Path("admin/drain-pool")
     public Response drainPool() {
         return singleChain().drainPool();
     }
 
     @POST
+    @Operation(hidden = true)
     @Path("admin/force-anchor")
     public Response forceAnchor() {
         return singleChain().forceAnchor();
     }
 
     @POST
+    @Operation(hidden = true)
     @Path("admin/anchor/bootstrap")
     public Response bootstrapScriptAnchor() {
         return singleChain().bootstrapScriptAnchor();
     }
 
     @POST
+    @Operation(hidden = true)
     @Path("admin/unlock-stale-round")
     public Response unlockStaleRound() {
         return singleChain().unlockStaleRound();
     }
 
     @GET
+    @Operation(hidden = true)
     @Path("stream")
     @Produces(MediaType.SERVER_SENT_EVENTS)
     public void stream(@QueryParam("fromHeight") @DefaultValue("-1") long fromHeight,
