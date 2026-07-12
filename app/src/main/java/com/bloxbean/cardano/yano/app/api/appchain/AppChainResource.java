@@ -467,15 +467,42 @@ public class AppChainResource {
                     "effects", gateway.effects(fromHeight, limit))).build();
         }
 
-        /** One emitted effect record by chain position. */
+        /** One emitted effect record by chain position, joined with this node's runtime status. */
         @GET
         @Path("effects/{height}/{ordinal}")
         public Response effect(@PathParam("height") long height,
                                @PathParam("ordinal") int ordinal) {
             return gateway.effect(height, ordinal)
-                    .map(view -> Response.ok(view).build())
+                    .map(view -> {
+                        Map<String, Object> result = new LinkedHashMap<>();
+                        result.put("record", view);
+                        gateway.effectRuntimeStatus(height, ordinal)
+                                .ifPresent(status -> result.put("execution", status));
+                        return Response.ok(result).build();
+                    })
                     .orElse(Response.status(Response.Status.NOT_FOUND)
                             .entity(Map.of("error", "No effect at " + height + "/" + ordinal)).build());
+        }
+
+        /** Effect Runtime counters (empty when this node runs no executor). */
+        @GET
+        @Path("effects/stats")
+        public Response effectStats() {
+            return Response.ok(Map.of("chainId", gateway.chainId(),
+                    "stats", gateway.effectStats())).build();
+        }
+
+        /** Operator requeue of a PARKED/QUARANTINED effect (ADR-010 F9). */
+        @POST
+        @Path("effects/{height}/{ordinal}/requeue")
+        public Response requeueEffect(@PathParam("height") long height,
+                                      @PathParam("ordinal") int ordinal) {
+            boolean requeued = gateway.requeueEffect(height, ordinal);
+            return requeued
+                    ? Response.ok(Map.of("requeued", true)).build()
+                    : Response.status(Response.Status.CONFLICT)
+                            .entity(Map.of("error", "Effect not requeueable (unknown, live, "
+                                    + "already terminal, or no executor on this node)")).build();
         }
 
         /** Finalized message refs from a sender key, ascending (height, index). */

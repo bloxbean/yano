@@ -115,6 +115,21 @@ public interface AppChainGateway {
         return java.util.Optional.empty();
     }
 
+    /** Effect Runtime counters (queue depth, executed, parked, …); empty when no runtime here. */
+    default Map<String, Object> effectStats() {
+        return Map.of();
+    }
+
+    /** This node's execution-plane status of one effect; empty when no runtime / not tracked. */
+    default java.util.Optional<Map<String, Object>> effectRuntimeStatus(long height, int ordinal) {
+        return java.util.Optional.empty();
+    }
+
+    /** Operator requeue: PARKED/QUARANTINED → PENDING (ADR-010 F9). False when not applicable. */
+    default boolean requeueEffect(long height, int ordinal) {
+        return false;
+    }
+
     // ------------------------------------------------------------------
     // Admin operations (ADR app-layer/006 E5.4) — node-local operability
     // controls; they do not change consensus rules.
