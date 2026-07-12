@@ -630,16 +630,23 @@ final class AppLedgerStore implements AutoCloseable {
 
     /**
      * Prune consensus-tier fx rows of RESOLVED effects below the horizon
-     * (ADR-010 F3 retention; FX-M1 review carry-in). Resolved = a closure row
-     * exists (chain-recorded outcome), the runtime tier holds a local
-     * terminal, or the effect is {@code ResultPolicy.NONE} (operator-only —
-     * nothing on chain ever depends on it, so past the retention window it
-     * prunes on every node, executor or not). Open CHAIN effects and anything
-     * at/above the executor's intake cursor are never pruned.
+     * (ADR-010 F3 retention; FX-M1/M2 review hardening). Prunable iff ALL of:
+     * <ul>
+     *   <li>resolved: a closure row exists (chain-recorded outcome), the
+     *       runtime tier holds a local terminal, or the effect is
+     *       {@code ResultPolicy.NONE} with NO runtime status at all (nothing
+     *       will ever run it on this node — a live PENDING/RETRY/PARKED/
+     *       QUARANTINED status is an obligation and blocks pruning);</li>
+     *   <li>expiry-safe: {@code expiryHeight == 0} or {@code expiryHeight <=
+     *       tip} — a record referenced by a FUTURE expiry bucket must survive
+     *       until the deterministic sweep consumes that bucket, or the sweep
+     *       hard-fails on the pruning node only (fork).</li>
+     * </ul>
      *
      * @return number of effect records pruned
      */
     int fxPruneBelow(long horizon) {
+        long tip = tipHeight();
         int pruned = 0;
         List<byte[]> deletions = new ArrayList<>();
         try (RocksIterator iterator = db.newIterator(fxRecordsCf)) {
@@ -654,27 +661,34 @@ final class AppLedgerStore implements AutoCloseable {
                 if (height >= horizon) {
                     break; // ascending order — nothing further is below the horizon
                 }
+                Optional<FxStatusRecord> status = fxRuntimeStatus(height, ordinal);
                 boolean resolved = fxClosed(height, ordinal)
-                        || fxRuntimeStatus(height, ordinal)
-                                .map(FxStatusRecord::locallyTerminal).orElse(false)
-                        || EffectRecord.decode(iterator.value()).result()
-                                == com.bloxbean.cardano.yano.api.appchain.effects.ResultPolicy.NONE;
+                        || status.map(FxStatusRecord::locallyTerminal).orElse(false)
+                        || (status.isEmpty()
+                                && EffectRecord.decode(iterator.value()).result()
+                                        == com.bloxbean.cardano.yano.api.appchain.effects.ResultPolicy.NONE);
                 if (!resolved) {
                     continue;
+                }
+                long expiryHeight = EffectRecord.decode(iterator.value()).expiryHeight();
+                if (expiryHeight > 0 && expiryHeight > tip) {
+                    continue; // future expiry bucket still references this record
                 }
                 deletions.add(key.clone());
                 deletions.add(fxClosureKey(height, ordinal));
                 deletions.add(fxRuntimeStatusKey(height, ordinal));
+                deletions.add(fxQueueKey(height, ordinal));
                 pruned++;
             }
         }
         if (!deletions.isEmpty()) {
             try (WriteBatch batch = new WriteBatch();
                  WriteOptions writeOptions = new WriteOptions()) {
-                for (int i = 0; i < deletions.size(); i += 3) {
+                for (int i = 0; i < deletions.size(); i += 4) {
                     batch.delete(fxRecordsCf, deletions.get(i));
                     batch.delete(fxRecordsCf, deletions.get(i + 1));
                     batch.delete(fxRuntimeCf, deletions.get(i + 2));
+                    batch.delete(fxRuntimeCf, deletions.get(i + 3));
                 }
                 db.write(writeOptions, batch);
             } catch (RocksDBException e) {
@@ -682,6 +696,55 @@ final class AppLedgerStore implements AutoCloseable {
             }
         }
         return pruned;
+    }
+
+    /** Emission records of exactly one height (prefix-bounded — no tail scan). */
+    List<EffectRecord> fxRecordsAt(long height) {
+        List<EffectRecord> records = new ArrayList<>();
+        ByteBuffer seek = ByteBuffer.allocate(9);
+        seek.put((byte) 'r').putLong(height);
+        try (RocksIterator iterator = db.newIterator(fxRecordsCf)) {
+            for (iterator.seek(seek.array()); iterator.isValid(); iterator.next()) {
+                byte[] key = iterator.key();
+                if (key.length != 13 || key[0] != 'r'
+                        || ByteBuffer.wrap(key, 1, 8).getLong() != height) {
+                    break;
+                }
+                records.add(EffectRecord.decode(iterator.value()));
+            }
+        }
+        return records;
+    }
+
+    /** Keys (height, ordinal) of OPEN effects up to {@code tip} — no value decode. */
+    List<long[]> fxOpenRecordKeysUpTo(long tip) {
+        List<long[]> keys = new ArrayList<>();
+        try (RocksIterator iterator = db.newIterator(fxRecordsCf)) {
+            for (iterator.seek(new byte[]{'r'}); iterator.isValid(); iterator.next()) {
+                byte[] key = iterator.key();
+                if (key.length != 13 || key[0] != 'r') {
+                    break;
+                }
+                ByteBuffer buffer = ByteBuffer.wrap(key, 1, 12);
+                long height = buffer.getLong();
+                int ordinal = buffer.getInt();
+                if (height > tip) {
+                    break;
+                }
+                if (!fxClosed(height, ordinal)) {
+                    keys.add(new long[]{height, ordinal});
+                }
+            }
+        }
+        return keys;
+    }
+
+    boolean fxQueueExists(long height, int ordinal) {
+        try {
+            return db.get(fxRuntimeCf, fxQueueKey(height, ordinal)) != null;
+        } catch (RocksDBException e) {
+            throw new RuntimeException("Failed to read effect queue row", e);
+        }
     }
 
     private static byte[] fxRuntimeStatusKey(long height, int ordinal) {

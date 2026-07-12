@@ -1654,7 +1654,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         if (currentFx != null) {
             // Own thread, like sinks: a slow external system must never stall
             // proposeTick / catch-up / anchoring (ADR-010 F5)
-            long tickMs = EffectRuntime.Settings.fromSettings(config.pluginSettings()).tickMs();
+            long tickMs = currentFx.settings().tickMs();
             ScheduledExecutorService fxExec = Executors.newSingleThreadScheduledExecutor(r -> {
                 Thread t = new Thread(r, "app-chain-fx-" + config.chainId());
                 t.setDaemon(true);
@@ -1662,6 +1662,9 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             });
             this.fxScheduler = fxExec;
             fxExec.scheduleWithFixedDelay(currentFx::tick, tickMs, tickMs, TimeUnit.MILLISECONDS);
+        }
+        if (Boolean.parseBoolean(config.pluginSettings().getOrDefault("effects.enabled", "false"))) {
+            exec.scheduleWithFixedDelay(this::fxRetentionTick, 60, 60, TimeUnit.SECONDS);
         }
     }
 
@@ -1686,10 +1689,22 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                 log.warn("App-chain retention tick failed: {}", e.toString());
             }
         }
-        // Effect outbox retention (ADR-010 F3): prune resolved effect records
-        // on the same horizon. Never prune what the executor hasn't intaken —
-        // cap at the intake cursor when this node runs the Effect Runtime.
-        long fxHorizon = horizon;
+    }
+
+    /**
+     * Effect outbox retention (ADR-010 F3) — independent of body retention
+     * and of anchoring: resolved records prune once older than
+     * {@code effects.retention.keep-blocks} behind the tip, capped at the
+     * executor's intake cursor. The ledger enforces the safety rules (live
+     * obligations and future-expiry records never prune).
+     */
+    private void fxRetentionTick() {
+        AppLedgerStore currentLedger = ledger;
+        if (!running.get() || currentLedger == null) {
+            return;
+        }
+        long keepBlocks = parseLongSetting("effects.retention.keep-blocks", 100_000);
+        long fxHorizon = currentLedger.tipHeight() - keepBlocks;
         long intakeCursor = currentLedger.fxIntakeCursor(-1);
         if (intakeCursor >= 0) {
             fxHorizon = Math.min(fxHorizon, intakeCursor);
@@ -1963,8 +1978,15 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
      * responsibility (ADR-010 F6), with idempotency as the safety net.
      */
     private void buildEffectRuntime(AppLedgerStore ledgerStore) {
-        EffectRuntime.Settings runtimeSettings =
-                EffectRuntime.Settings.fromSettings(config.pluginSettings());
+        EffectRuntime.Settings runtimeSettings;
+        try {
+            runtimeSettings = EffectRuntime.Settings.fromSettings(config.pluginSettings());
+        } catch (Exception e) {
+            // Executor settings are node-local — a typo must not take down the chain
+            log.error("App-chain '{}': invalid effects.executor.* settings — continuing without "
+                    + "an executor: {}", config.chainId(), e.toString());
+            return;
+        }
         if (!runtimeSettings.enabled()) {
             return;
         }
@@ -2013,8 +2035,16 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                     config.chainId());
             return;
         }
-        this.effectRuntime = new EffectRuntime(ledgerStore, config.chainId(), runtimeSettings,
-                executors, executorConfigs, log);
+        try {
+            this.effectRuntime = new EffectRuntime(ledgerStore, config.chainId(), runtimeSettings,
+                    executors, executorConfigs, log);
+        } catch (Exception e) {
+            // The executor is a node-local optional role — a broken executor
+            // setup must not take down sequencing/anchoring/sinks
+            log.error("App-chain '{}': effect runtime failed to start — continuing without an "
+                    + "executor: {}", config.chainId(), e.toString());
+            return;
+        }
         log.info("App-chain '{}' effect runtime enabled: executors={}, tick={}ms, maxParallel={}",
                 config.chainId(), executors.stream()
                         .map(com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutor::id).toList(),
@@ -2115,10 +2145,21 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             runner.close();
         }
         sinkRunners.clear();
+        // Shutdown ORDER matters (ADR-010 F5 review): stop the tick source and
+        // WAIT for it, then close the runtime (waits for workers), and only
+        // then may the ledger close — nothing may touch RocksDB afterwards.
         ScheduledExecutorService fxExec = fxScheduler;
         fxScheduler = null;
         if (fxExec != null) {
-            fxExec.shutdownNow();
+            fxExec.shutdown();
+            try {
+                if (!fxExec.awaitTermination(3, TimeUnit.SECONDS)) {
+                    fxExec.shutdownNow();
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                fxExec.shutdownNow();
+            }
         }
         EffectRuntime currentFx = effectRuntime;
         effectRuntime = null;

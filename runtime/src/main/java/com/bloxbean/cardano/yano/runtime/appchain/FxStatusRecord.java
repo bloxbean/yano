@@ -64,13 +64,21 @@ record FxStatusRecord(int status,
         return status == PENDING || status == RETRY || status == SUBMITTED;
     }
 
+    /** A REAL failed attempt — the only transition that consumes attempt budget. */
     FxStatusRecord retry(String error, long nextAt) {
         return new FxStatusRecord(RETRY, attempts + 1, nextAt, error, submittedRef, null,
                 System.currentTimeMillis());
     }
 
+    /** Precondition not met (EffectExecution.Retry) — no attempt consumed. */
+    FxStatusRecord deferred(String reason, long nextAt) {
+        return new FxStatusRecord(RETRY, attempts, nextAt, reason, submittedRef, null,
+                System.currentTimeMillis());
+    }
+
+    /** Long-running action started — polling it is not an attempt. */
     FxStatusRecord submitted(byte[] ref) {
-        return new FxStatusRecord(SUBMITTED, attempts + 1, 0, "", ref, null,
+        return new FxStatusRecord(SUBMITTED, attempts, 0, "", ref, null,
                 System.currentTimeMillis());
     }
 

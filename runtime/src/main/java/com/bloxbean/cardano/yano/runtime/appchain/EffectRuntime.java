@@ -1,5 +1,6 @@
 package com.bloxbean.cardano.yano.runtime.appchain;
 
+import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutor;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectExecution;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectExecutionContext;
@@ -8,7 +9,9 @@ import com.bloxbean.cardano.yano.api.appchain.effects.FinalityGate;
 import com.bloxbean.cardano.yano.api.appchain.effects.PendingEffect;
 import org.slf4j.Logger;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -23,9 +26,10 @@ import java.util.concurrent.atomic.AtomicLong;
  * The execution plane (ADR app-layer/010 F5): discovers finalized effects
  * from the consensus-tier outbox via a persisted intake cursor, gates them on
  * finality policy, and drives {@link AppEffectExecutor} attempts with
- * per-effect retry state — no head-of-line blocking (a dead webhook never
- * delays an unrelated effect), attempt cap into the PARKED lane, and a
- * backfill quarantine so a late-enabled executor never blind-fires history.
+ * per-effect retry state — no head-of-line blocking (skipped rows never
+ * consume the dispatch budget; foreign partitions are filtered at intake),
+ * attempt cap into the PARKED lane, and a backfill quarantine so a
+ * late-enabled executor never blind-fires history.
  * <p>
  * Deliberately NOT deterministic and NOT consensus: everything here is
  * node-local bookkeeping in the {@code app_fx_runtime} CF. Discovery reads
@@ -33,8 +37,17 @@ import java.util.concurrent.atomic.AtomicLong;
  * restart can never re-fire a chain-terminal effect; the at-least-once window
  * (crash between the external call and the local terminal) is closed by
  * executor idempotency on {@code idHash}, not by the runtime.
+ * <p>
+ * Threading: one scheduler tick thread, a bounded worker pool, plus REST
+ * threads (stats/requeue). Status+queue transition pairs are serialized on
+ * {@code transitionLock}; {@code closed} gates every ledger access during
+ * shutdown so the RocksDB handle is never touched after {@code close()}
+ * returns.
  */
 final class EffectRuntime implements AutoCloseable {
+
+    /** How close to its expiry height a CHAIN effect may still be dispatched. */
+    private static final long EXPIRY_SAFETY_BLOCKS = 2;
 
     /** Everything the runtime needs from configuration (effects.executor.*). */
     record Settings(boolean enabled,
@@ -53,7 +66,7 @@ final class EffectRuntime implements AutoCloseable {
             Set<String> types = Set.of();
             String typesValue = settings.getOrDefault("effects.executor.types", "").trim();
             if (!typesValue.isEmpty()) {
-                types = Set.of(typesValue.split("\\s*,\\s*"));
+                types = Set.copyOf(new LinkedHashSet<>(List.of(typesValue.split("\\s*,\\s*"))));
             }
             return new Settings(enabled, types,
                     longOf(settings, "effects.executor.tick-ms", 2000),
@@ -67,7 +80,26 @@ final class EffectRuntime implements AutoCloseable {
 
         private static long longOf(Map<String, String> settings, String key, long defaultValue) {
             String value = settings.get(key);
-            return value != null && !value.isBlank() ? Long.parseLong(value.trim()) : defaultValue;
+            if (value == null || value.isBlank()) {
+                return defaultValue;
+            }
+            try {
+                return Long.parseLong(value.trim());
+            } catch (NumberFormatException e) {
+                // Name the offending key — this surfaces during subsystem start
+                throw new IllegalArgumentException(
+                        "Invalid numeric value for " + key + ": '" + value + "'");
+            }
+        }
+
+        /** Queue rows examined per tick — far above the dispatch cap so skipped rows never starve it. */
+        int scanLimit() {
+            return Math.max(4096, maxBatch * 16);
+        }
+
+        /** New executions submitted per tick. */
+        int dispatchCap() {
+            return Math.max(1, maxParallel * 2);
         }
     }
 
@@ -81,8 +113,11 @@ final class EffectRuntime implements AutoCloseable {
 
     /** Effects currently in flight on the worker pool (in-memory only). */
     private final Set<String> inFlight = ConcurrentHashMap.newKeySet();
+    /** Serializes status+queue transition PAIRS (worker terminals vs REST requeue). */
+    private final Object transitionLock = new Object();
     private final AtomicLong executedCount = new AtomicLong();
     private final AtomicLong parkedCount = new AtomicLong();
+    private volatile boolean closed;
     private volatile String lastError;
 
     EffectRuntime(AppLedgerStore ledger, String chainId, Settings settings,
@@ -102,53 +137,60 @@ final class EffectRuntime implements AutoCloseable {
         initializeCursor();
     }
 
+    Settings settings() {
+        return settings;
+    }
+
     /**
      * First enablement (no cursor): start at the current tip and QUARANTINE
      * historical open effects — unexecuted obligations need an explicit
-     * operator requeue, never a blind backfill (ADR-010 F10 / review #8).
+     * operator requeue, never a blind backfill (ADR-010 F10). Key-only scan:
+     * no record decode, no payloads in memory.
      */
     private void initializeCursor() {
         if (ledger.fxIntakeCursor(-1) >= 0) {
             return;
         }
         long tip = ledger.tipHeight();
-        int quarantined = 0;
-        for (EffectRecord record : ledger.fxRecordsFrom(0, Integer.MAX_VALUE)) {
-            if (record.height() > tip) {
-                break;
-            }
-            if (!ledger.fxClosed(record.height(), record.ordinal())) {
-                ledger.fxRuntimePutStatus(record.height(), record.ordinal(),
-                        FxStatusRecord.quarantined());
-                quarantined++;
-            }
+        List<long[]> open = ledger.fxOpenRecordKeysUpTo(tip);
+        for (long[] key : open) {
+            ledger.fxRuntimePutStatus(key[0], (int) key[1], FxStatusRecord.quarantined());
         }
         ledger.fxPutIntakeCursor(tip);
-        if (quarantined > 0) {
+        if (!open.isEmpty()) {
             log.warn("App-chain '{}' effect executor enabled with {} historical open effect(s) — "
-                    + "QUARANTINED; review and requeue via the effects admin surface", chainId, quarantined);
+                    + "QUARANTINED; review and requeue via the effects admin surface",
+                    chainId, open.size());
         }
     }
 
     /** One scheduler tick: intake new blocks, then gate + dispatch eligible effects. */
     void tick() {
+        if (closed) {
+            return;
+        }
         try {
             intake();
             dispatch();
         } catch (Exception e) {
-            lastError = e.toString();
-            log.warn("App-chain '{}' effect runtime tick failed: {}", chainId, e.toString());
+            if (!closed) {
+                lastError = e.toString();
+                log.warn("App-chain '{}' effect runtime tick failed: {}", chainId, e.toString());
+            }
         }
     }
 
     private void intake() {
         long tip = ledger.tipHeight();
         long cursor = ledger.fxIntakeCursor(0);
-        while (cursor < tip) {
+        while (cursor < tip && !closed) {
             long next = cursor + 1;
-            for (EffectRecord record : recordsAt(next)) {
+            for (EffectRecord record : ledger.fxRecordsAt(next)) {
                 if (ledger.fxClosed(record.height(), record.ordinal())) {
                     continue; // e.g. expired in the same block span
+                }
+                if (!settings.types().isEmpty() && !settings.types().contains(record.type())) {
+                    continue; // another executor node's partition — never enqueued here
                 }
                 ledger.fxRuntimePutStatus(record.height(), record.ordinal(), FxStatusRecord.pending());
                 ledger.fxQueuePut(record.height(), record.ordinal());
@@ -158,16 +200,15 @@ final class EffectRuntime implements AutoCloseable {
         }
     }
 
-    private List<EffectRecord> recordsAt(long height) {
-        return ledger.fxRecordsFrom(height, Integer.MAX_VALUE).stream()
-                .takeWhile(record -> record.height() == height)
-                .toList();
-    }
-
     private void dispatch() {
+        long tip = ledger.tipHeight();
         long anchored = ledger.metaLong("anchor_last_height", 0L);
         long now = System.currentTimeMillis();
-        for (long[] entry : ledger.fxQueueScan(settings.maxBatch())) {
+        int dispatched = 0;
+        for (long[] entry : ledger.fxQueueScan(settings.scanLimit())) {
+            if (closed || dispatched >= settings.dispatchCap()) {
+                return;
+            }
             long height = entry[0];
             int ordinal = (int) entry[1];
             String key = height + "/" + ordinal;
@@ -187,23 +228,30 @@ final class EffectRuntime implements AutoCloseable {
             }
             if (record.gate() == FinalityGate.L1_ANCHORED
                     && height > anchored - settings.anchorMarginBlocks()) {
-                continue; // wait for the anchor high-water-mark
+                continue; // wait for the anchor high-water-mark (row stays queued)
             }
-            if (!settings.types().isEmpty() && !settings.types().contains(record.type())) {
-                continue; // another executor node's partition
+            if (record.expiryHeight() > 0 && record.expiryHeight() <= tip + EXPIRY_SAFETY_BLOCKS) {
+                continue; // too close to deterministic expiry — let the sweep close it
             }
             FxStatusRecord status = ledger.fxRuntimeStatus(height, ordinal)
                     .orElse(FxStatusRecord.pending());
-            if (!status.executable() || status.nextAttemptAt() > now) {
+            if (!status.executable()) {
+                // Orphan row (crash between a terminal status write and the
+                // queue delete) — the status list, not the queue, tracks it now
+                ledger.fxQueueDelete(height, ordinal);
+                continue;
+            }
+            if (status.nextAttemptAt() > now) {
                 continue;
             }
             AppEffectExecutor executor = find(record.type());
             if (executor == null) {
-                continue; // surfaced via stats (unroutable count) — retried when one appears
+                continue; // surfaced via stats — retried when one appears
             }
             if (!inFlight.add(key)) {
                 continue;
             }
+            dispatched++;
             pool.submit(() -> run(key, record, status, executor));
         }
     }
@@ -220,41 +268,53 @@ final class EffectRuntime implements AutoCloseable {
             } catch (Exception e) {
                 outcome = EffectExecution.failed(e.toString(), true);
             }
-            switch (outcome) {
-                case EffectExecution.Confirmed confirmed -> {
-                    ledger.fxRuntimePutStatus(height, ordinal, before.done(confirmed.externalRef()));
-                    ledger.fxQueueDelete(height, ordinal);
-                    executedCount.incrementAndGet();
-                    lastError = null;
-                    // ResultPolicy.CHAIN outcomes are injected as ~fx/result in FX-M3;
-                    // until then the local DONE record holds the external ref.
+            if (closed) {
+                return; // never touch the ledger after close() — re-attempted on restart
+            }
+            synchronized (transitionLock) {
+                if (closed) {
+                    return;
                 }
-                case EffectExecution.Failed failed -> {
-                    if (!failed.retryable() || before.attempts() + 1 >= settings.maxAttempts()) {
-                        ledger.fxRuntimePutStatus(height, ordinal, before.parked(failed.reason()));
+                switch (outcome) {
+                    case EffectExecution.Confirmed confirmed -> {
+                        ledger.fxRuntimePutStatus(height, ordinal, before.done(confirmed.externalRef()));
                         ledger.fxQueueDelete(height, ordinal);
-                        parkedCount.incrementAndGet();
-                        lastError = failed.reason();
-                        log.warn("App-chain '{}' effect {} PARKED after {} attempt(s): {}",
-                                chainId, key, before.attempts() + 1, failed.reason());
-                    } else {
-                        long delay = Math.min(settings.backoffMaxMs(),
-                                settings.backoffInitialMs() << Math.min(20, before.attempts()));
-                        ledger.fxRuntimePutStatus(height, ordinal,
-                                before.retry(failed.reason(), System.currentTimeMillis() + delay));
-                        lastError = failed.reason();
+                        executedCount.incrementAndGet();
+                        lastError = null;
+                        // ResultPolicy.CHAIN outcomes are injected as ~fx/result in
+                        // FX-M3; until then the local DONE record holds the ref and
+                        // the on-chain effect stays open (may still EXPIRE).
                     }
+                    case EffectExecution.Failed failed -> {
+                        if (!failed.retryable() || before.attempts() + 1 >= settings.maxAttempts()) {
+                            ledger.fxRuntimePutStatus(height, ordinal, before.parked(failed.reason()));
+                            ledger.fxQueueDelete(height, ordinal);
+                            parkedCount.incrementAndGet();
+                            lastError = failed.reason();
+                            log.warn("App-chain '{}' effect {} PARKED after {} attempt(s): {}",
+                                    chainId, key, before.attempts() + 1, failed.reason());
+                        } else {
+                            long delay = Math.min(settings.backoffMaxMs(),
+                                    settings.backoffInitialMs() << Math.min(20, before.attempts()));
+                            ledger.fxRuntimePutStatus(height, ordinal,
+                                    before.retry(failed.reason(), System.currentTimeMillis() + delay));
+                            lastError = failed.reason();
+                        }
+                    }
+                    case EffectExecution.Submitted submitted ->
+                            ledger.fxRuntimePutStatus(height, ordinal,
+                                    before.submitted(submitted.externalRef()));
+                    case EffectExecution.Retry retry ->
+                            ledger.fxRuntimePutStatus(height, ordinal,
+                                    before.deferred("not ready",
+                                            System.currentTimeMillis() + retry.notBefore().toMillis()));
                 }
-                case EffectExecution.Submitted submitted ->
-                        ledger.fxRuntimePutStatus(height, ordinal,
-                                before.submitted(submitted.externalRef()));
-                case EffectExecution.Retry retry ->
-                        ledger.fxRuntimePutStatus(height, ordinal, before.retry("not ready",
-                                System.currentTimeMillis() + retry.notBefore().toMillis()));
             }
         } catch (Exception e) {
-            lastError = e.toString();
-            log.warn("App-chain '{}' effect {} handling failed: {}", chainId, key, e.toString());
+            if (!closed) {
+                lastError = e.toString();
+                log.warn("App-chain '{}' effect {} handling failed: {}", chainId, key, e.toString());
+            }
         } finally {
             inFlight.remove(key);
         }
@@ -280,26 +340,46 @@ final class EffectRuntime implements AutoCloseable {
         };
     }
 
-    /** Operator requeue: PARKED/QUARANTINED/SKIPPED → PENDING (audit-logged by the caller). */
+    /**
+     * Operator requeue (ADR-010 F9): PARKED/QUARANTINED/SKIPPED → PENDING.
+     * Also the self-heal for a stranded executable status with no queue row
+     * (crash/race leftovers) — re-adds the row.
+     */
     boolean requeue(long height, int ordinal) {
-        Optional<FxStatusRecord> status = ledger.fxRuntimeStatus(height, ordinal);
-        if (ledger.fxRecord(height, ordinal).isEmpty() || ledger.fxClosed(height, ordinal)) {
+        if (closed) {
             return false;
         }
-        if (status.isPresent() && status.get().executable()) {
-            return false; // already live
+        synchronized (transitionLock) {
+            if (closed || ledger.fxRecord(height, ordinal).isEmpty()
+                    || ledger.fxClosed(height, ordinal)) {
+                return false;
+            }
+            Optional<FxStatusRecord> status = ledger.fxRuntimeStatus(height, ordinal);
+            if (status.isPresent() && status.get().executable()) {
+                if (ledger.fxQueueExists(height, ordinal)) {
+                    return false; // genuinely live
+                }
+                ledger.fxQueuePut(height, ordinal); // stranded executable — heal the row
+                log.info("App-chain '{}' effect {}/{} queue row restored by operator",
+                        chainId, height, ordinal);
+                return true;
+            }
+            ledger.fxRuntimePutStatus(height, ordinal,
+                    status.map(FxStatusRecord::requeued).orElse(FxStatusRecord.pending()));
+            ledger.fxQueuePut(height, ordinal);
+            log.info("App-chain '{}' effect {}/{} requeued by operator", chainId, height, ordinal);
+            return true;
         }
-        ledger.fxRuntimePutStatus(height, ordinal,
-                status.map(FxStatusRecord::requeued).orElse(FxStatusRecord.pending()));
-        ledger.fxQueuePut(height, ordinal);
-        log.info("App-chain '{}' effect {}/{} requeued by operator", chainId, height, ordinal);
-        return true;
     }
 
     Map<String, Object> stats() {
         Map<String, Object> stats = new LinkedHashMap<>();
+        if (closed) {
+            stats.put("closed", true);
+            return stats;
+        }
         stats.put("intakeCursor", ledger.fxIntakeCursor(0));
-        stats.put("queueDepth", ledger.fxQueueScan(settings.maxBatch()).size());
+        stats.put("queueDepth", ledger.fxQueueScan(settings.scanLimit()).size());
         stats.put("inFlight", inFlight.size());
         stats.put("executed", executedCount.get());
         stats.put("parked", parkedCount.get());
@@ -312,6 +392,9 @@ final class EffectRuntime implements AutoCloseable {
     }
 
     Optional<Map<String, Object>> statusOf(long height, int ordinal) {
+        if (closed) {
+            return Optional.empty();
+        }
         return ledger.fxRuntimeStatus(height, ordinal).map(status -> {
             Map<String, Object> view = new LinkedHashMap<>();
             view.put("status", status.statusName());
@@ -323,24 +406,32 @@ final class EffectRuntime implements AutoCloseable {
                 view.put("lastError", status.lastError());
             }
             if (status.submittedRef().length > 0) {
-                view.put("submittedRef",
-                        com.bloxbean.cardano.yaci.core.util.HexUtil.encodeHexString(status.submittedRef()));
+                view.put("submittedRef", HexUtil.encodeHexString(status.submittedRef()));
             }
             if (status.externalRef().length > 0) {
-                view.put("externalRef",
-                        com.bloxbean.cardano.yaci.core.util.HexUtil.encodeHexString(status.externalRef()));
+                view.put("externalRef", HexUtil.encodeHexString(status.externalRef()));
             }
             view.put("updatedAt", status.updatedAt());
             return view;
         });
     }
 
+    /**
+     * Shutdown: stop accepting work, then WAIT for workers — the ledger
+     * closes right after this returns, so no thread may still hold it.
+     * Interrupt-resistant executors are given a bounded second grace period.
+     */
     @Override
     public void close() {
+        closed = true;
         pool.shutdown();
         try {
-            if (!pool.awaitTermination(5, TimeUnit.SECONDS)) {
+            if (!pool.awaitTermination(10, TimeUnit.SECONDS)) {
                 pool.shutdownNow();
+                if (!pool.awaitTermination(5, TimeUnit.SECONDS)) {
+                    log.warn("App-chain '{}' effect workers did not terminate within grace — "
+                            + "ledger writes are gated by the closed flag", chainId);
+                }
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();

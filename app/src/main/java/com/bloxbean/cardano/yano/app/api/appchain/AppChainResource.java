@@ -166,6 +166,21 @@ public class AppChainResource {
         return singleChain().effect(height, ordinal);
     }
 
+    @GET
+    @Operation(hidden = true)
+    @Path("effects/stats")
+    public Response effectStats() {
+        return singleChain().effectStats();
+    }
+
+    @POST
+    @Operation(hidden = true)
+    @Path("effects/{height}/{ordinal}/requeue")
+    public Response requeueEffect(@PathParam("height") long height,
+                                  @PathParam("ordinal") int ordinal) {
+        return singleChain().requeueEffect(height, ordinal);
+    }
+
     @POST
     @Operation(hidden = true)
     @Path("admin/pause")

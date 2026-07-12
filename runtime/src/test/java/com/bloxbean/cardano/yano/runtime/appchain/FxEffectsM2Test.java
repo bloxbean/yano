@@ -228,6 +228,34 @@ class FxEffectsM2Test {
     }
 
     @Test
+    void retention_neverPrunesLiveObligationsOrFutureExpiry(@TempDir Path dir) throws Exception {
+        RecordingExecutor executor = new RecordingExecutor("test.action",
+                effect -> EffectExecution.failed("target down", false)); // parks immediately
+        try (Pipeline pipeline = new Pipeline(dir, emitting("test.action", ResultPolicy.NONE, null),
+                FX_SETTINGS);
+             EffectRuntime runtime = new EffectRuntime(pipeline.store, "fx-chain",
+                     runtimeSettings(3), List.of(executor), Map.of(), LoggerFactory.getLogger("fx"))) {
+            pipeline.applyNext(1); // height 1 → PARKED (an owed obligation)
+            runtime.tick();
+            awaitStatus(pipeline.store, 1, 0, FxStatusRecord.PARKED);
+
+            assertThat(pipeline.store.fxPruneBelow(100)).isZero(); // PARKED never prunes
+            assertThat(pipeline.store.fxRecord(1, 0)).isPresent();
+        }
+
+        // A locally-DONE CHAIN effect whose expiry bucket is still in the future
+        // must survive pruning — the deterministic sweep will consume the bucket
+        try (Pipeline pipeline = new Pipeline(dir.resolve("future-expiry"),
+                emittingWithExpiry("test.action", 1000), FX_SETTINGS)) {
+            pipeline.applyNext(1); // expiry registered at height 1001
+            pipeline.store.fxRuntimePutStatus(1, 0,
+                    FxStatusRecord.pending().done("ref".getBytes(StandardCharsets.UTF_8)));
+            assertThat(pipeline.store.fxPruneBelow(100)).isZero(); // expiry 1001 > tip 1
+            assertThat(pipeline.store.fxRecord(1, 0)).isPresent();
+        }
+    }
+
+    @Test
     void webhookExecutor_postsWithIdempotencyHeaders(@TempDir Path dir) throws Exception {
         ConcurrentLinkedQueue<Map<String, String>> received = new ConcurrentLinkedQueue<>();
         AtomicInteger responseCode = new AtomicInteger(200);
