@@ -95,6 +95,11 @@ signatures, and certificate thresholds are cryptographically verified on every
 node, always. A non-member's messages are dropped; a non-sequencer's blocks
 are never finalized; a tampered block fails the state-root re-execution check.
 
+For the full developer-level mechanics — the consensus round check by check,
+vote locks, rotation math, catch-up/restart semantics, and every built-in
+state machine's exact wire format — see the
+[consensus & internals guide](APP_CHAIN_CONSENSUS_GUIDE.md).
+
 ---
 
 ## 3. Quick start: two-node cluster with the default distribution
@@ -664,7 +669,9 @@ yano:
 `yano-appchain-stdlib` ships in the default distribution and is inert until a
 machine is selected by id — `yano.app-chain.state-machine` (or per chain,
 `chains[i].state-machine`). CBOR command formats and client-side command
-encoders are documented on the classes in `appchain/appchain-stdlib`. All
+encoders are documented on the classes in `appchain/appchain-stdlib` and,
+field by field, in the
+[consensus & internals guide §10](APP_CHAIN_CONSENSUS_GUIDE.md). All
 machines keep the framework guarantees: deterministic apply, provable state
 keys, anchorable roots. All members of a chain must run the same machine id.
 

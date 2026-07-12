@@ -10,7 +10,9 @@ A hands-on, copy-pasteable walkthrough in two parts:
   distribution, and use it — still no Yano rebuild.
 
 Reference documentation (all config options, REST reference, ops):
-`docs/APP_CHAIN_USER_GUIDE.md`. Design: `adr/app-layer/005-yano-app-chain-framework.md`.
+`docs/APP_CHAIN_USER_GUIDE.md`. Internals (consensus round, state-machine
+wire formats): `docs/APP_CHAIN_CONSENSUS_GUIDE.md`. Design:
+`adr/app-layer/005-yano-app-chain-framework.md`.
 
 ---
 
