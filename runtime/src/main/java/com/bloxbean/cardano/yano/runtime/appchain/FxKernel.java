@@ -215,8 +215,16 @@ final class FxKernel {
      * never influences the verdict), unknown effect, non-CHAIN effect,
      * already-terminal effect, or a same-block duplicate. First result wins.
      */
+    /** ~fx/result bodies are tiny ([v,h,ord,outcome,ref≤128,hash≤32]); anything larger is garbage. */
+    private static final int MAX_RESULT_BODY_BYTES = 512;
+
     private EffectResult interpretResult(byte[] body, AppBlock block, FxReader reader,
                                          java.util.Set<Long> closedInBlock) {
+        if (body == null || body.length > MAX_RESULT_BODY_BYTES) {
+            // Deterministic pre-decode cap — also excludes deeply-nested CBOR
+            // whose decode could StackOverflow past the Exception catch
+            return null;
+        }
         com.bloxbean.cardano.yano.api.appchain.effects.FxResultBody parsed;
         try {
             parsed = com.bloxbean.cardano.yano.api.appchain.effects.FxResultBody.decode(body);
@@ -314,7 +322,22 @@ final class FxKernel {
             FinalityGate gate = intent.gate() == FinalityGate.CHAIN_DEFAULT
                     ? settings.defaultGate() : intent.gate();
             int ordinal = emitted.size();
-            long expiryHeight = intent.expiryBlocks() > 0 ? block.height() + intent.expiryBlocks() : 0;
+            // CHAIN effects MUST close within the result window (M3 review):
+            // a result arriving after the window is a deterministic no-op, so
+            // an unexpirable CHAIN effect could stay open forever. Expiry is
+            // therefore mandatory for CHAIN, defaulted and capped to the window.
+            long expiryBlocks = intent.expiryBlocks();
+            if (intent.result() == ResultPolicy.CHAIN) {
+                if (expiryBlocks == 0) {
+                    expiryBlocks = Math.min(settings.maxExpiryBlocks(), settings.resultWindowBlocks());
+                } else if (expiryBlocks > settings.resultWindowBlocks()) {
+                    throw new EffectLimitExceededException("CHAIN effect expiry of " + expiryBlocks
+                            + " blocks exceeds effects.result-window-blocks ("
+                            + settings.resultWindowBlocks() + ") — the effect could outlive its "
+                            + "result window");
+                }
+            }
+            long expiryHeight = expiryBlocks > 0 ? block.height() + expiryBlocks : 0;
             EffectRecord record = new EffectRecord(EffectRecord.RECORD_VERSION, block.chainId(),
                     block.height(), ordinal, intent.type(), intent.payload(), intent.scope(),
                     gate, intent.result(), expiryHeight, intent.sourceMessageId());

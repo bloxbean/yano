@@ -72,6 +72,10 @@ record EffectsSettings(boolean enabled,
             throw new IllegalArgumentException("effects.max-per-block, effects.max-payload-bytes, "
                     + "effects.max-expiry-blocks and effects.result-window-blocks must be positive");
         }
+        if (maxPerBlock > 1_048_576) {
+            // Ordinals pack into 20 bits in the kernel's in-block dedup key
+            throw new IllegalArgumentException("effects.max-per-block must be <= 1048576");
+        }
         return new EffectsSettings(true, maxPerBlock, maxPayloadBytes, maxExpiryBlocks,
                 resultWindowBlocks, defaultGate, commitment, strict);
     }

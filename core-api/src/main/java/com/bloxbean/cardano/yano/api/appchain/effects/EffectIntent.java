@@ -20,8 +20,12 @@ import java.util.Objects;
  * @param gate            when execution becomes eligible (ADR-010 F7)
  * @param result          whether the outcome re-enters the chain (ADR-010 F8)
  * @param expiryBlocks    for {@link ResultPolicy#CHAIN}: deterministic EXPIRED
- *                        after this many blocks with no incorporated result;
- *                        0 = never expires
+ *                        after this many blocks with no incorporated result.
+ *                        0 = chain default. CHAIN effects ALWAYS expire — the
+ *                        kernel defaults 0 to min(max-expiry-blocks,
+ *                        result-window-blocks) and rejects values beyond the
+ *                        result window, so every CHAIN effect provably closes
+ *                        while results are still incorporable (ADR-010 F9)
  * @param sourceMessageId optional provenance link to the triggering message
  */
 public record EffectIntent(String type,

@@ -703,10 +703,16 @@ footprint.
 
 ### F9 — Expiry, poison lane, cancellation
 
-- **Expiry (deterministic timeout).** Emission with `expiryBlocks=k`
-  registers the id in the `x` height bucket at `createdHeight+k`. When block
-  `H` is applied, the interpreter reads bucket `x/H` (an O(1) CF lookup — no
-  iteration) and transitions every still-open CHAIN effect to **EXPIRED**:
+- **Expiry (deterministic timeout) — MANDATORY for CHAIN effects.** A result
+  arriving after `result-window-blocks` is a deterministic no-op, so an
+  unexpirable CHAIN effect could stay open forever (FX-M3 review finding): the
+  kernel defaults `expiryBlocks=0` to `min(max-expiry-blocks,
+  result-window-blocks)` and rejects values beyond the result window — every
+  CHAIN effect provably closes while results are still incorporable. Emission
+  with `expiryBlocks=k` registers the id in the `x` height bucket at
+  `createdHeight+k`. When block `H` is applied, the interpreter reads bucket
+  `x/H` (an O(1) CF lookup — no iteration) and transitions every still-open
+  CHAIN effect to **EXPIRED**:
   `~fx/done` leaf written, `onEffectResult(EXPIRED)` invoked. Purely
   height-driven ⇒ deterministic without any message. Late results for expired
   effects are deterministic no-ops; executors treat approaching expiry as a

@@ -1785,7 +1785,11 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             return;
         }
         long keepBlocks = parseLongSetting("effects.retention.keep-blocks", 100_000);
-        long fxHorizon = currentLedger.tipHeight() - keepBlocks;
+        // NEVER prune inside the consensus result window: the interpreter
+        // consults the fx CF there, and CF contents must be identical on
+        // every node or incorporation forks (ADR-010 F8)
+        long resultWindow = parseLongSetting("effects.result-window-blocks", 100_000);
+        long fxHorizon = currentLedger.tipHeight() - Math.max(keepBlocks, resultWindow);
         long intakeCursor = currentLedger.fxIntakeCursor(-1);
         if (intakeCursor >= 0) {
             fxHorizon = Math.min(fxHorizon, intakeCursor);
