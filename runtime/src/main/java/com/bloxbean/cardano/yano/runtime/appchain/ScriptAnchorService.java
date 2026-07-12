@@ -898,9 +898,13 @@ final class ScriptAnchorService {
             status.put("pendingTx", submit.txHash());
             status.put("pendingRange", submit.fromHeight() + ".." + submit.toHeight());
         }
-        if (lastAnchorTxHash != null) {
-            status.put("lastAnchorTx", lastAnchorTxHash);
-            status.put("lastAnchorL1Slot", lastAnchoredL1Slot);
+        // Prefer the in-memory copy; fall back to the PERSISTED meta so a
+        // restart does not blank the last confirmed anchor in status/UI.
+        String lastTx = lastAnchorTxHash != null ? lastAnchorTxHash : ledger.metaString(META_ANCHOR_TX);
+        if (lastTx != null) {
+            status.put("lastAnchorTx", lastTx);
+            status.put("lastAnchorL1Slot", lastAnchoredL1Slot != 0
+                    ? lastAnchoredL1Slot : ledger.metaLong(META_ANCHOR_SLOT, 0));
         }
         if (lastError != null) {
             status.put("lastError", lastError);
