@@ -258,7 +258,7 @@ final class ScriptAnchorService {
                 BuiltBootstrap built = buildBootstrapTx();
                 String txHash = txSubmitter.apply(built.txCbor());
                 pendingBootstrap = new PendingBootstrap(txHash, built.policyId(), built.scriptHash(),
-                        System.currentTimeMillis());
+                        built.datumHeight(), System.currentTimeMillis());
                 lastError = null;
                 log.info("Script-anchor bootstrap tx submitted: {} (policyId={}, scriptAddress={})",
                         txHash, HexUtil.encodeHexString(built.policyId()), built.scriptAddress());
@@ -275,7 +275,18 @@ final class ScriptAnchorService {
         }
     }
 
-    private record BuiltBootstrap(byte[] txCbor, byte[] policyId, byte[] scriptHash, String scriptAddress) {
+    private record BuiltBootstrap(byte[] txCbor, byte[] policyId, byte[] scriptHash, String scriptAddress,
+                                  long datumHeight) {
+    }
+
+    /**
+     * Thread-NFT asset name: the chain-id as UTF-8, truncated to the 32-byte
+     * ledger limit. Purely a display label for explorers — identity and
+     * uniqueness come from the one-shot policy id.
+     */
+    private byte[] threadTokenName() {
+        byte[] bytes = chainId.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        return bytes.length <= 32 ? bytes : java.util.Arrays.copyOf(bytes, 32);
     }
 
     private BuiltBootstrap buildBootstrapTx() throws Exception {
@@ -296,16 +307,21 @@ final class ScriptAnchorService {
 
         // Consume the seed (one-shot identity), mint the thread NFT straight
         // to the validator with the inline genesis datum; QuickTx balances
-        // fees/collateral/change and the julc evaluator prices exact ex-units
+        // fees/collateral/change and the julc evaluator prices exact ex-units.
+        // The token is NAMED with the chain-id (readable label on explorers);
+        // identity/uniqueness stays with the one-shot policy id.
         ScriptTx scriptTx = new ScriptTx()
                 .collectFrom(NodeUtxoSupplier.toCcl(seed))
                 .mintAsset(policy,
-                        List.of(Asset.builder().name("0x").value(BigInteger.ONE).build()),
+                        List.of(Asset.builder()
+                                .name("0x" + HexUtil.encodeHexString(threadTokenName()))
+                                .value(BigInteger.ONE).build()),
                         BigIntPlutusData.of(0),
                         scriptAddress.getAddress(),
                         AnchorDatumCodec.encode(datum));
         Transaction tx = txContext(scriptTx, 0).buildAndSign();
-        return new BuiltBootstrap(tx.serialize(), policyId, scriptHash, scriptAddress.getAddress());
+        return new BuiltBootstrap(tx.serialize(), policyId, scriptHash, scriptAddress.getAddress(),
+                datum.height());
     }
 
     // ------------------------------------------------------------------
@@ -526,10 +542,18 @@ final class ScriptAnchorService {
                 .sorted(Comparator.comparing(HexUtil::encodeHexString))
                 .toArray(byte[][]::new);
 
-        // Continuing output: same lovelace + thread NFT, next inline datum
+        // Continuing output: same lovelace + thread NFT, next inline datum.
+        // Carry the EXACT unit found on the thread UTxO — new chains name the
+        // token with the chain-id, pre-existing chains minted an empty name.
+        String policyHex = HexUtil.encodeHexString(policyId);
+        String threadUnit = anchorUtxo.assets().stream()
+                .filter(a -> policyHex.equalsIgnoreCase(a.policyId()))
+                .findFirst()
+                .map(a -> a.policyId() + (a.assetName() != null ? a.assetName() : ""))
+                .orElse(policyHex);
         List<Amount> continuing = new ArrayList<>();
         continuing.add(Amount.lovelace(anchorUtxo.lovelace()));
-        continuing.add(Amount.asset(HexUtil.encodeHexString(policyId), BigInteger.ONE));
+        continuing.add(Amount.asset(threadUnit, BigInteger.ONE));
 
         ScriptTx scriptTx = new ScriptTx()
                 .collectFrom(NodeUtxoSupplier.toCcl(anchorUtxo), BigIntPlutusData.of(0))
@@ -789,6 +813,10 @@ final class ScriptAnchorService {
             ledger.metaPutBytes(META_SCRIPT_HASH, bootstrap.scriptHash());
             ledger.metaPutString(META_SCRIPT_BOOTSTRAP_TX, bootstrap.txHash());
             ledger.metaPutLong(META_SCRIPT_BOOTSTRAP_SLOT, slot);
+            // The genesis datum already anchors the tip as of bootstrap time —
+            // record it so status lag starts truthful and the tick doesn't
+            // attempt no-op advance rounds until NEW blocks finalize.
+            ledger.metaPutLong(META_LAST_ANCHORED, bootstrap.datumHeight());
             log.info("Script-anchor bootstrap CONFIRMED on L1: tx={}, policyId={}, l1Slot={}",
                     bootstrap.txHash(), HexUtil.encodeHexString(bootstrap.policyId()), slot);
             return null;
@@ -842,6 +870,17 @@ final class ScriptAnchorService {
         status.put("enabled", true);
         status.put("mode", "script");
         status.put("leader", leader);
+        // address matches metadata-mode status: where the anchor lives (the
+        // script address once bootstrapped, else the leader's wallet). The
+        // wallet is reported separately too — it keeps paying fees after
+        // bootstrap, so operators need it for top-ups.
+        String address = anchorAddress();
+        if (!address.isEmpty()) {
+            status.put("address", address);
+        }
+        if (walletAddress != null) {
+            status.put("walletAddress", walletAddress.getAddress());
+        }
         status.putAll(identityStatus());
         status.put("lastAnchoredHeight", lastAnchoredHeight());
         status.put("anchoredCount", anchoredCount);
@@ -1031,7 +1070,8 @@ final class ScriptAnchorService {
 
     // ------------------------------------------------------------------
 
-    private record PendingBootstrap(String txHash, byte[] policyId, byte[] scriptHash, long submittedAt) {
+    private record PendingBootstrap(String txHash, byte[] policyId, byte[] scriptHash, long datumHeight,
+                                    long submittedAt) {
     }
 
     private record PendingCosign(Transaction tx, byte[] bodyBytes, byte[] bodyHash, byte[] requestBody,

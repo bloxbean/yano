@@ -18,8 +18,11 @@ import java.math.BigInteger;
  * (ADR app-layer/008.4 §2.3). Parameterized by the bootstrap UTxO outref:
  * minting is valid only when that exact UTxO is consumed, so at most one
  * token can ever exist (a distinct seed yields a distinct policy id).
- * Exactly one token (empty name, quantity 1) is minted; burning is never
- * permitted — the thread must live forever at the anchor validator.
+ * Exactly one token (a single name of the bootstrapper's choosing — the node
+ * uses the chain-id so explorers show a readable label — quantity 1) is
+ * minted; burning is never permitted — the thread must live forever at the
+ * anchor validator. Identity/uniqueness comes from the policy id, never the
+ * token name.
  */
 @MintingValidator
 public class AnchorThreadPolicy {
@@ -39,15 +42,16 @@ public class AnchorThreadPolicy {
         // The parameterized seed UTxO must be consumed in this tx (one-shot)
         boolean seedConsumed = consumesSeed(ctx.txInfo().inputs());
 
-        // The mint under our policy must be EXACTLY {empty-name: +1} — no
-        // burn, no extra names at ANY quantity
+        // The mint under our policy must be EXACTLY one name at +1 — no
+        // burn, no extra names at ANY quantity. The name itself is free
+        // (a display label); the policy id is the identity.
         boolean mintedExactlyOne = mintsExactlyThreadToken(
                 ctx.txInfo().mint(), ownPolicyHash);
 
         return seedConsumed && mintedExactlyOne;
     }
 
-    /** The inner mint map for our policy is exactly [("", 1)]. */
+    /** The inner mint map for our policy is exactly [(any-name, 1)]. */
     static boolean mintsExactlyThreadToken(Value mint, byte[] ownPolicyHash) {
         PlutusData policyData = Builtins.bData(ownPolicyHash);
         boolean found = false;
@@ -59,9 +63,8 @@ public class AnchorThreadPolicy {
                         (PlutusData.MapData) Builtins.sndPair(outerPair));
                 if (!Builtins.nullList(inner) && Builtins.nullList(Builtins.tailList(inner))) {
                     PlutusData entry = Builtins.headList(inner);
-                    byte[] name = Builtins.unBData(Builtins.fstPair(entry));
                     BigInteger qty = Builtins.unIData(Builtins.sndPair(entry));
-                    if (Builtins.lengthOfByteString(name) == 0 && qty.equals(BigInteger.ONE)) {
+                    if (qty.equals(BigInteger.ONE)) {
                         found = true;
                     }
                 }

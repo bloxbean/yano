@@ -58,4 +58,11 @@ anchor-redeemer = 0                  ; "Advance" (reserved, not inspected)
 ; The one-shot thread policy takes no redeemer semantics beyond minting
 ; exactly the single token in the bootstrap transaction (the parameterized
 ; outref must be consumed); burning is forbidden.
-thread-token-name = h''              ; empty token name, quantity 1
+;
+; The token name is a free display label (the node mints the chain-id as
+; UTF-8, truncated to the 32-byte ledger limit, so explorers show a readable
+; name). Identity and uniqueness come from the one-shot policy id, never the
+; name; the policy still enforces EXACTLY ONE name at quantity +1 (no rider
+; names at any quantity). Chains bootstrapped before this change carry the
+; empty name h'' forever — the validator is name-agnostic either way.
+thread-token-name = bstr .size (0..32)

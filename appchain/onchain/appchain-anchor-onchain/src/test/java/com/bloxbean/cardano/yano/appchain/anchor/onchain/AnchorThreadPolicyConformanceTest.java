@@ -88,10 +88,19 @@ class AnchorThreadPolicyConformanceTest extends ContractTest {
     }
 
     @Test
-    void wrongTokenName_fails() {
-        // Exactly one token but not the empty thread name
+    void namedToken_succeeds() {
+        // The token name is a free display label (the node mints with the
+        // chain-id); identity comes from the one-shot policy id, not the name
         var mint = Value.singleton(new PolicyId(OWN_POLICY),
-                new TokenName(new byte[]{0x01}), BigInteger.ONE);
+                new TokenName("orders-chain".getBytes(java.nio.charset.StandardCharsets.UTF_8)),
+                BigInteger.ONE);
+        assertSuccess(evaluate(program(), mintCtx(true, mint)));
+    }
+
+    @Test
+    void namedToken_quantityTwo_fails() {
+        var mint = Value.singleton(new PolicyId(OWN_POLICY),
+                new TokenName(new byte[]{0x01}), BigInteger.TWO);
         assertFailure(evaluate(program(), mintCtx(true, mint)));
     }
 

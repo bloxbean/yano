@@ -101,8 +101,10 @@ fn carries_thread_token(output: Output, thread_policy_id: ByteArray) -> Bool {
 
 /// One-shot state-thread NFT policy (ADR 008.4 §2.3): minting is valid only
 /// when the parameterized bootstrap seed UTxO is consumed, and the mint under
-/// this policy is EXACTLY {empty-name: +1} — no burn, no extra names at any
-/// quantity. Burning is never permitted; the thread lives forever.
+/// this policy is EXACTLY one name at +1 — no burn, no extra names at any
+/// quantity. The name is a free display label (the node mints with the
+/// chain-id); identity comes from the one-shot policy id, never the name.
+/// Burning is never permitted; the thread lives forever.
 validator anchor_thread(seed_tx_id: ByteArray, seed_index: Int) {
   mint(_redeemer: Data, policy_id: PolicyId, self: Transaction) {
     let seed_consumed =
@@ -114,7 +116,7 @@ validator anchor_thread(seed_tx_id: ByteArray, seed_index: Int) {
       )
     let mint_exact =
       when tokens(self.mint, policy_id) |> dict.to_pairs() is {
-        [Pair(name, qty)] -> name == "" && qty == 1
+        [Pair(_name, qty)] -> qty == 1
         _ -> False
       }
     seed_consumed && mint_exact
