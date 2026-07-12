@@ -11,9 +11,12 @@
 #   ./loadtest.sh orders-chain -n 5000 -c 50   # heavier
 #   ./loadtest.sh orders-chain -n 5000 --spread  # spread submits across all nodes
 #   ./loadtest.sh orders-chain -n 2000 -s 512  # 512-byte payloads
+#   ./loadtest.sh registry-chain --kv -n 2000  # kv-registry chain: real PUTs
 #
-# Targets any-bytes (ordered-log) chains. A kv-registry chain would reject
-# unstructured payloads at admission — load-test those with real kv commands.
+# Plain mode targets any-bytes (ordered-log) chains — a kv-registry chain
+# rejects unstructured payloads at admission. --kv submits real CBOR PUT
+# commands ([0, key, value]) with run-unique keys instead: use it to load
+# (and anchor-) test kv-registry chains.
 # =============================================================================
 set -uo pipefail
 
@@ -21,6 +24,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 HTTP_BASE="${YANO_CLUSTER_HTTP_BASE:-7070}"
 
 CHAIN=""; TOTAL=1000; CONC=20; SIZE=0; TOPIC="load"; TARGET="0"   # node index or "spread"
+KV=0                                                              # --kv: CBOR PUT commands
 
 c_grn() { printf '\033[32m%s\033[0m\n' "$*"; }
 c_ylw() { printf '\033[33m%s\033[0m\n' "$*"; }
@@ -50,7 +54,9 @@ Usage: ./loadtest.sh <chain-id> [options]
   -n <total>     total messages to submit          (default 1000)
   -c <conc>      concurrent submitters             (default 20)
   -s <bytes>     payload size in bytes             (default ~8)
-  -t <topic>     message topic                     (default "load")
+  -t <topic>     message topic                     (default "load"; "kv" in --kv mode)
+  --kv           kv-registry mode: submit CBOR PUT commands with run-unique
+                 keys (-s sizes the value). Required for kv-registry chains.
   --node <i>     submit all to node i              (default 0)
   --spread       round-robin submits across all ready nodes
   -h, --help
@@ -64,6 +70,7 @@ while [ $# -gt 0 ]; do case "$1" in
   -c) CONC="$2"; shift 2;;
   -s) SIZE="$2"; shift 2;;
   -t) TOPIC="$2"; shift 2;;
+  --kv) KV=1; shift;;
   --node) TARGET="$2"; shift 2;;
   --spread) TARGET="spread"; shift;;
   -h|--help) usage; exit 0;;
@@ -81,6 +88,21 @@ while IFS= read -r n; do [ -n "$n" ] && NODES+=("$n"); done < <(ready_nodes)
 # Fixed-size pad so each body is ~SIZE bytes ("<seq>" prefix + pad).
 PAD=""
 if [ "$SIZE" -gt 8 ]; then PAD="$(head -c "$((SIZE-8))" </dev/zero | tr '\0' x)"; fi
+
+# kv mode: each message is CBOR [0(PUT), key(bstr8), value(bstr)]. The key is
+# (run-tag, seq) — 8 bytes, unique across runs so every PUT writes a fresh
+# entry — and is assembled with pure printf (no subprocess in the hot loop).
+# The value ('x' pad, UTF-8-safe for value-format: utf8) is encoded ONCE here.
+if [ "$KV" = "1" ]; then
+  [ "$TOPIC" = "load" ] && TOPIC="kv"
+  RUN_TAG="$(printf '%08x' "$(( $(date +%s) & 0xffffffff ))")"
+  VAL="${PAD:-v}"
+  VALUE_HEX="$(printf '%s' "$VAL" | od -An -v -tx1 | tr -d ' \n')"
+  vlen="${#VAL}"
+  if   [ "$vlen" -lt 24 ];  then VALUE_BSTR="$(printf '%02x' $((0x40 + vlen)))$VALUE_HEX"
+  elif [ "$vlen" -lt 256 ]; then VALUE_BSTR="$(printf '58%02x' "$vlen")$VALUE_HEX"
+  else                           VALUE_BSTR="$(printf '59%04x' "$vlen")$VALUE_HEX"; fi
+fi
 
 WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
 
@@ -101,10 +123,15 @@ for (( w=0; w<CONC; w++ )); do
   (
     for (( s=start; s<=end; s++ )); do
       if [ "$TARGET" = "spread" ]; then node="${NODES[$(( s % nnodes ))]}"; else node="$TARGET"; fi
+      if [ "$KV" = "1" ]; then
+        data="$(printf '{"topic":"%s","bodyHex":"830048%s%08x%s"}' "$TOPIC" "$RUN_TAG" "$s" "$VALUE_BSTR")"
+      else
+        data="{\"topic\":\"$TOPIC\",\"body\":\"$s-$PAD\"}"
+      fi
       curl -s -o /dev/null -w '%{http_code}\n' --max-time 30 \
         -X POST "http://localhost:$(( HTTP_BASE + node ))/api/v1/app-chain/chains/$CHAIN/messages" \
         -H 'Content-Type: application/json' \
-        -d "{\"topic\":\"$TOPIC\",\"body\":\"$s-$PAD\"}"
+        -d "$data"
     done
   ) > "$WORK/codes.$w" 2>/dev/null &
 done

@@ -195,25 +195,58 @@ Caveats:
 
 - Each node independently syncs the public chain, so first start is **not**
   instant and uses real bandwidth/disk. For a fast demo, prefer devnet.
-- **L1 anchoring** to a public network needs funded anchor keys — the demo's
-  deterministic keys are unfunded. Anchoring is left off in relay mode.
+- **L1 anchoring** on a public network works, but needs a wallet YOU fund —
+  see below. The demo's deterministic anchor keys hold nothing on preprod.
 
-## L1 anchoring (devnet)
+## L1 anchoring
+
+Anchoring runs on **node 0 only** (the anchor leader). Script-mode followers
+co-sign and adopt the on-chain identity with zero anchor config; metadata-mode
+followers need nothing at all.
+
+Two modes (`--anchor-mode metadata|script`):
+
+| Mode | `metadata` | `script` (ADR [008.4](../../adr/app-layer/008.4-script-anchors-l1view.md)) |
+|------|------------|------------|
+| Anchor tx | plain tx, anchor payload in tx metadata | Plutus V3 thread-NFT UTxO, validator-enforced datum chain |
+| Signing | anchor wallet only | wallet + threshold co-signed member witnesses |
+| Setup | fund the wallet — that's it | fund + one-time `anchor-bootstrap <chain>` per chain |
+
+### Devnet (fast demo)
 
 ```bash
-./cluster.sh start 3 --anchor
-./cluster.sh anchor-bootstrap orders-chain     # funds + mints the thread NFT
+./cluster.sh start 3 --anchor                  # script mode (default)
+./cluster.sh anchor-bootstrap orders-chain     # funds via faucet + mints the thread NFT
+# or, simplest possible anchoring:
+./cluster.sh start 3 --anchor-mode metadata    # fund via faucet, anchors just start
 ```
 
-With `--anchor`, every chain runs [script anchors](../../adr/app-layer/008.4-script-anchors-l1view.md)
-(ADR 008.4). `anchor-bootstrap` funds the anchor wallet from the devnet faucet
-and mints the one-shot thread NFT; from then on the members co-sign periodic
-anchor transactions onto the devnet L1. Watch it:
+### Public network (e.g. preprod)
+
+```bash
+openssl rand -hex 32                           # generate an anchor wallet seed
+./cluster.sh start 3 --network preprod --anchor-mode metadata --anchor-key <that-hex>
+# start prints the anchor wallet's enterprise address -> send tADA to it
+# metadata mode: anchors start automatically once funded
+# script mode:   ./cluster.sh anchor-bootstrap <chain>   (one-time, per chain)
+```
+
+The anchor wallet is a raw 32-byte Ed25519 seed and its **enterprise address**
+(printed at start). A CIP-1852 wallet mnemonic (Eternl/Lace/devkit) can NOT be
+converted into this seed — HD payment keys are extended keys, not seeds.
+Generate a fresh seed and send funds to its address from any wallet instead.
+Cadence: `--anchor-every N` app blocks (default 2 on devnet, 30 on public —
+every anchor is a fee-paying L1 tx). Watch it:
 
 ```bash
 ./cluster.sh status
 curl -s localhost:7070/api/v1/app-chain/chains/orders-chain/status | jq .anchor
 ```
+
+Each chain that bootstraps a script anchor gets its **own on-chain identity**:
+the bootstrap consumes a unique seed UTxO, so each chain mints a distinct
+thread policy id, and the validator (parameterized by that policy id) lands at
+a distinct script address.
 
 ## Commands
 
@@ -222,7 +255,7 @@ curl -s localhost:7070/api/v1/app-chain/chains/orders-chain/status | jq .anchor
 ./cluster.sh status                health + per-chain tips/roots + consistency
 ./cluster.sh submit ...            submit a payload to an ordered-log chain
 ./cluster.sh kv ...                set/del on a kv-registry chain
-./cluster.sh anchor-bootstrap C    fund + bootstrap a script anchor (devnet)
+./cluster.sh anchor-bootstrap C    bootstrap a script anchor (devnet: auto-funds)
 ./cluster.sh logs <node> [-f]      show/tail a node log
 ./cluster.sh keys [N]              print member seeds + pubkeys
 ./cluster.sh chains                list chains from the config
@@ -231,7 +264,8 @@ curl -s localhost:7070/api/v1/app-chain/chains/orders-chain/status | jq .anchor
 ```
 
 Start options: `--network <net>`, `--jar` | `--native`, `--threshold <t>`,
-`--anchor`, `--data-dir <dir>`, `--http-base <p>`, `--server-base <p>`.
+`--anchor`, `--anchor-mode <metadata|script>`, `--anchor-key <hex>`,
+`--anchor-every <n>`, `--data-dir <dir>`, `--http-base <p>`, `--server-base <p>`.
 
 ## Troubleshooting
 

@@ -37,9 +37,13 @@ CLUSTER_DIR="${YANO_CLUSTER_DIR:-/tmp/yano-appchain-cluster}"
 HTTP_BASE="${YANO_CLUSTER_HTTP_BASE:-7070}"       # node i HTTP  = HTTP_BASE + i
 SERVER_BASE="${YANO_CLUSTER_SERVER_BASE:-13337}"  # node i n2n   = SERVER_BASE + i
 NETWORK="devnet"
+NETWORK_EXPLICIT=0                                # set when --network is passed
 RUNTIME="auto"                                    # auto | jar | native
 THRESHOLD=""                                      # default: majority
 ENABLE_ANCHOR=0
+ANCHOR_MODE="script"                              # metadata | script (--anchor-mode)
+ANCHOR_KEY=""                                     # --anchor-key: funded wallet seed (hex, 32 bytes)
+ANCHOR_EVERY=""                                   # --anchor-every: default 2 devnet / 30 public
 
 # Deterministic demo member identities: node i uses seed = byte(i+1) x32.
 # Precomputed Ed25519 public keys (standard Ed25519 == Yano app-chain keys).
@@ -156,6 +160,37 @@ node_dir()    { echo "$CLUSTER_DIR/node$1"; }
 pid_file()    { echo "$CLUSTER_DIR/node$1.pid"; }
 log_file()    { echo "$(node_dir "$1")/node.log"; }
 
+# `start` records the cluster's network/anchor settings here so later commands
+# (anchor-bootstrap, ...) act on the RUNNING cluster without re-passing flags.
+env_file()    { echo "$CLUSTER_DIR/cluster.env"; }
+save_cluster_env() {
+  { echo "NETWORK=$NETWORK"; echo "ENABLE_ANCHOR=$ENABLE_ANCHOR"
+    echo "ANCHOR_MODE=$ANCHOR_MODE"; } > "$(env_file)"
+}
+load_cluster_env() {
+  [ -f "$(env_file)" ] || return 0
+  local saved_network="$NETWORK"
+  # shellcheck disable=SC1090
+  . "$(env_file)"
+  # An explicit --network on THIS invocation still wins over the saved value.
+  [ "$NETWORK_EXPLICIT" = "1" ] && NETWORK="$saved_network"
+}
+
+# Anchor wallet address for chain $1: from node 0's status when the build
+# exposes it (metadata mode always; script mode from newer builds), else from
+# node 0's startup log (script mode on older builds logs it but omits it from
+# status). All chains share node 0's wallet key, so the last log match is fine.
+anchor_wallet_addr() {
+  local cid="$1" a
+  a="$(curl -s "http://localhost:$(http_port 0)/api/v1/app-chain/chains/$cid/status" 2>/dev/null \
+    | jq -r '.anchor.walletAddress // .anchor.address // empty' 2>/dev/null)"
+  if [ -z "$a" ] && [ -f "$(log_file 0)" ]; then
+    a="$(grep -E 'script-anchor wallet address:|anchoring enabled \(address:' "$(log_file 0)" 2>/dev/null \
+      | grep -oE 'addr(_test)?1[a-z0-9]+' | tail -1)"
+  fi
+  printf '%s' "$a"
+}
+
 # Members CSV (all N pubkeys) and default threshold (majority).
 members_csv() { local n="$1" i out=""; for ((i=0;i<n;i++)); do out+="${out:+,}$(node_pub "$i")"; done; echo "$out"; }
 default_threshold() { echo $(( $1 / 2 + 1 )); }
@@ -174,6 +209,11 @@ chain_props() {
   threshold="${THRESHOLD:-$(default_threshold "$n")}"
   peers="$(peers_csv "$n" "$i")"
   proposer="$(node_pub 0)"
+  # Anchoring is LEADER-ONLY (node 0): script-mode followers co-sign and adopt
+  # the identity with zero anchor config (008.4); metadata-mode followers need
+  # nothing. Cadence default: every 2 app blocks on devnet (snappy demo), every
+  # 30 on public networks (each anchor is a real fee-paying L1 tx).
+  local anchor_every="${ANCHOR_EVERY:-$([ "$NETWORK" = devnet ] && echo 2 || echo 30)}"
   local -a props=()
   for idx in $(chain_indices); do
     props+=("-Dyano.app-chain.chains[$idx].signing-key=$(node_seed "$i")")
@@ -182,11 +222,11 @@ chain_props() {
     props+=("-Dyano.app-chain.chains[$idx].peers=$peers")
     # Injected for every chain; rotating chains ignore it (sequencer.mode wins).
     props+=("-Dyano.app-chain.chains[$idx].sequencer.proposer=$proposer")
-    if [ "$ENABLE_ANCHOR" = "1" ]; then
+    if [ "$ENABLE_ANCHOR" = "1" ] && [ "$i" -eq 0 ]; then
       props+=("-Dyano.app-chain.chains[$idx].anchor.enabled=true")
-      props+=("-Dyano.app-chain.chains[$idx].anchor.mode=script")
-      props+=("-Dyano.app-chain.chains[$idx].anchor.signing-key=$(anchor_seed "$i")")
-      props+=("-Dyano.app-chain.chains[$idx].anchor.every-blocks=2")
+      props+=("-Dyano.app-chain.chains[$idx].anchor.mode=$ANCHOR_MODE")
+      props+=("-Dyano.app-chain.chains[$idx].anchor.signing-key=${ANCHOR_KEY:-$(anchor_seed "$i")}")
+      props+=("-Dyano.app-chain.chains[$idx].anchor.every-blocks=$anchor_every")
     fi
   done
   printf '%s\n' "${props[@]}"
@@ -290,7 +330,17 @@ cmd_start() {
   if [ -f "$(pid_file 0)" ] && kill -0 "$(cat "$(pid_file 0)" 2>/dev/null)" 2>/dev/null; then
     die "a cluster is already running (./cluster.sh stop first)"
   fi
+  if [ "$ENABLE_ANCHOR" = "1" ] && [ -n "$ANCHOR_KEY" ]; then
+    [[ "$ANCHOR_KEY" =~ ^[0-9a-fA-F]{64}$ ]] \
+      || die "--anchor-key must be a 32-byte Ed25519 seed as 64 hex chars"
+  fi
+  # The demo anchor seed is PUBLIC (checked into the repo) — on a public
+  # network anyone could sweep its address. Require a user-supplied key there.
+  if [ "$ENABLE_ANCHOR" = "1" ] && [ "$NETWORK" != "devnet" ] && [ -z "$ANCHOR_KEY" ]; then
+    die "anchoring on $NETWORK needs your own wallet key: --anchor-key \$(openssl rand -hex 32) — the default demo seed is publicly known"
+  fi
   mkdir -p "$CLUSTER_DIR"
+  save_cluster_env
 
   c_grn "Starting $n-node app-chain cluster"
   echo  "  runtime : $RUNTIME ($([ "$RUNTIME" = native ] && echo "$NATIVE" || echo "$JAR"))"
@@ -298,6 +348,7 @@ cmd_start() {
   echo  "  network : $NETWORK"
   echo  "  chains  : ${cids[*]}"
   echo  "  members : $n   threshold: ${THRESHOLD:-$(default_threshold "$n")}"
+  [ "$ENABLE_ANCHOR" = "1" ] && echo "  anchor  : $ANCHOR_MODE mode (leader: node 0)"
   echo  "  data    : $CLUSTER_DIR"
   echo
 
@@ -337,6 +388,31 @@ cmd_start() {
   echo "  submit : $0 submit ${cids[0]} <topic> <payload>"
   echo "  logs   : $0 logs <node>"
   echo "  stop   : $0 stop        (clean = stop + wipe data)"
+
+  if [ "$ENABLE_ANCHOR" = "1" ]; then
+    echo
+    local aaddr
+    aaddr="$(anchor_wallet_addr "${cids[0]}")"
+    c_ylw "L1 anchoring ($ANCHOR_MODE mode, node 0):"
+    [ -n "$aaddr" ] && echo "  anchor wallet : $aaddr" \
+      || echo "  anchor wallet : (see node 0 log: 'anchoring enabled')"
+    if [ "$NETWORK" = "devnet" ]; then
+      if [ "$ANCHOR_MODE" = "script" ]; then
+        echo "  next          : $0 anchor-bootstrap <chain>   (auto-funds via devnet faucet)"
+      else
+        echo "  next          : fund it via the faucet, then anchors start automatically:"
+        echo "                  curl -s -X POST http://localhost:$(http_port 0)/api/v1/devnet/fund \\"
+        echo "                    -H 'Content-Type: application/json' -d '{\"address\":\"$aaddr\",\"ada\":500}'"
+      fi
+    else
+      echo "  next          : send funds (tADA/ADA) to the anchor wallet address above"
+      if [ "$ANCHOR_MODE" = "script" ]; then
+        echo "                  then: $0 anchor-bootstrap <chain>   (one-time, per chain)"
+      else
+        echo "                  anchors then start automatically (no bootstrap in metadata mode)"
+      fi
+    fi
+  fi
 }
 
 running_node_count() {
@@ -425,15 +501,24 @@ cmd_kv() {
 
 cmd_anchor_bootstrap() {
   local cid="${1:-}"; [ -n "$cid" ] || die "usage: $0 anchor-bootstrap <chain-id>"
+  load_cluster_env
+  [ "$ANCHOR_MODE" = "script" ] || die "cluster runs anchor mode '$ANCHOR_MODE' — bootstrap only applies to script anchors (metadata mode needs none: fund the wallet and anchors start automatically)"
   local port; port="$(http_port 0)"
-  c_ylw "Funding anchor wallet + bootstrapping the script anchor for '$cid' (devnet only)..."
-  # Learn the wallet address, fund it, bootstrap.
-  local addr; addr="$(curl -s "http://localhost:$port/api/v1/app-chain/chains/$cid/status" \
-    | python3 -c "import json,sys;print((json.load(sys.stdin).get('anchor') or {}).get('address',''))" 2>/dev/null)"
-  [ -n "$addr" ] || die "no anchor wallet on '$cid' (start with --anchor)"
-  curl -s -X POST "http://localhost:$port/api/v1/devnet/fund" -H 'Content-Type: application/json' \
-    -d "{\"address\":\"$addr\",\"ada\":500}" >/dev/null
-  sleep 6
+  # Learn the wallet address; on devnet fund it from the faucet first — on a
+  # public network the wallet must already hold funds (sent externally).
+  local addr; addr="$(anchor_wallet_addr "$cid")"
+  [ -n "$addr" ] || die "no anchor wallet on '$cid' (start with --anchor / --anchor-mode script)"
+  if [ "$NETWORK" = "devnet" ]; then
+    c_ylw "Funding anchor wallet via devnet faucet + bootstrapping the script anchor for '$cid'..."
+    curl -s -X POST "http://localhost:$port/api/v1/devnet/fund" -H 'Content-Type: application/json' \
+      -d "{\"address\":\"$addr\",\"ada\":500}" >/dev/null
+    sleep 6
+  else
+    c_ylw "Bootstrapping the script anchor for '$cid' on $NETWORK..."
+    echo "(anchor wallet $addr must already be funded — if bootstrap fails with"
+    echo " 'No usable UTxO', send tADA/ADA there and re-run; a just-sent tx may"
+    echo " also need a minute to land in the node's UTxO view)"
+  fi
   curl -s -X POST "http://localhost:$port/api/v1/app-chain/chains/$cid/admin/anchor/bootstrap" | python3 -m json.tool 2>/dev/null \
     || die "bootstrap failed"
 }
@@ -483,7 +568,7 @@ Usage:
   $0 kv <chain> set <key> <value> [--node i]   put into a kv-registry chain
   $0 kv <chain> del <key> [--node i]           delete from a kv-registry chain
   $0 loadtest <chain> [-n M] [-c C] [--spread]  parallel throughput test
-  $0 anchor-bootstrap <chain>   fund + bootstrap a script anchor (devnet, --anchor)
+  $0 anchor-bootstrap <chain>   bootstrap a script anchor (one-time; devnet auto-funds)
   $0 logs <node> [-f]           show/tail a node log
   $0 keys [N]                   print derived member seeds + pubkeys
   $0 chains                     list chains from the config
@@ -492,15 +577,27 @@ Usage:
   $0 help
 
 start options:
-  --network <net>   devnet (default) | preprod | preview | mainnet | sanchonet
-                    devnet: node 0 produces L1, others follow. A public network:
-                    every node relays that network (needs sync; see README).
-  --jar | --native  force runtime (default: auto-detect the available build)
-  --threshold <t>   finality threshold (default: majority = N/2 + 1)
-  --anchor          enable script L1 anchoring on every chain (devnet demo)
-  --data-dir <dir>  cluster data/logs dir (default: $CLUSTER_DIR)
-  --http-base <p>   node i HTTP port = p + i (default: $HTTP_BASE)
-  --server-base <p> node i n2n  port = p + i (default: $SERVER_BASE)
+  --network <net>    devnet (default) | preprod | preview | mainnet | sanchonet
+                     devnet: node 0 produces L1, others follow. A public network:
+                     every node relays that network (needs sync; see README).
+  --jar | --native   force runtime (default: auto-detect the available build)
+  --threshold <t>    finality threshold (default: majority = N/2 + 1)
+  --anchor           enable L1 anchoring on every chain, script mode (node 0
+                     is the anchor leader; followers need no anchor config)
+  --anchor-mode <m>  metadata | script (implies --anchor).
+                     metadata: plain tx with the anchor in tx metadata — just
+                       fund the wallet, no bootstrap, works on any network.
+                     script: Plutus V3 thread-NFT + threshold co-signed
+                       advances — one-time 'anchor-bootstrap <chain>' per chain.
+  --anchor-key <hex> anchor wallet key (32-byte Ed25519 seed, 64 hex chars).
+                     Default: a deterministic demo seed. On a public network
+                     pass your own and fund the enterprise address the node
+                     prints (a CIP-1852 wallet mnemonic can NOT be converted
+                     to this seed — generate one: openssl rand -hex 32).
+  --anchor-every <n> anchor cadence in app blocks (default: 2 devnet, 30 public)
+  --data-dir <dir>   cluster data/logs dir (default: $CLUSTER_DIR)
+  --http-base <p>    node i HTTP port = p + i (default: $HTTP_BASE)
+  --server-base <p>  node i n2n  port = p + i (default: $SERVER_BASE)
 
 Chains come from \$YANO_HOME/config/application-appchain.yml — edit it to add/
 remove app chains or change their state machine / sequencer. See ./README.md.
@@ -530,15 +627,19 @@ CMD="$1"; shift || true
 POS=()
 while [ $# -gt 0 ]; do
   case "$1" in
-    --network)     NETWORK="$2"; shift 2;;
-    --jar)         RUNTIME="jar"; shift;;
-    --native)      RUNTIME="native"; shift;;
-    --threshold)   THRESHOLD="$2"; shift 2;;
-    --anchor)      ENABLE_ANCHOR=1; shift;;
-    --data-dir)    CLUSTER_DIR="$2"; shift 2;;
-    --http-base)   HTTP_BASE="$2"; shift 2;;
-    --server-base) SERVER_BASE="$2"; shift 2;;
-    *)             POS+=("$1"); shift;;
+    --network)      NETWORK="$2"; NETWORK_EXPLICIT=1; shift 2;;
+    --jar)          RUNTIME="jar"; shift;;
+    --native)       RUNTIME="native"; shift;;
+    --threshold)    THRESHOLD="$2"; shift 2;;
+    --anchor)       ENABLE_ANCHOR=1; shift;;
+    --anchor-mode)  ANCHOR_MODE="$2"; ENABLE_ANCHOR=1; shift 2
+                    case "$ANCHOR_MODE" in metadata|script) ;; *) die "--anchor-mode must be metadata or script";; esac;;
+    --anchor-key)   ANCHOR_KEY="$2"; ENABLE_ANCHOR=1; shift 2;;
+    --anchor-every) ANCHOR_EVERY="$2"; shift 2;;
+    --data-dir)     CLUSTER_DIR="$2"; shift 2;;
+    --http-base)    HTTP_BASE="$2"; shift 2;;
+    --server-base)  SERVER_BASE="$2"; shift 2;;
+    *)              POS+=("$1"); shift;;
   esac
 done
 set -- "${POS[@]:-}"
