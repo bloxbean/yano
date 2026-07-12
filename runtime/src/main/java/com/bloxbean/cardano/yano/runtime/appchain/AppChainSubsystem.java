@@ -1753,8 +1753,9 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         if (!running.get() || currentFx == null) {
             return;
         }
-        try {
-            for (EffectRuntime.Injection injection : currentFx.pendingInjections(32, 60_000)) {
+        for (EffectRuntime.Injection injection : currentFx.pendingInjections(32, 60_000)) {
+            // Per-iteration guard: one poisoned entry must never starve the batch
+            try {
                 com.bloxbean.cardano.yano.api.appchain.effects.FxResultBody body =
                         new com.bloxbean.cardano.yano.api.appchain.effects.FxResultBody(
                                 com.bloxbean.cardano.yano.api.appchain.effects.FxResultBody.BODY_VERSION,
@@ -1763,20 +1764,26 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                                         ? com.bloxbean.cardano.yano.api.appchain.effects.EffectOutcome.CONFIRMED
                                         : com.bloxbean.cardano.yano.api.appchain.effects.EffectOutcome.FAILED,
                                 injection.confirmed()
-                                        ? injection.externalRef()
+                                        ? truncateRef(injection.externalRef())
                                         : truncateReason(injection.reason()),
                                 null);
                 injectFxResult(body);
+            } catch (Exception e) {
+                log.warn("App-chain '{}' result injection for {}/{} failed: {}",
+                        config.chainId(), injection.height(), injection.ordinal(), e.toString());
             }
-        } catch (Exception e) {
-            log.warn("App-chain '{}' result injection tick failed: {}", config.chainId(), e.toString());
         }
     }
 
     private static byte[] truncateReason(String reason) {
-        byte[] bytes = (reason != null ? reason : "").getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        return truncateRef((reason != null ? reason : "")
+                .getBytes(java.nio.charset.StandardCharsets.UTF_8));
+    }
+
+    private static byte[] truncateRef(byte[] ref) {
         int max = com.bloxbean.cardano.yano.api.appchain.effects.FxResultBody.MAX_EXTERNAL_REF_BYTES;
-        return bytes.length <= max ? bytes : java.util.Arrays.copyOf(bytes, max);
+        return ref == null ? new byte[0]
+                : ref.length <= max ? ref : java.util.Arrays.copyOf(ref, max);
     }
 
     /** Pool + relay a member-signed ~fx/result (internal path, like injectObservation). */
@@ -2142,6 +2149,16 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                     + "(set effects.executors.<scheme>.*, drop an AppEffectExecutorFactory plugin, "
                     + "or enable effects.external.enabled for REST claim/report)", config.chainId());
             return;
+        }
+        // Security posture (ADR-010 F12 / final review): operator effect
+        // actions and external claim/report move real funds. If the REST
+        // surface has auth DISABLED, they are reachable unauthenticated —
+        // warn loudly (the app module enforces auth; the subsystem only sees
+        // the effect config, so this is a best-effort banner).
+        if (externalEffectsEnabled()) {
+            log.warn("App-chain '{}': effects.external.enabled=true exposes claim/report over "
+                    + "REST — ensure yano.app-chain.api.auth is enabled and restrict network "
+                    + "access to the executor/operator network (ADR-010 F12)", config.chainId());
         }
         try {
             this.effectRuntime = new EffectRuntime(ledgerStore, config.chainId(), runtimeSettings,

@@ -1,10 +1,29 @@
 # ADR-010: Deterministic Effect System (Emit → Execute → Result) for Yano App Chains
 
 ## Status
-Proposed — design for review before implementation
+Accepted — implemented (FX-M1…FX-M5, 2026-07-13) on `feat/app_layer_effect`
+
+## Implementation Status
+
+| Phase | Scope | Status |
+|---|---|---|
+| FX-M1 | Emission SPI, `app_fx_records` outbox CF, `effectsRoot` leaf, expiry sweep, reserved `~fx/` prefix, 010.1 upgrade replay-matrix, REST reads | **Done** (reviewed 6-angle: sound effectsRoot merkle, genesis-reserved prefix, apply-time staging) |
+| FX-M2 | `EffectRuntime` (intake cursor, gating, per-effect backoff, PARKED/QUARANTINED), executor SPI + ServiceLoader, webhook executor, fx retention, manifest CF list | **Done** (reviewed: prune safety, starvation, shutdown races fixed) |
+| FX-M3 | `~fx/result` interpreter (fail-closed, first-result-wins, consensus result window), member-signed injection, operator cancel, approvals payments (§8.1) | **Done** (reviewed: mandatory CHAIN expiry ≤ result window) |
+| FX-M4 | External claim/report mode (leases + fencing), `appchain-effects-cardano` payment executor, `AppChainClient` effects SDK | **Done** (reviewed: steal fencing, SUBMITTED claims, tx false-confirmation fixed) |
+| FX-M5 | Result signer policy (`effects.result.signers`), `FinalityGate.ZK_SETTLED` (gated on `zk_settled_height`), zeroj 0.1.0-pre9, final regression | **Done** |
+
+Open questions resolved: Q1 per-machine gate override → yes (e.g.
+`machines.approvals.payment-gate`); Q2 signer default → any-member with the
+designated-signer list as the production recommendation; Q3 `pendingCount()`
+→ shipped; Q4 approvals payments → stdlib behind config; Q5 per-type
+outcome-commitment → deferred (per-chain granularity in v1). Deferred to
+future iterations: on-chain claim mode, k-of-n result attestation,
+`effectsRoot` block-field promotion (next wire bump), fx CF list in the
+snapshot-manifest VERIFICATION (currently informational).
 
 ## Date
-2026-07-12
+2026-07-12 (accepted 2026-07-13)
 
 ## Authors
 BloxBean Team
@@ -791,7 +810,22 @@ footprint.
    deterministic backpressure signal to defer or reject new work when the
    pending set is large (e.g. executor outage).
 5. **Result authorization**: accepted signer policy per chain (any member ⇒
-   designated executor's member only ⇒ k-of-n) — see F8 trust model.
+   designated executor's member only via `effects.result.signers` ⇒ k-of-n) —
+   see F8 trust model.
+6. **REST authorization (final review)**: the effect operations
+   requeue/cancel/claim/report move real funds or change consensus-visible
+   state. They are gated by the app-chain API-key filter as **privileged
+   operations**: a topic-restricted (submit-only) key may read and submit to
+   its topics but may NOT call them — only a full key can. Because API auth is
+   opt-in, a node running the executor or external mode with auth disabled
+   exposes these unauthenticated; the runtime logs a loud warning, and
+   operators MUST enable `yano.app-chain.api.auth` and restrict network access
+   to the executor/operator network. The external-executor fence is the
+   `executorId` string within one trust domain (not a per-worker secret); the
+   status surface exposes only that a lease is held, never the id. A payment
+   executor SHOULD set `effects.executors.cardano.max-lovelace-per-tx` and be
+   funded conservatively so a buggy/compromised machine cannot drain the hot
+   wallet in one payment.
 
 ### F12 — Configuration, modules, REST, observability
 

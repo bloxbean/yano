@@ -23,7 +23,16 @@ public enum FinalityGate {
      * Cardano before the action fires. A verifiability delay, not a
      * rollback-safety mechanism (ADR-010 F7).
      */
-    L1_ANCHORED(1);
+    L1_ANCHORED(1),
+
+    /**
+     * Eligible once the effect's block height is covered by an accepted
+     * validity proof (ADR-006 E7.x / ADR-010 §13). Gated on the
+     * {@code zk_settled_height} high-water-mark, which stays 0 until the ZK
+     * settlement pipeline ships — a ZK_SETTLED effect on a non-ZK chain
+     * simply waits until expiry closes it.
+     */
+    ZK_SETTLED(2);
 
     private final int code;
 
@@ -43,6 +52,7 @@ public enum FinalityGate {
         return switch (code) {
             case 0 -> APP_FINAL;
             case 1 -> L1_ANCHORED;
+            case 2 -> ZK_SETTLED;
             default -> throw new IllegalArgumentException("Unknown finality gate code: " + code);
         };
     }
