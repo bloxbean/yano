@@ -89,6 +89,7 @@ can prove any record against a public Cardano anchor."
 | **App block** | Ordered batch of messages + post-state MPF root + finality certificate, hash-linked to the previous block. |
 | **State root** | MPF (Aiken-compatible Merkle Patricia Forestry) root after applying a block. Identical on every member, anchorable to L1, provable. |
 | **State machine** | The only component that interprets message bodies. Built-in: `ordered-log` + the standard library (section 9). Custom ones plug in (section 6). |
+| **Anchor leader** | The one node with `anchor.enabled` — it drives L1 anchoring (builds/pays/submits anchor txs). A coordination + fee-paying role, orthogonal to the proposer and NOT a trust point (§5.1); it does not rotate. |
 
 Trust model: **fail closed**. Envelope signatures, membership, vote
 signatures, and certificate thresholds are cryptographically verified on every
@@ -332,6 +333,28 @@ can send straight to it.
   identity with **zero anchor config** — they verify each advance against
   their own ledger and L1 view before signing.
 
+**The anchor leader role, precisely.** The leader is the node that DRIVES
+anchoring: it watches finalized progress, builds the anchor tx when
+`every-blocks` accumulate, pays fees/collateral from the anchor wallet,
+submits through the node's own tx path and tracks L1 confirmation. It is a
+different axis from the sequencer/proposer (which orders app blocks and MAY
+rotate) — anchor leadership is fixed to the `anchor.enabled` node and does
+not rotate, because there is exactly one thread UTxO to spend and one wallet
+paying fees (concurrent leaders would merely race on the same UTxO).
+
+It is **not a trust point** in script mode: every advance needs `threshold`
+member co-signatures, each member verifies the proposed range against its
+OWN ledger and L1 view before signing, and the on-chain validator re-enforces
+the member threshold and monotonic height independently. The worst a dead or
+compromised leader can do is *stop anchoring* — a liveness issue, never a
+safety one: the app chain keeps finalizing and `lagBlocks` climbs visibly.
+Recovery is operational: enable `anchor.*` (with the wallet key) on another
+member and restart it — the on-chain identity is persisted on L1 and members
+adopt it from sign requests, so the new leader resumes where the old one
+stopped. (Metadata mode is the same minus co-signing; its commitment is
+data-only, so the leader alone signs — the trust statement is accordingly
+weaker.)
+
 ### 5.2 Metadata anchors
 
 ```yaml
@@ -574,6 +597,7 @@ Flat (single-chain) keys. The same suffixes apply per chain under
 | `threshold` | `1` | Finality certificate signatures required |
 | `membership.mode` | `static` | `governed` = membership changes are finalized chain transactions requiring threshold-many identical member commands (§14.2, ADR 008.3). **Must match on all members** |
 | `membership.approval-window-blocks` | `600` | `governed` only: blocks a half-approved command stays pending before expiring |
+| `transport.mode` | `shared` | Outbound app transport (node-global). `shared`: when the L1 upstream is also an app-group peer, protocols 100/103 ride its session — one TCP connection per peer pair, with an automatic dedicated-dial fallback if the session stays down (~15s grace). `dedicated`: always dial a separate app connection (bandwidth isolation from L1 sync). Peers that are not the upstream always use dedicated dials; inbound is unaffected (the server port multiplexes both since v1). Per-peer transport is visible in `status` under `peerTransports` |
 | `block.interval-ms` | `2000` | Proposer tick (blocks are only made when messages are pending) |
 | `block.max-bytes` | `4194304` (4 MiB) | Primary block-size cap: the proposer trims each block to fit the serialized size; members reject oversized proposals. Tune for throughput |
 | `block.max-messages` | `5000` | Safety backstop against tiny-message floods (the byte cap above is the primary limit) |

@@ -36,6 +36,8 @@ Code pointers use class names — start at
 │   └─ anchor services, observers, sinks (optional)     │
 └───────────────────────────────────────────────────────┘
         ▲ outbound app-peer connections: per chain
+          (transport.mode=shared rides the L1 upstream session — one TCP
+           connection per peer pair — with dedicated dials as fallback)
 ```
 
 - **One inbound front, many chains.** All app-message agents share protocol
@@ -252,7 +254,17 @@ be monotonic across blocks. This pins app-chain history to L1 time — it is
 what makes rotation windows, observation stability (user guide §5.5) and
 anchor recency meaningful.
 
-### 6.4 Membership epochs
+### 6.4 Proposer vs anchor leader (don't conflate them)
+
+Rotation applies to the **proposer** only. The **anchor leader** — the node
+with `anchor.enabled` that builds and pays for L1 anchor txs — is a separate,
+fixed role that does not rotate (one thread UTxO, one fee wallet), and it is
+not a trust point: script-mode advances require threshold member
+co-signatures verified against each member's own ledger (user guide §5.1).
+A rotating chain with anchoring therefore has a rotating proposer AND a
+fixed anchor leader at the same time.
+
+### 6.5 Membership epochs
 
 Membership is either static config or **governed** (ADR 008.3): membership
 changes are themselves finalized chain transactions requiring
