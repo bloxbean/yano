@@ -149,6 +149,21 @@ final class ConnectionTrackingPeerClientFactory implements PeerClientFactory {
         }
 
         @Override
+        public void enableAppMsg(
+                com.bloxbean.cardano.yaci.core.protocol.appmsg.n2n.AppMsgSubmissionConfig appMsgConfig) {
+            // Forward BOTH overloads: running the config overload on the
+            // wrapper's inherited state while getAppProtocolManager() returns
+            // the delegate's manager splits the app-layer setup across two
+            // objects (found by the shared-transport gate).
+            delegate.enableAppMsg(appMsgConfig);
+        }
+
+        @Override
+        public void enableAppChainSync() {
+            delegate.enableAppChainSync();
+        }
+
+        @Override
         public AppProtocolManager getAppProtocolManager() {
             return delegate.getAppProtocolManager();
         }

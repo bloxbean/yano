@@ -395,6 +395,15 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 ledgerStateSubsystem);
         PeerClientFactory peerClientFactory = relayConnectionManager.wrapPeerClientFactory(
                 createPeerClientFactory());
+        if (appChainManager != null && config.isClientEnabled()) {
+            // Shared app transport (ADR 005 M1 unification): when the L1
+            // upstream is also an app-group peer, app protocols ride its
+            // session instead of a second dedicated connection.
+            String appTransportMode = stringOf(this.runtimeOptions.globals()
+                    .get(YanoPropertyKeys.AppChain.TRANSPORT_MODE), "shared");
+            peerClientFactory = appChainManager.wrapPeerClientFactory(
+                    peerClientFactory, appTransportMode, remoteCardanoHost, remoteCardanoPort);
+        }
         this.syncSubsystem = new SyncSubsystem(
                 config,
                 chainState,

@@ -64,7 +64,10 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
 
     private final SeenMessageIds seenMessageIds;
     private final ConcurrentLinkedDeque<ReceivedAppMessage> recentMessages = new ConcurrentLinkedDeque<>();
-    private final List<AppPeerClient> peerClients = new ArrayList<>();
+    private final List<AppPeerLink> peerClients = new ArrayList<>();
+    /** Shared L1-session transport (ADR 005 M1 unification); null = dedicated dials. */
+    private volatile SharedAppTransport sharedTransport;
+    private volatile java.util.Set<String> sharedEndpoints = java.util.Set.of();
 
     // M2: sequenced ledger (present when sequencing is enabled)
     private final AppMsgPool pool;
@@ -186,11 +189,49 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         } else {
             this.sequencerMode = null;
         }
+        createPeerLinks();
+    }
+
+    /** Build one outbound link per configured peer (shared where wired, else dedicated). */
+    private void createPeerLinks() {
         AppPeerClient.CatchUpHandler catchUpHandler =
                 config.sequencingEnabled() ? this::onCatchUpBlocks : null;
+        SharedAppTransport currentShared = sharedTransport;
         for (AppChainConfig.AppPeer peer : config.peers()) {
-            peerClients.add(new AppPeerClient(peer, protocolMagic, transportConfig(), catchUpHandler, log));
+            String endpointKey = SharedAppTransport.key(peer.host(), peer.port());
+            if (currentShared != null && sharedEndpoints.contains(endpointKey)) {
+                // Ride the node's L1 session to this peer (one connection per
+                // peer pair); a dedicated dial is kept as automatic fallback.
+                SharedAppPeerLink link = new SharedAppPeerLink(currentShared, endpointKey,
+                        peer.toString(),
+                        () -> new AppPeerClient(peer, protocolMagic, transportConfig(),
+                                catchUpHandler, log),
+                        log);
+                link.wireCatchUpHandler(catchUpHandler);
+                peerClients.add(link);
+                log.info("App chain '{}' peer {} uses the SHARED L1 transport", config.chainId(), peer);
+            } else {
+                peerClients.add(new AppPeerClient(peer, protocolMagic, transportConfig(),
+                        catchUpHandler, log));
+            }
         }
+    }
+
+    /**
+     * Use the shared L1-session transport for peers whose endpoint is in
+     * {@code endpoints} (ADR 005 M1 unification). Must be called before
+     * {@link #start()}. The constructor already built dedicated links (it runs
+     * before this wiring can), so the links are REBUILT here — they are inert
+     * until the first connect tick, which only happens after start().
+     */
+    void wireSharedTransport(SharedAppTransport transport, java.util.Set<String> endpoints) {
+        this.sharedTransport = transport;
+        this.sharedEndpoints = endpoints != null ? java.util.Set.copyOf(endpoints) : java.util.Set.of();
+        for (AppPeerLink link : peerClients) {
+            link.shutdown(); // pre-start: nothing connected; marks the link dead
+        }
+        peerClients.clear();
+        createPeerLinks();
     }
 
     /** Chain-governed membership selected (ADR 008.3)? Default: static. */
@@ -509,7 +550,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             return;
         }
         long tip = currentEngine.tipHeight();
-        for (AppPeerClient peerClient : peerClients) {
+        for (AppPeerLink peerClient : peerClients) {
             if (peerClient.isConnected()
                     && peerClient.requestCatchUp(config.chainId(), tip + 1, tip + 50)) {
                 break; // one in-flight catch-up request at a time
@@ -633,7 +674,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     }
 
     private void relay(AppMessage message) {
-        for (AppPeerClient peerClient : peerClients) {
+        for (AppPeerLink peerClient : peerClients) {
             peerClient.enqueue(message);
         }
         if (!peerClients.isEmpty()) {
@@ -1251,10 +1292,13 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                 && System.currentTimeMillis() - lastProgressAt > STALL_WINDOW_MS);
         status.put("storedMessages", recentMessages.size());
         Map<String, Boolean> peers = new LinkedHashMap<>();
-        for (AppPeerClient peerClient : peerClients) {
+        Map<String, String> peerTransports = new LinkedHashMap<>();
+        for (AppPeerLink peerClient : peerClients) {
             peers.put(peerClient.peerId(), peerClient.isConnected());
+            peerTransports.put(peerClient.peerId(), peerClient.transport());
         }
         status.put("peers", peers);
+        status.put("peerTransports", peerTransports);
         return status;
     }
 
@@ -1830,7 +1874,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     private void connectTick() {
         if (!running.get())
             return;
-        for (AppPeerClient peerClient : peerClients) {
+        for (AppPeerLink peerClient : peerClients) {
             try {
                 // Async: an unreachable peer must never wedge this scheduler
                 // (proposer/anchor/catch-up ticks share it) — 008.2 fix
@@ -1844,7 +1888,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     private void keepAliveTick() {
         if (!running.get())
             return;
-        for (AppPeerClient peerClient : peerClients) {
+        for (AppPeerLink peerClient : peerClients) {
             peerClient.keepAliveTick();
         }
     }
@@ -1892,7 +1936,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         if (sinkExec != null) {
             sinkExec.shutdownNow();
         }
-        for (AppPeerClient peerClient : peerClients) {
+        for (AppPeerLink peerClient : peerClients) {
             peerClient.shutdown();
         }
         AppChainEngine currentEngine = engine;
