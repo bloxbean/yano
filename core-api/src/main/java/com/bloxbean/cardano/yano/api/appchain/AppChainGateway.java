@@ -131,6 +131,23 @@ public interface AppChainGateway {
     }
 
     /**
+     * External-executor claim (ADR-010 F5): lease eligible effects to a named
+     * external worker over REST. Node-local work-dispatch, never consensus;
+     * an expired lease re-opens the effect. Empty unless this node runs the
+     * Effect Runtime with {@code effects.external.enabled=true}.
+     */
+    default List<com.bloxbean.cardano.yano.api.appchain.effects.PendingEffect> claimEffects(
+            String executorId, java.util.Set<String> types, int max, long leaseSeconds) {
+        return List.of();
+    }
+
+    /** External-executor report: definitive outcome for a claimed effect. */
+    default boolean reportEffect(String executorId, long height, int ordinal, boolean success,
+                                 byte[] externalRef, String reason) {
+        return false;
+    }
+
+    /**
      * Operator cancel (ADR-010 F9): injects a member-signed CANCELLED
      * {@code ~fx/result} for an OPEN CHAIN effect. Effective only while no
      * terminal exists; cancel cannot unsend an in-flight execution — a late

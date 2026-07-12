@@ -355,6 +355,96 @@ final class EffectRuntime implements AutoCloseable {
     }
 
     /**
+     * External-executor claim (ADR-010 F5, "external" deployment model):
+     * lease eligible queued effects to a named external worker. The lease is
+     * a WALL-CLOCK deadline in this node's runtime tier — purely node-local
+     * work-dispatch, never consensus (ADR-010 F6). An expired lease makes the
+     * effect re-eligible for anyone (in-process dispatch included);
+     * duplicates are absorbed by idempotency + first-result-wins.
+     */
+    List<PendingEffect> claim(String executorId, Set<String> types, int max, long leaseSeconds) {
+        if (closed || executorId == null || executorId.isBlank()) {
+            return List.of();
+        }
+        long tip = ledger.tipHeight();
+        long anchored = ledger.metaLong("anchor_last_height", 0L);
+        long now = System.currentTimeMillis();
+        long leaseUntil = now + Math.max(1, Math.min(leaseSeconds, 3600)) * 1000L;
+        List<PendingEffect> claimed = new ArrayList<>();
+        synchronized (transitionLock) {
+            for (long[] entry : ledger.fxQueueScan(settings.scanLimit())) {
+                if (claimed.size() >= Math.max(1, Math.min(max, 256))) {
+                    break;
+                }
+                long height = entry[0];
+                int ordinal = (int) entry[1];
+                if (inFlight.contains(height + "/" + ordinal) || ledger.fxClosed(height, ordinal)) {
+                    continue;
+                }
+                EffectRecord record = ledger.fxRecord(height, ordinal).orElse(null);
+                if (record == null
+                        || (types != null && !types.isEmpty() && !types.contains(record.type()))) {
+                    continue;
+                }
+                if (record.gate() == FinalityGate.L1_ANCHORED
+                        && height > anchored - settings.anchorMarginBlocks()) {
+                    continue;
+                }
+                if (record.expiryHeight() > 0 && record.expiryHeight() <= tip + EXPIRY_SAFETY_BLOCKS) {
+                    continue;
+                }
+                FxStatusRecord status = ledger.fxRuntimeStatus(height, ordinal)
+                        .orElse(FxStatusRecord.pending());
+                if (!status.executable() || status.nextAttemptAt() > now) {
+                    continue; // backoff, or another live lease
+                }
+                ledger.fxRuntimePutStatus(height, ordinal, status.external(executorId, leaseUntil));
+                claimed.add(PendingEffect.of(record));
+            }
+        }
+        return claimed;
+    }
+
+    /**
+     * External-executor report: a definitive outcome for a claimed effect
+     * (the external worker owns its own retrying). Lands as the same local
+     * terminal an in-process executor produces — the injection loop then
+     * feeds CHAIN outcomes back on-chain. Reports from a non-holder, or for
+     * an unknown/closed effect, are rejected.
+     */
+    boolean report(String executorId, long height, int ordinal, boolean success,
+                   byte[] externalRef, String reason) {
+        if (closed) {
+            return false;
+        }
+        synchronized (transitionLock) {
+            EffectRecord record = ledger.fxRecord(height, ordinal).orElse(null);
+            if (record == null || ledger.fxClosed(height, ordinal)) {
+                return false;
+            }
+            FxStatusRecord status = ledger.fxRuntimeStatus(height, ordinal).orElse(null);
+            if (status == null || status.status() != FxStatusRecord.EXTERNAL
+                    || !status.lastError().equals(executorId)) {
+                return false; // not claimed here / claimed by someone else
+            }
+            if (success) {
+                ledger.fxRuntimePutStatus(height, ordinal, status.done(externalRef));
+                executedCount.incrementAndGet();
+            } else if (record.result()
+                    == com.bloxbean.cardano.yano.api.appchain.effects.ResultPolicy.CHAIN) {
+                ledger.fxRuntimePutStatus(height, ordinal,
+                        status.doneFailed(reason != null ? reason : "external failure"));
+            } else {
+                ledger.fxRuntimePutStatus(height, ordinal,
+                        status.parked(reason != null ? reason : "external failure"));
+                parkedCount.incrementAndGet();
+            }
+            ledger.fxQueueDelete(height, ordinal);
+            return true;
+        }
+    }
+
+    /**
      * Locally-terminal CHAIN outcomes awaiting {@code ~fx/result} injection
      * (ADR-010 F8): DONE statuses with an outcome, whose effect is still open
      * on-chain, throttled by {@code reinjectIntervalMs} so the pool isn't

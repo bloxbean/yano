@@ -937,6 +937,29 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         return currentFx != null && currentFx.requeue(height, ordinal);
     }
 
+    private boolean externalEffectsEnabled() {
+        return Boolean.parseBoolean(
+                config.pluginSettings().getOrDefault("effects.external.enabled", "false"));
+    }
+
+    @Override
+    public List<com.bloxbean.cardano.yano.api.appchain.effects.PendingEffect> claimEffects(
+            String executorId, java.util.Set<String> types, int max, long leaseSeconds) {
+        EffectRuntime currentFx = effectRuntime;
+        if (currentFx == null || !externalEffectsEnabled()) {
+            return List.of();
+        }
+        return currentFx.claim(executorId, types, max, leaseSeconds);
+    }
+
+    @Override
+    public boolean reportEffect(String executorId, long height, int ordinal, boolean success,
+                                byte[] externalRef, String reason) {
+        EffectRuntime currentFx = effectRuntime;
+        return currentFx != null && externalEffectsEnabled()
+                && currentFx.report(executorId, height, ordinal, success, externalRef, reason);
+    }
+
     @Override
     public boolean cancelEffect(long height, int ordinal, String reason) {
         AppLedgerStore currentLedger = ledger;
@@ -2114,10 +2137,10 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                 }
             }
         }
-        if (executors.isEmpty()) {
+        if (executors.isEmpty() && !externalEffectsEnabled()) {
             log.warn("App-chain '{}': effects.executor.enabled=true but no executors configured "
-                    + "(set effects.executors.<scheme>.* or drop an AppEffectExecutorFactory plugin)",
-                    config.chainId());
+                    + "(set effects.executors.<scheme>.*, drop an AppEffectExecutorFactory plugin, "
+                    + "or enable effects.external.enabled for REST claim/report)", config.chainId());
             return;
         }
         try {
