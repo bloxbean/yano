@@ -142,7 +142,15 @@ final class AppChainEngine implements AutoCloseable {
         this.log = log;
         this.effectsSettings = EffectsSettings.from(config);
         this.fxKernel = new FxKernel(effectsSettings);
-        this.fxReader = new LedgerFxReader();
+        this.fxReader = ledger.fxReader();
+        if (!effectsSettings.enabled() && ledger.fxOpenCount() > 0) {
+            // One-way switch (ADR-010 F12): the expiry sweep only runs while
+            // effects are enabled, so disabling with open effects would strand
+            // their buckets forever (sweep reads only bucket(height)).
+            throw new IllegalStateException("App-chain '" + config.chainId() + "' has "
+                    + ledger.fxOpenCount() + " open effect(s) but effects.enabled=false — "
+                    + "effects cannot be disabled once in use");
+        }
         this.executor = Executors.newSingleThreadScheduledExecutor(r -> {
             Thread t = new Thread(r, "app-chain-engine-" + config.chainId());
             t.setDaemon(true);
@@ -920,29 +928,6 @@ final class AppChainEngine implements AutoCloseable {
         }
     }
 
-    /** Consensus-tier fx reads for the kernel, backed by the committed outbox CF. */
-    private final class LedgerFxReader implements FxKernel.FxReader {
-        @Override
-        public List<long[]> expiryBucket(long height) {
-            return ledger.fxExpiryBucket(height);
-        }
-
-        @Override
-        public Optional<com.bloxbean.cardano.yano.api.appchain.effects.EffectRecord> record(
-                long height, int ordinal) {
-            return ledger.fxRecord(height, ordinal);
-        }
-
-        @Override
-        public boolean closed(long height, int ordinal) {
-            return ledger.fxClosed(height, ordinal);
-        }
-
-        @Override
-        public long openCount() {
-            return ledger.fxOpenCount();
-        }
-    }
 
     private boolean verifyMemberSignature(AppMessage message, long height) {
         String senderHex = HexUtil.encodeHexString(message.getSender()).toLowerCase(Locale.ROOT);

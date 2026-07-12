@@ -1,6 +1,8 @@
 package com.bloxbean.cardano.yano.api.appchain;
 
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
+import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
+import com.bloxbean.cardano.yano.api.appchain.effects.EffectResult;
 
 /**
  * The developer-facing SPI of the Yano app-chain framework: a deterministic
@@ -62,9 +64,13 @@ public interface AppStateMachine {
      * here; emission must be a pure function of {@code (block, committed
      * state)}, and emission-logic changes MUST be height-gated
      * (ADR app-layer/010.1, {@code ActivationSchedule}).
+     * <p>
+     * Callers other than the framework should invoke THIS form. The 2-arg
+     * form is the legacy entry point: on an effect-emitting machine it fails
+     * deterministically at the first {@code emit()} (with earlier writes
+     * already staged) — never catch that and commit.
      */
-    default void apply(AppBlock block, AppStateWriter writer,
-                       com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter effects) {
+    default void apply(AppBlock block, AppStateWriter writer, AppEffectEmitter effects) {
         apply(block, writer);
     }
 
@@ -76,9 +82,7 @@ public interface AppStateMachine {
      * this block's app messages are applied; writes join the same atomic
      * commit. Same determinism contract as {@code apply()}. Default: no-op.
      */
-    default void onEffectResult(AppBlock block,
-                                com.bloxbean.cardano.yano.api.appchain.effects.EffectResult result,
-                                AppStateWriter writer) {
+    default void onEffectResult(AppBlock block, EffectResult result, AppStateWriter writer) {
     }
 
     /** Optional read path exposed via REST {@code /query} and the Java API. */

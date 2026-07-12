@@ -13,6 +13,7 @@ import com.bloxbean.cardano.yaci.events.api.EventBus;
 import com.bloxbean.cardano.yaci.events.api.EventMetadata;
 import com.bloxbean.cardano.yaci.events.api.PublishOptions;
 import com.bloxbean.cardano.yano.api.appchain.*;
+import com.bloxbean.cardano.yano.api.appchain.effects.EffectView;
 import com.bloxbean.cardano.yano.api.events.AppBlockFinalizedEvent;
 import com.bloxbean.cardano.yano.api.events.AppMessageReceivedEvent;
 import com.bloxbean.cardano.yano.runtime.kernel.Subsystem;
@@ -898,24 +899,21 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     // ------------------------------------------------------------------
 
     @Override
-    public List<com.bloxbean.cardano.yano.api.appchain.effects.EffectView> effects(
-            long fromHeight, int limit) {
+    public List<EffectView> effects(long fromHeight, int limit) {
         AppLedgerStore currentLedger = ledger;
         if (currentLedger == null) {
             return List.of();
         }
         return currentLedger.fxRecordsFrom(fromHeight, Math.max(1, Math.min(limit, 1000))).stream()
-                .map(com.bloxbean.cardano.yano.api.appchain.effects.EffectView::of)
+                .map(EffectView::of)
                 .toList();
     }
 
     @Override
-    public Optional<com.bloxbean.cardano.yano.api.appchain.effects.EffectView> effect(
-            long height, int ordinal) {
+    public Optional<EffectView> effect(long height, int ordinal) {
         AppLedgerStore currentLedger = ledger;
         return currentLedger != null
-                ? currentLedger.fxRecord(height, ordinal)
-                        .map(com.bloxbean.cardano.yano.api.appchain.effects.EffectView::of)
+                ? currentLedger.fxRecord(height, ordinal).map(EffectView::of)
                 : Optional.empty();
     }
 
@@ -1266,29 +1264,34 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         if (currentObservations != null) {
             status.put("observers", currentObservations.status());
         }
-        // Effects (ADR-010 F12 / 010.1 §2.3): consensus-affecting settings and
-        // activation entries, so operators can eyeball-compare members before
-        // an activation height arrives.
-        if (Boolean.parseBoolean(config.pluginSettings().getOrDefault("effects.enabled", "false"))) {
+        // Effects (ADR-010 F12 / 010.1 §2.3): the PARSED consensus-affecting
+        // settings (single source of truth: EffectsSettings) and activation
+        // entries, so operators can eyeball-compare members before an
+        // activation height arrives.
+        EffectsSettings effectsSettings = EffectsSettings.fromSettings(config.pluginSettings());
+        if (effectsSettings.enabled()) {
             Map<String, Object> effectsStatus = new LinkedHashMap<>();
             effectsStatus.put("enabled", true);
-            effectsStatus.put("maxPerBlock",
-                    config.pluginSettings().getOrDefault("effects.max-per-block", "256"));
-            effectsStatus.put("maxPayloadBytes",
-                    config.pluginSettings().getOrDefault("effects.max-payload-bytes", "16384"));
-            effectsStatus.put("defaultGate",
-                    config.pluginSettings().getOrDefault("effects.default-gate", "app-final"));
-            effectsStatus.put("outcomeCommitment",
-                    config.pluginSettings().getOrDefault("effects.outcome-commitment", "per-effect"));
+            effectsStatus.put("maxPerBlock", effectsSettings.maxPerBlock());
+            effectsStatus.put("maxPayloadBytes", effectsSettings.maxPayloadBytes());
+            effectsStatus.put("maxExpiryBlocks", effectsSettings.maxExpiryBlocks());
+            effectsStatus.put("defaultGate", effectsSettings.defaultGate().name());
+            effectsStatus.put("outcomeCommitment", effectsSettings.outcomeCommitment().name());
+            effectsStatus.put("strictReservedPrefix", effectsSettings.strictReservedPrefix());
             AppLedgerStore currentLedger = ledger;
             if (currentLedger != null) {
                 effectsStatus.put("openCount", currentLedger.fxOpenCount());
             }
-            Map<String, Long> activations = new java.util.TreeMap<>();
+            // Raw values, never parsed here — status must not 500 on a
+            // placeholder like "TBD"; ActivationSchedule is the authoritative
+            // parser and only machines that opt in invoke it
+            Map<String, String> activations = new java.util.TreeMap<>();
             for (var entry : config.pluginSettings().entrySet()) {
-                int idx = entry.getKey().indexOf(".activations.");
-                if (idx > 0) {
-                    activations.put(entry.getKey(), Long.parseLong(entry.getValue().trim()));
+                String key = entry.getKey();
+                boolean machineActivation = key.startsWith("machines.")
+                        && key.contains(".activations.");
+                if (machineActivation || key.startsWith("effects.activations.")) {
+                    activations.put(key, entry.getValue());
                 }
             }
             if (!activations.isEmpty()) {

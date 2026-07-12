@@ -63,17 +63,22 @@ class EffectsSpiTest {
         assertThat(FxKeys.isReserved("i/item".getBytes(StandardCharsets.UTF_8))).isFalse();
         assertThat(FxKeys.isReserved(null)).isFalse();
 
-        // Merkle root: empty → zeros; single leaf → the leaf's parent-of-one convention
+        // Merkle root: empty → zeros; single leaf → the leaf itself
         assertThat(FxKeys.effectsRoot(List.of())).isEqualTo(new byte[32]);
         byte[] a = new byte[32];
         a[0] = 1;
-        byte[] single = FxKeys.effectsRoot(List.of(a));
-        assertThat(single).isEqualTo(a); // one leaf = the root, same as messagesRoot
+        assertThat(FxKeys.effectsRoot(List.of(a))).isEqualTo(a);
         // order sensitivity
         byte[] b = new byte[32];
         b[0] = 2;
         assertThat(FxKeys.effectsRoot(List.of(a, b)))
                 .isNotEqualTo(FxKeys.effectsRoot(List.of(b, a)));
+        // pass-through odd promotion: a duplicated trailing leaf CHANGES the
+        // root (CVE-2012-2459 malleability class is excluded by construction)
+        byte[] c = new byte[32];
+        c[0] = 3;
+        assertThat(FxKeys.effectsRoot(List.of(a, b, c)))
+                .isNotEqualTo(FxKeys.effectsRoot(List.of(a, b, c, c)));
     }
 
     @Test

@@ -83,7 +83,7 @@ class FxEffectsM1Test {
             FxKernel.Result fx = pipeline.applyNext(2); // 2 messages → 2 effects
 
             assertThat(fx.emitted()).hasSize(2);
-            EffectRecord first = fx.emitted().get(0);
+            EffectRecord first = fx.emitted().get(0).record();
             assertThat(first.effectId().canonical()).isEqualTo("fx-chain/1/0");
             assertThat(first.gate()).isEqualTo(FinalityGate.APP_FINAL); // CHAIN_DEFAULT resolved
             assertThat(first.result()).isEqualTo(ResultPolicy.CHAIN);
@@ -96,7 +96,7 @@ class FxEffectsM1Test {
 
             // effectsRoot leaf in the AUTHENTICATED state, provable via stateGet
             List<byte[]> hashes = new ArrayList<>();
-            fx.emitted().forEach(r -> hashes.add(r.effectHash()));
+            fx.emitted().forEach(staged -> hashes.add(staged.effectHash()));
             Optional<byte[]> leaf = pipeline.store.stateGet(FxKeys.effectsRootKey(1));
             assertThat(leaf).isPresent();
             assertThat(leaf.get()).isEqualTo(FxKeys.effectsRoot(hashes));
@@ -195,6 +195,35 @@ class FxEffectsM1Test {
             assertThatThrownBy(() -> pipeline.applyNext(1))
                     .hasRootCauseInstanceOf(EffectLimitExceededException.class)
                     .hasStackTraceContaining("max-payload-bytes");
+        }
+
+        // Expiry cap doubles as the height-overflow guard (review finding A1)
+        AppStateMachine immortal = machineOf((block, writer, effects) ->
+                effects.emit(EffectIntent.of("webhook.post", new byte[]{1})
+                        .result(ResultPolicy.CHAIN)
+                        .expiryBlocks(Long.MAX_VALUE)
+                        .build()));
+        try (Pipeline pipeline = new Pipeline(dir.resolve("immortal"), immortal, FX_SETTINGS)) {
+            assertThatThrownBy(() -> pipeline.applyNext(1))
+                    .hasRootCauseInstanceOf(EffectLimitExceededException.class)
+                    .hasStackTraceContaining("max-expiry-blocks");
+        }
+    }
+
+    @Test
+    void reservedPrefix_isEnforcedEvenWithEffectsDisabled(@TempDir Path dir) {
+        // The ~fx/ keyspace is reserved from genesis (ADR-010 F4) — not an
+        // effects feature. A disabled chain must reject trespassing writes too.
+        AppStateMachine trespasser = new AppStateMachine() {
+            @Override public String id() { return "trespasser"; }
+            @Override public void apply(AppBlock block, AppStateWriter writer) {
+                writer.put("~fx/done/junk".getBytes(StandardCharsets.UTF_8), new byte[]{1});
+            }
+        };
+        try (Pipeline pipeline = new Pipeline(dir, trespasser, Map.of())) {
+            assertThatThrownBy(() -> pipeline.applyNext(1))
+                    .hasRootCauseInstanceOf(IllegalArgumentException.class)
+                    .hasStackTraceContaining("~fx/");
         }
     }
 
@@ -361,7 +390,6 @@ class FxEffectsM1Test {
         final AppLedgerStore store;
         final AppStateMachine machine;
         final FxKernel kernel;
-        final FxKernel.FxReader reader;
         byte[] prevHash = AppBlock.GENESIS_PREV_HASH;
         long height;
         long senderSeq;
@@ -370,12 +398,6 @@ class FxEffectsM1Test {
             this.store = new AppLedgerStore(dir.toString(), LoggerFactory.getLogger("fx-test"));
             this.machine = machine;
             this.kernel = new FxKernel(EffectsSettings.fromSettings(settings));
-            this.reader = new FxKernel.FxReader() {
-                @Override public List<long[]> expiryBucket(long h) { return store.fxExpiryBucket(h); }
-                @Override public Optional<EffectRecord> record(long h, int o) { return store.fxRecord(h, o); }
-                @Override public boolean closed(long h, int o) { return store.fxClosed(h, o); }
-                @Override public long openCount() { return store.fxOpenCount(); }
-            };
         }
 
         /** Apply + commit the next block with N generated messages; returns the kernel result. */
@@ -398,30 +420,10 @@ class FxEffectsM1Test {
                     AppBlockCodec.messagesRoot(list), new byte[32], list, sender,
                     FinalityCert.empty());
 
-            WriteBatch batch = new WriteBatch();
-            byte[] committedRoot = store.stateRoot();
-            try {
-                FxKernel.Result[] fx = new FxKernel.Result[1];
-                byte[] newRoot = store.mpfNodeStore().withBatch(batch, () -> {
-                    MpfTrie trie = committedRoot != null
-                            ? new MpfTrie(store.mpfNodeStore(), committedRoot)
-                            : new MpfTrie(store.mpfNodeStore());
-                    fx[0] = kernel.apply(machine, block, trie, reader);
-                    return trie.getRootHash();
-                });
-                byte[] effectiveRoot = newRoot != null ? newRoot : new byte[32];
-                AppBlock applied = new AppBlock(block.version(), block.chainId(), block.height(),
-                        block.prevHash(), block.l1Slot(), block.l1BlockHash(), block.timestamp(),
-                        block.messagesRoot(), effectiveRoot, block.messages(), block.proposer(),
-                        block.cert());
-                store.stageFx(batch, block.height(), fx[0]);
-                byte[] blockHash = AppBlockCodec.blockHash(applied);
-                store.commitBlock(applied, blockHash, effectiveRoot, batch);
-                prevHash = blockHash;
-                return fx[0];
-            } finally {
-                batch.close();
-            }
+            // Same shared pipeline the conformance harness uses (FxBlockApplier)
+            FxBlockApplier.Applied applied = FxBlockApplier.applyAndCommit(store, kernel, machine, block);
+            prevHash = applied.blockHash();
+            return applied.fx();
         }
 
         @Override

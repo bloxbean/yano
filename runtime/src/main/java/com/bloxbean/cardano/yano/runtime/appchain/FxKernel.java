@@ -16,7 +16,9 @@ import com.bloxbean.cardano.yano.api.appchain.effects.FxKeys;
 import com.bloxbean.cardano.yano.api.appchain.effects.ResultPolicy;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -29,7 +31,9 @@ import java.util.Optional;
  * <p>
  * Everything here is a pure function of {@code (block, committed state,
  * committed fx records)}; the kernel never touches wall clock, randomness or
- * node-local runtime state.
+ * node-local runtime state. All consensus-tier reads (expiry buckets, open
+ * count) happen HERE at apply time — staging ({@code AppLedgerStore.stageFx})
+ * is pure writes, so nothing depends on commit-time database state.
  */
 final class FxKernel {
 
@@ -49,17 +53,32 @@ final class FxKernel {
         long openCount();
     }
 
-    /** Everything one block's apply produced, for atomic staging at commit. */
-    record Result(List<EffectRecord> emitted,
+    /** One emitted effect with its canonical bytes and hash, computed exactly once. */
+    record StagedEffect(EffectRecord record, byte[] encoded, byte[] effectHash) {
+
+        static StagedEffect of(EffectRecord record) {
+            byte[] encoded = record.encode();
+            return new StagedEffect(record, encoded,
+                    com.bloxbean.cardano.client.crypto.Blake2bUtil.blake2bHash256(encoded));
+        }
+    }
+
+    /** Everything one block's apply produced, for atomic (pure-write) staging at commit. */
+    record Result(List<StagedEffect> emitted,
                   byte[] effectsRoot,
                   List<EffectResult> incorporated,
+                  Map<Long, byte[]> bucketPuts,
                   long consumedExpiryBucket,
                   long newOpenCount) {
 
-        static final Result NONE = new Result(List.of(), null, List.of(), -1, 0);
+        static final Result NONE = new Result(List.of(), null, List.of(), Map.of(), -1, 0);
 
         boolean isEmpty() {
             return emitted.isEmpty() && incorporated.isEmpty() && consumedExpiryBucket < 0;
+        }
+
+        List<EffectRecord> records() {
+            return emitted.stream().map(StagedEffect::record).toList();
         }
     }
 
@@ -73,18 +92,27 @@ final class FxKernel {
      * Apply one block through the machine with effects. Order (ADR-010 F8/F9):
      * expiry sweep (outcomes reference strictly older effects) → machine
      * apply → commitment leaves. Trie writes made here bypass the reserved
-     * prefix guard; the machine's writer enforces it.
+     * prefix guard; the machine's writer enforces it — ALWAYS, effects
+     * enabled or not: the {@code ~fx/} keyspace is reserved from genesis
+     * (ADR-010 F4), so enabling effects later can never collide with
+     * historical application leaves.
      */
     Result apply(AppStateMachine machine, AppBlock block, MpfTrie trie, FxReader reader) {
+        AppStateWriter machineWriter = guardedWriter(trie, settings.strictReservedPrefix());
+
         if (!settings.enabled()) {
-            machine.apply(block, guardedWriter(trie, false), DISABLED_EMITTER);
+            machine.apply(block, machineWriter, AppEffectEmitter.rejecting(
+                    "Effects are disabled for this chain (effects.enabled=false)"));
             return Result.NONE;
         }
 
-        AppStateWriter machineWriter = guardedWriter(trie, settings.strictReservedPrefix());
+        long committedOpen = reader.openCount();
 
         // 1. Deterministic expiry sweep at this height (FX-M1: the only
-        //    incorporation path; ~fx/result messages join in FX-M3).
+        //    incorporation path; ~fx/result messages join in FX-M3). Every
+        //    swept effect is ResultPolicy.CHAIN by construction — expiry is
+        //    only registrable on CHAIN intents (EffectIntent validation) —
+        //    so |incorporated| decrements the open-CHAIN count one-for-one.
         List<EffectResult> incorporated = new ArrayList<>();
         List<long[]> bucket = reader.expiryBucket(block.height());
         for (long[] entry : bucket) {
@@ -93,10 +121,14 @@ final class FxKernel {
             if (reader.closed(height, ordinal)) {
                 continue; // already terminal — nothing to expire
             }
-            EffectRecord record = reader.record(height, ordinal).orElse(null);
-            if (record == null) {
-                continue; // bucket entry without a record: impossible by construction
-            }
+            EffectRecord record = reader.record(height, ordinal).orElseThrow(() ->
+                    // Fail LOUDLY: a bucket entry without its record means the
+                    // fx CF is inconsistent on THIS node (partial restore /
+                    // corruption). Silently skipping would fork the state
+                    // root; rebuild the outbox by replay instead (ADR-010 F10).
+                    new IllegalStateException("Effect outbox inconsistent: expiry bucket at height "
+                            + block.height() + " references missing record " + height + "/" + ordinal
+                            + " — rebuild app_fx_records by replay"));
             EffectResult expired = new EffectResult(record.effectId(), record.type(), record.scope(),
                     EffectOutcome.EXPIRED, new byte[0], null, block.height());
             if (settings.outcomeCommitment() == EffectsSettings.OutcomeCommitment.PER_EFFECT) {
@@ -107,15 +139,15 @@ final class FxKernel {
         }
 
         // 2. Machine transition with emission.
-        BlockEmitter emitter = new BlockEmitter(block, reader.openCount(), incorporated.size());
+        BlockEmitter emitter = new BlockEmitter(block, committedOpen, incorporated.size());
         machine.apply(block, machineWriter, emitter);
 
         // 3. Commitment leaves.
         byte[] effectsRoot = null;
         if (!emitter.emitted.isEmpty()) {
             List<byte[]> hashes = new ArrayList<>(emitter.emitted.size());
-            for (EffectRecord record : emitter.emitted) {
-                hashes.add(record.effectHash());
+            for (StagedEffect staged : emitter.emitted) {
+                hashes.add(staged.effectHash());
             }
             effectsRoot = FxKeys.effectsRoot(hashes);
             trie.put(FxKeys.effectsRootKey(block.height()), effectsRoot);
@@ -129,9 +161,27 @@ final class FxKernel {
             trie.put(FxKeys.resultsRootKey(block.height()), FxKeys.effectsRoot(outcomeHashes));
         }
 
-        long newOpen = reader.openCount() + emitter.chainEmitted - incorporated.size();
+        // 4. Merge expiry buckets against committed state HERE (apply time),
+        //    so staging never reads the database (pipelining-safe).
+        Map<Long, List<long[]>> bucketAdds = new LinkedHashMap<>();
+        for (StagedEffect staged : emitter.emitted) {
+            EffectRecord record = staged.record();
+            if (record.expiryHeight() > 0) {
+                bucketAdds.computeIfAbsent(record.expiryHeight(), h -> new ArrayList<>())
+                        .add(new long[]{record.height(), record.ordinal()});
+            }
+        }
+        Map<Long, byte[]> bucketPuts = new LinkedHashMap<>();
+        for (Map.Entry<Long, List<long[]>> add : bucketAdds.entrySet()) {
+            List<long[]> merged = reader.expiryBucket(add.getKey());
+            merged.addAll(add.getValue());
+            bucketPuts.put(add.getKey(), FxBucketCodec.encode(merged));
+        }
+
+        long newOpen = committedOpen + emitter.chainEmitted - incorporated.size();
         return new Result(List.copyOf(emitter.emitted), effectsRoot, List.copyOf(incorporated),
-                bucket.isEmpty() ? -1 : block.height(), Math.max(0, newOpen));
+                Map.copyOf(bucketPuts), bucket.isEmpty() ? -1 : block.height(),
+                Math.max(0, newOpen));
     }
 
     // ------------------------------------------------------------------
@@ -157,7 +207,8 @@ final class FxKernel {
 
             @Override
             public byte[] stateRoot() {
-                return trie.getRootHash();
+                byte[] root = trie.getRootHash();
+                return root != null ? root : new byte[32]; // AppStateReader contract: never null
             }
 
             private void rejectReserved(byte[] key) {
@@ -174,7 +225,7 @@ final class FxKernel {
         private final AppBlock block;
         private final long committedOpen;
         private final int closedThisBlock;
-        private final List<EffectRecord> emitted = new ArrayList<>();
+        private final List<StagedEffect> emitted = new ArrayList<>();
         private int chainEmitted;
 
         BlockEmitter(AppBlock block, long committedOpen, int closedThisBlock) {
@@ -193,6 +244,12 @@ final class FxKernel {
                 throw new EffectLimitExceededException("effect payload of " + intent.payload().length
                         + " bytes exceeds effects.max-payload-bytes (" + settings.maxPayloadBytes() + ")");
             }
+            if (intent.expiryBlocks() > settings.maxExpiryBlocks()) {
+                // Also the overflow guard: maxExpiryBlocks bounds height + expiry
+                // far below Long.MAX_VALUE, so expiryHeight can never wrap
+                throw new EffectLimitExceededException("effect expiry of " + intent.expiryBlocks()
+                        + " blocks exceeds effects.max-expiry-blocks (" + settings.maxExpiryBlocks() + ")");
+            }
             FinalityGate gate = intent.gate() == FinalityGate.CHAIN_DEFAULT
                     ? settings.defaultGate() : intent.gate();
             int ordinal = emitted.size();
@@ -200,7 +257,7 @@ final class FxKernel {
             EffectRecord record = new EffectRecord(EffectRecord.RECORD_VERSION, block.chainId(),
                     block.height(), ordinal, intent.type(), intent.payload(), intent.scope(),
                     gate, intent.result(), expiryHeight, intent.sourceMessageId());
-            emitted.add(record);
+            emitted.add(StagedEffect.of(record));
             if (intent.result() == ResultPolicy.CHAIN) {
                 chainEmitted++;
             }
@@ -212,17 +269,4 @@ final class FxKernel {
             return Math.max(0, committedOpen + chainEmitted - closedThisBlock);
         }
     }
-
-    private static final AppEffectEmitter DISABLED_EMITTER = new AppEffectEmitter() {
-        @Override
-        public EffectId emit(EffectIntent intent) {
-            throw new IllegalStateException(
-                    "Effects are disabled for this chain (effects.enabled=false)");
-        }
-
-        @Override
-        public long pendingCount() {
-            return 0;
-        }
-    };
 }

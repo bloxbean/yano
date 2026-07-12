@@ -60,10 +60,13 @@ public final class FxKeys {
     }
 
     /**
-     * Binary merkle root (blake2b-256) over ordered effect hashes — the same
-     * algorithm as {@code AppBlockCodec.messagesRoot} (one hashing convention
-     * across the codebase). Empty list → 32 zero bytes; odd width → last
-     * node duplicated.
+     * Binary merkle root (blake2b-256) over ordered effect hashes. Empty list
+     * → 32 zero bytes; an odd node is promoted UNCHANGED to the next level
+     * (pass-through) — never duplicated, so lists differing only by a
+     * repeated trailing leaf produce different roots (the CVE-2012-2459
+     * malleability class). This deliberately differs from the legacy
+     * duplicate-promotion in {@code AppBlockCodec.messagesRoot}, which is
+     * frozen by the shipped block format (ADR-010 F4).
      */
     public static byte[] effectsRoot(List<byte[]> effectHashes) {
         if (effectHashes == null || effectHashes.isEmpty()) {
@@ -72,13 +75,16 @@ public final class FxKeys {
         List<byte[]> level = new java.util.ArrayList<>(effectHashes);
         while (level.size() > 1) {
             List<byte[]> next = new java.util.ArrayList<>((level.size() + 1) / 2);
-            for (int i = 0; i < level.size(); i += 2) {
+            for (int i = 0; i + 1 < level.size(); i += 2) {
                 byte[] left = level.get(i);
-                byte[] right = i + 1 < level.size() ? level.get(i + 1) : left;
+                byte[] right = level.get(i + 1);
                 byte[] combined = new byte[left.length + right.length];
                 System.arraycopy(left, 0, combined, 0, left.length);
                 System.arraycopy(right, 0, combined, left.length, right.length);
                 next.add(Blake2bUtil.blake2bHash256(combined));
+            }
+            if ((level.size() & 1) == 1) {
+                next.add(level.get(level.size() - 1)); // pass through, no duplication
             }
             level = next;
         }

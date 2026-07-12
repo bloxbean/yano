@@ -4,6 +4,7 @@ import com.bloxbean.cardano.vds.mpf.MpfTrie;
 import com.bloxbean.cardano.vds.mpf.rocksdb.RocksDbNodeStore;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
 import com.bloxbean.cardano.yano.api.appchain.codec.AppBlockCodec;
+import com.bloxbean.cardano.yano.api.appchain.effects.EffectRecord;
 import org.rocksdb.*;
 import org.slf4j.Logger;
 
@@ -408,34 +409,28 @@ final class AppLedgerStore implements AutoCloseable {
 
     private static final String FX_OPEN_COUNT = "fx_open_count";
 
-    /** Stage one block's effect writes into the commit batch (same atomicity as the block). */
+    /**
+     * Stage one block's effect writes into the commit batch (same atomicity as
+     * the block). Pure writes — every read (bucket merges, open count) already
+     * happened in {@link FxKernel#apply} at apply time.
+     */
     void stageFx(WriteBatch batch, long height, FxKernel.Result fx) {
         if (fx == null || fx.isEmpty()) {
             return;
         }
         try {
-            java.util.Map<Long, List<long[]>> expiryAdds = new java.util.LinkedHashMap<>();
-            List<byte[]> hashes = new ArrayList<>(fx.emitted().size());
-            for (var record : fx.emitted()) {
-                batch.put(fxRecordsCf, fxRecordKey(record.height(), record.ordinal()), record.encode());
-                hashes.add(record.effectHash());
-                if (record.expiryHeight() > 0) {
-                    expiryAdds.computeIfAbsent(record.expiryHeight(), h -> new ArrayList<>())
-                            .add(new long[]{record.height(), record.ordinal()});
-                }
+            for (FxKernel.StagedEffect staged : fx.emitted()) {
+                batch.put(fxRecordsCf,
+                        fxRecordKey(staged.record().height(), staged.record().ordinal()),
+                        staged.encoded());
             }
             if (!fx.emitted().isEmpty() && fx.effectsRoot() != null) {
                 ByteBuffer meta = ByteBuffer.allocate(4 + fx.effectsRoot().length);
                 meta.putInt(fx.emitted().size()).put(fx.effectsRoot());
                 batch.put(fxRecordsCf, fxBlockMetaKey(height), meta.array());
             }
-            // Merge each future bucket with its COMMITTED value once (grouped
-            // above — the WriteBatch read-visibility trap forbids two writes
-            // to the same bucket key in one batch).
-            for (var bucketEntry : expiryAdds.entrySet()) {
-                List<long[]> merged = fxExpiryBucket(bucketEntry.getKey());
-                merged.addAll(bucketEntry.getValue());
-                batch.put(fxRecordsCf, fxExpiryKey(bucketEntry.getKey()), encodeBucket(merged));
+            for (var bucketPut : fx.bucketPuts().entrySet()) {
+                batch.put(fxRecordsCf, fxExpiryKey(bucketPut.getKey()), bucketPut.getValue());
             }
             for (var result : fx.incorporated()) {
                 batch.put(fxRecordsCf,
@@ -452,20 +447,43 @@ final class AppLedgerStore implements AutoCloseable {
         }
     }
 
-    Optional<com.bloxbean.cardano.yano.api.appchain.effects.EffectRecord> fxRecord(long height, int ordinal) {
+    /** The kernel's consensus-tier read surface over this ledger — one adapter for all callers. */
+    FxKernel.FxReader fxReader() {
+        return new FxKernel.FxReader() {
+            @Override
+            public List<long[]> expiryBucket(long height) {
+                return fxExpiryBucket(height);
+            }
+
+            @Override
+            public Optional<EffectRecord> record(long height, int ordinal) {
+                return fxRecord(height, ordinal);
+            }
+
+            @Override
+            public boolean closed(long height, int ordinal) {
+                return fxClosed(height, ordinal);
+            }
+
+            @Override
+            public long openCount() {
+                return fxOpenCount();
+            }
+        };
+    }
+
+    Optional<EffectRecord> fxRecord(long height, int ordinal) {
         try {
             byte[] bytes = db.get(fxRecordsCf, fxRecordKey(height, ordinal));
-            return bytes != null
-                    ? Optional.of(com.bloxbean.cardano.yano.api.appchain.effects.EffectRecord.decode(bytes))
-                    : Optional.empty();
+            return bytes != null ? Optional.of(EffectRecord.decode(bytes)) : Optional.empty();
         } catch (RocksDBException e) {
             throw new RuntimeException("Failed to read effect record " + height + "/" + ordinal, e);
         }
     }
 
     /** Emission records in (height, ordinal) order starting at fromHeight. */
-    List<com.bloxbean.cardano.yano.api.appchain.effects.EffectRecord> fxRecordsFrom(long fromHeight, int limit) {
-        List<com.bloxbean.cardano.yano.api.appchain.effects.EffectRecord> records = new ArrayList<>();
+    List<EffectRecord> fxRecordsFrom(long fromHeight, int limit) {
+        List<EffectRecord> records = new ArrayList<>();
         ByteBuffer seek = ByteBuffer.allocate(1 + 8);
         seek.put((byte) 'r').putLong(Math.max(0, fromHeight));
         try (RocksIterator iterator = db.newIterator(fxRecordsCf)) {
@@ -474,7 +492,7 @@ final class AppLedgerStore implements AutoCloseable {
                 if (key.length != 13 || key[0] != 'r') {
                     break;
                 }
-                records.add(com.bloxbean.cardano.yano.api.appchain.effects.EffectRecord.decode(iterator.value()));
+                records.add(EffectRecord.decode(iterator.value()));
             }
         }
         return records;
@@ -483,7 +501,7 @@ final class AppLedgerStore implements AutoCloseable {
     /** Expiry-bucket entries {@code (height, ordinal)} registered at this height. */
     List<long[]> fxExpiryBucket(long height) {
         try {
-            return decodeBucket(db.get(fxRecordsCf, fxExpiryKey(height)));
+            return FxBucketCodec.decode(db.get(fxRecordsCf, fxExpiryKey(height)));
         } catch (RocksDBException e) {
             throw new RuntimeException("Failed to read effect expiry bucket " + height, e);
         }
@@ -535,26 +553,6 @@ final class AppLedgerStore implements AutoCloseable {
 
     private static byte[] fxClosureKey(long height, int ordinal) {
         return ByteBuffer.allocate(13).put((byte) 'c').putLong(height).putInt(ordinal).array();
-    }
-
-    private static byte[] encodeBucket(List<long[]> entries) {
-        ByteBuffer buffer = ByteBuffer.allocate(entries.size() * 12);
-        for (long[] entry : entries) {
-            buffer.putLong(entry[0]).putInt((int) entry[1]);
-        }
-        return buffer.array();
-    }
-
-    private static List<long[]> decodeBucket(byte[] bytes) {
-        if (bytes == null || bytes.length == 0) {
-            return new ArrayList<>();
-        }
-        List<long[]> entries = new ArrayList<>(bytes.length / 12);
-        ByteBuffer buffer = ByteBuffer.wrap(bytes);
-        while (buffer.remaining() >= 12) {
-            entries.add(new long[]{buffer.getLong(), buffer.getInt()});
-        }
-        return entries;
     }
 
     // ------------------------------------------------------------------

@@ -8,14 +8,20 @@ import java.util.Map;
 
 /**
  * Parsed {@code effects.*} chain settings (ADR app-layer/010 F12). The
- * consensus-affecting subset ({@code enabled}, {@code max-per-block},
- * {@code max-payload-bytes}, {@code default-gate}, {@code outcome-commitment})
- * MUST be identical on every member — a mismatch diverges state roots at the
- * first emission, the same failure class as a mismatched state machine.
+ * consensus-affecting subset — {@code enabled}, {@code max-per-block},
+ * {@code max-payload-bytes}, {@code max-expiry-blocks}, {@code default-gate},
+ * {@code outcome-commitment} AND {@code strict-reserved-prefix} (it changes
+ * which apply() calls fail) — MUST be identical on every member: a mismatch
+ * diverges state roots or block validity at the first emission, the same
+ * failure class as a mismatched state machine.
+ * <p>
+ * {@code strict-reserved-prefix} applies even when effects are disabled: the
+ * {@code ~fx/} trie keyspace is reserved from genesis (ADR-010 F4).
  */
 record EffectsSettings(boolean enabled,
                        int maxPerBlock,
                        int maxPayloadBytes,
+                       long maxExpiryBlocks,
                        FinalityGate defaultGate,
                        OutcomeCommitment outcomeCommitment,
                        boolean strictReservedPrefix) {
@@ -27,16 +33,17 @@ record EffectsSettings(boolean enabled,
         PER_BLOCK
     }
 
-    static final EffectsSettings DISABLED =
-            new EffectsSettings(false, 0, 0, FinalityGate.APP_FINAL, OutcomeCommitment.PER_EFFECT, true);
-
     static EffectsSettings from(AppChainConfig config) {
         return fromSettings(config.pluginSettings());
     }
 
     static EffectsSettings fromSettings(Map<String, String> settings) {
+        boolean strict = Boolean.parseBoolean(
+                settings.getOrDefault("effects.strict-reserved-prefix", "true"));
         if (!Boolean.parseBoolean(settings.getOrDefault("effects.enabled", "false"))) {
-            return DISABLED;
+            // Reserved-prefix enforcement is NOT effects-gated (see class javadoc)
+            return new EffectsSettings(false, 0, 0, 0, FinalityGate.APP_FINAL,
+                    OutcomeCommitment.PER_EFFECT, strict);
         }
         FinalityGate defaultGate = switch (
                 settings.getOrDefault("effects.default-gate", "app-final").trim().toLowerCase(Locale.ROOT)) {
@@ -54,16 +61,22 @@ record EffectsSettings(boolean enabled,
         };
         int maxPerBlock = intSetting(settings, "effects.max-per-block", 256);
         int maxPayloadBytes = intSetting(settings, "effects.max-payload-bytes", 16384);
-        if (maxPerBlock <= 0 || maxPayloadBytes <= 0) {
-            throw new IllegalArgumentException(
-                    "effects.max-per-block and effects.max-payload-bytes must be positive");
+        long maxExpiryBlocks = longSetting(settings, "effects.max-expiry-blocks", 100_000);
+        if (maxPerBlock <= 0 || maxPayloadBytes <= 0 || maxExpiryBlocks <= 0) {
+            throw new IllegalArgumentException("effects.max-per-block, effects.max-payload-bytes "
+                    + "and effects.max-expiry-blocks must be positive");
         }
-        return new EffectsSettings(true, maxPerBlock, maxPayloadBytes, defaultGate, commitment,
-                Boolean.parseBoolean(settings.getOrDefault("effects.strict-reserved-prefix", "true")));
+        return new EffectsSettings(true, maxPerBlock, maxPayloadBytes, maxExpiryBlocks,
+                defaultGate, commitment, strict);
     }
 
     private static int intSetting(Map<String, String> settings, String key, int defaultValue) {
         String value = settings.get(key);
         return value != null && !value.isBlank() ? Integer.parseInt(value.trim()) : defaultValue;
+    }
+
+    private static long longSetting(Map<String, String> settings, String key, long defaultValue) {
+        String value = settings.get(key);
+        return value != null && !value.isBlank() ? Long.parseLong(value.trim()) : defaultValue;
     }
 }

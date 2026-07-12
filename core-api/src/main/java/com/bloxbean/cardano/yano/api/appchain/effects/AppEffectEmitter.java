@@ -30,4 +30,24 @@ public interface AppEffectEmitter {
      * backpressure signal a machine may use to defer or reject new work.
      */
     long pendingCount();
+
+    /**
+     * An emitter that deterministically rejects emission with the given
+     * reason — the single implementation behind "effects unavailable here"
+     * (legacy 2-arg apply path, effects-disabled chains). {@code
+     * pendingCount()} reports 0.
+     */
+    static AppEffectEmitter rejecting(String reason) {
+        return new AppEffectEmitter() {
+            @Override
+            public EffectId emit(EffectIntent intent) {
+                throw new IllegalStateException(reason);
+            }
+
+            @Override
+            public long pendingCount() {
+                return 0;
+            }
+        };
+    }
 }

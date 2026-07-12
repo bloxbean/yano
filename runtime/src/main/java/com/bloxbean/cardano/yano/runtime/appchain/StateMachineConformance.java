@@ -1,6 +1,5 @@
 package com.bloxbean.cardano.yano.runtime.appchain;
 
-import com.bloxbean.cardano.vds.mpf.MpfTrie;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AuthScheme;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
@@ -12,11 +11,10 @@ import com.bloxbean.cardano.yano.api.appchain.AppStateMachineProvider;
 import com.bloxbean.cardano.yano.api.appchain.AppStateReader;
 import com.bloxbean.cardano.yano.api.appchain.FinalityCert;
 import com.bloxbean.cardano.yano.api.appchain.codec.AppBlockCodec;
-import com.bloxbean.cardano.yano.api.appchain.effects.EffectRecord;
-import org.rocksdb.WriteBatch;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -106,8 +104,8 @@ public final class StateMachineConformance {
         private int blocks = 20;
         private int messagesPerBlock = 5;
         private long seed = 42;
-        private BodyGenerator bodyGenerator =
-                (height, index, random) -> ("msg-" + height + "-" + index).getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        private BodyGenerator bodyGenerator = (height, index, random) ->
+                ("msg-" + height + "-" + index).getBytes(StandardCharsets.UTF_8);
         private int runs = 3;
         private long restartAtHeight = -1; // default: mid-corpus
 
@@ -198,7 +196,11 @@ public final class StateMachineConformance {
                 HeightOutcome expected = baseline.get(height);
                 HeightOutcome actual = outcomesPerRun.get(run).get(height);
                 if (expected == null || actual == null) {
-                    continue;
+                    // A hole is itself a failure (a run that never committed
+                    // this height) — never silently pass it
+                    return new Divergence("missing-outcome", height, run,
+                            expected != null ? expected.root() : "<absent>",
+                            actual != null ? actual.root() : "<absent>");
                 }
                 if (!expected.root().equals(actual.root())) {
                     return new Divergence("state-root", height, run, expected.root(), actual.root());
@@ -280,47 +282,16 @@ public final class StateMachineConformance {
         return outcomes;
     }
 
-    /** Mirrors AppChainEngine.applyBlock + commitBlock (same FxKernel pipeline + MPF batch staging). */
+    /** Same pipeline as production, via the shared applier (FxKernel + MPF batch staging). */
     private static HeightOutcome applyAndCommit(AppLedgerStore store, AppStateMachine machine,
                                                 Map<String, String> settings, AppBlock block) {
         FxKernel kernel = new FxKernel(EffectsSettings.fromSettings(settings));
-        FxKernel.FxReader reader = new FxKernel.FxReader() {
-            @Override public List<long[]> expiryBucket(long height) { return store.fxExpiryBucket(height); }
-            @Override public Optional<EffectRecord> record(long height, int ordinal) {
-                return store.fxRecord(height, ordinal);
-            }
-            @Override public boolean closed(long height, int ordinal) { return store.fxClosed(height, ordinal); }
-            @Override public long openCount() { return store.fxOpenCount(); }
-        };
-        WriteBatch batch = new WriteBatch();
-        byte[] committedRoot = store.stateRoot();
-        try {
-            FxKernel.Result[] fx = new FxKernel.Result[1];
-            byte[] newRoot = store.mpfNodeStore().withBatch(batch, () -> {
-                MpfTrie trie = committedRoot != null
-                        ? new MpfTrie(store.mpfNodeStore(), committedRoot)
-                        : new MpfTrie(store.mpfNodeStore());
-                fx[0] = kernel.apply(machine, block, trie, reader);
-                return trie.getRootHash();
-            });
-            byte[] effectiveRoot = newRoot != null ? newRoot : new byte[32];
-            AppBlock applied = new AppBlock(block.version(), block.chainId(), block.height(),
-                    block.prevHash(), block.l1Slot(), block.l1BlockHash(), block.timestamp(),
-                    block.messagesRoot(), effectiveRoot, block.messages(), block.proposer(),
-                    block.cert());
-            store.stageFx(batch, block.height(), fx[0]);
-            store.commitBlock(applied, AppBlockCodec.blockHash(applied), effectiveRoot, batch);
-            List<String> effectHashes = new ArrayList<>(fx[0].emitted().size());
-            for (EffectRecord record : fx[0].emitted()) {
-                effectHashes.add(HexUtil.encodeHexString(record.effectHash()));
-            }
-            return new HeightOutcome(HexUtil.encodeHexString(effectiveRoot), effectHashes);
-        } catch (RuntimeException e) {
-            batch.close();
-            throw e;
-        } finally {
-            batch.close();
+        FxBlockApplier.Applied applied = FxBlockApplier.applyAndCommit(store, kernel, machine, block);
+        List<String> effectHashes = new ArrayList<>(applied.fx().emitted().size());
+        for (FxKernel.StagedEffect staged : applied.fx().emitted()) {
+            effectHashes.add(HexUtil.encodeHexString(staged.effectHash()));
         }
+        return new HeightOutcome(HexUtil.encodeHexString(applied.block().stateRoot()), effectHashes);
     }
 
     private static AppStateMachineContext contextFor(String chainId, Map<String, String> settings) {
@@ -354,8 +325,8 @@ public final class StateMachineConformance {
         private int blocks = 40;
         private int messagesPerBlock = 5;
         private long seed = 42;
-        private BodyGenerator bodyGenerator =
-                (height, index, random) -> ("msg-" + height + "-" + index).getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        private BodyGenerator bodyGenerator = (height, index, random) ->
+                ("msg-" + height + "-" + index).getBytes(StandardCharsets.UTF_8);
         private int runs = 2;
 
         private UpgradeBuilder(AppStateMachineProvider oldProvider, AppStateMachineProvider newProvider) {
