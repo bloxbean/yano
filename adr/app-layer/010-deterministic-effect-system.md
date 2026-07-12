@@ -651,6 +651,40 @@ Properties:
   expiry and member-key rotation: results are persisted in a durable local
   queue and re-signed/resubmitted until the sequenced terminal is observed.
 
+**Outcome commitment modes (`effects.outcome-commitment`).** How incorporated
+outcomes are committed into the trie is a per-chain (consensus-affecting)
+choice, sized to expected CHAIN-result volume:
+
+- **`per-effect` (default)**: one `~fx/done/<idHash>` leaf per incorporated
+  outcome, as described above. O(1) positive proofs *and* O(1) non-inclusion
+  proofs ("as of root R, effect E is still open"). Trie grows O(chain-result
+  effects) — fine for typical enterprise volumes, heavy at millions.
+- **`per-block`**: the interpreter batches the block's **incorporated**
+  outcomes (accepted results + expiry-sweep transitions, in processing order)
+  into one `resultsRoot` leaf `~fx/results/<height>` — the exact mirror of
+  `effectsRoot`. First-result-wins dedup switches to the consensus-tier
+  record status in `fx_records` (equally deterministic — the interpreter
+  never reads `fx_runtime`). Trie grows O(effectful blocks) regardless of
+  effect volume.
+
+Provability comparison — what `per-block` keeps and what it trades away:
+
+| Proof | `per-effect` | `per-block` |
+|---|---|---|
+| outcome incorporated, content-bound (positive) | 1-step MPF proof | 2-step (list path → MPF leaf) — same trust chain, same shape as emission proofs |
+| result was sequenced | via `messagesRoot` (both modes, always) | same |
+| effect still open as of root R (negative) | O(1) MPF non-inclusion | O(blocks since emission) absence sweep — impractical for old effects |
+| latest-root outcome lookup | single self-service state query | needs an (untrusted) height hint from a node, then verify |
+
+The negative-proof gap is bounded wherever expiry is set: an effect with
+`expiryBlocks=k` is provably resolved-or-expired by `createdHeight+k`, so an
+openness proof never spans more than k blocks. High-volume chains choosing
+`per-block` SHOULD therefore make expiry mandatory on CHAIN-result types. A
+later refinement may allow per-type override (per-effect leaves only for
+high-value types). Note the symmetric caveat: the alternative volume lever —
+deleting done leaves after retention — also forfeits non-inclusion semantics
+beyond the retention window; batching just makes the trade explicit up front.
+
 `ResultPolicy.NONE` effects (webhooks, notifications, cache invalidation —
 nothing in app state depends on them) terminate in the runtime tier only:
 DONE/DEAD with evidence in `fx_runtime`, surfaced via REST/metrics, zero chain
@@ -752,6 +786,7 @@ yano:
       max-per-block: 256                # consensus parameter
       max-payload-bytes: 16384          # consensus parameter
       default-gate: app-final           # app-final | l1-anchored
+      outcome-commitment: per-effect    # per-effect | per-block (CONSENSUS-AFFECTING; F8)
       strict-reserved-prefix: true
       retention:
         keep-blocks: 100000             # prune terminal records/statuses
@@ -1022,9 +1057,12 @@ codebase-verified reason:
 - Result trust is membership trust (until k-of-n attestation ships); this is
   weaker than `~l1` recompute verification and must be understood by
   deployers.
-- The `~fx/done` leaves and `~fx/root` leaves accrete in the trie (32 B each);
-  bounded and cheap, but not zero; the block-field promotion later removes the
-  root leaves.
+- The `~fx/done` leaves and `~fx/root` leaves accrete in the trie (32 B each,
+  amplified by the append-only node store); bounded and cheap per block, but
+  `per-effect` outcome commitment grows O(chain-result effects) — chains
+  expecting millions of CHAIN results should choose
+  `outcome-commitment: per-block` (F8) and accept its negative-proof trade-off.
+  The block-field promotion later removes the root leaves.
 
 ## 13. Future: ZK settlement compatibility (ADR-006 E7.x)
 
@@ -1086,6 +1124,9 @@ Open questions for review:
    backpressure be left to machine-level state?
 4. Does the approvals payment example ship in stdlib behind config, or as a
    separate example machine in the scaffold?
+5. Should `outcome-commitment` support per-type override (per-effect leaves
+   for declared high-value types on an otherwise per-block chain), or is
+   per-chain granularity enough for v1?
 
 ## 16. External references
 
