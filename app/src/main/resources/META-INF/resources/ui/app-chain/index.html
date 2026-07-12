@@ -429,13 +429,14 @@
               <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 2l4 4-4 4"/><path d="M3 11V9a4 4 0 014-4h14"/><path d="M7 22l-4-4 4-4"/><path d="M21 13v2a4 4 0 01-4 4H3"/></svg></span>
               <h2>Traffic</h2>
             </div>
+            <span class="badge" title="In-memory counters — reset when the node restarts">since restart</span>
           </div>
           <div>
             <div class="metric"><span>Submitted</span><span id="submitted" class="mono v">-</span></div>
             <div class="metric"><span>Received</span><span id="received" class="mono v">-</span></div>
             <div class="metric"><span>Relayed</span><span id="relayed" class="mono v">-</span></div>
             <div class="metric"><span>Duplicates</span><span id="duplicates" class="mono v">-</span></div>
-            <div class="metric"><span>Messages (finalized)</span><span id="storedMessages" class="mono v">-</span></div>
+            <div class="metric"><span title="Recent finalized messages held in memory (capped buffer, resets on restart) — the full history stays in the ledger and is queryable via the API">Messages (recent)</span><span id="storedMessages" class="mono v">-</span></div>
           </div>
         </section>
       </div>
@@ -896,7 +897,7 @@
         const drops = s.drops || {};
         const dropKeys = Object.keys(drops);
         $('dropsList').innerHTML = dropKeys.length
-            ? dropKeys.map(k => '<div class="metric"><span>Dropped · ' + esc(k) + '</span>'
+            ? dropKeys.map(k => '<div class="metric"><span title="Since restart">Dropped · ' + esc(k) + '</span>'
                 + '<span class="mono">' + fmt(drops[k]) + '</span></div>').join('')
             : '<div class="metric"><span>Dropped</span><span class="mono">0</span></div>';
 
@@ -928,7 +929,7 @@
           if (wallet) rows.push(row('Wallet (fees)', copyable(wallet, 18)));
           rows.push(row('Last Anchored Height', mono(fmt(anchor.lastAnchoredHeight))));
           rows.push(row('Lag (blocks)', mono(fmt(anchor.lagBlocks))));
-          rows.push(row('Anchors Confirmed', mono(fmt(anchor.anchoredCount))));
+          rows.push(row('Anchors Confirmed <span class="muted" title="In-memory counter since the last restart — durable progress is Last Anchored Height">(since restart)</span>', mono(fmt(anchor.anchoredCount))));
           if (anchor.cosignPending)
             rows.push(row('Co-sign', mono(anchor.cosignPending
                 + (anchor.cosignRange ? ' · blocks ' + anchor.cosignRange : ''))));

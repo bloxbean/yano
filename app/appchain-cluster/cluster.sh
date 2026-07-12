@@ -40,6 +40,7 @@ NETWORK="devnet"
 NETWORK_EXPLICIT=0                                # set when --network is passed
 RUNTIME="auto"                                    # auto | jar | native
 THRESHOLD=""                                      # default: majority
+TRANSPORT=""                                      # ""=node default (shared) | shared | dedicated
 ENABLE_ANCHOR=0
 ANCHOR_MODE="script"                              # metadata | script (--anchor-mode)
 ANCHOR_KEY=""                                     # --anchor-key: funded wallet seed (hex, 32 bytes)
@@ -253,6 +254,9 @@ launch_node() {
     # past around the 3rd node — node 0 then drops later followers. Raise it.
     "-Dyano.relay.connection.max-connections-per-ip=500"
   )
+  # App transport: shared (default) rides protocols 100/103 on the L1 session
+  # to a peer that is also the upstream; dedicated forces separate dials.
+  [ -n "$TRANSPORT" ] && args+=("-Dyano.app-chain.transport.mode=$TRANSPORT")
   if [ "$NETWORK" = "devnet" ]; then
     args+=("-Dyano.genesis.shelley-genesis-file=$dir/shelley-genesis.json")
     if [ "$i" -ne 0 ]; then
@@ -582,6 +586,10 @@ start options:
                      every node relays that network (needs sync; see README).
   --jar | --native   force runtime (default: auto-detect the available build)
   --threshold <t>    finality threshold (default: majority = N/2 + 1)
+  --transport <m>    app transport: shared (default — app protocols ride the
+                     L1 session to the upstream peer; one TCP connection per
+                     peer pair) | dedicated (separate app connections, e.g.
+                     for bandwidth isolation)
   --anchor           enable L1 anchoring on every chain, script mode (node 0
                      is the anchor leader; followers need no anchor config)
   --anchor-mode <m>  metadata | script (implies --anchor).
@@ -631,6 +639,8 @@ while [ $# -gt 0 ]; do
     --jar)          RUNTIME="jar"; shift;;
     --native)       RUNTIME="native"; shift;;
     --threshold)    THRESHOLD="$2"; shift 2;;
+    --transport)    TRANSPORT="$2"; shift 2
+                    case "$TRANSPORT" in shared|dedicated) ;; *) die "--transport must be shared or dedicated";; esac;;
     --anchor)       ENABLE_ANCHOR=1; shift;;
     --anchor-mode)  ANCHOR_MODE="$2"; ENABLE_ANCHOR=1; shift 2
                     case "$ANCHOR_MODE" in metadata|script) ;; *) die "--anchor-mode must be metadata or script";; esac;;

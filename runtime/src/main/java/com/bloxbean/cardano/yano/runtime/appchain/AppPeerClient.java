@@ -28,7 +28,7 @@ import java.util.Objects;
  * pair) is planned once the upstream-selection work stabilizes — the handshake
  * and mux already support it.
  */
-final class AppPeerClient {
+final class AppPeerClient implements AppPeerLink {
     private static final int REPLAY_QUEUE_LIMIT = 200;
 
     /** Callback for catch-up replies fetched over protocol 103. */
@@ -74,17 +74,25 @@ final class AppPeerClient {
      * Request finalized app blocks [from..to] over protocol 103.
      * @return false when disconnected or a request is already in flight
      */
-    boolean requestCatchUp(String chainId, long fromHeight, long toHeight) {
+    @Override
+    public boolean requestCatchUp(String chainId, long fromHeight, long toHeight) {
         var currentSyncAgent = syncAgent;
         return currentSyncAgent != null && isConnected()
                 && currentSyncAgent.requestRange(chainId, fromHeight, toHeight);
     }
 
-    String peerId() {
+    @Override
+    public String peerId() {
         return peer.toString();
     }
 
-    boolean isConnected() {
+    @Override
+    public String transport() {
+        return "dedicated";
+    }
+
+    @Override
+    public boolean isConnected() {
         TCPNodeClient c = client;
         return c != null && c.isRunning();
     }
@@ -96,7 +104,8 @@ final class AppPeerClient {
      * submitters/relayers (ADR 008.2 delivery note — found by the rotation
      * partial-round test).
      */
-    void enqueue(AppMessage message) {
+    @Override
+    public void enqueue(AppMessage message) {
         if (shutdown)
             return;
         AppMsgSubmissionAgent a = agent;
@@ -122,7 +131,8 @@ final class AppPeerClient {
      * entirely (found by the 008.2 partial-round test). Attempts run on their
      * own daemon thread, one at a time.
      */
-    void ensureConnectedAsync() {
+    @Override
+    public void ensureConnectedAsync() {
         if (shutdown || isConnected() || !connecting.compareAndSet(false, true)) {
             return;
         }
@@ -233,7 +243,8 @@ final class AppPeerClient {
     }
 
     /** Periodic keep-alive heartbeat; no-op when disconnected. */
-    void keepAliveTick() {
+    @Override
+    public void keepAliveTick() {
         KeepAliveAgent ka = keepAliveAgent;
         if (ka != null && isConnected()) {
             try {
@@ -250,7 +261,8 @@ final class AppPeerClient {
      * {@link #ensureConnected()} — shutdown must still proceed (it closes the
      * published in-progress client, which breaks the retry loop).
      */
-    void shutdown() {
+    @Override
+    public void shutdown() {
         shutdown = true;
         disposeClient();
         synchronized (replayQueue) {

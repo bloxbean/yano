@@ -692,6 +692,7 @@ public class YanoProducer {
         forwardDynamicKeys("yano.app-chain.sequencer.", globals);
         forwardDynamicKeys("yano.app-chain.membership.", globals);
         forwardDynamicKeys("yano.app-chain.observers.", globals);
+        forwardDynamicKeys("yano.app-chain.transport.", globals);
         if (!appChainList.isEmpty() && appChainEnabled) {
             globals.put(YanoPropertyKeys.AppChain.CHAINS, appChainList);
             log.info("App-chain multi-chain config: {} chain(s)", appChainList.size());

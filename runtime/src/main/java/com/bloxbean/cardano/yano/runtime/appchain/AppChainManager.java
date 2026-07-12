@@ -97,6 +97,47 @@ public final class AppChainManager implements Subsystem, AppChainGateways {
         return List.of(gossipFactory, catchUpFactory);
     }
 
+    /**
+     * Ride the app-layer protocols on the node's L1 upstream session when the
+     * configured remote is also an app-group peer (ADR 005 M1 unification —
+     * one TCP connection per peer pair instead of an extra dedicated dial).
+     * <p>
+     * Decorates the sync subsystem's {@link PeerClientFactory}: sessions to
+     * the matching endpoint are armed with protocols 100/103 pre-connect, and
+     * the matching chains' peer links prefer the shared session (with an
+     * automatic dedicated-dial fallback while it is down). Returns the
+     * delegate unchanged when {@code transportMode} is {@code dedicated}, no
+     * remote is configured, or no hosted chain peers with the remote.
+     */
+    public com.bloxbean.cardano.yano.p2p.peer.PeerClientFactory wrapPeerClientFactory(
+            com.bloxbean.cardano.yano.p2p.peer.PeerClientFactory delegate,
+            String transportMode, String remoteHost, int remotePort) {
+        if (!"shared".equalsIgnoreCase(transportMode == null ? "" : transportMode.trim())
+                || remoteHost == null || remoteHost.isBlank() || remotePort <= 0) {
+            return delegate;
+        }
+        String remoteKey = SharedAppTransport.key(remoteHost, remotePort);
+        List<AppChainSubsystem> matching = chains.values().stream()
+                .filter(subsystem -> subsystem.chainConfig().peers().stream()
+                        .anyMatch(p -> SharedAppTransport.key(p.host(), p.port()).equals(remoteKey)))
+                .toList();
+        if (matching.isEmpty()) {
+            log.debug("App transport 'shared' requested but the L1 remote {} is not an "
+                    + "app-group peer of any hosted chain — keeping dedicated dials", remoteKey);
+            return delegate;
+        }
+        SharedAppTransport transport =
+                new SharedAppTransport(unionTransportConfig(), Set.of(remoteKey), log);
+        for (AppChainSubsystem subsystem : matching) {
+            subsystem.wireSharedTransport(transport, Set.of(remoteKey));
+        }
+        log.info("App transport: chains {} reuse the L1 peer session to {} for app "
+                        + "diffusion/catch-up (protocols 100/103); dedicated fallback engages "
+                        + "if the session stays down",
+                matching.stream().map(AppChainSubsystem::chainId).toList(), remoteKey);
+        return transport.wrap(delegate);
+    }
+
     /** Union transport config: all chain ids, most permissive size/TTL, per-chain auth dispatch. */
     private AppMsgSubmissionConfig unionTransportConfig() {
         Set<String> chainIds = new HashSet<>();

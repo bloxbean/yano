@@ -515,6 +515,14 @@ public final class YanoPropertyKeys {
         public static final String SEQUENCER_PROPOSER = "yano.app-chain.sequencer.proposer";
         /** Finality certificate signature threshold (n of members). */
         public static final String THRESHOLD = "yano.app-chain.threshold";
+        /**
+         * Outbound app transport: {@code shared} (default — ride the L1 peer
+         * session to a peer that is also the configured upstream; one TCP
+         * connection per peer pair, dedicated fallback on outage) or
+         * {@code dedicated} (always dial a separate app connection, e.g. for
+         * bandwidth isolation from L1 sync).
+         */
+        public static final String TRANSPORT_MODE = "yano.app-chain.transport.mode";
         public static final String BLOCK_INTERVAL_MS = "yano.app-chain.block.interval-ms";
         public static final String BLOCK_MAX_MESSAGES = "yano.app-chain.block.max-messages";
         /** Primary block-size cap in bytes (serialized block/proposal). */

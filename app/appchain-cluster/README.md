@@ -264,6 +264,7 @@ a distinct script address.
 ```
 
 Start options: `--network <net>`, `--jar` | `--native`, `--threshold <t>`,
+`--transport <shared|dedicated>`,
 `--anchor`, `--anchor-mode <metadata|script>`, `--anchor-key <hex>`,
 `--anchor-every <n>`, `--data-dir <dir>`, `--http-base <p>`, `--server-base <p>`.
 
