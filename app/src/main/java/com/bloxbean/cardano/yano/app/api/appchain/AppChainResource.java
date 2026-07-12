@@ -192,6 +192,22 @@ public class AppChainResource {
 
     @POST
     @Operation(hidden = true)
+    @Path("effects/claim")
+    public Response claimEffects(ChainScopedResource.ClaimRequest request) {
+        return singleChain().claimEffects(request);
+    }
+
+    @POST
+    @Operation(hidden = true)
+    @Path("effects/{height}/{ordinal}/report")
+    public Response reportEffect(@PathParam("height") long height,
+                                 @PathParam("ordinal") int ordinal,
+                                 ChainScopedResource.ReportRequest request) {
+        return singleChain().reportEffect(height, ordinal, request);
+    }
+
+    @POST
+    @Operation(hidden = true)
     @Path("admin/pause")
     public Response pause() {
         return singleChain().pause();

@@ -53,13 +53,15 @@ public class CardanoPaymentExecutor implements AppEffectExecutor {
     private final Account account;
     private final Network network;
     private final long metadataLabel;
+    private final long maxLovelacePerTx;
 
     CardanoPaymentExecutor(BackendService backendService, Account account, Network network,
-                           long metadataLabel) {
+                           long metadataLabel, long maxLovelacePerTx) {
         this.backendService = backendService;
         this.account = account;
         this.network = network;
         this.metadataLabel = metadataLabel;
+        this.maxLovelacePerTx = maxLovelacePerTx;
     }
 
     @Override
@@ -85,6 +87,13 @@ public class CardanoPaymentExecutor implements AppEffectExecutor {
         PaymentCommand command = PaymentCommand.decode(effect.payload());
         if (command == null) {
             return EffectExecution.failed("undecodable cardano.payment payload", false);
+        }
+        if (maxLovelacePerTx > 0 && command.lovelace() > maxLovelacePerTx) {
+            // Blast-radius cap (final review): a compromised/buggy machine
+            // cannot drain the hot wallet in one payment. Definitive — an
+            // operator must raise the cap or handle the payment out of band.
+            return EffectExecution.failed("payment of " + command.lovelace()
+                    + " lovelace exceeds max-lovelace-per-tx (" + maxLovelacePerTx + ")", false);
         }
 
         Metadata metadata = MetadataBuilder.createMetadata();

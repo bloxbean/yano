@@ -60,10 +60,19 @@ public class CardanoEffectExecutorFactory implements AppEffectExecutorFactory {
                 : Account.createFromAccountKey(network,
                         com.bloxbean.cardano.client.util.HexUtil.decodeHexString(accountKey));
         long metadataLabel = Long.parseLong(config.getOrDefault("metadata-label", "21042").trim());
+        long maxLovelacePerTx = Long.parseLong(
+                config.getOrDefault("max-lovelace-per-tx", "0").trim()); // 0 = uncapped
         BFBackendService backendService = new BFBackendService(
                 backendUrl.endsWith("/") ? backendUrl : backendUrl + "/", "");
-        log.info("cardano effect executor ready for '{}': payer={}, label={}",
-                chainId, account.baseAddress(), metadataLabel);
-        return List.of(new CardanoPaymentExecutor(backendService, account, network, metadataLabel));
+        if (maxLovelacePerTx <= 0) {
+            log.warn("cardano effect executor for '{}' has NO per-tx amount cap — set "
+                    + "effects.executors.cardano.max-lovelace-per-tx and fund the payer wallet "
+                    + "conservatively (a buggy/compromised machine could otherwise drain it)", chainId);
+        }
+        log.info("cardano effect executor ready for '{}': payer={}, label={}, maxPerTx={}",
+                chainId, account.baseAddress(), metadataLabel,
+                maxLovelacePerTx > 0 ? maxLovelacePerTx : "uncapped");
+        return List.of(new CardanoPaymentExecutor(backendService, account, network, metadataLabel,
+                maxLovelacePerTx));
     }
 }

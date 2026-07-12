@@ -25,8 +25,11 @@ import java.util.Set;
  * {@code yano.app-chain.api.auth.enabled=true}, every request matched to an
  * app-chain resource method must carry a configured key in the
  * {@code X-API-Key} header. A key entry of the form {@code key=topicA|topicB}
- * additionally restricts message submission to the listed topics (reads stay
- * unrestricted).
+ * is a <b>submit-only, topic-restricted</b> key: it may READ freely and SUBMIT
+ * only to the listed topics — it may NOT call any other state-changing
+ * operation (admin pause/drain/anchor, key rotation, or the effect operations
+ * requeue/cancel/claim/report, which can move real funds). An unscoped key
+ * ({@code key} with no {@code =topics}) is a full key.
  * <p>
  * Scoping is by the <em>matched resource class</em> ({@link ResourceInfo}), not
  * a URL substring — renaming or re-rooting the resource cannot silently
@@ -68,9 +71,29 @@ public class AppChainApiKeyFilter implements ContainerRequestFilter {
         }
 
         Set<String> allowedTopics = keys.get(apiKey);
-        if (!allowedTopics.isEmpty() && isSubmit(requestContext)) {
-            enforceTopicRestriction(requestContext, allowedTopics);
+        if (allowedTopics.isEmpty()) {
+            return; // full key — no further restriction
         }
+        // Submit-only, topic-restricted key: reads are fine; submit is
+        // topic-checked; ANY other state-changing call is forbidden (E4.1 /
+        // ADR-010 F12 — effect requeue/cancel/claim/report and admin ops move
+        // funds or change consensus-visible state).
+        if (isSubmit(requestContext)) {
+            enforceTopicRestriction(requestContext, allowedTopics);
+        } else if (isStateChanging(requestContext)) {
+            requestContext.abortWith(Response.status(Response.Status.FORBIDDEN)
+                    .type(MediaType.APPLICATION_JSON)
+                    .entity(Map.of("error", "This API key is submit-only (topic-restricted) and "
+                            + "may not call state-changing operations")).build());
+        }
+    }
+
+    /** Any mutating HTTP method (POST/PUT/DELETE/PATCH); reads (GET/HEAD/OPTIONS) are allowed. */
+    private boolean isStateChanging(ContainerRequestContext requestContext) {
+        return switch (requestContext.getMethod().toUpperCase(java.util.Locale.ROOT)) {
+            case "POST", "PUT", "DELETE", "PATCH" -> true;
+            default -> false;
+        };
     }
 
     /** True when the matched resource class is one of the app-chain resources. */

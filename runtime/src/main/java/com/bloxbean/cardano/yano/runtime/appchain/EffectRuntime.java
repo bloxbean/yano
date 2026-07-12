@@ -229,6 +229,10 @@ final class EffectRuntime implements AutoCloseable {
                 ledger.fxQueueDelete(height, ordinal);
                 continue;
             }
+            if (record.gate() == FinalityGate.ZK_SETTLED
+                    && height > ledger.metaLong("zk_settled_height", 0L)) {
+                continue; // awaits an accepted validity proof (ADR-006 E7.x wires the HWM)
+            }
             if (record.gate() == FinalityGate.L1_ANCHORED
                     && height > anchored - settings.anchorMarginBlocks()) {
                 continue; // wait for the anchor high-water-mark (row stays queued)
@@ -291,7 +295,8 @@ final class EffectRuntime implements AutoCloseable {
                 }
                 switch (outcome) {
                     case EffectExecution.Confirmed confirmed -> {
-                        ledger.fxRuntimePutStatus(height, ordinal, before.done(confirmed.externalRef()));
+                        ledger.fxRuntimePutStatus(height, ordinal,
+                                before.done(clampRef(confirmed.externalRef())));
                         ledger.fxQueueDelete(height, ordinal);
                         executedCount.incrementAndGet();
                         lastError = null;
@@ -345,6 +350,15 @@ final class EffectRuntime implements AutoCloseable {
         } finally {
             inFlight.remove(key);
         }
+    }
+
+    /** Bound an external ref to what a ~fx/result can carry (defensive; report() also rejects). */
+    private static byte[] clampRef(byte[] ref) {
+        int max = com.bloxbean.cardano.yano.api.appchain.effects.FxResultBody.MAX_EXTERNAL_REF_BYTES;
+        if (ref == null || ref.length <= max) {
+            return ref;
+        }
+        return java.util.Arrays.copyOf(ref, max);
     }
 
     private AppEffectExecutor find(String type) {
@@ -408,6 +422,10 @@ final class EffectRuntime implements AutoCloseable {
                     || (types != null && !types.isEmpty() && !types.contains(record.type()))) {
                 continue;
             }
+            if (record.gate() == FinalityGate.ZK_SETTLED
+                    && height > ledger.metaLong("zk_settled_height", 0L)) {
+                continue; // awaits an accepted validity proof (ADR-006 E7.x wires the HWM)
+            }
             if (record.gate() == FinalityGate.L1_ANCHORED
                     && height > anchored - settings.anchorMarginBlocks()) {
                 continue;
@@ -460,6 +478,11 @@ final class EffectRuntime implements AutoCloseable {
                 // in-process outcome will land, duplicates absorbed by
                 // idempotency
                 return false;
+            }
+            if (externalRef != null
+                    && externalRef.length > com.bloxbean.cardano.yano.api.appchain.effects
+                            .FxResultBody.MAX_EXTERNAL_REF_BYTES) {
+                return false; // over the on-chain ref bound — reject at the boundary
             }
             if (success) {
                 ledger.fxRuntimePutStatus(height, ordinal, status.done(externalRef));
@@ -582,10 +605,14 @@ final class EffectRuntime implements AutoCloseable {
                 view.put("nextAttemptAt", status.nextAttemptAt());
             }
             if (!status.lastError().isEmpty()) {
-                // EXTERNAL reuses the field for the lease holder's id — render
-                // it as such, not as an error (M4 review)
-                view.put(status.status() == FxStatusRecord.EXTERNAL ? "holder" : "lastError",
-                        status.lastError());
+                if (status.status() == FxStatusRecord.EXTERNAL) {
+                    // The holder id is the report fence (M4/M5 review): expose
+                    // only that a lease is HELD, never the token itself — the
+                    // holding worker knows its own id, others must not learn it
+                    view.put("leased", true);
+                } else {
+                    view.put("lastError", status.lastError());
+                }
             }
             if (status.submittedRef().length > 0) {
                 view.put("submittedRef", HexUtil.encodeHexString(status.submittedRef()));

@@ -25,7 +25,8 @@ record EffectsSettings(boolean enabled,
                        long resultWindowBlocks,
                        FinalityGate defaultGate,
                        OutcomeCommitment outcomeCommitment,
-                       boolean strictReservedPrefix) {
+                       boolean strictReservedPrefix,
+                       java.util.Set<String> resultSigners) {
 
     enum OutcomeCommitment {
         /** One {@code ~fx/done} leaf per incorporated outcome — O(1) open/closed proofs. */
@@ -44,15 +45,31 @@ record EffectsSettings(boolean enabled,
         if (!Boolean.parseBoolean(settings.getOrDefault("effects.enabled", "false"))) {
             // Reserved-prefix enforcement is NOT effects-gated (see class javadoc)
             return new EffectsSettings(false, 0, 0, 0, 0, FinalityGate.APP_FINAL,
-                    OutcomeCommitment.PER_EFFECT, strict);
+                    OutcomeCommitment.PER_EFFECT, strict, java.util.Set.of());
         }
         FinalityGate defaultGate = switch (
                 settings.getOrDefault("effects.default-gate", "app-final").trim().toLowerCase(Locale.ROOT)) {
             case "app-final" -> FinalityGate.APP_FINAL;
             case "l1-anchored" -> FinalityGate.L1_ANCHORED;
+            case "zk-settled" -> FinalityGate.ZK_SETTLED;
             default -> throw new IllegalArgumentException(
-                    "effects.default-gate must be 'app-final' or 'l1-anchored'");
+                    "effects.default-gate must be 'app-final', 'l1-anchored' or 'zk-settled'");
         };
+        // Result signer policy (ADR-010 F8, CONSENSUS-AFFECTING): empty = any
+        // current member may attest outcomes; else only the listed member keys
+        // (the designated executors' keys). Interpreter no-ops results from
+        // anyone else — deterministic, never a stall.
+        java.util.Set<String> resultSigners = java.util.Set.of();
+        String signersValue = settings.getOrDefault("effects.result.signers", "").trim();
+        if (!signersValue.isEmpty()) {
+            java.util.Set<String> parsed = new java.util.LinkedHashSet<>();
+            for (String key : signersValue.split("\\s*,\\s*")) {
+                if (!key.isBlank()) {
+                    parsed.add(key.toLowerCase(Locale.ROOT));
+                }
+            }
+            resultSigners = java.util.Set.copyOf(parsed);
+        }
         OutcomeCommitment commitment = switch (
                 settings.getOrDefault("effects.outcome-commitment", "per-effect").trim().toLowerCase(Locale.ROOT)) {
             case "per-effect" -> OutcomeCommitment.PER_EFFECT;
@@ -77,7 +94,7 @@ record EffectsSettings(boolean enabled,
             throw new IllegalArgumentException("effects.max-per-block must be <= 1048576");
         }
         return new EffectsSettings(true, maxPerBlock, maxPayloadBytes, maxExpiryBlocks,
-                resultWindowBlocks, defaultGate, commitment, strict);
+                resultWindowBlocks, defaultGate, commitment, strict, resultSigners);
     }
 
     private static int intSetting(Map<String, String> settings, String key, int defaultValue) {

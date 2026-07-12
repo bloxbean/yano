@@ -120,7 +120,7 @@ final class FxKernel {
                     .equals(message.getTopic())) {
                 continue;
             }
-            EffectResult result = interpretResult(message.getBody(), block, reader, closedInBlock);
+            EffectResult result = interpretResult(message, block, reader, closedInBlock);
             if (result == null) {
                 continue; // audit no-op (malformed / unknown / dup / out of window)
             }
@@ -218,8 +218,20 @@ final class FxKernel {
     /** ~fx/result bodies are tiny ([v,h,ord,outcome,ref≤128,hash≤32]); anything larger is garbage. */
     private static final int MAX_RESULT_BODY_BYTES = 512;
 
-    private EffectResult interpretResult(byte[] body, AppBlock block, FxReader reader,
-                                         java.util.Set<Long> closedInBlock) {
+    private EffectResult interpretResult(
+            com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage message,
+            AppBlock block, FxReader reader, java.util.Set<Long> closedInBlock) {
+        // Signer policy (ADR-010 F8, FX-M5): with a designated-signer list
+        // configured, results from any other member are deterministic no-ops.
+        // Membership itself was already enforced at envelope verification.
+        if (!settings.resultSigners().isEmpty()) {
+            String senderHex = com.bloxbean.cardano.yaci.core.util.HexUtil
+                    .encodeHexString(message.getSender()).toLowerCase(java.util.Locale.ROOT);
+            if (!settings.resultSigners().contains(senderHex)) {
+                return null;
+            }
+        }
+        byte[] body = message.getBody();
         if (body == null || body.length > MAX_RESULT_BODY_BYTES) {
             // Deterministic pre-decode cap — also excludes deeply-nested CBOR
             // whose decode could StackOverflow past the Exception catch
