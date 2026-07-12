@@ -41,6 +41,12 @@ public final class BlockProducerHelper {
     private static volatile Supplier<GenesisBootstrapData> genesisBootstrapDataSupplier = GenesisBootstrapData::empty;
     private static volatile Supplier<String> producerPoolHashSupplier = () -> null;
 
+    // When true, a multi-epoch jump (restart/restore at wall-clock slots) fires one
+    // transition per skipped epoch instead of a single collapsed transition, so every
+    // epoch gets full boundary processing (params, snapshot, AdaPot, rewards, governance).
+    // Off by default: a long-idle devnet can jump thousands of epochs.
+    private static volatile boolean processSkippedEpochs;
+
     private BlockProducerHelper() {}
 
     /**
@@ -56,6 +62,14 @@ public final class BlockProducerHelper {
 
     public static void setProducerPoolHashSupplier(Supplier<String> supplier) {
         producerPoolHashSupplier = supplier != null ? supplier : () -> null;
+    }
+
+    /**
+     * Enable per-epoch boundary processing across multi-epoch jumps
+     * ({@code yano.block-producer.process-skipped-epochs}).
+     */
+    public static void setProcessSkippedEpochs(boolean enabled) {
+        processSkippedEpochs = enabled;
     }
 
     public static void resetEpochTrackingToSlot(long tipSlot) {
@@ -205,14 +219,31 @@ public final class BlockProducerHelper {
                     .blockNo(blockNumber)
                     .build();
             PublishOptions opts = PublishOptions.builder().build();
-            eventBus.publish(new PreEpochTransitionEvent(previousEpoch, currentEpoch, slot, blockNumber),
-                    meta, opts);
-            eventBus.publish(new EpochTransitionEvent(previousEpoch, currentEpoch, slot, blockNumber),
-                    meta, opts);
-            eventBus.publish(new PostEpochTransitionEvent(previousEpoch, currentEpoch, slot, blockNumber),
-                    meta, opts);
+
+            if (processSkippedEpochs && currentEpoch - previousEpoch > 1) {
+                // Fire one full transition per skipped epoch so each gets complete
+                // boundary processing (params, snapshot, AdaPot, rewards, governance).
+                log.info("Processing {} skipped epoch transitions individually ({} -> {})",
+                        currentEpoch - previousEpoch, previousEpoch, currentEpoch);
+                for (int epoch = previousEpoch + 1; epoch <= currentEpoch; epoch++) {
+                    publishEpochTransition(eventBus, epoch - 1, epoch, slot, blockNumber, meta, opts);
+                }
+            } else {
+                publishEpochTransition(eventBus, previousEpoch, currentEpoch, slot, blockNumber, meta, opts);
+            }
         }
         previousEpoch = currentEpoch;
+    }
+
+    private static void publishEpochTransition(EventBus eventBus, int fromEpoch, int toEpoch,
+                                               long slot, long blockNumber,
+                                               EventMetadata meta, PublishOptions opts) {
+        eventBus.publish(new PreEpochTransitionEvent(fromEpoch, toEpoch, slot, blockNumber),
+                meta, opts);
+        eventBus.publish(new EpochTransitionEvent(fromEpoch, toEpoch, slot, blockNumber),
+                meta, opts);
+        eventBus.publish(new PostEpochTransitionEvent(fromEpoch, toEpoch, slot, blockNumber),
+                meta, opts);
     }
 
     private static int epochForSlot(long slot) {

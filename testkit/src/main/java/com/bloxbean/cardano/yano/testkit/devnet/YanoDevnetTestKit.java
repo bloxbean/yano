@@ -11,6 +11,7 @@ import com.bloxbean.cardano.yano.api.config.YanoConfig;
 import com.bloxbean.cardano.yano.devnet.YanoDevnetAssembly;
 import com.bloxbean.cardano.yano.runtime.assembly.Yano;
 
+import java.nio.file.Path;
 import java.util.Objects;
 import java.util.Optional;
 
@@ -33,14 +34,17 @@ public final class YanoDevnetTestKit implements AutoCloseable {
 
     /**
      * Builds a standard devnet test kit.
+     * Relative RocksDB paths are treated as test-owned temporary storage; use
+     * {@link YanoDevnetTestConfig.Builder#persistentRocksDbStorage(Path)} for a
+     * caller-owned persistent chainstate directory.
+     * Configs with RocksDB disabled are normalized to temporary RocksDB because
+     * testkit devnet supports only the file-backed, RocksDB-backed profile.
      *
      * @param config devnet configuration
      * @return managed test kit
      */
     public static YanoDevnetTestKit devnet(YanoConfig config) {
-        return from(YanoDevnetAssembly.devnet(config)
-                .runtimeOptions(YanoDevnetTestConfig.defaultRuntimeOptions())
-                .build());
+        return devnet(configFrom(config));
     }
 
     /**
@@ -66,14 +70,17 @@ public final class YanoDevnetTestKit implements AutoCloseable {
 
     /**
      * Builds a past-time-travel devnet test kit.
+     * Relative RocksDB paths are treated as test-owned temporary storage; use
+     * {@link YanoDevnetTestConfig.Builder#persistentRocksDbStorage(Path)} for a
+     * caller-owned persistent chainstate directory.
+     * Configs with RocksDB disabled are normalized to temporary RocksDB because
+     * testkit devnet supports only the file-backed, RocksDB-backed profile.
      *
      * @param config devnet time-travel configuration
      * @return managed test kit
      */
     public static YanoDevnetTestKit devnetTimeTravel(YanoConfig config) {
-        return from(YanoDevnetAssembly.devnetTimeTravel(config)
-                .runtimeOptions(YanoDevnetTestConfig.defaultRuntimeOptions())
-                .build());
+        return devnetTimeTravel(configFrom(config, true));
     }
 
     /**
@@ -119,7 +126,6 @@ public final class YanoDevnetTestKit implements AutoCloseable {
                 ? YanoDevnetAssembly.devnetTimeTravel(config.yanoConfig())
                 : YanoDevnetAssembly.devnet(config.yanoConfig());
         builder.runtimeOptions(config.runtimeOptions());
-        config.inMemoryGenesis().ifPresent(builder::inMemoryGenesis);
         Yano node = null;
         try {
             node = builder.build();
@@ -128,6 +134,30 @@ public final class YanoDevnetTestKit implements AutoCloseable {
             closeAfterFailedBuild(node, config, e);
             throw e;
         }
+    }
+
+    static YanoDevnetTestConfig configFrom(YanoConfig config) {
+        return configFrom(config, false);
+    }
+
+    static YanoDevnetTestConfig configFrom(YanoConfig config, boolean timeTravel) {
+        Objects.requireNonNull(config, "config");
+        YanoDevnetTestConfig.Builder builder = YanoDevnetTestConfig.builder()
+                .yanoConfig(config);
+        if (timeTravel) {
+            builder.timeTravel(true);
+        }
+        if (config.isUseRocksDB() && config.getRocksDBPath() != null && !config.getRocksDBPath().isBlank()) {
+            Path rocksDbPath = Path.of(config.getRocksDBPath());
+            if (rocksDbPath.isAbsolute()) {
+                builder.persistentRocksDbStorage(rocksDbPath);
+            } else {
+                builder.temporaryRocksDbStorage();
+            }
+        } else {
+            builder.temporaryRocksDbStorage();
+        }
+        return builder.build();
     }
 
     private static YanoDevnetTestKit from(Yano node, AutoCloseable cleanup) {

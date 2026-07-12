@@ -659,4 +659,75 @@ class EpochParamTrackerTest {
         assertThat(tracker.bootstrapEpochIfNeeded(42)).isFalse();
         assertThat(tracker.getResolvedParams(42)).isNull();
     }
+
+    // ===== Carry-forward (floor) lookup for devnet epoch jumps =====
+
+    @Test
+    @DisplayName("Carry-forward lookup resolves gap epochs to the nearest earlier finalized entry")
+    void carryForwardResolvesGapEpochs() {
+        EpochParamTracker tracker = createTracker();
+        tracker.setCarryForwardLookup(true);
+
+        tracker.bootstrapEpochIfNeeded(0);
+        tracker.finalizeEpoch(5); // devnet jump 0 -> 5: epochs 1-4 get no entries
+
+        for (int epoch = 1; epoch <= 4; epoch++) {
+            assertThat(tracker.getResolvedParams(epoch))
+                    .as("gap epoch %d should resolve via carry-forward", epoch)
+                    .isNotNull();
+            assertThat(tracker.getProtocolMajor(epoch)).isEqualTo(2);
+        }
+        // Wall-clock-ahead epochs (beyond the last processed boundary) also resolve
+        assertThat(tracker.getResolvedParams(10)).isNotNull();
+
+        // Survives restart: gaps in the persisted timeline still resolve
+        EpochParamTracker restarted = createTracker();
+        restarted.setCarryForwardLookup(true);
+        assertThat(restarted.getResolvedParams(3)).isNotNull();
+        assertThat(restarted.getProtocolMajor(3)).isEqualTo(2);
+    }
+
+    @Test
+    @DisplayName("Without carry-forward, gap epochs return null (exact-match lookup, real networks)")
+    void exactLookupWithoutCarryForward() {
+        EpochParamTracker tracker = createTracker();
+
+        tracker.bootstrapEpochIfNeeded(0);
+        tracker.finalizeEpoch(5);
+
+        assertThat(tracker.getResolvedParams(0)).isNotNull();
+        assertThat(tracker.getResolvedParams(5)).isNotNull();
+        assertThat(tracker.getResolvedParams(3)).isNull();
+        assertThat(tracker.getResolvedParams(10)).isNull();
+    }
+
+    @Test
+    @DisplayName("Carry-forward uses the nearest earlier entry and never resolves forward")
+    void carryForwardUsesNearestEarlierEntry() {
+        EpochParamTracker tracker = createTracker();
+        tracker.setCarryForwardLookup(true);
+
+        tracker.bootstrapEpochIfNeeded(0);
+        // Conway-style enactment changes nOpt at epoch 2, then a jump to epoch 8
+        tracker.applyEnactedParamChange(2, ProtocolParamUpdate.builder().nOpt(600).build());
+        tracker.finalizeEpoch(8);
+
+        // Gap epochs after the enactment carry the enacted value, not the genesis one
+        assertThat(tracker.getResolvedParams(5).getNOpt()).isEqualTo(600);
+        // Gap epoch before the enactment carries the epoch-0 snapshot
+        assertThat(tracker.getResolvedParams(1).getNOpt())
+                .isEqualTo(tracker.getResolvedParams(0).getNOpt());
+    }
+
+    @Test
+    @DisplayName("Carry-forward does not resolve epochs before the first tracked entry")
+    void carryForwardDoesNotResolveBeforeFirstEntry() {
+        EpochParamTracker tracker = createTracker();
+        tracker.setCarryForwardLookup(true);
+
+        tracker.finalizeEpoch(5); // first and only entry
+
+        assertThat(tracker.getResolvedParams(3)).isNull();
+        assertThat(tracker.getResolvedParams(5)).isNotNull();
+    }
 }

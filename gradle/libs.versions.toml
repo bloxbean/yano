@@ -65,9 +65,10 @@ archunit = "com.tngtech.archunit:archunit:1.4.1"
 
 rocksdb="org.rocksdb:rocksdbjni:9.11.2"
 
-scala3-library = "org.scala-lang:scala3-library_3:3.3.4"
-scalus-cardano-ledger = "org.scalus:scalus-cardano-ledger_3:0.16.0"
-scalus-bloxbean-ccl = "org.scalus:scalus-bloxbean-cardano-client-lib_3:0.16.0"
+scala3-library = "org.scala-lang:scala3-library_3:3.3.8"
+scalus-cardano-ledger = "org.scalus:scalus-cardano-ledger_3:0.18.2"
+scalus-bloxbean-ccl = "org.scalus:scalus-bloxbean-cardano-client-lib_3:0.18.2"
+blst-java = "foundation.icon:blst-java:0.3.2"
 
 aiken-java-binding = "com.bloxbean.cardano:aiken-java-binding:0.1.0"
 
