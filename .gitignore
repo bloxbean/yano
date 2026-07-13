@@ -191,3 +191,13 @@ __pycache__/
 
 # Compatibility test data (downloaded haskell cardano-node + scratch state)
 /test-data-dir/
+
+# Local debug/scratch artifacts under app/ (accidentally committed once — never again)
+/app/logs/
+/app/yano.log*
+/app/*.pid
+/app/*.bak
+/app/preprod-test/
+/app/chainstate-*.json
+/app/**/*.bak
+/app/**/*.working

@@ -178,6 +178,7 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
 
     // Server components (for serving other clients)
     private final ServeSubsystem serveSubsystem;
+    private final com.bloxbean.cardano.yano.runtime.appchain.AppChainManager appChainManager;
     private final RelayConnectionManager relayConnectionManager;
     private final int serverPort;
 
@@ -342,6 +343,11 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 relayConnectionManager,
                 log);
 
+        this.appChainManager = buildAppChainManager();
+        if (appChainManager != null) {
+            serveSubsystem.enableAppLayer(appChainManager.serverAgentFactories());
+        }
+
         // Register default consensus listener (accept-all placeholder)
         var consensusListener = new DefaultConsensusListener();
         AnnotationListenerRegistrar.register(eventBus, consensusListener,
@@ -389,6 +395,15 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 ledgerStateSubsystem);
         PeerClientFactory peerClientFactory = relayConnectionManager.wrapPeerClientFactory(
                 createPeerClientFactory());
+        if (appChainManager != null && config.isClientEnabled()) {
+            // Shared app transport (ADR 005 M1 unification): when the L1
+            // upstream is also an app-group peer, app protocols ride its
+            // session instead of a second dedicated connection.
+            String appTransportMode = stringOf(this.runtimeOptions.globals()
+                    .get(YanoPropertyKeys.AppChain.TRANSPORT_MODE), "shared");
+            peerClientFactory = appChainManager.wrapPeerClientFactory(
+                    peerClientFactory, appTransportMode, remoteCardanoHost, remoteCardanoPort);
+        }
         this.syncSubsystem = new SyncSubsystem(
                 config,
                 chainState,
@@ -455,7 +470,255 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
     }
 
     private List<Subsystem> runtimeKernelSubsystems() {
-        return RuntimeKernelStages.create(runtimeKernelActions());
+        List<Subsystem> subsystems = new java.util.ArrayList<>(RuntimeKernelStages.create(runtimeKernelActions()));
+        if (appChainManager != null) {
+            subsystems.add(appChainManager);
+        }
+        return List.copyOf(subsystems);
+    }
+
+    /**
+     * Builds the app-chain manager from runtime globals when enabled
+     * (adr/app-layer/005; multi-chain per adr/app-layer/006 E5.2).
+     * Chains come from the indexed list (yano.app-chain.chains) when present,
+     * otherwise from the flat yano.app-chain.* keys (single chain).
+     * Returns null when disabled.
+     */
+    private com.bloxbean.cardano.yano.runtime.appchain.AppChainManager buildAppChainManager() {
+        Map<String, Object> globals = this.runtimeOptions.globals();
+        if (!resolveBoolean(globals, YanoPropertyKeys.AppChain.ENABLED, false)) {
+            return null;
+        }
+
+        // Each chain: (suffix getter, prefix collector for plugin sub-maps like sinks.*)
+        List<java.util.function.Function<String, Object>> chainLookups = new java.util.ArrayList<>();
+        List<java.util.function.Function<String, Map<String, String>>> chainCollectors =
+                new java.util.ArrayList<>();
+        Object chainList = globals.get(YanoPropertyKeys.AppChain.CHAINS);
+        if (chainList instanceof List<?> entries && !entries.isEmpty()) {
+            for (Object entry : entries) {
+                if (entry instanceof Map<?, ?> chainMap) {
+                    chainLookups.add(suffix -> chainMap.get(suffix));
+                    chainCollectors.add(prefix -> collectPrefixed(chainMap, "", prefix));
+                }
+            }
+        } else {
+            // Flat single-chain config: full keys are "yano.app-chain." + suffix
+            chainLookups.add(suffix -> globals.get("yano.app-chain." + suffix));
+            chainCollectors.add(prefix -> collectPrefixed(globals, "yano.app-chain.", prefix));
+        }
+
+        String rocksPath = config.getRocksDBPath() != null ? config.getRocksDBPath() : "./chainstate";
+        List<com.bloxbean.cardano.yano.runtime.appchain.AppChainSubsystem> subsystems =
+                new java.util.ArrayList<>();
+        for (int i = 0; i < chainLookups.size(); i++) {
+            var appChainConfig = buildAppChainConfig(chainLookups.get(i), chainCollectors.get(i));
+            log.info("App chain enabled: {} ({} members, {} peers, sequencing: {}, anchoring: {})",
+                    appChainConfig.chainId(), appChainConfig.memberKeysHex().size(),
+                    appChainConfig.peers().size(), appChainConfig.sequencingEnabled(),
+                    appChainConfig.anchoringEnabled());
+            var subsystem = new com.bloxbean.cardano.yano.runtime.appchain.AppChainSubsystem(
+                    appChainConfig, protocolMagic, eventBus, null, rocksPath + "/app-chain",
+                    Thread.currentThread().getContextClassLoader(), log);
+            subsystem.wireL1(this::submitTransaction, this::getUtxoState);
+            subsystem.wireAnchorFees(this::anchorFeeParams);
+            subsystem.wireAnchorProtocolParams(this::anchorCclProtocolParams);
+            subsystems.add(subsystem);
+        }
+        return new com.bloxbean.cardano.yano.runtime.appchain.AppChainManager(subsystems, log);
+    }
+
+    /** Collect config entries whose full key starts with base+prefix, keyed by (key minus base). */
+    private static Map<String, String> collectPrefixed(Map<?, ?> source, String base, String prefix) {
+        Map<String, String> result = new java.util.LinkedHashMap<>();
+        String full = base + prefix;
+        for (Map.Entry<?, ?> entry : source.entrySet()) {
+            String key = String.valueOf(entry.getKey());
+            if (key.startsWith(full) && entry.getValue() != null) {
+                result.put(key.substring(base.length()), String.valueOf(entry.getValue()));
+            }
+        }
+        return result;
+    }
+
+    /** Builds one chain's config from suffix-keyed lookups (e.g. "chain-id", "sequencer.proposer"). */
+    private com.bloxbean.cardano.yano.api.appchain.AppChainConfig buildAppChainConfig(
+            java.util.function.Function<String, Object> get,
+            java.util.function.Function<String, Map<String, String>> collectPrefixed) {
+        java.util.Set<String> memberKeys = new java.util.HashSet<>();
+        for (String member : stringOf(get.apply("members"), "").split(",")) {
+            if (!member.isBlank()) memberKeys.add(member.trim());
+        }
+        List<com.bloxbean.cardano.yano.api.appchain.AppChainConfig.AppPeer> appPeers = new java.util.ArrayList<>();
+        for (String peer : stringOf(get.apply("peers"), "").split(",")) {
+            if (!peer.isBlank())
+                appPeers.add(com.bloxbean.cardano.yano.api.appchain.AppChainConfig.AppPeer.parse(peer.trim()));
+        }
+        boolean anchorEnabled = booleanOf(get.apply("anchor.enabled"), false);
+        List<String> webhookUrls = new java.util.ArrayList<>();
+        for (String url : stringOf(get.apply("webhooks"), "").split(",")) {
+            if (!url.isBlank()) webhookUrls.add(url.trim());
+        }
+        return new com.bloxbean.cardano.yano.api.appchain.AppChainConfig(
+                stringOf(get.apply("chain-id"), ""),
+                stringOf(get.apply("signing-key"), ""),
+                memberKeys,
+                appPeers,
+                (int) parseLong(get.apply("max-message-bytes"),
+                        com.bloxbean.cardano.yano.api.appchain.AppChainConfig.DEFAULT_MAX_MESSAGE_BYTES),
+                parseLong(get.apply("max-ttl-seconds"),
+                        com.bloxbean.cardano.yano.api.appchain.AppChainConfig.DEFAULT_MAX_TTL_SECONDS),
+                parseLong(get.apply("default-ttl-seconds"),
+                        com.bloxbean.cardano.yano.api.appchain.AppChainConfig.DEFAULT_DEFAULT_TTL_SECONDS),
+                stringOf(get.apply("sequencer.proposer"), ""),
+                (int) parseLong(get.apply("threshold"), 1),
+                parseLong(get.apply("block.interval-ms"),
+                        com.bloxbean.cardano.yano.api.appchain.AppChainConfig.DEFAULT_BLOCK_INTERVAL_MS),
+                (int) parseLong(get.apply("block.max-messages"),
+                        com.bloxbean.cardano.yano.api.appchain.AppChainConfig.DEFAULT_MAX_BLOCK_MESSAGES),
+                parseLong(get.apply("block.max-bytes"),
+                        com.bloxbean.cardano.yano.api.appchain.AppChainConfig.DEFAULT_BLOCK_MAX_BYTES),
+                stringOf(get.apply("state-machine"),
+                        com.bloxbean.cardano.yano.api.appchain.AppChainConfig.DEFAULT_STATE_MACHINE),
+                null,
+                anchorEnabled
+                        ? new com.bloxbean.cardano.yano.api.appchain.AppChainConfig.AnchorConfig(
+                                true,
+                                stringOf(get.apply("anchor.signing-key"), ""),
+                                parseLong(get.apply("anchor.every-blocks"), 10),
+                                parseLong(get.apply("anchor.max-interval-minutes"), 60),
+                                parseLong(get.apply("anchor.metadata-label"), 7014),
+                                parseLong(get.apply("anchor.validity-slots"),
+                                        com.bloxbean.cardano.yano.api.appchain.AppChainConfig.AnchorConfig.DEFAULT_VALIDITY_SLOTS),
+                                parseLong(get.apply("anchor.fallback-fee-lovelace"),
+                                        com.bloxbean.cardano.yano.api.appchain.AppChainConfig.AnchorConfig.DEFAULT_FALLBACK_FEE_LOVELACE),
+                                stringOf(get.apply("anchor.mode"),
+                                        com.bloxbean.cardano.yano.api.appchain.AppChainConfig.AnchorConfig.MODE_METADATA),
+                                new com.bloxbean.cardano.yano.api.appchain.AppChainConfig.AnchorScriptConfig(
+                                        stringOf(get.apply("anchor.script.validator"), ""),
+                                        stringOf(get.apply("anchor.script.thread-policy"), "")))
+                        : null,
+                (int) parseLong(get.apply("l1.stability-depth"), 0),
+                webhookUrls,
+                booleanOf(get.apply("retention.enabled"), false),
+                (int) parseLong(get.apply("retention.keep-blocks"), 0),
+                (int) parseLong(get.apply("pool.max-messages"),
+                        com.bloxbean.cardano.yano.api.appchain.AppChainConfig.DEFAULT_POOL_MAX_MESSAGES),
+                booleanOf(get.apply("message.enforce-sender-seq"), false),
+                pluginSettings(collectPrefixed, "sinks.", "zk.", "machines.", "sequencer.",
+                        "membership.", "observers."));
+    }
+
+    /**
+     * Current linear-fee protocol params for anchor tx pricing (ADR 008.1
+     * I1.5); null when unavailable (the anchor falls back to its configured
+     * fee). Resolves the ledger-tracked params for the current epoch, or the
+     * static/genesis params on nodes without epoch-param tracking.
+     */
+    private com.bloxbean.cardano.yano.runtime.appchain.AppChainSubsystem.AnchorFeeParams anchorFeeParams() {
+        try {
+            int epoch = epochNonceState != null ? epochNonceState.getCurrentEpoch() : 0;
+            var params = getProtocolParameters(Math.max(epoch, 0)).orElse(null);
+            if (params != null && params.minFeeA() != null && params.minFeeB() != null) {
+                // Script-anchor pricing (008.4): ex-unit prices + PlutusV3 cost
+                // model; null fields fall back to Conway defaults in the anchor
+                long[] costModelV3 = null;
+                if (params.costModelsRaw() != null && params.costModelsRaw().get("PlutusV3") != null) {
+                    costModelV3 = params.costModelsRaw().get("PlutusV3").stream()
+                            .mapToLong(Long::longValue).toArray();
+                }
+                return new com.bloxbean.cardano.yano.runtime.appchain.AppChainSubsystem.AnchorFeeParams(
+                        params.minFeeA(), params.minFeeB(),
+                        params.priceMem(), params.priceStep(), costModelV3);
+            }
+        } catch (Exception e) {
+            log.debug("Anchor fee params unavailable: {}", e.toString());
+        }
+        return null;
+    }
+
+    /** Memoized parse of the configured static protocol-param.json for the anchor fallback. */
+    private volatile com.bloxbean.cardano.client.api.model.ProtocolParams anchorStaticCclParams;
+    private volatile boolean anchorStaticCclParamsLoaded;
+
+    /**
+     * Current protocol parameters as the cardano-client-lib model, for
+     * QuickTx-based anchor tx construction (Iteration 4). Tracked / L1-derived
+     * params for the current epoch are primary; when those are unavailable
+     * (epoch-param tracking disabled or not yet resolved), fall back to the
+     * configured static {@code protocol-param.json}
+     * ({@code yano.genesis.protocol-parameters-file}). Returns {@code null} only
+     * when neither source is available — the anchor then fails closed.
+     */
+    private com.bloxbean.cardano.client.api.model.ProtocolParams anchorCclProtocolParams() {
+        try {
+            int epoch = Math.max(epochNonceState != null ? epochNonceState.getCurrentEpoch() : 0, 0);
+            var ccl = ProtocolParamsMapper.toCardanoClient(getProtocolParameters(epoch).orElse(null));
+            if (ccl != null) {
+                return ccl;
+            }
+            return anchorStaticCclParams(epoch);
+        } catch (Exception e) {
+            log.debug("Anchor protocol params unavailable: {}", e.toString());
+            return null;
+        }
+    }
+
+    /**
+     * The configured static {@code protocol-param.json} mapped to the CCL model
+     * (with the full raw PlutusV3 cost model), read directly regardless of
+     * epoch-param tracking mode and memoized. {@code null} when no file is
+     * configured.
+     */
+    private com.bloxbean.cardano.client.api.model.ProtocolParams anchorStaticCclParams(int epoch) {
+        if (anchorStaticCclParamsLoaded) {
+            return anchorStaticCclParams;
+        }
+        com.bloxbean.cardano.client.api.model.ProtocolParams result = null;
+        String file = config.getProtocolParametersFile();
+        if (file != null && !file.isBlank()) {
+            try {
+                String json = Files.readString(Path.of(file));
+                result = ProtocolParamsMapper.fromNodeProtocolParamToCardanoClient(json, epoch);
+            } catch (Exception e) {
+                log.debug("Anchor static protocol params unavailable from {}: {}", file, e.toString());
+            }
+        }
+        anchorStaticCclParams = result;
+        anchorStaticCclParamsLoaded = true;
+        return result;
+    }
+
+    /** Union of the dynamic plugin config sub-maps under the given prefixes. */
+    private static Map<String, String> pluginSettings(
+            java.util.function.Function<String, Map<String, String>> collectPrefixed, String... prefixes) {
+        Map<String, String> merged = new java.util.LinkedHashMap<>();
+        for (String prefix : prefixes) {
+            merged.putAll(collectPrefixed.apply(prefix));
+        }
+        return merged;
+    }
+
+    private static String stringOf(Object value, String def) {
+        return value != null && !String.valueOf(value).isBlank() ? String.valueOf(value).trim() : def;
+    }
+
+    private static boolean booleanOf(Object value, boolean def) {
+        if (value == null) return def;
+        if (value instanceof Boolean b) return b;
+        return Boolean.parseBoolean(String.valueOf(value));
+    }
+
+    /** Single app-chain gateway (back-compat), or null when disabled or multiple chains. */
+    public com.bloxbean.cardano.yano.api.appchain.AppChainGateway appChainGateway() {
+        return appChainManager != null ? appChainManager.single().orElse(null) : null;
+    }
+
+    /** All hosted app chains; empty registry when disabled. */
+    public com.bloxbean.cardano.yano.api.appchain.AppChainGateways appChainGateways() {
+        return appChainManager != null
+                ? appChainManager
+                : com.bloxbean.cardano.yano.api.appchain.AppChainGateways.empty();
     }
 
     private SubsystemHealth runtimeHealth(String name) {
@@ -3286,6 +3549,11 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
         Point remotePoint = remoteTip != null ? remoteTip.getPoint() : null;
         RelayConnectionSnapshot relayConnectionSnapshot = relayConnectionManager.snapshot();
         PeerGovernorSnapshot peerGovernorSnapshot = syncSubsystem.peerGovernorSnapshot();
+        // With client sync disabled (e.g. a standalone devnet block producer) the
+        // configured default remote is never contacted — reporting it as the
+        // "active peer" is misleading (status page showed the preprod relay on a
+        // devnet). Report the mode explicitly and no active peer instead.
+        boolean clientSyncEnabled = config.isClientEnabled();
 
         return NodeStatus.builder()
                 .running(isRunning())
@@ -3307,13 +3575,15 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 .runtimeDegradedOperation(maintenanceDegradation != null ? maintenanceDegradation.operation() : null)
                 .runtimeDegradedAtMillis(maintenanceDegradation != null ? maintenanceDegradation.timestampMillis() : null)
                 .peerName(peerStatus != null ? peerStatus.peerName() : null)
-                .upstreamMode(upstreamStatus.mode().configValue())
+                .upstreamMode(clientSyncEnabled
+                        ? upstreamStatus.mode().configValue()
+                        : "disabled (local producer)")
                 .upstreamConfiguredPeerCount(upstreamStatus.configuredPeerCount())
                 .upstreamHotPeerCount(upstreamStatus.hotPeerCount())
                 .upstreamObserverPeerCount(upstreamStatus.observerPeerCount())
                 .upstreamKnownPeerCount(upstreamStatus.knownPeerCount())
                 .upstreamCandidateHeaderCount(upstreamStatus.candidateHeaderCount())
-                .upstreamActivePeer(upstreamStatus.activePeerName())
+                .upstreamActivePeer(clientSyncEnabled ? upstreamStatus.activePeerName() : null)
                 .upstreamTxForwarding(upstreamStatus.txForwarding())
                 .upstreamMultiPeerObservationOnly(upstreamStatus.multiPeerObservationOnly())
                 .upstreamDiscoveryRunning(upstreamStatus.discoveryRunning())

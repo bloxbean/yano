@@ -21,3 +21,19 @@ include 'ledger-state'
 include 'ccl-ledger-rules'
 include 'scalus-bridge'
 include 'epoch-export'
+// App-chain modules live under appchain/ (plugins under appchain/extensions/);
+// project names are kept flat so artifact ids stay yano-appchain-*.
+include 'appchain-stdlib'
+include 'appchain-testkit'
+include 'appchain-client'
+include 'appchain-kafka-sink'
+include 'appchain-zk'
+include 'appchain-spring-boot-starter'
+include 'appchain-anchor-onchain'
+project(':appchain-anchor-onchain').projectDir = file('appchain/onchain/appchain-anchor-onchain')
+project(':appchain-stdlib').projectDir = file('appchain/appchain-stdlib')
+project(':appchain-testkit').projectDir = file('appchain/appchain-testkit')
+project(':appchain-client').projectDir = file('appchain/appchain-client')
+project(':appchain-kafka-sink').projectDir = file('appchain/extensions/appchain-kafka-sink')
+project(':appchain-zk').projectDir = file('appchain/extensions/appchain-zk')
+project(':appchain-spring-boot-starter').projectDir = file('spring-starters/appchain-spring-boot-starter')

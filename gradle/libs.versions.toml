@@ -1,7 +1,8 @@
 [versions]
-yaci = "0.5.0-pre11"
+yaci = "0.5.0-pre12"
 cardano-client-lib = "0.8.0-pre4"
-julc="0.1.0-pre13"
+julc="0.1.0-pre14"
+zeroj = "0.1.0-pre7"
 
 [libraries]
 yaci-core = { module = "com.bloxbean.cardano:yaci-core", version.ref = "yaci" }
@@ -20,6 +21,9 @@ cardano-client-crypto-ext = { module = "com.bloxbean.cardano:cardano-client-cryp
 cardano-client-backend-blockfrost = { module = "com.bloxbean.cardano:cardano-client-backend-blockfrost", version.ref = "cardano-client-lib" }
 cardano-client-quicktx = { module = "com.bloxbean.cardano:cardano-client-quicktx", version.ref = "cardano-client-lib" }
 cardano-client-cip20 = { module = "com.bloxbean.cardano:cardano-client-cip20", version.ref = "cardano-client-lib" }
+
+cardano-client-mpf = { module = "com.bloxbean.cardano:cardano-client-merkle-patricia-forestry", version.ref = "cardano-client-lib" }
+cardano-client-mpf-rocksdb = { module = "com.bloxbean.cardano:cardano-client-merkle-patricia-forestry-rocksdb", version.ref = "cardano-client-lib" }
 
 julc-vm-java={ module = "com.bloxbean.cardano:julc-vm-java", version.ref = "julc" }
 julc-cardano-client-lib={ module = "com.bloxbean.cardano:julc-cardano-client-lib", version.ref = "julc" }
@@ -46,6 +50,17 @@ assertj-core="org.assertj:assertj-core:3.21.0"
 reload4j="ch.qos.reload4j:reload4j:1.2.22"
 
 jackson-databind = "com.fasterxml.jackson.core:jackson-databind:2.17.0"
+jackson-dataformat-cbor = "com.fasterxml.jackson.dataformat:jackson-dataformat-cbor:2.17.0"
+kafka-clients = "org.apache.kafka:kafka-clients:3.7.1"
+spring-boot-autoconfigure = "org.springframework.boot:spring-boot-autoconfigure:3.5.6"
+spring-context = "org.springframework:spring-context:6.2.11"
+spring-boot-test = "org.springframework.boot:spring-boot-test:3.5.6"
+zeroj-verifier-core = { module = "com.bloxbean.cardano:zeroj-verifier-core", version.ref = "zeroj" }
+zeroj-verifier-groth16 = { module = "com.bloxbean.cardano:zeroj-verifier-groth16", version.ref = "zeroj" }
+zeroj-verifier-plonk = { module = "com.bloxbean.cardano:zeroj-verifier-plonk", version.ref = "zeroj" }
+zeroj-patterns = { module = "com.bloxbean.cardano:zeroj-patterns", version.ref = "zeroj" }
+zeroj-api = { module = "com.bloxbean.cardano:zeroj-api", version.ref = "zeroj" }
+zeroj-bbs = { module = "com.bloxbean.cardano:zeroj-bbs", version.ref = "zeroj" }
 archunit = "com.tngtech.archunit:archunit:1.4.1"
 
 rocksdb="org.rocksdb:rocksdbjni:9.11.2"

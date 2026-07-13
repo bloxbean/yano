@@ -157,6 +157,48 @@ public class ProtocolParamsMapper {
         return pp;
     }
 
+    /**
+     * Map a Yano {@link ProtocolParamsSnapshot} to a cardano-client-lib
+     * {@link ProtocolParams} for tx construction (QuickTx / script evaluation).
+     * Copies the full {@code costModelsRaw} — the raw PlutusV3 cost vector the
+     * evaluator needs (which {@link #fromNodeProtocolParam(String)} does not
+     * populate). Returns {@code null} if the snapshot is null or lacks fees.
+     */
+    public static ProtocolParams toCardanoClient(ProtocolParamsSnapshot snapshot) {
+        if (snapshot == null || snapshot.minFeeA() == null || snapshot.minFeeB() == null) {
+            return null;
+        }
+        LinkedHashMap<String, List<Long>> costModelsRaw = snapshot.costModelsRaw() != null
+                ? new LinkedHashMap<>(snapshot.costModelsRaw())
+                : new LinkedHashMap<>();
+        return ProtocolParams.builder()
+                .minFeeA(snapshot.minFeeA())
+                .minFeeB(snapshot.minFeeB())
+                .maxTxSize(snapshot.maxTxSize())
+                .priceMem(snapshot.priceMem())
+                .priceStep(snapshot.priceStep())
+                .maxTxExMem(snapshot.maxTxExMem() != null ? snapshot.maxTxExMem().toString() : null)
+                .maxTxExSteps(snapshot.maxTxExSteps() != null ? snapshot.maxTxExSteps().toString() : null)
+                .collateralPercent(snapshot.collateralPercent() != null
+                        ? BigDecimal.valueOf(snapshot.collateralPercent()) : null)
+                .maxCollateralInputs(snapshot.maxCollateralInputs())
+                .coinsPerUtxoSize(snapshot.coinsPerUtxoSize() != null
+                        ? snapshot.coinsPerUtxoSize().toString() : null)
+                .costModelsRaw(costModelsRaw)
+                .build();
+    }
+
+    /**
+     * Parse a cardano-node protocol-param.json into a CCL {@link ProtocolParams}
+     * WITH the raw cost models (unlike {@link #fromNodeProtocolParam(String)},
+     * which only sets the named/object cost models). Used as the static fallback
+     * source for app-chain anchor tx construction.
+     */
+    public static ProtocolParams fromNodeProtocolParamToCardanoClient(String json, int epoch)
+            throws IOException {
+        return toCardanoClient(fromNodeProtocolParamSnapshot(json, epoch));
+    }
+
     public static ProtocolParamsSnapshot fromNodeProtocolParamSnapshot(String json, int epoch) throws IOException {
         JsonNode root = MAPPER.readTree(json);
         JsonNode protocolVersion = node(root, "protocolVersion", "protocol_version");

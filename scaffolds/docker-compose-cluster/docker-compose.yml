@@ -1,0 +1,83 @@
+# Yano app-chain cluster — 3 nodes (1 sequencer + 2 followers) over the appmsg
+# mini-protocol, sharing one app chain. ADR app-layer/006 E1.5 scaffold.
+#
+# Build the node image first (from the repo root):
+#   ./gradlew :app:quarkusBuild
+#   docker build -t yano-node:local -f scaffolds/docker-compose-cluster/Dockerfile .
+# Then from this directory:
+#   docker compose up
+#
+# REST is exposed per node (see ports). Submit a message to the sequencer:
+#   curl -XPOST localhost:18081/api/v1/app-chain/messages \
+#        -H 'content-type: application/json' \
+#        -d '{"topic":"orders","body":"order #1"}'
+# Read it back from a follower (replicated):
+#   curl localhost:18082/api/v1/app-chain/messages
+#
+# The demo keys below are for LOCAL USE ONLY. Generate real Ed25519 seeds for
+# anything beyond a laptop.
+services:
+  node-a:
+    image: yano-node:local
+    hostname: node-a
+    command: ["-Dquarkus.http.port=8080"]
+    environment:
+      # --- node identity / networking ---
+      YANO_SERVER_PORT: "13337"
+      YANO_APP_CHAIN_ENABLED: "true"
+      YANO_APP_CHAIN_CHAIN_ID: "demo-chain"
+      # This node is the sequencer (proposer)
+      YANO_APP_CHAIN_SIGNING_KEY: "0101010101010101010101010101010101010101010101010101010101010101"
+      YANO_APP_CHAIN_PROPOSER: "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c"
+      YANO_APP_CHAIN_MEMBERS: >-
+        8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c,
+        8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394,
+        61b2e6f6e4a3d8c9b1a0f7e5d4c3b2a190817263544536271809fadecbafedca
+      YANO_APP_CHAIN_THRESHOLD: "2"
+      YANO_APP_CHAIN_PEERS: "node-b:13337,node-c:13337"
+      YANO_APP_CHAIN_STATE_MACHINE: "kv-registry"
+    ports:
+      - "18081:8080"   # REST
+      - "13337:13337"  # appmsg / n2n
+
+  node-b:
+    image: yano-node:local
+    hostname: node-b
+    command: ["-Dquarkus.http.port=8080"]
+    environment:
+      YANO_SERVER_PORT: "13337"
+      YANO_APP_CHAIN_ENABLED: "true"
+      YANO_APP_CHAIN_CHAIN_ID: "demo-chain"
+      YANO_APP_CHAIN_SIGNING_KEY: "0202020202020202020202020202020202020202020202020202020202020202"
+      YANO_APP_CHAIN_PROPOSER: "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c"
+      YANO_APP_CHAIN_MEMBERS: >-
+        8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c,
+        8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394,
+        61b2e6f6e4a3d8c9b1a0f7e5d4c3b2a190817263544536271809fadecbafedca
+      YANO_APP_CHAIN_THRESHOLD: "2"
+      YANO_APP_CHAIN_PEERS: "node-a:13337,node-c:13337"
+      YANO_APP_CHAIN_STATE_MACHINE: "kv-registry"
+    ports:
+      - "18082:8080"
+    depends_on: [node-a]
+
+  node-c:
+    image: yano-node:local
+    hostname: node-c
+    command: ["-Dquarkus.http.port=8080"]
+    environment:
+      YANO_SERVER_PORT: "13337"
+      YANO_APP_CHAIN_ENABLED: "true"
+      YANO_APP_CHAIN_CHAIN_ID: "demo-chain"
+      YANO_APP_CHAIN_SIGNING_KEY: "0303030303030303030303030303030303030303030303030303030303030303"
+      YANO_APP_CHAIN_PROPOSER: "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c"
+      YANO_APP_CHAIN_MEMBERS: >-
+        8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c,
+        8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394,
+        61b2e6f6e4a3d8c9b1a0f7e5d4c3b2a190817263544536271809fadecbafedca
+      YANO_APP_CHAIN_THRESHOLD: "2"
+      YANO_APP_CHAIN_PEERS: "node-a:13337,node-b:13337"
+      YANO_APP_CHAIN_STATE_MACHINE: "kv-registry"
+    ports:
+      - "18083:8080"
+    depends_on: [node-a]

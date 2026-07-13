@@ -17,9 +17,22 @@ dependencies {
 
     implementation libs.cardano.client.core
     implementation libs.cardano.client.crypto.ext
+    // App-chain state commitment (Merkle Patricia Forestry, Aiken-compatible)
+    implementation libs.cardano.client.mpf
+    implementation libs.cardano.client.mpf.rocksdb
     api project(':ledger-rules')
     api project(':ledger-state')
     implementation libs.jackson.databind
+
+    // Script anchors (ADR 008.4): UPLC param application + script hashing for
+    // the anchor artifacts (already shipped via ledger-rules' tx evaluator)...
+    implementation libs.julc.cardano.client.lib
+    // ...and the bundled julc-compiled anchor artifacts (resources only — the
+    // validator classes are never loaded)
+    runtimeOnly project(':appchain-anchor-onchain')
+    // Anchor tx construction (Iteration 4, owner-requested): QuickTx balances
+    // fees/collateral/change with additionalSignersCount for co-sign witnesses
+    implementation libs.cardano.client.quicktx
 
     testImplementation libs.project.reactor.test
 

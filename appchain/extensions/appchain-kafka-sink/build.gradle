@@ -1,0 +1,31 @@
+// Kafka bridge for finalized app blocks (ADR 006 E3.2), packaged as a T3
+// plugin jar: drop it on yaci.plugins.directory and configure
+// yano.app-chain.sinks.kafka.* — discovered via ServiceLoader.
+dependencies {
+    compileOnly project(':core-api')          // provided by the node at runtime
+    implementation libs.kafka.clients
+    implementation libs.slf4j.api
+
+    testImplementation project(':core-api')
+    testImplementation libs.kafka.clients
+    testImplementation libs.junit.jupiter.api
+    testRuntimeOnly libs.junit.jupiter.engine
+    testRuntimeOnly libs.junit.platform.launcher
+    testImplementation libs.assertj.core
+}
+
+java {
+    sourceCompatibility = 25
+    targetCompatibility = 25
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            pom {
+                name = 'Yano App-Chain Kafka Sink'
+                description = 'Kafka bridge plugin: produces finalized app blocks to Kafka topics'
+            }
+        }
+    }
+}

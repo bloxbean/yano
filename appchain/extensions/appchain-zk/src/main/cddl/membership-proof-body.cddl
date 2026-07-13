@@ -1,0 +1,19 @@
+; E7.3 anonymous membership submission body (ADR app-layer/006).
+; The author proves membership in the registered member set (a circuit over the
+; member-key Merkle root) instead of signing with an identifiable key, and binds
+; a one-time nullifier. The zk-membership machine verifies the proof and dedups
+; by nullifier IN apply() against the MPF state (rollback-safe, consensus-agreed)
+; — anonymous senders have no per-sender sequence. The nullifier context is an
+; application policy knob: hash(chainId, topic, epoch) for one-action-per-epoch
+; (voting, sealed bids), or a per-message tag for replay-only protection.
+
+membership-proof-body = [
+    circuit-id    : tstr,       ; membership circuit; VK pinned in zk.circuits config
+    proof-system  : tstr,       ; "groth16" | "plonk"
+    curve         : tstr,       ; e.g. "bls12381"
+    proof         : bstr,       ; the membership proof
+    public-inputs : [* bstr],   ; incl. the member-set Merkle root commitment
+    nullifier     : bstr,       ; one-time tag; second use is a no-op
+    context       : bstr,       ; nullifier context (epoch/topic binding)
+    payload       : bstr,       ; the anonymous message content
+]

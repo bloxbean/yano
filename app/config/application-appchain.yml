@@ -1,0 +1,60 @@
+# =============================================================================
+# App-chain cluster demo config  (external — lives in app/config, NOT bundled
+# in the jar). Activated with the `appchain` Quarkus profile, e.g.
+#   -Dquarkus.profile=devnet,appchain
+# The cluster launcher (app/appchain-cluster/cluster.sh) adds this profile for
+# you and injects the per-node/topology values.
+#
+# WHAT THIS FILE DEFINES (shared, identical on every node): the per-chain
+# "flavor" — chain-id, state machine, block cadence, and sequencer intent.
+#
+# WHAT THE LAUNCHER INJECTS (differs per node / per cluster size): members,
+# threshold, this node's signing-key, peers, and — for fixed-proposer chains —
+# the proposer. So the SAME file runs unchanged on a 3-node or a 9-node
+# cluster; you never hand-edit member lists here.
+#
+# ADD / REMOVE CHAINS FREELY: any chains[i] with a chain-id is hosted. The
+# launcher auto-discovers however many you define (indices must start at 0 and
+# be contiguous). Each chain is fully independent — its own ledger, state
+# machine, members view, sequencer and (optional) L1 anchor.
+# =============================================================================
+yano:
+  app-chain:
+    # --- Chain 0: an append-only ordered log, fixed proposer (node 0) --------
+    chains[0]:
+      chain-id: "orders-chain"
+      state-machine: ordered-log        # built-in: append-only log (default)
+      block:
+        interval-ms: 1000               # propose a block every ~1s
+        # block.max-bytes (default 4 MiB) is the primary size cap; the proposer
+        # trims each block to fit it. max-messages (default 5000) is a safety
+        # backstop against tiny-message floods. Tune either for throughput.
+      # No sequencer.mode → fixed proposer; the launcher injects
+      # sequencer.proposer = node 0's member key. To rotate instead, add:
+      #   sequencer:
+      #     mode: rotating
+      #     window-slots: 10
+
+    # --- Chain 1: a key/value registry, rotating sequencer -------------------
+    chains[1]:
+      chain-id: "registry-chain"
+      state-machine: kv-registry        # built-in: owner-guarded K/V registry
+      block:
+        interval-ms: 2000
+      sequencer:
+        mode: rotating                  # L1-slot-clocked rotation across members
+        window-slots: 10                # ~10 devnet slots (~10s) per proposer turn
+      machines:
+        kv-registry:
+          value-format: utf8            # PUT values must be valid UTF-8
+
+    # --- Add more chains here, e.g. a third with L1 anchoring ----------------
+    # chains[2]:
+    #   chain-id: "audit-chain"
+    #   state-machine: ordered-log
+    #   block:
+    #     interval-ms: 1000
+    #   anchor:
+    #     enabled: true
+    #     mode: script                  # ADR 008.4 script anchors (A2)
+    #     # signing-key + every-blocks are injected by `cluster.sh --anchor`

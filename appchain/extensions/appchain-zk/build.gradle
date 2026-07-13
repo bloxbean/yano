@@ -1,0 +1,38 @@
+// ZK verification plugin (ADR 006 E7.1/E7.2/E7.3), packaged as a T3 plugin jar.
+// EXPERIMENTAL — depends on ZeroJ (experimental, unaudited, trusted-setup ops).
+// Drop on yaci.plugins.directory and select via yano.app-chain.state-machine=zk-gate.
+// Proof GENERATION lives client-side (yano-appchain-client-zk); the node only verifies.
+dependencies {
+    compileOnly project(':core-api')          // provided by the node at runtime
+
+    api libs.zeroj.api
+    api libs.zeroj.verifier.core
+    api libs.zeroj.bbs                         // E7.2 BBS selective disclosure
+    // Verifier backends are discovered via ServiceLoader at runtime; ship the
+    // ones the deployment needs (or add zeroj-verifier-plonk).
+    runtimeOnly libs.zeroj.verifier.groth16
+    // Provided by the node at runtime (yaci-core / cardano-client) — don't bundle.
+    compileOnly libs.cbor
+    compileOnly libs.cardano.client.crypto
+    compileOnly libs.slf4j.api
+
+    testImplementation project(':core-api')
+    testImplementation project(':runtime')
+    testImplementation libs.cardano.client.crypto
+}
+
+java {
+    sourceCompatibility = 25
+    targetCompatibility = 25
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            pom {
+                name = 'Yano App-Chain ZK Verifier'
+                description = 'EXPERIMENTAL: ZK proof verification for app-chain messages (ZeroJ) — E7.1 admission/consensus proofs'
+            }
+        }
+    }
+}

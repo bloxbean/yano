@@ -1,0 +1,68 @@
+; =============================================================================
+; Yano App-Chain: Script Anchor on-chain ABI (v1) — ADR app-layer/008.4 §2.1
+; =============================================================================
+; The "contract of the contract": the datum/redeemer shapes every anchor
+; validator IMPLEMENTATION must satisfy. Two interchangeable implementations
+; exist (julc/Java — the bundled default — and Aiken — opt-in); everything
+; off-chain derives the script hash and address from the CONFIGURED compiled
+; UPLC artifact, never from the source language.
+;
+; One anchor UTxO per chain, identified by a one-shot state-thread NFT (the
+; minting policy is parameterized by the bootstrap UTxO outref, so exactly one
+; token can ever exist). The anchor's public identity is
+; (validator script hash, thread policy id).
+;
+; Spend ("Advance") rules enforced on-chain (Plutus V3):
+;   1. exactly one continuing output to the script address carrying the
+;      thread NFT, with an inline datum
+;   2. out.height > in.height; out.chain-id == in.chain-id;
+;      out.version == in.version
+;   3. >= in.threshold of in.member-keys appear as required signers of the
+;      transaction (signatures checked by the ledger; the validator compares
+;      blake2b-224 key hashes — app-chain member Ed25519 keys double as L1
+;      signing keys)
+;   4. membership may evolve: out.member-keys / out.threshold may differ —
+;      authorized by rule 3 against the INPUT datum (current members approve
+;      their successors, mirroring chain-governed membership, ADR 008.3);
+;      1 <= out.threshold <= len(out.member-keys)
+;   5. the value locked at the script is preserved or increased
+;
+; Datums are INLINE (consumers read them from the UTxO without a witness).
+; member-keys are sorted ascending (bytewise) — canonical form, deterministic
+; across implementations.
+;
+; WIRE FORMAT: the datum is Plutus Data, wrapped in constructor 0 —
+; Constr(0, [version, chain-id, height, block-hash, state-root,
+; member-keys, threshold]). Both the julc record codec and Aiken types
+; produce this Constr(0, fields) encoding; the field list below describes
+; the payload inside the wrapper.
+
+anchor-datum = [
+    version      : uint,             ; ABI version = 1
+    chain-id     : bstr,             ; app-chain identity (UTF-8 bytes)
+    height       : uint,             ; app-block height this anchor attests
+    block-hash   : bstr .size 32,    ; blake2b-256 app-block hash at height
+    state-root   : bstr .size 32,    ; MPF root bound by that block
+    member-keys  : [ + bstr .size 32 ], ; Ed25519 member public keys, sorted
+    threshold    : uint,             ; finality/advance threshold (1..len)
+]
+
+; Single action in v1: "Advance". The redeemer slot is a RESERVED action
+; discriminant — the v1 validator does not inspect it (all safety comes from
+; the datum rules + signature threshold). Off-chain code passes int 0.
+; Future ABI versions may add actions (e.g. a ZK-verified advance for E7.5)
+; — new action = new redeemer value, and the datum version field gates
+; interpretation.
+anchor-redeemer = 0                  ; "Advance" (reserved, not inspected)
+
+; The one-shot thread policy takes no redeemer semantics beyond minting
+; exactly the single token in the bootstrap transaction (the parameterized
+; outref must be consumed); burning is forbidden.
+;
+; The token name is a free display label (the node mints the chain-id as
+; UTF-8, truncated to the 32-byte ledger limit, so explorers show a readable
+; name). Identity and uniqueness come from the one-shot policy id, never the
+; name; the policy still enforces EXACTLY ONE name at quantity +1 (no rider
+; names at any quantity). Chains bootstrapped before this change carry the
+; empty name h'' forever — the validator is name-agnostic either way.
+thread-token-name = bstr .size (0..32)
