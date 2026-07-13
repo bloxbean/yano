@@ -61,7 +61,9 @@ The generic node runtime also has `NodePlugin` with discovery, lifecycle,
 event access, storage filters and dependency declarations. This is a valuable
 starting point, but it is not a coherent app-layer bundle system.
 
-Verified baseline gaps:
+Verified baseline gaps at the time of this vision ADR (the first three runtime
+lifecycle items are addressed by ADR-011.1; the manifested bundle/catalog gaps
+remain):
 
 1. The six typed SPIs are scanned independently. There is no shared bundle
    identity, artifact version, compatibility range, contribution inventory or
@@ -84,6 +86,11 @@ Verified baseline gaps:
    assumptions and makes authentication/routing ownership unclear.
 8. Plugins have no uniform inventory, health, metrics or CLI contribution
    model.
+
+ADR-011.1 retains the existing `NodePlugin` SPI and closes its immediate
+validation, dependency ordering, shared-registry, policy and lifecycle gaps. It
+does not implement this ADR's manifest, bundle identity, typed-SPI correlation,
+compatibility, inventory, domain API or isolation roadmap.
 
 ## 2. Decision summary
 
