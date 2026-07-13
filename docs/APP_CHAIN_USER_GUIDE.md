@@ -36,6 +36,7 @@ else is opt-in — a plugin jar on the node or a library in your application
 | `yano-appchain-client` | `appchain/appchain-client` | Java client SDK: REST + SSE + client-side proof verification (§16) |
 | `yano-appchain-testkit` | `appchain/appchain-testkit` | JUnit 5 `@AppChainCluster` embedded clusters for tests (§16) |
 | `yano-appchain-kafka-sink` | `appchain/extensions/appchain-kafka-sink` | Node plugin: finalized blocks → Kafka topics (§10) |
+| `yano-appchain-effects-cardano` | `appchain/extensions/appchain-effects-cardano` | Node plugin: Cardano payment executor for the effect system (§18) |
 | `yano-appchain-zk` | `appchain/extensions/appchain-zk` | Node plugin, EXPERIMENTAL: ZK state machines & verification (§17) |
 | `yano-appchain-spring-boot-starter` | `spring-starters/appchain-spring-boot-starter` | Spring Boot auto-config for the client SDK (§16) |
 
@@ -68,6 +69,10 @@ the app chain with configuration flags only; no code required:
 - **Catch-up**: a member that joins late or restarts behind fetches finalized
   blocks from peers (protocol 103) and verifies everything (hash chain,
   certificates, re-executed state roots) before committing.
+- **Effects** (optional): a finalized state transition can trigger an action
+  *outside* the chain — a Cardano payment, webhook, ERP call — safely, by
+  emitting a provable record that a separate runtime executes and reports back
+  on-chain (section 18).
 
 Typical uses with zero code: multi-party audit/compliance logs, consortium
 message queues with neutral custody, attestation feeds, document/DPP trails —
@@ -619,6 +624,18 @@ Flat (single-chain) keys. The same suffixes apply per chain under
 | `l1.stability-depth` | `0` | Depth of the stable L1 reference in app blocks (0 = off). When > 0, followers verify each proposal's L1 ref against their **own** L1 view (monotonic, hash-matched at depth; brief proposer lead is retried, a fabricated ref is rejected fail-closed) and the node refuses to start without an L1 event feed |
 | `pool.max-messages` | `10000` | Pending-pool capacity; a full pool returns 429 on submit and drops (counted) inbound gossip (§4) |
 | `message.enforce-sender-seq` | `false` | Consensus-visible sender-seq rule: followers reject blocks with stale/duplicate per-sender seqs (§4). Must match on all members |
+| `effects.enabled` | `false` | Enable the effect system (§18). **Consensus-affecting — must match on all members**; also all `effects.*` caps and gate/commitment keys below |
+| `effects.max-per-block` / `max-payload-bytes` / `max-expiry-blocks` / `result-window-blocks` | `256` / `16384` / `100000` / `100000` | Deterministic emission caps and the result-incorporation window (§18.1) |
+| `effects.default-gate` | `app-final` | `app-final` \| `l1-anchored` \| `zk-settled` — when emitted effects become executable (§18.4) |
+| `effects.outcome-commitment` | `per-effect` | `per-effect` (O(1) proofs) \| `per-block` (trie growth O(effectful blocks); ZK-friendly) |
+| `effects.strict-reserved-prefix` | `true` | Reject app writes to the `~fx/` trie prefix (consensus-affecting; active even when effects are off) |
+| `effects.result.signers` | empty | Restrict who may attest `~fx/result` to these member keys (default: any member; §18.5) |
+| `effects.executor.enabled` | `false` | This node RUNS effects (execution plane, §18.3). Node-local — not consensus |
+| `effects.executor.types` / `tick-ms` / `max-parallel` / `max-attempts` / `backoff-initial-ms` / `backoff-max-ms` | ` ` / `2000` / `4` / `8` / `2000` / `300000` | Executor tuning (§18.3) |
+| `effects.external.enabled` | `false` | Expose the external-executor claim/report REST surface (§18.6) |
+| `effects.executors.<scheme>.*` | — | Executor plugin config (built-in `webhook`; `cardano` via the plugin jar) — passed to the executor with the prefix stripped (§18.3) |
+| `effects.retention.keep-blocks` | `100000` | Prune resolved effect records older than this behind the tip |
+| `machines.approvals.payments` (+ `payment-type` / `payment-gate` / `payment-expiry-blocks`) | `false` | Stdlib approvals→payment effect (§18.3) |
 
 **Enabling.** Three states, checked in this order:
 
@@ -632,7 +649,7 @@ Flat (single-chain) keys. The same suffixes apply per chain under
 
 Extension settings are documented next to the capability they configure:
 `chains[i].*` (§8), `webhooks` and `sinks.*` (§10), `api.auth.enabled` and
-`api.keys` (§12), `retention.*` (§13), `zk.*` (§17).
+`api.keys` (§12), `retention.*` (§13), `zk.*` (§17), `effects.*` (§18).
 
 Storage: each app ledger is a separate RocksDB at
 `<yano.storage.path>/app-chain/<chain-id>/` — blocks, state trie, indexes and
@@ -797,6 +814,10 @@ persistence and at-least-once redelivery come from the framework
 (`yano.app-chain.sinks.<scheme>.*` config is passed through to your sink).
 In-process consumers can instead subscribe to `AppBlockFinalizedEvent`
 (section 7) or `AppChainGateway.subscribeFinalized`.
+
+Sinks *observe* finalized state. To *act on the outside world* from a finalized
+transition (submit a payment, call an API) with a result recorded back
+on-chain, use **effects** (section 18) — the outbound counterpart to sinks.
 
 ---
 
@@ -1149,7 +1170,311 @@ set; a fully anonymous transport scheme is a planned follow-up.
 
 ---
 
-## 18. Troubleshooting
+## 18. Effects — acting on the outside world
+
+Everything so far keeps state *inside* the chain. **Effects** (ADR-010) let a
+finalized state transition trigger an action *outside* it — submit a Cardano
+payment, call an ERP/webhook, pin to IPFS, issue a credential — without
+breaking determinism.
+
+The rule that makes it safe: **a state machine never performs the action, it
+emits a record describing it.** Emission is part of deterministic `apply()`,
+identical on every member and committed into the state root. A separate
+**Effect Runtime** (outside consensus, on one designated node or an external
+worker) executes finalized effects, and the outcome comes back as an ordinary
+sequenced message that the machine records. The guarantee is **exactly-once
+incorporation, at-least-once execution** — the external action may run more
+than once (so executors must be idempotent), but its outcome lands in chain
+state exactly once.
+
+```
+apply()  ── emit ──▶  effect record (in the state root, provable, anchored)
+                          │  finalized
+                          ▼
+                 Effect Runtime ── execute ──▶  external system
+                          │
+        ~fx/result (member-signed, sequenced) ──▶ apply() records the outcome
+```
+
+### 18.1 Enable effects
+
+Consensus-affecting — **every member must set the same values** (a mismatch
+diverges the state root, exactly like a mismatched state machine). Effects are
+off by default.
+
+```yaml
+yano.app-chain.effects.enabled: true
+# Deterministic caps (consensus parameters):
+yano.app-chain.effects.max-per-block: 256          # effects one block may emit
+yano.app-chain.effects.max-payload-bytes: 16384    # per-effect payload cap
+yano.app-chain.effects.max-expiry-blocks: 100000
+yano.app-chain.effects.result-window-blocks: 100000 # results incorporable within this window
+# Where an effect's outcome is committed in the trie:
+yano.app-chain.effects.outcome-commitment: per-effect  # per-effect | per-block
+# Default finality gate for emitted effects (see §18.4):
+yano.app-chain.effects.default-gate: app-final     # app-final | l1-anchored | zk-settled
+```
+
+Enabling effects reserves the `~fx/` key prefix in the state trie (a state
+machine may not write keys starting with `~fx/`). This reservation holds from
+genesis regardless of the flag, so effects can be turned on later without
+colliding with historical state.
+
+### 18.2 Emit effects from a state machine
+
+Override the three-argument `apply` and call `effects.emit(...)`. The emitter
+records intent — it performs no I/O, and everything forbidden in `apply()`
+(wall clock, randomness, network) stays forbidden.
+
+```java
+public class OrderStateMachine implements AppStateMachine {
+    @Override public String id() { return "orders"; }
+
+    @Override
+    public void apply(AppBlock block, AppStateWriter writer, AppEffectEmitter effects) {
+        for (AppMessage m : block.messages()) {
+            Order o = decode(m.getBody());
+            writer.put(key(o.id()), o.toBytes());          // ordinary state
+            if (o.isApproved()) {
+                effects.emit(EffectIntent.of("webhook.post", o.fulfilmentJson())
+                        .scope("orders/" + o.id())         // app-level idempotency scope
+                        .result(ResultPolicy.CHAIN)        // outcome comes back on-chain
+                        .gate(FinalityGate.CHAIN_DEFAULT)  // use the chain's default gate
+                        .expiryBlocks(1000)                // deterministic timeout (see §18.4)
+                        .sourceMessageId(m.getMessageId())
+                        .build());
+            }
+        }
+    }
+
+    // Called deterministically when a CHAIN effect's outcome is incorporated.
+    @Override
+    public void onEffectResult(AppBlock block, EffectResult result, AppStateWriter writer) {
+        if (!result.scope().startsWith("orders/")) return;
+        String id = result.scope().substring("orders/".length());
+        // result.confirmed(), result.outcome() (CONFIRMED/FAILED/CANCELLED/EXPIRED),
+        // result.externalRef() (e.g. a tx hash) — all provable in the state root.
+        writer.put(fulfilledKey(id), result.externalRef());
+    }
+}
+```
+
+`EffectIntent` fields: **type** (routes to an executor), **payload** (opaque
+bytes — never put secrets or PII here; records are replicated and committed),
+**scope** (your idempotency handle), **gate** (§18.4), **result**
+(`CHAIN` = outcome fed back and delivered to `onEffectResult`; `NONE` =
+fire-and-forget, operator-visible only), **expiryBlocks**. Effect ids are
+deterministic — `chainId/height/ordinal`, hashed into the idempotency key
+handed to every external system.
+
+> **Changing emission logic on a live chain is a hard fork** unless gated. Ship
+> emission changes behind a height-activated flag
+> (`ActivationSchedule`, ADR-010.1): `yano.app-chain.machines.<id>.activations.<name>=<height>`.
+> Verify with the conformance harness's upgrade replay-matrix
+> (`StateMachineConformance.upgrade(old, new)`).
+
+### 18.3 Run an executor
+
+The Effect Runtime is **off by default** — turn it on where you want effects
+to actually run (typically one node, or a dedicated executor node). Everywhere
+else, effects are still emitted and provable; they just wait.
+
+```yaml
+yano.app-chain.effects.executor.enabled: true      # this node executes effects
+yano.app-chain.effects.executor.types: ""          # empty = all; or "cardano.payment,webhook.post"
+yano.app-chain.effects.executor.tick-ms: 2000
+yano.app-chain.effects.executor.max-parallel: 4
+yano.app-chain.effects.executor.max-attempts: 8    # then PARKED for operator review
+yano.app-chain.effects.executor.backoff-initial-ms: 2000
+yano.app-chain.effects.executor.backoff-max-ms: 300000
+yano.app-chain.effects.retention.keep-blocks: 100000   # prune resolved effect records
+```
+
+Run it on **exactly one node** (or partition types across nodes with
+`executor.types`) — the runtime provides no cross-node mutual exclusion by
+design; overlap degrades to duplicate *attempts*, which idempotency absorbs.
+A late-enabled executor **quarantines** historical open effects rather than
+blind-firing them; requeue via REST. Failed effects retry with backoff, then
+**park** (never block other effects) for an operator to requeue or cancel.
+
+**Built-in `webhook.post` executor** — POSTs the payload with an
+`Idempotency-Key` header (the effect's id hash); the target URL lives in
+config, not the payload:
+
+```yaml
+yano.app-chain.effects.executors.webhook.url: https://erp.example/hooks/yano
+yano.app-chain.effects.executors.webhook.timeout-ms: 10000
+```
+
+**Cardano payment executor** — the `yano-appchain-effects-cardano` plugin jar
+(drop it in the plugins directory); handles `cardano.payment` effects with a
+`{"to": <bech32>, "lovelace": <n>, "memo"?: <str>}` payload, stamps the effect
+id into tx metadata, and confirms by tx hash. Secrets live here, never in
+payloads:
+
+```yaml
+yano.app-chain.effects.executors.cardano.backend-url: http://localhost:8080/api/v1/    # Blockfrost-compatible
+yano.app-chain.effects.executors.cardano.signing-mnemonic: "<payer wallet mnemonic>"   # or signing-account-key
+yano.app-chain.effects.executors.cardano.network: preprod                              # mainnet|preprod|preview
+yano.app-chain.effects.executors.cardano.metadata-label: 21042
+yano.app-chain.effects.executors.cardano.max-lovelace-per-tx: 500000000               # blast-radius cap (0 = uncapped)
+```
+
+> **Fund the payer wallet conservatively** and set `max-lovelace-per-tx`: a
+> buggy or compromised machine that emits an oversized payment cannot then
+> drain the hot wallet in one tx.
+
+**Stdlib approvals → payment** — no code: the `approvals` machine emits a
+`cardano.payment` on final approval, and records `STATUS_PAID` with the tx hash
+when it confirms.
+
+```yaml
+yano.app-chain.state-machine: approvals
+yano.app-chain.machines.approvals.payments: true
+yano.app-chain.machines.approvals.payment-type: cardano.payment
+yano.app-chain.machines.approvals.payment-gate: l1-anchored     # provable before funds move
+yano.app-chain.machines.approvals.payment-expiry-blocks: 1000
+# On a live chain, gate the feature at a height (ADR-010.1):
+# yano.app-chain.machines.approvals.activations.payments: 125000
+```
+
+### 18.4 Finality gates and expiry
+
+A **gate** decides when an emitted effect becomes eligible to execute:
+
+- **`app-final`** — as soon as the block is committed (the chain is
+  append-only after finality, so the emission is already irrevocable).
+- **`l1-anchored`** — once the effect's height is covered by an L1-confirmed,
+  stability-deep anchor (the emission is provable against Cardano before you
+  act). A verifiability delay, not a rollback safeguard.
+- **`zk-settled`** — once covered by an accepted validity proof (reserved for
+  the ZK settlement roadmap, §17; waits until expiry on non-ZK chains).
+
+`l1-anchored` needs anchoring enabled (§5) and `l1.stability-depth` set.
+`effects.gate.anchor-margin-blocks` adds a safety margin above the anchor
+high-water-mark.
+
+**Expiry is mandatory for CHAIN effects** — a result arriving after the result
+window is a deterministic no-op, so every CHAIN effect must provably close. If
+you pass `expiryBlocks(0)` the framework defaults it to the result window. When
+the expiry height passes with no incorporated result, the effect deterministically
+becomes **EXPIRED** (delivered to `onEffectResult`) — the "nobody answered in
+time" escape hatch, distinct from **FAILED** ("the target answered no").
+
+### 18.5 The result path and trust
+
+Executed `CHAIN` outcomes re-enter as member-signed `~fx/result` messages,
+sequenced like any other. The framework interpreter is fail-closed and
+first-result-wins: duplicate, late, malformed, unknown, or out-of-window
+results are deterministic no-ops — **a result can never stall the chain.** A
+result is a *member attestation*, not an independently verified fact (followers
+check the signature and membership, not the external world). Narrow who may
+attest with a designated-signer list:
+
+```yaml
+# Only these member keys' ~fx/result messages are accepted (default: any member):
+yano.app-chain.effects.result.signers: "<hex pubkey of the executor node>"
+```
+
+For L1-visible facts (a payment landing), prefer verifying via an L1 observer
+(§ config `observers`) over trusting an attestation. `k`-of-`n` result
+attestation for high-value effects is designed, not yet shipped.
+
+### 18.6 External executors (claim / report)
+
+To run execution *outside* Yano — a different team, language, or a worker that
+holds secrets Yano shouldn't — enable external mode and drive it over REST or
+the Java SDK. The node leases effects to a named worker; the worker executes
+and reports the outcome, which the node re-signs into a `~fx/result`.
+
+```yaml
+yano.app-chain.effects.executor.enabled: true
+yano.app-chain.effects.external.enabled: true
+```
+
+```java
+AppChainClient client = ...;
+JsonNode claimed = client.claimEffects("worker-1", List.of("cardano.payment"), 16, 60);
+for (JsonNode e : claimed.get("effects")) {
+    long height = e.get("height").asLong();
+    int ordinal = e.get("ordinal").asInt();
+    byte[] idKey = HexUtil.decodeHexString(e.get("idempotencyKey").asText());
+    byte[] txHash = executeExternally(e.get("payloadHex").asText(), idKey);  // pass idKey to the target
+    client.reportEffect("worker-1", height, ordinal, /*success*/ true, txHash, null);
+}
+```
+
+Leases are wall-clock and node-local; an expired lease re-opens the effect for
+failover. Reports are fenced to the lease holder.
+
+> **Security**: `requeue`/`cancel`/`claim`/`report` move funds or change
+> consensus-visible state — they are **privileged**: a submit-only
+> (topic-restricted) API key may not call them; only a full key can (§12).
+> Enable `yano.app-chain.api.auth` and keep the executor/operator REST surface
+> on a trusted network — external mode logs a warning if auth is off.
+
+### 18.7 Write a custom executor
+
+Any effect type your machines emit can be handled by a plugin implementing two
+interfaces — the same ServiceLoader pattern as custom sinks (§10):
+
+```java
+public class IpfsPinExecutor implements AppEffectExecutor {
+    private final String apiUrl;
+    IpfsPinExecutor(Map<String, String> config) { this.apiUrl = config.get("api-url"); }
+
+    @Override public String id() { return "ipfs"; }
+    @Override public boolean supports(String type) { return "ipfs.pin".equals(type); }
+
+    @Override
+    public EffectExecution execute(EffectExecutionContext ctx, PendingEffect effect) throws Exception {
+        String cid = decodeCid(effect.payload());
+        // MUST be idempotent on effect.idHash() — the same effect may re-run.
+        // ctx.submittedRef() is non-empty on a re-poll of a prior Submitted;
+        // probe by it instead of acting again.
+        pin(cid, effect.idHash());
+        return EffectExecution.confirmed(cid.getBytes());        // or .failed(reason, retryable),
+                                                                 // .submitted(ref), .retry(duration)
+    }
+}
+
+public class IpfsExecutorFactory implements AppEffectExecutorFactory {
+    @Override public String scheme() { return "ipfs"; }         // config ns: effects.executors.ipfs.*
+    @Override public List<AppEffectExecutor> create(String chainId, Map<String, String> config) {
+        return config.containsKey("api-url")
+                ? List.of(new IpfsPinExecutor(config)) : List.of();
+    }
+}
+```
+
+Register it via
+`META-INF/services/com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutorFactory`
+(one line: the factory's fully-qualified name), package as a jar, drop it in
+the plugins directory, and configure
+`yano.app-chain.effects.executors.ipfs.api-url=...`. The framework supplies
+discovery, finality gating, retries, backoff, the poison lane, and the result
+loop — you implement only the one attempt. Contract: **idempotent on
+`idHash`**, secrets from config not payloads, `Confirmed`/`Failed` are
+definitive, `Submitted` re-polls, throwing means retry.
+
+### 18.8 REST surface
+
+Chain-scoped under `/app-chain/chains/{chainId}/...` (single-chain alias
+`/app-chain/...`):
+
+| Endpoint | Purpose |
+|---|---|
+| `GET effects?fromHeight=&limit=` | emitted effect records (consensus view) |
+| `GET effects/{height}/{ordinal}` | one effect + this node's execution status |
+| `GET effects/stats` | runtime counters (queue depth, executed, parked) |
+| `POST effects/{height}/{ordinal}/requeue` | operator: PARKED/QUARANTINED → PENDING |
+| `POST effects/{height}/{ordinal}/cancel?reason=` | operator: cancel an open CHAIN effect |
+| `POST effects/claim` | external executor: lease effects |
+| `POST effects/{height}/{ordinal}/report` | external executor: report an outcome |
+
+---
+
+## 19. Troubleshooting
 
 - **`/status` is your dashboard**: `role`, `tipHeight`, `stateRoot`,
   `poolSize` (pending messages), per-peer connectivity, `anchor` progress,
@@ -1178,7 +1503,7 @@ set; a fully anonymous transport scheme is a planned follow-up.
   selects it). Run the `test-haskell-sync` skill for the standard L1
   compatibility regression.
 
-## 19. Current limitations
+## 20. Current limitations
 
 - Fixed sequencer (S1); rotating L1-clocked sequencing is designed (ADR 005)
   but not yet implemented — sequencer availability is an ops concern.
