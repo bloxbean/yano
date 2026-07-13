@@ -42,7 +42,7 @@ final class AikenArtifacts {
     }
 
     /** Strip one definite-length CBOR byte-string wrapper (major type 2). */
-    private static byte[] cborUnwrapBytes(byte[] cbor) {
+    static byte[] cborUnwrapBytes(byte[] cbor) {
         int first = cbor[0] & 0xFF;
         if (first >> 5 != 2)
             throw new IllegalStateException("Not a CBOR byte string (major type "

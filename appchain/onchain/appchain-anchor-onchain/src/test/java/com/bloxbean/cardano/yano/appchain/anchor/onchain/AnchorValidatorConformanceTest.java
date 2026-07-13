@@ -54,12 +54,16 @@ class AnchorValidatorConformanceTest extends ContractTest {
         initCrypto();
     }
 
-    /** The implementation under test — the Aiken twin overrides this. */
+    /**
+     * The implementation under test — the CHECKED-IN julc artifact (the exact
+     * bytes the runtime ships; environment-independent). The Aiken twin and
+     * the local-only source-compile drift test override this.
+     */
     Program program() {
         if (julcProgram == null) {
-            julcProgram = compileValidator(AnchorValidator.class)
-                    .program()
-                    .applyParams(PlutusData.bytes(THREAD_POLICY));
+            julcProgram = BundledJulcArtifacts.load(
+                    "META-INF/plutus/AnchorValidator.plutus.json",
+                    PlutusData.bytes(THREAD_POLICY));
         }
         return julcProgram;
     }
