@@ -194,9 +194,10 @@ __pycache__/
 
 # Local debug/scratch artifacts under app/ (accidentally committed once — never again)
 /app/logs/
+/app/yano.log*
+/app/*.pid
+/app/*.bak
 /app/preprod-test/
 /app/chainstate-*.json
-/app/proposal-*.txt
-/app/proposal-*.tsv
-/app/DrepChainstateDump.java
-/app/ProposalDRepDump.java
+/app/**/*.bak
+/app/**/*.working
