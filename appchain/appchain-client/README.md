@@ -10,7 +10,7 @@ Yaci networking stack. It provides:
 - SSE subscription with reconnect and duplicate suppression
 - typed submit/subscribe helpers using caller-provided encoders/decoders
 - AES-GCM group-body encryption helper
-- client-side MPF inclusion proof verification
+- client-side MPF and composed effect-proof verification
 
 See also:
 
@@ -23,6 +23,7 @@ See also:
 
 ```java
 import com.bloxbean.cardano.yano.appchain.client.AppChainClient;
+import com.bloxbean.cardano.yano.appchain.client.EffectProofVerifier;
 import com.bloxbean.cardano.yano.appchain.client.Hex;
 import com.bloxbean.cardano.yano.appchain.client.ProofVerifier;
 
@@ -44,6 +45,22 @@ an L1 anchor transaction rather than the same node that served the proof:
 ```java
 boolean verified = ProofVerifier.verify(proof.get(), anchoredStateRootHex);
 ```
+
+Effect emissions have a composed proof from canonical record bytes through
+the block's ordered effects root into that block's historical state root:
+
+```java
+var lookup = client.effectProof(42, 0);
+boolean verified = lookup.available() && EffectProofVerifier.verifyFor(
+        lookup.proof(), independentlyTrustedStateRootAtHeight42,
+        "orders-chain", 42, 0);
+```
+
+The lookup distinguishes `NOT_FOUND` from `PRUNED`; archive a proof before the
+node's effect-record retention horizon when long-lived evidence is required.
+An L1 anchor root can be compared directly only when it anchors height 42;
+for a later anchor, authenticate block 42's certificate/hash-chain link to the
+anchored descendant separately.
 
 ## SSE
 

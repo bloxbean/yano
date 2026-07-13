@@ -25,6 +25,7 @@ import com.bloxbean.cardano.yano.api.ProducerControl;
 import com.bloxbean.cardano.yano.api.SyncPhase;
 import com.bloxbean.cardano.yano.api.TxEvaluationGateway;
 import com.bloxbean.cardano.yano.api.TxGateway;
+import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
 import com.bloxbean.cardano.yano.api.config.RuntimeOptions;
 import com.bloxbean.cardano.yano.api.config.UpstreamPeerConfig;
 import com.bloxbean.cardano.yano.api.config.YanoConfig;
@@ -605,8 +606,7 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 (int) parseLong(get.apply("pool.max-messages"),
                         com.bloxbean.cardano.yano.api.appchain.AppChainConfig.DEFAULT_POOL_MAX_MESSAGES),
                 booleanOf(get.apply("message.enforce-sender-seq"), false),
-                pluginSettings(collectPrefixed, "sinks.", "zk.", "machines.", "sequencer.",
-                        "membership.", "observers."));
+                appChainPluginSettings(collectPrefixed));
     }
 
     /**
@@ -697,6 +697,13 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
             merged.putAll(collectPrefixed.apply(prefix));
         }
         return merged;
+    }
+
+    /** All extension namespaces copied into {@link AppChainConfig#pluginSettings()}. */
+    static Map<String, String> appChainPluginSettings(
+            java.util.function.Function<String, Map<String, String>> collectPrefixed) {
+        return pluginSettings(collectPrefixed, "sinks.", "zk.", "machines.", "sequencer.",
+                "membership.", "observers.", "transport.", "effects.");
     }
 
     private static String stringOf(Object value, String def) {

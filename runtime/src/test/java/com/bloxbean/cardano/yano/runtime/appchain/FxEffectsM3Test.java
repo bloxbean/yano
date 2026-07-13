@@ -28,6 +28,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.IntStream;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -228,17 +229,120 @@ class FxEffectsM3Test {
         }
     }
 
+    @Test
+    void resultReadyIndex_preventsOldStatusRowsFromStarvingInjection(@TempDir Path dir)
+            throws Exception {
+        AppEffectExecutor executor = new AppEffectExecutor() {
+            @Override public String id() { return "confirm"; }
+            @Override public boolean supports(String type) { return "test.action".equals(type); }
+            @Override public EffectExecution execute(
+                    com.bloxbean.cardano.yano.api.appchain.effects.EffectExecutionContext ctx,
+                    com.bloxbean.cardano.yano.api.appchain.effects.PendingEffect effect) {
+                return EffectExecution.confirmed("tx-indexed".getBytes(StandardCharsets.UTF_8));
+            }
+        };
+        RecordingMachine machine = new RecordingMachine(0);
+        try (MsgPipeline pipeline = new MsgPipeline(dir, machine, FX_SETTINGS);
+             EffectRuntime runtime = new EffectRuntime(pipeline.store, "fx-chain",
+                     new EffectRuntime.Settings(true, Set.of(), 50, 2, 3, 1, 5, 0, 100),
+                     List.of(executor), Map.of(), LoggerFactory.getLogger("fx"))) {
+            // More than Settings.scanLimit() irrelevant rows sort before h1.
+            // The pre-index implementation scanned this prefix and never saw
+            // the newer DONE result.
+            for (int ordinal = 0; ordinal < 4_200; ordinal++) {
+                pipeline.store.fxRuntimePutStatus(0, ordinal, FxStatusRecord.pending());
+            }
+            pipeline.apply(msg("t", "emit-indexed"));
+
+            long deadline = System.currentTimeMillis() + 10_000;
+            while (!pipeline.store.fxResultReadyExists(1, 0)
+                    && System.currentTimeMillis() < deadline) {
+                runtime.tick();
+                Thread.sleep(10);
+            }
+            assertThat(pipeline.store.fxResultReadyExists(1, 0)).isTrue();
+            assertThat(runtime.pendingInjections(1, 0)).singleElement().satisfies(injection -> {
+                assertThat(injection.height()).isEqualTo(1);
+                assertThat(injection.ordinal()).isZero();
+                assertThat(injection.confirmed()).isTrue();
+            });
+
+            byte[] result = new FxResultBody(1, 1, 0, EffectOutcome.CONFIRMED,
+                    "tx-indexed".getBytes(StandardCharsets.UTF_8), null).encode();
+            pipeline.apply(msg(FxResultBody.TOPIC, result));
+            assertThat(pipeline.store.fxResultReadyExists(1, 0)).isFalse();
+            assertThat(runtime.pendingInjections(1, 0)).isEmpty();
+        }
+    }
+
+    @Test
+    void resultReadyIndex_backfillsPreIndexDoneChainOutcomes(@TempDir Path dir) {
+        RecordingMachine machine = new RecordingMachine(0);
+        try (MsgPipeline pipeline = new MsgPipeline(dir, machine, FX_SETTINGS)) {
+            pipeline.apply(msg("t", "emit-legacy"));
+            pipeline.store.bindFxRuntimeOwner("legacy-owner");
+            pipeline.store.fxPutIntakeCursor(1);
+            pipeline.store.fxRuntimePutStatus(1, 0, FxStatusRecord.pending()
+                    .done("tx-legacy".getBytes(StandardCharsets.UTF_8)));
+            assertThat(pipeline.store.fxResultReadyExists(1, 0)).isFalse();
+
+            try (EffectRuntime runtime = new EffectRuntime(pipeline.store, "fx-chain",
+                    new EffectRuntime.Settings(true, Set.of(), 50, 2, 3, 1, 5, 0, 100),
+                    List.of(), Map.of(), "legacy-owner", LoggerFactory.getLogger("fx"))) {
+                assertThat(pipeline.store.fxResultReadyExists(1, 0)).isTrue();
+                assertThat(runtime.pendingInjections(1, 0)).singleElement()
+                        .satisfies(injection -> assertThat(injection.height()).isEqualTo(1));
+            }
+        }
+    }
+
+    @Test
+    void resultReadyInjection_roundRobinsBeyondOneReinjectionWindow(@TempDir Path dir) {
+        Map<String, String> settings = Map.of(
+                "effects.enabled", "true",
+                "effects.max-per-block", "512",
+                "effects.max-payload-bytes", "4096");
+        RecordingMachine machine = new RecordingMachine(0);
+        try (MsgPipeline pipeline = new MsgPipeline(dir, machine, settings)) {
+            Msg[] messages = IntStream.range(0, 401)
+                    .mapToObj(i -> msg("t", "emit-fair-" + i))
+                    .toArray(Msg[]::new);
+            pipeline.apply(messages);
+            pipeline.store.bindFxRuntimeOwner("fair-owner");
+            pipeline.store.fxPutIntakeCursor(1);
+            for (int ordinal = 0; ordinal < messages.length; ordinal++) {
+                pipeline.store.fxRuntimeComplete(1, ordinal,
+                        FxStatusRecord.pending().done(
+                                ("tx-" + ordinal).getBytes(StandardCharsets.UTF_8)), true);
+            }
+
+            try (EffectRuntime runtime = new EffectRuntime(pipeline.store, "fx-chain",
+                    new EffectRuntime.Settings(true, Set.of(), 50, 2, 3, 1, 5, 0, 100),
+                    List.of(), Map.of(), "fair-owner", LoggerFactory.getLogger("fx"))) {
+                Set<Integer> seen = new java.util.HashSet<>();
+                for (int batch = 0; batch < 13; batch++) {
+                    runtime.pendingInjections(32, 60_000)
+                            .forEach(injection -> seen.add(injection.ordinal()));
+                }
+                assertThat(seen).hasSize(messages.length)
+                        .contains(IntStream.range(0, messages.length).boxed().toArray(Integer[]::new));
+            }
+        }
+    }
+
     // ------------------------------------------------------------------
     // Approvals payments flow (ADR-010 §8.1)
     // ------------------------------------------------------------------
 
     @Test
     void approvalsPayments_emitOnApproval_paidOnResult(@TempDir Path dir) {
+        Map<String, String> approvalsSettings = Map.of(
+                "machines.approvals.payments", "true",
+                "machines.approvals.payment-expiry-blocks", "100",
+                "machines.approvals.activations.payments", "1");
         ApprovalsStateMachine machine = new ApprovalsStateMachine(
-                ApprovalsStateMachine.PaymentsConfig.from(Map.of(
-                        "machines.approvals.payments", "true",
-                        "machines.approvals.payment-expiry-blocks", "100")),
-                ActivationSchedule.empty());
+                ApprovalsStateMachine.PaymentsConfig.from(approvalsSettings),
+                ActivationSchedule.from(approvalsSettings, ApprovalsStateMachine.ID));
         try (MsgPipeline pipeline = new MsgPipeline(dir, machine, FX_SETTINGS)) {
             byte[] payment = "{\"to\":\"addr1..\",\"lovelace\":100}".getBytes(StandardCharsets.UTF_8);
             // h1: propose (2-of-n) + first approval; h2: second approval → APPROVED + emit
@@ -271,13 +375,68 @@ class FxEffectsM3Test {
     }
 
     @Test
+    void approvalsPayments_missingActivation_doesNotEmitOrParkPayload(@TempDir Path dir) {
+        ApprovalsStateMachine machine = new ApprovalsStateMachine(
+                ApprovalsStateMachine.PaymentsConfig.from(Map.of(
+                        "machines.approvals.payments", "true")),
+                ActivationSchedule.empty());
+        try (MsgPipeline pipeline = new MsgPipeline(dir, machine, FX_SETTINGS)) {
+            byte[] payment = "{\"to\":\"addr1..\",\"lovelace\":100}"
+                    .getBytes(StandardCharsets.UTF_8);
+            pipeline.apply(msg("t", ApprovalsStateMachine.propose("rel-old", payment, 1, 0), "alice"));
+            FxKernel.Result fx = pipeline.apply(
+                    msg("t", ApprovalsStateMachine.approve("rel-old"), "alice"));
+
+            assertThat(fx.emitted()).isEmpty();
+            assertThat(pipeline.store.stateGet(ApprovalsStateMachine.paymentKey("rel-old"))).isEmpty();
+            assertThat(pipeline.store.stateGet(ApprovalsStateMachine.effectLinkKey("rel-old"))).isEmpty();
+            var item = ApprovalsStateMachine.decodeItem(
+                    pipeline.store.stateGet(ApprovalsStateMachine.itemKey("rel-old")).orElseThrow());
+            assertThat(item.status()).isEqualTo(ApprovalsStateMachine.STATUS_APPROVED);
+        }
+    }
+
+    @Test
+    void approvalsPayments_activateExactlyAtConfiguredHeight_withoutRetroactivePayload(
+            @TempDir Path dir) {
+        Map<String, String> approvalsSettings = Map.of(
+                "machines.approvals.payments", "true",
+                "machines.approvals.activations.payments", "2");
+        ApprovalsStateMachine machine = new ApprovalsStateMachine(
+                ApprovalsStateMachine.PaymentsConfig.from(approvalsSettings),
+                ActivationSchedule.from(approvalsSettings, ApprovalsStateMachine.ID));
+        try (MsgPipeline pipeline = new MsgPipeline(dir, machine, FX_SETTINGS)) {
+            byte[] oldPayment = "old-payment".getBytes(StandardCharsets.UTF_8);
+            FxKernel.Result before = pipeline.apply(
+                    msg("t", ApprovalsStateMachine.propose("before", oldPayment, 1, 0), "alice"));
+            assertThat(before.emitted()).isEmpty();
+
+            byte[] activePayment = "active-payment".getBytes(StandardCharsets.UTF_8);
+            FxKernel.Result atActivation = pipeline.apply(
+                    msg("t", ApprovalsStateMachine.approve("before"), "alice"),
+                    msg("t", ApprovalsStateMachine.propose("active", activePayment, 1, 0), "alice"),
+                    msg("t", ApprovalsStateMachine.approve("active"), "alice"));
+
+            assertThat(atActivation.emitted()).singleElement().satisfies(staged -> {
+                assertThat(staged.record().scope()).isEqualTo("approvals/active");
+                assertThat(staged.record().payload()).isEqualTo(activePayment);
+            });
+            var beforeItem = ApprovalsStateMachine.decodeItem(
+                    pipeline.store.stateGet(ApprovalsStateMachine.itemKey("before")).orElseThrow());
+            assertThat(beforeItem.status()).isEqualTo(ApprovalsStateMachine.STATUS_APPROVED);
+            assertThat(pipeline.store.stateGet(ApprovalsStateMachine.effectLinkKey("before"))).isEmpty();
+        }
+    }
+
+    @Test
     void approvalsPayments_isDeterministic_viaConformance() {
         StateMachineConformance.builder(
                         new com.bloxbean.cardano.yano.appchain.stdlib.StdlibStateMachineProviders
                                 .ApprovalsProvider())
                 .settings(Map.of(
                         "effects.enabled", "true",
-                        "machines.approvals.payments", "true"))
+                        "machines.approvals.payments", "true",
+                        "machines.approvals.activations.payments", "1"))
                 .blocks(12)
                 .messagesPerBlock(2)
                 .bodyGenerator((height, index, random) -> {

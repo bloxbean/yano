@@ -168,6 +168,14 @@ public class AppChainResource {
 
     @GET
     @Operation(hidden = true)
+    @Path("effects/{height}/{ordinal}/proof")
+    public Response effectProof(@PathParam("height") long height,
+                                @PathParam("ordinal") int ordinal) {
+        return singleChain().effectProof(height, ordinal);
+    }
+
+    @GET
+    @Operation(hidden = true)
     @Path("effects/stats")
     public Response effectStats() {
         return singleChain().effectStats();
@@ -524,7 +532,65 @@ public class AppChainResource {
                             .entity(Map.of("error", "No effect at " + height + "/" + ordinal)).build());
         }
 
-        /** Effect Runtime counters (empty when this node runs no executor). */
+        /**
+         * Record-to-effectsRoot-to-historical-stateRoot composed proof
+         * (ADR-010 F4). A 410 means the commitment remains but one or more
+         * effect records needed for the list path crossed the retention
+         * horizon.
+         */
+        @GET
+        @Path("effects/{height}/{ordinal}/proof")
+        public Response effectProof(@PathParam("height") long height,
+                                    @PathParam("ordinal") int ordinal) {
+            com.bloxbean.cardano.yano.api.appchain.effects.EffectProofLookup lookup;
+            try {
+                lookup = gateway.effectProof(height, ordinal);
+            } catch (IllegalStateException e) {
+                return Response.status(Response.Status.INTERNAL_SERVER_ERROR)
+                        .entity(Map.of("code", "EFFECT_PROOF_INCONSISTENT",
+                                "error", e.getMessage())).build();
+            }
+            if (lookup.status()
+                    == com.bloxbean.cardano.yano.api.appchain.effects.EffectProofLookup.Status.NOT_FOUND) {
+                return Response.status(Response.Status.NOT_FOUND)
+                        .entity(Map.of("code", "EFFECT_NOT_FOUND",
+                                "error", "No effect at " + height + "/" + ordinal)).build();
+            }
+            if (lookup.status()
+                    == com.bloxbean.cardano.yano.api.appchain.effects.EffectProofLookup.Status.PRUNED) {
+                return Response.status(Response.Status.GONE)
+                        .entity(Map.of("code", "EFFECT_PROOF_PRUNED",
+                                "height", height, "ordinal", ordinal,
+                                "effectCount", lookup.effectCount(),
+                                "error", "Effect proof material passed the retention horizon"))
+                        .build();
+            }
+
+            var proof = lookup.proof();
+            var record = proof.record();
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("version", proof.version());
+            result.put("chainId", record.chainId());
+            result.put("height", record.height());
+            result.put("ordinal", record.ordinal());
+            result.put("recordCborHex", HexUtil.encodeHexString(record.encode()));
+            result.put("effectHashHex", HexUtil.encodeHexString(record.effectHash()));
+            result.put("effectCount", proof.effectCount());
+            List<Map<String, String>> path = new ArrayList<>(proof.merklePath().size());
+            for (var step : proof.merklePath()) {
+                path.add(Map.of("side", step.side().name(),
+                        "siblingHashHex", HexUtil.encodeHexString(step.siblingHash())));
+            }
+            result.put("merklePath", path);
+            result.put("effectsRootHex", HexUtil.encodeHexString(proof.effectsRoot()));
+            result.put("stateKeyHex", HexUtil.encodeHexString(
+                    com.bloxbean.cardano.yano.api.appchain.effects.FxKeys.effectsRootKey(record.height())));
+            result.put("stateRootHex", HexUtil.encodeHexString(proof.stateRoot()));
+            result.put("stateProofWireHex", HexUtil.encodeHexString(proof.stateProofWire()));
+            return Response.ok(result).build();
+        }
+
+        /** Effect consensus/runtime gauges and cumulative totals. */
         @GET
         @Path("effects/stats")
         public Response effectStats() {

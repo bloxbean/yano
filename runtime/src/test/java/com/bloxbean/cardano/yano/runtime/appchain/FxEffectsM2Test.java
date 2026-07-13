@@ -27,8 +27,12 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -112,12 +116,115 @@ class FxEffectsM2Test {
             awaitStatus(pipeline.store, 1, 0, FxStatusRecord.PARKED); // attempt cap = 2
             assertThat(pipeline.store.fxQueueScan(10)).isEmpty();     // out of the queue — no
             assertThat(executor.invocations).hasSize(2);              // head-of-line blocking
+            assertThat(map(runtime.stats().get("statusCounts")))
+                    .containsEntry("PARKED", 1L);
+            assertThat(map(runtime.stats().get("executionTotals")))
+                    .containsEntry("parked", 1L);
 
             // Operator requeue with the target fixed
             outcome.set(EffectExecution.confirmed(new byte[0]));
             assertThat(runtime.requeue(1, 0)).isTrue();
+            assertThat(map(runtime.stats().get("statusCounts")))
+                    .containsEntry("PARKED", 0L)
+                    .containsEntry("PENDING", 1L);
+            assertThat(runtime.stats()).containsEntry("queueDepth", 1L);
             runtime.tick();
             awaitStatus(pipeline.store, 1, 0, FxStatusRecord.DONE);
+        }
+    }
+
+    @Test
+    void statsScan_isExactBeyondDispatchScanLimit_andCardinalityIsBounded(@TempDir Path dir) {
+        Map<String, String> manySettings = new java.util.LinkedHashMap<>(FX_SETTINGS);
+        manySettings.put("effects.max-per-block", "5000");
+        EffectRuntime.Settings settings = new EffectRuntime.Settings(true, Set.of(),
+                50, 2, 3, 1, 5, 0, 100, Set.of("test.action"));
+        try (Pipeline pipeline = new Pipeline(dir,
+                emitting("test.action", ResultPolicy.NONE, null), manySettings);
+             EffectRuntime runtime = new EffectRuntime(pipeline.store, "fx-chain", settings,
+                     List.of(), Map.of(), LoggerFactory.getLogger("fx"))) {
+            pipeline.applyNext(4_100); // scanLimit is 4096
+            runtime.tick();
+
+            Map<String, Object> stats = runtime.stats();
+            assertThat(stats).containsEntry("queueDepth", 4_100L);
+            assertThat(map(stats.get("statusCounts")))
+                    .containsEntry("PENDING", 4_100L);
+            assertThat(map(stats.get("oldestPending")))
+                    .containsEntry("height", 1L)
+                    .containsEntry("ageBlocks", 0L);
+            assertThat(map(stats.get("resultBacklogByType")).keySet())
+                    .containsExactlyInAnyOrder("test.action", "other");
+            assertThat(map(stats.get("latencyByType")).keySet())
+                    .containsExactlyInAnyOrder("test.action", "other");
+        }
+    }
+
+    @Test
+    void boundedQueueScans_roundRobinPastIneligiblePrefix(@TempDir Path dir) throws Exception {
+        Map<String, String> manySettings = new java.util.LinkedHashMap<>(FX_SETTINGS);
+        manySettings.put("effects.max-per-block", "5000");
+
+        RecordingExecutor executor = new RecordingExecutor("target.action",
+                effect -> EffectExecution.confirmed(new byte[0]));
+        try (Pipeline pipeline = new Pipeline(dir.resolve("dispatch"),
+                emittingOnlyTailAsTarget(), manySettings);
+             EffectRuntime runtime = new EffectRuntime(pipeline.store, "fx-chain",
+                     runtimeSettings(3), List.of(executor), Map.of(), log())) {
+            pipeline.applyNext(4_100); // first 4,096 rows have no supporting executor
+            runtime.tick();
+            assertThat(executor.invocations).isEmpty();
+            runtime.tick();
+            awaitStatus(pipeline.store, 1, 4096, FxStatusRecord.DONE);
+            assertThat(executor.invocations).singleElement()
+                    .satisfies(effect -> assertThat(effect.effectId().ordinal()).isEqualTo(4096));
+        }
+
+        try (Pipeline pipeline = new Pipeline(dir.resolve("claim"),
+                emittingOnlyTailAsTarget(), manySettings);
+             EffectRuntime runtime = new EffectRuntime(pipeline.store, "fx-chain",
+                     runtimeSettings(3), List.of(), Map.of(), log())) {
+            pipeline.applyNext(4_100);
+            runtime.tick(); // intake only; external workers claim from the queue
+            assertThat(runtime.claim("worker", Set.of("target.action"), 1, 60)).isEmpty();
+            assertThat(runtime.claim("worker", Set.of("target.action"), 1, 60))
+                    .singleElement()
+                    .satisfies(effect -> assertThat(effect.effectId().ordinal()).isEqualTo(4096));
+        }
+    }
+
+    @Test
+    void dispatchCursor_doesNotSkipCapLimitedTailUnderSustainedArrival(@TempDir Path dir)
+            throws Exception {
+        Map<String, String> manySettings = new java.util.LinkedHashMap<>(FX_SETTINGS);
+        manySettings.put("effects.max-per-block", "5000");
+        EffectRuntime.Settings oneWorker = new EffectRuntime.Settings(true, Set.of(),
+                50, 1, 3, 1, 5, 0, 100);
+        RecordingExecutor executor = new RecordingExecutor("test.action",
+                effect -> EffectExecution.confirmed(new byte[0]));
+
+        try (Pipeline pipeline = new Pipeline(dir,
+                emitting("test.action", ResultPolicy.NONE, null), manySettings);
+             EffectRuntime runtime = new EffectRuntime(pipeline.store, "fx-chain", oneWorker,
+                     List.of(executor), Map.of(), log())) {
+            pipeline.applyNext(4_100); // larger than the 4,096-row scan window
+            runtime.tick();            // dispatch cap = two rows
+            awaitStatus(pipeline.store, 1, 0, FxStatusRecord.DONE);
+            awaitStatus(pipeline.store, 1, 1, FxStatusRecord.DONE);
+            awaitInFlight(runtime, 0);
+
+            // Keep more than a full scan window after the old cursor. A scan-
+            // end cursor would follow the arriving head forever and strand
+            // 1/2; the processed-prefix cursor resumes exactly at that row.
+            pipeline.applyNext(4_100);
+            assertThat(pipeline.store.fxQueueScanAll()).hasSizeGreaterThan(4_096);
+            runtime.tick();
+            awaitStatus(pipeline.store, 1, 2, FxStatusRecord.DONE);
+
+            assertThat(executor.invocations).anySatisfy(effect -> {
+                assertThat(effect.effectId().height()).isEqualTo(1);
+                assertThat(effect.effectId().ordinal()).isEqualTo(2);
+            });
         }
     }
 
@@ -153,6 +260,694 @@ class FxEffectsM2Test {
             runtime.tick();
             awaitStatus(pipeline.store, 1, 0, FxStatusRecord.DONE);
             assertThat(calls.get()).isEqualTo(2);
+        }
+    }
+
+    @Test
+    void queuedWork_isGloballyBound_andRevalidatesStatusBeforeExecution(@TempDir Path dir)
+            throws Exception {
+        CountDownLatch firstStarted = new CountDownLatch(1);
+        CountDownLatch releaseFirst = new CountDownLatch(1);
+        RecordingExecutor executor = new RecordingExecutor("test.action", effect -> {
+            if (effect.effectId().ordinal() == 0) {
+                firstStarted.countDown();
+                awaitLatch(releaseFirst, "release first effect");
+            }
+            return EffectExecution.confirmed(new byte[0]);
+        });
+        EffectRuntime.Settings oneWorker = new EffectRuntime.Settings(true, Set.of(),
+                50, 1, 3, 1, 5, 0, 100);
+        try (Pipeline pipeline = new Pipeline(dir,
+                emitting("test.action", ResultPolicy.NONE, null),
+                Map.of("effects.enabled", "true", "effects.max-per-block", "16",
+                        "effects.max-payload-bytes", "4096"));
+             EffectRuntime runtime = new EffectRuntime(pipeline.store, "fx-chain", oneWorker,
+                     List.of(executor), Map.of(), log())) {
+            pipeline.applyNext(10);
+            runtime.tick();
+            assertThat(firstStarted.await(5, TimeUnit.SECONDS)).isTrue();
+
+            // maxParallel=1 allows one running + one queued, globally. More
+            // ticks cannot accumulate work in the executor's queue.
+            assertThat(runtime.stats()).containsEntry("inFlight", 2);
+            for (int i = 0; i < 5; i++) {
+                runtime.tick();
+            }
+            assertThat(runtime.stats()).containsEntry("inFlight", 2);
+            assertThat(executor.invocations).hasSize(1);
+
+            // Simulate an operator/runtime terminal transition while ordinal
+            // 1 is waiting in the bounded pool. Its stale scheduling snapshot
+            // must not authorize an external call.
+            pipeline.store.fxRuntimeComplete(1, 1,
+                    FxStatusRecord.pending().parked("operator parked"), false);
+            releaseFirst.countDown();
+            awaitStatus(pipeline.store, 1, 0, FxStatusRecord.DONE);
+            awaitInFlight(runtime, 0);
+
+            assertThat(executor.invocations).singleElement()
+                    .satisfies(effect -> assertThat(effect.effectId().ordinal()).isZero());
+            assertThat(pipeline.store.fxRuntimeStatus(1, 1).orElseThrow().status())
+                    .isEqualTo(FxStatusRecord.PARKED);
+        } finally {
+            releaseFirst.countDown();
+        }
+    }
+
+    @Test
+    void queuedWork_rechecksExpiryBeforeExecution(@TempDir Path dir)
+            throws Exception {
+        CountDownLatch firstStarted = new CountDownLatch(1);
+        CountDownLatch releaseFirst = new CountDownLatch(1);
+        RecordingExecutor executor = new RecordingExecutor("test.action", effect -> {
+            if (effect.effectId().ordinal() == 0) {
+                firstStarted.countDown();
+                awaitLatch(releaseFirst, "release first effect");
+            }
+            return EffectExecution.confirmed(new byte[0]);
+        });
+        EffectRuntime.Settings oneWorker = new EffectRuntime.Settings(true, Set.of(),
+                50, 1, 3, 1, 5, 0, 100);
+        try (Pipeline pipeline = new Pipeline(dir, emittingWithExpiry("test.action", 3),
+                Map.of("effects.enabled", "true", "effects.max-per-block", "8",
+                        "effects.max-payload-bytes", "4096"));
+             EffectRuntime runtime = new EffectRuntime(pipeline.store, "fx-chain", oneWorker,
+                     List.of(executor), Map.of(), log())) {
+            pipeline.applyNext(2); // expiry height 4; safe to dispatch at tip 1
+            runtime.tick();
+            assertThat(firstStarted.await(5, TimeUnit.SECONDS)).isTrue();
+
+            pipeline.applyNext(0); // tip 2: ordinal 1 is now inside the safety window
+            releaseFirst.countDown();
+            awaitInFlight(runtime, 0);
+            assertThat(executor.invocations).singleElement()
+                    .satisfies(effect -> assertThat(effect.effectId().ordinal()).isZero());
+        } finally {
+            releaseFirst.countDown();
+        }
+    }
+
+    @Test
+    void queuedWork_rechecksChainClosureBeforeExecution(@TempDir Path dir)
+            throws Exception {
+        CountDownLatch firstStarted = new CountDownLatch(1);
+        CountDownLatch releaseFirst = new CountDownLatch(1);
+        RecordingExecutor executor = new RecordingExecutor("test.action", effect -> {
+            if (effect.effectId().ordinal() == 0) {
+                firstStarted.countDown();
+                awaitLatch(releaseFirst, "release first effect");
+            }
+            return EffectExecution.confirmed(new byte[0]);
+        });
+        EffectRuntime.Settings oneWorker = new EffectRuntime.Settings(true, Set.of(),
+                50, 1, 3, 1, 5, 0, 100);
+        try (Pipeline pipeline = new Pipeline(dir, emittingWithExpiry("test.action", 3),
+                Map.of("effects.enabled", "true", "effects.max-per-block", "8",
+                        "effects.max-payload-bytes", "4096"));
+             EffectRuntime runtime = new EffectRuntime(pipeline.store, "fx-chain", oneWorker,
+                     List.of(executor), Map.of(), log())) {
+            pipeline.applyNext(2);
+            runtime.tick();
+            assertThat(firstStarted.await(5, TimeUnit.SECONDS)).isTrue();
+
+            // Ordinal 1 is already queued, but expires on-chain while ordinal
+            // 0 occupies the only worker. The queued call must be suppressed.
+            pipeline.applyNext(0);
+            pipeline.applyNext(0);
+            pipeline.applyNext(0);
+            assertThat(pipeline.store.fxClosed(1, 1)).isTrue();
+            releaseFirst.countDown();
+            awaitInFlight(runtime, 0);
+
+            assertThat(executor.invocations).singleElement()
+                    .satisfies(effect -> assertThat(effect.effectId().ordinal()).isZero());
+            assertThat(pipeline.store.fxQueueExists(1, 1)).isFalse();
+        } finally {
+            releaseFirst.countDown();
+        }
+    }
+
+    @Test
+    void closeDoesNotWaitForBlockedSupports_andPreventsItsDispatch(@TempDir Path dir)
+            throws Exception {
+        CountDownLatch supportsStarted = new CountDownLatch(1);
+        CountDownLatch releaseSupports = new CountDownLatch(1);
+        CountDownLatch executorClosed = new CountDownLatch(1);
+        AtomicInteger executions = new AtomicInteger();
+        AppEffectExecutor executor = new AppEffectExecutor() {
+            @Override public String id() { return "blocking-supports"; }
+
+            @Override
+            public boolean supports(String effectType) {
+                supportsStarted.countDown();
+                awaitLatch(releaseSupports, "release supports check");
+                return true;
+            }
+
+            @Override
+            public EffectExecution execute(EffectExecutionContext context, PendingEffect effect) {
+                executions.incrementAndGet();
+                return EffectExecution.confirmed(new byte[0]);
+            }
+
+            @Override
+            public void close() {
+                executorClosed.countDown();
+            }
+        };
+
+        Pipeline pipeline = new Pipeline(dir,
+                emitting("test.action", ResultPolicy.NONE, null), FX_SETTINGS);
+        EffectRuntime runtime = new EffectRuntime(pipeline.store, "fx-chain",
+                runtimeSettings(3), List.of(executor), Map.of(), log());
+        boolean ledgerClosed = false;
+        try {
+            pipeline.applyNext(1);
+            AtomicReference<Throwable> tickFailure = new AtomicReference<>();
+            Thread ticker = new Thread(() -> {
+                try {
+                    runtime.tick();
+                } catch (Throwable t) {
+                    tickFailure.set(t);
+                }
+            }, "fx-test-tick");
+            CountDownLatch closeReturned = new CountDownLatch(1);
+            Thread closer = new Thread(() -> {
+                runtime.close(100, 100);
+                closeReturned.countDown();
+            }, "fx-test-close");
+            try {
+                ticker.start();
+                assertThat(supportsStarted.await(5, TimeUnit.SECONDS)).isTrue();
+                closer.start();
+                awaitClosed(runtime);
+
+                // supports() runs outside the scheduler-ledger barrier. A
+                // non-cooperative plugin cannot make shutdown unbounded, but
+                // its executor is not closed underneath the live callback.
+                assertThat(closeReturned.await(5, TimeUnit.SECONDS)).isTrue();
+                assertThat(executorClosed.getCount()).isEqualTo(1);
+
+                pipeline.close();
+                ledgerClosed = true;
+                releaseSupports.countDown();
+                ticker.join(5_000);
+
+                assertThat(ticker.isAlive()).isFalse();
+                assertThat(tickFailure.get()).isNull();
+                assertThat(executions).hasValue(0);
+                assertThat(executorClosed.await(5, TimeUnit.SECONDS)).isTrue();
+            } finally {
+                releaseSupports.countDown();
+                runtime.close(0, 0);
+                ticker.join(5_000);
+                closer.join(5_000);
+            }
+        } finally {
+            releaseSupports.countDown();
+            runtime.close(0, 0);
+            if (!ledgerClosed) {
+                pipeline.close();
+            }
+        }
+    }
+
+    @Test
+    void closeFansOutExecutorCleanup_andJoinsCooperativeClose(@TempDir Path dir)
+            throws Exception {
+        CountDownLatch blockingCloseStarted = new CountDownLatch(1);
+        CountDownLatch releaseBlockingClose = new CountDownLatch(1);
+        CountDownLatch blockingCloseFinished = new CountDownLatch(1);
+        CountDownLatch cooperativeCloseFinished = new CountDownLatch(1);
+        AtomicInteger blockingCloseCalls = new AtomicInteger();
+        AtomicInteger cooperativeCloseCalls = new AtomicInteger();
+        AppEffectExecutor blocking = new AppEffectExecutor() {
+            @Override public String id() { return "blocking-close"; }
+            @Override public boolean supports(String effectType) { return false; }
+            @Override public EffectExecution execute(
+                    EffectExecutionContext context, PendingEffect effect) {
+                throw new AssertionError("not executed");
+            }
+
+            @Override
+            public void close() {
+                blockingCloseCalls.incrementAndGet();
+                blockingCloseStarted.countDown();
+                while (true) {
+                    try {
+                        releaseBlockingClose.await();
+                        break;
+                    } catch (InterruptedException ignored) {
+                        // Deliberately non-cooperative plugin cleanup.
+                    }
+                }
+                blockingCloseFinished.countDown();
+            }
+        };
+        AppEffectExecutor cooperative = new AppEffectExecutor() {
+            @Override public String id() { return "cooperative-close"; }
+            @Override public boolean supports(String effectType) { return false; }
+            @Override public EffectExecution execute(
+                    EffectExecutionContext context, PendingEffect effect) {
+                throw new AssertionError("not executed");
+            }
+
+            @Override
+            public void close() {
+                cooperativeCloseCalls.incrementAndGet();
+                cooperativeCloseFinished.countDown();
+            }
+        };
+
+        try (Pipeline pipeline = new Pipeline(dir,
+                emitting("test.action", ResultPolicy.NONE, null), FX_SETTINGS)) {
+            EffectRuntime runtime = new EffectRuntime(pipeline.store, "fx-chain",
+                    runtimeSettings(3), List.of(blocking, cooperative), Map.of(), log());
+            CountDownLatch runtimeCloseReturned = new CountDownLatch(1);
+            AtomicBoolean cooperativeClosedAtReturn = new AtomicBoolean();
+            Thread runtimeCloser = new Thread(() -> {
+                runtime.close(25, 25);
+                cooperativeClosedAtReturn.set(cooperativeCloseFinished.getCount() == 0);
+                runtimeCloseReturned.countDown();
+            }, "fx-test-runtime-close");
+            try {
+                runtimeCloser.start();
+                assertThat(blockingCloseStarted.await(5, TimeUnit.SECONDS)).isTrue();
+
+                // Independent cleanup tasks let the cooperative executor
+                // close even though the first plugin is still blocked.
+                assertThat(cooperativeCloseFinished.await(1, TimeUnit.SECONDS)).isTrue();
+                assertThat(blockingCloseFinished.getCount()).isEqualTo(1);
+
+                // Runtime close waits only the shared short join budget. The
+                // cooperative resource is normally released before return;
+                // the blocked daemon remains safely detached.
+                assertThat(runtimeCloseReturned.await(1, TimeUnit.SECONDS)).isTrue();
+                assertThat(cooperativeClosedAtReturn).isTrue();
+                assertThat(blockingCloseFinished.getCount()).isEqualTo(1);
+
+                runtime.close(0, 0); // idempotent: never schedules a second callback
+                releaseBlockingClose.countDown();
+                assertThat(blockingCloseFinished.await(5, TimeUnit.SECONDS)).isTrue();
+                assertThat(blockingCloseCalls).hasValue(1);
+                assertThat(cooperativeCloseCalls).hasValue(1);
+            } finally {
+                releaseBlockingClose.countDown();
+                runtimeCloser.join(5_000);
+                runtime.close(0, 0);
+            }
+        }
+    }
+
+    @Test
+    void close_waitsForAcceptedApiOperationBeforeLedgerTeardown(@TempDir Path dir)
+            throws Exception {
+        CountDownLatch filterStarted = new CountDownLatch(1);
+        CountDownLatch releaseFilter = new CountDownLatch(1);
+        Set<String> blockingTypes = new java.util.AbstractSet<>() {
+            @Override
+            public java.util.Iterator<String> iterator() {
+                return Set.of("test.action").iterator();
+            }
+
+            @Override public int size() { return 1; }
+
+            @Override
+            public boolean contains(Object value) {
+                filterStarted.countDown();
+                awaitLatch(releaseFilter, "release claim type filter");
+                return "test.action".equals(value);
+            }
+        };
+
+        try (Pipeline pipeline = new Pipeline(dir,
+                emitting("test.action", ResultPolicy.NONE, null), FX_SETTINGS)) {
+            EffectRuntime runtime = new EffectRuntime(pipeline.store, "fx-chain",
+                    runtimeSettings(3), List.of(), Map.of(), log());
+            pipeline.applyNext(1);
+            runtime.tick();
+
+            AtomicReference<Throwable> claimFailure = new AtomicReference<>();
+            AtomicReference<List<PendingEffect>> claimResult = new AtomicReference<>();
+            Thread claimant = new Thread(() -> {
+                try {
+                    claimResult.set(runtime.claim("worker", blockingTypes, 1, 60));
+                } catch (Throwable t) {
+                    claimFailure.set(t);
+                }
+            }, "fx-test-claim");
+            CountDownLatch closeReturned = new CountDownLatch(1);
+            Thread closer = new Thread(() -> {
+                runtime.close(100, 100);
+                closeReturned.countDown();
+            }, "fx-test-api-close");
+            try {
+                claimant.start();
+                assertThat(filterStarted.await(5, TimeUnit.SECONDS)).isTrue();
+                closer.start();
+                awaitClosed(runtime);
+
+                // The accepted claim still has ledger work after the blocked
+                // filter. close must cross the API write barrier before the
+                // subsystem is allowed to close the store.
+                assertThat(closeReturned.await(100, TimeUnit.MILLISECONDS)).isFalse();
+                releaseFilter.countDown();
+                assertThat(closeReturned.await(5, TimeUnit.SECONDS)).isTrue();
+                claimant.join(5_000);
+
+                assertThat(claimant.isAlive()).isFalse();
+                assertThat(claimFailure.get()).isNull();
+                assertThat(claimResult.get()).isEmpty();
+                assertThat(runtime.statusOf(1, 0)).isEmpty();
+                assertThat(runtime.pendingInjections(1, 0)).isEmpty();
+                assertThat(runtime.report("worker", 1, 0, true, null, null)).isFalse();
+                assertThat(runtime.requeue(1, 0)).isFalse();
+            } finally {
+                releaseFilter.countDown();
+                runtime.close(0, 0);
+                claimant.join(5_000);
+                closer.join(5_000);
+            }
+        }
+    }
+
+    @Test
+    void interruptResistantCall_usesSnapshotContextAndDefersExecutorClose(@TempDir Path dir)
+            throws Exception {
+        CountDownLatch executionStarted = new CountDownLatch(1);
+        CountDownLatch releaseExecution = new CountDownLatch(1);
+        CountDownLatch executionFinished = new CountDownLatch(1);
+        CountDownLatch executorClosed = new CountDownLatch(1);
+        AtomicLong observedTip = new AtomicLong(-1);
+        AtomicLong observedAnchor = new AtomicLong(-1);
+        AtomicReference<Throwable> contextFailure = new AtomicReference<>();
+        AtomicBoolean callActiveWhenClosed = new AtomicBoolean();
+        AppEffectExecutor executor = new AppEffectExecutor() {
+            @Override public String id() { return "interrupt-resistant"; }
+            @Override public boolean supports(String effectType) {
+                return "test.action".equals(effectType);
+            }
+
+            @Override
+            public EffectExecution execute(EffectExecutionContext context, PendingEffect effect) {
+                executionStarted.countDown();
+                while (true) {
+                    try {
+                        releaseExecution.await();
+                        break;
+                    } catch (InterruptedException ignored) {
+                        // Deliberately non-cooperative: exercise bounded close.
+                    }
+                }
+                try {
+                    observedTip.set(context.tipHeight());
+                    observedAnchor.set(context.anchoredHeight());
+                } catch (Throwable t) {
+                    contextFailure.set(t);
+                } finally {
+                    executionFinished.countDown();
+                }
+                return EffectExecution.confirmed(new byte[0]);
+            }
+
+            @Override
+            public void close() {
+                callActiveWhenClosed.set(executionFinished.getCount() != 0);
+                executorClosed.countDown();
+            }
+        };
+
+        Pipeline pipeline = new Pipeline(dir,
+                emitting("test.action", ResultPolicy.NONE, null), FX_SETTINGS);
+        EffectRuntime runtime = new EffectRuntime(pipeline.store, "fx-chain",
+                runtimeSettings(3), List.of(executor), Map.of(), log());
+        boolean ledgerClosed = false;
+        try {
+            pipeline.applyNext(1);
+            pipeline.store.metaPutLong("anchor_last_height", 1);
+            runtime.tick();
+            assertThat(executionStarted.await(5, TimeUnit.SECONDS)).isTrue();
+
+            runtime.close(25, 25);
+            assertThat(executorClosed.getCount()).isEqualTo(1);
+
+            // The subsystem owns the store and closes it immediately after
+            // runtime.close(); the still-live plugin may safely consult only
+            // the immutable context snapshot from this point onward.
+            pipeline.close();
+            ledgerClosed = true;
+            releaseExecution.countDown();
+
+            assertThat(executionFinished.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(executorClosed.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(contextFailure.get()).isNull();
+            assertThat(observedTip).hasValue(1);
+            assertThat(observedAnchor).hasValue(1);
+            assertThat(callActiveWhenClosed).isFalse();
+        } finally {
+            releaseExecution.countDown();
+            runtime.close(0, 0);
+            if (!ledgerClosed) {
+                pipeline.close();
+            }
+        }
+    }
+
+    @Test
+    void executionContext_snapshotsConfigAndDefensivelyCopiesSubmittedRef(@TempDir Path dir)
+            throws Exception {
+        AtomicInteger calls = new AtomicInteger();
+        AtomicInteger idCalls = new AtomicInteger();
+        AtomicReference<Map<String, String>> observedSettings = new AtomicReference<>();
+        AtomicReference<byte[]> observedSubmittedRef = new AtomicReference<>();
+        AtomicBoolean settingsImmutable = new AtomicBoolean();
+        AppEffectExecutor executor = new AppEffectExecutor() {
+            @Override
+            public String id() {
+                if (idCalls.incrementAndGet() != 1) {
+                    throw new AssertionError("executor id must be snapshotted once");
+                }
+                return "snapshot-executor";
+            }
+            @Override public boolean supports(String effectType) {
+                return "test.action".equals(effectType);
+            }
+
+            @Override
+            public EffectExecution execute(EffectExecutionContext context, PendingEffect effect) {
+                if (calls.incrementAndGet() == 1) {
+                    observedSettings.set(context.settings());
+                    try {
+                        context.settings().put("token", "plugin-mutated");
+                    } catch (UnsupportedOperationException expected) {
+                        settingsImmutable.set(true);
+                    }
+                    return EffectExecution.submitted(new byte[] {1, 2, 3});
+                }
+                byte[] firstRead = context.submittedRef();
+                firstRead[0] = 99;
+                observedSubmittedRef.set(context.submittedRef());
+                return EffectExecution.confirmed(new byte[0]);
+            }
+        };
+
+        Map<String, String> mutableInner = new java.util.HashMap<>();
+        mutableInner.put("token", "initial");
+        Map<String, Map<String, String>> mutableOuter = new java.util.HashMap<>();
+        mutableOuter.put("snapshot-executor", mutableInner);
+
+        try (Pipeline pipeline = new Pipeline(dir,
+                emitting("test.action", ResultPolicy.NONE, null), FX_SETTINGS);
+             EffectRuntime runtime = new EffectRuntime(pipeline.store, "fx-chain",
+                     runtimeSettings(3), List.of(executor), mutableOuter, log())) {
+            // Both input map levels may be reused/mutated by bootstrap code;
+            // contexts must retain the construction-time snapshot.
+            mutableInner.put("token", "changed-after-construction");
+            mutableOuter.clear();
+
+            pipeline.applyNext(1);
+            runtime.tick();
+            awaitStatus(pipeline.store, 1, 0, FxStatusRecord.SUBMITTED);
+            Thread.sleep(10);
+            runtime.tick();
+            awaitStatus(pipeline.store, 1, 0, FxStatusRecord.DONE);
+
+            assertThat(observedSettings.get()).containsExactly(Map.entry("token", "initial"));
+            assertThat(settingsImmutable).isTrue();
+            assertThat(observedSubmittedRef.get()).containsExactly(1, 2, 3);
+            assertThat(idCalls).hasValue(1);
+        }
+    }
+
+    @Test
+    void repeatedIntake_preservesTerminalStatusAndRestoresExecutableQueue(@TempDir Path dir) {
+        try (Pipeline pipeline = new Pipeline(dir,
+                emitting("test.action", ResultPolicy.NONE, null), FX_SETTINGS);
+             EffectRuntime runtime = new EffectRuntime(pipeline.store, "fx-chain",
+                     runtimeSettings(3), List.of(), Map.of(), log())) {
+            pipeline.applyNext(2);
+            FxStatusRecord terminal = FxStatusRecord.pending().parked("operator parked");
+            FxStatusRecord retry = FxStatusRecord.pending().retry("transient", 0);
+            pipeline.store.fxRuntimePutStatus(1, 0, terminal);
+            pipeline.store.fxRuntimePutStatus(1, 1, retry);
+            pipeline.store.fxQueueDelete(1, 0);
+            pipeline.store.fxQueueDelete(1, 1);
+
+            runtime.tick();
+
+            assertThat(pipeline.store.fxRuntimeStatus(1, 0).orElseThrow().status())
+                    .isEqualTo(FxStatusRecord.PARKED);
+            assertThat(pipeline.store.fxQueueExists(1, 0)).isFalse();
+            assertThat(pipeline.store.fxRuntimeStatus(1, 1).orElseThrow().encode())
+                    .isEqualTo(retry.encode());
+            assertThat(pipeline.store.fxQueueExists(1, 1)).isTrue();
+            assertThat(pipeline.store.fxIntakeCursor(-1)).isEqualTo(1);
+        }
+    }
+
+    @Test
+    void executorTypePartition_appliesToQuarantineRequeueDispatchAndClaim(@TempDir Path dir)
+            throws Exception {
+        RecordingExecutor foreignExecutor = new RecordingExecutor("foreign.action",
+                effect -> EffectExecution.confirmed(new byte[0]));
+        EffectRuntime.Settings ownedOnly = new EffectRuntime.Settings(true,
+                Set.of("owned.action"), 50, 1, 3, 1, 5, 0, 100);
+        try (Pipeline pipeline = new Pipeline(dir, emittingTypes("owned.action", "foreign.action"),
+                FX_SETTINGS)) {
+            pipeline.applyNext(2); // history before this partition is enabled
+            try (EffectRuntime runtime = new EffectRuntime(pipeline.store, "fx-chain", ownedOnly,
+                    List.of(foreignExecutor), Map.of(), log())) {
+                assertThat(pipeline.store.fxRuntimeStatus(1, 0).orElseThrow().status())
+                        .isEqualTo(FxStatusRecord.QUARANTINED);
+                assertThat(pipeline.store.fxRuntimeStatus(1, 1)).isEmpty();
+                assertThat(runtime.requeue(1, 1)).isFalse();
+
+                // Even a legacy/corrupt foreign queue row cannot escape via
+                // an empty claim filter ("all") or a matching executor.
+                pipeline.store.fxRuntimePutStatus(1, 1, FxStatusRecord.pending());
+                pipeline.store.fxQueuePut(1, 1);
+                assertThat(runtime.claim("worker", Set.of(), 10, 60)).isEmpty();
+                runtime.tick();
+                awaitInFlight(runtime, 0);
+
+                assertThat(foreignExecutor.invocations).isEmpty();
+                assertThat(pipeline.store.fxQueueExists(1, 1)).isFalse();
+                assertThat(runtime.requeue(1, 1)).isFalse();
+
+                // The same strict partition still permits its owned,
+                // deliberately quarantined history to be reviewed/requeued.
+                assertThat(runtime.requeue(1, 0)).isTrue();
+                assertThat(pipeline.store.fxQueueExists(1, 0)).isTrue();
+            }
+        }
+    }
+
+    @Test
+    void foreignOwner_clearsRuntimeAndQuarantinesOpenEffects(@TempDir Path dir) throws Exception {
+        AtomicInteger sourceCalls = new AtomicInteger();
+        RecordingExecutor sourceExecutor = new RecordingExecutor("test.action", effect -> {
+            sourceCalls.incrementAndGet();
+            return EffectExecution.submitted("source-tx".getBytes(StandardCharsets.UTF_8));
+        });
+        RecordingExecutor targetExecutor = new RecordingExecutor("test.action",
+                effect -> EffectExecution.confirmed("target-tx".getBytes(StandardCharsets.UTF_8)));
+
+        try (Pipeline pipeline = new Pipeline(dir, emitting("test.action", ResultPolicy.NONE, null),
+                FX_SETTINGS)) {
+            try (EffectRuntime sourceRuntime = new EffectRuntime(pipeline.store, "fx-chain",
+                    runtimeSettings(3), List.of(sourceExecutor), Map.of(), "owner-a:types=", log())) {
+                pipeline.applyNext(1);
+                sourceRuntime.tick();
+                awaitStatus(pipeline.store, 1, 0, FxStatusRecord.SUBMITTED);
+            }
+
+            byte[] stateRoot = pipeline.store.stateRoot().clone();
+            byte[] blockRoot = pipeline.store.block(1).orElseThrow().stateRoot().clone();
+            byte[] record = pipeline.store.fxRecord(1, 0).orElseThrow().encode();
+            long openCount = pipeline.store.fxOpenCount();
+
+            try (EffectRuntime targetRuntime = new EffectRuntime(pipeline.store, "fx-chain",
+                    runtimeSettings(3), List.of(targetExecutor), Map.of(), "owner-b:types=", log())) {
+                assertThat(pipeline.store.fxRuntimeOwner()).isEqualTo("v1:owner-b:types=");
+                assertThat(pipeline.store.fxRuntimeStatus(1, 0).orElseThrow().status())
+                        .isEqualTo(FxStatusRecord.QUARANTINED);
+                assertThat(pipeline.store.fxQueueScan(10)).isEmpty();
+                assertThat(pipeline.store.fxIntakeCursor(-1)).isEqualTo(1);
+
+                targetRuntime.tick();
+                Thread.sleep(50);
+                assertThat(targetExecutor.invocations).isEmpty();
+
+                // Consensus-derived records and roots survive the disposable reset.
+                assertThat(pipeline.store.stateRoot()).isEqualTo(stateRoot);
+                assertThat(pipeline.store.block(1).orElseThrow().stateRoot()).isEqualTo(blockRoot);
+                assertThat(pipeline.store.fxRecord(1, 0).orElseThrow().encode()).isEqualTo(record);
+                assertThat(pipeline.store.fxOpenCount()).isEqualTo(openCount);
+
+                assertThat(targetRuntime.requeue(1, 0)).isTrue();
+                targetRuntime.tick();
+                awaitStatus(pipeline.store, 1, 0, FxStatusRecord.DONE);
+
+                pipeline.applyNext(1);
+                targetRuntime.tick();
+                awaitStatus(pipeline.store, 2, 0, FxStatusRecord.DONE);
+                assertThat(targetExecutor.invocations).hasSize(2);
+            }
+        }
+        assertThat(sourceCalls).hasValue(1);
+    }
+
+    @Test
+    void sameOwner_preservesWarmRestartState(@TempDir Path dir) throws Exception {
+        AtomicInteger calls = new AtomicInteger();
+        RecordingExecutor executor = new RecordingExecutor("test.action",
+                effect -> calls.incrementAndGet() == 1
+                        ? EffectExecution.submitted("tx-warm".getBytes(StandardCharsets.UTF_8))
+                        : EffectExecution.confirmed("tx-warm".getBytes(StandardCharsets.UTF_8)));
+        try (Pipeline pipeline = new Pipeline(dir, emitting("test.action", ResultPolicy.NONE, null),
+                FX_SETTINGS)) {
+            try (EffectRuntime first = new EffectRuntime(pipeline.store, "fx-chain",
+                    runtimeSettings(3), List.of(executor), Map.of(), "owner-a:types=", log())) {
+                pipeline.applyNext(1);
+                first.tick();
+                awaitStatus(pipeline.store, 1, 0, FxStatusRecord.SUBMITTED);
+            }
+
+            try (EffectRuntime restarted = new EffectRuntime(pipeline.store, "fx-chain",
+                    runtimeSettings(3), List.of(executor), Map.of(), "owner-a:types=", log())) {
+                FxStatusRecord submitted = pipeline.store.fxRuntimeStatus(1, 0).orElseThrow();
+                assertThat(submitted.status()).isEqualTo(FxStatusRecord.SUBMITTED);
+                assertThat(submitted.submittedRef())
+                        .isEqualTo("tx-warm".getBytes(StandardCharsets.UTF_8));
+
+                Thread.sleep(5);
+                restarted.tick();
+                awaitStatus(pipeline.store, 1, 0, FxStatusRecord.DONE);
+            }
+        }
+        assertThat(calls).hasValue(2);
+    }
+
+    @Test
+    void unownedLegacyRuntime_resetsConservatively(@TempDir Path dir) {
+        RecordingExecutor executor = new RecordingExecutor("test.action",
+                effect -> EffectExecution.confirmed(new byte[0]));
+        try (Pipeline pipeline = new Pipeline(dir, emitting("test.action", ResultPolicy.NONE, null),
+                FX_SETTINGS)) {
+            pipeline.applyNext(1);
+            pipeline.store.fxPutIntakeCursor(1);
+            pipeline.store.fxRuntimePutStatus(1, 0, FxStatusRecord.pending()
+                    .submitted("legacy-tx".getBytes(StandardCharsets.UTF_8), 0));
+            pipeline.store.fxQueuePut(1, 0);
+
+            try (EffectRuntime runtime = new EffectRuntime(pipeline.store, "fx-chain",
+                    runtimeSettings(3), List.of(executor), Map.of(), "owner-a:types=", log())) {
+                assertThat(pipeline.store.fxRuntimeStatus(1, 0).orElseThrow().status())
+                        .isEqualTo(FxStatusRecord.QUARANTINED);
+                assertThat(pipeline.store.fxQueueScan(10)).isEmpty();
+                assertThat(pipeline.store.fxIntakeCursor(-1)).isEqualTo(1);
+                assertThat(executor.invocations).isEmpty();
+            }
         }
     }
 
@@ -336,6 +1131,36 @@ class FxEffectsM2Test {
         };
     }
 
+    private static AppStateMachine emittingOnlyTailAsTarget() {
+        return new AppStateMachine() {
+            @Override public String id() { return "tail-emitter"; }
+            @Override public void apply(AppBlock block, AppStateWriter writer) { }
+            @Override
+            public void apply(AppBlock block, AppStateWriter writer, AppEffectEmitter effects) {
+                for (int i = 0; i < block.messages().size(); i++) {
+                    AppMessage message = block.messages().get(i);
+                    effects.emit(EffectIntent.of(
+                            i == 4096 ? "target.action" : "unsupported.action",
+                            message.getBody()).build());
+                }
+            }
+        };
+    }
+
+    private static AppStateMachine emittingTypes(String... types) {
+        return new AppStateMachine() {
+            @Override public String id() { return "typed-emitter"; }
+            @Override public void apply(AppBlock block, AppStateWriter writer) { }
+            @Override
+            public void apply(AppBlock block, AppStateWriter writer, AppEffectEmitter effects) {
+                for (int i = 0; i < block.messages().size(); i++) {
+                    effects.emit(EffectIntent.of(types[i % types.length],
+                            block.messages().get(i).getBody()).build());
+                }
+            }
+        };
+    }
+
     private interface Behavior {
         EffectExecution run(PendingEffect effect);
     }
@@ -370,6 +1195,15 @@ class FxEffectsM2Test {
         };
     }
 
+    private static org.slf4j.Logger log() {
+        return LoggerFactory.getLogger("fx");
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> map(Object value) {
+        return (Map<String, Object>) value;
+    }
+
     private static void awaitStatus(AppLedgerStore store, long height, int ordinal, int expected)
             throws InterruptedException {
         long deadline = System.currentTimeMillis() + 10_000;
@@ -384,6 +1218,42 @@ class FxEffectsM2Test {
         throw new AssertionError("Effect " + height + "/" + ordinal + " never reached status "
                 + expected + "; current: " + store.fxRuntimeStatus(height, ordinal)
                         .map(FxStatusRecord::statusName).orElse("<none>"));
+    }
+
+    private static void awaitInFlight(EffectRuntime runtime, int expected)
+            throws InterruptedException {
+        long deadline = System.currentTimeMillis() + 10_000;
+        while (System.currentTimeMillis() < deadline) {
+            Object value = runtime.stats().get("inFlight");
+            if (value instanceof Number number && number.intValue() == expected) {
+                return;
+            }
+            Thread.sleep(20);
+        }
+        throw new AssertionError("Effect runtime never reached inFlight=" + expected
+                + "; current: " + runtime.stats().get("inFlight"));
+    }
+
+    private static void awaitClosed(EffectRuntime runtime) throws InterruptedException {
+        long deadline = System.currentTimeMillis() + 5_000;
+        while (System.currentTimeMillis() < deadline) {
+            if (runtime.isClosed()) {
+                return;
+            }
+            Thread.sleep(10);
+        }
+        throw new AssertionError("Effect runtime close did not start");
+    }
+
+    private static void awaitLatch(CountDownLatch latch, String description) {
+        try {
+            if (!latch.await(10, TimeUnit.SECONDS)) {
+                throw new AssertionError("Timed out waiting to " + description);
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new AssertionError("Interrupted waiting to " + description, e);
+        }
     }
 
     /** Same shared pipeline as the M1 tests (FxBlockApplier). */

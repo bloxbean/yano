@@ -91,12 +91,29 @@ record EffectsSettings(boolean enabled,
             throw new IllegalArgumentException("effects.max-per-block, effects.max-payload-bytes, "
                     + "effects.max-expiry-blocks and effects.result-window-blocks must be positive");
         }
-        if (maxPerBlock > 1_048_576) {
+        if (maxPayloadBytes > 16 * 1024 * 1024) {
+            throw new IllegalArgumentException(
+                    "effects.max-payload-bytes must be <= 16777216; use payload-by-hash for larger bodies");
+        }
+        if (maxPerBlock > com.bloxbean.cardano.yano.api.appchain.effects.FxKeys.MAX_EFFECTS_PER_BLOCK) {
             // Ordinals pack into 20 bits in the kernel's in-block dedup key
             throw new IllegalArgumentException("effects.max-per-block must be <= 1048576");
         }
         return new EffectsSettings(true, maxPerBlock, maxPayloadBytes, maxExpiryBlocks,
                 resultWindowBlocks, defaultGate, commitment, strict, resultSigners);
+    }
+
+    /** Shared designated-signer policy for proposal admission and incorporation. */
+    boolean resultSignerAllowed(byte[] sender) {
+        if (resultSigners.isEmpty()) {
+            return true;
+        }
+        if (sender == null || sender.length == 0) {
+            return false;
+        }
+        String senderHex = com.bloxbean.cardano.yaci.core.util.HexUtil
+                .encodeHexString(sender).toLowerCase(Locale.ROOT);
+        return resultSigners.contains(senderHex);
     }
 
     private static int intSetting(Map<String, String> settings, String key, int defaultValue) {

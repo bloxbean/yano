@@ -685,17 +685,12 @@ public class YanoProducer {
         globals.put(YanoPropertyKeys.AppChain.RETENTION_KEEP_BLOCKS, appChainRetentionKeepBlocks);
         globals.put(YanoPropertyKeys.AppChain.POOL_MAX_MESSAGES, appChainPoolMaxMessages);
         globals.put(YanoPropertyKeys.AppChain.MESSAGE_ENFORCE_SENDER_SEQ, appChainEnforceSenderSeq);
-        // Dynamic plugin config (yano.app-chain.sinks.*, yano.app-chain.zk.* and
-        // yano.app-chain.machines.*) is copied verbatim so sink factories, the ZK
-        // verifier plugin and stdlib machine settings can be enabled from node-app
-        // config, not only in tests.
-        forwardDynamicKeys("yano.app-chain.sinks.", globals);
-        forwardDynamicKeys("yano.app-chain.zk.", globals);
-        forwardDynamicKeys("yano.app-chain.machines.", globals);
-        forwardDynamicKeys("yano.app-chain.sequencer.", globals);
-        forwardDynamicKeys("yano.app-chain.membership.", globals);
-        forwardDynamicKeys("yano.app-chain.observers.", globals);
-        forwardDynamicKeys("yano.app-chain.transport.", globals);
+        // Dynamic plugin config is copied verbatim so extension settings can
+        // be enabled from node-app config, not only through direct runtime
+        // construction in tests. Keep this list shared with indexed-chain
+        // parsing below: omitting effects.* here silently disables ADR-010 in
+        // a packaged node even though the configuration is present.
+        forwardAppChainDynamicKeys(globals);
         if (!appChainList.isEmpty() && appChainEnabled) {
             globals.put(YanoPropertyKeys.AppChain.CHAINS, appChainList);
             log.info("App-chain multi-chain config: {} chain(s)", appChainList.size());
@@ -846,8 +841,8 @@ public class YanoProducer {
      * Multi-chain config (ADR app-layer/006 E5.2): reads indexed properties
      * yano.app-chain.chains[i].&lt;suffix&gt; into suffix-keyed maps for the runtime.
      */
-    private java.util.List<java.util.Map<String, Object>> parseAppChainChains() {
-        var config = org.eclipse.microprofile.config.ConfigProvider.getConfig();
+    java.util.List<java.util.Map<String, Object>> parseAppChainChains() {
+        var config = appConfig;
         java.util.List<java.util.Map<String, Object>> chains = new java.util.ArrayList<>();
         String[] suffixes = {
                 "chain-id", "signing-key", "members", "peers",
@@ -874,13 +869,9 @@ public class YanoProducer {
                 config.getOptionalValue(prefix + suffix, String.class)
                         .ifPresent(value -> chain.put(suffix, value));
             }
-            // Dynamic plugin keys: chains[i].{sinks,zk,machines,sequencer,membership}.* -> suffix
+            // Dynamic plugin keys: chains[i].<extension>.* -> suffix.
             for (String property : config.getPropertyNames()) {
-                if (property.startsWith(prefix + "sinks.") || property.startsWith(prefix + "zk.")
-                        || property.startsWith(prefix + "machines.")
-                        || property.startsWith(prefix + "sequencer.")
-                        || property.startsWith(prefix + "membership.")
-                        || property.startsWith(prefix + "observers.")) {
+                if (isAppChainDynamicKey(property, prefix)) {
                     config.getOptionalValue(property, String.class)
                             .ifPresent(value -> chain.put(property.substring(prefix.length()), value));
                 }
@@ -890,9 +881,24 @@ public class YanoProducer {
         return chains;
     }
 
+    private static final java.util.List<String> APP_CHAIN_DYNAMIC_PREFIXES = java.util.List.of(
+            "sinks.", "zk.", "machines.", "sequencer.", "membership.",
+            "observers.", "transport.", "effects.");
+
+    private static boolean isAppChainDynamicKey(String property, String base) {
+        return APP_CHAIN_DYNAMIC_PREFIXES.stream()
+                .anyMatch(prefix -> property.startsWith(base + prefix));
+    }
+
+    void forwardAppChainDynamicKeys(java.util.Map<String, Object> globals) {
+        for (String prefix : APP_CHAIN_DYNAMIC_PREFIXES) {
+            forwardDynamicKeys("yano.app-chain." + prefix, globals);
+        }
+    }
+
     /** Copy every config property starting with {@code prefix} into globals verbatim. */
     private void forwardDynamicKeys(String prefix, java.util.Map<String, Object> globals) {
-        var config = org.eclipse.microprofile.config.ConfigProvider.getConfig();
+        var config = appConfig;
         for (String property : config.getPropertyNames()) {
             if (property.startsWith(prefix)) {
                 config.getOptionalValue(property, String.class)

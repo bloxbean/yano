@@ -12,17 +12,22 @@ import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectIntent;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectLimitExceededException;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectOutcome;
+import com.bloxbean.cardano.yano.api.appchain.effects.EffectProofLookup;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectRecord;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectResult;
 import com.bloxbean.cardano.yano.api.appchain.effects.FinalityGate;
 import com.bloxbean.cardano.yano.api.appchain.effects.FxKeys;
+import com.bloxbean.cardano.yano.api.appchain.effects.FxResultBody;
 import com.bloxbean.cardano.yano.api.appchain.effects.ResultPolicy;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
+import org.rocksdb.ColumnFamilyHandle;
+import org.rocksdb.RocksDB;
 import org.rocksdb.WriteBatch;
 import org.slf4j.LoggerFactory;
 
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -108,6 +113,68 @@ class FxEffectsM1Test {
     }
 
     @Test
+    void composedProof_usesEmissionHeightRootAndReportsPrunedMaterial(@TempDir Path dir)
+            throws Exception {
+        try (Pipeline pipeline = new Pipeline(dir.resolve("retained"),
+                new EmittingMachine(), FX_SETTINGS)) {
+            pipeline.applyNext(5);
+            byte[] emissionRoot = pipeline.store.block(1).orElseThrow().stateRoot();
+            pipeline.applyNext(1); // advance/change the tip after the target emission
+
+            EffectProofLookup lookup = pipeline.store.fxEffectProof(1, 4);
+            assertThat(lookup.status()).isEqualTo(EffectProofLookup.Status.AVAILABLE);
+            var proof = lookup.proof();
+            assertThat(proof.stateRoot()).isEqualTo(emissionRoot);
+            assertThat(proof.stateRoot()).isNotEqualTo(pipeline.store.stateRoot());
+            assertThat(FxKeys.verifyEffectsProof(proof.record().effectHash(), 4,
+                    proof.effectCount(), proof.merklePath(), proof.effectsRoot())).isTrue();
+            assertThat(pipeline.store.stateGetAtRoot(proof.stateRoot(), FxKeys.effectsRootKey(1)))
+                    .contains(proof.effectsRoot());
+            assertThat(new MpfTrie(pipeline.store.mpfNodeStore()).verifyProofWire(
+                    proof.stateRoot(), FxKeys.effectsRootKey(1), proof.effectsRoot(), true,
+                    proof.stateProofWire())).isTrue();
+
+            assertThat(pipeline.store.fxEffectProof(1, 5).status())
+                    .isEqualTo(EffectProofLookup.Status.NOT_FOUND);
+            assertThat(pipeline.store.fxEffectProof(99, 0).status())
+                    .isEqualTo(EffectProofLookup.Status.NOT_FOUND);
+        }
+
+        AppStateMachine noResultMachine = machineOf((block, writer, effects) ->
+                block.messages().forEach(message -> effects.emit(
+                        EffectIntent.of("audit.write", message.getBody()).build())));
+        try (Pipeline pipeline = new Pipeline(dir.resolve("pruned"),
+                noResultMachine, FX_SETTINGS)) {
+            pipeline.applyNext(3);
+            pipeline.applyNext(0);
+            assertThat(pipeline.store.fxPruneBelow(2)).isEqualTo(3);
+            assertThat(pipeline.store.fxBlockMeta(1)).isPresent();
+            assertThat(pipeline.store.fxEffectProof(1, 0).status())
+                    .isEqualTo(EffectProofLookup.Status.PRUNED);
+
+            // Simulate a retention tier where compact emission metadata
+            // survives but the historical block/proof material does not.
+            var dbField = AppLedgerStore.class.getDeclaredField("db");
+            var blocksCfField = AppLedgerStore.class.getDeclaredField("blocksCf");
+            dbField.setAccessible(true);
+            blocksCfField.setAccessible(true);
+            RocksDB db = (RocksDB) dbField.get(pipeline.store);
+            ColumnFamilyHandle blocksCf =
+                    (ColumnFamilyHandle) blocksCfField.get(pipeline.store);
+            db.delete(blocksCf, ByteBuffer.allocate(Long.BYTES).putLong(1L).array());
+            assertThat(pipeline.store.block(1)).isEmpty();
+
+            EffectProofLookup outOfRange = pipeline.store.fxEffectProof(1, 3);
+            assertThat(outOfRange.status()).isEqualTo(EffectProofLookup.Status.NOT_FOUND);
+            assertThat(outOfRange.effectCount()).isEqualTo(3);
+
+            EffectProofLookup validButPruned = pipeline.store.fxEffectProof(1, 0);
+            assertThat(validButPruned.status()).isEqualTo(EffectProofLookup.Status.PRUNED);
+            assertThat(validButPruned.effectCount()).isEqualTo(3);
+        }
+    }
+
+    @Test
     void expirySweep_incorporatesExpiredDeterministically(@TempDir Path dir) {
         EmittingMachine machine = new EmittingMachine(3); // expiryBlocks=3
         try (Pipeline pipeline = new Pipeline(dir, machine, FX_SETTINGS)) {
@@ -128,6 +195,7 @@ class FxEffectsM1Test {
             assertThat(pipeline.store.fxClosed(1, 0)).isTrue();
             assertThat(pipeline.store.fxExpiryBucket(4)).isEmpty();
             assertThat(pipeline.store.fxOpenCount()).isZero();
+            assertThat(pipeline.store.fxExpiredCount()).isEqualTo(1);
 
             // per-effect commitment: ~fx/done leaf carries the envelope hash
             byte[] done = pipeline.store.stateGet(FxKeys.doneKey(expired.effectId())).orElseThrow();
@@ -267,6 +335,54 @@ class FxEffectsM1Test {
                 .assertReplayStable();
     }
 
+    @Test
+    void unguardedResultHandlerChange_failsReplayStabilityBelowActivation() {
+        assertThatThrownBy(() -> resultHistoryUpgrade(
+                        provider("result-history", ResultHistoryMachine::new),
+                        provider("result-history", UnguardedResultV2Machine::new))
+                .assertReplayStable())
+                .isInstanceOf(AssertionError.class)
+                .hasMessageContaining("NOT replay-stable below activation height 6")
+                .hasMessageContaining("height 2");
+    }
+
+    @Test
+    void activationGatedResultHandlerChange_isReplayStableAndExercised() {
+        resultHistoryUpgrade(
+                        provider("result-history", ResultHistoryMachine::new),
+                        provider("result-history", GatedResultV2Machine::new))
+                .expectPostActivationDifference()
+                .assertReplayStable();
+    }
+
+    @Test
+    void upgradeHarness_canRequireAnObservablePostActivationDifference() {
+        assertThatThrownBy(() -> resultHistoryUpgrade(
+                        provider("result-history", ResultHistoryMachine::new),
+                        provider("result-history", ResultHistoryMachine::new))
+                .expectPostActivationDifference()
+                .assertReplayStable())
+                .isInstanceOf(AssertionError.class)
+                .hasMessageContaining("did not exercise an observable change")
+                .hasMessageContaining("activation height 6");
+    }
+
+    @Test
+    void upgradeHarness_rejectsActivationAlreadyPresentInCommonSettings() {
+        Map<String, String> conflicting = new java.util.LinkedHashMap<>(FX_SETTINGS);
+        conflicting.put("machines.emitter.activations.payment-v2", "10");
+
+        assertThatThrownBy(() -> StateMachineConformance.upgrade(
+                        provider("emitter", EmittingMachine::new),
+                        provider("emitter", GatedV2Machine::new))
+                .settings(conflicting)
+                .activationAt("payment-v2", 10)
+                .blocks(20)
+                .assertReplayStable())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("already contain activation key");
+    }
+
     // ------------------------------------------------------------------
     // Test machines and plumbing
     // ------------------------------------------------------------------
@@ -350,6 +466,89 @@ class FxEffectsM1Test {
         }
     }
 
+    /** Emits at odd heights; even-height {@code ~fx/result} messages drive this callback. */
+    private static class ResultHistoryMachine implements AppStateMachine {
+        private static final byte[] V1 = "v1".getBytes(StandardCharsets.UTF_8);
+
+        @Override
+        public String id() {
+            return "result-history";
+        }
+
+        @Override
+        public void apply(AppBlock block, AppStateWriter writer) {
+            throw new UnsupportedOperationException("engine always calls the 3-arg apply");
+        }
+
+        @Override
+        public void apply(AppBlock block, AppStateWriter writer, AppEffectEmitter effects) {
+            int command = 0;
+            for (var message : block.messages()) {
+                if (message.getTopic().startsWith("~")) {
+                    continue;
+                }
+                effects.emit(EffectIntent.of("result-history.v1", message.getBody())
+                        .scope("command/" + block.height() + "/" + command++)
+                        .result(ResultPolicy.CHAIN)
+                        .sourceMessageId(message.getMessageId())
+                        .build());
+            }
+        }
+
+        @Override
+        public void onEffectResult(AppBlock block, EffectResult result, AppStateWriter writer) {
+            writer.put(key("result/" + result.effectId().canonical()), resultMarker(block));
+        }
+
+        protected byte[] resultMarker(AppBlock block) {
+            return V1;
+        }
+    }
+
+    /** The invalid upgrade: result history changes from genesis instead of at A. */
+    private static final class UnguardedResultV2Machine extends ResultHistoryMachine {
+        private static final byte[] V2 = "v2".getBytes(StandardCharsets.UTF_8);
+
+        @Override
+        protected byte[] resultMarker(AppBlock block) {
+            return V2;
+        }
+    }
+
+    /** The valid upgrade: onEffectResult uses the same block-height schedule as apply. */
+    private static final class GatedResultV2Machine extends ResultHistoryMachine {
+        private static final byte[] V2 = "v2".getBytes(StandardCharsets.UTF_8);
+        private ActivationSchedule activations = ActivationSchedule.empty();
+
+        @Override
+        protected byte[] resultMarker(AppBlock block) {
+            return activations.isActive("result-handler-v2", block.height()) ? V2 : super.resultMarker(block);
+        }
+
+        void activations(ActivationSchedule schedule) {
+            this.activations = schedule;
+        }
+    }
+
+    private static StateMachineConformance.UpgradeBuilder resultHistoryUpgrade(
+            AppStateMachineProvider oldProvider, AppStateMachineProvider newProvider) {
+        return StateMachineConformance.upgrade(oldProvider, newProvider)
+                .settings(FX_SETTINGS)
+                .activationAt("result-handler-v2", 6)
+                .blocks(10)
+                .messagesPerBlock(1)
+                .messageGenerator((height, index, random) -> {
+                    if ((height & 1) == 1) {
+                        return StateMachineConformance.CorpusMessage.application(
+                                ("emit-" + height).getBytes(StandardCharsets.UTF_8));
+                    }
+                    byte[] result = new FxResultBody(FxResultBody.BODY_VERSION,
+                            height - 1, 0, EffectOutcome.CONFIRMED,
+                            ("confirmed-" + height).getBytes(StandardCharsets.UTF_8), null).encode();
+                    return new StateMachineConformance.CorpusMessage(FxResultBody.TOPIC, result);
+                });
+    }
+
     private static AppStateMachineProvider provider(String id,
                                                     java.util.function.Supplier<AppStateMachine> factory) {
         return new AppStateMachineProvider() {
@@ -359,6 +558,9 @@ class FxEffectsM1Test {
                     com.bloxbean.cardano.yano.api.appchain.AppStateMachineContext context) {
                 AppStateMachine machine = factory.get();
                 if (machine instanceof GatedV2Machine gated) {
+                    gated.activations(ActivationSchedule.from(context.settings(), id));
+                }
+                if (machine instanceof GatedResultV2Machine gated) {
                     gated.activations(ActivationSchedule.from(context.settings(), id));
                 }
                 return machine;

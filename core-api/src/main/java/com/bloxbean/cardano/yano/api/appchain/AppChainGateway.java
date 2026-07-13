@@ -115,7 +115,20 @@ public interface AppChainGateway {
         return java.util.Optional.empty();
     }
 
-    /** Effect Runtime counters (queue depth, executed, parked, …); empty when no runtime here. */
+    /**
+     * Composed proof of one emission against the historical state root at its
+     * block height. Distinguishes an unknown effect from retained commitment
+     * metadata whose record/path material has been pruned.
+     */
+    default com.bloxbean.cardano.yano.api.appchain.effects.EffectProofLookup effectProof(
+            long height, int ordinal) {
+        return com.bloxbean.cardano.yano.api.appchain.effects.EffectProofLookup.notFound(0);
+    }
+
+    /**
+     * Effect consensus/runtime observability. Consensus open/expiry values are
+     * present even without a local executor; runtime gauges then read zero.
+     */
     default Map<String, Object> effectStats() {
         return Map.of();
     }

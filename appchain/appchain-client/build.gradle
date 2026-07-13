@@ -4,6 +4,7 @@
 dependencies {
     implementation libs.jackson.databind
     implementation libs.jackson.dataformat.cbor
+    implementation libs.cardano.client.crypto
     api libs.cardano.client.mpf
 
     testImplementation libs.junit.jupiter.api

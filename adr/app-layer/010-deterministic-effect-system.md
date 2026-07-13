@@ -1,7 +1,7 @@
 # ADR-010: Deterministic Effect System (Emit → Execute → Result) for Yano App Chains
 
 ## Status
-Accepted — implemented (FX-M1…FX-M5, 2026-07-13) on `feat/app_layer_effect`
+Accepted — implemented (FX-M1…FX-M6B, 2026-07-13) on `feat/app_layer_effect`
 
 ## Implementation Status
 
@@ -12,6 +12,8 @@ Accepted — implemented (FX-M1…FX-M5, 2026-07-13) on `feat/app_layer_effect`
 | FX-M3 | `~fx/result` interpreter (fail-closed, first-result-wins, consensus result window), member-signed injection, operator cancel, approvals payments (§8.1) | **Done** (reviewed: mandatory CHAIN expiry ≤ result window) |
 | FX-M4 | External claim/report mode (leases + fencing), `appchain-effects-cardano` payment executor, `AppChainClient` effects SDK | **Done** (reviewed: steal fencing, SUBMITTED claims, tx false-confirmation fixed) |
 | FX-M5 | Result signer policy (`effects.result.signers`), `FinalityGate.ZK_SETTLED` (gated on `zk_settled_height`), zeroj 0.1.0-pre9, final regression | **Done** |
+| FX-M6A | Replay/recovery hardening: strict missing-activation safety, startup activation diagnostics, A±k and `onEffectResult()` upgrade coverage, executor-owned runtime reset/quarantine, bounded worker admission, pre-fire revalidation, type-partition fencing and ledger-safe shutdown | **Done** |
+| FX-M6B | Historical composed-effect proof + client verifier with precise 404/410 retention semantics; non-truncated bounded-cardinality metrics; durable fair work indexes/cursors | **Done** |
 
 Open questions resolved: Q1 per-machine gate override → yes (e.g.
 `machines.approvals.payment-gate`); Q2 signer default → any-member with the
@@ -19,8 +21,18 @@ designated-signer list as the production recommendation; Q3 `pendingCount()`
 → shipped; Q4 approvals payments → stdlib behind config; Q5 per-type
 outcome-commitment → deferred (per-chain granularity in v1). Deferred to
 future iterations: on-chain claim mode, k-of-n result attestation,
-`effectsRoot` block-field promotion (next wire bump), fx CF list in the
-snapshot-manifest VERIFICATION (currently informational).
+`effectsRoot` block-field promotion (next wire bump).
+
+The consensus/execution loop, proposal-time result-signer admission, composed
+proof API/client verifier, and dedicated effect observability described here
+are implemented for the v1 consensus format. Framework-level setting/codec
+epochs remain pending under ADR-010.1 D5, so the v1 `effects.*` consensus
+settings and algorithms are immutable for the chain lifetime. The remaining
+production-funds blocker is the Cardano executor safety design in §15: its
+metadata breadcrumb does not close the crash window before local `SUBMITTED`
+persistence. Optional quorum attestation, attempt history and alternative
+transports remain demand-driven extensions, not reasons to redesign the
+two-plane model.
 
 ## Date
 2026-07-12 (accepted 2026-07-13)
@@ -37,6 +49,9 @@ BloxBean Team
   messages with atomic meta writes)
 - ADR-008.4 (I3.2 `~l1/*` observations — member-signed reserved-topic injection,
   follower verification of externally-derived facts)
+- ADR-010.1 (emission versioning and replay compatibility)
+- ADR-011 (plugin bundles, lifecycle and domain APIs; this ADR's executor
+  factory is one typed contribution shape)
 
 This ADR was produced from a multi-track design exploration: a codebase
 architecture survey, an external prior-art survey, two competing storage-design
@@ -67,6 +82,31 @@ chain message. The bookkeeper records the receipt like any other entry.
 Instructions and receipts are ordered, replicated and provable; the messy,
 retryable, failure-prone act of *doing* stays outside the deterministic world,
 where it can be retried without ever corrupting the books.
+
+### 0.1 Concepts and consistency model
+
+- An **Effect** is immutable, deterministic intent emitted by a state
+  transition and stored as an `EffectRecord`. It says what is authorized; it
+  is not an execution or a claim that the outside world changed.
+- An **Execution Attempt** is one node-local, non-deterministic effort to carry
+  out an effect. Attempts may differ between nodes and are never authenticated
+  chain state.
+- An **Outcome Attestation** is a terminal `~fx/result` message, or the
+  deterministic EXPIRED transition, incorporated by consensus. A signed
+  result proves who attested to an outcome and that the chain recorded it; in
+  general it does **not** independently prove that the external action
+  happened.
+- The **Effect Runtime** is the execution-plane dispatcher and retry loop. It
+  may run in the Yano process, on a dedicated Yano member, or behind an
+  external-worker REST boundary. "Outside deterministic execution" means
+  outside `AppStateMachine.apply()`; it does not necessarily mean outside
+  Yano.
+
+The named consistency property is **eventual consistency between authorized
+intent and recorded outcome**. An effect is final at height H, while its
+outcome is recorded at a later height H′ or by deterministic expiry. Application
+schemas must therefore model the in-flight interval. The formal delivery
+contract remains **exactly-once incorporation with at-least-once execution**.
 
 ---
 
@@ -183,6 +223,14 @@ deterministic core enforces idempotency at result re-entry.**
 ## 5. Design overview — two planes
 
 The design separates two planes with different consistency requirements:
+
+This is the **transactional outbox pattern** adapted to authenticated app-chain
+state. `EffectRecord` rows commit atomically beside the application-state
+transition but remain outside the MPF trie; the ordered per-block
+`effectsRoot` leaf under `stateRoot` binds their content and completeness.
+Thus the outbox payload is not itself authenticated state, yet an auditor can
+prove that a particular instruction was among all effects authorized by a
+specific state root.
 
 ```
         CONSENSUS PLANE (deterministic, replicated, provable)
@@ -352,7 +400,7 @@ public record EffectIntent(
     // builder defaults: scope="", gate=CHAIN_DEFAULT, result=NONE, expiryBlocks=0
 }
 
-public enum FinalityGate  { CHAIN_DEFAULT, APP_FINAL, L1_ANCHORED }
+public enum FinalityGate  { CHAIN_DEFAULT, APP_FINAL, L1_ANCHORED, ZK_SETTLED }
 public enum ResultPolicy  { NONE, CHAIN }
 public enum EffectOutcome { CONFIRMED, FAILED, CANCELLED, EXPIRED }
 ```
@@ -387,7 +435,7 @@ versioned):
 
 ```
 EffectRecord = [ v(=1), chainId, height, ordinal, type, payload,
-                 scope, gate(0|1), result(0|1), expiryHeight, sourceMessageId / null ]
+                 scope, gate, result(0|1), expiryHeight, sourceMessageId / null ]
 effectHash   = blake2b-256(canonical record bytes)
 ```
 
@@ -399,7 +447,7 @@ the record MAY carry `payloadHash` + out-of-band body instead (F11).
 Two new CFs in the app ledger RocksDB (covered by snapshot checkpoints for
 free):
 
-**`fx_records` — consensus tier.** A pure function of the block stream;
+**`app_fx_records` (`fx_records` below) — consensus tier.** A pure function of the block stream;
 identical on every node; written in the same atomic `WriteBatch` as
 `commitBlock` (block + tip + trie nodes + indexes), via the same staging
 mechanism as `GovernedMembership.MetaWrite`.
@@ -409,15 +457,19 @@ mechanism as `GovernedMembership.MetaWrite`.
 | `r` ‖ be64(height) ‖ be32(ordinal) | EffectRecord CBOR | at block commit (emission) |
 | `n` ‖ be64(height) | count(4BE) ‖ effectsRoot(32) | at block commit when count > 0 |
 | `x` ‖ be64(expiryHeight) | CBOR list of (height, ordinal) expiring there | at block commit (emission with expiry) |
+| `c` ‖ be64(height) ‖ be32(ordinal) | terminal outcome envelope | when an outcome is incorporated or expiry commits |
 
-**`fx_runtime` — node-local tier.** Never replicated, never proven, freely
+**`app_fx_runtime` (`fx_runtime` below) — node-local tier.** Never replicated, never proven, freely
 rewritten by the Effect Runtime, disposable (rebuildable, F10).
 
 | Key | Value |
 |---|---|
-| `s` ‖ be64(height) ‖ be32(ordinal) | StatusRecord: {status, attempts, nextAttemptAt, lease, executorId, lastError, submittedRef, resultHash} |
-| `q` ‖ gate(1) ‖ be64(height) ‖ be32(ordinal) | (empty) pending-queue row; deleted on terminal |
-| meta | `fx_intake_cursor` — last block folded into the queue |
+| `s` ‖ be64(height) ‖ be32(ordinal) | StatusRecord: {status, attempts, nextAttemptAt, lastError/lease-holder, submittedRef, externalRef, timestamps, outcome} |
+| `q` ‖ be64(height) ‖ be32(ordinal) | (empty) pending-queue row; deleted on local terminal or chain closure |
+| `i` ‖ be64(height) ‖ be32(ordinal) | (empty) locally terminal CHAIN outcome awaiting incorporation |
+| `o` / `v` | runtime owner/type-partition binding / runtime schema version |
+| `d` / `e` / `u` | fair-scan cursors for embedded dispatch / external claims / result injection |
+| app meta | `fx_intake_cursor` — last block folded into the queue |
 
 **Why the split is the design's center of gravity:** status writes (a retry
 loop, a lease refresh) are ordinary local puts — no consensus round, no root
@@ -440,14 +492,17 @@ tick. The `n` rows (44 bytes per effectful block) may be kept indefinitely.
 ### F4 — The `effectsRoot` commitment and the reserved trie namespace
 
 ```
-effectsRoot(H) = merkleRoot([effectHash_0 … effectHash_{n-1}])   // ordered, blake2b-256
+rawTreeRoot(H) = merkleRoot([effectHash_0 … effectHash_{n-1}])   // ordered, blake2b-256
+effectsRoot(H) = blake2b-256("yano:fx:list-root:v1" ‖ be32(n) ‖ rawTreeRoot(H))
 trie leaf:  key = "~fx/root/" ‖ be64(H)      value = effectsRoot(H)   (only when n > 0)
 ```
 
 The merkleizer promotes an odd node UNCHANGED to the next level (pass-through,
 never duplicated), so lists differing only by a repeated trailing leaf produce
 different roots — the CVE-2012-2459 malleability class is excluded by
-construction. This deliberately differs from the legacy duplicate-promotion in
+construction. The domain-separated final hash also authenticates the exact
+list count; a valid path cannot be relabelled as a different-width tree. This
+deliberately differs from the legacy duplicate-promotion in
 `messagesRoot`, which is frozen by the shipped block format; aligning
 `messagesRoot` is deferred to the next block-version bump.
 
@@ -468,6 +523,21 @@ returns and **before** `trie.getRootHash()`. Consequences:
   stateRoot(H); (4) stateRoot(H) under the threshold cert / L1 anchor.
   Additionally the list root gives **completeness**: given the record list, a
   verifier knows no effect was suppressed.
+
+The count-bound form is the pre-release v1 baseline on this feature branch.
+It is intentionally incompatible with prototype databases that wrote the raw
+tree root directly; an already-certified chain would require the framework
+activation mechanism in ADR-010.1 D5 before changing this algorithm.
+
+In concrete terms, this proof can establish: **"this payment instruction
+existed under state root X."** The composed proof endpoint and client helper
+package these steps against the historical state root at H. Proof generation
+requires every record in H's effect list: after any sibling record crosses the
+retention horizon the endpoint returns `410 EFFECT_PROOF_PRUNED`, while the
+small per-block root metadata remains. A proof archived before pruning remains
+verifiable forever. Threshold-certificate/L1-anchor authentication of the
+served state root is a separate finality step; the client verifier accepts an
+independently obtained root.
 
 **Reserved trie namespace (required companion change).** The `~fx/` prefix is
 reserved in the *trie keyspace* **from genesis, regardless of whether effects
@@ -522,6 +592,14 @@ public interface AppEffectExecutorFactory {                 // ServiceLoader
 }
 ```
 
+The executor SPI is intentionally source-agnostic: an executor receives a
+`PendingEffect` and execution context, with no dependency on RocksDB, REST, or
+the intake cursor. Kafka, gRPC or WebSocket delivery would therefore be a
+dispatcher/transport adapter in front of the same executor contract, not a
+new kind of effect. No generic `EffectSource` abstraction is introduced until
+a concrete second delivery transport demonstrates a need for one (ADR-011
+owns the wider plugin/transport roadmap).
+
 Runtime tick (default 2 s, own scheduler, sibling of `sinkTick`):
 
 ```
@@ -533,28 +611,30 @@ tick():
 
   # 2 GATE + DISPATCH — per effect, no head-of-line blocking
   anchored = meta("anchor_last_height")
-  for (gate, height, ordinal) in queue.scan():                # (height, ordinal) order
+  for (height, ordinal) in queue.scanFrom(persistedCursor):   # bounded, round-robin
       if gate == L1_ANCHORED and height > anchored - anchorMargin: continue
       st = status(height, ordinal)
       if st in {LEASED, EXECUTING} and lease alive: continue
       if st == RETRY and now < nextAttemptAt: continue
       if st == PARKED: continue                               # operator lane, F9
-      ex = registry.find(rec.type); if ex == null: park("no executor"); continue
+      ex = registry.find(rec.type); if ex == null: continue       # stays pending
       lease(); pool.submit(run(rec, ex))                      # bounded parallelism
 
 run(rec, ex):
   outcome = ex.execute(ctx, rec)         # exceptions → attempts++, exp. backoff + jitter
   CONFIRMED/FAILED  → if rec.result == CHAIN: inject ~fx/result (F8)
-                      else: local terminal (DONE/DEAD), delete queue row
+                      else: local terminal (DONE/PARKED), delete queue row
   SUBMITTED(ref)    → record locally; re-poll next tick (executor checks the
                       external system by idHash/ref and returns CONFIRMED/FAILED)
   attempts ≥ max    → PARKED + alert; operator requeues/cancels via REST (F12)
 ```
 
-The queue row of a `ResultPolicy.CHAIN` effect is deleted when the sequenced
-terminal commits (the interpreter clears it, F8) — completion is recorded in
-replicated state, not in a local high-water mark, so replay and restart can
-never re-fire a chain-terminal effect.
+For a `ResultPolicy.CHAIN` effect, the local DONE status durably drives result
+reinjection until the sequenced terminal is observed; the queue row need not
+remain after local completion. The consensus closure row / `~fx/done`
+commitment, not a local queue high-water mark, is authoritative. Intake and
+restart consult that closure before dispatch, so a chain-terminal effect is
+not reopened merely because its node-local queue was rebuilt.
 
 **Deployment models** (all supported by the same runtime):
 
@@ -570,25 +650,28 @@ never re-fire a chain-terminal effect.
 ### F6 — Executor selection and claiming
 
 Survey verdict (§4): executor selection is an efficiency mechanism —
-correctness always comes from deterministic incorporation + idempotency. The
-design therefore ships, in order of escalation:
+correctness always comes from deterministic incorporation + idempotency.
+
+The implemented v1 modes are:
 
 1. **Single designated executor (default).** Operators enable the runtime on
    one node (the existing anchor-leader role is the precedent). Zero
    coordination traffic. Executor down ⇒ effects wait, bounded by expiry;
-   `fx_pending`/oldest-age metrics alarm.
-2. **Standby stagger** (`standby-delay-blocks=k`): executor with rank r only
-   touches effects pending longer than r·k blocks. Cheap HA; brief overlap
-   produces duplicate *attempts*, absorbed by idempotency — never divergent
-   state (the interpreter is first-result-wins).
-3. **Deterministic partition**: multiple executors with disjoint
-   `executor.types` lists, or assignment by `hash(idHash) mod executors`.
-4. **On-chain claims (deferred, not v1).** A `~fx/claim` sequenced message
-   with height-denominated leases, for effect types where even duplicate
-   attempts are expensive. Deliberately deferred: it costs a consensus round
-   per effect, and lease clocks are subtle — app-chain height stalls with the
-   chain; if built, leases MUST be denominated in **L1 slot** (already in
-   every block, monotonic) rather than app height or wall clock.
+   operators monitor the REST status surface and dedicated backlog/oldest-age
+   metrics.
+2. **Explicit type partitioning.** Multiple runtimes may use disjoint
+   `executor.types` lists.
+3. **External-worker claims.** REST claim/report uses node-local wall-clock
+   leases and fencing behind a fronting member. These leases coordinate
+   external workers only; they are not consensus state.
+
+Possible later escalations are a standby stagger or deterministic hash
+assignment, and **on-chain claims**. An on-chain claim would be a
+`~fx/claim` sequenced message with L1-slot-denominated leases, for effect types
+where even duplicate attempts are expensive. Deliberately deferred: it costs
+a consensus round per effect, and lease clocks are subtle — app-chain height
+stalls with the chain; if built, leases MUST be denominated in **L1 slot**
+(already in every block, monotonic) rather than app height or wall clock.
 
 Misconfiguration (two nodes enabled for the same type) degrades to duplicate
 attempts, never divergent state. This MUST be documented loudly, and the
@@ -607,6 +690,10 @@ Per-effect `FinalityGate`, evaluated by the runtime each tick:
   stability depth (reusing the L1ObservationService stability machinery). For
   counterparties who only trust Cardano: the emission is *externally provable*
   before the action fires.
+- **ZK_SETTLED**: eligible once `createdHeight ≤ zk_settled_height`. The
+  runtime reads only this verified settlement high-water mark; the future ZK
+  settlement subsystem is responsible for advancing it after proof acceptance
+  (§13).
 
 **L1 rollback semantics (precise, and pleasantly simple):** an L1 rollback
 rewinds the `anchor_last_height` high-water-mark and the anchor resubmits —
@@ -628,7 +715,7 @@ topics):
 
 ```
 topic: ~fx/result
-body:  [ v(=1), chainId, height, ordinal,            // the effectId
+body:  [ v(=1), height, ordinal,                     // chainId is bound by the verified envelope
          outcome(1 CONFIRMED | 2 FAILED | 3 CANCELLED),
          externalRef(bstr ≤128),                     // canonical handle: txHash, CID, resource id
          detailHash(bstr32 | null) ]                 // commitment to off-chain detail document
@@ -648,18 +735,18 @@ for each ~fx/result in block order:                      # deterministic, fail-c
     rec = fx_records.get(effectId)                       # consensus tier ONLY, never fx_runtime
     skip deterministically (audit no-op) if:
         unknown id | malformed | out-of-bounds sizes
-        | trie has ~fx/done/<idHash>                     # ← first result wins
-        | record already EXPIRED
-    write trie leaf  ~fx/done/<idHash> = blake2b-256(result envelope)
+        | consensus closure row already exists           # ← first result wins
+    write trie leaf  ~fx/done/<idHash> = blake2b-256(result envelope)  # per-effect mode
     machine.onEffectResult(block, result, writer)        # app records txHash etc. — into the root
-    stage: delete pending-queue row; schedule record pruning
+    stage consensus closure row; runtime observes closure and drops any local queue row
 ```
 
 Properties:
 
 - **Exactly-once incorporation**: duplicate results (executor retry, standby
-  overlap, malicious replay) hit the `~fx/done` guard and no-op identically on
-  every node. A result message can **never stall the chain** — every invalid
+  overlap, malicious replay) hit the consensus closure guard and no-op
+  identically on every node (`~fx/done` is additionally written in per-effect
+  commitment mode). A result message can **never stall the chain** — every invalid
   case is a deterministic no-op (explicit contrast with `~l1` MISMATCH, which
   stalls by design).
 - **Trust model, stated plainly**: a result is a *member attestation*, not an
@@ -667,16 +754,20 @@ Properties:
   (membership + signature — already enforced by the envelope layer), not the
   external world. A lying member attesting a false result has the same power
   as a lying proposer and is equally attributable (signed, sequenced,
-  permanent). Escalations, in order: restrict accepted signers to the
-  designated executor's member key (proposal-time check); require k-of-n
-  co-attestation for declared high-value types (the `~anchor/sig`
-  threshold-collection precedent); and where the fact is L1-visible (payments,
+  permanent). The implemented mitigation is to restrict accepted signers to the
+  designated executor's member key (implemented at proposal admission with
+  deterministic incorporation as the replay-safe backstop). A future k-of-n
+  co-attestation mode may follow the `~anchor/sig` threshold-collection
+  precedent. Where the fact is L1-visible (payments,
   anchors), verify via the existing `L1Observer` recompute path instead of
   trusting any attestation.
-- The `~fx/done` leaf doubles as the **audit anchor for the outcome**: intent
-  provable against block H (effectsRoot), outcome provable against block H′
-  (done leaf + the result message under H′'s messagesRoot). Symmetric proof
-  story, both under threshold certs and L1 anchors.
+- Honest proposers drop unauthorized results from their pools and followers
+  reject live proposals containing them. Incorporation still treats them as
+  deterministic no-ops so already-certified catch-up history remains
+  replayable and policy validation stays consensus-safe.
+- In per-effect mode, the `~fx/done` leaf doubles as the **audit anchor for the
+  outcome**. In per-block mode the `~fx/results/H′` list root plays that role.
+  In both modes the sequenced result is also under H′'s `messagesRoot`.
 - Executor result submission MUST survive `PoolFullException`, message TTL
   expiry and member-key rotation: results are persisted in a durable local
   queue and re-signed/resubmitted until the sequenced terminal is observed.
@@ -717,7 +808,7 @@ beyond the retention window; batching just makes the trade explicit up front.
 
 `ResultPolicy.NONE` effects (webhooks, notifications, cache invalidation —
 nothing in app state depends on them) terminate in the runtime tier only:
-DONE/DEAD with evidence in `fx_runtime`, surfaced via REST/metrics, zero chain
+DONE/PARKED with evidence in `fx_runtime`, surfaced via REST/metrics, zero chain
 footprint.
 
 ### F9 — Expiry, poison lane, cancellation
@@ -755,31 +846,37 @@ footprint.
 
 ### F10 — Replay, restart, snapshot restore, versioned emission
 
-- **Warm restart**: cursor, statuses and leases are persisted in `fx_runtime`;
-  the runtime resumes. Effects caught mid-EXECUTING sit behind an expired
-  lease and re-dispatch — the at-least-once path, absorbed by idempotency.
+- **Warm restart**: cursor and statuses are persisted in `fx_runtime`.
+  Embedded in-flight work is not assumed complete and may dispatch again;
+  external-worker claims wait for their persisted node-local lease to expire.
+  Both are the intended at-least-once path, absorbed by idempotency.
 - **Catch-up replay** (fresh follower): replaying `apply` regenerates
   `fx_records` identically — the outbox self-heals from the block stream by
   construction. Replay re-runs the *consensus plane* only; the runtime never
   fires from replay (executor disabled by default; where enabled, chain-
-  terminal effects have `~fx/done` leaves and cleared queue rows).
-- **Snapshot restore**: the RocksDB checkpoint covers both CFs; a restored
-  executor resumes with its own honest view — genuinely in-flight effects
-  re-execute (correct), completed ones don't. The state root does not depend
-  on any of it.
-- **Enabling the executor late / backfill quarantine**: when the runtime is
-  first enabled on a node, historical open effects older than
-  `executor.backfill-quarantine-blocks` are marked QUARANTINED and require
-  operator acknowledgment before firing — a restored or newly promoted
-  executor never blind-fires stale history.
+  terminal effects have consensus closure rows/commitments and are not
+  re-enqueued).
+- **Snapshot restore**: the RocksDB checkpoint covers both CFs. Same-node
+  recovery can resume its runtime view: genuinely in-flight effects may
+  re-execute (the intended at-least-once path), while completed effects stay
+  closed. Runtime state is bound to a canonical fingerprint of executor
+  identity plus its sorted type partition. A checkpoint copied to a different
+  owner (or legacy unowned state) atomically discards only
+  statuses/leases/queue/cursor and quarantines
+  historical open effects. The state root never depends on this tier.
+- **Enabling the executor late / backfill quarantine**: on first enable with
+  no intake cursor, the implementation quarantines all historical open
+  effects and advances the cursor to the current tip. Operators explicitly
+  requeue selected work; a newly promoted executor never blind-fires stale
+  history.
 - **Rebuild-on-corruption**: if the outbox CFs are lost or fail integrity
   checks (record hashes vs the `effectsRoot` leaves — the commitment doubles
   as a checksum), drop and rebuild by replay; then reconstruct status from the
-  chain: `~fx/done` present ⇒ terminal; CHAIN effect without done-leaf ⇒
-  PENDING (re-execute; idempotent); NONE effect ⇒ SKIPPED (no evidence either
-  way — never guess with emails). **Consensus-recorded results double as
-  durable, replicated execution receipts** — disaster recovery is a chain
-  query, not guesswork.
+  chain: consensus closure row present ⇒ terminal; open CHAIN effect ⇒
+  PENDING (re-execute; idempotent); NONE effect ⇒ SKIPPED (no evidence
+  either way — never guess with emails). **Consensus-recorded results double
+  as durable, replicated outcome attestations** — disaster recovery is a
+  chain query, not guesswork.
 - **Versioned emission (hard requirement).** Emission logic is part of the
   replayed transition: a machine upgrade that changes *what gets emitted for
   old blocks* changes historical effectsRoots and breaks catch-up exactly like
@@ -840,67 +937,90 @@ yano:
       max-per-block: 256                # consensus parameter
       max-payload-bytes: 16384          # consensus parameter
       max-expiry-blocks: 100000         # consensus parameter; also the height-overflow guard
-      default-gate: app-final           # app-final | l1-anchored
+      result-window-blocks: 100000       # consensus result-incorporation horizon
+      default-gate: app-final           # app-final | l1-anchored | zk-settled
       outcome-commitment: per-effect    # per-effect | per-block (CONSENSUS-AFFECTING; F8)
       strict-reserved-prefix: true      # CONSENSUS-AFFECTING; active even when enabled=false
+      result:
+        signers: ""                     # comma-separated member keys; empty = any member
       retention:
         keep-blocks: 100000             # prune terminal records/statuses
       gate:
         anchor-margin-blocks: 0
-        l1-stability-depth: 6
       executor:
         enabled: false                  # OFF by default on every node
-        id: fx-exec-1
-        types: []                       # empty = all supported; else allowlist partition
+        identity: ""                    # default: node-local sidecar outside checkpoints
+        types: ""                       # comma-separated; empty = all supported
         tick-ms: 2000
         max-parallel: 4
+        max-batch: 256
         max-attempts: 8
         backoff-initial-ms: 2000
         backoff-max-ms: 300000
-        standby-delay-blocks: 0
-        backfill-quarantine-blocks: 600
+      metrics:
+        types: ""                      # max 32 explicit type tags; empty = aggregate only
       external:
         enabled: false                  # REST claim/report surface for external executors
       executors:                        # per-executor factory config (scheme-keyed)
-        webhook.post:
+        webhook:
+          url: https://example.invalid/hook
           timeout-ms: 10000
-        cardano.payment:
-          wallet: default
+        cardano:
+          backend-url: https://cardano-backend.example
+          signing-mnemonic: ${CARDANO_PAYMENT_MNEMONIC}
+          network: preprod
           metadata-label: 21042
+          max-lovelace-per-tx: 100000000
 ```
 
 Consensus-affecting keys (`enabled`, `max-per-block`, `max-payload-bytes`,
-`default-gate`) are chain config like `threshold` — a mismatch across members
-diverges roots at the first emission; same coordination discipline as changing
-the state machine version; startup cross-check recommended.
+`max-expiry-blocks`, `result-window-blocks`, `default-gate`,
+`outcome-commitment`, `strict-reserved-prefix`, `result.signers`) are chain
+config like `threshold` — a mismatch across members may diverge roots or
+validity decisions; use the same coordination discipline as a state-machine
+upgrade.
 
 | Module | Contents |
 |---|---|
 | `core-api` (`api.appchain.effects`) | `AppEffectEmitter`, `EffectIntent`, `EffectId`, `EffectRecord`, `EffectResult`, `PendingEffect`, `AppEffectExecutor` (+ Factory/Context/Execution), enums, codec; the two `AppStateMachine` default methods; `TypedAppStateMachine` overload; CDDL for record/result |
-| `runtime` (`runtime.appchain.effects`) | `FxKernel` (effectsRoot leaf, result interpreter, expiry sweep — inside `AppChainEngine.applyBlock`), `EffectOutboxStore` (CFs riding the commit batch), `EffectRuntime` (intake/gate/dispatch/park), `ResultInjector` (internal `~fx/result` path), reserved-prefix guard in `BatchStateWriter`; built-in `webhook.post` executor |
-| `appchain/extensions/appchain-effects-cardano` | `cardano.payment` / `cardano.metadata` executors (CCL tx building; dedupe via metadata label carrying idHash — query before submit); keeps CCL deps out of runtime, mirrors `appchain-kafka-sink` |
-| `app` (Quarkus) | `EffectsResource`, metrics, config mapping |
-| `appchain-spring-boot-starter` | `yano.app-chain.effects.*` properties; auto-register `AppEffectExecutor` beans |
+| `runtime` (`runtime.appchain`) | `AppLedgerStore` owns the two CFs and atomic staging; `FxKernel` owns commitments/result interpretation/expiry; `EffectRuntime` owns intake/gating/dispatch/retry; `AppChainSubsystem` owns result injection and executor discovery; `BatchStateWriter` guards the prefix; built-in `webhook.post` executor |
+| `appchain/extensions/appchain-effects-cardano` | `cardano.payment` executor (CCL transaction building and confirmation polling; idHash metadata is a reconciliation breadcrumb, not automatic pre-submit dedupe) |
+| `app` (Quarkus) | effect routes on the existing `AppChainResource` |
+| `appchain-spring-boot-starter` | app-chain configuration integration; no separate effect-executor bean SPI is promised by this ADR |
 | `appchain-testkit` | emission assertions in `StateMachineConformance`; fake executor; deterministic result/expiry injection harness |
 
 REST (chain-scoped under the existing `/api/v1/app-chain/chains/{chainId}`,
 behind the existing API-key auth):
 
 ```
-GET  /effects?status=&type=&fromHeight=&limit=       list (runtime view over consensus records)
-GET  /effects/{height}/{ordinal}                     record + status + proof material
-GET  /effects/{height}/{ordinal}/proof               effectHash → list path → MPF proof of ~fx/root/H
+GET  /effects?fromHeight=&limit=                     list consensus records
+GET  /effects/{height}/{ordinal}                     record + this node's runtime status
+GET  /effects/{height}/{ordinal}/proof               record → list path → historical-root proof
 POST /effects/{height}/{ordinal}/requeue             operator: PARKED/QUARANTINED → PENDING
-POST /effects/{height}/{ordinal}/cancel              operator: inject CANCELLED result
+POST /effects/{height}/{ordinal}/cancel?reason=      operator: inject CANCELLED result
 POST /effects/claim                                  external executor: {types,max,leaseSeconds}
-POST /effects/{height}/{ordinal}/result              external executor: report outcome (lease-checked)
-GET  /effects/stats                                  counters by status/type, oldest-pending age
+POST /effects/{height}/{ordinal}/report              external executor: report outcome (lease-checked)
+GET  /effects/stats                                  full-scan status/backlog/age + cumulative totals
 ```
 
-Metrics from day one: `fx_pending`, `fx_parked`, `fx_executed_total`,
-`fx_expired_total`, oldest-pending age, per-type execution latency, unsubmitted
-result backlog. Admin actions are member-signed sequenced messages → audit
-trail for free.
+The composed route returns canonical record CBOR, the exact ordered Merkle
+path (including odd-node pass-through steps), and an MPF proof of the
+`~fx/root/<height>` leaf against that block's historical root. The dependency-
+light client verifies all three layers and can bind them to an independently
+trusted state root and requested effect identity.
+
+Micrometer exports non-truncated, memoized current open/queue/status/result-
+backlog and oldest-pending gauges, process-lifetime monotonic confirmed/failed/
+parked counters, committed
+expiry totals, and emission-to-terminal latency. Per-type backlog/latency tags
+come only from the explicit bounded `effects.metrics.types` allowlist (maximum
+32, with `other`); effect ids, scopes, errors and arbitrary workload types are
+never tags. These are operational snapshots, not a transactionally consistent
+multi-CF read while transitions are concurrent. Dedicated durable indexes and
+round-robin cursors prevent retained/ineligible prefixes from starving embedded
+dispatch, external claims, or CHAIN-result injection. Optional type/status REST
+filters remain demand-driven. Admin cancellation is member-signed and
+sequenced; requeue is node-local operational control.
 
 ## 8. Use cases
 
@@ -920,7 +1040,7 @@ public void apply(AppBlock block, AppStateWriter writer, AppEffectEmitter effect
             // ... dedupe, add approver ...
             int status = approvers.size() >= item.required() ? STATUS_APPROVED : STATUS_PENDING;
             writer.put(itemKey, item.with(status, approvers).encode());
-            if (status == STATUS_APPROVED && payments) {
+            if (status == STATUS_APPROVED && paymentsActiveAt(block.height())) {
                 byte[] paymentKey = payloadKey(command.itemId());
                 writer.get(paymentKey).ifPresent(payment -> {
                     EffectId id = effects.emit(EffectIntent.of("cardano.payment", payment)
@@ -961,9 +1081,10 @@ End-to-end:
 apply(H=1042): 2-of-3 reached → item APPROVED → emit cardano.payment
                → fx_records row (1042,0) + ~fx/root/1042 leaf   [one atomic commit; root binds intent]
 cert → anchor tx → anchor_last_height ≥ 1042 (+ stability depth)
-runtime tick:  gate open → CardanoPaymentExecutor: probe L1 by metadata label (idHash)
-               → not found → build tx (payee, amount, metadata {label: idHash}) → submit
-               → SUBMITTED(txHash) locally → later tick: tx at depth 6 → CONFIRMED(txHash)
+runtime tick:  gate open → CardanoPaymentExecutor builds tx
+               (payee, amount, metadata breadcrumb {label: idHash}) → submit and wait
+               → if confirmed: CONFIRMED(txHash)
+               → otherwise persist SUBMITTED(txHash); later ticks re-poll that hash
 inject ~fx/result (member-signed) → sequenced into block H′=1057
 apply(H′):     interpreter: no ~fx/done yet → write ~fx/done/<idHash>
                → onEffectResult: item PAID, txHash recorded      [root binds outcome]
@@ -971,10 +1092,14 @@ audit:         intent provable vs stateRoot(1042), outcome vs stateRoot(1057),
                both threshold-signed and L1-anchored; payment body verifiable vs record hash
 ```
 
-A crash after tx submission but before result injection re-attempts on
-restart; the metadata-label probe finds the existing tx and returns CONFIRMED
-without double-paying — the reference implementation of the idempotency
-contract.
+A crash after `SUBMITTED(txHash)` is persisted is safe to resume by polling the
+same transaction. There is still a duplicate-payment window if the process
+crashes after submission but before that local status is durable: metadata
+supports manual reconciliation, but the current executor does not search by
+metadata before its first submission. The formal contract therefore remains
+at-least-once execution, not exactly-once payment. Production funding requires
+conservative hot-wallet limits and a dedicated Cardano executor safety design
+(§15) before relying on automatic retries for material value.
 
 ### 8.2 Supply chain: shipment approval → ERP warehouse release
 
@@ -1025,7 +1150,7 @@ An approvals flow gates production deployment; on approval the machine emits
 `webhook.post` targeting the GitHub Actions dispatch endpoint
 (`ResultPolicy.NONE` — no chain state depends on the outcome; the deployment
 evidence lives in the CI system). The built-in webhook executor fires with the
-idempotency header; outcome (DONE/DEAD + HTTP status) is visible in
+idempotency header; outcome (DONE/PARKED + HTTP status) is visible in
 `/effects/stats` and metrics only. Zero chain footprint beyond the emission
 record — which is still provable ("deployment X was authorized at height H").
 
@@ -1035,19 +1160,19 @@ record — which is still provable ("deployment X was authorized at height H").
 |---|---|---|
 | 1 | Emission-logic upgrade breaks replay (roots diverge; node can never sync) | F10 versioned emission with activation heights — hard requirement; conformance replay tests |
 | 2 | N-times execution (embedded runtime on every member) | executor OFF by default; single designated executor; partitions; idempotency as last line (F5/F6) |
-| 3 | Forged/false results (authority trust) | fail-closed interpreter; signer policy up to k-of-n; L1-visible facts verified via `L1Observer` instead (F8) |
-| 4 | Crash between external call and result submission | at-least-once by design; durable local intent journal + probe-by-idHash before re-fire; retry-safety classes per type (F5, 8.1) |
-| 5 | Lease clocks unsound (stalled chain / proposer clock skew) | no leases in v1; failover = standby stagger or explicit reassignment; future leases in L1 slots (F6) |
+| 3 | Forged/false results (authority trust) | fail-closed interpreter; designated-signer policy; L1-visible facts verified via `L1Observer`; k-of-n remains a future extension (F8, §15) |
+| 4 | Crash between external call and result submission | at-least-once by design; durable local `SUBMITTED` state when available; external idempotency required; Cardano's pre-persist crash gap is explicitly unresolved (F5, §8.1, §15) |
+| 5 | Lease clocks unsound (stalled chain / proposer clock skew) | external REST leases are node-local efficiency/fencing only; any future consensus claim lease uses L1 slots (F6) |
 | 6 | Poison effect starves the pipeline | per-effect retry state, no head-of-line; attempt cap → PARKED + alert + replay endpoint (F9) |
-| 7 | Result message never sequenced (pool full, TTL, key rotation) | durable result queue, re-sign + resubmit until terminal observed (F8) |
-| 8 | Snapshot restore / late-enabled executor re-fires history | chain-recorded terminals + queue rows cleared at terminal commit; backfill quarantine (F10) |
+| 7 | Result message never sequenced (pool full, TTL, key rotation) | durable result-ready index, re-sign + resubmit until terminal observed; index backfills on upgrade and cannot be starved by old statuses (F8) |
+| 8 | Snapshot restore / late-enabled executor re-fires history | consensus closure rows prevent re-enqueue; first-enable quarantine; foreign owner/type-partition reset discards only runtime-local state (F10) |
 | 9 | L1 rollback rewinds anchor HWM after execution | monotonic executed set; stability-depth gate; deep-reorg accepted risk (F7) |
 | 10 | Reserved trie-key collision / app writes to `~fx/*` | deterministic `BatchStateWriter` guard + escape hatch (F4) |
 | 11 | Pending-set growth, emission spam, oversized payloads | deterministic caps, expiry, `pendingCount()` backpressure, metrics (F11) |
 | 12 | Lifecycle races (dup/late/orphan results, cancel vs in-flight) | single deterministic transition table; terminal states absorbing; every illegal transition = audit no-op (F8/F9) |
 | 13 | App machine mis-parses `~` messages | framework interprets `~fx/*`; machines get the typed `onEffectResult` hook; stdlib skips `~` topics (F8) |
 | 14 | PII/secrets in replicated/authenticated state | payload-by-hash, credential references, scope discipline (F11) |
-| 15 | Stuck effects invisible until business impact | status surface, metrics, oldest-pending alarms, member-signed admin ops (F12) |
+| 15 | Stuck effects invisible until business impact | REST status/stats, non-truncated backlog/oldest-age gauges, bounded per-type metrics and admin ops (F12) |
 
 ## 10. Hard requirements (MUST list)
 
@@ -1066,8 +1191,9 @@ record — which is still provable ("deployment X was authorized at height H").
 6. The result interpreter is deterministic and fail-closed: terminal states
    absorbing; malformed/duplicate/late/orphan results are audit-logged no-ops;
    a result message can NEVER stall the chain.
-7. Results are authority-based and the documentation says so; signer policy is
-   enforceable per chain; high-value types can require k-of-n attestation.
+7. Results are authority-based and the documentation says so; designated-
+   signer policy is enforceable per chain. k-of-n attestation for high-value
+   types is deferred and MUST NOT be implied by v1 configuration.
 8. Finality gating per effect; the executed set is monotonic across anchor
    HWM rewinds; L1_ANCHORED includes a stability-depth condition.
 9. Payload-by-hash for sensitive bodies; secrets never in records; nothing
@@ -1078,8 +1204,9 @@ record — which is still provable ("deployment X was authorized at height H").
     deterministically.
 12. Executor result submission survives pool-full, message expiry and member
     key rotation (durable, re-signable result queue).
-13. Status/metrics surface and member-signed admin operations
-    (cancel/requeue/park) ship with v1, not later.
+13. A status/stats surface, dedicated bounded-cardinality metrics and
+    privileged admin operations ship with v1; operators must configure alerts
+    appropriate to their effect SLAs (§F12).
 
 ## 11. Deviations from the initial sketch
 
@@ -1092,10 +1219,10 @@ codebase-verified reason:
 |---|---|---|
 | Effects stored as authenticated state (`effects/` namespace in the tree) | Outbox CF + per-block `effectsRoot` trie leaf (B+) | MPF has no prefix scan (a CF index is needed regardless); MPF node store is append-only (payloads would be permanent); per-effect leaves bill hashing into every apply on every node — see §6 |
 | `PENDING → CLAIMED → SUBMITTED → CONFIRMED` all as chain state | Only EMITTED + terminal outcomes on the consensus plane; CLAIMED/SUBMITTED/attempts are runtime-local | intermediate statuses are coordination data, not audit data; each on-chain hop = a sequenced message + root recomputation on every node for information no auditor needs (the txHash still lands in CONFIRMED) |
-| Generic claiming protocol with block-height leases | Default: designated executor + standby stagger + idempotency; on-chain claims deferred | every surveyed system: executor selection is efficiency, not correctness; height-denominated leases never expire on a stalled chain — if leases are ever built they must use L1 slots |
+| Generic claiming protocol with block-height leases | Designated executor, explicit type partitions, optional node-local external-worker claims; on-chain claims deferred | executor selection is efficiency, not correctness; node-local leases fence REST workers, while any future consensus lease must use L1 slots |
 | `effectId = hash(appchainId, blockNumber, messageIndex, effectIndex)` | `(chainId, height, ordinal)` + domain-separated hash | equivalent intent; ordinal-per-block is simpler than per-message indexing and survives framework-emitted transitions |
 | Execution result "submitted as another appchain message" (unspecified author) | Member-signed `~fx/result` on a reserved topic via the internal injection path; external executors report through a fronting member node | verified constraint: only current member keys can author messages; external `submit()` rejects `~` topics |
-| Finality policies incl. `L1_CONFIRMED`, `ZK_SETTLED` | v1: APP_FINAL, L1_ANCHORED (with stability depth); ZK gate deferred | app finality is already irreversible (append-only after cert) — "committed" and "final" coincide; the ZK gate slot is reserved (§13) |
+| Finality policies incl. `L1_CONFIRMED`, `ZK_SETTLED` | APP_FINAL, L1_ANCHORED and ZK_SETTLED | app finality is already irreversible (append-only after cert); ZK settlement changes the eligibility high-water mark, not the effect model (§13) |
 | — | EXPIRED as a first-class deterministic outcome, distinct from FAILED | IBC's ack-vs-timeout split: liveness failure needs an escape hatch that doesn't depend on any executor being alive |
 | — | Exactly-once *incorporation* / at-least-once *execution* stated as the formal contract | the honest, provable guarantee boundary (§2) |
 
@@ -1116,10 +1243,11 @@ codebase-verified reason:
   new-build snapshot on an old build, fails at startup. FX-M2 adds the CF
   list/format version to the snapshot manifest so this fails fast with a
   manifest-level diagnostic.
-- Retention (E4.4) does not yet cover effect records: payloads derived from
-  since-pruned message bodies persist in `app_fx_records` until fx pruning
-  ships (FX-M2 scope) — until then, chains relying on crypto-shredding should
-  use payload-by-hash for sensitive effect payloads (F11).
+- Retention prunes resolved effect records after the configured horizon while
+  preserving records needed by the consensus result window. Until that
+  horizon passes, payloads remain in checkpoints and replicated storage;
+  chains relying on crypto-shredding must use payload-by-hash for sensitive
+  effect bodies (F11).
 - Result trust is membership trust (until k-of-n attestation ships); this is
   weaker than `~l1` recompute verification and must be understood by
   deployers.
@@ -1135,13 +1263,23 @@ codebase-verified reason:
 The design is settlement-independent by construction, and B+ is the ZK-cheap
 shape (per zk-rollup L2→L1 messaging precedent):
 
+```
+effect list → effectsRoot → stateRoot → validity proof → settlement acceptance
+                                                           │
+                                                           └→ zk_settled_height
+                                                                      │
+                                                                      └→ execution eligibility
+```
+
 - `effectsRoot` is exactly the "outbound message tree root" of zkSync/Scroll:
   in ZK mode it becomes a public output of the state-transition proof, and
   emission correctness is checked in a cheap side-circuit over the linear
   effect list — payloads never enter the trie-update witness.
 - The finality gate tightens from "threshold cert / anchor HWM" to "validity
-  proof accepted" — a new `FinalityGate.ZK_SETTLED` value slotting into the
-  same runtime check; nothing else changes.
+  proof accepted". `FinalityGate.ZK_SETTLED` and its
+  `zk_settled_height` runtime check already ship; a settlement subsystem must
+  advance that authenticated/verified high-water mark. The effect model stays
+  unchanged as the proof mechanism evolves.
 - Result incorporation is already message-based and deterministic, so it is
   inside the proven transition automatically. Proving *execution* correctness
   (not just emission/incorporation) stays explicitly out of scope.
@@ -1180,43 +1318,43 @@ shape (per zk-rollup L2→L1 messaging precedent):
   absorb anyway (crash-window duplicates are unpreventable); deferred to an
   opt-in for genuinely expensive duplicate attempts.
 
-## 15. Implementation plan (proposed phases)
+## 15. Implementation history and follow-ups
 
-| Phase | Scope |
+| Phase | Shipped scope |
 |---|---|
-| **FX-M1: consensus plane** | core-api SPI (F1/F2), `fx_records` CF + commit-batch staging, `effectsRoot` leaf + reserved-prefix guard (F4), expiry sweep, conformance-harness emission assertions. No runtime yet — records observable via REST list. |
-| **FX-M2: runtime + webhook** | `fx_runtime` CF, `EffectRuntime` (intake/gate/dispatch/park), executor SPI + ServiceLoader, built-in `webhook.post` executor, metrics, `/effects` REST (read + requeue). |
-| **FX-M3: result loop** | `~fx/result` topic + `ResultInjector` + fail-closed interpreter + `~fx/done` leaves, `onEffectResult` hook, cancellation, approvals payment example end-to-end on the devnet cluster skill. |
-| **FX-M4: executors + external mode** | `appchain-effects-cardano` (payment/metadata with metadata-label idempotency), external claim/report REST, Spring starter properties, backfill quarantine. |
-| **FX-M5: hardening (as needed)** | signer policy enforcement / k-of-n attestation for high-value types, on-chain claim mode (L1-slot leases), effectsRoot → block-field promotion at the next wire bump, ZK_SETTLED gate. |
+| **FX-M1: consensus plane** | core-api emission SPI, `app_fx_records`, atomic staging, `effectsRoot`, reserved prefix, expiry and conformance coverage |
+| **FX-M2: runtime + webhook** | `app_fx_runtime`, intake/gating/dispatch/retry/park, executor SPI + ServiceLoader, webhook executor, retention, REST reads/requeue and snapshot CF manifest entries |
+| **FX-M3: result loop** | `~fx/result`, fail-closed first-result-wins interpretation, outcome commitments, `onEffectResult`, cancellation, mandatory CHAIN expiry and approvals integration |
+| **FX-M4: external execution** | REST claim/report with node-local leases/fencing, `cardano.payment`, `AppChainClient` effect operations and first-enable quarantine |
+| **FX-M5: hardening** | incorporation-time result-signer policy, `ZK_SETTLED` gate, security review and regression coverage |
+| **FX-M6A: replay/recovery safety** | strict approvals activation, activation startup/status diagnostics, upgrade restarts before and after A, topic-aware result-handler replay coverage, runtime owner/type-partition binding with foreign/legacy reset and quarantine, globally bounded worker admission, last-moment state/expiry/gate revalidation, and ledger-safe shutdown barriers/context snapshots |
+| **FX-M6B: proof + observability** | historical count-bound composed-effect proof route, bounded client verifier, precise 404-vs-410 classification from retained count metadata, non-truncated effect gauges plus monotonic counters/timers, bounded type tags, node-app config plumbing, and persisted fair cursors for dispatch/claim/result injection |
 
-### Pre-implementation design items
+### Resolved during implementation
 
-Acknowledged in this ADR but not fully designed; each must be resolved no
-later than the phase it gates:
+- Emission-version selection and replay compatibility are specified by
+  ADR-010.1 and covered by the replay matrix.
+- Retention never prunes open effects or records still needed inside the
+  consensus result window.
+- Checkpoint manifests enumerate both effect column families; checkpoints
+  include them automatically.
+- CHAIN effects always receive a bounded deterministic expiry within the
+  result window.
 
-| Item | Gates | Notes |
+### Post-M5 follow-ups
+
+| Priority | Item | Boundary / recommendation |
 |---|---|---|
-| **Emission-versioning mechanism** (version markers, activation heights, replay selection, conformance coverage) | **blocks FX-M1** | the most dangerous correctness requirement (hard req. #2); deserves a just-in-time sub-ADR (010.1) before the SPI freezes |
-| Result signer proposal-time enforcement (engine path parallel to `verifyProposalObservations`) | FX-M3 | intent specced in F8; code path not |
-| Retention invariant: never prune `fx_records` behind the intake cursor or for open effects (analog of the slowest-sink-cursor rule) | FX-M2 | |
-| Snapshot manifest explicitly names the new CFs in its verification list | FX-M2 | CFs ride the checkpoint automatically; the manifest should say so |
-| Cardano executor mini-design: wallet/key management outside Yano, UTxO selection & fees, metadata-label probe source (L1 view/indexer) | FX-M4 | flagship executor, real funds — own design note |
-| Per-effect retry-policy hints in `EffectIntent` (Temporal-style retry-as-data vs global executor config) | FX-M5 / optional | revisit after FX-M2 operational experience |
-
-Open questions for review:
-1. Should `default-gate` be per-machine (`machines.<id>.effects.default-gate`)
-   rather than per-chain?
-2. Result signer policy default: any member (simplest) vs designated executor
-   member only (stricter) — proposal-time enforcement cost is small; lean
-   stricter?
-3. Is `pendingCount()` worth its (small) deterministic bookkeeping, or should
-   backpressure be left to machine-level state?
-4. Does the approvals payment example ship in stdlib behind config, or as a
-   separate example machine in the scaffold?
-5. Should `outcome-commitment` support per-type override (per-effect leaves
-   for declared high-value types on an otherwise per-block chain), or is
-   per-chain granularity enough for v1?
+| Completed (FX-M6B) | **Composed proof and observability** | Historical proof route/client verification compose record hash, count-bound ordered list path and MPF inclusion; Micrometer exposes non-truncated backlog/status/oldest-age and bounded per-type latency/backlog. Node-local indexes plus persisted cursors remove bounded-prefix starvation from dispatch, claims and result injection. |
+| Before changing v1 consensus settings/codecs | **Framework effect epochs (ADR-010.1 D5)** | Define a height-indexed settings/codec timeline and replay matrix for signer rotation, result-window/cap changes, commitment-mode changes and future record/root versions. Until then these values are immutable for a chain's lifetime. |
+| Before production funds | **Cardano executor safety design** | Specify automatic pre-submit reconciliation, network/address validation, UTxO/fee policy, key custody, funding and transaction limits. The current metadata breadcrumb is not automatic dedup. Prefer ADR-010.2 before material-value deployment. |
+| Completed (FX-M6A) | **Proposal-time signer filtering** | Honest proposers remove unauthorized `~fx/result` messages from their pool and followers reject proposals containing them; incorporation-time validation remains the consensus-safe backstop and certified catch-up history remains replayable. |
+| High-value trust | **k-of-n outcome attestation** | Optional per-type/member policy; do not conflate attestation quorum with independent proof of execution. |
+| Completed (FX-M6A) | **Portable runtime reset/quarantine** | Node-local status/queue/cursor state is bound to executor identity + sorted type partition. Missing/mismatching ownership atomically resets only the disposable tier, then quarantines only historical effects owned by that partition; consensus records and roots are preserved. Dispatch, claims, reports and requeue enforce the same partition. Worker admission is globally bounded, and queued work revalidates current status, chain closure, expiry and finality immediately before external execution. Shutdown fences scheduler/store/API transitions before RocksDB teardown; executor contexts carry immutable height/config/reference snapshots. Plugin capability calls cannot hold the ledger barrier, stale callbacks cannot admit work after close, and independent bounded cleanup prevents one non-cooperative executor from delaying shutdown or another executor's cleanup. |
+| Optional operations | **Append-only attempt diagnostics** | If per-attempt history is needed, keep it node-local, bounded, sanitized and retention-controlled, with node/executor identity. It cannot authenticate external-worker internals and must never enter consensus state. Structured logs may be sufficient. |
+| Demand-driven extension | **Alternative execution transport** | Add a dispatcher/transport adapter only with a concrete second transport (Kafka/gRPC/WS). Keep `AppEffectExecutor` source-agnostic; do not introduce an abstract `EffectSource` pre-emptively. Coordinate this with ADR-011. |
+| Future protocol | **On-chain claims, k-way assignment and block-field promotion** | Use L1-slot leases if claims become necessary; consider standby/hash assignment for HA; promote `effectsRoot` at the next wire version if block-level ergonomics justify it. |
+| Optional policy | **Retry hints / per-type outcome commitment** | Revisit retry-as-data and per-type commitment modes after operational evidence, without changing v1 defaults. |
 
 ## 16. External references
 

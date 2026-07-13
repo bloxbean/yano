@@ -69,10 +69,10 @@ public final class ApprovalsStateMachine implements AppStateMachine {
      * flows back through {@code onEffectResult} into STATUS_PAID /
      * STATUS_PAY_FAILED with the external ref under {@code t/<itemId>}.
      * <p>
-     * Enabling payments on a LIVE chain is a transition-logic change: gate it
-     * with {@code machines.approvals.activations.payments=<height>}
-     * (ADR 010.1); without an activation entry the feature is active from
-     * genesis (new chains).
+     * Enabling payments is a transition-logic change: gate it with
+     * {@code machines.approvals.activations.payments=<height>} (ADR 010.1).
+     * Missing activation is always inactive; use height {@code 1} when a new
+     * chain intentionally enables payments from genesis.
      *
      * @param enabled      machines.approvals.payments
      * @param type         machines.approvals.payment-type (executor routing)
@@ -122,13 +122,9 @@ public final class ApprovalsStateMachine implements AppStateMachine {
         this.activations = activations;
     }
 
-    /** Payments active at this height (010.1: an activation entry, when present, gates it). */
+    /** Payments active at this height (010.1: missing activation means inactive). */
     private boolean paymentsActiveAt(long height) {
-        if (!payments.enabled()) {
-            return false;
-        }
-        return !activations.entries().containsKey("payments")
-                || activations.isActive("payments", height);
+        return payments.enabled() && activations.isActive("payments", height);
     }
 
     @Override

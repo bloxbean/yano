@@ -15,6 +15,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Client SDK behavior against a stubbed node: REST parsing, API-key header,
@@ -81,6 +82,76 @@ class AppChainClientTest {
         assertThat(tip.height()).isEqualTo(5);
 
         assertThat(seenApiKeys).allMatch("secret-key"::equals);
+    }
+
+    @Test
+    void effectProof_distinguishesAvailableMissingAndPruned() throws Exception {
+        String zeros = "00".repeat(32);
+        server = HttpServer.create(new InetSocketAddress("localhost", 0), 0);
+        server.createContext("/api/v1/app-chain/chains/c1/effects", exchange -> {
+            String path = exchange.getRequestURI().getPath();
+            int status;
+            String json;
+            if (path.endsWith("/7/2/proof")) {
+                status = 200;
+                json = ("""
+                        {"version":1,"chainId":"c1","height":7,"ordinal":2,
+                         "recordCborHex":"80","effectHashHex":"%s","effectCount":3,
+                         "merklePath":[
+                           {"side":"PASS_THROUGH","siblingHashHex":""},
+                           {"side":"LEFT","siblingHashHex":"%s"}],
+                         "effectsRootHex":"%s","stateKeyHex":"00",
+                         "stateRootHex":"%s","stateProofWireHex":"00"}
+                        """).formatted(zeros, zeros, zeros, zeros);
+            } else if (path.endsWith("/8/0/proof")) {
+                status = 404;
+                json = "{\"error\":\"No effect at 8/0\"}";
+            } else if (path.endsWith("/9/0/proof")) {
+                status = 410;
+                json = "{\"error\":\"Proof material pruned\",\"effectCount\":4}";
+            } else {
+                status = 200;
+                json = ("""
+                        {"version":1,"chainId":"c1","height":99,"ordinal":0,
+                         "recordCborHex":"80","effectHashHex":"%s","effectCount":1,
+                         "merklePath":[],"effectsRootHex":"%s","stateKeyHex":"00",
+                         "stateRootHex":"%s","stateProofWireHex":"00"}
+                        """).formatted(zeros, zeros, zeros);
+            }
+            byte[] response = json.getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", "application/json");
+            exchange.sendResponseHeaders(status, response.length);
+            exchange.getResponseBody().write(response);
+            exchange.close();
+        });
+        server.start();
+
+        AppChainClient client = AppChainClient.builder(
+                        "http://localhost:" + server.getAddress().getPort() + "/api/v1")
+                .chainId("c1").build();
+
+        AppChainClient.EffectProofLookup available = client.effectProof(7, 2);
+        assertThat(available.status()).isEqualTo(AppChainClient.EffectProofStatus.AVAILABLE);
+        assertThat(available.available()).isTrue();
+        assertThat(available.proof().height()).isEqualTo(7);
+        assertThat(available.proof().merklePath())
+                .extracting(AppChainClient.EffectMerkleStep::side)
+                .containsExactly(AppChainClient.EffectMerkleSide.PASS_THROUGH,
+                        AppChainClient.EffectMerkleSide.LEFT);
+
+        AppChainClient.EffectProofLookup missing = client.effectProof(8, 0);
+        assertThat(missing.status()).isEqualTo(AppChainClient.EffectProofStatus.NOT_FOUND);
+        assertThat(missing.proof()).isNull();
+        assertThat(missing.message()).isEqualTo("No effect at 8/0");
+
+        AppChainClient.EffectProofLookup pruned = client.effectProof(9, 0);
+        assertThat(pruned.status()).isEqualTo(AppChainClient.EffectProofStatus.PRUNED);
+        assertThat(pruned.proof()).isNull();
+        assertThat(pruned.effectCount()).isEqualTo(4);
+
+        assertThatThrownBy(() -> client.effectProof(10, 0))
+                .isInstanceOf(AppChainClient.AppChainClientException.class)
+                .hasMessageContaining("identity mismatch");
     }
 
     @Test

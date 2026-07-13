@@ -66,7 +66,16 @@ payments flow emits) or a minimal flat JSON object:
 
 `to` and a positive `lovelace` are required; `memo` (optional) becomes public
 L1 metadata. The stdlib `approvals` machine emits this automatically on final
-approval when `yano.app-chain.machines.approvals.payments=true`.
+approval when `yano.app-chain.machines.approvals.payments=true` and the explicit
+`yano.app-chain.machines.approvals.activations.payments=<height>` has been
+reached. Use height `1` only for a new chain that enables payments from genesis;
+use a future height, identical on every member, for a live-chain rollout.
+
+Legacy migration is different: if a chain already used `payments=true` under a
+binary that treated a missing activation as active, set
+`activations.payments=1` on every member **before** deploying the corrected
+binary, then validate replay or snapshot restoration. A future height would
+change historical emission behavior.
 
 ## Execution semantics
 

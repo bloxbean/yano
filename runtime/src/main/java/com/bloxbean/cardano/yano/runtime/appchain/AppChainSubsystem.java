@@ -920,9 +920,55 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     }
 
     @Override
+    public com.bloxbean.cardano.yano.api.appchain.effects.EffectProofLookup effectProof(
+            long height, int ordinal) {
+        AppLedgerStore currentLedger = ledger;
+        return currentLedger != null
+                ? currentLedger.fxEffectProof(height, ordinal)
+                : com.bloxbean.cardano.yano.api.appchain.effects.EffectProofLookup.notFound(0);
+    }
+
+    @Override
     public Map<String, Object> effectStats() {
         EffectRuntime currentFx = effectRuntime;
-        return currentFx != null ? currentFx.stats() : Map.of();
+        AppLedgerStore currentLedger = ledger;
+        if (currentFx != null) {
+            return currentFx.stats();
+        }
+        Map<String, Object> stats = new java.util.LinkedHashMap<>();
+        stats.put("enabled", Boolean.parseBoolean(
+                config.pluginSettings().getOrDefault("effects.enabled", "false")));
+        stats.put("runtimeEnabled", false);
+        stats.put("metricsGeneration", "inactive");
+        stats.put("openOnChain", currentLedger != null ? currentLedger.fxOpenCount() : 0L);
+        stats.put("expiredTotal", currentLedger != null ? currentLedger.fxExpiredCount() : 0L);
+        stats.put("queueDepth", 0L);
+        stats.put("inFlight", 0L);
+        stats.put("statusCounts", Map.of());
+        stats.put("resultBacklog", 0L);
+        Map<String, Long> emptyBacklogByType = new java.util.LinkedHashMap<>();
+        Map<String, Map<String, Number>> emptyLatencyByType = new java.util.LinkedHashMap<>();
+        for (String type : effectMetricBuckets()) {
+            emptyBacklogByType.put(type, 0L);
+            emptyLatencyByType.put(type, Map.of("count", 0L, "totalMillis", 0L));
+        }
+        stats.put("resultBacklogByType", java.util.Collections.unmodifiableMap(emptyBacklogByType));
+        stats.put("oldestPending", Map.of("height", 0L, "ageBlocks", 0L, "ageSeconds", 0d));
+        stats.put("executionTotals", Map.of("confirmed", 0L, "failed", 0L, "parked", 0L));
+        stats.put("latencyByType", java.util.Collections.unmodifiableMap(emptyLatencyByType));
+        return java.util.Collections.unmodifiableMap(stats);
+    }
+
+    /** Stable metric buckets are available even before the local executor starts. */
+    private List<String> effectMetricBuckets() {
+        java.util.Set<String> configured = EffectRuntime.Settings.metricsTypesFrom(
+                config.pluginSettings());
+        if (configured.isEmpty()) {
+            return List.of("all");
+        }
+        List<String> buckets = new ArrayList<>(new java.util.TreeSet<>(configured));
+        buckets.add("other");
+        return List.copyOf(buckets);
     }
 
     @Override
@@ -1328,6 +1374,13 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         if (currentObservations != null) {
             status.put("observers", currentObservations.status());
         }
+        Map<String, String> activations = transitionActivationSettings(config.pluginSettings());
+        if (!activations.isEmpty()) {
+            // Transition activations apply to all state-machine/kernel logic,
+            // not only effects. Keep this top-level so operators can compare
+            // members even while effects.enabled=false (ADR-010.1 §2.3).
+            status.put("activations", activations);
+        }
         // Effects (ADR-010 F12 / 010.1 §2.3): the PARSED consensus-affecting
         // settings (single source of truth: EffectsSettings) and activation
         // entries, so operators can eyeball-compare members before an
@@ -1346,18 +1399,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             if (currentLedger != null) {
                 effectsStatus.put("openCount", currentLedger.fxOpenCount());
             }
-            // Raw values, never parsed here — status must not 500 on a
-            // placeholder like "TBD"; ActivationSchedule is the authoritative
-            // parser and only machines that opt in invoke it
-            Map<String, String> activations = new java.util.TreeMap<>();
-            for (var entry : config.pluginSettings().entrySet()) {
-                String key = entry.getKey();
-                boolean machineActivation = key.startsWith("machines.")
-                        && key.contains(".activations.");
-                if (machineActivation || key.startsWith("effects.activations.")) {
-                    activations.put(key, entry.getValue());
-                }
-            }
+            // Preserve the nested field for existing effects-status consumers.
             if (!activations.isEmpty()) {
                 effectsStatus.put("activations", activations);
             }
@@ -1446,6 +1488,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         log.info("Starting app chain '{}' (member: {}, members: {}, peers: {}, sequencing: {})",
                 config.chainId(), signer.publicKeyHex(), group.size(), config.peers(),
                 config.sequencingEnabled());
+        logTransitionActivations();
 
         // Fail fast on a silently-degraded L1 linkage (ADR 008.1 I1.3): with
         // stability-depth or anchoring configured but no L1 event feed, every
@@ -1716,6 +1759,48 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         if (Boolean.parseBoolean(config.pluginSettings().getOrDefault("effects.enabled", "false"))) {
             exec.scheduleWithFixedDelay(this::fxRetentionTick, 60, 60, TimeUnit.SECONDS);
         }
+    }
+
+    /** Consensus-affecting activation entries, sorted for stable status/log comparison. */
+    static Map<String, String> transitionActivationSettings(Map<String, String> settings) {
+        Map<String, String> activations = new TreeMap<>();
+        for (var entry : settings.entrySet()) {
+            String key = entry.getKey();
+            boolean effectActivation = key.startsWith("effects.activations.")
+                    && key.length() > "effects.activations.".length();
+            int machineMarker = key.indexOf(".activations.", "machines.".length());
+            boolean machineActivation = key.startsWith("machines.")
+                    && machineMarker > "machines.".length()
+                    && machineMarker + ".activations.".length() < key.length();
+            if (effectActivation || machineActivation) {
+                activations.put(key, entry.getValue());
+            }
+        }
+        return Collections.unmodifiableMap(activations);
+    }
+
+    /** Fail fast and make the activation schedule visible on every startup. */
+    private void logTransitionActivations() {
+        for (var entry : transitionActivationSettings(config.pluginSettings()).entrySet()) {
+            long height;
+            try {
+                height = Long.parseLong(entry.getValue().trim());
+            } catch (RuntimeException e) {
+                throw invalidActivation(entry.getKey(), entry.getValue(), e);
+            }
+            if (height <= 0) {
+                throw invalidActivation(entry.getKey(), entry.getValue(), null);
+            }
+            log.info("App-chain '{}' transition activation {}={}",
+                    config.chainId(), entry.getKey(), height);
+        }
+    }
+
+    private IllegalArgumentException invalidActivation(String key, String value, Throwable cause) {
+        String message = "App-chain '" + config.chainId() + "': transition activation '" + key
+                + "' must be a positive block height, got '" + value + "'";
+        return cause != null ? new IllegalArgumentException(message, cause)
+                : new IllegalArgumentException(message);
     }
 
     /** Prune message bodies below the L1_FINAL anchor horizon (E4.4). */
@@ -2161,8 +2246,10 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                     + "access to the executor/operator network (ADR-010 F12)", config.chainId());
         }
         try {
+            String executorIdentity = resolveEffectExecutorIdentity();
+            String runtimeOwner = effectRuntimeOwner(executorIdentity, runtimeSettings.types());
             this.effectRuntime = new EffectRuntime(ledgerStore, config.chainId(), runtimeSettings,
-                    executors, executorConfigs, log);
+                    executors, executorConfigs, runtimeOwner, log);
         } catch (Exception e) {
             // The executor is a node-local optional role — a broken executor
             // setup must not take down sequencing/anchoring/sinks
@@ -2174,6 +2261,82 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                 config.chainId(), executors.stream()
                         .map(com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutor::id).toList(),
                 runtimeSettings.tickMs(), runtimeSettings.maxParallel());
+    }
+
+    /**
+     * Stable physical-executor identity. The generated sidecar deliberately
+     * lives beside the checkpointed chain directory: member-key rotation on
+     * this node preserves pending results, while restoring another node's
+     * checkpoint does not import that node's leases/status/cursors.
+     */
+    private String resolveEffectExecutorIdentity() throws java.io.IOException {
+        String configured = config.pluginSettings()
+                .getOrDefault("effects.executor.identity", "").trim();
+        if (!configured.isEmpty()) {
+            if (configured.length() > 512) {
+                throw new IllegalArgumentException(
+                        "effects.executor.identity must be at most 512 characters");
+            }
+            return configured;
+        }
+
+        java.nio.file.Path chainPath = java.nio.file.Path.of(ledgerPath).toAbsolutePath();
+        java.nio.file.Path identityPath = chainPath.resolveSibling(
+                chainPath.getFileName() + ".effect-executor-id");
+        java.nio.file.Path parent = identityPath.getParent();
+        if (parent != null) {
+            java.nio.file.Files.createDirectories(parent);
+        }
+        if (!java.nio.file.Files.exists(identityPath)) {
+            String candidate = "local:" + java.util.UUID.randomUUID();
+            try {
+                java.nio.file.Files.writeString(identityPath, candidate,
+                        java.nio.charset.StandardCharsets.UTF_8,
+                        java.nio.file.StandardOpenOption.CREATE_NEW,
+                        java.nio.file.StandardOpenOption.WRITE);
+            } catch (java.nio.file.FileAlreadyExistsException ignored) {
+                // A concurrent startup won creation; read its identity below.
+            }
+        }
+        String identity = java.nio.file.Files.readString(identityPath,
+                java.nio.charset.StandardCharsets.UTF_8).trim();
+        if (identity.isEmpty() || identity.length() > 512) {
+            throw new IllegalStateException("Malformed effect executor identity sidecar: "
+                    + identityPath);
+        }
+        return identity;
+    }
+
+    /**
+     * Fixed-size, collision-resistant binding of a physical executor identity
+     * and its exact type partition. Length-prefixing avoids delimiter
+     * ambiguities; hashing keeps the stored owner inside the runtime-CF bound
+     * even when the configured identity is at its documented maximum.
+     */
+    static String effectRuntimeOwner(String executorIdentity, Set<String> types) {
+        java.util.Objects.requireNonNull(executorIdentity, "executorIdentity");
+        java.util.Objects.requireNonNull(types, "types");
+        try {
+            java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream();
+            try (java.io.DataOutputStream data = new java.io.DataOutputStream(bytes)) {
+                byte[] identityBytes = executorIdentity.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+                data.writeInt(identityBytes.length);
+                data.write(identityBytes);
+                java.util.SortedSet<String> sortedTypes = new java.util.TreeSet<>(types);
+                data.writeInt(sortedTypes.size());
+                for (String type : sortedTypes) {
+                    byte[] typeBytes = java.util.Objects.requireNonNull(type, "effect type")
+                            .getBytes(java.nio.charset.StandardCharsets.UTF_8);
+                    data.writeInt(typeBytes.length);
+                    data.write(typeBytes);
+                }
+            }
+            return "fp1:" + com.bloxbean.cardano.yaci.core.util.HexUtil.encodeHexString(
+                    com.bloxbean.cardano.client.crypto.Blake2bUtil.blake2bHash256(
+                            bytes.toByteArray()));
+        } catch (java.io.IOException impossible) {
+            throw new java.io.UncheckedIOException(impossible);
+        }
     }
 
     @Override

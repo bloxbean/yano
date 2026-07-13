@@ -4,7 +4,10 @@ import com.bloxbean.cardano.vds.mpf.MpfTrie;
 import com.bloxbean.cardano.vds.mpf.rocksdb.RocksDbNodeStore;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
 import com.bloxbean.cardano.yano.api.appchain.codec.AppBlockCodec;
+import com.bloxbean.cardano.yano.api.appchain.effects.EffectProof;
+import com.bloxbean.cardano.yano.api.appchain.effects.EffectProofLookup;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectRecord;
+import com.bloxbean.cardano.yano.api.appchain.effects.FxKeys;
 import org.rocksdb.*;
 import org.slf4j.Logger;
 
@@ -287,6 +290,22 @@ final class AppLedgerStore implements AutoCloseable {
         return new MpfTrie(mpfNodeStore, root).getProofWire(key);
     }
 
+    /** Read a key against a retained historical MPF root. */
+    Optional<byte[]> stateGetAtRoot(byte[] root, byte[] key) {
+        if (root == null || root.length != 32) {
+            return Optional.empty();
+        }
+        return Optional.ofNullable(new MpfTrie(mpfNodeStore, root).get(key));
+    }
+
+    /** Build an inclusion proof against a retained historical MPF root. */
+    Optional<byte[]> stateProofWireAtRoot(byte[] root, byte[] key) {
+        if (root == null || root.length != 32) {
+            return Optional.empty();
+        }
+        return new MpfTrie(mpfNodeStore, root).getProofWire(key);
+    }
+
     /**
      * Persisted vote lock: the block hash this member voted for at the given
      * height. Guarantees at-most-one vote per height across restarts.
@@ -413,6 +432,7 @@ final class AppLedgerStore implements AutoCloseable {
     // ------------------------------------------------------------------
 
     private static final String FX_OPEN_COUNT = "fx_open_count";
+    private static final String FX_EXPIRED_COUNT = "fx_expired_count";
 
     /**
      * Stage one block's effect writes into the commit batch (same atomicity as
@@ -441,12 +461,27 @@ final class AppLedgerStore implements AutoCloseable {
                 batch.put(fxRecordsCf,
                         fxClosureKey(result.effectId().height(), result.effectId().ordinal()),
                         result.encodeEnvelope());
+                // Runtime rows are disposable and may not exist on every
+                // member. Removing these local indexes in the same commit as
+                // the consensus closure prevents stale queue/backlog gauges.
+                batch.delete(fxRuntimeCf,
+                        fxQueueKey(result.effectId().height(), result.effectId().ordinal()));
+                batch.delete(fxRuntimeCf,
+                        fxResultReadyKey(result.effectId().height(), result.effectId().ordinal()));
             }
             if (fx.consumedExpiryBucket() >= 0) {
                 batch.delete(fxRecordsCf, fxExpiryKey(fx.consumedExpiryBucket()));
             }
             batch.put(metaCf, FX_OPEN_COUNT.getBytes(StandardCharsets.UTF_8),
                     longBytes(fx.newOpenCount()));
+            long expired = fx.incorporated().stream()
+                    .filter(result -> result.outcome()
+                            == com.bloxbean.cardano.yano.api.appchain.effects.EffectOutcome.EXPIRED)
+                    .count();
+            if (expired > 0) {
+                batch.put(metaCf, FX_EXPIRED_COUNT.getBytes(StandardCharsets.UTF_8),
+                        longBytes(fx.newExpiredCount()));
+            }
         } catch (RocksDBException e) {
             throw new RuntimeException("Failed to stage effect writes at height " + height, e);
         }
@@ -473,6 +508,11 @@ final class AppLedgerStore implements AutoCloseable {
             @Override
             public long openCount() {
                 return fxOpenCount();
+            }
+
+            @Override
+            public long expiredCount() {
+                return fxExpiredCount();
             }
         };
     }
@@ -539,9 +579,103 @@ final class AppLedgerStore implements AutoCloseable {
         }
     }
 
+    /**
+     * Build the composed effect proof against the state root at {@code height},
+     * never against the current tip. The compact per-block metadata row is
+     * retained after record pruning, so callers can distinguish NOT_FOUND
+     * from PRUNED. All three roots (records, metadata, historical trie leaf)
+     * are cross-checked before any proof is returned.
+     */
+    EffectProofLookup fxEffectProof(long height, int ordinal) {
+        if (height <= 0 || ordinal < 0) {
+            return EffectProofLookup.notFound(0);
+        }
+        Optional<byte[]> encodedMeta = fxBlockMeta(height);
+        if (encodedMeta.isEmpty()) {
+            // A retained authenticated leaf without its local lookup metadata
+            // is corruption, not an ordinary 404.
+            block(height).ifPresent(emissionBlock -> {
+                if (stateGetAtRoot(emissionBlock.stateRoot(), FxKeys.effectsRootKey(height))
+                        .isPresent()) {
+                    throw new IllegalStateException(
+                            "Historical effect root exists without metadata at height " + height);
+                }
+            });
+            return EffectProofLookup.notFound(0);
+        }
+        byte[] meta = encodedMeta.get();
+        if (meta.length != 36) {
+            throw new IllegalStateException("Malformed effect metadata at height " + height);
+        }
+        ByteBuffer metaBuffer = ByteBuffer.wrap(meta);
+        int count = metaBuffer.getInt();
+        byte[] committedEffectsRoot = new byte[32];
+        metaBuffer.get(committedEffectsRoot);
+        if (count <= 0 || count > FxKeys.MAX_EFFECTS_PER_BLOCK) {
+            throw new IllegalStateException("Invalid effect count " + count + " at height " + height);
+        }
+        // The retained block metadata is sufficient to reject an ordinal
+        // outside the committed emission range. Do this before consulting
+        // historical block/trie material so pruning does not turn a provable
+        // 404 into a node-local 410.
+        if (ordinal >= count) {
+            return EffectProofLookup.notFound(count);
+        }
+
+        AppBlock emissionBlock = block(height).orElse(null);
+        if (emissionBlock == null) {
+            return EffectProofLookup.pruned(count);
+        }
+        byte[] historicalStateRoot = emissionBlock.stateRoot();
+        byte[] stateKey = FxKeys.effectsRootKey(height);
+        byte[] trieValue = stateGetAtRoot(historicalStateRoot, stateKey)
+                .orElseThrow(() -> new IllegalStateException(
+                        "Historical state omits effect root at height " + height));
+        if (!java.util.Arrays.equals(trieValue, committedEffectsRoot)) {
+            throw new IllegalStateException("Effect metadata does not match historical state at height "
+                    + height);
+        }
+
+        List<byte[]> hashes = new ArrayList<>(count);
+        EffectRecord target = null;
+        for (int i = 0; i < count; i++) {
+            Optional<EffectRecord> candidate = fxRecord(height, i);
+            if (candidate.isEmpty()) {
+                return EffectProofLookup.pruned(count);
+            }
+            EffectRecord record = candidate.get();
+            if (record.height() != height || record.ordinal() != i) {
+                throw new IllegalStateException("Non-contiguous effect record at height "
+                        + height + ", ordinal " + i);
+            }
+            if (i == ordinal) {
+                target = record;
+            }
+            hashes.add(record.effectHash());
+        }
+        byte[] recomputedRoot = FxKeys.effectsRoot(hashes);
+        if (!java.util.Arrays.equals(recomputedRoot, committedEffectsRoot)) {
+            throw new IllegalStateException("Effect records do not match metadata root at height " + height);
+        }
+
+        byte[] stateProof = stateProofWireAtRoot(historicalStateRoot, stateKey)
+                .orElseThrow(() -> new IllegalStateException(
+                        "Historical effect-root proof unavailable at height " + height));
+        EffectProof proof = new EffectProof(EffectProof.PROOF_VERSION,
+                java.util.Objects.requireNonNull(target), count,
+                FxKeys.effectsProof(hashes, ordinal), committedEffectsRoot,
+                historicalStateRoot, stateProof);
+        return EffectProofLookup.available(proof);
+    }
+
     /** Committed count of open CHAIN effects. */
     long fxOpenCount() {
         return metaLong(FX_OPEN_COUNT, 0L);
+    }
+
+    /** Monotonic committed count of deterministic EXPIRED outcomes. */
+    long fxExpiredCount() {
+        return metaLong(FX_EXPIRED_COUNT, 0L);
     }
 
     private static byte[] fxRecordKey(long height, int ordinal) {
@@ -563,12 +697,77 @@ final class AppLedgerStore implements AutoCloseable {
     // ------------------------------------------------------------------
     // Effect runtime tier (ADR-010 F3): node-local execution progress in
     // CF app_fx_runtime — plain puts, never in any root, disposable.
-    // Key tags: 's'+h(8BE)+ord(4BE) → FxStatusRecord CBOR;
-    //           'q'+h(8BE)+ord(4BE) → (empty) pending-queue row.
+    // Key tags: 'o' → runtime owner identity;
+    //           's'+h(8BE)+ord(4BE) → FxStatusRecord CBOR;
+    //           'q'+h(8BE)+ord(4BE) → (empty) pending-queue row;
+    //           'i'+h(8BE)+ord(4BE) → (empty) CHAIN result-ready row;
+    //           'd'/'e'/'u' → dispatch/claim/result-injection scan cursors;
+    //           'v' → runtime schema/index version.
     // Wall clock is FINE here — this is the execution plane.
     // ------------------------------------------------------------------
 
     private static final String FX_INTAKE_CURSOR = "fx_intake_cursor";
+    private static final byte[] FX_RUNTIME_OWNER = new byte[]{'o'};
+    private static final byte[] FX_RUNTIME_SCHEMA = new byte[]{'v'};
+    private static final byte[] FX_RESULT_INJECTION_CURSOR = new byte[]{'u'};
+    private static final byte[] FX_DISPATCH_CURSOR = new byte[]{'d'};
+    private static final byte[] FX_CLAIM_CURSOR = new byte[]{'e'};
+    private static final byte[] FX_RUNTIME_SCHEMA_V2 = new byte[]{2};
+    private static final byte[] FX_RUNTIME_RANGE_START = new byte[]{0};
+    private static final byte[] FX_RUNTIME_RANGE_END = new byte[]{(byte) 0xff};
+
+    /** Result of binding the disposable execution tier to one executor identity. */
+    record FxRuntimeBinding(boolean ownerChanged, boolean discardedState, String previousOwner) {
+    }
+
+    /** Current owner of the node-local execution tier, or null on a legacy/fresh ledger. */
+    String fxRuntimeOwner() {
+        try {
+            byte[] value = db.get(fxRuntimeCf, FX_RUNTIME_OWNER);
+            return value != null ? new String(value, StandardCharsets.UTF_8) : null;
+        } catch (RocksDBException e) {
+            throw new RuntimeException("Failed to read effect runtime owner", e);
+        }
+    }
+
+    /**
+     * Bind node-local execution progress to {@code owner}. A copied snapshot,
+     * a changed executor partition, or a pre-owner legacy runtime must never
+     * inherit another worker's attempts, leases, submitted refs or cursor.
+     * Reset is one synchronous cross-CF batch and deliberately leaves the
+     * consensus-derived {@code app_fx_records} tier untouched.
+     */
+    FxRuntimeBinding bindFxRuntimeOwner(String owner) {
+        if (owner == null || owner.isBlank() || owner.length() > 512) {
+            throw new IllegalArgumentException("Effect runtime owner must be 1..512 characters");
+        }
+        String encodedOwner = "v1:" + owner.trim();
+        String previous = fxRuntimeOwner();
+        if (encodedOwner.equals(previous)) {
+            return new FxRuntimeBinding(false, false, previous);
+        }
+
+        boolean hadRuntimeState = previous != null || fxIntakeCursor(-1) >= 0;
+        if (!hadRuntimeState) {
+            try (RocksIterator iterator = db.newIterator(fxRuntimeCf)) {
+                iterator.seekToFirst();
+                hadRuntimeState = iterator.isValid();
+            }
+        }
+        try (WriteBatch batch = new WriteBatch();
+             WriteOptions writeOptions = new WriteOptions().setSync(true)) {
+            // All runtime keys use ASCII tags, hence this range covers the
+            // whole disposable CF while allowing the owner put later in the
+            // same ordered batch to survive the tombstone.
+            batch.deleteRange(fxRuntimeCf, FX_RUNTIME_RANGE_START, FX_RUNTIME_RANGE_END);
+            batch.delete(metaCf, FX_INTAKE_CURSOR.getBytes(StandardCharsets.UTF_8));
+            batch.put(fxRuntimeCf, FX_RUNTIME_OWNER, encodedOwner.getBytes(StandardCharsets.UTF_8));
+            db.write(writeOptions, batch);
+            return new FxRuntimeBinding(true, hadRuntimeState, previous);
+        } catch (RocksDBException e) {
+            throw new RuntimeException("Failed to bind/reset effect runtime owner", e);
+        }
+    }
 
     long fxIntakeCursor(long defaultValue) {
         return metaLong(FX_INTAKE_CURSOR, defaultValue);
@@ -583,6 +782,99 @@ final class AppLedgerStore implements AutoCloseable {
             db.put(fxRuntimeCf, fxRuntimeStatusKey(height, ordinal), status.encode());
         } catch (RocksDBException e) {
             throw new RuntimeException("Failed to write effect runtime status", e);
+        }
+    }
+
+    /**
+     * Atomically publish a local terminal, remove it from dispatch, and add it
+     * to the durable result-ready index when a CHAIN outcome must be injected.
+     */
+    void fxRuntimeComplete(long height, int ordinal, FxStatusRecord status,
+                           boolean resultReady) {
+        try (WriteBatch batch = new WriteBatch();
+             WriteOptions writeOptions = new WriteOptions()) {
+            batch.put(fxRuntimeCf, fxRuntimeStatusKey(height, ordinal), status.encode());
+            batch.delete(fxRuntimeCf, fxQueueKey(height, ordinal));
+            if (resultReady) {
+                batch.put(fxRuntimeCf, fxResultReadyKey(height, ordinal), new byte[0]);
+            } else {
+                batch.delete(fxRuntimeCf, fxResultReadyKey(height, ordinal));
+            }
+            db.write(writeOptions, batch);
+        } catch (RocksDBException e) {
+            throw new RuntimeException("Failed to complete effect runtime transition", e);
+        }
+    }
+
+    /**
+     * One-time v1→v2 backfill for DONE CHAIN outcomes created before the
+     * result-ready index existed. The marker is written only with the complete
+     * rebuilt index, so a crash retries safely on startup.
+     */
+    void fxEnsureResultReadyIndex() {
+        try {
+            if (java.util.Arrays.equals(db.get(fxRuntimeCf, FX_RUNTIME_SCHEMA),
+                    FX_RUNTIME_SCHEMA_V2)) {
+                return;
+            }
+            // Clear any partial prior rebuild first. Chunk writes keep startup
+            // memory bounded; the v2 marker remains the commit point. A crash
+            // before it is published simply repeats this delete+rebuild.
+            try (WriteBatch batch = new WriteBatch();
+                 WriteOptions writeOptions = new WriteOptions().setSync(true)) {
+                batch.deleteRange(fxRuntimeCf, new byte[]{'i'}, new byte[]{'j'});
+                batch.delete(fxRuntimeCf, FX_RESULT_INJECTION_CURSOR);
+                db.write(writeOptions, batch);
+            }
+
+            List<long[]> chunk = new ArrayList<>(10_000);
+            try (RocksIterator iterator = db.newIterator(fxRuntimeCf)) {
+                for (iterator.seek(new byte[]{'s'}); iterator.isValid(); iterator.next()) {
+                    byte[] key = iterator.key();
+                    if (key.length != 13 || key[0] != 's') {
+                        break;
+                    }
+                    FxStatusRecord status = FxStatusRecord.decode(iterator.value());
+                    if (status.status() != FxStatusRecord.DONE
+                            || status.outcomeCode() == FxStatusRecord.OUTCOME_NONE) {
+                        continue;
+                    }
+                    ByteBuffer position = ByteBuffer.wrap(key, 1, 12);
+                    long height = position.getLong();
+                    int ordinal = position.getInt();
+                    EffectRecord record = fxRecord(height, ordinal).orElse(null);
+                    if (record != null && record.result()
+                            == com.bloxbean.cardano.yano.api.appchain.effects.ResultPolicy.CHAIN
+                            && !fxClosed(height, ordinal)) {
+                        chunk.add(new long[]{height, ordinal});
+                        if (chunk.size() == 10_000) {
+                            writeResultReadyChunk(chunk);
+                            chunk.clear();
+                        }
+                    }
+                }
+            }
+            if (!chunk.isEmpty()) {
+                writeResultReadyChunk(chunk);
+            }
+            try (WriteBatch batch = new WriteBatch();
+                 WriteOptions writeOptions = new WriteOptions().setSync(true)) {
+                batch.put(fxRuntimeCf, FX_RUNTIME_SCHEMA, FX_RUNTIME_SCHEMA_V2);
+                db.write(writeOptions, batch);
+            }
+        } catch (RocksDBException e) {
+            throw new RuntimeException("Failed to rebuild effect result-ready index", e);
+        }
+    }
+
+    private void writeResultReadyChunk(List<long[]> entries) throws RocksDBException {
+        try (WriteBatch batch = new WriteBatch();
+             WriteOptions writeOptions = new WriteOptions()) {
+            for (long[] entry : entries) {
+                batch.put(fxRuntimeCf,
+                        fxResultReadyKey(entry[0], Math.toIntExact(entry[1])), new byte[0]);
+            }
+            db.write(writeOptions, batch);
         }
     }
 
@@ -613,19 +905,164 @@ final class AppLedgerStore implements AutoCloseable {
 
     /** Queue rows in (height, ordinal) order — the runtime's work list. */
     List<long[]> fxQueueScan(int limit) {
+        return fxQueueScanAfter(limit, null);
+    }
+
+    /**
+     * At most {@code limit} queue rows strictly after {@code cursor}, wrapping
+     * once to the head. This keeps work selection bounded without permanently
+     * pinning it to the oldest ineligible prefix.
+     */
+    List<long[]> fxQueueScanAfter(int limit, long[] cursor) {
         List<long[]> entries = new ArrayList<>(Math.min(limit, 256));
+        if (limit <= 0) {
+            return entries;
+        }
         try (RocksIterator iterator = db.newIterator(fxRuntimeCf)) {
-            for (iterator.seek(new byte[]{'q'}); iterator.isValid() && entries.size() < limit;
-                 iterator.next()) {
-                byte[] key = iterator.key();
-                if (key.length != 13 || key[0] != 'q') {
-                    break;
-                }
-                ByteBuffer buffer = ByteBuffer.wrap(key, 1, 12);
-                entries.add(new long[]{buffer.getLong(), buffer.getInt()});
+            byte[] cursorKey = cursor != null
+                    ? fxQueueKey(cursor[0], Math.toIntExact(cursor[1])) : null;
+            iterator.seek(cursorKey != null ? cursorKey : new byte[]{'q'});
+            if (cursorKey != null && iterator.isValid()
+                    && java.util.Arrays.equals(iterator.key(), cursorKey)) {
+                iterator.next(); // cursor is exclusive
+            }
+            collectPositionRows(iterator, entries, limit, null, (byte) 'q');
+            if (cursorKey != null && entries.size() < limit) {
+                iterator.seek(new byte[]{'q'});
+                collectPositionRows(iterator, entries, limit, cursorKey, (byte) 'q');
             }
         }
         return entries;
+    }
+
+    private static void collectPositionRows(RocksIterator iterator, List<long[]> entries,
+                                            int limit, byte[] inclusiveEnd, byte tag) {
+        while (iterator.isValid() && entries.size() < limit) {
+            byte[] key = iterator.key();
+            if (key.length != 13 || key[0] != tag) {
+                break;
+            }
+            if (inclusiveEnd != null
+                    && java.util.Arrays.compareUnsigned(key, inclusiveEnd) > 0) {
+                break;
+            }
+            ByteBuffer buffer = ByteBuffer.wrap(key, 1, 12);
+            entries.add(new long[]{buffer.getLong(), buffer.getInt()});
+            iterator.next();
+        }
+    }
+
+    /** Every queue row; intended for memoized operational snapshots, not dispatch. */
+    List<long[]> fxQueueScanAll() {
+        return fxQueueScan(Integer.MAX_VALUE);
+    }
+
+    /** Durable local CHAIN outcomes awaiting incorporation, in chain order. */
+    List<long[]> fxResultReadyScan() {
+        return fxResultReadyScanAfter(Integer.MAX_VALUE, null);
+    }
+
+    /** Bounded, wrapping result-ready scan used by the fair injection loop. */
+    List<long[]> fxResultReadyScanAfter(int limit, long[] cursor) {
+        List<long[]> entries = new ArrayList<>(Math.min(limit, 256));
+        if (limit <= 0) {
+            return entries;
+        }
+        try (RocksIterator iterator = db.newIterator(fxRuntimeCf)) {
+            byte[] cursorKey = cursor != null
+                    ? fxResultReadyKey(cursor[0], Math.toIntExact(cursor[1])) : null;
+            iterator.seek(cursorKey != null ? cursorKey : new byte[]{'i'});
+            if (cursorKey != null && iterator.isValid()
+                    && java.util.Arrays.equals(iterator.key(), cursorKey)) {
+                iterator.next();
+            }
+            collectPositionRows(iterator, entries, limit, null, (byte) 'i');
+            if (cursorKey != null && entries.size() < limit) {
+                iterator.seek(new byte[]{'i'});
+                collectPositionRows(iterator, entries, limit, cursorKey, (byte) 'i');
+            }
+        }
+        return entries;
+    }
+
+    /** Last result-ready position visited by the fair injection scanner. */
+    Optional<long[]> fxResultInjectionCursor() {
+        try {
+            byte[] value = db.get(fxRuntimeCf, FX_RESULT_INJECTION_CURSOR);
+            if (value == null) {
+                return Optional.empty();
+            }
+            if (value.length != Long.BYTES + Integer.BYTES) {
+                throw new IllegalStateException("Malformed effect result injection cursor");
+            }
+            ByteBuffer buffer = ByteBuffer.wrap(value);
+            return Optional.of(new long[]{buffer.getLong(), buffer.getInt()});
+        } catch (RocksDBException e) {
+            throw new RuntimeException("Failed to read effect result injection cursor", e);
+        }
+    }
+
+    void fxPutResultInjectionCursor(long height, int ordinal) {
+        fxPutRuntimeCursor(FX_RESULT_INJECTION_CURSOR, height, ordinal,
+                "effect result injection cursor");
+    }
+
+    Optional<long[]> fxDispatchCursor() {
+        return fxRuntimeCursor(FX_DISPATCH_CURSOR, "effect dispatch cursor");
+    }
+
+    void fxPutDispatchCursor(long height, int ordinal) {
+        fxPutRuntimeCursor(FX_DISPATCH_CURSOR, height, ordinal, "effect dispatch cursor");
+    }
+
+    Optional<long[]> fxClaimCursor() {
+        return fxRuntimeCursor(FX_CLAIM_CURSOR, "effect claim cursor");
+    }
+
+    void fxPutClaimCursor(long height, int ordinal) {
+        fxPutRuntimeCursor(FX_CLAIM_CURSOR, height, ordinal, "effect claim cursor");
+    }
+
+    private Optional<long[]> fxRuntimeCursor(byte[] key, String label) {
+        try {
+            byte[] value = db.get(fxRuntimeCf, key);
+            if (value == null) {
+                return Optional.empty();
+            }
+            if (value.length != Long.BYTES + Integer.BYTES) {
+                throw new IllegalStateException("Malformed " + label);
+            }
+            ByteBuffer buffer = ByteBuffer.wrap(value);
+            return Optional.of(new long[]{buffer.getLong(), buffer.getInt()});
+        } catch (RocksDBException e) {
+            throw new RuntimeException("Failed to read " + label, e);
+        }
+    }
+
+    private void fxPutRuntimeCursor(byte[] key, long height, int ordinal, String label) {
+        byte[] value = ByteBuffer.allocate(Long.BYTES + Integer.BYTES)
+                .putLong(height).putInt(ordinal).array();
+        try {
+            db.put(fxRuntimeCf, key, value);
+        } catch (RocksDBException e) {
+            throw new RuntimeException("Failed to write " + label, e);
+        }
+    }
+
+    boolean fxResultReadyExists(long height, int ordinal) {
+        try {
+            return db.get(fxRuntimeCf, fxResultReadyKey(height, ordinal)) != null;
+        } catch (RocksDBException e) {
+            throw new RuntimeException("Failed to read effect result-ready row", e);
+        }
+    }
+
+    void fxResultReadyDelete(long height, int ordinal) {
+        try {
+            db.delete(fxRuntimeCf, fxResultReadyKey(height, ordinal));
+        } catch (RocksDBException e) {
+            throw new RuntimeException("Failed to delete effect result-ready row", e);
+        }
     }
 
     /**
@@ -678,17 +1115,19 @@ final class AppLedgerStore implements AutoCloseable {
                 deletions.add(fxClosureKey(height, ordinal));
                 deletions.add(fxRuntimeStatusKey(height, ordinal));
                 deletions.add(fxQueueKey(height, ordinal));
+                deletions.add(fxResultReadyKey(height, ordinal));
                 pruned++;
             }
         }
         if (!deletions.isEmpty()) {
             try (WriteBatch batch = new WriteBatch();
                  WriteOptions writeOptions = new WriteOptions()) {
-                for (int i = 0; i < deletions.size(); i += 4) {
+                for (int i = 0; i < deletions.size(); i += 5) {
                     batch.delete(fxRecordsCf, deletions.get(i));
                     batch.delete(fxRecordsCf, deletions.get(i + 1));
                     batch.delete(fxRuntimeCf, deletions.get(i + 2));
                     batch.delete(fxRuntimeCf, deletions.get(i + 3));
+                    batch.delete(fxRuntimeCf, deletions.get(i + 4));
                 }
                 db.write(writeOptions, batch);
             } catch (RocksDBException e) {
@@ -765,12 +1204,21 @@ final class AppLedgerStore implements AutoCloseable {
         return entries;
     }
 
+    /** Every status row; intended for memoized operational snapshots. */
+    List<Object[]> fxRuntimeStatusScanAll() {
+        return fxRuntimeStatusScan(Integer.MAX_VALUE);
+    }
+
     private static byte[] fxRuntimeStatusKey(long height, int ordinal) {
         return ByteBuffer.allocate(13).put((byte) 's').putLong(height).putInt(ordinal).array();
     }
 
     private static byte[] fxQueueKey(long height, int ordinal) {
         return ByteBuffer.allocate(13).put((byte) 'q').putLong(height).putInt(ordinal).array();
+    }
+
+    private static byte[] fxResultReadyKey(long height, int ordinal) {
+        return ByteBuffer.allocate(13).put((byte) 'i').putLong(height).putInt(ordinal).array();
     }
 
     // ------------------------------------------------------------------

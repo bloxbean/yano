@@ -51,6 +51,11 @@ final class FxKernel {
 
         /** Committed count of open {@link ResultPolicy#CHAIN} effects. */
         long openCount();
+
+        /** Committed cumulative count of deterministic EXPIRED outcomes. */
+        default long expiredCount() {
+            return 0L;
+        }
     }
 
     /** One emitted effect with its canonical bytes and hash, computed exactly once. */
@@ -69,9 +74,10 @@ final class FxKernel {
                   List<EffectResult> incorporated,
                   Map<Long, byte[]> bucketPuts,
                   long consumedExpiryBucket,
-                  long newOpenCount) {
+                  long newOpenCount,
+                  long newExpiredCount) {
 
-        static final Result NONE = new Result(List.of(), null, List.of(), Map.of(), -1, 0);
+        static final Result NONE = new Result(List.of(), null, List.of(), Map.of(), -1, 0, 0);
 
         boolean isEmpty() {
             return emitted.isEmpty() && incorporated.isEmpty() && consumedExpiryBucket < 0;
@@ -137,6 +143,7 @@ final class FxKernel {
         //    on CHAIN intents (EffectIntent validation) — so |incorporated|
         //    decrements the open-CHAIN count one-for-one.
         List<long[]> bucket = reader.expiryBucket(block.height());
+        long expiredThisBlock = 0;
         for (long[] entry : bucket) {
             long height = entry[0];
             int ordinal = (int) entry[1];
@@ -158,6 +165,7 @@ final class FxKernel {
                 trie.put(FxKeys.doneKey(expired.effectId()), expired.envelopeHash());
             }
             incorporated.add(expired);
+            expiredThisBlock++;
             machine.onEffectResult(block, expired, machineWriter);
         }
 
@@ -203,7 +211,8 @@ final class FxKernel {
         long newOpen = committedOpen + emitter.chainEmitted - incorporated.size();
         return new Result(List.copyOf(emitter.emitted), effectsRoot, List.copyOf(incorporated),
                 Map.copyOf(bucketPuts), bucket.isEmpty() ? -1 : block.height(),
-                Math.max(0, newOpen));
+                Math.max(0, newOpen),
+                Math.addExact(reader.expiredCount(), expiredThisBlock));
     }
 
     // ------------------------------------------------------------------
@@ -224,12 +233,8 @@ final class FxKernel {
         // Signer policy (ADR-010 F8, FX-M5): with a designated-signer list
         // configured, results from any other member are deterministic no-ops.
         // Membership itself was already enforced at envelope verification.
-        if (!settings.resultSigners().isEmpty()) {
-            String senderHex = com.bloxbean.cardano.yaci.core.util.HexUtil
-                    .encodeHexString(message.getSender()).toLowerCase(java.util.Locale.ROOT);
-            if (!settings.resultSigners().contains(senderHex)) {
-                return null;
-            }
+        if (!settings.resultSignerAllowed(message.getSender())) {
+            return null;
         }
         byte[] body = message.getBody();
         if (body == null || body.length > MAX_RESULT_BODY_BYTES) {

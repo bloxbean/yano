@@ -14,9 +14,34 @@ import java.util.Map;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 class YanoProducerTest {
+
+    @Test
+    void effectSettingsAreForwardedForFlatAndIndexedAppChains() {
+        var producer = new YanoProducer(Thread.currentThread().getContextClassLoader());
+        producer.appConfig = new PresentConfig(Map.of(
+                "yano.app-chain.effects.enabled", "true",
+                "yano.app-chain.effects.metrics.types", "cardano.payment,webhook",
+                "yano.app-chain.chains[0].chain-id", "payments",
+                "yano.app-chain.chains[0].effects.enabled", "true",
+                "yano.app-chain.chains[0].effects.executor.enabled", "true",
+                "yano.app-chain.chains[0].unrelated.value", "ignored"));
+
+        Map<String, Object> globals = new java.util.LinkedHashMap<>();
+        producer.forwardAppChainDynamicKeys(globals);
+        assertEquals("true", globals.get("yano.app-chain.effects.enabled"));
+        assertEquals("cardano.payment,webhook",
+                globals.get("yano.app-chain.effects.metrics.types"));
+
+        var chain = producer.parseAppChainChains().getFirst();
+        assertEquals("payments", chain.get("chain-id"));
+        assertEquals("true", chain.get("effects.enabled"));
+        assertEquals("true", chain.get("effects.executor.enabled"));
+        assertFalse(chain.containsKey("unrelated.value"));
+    }
 
     @Test
     void rollbackRetentionAdapterHonorsConfigPresenceAndPopulatesGlobals() {

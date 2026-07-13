@@ -442,6 +442,18 @@ final class AppChainEngine implements AutoCloseable {
             }
             return false;
         });
+        // Designated result signers are a consensus-affecting chain policy.
+        // Drop unauthorized results before an honest proposer spends block
+        // capacity on a message the kernel will deterministically ignore.
+        candidates.removeIf(m -> {
+            if (authorizedResultMessage(m)) {
+                return false;
+            }
+            log.info("Effect result {} dropped: sender is not designated by effects.result.signers",
+                    m.getMessageIdHex());
+            pool.remove(List.of(m));
+            return true;
+        });
         // Application-level admission — framework system topics (~governance/*)
         // bypass it: state machines must not veto governance commands (008.3);
         // they skip these opaque bodies deterministically in apply()
@@ -600,6 +612,11 @@ final class AppChainEngine implements AutoCloseable {
             if (message.getBody() != null && message.getBody().length > config.maxMessageBytes()) {
                 log.warn("Proposal contains an over-limit message {} ({} > {}) — rejecting block",
                         message.getMessageIdHex(), message.getBody().length, config.maxMessageBytes());
+                return;
+            }
+            if (!authorizedResultMessage(message)) {
+                log.warn("Proposal contains effect result {} from a non-designated signer — "
+                        + "rejecting block", message.getMessageIdHex());
                 return;
             }
         }
@@ -934,6 +951,12 @@ final class AppChainEngine implements AutoCloseable {
         return group.containsAt(senderHex, height)
                 && message.getAuthProof() != null
                 && AppMessageSigner.verify(message.getAuthProof(), message.signedBodyBytes(), message.getSender());
+    }
+
+    private boolean authorizedResultMessage(AppMessage message) {
+        return !com.bloxbean.cardano.yano.api.appchain.effects.FxResultBody.TOPIC
+                .equals(message.getTopic())
+                || effectsSettings.resultSignerAllowed(message.getSender());
     }
 
     /**

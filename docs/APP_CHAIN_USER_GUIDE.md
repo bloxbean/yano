@@ -625,17 +625,18 @@ Flat (single-chain) keys. The same suffixes apply per chain under
 | `pool.max-messages` | `10000` | Pending-pool capacity; a full pool returns 429 on submit and drops (counted) inbound gossip (§4) |
 | `message.enforce-sender-seq` | `false` | Consensus-visible sender-seq rule: followers reject blocks with stale/duplicate per-sender seqs (§4). Must match on all members |
 | `effects.enabled` | `false` | Enable the effect system (§18). **Consensus-affecting — must match on all members**; also all `effects.*` caps and gate/commitment keys below |
-| `effects.max-per-block` / `max-payload-bytes` / `max-expiry-blocks` / `result-window-blocks` | `256` / `16384` / `100000` / `100000` | Deterministic emission caps and the result-incorporation window (§18.1) |
+| `effects.max-per-block` / `max-payload-bytes` / `max-expiry-blocks` / `result-window-blocks` | `256` / `16384` / `100000` / `100000` | Deterministic emission caps and result-incorporation window (§18.1); payload bytes are capped at 16 MiB—use payload-by-hash for larger bodies |
 | `effects.default-gate` | `app-final` | `app-final` \| `l1-anchored` \| `zk-settled` — when emitted effects become executable (§18.4) |
 | `effects.outcome-commitment` | `per-effect` | `per-effect` (O(1) proofs) \| `per-block` (trie growth O(effectful blocks); ZK-friendly) |
 | `effects.strict-reserved-prefix` | `true` | Reject app writes to the `~fx/` trie prefix (consensus-affecting; active even when effects are off) |
 | `effects.result.signers` | empty | Restrict who may attest `~fx/result` to these member keys (default: any member; §18.5) |
 | `effects.executor.enabled` | `false` | This node RUNS effects (execution plane, §18.3). Node-local — not consensus |
 | `effects.executor.types` / `tick-ms` / `max-parallel` / `max-attempts` / `backoff-initial-ms` / `backoff-max-ms` | ` ` / `2000` / `4` / `8` / `2000` / `300000` | Executor tuning (§18.3) |
+| `effects.executor.identity` | generated node-local sidecar | Stable identity for this node's disposable execution progress. The generated file lives beside the checkpointed chain directory, so member-key rotation preserves work but restoring onto another executor resets/quarantines it. Set an explicit unique value when storage is relocated; never clone it across physical executors (§18.3) |
 | `effects.external.enabled` | `false` | Expose the external-executor claim/report REST surface (§18.6) |
 | `effects.executors.<scheme>.*` | — | Executor plugin config (built-in `webhook`; `cardano` via the plugin jar) — passed to the executor with the prefix stripped (§18.3) |
 | `effects.retention.keep-blocks` | `100000` | Prune resolved effect records older than this behind the tip |
-| `machines.approvals.payments` (+ `payment-type` / `payment-gate` / `payment-expiry-blocks`) | `false` | Stdlib approvals→payment effect (§18.3) |
+| `machines.approvals.payments` (+ `payment-type` / `payment-gate` / `payment-expiry-blocks`) | `false` | Stdlib approvals→payment effect (§18.3); also requires `machines.approvals.activations.payments=<height>` |
 
 **Enabling.** Three states, checked in this order:
 
@@ -650,6 +651,12 @@ Flat (single-chain) keys. The same suffixes apply per chain under
 Extension settings are documented next to the capability they configure:
 `chains[i].*` (§8), `webhooks` and `sinks.*` (§10), `api.auth.enabled` and
 `api.keys` (§12), `retention.*` (§13), `zk.*` (§17), `effects.*` (§18).
+
+Current v1 `effects.*` consensus settings—including `result.signers`, caps,
+commitment mode and root/record algorithms—are immutable after chain launch.
+Machine activation is implemented, but framework-level effect-setting epochs
+from ADR-010.1 D5 are still pending; changing these values on an existing
+history can make replay diverge.
 
 Storage: each app ledger is a separate RocksDB at
 `<yano.storage.path>/app-chain/<chain-id>/` — blocks, state trie, indexes and
@@ -1010,6 +1017,16 @@ Standard Quarkus Prometheus endpoint `/q/metrics`, per-chain `chain` tag:
 `yano_appchain_messages_finalized_total` (counters),
 `yano_appchain_block_interval` (timer).
 
+Effects add `yano_appchain_effects_open`, `queue_depth`, `in_flight`,
+`runtime_status{status}`, `result_backlog`,
+`result_backlog_by_type{type}`, `oldest_pending_age_blocks`, and
+`oldest_pending_age` gauges; `execution_total{outcome}` and `expired_total`
+counters; and `execution_latency_seconds{type}`. Status/outcome tags are fixed.
+Type tags come only from the bounded `effects.metrics.types` allowlist (plus
+`other`), never from arbitrary workload values. Gauges come from a memoized,
+non-truncated operational scan and may span a concurrent transition; counters
+and timers are normalized to remain monotonic for the life of the node process.
+
 A ready-made Grafana dashboard ships at `docs/grafana/appchain-dashboard.json`.
 
 **Status page**: a built-in dashboard is served at **`/ui/app-chain/`**
@@ -1179,7 +1196,8 @@ breaking determinism.
 
 The rule that makes it safe: **a state machine never performs the action, it
 emits a record describing it.** Emission is part of deterministic `apply()`,
-identical on every member and committed into the state root. A separate
+identical on every member and transitively committed through the count-bound
+`effectsRoot` leaf into the state root. A separate
 **Effect Runtime** (outside consensus, on one designated node or an external
 worker) executes finalized effects, and the outcome comes back as an ordinary
 sequenced message that the machine records. The guarantee is **exactly-once
@@ -1188,7 +1206,7 @@ than once (so executors must be idempotent), but its outcome lands in chain
 state exactly once.
 
 ```
-apply()  ── emit ──▶  effect record (in the state root, provable, anchored)
+apply()  ── emit ──▶  effect record (outbox + effectsRoot, provable, anchored)
                           │  finalized
                           ▼
                  Effect Runtime ── execute ──▶  external system
@@ -1253,7 +1271,8 @@ public class OrderStateMachine implements AppStateMachine {
         if (!result.scope().startsWith("orders/")) return;
         String id = result.scope().substring("orders/".length());
         // result.confirmed(), result.outcome() (CONFIRMED/FAILED/CANCELLED/EXPIRED),
-        // result.externalRef() (e.g. a tx hash) — all provable in the state root.
+        // result.externalRef() (e.g. a tx hash) — committed transitively by the
+        // configured outcome root; values written here also enter application state.
         writer.put(fulfilledKey(id), result.externalRef());
     }
 }
@@ -1282,11 +1301,14 @@ else, effects are still emitted and provable; they just wait.
 ```yaml
 yano.app-chain.effects.executor.enabled: true      # this node executes effects
 yano.app-chain.effects.executor.types: ""          # empty = all; or "cardano.payment,webhook.post"
+# Optional stable override; must be unique per physical executor and survive key rotation:
+# yano.app-chain.effects.executor.identity: payments-executor-sg-1
 yano.app-chain.effects.executor.tick-ms: 2000
 yano.app-chain.effects.executor.max-parallel: 4
 yano.app-chain.effects.executor.max-attempts: 8    # then PARKED for operator review
 yano.app-chain.effects.executor.backoff-initial-ms: 2000
 yano.app-chain.effects.executor.backoff-max-ms: 300000
+yano.app-chain.effects.metrics.types: "cardano.payment,webhook.post" # max 32; empty = aggregate only
 yano.app-chain.effects.retention.keep-blocks: 100000   # prune resolved effect records
 ```
 
@@ -1296,6 +1318,16 @@ design; overlap degrades to duplicate *attempts*, which idempotency absorbs.
 A late-enabled executor **quarantines** historical open effects rather than
 blind-firing them; requeue via REST. Failed effects retry with backoff, then
 **park** (never block other effects) for an operator to requeue or cancel.
+
+Runtime attempts, leases, submitted references and the intake cursor are bound
+to a fixed-size canonical fingerprint of the executor identity and sorted type
+partition. Moving a checkpoint to a different executor, changing
+`executor.identity`, changing `executor.types`, or upgrading a legacy
+checkpoint with no owner binding discards only that node-local runtime state
+and quarantines every historical open effect. Consensus effect records,
+closures and state roots are preserved. Review and explicitly requeue each
+obligation; an already-submitted external action may otherwise be attempted
+again, so executor-side idempotency remains mandatory.
 
 **Built-in `webhook.post` executor** — POSTs the payload with an
 `Idempotency-Key` header (the effect's id hash); the target URL lives in
@@ -1331,12 +1363,20 @@ when it confirms.
 ```yaml
 yano.app-chain.state-machine: approvals
 yano.app-chain.machines.approvals.payments: true
+yano.app-chain.machines.approvals.activations.payments: 1       # new chain: active from genesis
 yano.app-chain.machines.approvals.payment-type: cardano.payment
 yano.app-chain.machines.approvals.payment-gate: l1-anchored     # provable before funds move
 yano.app-chain.machines.approvals.payment-expiry-blocks: 1000
-# On a live chain, gate the feature at a height (ADR-010.1):
-# yano.app-chain.machines.approvals.activations.payments: 125000
+# Live chain: replace 1 with a future height deployed identically to every member (ADR-010.1).
 ```
+
+> **Legacy migration:** if this chain already ran a binary where
+> `payments=true` worked without an activation key, first deploy
+> `activations.payments=1` identically to every member, then deploy this binary
+> and validate full replay or snapshot restoration. Do **not** choose a future
+> height for that migration: doing so would change historical payload parking
+> and emissions. A future height is only for enabling payments for the first
+> time on a live chain.
 
 ### 18.4 Finality gates and expiry
 
@@ -1466,11 +1506,39 @@ Chain-scoped under `/app-chain/chains/{chainId}/...` (single-chain alias
 |---|---|
 | `GET effects?fromHeight=&limit=` | emitted effect records (consensus view) |
 | `GET effects/{height}/{ordinal}` | one effect + this node's execution status |
-| `GET effects/stats` | runtime counters (queue depth, executed, parked) |
+| `GET effects/{height}/{ordinal}/proof` | composed record → effects root → historical state-root proof |
+| `GET effects/stats` | non-truncated memoized backlog/status/oldest-age plus execution, expiry and latency totals |
 | `POST effects/{height}/{ordinal}/requeue` | operator: PARKED/QUARANTINED → PENDING |
 | `POST effects/{height}/{ordinal}/cancel?reason=` | operator: cancel an open CHAIN effect |
 | `POST effects/claim` | external executor: lease effects |
 | `POST effects/{height}/{ordinal}/report` | external executor: report an outcome |
+
+The proof endpoint returns the canonical record CBOR, its ordered Merkle path,
+and an MPF proof of `~fx/root/<height>` against that block's historical state
+root. Verify it locally with `EffectProofVerifier`, preferably supplying a
+state root independently obtained from the certified block at exactly that
+emission height:
+
+```java
+var lookup = client.effectProof(height, ordinal);
+if (lookup.available()) {
+    boolean valid = EffectProofVerifier.verifyFor(
+            lookup.proof(), stateRootAtEmissionHeight, chainId, height, ordinal);
+}
+```
+
+An L1 anchor root can be supplied directly only when it anchors that exact
+height. For a later anchor, authenticate block H through its threshold
+certificate and the certified hash chain to the anchored descendant first;
+the MPF proof itself is deliberately against `stateRoot(H)`.
+
+`404` means no such effect/ordinal according to the retained index. `410
+EFFECT_PROOF_PRUNED` is an availability signal from this node: its compact
+metadata says one or more records needed to reconstruct the path passed
+`effects.retention.keep-blocks`. A 410 is not itself a portable proof that the
+ordinal existed; only a successfully verified composed proof establishes that.
+Archive proofs before that horizon when long-lived portable evidence is
+required; a proof already obtained remains verifiable forever.
 
 ---
 

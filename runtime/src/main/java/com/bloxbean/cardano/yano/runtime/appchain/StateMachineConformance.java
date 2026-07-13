@@ -18,12 +18,14 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Random;
+import java.util.Set;
 
 /**
  * Determinism conformance harness for {@link AppStateMachine} implementations
@@ -65,7 +67,7 @@ public final class StateMachineConformance {
     private final int blocks;
     private final int messagesPerBlock;
     private final long seed;
-    private final BodyGenerator bodyGenerator;
+    private final MessageGenerator messageGenerator;
     private final int runs;
     private final long restartAtHeight;
 
@@ -75,6 +77,37 @@ public final class StateMachineConformance {
         byte[] body(long height, int index, Random random);
     }
 
+    /**
+     * Deterministic corpus-message generator. Unlike {@link BodyGenerator},
+     * this can select a reserved framework topic such as {@code ~fx/result},
+     * allowing upgrade tests to exercise result incorporation and
+     * {@link AppStateMachine#onEffectResult} through the real kernel path.
+     */
+    @FunctionalInterface
+    public interface MessageGenerator {
+        CorpusMessage message(long height, int index, Random random);
+    }
+
+    /** Topic and body used to construct one deterministic corpus envelope. */
+    public record CorpusMessage(String topic, byte[] body) {
+        public CorpusMessage {
+            if (topic == null || topic.isBlank()) {
+                throw new IllegalArgumentException("topic must not be blank");
+            }
+            body = Objects.requireNonNull(body, "body").clone();
+        }
+
+        @Override
+        public byte[] body() {
+            return body.clone();
+        }
+
+        /** Application command on the harness's conventional {@code t} topic. */
+        public static CorpusMessage application(byte[] body) {
+            return new CorpusMessage("t", body);
+        }
+    }
+
     private StateMachineConformance(Builder builder) {
         this.provider = builder.provider;
         this.settings = builder.settings;
@@ -82,7 +115,7 @@ public final class StateMachineConformance {
         this.blocks = builder.blocks;
         this.messagesPerBlock = builder.messagesPerBlock;
         this.seed = builder.seed;
-        this.bodyGenerator = builder.bodyGenerator;
+        this.messageGenerator = builder.messageGenerator;
         this.runs = builder.runs;
         this.restartAtHeight = builder.restartAtHeight;
     }
@@ -104,8 +137,9 @@ public final class StateMachineConformance {
         private int blocks = 20;
         private int messagesPerBlock = 5;
         private long seed = 42;
-        private BodyGenerator bodyGenerator = (height, index, random) ->
-                ("msg-" + height + "-" + index).getBytes(StandardCharsets.UTF_8);
+        private MessageGenerator messageGenerator = (height, index, random) ->
+                CorpusMessage.application(("msg-" + height + "-" + index)
+                        .getBytes(StandardCharsets.UTF_8));
         private int runs = 3;
         private long restartAtHeight = -1; // default: mid-corpus
 
@@ -118,7 +152,17 @@ public final class StateMachineConformance {
         public Builder blocks(int value) { this.blocks = value; return this; }
         public Builder messagesPerBlock(int value) { this.messagesPerBlock = value; return this; }
         public Builder seed(long value) { this.seed = value; return this; }
-        public Builder bodyGenerator(BodyGenerator value) { this.bodyGenerator = value; return this; }
+        public Builder bodyGenerator(BodyGenerator value) {
+            Objects.requireNonNull(value, "value");
+            this.messageGenerator = (height, index, random) ->
+                    CorpusMessage.application(value.body(height, index, random));
+            return this;
+        }
+        /** Generate topics as well as bodies, including framework messages such as {@code ~fx/result}. */
+        public Builder messageGenerator(MessageGenerator value) {
+            this.messageGenerator = Objects.requireNonNull(value, "value");
+            return this;
+        }
         /** Independent full replays compared root-by-root (default 3). */
         public Builder runs(int value) { this.runs = Math.max(2, value); return this; }
         /** Close and reopen the ledger at this height in the replay run (default: middle). */
@@ -168,7 +212,7 @@ public final class StateMachineConformance {
     // ------------------------------------------------------------------
 
     private Result execute() {
-        List<AppBlock> corpus = buildCorpus(chainId, blocks, messagesPerBlock, seed, bodyGenerator);
+        List<AppBlock> corpus = buildCorpus(chainId, blocks, messagesPerBlock, seed, messageGenerator);
         List<Map<Long, HeightOutcome>> outcomesPerRun = new ArrayList<>();
         try {
             Path workDir = Files.createTempDirectory("appchain-conformance");
@@ -216,7 +260,7 @@ public final class StateMachineConformance {
 
     /** Identical envelopes/blocks for every run: all inputs derive from the seed. */
     private static List<AppBlock> buildCorpus(String chainId, int blocks, int messagesPerBlock,
-                                              long seed, BodyGenerator bodyGenerator) {
+                                              long seed, MessageGenerator messageGenerator) {
         Random random = new Random(seed);
         byte[] sender = new byte[32];
         new Random(seed ^ 0x5EED).nextBytes(sender);
@@ -228,14 +272,17 @@ public final class StateMachineConformance {
         for (long height = 1; height <= blocks; height++) {
             List<AppMessage> messages = new ArrayList<>(messagesPerBlock);
             for (int index = 0; index < messagesPerBlock; index++) {
-                byte[] body = bodyGenerator.body(height, index, random);
+                CorpusMessage generated = Objects.requireNonNull(
+                        messageGenerator.message(height, index, random),
+                        "messageGenerator returned null at height " + height + ", index " + index);
+                byte[] body = generated.body();
                 long sequence = ++senderSeq;
-                byte[] messageId = AppMessage.computeMessageId(chainId, "t", sender,
+                byte[] messageId = AppMessage.computeMessageId(chainId, generated.topic(), sender,
                         sequence, expiresAt, body);
                 messages.add(AppMessage.builder()
                         .messageId(messageId)
                         .chainId(chainId)
-                        .topic("t")
+                        .topic(generated.topic())
                         .sender(sender)
                         .senderSeq(sequence)
                         .expiresAt(expiresAt)
@@ -325,9 +372,11 @@ public final class StateMachineConformance {
         private int blocks = 40;
         private int messagesPerBlock = 5;
         private long seed = 42;
-        private BodyGenerator bodyGenerator = (height, index, random) ->
-                ("msg-" + height + "-" + index).getBytes(StandardCharsets.UTF_8);
+        private MessageGenerator messageGenerator = (height, index, random) ->
+                CorpusMessage.application(("msg-" + height + "-" + index)
+                        .getBytes(StandardCharsets.UTF_8));
         private int runs = 2;
+        private boolean expectPostActivationDifference;
 
         private UpgradeBuilder(AppStateMachineProvider oldProvider, AppStateMachineProvider newProvider) {
             this.oldProvider = Objects.requireNonNull(oldProvider, "oldProvider");
@@ -345,13 +394,35 @@ public final class StateMachineConformance {
         public UpgradeBuilder blocks(int value) { this.blocks = value; return this; }
         public UpgradeBuilder messagesPerBlock(int value) { this.messagesPerBlock = value; return this; }
         public UpgradeBuilder seed(long value) { this.seed = value; return this; }
-        public UpgradeBuilder bodyGenerator(BodyGenerator value) { this.bodyGenerator = value; return this; }
-        /** Post-activation determinism replays of the NEW version (default 2, plus a restart run). */
+        public UpgradeBuilder bodyGenerator(BodyGenerator value) {
+            Objects.requireNonNull(value, "value");
+            this.messageGenerator = (height, index, random) ->
+                    CorpusMessage.application(value.body(height, index, random));
+            return this;
+        }
+        /** Generate topics as well as bodies, including framework messages such as {@code ~fx/result}. */
+        public UpgradeBuilder messageGenerator(MessageGenerator value) {
+            this.messageGenerator = Objects.requireNonNull(value, "value");
+            return this;
+        }
+        /** Full determinism replays of the NEW version (default 2, plus boundary restart runs). */
         public UpgradeBuilder runs(int value) { this.runs = Math.max(2, value); return this; }
 
         /**
+         * Require this fixture to produce at least one state-root or ordered
+         * effect-list difference from the old version at/after activation.
+         * This is opt-in because a compatibility-only or deliberately dormant
+         * upgrade can legitimately remain a no-op for a particular corpus.
+         */
+        public UpgradeBuilder expectPostActivationDifference() {
+            this.expectPostActivationDifference = true;
+            return this;
+        }
+
+        /**
          * ADR-010.1 §3 semantics: (1) baseline with the old version, no
-         * activation configured; (2) N runs + one kill-and-reopen run of the
+         * activation configured; (2) N runs plus kill-and-reopen runs before
+         * and after the activation boundary for the
          * new version WITH the activation — heights below the activation must
          * match the baseline byte-for-byte (roots AND effect lists), heights
          * at/after it must be deterministic across the new version's runs.
@@ -364,21 +435,41 @@ public final class StateMachineConformance {
                 throw new IllegalStateException("activation height " + activationHeight
                         + " is beyond the corpus (" + blocks + " blocks) — nothing would be tested");
             }
-            List<AppBlock> corpus = buildCorpus(chainId, blocks, messagesPerBlock, seed, bodyGenerator);
+            Set<String> activationKeys = new LinkedHashSet<>();
+            activationKeys.add(activationKey(oldProvider.id()));
+            activationKeys.add(activationKey(newProvider.id()));
+            for (String key : activationKeys) {
+                if (settings.containsKey(key)) {
+                    throw new IllegalStateException("settings already contain activation key '" + key
+                            + "'; remove it and let activationAt() define the upgrade boundary");
+                }
+            }
+            List<AppBlock> corpus = buildCorpus(chainId, blocks, messagesPerBlock, seed, messageGenerator);
             Map<String, String> upgraded = new LinkedHashMap<>(settings);
-            upgraded.put("machines." + newProvider.id() + ".activations." + changeName,
-                    String.valueOf(activationHeight));
+            upgraded.put(activationKey(newProvider.id()), String.valueOf(activationHeight));
             try {
                 Path workDir = Files.createTempDirectory("appchain-upgrade-conformance");
                 Map<Long, HeightOutcome> baseline = applyCorpus(oldProvider, settings, chainId,
                         corpus, workDir.resolve("baseline"), -1);
                 List<Map<Long, HeightOutcome>> newRuns = new ArrayList<>();
                 for (int run = 0; run < runs; run++) {
-                    long restartAt = run == runs - 1
-                            ? Math.max(1, activationHeight - 1) // reopen across the boundary
-                            : -1;
                     newRuns.add(applyCorpus(newProvider, upgraded, chainId, corpus,
-                            workDir.resolve("upgraded-" + run), restartAt));
+                            workDir.resolve("upgraded-" + run), -1));
+                }
+                // Exercise crash recovery on both sides of the boundary. A restart
+                // point is the last committed height before reopen, so A-1 reopens
+                // exactly at activation and A+1 reopens after new behavior is live.
+                Set<Long> restartPoints = new LinkedHashSet<>();
+                if (activationHeight - 1 >= 1 && activationHeight - 1 < blocks) {
+                    restartPoints.add(activationHeight - 1);
+                }
+                if (activationHeight + 1 < blocks) {
+                    restartPoints.add(activationHeight + 1);
+                }
+                int restartRun = 0;
+                for (long restartAt : restartPoints) {
+                    newRuns.add(applyCorpus(newProvider, upgraded, chainId, corpus,
+                            workDir.resolve("upgraded-restart-" + restartRun++), restartAt));
                 }
                 // Replay stability below the activation: new version vs OLD baseline
                 List<Map<Long, HeightOutcome>> vsBaseline = new ArrayList<>();
@@ -398,11 +489,34 @@ public final class StateMachineConformance {
                             + post.kind() + " at height " + post.height() + "): " + post.baseline()
                             + " vs " + post.divergent());
                 }
+                if (expectPostActivationDifference
+                        && !differsAtOrAfter(baseline, newRuns.get(0), activationHeight, blocks)) {
+                    throw new AssertionError("Upgrade fixture did not exercise an observable change "
+                            + "at/after activation height " + activationHeight
+                            + ": old and new state roots and effect lists are identical through height "
+                            + blocks + ". Add corpus messages that trigger the activated branch, or "
+                            + "remove expectPostActivationDifference() for an intentional no-op upgrade.");
+                }
             } catch (AssertionError e) {
                 throw e;
             } catch (Exception e) {
                 throw new RuntimeException("Upgrade conformance harness failed", e);
             }
+        }
+
+        private String activationKey(String machineId) {
+            return "machines." + machineId + ".activations." + changeName;
+        }
+
+        private static boolean differsAtOrAfter(Map<Long, HeightOutcome> oldOutcomes,
+                                                Map<Long, HeightOutcome> newOutcomes,
+                                                long fromHeight, long throughHeight) {
+            for (long height = fromHeight; height <= throughHeight; height++) {
+                if (!Objects.equals(oldOutcomes.get(height), newOutcomes.get(height))) {
+                    return true;
+                }
+            }
+            return false;
         }
     }
 }

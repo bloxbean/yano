@@ -15,6 +15,8 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
@@ -38,6 +40,8 @@ import java.util.function.Consumer;
  * </pre>
  */
 public final class AppChainClient {
+
+    private static final int MAX_EFFECT_PROOF_RESPONSE_BYTES = 40 * 1024 * 1024;
 
     private final String baseUrl;
     private final String chainId;
@@ -173,7 +177,77 @@ public final class AppChainClient {
         return Optional.ofNullable(getJsonOrNull(chainPath("/effects/" + height + "/" + ordinal)));
     }
 
-    /** Effect Runtime counters of the connected node. */
+    /**
+     * Composed proof that the canonical effect at {@code (height, ordinal)} is
+     * a leaf of that block's ordered effects root and that the effects root is
+     * included in the block's historical state root.
+     * <p>
+     * A missing effect ({@code 404}) and an effect whose list-proof material
+     * has aged out of node retention ({@code 410}) are intentionally distinct:
+     * callers can retry the former only if they addressed the wrong node/chain,
+     * while the latter requires an archived proof or a longer retention policy.
+     */
+    public EffectProofLookup effectProof(long height, int ordinal) {
+        if (height <= 0) {
+            throw new IllegalArgumentException("height must be > 0");
+        }
+        if (ordinal < 0) {
+            throw new IllegalArgumentException("ordinal must be >= 0");
+        }
+        String url = chainPath("/effects/" + height + "/" + ordinal + "/proof");
+        try {
+            HttpResponse<java.io.InputStream> response = httpClient.send(
+                    requestBuilder(url).GET().build(), HttpResponse.BodyHandlers.ofInputStream());
+            String responseBody;
+            try (java.io.InputStream input = response.body()) {
+                byte[] bytes = input.readNBytes(MAX_EFFECT_PROOF_RESPONSE_BYTES + 1);
+                if (bytes.length > MAX_EFFECT_PROOF_RESPONSE_BYTES) {
+                    throw new AppChainClientException(
+                            "Effect proof response exceeds 40 MiB from " + url);
+                }
+                responseBody = new String(bytes, StandardCharsets.UTF_8);
+            }
+            JsonNode body = responseBody.isBlank()
+                    ? objectMapper.createObjectNode()
+                    : objectMapper.readTree(responseBody);
+            if (response.statusCode() == 404) {
+                return EffectProofLookup.notFound(errorMessage(body, "Effect not found"));
+            }
+            if (response.statusCode() == 410) {
+                return EffectProofLookup.pruned(
+                        errorMessage(body, "Effect proof material was pruned"),
+                        body.path("effectCount").asInt(0));
+            }
+            if (response.statusCode() != 200) {
+                throw new AppChainClientException("HTTP " + response.statusCode() + " from " + url
+                        + ": " + responseBody);
+            }
+
+            // Permit a future/wrapper response while keeping the v1 wire body
+            // flat. The proof itself remains the same typed contract.
+            JsonNode proofNode = body.hasNonNull("proof") ? body.get("proof") : body;
+            EffectProof proof = EffectProof.from(proofNode);
+            if (proof.height() != height || proof.ordinal() != ordinal) {
+                throw new AppChainClientException("Effect proof identity mismatch: requested "
+                        + height + "/" + ordinal + " but server returned "
+                        + proof.height() + "/" + proof.ordinal());
+            }
+            if (chainId != null && !chainId.equals(proof.chainId())) {
+                throw new AppChainClientException("Effect proof chain mismatch: requested "
+                        + chainId + " but server returned " + proof.chainId());
+            }
+            return EffectProofLookup.available(proof);
+        } catch (AppChainClientException e) {
+            throw e;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new AppChainClientException("Interrupted calling " + url, e);
+        } catch (Exception e) {
+            throw new AppChainClientException("Request failed: " + url, e);
+        }
+    }
+
+    /** Effect consensus/runtime gauges and cumulative totals of the connected node. */
     public JsonNode effectStats() {
         return getJson(chainPath("/effects/stats"), 200);
     }
@@ -410,6 +484,11 @@ public final class AppChainClient {
         }
     }
 
+    private static String errorMessage(JsonNode body, String fallback) {
+        String error = body.path("error").asText("");
+        return error.isBlank() ? fallback : error;
+    }
+
     // ------------------------------------------------------------------
     // Types
     // ------------------------------------------------------------------
@@ -470,6 +549,136 @@ public final class AppChainClient {
      */
     public record Proof(String keyHex, String chainId, String stateRootHex,
                         String proofWireHex, String valueHex, Long finalizedAtHeight) {
+    }
+
+    /** Result of looking up a composed effect proof. */
+    public record EffectProofLookup(EffectProofStatus status, EffectProof proof,
+                                    String message, int effectCount) {
+        public EffectProofLookup {
+            Objects.requireNonNull(status, "status");
+            if (status == EffectProofStatus.AVAILABLE && proof == null) {
+                throw new IllegalArgumentException("AVAILABLE requires a proof");
+            }
+            if (status != EffectProofStatus.AVAILABLE && proof != null) {
+                throw new IllegalArgumentException(status + " must not carry a proof");
+            }
+        }
+
+        static EffectProofLookup available(EffectProof proof) {
+            return new EffectProofLookup(EffectProofStatus.AVAILABLE,
+                    Objects.requireNonNull(proof, "proof"), null, proof.effectCount());
+        }
+
+        static EffectProofLookup notFound(String message) {
+            return new EffectProofLookup(EffectProofStatus.NOT_FOUND, null, message, 0);
+        }
+
+        static EffectProofLookup pruned(String message, int effectCount) {
+            return new EffectProofLookup(EffectProofStatus.PRUNED, null, message,
+                    Math.max(0, effectCount));
+        }
+
+        public boolean available() {
+            return status == EffectProofStatus.AVAILABLE;
+        }
+    }
+
+    public enum EffectProofStatus {
+        AVAILABLE,
+        NOT_FOUND,
+        PRUNED
+    }
+
+    /**
+     * REST wire model for ADR-010's composed proof. The canonical effect
+     * record remains CBOR hex; all hashes and the MPF proof remain hex so the
+     * client never depends on core-api's record classes.
+     */
+    public record EffectProof(int version,
+                              String chainId,
+                              long height,
+                              int ordinal,
+                              String recordCborHex,
+                              String effectHashHex,
+                              int effectCount,
+                              List<EffectMerkleStep> merklePath,
+                              String effectsRootHex,
+                              String stateKeyHex,
+                              String stateRootHex,
+                              String stateProofWireHex) {
+
+        public EffectProof {
+            merklePath = merklePath != null ? List.copyOf(merklePath) : List.of();
+        }
+
+        static EffectProof from(JsonNode node) {
+            List<EffectMerkleStep> path = new ArrayList<>();
+            JsonNode pathNode = required(node, "merklePath");
+            if (!pathNode.isArray()) {
+                throw new IllegalArgumentException("merklePath must be an array");
+            }
+            if (pathNode.size() > 20) {
+                throw new IllegalArgumentException("merklePath exceeds the v1 maximum depth");
+            }
+            for (JsonNode step : pathNode) {
+                // `side` is the v1 name; accept the early-design `sibling`
+                // spelling so pre-release nodes fail forward cleanly.
+                String sideText = step.hasNonNull("side")
+                        ? step.get("side").asText()
+                        : requiredText(step, "sibling");
+                EffectMerkleSide side;
+                try {
+                    side = EffectMerkleSide.valueOf(sideText.trim().toUpperCase(Locale.ROOT));
+                } catch (IllegalArgumentException e) {
+                    throw new IllegalArgumentException("Unknown effect Merkle side: " + sideText, e);
+                }
+                String siblingHash = step.hasNonNull("siblingHashHex")
+                        ? step.get("siblingHashHex").asText()
+                        : step.path("hashHex").asText("");
+                path.add(new EffectMerkleStep(side, siblingHash));
+            }
+            return new EffectProof(
+                    required(node, "version").asInt(),
+                    requiredText(node, "chainId"),
+                    required(node, "height").asLong(),
+                    required(node, "ordinal").asInt(),
+                    requiredText(node, "recordCborHex"),
+                    requiredText(node, "effectHashHex"),
+                    required(node, "effectCount").asInt(),
+                    path,
+                    requiredText(node, "effectsRootHex"),
+                    requiredText(node, "stateKeyHex"),
+                    requiredText(node, "stateRootHex"),
+                    requiredText(node, "stateProofWireHex"));
+        }
+
+        private static JsonNode required(JsonNode node, String field) {
+            if (node == null || !node.hasNonNull(field)) {
+                throw new IllegalArgumentException("Missing effect proof field: " + field);
+            }
+            return node.get(field);
+        }
+
+        private static String requiredText(JsonNode node, String field) {
+            String value = required(node, field).asText();
+            if (value.isBlank()) {
+                throw new IllegalArgumentException("Empty effect proof field: " + field);
+            }
+            return value;
+        }
+    }
+
+    public record EffectMerkleStep(EffectMerkleSide side, String siblingHashHex) {
+        public EffectMerkleStep {
+            Objects.requireNonNull(side, "side");
+            siblingHashHex = siblingHashHex != null ? siblingHashHex : "";
+        }
+    }
+
+    public enum EffectMerkleSide {
+        LEFT,
+        RIGHT,
+        PASS_THROUGH
     }
 
     public static final class AppChainClientException extends RuntimeException {
