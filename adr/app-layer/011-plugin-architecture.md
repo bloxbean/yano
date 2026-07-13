@@ -61,9 +61,9 @@ The generic node runtime also has `NodePlugin` with discovery, lifecycle,
 event access, storage filters and dependency declarations. This is a valuable
 starting point, but it is not a coherent app-layer bundle system.
 
-Verified baseline gaps at the time of this vision ADR (the first three runtime
-lifecycle items are addressed by ADR-011.1; the manifested bundle/catalog gaps
-remain):
+Verified baseline gaps at the time of this vision ADR (ADR-011.1 addresses
+items 2 and 3 plus the `NodePlugin`-only policy portion adjacent to item 4; the
+manifested bundle/catalog and typed-SPI policy gaps remain):
 
 1. The six typed SPIs are scanned independently. There is no shared bundle
    identity, artifact version, compatibility range, contribution inventory or
@@ -256,9 +256,10 @@ DISCOVERED → VALIDATED → INITIALIZED → STARTED → STOPPED → CLOSED
 - Threads and scheduled work use managed handles so health and shutdown can
   attribute them to the owning plugin.
 
-The detailed lifecycle API and whether `NodePlugin` is adapted or superseded
-are deferred to ADR-011.1. The current bug where initialization precedes
-dependency ordering must be removed regardless of that API choice.
+ADR-011.1 defines lifecycle correctness for the existing `NodePlugin` SPI.
+ADR-011.2 will decide how that SPI appears in the manifested catalog—as an
+adapted legacy bundle, a typed auxiliary contribution, or a separately
+deprecated mechanism.
 
 ## 8. Configuration and secrets
 
@@ -346,7 +347,7 @@ packaging rules are settled.
 
 A configured plugin directory/classpath is scanned at startup. The exact
 class-loader model (shared, child-first with API parent, or per-bundle layers)
-is deferred to ADR-011.1 because dependency isolation, logging libraries and
+is deferred to ADR-011.2 because dependency isolation, logging libraries and
 ServiceLoader behavior require focused testing. Plugins compile against a
 published plugin/API surface and must not package Yano runtime internals.
 
@@ -432,17 +433,29 @@ execution. ADR-010's attestation trust model remains unchanged.
 
 ## 16. Delivery roadmap
 
-### ADR-011.1 — Bundle catalog and lifecycle foundation
+### ADR-011.1 — NodePlugin lifecycle correctness kernel (accepted and implemented)
+
+- validate metadata, operator policy and the complete dependency graph before
+  lifecycle callbacks;
+- initialize/start transactionally and stop/close in deterministic reverse
+  dependency order;
+- provide the shared owner-aware service/filter registry and restart-safe
+  contribution scopes;
+- integrate plugin activation with runtime startup, shutdown and construction
+  cleanup.
+
+### ADR-011.2 — Manifested bundle catalog and compatibility
 
 - freeze manifest schema and plugin API compatibility rules;
-- implement descriptor scan, legacy adapters, enable/allow/deny policy,
-  duplicate/conflict checks and dependency graph validation;
-- order before initialization, provide one scoped shared registry and reverse
-  shutdown;
+- implement descriptor scan and synthetic legacy adapters across `NodePlugin`
+  and the existing typed app-layer SPIs;
+- enforce bundle-wide enable/allow/deny policy, API compatibility,
+  duplicate/contribution-conflict checks and dependency validation before
+  typed contribution activation;
 - expose inventory/diagnostics and add JVM/native packaging tests;
-- decide and test the class-loader model.
+- decide and test the class-loader model and deterministic catalog fingerprint.
 
-### ADR-011.2 — Query and domain API extensions
+### ADR-011.3 — Query and domain API extensions
 
 - wire `AppStateMachine.query()` to an authenticated, bounded chain route;
 - define request/response encoding and committed-state consistency;
@@ -450,7 +463,7 @@ execution. ADR-010's attestation trust model remains unchanged.
   build-time native adapter;
 - add product-passport-style aggregation only after query semantics settle.
 
-### ADR-011.3 — Operations and integration extensions
+### ADR-011.4 — Operations and integration extensions
 
 - standard health and metrics contribution APIs;
 - catalog validation/inspection CLI;
