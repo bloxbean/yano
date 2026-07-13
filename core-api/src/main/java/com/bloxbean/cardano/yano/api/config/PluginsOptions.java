@@ -1,9 +1,12 @@
 package com.bloxbean.cardano.yano.api.config;
 
 import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
 
+/** Existing NodePlugin discovery policy and compatibility configuration. */
 public record PluginsOptions(
         boolean enabled,
         boolean autoRegisterAnnotated,
@@ -12,9 +15,12 @@ public record PluginsOptions(
         Map<String, Object> config
 ) {
     public PluginsOptions {
-        allowList = allowList == null ? Set.of() : Collections.unmodifiableSet(allowList);
-        denyList = denyList == null ? Set.of() : Collections.unmodifiableSet(denyList);
-        config = config == null ? Map.of() : Collections.unmodifiableMap(config);
+        allowList = allowList == null ? Set.of()
+                : Collections.unmodifiableSet(new LinkedHashSet<>(allowList));
+        denyList = denyList == null ? Set.of()
+                : Collections.unmodifiableSet(new LinkedHashSet<>(denyList));
+        config = config == null ? Map.of()
+                : Collections.unmodifiableMap(new LinkedHashMap<>(config));
     }
 
     public static PluginsOptions defaults() {

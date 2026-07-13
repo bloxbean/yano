@@ -12,15 +12,14 @@ import java.util.Set;
  * - Implementing policy decisions
  * 
  * Plugin lifecycle:
- * 1. Discovery - Via ServiceLoader or programmatic registration
- * 2. init() - Receive context and register listeners/services
- * 3. start() - Begin active processing
+ * 1. Discovery - Via ServiceLoader
+ * 2. init() - Receive context and register stable services/contributions
+ * 3. start() - Register restartable listeners and begin active processing
  * 4. stop() - Graceful shutdown of processing
  * 5. close() - Release all resources
  * 
  * Plugin discovery:
  * - Automatic: Place plugin JAR in classpath with META-INF/services/NodePlugin
- * - Programmatic: Register via NodeRuntimeBuilder.withPlugins()
  * 
  * Best practices:
  * - Use unique reverse-DNS naming for plugin IDs (e.g., "com.example.myplugin")
@@ -51,8 +50,9 @@ public interface NodePlugin extends AutoCloseable {
 
     /**
      * Declare dependencies on other plugins.
-     * The plugin manager will ensure dependencies are initialized first.
-     * Circular dependencies will be detected and logged.
+     * The plugin manager validates the complete selected graph before any
+     * lifecycle callback and initializes dependencies first. A missing
+     * selected dependency or dependency cycle prevents startup.
      * 
      * @return Set of plugin IDs this plugin depends on
      */
@@ -68,11 +68,12 @@ public interface NodePlugin extends AutoCloseable {
 
     /**
      * Initialize the plugin with runtime context.
-     * Called once during plugin manager initialization.
+     * Called once after discovery, operator policy and dependency validation
+     * have succeeded for the complete selected plugin set.
      * Use this to:
-     * - Register event listeners
      * - Access configuration
      * - Register services for other plugins
+     * - Register stable contributions such as storage filters
      * 
      * @param ctx Plugin context providing access to event bus, config, etc.
      */
@@ -81,14 +82,21 @@ public interface NodePlugin extends AutoCloseable {
     /**
      * Start active plugin processing.
      * Called after all plugins are initialized.
-     * Use this to begin background tasks or active monitoring.
+     * Use this to register event listeners and begin background tasks or
+     * active monitoring. Services and storage filters registered synchronously
+     * in this callback are scoped to the current start cycle and removed after
+     * {@link #stop()}; they may be registered again on the next start. Work
+     * removed by {@code stop()} must be restored by a later call to this method
+     * because a clean runtime stop may be followed by another start on the
+     * same plugin instance.
      */
     void start();
     
     /**
      * Stop active plugin processing.
      * Called during graceful shutdown.
-     * Should stop background tasks and prepare for close().
+     * Should remove event listeners, stop background tasks and leave the
+     * initialized plugin ready for either a later start or close.
      */
     void stop();
 

@@ -49,14 +49,13 @@ public interface PluginContext {
     Logger logger();
     
     /**
-     * Get plugin-specific configuration.
-     * 
-     * Configuration can come from:
-     * - System properties (yaci.plugins.{pluginId}.*)
-     * - Configuration files
-     * - Programmatic configuration via builder
-     * 
-     * @return Immutable configuration map
+     * Get the immutable plugin compatibility configuration map.
+     *
+     * <p>The current runtime supplies one shared global map to every plugin;
+     * callers must use namespaced keys. Prefix-stripped, per-plugin views are
+     * deferred to the manifested bundle catalog.</p>
+     *
+     * @return Immutable shared configuration map
      */
     Map<String, Object> config();
     
@@ -89,9 +88,17 @@ public interface PluginContext {
      * - Storage adapters registering data access services
      * - Notification plugins providing alert mechanisms
      * - Analytics plugins exposing metrics
+     *
+     * <p>A service registered synchronously during
+     * {@link NodePlugin#init(PluginContext)}
+     * remains until close. A service registered during a start cycle is
+     * removed after that plugin's stop callback and may be registered again on
+     * restart. New registrations are rejected between start cycles and after
+     * close.</p>
      * 
      * @param key Unique service identifier
      * @param service The service instance to register
+     * @throws IllegalStateException if any plugin already owns the key
      */
     void registerService(String key, Object service);
     
@@ -102,6 +109,12 @@ public interface PluginContext {
      * output to be stored. Multiple filters can be registered; they are
      * applied in {@link StorageFilter#priority()} order.
      *
+     * <p>Filters must be registered synchronously from
+     * {@link NodePlugin#init(PluginContext)} or {@link NodePlugin#start()}
+     * before that callback returns. Init-scoped filters remain until close;
+     * start-scoped filters are removed after stop and may be registered again
+     * on restart.</p>
+     *
      * @param filter the storage filter to register
      */
     void registerStorageFilter(StorageFilter filter);
@@ -111,6 +124,9 @@ public interface PluginContext {
      * 
      * Services are looked up by key and cast to the requested type.
      * Returns empty if service not found or type mismatch.
+     * A service needed during initialization should come from a plugin named
+     * in the consumer's {@link NodePlugin#dependsOn()} set so dependency-first
+     * initialization guarantees that it is available.
      * 
      * @param <T> Expected service type
      * @param key Service identifier
@@ -119,4 +135,3 @@ public interface PluginContext {
      */
     <T> Optional<T> getService(String key, Class<T> type);
 }
-

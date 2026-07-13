@@ -36,6 +36,7 @@ final class RuntimeKernelStages {
         return List.of(
                 new RuntimeResourceCloseSubsystem(),
                 new RuntimeStartupBoundarySubsystem(),
+                new RuntimePluginSubsystem(),
                 new RuntimeTxSubsystem(),
                 new RuntimeEarlyServeSubsystem(),
                 new RuntimeBootstrapRecoverySubsystem(),
@@ -139,6 +140,10 @@ final class RuntimeKernelStages {
 
         void stopRuntimeServices();
 
+        void startPluginsAndInitializeFilters();
+
+        void stopPluginsAfterRuntimeDrain();
+
         void closeRuntimeResourcesUnderMaintenance();
 
         SubsystemHealth runtimeHealth(String name);
@@ -233,6 +238,34 @@ final class RuntimeKernelStages {
         @Override
         public void close() {
             actions.closeRuntimeResourcesUnderMaintenance();
+        }
+
+        @Override
+        public SubsystemHealth health() {
+            return actions.runtimeHealth(name());
+        }
+    }
+
+    /**
+     * Activates plugins and freezes the UTXO filter chain before any bootstrap,
+     * producer, or sync stage can publish/apply chain data. Reverse kernel stop
+     * then drains all producers before stopping plugins while maintenance is
+     * still held by the startup/shutdown boundaries.
+     */
+    private final class RuntimePluginSubsystem implements Subsystem {
+        @Override
+        public String name() {
+            return "plugins";
+        }
+
+        @Override
+        public void start() {
+            runStartupStage(actions::startPluginsAndInitializeFilters);
+        }
+
+        @Override
+        public void stop() {
+            actions.stopPluginsAfterRuntimeDrain();
         }
 
         @Override

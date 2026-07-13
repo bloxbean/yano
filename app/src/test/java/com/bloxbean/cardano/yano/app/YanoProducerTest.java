@@ -12,12 +12,44 @@ import org.junit.jupiter.api.Test;
 
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 class YanoProducerTest {
+
+    @Test
+    void pluginPolicyIsMappedWithoutDroppingAllowDenyOrReservedFlag() {
+        var producer = new YanoProducer(Thread.currentThread().getContextClassLoader());
+        producer.pluginsEnabled = true;
+        producer.pluginsLoggingEnabled = true;
+        producer.appConfig = new PresentConfig(Map.of(
+                YanoPropertyKeys.Plugins.ALLOW_LIST, "com.example.a, com.example.b",
+                YanoPropertyKeys.Plugins.DENY_LIST, "com.example.b",
+                YanoPropertyKeys.Plugins.AUTO_REGISTER_ANNOTATED, "true"));
+
+        var options = producer.pluginOptions();
+
+        assertEquals(Set.of("com.example.a", "com.example.b"), options.allowList());
+        assertEquals(Set.of("com.example.b"), options.denyList());
+        assertEquals(true, options.autoRegisterAnnotated());
+        assertEquals(true, options.config().get("plugins.logging.enabled"));
+    }
+
+    @Test
+    void pluginStartupFailureIsRecognizedThroughWrapperCauses() {
+        var pluginFailure = new com.bloxbean.cardano.yano.runtime.plugins.PluginManager
+                .PluginManagerException(
+                com.bloxbean.cardano.yano.runtime.plugins.PluginManager.FailurePhase.START,
+                "com.example.plugin", "failed", null);
+
+        assertEquals(true, YanoProducer.isPluginStartupFailure(
+                new RuntimeException("wrapper", pluginFailure)));
+        assertFalse(YanoProducer.isPluginStartupFailure(
+                new RuntimeException("unrelated")));
+    }
 
     @Test
     void effectSettingsAreForwardedForFlatAndIndexedAppChains() {
@@ -193,6 +225,12 @@ class YanoProducerTest {
             }
             if (propertyType == Long.class) {
                 return Optional.of(propertyType.cast(Long.valueOf(value)));
+            }
+            if (propertyType == Boolean.class) {
+                return Optional.of(propertyType.cast(Boolean.valueOf(value)));
+            }
+            if (propertyType == String[].class) {
+                return Optional.of(propertyType.cast(value.split(",")));
             }
             throw new UnsupportedOperationException("Unsupported config type: " + propertyType.getName());
         }

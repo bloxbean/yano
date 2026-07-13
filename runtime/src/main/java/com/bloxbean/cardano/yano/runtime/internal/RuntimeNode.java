@@ -145,8 +145,10 @@ import lombok.extern.slf4j.Slf4j;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -344,109 +346,135 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 relayConnectionManager,
                 log);
 
-        this.appChainManager = buildAppChainManager();
-        if (appChainManager != null) {
-            serveSubsystem.enableAppLayer(appChainManager.serverAgentFactories());
-        }
-
-        // Register default consensus listener (accept-all placeholder)
-        var consensusListener = new DefaultConsensusListener();
-        AnnotationListenerRegistrar.register(eventBus, consensusListener,
-                SubscriptionOptions.builder().build());
-
-        // Discover/init plugins before sync assembly so validation customizers can
-        // participate in header-validator construction. startAll() still runs at startup.
-        if (this.runtimeOptions.plugins().enabled()) {
-            pluginManager = new PluginManager(eventBus, scheduler, this.runtimeOptions.plugins().config(), Thread.currentThread().getContextClassLoader());
-            try {
+        Deque<Runnable> constructionCleanup = new ArrayDeque<>();
+        constructionCleanup.addLast(schedulers::close);
+        constructionCleanup.addLast(chainStorage::close);
+        constructionCleanup.addLast(eventBus::close);
+        constructionCleanup.addLast(txSubsystem::close);
+        constructionCleanup.addLast(serveSubsystem::close);
+        try {
+            // Discover/init plugins before sync assembly so validation customizers can
+            // participate in header-validator construction. startAll() still runs at startup.
+            if (this.runtimeOptions.plugins().enabled()) {
+                pluginManager = PluginManager.withOptions(
+                        eventBus, scheduler, this.runtimeOptions.plugins(),
+                        Thread.currentThread().getContextClassLoader());
+                constructionCleanup.addLast(pluginManager::close);
                 pluginManager.discoverAndInit();
-            } catch (Exception e) {
-                log.warn("Plugin discovery/init failed during runtime assembly: {}", e.toString(), e);
+            }
+
+            this.appChainManager = buildAppChainManager();
+            if (appChainManager != null) {
+                constructionCleanup.addLast(appChainManager::stop);
+                serveSubsystem.enableAppLayer(appChainManager.serverAgentFactories());
+            }
+
+            // Register default consensus listener (accept-all placeholder).
+            var consensusListener = new DefaultConsensusListener();
+            AnnotationListenerRegistrar.register(eventBus, consensusListener,
+                    SubscriptionOptions.builder().build());
+
+            chainStorage.runStartupMigrations();
+
+            this.utxoSubsystem = new UtxoSubsystem(
+                    config,
+                    this.runtimeOptions,
+                    chainState,
+                    rocksDbSupplierOrNull(),
+                    eventBus,
+                    scheduler,
+                    log);
+            constructionCleanup.addLast(utxoSubsystem::close);
+            this.utxoStore = utxoSubsystem.store();
+            this.ledgerStateSubsystem = new LedgerStateSubsystem(
+                    config,
+                    this.runtimeOptions,
+                    chainState,
+                    eventBus,
+                    log,
+                    rocksDbAccessOrNull(),
+                    eraMetadataStoreOrNull(),
+                    byronGenesisUtxoMetadataStoreOrNull(),
+                    chainState instanceof ChainStateSnapshots snapshots ? snapshots : null,
+                    () -> this.utxoStore,
+                    utxoSubsystem::state,
+                    this::resolveGenesisHash,
+                    inMemoryDevnetGenesis);
+            constructionCleanup.addLast(ledgerStateSubsystem::close);
+            this.chronologySubsystem = new ChronologySubsystem(
+                    new ChronologyService(this.chainState),
+                    eventBus,
+                    ledgerStateSubsystem);
+            PeerClientFactory peerClientFactory = relayConnectionManager.wrapPeerClientFactory(
+                    createPeerClientFactory());
+            if (appChainManager != null && config.isClientEnabled()) {
+                // Shared app transport (ADR 005 M1 unification): when the L1
+                // upstream is also an app-group peer, app protocols ride its
+                // session instead of a second dedicated connection.
+                String appTransportMode = stringOf(this.runtimeOptions.globals()
+                        .get(YanoPropertyKeys.AppChain.TRANSPORT_MODE), "shared");
+                peerClientFactory = appChainManager.wrapPeerClientFactory(
+                        peerClientFactory, appTransportMode, remoteCardanoHost, remoteCardanoPort);
+            }
+            this.syncSubsystem = new SyncSubsystem(
+                    config,
+                    chainState,
+                    eventBus,
+                    scheduler,
+                    this.schedulers.tasks(),
+                    serveSubsystem,
+                    ledgerStateSubsystem,
+                    chainStorage,
+                    isRunning::get,
+                    this::getEpochParamProvider,
+                    this::currentGenesisBootstrapData,
+                    remoteCardanoHost,
+                    remoteCardanoPort,
+                    protocolMagic,
+                    log,
+                    this.bodyValidator,
+                    txSubsystem::txDiffusion,
+                    peerClientFactory,
+                    this::epochNonceForHeaderValidation,
+                    headerValidationLedgerViewProvider(),
+                    headerValidationCustomizers());
+            constructionCleanup.addLast(syncSubsystem::close);
+            relayConnectionManager.addListener(this.syncSubsystem.peerGovernorConnectionListener());
+            peerStoreSupplierRef.set(this.syncSubsystem::sharablePeerEntries);
+            this.producerStartupCoordinator = new ProducerStartupCoordinator(producerStartupActions());
+            this.devnetRuntime = RuntimeDevnetRuntime.create(
+                    this::rollbackDevnet,
+                    producerSubsystem::hasProduction,
+                    producerSubsystem::modeOrNull,
+                    this::advanceTimeBySlots,
+                    this::advanceTimeUntilSlot,
+                    this::advanceTimeBySeconds,
+                    this::catchUpToWallClock,
+                    this::shiftGenesisAndStartProducer,
+                    this::fundAddress,
+                    this::createDevnetSnapshot,
+                    this::restoreDevnetSnapshotAndGetTip,
+                    this::listDevnetSnapshots,
+                    this::deleteDevnetSnapshot);
+            this.kernel = new NodeKernel(
+                    runtimeKernelSubsystems(),
+                    new SubsystemContext(eventBus, schedulers, this.runtimeOptions.globals(), new ServiceRegistry()));
+            constructionCleanup.clear();
+        } catch (RuntimeException | Error failure) {
+            cleanupConstructionFailure(failure, constructionCleanup);
+            throw failure;
+        }
+    }
+
+    private void cleanupConstructionFailure(Throwable primary, Deque<Runnable> cleanup) {
+        while (!cleanup.isEmpty()) {
+            try {
+                cleanup.removeLast().run();
+            } catch (Throwable cleanupFailure) {
+                primary.addSuppressed(cleanupFailure);
+                log.warn("Runtime assembly cleanup failed", cleanupFailure);
             }
         }
-
-        chainStorage.runStartupMigrations();
-
-        this.utxoSubsystem = new UtxoSubsystem(
-                config,
-                this.runtimeOptions,
-                chainState,
-                rocksDbSupplierOrNull(),
-                eventBus,
-                scheduler,
-                log);
-        this.utxoStore = utxoSubsystem.store();
-        this.ledgerStateSubsystem = new LedgerStateSubsystem(
-                config,
-                this.runtimeOptions,
-                chainState,
-                eventBus,
-                log,
-                rocksDbAccessOrNull(),
-                eraMetadataStoreOrNull(),
-                byronGenesisUtxoMetadataStoreOrNull(),
-                chainState instanceof ChainStateSnapshots snapshots ? snapshots : null,
-                () -> this.utxoStore,
-                utxoSubsystem::state,
-                this::resolveGenesisHash,
-                inMemoryDevnetGenesis);
-        this.chronologySubsystem = new ChronologySubsystem(
-                new ChronologyService(this.chainState),
-                eventBus,
-                ledgerStateSubsystem);
-        PeerClientFactory peerClientFactory = relayConnectionManager.wrapPeerClientFactory(
-                createPeerClientFactory());
-        if (appChainManager != null && config.isClientEnabled()) {
-            // Shared app transport (ADR 005 M1 unification): when the L1
-            // upstream is also an app-group peer, app protocols ride its
-            // session instead of a second dedicated connection.
-            String appTransportMode = stringOf(this.runtimeOptions.globals()
-                    .get(YanoPropertyKeys.AppChain.TRANSPORT_MODE), "shared");
-            peerClientFactory = appChainManager.wrapPeerClientFactory(
-                    peerClientFactory, appTransportMode, remoteCardanoHost, remoteCardanoPort);
-        }
-        this.syncSubsystem = new SyncSubsystem(
-                config,
-                chainState,
-                eventBus,
-                scheduler,
-                this.schedulers.tasks(),
-                serveSubsystem,
-                ledgerStateSubsystem,
-                chainStorage,
-                isRunning::get,
-                this::getEpochParamProvider,
-                this::currentGenesisBootstrapData,
-                remoteCardanoHost,
-                remoteCardanoPort,
-                protocolMagic,
-                log,
-                this.bodyValidator,
-                txSubsystem::txDiffusion,
-                peerClientFactory,
-                this::epochNonceForHeaderValidation,
-                headerValidationLedgerViewProvider(),
-                headerValidationCustomizers());
-        relayConnectionManager.addListener(this.syncSubsystem.peerGovernorConnectionListener());
-        peerStoreSupplierRef.set(this.syncSubsystem::sharablePeerEntries);
-        this.producerStartupCoordinator = new ProducerStartupCoordinator(producerStartupActions());
-        this.devnetRuntime = RuntimeDevnetRuntime.create(
-                this::rollbackDevnet,
-                producerSubsystem::hasProduction,
-                producerSubsystem::modeOrNull,
-                this::advanceTimeBySlots,
-                this::advanceTimeUntilSlot,
-                this::advanceTimeBySeconds,
-                this::catchUpToWallClock,
-                this::shiftGenesisAndStartProducer,
-                this::fundAddress,
-                this::createDevnetSnapshot,
-                this::restoreDevnetSnapshotAndGetTip,
-                this::listDevnetSnapshots,
-                this::deleteDevnetSnapshot);
-        this.kernel = new NodeKernel(
-                runtimeKernelSubsystems(),
-                new SubsystemContext(eventBus, schedulers, this.runtimeOptions.globals(), new ServiceRegistry()));
     }
 
     private RocksDbSupplier rocksDbSupplierOrNull() {
@@ -805,6 +833,16 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
             }
 
             @Override
+            public void startPluginsAndInitializeFilters() {
+                RuntimeNode.this.startPluginsAndInitializeFilters();
+            }
+
+            @Override
+            public void stopPluginsAfterRuntimeDrain() {
+                RuntimeNode.this.stopPluginsAfterRuntimeDrain();
+            }
+
+            @Override
             public void closeRuntimeResourcesUnderMaintenance() {
                 withRuntimeMaintenance("node close", () -> closeRuntimeResources(unsafeLedgerApplyShutdown));
             }
@@ -1007,7 +1045,7 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
 
             @Override
             public void startPublication() {
-                publishStartupEventAndInitializeFilters();
+                publishStartupEvent();
             }
 
             @Override
@@ -1226,19 +1264,29 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
         return ledgerStateSubsystem.accountHistoryProvider();
     }
 
-    private void publishStartupEventAndInitializeFilters() {
+    private void startPluginsAndInitializeFilters() {
+        boolean pluginsStarted = false;
         if (pluginManager != null && runtimeOptions.plugins().enabled()) {
-            try {
-                pluginManager.discoverAndInit();
-                pluginManager.startAll();
-            } catch (Exception e) {
-                log.warn("Plugin manager init/start failed: {}", e.toString(), e);
-            }
+            pluginManager.startAll();
+            pluginsStarted = true;
         }
 
-        utxoSubsystem.initializeFilterChain(
-                pluginManager != null ? pluginManager.getStorageFilters() : List.of());
+        try {
+            utxoSubsystem.initializeFilterChain(
+                    pluginManager != null ? pluginManager.getStorageFilters() : List.of());
+        } catch (RuntimeException | Error failure) {
+            if (pluginsStarted) {
+                try {
+                    pluginManager.stopAll();
+                } catch (Throwable stopFailure) {
+                    failure.addSuppressed(stopFailure);
+                }
+            }
+            throw failure;
+        }
+    }
 
+    private void publishStartupEvent() {
         EventMetadata meta = EventMetadata.builder().origin("runtime").build();
         eventBus.publish(
                 new NodeStartedEvent(System.currentTimeMillis()),
@@ -1250,6 +1298,10 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
      * Start the node (both client and server)
      */
     public void start() {
+        if (unsafeLedgerApplyShutdown) {
+            throw new IllegalStateException(
+                    "Cannot restart after an unsafe ledger-apply shutdown; create a new runtime instance");
+        }
         try {
             kernel.start();
         } catch (KernelLifecycleException e) {
@@ -3264,10 +3316,21 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
         }
     }
 
+    /** Called only after the kernel has stopped sync/apply stages. */
+    private void stopPluginsAfterRuntimeDrain() {
+        if (unsafeLedgerApplyShutdown) {
+            throw new IllegalStateException(
+                    "Cannot stop plugins safely because a ledger apply worker did not stop or drain");
+        } else if (pluginManager != null) {
+            pluginManager.stopAll();
+        }
+    }
+
     private void closeRuntimeResources(boolean unsafeLedgerApplyWorker) {
         if (!closed.compareAndSet(false, true)) {
             return;
         }
+        Throwable pluginCleanupFailure = null;
 
         try {
             producerSubsystem.stop();
@@ -3284,8 +3347,6 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
 
         closeTerminalResource("sync subsystem", syncSubsystem::close);
 
-        schedulers.close();
-
         if (!unsafeLedgerApplyWorker) {
             try {
                 if (!utxoSubsystem.drainAsyncHandlerBeforeClose(Duration.ofSeconds(30))) {
@@ -3301,7 +3362,14 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
             // Stop plugins/listeners before closing the bus and ChainState only after all apply
             // workers are stopped/drained. Closing shared state first can make a queued async
             // listener fail while applying an accepted block event.
-            try { if (pluginManager != null) pluginManager.close(); } catch (Exception ignored) {}
+            try {
+                if (pluginManager != null) {
+                    pluginManager.close();
+                }
+            } catch (Throwable failure) {
+                pluginCleanupFailure = failure;
+                log.warn("Error closing plugin manager", failure);
+            }
             try { utxoSubsystem.closeEventHandlers(); } catch (Exception ignored) {}
             try { ledgerStateSubsystem.closeEventHandlers(); } catch (Exception ignored) {}
             try { eventBus.close(); } catch (Exception ignored) {}
@@ -3312,8 +3380,19 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
             log.error("Skipping EventBus close because an apply worker did not stop or drain");
         }
 
+        // Plugin stop/close may need the manager-provided scheduler. Keep it
+        // alive until every safe plugin/listener cleanup callback has run.
+        schedulers.close();
+
         boolean unsafeLedgerApplyWorkerAtClose = unsafeLedgerApplyWorker;
         closeTerminalResource("chain storage", () -> chainStorage.closeAfterRuntimeDrain(unsafeLedgerApplyWorkerAtClose));
+
+        if (pluginCleanupFailure instanceof Error error) {
+            throw error;
+        }
+        if (pluginCleanupFailure instanceof RuntimeException runtimeException) {
+            throw runtimeException;
+        }
     }
 
     private void closeTerminalResource(String name, Runnable closeAction) {

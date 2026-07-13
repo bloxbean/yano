@@ -37,6 +37,9 @@ yaci:
   plugins:
     enabled: true
     directory: plugins
+    allow-list: []
+    deny-list: []
+    auto-register-annotated: false
     logging:
       enabled: false
 

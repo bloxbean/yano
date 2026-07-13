@@ -583,10 +583,7 @@ public class YanoProducer {
         EventsOptions eventsOptions = new EventsOptions(
                 eventsEnabled, 8192, SubscriptionOptions.Overflow.BLOCK);
 
-        Map<String, Object> pluginConfigMap = new HashMap<>();
-        pluginConfigMap.put("plugins.logging.enabled", pluginsLoggingEnabled);
-        PluginsOptions pluginsOptions = new PluginsOptions(
-                pluginsEnabled, false, Set.of(), Set.of(), pluginConfigMap);
+        PluginsOptions pluginsOptions = pluginOptions();
 
         RollbackRetentionGenesisValues rollbackRetentionGenesisValues = rollbackRetentionEpochs.orElse(0) > 0
                 ? resolveRollbackRetentionGenesisValues(resolvedShelleyGenesis)
@@ -940,17 +937,30 @@ public class YanoProducer {
                 log.info("REST API available at {}/ for manual control", nodeApiBaseUrl());
             } catch (Exception e) {
                 log.error("Failed to auto-start Yano: {}", e.getMessage(), e);
+                if (isPluginStartupFailure(e)) {
+                    throw new RuntimeException(
+                            "Required plugin discovery or startup failed; refusing partial node startup", e);
+                }
                 if (bootstrapEnabled) {
                     log.error("Bootstrap mode is enabled but failed. "
                             + "The node cannot start without bootstrap state. Shutting down.");
                     throw new RuntimeException("Bootstrap failed, cannot start node", e);
                 }
-                log.info("You can still start manually via: curl -X POST {}/start", nodeApiBaseUrl());
+                log.info("Inspect the startup failure before retrying; a process restart may be required");
             }
         } else {
             log.info("Auto-sync is disabled. Start manually via: curl -X POST {}/start", nodeApiBaseUrl());
             log.info("REST API available at {}/", nodeApiBaseUrl());
         }
+    }
+
+    static boolean isPluginStartupFailure(Throwable failure) {
+        for (Throwable current = failure; current != null; current = current.getCause()) {
+            if (current instanceof com.bloxbean.cardano.yano.runtime.plugins.PluginManager.PluginManagerException) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private String nodeApiBaseUrl() {
@@ -1159,6 +1169,20 @@ public class YanoProducer {
                         .filter(item -> !item.isBlank())
                         .toList())
                 .orElse(List.of());
+    }
+
+    /** Map packaged-node configuration to the complete existing plugin policy. */
+    PluginsOptions pluginOptions() {
+        Map<String, Object> pluginConfigMap = new HashMap<>();
+        pluginConfigMap.put("plugins.logging.enabled", pluginsLoggingEnabled);
+        return new PluginsOptions(
+                pluginsEnabled,
+                configBoolean(YanoPropertyKeys.Plugins.AUTO_REGISTER_ANNOTATED, false),
+                new java.util.LinkedHashSet<>(
+                        configStringList(YanoPropertyKeys.Plugins.ALLOW_LIST)),
+                new java.util.LinkedHashSet<>(
+                        configStringList(YanoPropertyKeys.Plugins.DENY_LIST)),
+                pluginConfigMap);
     }
 
     void onStop(@Observes ShutdownEvent event) {

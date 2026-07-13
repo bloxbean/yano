@@ -23,14 +23,14 @@ This guide explains how to use the Yano event system and plugin SPI, both for de
 ```text
                     +-------------------+                 +-------------------------+
                     |   RuntimeOptions  |                 |     PluginsOptions      |
-                    |  (events, plugins)|                 | (enabled, config map)   |
+                    |  (events, plugins)|                 | (policy + config map)   |
                     +---------+---------+                 +------------+------------+
                               |                                         |
                               v                                         v
                       +-------+-------------------------------+   +-----+--------------------+
                       |             Yano                  |   |       PluginManager     |
                       |  - selects EventBus (Simple/Noop)     |   |  - ServiceLoader        |
-                      |  - constructs PluginManager           |   |  - init/start/stop/close|
+                      |  - constructs PluginManager           |   |  - validate/order first |
                       +-------+---------------+---------------+   +-----+-----------+-------+
                               |               |                               |
                               |               |                               |
@@ -56,7 +56,9 @@ This guide explains how to use the Yano event system and plugin SPI, both for de
 
 Flow summary:
 - Yano takes RuntimeOptions to build/select EventBus and initialize PluginManager.
-- PluginManager discovers NodePlugin via ServiceLoader and calls init(ctx)/start().
+- PluginManager discovers `NodePlugin` via ServiceLoader, snapshots metadata,
+  applies policy, validates the dependency graph, and only then calls
+  `init(ctx)` / `start()` in deterministic dependency order.
 - Plugins register listeners using AnnotationListenerRegistrar:
   - If build-time bindings exist (events-processor), registrar uses ServiceLoader to find DomainEventBindings and registers without reflection.
   - Otherwise registrar reflects over @DomainEventListener methods and subscribes them.
@@ -74,8 +76,12 @@ Use explicit options (records) — do not rely on `System.setProperty`.
 
 - `PluginsOptions` (core-api)
   - `enabled` (boolean): enable/disable plugin system.
-  - `autoRegisterAnnotated` (boolean): reserved; manual registration recommended.
-  - `allowList`/`denyList` (Set<String>): optional controls.
+  - `autoRegisterAnnotated` (boolean): reserved and currently inactive; plugins
+    should own their listener handles explicitly.
+  - `allowList`/`denyList` (Set<String>): exact, case-sensitive controls. Empty
+    allow means all discovered plugins; deny wins. A missing allow-listed id,
+    duplicate id, missing selected dependency, or cycle fails startup before
+    any plugin initializes.
   - `config` (Map<String,Object>): namespaced plugin settings (e.g., `plugins.logging.enabled`).
 
 - `RuntimeOptions` (core-api)
@@ -103,7 +109,10 @@ node.lifecycle().start();
 ### Quarkus app
 
 - `app` maps `application.yml` → options in `YanoProducer`, then builds a `Yano`:
-  - `yaci.events.enabled`, `yaci.plugins.enabled`, `yaci.plugins.logging.enabled`, etc.
+  - `yaci.events.enabled`, `yaci.plugins.enabled`,
+    `yaci.plugins.allow-list`, `yaci.plugins.deny-list`,
+    `yaci.plugins.auto-register-annotated`, and
+    `yaci.plugins.logging.enabled`.
 
 ## Writing a Plugin (ServiceLoader)
 
@@ -113,23 +122,52 @@ node.lifecycle().start();
 public final class MyPlugin implements NodePlugin {
   private List<SubscriptionHandle> handles = java.util.List.of();
   private Logger log;
+  private EventBus eventBus;
 
   @Override public String id() { return "com.example.myplugin"; }
   @Override public String version() { return "1.0.0"; }
+  @Override public Set<String> dependsOn() { return Set.of(); }
 
   @Override public void init(PluginContext ctx) {
     this.log = ctx.logger();
+    this.eventBus = ctx.eventBus();
+  }
+
+  @Override public synchronized void start() {
+    if (!handles.isEmpty()) return;
     // Register annotated methods (build-time bindings if processor is on the classpath)
     SubscriptionOptions defaults = SubscriptionOptions.builder().build();
     this.handles = com.bloxbean.cardano.yaci.events.api.support.AnnotationListenerRegistrar
-        .register(ctx.eventBus(), this, defaults);
+        .register(eventBus, this, defaults);
   }
 
-  @Override public void start() {}
-  @Override public void stop() { handles.forEach(h -> { try { h.close(); } catch (Exception ignored) {} }); }
+  @Override public synchronized void stop() {
+    handles.forEach(h -> { try { h.close(); } catch (Exception ignored) {} });
+    handles = java.util.List.of();
+  }
   @Override public void close() { stop(); }
 }
 ```
+
+All selected plugins are currently required. Initialization or startup failure
+rolls back the selected set in reverse dependency order and fails node startup.
+`stop()` and `close()` also run in reverse order. Optional/degraded trust tiers
+belong to the later manifested bundle catalog.
+
+Every context sees the same service registry. A dependency may register a
+service during `init()` and its dependent may retrieve it during its own
+`init()`; duplicate service keys are rejected rather than overwritten. The
+configuration map remains the existing global compatibility map in this
+release, so plugins must continue to use namespaced keys. Prefix-stripped
+per-bundle configuration is deferred to the manifested bundle work.
+
+Services and storage filters registered during `init()` are stable until
+close. Contributions registered synchronously during `start()` belong to that
+start cycle: the manager removes them after the owner's `stop()` callback so
+the same keys and filters can be registered once on restart. Storage filters
+must be registered before `start()` returns because the runtime freezes the
+filter snapshot immediately after all plugins start. New contributions are
+rejected between cycles and after close.
 
 2) Add ServiceLoader descriptor in your resources:
 - `META-INF/services/com.bloxbean.cardano.yano.api.plugin.NodePlugin`:

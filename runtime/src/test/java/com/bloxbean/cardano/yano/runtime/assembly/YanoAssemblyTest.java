@@ -167,6 +167,7 @@ class YanoAssemblyTest {
             assertEquals(List.of(
                     "runtime-resources",
                     "runtime-startup-boundary",
+                    "plugins",
                     "tx",
                     "serve",
                     "runtime-bootstrap-recovery",
