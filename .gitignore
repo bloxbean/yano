@@ -199,3 +199,5 @@ __pycache__/
 /app/*.bak
 /app/preprod-test/
 /app/chainstate-*.json
+/app/**/*.bak
+/app/**/*.working
