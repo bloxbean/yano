@@ -9,11 +9,13 @@ import java.util.Map;
 /**
  * Parsed {@code effects.*} chain settings (ADR app-layer/010 F12). The
  * consensus-affecting subset — {@code enabled}, {@code max-per-block},
- * {@code max-payload-bytes}, {@code max-expiry-blocks}, {@code default-gate},
- * {@code outcome-commitment} AND {@code strict-reserved-prefix} (it changes
- * which apply() calls fail) — MUST be identical on every member: a mismatch
- * diverges state roots or block validity at the first emission, the same
- * failure class as a mismatched state machine.
+ * {@code max-payload-bytes}, {@code max-expiry-blocks},
+ * {@code result-window-blocks}, {@code default-gate},
+ * {@code outcome-commitment}, {@code result.signers} (all read at apply time
+ * by the kernel) AND {@code strict-reserved-prefix} (it changes which apply()
+ * calls fail) — MUST be identical on every member: a mismatch diverges state
+ * roots or block validity at the first emission, the same failure class as a
+ * mismatched state machine.
  * <p>
  * {@code strict-reserved-prefix} applies even when effects are disabled: the
  * {@code ~fx/} trie keyspace is reserved from genesis (ADR-010 F4).
