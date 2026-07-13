@@ -37,12 +37,16 @@ class AnchorThreadPolicyConformanceTest extends ContractTest {
         initCrypto();
     }
 
-    /** The implementation under test — the Aiken twin overrides this. */
+    /**
+     * The implementation under test — the CHECKED-IN julc artifact (the exact
+     * bytes the runtime ships; environment-independent). The Aiken twin and
+     * the local-only source-compile drift test override this.
+     */
     Program program() {
         if (julcProgram == null) {
-            julcProgram = compileValidator(AnchorThreadPolicy.class)
-                    .program()
-                    .applyParams(PlutusData.bytes(SEED_TX_ID), PlutusData.integer(SEED_INDEX));
+            julcProgram = BundledJulcArtifacts.load(
+                    "META-INF/plutus/AnchorThreadPolicy.plutus.json",
+                    PlutusData.bytes(SEED_TX_ID), PlutusData.integer(SEED_INDEX));
         }
         return julcProgram;
     }
