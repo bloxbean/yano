@@ -101,6 +101,55 @@ class LegacyServiceLoaderProviderRegistryTest {
     }
 
     @Test
+    void nestedProcessFatalDiscoveryFailureRollsBackBeforeEscapingUnwrapped() {
+        TestVirtualMachineError fatal = new TestVirtualMachineError();
+        LegacyServiceLoaderProviderRegistry.ProviderSource source = (type, loader) ->
+                type == FinalizedStreamSinkFactory.class
+                        ? List.<ServiceLoader.Provider<?>>of(
+                                handle(FirstSinkFactory.class, FirstSinkFactory::new),
+                                handle(SecondSinkFactory.class, () -> {
+                                    throw new IllegalStateException("wrapper", fatal);
+                                })).iterator()
+                        : List.<ServiceLoader.Provider<?>>of().iterator();
+
+        assertThatThrownBy(() -> new LegacyServiceLoaderProviderRegistry(
+                getClass().getClassLoader(), source, 8)).isSameAs(fatal);
+        assertThat(CLOSE_ORDER).containsExactly("first");
+    }
+
+    @Test
+    void nestedProcessFatalCloseStillClosesEveryProviderInReverseOrder() {
+        TestVirtualMachineError fatal = new TestVirtualMachineError();
+        AssertionError wrapper = new AssertionError("wrapper");
+        wrapper.addSuppressed(fatal);
+        class FatalCloseFactory extends ClosingSinkFactory {
+            private FatalCloseFactory() {
+                super("fatal");
+            }
+
+            @Override
+            public void close() {
+                super.close();
+                throw wrapper;
+            }
+        }
+        LegacyServiceLoaderProviderRegistry.ProviderSource source = (type, loader) ->
+                type == FinalizedStreamSinkFactory.class
+                        ? List.<ServiceLoader.Provider<?>>of(
+                                handle(FirstSinkFactory.class, FirstSinkFactory::new),
+                                handle(FatalCloseFactory.class, FatalCloseFactory::new))
+                                .iterator()
+                        : List.<ServiceLoader.Provider<?>>of().iterator();
+        LegacyServiceLoaderProviderRegistry registry =
+                new LegacyServiceLoaderProviderRegistry(
+                        getClass().getClassLoader(), source, 8);
+
+        assertThatThrownBy(registry::close).isSameAs(fatal);
+        assertThat(CLOSE_ORDER).containsExactly("fatal", "first");
+        registry.close();
+    }
+
+    @Test
     void globalDiscoveryBoundRollsBackBeforeAdvancingPastLimit() {
         LegacyServiceLoaderProviderRegistry.ProviderSource source = (type, loader) ->
                 type == FinalizedStreamSinkFactory.class
@@ -217,6 +266,9 @@ class LegacyServiceLoaderProviderRegistryTest {
         private SecondSinkFactory() {
             super("second");
         }
+    }
+
+    private static final class TestVirtualMachineError extends VirtualMachineError {
     }
 
     private static final class TestNodePlugin implements NodePlugin {

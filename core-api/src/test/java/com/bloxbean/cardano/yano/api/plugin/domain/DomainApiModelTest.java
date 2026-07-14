@@ -214,12 +214,15 @@ class DomainApiModelTest {
     @Test
     @SuppressWarnings("unchecked")
     void contextDeepCopiesTypedConfigAndNeverPrintsValues() {
+        String secretKey = "credential-key-sentinel";
+        String secretValue = "credential-value-sentinel";
         List<Object> flags = new ArrayList<>(List.of("one"));
         Map<String, Object> nested = new LinkedHashMap<>();
         nested.put("flags", flags);
         Map<String, Object> source = new LinkedHashMap<>();
         source.put("endpoint", "https://internal.example");
         source.put("limits", nested);
+        source.put(secretKey, secretValue);
 
         DomainApiContext context = new DomainApiContext(source, emptyQueries());
         flags.add("two");
@@ -235,8 +238,9 @@ class DomainApiModelTest {
         assertThatThrownBy(() -> ((List<Object>) copiedNested.get("flags")).add("next"))
                 .isInstanceOf(UnsupportedOperationException.class);
         assertThat(context.toString())
-                .contains("bundleConfigKeys=[endpoint, limits]")
-                .doesNotContain("https://internal.example");
+                .contains("bundleConfigEntries=3", "queryService=<host-owned>")
+                .doesNotContain("endpoint", "limits", "https://internal.example",
+                        secretKey, secretValue);
         assertThatThrownBy(() -> new DomainApiContext(
                 Map.of("mutable", new StringBuilder("value")), emptyQueries()))
                 .isInstanceOf(IllegalArgumentException.class)
@@ -245,6 +249,16 @@ class DomainApiModelTest {
                 Map.of("safe\u202econfusing", "value"), emptyQueries()))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("ASCII property names");
+
+        Map<String, Object> cycle = new LinkedHashMap<>();
+        cycle.put("nested", cycle);
+        assertThatThrownBy(() -> new DomainApiContext(cycle, emptyQueries()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("reference cycle");
+        assertThatThrownBy(() -> new DomainApiContext(
+                Map.of("number", Double.NaN), emptyQueries()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("numbers must be finite");
     }
 
     @Test

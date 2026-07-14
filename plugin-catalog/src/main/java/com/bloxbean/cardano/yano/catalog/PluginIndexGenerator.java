@@ -56,7 +56,14 @@ public final class PluginIndexGenerator {
     }
 
     private ScanResult scanCanonical(List<Path> canonicalArtifacts) throws IOException {
-        return scanCanonical(canonicalArtifacts, Set.of());
+        List<IndexedBundle> bundles = new ArrayList<>();
+        List<IndexedLegacyProvider> legacyProviders = new ArrayList<>();
+        Map<String, Path> bundleSources = new TreeMap<>();
+        for (Path artifact : canonicalArtifacts) {
+            PluginIndex partial = scanner.scan(artifact);
+            collect(partial, artifact, bundles, legacyProviders, bundleSources);
+        }
+        return merged(bundles, legacyProviders, bundleSources);
     }
 
     private ScanResult scanCanonical(
@@ -67,13 +74,31 @@ public final class PluginIndexGenerator {
         List<IndexedLegacyProvider> legacyProviders = new ArrayList<>();
         Map<String, Path> bundleSources = new TreeMap<>();
         for (Path artifact : canonicalArtifacts) {
-            PluginIndex partial = scanner.scan(
+            PluginIndex partial = scanner.scanClasspathArtifact(
                     artifact, closedClasspathArtifacts.contains(artifact));
-            bundles.addAll(partial.bundles());
-            legacyProviders.addAll(partial.legacyProviders());
-            partial.bundles().forEach(bundle -> bundleSources.put(
-                    bundle.manifest().id(), artifact));
+            collect(partial, artifact, bundles, legacyProviders, bundleSources);
         }
+        return merged(bundles, legacyProviders, bundleSources);
+    }
+
+    private static void collect(
+            PluginIndex partial,
+            Path artifact,
+            List<IndexedBundle> bundles,
+            List<IndexedLegacyProvider> legacyProviders,
+            Map<String, Path> bundleSources
+    ) {
+        bundles.addAll(partial.bundles());
+        legacyProviders.addAll(partial.legacyProviders());
+        partial.bundles().forEach(bundle -> bundleSources.put(
+                bundle.manifest().id(), artifact));
+    }
+
+    private static ScanResult merged(
+            List<IndexedBundle> bundles,
+            List<IndexedLegacyProvider> legacyProviders,
+            Map<String, Path> bundleSources
+    ) {
         try {
             PluginIndex index = new PluginIndex(
                     PluginIndex.CURRENT_SCHEMA_VERSION, bundles, legacyProviders);

@@ -176,6 +176,7 @@ public final class PluginIndexCodec {
         json.writeObjectFieldStart("yanoApi");
         json.writeNumberField("min", manifest.yanoApi().min());
         json.writeNumberField("max", manifest.yanoApi().max());
+        json.writeNumberField("minLevel", manifest.yanoApi().minLevel());
         json.writeEndObject();
         json.writeArrayFieldStart("dependencies");
         for (BundleDependency dependency : manifest.dependencies().stream().sorted(DEPENDENCY_ORDER).toList()) {
@@ -216,9 +217,7 @@ public final class PluginIndexCodec {
         if (raw.bundles.size() > PluginIndex.MAX_BUNDLES) {
             throw new IllegalArgumentException("plugin index contains too many bundles");
         }
-        if (raw.legacyProviders.size() > PluginIndex.MAX_LEGACY_PROVIDERS) {
-            throw new IllegalArgumentException("plugin index contains too many legacy providers");
-        }
+        PluginIndex.validateProviderLimit(0, raw.legacyProviders.size());
         List<IndexedBundle> bundles = new ArrayList<>(raw.bundles.size());
         for (RawBundle rawBundle : raw.bundles) {
             if (rawBundle == null || rawBundle.manifest == null) {
@@ -275,8 +274,10 @@ public final class PluginIndexCodec {
         if (raw.schemaVersion == null) {
             throw new IllegalArgumentException("manifest schemaVersion must be present");
         }
-        if (raw.yanoApi == null || raw.yanoApi.min == null || raw.yanoApi.max == null) {
-            throw new IllegalArgumentException("manifest yanoApi.min and yanoApi.max must be present");
+        if (raw.yanoApi == null || raw.yanoApi.min == null || raw.yanoApi.max == null
+                || raw.yanoApi.minLevel == null) {
+            throw new IllegalArgumentException(
+                    "manifest yanoApi.min, yanoApi.max and yanoApi.minLevel must be present");
         }
         if (raw.dependencies != null
                 && raw.dependencies.size() > CatalogValidation.MAX_DEPENDENCIES) {
@@ -314,7 +315,7 @@ public final class PluginIndexCodec {
                 raw.schemaVersion,
                 raw.id,
                 SemVersion.parse(raw.version),
-                new YanoApiRange(raw.yanoApi.min, raw.yanoApi.max),
+                new YanoApiRange(raw.yanoApi.min, raw.yanoApi.max, raw.yanoApi.minLevel),
                 dependencies,
                 contributions);
     }
@@ -393,7 +394,7 @@ public final class PluginIndexCodec {
     ) {
     }
 
-    private record RawYanoApi(Integer min, Integer max) {
+    private record RawYanoApi(Integer min, Integer max, Integer minLevel) {
     }
 
     private record RawDependency(String id, String minVersion, String maxVersionExclusive) {

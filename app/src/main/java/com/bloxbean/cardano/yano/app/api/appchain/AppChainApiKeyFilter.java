@@ -4,6 +4,8 @@ import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
 import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiAccess;
 import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiGateway;
 import com.bloxbean.cardano.yano.api.plugin.domain.DomainHttpMethod;
+import com.bloxbean.cardano.yano.app.ApiPrefixContract;
+import com.bloxbean.cardano.yano.app.api.plugin.PluginOperationsResource;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.inject.Inject;
@@ -15,7 +17,7 @@ import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
 import jakarta.ws.rs.core.UriInfo;
 import jakarta.ws.rs.ext.Provider;
-import org.eclipse.microprofile.config.inject.ConfigProperty;
+import org.eclipse.microprofile.config.ConfigProvider;
 
 import java.io.ByteArrayInputStream;
 import java.util.LinkedHashMap;
@@ -24,7 +26,7 @@ import java.util.Optional;
 import java.util.Set;
 
 /**
- * Opt-in API-key authentication for the app-chain REST surface
+ * API-key authentication for the app-chain and plugin-operations REST surfaces
  * (ADR app-layer/006 E4.1). Disabled by default — when
  * {@code yano.app-chain.api.auth.enabled=true}, every request matched to an
  * app-chain resource method must carry a configured key in the
@@ -34,6 +36,8 @@ import java.util.Set;
  * operation (admin pause/drain/anchor, key rotation, or the effect operations
  * requeue/cancel/claim/report, which can move real funds). An unscoped key
  * ({@code key} with no {@code =topics}) is a full key.
+ * Plugin operations are always privileged: they fail closed when this realm
+ * is disabled or has no configured full key.
  * <p>
  * Scoping is by the <em>matched resource class</em> ({@link ResourceInfo}), not
  * a URL substring — renaming or re-rooting the resource cannot silently
@@ -47,14 +51,22 @@ public class AppChainApiKeyFilter implements ContainerRequestFilter {
     private static final int QUERY_JSON_MAX_BYTES = 132 * 1024;
     private static final int DOMAIN_BODY_MAX_BYTES = 64 * 1024;
 
-    @ConfigProperty(name = YanoPropertyKeys.AppChain.API_AUTH_ENABLED, defaultValue = "false")
-    boolean authEnabled;
-
-    @ConfigProperty(name = YanoPropertyKeys.AppChain.API_KEYS)
+    // Package-private overrides keep isolated unit tests independent of the
+    // global MP Config provider. Production leaves them null and resolves the
+    // runtime configuration lazily, which is essential for native images:
+    // API keys must not be captured or embedded during static initialization.
+    Boolean authEnabled;
     Optional<String> apiKeysConfig;
 
     @Inject
     ObjectMapper objectMapper;
+
+    @Inject
+    ApiPrefixContract apiPrefixContract;
+
+    // Unit-test override. Production always resolves the immutable artifact
+    // prefix from ApiPrefixContract rather than mutable runtime configuration.
+    String apiPathPrefix;
 
     @Inject
     DomainApiGateway domainApis;
@@ -69,7 +81,7 @@ public class AppChainApiKeyFilter implements ContainerRequestFilter {
 
     @Override
     public void filter(ContainerRequestContext requestContext) {
-        if (!isAppChainResource()) {
+        if (!isProtectedResource()) {
             return;
         }
 
@@ -100,13 +112,13 @@ public class AppChainApiKeyFilter implements ContainerRequestFilter {
                 requestContext.abortWith(Response.status(Response.Status.SERVICE_UNAVAILABLE)
                         .type(MediaType.APPLICATION_JSON)
                         .entity(Map.of("code", "AUTH_UNAVAILABLE",
-                                "error", "Privileged app-chain operations require "
+                                "error", "Privileged plugin/app-chain operations require "
                                         + "API-key authentication and a full key"))
                         .build());
             }
             return;
         }
-        if (!authEnabled) {
+        if (!authEnabled()) {
             return;
         }
 
@@ -143,6 +155,9 @@ public class AppChainApiKeyFilter implements ContainerRequestFilter {
     }
 
     private AppChainAccess.Level access(ContainerRequestContext requestContext) {
+        if (isPluginOperationsResource()) {
+            return AppChainAccess.Level.PRIVILEGED;
+        }
         if (isDomainApiResource()) {
             return domainAccess(requestContext);
         }
@@ -159,17 +174,23 @@ public class AppChainApiKeyFilter implements ContainerRequestFilter {
         };
     }
 
-    /** True when the matched resource class is one of the app-chain resources. */
-    private boolean isAppChainResource() {
+    /** True when the matched resource class is protected by this credential realm. */
+    private boolean isProtectedResource() {
         Class<?> resourceClass = resourceInfo != null ? resourceInfo.getResourceClass() : null;
         return resourceClass == AppChainResource.class
                 || resourceClass == AppChainResource.ChainScopedResource.class
-                || resourceClass == PluginDomainResource.class;
+                || resourceClass == PluginDomainResource.class
+                || resourceClass == PluginOperationsResource.class;
     }
 
     private boolean isDomainApiResource() {
         return resourceInfo != null
                 && resourceInfo.getResourceClass() == PluginDomainResource.class;
+    }
+
+    private boolean isPluginOperationsResource() {
+        return resourceInfo != null
+                && resourceInfo.getResourceClass() == PluginOperationsResource.class;
     }
 
     private boolean isCommittedQueryResource() {
@@ -191,7 +212,8 @@ public class AppChainApiKeyFilter implements ContainerRequestFilter {
     ) {
         boolean domain = isDomainApiResource();
         boolean query = isCommittedQueryResource();
-        if (!domain && !query) {
+        boolean operations = isPluginOperationsResource();
+        if (!domain && !query && !operations) {
             return true;
         }
         final String rawPath;
@@ -201,24 +223,67 @@ public class AppChainApiKeyFilter implements ContainerRequestFilter {
                     ? requestUri.getRawPath()
                     : uriInfo != null ? uriInfo.getPath(false) : null;
         } catch (RuntimeException unavailable) {
-            return abortNonCanonicalExtensionPath(requestContext, domain);
+            return abortNonCanonicalExtensionPath(requestContext, domain, operations);
         }
         if (rawPath == null || rawPath.isEmpty()
                 || rawPath.indexOf('%') >= 0
                 || rawPath.indexOf(';') >= 0
                 || rawPath.contains("//")
-                || rawPath.endsWith("/")) {
-            return abortNonCanonicalExtensionPath(requestContext, domain);
+                || rawPath.endsWith("/")
+                || containsDotSegment(rawPath)
+                || (operations && !isCanonicalOperationsPath(
+                        rawPath, artifactApiPathPrefix()))) {
+            return abortNonCanonicalExtensionPath(requestContext, domain, operations);
         }
         return true;
     }
 
+    private static boolean containsDotSegment(String rawPath) {
+        for (String segment : rawPath.split("/", -1)) {
+            if (segment.equals(".") || segment.equals("..")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private String artifactApiPathPrefix() {
+        if (apiPathPrefix != null) {
+            return apiPathPrefix;
+        }
+        return apiPrefixContract != null ? apiPrefixContract.pathPrefix() : null;
+    }
+
+    private static boolean isCanonicalOperationsPath(
+            String rawPath,
+            String apiPathPrefix
+    ) {
+        if (apiPathPrefix == null) {
+            return false;
+        }
+        String root = apiPathPrefix + "/plugin-operations";
+        if (rawPath.equals(root) || rawPath.equals(root + "/bundles")) {
+            return true;
+        }
+        String bundlePrefix = root + "/bundles/";
+        String bundleId = rawPath.startsWith(bundlePrefix)
+                ? rawPath.substring(bundlePrefix.length()) : null;
+        return PluginOperationsResource.validBundleId(bundleId);
+    }
+
     private static boolean abortNonCanonicalExtensionPath(
             ContainerRequestContext requestContext,
-            boolean domain
+            boolean domain,
+            boolean operations
     ) {
         if (domain) {
             abortDomainNotFound(requestContext);
+        } else if (operations) {
+            requestContext.abortWith(Response.status(Response.Status.NOT_FOUND)
+                    .type(MediaType.APPLICATION_JSON)
+                    .entity(Map.of("code", "NOT_FOUND",
+                            "error", "No plugin operations route matches the request"))
+                    .build());
         } else {
             requestContext.abortWith(Response.status(Response.Status.BAD_REQUEST)
                     .type(MediaType.APPLICATION_JSON)
@@ -267,7 +332,7 @@ public class AppChainApiKeyFilter implements ContainerRequestFilter {
     }
 
     private boolean privilegedAuthenticationAvailable() {
-        return authEnabled && keys().values().stream().anyMatch(Set::isEmpty);
+        return authEnabled() && keys().values().stream().anyMatch(Set::isEmpty);
     }
 
     private static void abortDomainNotFound(ContainerRequestContext requestContext) {
@@ -351,7 +416,7 @@ public class AppChainApiKeyFilter implements ContainerRequestFilter {
             return current;
         }
         Map<String, Set<String>> parsed = new LinkedHashMap<>();
-        for (String entry : apiKeysConfig.orElse("").split(",")) {
+        for (String entry : apiKeysConfig().orElse("").split(",")) {
             String trimmed = entry.trim();
             if (trimmed.isEmpty()) {
                 continue;
@@ -370,4 +435,17 @@ public class AppChainApiKeyFilter implements ContainerRequestFilter {
         parsedKeys = parsed;
         return parsed;
     }
+
+    private boolean authEnabled() {
+        return authEnabled != null ? authEnabled : ConfigProvider.getConfig()
+                .getOptionalValue(
+                        YanoPropertyKeys.AppChain.API_AUTH_ENABLED, Boolean.class)
+                .orElse(false);
+    }
+
+    private Optional<String> apiKeysConfig() {
+        return apiKeysConfig != null ? apiKeysConfig : ConfigProvider.getConfig()
+                .getOptionalValue(YanoPropertyKeys.AppChain.API_KEYS, String.class);
+    }
+
 }

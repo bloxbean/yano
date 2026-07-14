@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.api.plugin;
 
 import com.bloxbean.cardano.yaci.events.api.EventBus;
+import com.bloxbean.cardano.yano.api.config.PluginConfigValues;
 import org.slf4j.Logger;
 
 import java.util.Map;
@@ -62,7 +63,11 @@ public interface PluginContext {
      *
      * <p>This compatibility view is shared across plugins, so callers must use
      * namespaced keys. New manifested plugins should prefer
-     * {@link #bundleConfig()}, which cannot expose another bundle's settings.</p>
+     * {@link #bundleConfig()}, which cannot expose another bundle's settings.
+     * The complete graph is an immutable snapshot: nested maps and lists
+     * cannot be modified and later embedder mutations are not visible.
+     * Preview v1 accepts only the bounded JSON-like types documented by
+     * {@link PluginConfigValues}.</p>
      *
      * @return Immutable shared configuration map
      */
@@ -74,7 +79,9 @@ public interface PluginContext {
      *
      * <p>The default preserves binary compatibility for legacy plugins, which
      * continue to see the shared compatibility map. Manifested runtimes
-     * override this with an owner-scoped view.</p>
+     * override this with an owner-scoped, recursively immutable snapshot.
+     * Configuration validation diagnostics never render values because they
+     * may contain credentials.</p>
      */
     default Map<String, Object> bundleConfig() {
         return config();

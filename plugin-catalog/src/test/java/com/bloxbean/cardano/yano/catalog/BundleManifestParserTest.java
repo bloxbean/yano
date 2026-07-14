@@ -22,7 +22,7 @@ class BundleManifestParserTest {
                   "schemaVersion": 1,
                   "id": "com.example.product-passport",
                   "version": "1.2.0-beta.1+build.7",
-                  "yanoApi": { "min": 1, "max": 2 },
+                  "yanoApi": { "min": 1, "max": 2, "minLevel": 1 },
                   "dependencies": [
                     {
                       "id": "com.example.shared-claims",
@@ -42,7 +42,8 @@ class BundleManifestParserTest {
 
         assertThat(manifest.id()).isEqualTo(ID);
         assertThat(manifest.version().toString()).isEqualTo("1.2.0-beta.1+build.7");
-        assertThat(manifest.yanoApi().supports(2)).isTrue();
+        assertThat(manifest.yanoApi().supports(2, 1)).isTrue();
+        assertThat(manifest.yanoApi().minLevel()).isEqualTo(1);
         assertThat(manifest.dependencies()).containsExactly(new BundleDependency(
                 "com.example.shared-claims", SemVersion.parse("1.0.0"), SemVersion.parse("2.0.0")));
         assertThat(manifest.contributions()).containsExactly(new BundleContribution(
@@ -66,7 +67,7 @@ class BundleManifestParserTest {
         List<BundleDependency> dependencies = new ArrayList<>();
         List<BundleContribution> contributions = new ArrayList<>();
         BundleManifest manifest = new BundleManifest(
-                1, ID, SemVersion.parse("1.0.0"), new YanoApiRange(1, 1), dependencies, contributions);
+                1, ID, SemVersion.parse("1.0.0"), new YanoApiRange(1, 1, 1), dependencies, contributions);
         dependencies.add(new BundleDependency("com.example.other", null, null));
         contributions.add(new BundleContribution(
                 ContributionKind.FINALIZED_SINK, "sink", "com.example.SinkProvider"));
@@ -136,6 +137,10 @@ class BundleManifestParserTest {
                 "yanoApi.min", "positive");
         assertInvalid(replace(minimalManifest(), "\"min\": 1, \"max\": 1", "\"min\": 2, \"max\": 1"),
                 "yanoApi", "min <= max");
+        assertInvalid(replace(minimalManifest(), "\"minLevel\": 1", "\"minLevel\": 0"),
+                "yanoApi.minLevel", "positive");
+        assertInvalid(replace(minimalManifest(), ", \"minLevel\": 1", ""),
+                "yanoApi.minLevel", "must be present");
     }
 
     @Test
@@ -259,7 +264,7 @@ class BundleManifestParserTest {
                 1,
                 longId,
                 SemVersion.parse("1.0.0"),
-                new YanoApiRange(1, 1),
+                new YanoApiRange(1, 1, 1),
                 List.of(),
                 List.of(contribution));
 
@@ -269,6 +274,61 @@ class BundleManifestParserTest {
                 ContributionKind.DOMAIN_API, "domain-api", "com.example.DomainProvider"))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("reverse-DNS");
+    }
+
+    @Test
+    void healthAndMetricsAreManifestOwnedSingletonContributions() {
+        String valid = minimalManifest().replace("\n}", """
+                , "contributions": [
+                  {
+                    "kind": "health",
+                    "name": "com.example.product-passport",
+                    "provider": "com.example.passport.PassportHealthProvider"
+                  },
+                  {
+                    "kind": "metrics",
+                    "name": "com.example.product-passport",
+                    "provider": "com.example.passport.PassportMetricsProvider"
+                  }
+                ]
+                }
+                """);
+
+        assertThat(parse(valid).contributions()).containsExactly(
+                new BundleContribution(
+                        ContributionKind.HEALTH,
+                        ID,
+                        "com.example.passport.PassportHealthProvider"),
+                new BundleContribution(
+                        ContributionKind.METRICS,
+                        ID,
+                        "com.example.passport.PassportMetricsProvider"));
+        assertThat(ContributionKind.HEALTH.manifestRequired()).isTrue();
+        assertThat(ContributionKind.METRICS.manifestRequired()).isTrue();
+        assertThat(ContributionKind.HEALTH.serviceType().getName())
+                .isEqualTo("com.bloxbean.cardano.yano.api.plugin.operations.PluginHealthProvider");
+        assertThat(ContributionKind.METRICS.serviceType().getName())
+                .isEqualTo("com.bloxbean.cardano.yano.api.plugin.operations.PluginMetricsProvider");
+
+        assertInvalid(valid.replace(
+                        "\"name\": \"com.example.product-passport\"",
+                        "\"name\": \"com.example.other\""),
+                "health", "must equal the containing bundle id");
+
+        String duplicateHealth = valid.replace("""
+                  {
+                    "kind": "metrics",
+                    "name": "com.example.product-passport",
+                    "provider": "com.example.passport.PassportMetricsProvider"
+                  }
+                """, """
+                  {
+                    "kind": "health",
+                    "name": "com.example.product-passport",
+                    "provider": "com.example.passport.SecondHealthProvider"
+                  }
+                """);
+        assertInvalid(duplicateHealth, "contributions", "at most one health provider");
     }
 
     private static BundleManifest parse(String json) {
@@ -302,7 +362,7 @@ class BundleManifestParserTest {
                   "schemaVersion": 1,
                   "id": "com.example.product-passport",
                   "version": "1.0.0",
-                  "yanoApi": { "min": 1, "max": 1 }
+                  "yanoApi": { "min": 1, "max": 1, "minLevel": 1 }
                 }
                 """;
     }

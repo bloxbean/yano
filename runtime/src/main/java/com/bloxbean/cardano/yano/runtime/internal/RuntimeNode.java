@@ -82,6 +82,7 @@ import com.bloxbean.cardano.yano.runtime.producer.StakeDataProviderFactory;
 import com.bloxbean.cardano.yano.runtime.plugins.PluginManager;
 import com.bloxbean.cardano.yano.runtime.plugins.DomainApiRegistry;
 import com.bloxbean.cardano.yano.runtime.plugins.PluginRuntimeEnvironment;
+import com.bloxbean.cardano.yano.runtime.plugins.PluginOperationsRegistry;
 import com.bloxbean.cardano.yano.api.account.AccountHistoryProvider;
 import com.bloxbean.cardano.yano.api.account.AccountStateReadStore;
 import com.bloxbean.cardano.yano.api.account.LedgerStateProvider;
@@ -186,6 +187,7 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
     private final ServeSubsystem serveSubsystem;
     private final com.bloxbean.cardano.yano.runtime.appchain.AppChainManager appChainManager;
     private final DomainApiRegistry domainApiRegistry;
+    private final PluginOperationsRegistry pluginOperationsRegistry;
     private final RelayConnectionManager relayConnectionManager;
     private final int serverPort;
 
@@ -221,6 +223,9 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
         void closePluginManager();
 
         void closeDomainApis();
+
+        default void closePluginOperations() {
+        }
 
         void closePluginEnvironment();
 
@@ -426,10 +431,14 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
         constructionCleanup.addLast(txSubsystem::close);
         constructionCleanup.addLast(serveSubsystem::close);
         try {
+            this.pluginOperationsRegistry = new PluginOperationsRegistry(
+                    this.pluginEnvironment, log);
+            constructionCleanup.addLast(pluginOperationsRegistry::close);
             // Discover/init plugins before sync assembly so validation customizers can
             // participate in header-validator construction. startAll() still runs at startup.
             if (this.runtimeOptions.plugins().enabled()) {
-                pluginManager = this.pluginEnvironment.createNodePluginManager(eventBus, scheduler);
+                pluginManager = this.pluginEnvironment.createNodePluginManager(
+                        eventBus, scheduler, pluginOperationsRegistry);
                 constructionCleanup.addLast(pluginManager::close);
                 pluginManager.discoverAndInit();
             }
@@ -442,7 +451,8 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
             this.domainApiRegistry = new DomainApiRegistry(
                     this.pluginEnvironment,
                     appChainGateways(),
-                    log);
+                    log,
+                    pluginOperationsRegistry);
             constructionCleanup.addLast(domainApiRegistry::close);
 
             // Register default consensus listener (accept-all placeholder).
@@ -862,6 +872,12 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
     /** Constrained ADR-011.3 domain API dispatcher. */
     public com.bloxbean.cardano.yano.api.plugin.domain.DomainApiGateway domainApis() {
         return domainApiRegistry;
+    }
+
+    /** Cached ADR-011.4 operations view; reading it never invokes plugin code. */
+    public com.bloxbean.cardano.yano.api.plugin.operations.PluginOperationsView
+            pluginOperations() {
+        return pluginOperationsRegistry;
     }
 
     private SubsystemHealth runtimeHealth(String name) {
@@ -1387,6 +1403,11 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
             domainApiRegistry.resume();
             utxoSubsystem.initializeFilterChain(
                     pluginManager != null ? pluginManager.getStorageFilters() : List.of());
+            // Health and metrics may depend on services contributed by the
+            // ordinary plugin planes, so construct telemetry only after both
+            // NodePlugin and domain products are active.
+            pluginOperationsRegistry.activateTelemetry();
+            pluginOperationsRegistry.startSampling();
         } catch (Throwable failure) {
             boolean stopNodePlugins = pluginsStarted;
             Runnable stopPlugins = () -> stopDomainAndNodePlugins(stopNodePlugins);
@@ -1397,6 +1418,11 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
 
     private void stopDomainAndNodePlugins(boolean stopNodePlugins) {
         Throwable failure = null;
+        try {
+            pluginOperationsRegistry.sealAndAwait();
+        } catch (Throwable operationsFailure) {
+            failure = recordPluginCleanupFailure(failure, operationsFailure);
+        }
         try {
             domainApiRegistry.sealAndAwait();
         } catch (Throwable domainFailure) {
@@ -3541,7 +3567,9 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
         // and must close on every shutdown path, including an unsafe ledger
         // drain where broader provider teardown is deliberately skipped.
         Throwable failure = attemptRuntimeCleanup(
-                null, "domain API products", domainApiRegistry::sealAndAwait);
+                null, "plugin telemetry products", pluginOperationsRegistry::sealAndAwait);
+        failure = attemptRuntimeCleanup(
+                failure, "domain API products", domainApiRegistry::sealAndAwait);
         if (unsafeLedgerApplyShutdown) {
             failure = recordPluginCleanupFailure(failure, new IllegalStateException(
                     "Cannot stop plugins safely because a ledger apply worker did not stop or drain"));
@@ -3626,6 +3654,11 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
             @Override
             public void closeDomainApis() {
                 domainApiRegistry.close();
+            }
+
+            @Override
+            public void closePluginOperations() {
+                pluginOperationsRegistry.close();
             }
 
             @Override
@@ -3727,6 +3760,9 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                     cleanupFailure, "domain API registry", actions::closeDomainApis);
             cleanupFailure = attemptRuntimeCleanup(
                     cleanupFailure, "plugin manager", actions::closePluginManager);
+            cleanupFailure = attemptRuntimeCleanup(
+                    cleanupFailure, "plugin operations registry",
+                    actions::closePluginOperations);
             cleanupFailure = attemptRuntimeCleanup(
                     cleanupFailure, "plugin environment", actions::closePluginEnvironment);
             cleanupFailure = attemptRuntimeCleanup(

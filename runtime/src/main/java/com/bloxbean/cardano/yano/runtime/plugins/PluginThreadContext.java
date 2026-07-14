@@ -25,11 +25,18 @@ final class PluginThreadContext {
         Objects.requireNonNull(callback, "callback");
         Thread thread = Thread.currentThread();
         ClassLoader previous = thread.getContextClassLoader();
+        boolean interrupted = thread.isInterrupted();
         thread.setContextClassLoader(loader);
         try {
             return callback.get();
         } finally {
             thread.setContextClassLoader(previous);
+            boolean currentInterrupted = thread.isInterrupted();
+            if (interrupted && !currentInterrupted) {
+                thread.interrupt();
+            } else if (!interrupted && currentInterrupted) {
+                Thread.interrupted();
+            }
         }
     }
 

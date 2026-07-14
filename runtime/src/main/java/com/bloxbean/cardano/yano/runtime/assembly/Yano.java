@@ -64,6 +64,12 @@ public interface Yano extends AutoCloseable {
         return Optional.empty();
     }
 
+    /** Cached ADR-011.4 plugin operations state, when supplied by the runtime. */
+    default Optional<com.bloxbean.cardano.yano.api.plugin.operations.PluginOperationsView>
+            pluginOperations() {
+        return Optional.empty();
+    }
+
     default void start() {
         lifecycle().start();
     }

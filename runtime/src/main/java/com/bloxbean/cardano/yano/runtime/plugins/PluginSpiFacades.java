@@ -36,6 +36,16 @@ import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiProvider;
 import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiRequest;
 import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiResponse;
 import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiRoute;
+import com.bloxbean.cardano.yano.api.plugin.operations.PluginHealthCheckDescriptor;
+import com.bloxbean.cardano.yano.api.plugin.operations.PluginHealthContext;
+import com.bloxbean.cardano.yano.api.plugin.operations.PluginHealthProvider;
+import com.bloxbean.cardano.yano.api.plugin.operations.PluginHealthSnapshot;
+import com.bloxbean.cardano.yano.api.plugin.operations.PluginHealthSource;
+import com.bloxbean.cardano.yano.api.plugin.operations.PluginMetricDescriptor;
+import com.bloxbean.cardano.yano.api.plugin.operations.PluginMetricSnapshot;
+import com.bloxbean.cardano.yano.api.plugin.operations.PluginMetricsContext;
+import com.bloxbean.cardano.yano.api.plugin.operations.PluginMetricsProvider;
+import com.bloxbean.cardano.yano.api.plugin.operations.PluginMetricsSource;
 import com.bloxbean.cardano.yano.catalog.ContributionKind;
 import com.bloxbean.cardano.yano.runtime.util.LifecycleFailures;
 
@@ -365,6 +375,12 @@ final class PluginSpiFacades {
             case DOMAIN_API -> new DomainApiProviderFacade(
                     (DomainApiProvider) delegate, effectiveLoader, activation,
                     products, callbacks);
+            case HEALTH -> new HealthProviderFacade(
+                    (PluginHealthProvider) delegate, effectiveLoader, activation,
+                    products, callbacks);
+            case METRICS -> new MetricsProviderFacade(
+                    (PluginMetricsProvider) delegate, effectiveLoader, activation,
+                    products, callbacks);
         };
     }
 
@@ -591,7 +607,7 @@ final class PluginSpiFacades {
                 // identity-rich, fixed platform diagnostic; in particular a
                 // plugin cannot smuggle its own exception message through by
                 // throwing PluginActivationException directly.
-                LifecycleFailures.rethrowIfProcessFatal(failure);
+                LifecycleFailures.rethrowIfProcessFatalReachable(failure);
                 if (failure instanceof InterruptedException) {
                     Thread.currentThread().interrupt();
                 }
@@ -910,6 +926,136 @@ final class PluginSpiFacades {
                         value, api -> new DomainApiFacade(
                                 api, loader, activation, callbacks));
             }));
+        }
+    }
+
+    private record HealthProviderFacade(
+            PluginHealthProvider delegate,
+            ClassLoader loader,
+            ActivationContext activation,
+            ProductReservations products,
+            CallbackTracker callbacks
+    ) implements PluginHealthProvider {
+        private HealthProviderFacade {
+            Objects.requireNonNull(delegate, "delegate");
+        }
+
+        @Override
+        public String id() {
+            return activation.call("read health provider identity",
+                    () -> pluginCall(callbacks, loader, delegate::id));
+        }
+
+        @Override
+        public PluginHealthSource create(PluginHealthContext context) {
+            Objects.requireNonNull(context, "context");
+            return activation.call("create health source", () -> callbacks.call(() -> {
+                PluginHealthSource value = PluginThreadContext.call(
+                        loader, () -> delegate.create(context));
+                return products.facadeForNewInvocation(
+                        value, source -> new HealthSourceFacade(
+                                source, loader, activation, callbacks));
+            }));
+        }
+    }
+
+    private record HealthSourceFacade(
+            PluginHealthSource delegate,
+            ClassLoader loader,
+            ActivationContext activation,
+            CallbackTracker callbacks
+    ) implements PluginHealthSource {
+        private HealthSourceFacade {
+            Objects.requireNonNull(delegate, "delegate");
+        }
+
+        @Override
+        public List<PluginHealthCheckDescriptor> checks() {
+            return activation.call("enumerate health checks", () -> callbacks.call(() -> {
+                List<PluginHealthCheckDescriptor> values = Objects.requireNonNull(
+                        PluginThreadContext.call(loader, delegate::checks),
+                        "PluginHealthSource.checks() must not return null");
+                return snapshotList(values, loader, callbacks,
+                        PluginHealthCheckDescriptor.MAX_CHECKS_PER_BUNDLE,
+                        "PluginHealthSource must declare at most 16 checks");
+            }));
+        }
+
+        @Override
+        public PluginHealthSnapshot snapshot() {
+            return Objects.requireNonNull(
+                    pluginCall(callbacks, loader, delegate::snapshot),
+                    "PluginHealthSource.snapshot() must not return null");
+        }
+
+        @Override
+        public void close() {
+            pluginCleanupRun(callbacks, loader, delegate::close);
+        }
+    }
+
+    private record MetricsProviderFacade(
+            PluginMetricsProvider delegate,
+            ClassLoader loader,
+            ActivationContext activation,
+            ProductReservations products,
+            CallbackTracker callbacks
+    ) implements PluginMetricsProvider {
+        private MetricsProviderFacade {
+            Objects.requireNonNull(delegate, "delegate");
+        }
+
+        @Override
+        public String id() {
+            return activation.call("read metrics provider identity",
+                    () -> pluginCall(callbacks, loader, delegate::id));
+        }
+
+        @Override
+        public PluginMetricsSource create(PluginMetricsContext context) {
+            Objects.requireNonNull(context, "context");
+            return activation.call("create metrics source", () -> callbacks.call(() -> {
+                PluginMetricsSource value = PluginThreadContext.call(
+                        loader, () -> delegate.create(context));
+                return products.facadeForNewInvocation(
+                        value, source -> new MetricsSourceFacade(
+                                source, loader, activation, callbacks));
+            }));
+        }
+    }
+
+    private record MetricsSourceFacade(
+            PluginMetricsSource delegate,
+            ClassLoader loader,
+            ActivationContext activation,
+            CallbackTracker callbacks
+    ) implements PluginMetricsSource {
+        private MetricsSourceFacade {
+            Objects.requireNonNull(delegate, "delegate");
+        }
+
+        @Override
+        public List<PluginMetricDescriptor> descriptors() {
+            return activation.call("enumerate metric descriptors", () -> callbacks.call(() -> {
+                List<PluginMetricDescriptor> values = Objects.requireNonNull(
+                        PluginThreadContext.call(loader, delegate::descriptors),
+                        "PluginMetricsSource.descriptors() must not return null");
+                return snapshotList(values, loader, callbacks,
+                        PluginMetricDescriptor.MAX_SERIES_PER_BUNDLE,
+                        "PluginMetricsSource must declare at most 64 metrics");
+            }));
+        }
+
+        @Override
+        public PluginMetricSnapshot snapshot() {
+            return Objects.requireNonNull(
+                    pluginCall(callbacks, loader, delegate::snapshot),
+                    "PluginMetricsSource.snapshot() must not return null");
+        }
+
+        @Override
+        public void close() {
+            pluginCleanupRun(callbacks, loader, delegate::close);
         }
     }
 

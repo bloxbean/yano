@@ -5,6 +5,7 @@ import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiGateway;
 import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiResponse;
 import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiRouteInfo;
 import com.bloxbean.cardano.yano.api.plugin.domain.DomainHttpMethod;
+import com.bloxbean.cardano.yano.app.api.plugin.PluginOperationsResource;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.ws.rs.container.ContainerRequestContext;
 import jakarta.ws.rs.container.ResourceInfo;
@@ -25,6 +26,16 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 
 class AppChainApiKeyFilterUnitTest {
+
+    @Test
+    void operatorAuthConfigurationIsNotInjectedDuringNativeStaticInitialization()
+            throws Exception {
+        for (String field : List.of("authEnabled", "apiKeysConfig")) {
+            assertNull(AppChainApiKeyFilter.class.getDeclaredField(field)
+                    .getAnnotation(org.eclipse.microprofile.config.inject.ConfigProperty.class),
+                    field);
+        }
+    }
 
     @Test
     void rawQueryAndDomainBodiesAreBoundBeforeDeserialization() throws Exception {
@@ -95,6 +106,91 @@ class AppChainApiKeyFilterUnitTest {
         filter(true, "full,restricted=orders", DomainApiAccess.READ,
                 AppChainResource.ChainScopedResource.class, pause).filter(full.context());
         assertNull(full.aborted);
+    }
+
+    @Test
+    void pluginOperationsRequireAnEnabledUnscopedFullKey() throws Exception {
+        Method summary = PluginOperationsResource.class.getMethod("summary");
+
+        RequestProbe disabled = new RequestProbe("GET", null, null);
+        filter(false, "", DomainApiAccess.READ,
+                PluginOperationsResource.class, summary,
+                "plugin-operations").filter(disabled.context());
+        assertEquals(503, disabled.aborted.getStatus());
+
+        RequestProbe scopedOnly = new RequestProbe("GET", "restricted", null);
+        filter(true, "restricted=orders", DomainApiAccess.READ,
+                PluginOperationsResource.class, summary,
+                "plugin-operations").filter(scopedOnly.context());
+        assertEquals(503, scopedOnly.aborted.getStatus());
+
+        RequestProbe missing = new RequestProbe("GET", null, null);
+        filter(true, "full,restricted=orders", DomainApiAccess.READ,
+                PluginOperationsResource.class, summary,
+                "plugin-operations").filter(missing.context());
+        assertEquals(401, missing.aborted.getStatus());
+
+        RequestProbe restricted = new RequestProbe("GET", "restricted", null);
+        filter(true, "full,restricted=orders", DomainApiAccess.READ,
+                PluginOperationsResource.class, summary,
+                "plugin-operations").filter(restricted.context());
+        assertEquals(403, restricted.aborted.getStatus());
+
+        RequestProbe full = new RequestProbe("GET", "full", null);
+        filter(true, "full,restricted=orders", DomainApiAccess.READ,
+                PluginOperationsResource.class, summary,
+                "plugin-operations").filter(full.context());
+        assertNull(full.aborted);
+    }
+
+    @Test
+    void pluginOperationsRejectNonCanonicalAliasesBeforeDispatch() throws Exception {
+        Method summary = PluginOperationsResource.class.getMethod("summary");
+        for (String path : List.of(
+                "plugin-operations/",
+                "plugin-operations;x=1",
+                "plugin%2doperations",
+                "plugin-operations//bundles",
+                "./plugin-operations",
+                "api/plugin-operations",
+                "plugin-operations-prefix/plugin-operations/bundles",
+                "plugin-operations/plugin-operations/bundles/com.example.bundle")) {
+            RequestProbe request = new RequestProbe("GET", "full", null);
+            filter(true, "full", DomainApiAccess.READ,
+                    PluginOperationsResource.class, summary, path).filter(request.context());
+            assertEquals(404, request.aborted.getStatus(), path);
+        }
+
+        for (String path : List.of(
+                "plugin-operations",
+                "plugin-operations/bundles",
+                "plugin-operations/bundles/com.example.bundle")) {
+            RequestProbe request = new RequestProbe("GET", "full", null);
+            filter(true, "full", DomainApiAccess.READ,
+                    PluginOperationsResource.class, summary, path).filter(request.context());
+            assertNull(request.aborted, path);
+        }
+    }
+
+    @Test
+    void pluginOperationsUseTheExactBakedPrefixEvenWhenItContainsTheRouteName()
+            throws Exception {
+        Method summary = PluginOperationsResource.class.getMethod("summary");
+        String path = "/tenant/plugin-operations/plugin-operations";
+
+        AppChainApiKeyFilter matching = filter(true, "full", DomainApiAccess.READ,
+                PluginOperationsResource.class, summary, path);
+        matching.apiPathPrefix = "/tenant/plugin-operations";
+        RequestProbe accepted = new RequestProbe("GET", "full", null);
+        matching.filter(accepted.context());
+        assertNull(accepted.aborted);
+
+        AppChainApiKeyFilter otherArtifact = filter(true, "full", DomainApiAccess.READ,
+                PluginOperationsResource.class, summary, path);
+        otherArtifact.apiPathPrefix = "/tenant";
+        RequestProbe rejected = new RequestProbe("GET", "full", null);
+        otherArtifact.filter(rejected.context());
+        assertEquals(404, rejected.aborted.getStatus());
     }
 
     @Test
@@ -194,6 +290,7 @@ class AppChainApiKeyFilterUnitTest {
         AppChainApiKeyFilter filter = new AppChainApiKeyFilter();
         filter.authEnabled = authEnabled;
         filter.apiKeysConfig = Optional.ofNullable(keys);
+        filter.apiPathPrefix = "";
         filter.objectMapper = new ObjectMapper();
         filter.domainApis = new AccessGateway(domainAccess);
         filter.resourceInfo = new ResourceInfo() {
@@ -216,6 +313,9 @@ class AppChainApiKeyFilterUnitTest {
                 (proxy, method, args) -> switch (method.getName()) {
                     case "getPathParameters" -> path;
                     case "getPath" -> rawPath;
+                    case "getRequestUri" -> java.net.URI.create(
+                            "http://localhost" + (rawPath.startsWith("/") ? "" : "/")
+                                    + rawPath);
                     default -> null;
                 });
         return filter;

@@ -190,6 +190,8 @@ public final class PluginRuntimeEnvironment implements AutoCloseable {
                 inputs.add(new PluginCatalogBuilder.CatalogInput(
                         index, PluginSourceCategory.DIRECTORY, artifact));
             }
+            PluginCatalogBuilder.validateProviderBudget(inputs, PluginIndex.MAX_PROVIDERS);
+            PluginCatalogBuilder.validateManifestCompatibility(inputs);
             validateDirectoryArtifacts(handle, inputs);
             handle.activateDirectoryArtifacts(
                     selectedDirectoryArtifacts(options, inputs));
@@ -335,6 +337,51 @@ public final class PluginRuntimeEnvironment implements AutoCloseable {
     /** Create the exactly-once lifecycle owner for this catalog's selected NodePlugins. */
     public PluginManager createNodePluginManager(EventBus eventBus,
                                                  ScheduledExecutorService scheduler) {
+        return createNodePluginManager(
+                eventBus, scheduler, NodePluginLifecycleObserver.NOOP);
+    }
+
+    /** Create the lifecycle owner with actual outcomes projected into operations data. */
+    public PluginManager createNodePluginManager(
+            EventBus eventBus,
+            ScheduledExecutorService scheduler,
+            PluginOperationsRegistry operations
+    ) {
+        Objects.requireNonNull(operations, "operations");
+        return createNodePluginManager(eventBus, scheduler,
+                new NodePluginLifecycleObserver() {
+                    @Override
+                    public void starting(String bundleId) {
+                        operations.nodePluginStarting(bundleId);
+                    }
+
+                    @Override
+                    public void started(String bundleId) {
+                        operations.nodePluginStarted(bundleId);
+                    }
+
+                    @Override
+                    public void startFailed(String bundleId) {
+                        operations.nodePluginStartFailed(bundleId);
+                    }
+
+                    @Override
+                    public void stopped(String bundleId, boolean succeeded) {
+                        operations.nodePluginStopped(bundleId, succeeded);
+                    }
+
+                    @Override
+                    public void closed(String bundleId, boolean succeeded) {
+                        operations.nodePluginClosed(bundleId, succeeded);
+                    }
+                });
+    }
+
+    private PluginManager createNodePluginManager(
+            EventBus eventBus,
+            ScheduledExecutorService scheduler,
+            NodePluginLifecycleObserver lifecycleObserver
+    ) {
         // Claim the manager lifetime at the same ordering point used by
         // close(). Construction itself stays outside the monitor because it
         // invokes plugin metadata callbacks. If creation wins, close observes
@@ -354,14 +401,14 @@ public final class PluginRuntimeEnvironment implements AutoCloseable {
                     build.selectedIds(), build.bundleConfigs(),
                     build.registry()::markNodePluginClosed,
                     build.registry()::registerContributionCleanup,
-                    build.registry().callbackTracker());
+                    build.registry().callbackTracker(), lifecycleObserver);
             nodePluginManager = created;
             return created;
         } catch (Throwable failure) {
             synchronized (closeMonitor) {
                 nodePluginManagerClaimed.set(false);
             }
-            LifecycleFailures.rethrowIfProcessFatal(failure);
+            LifecycleFailures.rethrowIfProcessFatalReachable(failure);
             if (failure instanceof RuntimeException runtime) {
                 throw runtime;
             }

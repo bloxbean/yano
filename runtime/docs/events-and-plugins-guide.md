@@ -170,7 +170,11 @@ service during `init()` and its dependent may retrieve it during its own
 `init()`; duplicate service keys are rejected rather than overwritten. The
 global `config()` map remains available for legacy compatibility. A manifested
 plugin should use the immutable prefix-stripped `bundleConfig()` view so it
-cannot accidentally consume another bundle's settings.
+cannot accidentally consume another bundle's settings. Both views are deep,
+bounded snapshots: nested maps and lists are immutable and cannot change when
+an embedder later mutates its source objects. Preview v1 configuration values
+are limited to strings, booleans, finite immutable numbers, string-keyed maps
+and lists; unsupported mutable values are rejected before plugin callbacks.
 
 Services and storage filters registered during `init()` are stable until
 close. Contributions registered synchronously during `start()` belong to that
@@ -196,7 +200,7 @@ com.example.MyPlugin
   "schemaVersion": 1,
   "id": "com.example.myplugin",
   "version": "1.0.0",
-  "yanoApi": { "min": 1, "max": 1 },
+  "yanoApi": { "min": 1, "max": 1, "minLevel": 1 },
   "dependencies": [],
   "contributions": [
     {
@@ -215,9 +219,16 @@ manifest. Policy applies to the manifest bundle id and therefore governs all
 contributions in that product together.
 
 The bundle `version` is the plugin product's SemVer, owned and released by that
-bundle independently of the Yano product version and plugin API major. Keep the
-artifact/build version and manifest version aligned unless the plugin has an
-explicitly documented independent artifact-version policy.
+bundle independently of the Yano product version and plugin API contract. Keep
+the artifact/build version and manifest version aligned unless the plugin has
+an explicitly documented independent artifact-version policy.
+
+Schema v1 requires all three `yanoApi` fields. `min` and `max` are the inclusive
+plugin API majors the bundle supports; `minLevel` is the oldest global additive
+API level that contains every public symbol or contribution kind the bundle
+uses. The level increases for every additive public plugin API change and never
+resets on a major bump. Startup requires both a major in range and a host level
+at least `minLevel`, and rejects a mismatch before provider construction.
 
 ### Using `@DomainEventListener`
 

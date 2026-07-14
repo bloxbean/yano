@@ -231,6 +231,11 @@ public final class YanoDevnetAssembly {
         }
 
         @Override
+        public com.bloxbean.cardano.yano.api.plugin.domain.DomainApiGateway domainApis() {
+            return delegate.domainApis();
+        }
+
+        @Override
         public Optional<RuntimeMaintenanceGate> maintenanceGate() {
             return delegate.maintenanceGate();
         }
@@ -243,6 +248,12 @@ public final class YanoDevnetAssembly {
         @Override
         public Optional<com.bloxbean.cardano.yano.api.plugin.PluginCatalogView> pluginCatalog() {
             return delegate.pluginCatalog();
+        }
+
+        @Override
+        public Optional<com.bloxbean.cardano.yano.api.plugin.operations.PluginOperationsView>
+                pluginOperations() {
+            return delegate.pluginOperations();
         }
 
         @Override

@@ -72,8 +72,13 @@ tasks.register('verifyPluginJar') {
                 'com.bloxbean.cardano.yano.api.appchain.AppStateMachineProvider'
         def domainApiServicePath = 'META-INF/services/' +
                 'com.bloxbean.cardano.yano.api.plugin.domain.DomainApiProvider'
+        def healthServicePath = 'META-INF/services/' +
+                'com.bloxbean.cardano.yano.api.plugin.operations.PluginHealthProvider'
+        def metricsServicePath = 'META-INF/services/' +
+                'com.bloxbean.cardano.yano.api.plugin.operations.PluginMetricsProvider'
         def manifestPath = 'META-INF/yano/plugins/com.example.appchain.counter.json'
-        [stateMachineServicePath, domainApiServicePath, manifestPath].each { requiredPath ->
+        [stateMachineServicePath, domainApiServicePath, healthServicePath,
+         metricsServicePath, manifestPath].each { requiredPath ->
             if (contents.matching { include requiredPath }.isEmpty()) {
                 throw new GradleException("Plugin jar is missing ${requiredPath}")
             }
@@ -82,6 +87,10 @@ tasks.register('verifyPluginJar') {
                 'com.example.appchain.CounterStateMachineProvider'
         def expectedDomainApiProvider =
                 'com.example.appchain.CounterDomainApiProvider'
+        def expectedHealthProvider =
+                'com.example.appchain.CounterHealthProvider'
+        def expectedMetricsProvider =
+                'com.example.appchain.CounterMetricsProvider'
         def stateMachineProviders = contents.matching {
             include stateMachineServicePath
         }.singleFile
@@ -104,6 +113,24 @@ tasks.register('verifyPluginJar') {
                     "Domain API service entry must contain exactly "
                             + expectedDomainApiProvider)
         }
+        def healthProviders = contents.matching {
+            include healthServicePath
+        }.singleFile.readLines('UTF-8')
+                .collect { it.trim() }
+                .findAll { !it.isEmpty() && !it.startsWith('#') }
+        if (healthProviders != [expectedHealthProvider]) {
+            throw new GradleException(
+                    "Health service entry must contain exactly ${expectedHealthProvider}")
+        }
+        def metricsProviders = contents.matching {
+            include metricsServicePath
+        }.singleFile.readLines('UTF-8')
+                .collect { it.trim() }
+                .findAll { !it.isEmpty() && !it.startsWith('#') }
+        if (metricsProviders != [expectedMetricsProvider]) {
+            throw new GradleException(
+                    "Metrics service entry must contain exactly ${expectedMetricsProvider}")
+        }
         def manifest = new groovy.json.JsonSlurper().parse(
                 contents.matching { include manifestPath }.singleFile)
         def stateMachineContributions = manifest.contributions.findAll { contribution ->
@@ -116,11 +143,27 @@ tasks.register('verifyPluginJar') {
                     contribution.name == manifest.id &&
                     contribution.provider == expectedDomainApiProvider
         }
+        def healthContributions = manifest.contributions.findAll { contribution ->
+            contribution.kind == 'health' &&
+                    contribution.name == manifest.id &&
+                    contribution.provider == expectedHealthProvider
+        }
+        def metricsContributions = manifest.contributions.findAll { contribution ->
+            contribution.kind == 'metrics' &&
+                    contribution.name == manifest.id &&
+                    contribution.provider == expectedMetricsProvider
+        }
         if (manifest.id != 'com.example.appchain.counter'
+                || manifest.yanoApi?.min != 1
+                || manifest.yanoApi?.max != 1
+                || manifest.yanoApi?.minLevel != 1
                 || stateMachineContributions.size() != 1
                 || domainApiContributions.size() != 1
-                || manifest.contributions.size() != 2) {
-            throw new GradleException('Plugin manifest identity/provider declaration is invalid')
+                || healthContributions.size() != 1
+                || metricsContributions.size() != 1
+                || manifest.contributions.size() != 4) {
+            throw new GradleException(
+                    'Plugin manifest identity, API level, or provider declaration is invalid')
         }
         if (manifest.version != project.version.toString()) {
             throw new GradleException(

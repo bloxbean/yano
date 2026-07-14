@@ -1,8 +1,9 @@
-# App-chain state-machine and domain API plugin template
+# App-chain state-machine, domain API, and operations plugin template
 
 A standalone Gradle project for a **custom app-chain state machine, committed
-query, and bundle-owned domain API** loaded by a default Yano distribution as a
-plugin jar — no fork, no rebuild of the node.
+query, bundle-owned domain API, health source, and bounded custom metrics**
+loaded by a default Yano distribution as a plugin jar — no fork, no rebuild of
+the node.
 
 ## What's here
 
@@ -14,11 +15,15 @@ plugin-template/
     ├── CounterStateMachine.java       # deterministic apply + committed query
     ├── CounterStateMachineProvider.java
     ├── CounterDomainApiProvider.java  # constrained routes + query facade
+    ├── CounterHealthProvider.java     # fixed health schema + cached samples
+    ├── CounterMetricsProvider.java    # fixed, label-free metric schema
     └── JsonSupport.java               # safe JSON string encoding
 └── src/main/resources/META-INF/
     ├── services/
     │   ├── com.bloxbean.cardano.yano.api.appchain.AppStateMachineProvider
-    │   └── com.bloxbean.cardano.yano.api.plugin.domain.DomainApiProvider
+    │   ├── com.bloxbean.cardano.yano.api.plugin.domain.DomainApiProvider
+    │   ├── com.bloxbean.cardano.yano.api.plugin.operations.PluginHealthProvider
+    │   └── com.bloxbean.cardano.yano.api.plugin.operations.PluginMetricsProvider
     └── yano/plugins/
         └── com.example.appchain.counter.json
 ```
@@ -38,10 +43,21 @@ plugin compiles against `yano-core-api`; `yano-runtime` is test-only because
 it supplies `StateMachineConformance`. The `check` lifecycle also runs
 `verifyPluginJar`, which rejects missing discovery metadata or bundled Yano
 API/runtime classes, and `verifyPluginCatalogLaunch`, which loads the built JAR
-through Yano's production directory catalog and constructs the state-machine
-and domain API providers. The plugin project version is this bundle's independently released
-SemVer and must match the manifest `version`; it is not the Yano dependency
-version selected by `-PyanoVersion`.
+through Yano's production directory catalog and constructs all four providers.
+The plugin project version is this bundle's independently released SemVer and
+must match the manifest `version`; it is not the Yano dependency version
+selected by `-PyanoVersion`.
+
+The schema-v1 manifest's `yanoApi` object is a separate host-compatibility
+contract. `min`/`max` are inclusive plugin API majors and the required positive
+`minLevel` is the oldest global additive API level whose public symbols this
+plugin uses. The complete, unreleased preview surface is the major 1 / level 1
+baseline. After that baseline ships, Yano increments the global level for each
+additive public plugin API symbol or contribution kind and never resets it on a
+major bump. Before level 2, the repository will add the append-only level
+ledger that maps each level to its first release and exact additions. Keep
+`minLevel` at the oldest level that actually supplies the APIs you need; do not
+copy the plugin's artifact version into it.
 
 Yano repository contributors can verify the scaffold directly against the
 current checkout, without publishing it first:
@@ -77,9 +93,12 @@ The qualified JSON manifest and the `META-INF/services` entry are both
 required. The manifest declares the auditable bundle identity and provider;
 ServiceLoader remains the behavior-instantiation contract. Their provider
 kind/class declarations must match exactly or the node fails before plugin
-code is activated. For schema v1, the `domain-api` contribution name and
-`DomainApiProvider.id()` must both equal the containing bundle id
-`com.example.appchain.counter`.
+code is activated. For schema v1, each `domain-api`, `health`, and `metrics`
+contribution name and provider `id()` must equal the containing bundle id
+`com.example.appchain.counter`; a bundle may declare at most one of each.
+The node also checks that its API major is within the manifest range and its
+global API level is at least `minLevel`, rejecting an incompatible bundle
+before provider construction.
 
 If the plugin uses third-party runtime dependencies, publish a reproducible
 shaded JAR (without `com/bloxbean/cardano/yano/api/**`) so the artifact is a
@@ -138,14 +157,29 @@ before using a `PRIVILEGED` route. Send it as `X-API-Key`. If authentication is
 disabled, missing, or has only topic-scoped keys, privileged plugin routes are
 hidden as 404 and are never invoked.
 
+## Health and metrics
+
+`CounterHealthProvider` and `CounterMetricsProvider` demonstrate the bounded
+operations contracts. Each publishes its complete descriptor schema once;
+samples must contain exactly those identities. Health reports carry only a
+check id and status. Metrics are label-free in v1, use finite values, and keep
+counters/timers generation-monotonic. Both construction contexts intentionally
+contain an empty configuration map.
+
+Yano samples these sources behind callback deadlines and serves HTTP health,
+Prometheus metrics, and the plugin dashboard from its host-owned cache. An HTTP
+or metrics scrape never invokes plugin code directly, and plugin health does
+not alter node liveness, readiness, consensus, or the catalog fingerprint.
+
 ## Testing
 
 - **Unit**: call `apply()` and `query()` with an in-memory state view
   (`CounterStateMachineTest`), then exercise routes with a fake bounded
   `DomainQueryService` (`CounterDomainApiTest`) — fastest inner loop.
-- **Catalog/deployment**: `check` verifies both ServiceLoader descriptors, both
-  manifest contributions, API-class isolation, and resolves both providers
-  from the built JAR through the production directory catalog.
+- **Catalog/deployment**: `check` verifies all four ServiceLoader descriptors,
+  all four manifest contributions, API major/level compatibility, API-class
+  isolation, and resolves every provider from the built JAR through the
+  production directory catalog.
 - **End-to-end**: use `appchain-testkit`'s `@AppChainCluster` to run your
   machine across a real embedded multi-node cluster.
 

@@ -32,6 +32,8 @@ public final class LifecycleFailures {
      */
     public static Throwable merge(Throwable current, Throwable next) {
         Objects.requireNonNull(next, "next");
+        current = normalizeProcessFatalReachable(current);
+        next = normalizeProcessFatalReachable(next);
         if (current == null || current == next) {
             return current == null ? next : current;
         }
@@ -64,8 +66,19 @@ public final class LifecycleFailures {
      * at a sanitizing boundary.
      */
     public static void rethrowIfProcessFatalReachable(Throwable failure) {
+        Error fatal = findProcessFatalReachable(failure);
+        if (fatal != null) {
+            throw fatal;
+        }
+    }
+
+    /**
+     * Return the first process-fatal value reachable through a bounded
+     * cause/suppressed graph, or {@code null} when the graph is recoverable.
+     */
+    public static Error findProcessFatalReachable(Throwable failure) {
         if (failure == null) {
-            return;
+            return null;
         }
         Set<Throwable> visited = Collections.newSetFromMap(new IdentityHashMap<>());
         ArrayDeque<Throwable> pending = new ArrayDeque<>();
@@ -75,15 +88,37 @@ public final class LifecycleFailures {
             if (!visited.add(current)) {
                 continue;
             }
-            rethrowIfProcessFatal(current);
-            Throwable cause;
-            Throwable[] suppressed;
+            if (current instanceof VirtualMachineError fatal) {
+                return fatal;
+            }
+            if (current instanceof ThreadDeath fatal) {
+                return fatal;
+            }
+            Throwable cause = null;
             try {
                 cause = current.getCause();
+            } catch (Throwable inspectionFailure) {
+                if (inspectionFailure instanceof VirtualMachineError fatal) {
+                    return fatal;
+                }
+                if (inspectionFailure instanceof ThreadDeath fatal) {
+                    return fatal;
+                }
+                // Cause inspection is plugin-overridable. A hostile ordinary
+                // failure must not hide a fatal on the independent,
+                // platform-owned suppressed edge.
+            }
+            Throwable[] suppressed;
+            try {
                 suppressed = current.getSuppressed();
             } catch (Throwable inspectionFailure) {
-                rethrowIfProcessFatal(inspectionFailure);
-                return;
+                if (inspectionFailure instanceof VirtualMachineError fatal) {
+                    return fatal;
+                }
+                if (inspectionFailure instanceof ThreadDeath fatal) {
+                    return fatal;
+                }
+                suppressed = new Throwable[0];
             }
             if (cause != null
                     && pending.size() + visited.size() < MAX_THROWABLE_GRAPH_NODES) {
@@ -96,6 +131,13 @@ public final class LifecycleFailures {
                 }
             }
         }
+        return null;
+    }
+
+    /** Replace an ordinary wrapper with the process-fatal value it contains. */
+    public static Throwable normalizeProcessFatalReachable(Throwable failure) {
+        Error fatal = findProcessFatalReachable(failure);
+        return fatal == null ? failure : fatal;
     }
 
     private static int rank(Throwable failure) {

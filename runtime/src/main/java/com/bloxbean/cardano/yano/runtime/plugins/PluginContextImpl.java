@@ -1,13 +1,12 @@
 package com.bloxbean.cardano.yano.runtime.plugins;
 
 import com.bloxbean.cardano.yaci.events.api.EventBus;
+import com.bloxbean.cardano.yano.api.config.PluginConfigValues;
 import com.bloxbean.cardano.yano.api.plugin.PluginContext;
 import com.bloxbean.cardano.yano.api.plugin.StorageFilter;
 import org.slf4j.Logger;
 
 import java.util.List;
-import java.util.Collections;
-import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -72,7 +71,7 @@ final class PluginContextImpl implements PluginContext {
     @Override public Optional<ClassLoader> pluginClassLoader() { return classLoader; }
 
     private static Map<String, Object> immutableMap(Map<String, Object> values) {
-        return Collections.unmodifiableMap(new LinkedHashMap<>(values != null ? values : Map.of()));
+        return values == null ? Map.of() : PluginConfigValues.immutableCopy(values);
     }
 
     @Override

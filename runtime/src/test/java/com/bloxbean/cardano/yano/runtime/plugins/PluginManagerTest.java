@@ -1264,22 +1264,122 @@ class PluginManagerTest {
     }
 
     @Test
+    void processFatalNestedInCleanupWrapperEscapesAfterEveryReverseCallback() {
+        List<String> stopEvents = new ArrayList<>();
+        RecordingPlugin stopA = plugin("a", stopEvents);
+        RecordingPlugin stopB = plugin("b", stopEvents, "a");
+        TestVirtualMachineError stopFatal = new TestVirtualMachineError(
+                "nested fatal stop");
+        stopB.onStop = () -> {
+            throw new IllegalStateException("stop wrapper", stopFatal);
+        };
+        RecordingPlugin stopC = plugin("c", stopEvents, "b");
+        AssertionError stopOrdinary = new AssertionError("ordinary stop");
+        stopC.stopError = stopOrdinary;
+        PluginManager stopManager = manager(options(), List.of(stopC, stopB, stopA));
+        stopManager.discoverAndInit();
+        stopManager.startAll();
+
+        assertThat(catchThrowable(stopManager::stopAll)).isSameAs(stopFatal);
+        assertThat(stopEvents).endsWith("stop:c", "stop:b", "stop:a");
+        assertThat(stopFatal.getSuppressed()).containsExactly(stopOrdinary);
+        stopManager.close();
+
+        List<String> closeEvents = new ArrayList<>();
+        RecordingPlugin closeA = plugin("a", closeEvents);
+        RecordingPlugin closeB = plugin("b", closeEvents, "a");
+        TestVirtualMachineError closeFatal = new TestVirtualMachineError(
+                "suppressed fatal close");
+        RuntimeException closeWrapper = new RuntimeException("close wrapper");
+        closeWrapper.addSuppressed(closeFatal);
+        closeB.onClose = () -> {
+            throw closeWrapper;
+        };
+        RecordingPlugin closeC = plugin("c", closeEvents, "b");
+        AssertionError closeOrdinary = new AssertionError("ordinary close");
+        closeC.closeError = closeOrdinary;
+        PluginManager closeManager = manager(options(), List.of(closeC, closeB, closeA));
+        closeManager.discoverAndInit();
+
+        assertThat(catchThrowable(closeManager::close)).isSameAs(closeFatal);
+        assertThat(closeEvents).endsWith("close:c", "close:b", "close:a");
+        assertThat(closeFatal.getSuppressed()).containsExactly(closeOrdinary);
+        closeManager.close();
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
     void optionsAndContextConfigurationAreDefensiveSnapshots() {
         Set<String> allow = new LinkedHashSet<>(Set.of("a"));
+        List<Object> nestedValues = new ArrayList<>(List.of("before"));
+        Map<String, Object> nested = new LinkedHashMap<>();
+        nested.put("values", nestedValues);
         Map<String, Object> config = new LinkedHashMap<>();
         config.put("value", "before");
+        config.put("nested", nested);
         PluginsOptions options = new PluginsOptions(true, false, allow, Set.of(), config);
         allow.clear();
         config.put("value", "after");
+        nested.put("late", true);
+        nestedValues.add("after");
 
         List<String> events = new ArrayList<>();
         RecordingPlugin a = plugin("a", events);
         a.onInit = context -> {
             assertThat(context.config()).containsEntry("value", "before");
+            Map<String, Object> copiedNested =
+                    (Map<String, Object>) context.config().get("nested");
+            List<Object> copiedValues =
+                    (List<Object>) copiedNested.get("values");
+            assertThat(copiedNested).doesNotContainKey("late");
+            assertThat(copiedValues).containsExactly("before");
             assertThatThrownBy(() -> context.config().put("x", "y"))
+                    .isInstanceOf(UnsupportedOperationException.class);
+            assertThatThrownBy(() -> copiedNested.put("x", "y"))
+                    .isInstanceOf(UnsupportedOperationException.class);
+            assertThatThrownBy(() -> copiedValues.add("next"))
                     .isInstanceOf(UnsupportedOperationException.class);
         };
         PluginManager manager = manager(options, List.of(a));
+
+        manager.discoverAndInit();
+        manager.close();
+        assertThat(events).containsExactly("init:a", "close:a");
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void catalogBundleConfigurationIsDeepFrozenBeforeContextPublication() {
+        List<Object> sourceValues = new ArrayList<>(List.of("first"));
+        Map<String, Object> sourceNested = new LinkedHashMap<>();
+        sourceNested.put("values", sourceValues);
+        Map<String, Object> sourceBundle = new LinkedHashMap<>();
+        sourceBundle.put("nested", sourceNested);
+        Map<String, Map<String, Object>> bundleConfigs = new LinkedHashMap<>();
+        bundleConfigs.put("a", sourceBundle);
+
+        List<String> events = new ArrayList<>();
+        RecordingPlugin plugin = plugin("a", events);
+        plugin.onInit = context -> {
+            Map<String, Object> nested =
+                    (Map<String, Object>) context.bundleConfig().get("nested");
+            List<Object> values = (List<Object>) nested.get("values");
+            assertThat(values).containsExactly("first");
+            assertThat(nested).doesNotContainKey("late");
+            assertThatThrownBy(() -> nested.put("next", true))
+                    .isInstanceOf(UnsupportedOperationException.class);
+            assertThatThrownBy(() -> values.add("next"))
+                    .isInstanceOf(UnsupportedOperationException.class);
+        };
+        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+        schedulers.add(scheduler);
+        PluginManager manager = PluginManager.fromCatalog(
+                new NoopEventBus(), scheduler, options(),
+                Thread.currentThread().getContextClassLoader(),
+                List.of(plugin), Set.of("a"), bundleConfigs);
+        sourceValues.add("late");
+        sourceNested.put("late", true);
+        sourceBundle.put("late", true);
 
         manager.discoverAndInit();
         manager.close();
@@ -1322,6 +1422,181 @@ class PluginManagerTest {
                 "stop:sealed-lifecycle",
                 "close:sealed-lifecycle");
         assertThat(callbacks.hasPending()).isFalse();
+    }
+
+    @Test
+    void catalogManagerObservesActualNodePluginLifecycleOutcomes() {
+        List<String> pluginEvents = new ArrayList<>();
+        RecordingPlugin plugin = plugin("observed", pluginEvents);
+        List<String> observations = new ArrayList<>();
+        NodePluginLifecycleObserver observer = new NodePluginLifecycleObserver() {
+            @Override
+            public void starting(String bundleId) {
+                observations.add("starting:" + bundleId);
+            }
+
+            @Override
+            public void started(String bundleId) {
+                observations.add("started:" + bundleId);
+            }
+
+            @Override
+            public void stopped(String bundleId, boolean succeeded) {
+                observations.add("stopped:" + bundleId + ':' + succeeded);
+            }
+
+            @Override
+            public void closed(String bundleId, boolean succeeded) {
+                observations.add("closed:" + bundleId + ':' + succeeded);
+            }
+        };
+        PluginManager manager = catalogManager(plugin, observer);
+
+        manager.discoverAndInit();
+        manager.startAll();
+        manager.stopAll();
+        manager.close();
+
+        assertThat(observations).containsExactly(
+                "starting:observed",
+                "started:observed",
+                "stopped:observed:true",
+                "closed:observed:true");
+    }
+
+    @Test
+    void ordinaryLifecycleObserverFailuresDoNotChangePluginCallbacks() {
+        List<String> pluginEvents = new ArrayList<>();
+        RecordingPlugin plugin = plugin("observer-failure", pluginEvents);
+        NodePluginLifecycleObserver observer = new NodePluginLifecycleObserver() {
+            private void fail() {
+                throw new IllegalStateException("observer failure");
+            }
+
+            @Override
+            public void starting(String bundleId) {
+                fail();
+            }
+
+            @Override
+            public void started(String bundleId) {
+                fail();
+            }
+
+            @Override
+            public void stopped(String bundleId, boolean succeeded) {
+                fail();
+            }
+
+            @Override
+            public void closed(String bundleId, boolean succeeded) {
+                fail();
+            }
+        };
+        PluginManager manager = catalogManager(plugin, observer);
+
+        manager.discoverAndInit();
+        manager.startAll();
+        manager.stopAll();
+        manager.close();
+
+        assertThat(pluginEvents).containsExactly(
+                "init:observer-failure",
+                "start:observer-failure",
+                "stop:observer-failure",
+                "close:observer-failure");
+    }
+
+    @Test
+    void fatalStopObservationWaitsForReverseTeardownAndLeavesManagerTerminal() {
+        List<String> pluginEvents = new ArrayList<>();
+        RecordingPlugin first = plugin("first", pluginEvents);
+        AssertionError laterStopFailure = new AssertionError("later stop failure");
+        first.stopError = laterStopFailure;
+        RecordingPlugin second = plugin("second", pluginEvents, "first");
+        TestVirtualMachineError fatal = new TestVirtualMachineError(
+                "fatal stop observation");
+        NodePluginLifecycleObserver observer = new NodePluginLifecycleObserver() {
+            @Override
+            public void stopped(String bundleId, boolean succeeded) {
+                if ("second".equals(bundleId)) {
+                    throw fatal;
+                }
+            }
+        };
+        PluginManager manager = catalogManager(List.of(first, second), observer);
+
+        manager.discoverAndInit();
+        manager.startAll();
+
+        assertThat(catchThrowable(manager::stopAll)).isSameAs(fatal);
+        assertThat(fatal.getSuppressed()).contains(laterStopFailure);
+        assertThat(pluginEvents).containsExactly(
+                "init:first", "init:second",
+                "start:first", "start:second",
+                "stop:second", "stop:first");
+
+        manager.close();
+        manager.close();
+        assertThat(pluginEvents).endsWith("close:second", "close:first");
+        assertThat(pluginEvents.stream().filter("stop:second"::equals)).hasSize(1);
+        assertThat(pluginEvents.stream().filter("stop:first"::equals)).hasSize(1);
+        assertThat(pluginEvents.stream().filter("close:second"::equals)).hasSize(1);
+        assertThat(pluginEvents.stream().filter("close:first"::equals)).hasSize(1);
+    }
+
+    @Test
+    void fatalCloseObservationWaitsForReverseTeardownAndLeavesManagerClosed() {
+        List<String> pluginEvents = new ArrayList<>();
+        RecordingPlugin first = plugin("first", pluginEvents);
+        AssertionError laterCloseFailure = new AssertionError("later close failure");
+        first.closeError = laterCloseFailure;
+        RecordingPlugin second = plugin("second", pluginEvents, "first");
+        TestVirtualMachineError fatal = new TestVirtualMachineError(
+                "fatal close observation");
+        NodePluginLifecycleObserver observer = new NodePluginLifecycleObserver() {
+            @Override
+            public void closed(String bundleId, boolean succeeded) {
+                if ("second".equals(bundleId)) {
+                    throw fatal;
+                }
+            }
+        };
+        PluginManager manager = catalogManager(List.of(first, second), observer);
+
+        manager.discoverAndInit();
+
+        assertThat(catchThrowable(manager::close)).isSameAs(fatal);
+        assertThat(fatal.getSuppressed()).contains(laterCloseFailure);
+        assertThat(pluginEvents).containsExactly(
+                "init:first", "init:second", "close:second", "close:first");
+
+        manager.close();
+        assertThat(pluginEvents.stream().filter("close:second"::equals)).hasSize(1);
+        assertThat(pluginEvents.stream().filter("close:first"::equals)).hasSize(1);
+    }
+
+    private PluginManager catalogManager(
+            NodePlugin plugin,
+            NodePluginLifecycleObserver observer
+    ) {
+        return catalogManager(List.of(plugin), observer);
+    }
+
+    private PluginManager catalogManager(
+            List<NodePlugin> plugins,
+            NodePluginLifecycleObserver observer
+    ) {
+        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+        schedulers.add(scheduler);
+        Set<String> selectedIds = plugins.stream()
+                .map(NodePlugin::id)
+                .collect(java.util.stream.Collectors.toUnmodifiableSet());
+        return PluginManager.fromCatalog(
+                new NoopEventBus(), scheduler, options(),
+                Thread.currentThread().getContextClassLoader(),
+                plugins, selectedIds, Map.of(),
+                ignored -> { }, ignored -> { }, null, observer);
     }
 
     private PluginManager manager(PluginsOptions options, List<NodePlugin> plugins) {

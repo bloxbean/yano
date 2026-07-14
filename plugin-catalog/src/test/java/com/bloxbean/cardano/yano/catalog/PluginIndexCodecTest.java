@@ -9,6 +9,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class PluginIndexCodecTest {
@@ -23,7 +24,7 @@ class PluginIndexCodecTest {
                 1,
                 "com.example.bundle",
                 SemVersion.parse("2.1.0"),
-                new YanoApiRange(1, 2),
+                new YanoApiRange(1, 2, 1),
                 List.of(
                         new BundleDependency("com.example.zeta", SemVersion.parse("1.0.0"), null),
                         new BundleDependency("com.example.alpha", null, SemVersion.parse("3.0.0"))),
@@ -32,6 +33,14 @@ class PluginIndexCodecTest {
                                 ContributionKind.DOMAIN_API,
                                 "com.example.bundle",
                                 "com.example.BundleDomainApiProvider"),
+                        new BundleContribution(
+                                ContributionKind.HEALTH,
+                                "com.example.bundle",
+                                "com.example.BundleHealthProvider"),
+                        new BundleContribution(
+                                ContributionKind.METRICS,
+                                "com.example.bundle",
+                                "com.example.BundleMetricsProvider"),
                         new BundleContribution(
                                 ContributionKind.FINALIZED_SINK, "zeta", "com.example.ZetaProvider"),
                         new BundleContribution(
@@ -59,6 +68,27 @@ class PluginIndexCodecTest {
     void writesStableEmptyDocument() {
         assertThat(new String(codec.write(PluginIndex.empty()), StandardCharsets.UTF_8))
                 .isEqualTo("{\"schemaVersion\":1,\"bundles\":[],\"legacyProviders\":[]}");
+    }
+
+    @Test
+    @SuppressWarnings("deprecation")
+    void sharedProviderBudgetAcceptsExactLimitAndRejectsNextEvidence() {
+        assertThat(PluginIndex.MAX_PROVIDERS).isEqualTo(32_768);
+        assertThat(PluginIndex.MAX_LEGACY_PROVIDERS).isEqualTo(PluginIndex.MAX_PROVIDERS);
+
+        assertThatCode(() -> PluginIndex.validateProviderLimit(
+                PluginIndex.MAX_PROVIDERS - 1L, 1L)).doesNotThrowAnyException();
+        assertThatCode(() -> PluginIndex.validateProviderLimit(
+                PluginIndex.MAX_PROVIDERS, 0L)).doesNotThrowAnyException();
+        assertThatThrownBy(() -> PluginIndex.validateProviderLimit(
+                PluginIndex.MAX_PROVIDERS - 1L, 2L))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("plugin index contains too many providers; maximum 32768 covers "
+                        + "manifested contributions plus legacy-provider evidence");
+        assertThatThrownBy(() -> PluginIndex.validateProviderLimit(
+                PluginIndex.MAX_PROVIDERS, 1L))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("maximum 32768");
     }
 
     @Test
@@ -112,7 +142,7 @@ class PluginIndexCodecTest {
                 1,
                 "com.example.invalid-mode",
                 SemVersion.parse("1.0.0"),
-                new YanoApiRange(1, 1),
+                new YanoApiRange(1, 1, 1),
                 List.of(),
                 List.of());
         assertThatThrownBy(() -> new IndexedBundle(
@@ -156,6 +186,21 @@ class PluginIndexCodecTest {
     }
 
     @Test
+    void healthAndMetricsCannotBeRepresentedAsLegacyProviders() {
+        for (ContributionKind kind : List.of(
+                ContributionKind.HEALTH, ContributionKind.METRICS)) {
+            assertThatThrownBy(() -> new IndexedLegacyProvider(
+                    kind,
+                    "com.example.LegacyObservabilityProvider",
+                    DIGEST_A,
+                    PluginDigestMode.JAR))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining(kind.manifestKey()
+                            + " providers require a bundle manifest");
+        }
+    }
+
+    @Test
     void rejectsNonUtf8AndImpossibleManifestSnapshots() {
         String valid = "{\"schemaVersion\":1,\"bundles\":[],\"legacyProviders\":[]}";
         assertThatThrownBy(() -> codec.read(valid.getBytes(StandardCharsets.UTF_16)))
@@ -172,7 +217,7 @@ class PluginIndexCodecTest {
                 1,
                 "com.example.oversized",
                 SemVersion.parse("1.0.0"),
-                new YanoApiRange(1, 1),
+                new YanoApiRange(1, 1, 1),
                 List.of(),
                 contributions);
         PluginIndex index = new PluginIndex(
@@ -221,7 +266,7 @@ class PluginIndexCodecTest {
                       "schemaVersion":1,
                       "id":"com.example.too-many",
                       "version":"1.0.0",
-                      "yanoApi":{"min":1,"max":1},
+                      "yanoApi":{"min":1,"max":1,"minLevel":1},
                       "dependencies":[],
                       "contributions":[%s]
                     },
@@ -237,6 +282,32 @@ class PluginIndexCodecTest {
                 .hasMessageContaining("contributions must contain at most 256 entries");
     }
 
+    @Test
+    void aggregateIndexRequiresManifestMinimumApiLevel() {
+        String json = """
+                {
+                  "schemaVersion":1,
+                  "bundles":[{
+                    "manifest":{
+                      "schemaVersion":1,
+                      "id":"com.example.missing-level",
+                      "version":"1.0.0",
+                      "yanoApi":{"min":1,"max":1},
+                      "dependencies":[],
+                      "contributions":[]
+                    },
+                    "digest":"%s",
+                    "digestMode":"JAR"
+                  }],
+                  "legacyProviders":[]
+                }
+                """.formatted(DIGEST_A);
+
+        assertThatThrownBy(() -> codec.read(json.getBytes(StandardCharsets.UTF_8)))
+                .isInstanceOf(PluginCatalogException.class)
+                .hasMessageContaining("yanoApi.minLevel must be present");
+    }
+
     private static BundleManifest manifestWithProvider(
             String id,
             ContributionKind kind,
@@ -246,7 +317,7 @@ class PluginIndexCodecTest {
                 1,
                 id,
                 SemVersion.parse("1.0.0"),
-                new YanoApiRange(1, 1),
+                new YanoApiRange(1, 1, 1),
                 List.of(),
                 List.of(new BundleContribution(kind, name, "com.example.SharedProvider")));
     }

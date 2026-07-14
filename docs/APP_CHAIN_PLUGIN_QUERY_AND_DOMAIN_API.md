@@ -194,7 +194,7 @@ manifest filename id must all be identical:
   "schemaVersion": 1,
   "id": "com.example.product-passport",
   "version": "1.0.0",
-  "yanoApi": { "min": 1, "max": 1 },
+  "yanoApi": { "min": 1, "max": 1, "minLevel": 1 },
   "dependencies": [],
   "contributions": [
     {
@@ -210,6 +210,13 @@ manifest filename id must all be identical:
   ]
 }
 ```
+
+The schema-v1 `yanoApi.minLevel` field is required. Compatibility requires both
+a host API major within `min`/`max` and a host global API level at least
+`minLevel`; an incompatible bundle is rejected before any provider is
+constructed. The level advances for additive public plugin APIs (including new
+contribution kinds) and never resets when the major changes. It is independent
+of the bundle's `version` SemVer.
 
 ServiceLoader remains the behavior-instantiation contract. The manifest is
 identity, compatibility, policy, ownership, and inventory metadata; it is not

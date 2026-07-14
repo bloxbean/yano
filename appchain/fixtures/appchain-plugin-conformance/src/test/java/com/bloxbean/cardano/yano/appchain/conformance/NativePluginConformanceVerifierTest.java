@@ -23,6 +23,7 @@ import com.bloxbean.cardano.yano.api.appchain.sink.FinalizedStreamSink;
 import com.bloxbean.cardano.yano.api.appchain.sink.FinalizedStreamSinkFactory;
 import com.bloxbean.cardano.yano.api.config.PluginsOptions;
 import com.bloxbean.cardano.yano.api.plugin.NodePlugin;
+import com.bloxbean.cardano.yano.api.plugin.PluginApiVersion;
 import com.bloxbean.cardano.yano.api.plugin.PluginContext;
 import com.bloxbean.cardano.yano.api.plugin.StorageFilter;
 import com.bloxbean.cardano.yano.api.plugin.domain.DomainApi;
@@ -31,6 +32,14 @@ import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiProvider;
 import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiRequest;
 import com.bloxbean.cardano.yano.api.plugin.domain.DomainHttpMethod;
 import com.bloxbean.cardano.yano.api.plugin.domain.DomainQueryService;
+import com.bloxbean.cardano.yano.api.plugin.operations.PluginHealthContext;
+import com.bloxbean.cardano.yano.api.plugin.operations.PluginHealthProvider;
+import com.bloxbean.cardano.yano.api.plugin.operations.PluginHealthSource;
+import com.bloxbean.cardano.yano.api.plugin.operations.PluginHealthStatus;
+import com.bloxbean.cardano.yano.api.plugin.operations.PluginMetricType;
+import com.bloxbean.cardano.yano.api.plugin.operations.PluginMetricsContext;
+import com.bloxbean.cardano.yano.api.plugin.operations.PluginMetricsProvider;
+import com.bloxbean.cardano.yano.api.plugin.operations.PluginMetricsSource;
 import com.bloxbean.cardano.yano.catalog.BundleManifestParser;
 import com.bloxbean.cardano.yano.catalog.ContributionKind;
 import com.bloxbean.cardano.yano.runtime.plugins.PluginLoaderHandle;
@@ -79,7 +88,9 @@ class NativePluginConformanceVerifierTest {
                     ConformanceSignerProviderFactory.class.getName(),
                     ConformanceEffectExecutorFactory.class.getName(),
                     ConformanceFinalizedSinkFactory.class.getName(),
-                    ConformanceDomainApiProvider.class.getName())) {
+                    ConformanceDomainApiProvider.class.getName(),
+                    ConformanceHealthProvider.class.getName(),
+                    ConformanceMetricsProvider.class.getName())) {
                 assertThat(constantPool).doesNotContain(provider.replace('.', '/'));
             }
         }
@@ -104,10 +115,14 @@ class NativePluginConformanceVerifierTest {
                 ConformanceFinalizedSinkFactory.class);
         assertExactService(loader, DomainApiProvider.class,
                 ConformanceDomainApiProvider.class);
+        assertExactService(loader, PluginHealthProvider.class,
+                ConformanceHealthProvider.class);
+        assertExactService(loader, PluginMetricsProvider.class,
+                ConformanceMetricsProvider.class);
     }
 
     @Test
-    void catalogRegistryResolvesAndConstructsAllSevenTypedProviders(
+    void catalogRegistryResolvesAndConstructsAllNineTypedProviders(
             @TempDir Path pluginDirectory) throws Exception {
         String fixtureJarProperty = System.getProperty(
                 "yano.plugin.conformance.fixture.jar");
@@ -121,6 +136,10 @@ class NativePluginConformanceVerifierTest {
         try (PluginRuntimeEnvironment environment = PluginRuntimeEnvironment.open(
                 onlyFixture, PluginLoaderHandle.directory(
                         pluginDirectory, isolatedPluginParent(getClass().getClassLoader())))) {
+            assertThat(environment.catalog().pluginApiMajor())
+                    .isEqualTo(PluginApiVersion.CURRENT_MAJOR);
+            assertThat(environment.catalog().pluginApiLevel())
+                    .isEqualTo(PluginApiVersion.CURRENT_LEVEL);
             assertThat(environment.selectedBundleIds())
                     .containsExactly(NativePluginConformanceVerifier.BUNDLE_ID);
             assertCatalogProvider(environment, AppStateMachineProvider.class,
@@ -137,12 +156,16 @@ class NativePluginConformanceVerifierTest {
                     ConformanceFinalizedSinkFactory.SCHEME);
             assertCatalogProvider(environment, DomainApiProvider.class,
                     ConformanceDomainApiProvider.ID);
+            assertCatalogProvider(environment, PluginHealthProvider.class,
+                    ConformanceHealthProvider.ID);
+            assertCatalogProvider(environment, PluginMetricsProvider.class,
+                    ConformanceMetricsProvider.ID);
             exerciseCatalogFacades(environment);
         }
     }
 
     @Test
-    void strictManifestDeclaresNodeVerifierAndAllSevenTypedKinds() throws Exception {
+    void strictManifestDeclaresNodeVerifierAndAllNineTypedKinds() throws Exception {
         ClassLoader loader = getClass().getClassLoader();
         try (InputStream input = loader.getResourceAsStream(MANIFEST_PATH)) {
             assertThat(input).as("fixture manifest").isNotNull();
@@ -150,6 +173,11 @@ class NativePluginConformanceVerifierTest {
             assertThat(manifest.id()).isEqualTo(NativePluginConformanceVerifier.BUNDLE_ID);
             assertThat(manifest.version().toString())
                     .isEqualTo(NativePluginConformanceVerifier.VERSION);
+            assertThat(manifest.yanoApi().minLevel())
+                    .isEqualTo(PluginApiVersion.CURRENT_LEVEL);
+            assertThat(manifest.yanoApi().supports(
+                    PluginApiVersion.CURRENT_MAJOR,
+                    PluginApiVersion.CURRENT_LEVEL)).isTrue();
             assertThat(manifest.dependencies()).isEmpty();
             assertThat(manifest.contributions())
                     .extracting(contribution -> contribution.kind())
@@ -161,7 +189,9 @@ class NativePluginConformanceVerifierTest {
                             ContributionKind.SIGNER_PROVIDER,
                             ContributionKind.EFFECT_EXECUTOR,
                             ContributionKind.FINALIZED_SINK,
-                            ContributionKind.DOMAIN_API));
+                            ContributionKind.DOMAIN_API,
+                            ContributionKind.HEALTH,
+                            ContributionKind.METRICS));
         }
     }
 
@@ -271,6 +301,34 @@ class NativePluginConformanceVerifierTest {
             assertThat(queryJson)
                     .contains("\"chainId\":\"unsafe\\\"\\n\"")
                     .doesNotContain("unsafe\"\n");
+        }
+
+        try (PluginHealthSource health = environment.providers().require(
+                PluginHealthProvider.class, ConformanceHealthProvider.ID)
+                .create(new PluginHealthContext(
+                        ConformanceHealthProvider.ID, Map.of()))) {
+            assertThat(health.checks()).singleElement().satisfies(descriptor ->
+                    assertThat(descriptor.id()).isEqualTo(
+                            ConformanceHealthProvider.CHECK_ID));
+            // A second product callback proves that the facade restored the
+            // TCCL poisoned by descriptor publication.
+            assertThat(health.snapshot().reports()).singleElement().satisfies(report -> {
+                assertThat(report.checkId()).isEqualTo(ConformanceHealthProvider.CHECK_ID);
+                assertThat(report.status()).isEqualTo(PluginHealthStatus.UP);
+            });
+        }
+
+        try (PluginMetricsSource metrics = environment.providers().require(
+                PluginMetricsProvider.class, ConformanceMetricsProvider.ID)
+                .create(new PluginMetricsContext(
+                        ConformanceMetricsProvider.ID, Map.of()))) {
+            assertThat(metrics.descriptors()).singleElement().satisfies(descriptor -> {
+                assertThat(descriptor.id()).isEqualTo(
+                        ConformanceMetricsProvider.METRIC_ID);
+                assertThat(descriptor.type()).isEqualTo(PluginMetricType.COUNTER);
+            });
+            assertThat(metrics.snapshot().values())
+                    .containsOnlyKeys(ConformanceMetricsProvider.METRIC_ID);
         }
     }
 

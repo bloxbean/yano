@@ -32,10 +32,12 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowable;
 
 class DomainApiRegistryTest {
 
@@ -366,6 +368,265 @@ class DomainApiRegistryTest {
         }
     }
 
+    @Test
+    void fatalAdmissionAndStartObservationsReleaseOwnershipBeforeEscape()
+            throws Exception {
+        for (ObservationSeam seam : List.of(
+                ObservationSeam.ADMITTED, ObservationSeam.STARTED)) {
+            String id = "com.example.fatal-" + seam.name().toLowerCase();
+            AtomicInteger callbacks = new AtomicInteger();
+            AtomicInteger closes = new AtomicInteger();
+            RecordingProviders providers = new RecordingProviders(provider(id, () -> api(
+                    List.of(route("read", "read", DomainApiAccess.READ)), request -> {
+                        callbacks.incrementAndGet();
+                        return text("ok");
+                    }, closes)));
+            TestVirtualMachineError fatal = new TestVirtualMachineError(
+                    "fatal " + seam.name().toLowerCase());
+            ThrowOnceObserver observer = new ThrowOnceObserver(seam, fatal);
+            AtomicReference<Throwable> uncaught = new AtomicReference<>();
+            Thread.UncaughtExceptionHandler previous =
+                    Thread.getDefaultUncaughtExceptionHandler();
+            Thread.setDefaultUncaughtExceptionHandler((thread, failure) ->
+                    uncaught.compareAndSet(null, failure));
+
+            try (DomainApiRegistry registry = registry(
+                    providers, Duration.ofSeconds(1), observer)) {
+                registry.resume();
+
+                assertThat(catchThrowable(() -> registry.dispatch(
+                        id, DomainHttpMethod.GET, "read", Map.of(), new byte[0])))
+                        .isSameAs(fatal);
+                awaitAdmissions(registry, 0);
+                if (seam == ObservationSeam.STARTED) {
+                    awaitThrowable(uncaught, fatal);
+                }
+                assertThat(callbacks).hasValue(0);
+
+                assertThat(registry.dispatch(
+                        id, DomainHttpMethod.GET, "read", Map.of(), new byte[0]).body())
+                        .isEqualTo("ok".getBytes(StandardCharsets.UTF_8));
+                awaitAdmissions(registry, 0);
+                registry.sealAndAwait();
+                assertThat(closes).hasValue(1);
+                assertThat(providers.cleanupSignals).singleElement()
+                        .satisfies(signal -> assertThat(signal).isDone());
+            } finally {
+                Thread.setDefaultUncaughtExceptionHandler(previous);
+            }
+        }
+    }
+
+    @Test
+    void fatalOutcomeAndCallbackFinishedObservationsDoNotChangePluginResponse()
+            throws Exception {
+        for (ObservationSeam seam : List.of(
+                ObservationSeam.OUTCOME, ObservationSeam.CALLBACK_FINISHED)) {
+            String id = "com.example.fatal-" + seam.name().toLowerCase();
+            AtomicInteger callbacks = new AtomicInteger();
+            RecordingProviders providers = new RecordingProviders(provider(id, () -> api(
+                    List.of(route("read", "read", DomainApiAccess.READ)), request -> {
+                        callbacks.incrementAndGet();
+                        return text("ok");
+                    }, new AtomicInteger())));
+            TestVirtualMachineError fatal = new TestVirtualMachineError(
+                    "fatal " + seam.name().toLowerCase());
+            ThrowOnceObserver observer = new ThrowOnceObserver(seam, fatal);
+            AtomicReference<Throwable> uncaught = new AtomicReference<>();
+            Thread.UncaughtExceptionHandler previous =
+                    Thread.getDefaultUncaughtExceptionHandler();
+            Thread.setDefaultUncaughtExceptionHandler((thread, failure) ->
+                    uncaught.compareAndSet(null, failure));
+
+            try (DomainApiRegistry registry = registry(
+                    providers, Duration.ofSeconds(1), observer)) {
+                registry.resume();
+
+                assertThat(registry.dispatch(
+                        id, DomainHttpMethod.GET, "read", Map.of(), new byte[0]).body())
+                        .isEqualTo("ok".getBytes(StandardCharsets.UTF_8));
+                awaitThrowable(uncaught, fatal);
+                awaitAdmissions(registry, 0);
+
+                assertThat(registry.dispatch(
+                        id, DomainHttpMethod.GET, "read", Map.of(), new byte[0]).body())
+                        .isEqualTo("ok".getBytes(StandardCharsets.UTF_8));
+                assertThat(callbacks).hasValue(2);
+                registry.sealAndAwait();
+            } finally {
+                Thread.setDefaultUncaughtExceptionHandler(previous);
+            }
+        }
+    }
+
+    @Test
+    void fatalPluginCallbackSkipsOrdinaryOutcomeAndReleasesLaneBeforeEscape()
+            throws Exception {
+        String id = "com.example.fatal-callback";
+        TestVirtualMachineError fatal = new TestVirtualMachineError("fatal callback");
+        AtomicBoolean first = new AtomicBoolean(true);
+        RecordingProviders providers = new RecordingProviders(provider(id, () -> api(
+                List.of(route("read", "read", DomainApiAccess.READ)), request -> {
+                    if (first.compareAndSet(true, false)) {
+                        throw fatal;
+                    }
+                    return text("ok");
+                }, new AtomicInteger())));
+        RecordingObserver observer = new RecordingObserver();
+        AtomicReference<Throwable> uncaught = new AtomicReference<>();
+        Thread.UncaughtExceptionHandler previous =
+                Thread.getDefaultUncaughtExceptionHandler();
+        Thread.setDefaultUncaughtExceptionHandler((thread, failure) ->
+                uncaught.compareAndSet(null, failure));
+
+        try (DomainApiRegistry registry = registry(
+                providers, Duration.ofSeconds(1), observer)) {
+            registry.resume();
+
+            assertThat(catchThrowable(() -> registry.dispatch(
+                    id, DomainHttpMethod.GET, "read", Map.of(), new byte[0])))
+                    .isSameAs(fatal);
+            awaitThrowable(uncaught, fatal);
+            awaitAdmissions(registry, 0);
+            assertThat(observer.events).containsSubsequence(
+                    "admitted:" + id,
+                    "started:" + id,
+                    "callback-finished:" + id);
+            assertThat(observer.events).noneMatch(event -> event.startsWith("outcome:"));
+
+            assertThat(registry.dispatch(
+                    id, DomainHttpMethod.GET, "read", Map.of(), new byte[0]).body())
+                    .isEqualTo("ok".getBytes(StandardCharsets.UTF_8));
+            registry.sealAndAwait();
+        } finally {
+            Thread.setDefaultUncaughtExceptionHandler(previous);
+        }
+    }
+
+    @Test
+    void activationObserverFatalsRollbackProductsAndCompleteCatalogLifetime() {
+        for (ObservationSeam seam : List.of(
+                ObservationSeam.ACTIVATING, ObservationSeam.ACTIVE)) {
+            String id = "com.example.activation-" + seam.name().toLowerCase();
+            AtomicInteger creates = new AtomicInteger();
+            AtomicInteger closes = new AtomicInteger();
+            RecordingProviders providers = new RecordingProviders(provider(id, () -> {
+                creates.incrementAndGet();
+                return api(List.of(route("read", "read", DomainApiAccess.READ)),
+                        request -> text("ok"), closes);
+            }));
+            TestVirtualMachineError fatal = new TestVirtualMachineError(
+                    "fatal " + seam.name().toLowerCase());
+            ThrowOnceObserver observer = new ThrowOnceObserver(seam, fatal);
+
+            try (DomainApiRegistry registry = registry(
+                    providers, Duration.ofSeconds(1), observer)) {
+                assertThat(catchThrowable(registry::resume)).isSameAs(fatal);
+                assertThat(registry.routes()).isEmpty();
+                assertThat(providers.cleanupSignals).singleElement()
+                        .satisfies(signal -> assertThat(signal).isDone());
+                assertThat(creates).hasValue(seam == ObservationSeam.ACTIVE ? 1 : 0);
+                assertThat(closes).hasValue(seam == ObservationSeam.ACTIVE ? 1 : 0);
+
+                registry.resume();
+                assertThat(registry.dispatch(
+                        id, DomainHttpMethod.GET, "read", Map.of(), new byte[0]).body())
+                        .isEqualTo("ok".getBytes(StandardCharsets.UTF_8));
+                registry.sealAndAwait();
+            }
+        }
+
+        String id = "com.example.activation-failed";
+        AssertionError constructionFailure = new AssertionError("construction failed");
+        RecordingProviders providers = new RecordingProviders(provider(id, () -> {
+            throw constructionFailure;
+        }));
+        TestVirtualMachineError fatal = new TestVirtualMachineError(
+                "fatal activation-failed observation");
+        ThrowOnceObserver observer = new ThrowOnceObserver(
+                ObservationSeam.ACTIVATION_FAILED, fatal);
+        try (DomainApiRegistry registry = registry(
+                providers, Duration.ofSeconds(1), observer)) {
+            assertThat(catchThrowable(registry::resume)).isSameAs(fatal);
+            assertThat(fatal.getSuppressed()).contains(constructionFailure);
+            assertThat(providers.cleanupSignals).singleElement()
+                    .satisfies(signal -> assertThat(signal).isDone());
+            assertThat(registry.routes()).isEmpty();
+        }
+    }
+
+    @Test
+    void cleanupRegistrationFatalAfterRecordingCompletesBarrierAndAllowsRetry() {
+        String id = "com.example.registration-fatal";
+        AtomicInteger creates = new AtomicInteger();
+        AtomicInteger closes = new AtomicInteger();
+        RecordingProviders providers = new RecordingProviders(provider(id, () -> {
+            creates.incrementAndGet();
+            return api(List.of(route("read", "read", DomainApiAccess.READ)),
+                    request -> text("ok"), closes);
+        }));
+        TestVirtualMachineError fatal = new TestVirtualMachineError(
+                "fatal cleanup registration");
+        providers.failNextCleanupRegistration(fatal);
+
+        try (DomainApiRegistry registry = registry(providers, Duration.ofSeconds(1))) {
+            assertThat(catchThrowable(registry::resume)).isSameAs(fatal);
+            assertThat(registry.routes()).isEmpty();
+            assertThat(creates).hasValue(0);
+            assertThat(providers.cleanupSignals).singleElement()
+                    .satisfies(signal -> assertThat(signal).isDone());
+
+            registry.resume();
+            assertThat(registry.dispatch(
+                    id, DomainHttpMethod.GET, "read", Map.of(), new byte[0]).body())
+                    .isEqualTo("ok".getBytes(StandardCharsets.UTF_8));
+            registry.sealAndAwait();
+            assertThat(creates).hasValue(1);
+            assertThat(closes).hasValue(1);
+            assertThat(providers.cleanupSignals).hasSize(2)
+                    .allMatch(CompletableFuture::isDone);
+        }
+    }
+
+    @Test
+    void fatalStoppedObservationCannotAbortRemainingReverseProductClose() {
+        String firstId = "com.example.a-close-failure";
+        String secondId = "com.example.b-stop-fatal";
+        AssertionError laterCloseFailure = new AssertionError("later close failure");
+        List<String> closeOrder = new ArrayList<>();
+        DomainApi first = api(
+                List.of(route("read", "read", DomainApiAccess.READ)),
+                request -> text("first"), () -> {
+                    closeOrder.add(firstId);
+                    throw laterCloseFailure;
+                });
+        DomainApi second = api(
+                List.of(route("read", "read", DomainApiAccess.READ)),
+                request -> text("second"), () -> {
+                    closeOrder.add(secondId);
+                });
+        RecordingProviders providers = new RecordingProviders(Map.of(
+                firstId, provider(firstId, () -> first),
+                secondId, provider(secondId, () -> second)));
+        TestVirtualMachineError fatal = new TestVirtualMachineError(
+                "fatal stopped observation");
+        ThrowOnceObserver observer = new ThrowOnceObserver(
+                ObservationSeam.STOPPED, secondId, fatal);
+        DomainApiRegistry registry = registry(
+                providers, Duration.ofSeconds(1), observer);
+        try {
+            registry.resume();
+
+            assertThat(catchThrowable(registry::sealAndAwait)).isSameAs(fatal);
+            assertThat(fatal.getSuppressed()).contains(laterCloseFailure);
+            assertThat(closeOrder).containsExactly(secondId, firstId);
+            assertThat(providers.cleanupSignals).singleElement()
+                    .satisfies(signal -> assertThat(signal).isDone());
+        } finally {
+            registry.close();
+        }
+    }
+
     private static DomainApiRegistry registry(
             RecordingProviders providers,
             Duration timeout
@@ -374,6 +635,17 @@ class DomainApiRegistryTest {
                 providers, ignored -> Map.of(), AppChainGateways.empty(),
                 LoggerFactory.getLogger(DomainApiRegistryTest.class),
                 timeout, 16);
+    }
+
+    private static DomainApiRegistry registry(
+            RecordingProviders providers,
+            Duration timeout,
+            DomainApiRegistry.OperationsObserver observer
+    ) {
+        return new DomainApiRegistry(
+                providers, ignored -> Map.of(), AppChainGateways.empty(),
+                LoggerFactory.getLogger(DomainApiRegistryTest.class),
+                timeout, 16, observer);
     }
 
     private static DomainApiRoute route(
@@ -389,6 +661,14 @@ class DomainApiRegistryTest {
             Handler handler,
             AtomicInteger closes
     ) {
+        return api(routes, handler, closes::incrementAndGet);
+    }
+
+    private static DomainApi api(
+            List<DomainApiRoute> routes,
+            Handler handler,
+            Runnable close
+    ) {
         return new DomainApi() {
             @Override
             public List<DomainApiRoute> routes() {
@@ -402,7 +682,7 @@ class DomainApiRegistryTest {
 
             @Override
             public void close() {
-                closes.incrementAndGet();
+                close.run();
             }
         };
     }
@@ -499,6 +779,17 @@ class DomainApiRegistryTest {
         assertThat(registry.activeAdmissionsForTesting()).isEqualTo(expected);
     }
 
+    private static void awaitThrowable(
+            AtomicReference<Throwable> actual,
+            Throwable expected
+    ) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(1);
+        while (actual.get() == null && System.nanoTime() < deadline) {
+            Thread.sleep(1);
+        }
+        assertThat(actual.get()).isSameAs(expected);
+    }
+
     private static AppChainGateways gateways(AppChainGateway... gateways) {
         Map<String, AppChainGateway> byId = new LinkedHashMap<>();
         for (AppChainGateway gateway : gateways) {
@@ -522,9 +813,120 @@ class DomainApiRegistryTest {
         DomainApiResponse handle(DomainApiRequest request) throws Exception;
     }
 
+    private enum ObservationSeam {
+        ACTIVATING,
+        ACTIVE,
+        ACTIVATION_FAILED,
+        STOPPED,
+        ADMITTED,
+        STARTED,
+        OUTCOME,
+        CALLBACK_FINISHED
+    }
+
+    private static class RecordingObserver
+            implements DomainApiRegistry.OperationsObserver {
+        protected final List<String> events = new ArrayList<>();
+
+        protected void observe(ObservationSeam seam, String bundleId) {
+            events.add(seam.name().toLowerCase().replace('_', '-') + ':' + bundleId);
+        }
+
+        @Override
+        public void domainActivating(String bundleId) {
+            observe(ObservationSeam.ACTIVATING, bundleId);
+        }
+
+        @Override
+        public void domainActive(String bundleId) {
+            observe(ObservationSeam.ACTIVE, bundleId);
+        }
+
+        @Override
+        public void domainActivationFailed(String bundleId) {
+            observe(ObservationSeam.ACTIVATION_FAILED, bundleId);
+        }
+
+        @Override
+        public void domainStopped(String bundleId, boolean succeeded) {
+            observe(ObservationSeam.STOPPED, bundleId);
+        }
+
+        @Override
+        public void domainAdmitted(String bundleId) {
+            observe(ObservationSeam.ADMITTED, bundleId);
+        }
+
+        @Override
+        public void domainStarted(String bundleId) {
+            observe(ObservationSeam.STARTED, bundleId);
+        }
+
+        @Override
+        public void domainQueueFinished(String bundleId) {
+            events.add("queue-finished:" + bundleId);
+        }
+
+        @Override
+        public void domainCallbackFinished(String bundleId) {
+            observe(ObservationSeam.CALLBACK_FINISHED, bundleId);
+        }
+
+        @Override
+        public void domainOutcome(
+                String bundleId,
+                DomainHttpMethod method,
+                com.bloxbean.cardano.yano.api.plugin.operations.PluginOperationOutcome outcome
+        ) {
+            observe(ObservationSeam.OUTCOME, bundleId);
+        }
+    }
+
+    private static final class ThrowOnceObserver extends RecordingObserver {
+        private final ObservationSeam failingSeam;
+        private final String failingBundle;
+        private final TestVirtualMachineError fatal;
+        private final AtomicBoolean failed = new AtomicBoolean();
+
+        private ThrowOnceObserver(
+                ObservationSeam failingSeam,
+                TestVirtualMachineError fatal
+        ) {
+            this(failingSeam, null, fatal);
+        }
+
+        private ThrowOnceObserver(
+                ObservationSeam failingSeam,
+                String failingBundle,
+                TestVirtualMachineError fatal
+        ) {
+            this.failingSeam = failingSeam;
+            this.failingBundle = failingBundle;
+            this.fatal = fatal;
+        }
+
+        @Override
+        protected void observe(ObservationSeam seam, String bundleId) {
+            super.observe(seam, bundleId);
+            if (seam == failingSeam
+                    && (failingBundle == null || failingBundle.equals(bundleId))
+                    && failed.compareAndSet(false, true)) {
+                throw fatal;
+            }
+        }
+    }
+
+    private static final class TestVirtualMachineError extends VirtualMachineError {
+        private TestVirtualMachineError(String message) {
+            super(message);
+        }
+    }
+
     private static final class RecordingProviders implements PluginProviderRegistry {
         private final Map<String, DomainApiProvider> providers;
         private final List<CompletableFuture<Void>> cleanupSignals = new ArrayList<>();
+        private final AtomicReference<Throwable> cleanupRegistrationFailure =
+                new AtomicReference<>();
 
         private RecordingProviders(DomainApiProvider provider) {
             this(Map.of(provider.id(), provider));
@@ -553,6 +955,20 @@ class DomainApiRegistryTest {
         @Override
         public void registerContributionCleanup(CompletableFuture<Void> completion) {
             cleanupSignals.add(completion);
+            Throwable failure = cleanupRegistrationFailure.getAndSet(null);
+            if (failure instanceof RuntimeException runtime) {
+                throw runtime;
+            }
+            if (failure instanceof Error error) {
+                throw error;
+            }
+            if (failure != null) {
+                throw new IllegalStateException(failure);
+            }
+        }
+
+        private void failNextCleanupRegistration(Throwable failure) {
+            cleanupRegistrationFailure.set(failure);
         }
     }
 }

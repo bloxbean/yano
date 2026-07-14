@@ -28,7 +28,9 @@ final class CatalogValidation {
     }
 
     static String contributionName(ContributionKind kind, String value, String field) {
-        if (kind == ContributionKind.DOMAIN_API) {
+        if (kind == ContributionKind.DOMAIN_API
+                || kind == ContributionKind.HEALTH
+                || kind == ContributionKind.METRICS) {
             return bundleId(value, field);
         }
         if (value == null || value.length() > MAX_NAME_LENGTH

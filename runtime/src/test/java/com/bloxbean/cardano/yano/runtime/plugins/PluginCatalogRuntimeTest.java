@@ -1,5 +1,17 @@
 package com.bloxbean.cardano.yano.runtime.plugins;
 
+import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
+import com.bloxbean.cardano.yano.api.appchain.AppStateMachineContext;
+import com.bloxbean.cardano.yano.api.appchain.AppStateMachineProvider;
+import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutor;
+import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutorFactory;
+import com.bloxbean.cardano.yano.api.appchain.l1view.L1Observer;
+import com.bloxbean.cardano.yano.api.appchain.l1view.L1ObserverProvider;
+import com.bloxbean.cardano.yano.api.appchain.sequencer.SequencerContext;
+import com.bloxbean.cardano.yano.api.appchain.sequencer.SequencerMode;
+import com.bloxbean.cardano.yano.api.appchain.sequencer.SequencerModeProvider;
+import com.bloxbean.cardano.yano.api.appchain.signer.SignerProvider;
+import com.bloxbean.cardano.yano.api.appchain.signer.SignerProviderFactory;
 import com.bloxbean.cardano.yano.api.appchain.sink.FinalizedStreamSink;
 import com.bloxbean.cardano.yano.api.appchain.sink.FinalizedStreamSinkFactory;
 import com.bloxbean.cardano.yano.api.config.PluginsOptions;
@@ -11,6 +23,15 @@ import com.bloxbean.cardano.yano.api.plugin.PluginContext;
 import com.bloxbean.cardano.yano.api.plugin.PluginDigestMode;
 import com.bloxbean.cardano.yano.api.plugin.PluginSelectionStatus;
 import com.bloxbean.cardano.yano.api.plugin.PluginSourceCategory;
+import com.bloxbean.cardano.yano.api.plugin.domain.DomainApi;
+import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiContext;
+import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiProvider;
+import com.bloxbean.cardano.yano.api.plugin.operations.PluginHealthContext;
+import com.bloxbean.cardano.yano.api.plugin.operations.PluginHealthProvider;
+import com.bloxbean.cardano.yano.api.plugin.operations.PluginHealthSource;
+import com.bloxbean.cardano.yano.api.plugin.operations.PluginMetricsContext;
+import com.bloxbean.cardano.yano.api.plugin.operations.PluginMetricsProvider;
+import com.bloxbean.cardano.yano.api.plugin.operations.PluginMetricsSource;
 import com.bloxbean.cardano.yano.catalog.BundleContribution;
 import com.bloxbean.cardano.yano.catalog.BundleDependency;
 import com.bloxbean.cardano.yano.catalog.BundleManifest;
@@ -18,6 +39,10 @@ import com.bloxbean.cardano.yano.catalog.ContributionKind;
 import com.bloxbean.cardano.yano.catalog.IndexedBundle;
 import com.bloxbean.cardano.yano.catalog.IndexedLegacyProvider;
 import com.bloxbean.cardano.yano.catalog.PluginArtifactScanner;
+import com.bloxbean.cardano.yano.catalog.PluginCatalogException;
+import com.bloxbean.cardano.yano.catalog.PluginCatalogInspection;
+import com.bloxbean.cardano.yano.catalog.PluginCatalogInspectionPolicy;
+import com.bloxbean.cardano.yano.catalog.PluginCatalogInspector;
 import com.bloxbean.cardano.yano.catalog.PluginIndex;
 import com.bloxbean.cardano.yano.catalog.PluginIndexCodec;
 import com.bloxbean.cardano.yano.catalog.SemVersion;
@@ -198,6 +223,35 @@ class PluginCatalogRuntimeTest {
         assertThat(fatal.getSuppressed()).contains(assertion);
         assertThat(assertionCloses).hasValue(1);
         assertThat(fatalCloses).hasValue(1);
+        registry.close();
+    }
+
+    @Test
+    void providerRegistryClosePromotesFatalNestedInSuppressedWrapperAfterFullCleanup() {
+        AtomicInteger ordinaryCloses = new AtomicInteger();
+        AtomicInteger wrappedFatalCloses = new AtomicInteger();
+        AssertionError ordinary = new AssertionError("ordinary provider close");
+        TestVirtualMachineError fatal = new TestVirtualMachineError(
+                "suppressed fatal provider close");
+        AssertionError wrapper = new AssertionError("wrapper");
+        wrapper.addSuppressed(fatal);
+        CloseProbeSinkFactory wrappedFatalProvider = new CloseProbeSinkFactory(
+                "wrapped-fatal", wrappedFatalCloses, wrapper);
+        CloseProbeSinkFactory ordinaryProvider = new CloseProbeSinkFactory(
+                "ordinary", ordinaryCloses, ordinary);
+        CatalogPluginProviderRegistry registry = new CatalogPluginProviderRegistry(
+                List.of(
+                        sinkEntry("com.example.wrapped-fatal", wrappedFatalProvider),
+                        sinkEntry("com.example.ordinary", ordinaryProvider)),
+                List.of("com.example.wrapped-fatal", "com.example.ordinary"), List.of());
+        registry.find(FinalizedStreamSinkFactory.class, "wrapped-fatal");
+        registry.find(FinalizedStreamSinkFactory.class, "ordinary");
+
+        assertThatThrownBy(registry::close).isSameAs(fatal);
+        assertThat(fatal.getSuppressed()).containsExactly(ordinary);
+        assertThat(ordinaryCloses).hasValue(1);
+        assertThat(wrappedFatalCloses).hasValue(1);
+
         registry.close();
     }
 
@@ -1227,6 +1281,280 @@ class PluginCatalogRuntimeTest {
     }
 
     @Test
+    void offlineInspectorFingerprintOrderAndPolicyMatchRuntimeCatalog() throws Exception {
+        String baseId = "com.example.parity-base";
+        String featureId = "com.example.parity-feature";
+        String baseProvider = "com.example.parity.BaseSink";
+        String featureProvider = "com.example.parity.FeatureSink";
+        Path classes = compilePackagedDirectorySink(baseProvider, "parity-base");
+        compilePackagedDirectorySink(featureProvider, "parity-feature");
+
+        Path baseJar = tempDirectory.resolve("parity-base.jar");
+        writeJar(baseJar, Map.of(
+                baseProvider.replace('.', '/') + ".class",
+                Files.readAllBytes(classes.resolve(baseProvider.replace('.', '/') + ".class")),
+                SINK_SERVICE, baseProvider.getBytes(StandardCharsets.UTF_8),
+                manifestPath(baseId), manifest(baseId, "parity-base", baseProvider)));
+        Path featureJar = tempDirectory.resolve("parity-feature.jar");
+        writeJar(featureJar, Map.of(
+                featureProvider.replace('.', '/') + ".class",
+                Files.readAllBytes(classes.resolve(featureProvider.replace('.', '/') + ".class")),
+                SINK_SERVICE, featureProvider.getBytes(StandardCharsets.UTF_8),
+                manifestPath(featureId), manifest(
+                        featureId, "parity-feature", featureProvider, List.of(baseId))));
+
+        PluginArtifactScanner scanner = new PluginArtifactScanner();
+        PluginIndex baseIndex = scanner.scan(baseJar);
+        PluginIndex featureIndex = scanner.scan(featureJar);
+        PluginIndex combined = new PluginIndex(
+                PluginIndex.CURRENT_SCHEMA_VERSION,
+                List.of(baseIndex.bundles().getFirst(), featureIndex.bundles().getFirst()),
+                List.of());
+        PluginCatalogInspector inspector = new PluginCatalogInspector();
+
+        try (URLClassLoader loader = new ServiceOnlyClassLoader(
+                new URL[]{featureJar.toUri().toURL(), baseJar.toUri().toURL()},
+                getClass().getClassLoader())) {
+            PluginCatalogBuilder.BuildResult runtime = new PluginCatalogBuilder().build(
+                    PluginsOptions.defaults(), loader,
+                    List.of(new PluginCatalogBuilder.CatalogInput(
+                            combined, PluginSourceCategory.CLASSPATH)));
+            try {
+                PluginCatalogInspection offline = inspector.inspect(
+                        combined, PluginCatalogInspectionPolicy.current());
+                assertThat(offline.pluginApiMajor())
+                        .isEqualTo(runtime.catalog().pluginApiMajor());
+                assertThat(offline.pluginApiLevel())
+                        .isEqualTo(runtime.catalog().pluginApiLevel());
+                assertThat(offline.fingerprint()).isEqualTo(runtime.catalog().fingerprint());
+                assertThat(offline.selectedBundleOrder())
+                        .isEqualTo(runtime.catalog().selectedBundleOrder())
+                        .containsExactly(baseId, featureId);
+            } finally {
+                runtime.registry().close();
+            }
+        }
+
+        Set<String> allow = Set.of(baseId, featureId);
+        Set<String> deny = Set.of(featureId);
+        PluginCatalogInspection offlineFiltered = inspector.inspect(
+                combined, new PluginCatalogInspectionPolicy(1, 1, allow, deny));
+        try (URLClassLoader loader = new ServiceOnlyClassLoader(
+                new URL[]{baseJar.toUri().toURL(), featureJar.toUri().toURL()},
+                getClass().getClassLoader())) {
+            PluginsOptions options = new PluginsOptions(
+                    true, false, allow, deny, Map.of());
+            PluginCatalogBuilder.BuildResult runtimeFiltered = new PluginCatalogBuilder().build(
+                    options, loader,
+                    List.of(new PluginCatalogBuilder.CatalogInput(
+                            combined, PluginSourceCategory.CLASSPATH)));
+            try {
+                assertThat(offlineFiltered.fingerprint())
+                        .isEqualTo(runtimeFiltered.catalog().fingerprint());
+                assertThat(offlineFiltered.selectedBundleOrder())
+                        .isEqualTo(runtimeFiltered.catalog().selectedBundleOrder())
+                        .containsExactly(baseId);
+                assertThat(offlineFiltered.bundles())
+                        .extracting(PluginBundleInfo::selectionStatus)
+                        .containsExactlyElementsOf(runtimeFiltered.catalog().bundles().stream()
+                                .map(PluginBundleInfo::selectionStatus)
+                                .toList())
+                        .containsExactly(
+                                PluginSelectionStatus.SELECTED,
+                                PluginSelectionStatus.DENIED);
+            } finally {
+                runtimeFiltered.registry().close();
+            }
+        }
+    }
+
+    @Test
+    void offlineRuntimeParityCoversEveryKindRangesTopologyAndDigestModes()
+            throws Exception {
+        ParityMatrix matrix = parityMatrix();
+        PluginCatalogInspection offline = new PluginCatalogInspector().inspect(
+                matrix.index(), PluginCatalogInspectionPolicy.current());
+
+        try (URLClassLoader loader = new ServiceOnlyClassLoader(
+                new URL[]{matrix.services().toUri().toURL()}, getClass().getClassLoader())) {
+            PluginCatalogBuilder.BuildResult runtime = new PluginCatalogBuilder().build(
+                    PluginsOptions.defaults(), loader,
+                    List.of(new PluginCatalogBuilder.CatalogInput(
+                            matrix.index(), PluginSourceCategory.CLASSPATH)));
+            try {
+                assertCatalogParity(offline, runtime.catalog());
+                assertThat(offline.selectedBundleOrder()).containsExactly(
+                        matrix.independentId(), matrix.baseId(),
+                        matrix.middleId(), matrix.allKindsId());
+                assertThat(offline.bundles())
+                        .extracting(PluginBundleInfo::digestMode)
+                        .contains(PluginDigestMode.JAR, PluginDigestMode.ARTIFACT_TREE,
+                                PluginDigestMode.ARTIFACT_CLOSURE);
+                PluginBundleInfo allKinds = offline.bundles().stream()
+                        .filter(bundle -> bundle.id().equals(matrix.allKindsId()))
+                        .findFirst()
+                        .orElseThrow();
+                assertThat(allKinds.contributions())
+                        .extracting(value -> value.kind())
+                        .containsExactlyInAnyOrder(java.util.Arrays.stream(ContributionKind.values())
+                                .map(ContributionKind::manifestKey)
+                                .toArray(String[]::new));
+            } finally {
+                runtime.registry().close();
+            }
+        }
+    }
+
+    @Test
+    void offlineRuntimeParityCoversAllowDenyPrecedenceAndFilteredFingerprint()
+            throws Exception {
+        ParityMatrix matrix = parityMatrix();
+        Set<String> allow = Set.of(matrix.baseId(), matrix.allKindsId());
+        Set<String> deny = Set.of(matrix.allKindsId());
+        PluginCatalogInspectionPolicy policy = new PluginCatalogInspectionPolicy(
+                PluginCatalogBuilder.PLUGIN_API_MAJOR,
+                PluginCatalogBuilder.PLUGIN_API_LEVEL, allow, deny);
+        PluginCatalogInspection offline = new PluginCatalogInspector().inspect(
+                matrix.index(), policy);
+
+        try (URLClassLoader loader = new ServiceOnlyClassLoader(
+                new URL[]{matrix.services().toUri().toURL()}, getClass().getClassLoader())) {
+            PluginsOptions options = new PluginsOptions(
+                    true, false, allow, deny, Map.of());
+            PluginCatalogBuilder.BuildResult runtime = new PluginCatalogBuilder().build(
+                    options, loader, List.of(new PluginCatalogBuilder.CatalogInput(
+                            matrix.index(), PluginSourceCategory.CLASSPATH)));
+            try {
+                assertCatalogParity(offline, runtime.catalog());
+                assertThat(offline.selectedBundleOrder()).containsExactly(matrix.baseId());
+                assertThat(selectionStatuses(offline.bundles()))
+                        .containsEntry(matrix.baseId(), PluginSelectionStatus.SELECTED)
+                        .containsEntry(matrix.allKindsId(), PluginSelectionStatus.DENIED)
+                        .containsEntry(matrix.independentId(),
+                                PluginSelectionStatus.NOT_ALLOW_LISTED)
+                        .containsEntry(matrix.middleId(),
+                                PluginSelectionStatus.NOT_ALLOW_LISTED);
+            } finally {
+                runtime.registry().close();
+            }
+        }
+    }
+
+    @Test
+    void offlineRuntimeParityRejectsRangeCycleReservedAndDuplicateConflicts()
+            throws Exception {
+        ParityMatrix matrix = parityMatrix();
+        IndexedBundle incompatibleMiddle = parityBundle(
+                matrix.middleId(), "2.1.0",
+                List.of(new BundleDependency(
+                        matrix.baseId(), SemVersion.parse("2.0.0"),
+                        SemVersion.parse("3.0.0"))),
+                List.of(), 'c', PluginDigestMode.ARTIFACT_CLOSURE);
+        PluginIndex incompatible = replaceBundle(matrix.index(), incompatibleMiddle);
+        IndexedBundle cyclicBase = parityBundle(
+                matrix.baseId(), "1.5.0",
+                List.of(new BundleDependency(matrix.allKindsId(), null, null)),
+                List.of(), 'b', PluginDigestMode.ARTIFACT_TREE);
+        PluginIndex cyclic = replaceBundle(matrix.index(), cyclicBase);
+
+        try (URLClassLoader loader = new ServiceOnlyClassLoader(
+                new URL[]{matrix.services().toUri().toURL()}, getClass().getClassLoader())) {
+            assertParityFailure(incompatible, PluginsOptions.defaults(),
+                    PluginCatalogInspectionPolicy.current(), loader,
+                    "requires an incompatible version");
+            assertParityFailure(cyclic, PluginsOptions.defaults(),
+                    PluginCatalogInspectionPolicy.current(), loader,
+                    "dependency cycle");
+        }
+
+        try (URLClassLoader loader = new ServiceOnlyClassLoader(
+                new URL[0], getClass().getClassLoader())) {
+            List<ReservedContribution> reserved = List.of(
+                    new ReservedContribution(ContributionKind.APP_STATE_MACHINE, "ordered-log"),
+                    new ReservedContribution(ContributionKind.SEQUENCER_MODE, "fixed"),
+                    new ReservedContribution(ContributionKind.SEQUENCER_MODE, "rotating"),
+                    new ReservedContribution(ContributionKind.L1_OBSERVER, "metadata-label"),
+                    new ReservedContribution(ContributionKind.L1_OBSERVER, "address-deposit"),
+                    new ReservedContribution(ContributionKind.EFFECT_EXECUTOR, "webhook"));
+            for (int index = 0; index < reserved.size(); index++) {
+                ReservedContribution value = reserved.get(index);
+                String id = "com.example.parity-reserved-" + index;
+                PluginIndex reservedIndex = index(parityBundle(
+                        id, "1.0.0", List.of(),
+                        List.of(new BundleContribution(value.kind(), value.name(),
+                                parityProvider(value.kind()).getName())),
+                        'e', PluginDigestMode.JAR));
+                assertParityFailure(reservedIndex, PluginsOptions.defaults(),
+                        PluginCatalogInspectionPolicy.current(), loader,
+                        value.kind().manifestKey() + "/" + value.name());
+            }
+        }
+
+        String firstId = "com.example.parity-duplicate-a";
+        String secondId = "com.example.parity-duplicate-b";
+        String duplicateName = "parity-duplicate";
+        PluginIndex duplicate = index(
+                parityBundle(firstId, "1.0.0", List.of(),
+                        List.of(new BundleContribution(
+                                ContributionKind.FINALIZED_SINK, duplicateName,
+                                ParitySinkProvider.class.getName())),
+                        'f', PluginDigestMode.JAR),
+                parityBundle(secondId, "1.0.0", List.of(),
+                        List.of(new BundleContribution(
+                                ContributionKind.FINALIZED_SINK, duplicateName,
+                                SecondParitySinkProvider.class.getName())),
+                        '9', PluginDigestMode.ARTIFACT_TREE));
+        Path duplicateServices = serviceJar(
+                "parity-duplicate-services.jar",
+                Map.of(ContributionKind.FINALIZED_SINK,
+                        List.of(ParitySinkProvider.class, SecondParitySinkProvider.class)));
+        try (URLClassLoader loader = new ServiceOnlyClassLoader(
+                new URL[]{duplicateServices.toUri().toURL()}, getClass().getClassLoader())) {
+            assertParityFailure(duplicate, PluginsOptions.defaults(),
+                    PluginCatalogInspectionPolicy.current(), loader,
+                    "Duplicate selected contribution 'finalized-sink/" + duplicateName + "'");
+        }
+    }
+
+    @Test
+    void offlineRuntimeParityRejectsUnsupportedApiLevelBeforeProviderConstruction()
+            throws Exception {
+        String bundleId = "com.example.parity-api-level";
+        PluginIndex levelGated = index(new IndexedBundle(new BundleManifest(
+                BundleManifest.CURRENT_SCHEMA_VERSION,
+                bundleId,
+                SemVersion.parse("1.0.0"),
+                new YanoApiRange(
+                        PluginCatalogBuilder.PLUGIN_API_MAJOR,
+                        PluginCatalogBuilder.PLUGIN_API_MAJOR,
+                        PluginCatalogBuilder.PLUGIN_API_LEVEL + 1),
+                List.of(),
+                List.of(new BundleContribution(
+                        ContributionKind.FINALIZED_SINK,
+                        "parity-api-level",
+                        LevelGatedSinkProvider.class.getName()))),
+                digest('7'), PluginDigestMode.JAR));
+        Path services = tempDirectory.resolve("parity-api-level-services.jar");
+        writeJar(services, Map.of(
+                SINK_SERVICE,
+                ("com.example.missing.NewerApiSinkProvider\n"
+                        + LevelGatedSinkProvider.class.getName() + "\n")
+                        .getBytes(StandardCharsets.UTF_8)));
+        LevelGatedSinkProvider.constructorCalls.set(0);
+
+        try (URLClassLoader loader = new ServiceOnlyClassLoader(
+                new URL[]{services.toUri().toURL()}, getClass().getClassLoader())) {
+            assertParityFailure(levelGated, PluginsOptions.defaults(),
+                    PluginCatalogInspectionPolicy.current(), loader,
+                    "does not support Yano plugin API major "
+                            + PluginCatalogBuilder.PLUGIN_API_MAJOR + " level "
+                            + PluginCatalogBuilder.PLUGIN_API_LEVEL);
+        }
+
+        assertThat(LevelGatedSinkProvider.constructorCalls).hasValue(0);
+    }
+
+    @Test
     void manifestedNodePluginsReceiveOnlyOwnImmutablePrefixStrippedBundleConfig() throws Exception {
         FirstConfigPlugin.context = null;
         SecondConfigPlugin.context = null;
@@ -1422,11 +1750,16 @@ class PluginCatalogRuntimeTest {
             }
         }
 
-        String firstSecret = "first-alias-secret";
-        String secondSecret = "second-alias-secret";
+        String propertySecret = "credential-key-sentinel";
+        String firstSecret = "first-alias-value-sentinel";
+        String secondSecret = "second-alias-value-sentinel";
+        String bracketedSecretKey = bracketedBundleConfigKey(
+                FirstConfigPlugin.ID, propertySecret);
+        String quotedSecretKey = quotedBundleConfigKey(
+                FirstConfigPlugin.ID, propertySecret);
         Map<String, Object> conflicting = Map.of(
-                bracketedBundleConfigKey(FirstConfigPlugin.ID, "credential"), firstSecret,
-                quotedBundleConfigKey(FirstConfigPlugin.ID, "credential"), secondSecret);
+                bracketedSecretKey, firstSecret,
+                quotedSecretKey, secondSecret);
         try (URLClassLoader loader = new ServiceOnlyClassLoader(
                 new URL[]{jar.toUri().toURL()}, getClass().getClassLoader())) {
             assertThatThrownBy(() -> new PluginCatalogBuilder().build(
@@ -1434,7 +1767,11 @@ class PluginCatalogRuntimeTest {
                     loader, List.of(new PluginCatalogBuilder.CatalogInput(
                             index, PluginSourceCategory.CLASSPATH))))
                     .isInstanceOf(IllegalStateException.class)
-                    .hasMessageContaining("Conflicting plugin bundle configuration aliases")
+                    .hasMessage("Conflicting plugin bundle configuration aliases "
+                            + "(keys and values omitted)")
+                    .hasMessageNotContaining(propertySecret)
+                    .hasMessageNotContaining(bracketedSecretKey)
+                    .hasMessageNotContaining(quotedSecretKey)
                     .hasMessageNotContaining(firstSecret)
                     .hasMessageNotContaining(secondSecret);
         }
@@ -1561,7 +1898,7 @@ class PluginCatalogRuntimeTest {
                 BundleManifest.CURRENT_SCHEMA_VERSION,
                 OpaqueVersionDependentSink.ID,
                 SemVersion.parse("1.0.0"),
-                new YanoApiRange(1, 1),
+                new YanoApiRange(1, 1, 1),
                 List.of(new BundleDependency(OpaqueVersionLegacyPlugin.ID,
                         SemVersion.parse("1.0.0"), null)),
                 List.of(new BundleContribution(ContributionKind.FINALIZED_SINK,
@@ -1894,6 +2231,43 @@ class PluginCatalogRuntimeTest {
                     PluginsOptions.defaults(), handle))
                     .isInstanceOf(PluginCatalogActivationException.class)
                     .hasMessageContaining("provider types could not be validated");
+            assertThat(handle.classLoader()).isSameAs(parent);
+            assertThat(snapshotDirectory).doesNotExist();
+            assertThat(thread.getContextClassLoader()).isSameAs(parent);
+        } finally {
+            thread.setContextClassLoader(original);
+        }
+    }
+
+    @Test
+    void directoryCompatibilityPreflightRunsBeforeProviderTypeValidation()
+            throws Exception {
+        String bundleId = "com.example.incompatible.provider-type";
+        String provider = "com.example.incompatible.BrokenSink";
+        Path directory = Files.createDirectory(
+                tempDirectory.resolve("incompatible-provider-type-directory"));
+        writeJar(directory.resolve("incompatible-provider.jar"), Map.of(
+                provider.replace('.', '/') + ".class", new byte[]{1, 2, 3},
+                SINK_SERVICE, provider.getBytes(StandardCharsets.UTF_8),
+                manifestPath(bundleId), manifest(
+                        bundleId, "incompatible-provider", provider, List.of(),
+                        PluginCatalogBuilder.PLUGIN_API_LEVEL + 1)));
+
+        Thread thread = Thread.currentThread();
+        ClassLoader original = thread.getContextClassLoader();
+        try (URLClassLoader parent = new ServiceOnlyClassLoader(
+                new URL[0], getClass().getClassLoader())) {
+            thread.setContextClassLoader(parent);
+            PluginLoaderHandle handle = PluginLoaderHandle.directory(directory, parent);
+            Path snapshotDirectory = handle.artifacts().getFirst().getParent();
+
+            assertThatThrownBy(() -> PluginRuntimeEnvironment.open(
+                    PluginsOptions.defaults(), handle))
+                    .isInstanceOf(PluginCatalogActivationException.class)
+                    .hasMessageContaining("does not support Yano plugin API major "
+                            + PluginCatalogBuilder.PLUGIN_API_MAJOR + " level "
+                            + PluginCatalogBuilder.PLUGIN_API_LEVEL)
+                    .hasMessageNotContaining("provider types could not be validated");
             assertThat(handle.classLoader()).isSameAs(parent);
             assertThat(snapshotDirectory).doesNotExist();
             assertThat(thread.getContextClassLoader()).isSameAs(parent);
@@ -2369,7 +2743,7 @@ class PluginCatalogRuntimeTest {
                 BundleManifest.CURRENT_SCHEMA_VERSION,
                 OpaqueVersionDependentSink.ID,
                 SemVersion.parse("1.0.0"),
-                new YanoApiRange(1, 1),
+                new YanoApiRange(1, 1, 1),
                 List.of(),
                 List.of(new BundleContribution(ContributionKind.FINALIZED_SINK,
                         OpaqueVersionDependentSink.SCHEME,
@@ -2674,7 +3048,7 @@ class PluginCatalogRuntimeTest {
                 BundleManifest.CURRENT_SCHEMA_VERSION,
                 id,
                 SemVersion.parse("1.0.0"),
-                new YanoApiRange(1, 1),
+                new YanoApiRange(1, 1, 1),
                 List.of(),
                 List.of(new BundleContribution(
                         ContributionKind.NODE_PLUGIN, id, provider.getName())));
@@ -2691,7 +3065,7 @@ class PluginCatalogRuntimeTest {
                 BundleManifest.CURRENT_SCHEMA_VERSION,
                 id,
                 SemVersion.parse("1.0.0"),
-                new YanoApiRange(1, 1),
+                new YanoApiRange(1, 1, 1),
                 List.of(),
                 List.of(new BundleContribution(
                         ContributionKind.FINALIZED_SINK, selector, provider)));
@@ -2704,6 +3078,163 @@ class PluginCatalogRuntimeTest {
 
     private static String digest(char character) {
         return "sha256:" + String.valueOf(character).repeat(64);
+    }
+
+    private ParityMatrix parityMatrix() throws IOException {
+        String independentId = "com.example.parity-a-independent";
+        String baseId = "com.example.parity-z-base";
+        String middleId = "com.example.parity-b-middle";
+        String allKindsId = "com.example.parity-c-all-kinds";
+        List<BundleContribution> allKinds = new ArrayList<>();
+        Map<ContributionKind, List<Class<?>>> providers = new LinkedHashMap<>();
+        for (ContributionKind kind : ContributionKind.values()) {
+            Class<?> provider = parityProvider(kind);
+            String name = kind.manifestRequired()
+                    ? allKindsId : "parity-" + kind.manifestKey();
+            allKinds.add(new BundleContribution(kind, name, provider.getName()));
+            providers.put(kind, List.of(provider));
+        }
+        PluginIndex index = index(
+                parityBundle(middleId, "2.1.0",
+                        List.of(new BundleDependency(
+                                baseId, SemVersion.parse("1.0.0"),
+                                SemVersion.parse("2.0.0"))),
+                        List.of(), 'c', PluginDigestMode.ARTIFACT_CLOSURE),
+                parityBundle(allKindsId, "3.0.0",
+                        List.of(new BundleDependency(
+                                middleId, SemVersion.parse("2.0.0"),
+                                SemVersion.parse("3.0.0"))),
+                        allKinds, 'd', PluginDigestMode.JAR),
+                parityBundle(baseId, "1.5.0", List.of(), List.of(),
+                        'b', PluginDigestMode.ARTIFACT_TREE),
+                parityBundle(independentId, "1.0.0", List.of(), List.of(),
+                        'a', PluginDigestMode.JAR));
+        return new ParityMatrix(index,
+                serviceJar("parity-all-kinds-services.jar", providers),
+                independentId, baseId, middleId, allKindsId);
+    }
+
+    private Path serviceJar(
+            String name,
+            Map<ContributionKind, List<Class<?>>> providers
+    ) throws IOException {
+        Map<String, byte[]> entries = new LinkedHashMap<>();
+        providers.forEach((kind, types) -> entries.put(
+                "META-INF/services/" + kind.serviceType().getName(),
+                (types.stream().map(Class::getName)
+                        .collect(java.util.stream.Collectors.joining("\n")) + "\n")
+                        .getBytes(StandardCharsets.UTF_8)));
+        Path output = tempDirectory.resolve(name);
+        writeJar(output, entries);
+        return output;
+    }
+
+    private static IndexedBundle parityBundle(
+            String id,
+            String version,
+            List<BundleDependency> dependencies,
+            List<BundleContribution> contributions,
+            char digestCharacter,
+            PluginDigestMode digestMode
+    ) {
+        return new IndexedBundle(new BundleManifest(
+                BundleManifest.CURRENT_SCHEMA_VERSION,
+                id,
+                SemVersion.parse(version),
+                new YanoApiRange(PluginCatalogBuilder.PLUGIN_API_MAJOR,
+                        PluginCatalogBuilder.PLUGIN_API_MAJOR,
+                        PluginCatalogBuilder.PLUGIN_API_LEVEL),
+                dependencies,
+                contributions), digest(digestCharacter), digestMode);
+    }
+
+    private static PluginIndex index(IndexedBundle... bundles) {
+        return new PluginIndex(
+                PluginIndex.CURRENT_SCHEMA_VERSION, List.of(bundles), List.of());
+    }
+
+    private static PluginIndex replaceBundle(
+            PluginIndex source,
+            IndexedBundle replacement
+    ) {
+        return new PluginIndex(source.schemaVersion(), source.bundles().stream()
+                .map(bundle -> bundle.manifest().id().equals(replacement.manifest().id())
+                        ? replacement : bundle)
+                .toList(), source.legacyProviders());
+    }
+
+    private static Class<?> parityProvider(ContributionKind kind) {
+        return switch (kind) {
+            case NODE_PLUGIN -> ParityNodePlugin.class;
+            case APP_STATE_MACHINE -> ParityStateMachineProvider.class;
+            case SEQUENCER_MODE -> ParitySequencerProvider.class;
+            case L1_OBSERVER -> ParityL1ObserverProvider.class;
+            case SIGNER_PROVIDER -> ParitySignerProvider.class;
+            case EFFECT_EXECUTOR -> ParityEffectProvider.class;
+            case FINALIZED_SINK -> ParitySinkProvider.class;
+            case DOMAIN_API -> ParityDomainApiProvider.class;
+            case HEALTH -> ParityHealthProvider.class;
+            case METRICS -> ParityMetricsProvider.class;
+        };
+    }
+
+    private static void assertCatalogParity(
+            PluginCatalogInspection offline,
+            PluginCatalogSnapshot runtime
+    ) {
+        assertThat(offline.pluginApiMajor()).isEqualTo(runtime.pluginApiMajor());
+        assertThat(offline.pluginApiLevel()).isEqualTo(runtime.pluginApiLevel());
+        assertThat(offline.fingerprint()).isEqualTo(runtime.fingerprint());
+        assertThat(offline.selectedBundleOrder()).isEqualTo(runtime.selectedBundleOrder());
+        Map<String, PluginBundleInfo> runtimeById = new LinkedHashMap<>();
+        runtime.bundles().forEach(bundle -> runtimeById.put(bundle.id(), bundle));
+        assertThat(offline.bundles()).extracting(PluginBundleInfo::id)
+                .containsExactlyElementsOf(runtimeById.keySet());
+        for (PluginBundleInfo expected : offline.bundles()) {
+            PluginBundleInfo actual = runtimeById.get(expected.id());
+            assertThat(actual.version()).isEqualTo(expected.version());
+            assertThat(actual.selected()).isEqualTo(expected.selected());
+            assertThat(actual.selectionStatus()).isEqualTo(expected.selectionStatus());
+            assertThat(actual.legacy()).isEqualTo(expected.legacy());
+            assertThat(actual.digest()).isEqualTo(expected.digest());
+            assertThat(actual.digestMode()).isEqualTo(expected.digestMode());
+            assertThat(actual.dependencies()).isEqualTo(expected.dependencies());
+            assertThat(actual.contributions()).isEqualTo(expected.contributions());
+        }
+    }
+
+    private static Map<String, PluginSelectionStatus> selectionStatuses(
+            List<PluginBundleInfo> bundles
+    ) {
+        Map<String, PluginSelectionStatus> statuses = new LinkedHashMap<>();
+        bundles.forEach(bundle -> statuses.put(bundle.id(), bundle.selectionStatus()));
+        return statuses;
+    }
+
+    private static void assertParityFailure(
+            PluginIndex index,
+            PluginsOptions options,
+            PluginCatalogInspectionPolicy policy,
+            ClassLoader loader,
+            String messageFragment
+    ) {
+        Throwable offline = catchThrowable(() ->
+                new PluginCatalogInspector().inspect(index, policy));
+        AtomicReference<PluginCatalogBuilder.BuildResult> unexpected =
+                new AtomicReference<>();
+        Throwable runtime = catchThrowable(() -> unexpected.set(
+                new PluginCatalogBuilder().build(options, loader,
+                        List.of(new PluginCatalogBuilder.CatalogInput(
+                                index, PluginSourceCategory.CLASSPATH)))));
+        if (unexpected.get() != null) {
+            unexpected.get().registry().close();
+        }
+        assertThat(offline)
+                .isInstanceOf(PluginCatalogException.class)
+                .hasMessageContaining(messageFragment);
+        assertThat(runtime)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining(messageFragment);
     }
 
     private PluginLoaderHandle directoryHandleWithIndexEnumerationFailure(
@@ -3168,6 +3699,16 @@ class PluginCatalogRuntimeTest {
             String provider,
             List<String> dependencies
     ) {
+        return manifest(id, name, provider, dependencies, 1);
+    }
+
+    private static byte[] manifest(
+            String id,
+            String name,
+            String provider,
+            List<String> dependencies,
+            int minLevel
+    ) {
         String dependencyJson = dependencies.stream()
                 .map(dependency -> "{\"id\":\"" + dependency + "\"}")
                 .collect(java.util.stream.Collectors.joining(","));
@@ -3176,13 +3717,13 @@ class PluginCatalogRuntimeTest {
                   "schemaVersion": 1,
                   "id": "%s",
                   "version": "1.0.0",
-                  "yanoApi": {"min": 1, "max": 1},
+                  "yanoApi": {"min": 1, "max": 1, "minLevel": %d},
                   "dependencies": [%s],
                   "contributions": [
                     {"kind": "finalized-sink", "name": "%s", "provider": "%s"}
                   ]
                 }
-                """.formatted(id, dependencyJson, name, provider))
+                """.formatted(id, minLevel, dependencyJson, name, provider))
                 .getBytes(StandardCharsets.UTF_8);
     }
 
@@ -3210,7 +3751,7 @@ class PluginCatalogRuntimeTest {
                     BundleManifest.CURRENT_SCHEMA_VERSION,
                     deepCatalogBundleId(index),
                     SemVersion.parse("1.0.0"),
-                    new YanoApiRange(1, 1),
+                    new YanoApiRange(1, 1, 1),
                     dependencies,
                     List.of());
             bundles.add(new IndexedBundle(
@@ -3262,6 +3803,135 @@ class PluginCatalogRuntimeTest {
                 output.write(entry.getValue());
                 output.closeEntry();
             }
+        }
+    }
+
+    private record ParityMatrix(
+            PluginIndex index,
+            Path services,
+            String independentId,
+            String baseId,
+            String middleId,
+            String allKindsId
+    ) {
+    }
+
+    private record ReservedContribution(ContributionKind kind, String name) {
+    }
+
+    private static AssertionError unexpectedParityActivation() {
+        return new AssertionError("catalog parity providers must not be activated");
+    }
+
+    public static final class ParityNodePlugin implements NodePlugin {
+        @Override public String id() { throw unexpectedParityActivation(); }
+        @Override public String version() { throw unexpectedParityActivation(); }
+        @Override public void init(PluginContext ctx) { throw unexpectedParityActivation(); }
+        @Override public void start() { throw unexpectedParityActivation(); }
+        @Override public void stop() { throw unexpectedParityActivation(); }
+        @Override public void close() { throw unexpectedParityActivation(); }
+    }
+
+    public static final class ParityStateMachineProvider implements AppStateMachineProvider {
+        @Override public String id() { throw unexpectedParityActivation(); }
+        @Override public AppStateMachine create() { throw unexpectedParityActivation(); }
+    }
+
+    public static final class ParitySequencerProvider implements SequencerModeProvider {
+        @Override public String id() { throw unexpectedParityActivation(); }
+        @Override
+        public SequencerMode create(SequencerContext context) {
+            throw unexpectedParityActivation();
+        }
+    }
+
+    public static final class ParityL1ObserverProvider implements L1ObserverProvider {
+        @Override public String type() { throw unexpectedParityActivation(); }
+        @Override
+        public L1Observer create(String observerId, Map<String, String> settings) {
+            throw unexpectedParityActivation();
+        }
+    }
+
+    public static final class ParitySignerProvider implements SignerProviderFactory {
+        @Override public String scheme() { throw unexpectedParityActivation(); }
+        @Override
+        public SignerProvider create(String keyReference) {
+            throw unexpectedParityActivation();
+        }
+    }
+
+    public static final class ParityEffectProvider implements AppEffectExecutorFactory {
+        @Override public String scheme() { throw unexpectedParityActivation(); }
+        @Override
+        public List<AppEffectExecutor> create(
+                String chainId,
+                Map<String, String> config
+        ) {
+            throw unexpectedParityActivation();
+        }
+    }
+
+    public static final class ParitySinkProvider implements FinalizedStreamSinkFactory {
+        @Override public String scheme() { throw unexpectedParityActivation(); }
+        @Override
+        public List<FinalizedStreamSink> create(
+                String chainId,
+                Map<String, String> config
+        ) {
+            throw unexpectedParityActivation();
+        }
+    }
+
+    public static final class SecondParitySinkProvider implements FinalizedStreamSinkFactory {
+        @Override public String scheme() { throw unexpectedParityActivation(); }
+        @Override
+        public List<FinalizedStreamSink> create(
+                String chainId,
+                Map<String, String> config
+        ) {
+            throw unexpectedParityActivation();
+        }
+    }
+
+    public static final class LevelGatedSinkProvider implements FinalizedStreamSinkFactory {
+        private static final AtomicInteger constructorCalls = new AtomicInteger();
+
+        public LevelGatedSinkProvider() {
+            constructorCalls.incrementAndGet();
+        }
+
+        @Override public String scheme() { throw unexpectedParityActivation(); }
+        @Override
+        public List<FinalizedStreamSink> create(
+                String chainId,
+                Map<String, String> config
+        ) {
+            throw unexpectedParityActivation();
+        }
+    }
+
+    public static final class ParityDomainApiProvider implements DomainApiProvider {
+        @Override public String id() { throw unexpectedParityActivation(); }
+        @Override
+        public DomainApi create(DomainApiContext context) {
+            throw unexpectedParityActivation();
+        }
+    }
+
+    public static final class ParityHealthProvider implements PluginHealthProvider {
+        @Override public String id() { throw unexpectedParityActivation(); }
+        @Override
+        public PluginHealthSource create(PluginHealthContext context) {
+            throw unexpectedParityActivation();
+        }
+    }
+
+    public static final class ParityMetricsProvider implements PluginMetricsProvider {
+        @Override public String id() { throw unexpectedParityActivation(); }
+        @Override
+        public PluginMetricsSource create(PluginMetricsContext context) {
+            throw unexpectedParityActivation();
         }
     }
 

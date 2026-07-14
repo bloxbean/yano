@@ -111,7 +111,8 @@ state machine's exact wire format — see the
 ## 3. Quick start: two-node cluster with the default distribution
 
 This walkthrough uses `java -jar` with `-D` flags (built from source). The
-**official distributions** work the same way — only where config lives differs:
+**official distributions** work the same way — only where ordinary runtime
+config lives differs:
 the release zip (`yano-<ver>.zip`) has a `./yano.sh start:<profile>` launcher
 plus `config/application.yml`; the Docker bundle (`yano-docker-<ver>.zip`)
 mounts `config/application.yml` and a `plugins/` directory into the
@@ -119,6 +120,10 @@ mounts `config/application.yml` and a `plugins/` directory into the
 directory plugin JARs after build; manifested bundles may be included when the
 native application is built). See the tutorial's Part 0 for per-distribution
 instructions; releases: https://github.com/bloxbean/yano/releases
+
+The public REST prefix is the exception: it is an immutable artifact input,
+not a `-D` or YAML launch setting. Build it with `-PyanoApiPrefix` as described
+in section 4 and the distribution guide.
 
 ### 3.1 Generate member keys
 
@@ -237,7 +242,12 @@ Highlights (full reference: `appchain-cluster/README.md`):
 
 ## 4. REST API
 
-Base path: `${yano.api-prefix}/app-chain` (default `/api/v1/app-chain`).
+Base path: `<artifact-api-prefix>/app-chain` (default
+`/api/v1/app-chain`). The prefix is fixed into each JVM/native/container
+artifact with strict `-PyanoApiPrefix=<path>`; it is not editable launch
+configuration. `/` and canonical paths up to 256 characters are supported.
+Changing it requires a rebuild; see
+[`BUILD_DISTRIBUTIONS.md`](BUILD_DISTRIBUTIONS.md#artifact-api-prefix).
 
 Every chain endpoint below is also available **chain-scoped** as
 `/app-chain/chains/{chainId}/...` on a multi-chain node (section 8). The
@@ -1052,7 +1062,12 @@ traffic/anchor/sinks/peers panels, four trend charts, a live SSE message feed
 and a recent-blocks table. Query params: `?api=` (API prefix), `?poll=` (ms),
 `?noanim=1`. When API-key auth is enabled, set the key via the key button
 (stored in the browser; the live feed uses fetch-streaming so the key applies
-there too).
+there too). The `?api=` value only tells this app-chain page where to call; it
+does not reconfigure server routing and must match the prefix baked into the
+artifact. The privileged plugin dashboard at `/ui/plugins/` does not accept
+such an override: it uses immutable `/ui/plugins/api-prefix.json` and fails
+closed if discovery is missing or invalid. See
+[`PLUGIN_OPERATIONS.md`](PLUGIN_OPERATIONS.md).
 
 `GET /status` also reports `lastBlockAtMillis`, `blockIntervalMs` (rolling
 average), `stalled`, `drops` (by reason), `anchor.lagBlocks` and per-sink
@@ -1522,7 +1537,7 @@ Register it via
   "schemaVersion": 1,
   "id": "com.example.ipfs",
   "version": "1.0.0",
-  "yanoApi": { "min": 1, "max": 1 },
+  "yanoApi": { "min": 1, "max": 1, "minLevel": 1 },
   "dependencies": [],
   "contributions": [
     {

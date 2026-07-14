@@ -134,8 +134,10 @@ public final class BundleManifestParser {
             throw new IllegalArgumentException("schemaVersion must be present");
         }
         SemVersion version = SemVersion.parse(raw.version);
-        if (raw.yanoApi == null || raw.yanoApi.min == null || raw.yanoApi.max == null) {
-            throw new IllegalArgumentException("yanoApi.min and yanoApi.max must be present");
+        if (raw.yanoApi == null || raw.yanoApi.min == null || raw.yanoApi.max == null
+                || raw.yanoApi.minLevel == null) {
+            throw new IllegalArgumentException(
+                    "yanoApi.min, yanoApi.max and yanoApi.minLevel must be present");
         }
         List<BundleDependency> dependencies = new ArrayList<>();
         if (raw.dependencies != null) {
@@ -165,7 +167,7 @@ public final class BundleManifestParser {
                 raw.schemaVersion,
                 raw.id,
                 version,
-                new YanoApiRange(raw.yanoApi.min, raw.yanoApi.max),
+                new YanoApiRange(raw.yanoApi.min, raw.yanoApi.max, raw.yanoApi.minLevel),
                 dependencies,
                 contributions);
     }
@@ -301,7 +303,7 @@ public final class BundleManifestParser {
     ) {
     }
 
-    private record RawYanoApi(Integer min, Integer max) {
+    private record RawYanoApi(Integer min, Integer max, Integer minLevel) {
     }
 
     private record RawDependency(String id, String minVersion, String maxVersionExclusive) {

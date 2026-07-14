@@ -86,8 +86,8 @@ class AppChainProviderRegistryTest {
             first.stop();
         }
 
-        assertThat(fixtures.closedSinks.get()).isEqualTo(2);
-        assertThat(fixtures.closedExecutors.get()).isEqualTo(2);
+        awaitValue(fixtures.closedSinks, 2);
+        awaitValue(fixtures.closedExecutors, 2);
     }
 
     @Test
@@ -156,7 +156,7 @@ class AppChainProviderRegistryTest {
         } finally {
             subsystem.stop();
         }
-        assertThat(closes).hasValue(1);
+        awaitValue(closes, 1);
     }
 
     @Test
@@ -211,7 +211,7 @@ class AppChainProviderRegistryTest {
             subsystem.stop();
         }
         assertThat(creations).hasValue(2);
-        assertThat(closes).hasValue(2);
+        awaitValue(closes, 2);
     }
 
     @Test
@@ -237,7 +237,7 @@ class AppChainProviderRegistryTest {
 
         subsystem.start();
         subsystem.stop();
-        assertThat(closes).hasValue(1);
+        awaitValue(closes, 1);
         assertThatThrownBy(subsystem::start)
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("previous runtime cleanup failed")
@@ -317,7 +317,7 @@ class AppChainProviderRegistryTest {
         } finally {
             subsystem.stop();
         }
-        assertThat(closes).hasValue(1);
+        awaitValue(closes, 1);
     }
 
     @Test
@@ -906,7 +906,7 @@ class AppChainProviderRegistryTest {
             subsystem.stop();
         }
         assertThat(failingCloses).hasValue(1);
-        assertThat(healthyCloses).hasValue(1);
+        awaitValue(healthyCloses, 1);
     }
 
     @Test
@@ -1359,6 +1359,16 @@ class AppChainProviderRegistryTest {
         private FatalPluginError(String message) {
             super(message);
         }
+    }
+
+    /** A normal stop is bounded; an already-admitted callback may close just after it returns. */
+    private static void awaitValue(AtomicInteger actual, int expected) {
+        assertTimeoutPreemptively(Duration.ofSeconds(5), () -> {
+            while (actual.get() < expected) {
+                Thread.sleep(10);
+            }
+            assertThat(actual).hasValue(expected);
+        });
     }
 
     private static byte[] seed(int fill) {

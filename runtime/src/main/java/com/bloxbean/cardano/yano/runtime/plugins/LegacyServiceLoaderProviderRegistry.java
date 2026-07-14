@@ -36,7 +36,7 @@ import java.util.function.Function;
 public final class LegacyServiceLoaderProviderRegistry
         implements PluginProviderRegistry, AutoCloseable {
     /** Keep raw ServiceLoader traversal within the aggregate-index provider bound. */
-    static final int MAX_DISCOVERED_PROVIDERS = PluginIndex.MAX_LEGACY_PROVIDERS;
+    static final int MAX_DISCOVERED_PROVIDERS = PluginIndex.MAX_PROVIDERS;
     private static final int MAX_LEGACY_SELECTOR_LENGTH = 128;
 
     private final Map<Class<?>, Map<String, Object>> providers;
@@ -138,7 +138,7 @@ public final class LegacyServiceLoaderProviderRegistry
                 }
             }
         } catch (Throwable failure) {
-            LifecycleFailures.rethrowIfProcessFatal(failure);
+            LifecycleFailures.rethrowIfProcessFatalReachable(failure);
             throw new IllegalStateException(type.getSimpleName() + " discovery failed", failure);
         }
         destination.put(type, Collections.unmodifiableMap(new LinkedHashMap<>(byName)));
@@ -286,7 +286,7 @@ public final class LegacyServiceLoaderProviderRegistry
     }
 
     private static IllegalStateException initializationFailure(Throwable failure) {
-        LifecycleFailures.rethrowIfProcessFatal(failure);
+        LifecycleFailures.rethrowIfProcessFatalReachable(failure);
         return new IllegalStateException(
                 "Legacy plugin provider registry initialization failed", failure);
     }
@@ -295,7 +295,7 @@ public final class LegacyServiceLoaderProviderRegistry
         if (failure == null) {
             return;
         }
-        LifecycleFailures.rethrowIfProcessFatal(failure);
+        LifecycleFailures.rethrowIfProcessFatalReachable(failure);
         throw new IllegalStateException("Legacy plugin provider close failed", failure);
     }
 

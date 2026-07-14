@@ -1,9 +1,8 @@
 package com.bloxbean.cardano.yano.api.plugin.domain;
 
 import com.bloxbean.cardano.yano.api.appchain.AppQueryPath;
+import com.bloxbean.cardano.yano.api.config.PluginConfigValues;
 
-import java.math.BigDecimal;
-import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -21,6 +20,14 @@ final class DomainApiValidation {
     private static final Pattern URI_SEGMENT = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._~-]*");
     private static final Pattern QUERY_NAME = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._~-]{0,63}");
     private static final Pattern CONFIG_KEY = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._\\[\\]-]{0,159}");
+    private static final PluginConfigValues.Limits CONFIG_LIMITS =
+            new PluginConfigValues.Limits(
+                    DomainApiContext.MAX_CONFIG_DEPTH,
+                    DomainApiContext.MAX_CONFIG_NODES,
+                    DomainApiContext.MAX_CONFIG_CHARACTERS,
+                    DomainApiContext.MAX_CONFIG_COLLECTION_ENTRIES,
+                    DomainApiContext.MAX_CONFIG_KEY_LENGTH,
+                    DomainApiContext.MAX_CONFIG_VALUE_LENGTH);
 
     private DomainApiValidation() {
     }
@@ -151,88 +158,33 @@ final class DomainApiValidation {
         if (values.size() > DomainApiContext.MAX_CONFIG_ENTRIES) {
             throw new IllegalArgumentException("bundleConfig must contain at most 256 entries");
         }
-        ConfigBudget budget = new ConfigBudget();
-        return immutableStringMap(values, 0, budget);
+        return canonicalConfigMap(PluginConfigValues.immutableCopy(values, CONFIG_LIMITS));
     }
 
-    private static Map<String, Object> immutableStringMap(
-            Map<?, ?> values,
-            int depth,
-            ConfigBudget budget
-    ) {
-        requireConfigDepth(depth);
+    private static Map<String, Object> canonicalConfigMap(Map<?, ?> values) {
         Map<String, Object> copy = new TreeMap<>();
         for (Map.Entry<?, ?> entry : values.entrySet()) {
             if (!(entry.getKey() instanceof String key) || !CONFIG_KEY.matcher(key).matches()) {
                 throw new IllegalArgumentException(
                         "bundleConfig keys must be 1-160 character ASCII property names");
             }
-            budget.add(key.length());
-            copy.put(key, immutableConfigValue(entry.getValue(), depth + 1, budget));
+            copy.put(key, canonicalConfigValue(entry.getValue()));
         }
         return Collections.unmodifiableMap(new LinkedHashMap<>(copy));
     }
 
-    private static Object immutableConfigValue(Object value, int depth, ConfigBudget budget) {
-        requireConfigDepth(depth);
-        Objects.requireNonNull(value, "bundleConfig values must not be null");
-        budget.addNode();
-        if (value instanceof String text) {
-            if (text.length() > DomainApiContext.MAX_CONFIG_VALUE_LENGTH) {
-                throw new IllegalArgumentException(
-                        "bundleConfig string values must contain at most 8192 characters");
-            }
-            budget.add(text.length());
-            return text;
-        }
-        if (value instanceof Boolean || value instanceof Byte || value instanceof Short
-                || value instanceof Integer || value instanceof Long) {
-            budget.add(value.toString().length());
-            return value;
-        }
-        if (value.getClass() == BigInteger.class) {
-            budget.add(value.toString().length());
-            return value;
-        }
-        if (value instanceof Float number) {
-            if (!Float.isFinite(number)) {
-                throw new IllegalArgumentException("bundleConfig numbers must be finite");
-            }
-            budget.add(number.toString().length());
-            return number;
-        }
-        if (value instanceof Double number) {
-            if (!Double.isFinite(number)) {
-                throw new IllegalArgumentException("bundleConfig numbers must be finite");
-            }
-            budget.add(number.toString().length());
-            return number;
-        }
-        if (value.getClass() == BigDecimal.class) {
-            BigDecimal number = (BigDecimal) value;
-            budget.add(number.toString().length());
-            return number;
-        }
+    private static Object canonicalConfigValue(Object value) {
         if (value instanceof Map<?, ?> map) {
-            if (map.size() > DomainApiContext.MAX_CONFIG_COLLECTION_ENTRIES) {
-                throw new IllegalArgumentException(
-                        "nested bundleConfig maps must contain at most 256 entries");
-            }
-            return immutableStringMap(map, depth, budget);
+            return canonicalConfigMap(map);
         }
         if (value instanceof List<?> list) {
-            if (list.size() > DomainApiContext.MAX_CONFIG_COLLECTION_ENTRIES) {
-                throw new IllegalArgumentException(
-                        "nested bundleConfig lists must contain at most 256 entries");
-            }
             List<Object> copy = new ArrayList<>(list.size());
             for (Object nested : list) {
-                copy.add(immutableConfigValue(nested, depth + 1, budget));
+                copy.add(canonicalConfigValue(nested));
             }
             return List.copyOf(copy);
         }
-        throw new IllegalArgumentException(
-                "bundleConfig values must be immutable scalars, string-keyed maps, or lists");
+        return value;
     }
 
     private static List<String> splitRelativePath(
@@ -257,12 +209,6 @@ final class DomainApiValidation {
         return segments;
     }
 
-    private static void requireConfigDepth(int depth) {
-        if (depth > DomainApiContext.MAX_CONFIG_DEPTH) {
-            throw new IllegalArgumentException("bundleConfig nesting must not exceed 8 levels");
-        }
-    }
-
     private static boolean containsControl(String value) {
         return value.codePoints().anyMatch(Character::isISOControl);
     }
@@ -275,22 +221,4 @@ final class DomainApiValidation {
     record Template(String value, List<String> parameterNames) {
     }
 
-    private static final class ConfigBudget {
-        private int nodes;
-        private int characters;
-
-        void addNode() {
-            if (++nodes > DomainApiContext.MAX_CONFIG_NODES) {
-                throw new IllegalArgumentException("bundleConfig contains more than 2048 values");
-            }
-        }
-
-        void add(int count) {
-            characters += count;
-            if (characters > DomainApiContext.MAX_CONFIG_CHARACTERS) {
-                throw new IllegalArgumentException(
-                        "bundleConfig exceeds the 65536 character aggregate limit");
-            }
-        }
-    }
 }

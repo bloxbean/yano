@@ -24,6 +24,8 @@ import com.bloxbean.cardano.yano.api.config.UpstreamValidationConfig;
 import com.bloxbean.cardano.yano.api.config.UpstreamValidationStartConfig;
 import com.bloxbean.cardano.yano.api.config.YanoConfig;
 import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
+import com.bloxbean.cardano.yano.api.plugin.PluginCatalogView;
+import com.bloxbean.cardano.yano.api.plugin.operations.PluginOperationsView;
 import com.bloxbean.cardano.yano.app.bootstrap.BootstrapConfigParser;
 import com.bloxbean.cardano.yano.bootstrap.providers.DefaultBootstrapDataProviderFactory;
 import com.bloxbean.cardano.yano.devnet.YanoDevnetAssembly;
@@ -154,6 +156,9 @@ public class YanoProducer {
 
     @ConfigProperty(name = YanoPropertyKeys.API_PREFIX, defaultValue = "/api/v1")
     String apiPrefix;
+
+    @Inject
+    ApiPrefixContract apiPrefixContract;
 
     @ConfigProperty(name = YanoPropertyKeys.Events.ENABLED, defaultValue = "true")
     boolean eventsEnabled;
@@ -517,6 +522,9 @@ public class YanoProducer {
     }
 
     Yano ensureYano() {
+        if (apiPrefixContract != null) {
+            apiPrefixContract.verify();
+        }
         if (yano != null) {
             return yano;
         }
@@ -849,6 +857,20 @@ public class YanoProducer {
         return ensureYano().domainApis();
     }
 
+    @Produces
+    @ApplicationScoped
+    public PluginCatalogView createPluginCatalogView() {
+        return ensureYano().pluginCatalog()
+                .orElseThrow(() -> unavailableRole("PluginCatalogView"));
+    }
+
+    @Produces
+    @ApplicationScoped
+    public PluginOperationsView createPluginOperationsView() {
+        return ensureYano().pluginOperations()
+                .orElseThrow(() -> unavailableRole("PluginOperationsView"));
+    }
+
     /**
      * Multi-chain config (ADR app-layer/006 E5.2): reads indexed properties
      * yano.app-chain.chains[i].&lt;suffix&gt; into suffix-keyed maps for the runtime.
@@ -941,6 +963,9 @@ public class YanoProducer {
     }
 
     void onStart(@Observes StartupEvent event) {
+        if (apiPrefixContract != null) {
+            apiPrefixContract.verify();
+        }
         log.info("Yano application starting up...");
         log.info("Auto-sync-start enabled: {}", autoSyncStart);
 
@@ -1062,7 +1087,9 @@ public class YanoProducer {
     }
 
     private String nodeApiBaseUrl() {
-        return "http://localhost:" + httpPort + normalizedApiPrefix() + "/node";
+        String prefix = apiPrefixContract != null
+                ? apiPrefixContract.pathPrefix() : normalizedApiPrefix();
+        return "http://localhost:" + httpPort + prefix + "/node";
     }
 
     private String normalizedApiPrefix() {

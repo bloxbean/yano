@@ -56,7 +56,7 @@ class LifecycleFailuresTest {
     }
 
     @Test
-    void processFatalCauseInspectionEscapesInsteadOfBeingSwallowed() {
+    void processFatalCauseInspectionIsRetainedForRethrowAfterCleanup() {
         TestVirtualMachineError fatal = new TestVirtualMachineError();
         RuntimeException primary = new RuntimeException("primary") {
             @Override
@@ -65,10 +65,11 @@ class LifecycleFailuresTest {
             }
         };
 
-        org.assertj.core.api.Assertions.assertThatThrownBy(
-                        () -> LifecycleFailures.merge(primary,
-                                new RuntimeException("cleanup")))
-                .isSameAs(fatal);
+        RuntimeException cleanup = new RuntimeException("cleanup");
+        Throwable merged = LifecycleFailures.merge(primary, cleanup);
+
+        assertThat(merged).isSameAs(fatal);
+        assertThat(fatal.getSuppressed()).containsExactly(cleanup);
     }
 
     @Test
@@ -85,6 +86,45 @@ class LifecycleFailuresTest {
         org.assertj.core.api.Assertions.assertThatThrownBy(
                         () -> LifecycleFailures.rethrowIfProcessFatalReachable(suppressedWrapper))
                 .isSameAs(suppressedFatal);
+    }
+
+    @Test
+    void mergePromotesNestedFatalWithoutLosingEarlierCleanupFailure() {
+        AssertionError earlier = new AssertionError("earlier");
+        TestVirtualMachineError causeFatal = new TestVirtualMachineError();
+        RuntimeException causeWrapper = new RuntimeException("wrapper", causeFatal);
+
+        Throwable causeMerged = LifecycleFailures.merge(earlier, causeWrapper);
+
+        assertThat(causeMerged).isSameAs(causeFatal);
+        assertThat(causeFatal.getSuppressed()).containsExactly(earlier);
+
+        AssertionError secondEarlier = new AssertionError("second-earlier");
+        TestVirtualMachineError suppressedFatal = new TestVirtualMachineError();
+        RuntimeException suppressedWrapper = new RuntimeException("wrapper");
+        suppressedWrapper.addSuppressed(suppressedFatal);
+
+        Throwable suppressedMerged = LifecycleFailures.merge(
+                secondEarlier, suppressedWrapper);
+
+        assertThat(suppressedMerged).isSameAs(suppressedFatal);
+        assertThat(suppressedFatal.getSuppressed()).containsExactly(secondEarlier);
+    }
+
+    @Test
+    void hostileOrdinaryCauseAccessorCannotHideSuppressedFatal() {
+        TestVirtualMachineError fatal = new TestVirtualMachineError();
+        RuntimeException wrapper = new RuntimeException("wrapper") {
+            @Override
+            public synchronized Throwable getCause() {
+                throw new IllegalStateException("hostile cause accessor");
+            }
+        };
+        wrapper.addSuppressed(fatal);
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(
+                        () -> LifecycleFailures.rethrowIfProcessFatalReachable(wrapper))
+                .isSameAs(fatal);
     }
 
     private static final class FreshCauseFailure extends RuntimeException {

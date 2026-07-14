@@ -26,8 +26,16 @@ public record PluginIndex(
     public static final String RESOURCE_PATH = "META-INF/yano-plugin-index-v1.json";
     /** Maximum manifested bundles accepted in one index. */
     public static final int MAX_BUNDLES = 4_096;
-    /** Maximum legacy providers accepted in one index. */
-    public static final int MAX_LEGACY_PROVIDERS = 32_768;
+    /** Maximum manifested contributions plus legacy-provider evidence in one index. */
+    public static final int MAX_PROVIDERS = 32_768;
+    /**
+     * Compatibility name for the former legacy-only ceiling.
+     *
+     * @deprecated use {@link #MAX_PROVIDERS}; the ceiling now covers every
+     * manifested contribution plus legacy-provider evidence together
+     */
+    @Deprecated
+    public static final int MAX_LEGACY_PROVIDERS = MAX_PROVIDERS;
 
     /** Validates, canonically sorts, defensively copies, and creates an index. */
     public PluginIndex {
@@ -37,8 +45,8 @@ public record PluginIndex(
         if (bundles != null && bundles.size() > MAX_BUNDLES) {
             throw new IllegalArgumentException("plugin index contains too many bundles");
         }
-        if (legacyProviders != null && legacyProviders.size() > MAX_LEGACY_PROVIDERS) {
-            throw new IllegalArgumentException("plugin index contains too many legacy providers");
+        if (legacyProviders != null) {
+            validateProviderLimit(0, legacyProviders.size());
         }
         bundles = bundles == null ? List.of() : bundles.stream()
                 .map(bundle -> Objects.requireNonNull(bundle, "plugin index bundles must not contain null"))
@@ -50,6 +58,11 @@ public record PluginIndex(
                 .sorted(Comparator.comparing((IndexedLegacyProvider value) -> value.kind().manifestKey())
                         .thenComparing(IndexedLegacyProvider::provider))
                 .toList();
+        long manifestedProviders = 0;
+        for (IndexedBundle bundle : bundles) {
+            manifestedProviders += bundle.manifest().contributions().size();
+        }
+        validateProviderLimit(manifestedProviders, legacyProviders.size());
         Set<String> ids = new HashSet<>();
         for (IndexedBundle bundle : bundles) {
             if (!ids.add(bundle.manifest().id())) {
@@ -86,6 +99,23 @@ public record PluginIndex(
      */
     public static PluginIndex empty() {
         return new PluginIndex(CURRENT_SCHEMA_VERSION, List.of(), List.of());
+    }
+
+    /** Overflow-safe arithmetic seam used by boundary tests. */
+    static void validateProviderLimit(long manifestedProviders, long legacyProviders) {
+        if (manifestedProviders < 0 || legacyProviders < 0) {
+            throw new IllegalArgumentException("provider counts must not be negative");
+        }
+        if (manifestedProviders > MAX_PROVIDERS
+                || legacyProviders > MAX_PROVIDERS - manifestedProviders) {
+            throw providerLimitExceeded();
+        }
+    }
+
+    private static IllegalArgumentException providerLimitExceeded() {
+        return new IllegalArgumentException("plugin index contains too many providers; maximum "
+                + MAX_PROVIDERS
+                + " covers manifested contributions plus legacy-provider evidence");
     }
 
     private static void validateProviderSource(

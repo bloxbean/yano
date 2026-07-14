@@ -1,12 +1,13 @@
 package com.bloxbean.cardano.yano.runtime.plugins;
 
 import com.bloxbean.cardano.yaci.events.api.EventBus;
+import com.bloxbean.cardano.yano.api.config.PluginConfigValues;
 import com.bloxbean.cardano.yano.api.config.PluginsOptions;
 import com.bloxbean.cardano.yano.api.plugin.NodePlugin;
 import com.bloxbean.cardano.yano.api.plugin.PluginCapability;
 import com.bloxbean.cardano.yano.api.plugin.StorageFilter;
-import com.bloxbean.cardano.yano.runtime.sync.validation.HeaderValidationCustomizer;
 import com.bloxbean.cardano.yano.catalog.PluginIndex;
+import com.bloxbean.cardano.yano.runtime.sync.validation.HeaderValidationCustomizer;
 import com.bloxbean.cardano.yano.runtime.util.LifecycleFailures;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -65,7 +66,7 @@ public final class PluginManager implements AutoCloseable {
     private static final int MAX_PLUGIN_VERSION_LENGTH = 128;
     private static final int MAX_PLUGIN_DEPENDENCIES = 256;
     private static final int MAX_PLUGIN_CAPABILITIES = PluginCapability.values().length;
-    private static final int MAX_DISCOVERED_NODE_PLUGINS = PluginIndex.MAX_LEGACY_PROVIDERS;
+    private static final int MAX_DISCOVERED_NODE_PLUGINS = PluginIndex.MAX_PROVIDERS;
 
     private final EventBus eventBus;
     private final ScheduledExecutorService scheduler;
@@ -84,6 +85,7 @@ public final class PluginManager implements AutoCloseable {
     private final PluginContextFacades.ManagedCallbackResources managedCallbacks;
     /** Shared catalog admission fence; null for standalone legacy managers. */
     private final PluginSpiFacades.CallbackTracker catalogCallbacks;
+    private final NodePluginLifecycleObserver lifecycleObserver;
 
     /** Successfully initialized plugins, always in dependency order. */
     private final List<NodePlugin> plugins = new ArrayList<>();
@@ -110,7 +112,8 @@ public final class PluginManager implements AutoCloseable {
         this(eventBus, scheduler,
                 new PluginsOptions(true, false, Set.of(), Set.of(), config),
                 classLoader, null, Set.of(), Map.of(), false,
-                ignored -> { }, ignored -> { }, null);
+                ignored -> { }, ignored -> { }, null,
+                NodePluginLifecycleObserver.NOOP);
     }
 
     /**
@@ -124,7 +127,8 @@ public final class PluginManager implements AutoCloseable {
                                             ClassLoader classLoader) {
         return new PluginManager(eventBus, scheduler, options, classLoader,
                 null, Set.of(), Map.of(), false,
-                ignored -> { }, ignored -> { }, null);
+                ignored -> { }, ignored -> { }, null,
+                NodePluginLifecycleObserver.NOOP);
     }
 
     /**
@@ -148,7 +152,8 @@ public final class PluginManager implements AutoCloseable {
         return new PluginManager(eventBus, scheduler, catalogPolicy, classLoader,
                 Objects.requireNonNull(selectedPlugins, "selectedPlugins"),
                 selectedBundleIds, bundleConfigs, true,
-                ignored -> { }, ignored -> { }, null);
+                ignored -> { }, ignored -> { }, null,
+                NodePluginLifecycleObserver.NOOP);
     }
 
     /** Catalog lifecycle construction with exact terminal-close accounting. */
@@ -167,7 +172,7 @@ public final class PluginManager implements AutoCloseable {
                 Objects.requireNonNull(selectedPlugins, "selectedPlugins"),
                 selectedBundleIds, bundleConfigs, true,
                 Objects.requireNonNull(terminalCloseObserver, "terminalCloseObserver"),
-                ignored -> { }, null);
+                ignored -> { }, null, NodePluginLifecycleObserver.NOOP);
     }
 
     /** Catalog lifecycle construction with callback-lifetime registration. */
@@ -196,6 +201,23 @@ public final class PluginManager implements AutoCloseable {
                                      Consumer<NodePlugin> terminalCloseObserver,
                                      Consumer<CompletableFuture<Void>> callbackRegistrar,
                                      PluginSpiFacades.CallbackTracker catalogCallbacks) {
+        return fromCatalog(eventBus, scheduler, options, classLoader, selectedPlugins,
+                selectedBundleIds, bundleConfigs, terminalCloseObserver,
+                callbackRegistrar, catalogCallbacks, NodePluginLifecycleObserver.NOOP);
+    }
+
+    /** Catalog lifecycle construction with host-owned lifecycle observation. */
+    static PluginManager fromCatalog(EventBus eventBus,
+                                     ScheduledExecutorService scheduler,
+                                     PluginsOptions options,
+                                     ClassLoader classLoader,
+                                     Collection<NodePlugin> selectedPlugins,
+                                     Set<String> selectedBundleIds,
+                                     Map<String, Map<String, Object>> bundleConfigs,
+                                     Consumer<NodePlugin> terminalCloseObserver,
+                                     Consumer<CompletableFuture<Void>> callbackRegistrar,
+                                     PluginSpiFacades.CallbackTracker catalogCallbacks,
+                                     NodePluginLifecycleObserver lifecycleObserver) {
         PluginsOptions catalogPolicy = new PluginsOptions(true,
                 options != null && options.autoRegisterAnnotated(),
                 Set.of(), Set.of(), options != null ? options.config() : Map.of());
@@ -204,7 +226,8 @@ public final class PluginManager implements AutoCloseable {
                 selectedBundleIds, bundleConfigs, true,
                 Objects.requireNonNull(terminalCloseObserver, "terminalCloseObserver"),
                 Objects.requireNonNull(callbackRegistrar, "callbackRegistrar"),
-                catalogCallbacks);
+                catalogCallbacks,
+                Objects.requireNonNull(lifecycleObserver, "lifecycleObserver"));
     }
 
     /** Test/programmatic source used without changing the public discovery SPI. */
@@ -221,7 +244,8 @@ public final class PluginManager implements AutoCloseable {
                           Map<String, Map<String, Object>> bundleConfigs) {
         this(eventBus, scheduler, options, classLoader, suppliedPlugins,
                 externallySatisfiedDependencies, bundleConfigs, false,
-                ignored -> { }, ignored -> { }, null);
+                ignored -> { }, ignored -> { }, null,
+                NodePluginLifecycleObserver.NOOP);
     }
 
     private PluginManager(EventBus eventBus, ScheduledExecutorService scheduler,
@@ -232,7 +256,8 @@ public final class PluginManager implements AutoCloseable {
                           boolean preserveSuppliedOrder,
                           Consumer<NodePlugin> terminalCloseObserver,
                           Consumer<CompletableFuture<Void>> callbackRegistrar,
-                          PluginSpiFacades.CallbackTracker catalogCallbacks) {
+                          PluginSpiFacades.CallbackTracker catalogCallbacks,
+                          NodePluginLifecycleObserver lifecycleObserver) {
         this.eventBus = Objects.requireNonNull(eventBus, "eventBus");
         this.scheduler = Objects.requireNonNull(scheduler, "scheduler");
         this.options = snapshot(Objects.requireNonNull(options, "options"));
@@ -246,6 +271,8 @@ public final class PluginManager implements AutoCloseable {
         this.terminalCloseObserver = Objects.requireNonNull(
                 terminalCloseObserver, "terminalCloseObserver");
         this.catalogCallbacks = catalogCallbacks;
+        this.lifecycleObserver = Objects.requireNonNull(
+                lifecycleObserver, "lifecycleObserver");
         this.managedCallbacks = new PluginContextFacades.ManagedCallbackResources(
                 Objects.requireNonNull(callbackRegistrar, "callbackRegistrar"));
         if (bundleConfigs == null || bundleConfigs.isEmpty()) {
@@ -253,7 +280,7 @@ public final class PluginManager implements AutoCloseable {
         } else {
             Map<String, Map<String, Object>> copy = new LinkedHashMap<>();
             bundleConfigs.forEach((id, values) -> copy.put(id,
-                    Collections.unmodifiableMap(new LinkedHashMap<>(values))));
+                    PluginConfigValues.immutableCopy(values)));
             this.bundleConfigs = Collections.unmodifiableMap(copy);
         }
     }
@@ -410,13 +437,23 @@ public final class PluginManager implements AutoCloseable {
         for (NodePlugin plugin : plugins) {
             String id = idOf(plugin);
             try {
+                observeLifecycle("starting", id, () -> lifecycleObserver.starting(id));
                 pluginContexts.get(plugin).beginStartCycle();
                 runPluginCallback(plugin::start);
                 pluginContexts.get(plugin).completeStartCycle();
                 synchronized (this) {
                     startedPlugins.add(plugin);
                 }
+                observeLifecycle("started", id, () -> lifecycleObserver.started(id));
             } catch (Throwable failure) {
+                Throwable startupCause = failure;
+                try {
+                    observeLifecycle("start-failed", id,
+                            () -> lifecycleObserver.startFailed(id));
+                } catch (Throwable fatalObservation) {
+                    startupCause = LifecycleFailures.merge(
+                            startupCause, fatalObservation);
+                }
                 List<Throwable> cleanupFailures = new ArrayList<>();
                 CompletableFuture<Void> callbackCleanup =
                         managedCallbacks.sealTerminal();
@@ -430,7 +467,7 @@ public final class PluginManager implements AutoCloseable {
                     clearPublishedState();
                 }
                 throw startupFailure(FailurePhase.START, id,
-                        "Plugin start failed", failure, cleanupFailures);
+                        "Plugin start failed", startupCause, cleanupFailures);
             }
         }
         synchronized (this) {
@@ -686,7 +723,7 @@ public final class PluginManager implements AutoCloseable {
             return discoverCandidatesForTesting(
                     providers, MAX_DISCOVERED_NODE_PLUGINS);
         } catch (Throwable failure) {
-            LifecycleFailures.rethrowIfProcessFatal(failure);
+            LifecycleFailures.rethrowIfProcessFatalReachable(failure);
             throw problem(FailurePhase.DISCOVERY, null,
                     "NodePlugin discovery failed", failure);
         }
@@ -741,7 +778,7 @@ public final class PluginManager implements AutoCloseable {
             log.info("Discovered plugin: {}:{}", id, version);
             return descriptor;
         } catch (Throwable failure) {
-            LifecycleFailures.rethrowIfProcessFatal(failure);
+            LifecycleFailures.rethrowIfProcessFatalReachable(failure);
             throw problem(FailurePhase.DISCOVERY, null,
                     "Invalid NodePlugin metadata from " + plugin.getClass().getName(), failure);
         }
@@ -1003,6 +1040,7 @@ public final class PluginManager implements AutoCloseable {
     }
 
     private void stopOne(NodePlugin plugin, String id, List<Throwable> failures) {
+        int failuresBefore = failures.size();
         PluginContextImpl context = pluginContexts.get(plugin);
         try {
             if (context != null) {
@@ -1029,10 +1067,20 @@ public final class PluginManager implements AutoCloseable {
                 log.warn("Plugin contribution cleanup failed for '{}' (errorType={})",
                         id, failure.getClass().getName());
             }
+            boolean succeeded = failures.size() == failuresBefore;
+            try {
+                observeLifecycle("stopped", id,
+                        () -> lifecycleObserver.stopped(id, succeeded));
+            } catch (Throwable observationFailure) {
+                // Preserve process-fatal precedence without abandoning the
+                // remaining reverse-order plugin teardown.
+                failures.add(observationFailure);
+            }
         }
     }
 
     private void closeOne(NodePlugin plugin, String id, List<Throwable> failures) {
+        int failuresBefore = failures.size();
         try {
             runPluginTeardownCallback(plugin::close);
         } catch (Throwable failure) {
@@ -1054,6 +1102,26 @@ public final class PluginManager implements AutoCloseable {
             services.removeOwner(id);
             storageFilters.removeOwner(id);
             internallyOwned.remove(plugin);
+            boolean succeeded = failures.size() == failuresBefore;
+            try {
+                observeLifecycle("closed", id,
+                        () -> lifecycleObserver.closed(id, succeeded));
+            } catch (Throwable observationFailure) {
+                // closeInitializedReverse must still attempt every owner. The
+                // aggregate promotes this fatal observation after cleanup.
+                failures.add(observationFailure);
+            }
+        }
+    }
+
+    private void observeLifecycle(String transition, String id, Runnable observation) {
+        try {
+            observation.run();
+        } catch (Throwable observationFailure) {
+            LifecycleFailures.rethrowIfProcessFatalReachable(observationFailure);
+            log.warn("NodePlugin lifecycle observation failed "
+                            + "(plugin={}, transition={}, errorType={})",
+                    id, transition, observationFailure.getClass().getName());
         }
     }
 
@@ -1102,12 +1170,8 @@ public final class PluginManager implements AutoCloseable {
     }
 
     private static PluginsOptions snapshot(PluginsOptions options) {
-        Set<String> allow = Collections.unmodifiableSet(new LinkedHashSet<>(options.allowList()));
-        Set<String> deny = Collections.unmodifiableSet(new LinkedHashSet<>(options.denyList()));
-        Map<String, Object> config = Collections.unmodifiableMap(
-                new LinkedHashMap<>(options.config()));
         return new PluginsOptions(options.enabled(), options.autoRegisterAnnotated(),
-                allow, deny, config);
+                options.allowList(), options.denyList(), options.config());
     }
 
     private static Logger pluginLogger(String id) {
@@ -1120,7 +1184,7 @@ public final class PluginManager implements AutoCloseable {
     }
 
     private static RuntimeException propagate(Throwable failure) {
-        LifecycleFailures.rethrowIfProcessFatal(failure);
+        LifecycleFailures.rethrowIfProcessFatalReachable(failure);
         if (failure instanceof RuntimeException runtimeException) {
             return runtimeException;
         }
@@ -1132,7 +1196,7 @@ public final class PluginManager implements AutoCloseable {
             FailurePhase phase, String pluginId, String message, Throwable primary,
             List<Throwable> cleanupFailures) {
         Throwable winner = mergeFailures(primary, cleanupFailures);
-        LifecycleFailures.rethrowIfProcessFatal(winner);
+        LifecycleFailures.rethrowIfProcessFatalReachable(winner);
         return problem(phase, pluginId,
                 message + " for '" + pluginId + "'", winner);
     }
@@ -1141,7 +1205,7 @@ public final class PluginManager implements AutoCloseable {
             FailurePhase phase, String message, List<Throwable> failures) {
         log.warn("{} with {} callback failure(s)", message, failures.size());
         Throwable winner = mergeFailures(null, failures);
-        LifecycleFailures.rethrowIfProcessFatal(winner);
+        LifecycleFailures.rethrowIfProcessFatalReachable(winner);
         return problem(phase, null, message, winner);
     }
 

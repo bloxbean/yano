@@ -71,8 +71,10 @@ class YanoProducerTest {
                 "yano.plugins.bundle.\"com.example.product-passport\".api-key"));
         assertFalse(options.config().containsKey("yano.unrelated.secret"));
         assertEquals(false, options.config().get("plugins.logging.enabled"));
-        assertTrue(options.toString().contains(
+        assertTrue(options.toString().contains("configEntries=3"));
+        assertFalse(options.toString().contains(
                 "yano.plugins.bundle.\"com.example.product-passport\".api-key"));
+        assertFalse(options.toString().contains("endpoint"));
         assertFalse(options.toString().contains("top-secret-value"));
     }
 

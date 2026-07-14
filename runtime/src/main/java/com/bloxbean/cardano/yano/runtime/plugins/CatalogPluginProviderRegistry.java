@@ -11,6 +11,8 @@ import com.bloxbean.cardano.yano.api.plugin.PluginActivationException;
 import com.bloxbean.cardano.yano.api.plugin.PluginCapability;
 import com.bloxbean.cardano.yano.api.plugin.PluginContext;
 import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiProvider;
+import com.bloxbean.cardano.yano.api.plugin.operations.PluginHealthProvider;
+import com.bloxbean.cardano.yano.api.plugin.operations.PluginMetricsProvider;
 import com.bloxbean.cardano.yano.catalog.BundleManifest;
 import com.bloxbean.cardano.yano.catalog.ContributionKind;
 import com.bloxbean.cardano.yano.runtime.util.LifecycleFailures;
@@ -387,7 +389,7 @@ final class CatalogPluginProviderRegistry implements PluginProviderRegistry, Aut
         if (failure == null) {
             return;
         }
-        LifecycleFailures.rethrowIfProcessFatal(failure);
+        LifecycleFailures.rethrowIfProcessFatalReachable(failure);
         throw new PluginActivationException("Plugin provider close failed", failure);
     }
 
@@ -505,13 +507,14 @@ final class CatalogPluginProviderRegistry implements PluginProviderRegistry, Aut
                 // sneaky checked failures are plugin activation failures: cache
                 // one fixed platform diagnostic so every waiter observes the
                 // same terminal result and plugin messages are not promoted.
-                if (LifecycleFailures.isProcessFatal(failure)) {
+                Error fatal = LifecycleFailures.findProcessFatalReachable(failure);
+                if (fatal != null) {
                     synchronized (this) {
                         activationState = ActivationState.INACTIVE;
                         activationOwner = null;
                         notifyAll();
                     }
-                    LifecycleFailures.rethrowIfProcessFatal(failure);
+                    throw fatal;
                 }
                 RuntimeException activationFailure = failure instanceof PluginActivationException
                         ? (PluginActivationException) failure
@@ -610,7 +613,7 @@ final class CatalogPluginProviderRegistry implements PluginProviderRegistry, Aut
                     outcome = closeFailedCandidate(candidate, outcome, terminallyClosedInstances,
                             pluginClassLoader, callbackTracker);
                 }
-                LifecycleFailures.rethrowIfProcessFatal(outcome);
+                LifecycleFailures.rethrowIfProcessFatalReachable(outcome);
                 throw activationFailure("construct provider", outcome);
             }
         }
@@ -789,6 +792,12 @@ final class CatalogPluginProviderRegistry implements PluginProviderRegistry, Aut
                 case DOMAIN_API -> pluginCallback(
                         callbackTracker, pluginClassLoader,
                         ((DomainApiProvider) provider)::id);
+                case HEALTH -> pluginCallback(
+                        callbackTracker, pluginClassLoader,
+                        ((PluginHealthProvider) provider)::id);
+                case METRICS -> pluginCallback(
+                        callbackTracker, pluginClassLoader,
+                        ((PluginMetricsProvider) provider)::id);
             };
             if (selector == null || selector.isBlank() || !selector.equals(selector.trim())) {
                 throw new IllegalStateException("Provider returned an invalid selector");

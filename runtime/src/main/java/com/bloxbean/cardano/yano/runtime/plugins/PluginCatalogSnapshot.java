@@ -9,6 +9,7 @@ import java.util.Objects;
 /** Published only after the complete catalog has validated. */
 record PluginCatalogSnapshot(
         int pluginApiMajor,
+        int pluginApiLevel,
         String fingerprint,
         List<PluginBundleInfo> bundles,
         List<String> selectedBundleOrder
@@ -16,6 +17,9 @@ record PluginCatalogSnapshot(
     PluginCatalogSnapshot {
         if (pluginApiMajor <= 0) {
             throw new IllegalArgumentException("pluginApiMajor must be positive");
+        }
+        if (pluginApiLevel <= 0) {
+            throw new IllegalArgumentException("pluginApiLevel must be positive");
         }
         fingerprint = Objects.requireNonNull(fingerprint, "fingerprint");
         bundles = List.copyOf(bundles);

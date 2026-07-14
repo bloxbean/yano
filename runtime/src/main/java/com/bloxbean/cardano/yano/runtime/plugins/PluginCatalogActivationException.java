@@ -27,7 +27,7 @@ public final class PluginCatalogActivationException extends PluginActivationExce
             detail = boundedDiagnostic(failure.getMessage());
         } catch (Throwable diagnosticFailure) {
             com.bloxbean.cardano.yano.runtime.util.LifecycleFailures
-                    .rethrowIfProcessFatal(diagnosticFailure);
+                    .rethrowIfProcessFatalReachable(diagnosticFailure);
             // Hostile Throwable diagnostics are optional. Cleanup has already
             // completed before this method is called, so use the fixed form.
         }

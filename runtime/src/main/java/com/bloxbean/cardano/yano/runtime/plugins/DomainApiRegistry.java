@@ -17,6 +17,7 @@ import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiRouteInfo;
 import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiRouteSet;
 import com.bloxbean.cardano.yano.api.plugin.domain.DomainHttpMethod;
 import com.bloxbean.cardano.yano.api.plugin.domain.DomainQueryService;
+import com.bloxbean.cardano.yano.api.plugin.operations.PluginOperationOutcome;
 import com.bloxbean.cardano.yano.runtime.util.LifecycleFailures;
 import org.slf4j.Logger;
 
@@ -67,6 +68,7 @@ public final class DomainApiRegistry implements DomainApiGateway, AutoCloseable 
     private final Function<String, Map<String, Object>> bundleConfig;
     private final AppChainGateways appChains;
     private final Logger log;
+    private final OperationsObserver operations;
     private final List<String> bundleIds;
     private final long callerTimeoutNanos;
     private final int queueCapacity;
@@ -91,9 +93,18 @@ public final class DomainApiRegistry implements DomainApiGateway, AutoCloseable 
             AppChainGateways appChains,
             Logger log
     ) {
+        this(environment, appChains, log, null);
+    }
+
+    public DomainApiRegistry(
+            PluginRuntimeEnvironment environment,
+            AppChainGateways appChains,
+            Logger log,
+            PluginOperationsRegistry operations
+    ) {
         this(Objects.requireNonNull(environment, "environment").providers(),
                 environment::domainApiConfig, appChains, log,
-                DEFAULT_CALLER_TIMEOUT, DEFAULT_QUEUE_CAPACITY);
+                DEFAULT_CALLER_TIMEOUT, DEFAULT_QUEUE_CAPACITY, operations);
     }
 
     /** Package-private timing seam for deterministic lifecycle tests. */
@@ -105,10 +116,37 @@ public final class DomainApiRegistry implements DomainApiGateway, AutoCloseable 
             Duration callerTimeout,
             int queueCapacity
     ) {
+        this(pluginProviders, bundleConfig, appChains, log,
+                callerTimeout, queueCapacity, OperationsObserver.NOOP);
+    }
+
+    DomainApiRegistry(
+            PluginProviderRegistry pluginProviders,
+            Function<String, Map<String, Object>> bundleConfig,
+            AppChainGateways appChains,
+            Logger log,
+            Duration callerTimeout,
+            int queueCapacity,
+            PluginOperationsRegistry operations
+    ) {
+        this(pluginProviders, bundleConfig, appChains, log,
+                callerTimeout, queueCapacity, observer(operations));
+    }
+
+    DomainApiRegistry(
+            PluginProviderRegistry pluginProviders,
+            Function<String, Map<String, Object>> bundleConfig,
+            AppChainGateways appChains,
+            Logger log,
+            Duration callerTimeout,
+            int queueCapacity,
+            OperationsObserver operations
+    ) {
         this.pluginProviders = Objects.requireNonNull(pluginProviders, "pluginProviders");
         this.bundleConfig = Objects.requireNonNull(bundleConfig, "bundleConfig");
         this.appChains = Objects.requireNonNull(appChains, "appChains");
         this.log = Objects.requireNonNull(log, "log");
+        this.operations = Objects.requireNonNull(operations, "operations");
         Objects.requireNonNull(callerTimeout, "callerTimeout");
         if (callerTimeout.isZero() || callerTimeout.isNegative()) {
             throw new IllegalArgumentException("callerTimeout must be positive");
@@ -136,6 +174,62 @@ public final class DomainApiRegistry implements DomainApiGateway, AutoCloseable 
                 new ThreadPoolExecutor.AbortPolicy());
     }
 
+    private static OperationsObserver observer(PluginOperationsRegistry operations) {
+        if (operations == null) {
+            return OperationsObserver.NOOP;
+        }
+        return new OperationsObserver() {
+            @Override
+            public void domainActivating(String bundleId) {
+                operations.domainActivating(bundleId);
+            }
+
+            @Override
+            public void domainActive(String bundleId) {
+                operations.domainActive(bundleId);
+            }
+
+            @Override
+            public void domainActivationFailed(String bundleId) {
+                operations.domainActivationFailed(bundleId);
+            }
+
+            @Override
+            public void domainStopped(String bundleId, boolean succeeded) {
+                operations.domainStopped(bundleId, succeeded);
+            }
+
+            @Override
+            public void domainAdmitted(String bundleId) {
+                operations.domainAdmitted(bundleId);
+            }
+
+            @Override
+            public void domainStarted(String bundleId) {
+                operations.domainStarted(bundleId);
+            }
+
+            @Override
+            public void domainQueueFinished(String bundleId) {
+                operations.domainQueueFinished(bundleId);
+            }
+
+            @Override
+            public void domainCallbackFinished(String bundleId) {
+                operations.domainCallbackFinished(bundleId);
+            }
+
+            @Override
+            public void domainOutcome(
+                    String bundleId,
+                    DomainHttpMethod method,
+                    PluginOperationOutcome outcome
+            ) {
+                operations.domainOutcome(bundleId, method, outcome);
+            }
+        };
+    }
+
     /**
      * Construct and validate one complete product generation, then publish it
      * atomically. The runtime calls this only after catalog callbacks reopen.
@@ -155,36 +249,84 @@ public final class DomainApiRegistry implements DomainApiGateway, AutoCloseable 
             }
 
             CompletableFuture<Void> terminal = new CompletableFuture<>();
-            pluginProviders.registerContributionCleanup(terminal);
-            Generation created = null;
-            Throwable failure = null;
             try {
-                created = createGeneration(terminal);
-                List<DomainApiRouteInfo> routes = created.publication().routes();
-                if (baselineRoutes == null) {
-                    baselineRoutes = routes;
-                    publication = created.publication();
-                } else if (!baselineRoutes.equals(routes)) {
-                    throw new IllegalStateException(
-                            "Domain API route metadata changed across runtime generations");
-                } else {
-                    publication = created.publication();
+                pluginProviders.registerContributionCleanup(terminal);
+            } catch (Throwable registrationFailure) {
+                terminal.complete(null);
+                rethrowLifecycleFailure(
+                        registrationFailure,
+                        "Domain API cleanup registration failed");
+            }
+            Throwable failure = observeAllActivating(null);
+            Generation created = null;
+            Publication previousPublication = publication;
+            if (failure == null) {
+                try {
+                    created = createGeneration(terminal);
+                    List<DomainApiRouteInfo> routes = created.publication().routes();
+                    if (baselineRoutes == null) {
+                        baselineRoutes = routes;
+                    } else if (!baselineRoutes.equals(routes)) {
+                        throw new IllegalStateException(
+                                "Domain API route metadata changed across runtime generations");
+                    }
+                    synchronized (admissionMonitor) {
+                        publication = created.publication();
+                        generation = created;
+                        accepting = true;
+                    }
+                    failure = observeAllActive(created.products().keySet(), failure);
+                    if (failure == null) {
+                        return;
+                    }
+                } catch (Throwable startupFailure) {
+                    failure = LifecycleFailures.merge(failure, startupFailure);
                 }
-                synchronized (admissionMonitor) {
-                    generation = created;
-                    accepting = true;
-                }
-                return;
-            } catch (Throwable startupFailure) {
-                failure = startupFailure;
             }
 
+            synchronized (admissionMonitor) {
+                accepting = false;
+                if (generation == created) {
+                    generation = null;
+                }
+                publication = previousPublication;
+            }
+            failure = observeAllActivationFailed(failure);
             if (created != null) {
-                failure = closeProducts(created.products(), failure);
+                failure = closeProducts(created.products(), failure, false);
             }
             terminal.complete(null);
             rethrowLifecycleFailure(failure, "Domain API startup failed");
         }
+    }
+
+    private Throwable observeAllActivating(Throwable failure) {
+        Throwable outcome = failure;
+        for (String bundleId : bundleIds) {
+            outcome = observeOperations(outcome,
+                    () -> operations.domainActivating(bundleId));
+        }
+        return outcome;
+    }
+
+    private Throwable observeAllActive(Set<String> activeBundleIds, Throwable failure) {
+        Throwable outcome = failure;
+        for (String bundleId : bundleIds) {
+            if (activeBundleIds.contains(bundleId)) {
+                outcome = observeOperations(outcome,
+                        () -> operations.domainActive(bundleId));
+            }
+        }
+        return outcome;
+    }
+
+    private Throwable observeAllActivationFailed(Throwable failure) {
+        Throwable outcome = failure;
+        for (String bundleId : bundleIds) {
+            outcome = observeOperations(outcome,
+                    () -> operations.domainActivationFailed(bundleId));
+        }
+        return outcome;
     }
 
     /**
@@ -194,11 +336,15 @@ public final class DomainApiRegistry implements DomainApiGateway, AutoCloseable 
     public void sealAndAwait() {
         requireHostLifecycleCaller("stop domain APIs");
         synchronized (lifecycleMonitor) {
-            Generation closing = stopAdmissionAndAwait();
+            StopResult stopped = stopAdmissionAndAwait();
+            Generation closing = stopped.generation();
             if (closing == null) {
+                rethrowLifecycleFailure(
+                        stopped.failure(), "Domain API shutdown failed");
                 return;
             }
-            Throwable failure = closeProducts(closing.products(), null);
+            Throwable failure = closeProducts(
+                    closing.products(), stopped.failure(), true);
             closing.terminal().complete(null);
             rethrowLifecycleFailure(failure, "Domain API shutdown failed");
         }
@@ -236,7 +382,9 @@ public final class DomainApiRegistry implements DomainApiGateway, AutoCloseable 
             Map<String, List<String>> queryParameters,
             byte[] body
     ) {
-        long deadline = System.nanoTime() + callerTimeoutNanos;
+        long now = System.nanoTime();
+        long deadline = now > Long.MAX_VALUE - callerTimeoutNanos
+                ? Long.MAX_VALUE : now + callerTimeoutNanos;
         if (bundleId == null || method == null || relativePath == null
                 || queryParameters == null || body == null) {
             throw invalidRequest("Domain API request fields must not be null");
@@ -269,9 +417,15 @@ public final class DomainApiRegistry implements DomainApiGateway, AutoCloseable 
         }
 
         if (deadline - System.nanoTime() <= 0) {
+            rethrowOperationsFailure(observeOperations(null,
+                    () -> operations.domainOutcome(match.bundleId(), method,
+                            PluginOperationOutcome.TIMED_OUT)));
             throw timedOut();
         }
         if (!hostAdmissions.tryAcquire()) {
+            rethrowOperationsFailure(observeOperations(null,
+                    () -> operations.domainOutcome(match.bundleId(), method,
+                            PluginOperationOutcome.REJECTED)));
             if (!isAcceptingBundle(match.bundleId())) {
                 throw new DomainApiException(DomainApiException.Code.UNAVAILABLE,
                         "Domain API service is stopped");
@@ -279,17 +433,27 @@ public final class DomainApiRegistry implements DomainApiGateway, AutoCloseable 
             throw new DomainApiException(DomainApiException.Code.BUSY,
                     "Domain API host queue is full");
         }
-        final Invocation invocation;
+        final AdmissionResult admitted;
         try {
-            invocation = admitInvocation(match, request);
+            admitted = admitInvocation(match, request);
         } catch (RuntimeException | Error admissionFailure) {
             hostAdmissions.release();
-            throw admissionFailure;
+            Throwable failure = observeOperations(admissionFailure,
+                    () -> operations.domainOutcome(match.bundleId(), method,
+                            PluginOperationOutcome.REJECTED));
+            rethrowLifecycleFailure(failure, "Domain API admission failed");
+            throw new AssertionError("unreachable");
+        }
+        Invocation invocation = admitted.invocation();
+        if (admitted.failure() != null) {
+            Throwable failure = invocation.cancelBeforeQueue(admitted.failure());
+            rethrowLifecycleFailure(failure, "Domain API admission observation failed");
         }
         try {
             invocation.bundle.lane().execute(invocation);
         } catch (RejectedExecutionException rejected) {
-            invocation.cancelQueued();
+            rethrowOperationsFailure(invocation.cancelQueued(
+                    PluginOperationOutcome.REJECTED, null));
             if (!isAcceptingGeneration(invocation.bundle)) {
                 throw new DomainApiException(DomainApiException.Code.UNAVAILABLE,
                         "Domain API service is stopped", rejected);
@@ -365,27 +529,34 @@ public final class DomainApiRegistry implements DomainApiGateway, AutoCloseable 
     }
 
     private void sealAndAwaitWithinLifecycleMonitor() {
-        Generation closing = stopAdmissionAndAwait();
+        StopResult stopped = stopAdmissionAndAwait();
+        Generation closing = stopped.generation();
         if (closing == null) {
+            rethrowLifecycleFailure(
+                    stopped.failure(), "Domain API shutdown failed");
             return;
         }
-        Throwable failure = closeProducts(closing.products(), null);
+        Throwable failure = closeProducts(
+                closing.products(), stopped.failure(), true);
         closing.terminal().complete(null);
         rethrowLifecycleFailure(failure, "Domain API shutdown failed");
     }
 
-    private Generation stopAdmissionAndAwait() {
+    private StopResult stopAdmissionAndAwait() {
         List<Invocation> admitted;
         synchronized (admissionMonitor) {
             accepting = false;
             admitted = List.copyOf(admittedInvocations);
         }
-        admitted.forEach(Invocation::cancelForSeal);
+        Throwable failure = null;
+        for (Invocation invocation : admitted) {
+            failure = invocation.cancelForSeal(failure);
+        }
         synchronized (admissionMonitor) {
             awaitNoAdmissions();
             Generation closing = generation;
             generation = null;
-            return closing;
+            return new StopResult(closing, failure);
         }
     }
 
@@ -429,7 +600,7 @@ public final class DomainApiRegistry implements DomainApiGateway, AutoCloseable 
                         new DomainApiRouteInfo(bundleId, route.route())));
             }
         } catch (Throwable failure) {
-            Throwable outcome = closeProducts(products, failure);
+            Throwable outcome = closeProducts(products, failure, false);
             rethrowLifecycleFailure(outcome, "Domain API product construction failed");
         }
         allRoutes.sort(ROUTE_ORDER);
@@ -473,7 +644,7 @@ public final class DomainApiRegistry implements DomainApiGateway, AutoCloseable 
         };
     }
 
-    private Invocation admitInvocation(
+    private AdmissionResult admitInvocation(
             RouteMatch match,
             DomainApiRequest request
     ) {
@@ -491,7 +662,9 @@ public final class DomainApiRegistry implements DomainApiGateway, AutoCloseable 
                 activeAdmissions--;
                 throw new IllegalStateException("Duplicate domain API invocation admission");
             }
-            return invocation;
+            Throwable observationFailure = observeOperations(null,
+                    () -> operations.domainAdmitted(bundle.bundleId()));
+            return new AdmissionResult(invocation, observationFailure);
         }
     }
 
@@ -548,15 +721,28 @@ public final class DomainApiRegistry implements DomainApiGateway, AutoCloseable 
         }
     }
 
-    private Throwable closeProducts(Map<String, ActiveBundle> products, Throwable current) {
+    private Throwable closeProducts(
+            Map<String, ActiveBundle> products,
+            Throwable current,
+            boolean observeStopped
+    ) {
         List<ActiveBundle> reverse = new ArrayList<>(products.values());
         reverse.sort(Comparator.comparing(ActiveBundle::bundleId).reversed());
         Throwable failure = current;
         for (ActiveBundle bundle : reverse) {
+            boolean succeeded = false;
             try {
                 bundle.api().close();
+                succeeded = true;
             } catch (Throwable closeFailure) {
                 failure = LifecycleFailures.merge(failure, closeFailure);
+            } finally {
+                if (observeStopped) {
+                    boolean stopped = succeeded;
+                    failure = observeOperations(failure,
+                            () -> operations.domainStopped(
+                                    bundle.bundleId(), stopped));
+                }
             }
         }
         return failure;
@@ -585,6 +771,38 @@ public final class DomainApiRegistry implements DomainApiGateway, AutoCloseable 
     private void ensureNotClosed() {
         if (closed) {
             throw new IllegalStateException("Domain API registry is closed");
+        }
+    }
+
+    private Throwable observeOperations(Throwable current, Runnable observation) {
+        try {
+            observation.run();
+        } catch (Throwable observationFailure) {
+            Throwable fatal = processFatal(observationFailure);
+            if (fatal != null) {
+                return LifecycleFailures.merge(current, fatal);
+            }
+            log.warn("Plugin operations observation failed (errorType={})",
+                    observationFailure.getClass().getName());
+        }
+        return current;
+    }
+
+    private static Throwable processFatal(Throwable failure) {
+        if (failure == null) {
+            return null;
+        }
+        try {
+            LifecycleFailures.rethrowIfProcessFatalReachable(failure);
+            return null;
+        } catch (Throwable fatal) {
+            return fatal;
+        }
+    }
+
+    private static void rethrowOperationsFailure(Throwable failure) {
+        if (failure != null) {
+            rethrowLifecycleFailure(failure, "Plugin operations observation failed");
         }
     }
 
@@ -641,6 +859,12 @@ public final class DomainApiRegistry implements DomainApiGateway, AutoCloseable 
             Map<String, ActiveBundle> products,
             CompletableFuture<Void> terminal
     ) {
+    }
+
+    private record StopResult(Generation generation, Throwable failure) {
+    }
+
+    private record AdmissionResult(Invocation invocation, Throwable failure) {
     }
 
     private record RouteMatch(
@@ -706,6 +930,7 @@ public final class DomainApiRegistry implements DomainApiGateway, AutoCloseable 
         private InvocationState state = InvocationState.QUEUED;
         private Thread runner;
         private boolean admissionReleased;
+        private boolean operationRecorded;
 
         private Invocation(
                 GenerationLease lease,
@@ -726,29 +951,69 @@ public final class DomainApiRegistry implements DomainApiGateway, AutoCloseable 
                 state = InvocationState.RUNNING;
                 runner = Thread.currentThread();
             }
-            enterCallback();
+            Throwable lifecycleFailure = observeOperations(null,
+                    () -> operations.domainStarted(bundle.bundleId()));
+            DomainApiResponse response = null;
             Throwable callbackFailure = null;
+            boolean callbackEntered = false;
+            if (lifecycleFailure == null) {
+                try {
+                    enterCallback();
+                    callbackEntered = true;
+                    response = Objects.requireNonNull(
+                            bundle.api().handle(request),
+                            "DomainApi.handle() must not return null");
+                } catch (Throwable failure) {
+                    callbackFailure = failure;
+                } finally {
+                    if (callbackEntered) {
+                        try {
+                            exitCallback();
+                        } catch (Throwable markerFailure) {
+                            lifecycleFailure = LifecycleFailures.merge(
+                                    lifecycleFailure, markerFailure);
+                        }
+                    }
+                }
+            }
+
+            Throwable callbackFatal = processFatal(callbackFailure);
+            if (callbackFatal != null) {
+                lifecycleFailure = LifecycleFailures.merge(
+                        lifecycleFailure, callbackFatal);
+            } else if (lifecycleFailure == null) {
+                lifecycleFailure = recordOutcome(
+                        callbackFailure == null
+                                ? PluginOperationOutcome.SUCCEEDED
+                                : PluginOperationOutcome.FAILED,
+                        lifecycleFailure);
+            }
+            lifecycleFailure = observeOperations(lifecycleFailure,
+                    () -> operations.domainCallbackFinished(bundle.bundleId()));
+
             try {
-                result.complete(Objects.requireNonNull(
-                        bundle.api().handle(request),
-                        "DomainApi.handle() must not return null"));
-            } catch (Throwable failure) {
-                callbackFailure = failure;
-                result.completeExceptionally(failure);
-            } finally {
-                exitCallback();
                 synchronized (this) {
                     runner = null;
                     state = InvocationState.FINISHED;
                 }
-                releaseAdmission();
+            } catch (Throwable stateFailure) {
+                lifecycleFailure = LifecycleFailures.merge(
+                        lifecycleFailure, stateFailure);
             }
-            if (callbackFailure != null) {
-                // A caller timeout may mean nobody remains to observe this
-                // future. Process-fatal signals must still terminate the host
-                // worker rather than being converted into an orphaned value.
-                LifecycleFailures.rethrowIfProcessFatalReachable(callbackFailure);
+            lifecycleFailure = releaseAdmission(lifecycleFailure);
+
+            if (callbackEntered && callbackFailure == null) {
+                result.complete(response);
+            } else {
+                Throwable resultFailure = callbackFailure != null
+                        ? callbackFailure : lifecycleFailure;
+                if (resultFailure == null) {
+                    resultFailure = new IllegalStateException(
+                            "Domain API callback did not enter plugin code");
+                }
+                result.completeExceptionally(resultFailure);
             }
+            rethrowOperationsFailure(lifecycleFailure);
         }
 
         private CompletableFuture<DomainApiResponse> result() {
@@ -756,26 +1021,58 @@ public final class DomainApiRegistry implements DomainApiGateway, AutoCloseable 
         }
 
         private void timeout() {
-            Thread interrupt = null;
             boolean cancelled = false;
+            boolean recordTimeout;
             synchronized (this) {
                 if (state == InvocationState.QUEUED) {
                     state = InvocationState.CANCELLED;
                     cancelled = true;
                 } else if (state == InvocationState.RUNNING) {
-                    interrupt = runner;
+                    if (runner != null) {
+                        // Completion uses this monitor, so the worker cannot
+                        // advance to another callback before interruption.
+                        runner.interrupt();
+                    }
                 }
+                recordTimeout = claimOutcomeLocked();
             }
+            Throwable failure = null;
             if (cancelled) {
                 bundle.lane().remove(this);
-                releaseAdmission();
+                failure = observeOperations(failure,
+                        () -> operations.domainQueueFinished(bundle.bundleId()));
             }
-            if (interrupt != null) {
-                interrupt.interrupt();
+            if (recordTimeout) {
+                failure = observeOperations(failure,
+                        () -> operations.domainOutcome(
+                                bundle.bundleId(), request.method(),
+                                PluginOperationOutcome.TIMED_OUT));
             }
+            if (cancelled) {
+                failure = releaseAdmission(failure);
+                result.completeExceptionally(timedOut());
+            }
+            rethrowOperationsFailure(failure);
         }
 
-        private void cancelQueued() {
+        private Throwable cancelBeforeQueue(Throwable current) {
+            synchronized (this) {
+                if (state != InvocationState.QUEUED) {
+                    return current;
+                }
+                state = InvocationState.CANCELLED;
+            }
+            Throwable failure = observeOperations(current,
+                    () -> operations.domainQueueFinished(bundle.bundleId()));
+            failure = releaseAdmission(failure);
+            result.completeExceptionally(failure);
+            return failure;
+        }
+
+        private Throwable cancelQueued(
+                PluginOperationOutcome outcome,
+                Throwable current
+        ) {
             boolean cancelled = false;
             synchronized (this) {
                 if (state == InvocationState.QUEUED) {
@@ -783,12 +1080,19 @@ public final class DomainApiRegistry implements DomainApiGateway, AutoCloseable 
                     cancelled = true;
                 }
             }
-            if (cancelled) {
-                releaseAdmission();
+            if (!cancelled) {
+                return current;
             }
+            bundle.lane().remove(this);
+            Throwable failure = observeOperations(current,
+                    () -> operations.domainQueueFinished(bundle.bundleId()));
+            failure = recordOutcome(outcome, failure);
+            failure = releaseAdmission(failure);
+            result.completeExceptionally(new InvocationUnavailableException());
+            return failure;
         }
 
-        private void cancelForSeal() {
+        private Throwable cancelForSeal(Throwable current) {
             boolean cancelled = false;
             synchronized (this) {
                 if (state == InvocationState.QUEUED) {
@@ -796,27 +1100,68 @@ public final class DomainApiRegistry implements DomainApiGateway, AutoCloseable 
                     cancelled = true;
                 }
             }
-            if (cancelled) {
-                bundle.lane().remove(this);
-                result.completeExceptionally(new InvocationUnavailableException());
-                releaseAdmission();
+            if (!cancelled) {
+                return current;
             }
+            bundle.lane().remove(this);
+            Throwable failure = observeOperations(current,
+                    () -> operations.domainQueueFinished(bundle.bundleId()));
+            failure = recordOutcome(PluginOperationOutcome.REJECTED, failure);
+            failure = releaseAdmission(failure);
+            result.completeExceptionally(new InvocationUnavailableException());
+            return failure;
+        }
+
+        private Throwable recordOutcome(
+                PluginOperationOutcome outcome,
+                Throwable current
+        ) {
+            synchronized (this) {
+                if (!claimOutcomeLocked()) {
+                    return current;
+                }
+            }
+            return observeOperations(current,
+                    () -> operations.domainOutcome(
+                            bundle.bundleId(), request.method(), outcome));
+        }
+
+        private boolean claimOutcomeLocked() {
+            if (operationRecorded) {
+                return false;
+            }
+            operationRecorded = true;
+            return true;
         }
 
         private synchronized boolean isQueueable() {
             return state == InvocationState.QUEUED;
         }
 
-        private void releaseAdmission() {
+        private Throwable releaseAdmission(Throwable current) {
             synchronized (this) {
                 if (admissionReleased) {
-                    return;
+                    return current;
                 }
                 admissionReleased = true;
             }
-            hostAdmissions.release();
-            unregisterInvocation(this);
-            lease.close();
+            Throwable failure = current;
+            try {
+                hostAdmissions.release();
+            } catch (Throwable releaseFailure) {
+                failure = LifecycleFailures.merge(failure, releaseFailure);
+            }
+            try {
+                unregisterInvocation(this);
+            } catch (Throwable unregisterFailure) {
+                failure = LifecycleFailures.merge(failure, unregisterFailure);
+            }
+            try {
+                lease.close();
+            } catch (Throwable leaseFailure) {
+                failure = LifecycleFailures.merge(failure, leaseFailure);
+            }
+            return failure;
         }
     }
 
@@ -831,6 +1176,42 @@ public final class DomainApiRegistry implements DomainApiGateway, AutoCloseable 
         RUNNING,
         CANCELLED,
         FINISHED
+    }
+
+    interface OperationsObserver {
+        OperationsObserver NOOP = new OperationsObserver() {
+        };
+
+        default void domainActivating(String bundleId) {
+        }
+
+        default void domainActive(String bundleId) {
+        }
+
+        default void domainActivationFailed(String bundleId) {
+        }
+
+        default void domainStopped(String bundleId, boolean succeeded) {
+        }
+
+        default void domainAdmitted(String bundleId) {
+        }
+
+        default void domainStarted(String bundleId) {
+        }
+
+        default void domainQueueFinished(String bundleId) {
+        }
+
+        default void domainCallbackFinished(String bundleId) {
+        }
+
+        default void domainOutcome(
+                String bundleId,
+                DomainHttpMethod method,
+                PluginOperationOutcome outcome
+        ) {
+        }
     }
 
     private final class BundleLane {
@@ -883,25 +1264,48 @@ public final class DomainApiRegistry implements DomainApiGateway, AutoCloseable 
                         return;
                     }
                 }
-                next.run();
-                // Do not leak a host-issued timeout interrupt (or a plugin's
-                // self-interrupt) into the next bundle callback when this
-                // worker continues inside the same dispatcher runnable.
-                Thread.interrupted();
+                Throwable invocationFailure = null;
+                try {
+                    next.run();
+                } catch (Throwable failure) {
+                    invocationFailure = failure;
+                } finally {
+                    // Do not leak a host-issued timeout interrupt (or a plugin's
+                    // self-interrupt) into the next bundle callback when this
+                    // worker continues inside the same dispatcher runnable.
+                    Thread.interrupted();
+                }
+                boolean handedOff = false;
+                boolean continueLocally = false;
                 synchronized (this) {
                     if (waiting.isEmpty()) {
                         scheduled = false;
-                        return;
+                    } else {
+                        try {
+                            hostExecutor.execute(this::drainFairly);
+                            handedOff = true;
+                        } catch (RejectedExecutionException saturated) {
+                            if (invocationFailure == null) {
+                                // The current worker still owns this bundle's serial
+                                // token. Continue locally rather than stranding an
+                                // already-admitted callback; the host pool remains
+                                // bounded and no second callback for this bundle runs.
+                                continueLocally = true;
+                            } else {
+                                // The fatal must escape this worker. Mark the lane
+                                // unscheduled so a later admission can restart the
+                                // existing queue instead of leaving it permanently stuck.
+                                scheduled = false;
+                            }
+                        }
                     }
-                    try {
-                        hostExecutor.execute(this::drainFairly);
-                        return;
-                    } catch (RejectedExecutionException saturated) {
-                        // The current worker still owns this bundle's serial
-                        // token. Continue locally rather than stranding an
-                        // already-admitted callback; the host pool remains
-                        // bounded and no second callback for this bundle runs.
-                    }
+                }
+                if (invocationFailure != null) {
+                    rethrowLifecycleFailure(
+                            invocationFailure, "Domain API invocation failed fatally");
+                }
+                if (handedOff || !continueLocally) {
+                    return;
                 }
             }
         }

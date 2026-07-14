@@ -6,10 +6,18 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
 import java.io.OutputStream;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.BasicFileAttributes;
+import java.nio.file.attribute.FileTime;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
 import java.util.jar.JarOutputStream;
@@ -24,6 +32,64 @@ class PluginArtifactScannerTest {
     Path temporary;
 
     private final PluginArtifactScanner scanner = new PluginArtifactScanner();
+
+    @Test
+    void snapshotByteBudgetAcceptsExactLimitAndRejectsNextByte() throws Exception {
+        Path artifact = temporary.resolve("boundary.jar");
+        assertThat(PluginArtifactSnapshot.advanceCapturedBytes(
+                artifact, PluginArtifactScanner.MAX_ARTIFACT_BYTES - 1, 1))
+                .isEqualTo(PluginArtifactScanner.MAX_ARTIFACT_BYTES);
+
+        assertThatThrownBy(() -> PluginArtifactSnapshot.advanceCapturedBytes(
+                artifact, PluginArtifactScanner.MAX_ARTIFACT_BYTES, 1))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("immutable snapshot byte limit")
+                .hasMessageContaining(Long.toString(
+                        PluginArtifactScanner.MAX_ARTIFACT_BYTES));
+    }
+
+    @Test
+    void rejectsOversizedSparseArtifactBeforeCreatingPrivateSnapshot() throws Exception {
+        Path artifact = sparseFile(
+                temporary.resolve("oversized.jar"),
+                PluginArtifactScanner.MAX_ARTIFACT_BYTES + 1);
+        AtomicBoolean captureStarted = new AtomicBoolean();
+        PluginArtifactScanner boundedScanner = scanner(
+                new PluginArtifactScanner.ScanObserver() {
+                    @Override
+                    public void beforeSnapshotCapture(Path source) {
+                        captureStarted.set(true);
+                    }
+                });
+
+        assertThatThrownBy(() -> boundedScanner.scan(artifact))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("immutable snapshot byte limit")
+                .hasMessageContaining(Long.toString(
+                        PluginArtifactScanner.MAX_ARTIFACT_BYTES));
+        assertThat(captureStarted).isFalse();
+    }
+
+    @Test
+    void rejectsExplodedArtifactAboveAggregateByteLimitBeforeCapture() throws Exception {
+        Path artifact = emptyArtifact("oversized-tree");
+        long half = PluginArtifactScanner.MAX_ARTIFACT_BYTES / 2;
+        sparseFile(artifact.resolve("first.bin"), half);
+        sparseFile(artifact.resolve("second.bin"), half + 1);
+        AtomicBoolean captureStarted = new AtomicBoolean();
+        PluginArtifactScanner boundedScanner = scanner(
+                new PluginArtifactScanner.ScanObserver() {
+                    @Override
+                    public void beforeSnapshotCapture(Path source) {
+                        captureStarted.set(true);
+                    }
+                });
+
+        assertThatThrownBy(() -> boundedScanner.scan(artifact))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("immutable snapshot byte limit");
+        assertThat(captureStarted).isFalse();
+    }
 
     @Test
     void scansAndCorrelatesOneManifestedJar() throws Exception {
@@ -135,6 +201,44 @@ class PluginArtifactScannerTest {
     }
 
     @Test
+    void correlatesManifestedHealthAndMetricsServiceMetadata() throws Exception {
+        String id = "com.example.observability";
+        String healthProvider = "com.example.ObservabilityHealthProvider";
+        String metricsProvider = "com.example.ObservabilityMetricsProvider";
+        Path artifact = emptyArtifact("observability");
+        writeManifest(artifact, id, List.of(
+                new BundleContribution(ContributionKind.HEALTH, id, healthProvider),
+                new BundleContribution(ContributionKind.METRICS, id, metricsProvider)));
+        writeService(artifact, ContributionKind.HEALTH, healthProvider);
+        writeService(artifact, ContributionKind.METRICS, metricsProvider);
+        writeProviderClass(artifact, healthProvider);
+        writeProviderClass(artifact, metricsProvider);
+
+        PluginIndex index = scanner.scan(artifact);
+
+        assertThat(index.legacyProviders()).isEmpty();
+        assertThat(index.bundles()).singleElement().satisfies(bundle ->
+                assertThat(bundle.manifest().contributions()).containsExactly(
+                        new BundleContribution(ContributionKind.HEALTH, id, healthProvider),
+                        new BundleContribution(ContributionKind.METRICS, id, metricsProvider)));
+    }
+
+    @Test
+    void rejectsUnmanifestedHealthAndMetricsProviders() throws Exception {
+        Path artifact = emptyArtifact("unmanifested-observability");
+        writeService(artifact, ContributionKind.HEALTH, "com.example.LegacyHealth");
+        writeService(artifact, ContributionKind.METRICS, "com.example.LegacyMetrics");
+        writeProviderClass(artifact, "com.example.LegacyHealth");
+        writeProviderClass(artifact, "com.example.LegacyMetrics");
+
+        assertThatThrownBy(() -> scanner.scan(artifact))
+                .isInstanceOf(PluginCatalogException.class)
+                .hasMessageContaining("[health, metrics]")
+                .hasMessageContaining("require a bundle manifest")
+                .hasMessageContaining("cannot use legacy discovery");
+    }
+
+    @Test
     void rejectsUnmanifestedDomainApiInsteadOfSynthesizingLegacyEvidence() throws Exception {
         Path artifact = emptyArtifact("legacy-domain-api");
         String provider = "com.example.LegacyDomainApiProvider";
@@ -228,6 +332,191 @@ class PluginArtifactScannerTest {
     }
 
     @Test
+    void rejectsAnOrdinaryArtifactThatBecomesAPluginAfterTheProbe() throws Exception {
+        Path artifact = emptyArtifact("ordinary-becomes-plugin");
+        String id = "com.example.late";
+        String provider = "com.example.LateProvider";
+        PluginArtifactScanner racingScanner = scanner(new PluginArtifactScanner.ScanObserver() {
+            @Override
+            public void afterProbe(Path source, boolean pluginArtifact) throws IOException {
+                assertThat(pluginArtifact).isFalse();
+                writeManifest(source, id,
+                        List.of(new BundleContribution(KIND, "late", provider)));
+                writeService(source, KIND, provider);
+                writeProviderClass(source, provider);
+            }
+        });
+
+        assertThatThrownBy(() -> racingScanner.scanClasspathArtifact(artifact, false))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("changed while it was being inspected");
+    }
+
+    @Test
+    void strictExplicitGenerationClassifiesOnlyTheCapturedBytes() throws Exception {
+        String id = "com.example.strict-snapshot";
+        String provider = "com.example.StrictSnapshotProvider";
+        Path pluginDirectory = manifestedDirectory(
+                "strict-plugin", id, "strict", provider);
+        byte[] pluginBytes = Files.readAllBytes(createJar(
+                pluginDirectory, temporary.resolve("strict-plugin.jar")));
+        byte[] ordinaryBytes = pluginBytes.clone();
+        replaceAscii(ordinaryBytes,
+                BundleManifestParser.RESOURCE_DIRECTORY,
+                "META-INF/yano/xlugins/");
+        replaceAscii(ordinaryBytes, "META-INF/services/", "META-INF/xervices/");
+
+        Path artifact = temporary.resolve("strict-race.jar");
+        Files.write(artifact, ordinaryBytes);
+        assertThat(scanner.scan(artifact)).isEqualTo(PluginIndex.empty());
+        BasicFileAttributes original = Files.readAttributes(
+                artifact, BasicFileAttributes.class);
+        FileTime originalModified = original.lastModifiedTime();
+
+        PluginArtifactScanner racingScanner = scanner(new PluginArtifactScanner.ScanObserver() {
+            @Override
+            public void beforeSnapshotCapture(Path source) throws IOException {
+                Files.write(source, pluginBytes,
+                        StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
+                Files.setLastModifiedTime(source, originalModified);
+                BasicFileAttributes changed = Files.readAttributes(
+                        source, BasicFileAttributes.class);
+                assertThat(changed.fileKey()).isEqualTo(original.fileKey());
+                assertThat(changed.size()).isEqualTo(original.size());
+                assertThat(changed.lastModifiedTime()).isEqualTo(originalModified);
+                assertThat(changed.creationTime()).isEqualTo(original.creationTime());
+            }
+        });
+
+        PluginIndex index = new PluginIndexGenerator(
+                racingScanner, new PluginIndexCodec()).generate(List.of(artifact));
+
+        assertThat(index.bundles()).singleElement().satisfies(bundle ->
+                assertThat(bundle.manifest().id()).isEqualTo(id));
+    }
+
+    @Test
+    void immutableSnapshotPreventsAbaMetadataDigestPairing() throws Exception {
+        String firstId = "com.example.aba-first";
+        String firstProvider = "com.example.FirstProvider";
+        Path firstDirectory = manifestedDirectory(
+                "aba-first", firstId, "first", firstProvider);
+        Path artifact = createJar(firstDirectory, temporary.resolve("aba.jar"));
+        String expectedDigest = CatalogDigests.artifact(artifact).value();
+
+        String secondId = "com.example.aba-second";
+        String secondProvider = "com.example.OtherProvider";
+        Path secondDirectory = manifestedDirectory(
+                "aba-second", secondId, "second", secondProvider);
+        Path replacement = createJar(
+                secondDirectory, temporary.resolve("aba-replacement.jar"));
+        Path saved = temporary.resolve("aba-original.jar");
+        AtomicReference<Path> snapshotRoot = new AtomicReference<>();
+        PluginArtifactScanner racingScanner = scanner(new PluginArtifactScanner.ScanObserver() {
+            @Override
+            public void beforeSnapshotInspection(Path source, Path snapshot)
+                    throws IOException {
+                snapshotRoot.set(snapshot.getParent());
+                Files.move(source, saved, StandardCopyOption.REPLACE_EXISTING);
+                Files.copy(replacement, source, StandardCopyOption.REPLACE_EXISTING);
+            }
+
+            @Override
+            public void afterSnapshotInspection(Path source, Path snapshot)
+                    throws IOException {
+                Files.deleteIfExists(source);
+                Files.move(saved, source, StandardCopyOption.REPLACE_EXISTING);
+            }
+        });
+
+        PluginIndex index = racingScanner.scan(artifact);
+
+        assertThat(index.bundles()).singleElement().satisfies(bundle -> {
+            assertThat(bundle.manifest().id()).isEqualTo(firstId);
+            assertThat(bundle.manifest().contributions()).containsExactly(
+                    new BundleContribution(KIND, "first", firstProvider));
+            assertThat(bundle.digest()).isEqualTo(expectedDigest);
+        });
+        assertThat(CatalogDigests.artifact(artifact).value()).isEqualTo(expectedDigest);
+        assertThat(snapshotRoot.get()).isNotNull().doesNotExist();
+    }
+
+    @Test
+    void rejectsSameSizeRootReplacementDuringSnapshotCaptureAndCleansUp()
+            throws Exception {
+        Path directory = manifestedDirectory(
+                "same-size-source", "com.example.same-size", "sink",
+                "com.example.SameSizeProvider");
+        Path artifact = createJar(directory, temporary.resolve("same-size.jar"));
+        byte[] replacementBytes = Files.readAllBytes(artifact);
+        replacementBytes[replacementBytes.length / 2] ^= 1;
+        Path replacement = temporary.resolve("same-size-replacement.jar");
+        Files.write(replacement, replacementBytes);
+        assertThat(Files.size(replacement)).isEqualTo(Files.size(artifact));
+
+        AtomicReference<Path> snapshotRoot = new AtomicReference<>();
+        PluginArtifactScanner racingScanner = scanner(new PluginArtifactScanner.ScanObserver() {
+            @Override
+            public void afterSnapshotCopy(Path source, Path snapshot) throws IOException {
+                snapshotRoot.set(snapshot.getParent());
+                Files.move(replacement, source, StandardCopyOption.REPLACE_EXISTING);
+            }
+        });
+
+        assertThatThrownBy(() -> racingScanner.scan(artifact))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("immutable scan snapshot was captured");
+        assertThat(snapshotRoot.get()).isNotNull().doesNotExist();
+    }
+
+    @Test
+    void rejectsRootSymlinkReplacementDuringSnapshotCaptureAndCleansUp()
+            throws Exception {
+        Path directory = manifestedDirectory(
+                "symlink-race-source", "com.example.symlink-race", "sink",
+                "com.example.SymlinkRaceProvider");
+        Path artifact = createJar(directory, temporary.resolve("symlink-race.jar"));
+        Path saved = temporary.resolve("symlink-race-original.jar");
+        AtomicReference<Path> snapshotRoot = new AtomicReference<>();
+        PluginArtifactScanner racingScanner = scanner(new PluginArtifactScanner.ScanObserver() {
+            @Override
+            public void afterSnapshotCopy(Path source, Path snapshot) throws IOException {
+                snapshotRoot.set(snapshot.getParent());
+                Files.move(source, saved, StandardCopyOption.REPLACE_EXISTING);
+                Files.createSymbolicLink(source, saved.getFileName());
+            }
+        });
+
+        assertThatThrownBy(() -> racingScanner.scan(artifact))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("must not be a symbolic link");
+        assertThat(snapshotRoot.get()).isNotNull().doesNotExist();
+    }
+
+    @Test
+    void removesPrivateSnapshotAfterCorrelationFailure() throws Exception {
+        String provider = "com.example.CleanupProvider";
+        Path artifact = manifestedDirectory(
+                "cleanup-failure", "com.example.cleanup", "sink", provider);
+        AtomicReference<Path> snapshotRoot = new AtomicReference<>();
+        PluginArtifactScanner corruptingScanner = scanner(
+                new PluginArtifactScanner.ScanObserver() {
+                    @Override
+                    public void beforeSnapshotInspection(Path source, Path snapshot)
+                            throws IOException {
+                        snapshotRoot.set(snapshot.getParent());
+                        Files.delete(snapshot.resolve(
+                                provider.replace('.', '/') + ".class"));
+                    }
+                });
+
+        assertThatThrownBy(() -> corruptingScanner.scan(artifact))
+                .isInstanceOf(PluginCatalogException.class)
+                .hasMessageContaining("no base class entry in the same artifact");
+        assertThat(snapshotRoot.get()).isNotNull().doesNotExist();
+    }
+
+    @Test
     void rejectsAnInputArtifactThatAlreadyContainsAnAggregateIndex() throws Exception {
         Path directory = emptyArtifact("nested-index-directory");
         writeBytes(directory, PluginIndex.RESOURCE_PATH, "{}".getBytes());
@@ -289,6 +578,12 @@ class PluginArtifactScannerTest {
         return artifact;
     }
 
+    private static PluginArtifactScanner scanner(
+            PluginArtifactScanner.ScanObserver observer
+    ) {
+        return new PluginArtifactScanner(new BundleManifestParser(), observer);
+    }
+
     private Path emptyArtifact(String name) throws IOException {
         return Files.createDirectories(temporary.resolve(name));
     }
@@ -314,7 +609,7 @@ class PluginArtifactScannerTest {
                   "schemaVersion": 1,
                   "id": "%s",
                   "version": "1.0.0",
-                  "yanoApi": {"min": 1, "max": 1},
+                  "yanoApi": {"min": 1, "max": 1, "minLevel": 1},
                   "dependencies": [],
                   "contributions": [%s]
                 }
@@ -364,5 +659,38 @@ class PluginArtifactScannerTest {
             }
         }
         return output;
+    }
+
+    private static Path sparseFile(Path output, long size) throws IOException {
+        try (FileChannel channel = FileChannel.open(output,
+                StandardOpenOption.CREATE_NEW,
+                StandardOpenOption.WRITE,
+                StandardOpenOption.SPARSE)) {
+            channel.position(size - 1);
+            channel.write(ByteBuffer.wrap(new byte[]{1}));
+        }
+        return output;
+    }
+
+    private static void replaceAscii(byte[] bytes, String expected, String replacement) {
+        byte[] from = expected.getBytes(StandardCharsets.US_ASCII);
+        byte[] to = replacement.getBytes(StandardCharsets.US_ASCII);
+        assertThat(to).hasSameSizeAs(from);
+        int replacements = 0;
+        for (int index = 0; index <= bytes.length - from.length; index++) {
+            boolean match = true;
+            for (int offset = 0; offset < from.length; offset++) {
+                if (bytes[index + offset] != from[offset]) {
+                    match = false;
+                    break;
+                }
+            }
+            if (match) {
+                System.arraycopy(to, 0, bytes, index, to.length);
+                replacements++;
+                index += from.length - 1;
+            }
+        }
+        assertThat(replacements).isPositive();
     }
 }

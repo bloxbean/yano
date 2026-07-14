@@ -5,8 +5,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 
 import java.io.InputStream;
+import java.lang.reflect.RecordComponent;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
@@ -67,6 +69,20 @@ class PluginCatalogNativeImageMetadataTest {
                     .as("declared fields for %s", name)
                     .isTrue();
         });
+    }
+
+    @Test
+    void nativeJacksonApiRangeRecordsRetainRequiredMinimumLevel() {
+        for (Class<?> owner : List.of(BundleManifestParser.class, PluginIndexCodec.class)) {
+            Class<?> rawYanoApi = Arrays.stream(owner.getDeclaredClasses())
+                    .filter(type -> type.getSimpleName().equals("RawYanoApi"))
+                    .findFirst()
+                    .orElseThrow();
+            assertThat(Arrays.stream(rawYanoApi.getRecordComponents())
+                    .map(RecordComponent::getName))
+                    .as("native Jackson API range fields for %s", owner.getSimpleName())
+                    .containsExactly("min", "max", "minLevel");
+        }
     }
 
     @Test

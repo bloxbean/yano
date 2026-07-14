@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed — requirements exploration and roadmap
+Accepted — implemented and verified
 
 The number is local to the `adr/app-layer` series; root-level ADR-011 is an
 unrelated node-capability roadmap.
@@ -27,26 +27,27 @@ BloxBean Team
 
 ## 0. In plain words
 
-Yano already lets applications contribute state machines, effect executors,
-stream sinks, sequencer modes, L1 observers and signers. Those extension
-points are useful, but Yano discovers each one independently. It cannot yet
-answer basic platform questions such as: Which product plugin is installed?
-Which compatible version is active? Which contributions belong to it? In what
-order should dependencies start? Which configuration and health status belong
-to it? How may it expose a safe domain query or API?
+At proposal time, Yano already let applications contribute state machines,
+effect executors, stream sinks, sequencer modes, L1 observers and signers, but
+it discovered each extension point independently. It could not answer basic
+platform questions such as: Which product plugin is installed? Which
+compatible version is active? Which contributions belong to it? In what order
+should dependencies start? Which configuration and health status belong to it?
+How may it expose a safe domain query or API?
 
-This ADR adds that missing control plane. A **plugin bundle** has one manifest
-and may contain one or more existing typed contributions. A catalog validates
-identity, compatibility, dependencies and policy before any contribution is
-initialized. Typed SPIs remain the data plane; the bundle does not replace
-them with a generic service locator.
+This ADR defines that missing control plane, which its sub-ADRs implement. A
+**plugin bundle** has one manifest and may contain one or more typed
+contributions. A catalog validates identity, compatibility, dependencies and
+policy before any contribution is initialized. Typed SPIs remain the data
+plane; the bundle does not replace them with a generic service locator.
 
 The first version is restart-based and trusted in-process code. It does not
 promise sandboxing, hot reload, or arbitrary runtime JAX-RS discovery.
 
-## 1. Context and current baseline
+## 1. Context and proposal-time baseline
 
-The app-chain implementation already discovers six `ServiceLoader` SPIs:
+When this ADR was proposed, the app-chain implementation discovered six
+`ServiceLoader` SPIs:
 
 | Typed contribution | Role | Trust / determinism |
 |---|---|---|
@@ -57,48 +58,51 @@ The app-chain implementation already discovers six `ServiceLoader` SPIs:
 | `AppEffectExecutorFactory` | performs effects outside deterministic `apply()` | privileged local, side-effecting |
 | `FinalizedStreamSinkFactory` | exports finalized blocks | auxiliary local integration |
 
-The generic node runtime also has `NodePlugin` with discovery, lifecycle,
-event access, storage filters and dependency declarations. This is a valuable
-starting point, but it is not a coherent app-layer bundle system.
+The generic node runtime also had `NodePlugin` with discovery, lifecycle,
+event access, storage filters and dependency declarations. This was a valuable
+starting point, but not a coherent app-layer bundle system.
 
-Verified baseline gaps at the time of this vision ADR (ADR-011.1 addresses
-items 2 and 3 plus the `NodePlugin`-only policy portion adjacent to item 4; the
-manifested bundle/catalog and typed-SPI policy gaps remain):
+The following were verified gaps at proposal time. They record the starting
+point, not the current implementation state:
 
-1. The six typed SPIs are scanned independently. There is no shared bundle
+1. The six typed SPIs were scanned independently. There was no shared bundle
    identity, artifact version, compatibility range, contribution inventory or
    dependency graph.
-2. `PluginManager` calls `NodePlugin.init()` during discovery and only sorts
-   dependencies afterwards. Missing dependencies and cycles are logged rather
-   than rejected, so declared ordering does not govern initialization.
-3. Each current `PluginContextImpl` owns a private service registry. A service
-   registered through one context cannot be found through another, despite
+2. `PluginManager` called `NodePlugin.init()` during discovery and only sorted
+   dependencies afterwards. Missing dependencies and cycles were logged rather
+   than rejected, so declared ordering did not govern initialization.
+3. Each `PluginContextImpl` owned a private service registry. A service
+   registered through one context could not be found through another, despite
    the API describing inter-plugin communication.
-4. There is no app-layer enable/allow/deny policy enforced before typed SPI
-   activation, and configuration is not consistently isolated by plugin id.
-5. Duplicate ids, contribution conflicts and Yano API incompatibility have no
+4. There was no app-layer enable/allow/deny policy enforced before typed SPI
+   activation, and configuration was not consistently isolated by plugin id.
+5. Duplicate ids, contribution conflicts and Yano API incompatibility had no
    uniform fail-fast rule.
-6. `AppStateMachine.query(path, params)` exists in `core-api` but is not wired
-   to the REST surface. A plugin cannot expose a product-passport or other
-   domain view through a stable app-layer contract.
-7. The Quarkus REST module has no plugin API contribution contract. Dynamic
-   dropped-JAR REST discovery also conflicts with native-image closed-world
-   assumptions and makes authentication/routing ownership unclear.
-8. Plugins have no uniform inventory, health, metrics or CLI contribution
+6. `AppStateMachine.query(path, params)` existed in `core-api` but was not
+   wired to the REST surface. A plugin could not expose a product-passport or
+   other domain view through a stable app-layer contract.
+7. The Quarkus REST module had no plugin API contribution contract. Dynamic
+   dropped-JAR REST discovery also conflicted with native-image closed-world
+   assumptions and made authentication/routing ownership unclear.
+8. Plugins had no uniform inventory, health, metrics or CLI contribution
    model.
 
-ADR-011.1 retains the existing `NodePlugin` SPI and closes its immediate
-validation, dependency ordering, shared-registry, policy and lifecycle gaps. It
-does not implement this ADR's manifest, bundle identity, typed-SPI correlation,
-compatibility, inventory, domain API or isolation roadmap.
+ADR-011.1 retained `NodePlugin` and closed its validation, dependency-order,
+shared-registry, policy and lifecycle gaps. ADR-011.2 added the manifested
+catalog and correlated all catalog contribution kinds. ADR-011.3 added
+committed queries and constrained domain APIs. ADR-011.4 added the separate
+operations, health, metrics, inspection and dashboard surfaces. The complete
+platform has passed its two-node functional closure and final JVM, native, and
+API-prefix artifact revalidation; ADR-011.4 records the exact evidence.
 
 ## 2. Decision summary
 
-Yano will introduce a **manifested plugin bundle and catalog** above its typed
+Yano introduces a **manifested plugin bundle and catalog** above its typed
 SPIs.
 
-- A bundle has a stable id, version, Yano API compatibility range,
-  dependencies, configuration namespace and declared contribution kinds.
+- A bundle has a stable id, artifact SemVer, inclusive plugin API-major range,
+  required minimum global API level, dependencies, configuration namespace
+  and declared contribution kinds.
 - Existing typed SPIs remain the only way to contribute consensus and runtime
   behavior. The manifest describes and governs them; it does not instantiate
   arbitrary classes by name.
@@ -184,33 +188,46 @@ coordination tractable.
 ## 5. Bundle descriptor and discovery
 
 A JVM bundle contains a bundle-qualified
-`META-INF/yano/plugins/<bundle-id>.json` manifest. ADR-011.2 freezes the exact
-schema; the following remains the original conceptual sketch:
+`META-INF/yano/plugins/<bundle-id>.json` manifest. ADR-011.2 freezes schema v1;
+this is a schema-valid example rather than a conceptual alternate format:
 
 ```json
 {
   "schemaVersion": 1,
   "id": "com.example.product-passport",
   "version": "1.2.0",
-  "yanoApiRange": ">=0.8 <0.10",
-  "requires": [
-    {"id": "com.example.shared-domain", "versionRange": "^2.0"}
+  "yanoApi": {
+    "min": 1,
+    "max": 1,
+    "minLevel": 1
+  },
+  "dependencies": [
+    {
+      "id": "com.example.shared-domain",
+      "minVersion": "2.0.0",
+      "maxVersionExclusive": "3.0.0"
+    }
   ],
   "contributions": [
-    "app-state-machine",
-    "effect-executor",
-    "domain-api",
-    "health"
-  ],
-  "configPrefix": "yano.plugins.bundle.\"com.example.product-passport\"",
-  "nativeMode": "build-time"
+    {
+      "kind": "app-state-machine",
+      "name": "product-passport",
+      "provider": "com.example.passport.PassportStateMachineProvider"
+    },
+    {
+      "kind": "domain-api",
+      "name": "com.example.product-passport",
+      "provider": "com.example.passport.PassportDomainApiProvider"
+    }
+  ]
 }
 ```
 
 The descriptor is declarative. Standard `META-INF/services/*` entries continue
 to name implementations of the typed SPIs. The catalog correlates discovered
 providers with their containing bundle and verifies that actual and declared
-contribution kinds agree.
+contribution kinds agree. Configuration namespace and JVM/native packaging
+mode are host-derived policy, not schema-v1 manifest fields.
 
 Catalog construction order:
 
@@ -226,8 +243,8 @@ Catalog construction order:
    inventory and warnings.
 4. Reject selected contribution conflicts and resolve required dependency
    identities and version ranges.
-5. Topologically sort selected bundles; a missing dependency or cycle is fatal for any
-   selected required/consensus plugin.
+5. Topologically sort selected bundles; a missing dependency or cycle is fatal
+   for any selected required/consensus plugin.
 6. Publish the immutable catalog/provider registry.
 7. Construct scoped contexts, initialize in dependency order, then start only
    after all required initialization succeeds.
@@ -238,11 +255,15 @@ deployment comparison.
 
 ## 6. Trust tiers and failure policy
 
-| Tier | Contributions | Startup / runtime policy |
+Schema v1 recognizes exactly ten catalog contribution kinds: `node-plugin`
+plus nine typed SPIs.
+
+| Tier | Manifest contribution kinds | Startup / runtime policy |
 |---|---|---|
-| **CONSENSUS** | state machines, sequencer modes, L1 observers and validation customizers | selected contribution missing, duplicate, incompatible or failed → chain/node role does not start; runtime failure is fatal to that chain role |
-| **PRIVILEGED_LOCAL** | signers, effect executors, domain/admin APIs | if explicitly selected for the role, configuration/init failure is startup-fatal; runtime failure parks/degrades affected work and alerts; APIs require authorization |
-| **AUXILIARY_LOCAL** | finalized sinks, event consumers, health/metrics exporters | optional failure is isolated; plugin becomes DEGRADED/FAILED and retry policy is contribution-specific |
+| **REQUIRED** | `node-plugin` | catalog or lifecycle validation failure is startup-fatal; runtime lifecycle failure is fatal to the owning node role |
+| **CONSENSUS** | `app-state-machine`, `sequencer-mode`, `l1-observer` | selected contribution missing, duplicate, incompatible or failed → chain/node role does not start; runtime failure is fatal to that chain role |
+| **PRIVILEGED_LOCAL** | `signer-provider`, `effect-executor`, `domain-api` | if explicitly selected for the role, configuration/init failure is startup-fatal; runtime failure parks/degrades affected work and alerts; APIs require authorization |
+| **AUXILIARY_LOCAL** | `finalized-sink`, `health`, `metrics` | optional failure is isolated; plugin becomes degraded/failed and retry policy is contribution-specific |
 
 The tier is determined by the typed contribution, not self-declared to obtain a
 weaker failure policy. A bundle containing several tiers is reported per
@@ -287,21 +308,23 @@ prefixes another or a bundle is removed. The former bracketed spelling remains
 a migration alias. Environment variables use the reversible UTF-8-hex owner
 form `YANO_PLUGINS_BUNDLE_HEX__<UTF8_HEX_ID>__<KEY>`; the former punctuation-
 to-underscore owner form is rejected because it cannot distinguish removed or
-colliding dot/hyphen ids. Each context receives an immutable, owner-stripped
-view for its bundle, a plugin-specific logger and explicit secret references.
-The shared global map remains only as a legacy compatibility view during
-migration.
+colliding dot/hyphen ids. A manifested `NodePlugin` context receives an
+owner-stripped, deeply immutable, bounded JSON-like view for its bundle and a
+plugin-specific logger. The shared global map remains only as a legacy
+compatibility view during migration.
 
 Existing stable contribution paths remain valid through adapters, including:
 
 - `yano.app-chain.effects.executors.<scheme>.*`
 - app-chain machine, sink, sequencer, L1 observer and signer selections
 
-Secrets are referenced from configuration/KMS providers and never copied into
-the manifest, contribution contexts, catalog status, effect records or health
-details. Contexts receive only ordinary non-secret values plus explicit opaque
-secret references/capabilities. Configuration validation errors name a safely
-normalized or escaped key but redact the value when it may be secret.
+Contribution-specific adapters continue to own credentials and KMS references.
+The generic v1 domain, health and metrics contexts deliberately receive no raw
+bundle configuration because no opaque secret-reference/capability contract is
+yet defined for them. Secrets are never copied into manifests, catalog or
+operations snapshots, effect records, health details or diagnostics.
+Configuration validation errors redact both keys and values because either may
+identify secret material.
 
 ## 9. Query and domain API model
 
@@ -309,7 +332,7 @@ normalized or escaped key but redact the value when it may be secret.
 
 Yano wires a committed-context overload of the already-declared
 `AppStateMachine.query(path, params)` through a chain-scoped route,
-conceptually:
+conceptually below the artifact API prefix (shown with the default):
 
 ```
 POST /api/v1/app-chain/chains/{chainId}/query/{path}
@@ -325,14 +348,17 @@ consensus; the returned payload is opaque and is not automatically a proof.
 
 ### 9.2 Domain API contributions
 
-A manifest-only `DomainApiProvider` registers handlers and constrained
-route metadata through a stable route registry under:
+A manifest-only `DomainApiProvider` registers handlers and constrained route
+metadata through a stable route registry under the artifact's API prefix
+(shown below with the default):
 
 ```
 /api/v1/plugins/{pluginId}/...
 ```
 
-The registry owns unique route identity, structural collision checks, raw
+The prefix is an artifact build contract selected only with strict
+`-PyanoApiPrefix=<path>` (default `/api/v1`), not launch-time plugin
+configuration. The registry owns unique route identity, structural collision checks, raw
 canonical-path validation with percent aliases rejected, request limits,
 response media validation, authentication class (`READ`, `PRIVILEGED`, or
 internal-only), metrics and shutdown. Privileged public routes fail closed
@@ -354,33 +380,38 @@ deferred until the basic query contract and consistency semantics are proven.
 
 ## 10. Observability, health and CLI
 
-The platform exposes one inventory entry per bundle and contribution:
+The immutable catalog exposes one inventory entry per bundle and contribution:
 
 - id, version, artifact digest and source
 - compatibility decision, dependencies and contribution kinds
 - enabled/disabled reason and trust tier
-- lifecycle state, last failure and health summary
-- per-chain instances and relevant configuration namespace (never values of
-  secrets)
+
+A separate node-local operations snapshot joins to that catalog by fingerprint
+and exposes bounded lifecycle, health, failure and custom metric state. Dynamic
+state is never included in the catalog fingerprint. Runtime lifecycle is
+currently observed for `node-plugin`, `domain-api`, `health` and `metrics`.
+The other six app-chain factory contributions remain catalog-visible with
+`lifecycleObserved=false`, `VALIDATED` and `UNKNOWN`; selection alone is not
+reported as an active instance.
 
 Health and metric contributions receive bounded typed registries, so they
 cannot replace the node's server or publish unmanaged endpoints. Standard
-plugin lifecycle and failure counters are supplied by the platform.
+plugin lifecycle and failure counters are supplied by the platform, and HTTP,
+health, Micrometer and dashboard adapters read only host-cached snapshots.
 
-CLI extension is useful for domain operations but is not a v1 requirement.
-Initial CLI commands inspect, validate and diagnose the catalog; arbitrary
-plugin-defined commands follow only after naming, authorization and native
-packaging rules are settled.
+The host-owned CLI inspects, validates and diagnoses catalogs without loading
+provider code. Arbitrary plugin-defined commands remain deferred until naming,
+authorization and native packaging rules are settled.
 
 ## 11. Packaging and compatibility
 
 ### JVM
 
-A configured plugin directory/classpath is scanned at startup. The exact
-class-loader model (shared, child-first with API parent, or per-bundle layers)
-is deferred to ADR-011.2 because dependency isolation, logging libraries and
-ServiceLoader behavior require focused testing. Plugins compile against a
-published plugin/API surface and must not package Yano runtime internals.
+A configured plugin directory/classpath is scanned at startup through one
+lifecycle-owned parent-first loader. Directory artifacts are captured into
+immutable runtime snapshots before catalog validation and activation. Plugins
+compile against the published plugin/API surface and must not package Yano
+runtime internals.
 
 ### Native image
 
@@ -391,10 +422,28 @@ not supported.
 
 ### Compatibility
 
-The descriptor's `yanoApiRange` governs the stable plugin API, not Yano's full
-implementation version. Consensus plugin upgrades additionally use existing
-chain-coordination/version-activation procedures; manifest compatibility alone
-does not make a state-transition upgrade safe.
+The descriptor's inclusive `yanoApi.min`/`yanoApi.max` range governs breaking
+plugin API-major compatibility, while required `yanoApi.minLevel` identifies
+the minimum additive API surface. A host is compatible only when its current
+major is within the range **and** its current global level is at least
+`minLevel`. The level is globally monotonic and never resets on a major bump;
+a high level cannot compensate for an unsupported major. Bundle artifact
+SemVer and the Yano product release version are independent of both API
+dimensions.
+
+Yano has not shipped a stable plugin release yet and its preview databases and
+catalog history are disposable. The complete current public plugin surface is
+therefore the unreleased baseline **plugin API major 1, global level 1**; the
+health and metrics kinds are part of that baseline, not a level migration.
+Once this baseline is released, every additive public plugin API change must
+advance the global level. Before level 2 is introduced, the project must add an
+append-only level ledger that records each level, release, and newly introduced
+public symbol or contribution kind. Published ledger entries are never edited
+or renumbered.
+
+Consensus plugin upgrades additionally use existing chain-coordination and
+height/version-activation procedures; manifest compatibility alone does not
+make a state-transition upgrade safe.
 
 ## 12. Effect-system integration
 
@@ -496,12 +545,17 @@ execution. ADR-010's attestation trust model remains unchanged.
 - keep product-passport-style aggregation as a plugin/application concern;
   materialized cross-machine views remain deferred until concrete demand.
 
-### ADR-011.4 — Operations and integration extensions
+### ADR-011.4 — Operations and integration extensions (accepted and implemented)
 
-- standard health and metrics contribution APIs;
-- catalog validation/inspection CLI;
-- evaluate CLI contributions and alternative effect transports using concrete
-  demand rather than speculative generic interfaces.
+Implementation and acceptance evidence are specified by
+`011.4-plugin-operations-and-observability.md`:
+
+- a node-local operations view separate from the catalog fingerprint;
+- manifest-only, auxiliary health and metric snapshot providers;
+- bounded cached REST, health, Micrometer, and static dashboard adapters;
+- a host-owned catalog validation/inspection CLI that never loads providers;
+- plugin-defined CLI contributions and alternative effect transports remain
+  deferred until concrete demand.
 
 ## 17. Migration
 

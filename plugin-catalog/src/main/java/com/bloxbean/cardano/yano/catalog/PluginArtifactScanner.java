@@ -47,24 +47,41 @@ public final class PluginArtifactScanner {
     public static final int MAX_ENTRY_NAME_LENGTH = 4_096;
     /** Maximum aggregate entry-name characters retained while scanning. */
     public static final int MAX_TOTAL_ENTRY_NAME_CHARACTERS = 16 * 1024 * 1024;
+    /** Maximum bytes copied for one explicit JAR or exploded artifact snapshot. */
+    public static final long MAX_ARTIFACT_BYTES = 1024L * 1024L * 1024L;
 
     private static final String SERVICE_DIRECTORY = "META-INF/services/";
     private static final String API_CLASS_PREFIX = "com/bloxbean/cardano/yano/api/";
     private static final String MULTI_RELEASE_PREFIX = "META-INF/versions/";
 
     private final BundleManifestParser manifestParser;
+    private final ScanObserver scanObserver;
 
     /** Creates a scanner using the strict schema-v1 manifest parser. */
     public PluginArtifactScanner() {
-        this(new BundleManifestParser());
+        this(new BundleManifestParser(), ScanObserver.NOOP);
     }
 
     PluginArtifactScanner(BundleManifestParser manifestParser) {
+        this(manifestParser, ScanObserver.NOOP);
+    }
+
+    PluginArtifactScanner(
+            BundleManifestParser manifestParser,
+            ScanObserver scanObserver
+    ) {
         this.manifestParser = Objects.requireNonNull(manifestParser, "manifestParser");
+        this.scanObserver = Objects.requireNonNull(scanObserver, "scanObserver");
     }
 
     /**
-     * Scans exactly one regular JAR file or exploded artifact directory.
+     * Scans exactly one explicit regular JAR file or exploded artifact directory.
+     *
+     * <p>The source is copied into a private immutable snapshot before it is
+     * classified. Accepted metadata and its digest therefore describe the
+     * same captured bytes, including when an input changes concurrently. The
+     * result does not attest that unrelated tooling later loads those bytes
+     * from the mutable source path.</p>
      *
      * @param artifact artifact to inspect without loading provider code
      * @return canonical partial index, or an empty index for an ordinary artifact
@@ -72,7 +89,14 @@ public final class PluginArtifactScanner {
      * @throws PluginCatalogException if plugin metadata or artifact correlation is invalid
      */
     public PluginIndex scan(Path artifact) throws IOException {
-        return scan(artifact, false);
+        Objects.requireNonNull(artifact, "artifact");
+        PluginArtifactSnapshot.SourceStamp sourceStamp =
+                PluginArtifactSnapshot.stamp(artifact);
+        scanObserver.beforeSnapshotCapture(artifact);
+        try (PluginArtifactSnapshot snapshot = PluginArtifactSnapshot.capture(
+                artifact, sourceStamp, scanObserver::afterSnapshotCopy)) {
+            return scanSnapshot(artifact, snapshot, false);
+        }
     }
 
     /**
@@ -80,25 +104,59 @@ public final class PluginArtifactScanner {
      * even when the artifact itself contains no plugin provider metadata. This
      * is used for every dependency assigned to a strict build-time bundle
      * closure; unrelated application dependencies remain outside that policy.
+     *
+     * <p>This package-private build optimization probes ordinary dependencies
+     * under a structural-stamp guard and avoids snapshotting them. Explicit or
+     * operator-selected artifacts must use {@link #scan(Path)} instead.</p>
      */
-    PluginIndex scan(Path artifact, boolean requireClosedClassPath) throws IOException {
+    PluginIndex scanClasspathArtifact(
+            Path artifact,
+            boolean requireClosedClassPath
+    ) throws IOException {
         Objects.requireNonNull(artifact, "artifact");
+        PluginArtifactSnapshot.SourceStamp beforeProbe =
+                PluginArtifactSnapshot.stamp(artifact);
         ArtifactContents probe = inspect(artifact, requireClosedClassPath);
         boolean pluginArtifact = probe.manifest() != null
                 || hasServiceProviders(probe.services());
+        scanObserver.afterProbe(artifact, pluginArtifact);
+        PluginArtifactSnapshot.SourceStamp afterProbe =
+                PluginArtifactSnapshot.stamp(artifact);
+        if (!beforeProbe.equals(afterProbe)) {
+            throw new IOException("Plugin artifact changed while it was being inspected");
+        }
         rejectManifestClassPath(probe, pluginArtifact || requireClosedClassPath);
         if (!pluginArtifact) {
             return PluginIndex.empty();
         }
 
-        CatalogDigests.Digest before = CatalogDigests.artifact(artifact);
-        ArtifactContents contents = inspect(artifact, requireClosedClassPath);
-        rejectManifestClassPath(contents, true);
-        CatalogDigests.Digest after = CatalogDigests.artifact(artifact);
-        if (!before.equals(after)) {
-            throw invalid("artifact changed while it was being indexed");
+        scanObserver.beforeSnapshotCapture(artifact);
+        try (PluginArtifactSnapshot snapshot = PluginArtifactSnapshot.capture(
+                artifact, afterProbe, scanObserver::afterSnapshotCopy)) {
+            return scanSnapshot(artifact, snapshot, requireClosedClassPath);
         }
-        return correlate(contents, after);
+    }
+
+    private PluginIndex scanSnapshot(
+            Path source,
+            PluginArtifactSnapshot snapshot,
+            boolean requireClosedClassPath
+    ) throws IOException {
+        scanObserver.beforeSnapshotInspection(source, snapshot.artifact());
+        ArtifactContents contents;
+        try {
+            contents = inspect(snapshot.artifact(), requireClosedClassPath);
+        } finally {
+            scanObserver.afterSnapshotInspection(source, snapshot.artifact());
+        }
+        boolean pluginArtifact = contents.manifest() != null
+                || hasServiceProviders(contents.services());
+        rejectManifestClassPath(contents, pluginArtifact || requireClosedClassPath);
+        if (!pluginArtifact) {
+            return PluginIndex.empty();
+        }
+        CatalogDigests.Digest digest = CatalogDigests.artifact(snapshot.artifact());
+        return correlate(contents, digest);
     }
 
     private ArtifactContents inspect(Path artifact, boolean inspectOrdinaryManifest)
@@ -349,7 +407,7 @@ public final class PluginArtifactScanner {
 
     private static int providerLimit(BundleManifest manifest) {
         return manifest == null
-                ? PluginIndex.MAX_LEGACY_PROVIDERS
+                ? PluginIndex.MAX_PROVIDERS
                 : CatalogValidation.MAX_CONTRIBUTIONS;
     }
 
@@ -596,6 +654,26 @@ public final class PluginArtifactScanner {
             Set<String> fileEntries,
             boolean manifestClassPath
     ) {
+    }
+
+    /** Package-private deterministic mutation seam for scanner race tests. */
+    interface ScanObserver {
+        ScanObserver NOOP = new ScanObserver() { };
+
+        default void afterProbe(Path source, boolean pluginArtifact) throws IOException {
+        }
+
+        default void beforeSnapshotCapture(Path source) throws IOException {
+        }
+
+        default void afterSnapshotCopy(Path source, Path snapshot) throws IOException {
+        }
+
+        default void beforeSnapshotInspection(Path source, Path snapshot) throws IOException {
+        }
+
+        default void afterSnapshotInspection(Path source, Path snapshot) throws IOException {
+        }
     }
 
     private record ServiceDeclaration(ContributionKind kind, String provider) {

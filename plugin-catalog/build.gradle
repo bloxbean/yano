@@ -1,6 +1,15 @@
+plugins {
+    id 'application'
+}
+
 dependencies {
     api project(':core-api')
     implementation libs.jackson.databind
+}
+
+application {
+    applicationName = 'yano-plugins'
+    mainClass = 'com.bloxbean.cardano.yano.catalog.PluginCatalogCli'
 }
 
 java {
@@ -16,5 +25,18 @@ publishing {
                 description = 'Manifest model and validation for Yano plugin bundles'
             }
         }
+    }
+}
+
+def packagedCliInstall = tasks.named('installDist')
+def packagedCliZip = tasks.named('distZip')
+
+tasks.named('test') {
+    dependsOn packagedCliInstall, packagedCliZip
+    doFirst {
+        systemProperty 'yano.test.plugin-cli-install-dir',
+                layout.buildDirectory.dir('install/yano-plugins').get().asFile.absolutePath
+        systemProperty 'yano.test.plugin-cli-dist-zip',
+                packagedCliZip.get().archiveFile.get().asFile.absolutePath
     }
 }

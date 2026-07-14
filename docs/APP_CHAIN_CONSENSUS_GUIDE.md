@@ -487,7 +487,7 @@ There is no typed query API yet (§9). The pattern:
      "schemaVersion": 1,
      "id": "com.example.my-machine",
      "version": "1.0.0",
-     "yanoApi": { "min": 1, "max": 1 },
+     "yanoApi": { "min": 1, "max": 1, "minLevel": 1 },
      "dependencies": [],
      "contributions": [
        {

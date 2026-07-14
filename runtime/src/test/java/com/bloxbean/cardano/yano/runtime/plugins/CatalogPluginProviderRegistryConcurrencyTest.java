@@ -291,6 +291,55 @@ class CatalogPluginProviderRegistryConcurrencyTest {
     }
 
     @Test
+    void nestedProcessFatalSelectorResetsActivationAndAllowsFreshRetry() {
+        AtomicInteger creations = new AtomicInteger();
+        AtomicInteger closes = new AtomicInteger();
+        TestVirtualMachineError fatal = new TestVirtualMachineError("nested fatal selector");
+        class RetryFactory implements FinalizedStreamSinkFactory, AutoCloseable {
+            private final int generation;
+
+            private RetryFactory(int generation) {
+                this.generation = generation;
+            }
+
+            @Override
+            public String scheme() {
+                if (generation == 1) {
+                    throw new IllegalStateException("wrapper", fatal);
+                }
+                return "fatal";
+            }
+
+            @Override
+            public List<FinalizedStreamSink> create(
+                    String chainId,
+                    Map<String, String> config
+            ) {
+                return List.of();
+            }
+
+            @Override
+            public void close() {
+                closes.incrementAndGet();
+            }
+        }
+        CatalogPluginProviderRegistry registry = new CatalogPluginProviderRegistry(
+                List.of(entry("fatal-bundle", "fatal", () -> {
+                    int generation = creations.incrementAndGet();
+                    return new RetryFactory(generation);
+                })), List.of("fatal-bundle"), List.of());
+
+        assertThatThrownBy(() -> registry.find(
+                FinalizedStreamSinkFactory.class, "fatal")).isSameAs(fatal);
+        assertThat(closes).hasValue(1);
+        assertThat(registry.find(FinalizedStreamSinkFactory.class, "fatal")).isPresent();
+        assertThat(creations).hasValue(2);
+
+        registry.close();
+        assertThat(closes).hasValue(2);
+    }
+
+    @Test
     void recursiveSameThreadRetrievalFailsFastAndCachesFailure() {
         AtomicReference<CatalogPluginProviderRegistry> registryRef = new AtomicReference<>();
         AtomicInteger closeCalls = new AtomicInteger();

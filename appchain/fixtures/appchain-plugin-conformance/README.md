@@ -1,15 +1,22 @@
 # ADR-011.2 plugin conformance fixture
 
-This build-only bundle covers the `NodePlugin` lifecycle and all seven typed
+This build-only bundle covers the `NodePlugin` lifecycle and all nine typed
 app-chain plugin SPIs in both runtime modes without peers or external work.
+
+Its schema-v1 manifest declares the initial global plugin API `minLevel` of
+`1`. The JVM verifier requires the runtime catalog to publish the current API
+major and level before constructing providers; the broader ADR-011.2 tests
+also prove that an out-of-range major or a host level below `minLevel` fails
+before construction and yields the same result in offline inspection.
 
 - The JVM test opens the fixture JAR through `PluginRuntimeEnvironment` and
   constructs every product through the catalog-owned provider registry.
 - The packaged JVM and native smoke tasks auto-start an isolated one-member
   app chain configured with every applicable selector. They require running structured
   status for the fixture signer, state machine, sequencer, observer, finalized
-  sink, and effect executor. This exercises the same assembly and lifecycle
-  path as an operator-configured chain.
+  sink, effect executor, domain API, health source, and metrics source. This
+  exercises the same assembly, sampling, and lifecycle path as an
+  operator-configured chain.
 - Every fixture factory poisons its provider-callback TCCL before returning.
   The first callback on each returned product poisons it again, and every
   later callback rejects a missing TCCL. Catalog facades restore the caller
@@ -47,3 +54,10 @@ node-plugin lifecycle marker:
 ```text
 ADR-011.2 node-plugin conformance activated through catalog
 ```
+
+For multi-node operations tests, the same fixture JAR can expose node-local
+health outcomes with `-Dyano.plugin.conformance.health-mode=UP|DEGRADED|DOWN|HANG`.
+The default is `UP`. `HANG` deliberately ignores interruption while sampling;
+use it only in a disposable process and terminate that process forcibly after
+the timeout behavior is verified. Selector text never becomes a metric label,
+provider identity, or public check identity.

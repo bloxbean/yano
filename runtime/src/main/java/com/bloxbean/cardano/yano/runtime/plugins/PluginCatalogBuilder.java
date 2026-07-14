@@ -8,6 +8,7 @@ import com.bloxbean.cardano.yano.api.appchain.signer.SignerProviderFactory;
 import com.bloxbean.cardano.yano.api.appchain.sink.FinalizedStreamSinkFactory;
 import com.bloxbean.cardano.yano.api.config.PluginsOptions;
 import com.bloxbean.cardano.yano.api.plugin.NodePlugin;
+import com.bloxbean.cardano.yano.api.plugin.PluginApiVersion;
 import com.bloxbean.cardano.yano.api.plugin.PluginCapability;
 import com.bloxbean.cardano.yano.api.plugin.PluginBundleInfo;
 import com.bloxbean.cardano.yano.api.plugin.PluginContributionInfo;
@@ -16,6 +17,8 @@ import com.bloxbean.cardano.yano.api.plugin.PluginSourceCategory;
 import com.bloxbean.cardano.yano.api.plugin.PluginSelectionStatus;
 import com.bloxbean.cardano.yano.api.plugin.PluginTrustTier;
 import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiProvider;
+import com.bloxbean.cardano.yano.api.plugin.operations.PluginHealthProvider;
+import com.bloxbean.cardano.yano.api.plugin.operations.PluginMetricsProvider;
 import com.bloxbean.cardano.yano.catalog.BundleContribution;
 import com.bloxbean.cardano.yano.catalog.BundleDependency;
 import com.bloxbean.cardano.yano.catalog.BundleManifest;
@@ -64,7 +67,8 @@ import java.util.function.Supplier;
 
 /** Validates policy/graph/provider correlation and publishes one immutable catalog. */
 final class PluginCatalogBuilder {
-    static final int PLUGIN_API_MAJOR = 1;
+    static final int PLUGIN_API_MAJOR = PluginApiVersion.CURRENT_MAJOR;
+    static final int PLUGIN_API_LEVEL = PluginApiVersion.CURRENT_LEVEL;
     static final int MAX_CYCLE_DIAGNOSTIC_LENGTH = 512;
     private static final int MAX_CYCLE_ID_DISPLAY_LENGTH = 64;
     private static final String DEPENDENCY_CYCLE_DIAGNOSTIC_PREFIX =
@@ -77,7 +81,7 @@ final class PluginCatalogBuilder {
     static final int MAX_LEGACY_CLASS_BYTES = 16 * 1024 * 1024;
     private static final int MAX_ZERO_PROGRESS_READS = 16;
     /** Bound the combined ServiceLoader traversal across every contribution kind. */
-    static final int MAX_DISCOVERED_PROVIDERS = PluginIndex.MAX_LEGACY_PROVIDERS;
+    static final int MAX_DISCOVERED_PROVIDERS = PluginIndex.MAX_PROVIDERS;
     private static final Logger log = LoggerFactory.getLogger(PluginCatalogBuilder.class);
 
     BuildResult build(PluginsOptions options,
@@ -105,6 +109,8 @@ final class PluginCatalogBuilder {
             return emptyResult(loader);
         }
 
+        validateProviderBudget(inputs, MAX_DISCOVERED_PROVIDERS);
+        validateManifestCompatibility(inputs);
         Map<ProviderKey, ServiceLoader.Provider<?>> handles = discoverProviderHandles(loader);
         // Manifest declaration uniqueness is a catalog property, independent
         // of whether policy makes the provider executable on the terminal
@@ -120,10 +126,6 @@ final class PluginCatalogBuilder {
             for (CatalogInput input : inputs) {
                 for (IndexedBundle indexed : input.index().bundles()) {
                     BundleManifest manifest = indexed.manifest();
-                    if (!manifest.yanoApi().supports(PLUGIN_API_MAJOR)) {
-                        throw new IllegalStateException("Plugin bundle '" + manifest.id()
-                                + "' does not support Yano plugin API major " + PLUGIN_API_MAJOR);
-                    }
                     validateReservedNames(manifest);
                     boolean executableDirectoryBundle = input.source()
                             != PluginSourceCategory.DIRECTORY
@@ -280,7 +282,7 @@ final class PluginCatalogBuilder {
                     .map(PluginCatalogBuilder::inventory)
                     .toList();
             PluginCatalogSnapshot snapshot = new PluginCatalogSnapshot(
-                    PLUGIN_API_MAJOR, fingerprint, inventory, order);
+                    PLUGIN_API_MAJOR, PLUGIN_API_LEVEL, fingerprint, inventory, order);
             warnLegacyBundles(discovered.values());
             return new BuildResult(snapshot, registry, order,
                     Collections.unmodifiableSet(new LinkedHashSet<>(selected.keySet())),
@@ -301,7 +303,8 @@ final class PluginCatalogBuilder {
     private static BuildResult emptyResult(ClassLoader loader) {
         CatalogPluginProviderRegistry registry = new CatalogPluginProviderRegistry(
                 List.of(), List.of(), List.of(), loader);
-        return new BuildResult(new PluginCatalogSnapshot(PLUGIN_API_MAJOR,
+        return new BuildResult(new PluginCatalogSnapshot(
+                PLUGIN_API_MAJOR, PLUGIN_API_LEVEL,
                 fingerprint(List.of()), List.of(), List.of()),
                 registry, List.of(), Set.of(), Map.of());
     }
@@ -335,6 +338,54 @@ final class PluginCatalogBuilder {
             ClassLoader loader) {
         return discoverProviderHandles(loader, PluginCatalogBuilder::providerIterator,
                 MAX_DISCOVERED_PROVIDERS);
+    }
+
+    /** Package-private seam proving the provider-evidence bound spans catalog inputs. */
+    static void validateProviderBudget(
+            List<CatalogInput> inputs,
+            int maximumProviders
+    ) {
+        Objects.requireNonNull(inputs, "inputs");
+        if (maximumProviders < 1) {
+            throw new IllegalArgumentException("maximumProviders must be positive");
+        }
+        long discovered = 0;
+        for (CatalogInput input : inputs) {
+            PluginIndex index = Objects.requireNonNull(input, "inputs must not contain null").index();
+            for (IndexedBundle bundle : index.bundles()) {
+                discovered = addProviderEvidence(
+                        discovered, bundle.manifest().contributions().size(), maximumProviders);
+            }
+            discovered = addProviderEvidence(
+                    discovered, index.legacyProviders().size(), maximumProviders);
+        }
+    }
+
+    static void validateManifestCompatibility(List<CatalogInput> inputs) {
+        for (CatalogInput input : inputs) {
+            for (IndexedBundle indexed : input.index().bundles()) {
+                BundleManifest manifest = indexed.manifest();
+                if (!manifest.yanoApi().supports(
+                        PLUGIN_API_MAJOR, PLUGIN_API_LEVEL)) {
+                    throw new IllegalStateException("Plugin bundle '" + manifest.id()
+                            + "' does not support Yano plugin API major "
+                            + PLUGIN_API_MAJOR + " level " + PLUGIN_API_LEVEL);
+                }
+            }
+        }
+    }
+
+    private static long addProviderEvidence(
+            long discovered,
+            int additional,
+            int maximumProviders
+    ) {
+        if (additional > maximumProviders - discovered) {
+            throw new IllegalStateException("Plugin catalog provider evidence exceeds the global "
+                    + "limit of " + maximumProviders
+                    + " across manifested contributions and legacy providers");
+        }
+        return discovered + additional;
     }
 
     private static Map<ProviderKey, ServiceLoader.Provider<?>> discoverProviderHandles(
@@ -375,7 +426,7 @@ final class PluginCatalogBuilder {
                     }
                 }
             } catch (Throwable failure) {
-                LifecycleFailures.rethrowIfProcessFatal(failure);
+                LifecycleFailures.rethrowIfProcessFatalReachable(failure);
                 throw new IllegalStateException("ServiceLoader discovery failed for "
                             + kind.serviceType().getName(), failure);
             }
@@ -413,7 +464,7 @@ final class PluginCatalogBuilder {
             return PluginThreadContext.call(loader,
                     () -> Objects.requireNonNull(provider.get(), "ServiceLoader returned null"));
         } catch (Throwable failure) {
-            LifecycleFailures.rethrowIfProcessFatal(failure);
+            LifecycleFailures.rethrowIfProcessFatalReachable(failure);
             throw new LegacyProviderConstructionException(key.providerClass(), failure);
         }
     }
@@ -496,7 +547,7 @@ final class PluginCatalogBuilder {
                     continue;
                 }
                 Throwable safeCleanupFailure = cleanupFailure;
-                if (!LifecycleFailures.isProcessFatal(cleanupFailure)) {
+                if (LifecycleFailures.findProcessFatalReachable(cleanupFailure) == null) {
                     // Preserve Error precedence while selecting the cleanup
                     // winner, but never promote plugin-controlled text to the
                     // public activation diagnostic. If this safe Error wins,
@@ -917,7 +968,7 @@ final class PluginCatalogBuilder {
             case APP_STATE_MACHINE, SEQUENCER_MODE, L1_OBSERVER -> PluginTrustTier.CONSENSUS;
             case SIGNER_PROVIDER, EFFECT_EXECUTOR, DOMAIN_API ->
                     PluginTrustTier.PRIVILEGED_LOCAL;
-            case FINALIZED_SINK -> PluginTrustTier.AUXILIARY_LOCAL;
+            case FINALIZED_SINK, HEALTH, METRICS -> PluginTrustTier.AUXILIARY_LOCAL;
         };
     }
 
@@ -926,6 +977,7 @@ final class PluginCatalogBuilder {
             ByteArrayOutputStream bytes = new ByteArrayOutputStream();
             try (DataOutputStream data = new DataOutputStream(bytes)) {
                 data.writeInt(PLUGIN_API_MAJOR);
+                data.writeInt(PLUGIN_API_LEVEL);
                 data.writeInt(ordered.size());
                 for (Candidate candidate : ordered) {
                     text(data, candidate.id());
@@ -937,7 +989,9 @@ final class PluginCatalogBuilder {
                         data.writeInt(candidate.manifest().schemaVersion());
                         data.writeInt(candidate.manifest().yanoApi().min());
                         data.writeInt(candidate.manifest().yanoApi().max());
+                        data.writeInt(candidate.manifest().yanoApi().minLevel());
                     } else {
+                        data.writeInt(0);
                         data.writeInt(0);
                         data.writeInt(0);
                         data.writeInt(0);
@@ -998,7 +1052,7 @@ final class PluginCatalogBuilder {
         // stale secret to a selected com.example parent bundle.
         new TreeMap<>(config).forEach((key, value) -> parseExactBundleConfigKey(key)
                 .ifPresent(parsed -> putBundleConfig(
-                        mutable.get(parsed.owner()), parsed.property(), value, key)));
+                        mutable.get(parsed.owner()), parsed.property(), value)));
 
         // The previous punctuation-to-underscore owner spelling was lossy: a
         // stale secret for a removed `a-b` bundle could later be reassigned to
@@ -1045,7 +1099,7 @@ final class PluginCatalogBuilder {
                 // value differs.
                 return;
             }
-            putBundleConfig(ownerConfig, property, value, key);
+            putBundleConfig(ownerConfig, property, value);
         });
 
         Map<String, Map<String, Object>> result = new TreeMap<>();
@@ -1087,15 +1141,14 @@ final class PluginCatalogBuilder {
 
     private static void putBundleConfig(Map<String, Object> ownerConfig,
                                         String property,
-                                        Object value,
-                                        String sourceKey) {
+                                        Object value) {
         if (ownerConfig == null) {
             return;
         }
         if (ownerConfig.containsKey(property)
                 && !Objects.equals(ownerConfig.get(property), value)) {
-            throw new IllegalStateException("Conflicting plugin bundle configuration aliases for '"
-                    + sourceKey + "' (values omitted)");
+            throw new IllegalStateException(
+                    "Conflicting plugin bundle configuration aliases (keys and values omitted)");
         }
         ownerConfig.putIfAbsent(property, value);
     }
@@ -1173,6 +1226,8 @@ final class PluginCatalogBuilder {
                     case EFFECT_EXECUTOR -> ((AppEffectExecutorFactory) provider).scheme();
                     case FINALIZED_SINK -> ((FinalizedStreamSinkFactory) provider).scheme();
                     case DOMAIN_API -> ((DomainApiProvider) provider).id();
+                    case HEALTH -> ((PluginHealthProvider) provider).id();
+                    case METRICS -> ((PluginMetricsProvider) provider).id();
                 });
         int maximumLength = key.kind() == ContributionKind.NODE_PLUGIN
                 ? MAX_LEGACY_ID_LENGTH : MAX_LEGACY_SELECTOR_LENGTH;
@@ -1194,7 +1249,7 @@ final class PluginCatalogBuilder {
         try {
             return PluginThreadContext.call(loader, callback::get);
         } catch (Throwable failure) {
-            LifecycleFailures.rethrowIfProcessFatal(failure);
+            LifecycleFailures.rethrowIfProcessFatalReachable(failure);
             throw new LegacyProviderMetadataException(
                     key.providerClass(), operation, failure);
         }

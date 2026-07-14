@@ -8,6 +8,9 @@ public interface PluginCatalogView {
     /** Plugin API compatibility major used for catalog validation. */
     int pluginApiMajor();
 
+    /** Global additive plugin API level used for catalog validation. */
+    int pluginApiLevel();
+
     /** Canonical selected-catalog fingerprint, prefixed with {@code sha256:}. */
     String fingerprint();
 

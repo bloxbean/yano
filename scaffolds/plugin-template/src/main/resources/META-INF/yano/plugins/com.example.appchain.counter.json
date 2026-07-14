@@ -2,10 +2,28 @@
   "schemaVersion": 1,
   "id": "com.example.appchain.counter",
   "version": "0.1.0",
-  "yanoApi": { "min": 1, "max": 1 },
+  "yanoApi": { "min": 1, "max": 1, "minLevel": 1 },
   "dependencies": [],
   "contributions": [
-    { "kind": "app-state-machine", "name": "counter", "provider": "com.example.appchain.CounterStateMachineProvider" },
-    { "kind": "domain-api", "name": "com.example.appchain.counter", "provider": "com.example.appchain.CounterDomainApiProvider" }
+    {
+      "kind": "app-state-machine",
+      "name": "counter",
+      "provider": "com.example.appchain.CounterStateMachineProvider"
+    },
+    {
+      "kind": "domain-api",
+      "name": "com.example.appchain.counter",
+      "provider": "com.example.appchain.CounterDomainApiProvider"
+    },
+    {
+      "kind": "health",
+      "name": "com.example.appchain.counter",
+      "provider": "com.example.appchain.CounterHealthProvider"
+    },
+    {
+      "kind": "metrics",
+      "name": "com.example.appchain.counter",
+      "provider": "com.example.appchain.CounterMetricsProvider"
+    }
   ]
 }

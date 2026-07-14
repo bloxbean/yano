@@ -206,7 +206,7 @@ class PluginCatalogCollisionPolicyTest {
                 BundleManifest.CURRENT_SCHEMA_VERSION,
                 id,
                 SemVersion.parse("1.0.0"),
-                new YanoApiRange(1, 1),
+                new YanoApiRange(1, 1, 1),
                 List.of(),
                 List.of(new BundleContribution(
                         ContributionKind.FINALIZED_SINK, SHARED_SCHEME, provider)));
@@ -221,7 +221,7 @@ class PluginCatalogCollisionPolicyTest {
                   "schemaVersion": 1,
                   "id": "%s",
                   "version": "1.0.0",
-                  "yanoApi": {"min": 1, "max": 1},
+                  "yanoApi": {"min": 1, "max": 1, "minLevel": 1},
                   "dependencies": [],
                   "contributions": [{
                     "kind": "finalized-sink",

@@ -47,10 +47,10 @@ public final class DomainApiContext {
         return queryService;
     }
 
-    /** Never renders configuration values, which may be credentials. */
+    /** Never renders configuration keys or values, which may be credentials. */
     @Override
     public String toString() {
-        return "DomainApiContext[bundleConfigKeys=" + bundleConfig.keySet()
+        return "DomainApiContext[bundleConfigEntries=" + bundleConfig.size()
                 + ", queryService=<host-owned>]";
     }
 

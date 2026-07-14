@@ -66,9 +66,10 @@ undistributed rewards. Yano's AdaPot API is therefore a Yano extension.
 | Latest stake snapshot epoch | `LedgerStateProvider.getLatestSnapshotEpoch()` | metadata lookup | Already exposed by provider. |
 | Snapshot pruning | `yano.account-state.snapshot-retention-epochs` | configured retention | Old stake snapshots can be deleted. |
 
-The existing debug endpoint `GET /api/debug/epoch-snapshot/{epoch}` returns the
-entire stake snapshot and computes total active stake by scanning all entries.
-That shape is too heavy to promote directly.
+The existing debug endpoint
+`GET <artifact-api-prefix>/api/debug/epoch-snapshot/{epoch}` returns the entire
+stake snapshot and computes total active stake by scanning all entries. That
+shape is too heavy to promote directly.
 
 ## Current Endpoint Inventory (2026-04-30)
 
@@ -103,11 +104,13 @@ Current production API coverage before this implementation pass:
 
 Debug endpoint promotion review:
 
-- `GET /api/debug/adapot/{epoch}` and `GET /api/debug/adapot-chain` are
+- `GET <artifact-api-prefix>/api/debug/adapot/{epoch}` and
+  `GET <artifact-api-prefix>/api/debug/adapot-chain` are
   superseded by the production AdaPot endpoints and should not be promoted.
-- `GET /api/debug/epoch-snapshot/{epoch}` should not be promoted because it
-  returns the full snapshot. The production API should use the same retained
-  snapshot data only for point lookups or aggregate totals.
+- `GET <artifact-api-prefix>/api/debug/epoch-snapshot/{epoch}` should not be
+  promoted because it returns the full snapshot. The production API should
+  use the same retained snapshot data only for point lookups or aggregate
+  totals.
 - reward-input, pool-parameter, block-count, fee, retired-pool, and
   deregistered-account debug endpoints remain diagnostic endpoints. They are not
   Blockfrost-compatible surfaces and are outside this ADR's production scope.
@@ -224,13 +227,18 @@ The "current" active stake endpoint should use the latest available snapshot
 epoch, not the moving chain tip's live UTXO state. If a requested epoch snapshot
 has been pruned, return not available.
 
-Do not promote `GET /api/debug/epoch-snapshot/{epoch}` directly. It returns
-millions of entries on mainnet and is too expensive as a default production API.
-Expose aggregate and point lookup endpoints first.
+Do not promote
+`GET <artifact-api-prefix>/api/debug/epoch-snapshot/{epoch}` directly. It
+returns millions of entries on mainnet and is too expensive as a default
+production API. Expose aggregate and point lookup endpoints first.
 
 ## Proposed Endpoints
 
-All paths below are relative to `yano.api-prefix`, default `/api/v1`.
+All paths below are relative to the immutable artifact API prefix, which
+defaults to `/api/v1` and is selected only at build time with strict
+`-PyanoApiPrefix=<path>`. It cannot be changed by launch configuration; see
+`adr/018-rest-api-prefix-and-blockfrost-compatible-ledger-apis.md` for the
+generated route/marker/discovery contract.
 
 ### Proposals
 

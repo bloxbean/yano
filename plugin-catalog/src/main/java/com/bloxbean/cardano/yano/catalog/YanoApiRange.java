@@ -1,14 +1,15 @@
 package com.bloxbean.cardano.yano.catalog;
 
 /**
- * Inclusive supported Yano plugin API-major range.
+ * Supported Yano plugin API major range and minimum global additive level.
  *
  * @param min lowest supported positive API major
  * @param max highest supported positive API major
+ * @param minLevel lowest required positive global API level
  */
-public record YanoApiRange(int min, int max) {
+public record YanoApiRange(int min, int max, int minLevel) {
 
-    /** Validates and creates an inclusive API-major range. */
+    /** Validates and creates an inclusive API-major range plus minimum level. */
     public YanoApiRange {
         if (min <= 0) {
             throw new IllegalArgumentException("yanoApi.min must be positive");
@@ -19,15 +20,19 @@ public record YanoApiRange(int min, int max) {
         if (min > max) {
             throw new IllegalArgumentException("yanoApi range must satisfy min <= max");
         }
+        if (minLevel <= 0) {
+            throw new IllegalArgumentException("yanoApi.minLevel must be positive");
+        }
     }
 
     /**
-     * Tests an API major for compatibility.
+     * Tests a host API major and global additive level for compatibility.
      *
      * @param apiMajor API major to test
-     * @return {@code true} when the value is within this inclusive range
+     * @param apiLevel global additive API level to test
+     * @return {@code true} when the major is in range and the level is sufficient
      */
-    public boolean supports(int apiMajor) {
-        return apiMajor >= min && apiMajor <= max;
+    public boolean supports(int apiMajor, int apiLevel) {
+        return apiMajor >= min && apiMajor <= max && apiLevel >= minLevel;
     }
 }

@@ -6,12 +6,20 @@ import com.bloxbean.cardano.yano.api.appchain.AppQueryException;
 import com.bloxbean.cardano.yano.api.appchain.AppQueryResult;
 import com.bloxbean.cardano.yano.api.config.PluginsOptions;
 import com.bloxbean.cardano.yano.api.plugin.PluginBundleInfo;
+import com.bloxbean.cardano.yano.api.plugin.PluginApiVersion;
 import com.bloxbean.cardano.yano.api.plugin.PluginDigestMode;
 import com.bloxbean.cardano.yano.api.plugin.PluginSourceCategory;
 import com.bloxbean.cardano.yano.api.plugin.domain.DomainApi;
 import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiContext;
 import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiProvider;
 import com.bloxbean.cardano.yano.api.plugin.domain.DomainQueryService;
+import com.bloxbean.cardano.yano.api.plugin.operations.PluginHealthContext;
+import com.bloxbean.cardano.yano.api.plugin.operations.PluginHealthProvider;
+import com.bloxbean.cardano.yano.api.plugin.operations.PluginHealthSource;
+import com.bloxbean.cardano.yano.api.plugin.operations.PluginHealthStatus;
+import com.bloxbean.cardano.yano.api.plugin.operations.PluginMetricsContext;
+import com.bloxbean.cardano.yano.api.plugin.operations.PluginMetricsProvider;
+import com.bloxbean.cardano.yano.api.plugin.operations.PluginMetricsSource;
 import com.bloxbean.cardano.yano.runtime.plugins.PluginLoaderHandle;
 import com.bloxbean.cardano.yano.runtime.plugins.PluginRuntimeEnvironment;
 
@@ -29,6 +37,10 @@ public final class PluginCatalogLaunchProbe {
             "com.example.appchain.CounterStateMachineProvider";
     private static final String DOMAIN_PROVIDER_CLASS =
             "com.example.appchain.CounterDomainApiProvider";
+    private static final String HEALTH_PROVIDER_CLASS =
+            "com.example.appchain.CounterHealthProvider";
+    private static final String METRICS_PROVIDER_CLASS =
+            "com.example.appchain.CounterMetricsProvider";
     private static final String MACHINE_ID = "counter";
 
     private PluginCatalogLaunchProbe() {
@@ -52,6 +64,13 @@ public final class PluginCatalogLaunchProbe {
                     policy,
                     PluginLoaderHandle.directory(pluginDirectory,
                             PluginCatalogLaunchProbe.class.getClassLoader()))) {
+                if (environment.catalog().pluginApiMajor()
+                        != PluginApiVersion.CURRENT_MAJOR
+                        || environment.catalog().pluginApiLevel()
+                        != PluginApiVersion.CURRENT_LEVEL) {
+                    throw new IllegalStateException(
+                            "Catalog host API major/level does not match the scaffold contract");
+                }
                 if (!environment.selectedBundleIds().equals(Set.of(BUNDLE_ID))) {
                     throw new IllegalStateException(
                             "Catalog did not select exactly the scaffold bundle");
@@ -85,6 +104,33 @@ public final class PluginCatalogLaunchProbe {
                                 "Catalog provider constructed an invalid domain API");
                     }
                 }
+
+                PluginHealthProvider healthProvider = environment.providers()
+                        .find(PluginHealthProvider.class, BUNDLE_ID)
+                        .orElseThrow(() -> new IllegalStateException(
+                                "Catalog cannot resolve the health provider"));
+                try (PluginHealthSource health = healthProvider.create(
+                        new PluginHealthContext(BUNDLE_ID, Map.of()))) {
+                    if (health.checks().size() != 1
+                            || health.snapshot().reports().getFirst().status()
+                            != PluginHealthStatus.UP) {
+                        throw new IllegalStateException(
+                                "Catalog provider constructed invalid health telemetry");
+                    }
+                }
+
+                PluginMetricsProvider metricsProvider = environment.providers()
+                        .find(PluginMetricsProvider.class, BUNDLE_ID)
+                        .orElseThrow(() -> new IllegalStateException(
+                                "Catalog cannot resolve the metrics provider"));
+                try (PluginMetricsSource metrics = metricsProvider.create(
+                        new PluginMetricsContext(BUNDLE_ID, Map.of()))) {
+                    if (metrics.descriptors().size() != 1
+                            || metrics.snapshot().values().size() != 1) {
+                        throw new IllegalStateException(
+                                "Catalog provider constructed invalid custom metrics");
+                    }
+                }
             }
         } finally {
             deleteTree(pluginDirectory);
@@ -99,11 +145,15 @@ public final class PluginCatalogLaunchProbe {
                 || !expectedVersion.equals(bundle.version())
                 || bundle.source() != PluginSourceCategory.DIRECTORY
                 || bundle.digestMode() != PluginDigestMode.JAR
-                || bundle.contributions().size() != 2
+                || bundle.contributions().size() != 4
                 || bundle.contributions().stream().noneMatch(contribution ->
                         PROVIDER_CLASS.equals(contribution.providerClass()))
                 || bundle.contributions().stream().noneMatch(contribution ->
-                        DOMAIN_PROVIDER_CLASS.equals(contribution.providerClass()))) {
+                        DOMAIN_PROVIDER_CLASS.equals(contribution.providerClass()))
+                || bundle.contributions().stream().noneMatch(contribution ->
+                        HEALTH_PROVIDER_CLASS.equals(contribution.providerClass()))
+                || bundle.contributions().stream().noneMatch(contribution ->
+                        METRICS_PROVIDER_CLASS.equals(contribution.providerClass()))) {
             throw new IllegalStateException(
                     "Scaffold bundle inventory does not match its deployment contract");
         }

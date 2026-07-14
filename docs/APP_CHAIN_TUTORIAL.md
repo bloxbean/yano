@@ -409,7 +409,7 @@ Add the bundle manifest at
   "schemaVersion": 1,
   "id": "com.example.kvchain",
   "version": "0.1.0",
-  "yanoApi": { "min": 1, "max": 1 },
+  "yanoApi": { "min": 1, "max": 1, "minLevel": 1 },
   "dependencies": [],
   "contributions": [
     {

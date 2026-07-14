@@ -132,7 +132,11 @@ class AppChainEngineLifecycleTest {
 
             engine.proposeTick();
 
-            awaitCondition(() -> batch.closeCalls.get() == 1);
+            // closeCalls is incremented at close() entry, before the worker
+            // merges the cleanup failure into the primary failure. Wait for
+            // the observable contract instead of racing that bookkeeping.
+            awaitCondition(() -> batch.closeCalls.get() == 1
+                    && Arrays.asList(fatalCleanup.getSuppressed()).contains(primary));
             assertThat(fatalCleanup.getSuppressed()).containsExactly(primary);
             verify(logger, timeout(5_000)).error(
                     "App-chain propose tick failed (errorType={})",
