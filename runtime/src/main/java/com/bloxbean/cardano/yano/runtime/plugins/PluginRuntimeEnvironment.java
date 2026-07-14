@@ -385,6 +385,28 @@ public final class PluginRuntimeEnvironment implements AutoCloseable {
         return build.bundleConfigs();
     }
 
+    /** Immutable configuration view for one selected bundle, or empty. */
+    public Map<String, Object> bundleConfig(String bundleId) {
+        ensureOpen();
+        Objects.requireNonNull(bundleId, "bundleId");
+        return build.bundleConfigs().getOrDefault(bundleId, Map.of());
+    }
+
+    /**
+     * Safe configuration projected into an ADR-011.3 domain context.
+     *
+     * <p>v1 deliberately exposes no raw bundle values. The catalog namespace
+     * can contain credentials, while the domain SPI does not yet define a
+     * typed opaque secret-reference/capability value. Returning an empty view
+     * fails closed until that contract exists instead of relying on key-name
+     * heuristics that can copy secret material into a request-facing plugin.</p>
+     */
+    public Map<String, Object> domainApiConfig(String bundleId) {
+        ensureOpen();
+        Objects.requireNonNull(bundleId, "bundleId");
+        return Map.of();
+    }
+
     public ClassLoader classLoader() {
         ensureOpen();
         return loaderHandle.classLoader();

@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.runtime.plugins;
 
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppQueryContext;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineProvider;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
@@ -178,6 +179,51 @@ class PluginContributionCleanupBarrierTest {
 
         Thread closeThread = new Thread(registry::close,
                 "blocked-plugin-registry-close");
+        closeThread.start();
+        assertEventuallySealed(exposed);
+        closeThread.join(100);
+        assertThat(closeThread.isAlive()).isTrue();
+        assertThat(providerCloses).hasValue(0);
+
+        releaseCallback.countDown();
+        callbackThread.join(2_000);
+        closeThread.join(2_000);
+        assertThat(callbackThread.isAlive()).isFalse();
+        assertThat(closeThread.isAlive()).isFalse();
+        assertThat(providerCloses).hasValue(1);
+    }
+
+    @Test
+    void registryCloseWaitsForAdmittedCommittedQueryCallback() throws Exception {
+        CountDownLatch callbackStarted = new CountDownLatch(1);
+        CountDownLatch releaseCallback = new CountDownLatch(1);
+        AtomicInteger providerCloses = new AtomicInteger();
+        AppStateMachine machine = new AppStateMachine() {
+            @Override public String id() { return "blocked-query"; }
+            @Override public void apply(AppBlock block, AppStateWriter writer) { }
+            @Override public byte[] query(
+                    String path, byte[] params, AppQueryContext context
+            ) {
+                callbackStarted.countDown();
+                await(releaseCallback);
+                return new byte[]{1};
+            }
+        };
+        CloseableStateMachineProvider provider =
+                new CloseableStateMachineProvider(machine, providerCloses);
+        CatalogPluginProviderRegistry registry = registry(
+                ContributionKind.APP_STATE_MACHINE, "blocked-query", provider);
+        AppStateMachine exposed = registry.require(
+                AppStateMachineProvider.class, "blocked-query").create();
+
+        Thread callbackThread = new Thread(
+                () -> exposed.query("blocked", new byte[0], null),
+                "blocked-plugin-query-callback");
+        callbackThread.start();
+        assertThat(callbackStarted.await(1, TimeUnit.SECONDS)).isTrue();
+
+        Thread closeThread = new Thread(registry::close,
+                "blocked-query-registry-close");
         closeThread.start();
         assertEventuallySealed(exposed);
         closeThread.join(100);

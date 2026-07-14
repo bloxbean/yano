@@ -28,13 +28,21 @@ import com.bloxbean.cardano.yano.runtime.util.LifecycleFailures;
 import org.slf4j.Logger;
 
 import java.util.*;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedDeque;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * App-chain subsystem: authenticated diffusion (M1) + sequenced durable ledger
@@ -50,6 +58,11 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     private static final int SEEN_IDS_HARD_CAP = 200_000;
     private static final long CONNECT_INTERVAL_SECONDS = 5;
     private static final long KEEPALIVE_INTERVAL_SECONDS = 20;
+    private static final int QUERY_QUEUE_CAPACITY = 16;
+    private static final long QUERY_TIMEOUT_SECONDS = 2;
+    private static final int MAX_QUERY_PATH_CHARACTERS = AppQueryPath.MAX_LENGTH;
+    private static final int MAX_QUERY_REQUEST_BYTES = 64 * 1024;
+    private static final int MAX_QUERY_RESULT_BYTES = 1024 * 1024;
     private static final String SYSTEM_TOPIC_PREFIX = "~";
     private static final String CONSENSUS_TOPIC_PREFIX = "~consensus/";
     /** Script-anchor co-signing (008.4): diffusion-only, never pooled/sequenced. */
@@ -152,6 +165,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     private volatile ScheduledExecutorService scheduler;
     private volatile ScheduledExecutorService sinkScheduler;
     private volatile ScheduledExecutorService fxScheduler;
+    private volatile QueryLane queryLane;
     private volatile EffectRuntime effectRuntime;
     /**
      * Per-start admission fence for callers that may retain any resource owned
@@ -729,6 +743,11 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             @Override
             public byte[] query(String path, byte[] params) {
                 return delegate.query(path, params);
+            }
+
+            @Override
+            public byte[] query(String path, byte[] params, AppQueryContext state) {
+                return delegate.query(path, params, state);
             }
         };
     }
@@ -1320,6 +1339,423 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             AppLedgerStore currentLedger = ledger;
             return currentLedger != null ? currentLedger.stateProofWire(key) : Optional.empty();
         });
+    }
+
+    @Override
+    public AppQueryResult query(String path, byte[] request) {
+        long deadline = System.nanoTime()
+                + TimeUnit.SECONDS.toNanos(QUERY_TIMEOUT_SECONDS);
+        String validatedPath = validateQueryPath(path);
+        if (request != null && request.length > MAX_QUERY_REQUEST_BYTES) {
+            throw queryFailure(AppQueryException.Code.REQUEST_TOO_LARGE,
+                    "App-chain query request exceeds the size limit");
+        }
+        byte[] requestCopy = request != null ? request.clone() : new byte[0];
+
+        QueryLane currentLane = queryLane;
+        if (currentLane == null) {
+            throw queryUnavailable();
+        }
+        if (deadline - System.nanoTime() <= 0) {
+            throw queryFailure(AppQueryException.Code.TIMEOUT,
+                    "App-chain query deadline exceeded");
+        }
+        QueryTask task = currentLane.admit(validatedPath, requestCopy);
+        try {
+            long remaining = deadline - System.nanoTime();
+            if (remaining <= 0) {
+                throw new TimeoutException("query admission exceeded deadline");
+            }
+            return task.completion().get(remaining, TimeUnit.NANOSECONDS);
+        } catch (TimeoutException e) {
+            AppQueryException timeout = queryFailure(AppQueryException.Code.TIMEOUT,
+                    "App-chain query deadline exceeded");
+            task.cancel(timeout);
+            throw timeout;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            AppQueryException interrupted = queryFailure(AppQueryException.Code.UNAVAILABLE,
+                    "App-chain query wait was interrupted");
+            task.cancel(interrupted);
+            throw interrupted;
+        } catch (ExecutionException e) {
+            Throwable failure = e.getCause();
+            LifecycleFailures.rethrowIfProcessFatalReachable(failure);
+            if (failure instanceof AppQueryException queryException) {
+                throw queryException;
+            }
+            throw queryFailure(AppQueryException.Code.FAILED,
+                    "App-chain query failed", failure);
+        }
+    }
+
+    private static String validateQueryPath(String path) {
+        if (path != null && path.length() > MAX_QUERY_PATH_CHARACTERS) {
+            throw queryFailure(AppQueryException.Code.REQUEST_TOO_LARGE,
+                    "App-chain query path exceeds the size limit");
+        }
+        try {
+            return AppQueryPath.validate(path);
+        } catch (IllegalArgumentException invalidPath) {
+            throw queryFailure(AppQueryException.Code.INVALID_REQUEST,
+                    "App-chain query path is invalid", invalidPath);
+        }
+    }
+
+    private static AppQueryException queryUnavailable() {
+        return queryFailure(AppQueryException.Code.UNAVAILABLE,
+                "App-chain query service is unavailable");
+    }
+
+    private static AppQueryException queryFailure(
+            AppQueryException.Code code,
+            String message
+    ) {
+        return new AppQueryException(code, message);
+    }
+
+    private static AppQueryException queryFailure(
+            AppQueryException.Code code,
+            String message,
+            Throwable cause
+    ) {
+        return new AppQueryException(code, message, cause);
+    }
+
+    /** One generation-scoped, single-worker bounded query lane. */
+    private final class QueryLane {
+        private final long generationToken;
+        private final AppLedgerStore generationLedger;
+        private final ThreadPoolExecutor executor;
+        private final Set<QueryTask> accepted = ConcurrentHashMap.newKeySet();
+        private final AtomicBoolean accepting = new AtomicBoolean(true);
+
+        private QueryLane(long generationToken, AppLedgerStore generationLedger) {
+            this.generationToken = generationToken;
+            this.generationLedger = Objects.requireNonNull(generationLedger, "generationLedger");
+            this.executor = new ThreadPoolExecutor(
+                    1,
+                    1,
+                    0L,
+                    TimeUnit.MILLISECONDS,
+                    new ArrayBlockingQueue<>(QUERY_QUEUE_CAPACITY),
+                    runnable -> {
+                        Thread thread = new Thread(
+                                runnable, "app-chain-query-" + config.chainId());
+                        thread.setDaemon(true);
+                        thread.setContextClassLoader(AppChainSubsystem.class.getClassLoader());
+                        return thread;
+                    },
+                    new ThreadPoolExecutor.AbortPolicy());
+        }
+
+        private QueryTask admit(String path, byte[] request) {
+            if (!accepting.get()) {
+                throw queryUnavailable();
+            }
+            QueryTask task = new QueryTask(this, path, request);
+            accepted.add(task);
+            if (!accepting.get()) {
+                AppQueryException unavailable = queryUnavailable();
+                task.cancel(unavailable);
+                throw unavailable;
+            }
+            try {
+                executor.execute(task);
+                return task;
+            } catch (RejectedExecutionException e) {
+                boolean busy = accepting.get() && !executor.isShutdown();
+                AppQueryException rejection = busy
+                        ? queryFailure(AppQueryException.Code.BUSY,
+                                "App-chain query queue is full")
+                        : queryUnavailable();
+                task.cancel(rejection);
+                throw rejection;
+            }
+        }
+
+        private AppQueryResult execute(String path, byte[] request, QueryTask task) {
+            var generationUse = generationUseGate.tryAcquire(generationToken);
+            try (generationUse) {
+                if (!generationUse.admitted()) {
+                    throw queryUnavailable();
+                }
+                task.throwIfCancelled();
+
+                final String machineId;
+                try {
+                    machineId = stateMachine.id();
+                } catch (Throwable failure) {
+                    LifecycleFailures.rethrowIfProcessFatalReachable(failure);
+                    logQueryPluginFailure("identity", failure);
+                    throw queryFailure(AppQueryException.Code.FAILED,
+                            "App-chain state-machine identity failed");
+                }
+                if (machineId == null || machineId.isBlank()) {
+                    throw queryFailure(AppQueryException.Code.FAILED,
+                            "App-chain state-machine identity is invalid");
+                }
+
+                final AppLedgerStore.CommittedStateSnapshot snapshot;
+                try {
+                    snapshot = generationLedger.captureCommittedState();
+                } catch (Throwable failure) {
+                    LifecycleFailures.rethrowIfProcessFatalReachable(failure);
+                    throw queryFailure(AppQueryException.Code.UNAVAILABLE,
+                            "Committed app-chain state is unavailable", failure);
+                }
+
+                ExpiringQueryContext context = new ExpiringQueryContext(
+                        generationLedger, snapshot.height(), snapshot.stateRoot());
+                byte[] result;
+                try {
+                    // A queued request whose caller timed out must never begin
+                    // plugin execution merely because it raced dequeue. An
+                    // already-started callback is interrupted and remains
+                    // generation-fenced until it exits.
+                    task.throwIfCancelled();
+                    result = stateMachine.query(path, request.clone(), context);
+                } catch (AppQueryException declared) {
+                    LifecycleFailures.rethrowIfProcessFatalReachable(declared);
+                    if (declared.code() == AppQueryException.Code.UNSUPPORTED) {
+                        throw queryFailure(AppQueryException.Code.UNSUPPORTED,
+                                "App-chain query path is unsupported");
+                    }
+                    if (declared.code() == AppQueryException.Code.INVALID_REQUEST) {
+                        throw queryFailure(AppQueryException.Code.INVALID_REQUEST,
+                                "App-chain query parameters are invalid");
+                    }
+                    logQueryPluginFailure("callback", declared);
+                    throw queryFailure(AppQueryException.Code.FAILED,
+                            "App-chain state-machine query failed");
+                } catch (Throwable failure) {
+                    LifecycleFailures.rethrowIfProcessFatalReachable(failure);
+                    logQueryPluginFailure("callback", failure);
+                    throw queryFailure(AppQueryException.Code.FAILED,
+                            "App-chain state-machine query failed");
+                } finally {
+                    context.expire();
+                }
+
+                if (result == null) {
+                    throw queryFailure(AppQueryException.Code.FAILED,
+                            "App-chain state-machine query returned no result");
+                }
+                if (result.length > MAX_QUERY_RESULT_BYTES) {
+                    throw queryFailure(AppQueryException.Code.RESULT_TOO_LARGE,
+                            "App-chain query result exceeds the size limit");
+                }
+                return new AppQueryResult(
+                        config.chainId(), machineId, snapshot.height(),
+                        snapshot.stateRoot(), result);
+            }
+        }
+
+        private void requestShutdown() {
+            if (!accepting.compareAndSet(true, false)) {
+                return;
+            }
+            AppQueryException unavailable = queryUnavailable();
+            for (QueryTask task : List.copyOf(accepted)) {
+                task.cancel(unavailable);
+            }
+            for (Runnable queued : executor.shutdownNow()) {
+                if (queued instanceof QueryTask task) {
+                    task.cancel(unavailable);
+                }
+            }
+        }
+
+        private void finished(QueryTask task) {
+            accepted.remove(task);
+        }
+
+        private void logQueryPluginFailure(String stage, Throwable failure) {
+            try {
+                log.warn("App-chain '{}' query {} failed (errorType={})",
+                        config.chainId(), stage, failure.getClass().getName());
+            } catch (Throwable diagnosticFailure) {
+                LifecycleFailures.rethrowIfProcessFatalReachable(diagnosticFailure);
+            }
+        }
+    }
+
+    /**
+     * Direct executor task rather than FutureTask: process-fatal plugin errors
+     * must still reach the worker's uncaught-error path after a caller timeout.
+     */
+    private static final class QueryTask implements Runnable {
+        private static final int QUEUED = 0;
+        private static final int RUNNING = 1;
+        private static final int FINISHED = 2;
+
+        private final QueryLane owner;
+        private final String path;
+        private final byte[] request;
+        private final CompletableFuture<AppQueryResult> completion = new CompletableFuture<>();
+        private final AtomicInteger state = new AtomicInteger(QUEUED);
+        private final AtomicReference<AppQueryException> cancellation = new AtomicReference<>();
+        private volatile Thread runner;
+
+        private QueryTask(QueryLane owner, String path, byte[] request) {
+            this.owner = owner;
+            this.path = path;
+            this.request = request.clone();
+        }
+
+        private CompletableFuture<AppQueryResult> completion() {
+            return completion;
+        }
+
+        private void cancel(AppQueryException reason) {
+            cancellation.compareAndSet(null, Objects.requireNonNull(reason, "reason"));
+            if (state.compareAndSet(QUEUED, FINISHED)) {
+                owner.executor.remove(this);
+                completion.completeExceptionally(cancellation.get());
+                owner.finished(this);
+                return;
+            }
+            Thread activeRunner = runner;
+            if (state.get() == RUNNING && activeRunner != null) {
+                activeRunner.interrupt();
+            }
+        }
+
+        @Override
+        public void run() {
+            if (!state.compareAndSet(QUEUED, RUNNING)) {
+                return;
+            }
+            runner = Thread.currentThread();
+            Throwable processFatal = null;
+            try {
+                AppQueryException cancellationFailure = cancellation.get();
+                if (cancellationFailure != null) {
+                    throw cancellationFailure;
+                }
+                AppQueryResult result = owner.execute(path, request, this);
+                cancellationFailure = cancellation.get();
+                if (cancellationFailure != null) {
+                    throw cancellationFailure;
+                }
+                completion.complete(result);
+            } catch (Throwable failure) {
+                try {
+                    LifecycleFailures.rethrowIfProcessFatalReachable(failure);
+                } catch (Throwable fatal) {
+                    processFatal = fatal;
+                    completion.completeExceptionally(fatal);
+                }
+                if (processFatal == null) {
+                    AppQueryException cancellationFailure = cancellation.get();
+                    Throwable exposedFailure = cancellationFailure != null
+                            ? cancellationFailure : failure;
+                    AppQueryException exposed = exposedFailure instanceof AppQueryException queryException
+                            ? queryException
+                            : queryFailure(AppQueryException.Code.FAILED,
+                                    "App-chain query failed", exposedFailure);
+                    completion.completeExceptionally(exposed);
+                }
+            } finally {
+                runner = null;
+                state.set(FINISHED);
+                owner.finished(this);
+            }
+            if (processFatal != null) {
+                LifecycleFailures.rethrowIfProcessFatal(processFatal);
+            }
+        }
+
+        private void throwIfCancelled() {
+            AppQueryException cancellationFailure = cancellation.get();
+            if (cancellationFailure != null) {
+                throw cancellationFailure;
+            }
+        }
+    }
+
+    /** Root-fixed reader that fences retained access after callback return. */
+    private static final class ExpiringQueryContext implements AppQueryContext {
+        private final AppLedgerStore ledger;
+        private final long committedHeight;
+        private final byte[] stateRoot;
+        private boolean active = true;
+        private int activeReads;
+
+        private ExpiringQueryContext(
+                AppLedgerStore ledger,
+                long committedHeight,
+                byte[] stateRoot
+        ) {
+            this.ledger = Objects.requireNonNull(ledger, "ledger");
+            this.committedHeight = committedHeight;
+            this.stateRoot = Objects.requireNonNull(stateRoot, "stateRoot").clone();
+        }
+
+        @Override
+        public Optional<byte[]> get(byte[] key) {
+            beginRead();
+            try {
+                byte[] keyCopy = Objects.requireNonNull(key, "key").clone();
+                return ledger.stateGetAtRoot(stateRoot, keyCopy)
+                        .map(byte[]::clone);
+            } finally {
+                endRead();
+            }
+        }
+
+        @Override
+        public byte[] stateRoot() {
+            beginRead();
+            try {
+                return stateRoot.clone();
+            } finally {
+                endRead();
+            }
+        }
+
+        @Override
+        public long committedHeight() {
+            beginRead();
+            try {
+                return committedHeight;
+            } finally {
+                endRead();
+            }
+        }
+
+        private synchronized void beginRead() {
+            if (!active) {
+                throw queryUnavailable();
+            }
+            activeReads++;
+        }
+
+        private void endRead() {
+            synchronized (this) {
+                activeReads--;
+                if (!active && activeReads == 0) {
+                    notifyAll();
+                }
+            }
+        }
+
+        private void expire() {
+            boolean interrupted = false;
+            synchronized (this) {
+                active = false;
+                while (activeReads != 0) {
+                    try {
+                        wait();
+                    } catch (InterruptedException e) {
+                        interrupted = true;
+                    }
+                }
+            }
+            if (interrupted) {
+                Thread.currentThread().interrupt();
+            }
+        }
     }
 
     @Override
@@ -2452,6 +2888,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             buildSinks(ledgerStore);
             buildEffectRuntime(ledgerStore);
             subscribeL1Events(generationToken);
+            this.queryLane = new QueryLane(generationToken, ledgerStore);
         }
 
         ScheduledExecutorService exec = Executors.newSingleThreadScheduledExecutor(r -> {
@@ -3763,6 +4200,15 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         // remain re-entrant and ledger/provider cleanup waits on this future.
         CompletableFuture<Void> generationQuiescent = generationUseGate.seal();
         running.set(false);
+        QueryLane retiringQueries = queryLane;
+        queryLane = null;
+        if (retiringQueries != null) {
+            try {
+                retiringQueries.requestShutdown();
+            } catch (Throwable cleanupFailure) {
+                recordCleanupFailure("query lane", cleanupFailure, cleanupFailures);
+            }
+        }
         // Close sink admission before stopping any scheduler. An already
         // admitted delivery may ignore interruption, so ledger/product close
         // is fenced on the runner's terminal signals below.
@@ -3908,6 +4354,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                 || scheduler != null
                 || sinkScheduler != null
                 || fxScheduler != null
+                || queryLane != null
                 || effectRuntime != null
                 || anchorService != null
                 || scriptAnchorService != null

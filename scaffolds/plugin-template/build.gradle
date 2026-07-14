@@ -68,31 +68,58 @@ tasks.register('verifyPluginJar') {
     doLast {
         def archive = tasks.named('jar').get().archiveFile.get().asFile
         def contents = zipTree(archive)
-        def servicePath = 'META-INF/services/' +
+        def stateMachineServicePath = 'META-INF/services/' +
                 'com.bloxbean.cardano.yano.api.appchain.AppStateMachineProvider'
+        def domainApiServicePath = 'META-INF/services/' +
+                'com.bloxbean.cardano.yano.api.plugin.domain.DomainApiProvider'
         def manifestPath = 'META-INF/yano/plugins/com.example.appchain.counter.json'
-        [servicePath, manifestPath].each { requiredPath ->
+        [stateMachineServicePath, domainApiServicePath, manifestPath].each { requiredPath ->
             if (contents.matching { include requiredPath }.isEmpty()) {
                 throw new GradleException("Plugin jar is missing ${requiredPath}")
             }
         }
-        def expectedProvider = 'com.example.appchain.CounterStateMachineProvider'
-        def serviceProviders = contents.matching { include servicePath }.singleFile
+        def expectedStateMachineProvider =
+                'com.example.appchain.CounterStateMachineProvider'
+        def expectedDomainApiProvider =
+                'com.example.appchain.CounterDomainApiProvider'
+        def stateMachineProviders = contents.matching {
+            include stateMachineServicePath
+        }.singleFile
                 .readLines('UTF-8')
                 .collect { it.trim() }
                 .findAll { !it.isEmpty() && !it.startsWith('#') }
-        if (serviceProviders != [expectedProvider]) {
+        if (stateMachineProviders != [expectedStateMachineProvider]) {
             throw new GradleException(
-                    "Plugin service entry must contain exactly ${expectedProvider}")
+                    "State-machine service entry must contain exactly "
+                            + expectedStateMachineProvider)
+        }
+        def domainApiProviders = contents.matching {
+            include domainApiServicePath
+        }.singleFile
+                .readLines('UTF-8')
+                .collect { it.trim() }
+                .findAll { !it.isEmpty() && !it.startsWith('#') }
+        if (domainApiProviders != [expectedDomainApiProvider]) {
+            throw new GradleException(
+                    "Domain API service entry must contain exactly "
+                            + expectedDomainApiProvider)
         }
         def manifest = new groovy.json.JsonSlurper().parse(
                 contents.matching { include manifestPath }.singleFile)
-        def contributions = manifest.contributions.findAll { contribution ->
+        def stateMachineContributions = manifest.contributions.findAll { contribution ->
             contribution.kind == 'app-state-machine' &&
                     contribution.name == 'counter' &&
-                    contribution.provider == expectedProvider
+                    contribution.provider == expectedStateMachineProvider
         }
-        if (manifest.id != 'com.example.appchain.counter' || contributions.size() != 1) {
+        def domainApiContributions = manifest.contributions.findAll { contribution ->
+            contribution.kind == 'domain-api' &&
+                    contribution.name == manifest.id &&
+                    contribution.provider == expectedDomainApiProvider
+        }
+        if (manifest.id != 'com.example.appchain.counter'
+                || stateMachineContributions.size() != 1
+                || domainApiContributions.size() != 1
+                || manifest.contributions.size() != 2) {
             throw new GradleException('Plugin manifest identity/provider declaration is invalid')
         }
         if (manifest.version != project.version.toString()) {

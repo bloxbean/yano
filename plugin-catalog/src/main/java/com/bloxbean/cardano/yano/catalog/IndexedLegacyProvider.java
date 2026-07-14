@@ -21,6 +21,10 @@ public record IndexedLegacyProvider(
     /** Validates and creates indexed legacy-provider evidence. */
     public IndexedLegacyProvider {
         kind = Objects.requireNonNull(kind, "kind");
+        if (kind.manifestRequired()) {
+            throw new IllegalArgumentException(
+                    kind.manifestKey() + " providers require a bundle manifest");
+        }
         provider = CatalogNames.providerClass(provider);
         digest = CatalogDigests.requireSha256(digest);
         digestMode = Objects.requireNonNull(digestMode, "digestMode");

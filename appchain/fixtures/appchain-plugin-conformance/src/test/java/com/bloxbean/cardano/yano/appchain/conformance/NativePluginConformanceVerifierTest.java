@@ -3,6 +3,7 @@ package com.bloxbean.cardano.yano.appchain.conformance;
 import com.bloxbean.cardano.yaci.events.api.EventBus;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineProvider;
+import com.bloxbean.cardano.yano.api.appchain.AppQueryResult;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutor;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutorFactory;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectExecution;
@@ -24,6 +25,12 @@ import com.bloxbean.cardano.yano.api.config.PluginsOptions;
 import com.bloxbean.cardano.yano.api.plugin.NodePlugin;
 import com.bloxbean.cardano.yano.api.plugin.PluginContext;
 import com.bloxbean.cardano.yano.api.plugin.StorageFilter;
+import com.bloxbean.cardano.yano.api.plugin.domain.DomainApi;
+import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiContext;
+import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiProvider;
+import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiRequest;
+import com.bloxbean.cardano.yano.api.plugin.domain.DomainHttpMethod;
+import com.bloxbean.cardano.yano.api.plugin.domain.DomainQueryService;
 import com.bloxbean.cardano.yano.catalog.BundleManifestParser;
 import com.bloxbean.cardano.yano.catalog.ContributionKind;
 import com.bloxbean.cardano.yano.runtime.plugins.PluginLoaderHandle;
@@ -71,7 +78,8 @@ class NativePluginConformanceVerifierTest {
                     ConformanceL1ObserverProvider.class.getName(),
                     ConformanceSignerProviderFactory.class.getName(),
                     ConformanceEffectExecutorFactory.class.getName(),
-                    ConformanceFinalizedSinkFactory.class.getName())) {
+                    ConformanceFinalizedSinkFactory.class.getName(),
+                    ConformanceDomainApiProvider.class.getName())) {
                 assertThat(constantPool).doesNotContain(provider.replace('.', '/'));
             }
         }
@@ -94,10 +102,12 @@ class NativePluginConformanceVerifierTest {
                 ConformanceEffectExecutorFactory.class);
         assertExactService(loader, FinalizedStreamSinkFactory.class,
                 ConformanceFinalizedSinkFactory.class);
+        assertExactService(loader, DomainApiProvider.class,
+                ConformanceDomainApiProvider.class);
     }
 
     @Test
-    void catalogRegistryResolvesAndConstructsAllSixTypedProviders(
+    void catalogRegistryResolvesAndConstructsAllSevenTypedProviders(
             @TempDir Path pluginDirectory) throws Exception {
         String fixtureJarProperty = System.getProperty(
                 "yano.plugin.conformance.fixture.jar");
@@ -125,12 +135,14 @@ class NativePluginConformanceVerifierTest {
                     ConformanceEffectExecutorFactory.SCHEME);
             assertCatalogProvider(environment, FinalizedStreamSinkFactory.class,
                     ConformanceFinalizedSinkFactory.SCHEME);
+            assertCatalogProvider(environment, DomainApiProvider.class,
+                    ConformanceDomainApiProvider.ID);
             exerciseCatalogFacades(environment);
         }
     }
 
     @Test
-    void strictManifestDeclaresNodeVerifierAndAllSixTypedKinds() throws Exception {
+    void strictManifestDeclaresNodeVerifierAndAllSevenTypedKinds() throws Exception {
         ClassLoader loader = getClass().getClassLoader();
         try (InputStream input = loader.getResourceAsStream(MANIFEST_PATH)) {
             assertThat(input).as("fixture manifest").isNotNull();
@@ -148,7 +160,8 @@ class NativePluginConformanceVerifierTest {
                             ContributionKind.L1_OBSERVER,
                             ContributionKind.SIGNER_PROVIDER,
                             ContributionKind.EFFECT_EXECUTOR,
-                            ContributionKind.FINALIZED_SINK));
+                            ContributionKind.FINALIZED_SINK,
+                            ContributionKind.DOMAIN_API));
         }
     }
 
@@ -235,6 +248,29 @@ class NativePluginConformanceVerifierTest {
             assertThat(sinks.getFirst().deliver(null)).isTrue();
         } finally {
             sinks.forEach(FinalizedStreamSink::close);
+        }
+
+        DomainQueryService queryService = new DomainQueryService() {
+            @Override public List<String> chainIds() { return List.of("conformance-chain"); }
+            @Override public AppQueryResult query(String chainId, String path, byte[] params) {
+                return new AppQueryResult("unsafe\"\n", ConformanceStateMachineProvider.ID,
+                        0, new byte[32], params);
+            }
+        };
+        try (DomainApi domainApi = environment.providers().require(
+                DomainApiProvider.class, ConformanceDomainApiProvider.ID)
+                .create(new DomainApiContext(Map.of(), queryService))) {
+            assertThat(domainApi.routes()).hasSize(4);
+            assertThat(domainApi.handle(new DomainApiRequest(
+                    "status", DomainHttpMethod.GET, "status",
+                    Map.of(), Map.of(), new byte[0])).status()).isEqualTo(200);
+            String queryJson = new String(domainApi.handle(new DomainApiRequest(
+                    "query", DomainHttpMethod.POST, "query/echo",
+                    Map.of("path", "echo"), Map.of(), new byte[]{1, 2}))
+                    .body(), StandardCharsets.UTF_8);
+            assertThat(queryJson)
+                    .contains("\"chainId\":\"unsafe\\\"\\n\"")
+                    .doesNotContain("unsafe\"\n");
         }
     }
 

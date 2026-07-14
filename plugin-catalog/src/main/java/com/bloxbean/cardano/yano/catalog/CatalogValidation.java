@@ -28,6 +28,9 @@ final class CatalogValidation {
     }
 
     static String contributionName(ContributionKind kind, String value, String field) {
+        if (kind == ContributionKind.DOMAIN_API) {
+            return bundleId(value, field);
+        }
         if (value == null || value.length() > MAX_NAME_LENGTH
                 || !CONTRIBUTION_NAME.matcher(value).matches()) {
             throw new IllegalArgumentException(field

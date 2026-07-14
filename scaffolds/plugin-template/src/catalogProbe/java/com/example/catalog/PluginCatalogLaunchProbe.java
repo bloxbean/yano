@@ -2,10 +2,16 @@ package com.example.catalog;
 
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineProvider;
+import com.bloxbean.cardano.yano.api.appchain.AppQueryException;
+import com.bloxbean.cardano.yano.api.appchain.AppQueryResult;
 import com.bloxbean.cardano.yano.api.config.PluginsOptions;
 import com.bloxbean.cardano.yano.api.plugin.PluginBundleInfo;
 import com.bloxbean.cardano.yano.api.plugin.PluginDigestMode;
 import com.bloxbean.cardano.yano.api.plugin.PluginSourceCategory;
+import com.bloxbean.cardano.yano.api.plugin.domain.DomainApi;
+import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiContext;
+import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiProvider;
+import com.bloxbean.cardano.yano.api.plugin.domain.DomainQueryService;
 import com.bloxbean.cardano.yano.runtime.plugins.PluginLoaderHandle;
 import com.bloxbean.cardano.yano.runtime.plugins.PluginRuntimeEnvironment;
 
@@ -21,6 +27,8 @@ public final class PluginCatalogLaunchProbe {
     private static final String BUNDLE_ID = "com.example.appchain.counter";
     private static final String PROVIDER_CLASS =
             "com.example.appchain.CounterStateMachineProvider";
+    private static final String DOMAIN_PROVIDER_CLASS =
+            "com.example.appchain.CounterDomainApiProvider";
     private static final String MACHINE_ID = "counter";
 
     private PluginCatalogLaunchProbe() {
@@ -64,6 +72,19 @@ public final class PluginCatalogLaunchProbe {
                     throw new IllegalStateException(
                             "Catalog provider constructed the wrong state machine");
                 }
+
+                DomainApiProvider domainProvider = environment.providers()
+                        .find(DomainApiProvider.class, BUNDLE_ID)
+                        .orElseThrow(() -> new IllegalStateException(
+                                "Catalog cannot resolve the domain API provider"));
+                try (DomainApi domainApi = domainProvider.create(
+                        new DomainApiContext(Map.of(), unavailableQueries()))) {
+                    if (!BUNDLE_ID.equals(domainProvider.id())
+                            || domainApi.routes().size() != 4) {
+                        throw new IllegalStateException(
+                                "Catalog provider constructed an invalid domain API");
+                    }
+                }
             }
         } finally {
             deleteTree(pluginDirectory);
@@ -78,12 +99,29 @@ public final class PluginCatalogLaunchProbe {
                 || !expectedVersion.equals(bundle.version())
                 || bundle.source() != PluginSourceCategory.DIRECTORY
                 || bundle.digestMode() != PluginDigestMode.JAR
-                || bundle.contributions().size() != 1
-                || !PROVIDER_CLASS.equals(
-                        bundle.contributions().getFirst().providerClass())) {
+                || bundle.contributions().size() != 2
+                || bundle.contributions().stream().noneMatch(contribution ->
+                        PROVIDER_CLASS.equals(contribution.providerClass()))
+                || bundle.contributions().stream().noneMatch(contribution ->
+                        DOMAIN_PROVIDER_CLASS.equals(contribution.providerClass()))) {
             throw new IllegalStateException(
                     "Scaffold bundle inventory does not match its deployment contract");
         }
+    }
+
+    private static DomainQueryService unavailableQueries() {
+        return new DomainQueryService() {
+            @Override
+            public java.util.List<String> chainIds() {
+                return java.util.List.of();
+            }
+
+            @Override
+            public AppQueryResult query(String chainId, String path, byte[] params) {
+                throw new AppQueryException(AppQueryException.Code.UNAVAILABLE,
+                        "catalog probe has no app chain");
+            }
+        };
     }
 
     private static void deleteTree(Path root) throws Exception {

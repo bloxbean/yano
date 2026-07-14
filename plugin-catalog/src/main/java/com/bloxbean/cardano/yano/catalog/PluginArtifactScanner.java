@@ -279,6 +279,15 @@ public final class PluginArtifactScanner {
         contents.services().forEach((kind, providers) -> providers.forEach(
                 provider -> registered.add(new ServiceDeclaration(kind, provider))));
         if (contents.manifest() == null) {
+            List<String> manifestedOnlyKinds = contents.services().entrySet().stream()
+                    .filter(entry -> entry.getKey().manifestRequired() && !entry.getValue().isEmpty())
+                    .map(entry -> entry.getKey().manifestKey())
+                    .sorted()
+                    .toList();
+            if (!manifestedOnlyKinds.isEmpty()) {
+                throw invalid("providers for " + manifestedOnlyKinds
+                        + " require a bundle manifest and cannot use legacy discovery");
+            }
             validateProviderClasses(registered, contents.fileEntries());
             List<IndexedLegacyProvider> providers = contents.services().entrySet().stream()
                     .flatMap(entry -> entry.getValue().stream()

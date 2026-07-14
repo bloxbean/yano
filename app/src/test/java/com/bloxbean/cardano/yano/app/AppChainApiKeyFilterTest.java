@@ -107,6 +107,17 @@ class AppChainApiKeyFilterTest {
     }
 
     @Test
+    void restrictedKey_postQueryIsSemanticallyReadOnly() {
+        given()
+                .header("X-API-Key", "restricted-key")
+                .contentType("application/json")
+                .body("{\"paramsHex\":\"00ff\"}")
+                .when().post("/api/v1/app-chain/chains/not-hosted/query/by-id")
+                .then()
+                .statusCode(404); // past auth; unknown chain is resolved downstream
+    }
+
+    @Test
     void otherEndpoints_remainOpen() {
         given()
                 .when().get("/api/v1/node/status")

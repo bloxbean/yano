@@ -1,7 +1,8 @@
-# App-chain state-machine plugin template
+# App-chain state-machine and domain API plugin template
 
-A standalone Gradle project for a **custom app-chain state machine** loaded by a
-default Yano distribution as a plugin jar — no fork, no rebuild of the node.
+A standalone Gradle project for a **custom app-chain state machine, committed
+query, and bundle-owned domain API** loaded by a default Yano distribution as a
+plugin jar — no fork, no rebuild of the node.
 
 ## What's here
 
@@ -10,11 +11,14 @@ plugin-template/
 ├── build.gradle                       # compileOnly against yano-core-api
 ├── settings.gradle
 ├── src/main/java/com/example/appchain/
-    ├── CounterStateMachine.java       # your deterministic apply() logic
-    └── CounterStateMachineProvider.java
+    ├── CounterStateMachine.java       # deterministic apply + committed query
+    ├── CounterStateMachineProvider.java
+    ├── CounterDomainApiProvider.java  # constrained routes + query facade
+    └── JsonSupport.java               # safe JSON string encoding
 └── src/main/resources/META-INF/
     ├── services/
-    │   └── com.bloxbean.cardano.yano.api.appchain.AppStateMachineProvider
+    │   ├── com.bloxbean.cardano.yano.api.appchain.AppStateMachineProvider
+    │   └── com.bloxbean.cardano.yano.api.plugin.domain.DomainApiProvider
     └── yano/plugins/
         └── com.example.appchain.counter.json
 ```
@@ -34,8 +38,8 @@ plugin compiles against `yano-core-api`; `yano-runtime` is test-only because
 it supplies `StateMachineConformance`. The `check` lifecycle also runs
 `verifyPluginJar`, which rejects missing discovery metadata or bundled Yano
 API/runtime classes, and `verifyPluginCatalogLaunch`, which loads the built JAR
-through Yano's production directory catalog and constructs the `counter`
-provider. The plugin project version is this bundle's independently released
+through Yano's production directory catalog and constructs the state-machine
+and domain API providers. The plugin project version is this bundle's independently released
 SemVer and must match the manifest `version`; it is not the Yano dependency
 version selected by `-PyanoVersion`.
 
@@ -73,7 +77,9 @@ The qualified JSON manifest and the `META-INF/services` entry are both
 required. The manifest declares the auditable bundle identity and provider;
 ServiceLoader remains the behavior-instantiation contract. Their provider
 kind/class declarations must match exactly or the node fails before plugin
-code is activated.
+code is activated. For schema v1, the `domain-api` contribution name and
+`DomainApiProvider.id()` must both equal the containing bundle id
+`com.example.appchain.counter`.
 
 If the plugin uses third-party runtime dependencies, publish a reproducible
 shaded JAR (without `com/bloxbean/cardano/yano/api/**`) so the artifact is a
@@ -91,11 +97,57 @@ class cannot be correlated to the same artifact.
 - Every key you write becomes individually provable (MPF); clients verify
   proofs offline with the `appchain-client` SDK.
 
+## Committed queries and domain routes
+
+`CounterStateMachine.query(path, params, context)` runs off-consensus against a
+root-fixed committed snapshot. It is read-only, may overlap later block apply,
+must not retain `context`, and reports only `UNSUPPORTED` or `INVALID_REQUEST`
+as plugin-authored `AppQueryException` codes. The host owns timeout, overload,
+availability, result-size, and unexpected-failure codes.
+
+`CounterDomainApiProvider` publishes an immutable route set validated with
+`DomainApiRouteSet.validateAndOrder`:
+
+- `GET status` and `GET counters/{key}` are `READ`;
+- `GET operator` is `PRIVILEGED` and is never anonymously enabled;
+- `GET internal` is reserved inventory and cannot be dispatched in v1.
+
+The host owns `/api/v1/plugins/{bundleId}/...`, request limits, authentication,
+timeouts, and error redaction. The plugin receives no JAX-RS router or request
+identity. In production ADR-011.3 v1, `DomainApiContext.bundleConfig()` is
+intentionally empty; do not expect credentials there. The example closes its
+product idempotently, safely JSON-encodes caller-controlled strings, and maps
+`AppQueryException.code()` to `DomainApiException.code()` without copying the
+source message.
+
+Example requests after the node starts:
+
+```bash
+# Generic root-attested query (paramsHex is UTF-8 "visits")
+curl -X POST \
+  http://localhost:8080/api/v1/app-chain/chains/my-chain/query/counter/read \
+  -H 'Content-Type: application/json' \
+  -d '{"paramsHex":"766973697473"}'
+
+# Bundle-owned READ route; response carries the same committed root envelope
+curl 'http://localhost:8080/api/v1/plugins/com.example.appchain.counter/counters/visits?chain=my-chain'
+```
+
+Enable API-key authentication and configure at least one unscoped full key
+before using a `PRIVILEGED` route. Send it as `X-API-Key`. If authentication is
+disabled, missing, or has only topic-scoped keys, privileged plugin routes are
+hidden as 404 and are never invoked.
+
 ## Testing
 
-- **Unit**: call `apply()` with an in-memory `AppStateWriter`
-  (`CounterStateMachineTest`) — fastest inner loop.
+- **Unit**: call `apply()` and `query()` with an in-memory state view
+  (`CounterStateMachineTest`), then exercise routes with a fake bounded
+  `DomainQueryService` (`CounterDomainApiTest`) — fastest inner loop.
+- **Catalog/deployment**: `check` verifies both ServiceLoader descriptors, both
+  manifest contributions, API-class isolation, and resolves both providers
+  from the built JAR through the production directory catalog.
 - **End-to-end**: use `appchain-testkit`'s `@AppChainCluster` to run your
   machine across a real embedded multi-node cluster.
 
-See `docs/APP_CHAIN_TUTORIAL.md` for the full walkthrough.
+See `docs/APP_CHAIN_PLUGIN_QUERY_AND_DOMAIN_API.md` for the full query/domain
+contract and `docs/APP_CHAIN_TUTORIAL.md` for the app-chain walkthrough.

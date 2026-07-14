@@ -21,6 +21,13 @@ import com.bloxbean.cardano.yano.api.appchain.sink.FinalizedStreamSink;
 import com.bloxbean.cardano.yano.api.appchain.sink.FinalizedStreamSinkFactory;
 import com.bloxbean.cardano.yano.api.config.PluginsOptions;
 import com.bloxbean.cardano.yano.api.plugin.PluginDigestMode;
+import com.bloxbean.cardano.yano.api.plugin.domain.DomainApi;
+import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiContext;
+import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiProvider;
+import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiRequest;
+import com.bloxbean.cardano.yano.api.plugin.domain.DomainHttpMethod;
+import com.bloxbean.cardano.yano.api.plugin.domain.DomainQueryService;
+import com.bloxbean.cardano.yano.api.appchain.AppQueryResult;
 import com.bloxbean.cardano.yano.runtime.plugins.PluginDiscoveryMode;
 import com.bloxbean.cardano.yano.runtime.plugins.PluginRuntimeEnvironment;
 import org.junit.jupiter.api.Test;
@@ -132,6 +139,8 @@ class PluginCatalogPackagingTest {
                     AppEffectExecutorFactory.class, "conformance-effect").isPresent());
             assertEquals(conformanceIncluded, environment.providers().find(
                     FinalizedStreamSinkFactory.class, "conformance-sink").isPresent());
+            assertEquals(conformanceIncluded, environment.providers().find(
+                    DomainApiProvider.class, CONFORMANCE_BUNDLE).isPresent());
             if (conformanceIncluded) {
                 exerciseConformanceProviderFacades(environment);
             }
@@ -221,6 +230,22 @@ class PluginCatalogPackagingTest {
         } finally {
             sinks.forEach(FinalizedStreamSink::close);
         }
+
+        DomainQueryService queryService = new DomainQueryService() {
+            @Override public List<String> chainIds() { return List.of("conformance-chain"); }
+            @Override public AppQueryResult query(String chainId, String path, byte[] params) {
+                return new AppQueryResult(chainId, "conformance-machine",
+                        0, new byte[32], params);
+            }
+        };
+        try (DomainApi domainApi = environment.providers().require(
+                DomainApiProvider.class, CONFORMANCE_BUNDLE)
+                .create(new DomainApiContext(Map.of(), queryService))) {
+            assertEquals(4, domainApi.routes().size());
+            assertEquals(200, domainApi.handle(new DomainApiRequest(
+                    "status", DomainHttpMethod.GET, "status",
+                    Map.of(), Map.of(), new byte[0])).status());
+        }
     }
 
     @Test
@@ -235,6 +260,7 @@ class PluginCatalogPackagingTest {
                     Set.copyOf(environment.providers().names(AppStateMachineProvider.class)));
             assertTrue(environment.providers().names(FinalizedStreamSinkFactory.class).isEmpty());
             assertTrue(environment.providers().names(AppEffectExecutorFactory.class).isEmpty());
+            assertTrue(environment.providers().names(DomainApiProvider.class).isEmpty());
             assertFalse(environment.catalog().bundles().isEmpty());
         }
     }

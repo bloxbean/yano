@@ -5,7 +5,7 @@ import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 
 /**
- * Immutable selector registry for the six typed app-chain plugin SPIs.
+ * Immutable selector registry for the seven typed app-chain plugin SPIs.
  *
  * <p>The manifested catalog implements this contract with lazy, cached
  * provider handles. The legacy adapter exists only for source-compatible

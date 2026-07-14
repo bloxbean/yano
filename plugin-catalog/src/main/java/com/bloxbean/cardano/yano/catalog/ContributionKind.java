@@ -7,32 +7,37 @@ import com.bloxbean.cardano.yano.api.appchain.sequencer.SequencerModeProvider;
 import com.bloxbean.cardano.yano.api.appchain.signer.SignerProviderFactory;
 import com.bloxbean.cardano.yano.api.appchain.sink.FinalizedStreamSinkFactory;
 import com.bloxbean.cardano.yano.api.plugin.NodePlugin;
+import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiProvider;
 
 import java.util.Arrays;
 
 /** Supported ServiceLoader contribution kinds in a bundle manifest. */
 public enum ContributionKind {
     /** General node lifecycle plugin. */
-    NODE_PLUGIN("node-plugin", NodePlugin.class),
+    NODE_PLUGIN("node-plugin", NodePlugin.class, false),
     /** Deterministic app-chain state-machine provider. */
-    APP_STATE_MACHINE("app-state-machine", AppStateMachineProvider.class),
+    APP_STATE_MACHINE("app-state-machine", AppStateMachineProvider.class, false),
     /** App-chain sequencer-mode provider. */
-    SEQUENCER_MODE("sequencer-mode", SequencerModeProvider.class),
+    SEQUENCER_MODE("sequencer-mode", SequencerModeProvider.class, false),
     /** App-chain L1 observation provider. */
-    L1_OBSERVER("l1-observer", L1ObserverProvider.class),
+    L1_OBSERVER("l1-observer", L1ObserverProvider.class, false),
     /** Local signer provider factory. */
-    SIGNER_PROVIDER("signer-provider", SignerProviderFactory.class),
+    SIGNER_PROVIDER("signer-provider", SignerProviderFactory.class, false),
     /** Local app-effect executor factory. */
-    EFFECT_EXECUTOR("effect-executor", AppEffectExecutorFactory.class),
+    EFFECT_EXECUTOR("effect-executor", AppEffectExecutorFactory.class, false),
     /** Finalized app-chain stream sink factory. */
-    FINALIZED_SINK("finalized-sink", FinalizedStreamSinkFactory.class);
+    FINALIZED_SINK("finalized-sink", FinalizedStreamSinkFactory.class, false),
+    /** Host-dispatched domain API; schema v1 requires an owning bundle manifest. */
+    DOMAIN_API("domain-api", DomainApiProvider.class, true);
 
     private final String manifestKey;
     private final Class<?> serviceType;
+    private final boolean manifestRequired;
 
-    ContributionKind(String manifestKey, Class<?> serviceType) {
+    ContributionKind(String manifestKey, Class<?> serviceType, boolean manifestRequired) {
         this.manifestKey = manifestKey;
         this.serviceType = serviceType;
+        this.manifestRequired = manifestRequired;
     }
 
     /**
@@ -51,6 +56,15 @@ public enum ContributionKind {
      */
     public Class<?> serviceType() {
         return serviceType;
+    }
+
+    /**
+     * Whether this contribution has no synthetic legacy representation.
+     *
+     * @return true when an owning bundle manifest is mandatory
+     */
+    public boolean manifestRequired() {
+        return manifestRequired;
     }
 
     /**

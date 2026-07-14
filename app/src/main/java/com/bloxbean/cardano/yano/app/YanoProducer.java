@@ -843,6 +843,12 @@ public class YanoProducer {
         return ensureYano().appChains();
     }
 
+    @Produces
+    @ApplicationScoped
+    public com.bloxbean.cardano.yano.api.plugin.domain.DomainApiGateway createDomainApiGateway() {
+        return ensureYano().domainApis();
+    }
+
     /**
      * Multi-chain config (ADR app-layer/006 E5.2): reads indexed properties
      * yano.app-chain.chains[i].&lt;suffix&gt; into suffix-keyed maps for the runtime.

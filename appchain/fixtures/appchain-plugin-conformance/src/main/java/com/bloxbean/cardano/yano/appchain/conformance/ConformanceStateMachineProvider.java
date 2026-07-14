@@ -4,6 +4,10 @@ import com.bloxbean.cardano.yano.api.appchain.AppBlock;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineProvider;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
+import com.bloxbean.cardano.yano.api.appchain.AppQueryContext;
+
+import java.nio.charset.StandardCharsets;
+import java.util.HexFormat;
 
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -41,6 +45,19 @@ public final class ConformanceStateMachineProvider implements AppStateMachinePro
                 ConformanceTcclProbe.productCallback(firstCallback,
                         "state-machine apply");
                 // The isolated conformance chain never proposes a block.
+            }
+
+            @Override
+            public byte[] query(String path, byte[] params, AppQueryContext state) {
+                ConformanceTcclProbe.productCallback(firstCallback,
+                        "state-machine committed query");
+                if (!"echo".equals(path)) {
+                    throw new UnsupportedOperationException("unsupported conformance query");
+                }
+                String payload = "echo:" + state.committedHeight() + ":"
+                        + HexFormat.of().formatHex(params) + ":"
+                        + HexFormat.of().formatHex(state.stateRoot());
+                return payload.getBytes(StandardCharsets.UTF_8);
             }
         };
         ConformanceTcclProbe.poisonProviderCallback();

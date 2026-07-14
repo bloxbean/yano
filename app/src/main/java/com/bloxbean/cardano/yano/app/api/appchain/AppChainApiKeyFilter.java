@@ -1,6 +1,9 @@
 package com.bloxbean.cardano.yano.app.api.appchain;
 
 import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
+import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiAccess;
+import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiGateway;
+import com.bloxbean.cardano.yano.api.plugin.domain.DomainHttpMethod;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.inject.Inject;
@@ -10,6 +13,7 @@ import jakarta.ws.rs.container.ResourceInfo;
 import jakarta.ws.rs.core.Context;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
+import jakarta.ws.rs.core.UriInfo;
 import jakarta.ws.rs.ext.Provider;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
@@ -40,6 +44,8 @@ import java.util.Set;
 public class AppChainApiKeyFilter implements ContainerRequestFilter {
 
     public static final String API_KEY_HEADER = "X-API-Key";
+    private static final int QUERY_JSON_MAX_BYTES = 132 * 1024;
+    private static final int DOMAIN_BODY_MAX_BYTES = 64 * 1024;
 
     @ConfigProperty(name = YanoPropertyKeys.AppChain.API_AUTH_ENABLED, defaultValue = "false")
     boolean authEnabled;
@@ -50,14 +56,57 @@ public class AppChainApiKeyFilter implements ContainerRequestFilter {
     @Inject
     ObjectMapper objectMapper;
 
+    @Inject
+    DomainApiGateway domainApis;
+
     @Context
     ResourceInfo resourceInfo;
+
+    @Context
+    UriInfo uriInfo;
 
     private volatile Map<String, Set<String>> parsedKeys;
 
     @Override
     public void filter(ContainerRequestContext requestContext) {
-        if (!authEnabled || !isAppChainResource()) {
+        if (!isAppChainResource()) {
+            return;
+        }
+
+        if (!enforceCanonicalExtensionPath(requestContext)) {
+            return;
+        }
+
+        if (!enforceRawEntityBound(requestContext)) {
+            return;
+        }
+
+        AppChainAccess.Level access = access(requestContext);
+        // INTERNAL domain routes are deliberately indistinguishable from an
+        // unknown path and never become HTTP capabilities.
+        if (access == AppChainAccess.Level.INTERNAL) {
+            abortDomainNotFound(requestContext);
+            return;
+        }
+        if (access == AppChainAccess.Level.PRIVILEGED
+                && !privilegedAuthenticationAvailable()) {
+            // A privileged capability is never made anonymous by an operator
+            // omitting or disabling API-key configuration. Plugin routes are
+            // hidden as absent; statically known host operations report the
+            // configuration problem without invoking their resource method.
+            if (isDomainApiResource()) {
+                abortDomainNotFound(requestContext);
+            } else {
+                requestContext.abortWith(Response.status(Response.Status.SERVICE_UNAVAILABLE)
+                        .type(MediaType.APPLICATION_JSON)
+                        .entity(Map.of("code", "AUTH_UNAVAILABLE",
+                                "error", "Privileged app-chain operations require "
+                                        + "API-key authentication and a full key"))
+                        .build());
+            }
+            return;
+        }
+        if (!authEnabled) {
             return;
         }
 
@@ -74,25 +123,39 @@ public class AppChainApiKeyFilter implements ContainerRequestFilter {
         if (allowedTopics.isEmpty()) {
             return; // full key — no further restriction
         }
-        // Submit-only, topic-restricted key: reads are fine; submit is
-        // topic-checked; ANY other state-changing call is forbidden (E4.1 /
-        // ADR-010 F12 — effect requeue/cancel/claim/report and admin ops move
-        // funds or change consensus-visible state).
-        if (isSubmit(requestContext)) {
-            enforceTopicRestriction(requestContext, allowedTopics);
-        } else if (isStateChanging(requestContext)) {
-            requestContext.abortWith(Response.status(Response.Status.FORBIDDEN)
-                    .type(MediaType.APPLICATION_JSON)
-                    .entity(Map.of("error", "This API key is submit-only (topic-restricted) and "
-                            + "may not call state-changing operations")).build());
+        // A topic-scoped key may read freely, may submit only to its declared
+        // topics, and may never invoke a privileged or internal operation.
+        // This classification is semantic: ADR-011.3's generic query is a
+        // read even though its bounded parameter transport uses POST.
+        switch (access) {
+            case READ -> {
+                return;
+            }
+            case SUBMIT -> enforceTopicRestriction(requestContext, allowedTopics);
+            case PRIVILEGED, INTERNAL -> requestContext.abortWith(
+                    Response.status(Response.Status.FORBIDDEN)
+                            .type(MediaType.APPLICATION_JSON)
+                            .entity(Map.of("error", "This API key is submit-only "
+                                    + "(topic-restricted) and may not call privileged "
+                                    + "operations"))
+                            .build());
         }
     }
 
-    /** Any mutating HTTP method (POST/PUT/DELETE/PATCH); reads (GET/HEAD/OPTIONS) are allowed. */
-    private boolean isStateChanging(ContainerRequestContext requestContext) {
+    private AppChainAccess.Level access(ContainerRequestContext requestContext) {
+        if (isDomainApiResource()) {
+            return domainAccess(requestContext);
+        }
+        java.lang.reflect.Method method = resourceInfo != null
+                ? resourceInfo.getResourceMethod() : null;
+        AppChainAccess declared = method != null
+                ? method.getAnnotation(AppChainAccess.class) : null;
+        if (declared != null) {
+            return declared.value();
+        }
         return switch (requestContext.getMethod().toUpperCase(java.util.Locale.ROOT)) {
-            case "POST", "PUT", "DELETE", "PATCH" -> true;
-            default -> false;
+            case "GET", "HEAD", "OPTIONS" -> AppChainAccess.Level.READ;
+            default -> AppChainAccess.Level.PRIVILEGED;
         };
     }
 
@@ -100,15 +163,118 @@ public class AppChainApiKeyFilter implements ContainerRequestFilter {
     private boolean isAppChainResource() {
         Class<?> resourceClass = resourceInfo != null ? resourceInfo.getResourceClass() : null;
         return resourceClass == AppChainResource.class
-                || resourceClass == AppChainResource.ChainScopedResource.class;
+                || resourceClass == AppChainResource.ChainScopedResource.class
+                || resourceClass == PluginDomainResource.class;
     }
 
-    /** True for the message-submission endpoint, independent of URL form. */
-    private boolean isSubmit(ContainerRequestContext requestContext) {
-        java.lang.reflect.Method method = resourceInfo != null ? resourceInfo.getResourceMethod() : null;
-        return method != null
-                && "submit".equals(method.getName())
-                && "POST".equalsIgnoreCase(requestContext.getMethod());
+    private boolean isDomainApiResource() {
+        return resourceInfo != null
+                && resourceInfo.getResourceClass() == PluginDomainResource.class;
+    }
+
+    private boolean isCommittedQueryResource() {
+        return resourceInfo != null
+                && resourceInfo.getResourceClass()
+                        == AppChainResource.ChainScopedResource.class
+                && resourceInfo.getResourceMethod() != null
+                && resourceInfo.getResourceMethod().getName().equals("query");
+    }
+
+    /**
+     * RESTEasy removes matrix parameters and one trailing slash while matching
+     * a resource. Validate the still-encoded request path before trusting the
+     * normalized {@code @PathParam} values, otherwise aliases such as
+     * {@code status;x=1} can reach the canonical {@code status} handler.
+     */
+    private boolean enforceCanonicalExtensionPath(
+            ContainerRequestContext requestContext
+    ) {
+        boolean domain = isDomainApiResource();
+        boolean query = isCommittedQueryResource();
+        if (!domain && !query) {
+            return true;
+        }
+        final String rawPath;
+        try {
+            var requestUri = uriInfo != null ? uriInfo.getRequestUri() : null;
+            rawPath = requestUri != null
+                    ? requestUri.getRawPath()
+                    : uriInfo != null ? uriInfo.getPath(false) : null;
+        } catch (RuntimeException unavailable) {
+            return abortNonCanonicalExtensionPath(requestContext, domain);
+        }
+        if (rawPath == null || rawPath.isEmpty()
+                || rawPath.indexOf('%') >= 0
+                || rawPath.indexOf(';') >= 0
+                || rawPath.contains("//")
+                || rawPath.endsWith("/")) {
+            return abortNonCanonicalExtensionPath(requestContext, domain);
+        }
+        return true;
+    }
+
+    private static boolean abortNonCanonicalExtensionPath(
+            ContainerRequestContext requestContext,
+            boolean domain
+    ) {
+        if (domain) {
+            abortDomainNotFound(requestContext);
+        } else {
+            requestContext.abortWith(Response.status(Response.Status.BAD_REQUEST)
+                    .type(MediaType.APPLICATION_JSON)
+                    .entity(Map.of("code", "INVALID_REQUEST",
+                            "error", "App-chain query path is invalid"))
+                    .build());
+        }
+        return false;
+    }
+
+    private AppChainAccess.Level domainAccess(ContainerRequestContext requestContext) {
+        try {
+            DomainHttpMethod method = switch (requestContext.getMethod()
+                    .toUpperCase(java.util.Locale.ROOT)) {
+                case "GET" -> DomainHttpMethod.GET;
+                case "POST" -> DomainHttpMethod.POST;
+                default -> null;
+            };
+            if (method == null || uriInfo == null) {
+                return AppChainAccess.Level.PRIVILEGED;
+            }
+            // false preserves the raw encoded form. The registry accepts only
+            // canonical unreserved ASCII and rejects every '%' before any
+            // path value can be interpreted a second time.
+            var parameters = uriInfo.getPathParameters(false);
+            String bundleId = parameters.getFirst("bundleId");
+            String path = parameters.getFirst("path");
+            if (bundleId == null || path == null) {
+                return AppChainAccess.Level.PRIVILEGED;
+            }
+            DomainApiAccess declared = domainApis.access(bundleId, method, path)
+                    .orElse(null);
+            if (declared == null) {
+                return AppChainAccess.Level.INTERNAL;
+            }
+            return switch (declared) {
+                case READ -> AppChainAccess.Level.READ;
+                case PRIVILEGED -> AppChainAccess.Level.PRIVILEGED;
+                case INTERNAL -> AppChainAccess.Level.INTERNAL;
+            };
+        } catch (RuntimeException invalidOrUnavailable) {
+            // Unknown/unclassifiable plugin operations fail closed and are
+            // indistinguishable from INTERNAL or absent routes over HTTP.
+            return AppChainAccess.Level.INTERNAL;
+        }
+    }
+
+    private boolean privilegedAuthenticationAvailable() {
+        return authEnabled && keys().values().stream().anyMatch(Set::isEmpty);
+    }
+
+    private static void abortDomainNotFound(ContainerRequestContext requestContext) {
+        requestContext.abortWith(Response.status(Response.Status.NOT_FOUND)
+                .type(MediaType.APPLICATION_JSON)
+                .entity(Map.of("error", "No domain API route matches the request"))
+                .build());
     }
 
     private void enforceTopicRestriction(ContainerRequestContext requestContext, Set<String> allowedTopics) {
@@ -128,6 +294,53 @@ public class AppChainApiKeyFilter implements ContainerRequestFilter {
             requestContext.abortWith(Response.status(Response.Status.BAD_REQUEST)
                     .type(MediaType.APPLICATION_JSON)
                     .entity(Map.of("error", "Unreadable request body")).build());
+        }
+    }
+
+    /**
+     * Bound entities before JSON or byte-array deserialization. Resource-level
+     * decoded limits remain the second line of defense.
+     */
+    private boolean enforceRawEntityBound(ContainerRequestContext requestContext) {
+        int limit = 0;
+        if (isDomainApiResource()) {
+            if ("GET".equalsIgnoreCase(requestContext.getMethod())
+                    && requestContext.hasEntity()) {
+                requestContext.abortWith(Response.status(Response.Status.BAD_REQUEST)
+                        .type(MediaType.APPLICATION_JSON)
+                        .entity(Map.of("code", "INVALID_REQUEST",
+                                "error", "GET domain API requests must not contain a body"))
+                        .build());
+                return false;
+            }
+            if ("POST".equalsIgnoreCase(requestContext.getMethod())) {
+                limit = DOMAIN_BODY_MAX_BYTES;
+            }
+        } else if (isCommittedQueryResource()) {
+            limit = QUERY_JSON_MAX_BYTES;
+        }
+        if (limit == 0 || !requestContext.hasEntity()) {
+            return true;
+        }
+        try {
+            byte[] body = requestContext.getEntityStream().readNBytes(limit + 1);
+            if (body.length > limit) {
+                requestContext.abortWith(Response.status(413)
+                        .type(MediaType.APPLICATION_JSON)
+                        .entity(Map.of("code", "REQUEST_TOO_LARGE",
+                                "error", "Request entity exceeds the size limit"))
+                        .build());
+                return false;
+            }
+            requestContext.setEntityStream(new ByteArrayInputStream(body));
+            return true;
+        } catch (Exception unreadable) {
+            requestContext.abortWith(Response.status(Response.Status.BAD_REQUEST)
+                    .type(MediaType.APPLICATION_JSON)
+                    .entity(Map.of("code", "INVALID_REQUEST",
+                            "error", "Unreadable request body"))
+                    .build());
+            return false;
         }
     }
 

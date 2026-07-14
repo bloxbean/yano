@@ -39,6 +39,11 @@
       "kind": "finalized-sink",
       "name": "conformance-sink",
       "provider": "com.bloxbean.cardano.yano.appchain.conformance.ConformanceFinalizedSinkFactory"
+    },
+    {
+      "kind": "domain-api",
+      "name": "com.bloxbean.cardano.yano.fixture.plugin-conformance",
+      "provider": "com.bloxbean.cardano.yano.appchain.conformance.ConformanceDomainApiProvider"
     }
   ]
 }

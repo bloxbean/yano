@@ -2,6 +2,9 @@
 
 This guide explains how to use the Yano event system and plugin SPI, both for developers embedding Yano in their apps and for contributors writing default plugins or internal listeners.
 
+For committed state-machine queries and manifested domain HTTP APIs, continue
+with the [query and domain API plugin guide](../../docs/APP_CHAIN_PLUGIN_QUERY_AND_DOMAIN_API.md).
+
 ## Overview
 
 - Module overview
@@ -41,7 +44,7 @@ immutable catalog + typed provider registry
             +----> PluginManager ----> NodePlugin init/start lifecycle
             |
             +----> app-chain state machines, modes, observers, signers,
-                   effect executors and finalized sinks
+                   effect executors, finalized sinks and domain APIs
 
 Runtime event publications ----> EventBus ----> plugin listeners
                                       |

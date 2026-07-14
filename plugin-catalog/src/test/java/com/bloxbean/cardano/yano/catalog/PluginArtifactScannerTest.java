@@ -117,6 +117,38 @@ class PluginArtifactScannerTest {
     }
 
     @Test
+    void correlatesManifestedDomainApiServiceMetadata() throws Exception {
+        ContributionKind domain = ContributionKind.DOMAIN_API;
+        String id = "com.example.passport";
+        String provider = "com.example.PassportDomainApiProvider";
+        Path artifact = emptyArtifact("domain-api");
+        writeManifest(artifact, id, List.of(new BundleContribution(domain, id, provider)));
+        writeService(artifact, domain, provider);
+        writeProviderClass(artifact, provider);
+
+        PluginIndex index = scanner.scan(artifact);
+
+        assertThat(index.legacyProviders()).isEmpty();
+        assertThat(index.bundles()).singleElement().satisfies(bundle ->
+                assertThat(bundle.manifest().contributions()).containsExactly(
+                        new BundleContribution(domain, id, provider)));
+    }
+
+    @Test
+    void rejectsUnmanifestedDomainApiInsteadOfSynthesizingLegacyEvidence() throws Exception {
+        Path artifact = emptyArtifact("legacy-domain-api");
+        String provider = "com.example.LegacyDomainApiProvider";
+        writeService(artifact, ContributionKind.DOMAIN_API, provider);
+        writeProviderClass(artifact, provider);
+
+        assertThatThrownBy(() -> scanner.scan(artifact))
+                .isInstanceOf(PluginCatalogException.class)
+                .hasMessageContaining("domain-api")
+                .hasMessageContaining("require a bundle manifest")
+                .hasMessageContaining("cannot use legacy discovery");
+    }
+
+    @Test
     void requiresProviderClassOwnershipAndRejectsMultiReleaseOverrides() throws Exception {
         Path missingClass = emptyArtifact("missing-provider-class");
         writeService(missingClass, KIND, "com.example.ExternalProvider");

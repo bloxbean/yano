@@ -15,6 +15,7 @@ import com.bloxbean.cardano.yano.api.plugin.PluginDigestMode;
 import com.bloxbean.cardano.yano.api.plugin.PluginSourceCategory;
 import com.bloxbean.cardano.yano.api.plugin.PluginSelectionStatus;
 import com.bloxbean.cardano.yano.api.plugin.PluginTrustTier;
+import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiProvider;
 import com.bloxbean.cardano.yano.catalog.BundleContribution;
 import com.bloxbean.cardano.yano.catalog.BundleDependency;
 import com.bloxbean.cardano.yano.catalog.BundleManifest;
@@ -199,6 +200,12 @@ final class PluginCatalogBuilder {
             for (Map.Entry<ProviderKey, ServiceLoader.Provider<?>> discovered : handles.entrySet()) {
                 if (claimed.contains(discovered.getKey())) {
                     continue;
+                }
+                if (discovered.getKey().kind().manifestRequired()) {
+                    throw new IllegalStateException("ServiceLoader provider '"
+                            + discovered.getKey().providerClass() + "' for contribution kind '"
+                            + discovered.getKey().kind().manifestKey()
+                            + "' requires an owning bundle manifest");
                 }
                 IndexedLegacy indexed = indexedLegacy.get(discovered.getKey().kind() + "\u0000"
                         + discovered.getKey().providerClass());
@@ -908,7 +915,8 @@ final class PluginCatalogBuilder {
         return switch (kind) {
             case NODE_PLUGIN -> PluginTrustTier.REQUIRED;
             case APP_STATE_MACHINE, SEQUENCER_MODE, L1_OBSERVER -> PluginTrustTier.CONSENSUS;
-            case SIGNER_PROVIDER, EFFECT_EXECUTOR -> PluginTrustTier.PRIVILEGED_LOCAL;
+            case SIGNER_PROVIDER, EFFECT_EXECUTOR, DOMAIN_API ->
+                    PluginTrustTier.PRIVILEGED_LOCAL;
             case FINALIZED_SINK -> PluginTrustTier.AUXILIARY_LOCAL;
         };
     }
@@ -1164,6 +1172,7 @@ final class PluginCatalogBuilder {
                     case SIGNER_PROVIDER -> ((SignerProviderFactory) provider).scheme();
                     case EFFECT_EXECUTOR -> ((AppEffectExecutorFactory) provider).scheme();
                     case FINALIZED_SINK -> ((FinalizedStreamSinkFactory) provider).scheme();
+                    case DOMAIN_API -> ((DomainApiProvider) provider).id();
                 });
         int maximumLength = key.kind() == ContributionKind.NODE_PLUGIN
                 ? MAX_LEGACY_ID_LENGTH : MAX_LEGACY_SELECTOR_LENGTH;

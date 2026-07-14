@@ -1,12 +1,12 @@
 # ADR-011.2 plugin conformance fixture
 
-This build-only bundle covers the `NodePlugin` lifecycle and all six typed
+This build-only bundle covers the `NodePlugin` lifecycle and all seven typed
 app-chain plugin SPIs in both runtime modes without peers or external work.
 
 - The JVM test opens the fixture JAR through `PluginRuntimeEnvironment` and
   constructs every product through the catalog-owned provider registry.
 - The packaged JVM and native smoke tasks auto-start an isolated one-member
-  app chain configured with all six selectors. They require running structured
+  app chain configured with every applicable selector. They require running structured
   status for the fixture signer, state machine, sequencer, observer, finalized
   sink, and effect executor. This exercises the same assembly and lifecycle
   path as an operator-configured chain.
@@ -41,7 +41,7 @@ the native reachability fixture subject to the same complete executable-input
 accounting as supported build-time plugins.
 
 The build and smoke invocations must use the same property value. In addition
-to the six structured app-chain assertions, the smoke requires exactly one
+to the structured app-chain and query/domain API assertions, the smoke requires exactly one
 node-plugin lifecycle marker:
 
 ```text

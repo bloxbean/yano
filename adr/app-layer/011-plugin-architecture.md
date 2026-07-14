@@ -107,9 +107,11 @@ SPIs.
 - Contributions are assigned an explicit trust tier and failure policy.
 - Lifecycle is restart-based in v1. Runtime hot install/uninstall/reload is not
   supported.
-- App-layer queries first gain a generic, authenticated route to
-  `AppStateMachine.query()`. Domain API contributions use a constrained route
-  registry, not arbitrary runtime JAX-RS resource discovery.
+- App-layer queries first gain a generic, authenticated route to a
+  committed-context `AppStateMachine.query()` overload. The legacy
+  two-argument method remains linkable but is never presented as a
+  root-attested runtime query. Domain API contributions use a constrained
+  route registry, not arbitrary runtime JAX-RS resource discovery.
 - JVM deployments may load configured plugin artifacts; native deployments
   include plugins at build time and generate the same catalog metadata.
 - Existing unmanifested SPI providers remain supported for a migration period
@@ -296,38 +298,50 @@ Existing stable contribution paths remain valid through adapters, including:
 - app-chain machine, sink, sequencer, L1 observer and signer selections
 
 Secrets are referenced from configuration/KMS providers and never copied into
-the manifest, catalog status, effect records or health details. Configuration
-validation errors name the key but redact the value when it may be secret.
+the manifest, contribution contexts, catalog status, effect records or health
+details. Contexts receive only ordinary non-secret values plus explicit opaque
+secret references/capabilities. Configuration validation errors name a safely
+normalized or escaped key but redact the value when it may be secret.
 
 ## 9. Query and domain API model
 
 ### 9.1 Generic state-machine query
 
-Yano will first wire the already-declared `AppStateMachine.query(path, params)`
-through a chain-scoped route, conceptually:
+Yano wires a committed-context overload of the already-declared
+`AppStateMachine.query(path, params)` through a chain-scoped route,
+conceptually:
 
 ```
 POST /api/v1/app-chain/chains/{chainId}/query/{path}
 ```
 
-The route supplies canonical request bytes/parameters, enforces size and time
-limits, authenticates according to app-chain API policy and returns the
-machine's encoded response. Query execution is read-only and never part of
-consensus; implementations must document whether they read only committed
-state and how responses can be verified.
+The legacy two-argument hook remains available for source/binary linkage but is
+not invoked or root-attested by the runtime. A runtime query supplies a
+root-fixed committed reader and returns its captured height/root, enforces raw
+transport and decoded size limits, uses one shared normalized path grammar,
+counts queue time toward its deadline, and removes timed-out queued work before
+it can invoke a plugin. Query execution is read-only and never part of
+consensus; the returned payload is opaque and is not automatically a proof.
 
 ### 9.2 Domain API contributions
 
-A later `DomainApiProvider` registers handlers and schemas through a stable
-route registry under:
+A manifest-only `DomainApiProvider` registers handlers and constrained
+route metadata through a stable route registry under:
 
 ```
 /api/v1/plugins/{pluginId}/...
 ```
 
-The registry owns collision checks, request limits, serialization, OpenAPI
-metadata, authentication class (`READ`, `PRIVILEGED`, or internal-only),
-metrics and shutdown. Plugins do not receive the Quarkus router directly.
+The registry owns unique route identity, structural collision checks, raw
+canonical-path validation with percent aliases rejected, request limits,
+response media validation, authentication class (`READ`, `PRIVILEGED`, or
+internal-only), metrics and shutdown. Privileged public routes fail closed
+unless authentication is enabled and an unscoped full key exists. Per-bundle
+admission plus a host-wide bound prevents one domain API from exhausting all
+handler capacity. Plugins do not receive the Quarkus router directly.
+Schema/OpenAPI contribution is deferred until a bounded, native-compatible
+contract exists; opaque bytes are never advertised as JSON unless the host
+validates them first.
 
 Arbitrary JAX-RS/CDI discovery from a dropped JAR is rejected for v1 because
 it makes route ownership and security difficult and does not translate to a
@@ -472,13 +486,15 @@ execution. ADR-010's attestation trust model remains unchanged.
 - expose inventory/diagnostics and add JVM/native packaging tests;
 - decide and test the class-loader model and deterministic catalog fingerprint.
 
-### ADR-011.3 — Query and domain API extensions
+### ADR-011.3 — Query and domain API extensions (accepted and implemented)
 
-- wire `AppStateMachine.query()` to an authenticated, bounded chain route;
+- wire the contextual `AppStateMachine.query()` overload to an authenticated,
+  bounded chain route without invoking the legacy two-argument hook;
 - define request/response encoding and committed-state consistency;
 - specify `DomainApiProvider`, route registry, authorization classes and
   build-time native adapter;
-- add product-passport-style aggregation only after query semantics settle.
+- keep product-passport-style aggregation as a plugin/application concern;
+  materialized cross-machine views remain deferred until concrete demand.
 
 ### ADR-011.4 — Operations and integration extensions
 
@@ -508,9 +524,8 @@ ADR-011.2 resolved the v1 loader, version-range, `NodePlugin` catalog role and
 catalog-fingerprint questions: v1 uses one lifecycle-owned parent-first loader,
 structured inclusive/exclusive SemVer bounds, a typed manifested `node-plugin`
 contribution plus a migration adapter, and a canonical selected-catalog
-fingerprint. Remaining questions are:
-
-1. What canonical query request/response encoding and proof metadata should
-   the generic route use?
-2. Should artifact provenance require signed manifests, signed JARs, or an
-   external deployment attestation?
+fingerprint. ADR-011.3 resolves the root-fixed query envelope and constrained
+domain-route boundary; proof-carrying payload conventions and bounded
+schema/OpenAPI metadata remain deferred. The remaining cross-cutting question
+is whether artifact provenance should require signed manifests, signed JARs or
+an external deployment attestation.

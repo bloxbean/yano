@@ -46,6 +46,11 @@ public interface Yano extends AutoCloseable {
         return com.bloxbean.cardano.yano.api.appchain.AppChainGateways.empty();
     }
 
+    /** Host-owned ADR-011.3 domain API dispatcher; empty when none are selected. */
+    default com.bloxbean.cardano.yano.api.plugin.domain.DomainApiGateway domainApis() {
+        return com.bloxbean.cardano.yano.api.plugin.domain.DomainApiGateway.empty();
+    }
+
     default Optional<RuntimeMaintenanceGate> maintenanceGate() {
         return Optional.empty();
     }

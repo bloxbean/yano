@@ -10,6 +10,7 @@ import com.bloxbean.cardano.yano.api.plugin.NodePlugin;
 import com.bloxbean.cardano.yano.api.plugin.PluginActivationException;
 import com.bloxbean.cardano.yano.api.plugin.PluginCapability;
 import com.bloxbean.cardano.yano.api.plugin.PluginContext;
+import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiProvider;
 import com.bloxbean.cardano.yano.catalog.BundleManifest;
 import com.bloxbean.cardano.yano.catalog.ContributionKind;
 import com.bloxbean.cardano.yano.runtime.util.LifecycleFailures;
@@ -785,6 +786,9 @@ final class CatalogPluginProviderRegistry implements PluginProviderRegistry, Aut
                 case FINALIZED_SINK -> pluginCallback(
                         callbackTracker, pluginClassLoader,
                         ((FinalizedStreamSinkFactory) provider)::scheme);
+                case DOMAIN_API -> pluginCallback(
+                        callbackTracker, pluginClassLoader,
+                        ((DomainApiProvider) provider)::id);
             };
             if (selector == null || selector.isBlank() || !selector.equals(selector.trim())) {
                 throw new IllegalStateException("Provider returned an invalid selector");

@@ -4,6 +4,7 @@ import com.bloxbean.cardano.yaci.core.model.Block;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
 import com.bloxbean.cardano.yano.api.appchain.AppChainInfo;
+import com.bloxbean.cardano.yano.api.appchain.AppQueryContext;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineContext;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineProvider;
@@ -29,6 +30,12 @@ import com.bloxbean.cardano.yano.api.appchain.sink.FinalizedStreamSink;
 import com.bloxbean.cardano.yano.api.appchain.sink.FinalizedStreamSinkFactory;
 import com.bloxbean.cardano.yano.api.plugin.NodePlugin;
 import com.bloxbean.cardano.yano.api.plugin.PluginActivationException;
+import com.bloxbean.cardano.yano.api.plugin.domain.DomainApi;
+import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiContext;
+import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiProvider;
+import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiRequest;
+import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiResponse;
+import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiRoute;
 import com.bloxbean.cardano.yano.catalog.ContributionKind;
 import com.bloxbean.cardano.yano.runtime.util.LifecycleFailures;
 
@@ -354,6 +361,9 @@ final class PluginSpiFacades {
                     products, callbacks);
             case FINALIZED_SINK -> new SinkFactoryFacade(
                     (FinalizedStreamSinkFactory) delegate, effectiveLoader, activation,
+                    products, callbacks);
+            case DOMAIN_API -> new DomainApiProviderFacade(
+                    (DomainApiProvider) delegate, effectiveLoader, activation,
                     products, callbacks);
         };
     }
@@ -873,6 +883,84 @@ final class PluginSpiFacades {
         return new IllegalStateException(message, failure);
     }
 
+    private record DomainApiProviderFacade(
+            DomainApiProvider delegate,
+            ClassLoader loader,
+            ActivationContext activation,
+            ProductReservations products,
+            CallbackTracker callbacks
+    ) implements DomainApiProvider {
+        private DomainApiProviderFacade {
+            Objects.requireNonNull(delegate, "delegate");
+        }
+
+        @Override
+        public String id() {
+            return activation.call("read domain-api provider identity",
+                    () -> pluginCall(callbacks, loader, delegate::id));
+        }
+
+        @Override
+        public DomainApi create(DomainApiContext context) {
+            Objects.requireNonNull(context, "context");
+            return activation.call("create domain-api product", () -> callbacks.call(() -> {
+                DomainApi value = PluginThreadContext.call(
+                        loader, () -> delegate.create(context));
+                return products.facadeForNewInvocation(
+                        value, api -> new DomainApiFacade(
+                                api, loader, activation, callbacks));
+            }));
+        }
+    }
+
+    private record DomainApiFacade(
+            DomainApi delegate,
+            ClassLoader loader,
+            ActivationContext activation,
+            CallbackTracker callbacks
+    ) implements DomainApi {
+        private DomainApiFacade {
+            Objects.requireNonNull(delegate, "delegate");
+        }
+
+        @Override
+        public List<DomainApiRoute> routes() {
+            return activation.call("enumerate domain-api routes", () -> {
+                List<DomainApiRoute> values = Objects.requireNonNull(
+                        pluginCall(callbacks, loader, delegate::routes),
+                        "DomainApi.routes() must not return null");
+                Iterator<DomainApiRoute> iterator = Objects.requireNonNull(
+                        pluginCall(callbacks, loader, values::iterator),
+                        "DomainApi route iterator must not be null");
+                List<DomainApiRoute> snapshot = new ArrayList<>();
+                while (pluginCall(callbacks, loader, iterator::hasNext)) {
+                    if (snapshot.size() == DomainApi.MAX_ROUTES) {
+                        throw new IllegalStateException(
+                                "DomainApi must declare at most "
+                                        + DomainApi.MAX_ROUTES + " routes");
+                    }
+                    snapshot.add(Objects.requireNonNull(
+                            pluginCall(callbacks, loader, iterator::next),
+                            "DomainApi routes must not contain null entries"));
+                }
+                return List.copyOf(snapshot);
+            });
+        }
+
+        @Override
+        public DomainApiResponse handle(DomainApiRequest request) throws Exception {
+            Objects.requireNonNull(request, "request");
+            return Objects.requireNonNull(
+                    pluginCall(callbacks, loader, () -> delegate.handle(request)),
+                    "DomainApi.handle() must not return null");
+        }
+
+        @Override
+        public void close() {
+            pluginCleanupRun(callbacks, loader, delegate::close);
+        }
+    }
+
     private record StateMachineProviderFacade(
             AppStateMachineProvider delegate,
             ClassLoader loader,
@@ -962,8 +1050,18 @@ final class PluginSpiFacades {
 
         @Override
         public byte[] query(String path, byte[] params) {
-            return pluginCall(callbacks, loader,
-                    () -> delegate.query(path, params));
+            byte[] input = params != null ? params.clone() : null;
+            byte[] response = pluginCall(callbacks, loader,
+                    () -> delegate.query(path, input));
+            return response != null ? response.clone() : null;
+        }
+
+        @Override
+        public byte[] query(String path, byte[] params, AppQueryContext state) {
+            byte[] input = params != null ? params.clone() : null;
+            byte[] response = pluginCall(callbacks, loader,
+                    () -> delegate.query(path, input, state));
+            return response != null ? response.clone() : null;
         }
     }
 

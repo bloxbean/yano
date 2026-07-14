@@ -8,7 +8,8 @@
       {"pattern": "\\QMETA-INF/services/com.bloxbean.cardano.yano.api.appchain.l1view.L1ObserverProvider\\E"},
       {"pattern": "\\QMETA-INF/services/com.bloxbean.cardano.yano.api.appchain.signer.SignerProviderFactory\\E"},
       {"pattern": "\\QMETA-INF/services/com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutorFactory\\E"},
-      {"pattern": "\\QMETA-INF/services/com.bloxbean.cardano.yano.api.appchain.sink.FinalizedStreamSinkFactory\\E"}
+      {"pattern": "\\QMETA-INF/services/com.bloxbean.cardano.yano.api.appchain.sink.FinalizedStreamSinkFactory\\E"},
+      {"pattern": "\\QMETA-INF/services/com.bloxbean.cardano.yano.api.plugin.domain.DomainApiProvider\\E"}
     ]
   }
 }

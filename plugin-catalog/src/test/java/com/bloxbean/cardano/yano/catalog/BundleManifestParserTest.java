@@ -209,6 +209,68 @@ class BundleManifestParserTest {
                 "contributions", "duplicate kind/name");
     }
 
+    @Test
+    void domainApiIsManifestedOnceAndOwnedByTheContainingBundleId() {
+        String valid = withContribution("""
+                , "contributions": [{
+                  "kind": "domain-api",
+                  "name": "com.example.product-passport",
+                  "provider": "com.example.passport.PassportDomainApiProvider"
+                }]
+                """);
+
+        assertThat(parse(valid).contributions()).containsExactly(new BundleContribution(
+                ContributionKind.DOMAIN_API,
+                ID,
+                "com.example.passport.PassportDomainApiProvider"));
+        assertThat(ContributionKind.DOMAIN_API.manifestRequired()).isTrue();
+        assertThat(ContributionKind.DOMAIN_API.serviceType().getName())
+                .isEqualTo("com.bloxbean.cardano.yano.api.plugin.domain.DomainApiProvider");
+
+        assertInvalid(valid.replace(
+                        "\"name\": \"com.example.product-passport\"",
+                        "\"name\": \"com.example.other\""),
+                "domain-api", "must equal the containing bundle id");
+
+        String duplicate = minimalManifest().replace("\n}", """
+                , "contributions": [
+                  {
+                    "kind": "domain-api",
+                    "name": "com.example.product-passport",
+                    "provider": "com.example.passport.FirstDomainApiProvider"
+                  },
+                  {
+                    "kind": "domain-api",
+                    "name": "com.example.product-passport",
+                    "provider": "com.example.passport.SecondDomainApiProvider"
+                  }
+                ]
+                }
+                """);
+        assertInvalid(duplicate, "contributions", "at most one domain-api");
+    }
+
+    @Test
+    void domainApiSelectorUsesTheFullBundleIdGrammarAndLength() {
+        String longId = "com." + "a".repeat(63) + "." + "b".repeat(63) + ".example";
+        BundleContribution contribution = new BundleContribution(
+                ContributionKind.DOMAIN_API, longId, "com.example.DomainProvider");
+        BundleManifest manifest = new BundleManifest(
+                1,
+                longId,
+                SemVersion.parse("1.0.0"),
+                new YanoApiRange(1, 1),
+                List.of(),
+                List.of(contribution));
+
+        assertThat(longId.length()).isGreaterThan(CatalogValidation.MAX_NAME_LENGTH);
+        assertThat(manifest.contributions()).containsExactly(contribution);
+        assertThatThrownBy(() -> new BundleContribution(
+                ContributionKind.DOMAIN_API, "domain-api", "com.example.DomainProvider"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("reverse-DNS");
+    }
+
     private static BundleManifest parse(String json) {
         return PARSER.parse(RESOURCE, bytes(json));
     }

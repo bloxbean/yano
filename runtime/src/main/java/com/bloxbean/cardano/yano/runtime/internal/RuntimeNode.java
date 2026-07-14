@@ -80,6 +80,7 @@ import com.bloxbean.cardano.yano.runtime.producer.SlotLeaderProducerFactory;
 import com.bloxbean.cardano.yano.runtime.producer.SlotLeaderSigningComponents;
 import com.bloxbean.cardano.yano.runtime.producer.StakeDataProviderFactory;
 import com.bloxbean.cardano.yano.runtime.plugins.PluginManager;
+import com.bloxbean.cardano.yano.runtime.plugins.DomainApiRegistry;
 import com.bloxbean.cardano.yano.runtime.plugins.PluginRuntimeEnvironment;
 import com.bloxbean.cardano.yano.api.account.AccountHistoryProvider;
 import com.bloxbean.cardano.yano.api.account.AccountStateReadStore;
@@ -184,6 +185,7 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
     // Server components (for serving other clients)
     private final ServeSubsystem serveSubsystem;
     private final com.bloxbean.cardano.yano.runtime.appchain.AppChainManager appChainManager;
+    private final DomainApiRegistry domainApiRegistry;
     private final RelayConnectionManager relayConnectionManager;
     private final int serverPort;
 
@@ -217,6 +219,8 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
         void markUnsafe();
 
         void closePluginManager();
+
+        void closeDomainApis();
 
         void closePluginEnvironment();
 
@@ -435,6 +439,11 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 constructionCleanup.addLast(appChainManager::stop);
                 serveSubsystem.enableAppLayer(appChainManager.serverAgentFactories());
             }
+            this.domainApiRegistry = new DomainApiRegistry(
+                    this.pluginEnvironment,
+                    appChainGateways(),
+                    log);
+            constructionCleanup.addLast(domainApiRegistry::close);
 
             // Register default consensus listener (accept-all placeholder).
             var consensusListener = new DefaultConsensusListener();
@@ -848,6 +857,11 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
         return appChainManager != null
                 ? appChainManager
                 : com.bloxbean.cardano.yano.api.appchain.AppChainGateways.empty();
+    }
+
+    /** Constrained ADR-011.3 domain API dispatcher. */
+    public com.bloxbean.cardano.yano.api.plugin.domain.DomainApiGateway domainApis() {
+        return domainApiRegistry;
     }
 
     private SubsystemHealth runtimeHealth(String name) {
@@ -1365,18 +1379,38 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
         // callback and product-cleanup barriers have reached quiescence.
         pluginEnvironment.resumeContributionCallbacks();
         boolean pluginsStarted = false;
-        if (pluginManager != null && runtimeOptions.plugins().enabled()) {
-            pluginManager.startAll();
-            pluginsStarted = true;
-        }
-
         try {
+            if (pluginManager != null && runtimeOptions.plugins().enabled()) {
+                pluginManager.startAll();
+                pluginsStarted = true;
+            }
+            domainApiRegistry.resume();
             utxoSubsystem.initializeFilterChain(
                     pluginManager != null ? pluginManager.getStorageFilters() : List.of());
         } catch (Throwable failure) {
-            Runnable stopPlugins = pluginsStarted ? pluginManager::stopAll : () -> { };
+            boolean stopNodePlugins = pluginsStarted;
+            Runnable stopPlugins = () -> stopDomainAndNodePlugins(stopNodePlugins);
             throw rollbackPluginStartup(failure, stopPlugins,
                     pluginEnvironment::sealContributionCallbacks);
+        }
+    }
+
+    private void stopDomainAndNodePlugins(boolean stopNodePlugins) {
+        Throwable failure = null;
+        try {
+            domainApiRegistry.sealAndAwait();
+        } catch (Throwable domainFailure) {
+            failure = recordPluginCleanupFailure(failure, domainFailure);
+        }
+        if (stopNodePlugins) {
+            try {
+                pluginManager.stopAll();
+            } catch (Throwable pluginFailure) {
+                failure = recordPluginCleanupFailure(failure, pluginFailure);
+            }
+        }
+        if (failure != null) {
+            throw propagatePluginCleanupFailure(failure);
         }
     }
 
@@ -3503,28 +3537,44 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
     /** Called only after the kernel has stopped sync/apply stages. */
     private void stopPluginsAfterRuntimeDrain() {
         requirePluginTeardownAllowed("stop runtime plugins");
+        // Domain request admission is independent of ledger apply ownership
+        // and must close on every shutdown path, including an unsafe ledger
+        // drain where broader provider teardown is deliberately skipped.
+        Throwable failure = attemptRuntimeCleanup(
+                null, "domain API products", domainApiRegistry::sealAndAwait);
         if (unsafeLedgerApplyShutdown) {
-            throw new IllegalStateException(
-                    "Cannot stop plugins safely because a ledger apply worker did not stop or drain");
-        } else {
-            // Close callback admission only after every runtime subsystem has
-            // stopped accepting work. Calls already admitted remain valid and
-            // are allowed to finish before NodePlugin/provider/loader teardown.
-            pluginEnvironment.sealContributionCallbacks();
-            if (pluginManager != null) {
-                pluginManager.sealManagedCallbacks();
-            }
-            if (pluginEnvironment.hasPendingContributionCallbacks()
-                    || pluginEnvironment.hasPendingContributionCleanup()) {
-                log.warn("Waiting for plugin contribution callbacks and product cleanup to "
-                        + "finish before stopping bundle lifecycle");
-            }
-            pluginEnvironment.awaitContributionCallbacks();
-            pluginEnvironment.awaitContributionCleanup();
-            if (pluginManager != null) {
-                pluginManager.stopAll();
-            }
+            failure = recordPluginCleanupFailure(failure, new IllegalStateException(
+                    "Cannot stop plugins safely because a ledger apply worker did not stop or drain"));
+            rethrowRuntimeCleanup(failure, "Runtime plugin stop failed");
+            return;
         }
+        // Close callback admission only after every runtime subsystem has
+        // stopped accepting work. Calls already admitted remain valid and are
+        // allowed to finish before NodePlugin/provider/loader teardown.
+        failure = attemptRuntimeCleanup(
+                failure, "plugin contribution admission",
+                pluginEnvironment::sealContributionCallbacks);
+        if (pluginManager != null) {
+            failure = attemptRuntimeCleanup(
+                    failure, "managed plugin callback admission",
+                    pluginManager::sealManagedCallbacks);
+        }
+        if (pluginEnvironment.hasPendingContributionCallbacks()
+                || pluginEnvironment.hasPendingContributionCleanup()) {
+            log.warn("Waiting for plugin contribution callbacks and product cleanup to "
+                    + "finish before stopping bundle lifecycle");
+        }
+        failure = attemptRuntimeCleanup(
+                failure, "plugin contribution callbacks",
+                pluginEnvironment::awaitContributionCallbacks);
+        failure = attemptRuntimeCleanup(
+                failure, "plugin contribution products",
+                pluginEnvironment::awaitContributionCleanup);
+        if (pluginManager != null) {
+            failure = attemptRuntimeCleanup(
+                    failure, "plugin manager", pluginManager::stopAll);
+        }
+        rethrowRuntimeCleanup(failure, "Runtime plugin stop failed");
     }
 
     private void closeRuntimeResources(boolean unsafeLedgerApplyWorker) {
@@ -3571,6 +3621,11 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 if (pluginManager != null) {
                     pluginManager.close();
                 }
+            }
+
+            @Override
+            public void closeDomainApis() {
+                domainApiRegistry.close();
             }
 
             @Override
@@ -3668,6 +3723,8 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
             // Stop plugins/listeners before closing the bus and ChainState only after all apply
             // workers are stopped/drained. Closing shared state first can make a queued async
             // listener fail while applying an accepted block event.
+            cleanupFailure = attemptRuntimeCleanup(
+                    cleanupFailure, "domain API registry", actions::closeDomainApis);
             cleanupFailure = attemptRuntimeCleanup(
                     cleanupFailure, "plugin manager", actions::closePluginManager);
             cleanupFailure = attemptRuntimeCleanup(

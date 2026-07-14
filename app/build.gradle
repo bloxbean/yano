@@ -645,6 +645,119 @@ def awaitPluginConformanceStatus = { int httpPort, int timeoutSeconds,
     return status
 }
 
+// Exercise the ADR-011.3 committed query and constrained domain API through
+// the same public HTTP adapter in packaged JVM and native modes.
+def assertPluginConformanceQueryApis = { int httpPort ->
+    def request = { String method, String path, String contentType, byte[] body ->
+        def connection = (java.net.HttpURLConnection) new URL(
+                "http://127.0.0.1:${httpPort}${path}").openConnection()
+        try {
+            connection.connectTimeout = 2000
+            connection.readTimeout = 4000
+            connection.requestMethod = method
+            if (body != null) {
+                connection.doOutput = true
+                connection.setRequestProperty('Content-Type', contentType)
+                connection.outputStream.withCloseable { it.write(body) }
+            }
+            int status = connection.responseCode
+            def stream = status >= 400 ? connection.errorStream : connection.inputStream
+            byte[] responseBody = stream != null
+                    ? stream.withCloseable { it.readAllBytes() } : new byte[0]
+            return [status: status,
+                    text: new String(responseBody, java.nio.charset.StandardCharsets.UTF_8)]
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    def query = request('POST',
+            '/api/v1/app-chain/chains/conformance-chain/query/echo',
+            'application/json',
+            '{"paramsHex":"00ff"}'.getBytes(java.nio.charset.StandardCharsets.UTF_8))
+    if (query.status != 200) {
+        throw new GradleException(
+                "Committed query smoke failed: status=${query.status}, body=${query.text}")
+    }
+    def queryJson = new groovy.json.JsonSlurper().parseText(query.text)
+    if (queryJson.chainId != 'conformance-chain'
+            || queryJson.stateMachineId != 'conformance-machine'
+            || !(queryJson.stateRoot ==~ /[0-9a-f]{64}/)
+            || !(queryJson.payloadHex ==~ /[0-9a-f]+/)) {
+        throw new GradleException("Committed query envelope is invalid: ${queryJson}")
+    }
+    def decodedPayload = new String(java.util.HexFormat.of().parseHex(
+            queryJson.payloadHex.toString()), java.nio.charset.StandardCharsets.UTF_8)
+    if (decodedPayload != "echo:${queryJson.committedHeight}:00ff:${queryJson.stateRoot}") {
+        throw new GradleException("Committed query payload/root binding failed: ${queryJson}")
+    }
+
+    def queryMatrixAlias = request('POST',
+            '/api/v1/app-chain/chains/conformance-chain/query/echo;x=1',
+            'application/json',
+            '{"paramsHex":"00ff"}'.getBytes(java.nio.charset.StandardCharsets.UTF_8))
+    if (queryMatrixAlias.status != 400) {
+        throw new GradleException(
+                "Matrix query alias was not rejected: ${queryMatrixAlias}")
+    }
+    def queryTrailingAlias = request('POST',
+            '/api/v1/app-chain/chains/conformance-chain/query/echo/',
+            'application/json',
+            '{"paramsHex":"00ff"}'.getBytes(java.nio.charset.StandardCharsets.UTF_8))
+    if (queryTrailingAlias.status != 400) {
+        throw new GradleException(
+                "Trailing-slash query alias was not rejected: ${queryTrailingAlias}")
+    }
+
+    def domainStatus = request('GET',
+            "/api/v1/plugins/${pluginConformanceBundleId}/status", null, null)
+    if (domainStatus.status != 200
+            || new groovy.json.JsonSlurper().parseText(domainStatus.text).status != 'ok') {
+        throw new GradleException(
+                "Domain API status smoke failed: ${domainStatus}")
+    }
+    def domainMatrixAlias = request('GET',
+            "/api/v1/plugins/${pluginConformanceBundleId}/status;x=1", null, null)
+    if (domainMatrixAlias.status != 404) {
+        throw new GradleException(
+                "Matrix domain alias was not concealed: ${domainMatrixAlias}")
+    }
+    def domainTrailingAlias = request('GET',
+            "/api/v1/plugins/${pluginConformanceBundleId}/status/", null, null)
+    if (domainTrailingAlias.status != 404) {
+        throw new GradleException(
+                "Trailing-slash domain alias was not concealed: ${domainTrailingAlias}")
+    }
+
+    def domainQuery = request('POST',
+            "/api/v1/plugins/${pluginConformanceBundleId}/query/echo",
+            'application/octet-stream', [0, (byte) 0xff] as byte[])
+    if (domainQuery.status != 200) {
+        throw new GradleException(
+                "Domain API query smoke failed: ${domainQuery}")
+    }
+    def domainJson = new groovy.json.JsonSlurper().parseText(domainQuery.text)
+    if (domainJson.chainId != queryJson.chainId
+            || domainJson.stateRoot != queryJson.stateRoot
+            || domainJson.payloadHex != queryJson.payloadHex) {
+        throw new GradleException(
+                "Domain API query does not preserve committed query envelope: ${domainJson}")
+    }
+
+    def privileged = request('GET',
+            "/api/v1/plugins/${pluginConformanceBundleId}/operator", null, null)
+    if (privileged.status != 404) {
+        throw new GradleException(
+                "Privileged domain route did not fail closed without auth: ${privileged}")
+    }
+    def internal = request('GET',
+            "/api/v1/plugins/${pluginConformanceBundleId}/internal", null, null)
+    if (internal.status != 404) {
+        throw new GradleException(
+                "Internal domain route became HTTP-visible: ${internal}")
+    }
+}
+
 def nativePluginCatalogExpectationFile = layout.buildDirectory.file(
         'reports/plugin-catalog/native-smoke-expectation.properties')
 
@@ -826,6 +939,7 @@ tasks.register('nativePluginCatalogSmoke') {
             if (includeNativePluginConformanceFixture) {
                 awaitPluginConformanceStatus(
                         httpPort, timeoutSeconds, process, logTail)
+                assertPluginConformanceQueryApis(httpPort)
             }
 
             def requiredDiagnostics = [
@@ -1201,6 +1315,7 @@ tasks.register('packagedJvmPluginCatalogSmoke') {
             }
 
             awaitPluginConformanceStatus(httpPort, 90, process, logTail)
+            assertPluginConformanceQueryApis(httpPort)
 
             def provenancePrefix = 'YANO_PLUGIN_CATALOG_PROVENANCE '
             def marker = 'ADR-011.2 node-plugin conformance activated through catalog'

@@ -119,7 +119,7 @@ class RuntimeNodeShutdownSafetyTest {
         assertThat(outcome.unsafeLedgerApplyWorker()).isFalse();
         assertThat(outcome.failure()).isNull();
         assertThat(actions.calls).containsExactly(
-                "sync", "drain", "plugin-manager", "plugin-environment",
+                "sync", "drain", "domain-apis", "plugin-manager", "plugin-environment",
                 "utxo-event-handlers", "ledger-event-handlers", "event-bus",
                 "utxo", "ledger", "schedulers", "chain-storage:false");
     }
@@ -217,6 +217,11 @@ class RuntimeNodeShutdownSafetyTest {
         @Override
         public void closePluginManager() {
             calls.add("plugin-manager");
+        }
+
+        @Override
+        public void closeDomainApis() {
+            calls.add("domain-apis");
         }
 
         @Override

@@ -14,6 +14,7 @@ import com.bloxbean.cardano.yaci.events.api.SubscriptionOptions;
 import com.bloxbean.cardano.yaci.events.impl.NoopEventBus;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
 import com.bloxbean.cardano.yano.api.appchain.AppChainInfo;
+import com.bloxbean.cardano.yano.api.appchain.AppQueryContext;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineContext;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineProvider;
@@ -168,6 +169,10 @@ class PluginTcclBoundaryTest {
             firstMachine.apply(null, null, null);
             firstMachine.onEffectResult(null, null, null);
             assertThatThrownBy(() -> firstMachine.query("failure", new byte[0]))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessage("expected query failure");
+            assertThatThrownBy(() -> firstMachine.query(
+                    "failure", new byte[0], (AppQueryContext) null))
                     .isInstanceOf(IllegalStateException.class)
                     .hasMessage("expected query failure");
             assertCaller(caller);
@@ -2671,6 +2676,12 @@ class PluginTcclBoundaryTest {
         @Override public byte[] query(String path, byte[] params) {
             probe.check();
             throw new IllegalStateException("expected query failure");
+        }
+        @Override public byte[] query(
+                String path, byte[] params, AppQueryContext context
+        ) {
+            probe.check();
+            return query(path, params);
         }
     }
 

@@ -48,7 +48,7 @@ public record BundleManifest(
                         .thenComparing(BundleContribution::provider))
                 .toList();
         validateDependencies(id, dependencies);
-        validateContributions(contributions);
+        validateContributions(id, contributions);
     }
 
     /**
@@ -76,23 +76,36 @@ public record BundleManifest(
         }
     }
 
-    private static void validateContributions(List<BundleContribution> contributions) {
+    private static void validateContributions(
+            String bundleId,
+            List<BundleContribution> contributions
+    ) {
         if (contributions.size() > CatalogValidation.MAX_CONTRIBUTIONS) {
             throw new IllegalArgumentException("contributions must contain at most 256 entries");
         }
         Set<ContributionKey> keys = new HashSet<>();
         Set<ProviderKey> providers = new HashSet<>();
         int nodePlugins = 0;
+        int domainApis = 0;
         for (BundleContribution contribution : contributions) {
             Objects.requireNonNull(contribution, "contributions must not contain null entries");
+            if (contribution.kind() == ContributionKind.NODE_PLUGIN && ++nodePlugins > 1) {
+                throw new IllegalArgumentException("contributions must declare at most one node-plugin");
+            }
+            if (contribution.kind() == ContributionKind.DOMAIN_API) {
+                if (++domainApis > 1) {
+                    throw new IllegalArgumentException("contributions must declare at most one domain-api");
+                }
+                if (!bundleId.equals(contribution.name())) {
+                    throw new IllegalArgumentException(
+                            "domain-api contribution name must equal the containing bundle id");
+                }
+            }
             if (!keys.add(new ContributionKey(contribution.kind(), contribution.name()))) {
                 throw new IllegalArgumentException("contributions must not contain duplicate kind/name pairs");
             }
             if (!providers.add(new ProviderKey(contribution.kind(), contribution.provider()))) {
                 throw new IllegalArgumentException("contributions must not contain duplicate kind/provider pairs");
-            }
-            if (contribution.kind() == ContributionKind.NODE_PLUGIN && ++nodePlugins > 1) {
-                throw new IllegalArgumentException("contributions must declare at most one node-plugin");
             }
         }
     }

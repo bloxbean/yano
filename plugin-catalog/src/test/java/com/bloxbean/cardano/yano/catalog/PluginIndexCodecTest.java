@@ -29,6 +29,10 @@ class PluginIndexCodecTest {
                         new BundleDependency("com.example.alpha", null, SemVersion.parse("3.0.0"))),
                 List.of(
                         new BundleContribution(
+                                ContributionKind.DOMAIN_API,
+                                "com.example.bundle",
+                                "com.example.BundleDomainApiProvider"),
+                        new BundleContribution(
                                 ContributionKind.FINALIZED_SINK, "zeta", "com.example.ZetaProvider"),
                         new BundleContribution(
                                 ContributionKind.APP_STATE_MACHINE, "alpha", "com.example.AlphaProvider")));
@@ -122,6 +126,33 @@ class PluginIndexCodecTest {
                         PluginDigestMode.ARTIFACT_CLOSURE))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("legacy provider digestMode must be JAR");
+    }
+
+    @Test
+    void domainApiCannotBeEncodedOrDecodedAsALegacyProvider() {
+        assertThatThrownBy(() -> new IndexedLegacyProvider(
+                ContributionKind.DOMAIN_API,
+                "com.example.LegacyDomainApiProvider",
+                DIGEST_A,
+                PluginDigestMode.JAR))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("domain-api providers require a bundle manifest");
+
+        String raw = """
+                {
+                  "schemaVersion":1,
+                  "bundles":[],
+                  "legacyProviders":[{
+                    "kind":"domain-api",
+                    "provider":"com.example.LegacyDomainApiProvider",
+                    "digest":"%s",
+                    "digestMode":"JAR"
+                  }]
+                }
+                """.formatted(DIGEST_A);
+        assertThatThrownBy(() -> codec.read(raw.getBytes(StandardCharsets.UTF_8)))
+                .isInstanceOf(PluginCatalogException.class)
+                .hasMessageContaining("domain-api providers require a bundle manifest");
     }
 
     @Test
