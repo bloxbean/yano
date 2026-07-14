@@ -16,19 +16,17 @@ GET /api/v1/plugin-operations/bundles?after=<bundle-id>&limit=<1..100>
 GET /api/v1/plugin-operations/bundles/<bundle-id>
 ```
 
-Enable the app-chain API-key realm and configure at least one unscoped full
-key. Prefer environment variables or an external secret provider instead of
+Configure at least one unscoped full key. Prefer environment variables or an
+external secret provider instead of
 putting production keys in a committed configuration file:
 
 ```bash
-export YANO_APP_CHAIN_API_AUTH_ENABLED=true
 export YANO_APP_CHAIN_API_KEYS='replace-with-a-long-random-full-key'
 ```
 
 The equivalent Java properties are:
 
 ```properties
-yano.app-chain.api.auth.enabled=true
 yano.app-chain.api.keys=replace-with-a-long-random-full-key
 ```
 
@@ -41,11 +39,14 @@ curl -H 'X-API-Key: replace-with-a-long-random-full-key' \
   http://127.0.0.1:7070/api/v1/plugin-operations
 ```
 
-The surface fails closed: disabled or incompletely configured authentication
-returns `503`, a missing or invalid key returns `401`, a scoped key returns
+The surface fails closed: a missing full-key configuration returns `503`, a
+missing or invalid request key returns `401`, a scoped key returns
 `403`, and an unscoped full key returns `200`. API keys are resolved at runtime
 for JVM/native parity, but the parsed key set is cached; restart the node after
 rotating keys.
+
+Set `YANO_APP_CHAIN_API_AUTH_ENABLED=true` too only when READ and SUBMIT routes
+must require keys; privileged plugin operations require a full key in either mode.
 
 ## Dashboard
 

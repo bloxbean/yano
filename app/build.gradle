@@ -604,7 +604,7 @@ def bakedApiPathPrefix = {
 
 def pluginOperationsAuthArguments = {
     [
-            '-Dyano.app-chain.api.auth.enabled=true',
+            '-Dyano.app-chain.api.auth.enabled=false',
             "-Dyano.app-chain.api.keys=${pluginOperationsSmokeApiKey}"
     ].collect { it.toString() }
 }
@@ -741,7 +741,7 @@ def awaitPluginConformanceStatus = { int httpPort, int timeoutSeconds,
 def assertPluginConformanceQueryApis = { int httpPort ->
     String apiPath = bakedApiPathPrefix()
     def request = { String method, String path, String contentType, byte[] body,
-                    boolean authenticated = true ->
+                    boolean authenticated = false ->
         def connection = (java.net.HttpURLConnection) new URL(
                 "http://127.0.0.1:${httpPort}${path}").openConnection()
         try {

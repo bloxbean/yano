@@ -116,9 +116,9 @@ The v1 access classes are:
 
 - `READ`: available under the host's read policy. A topic-scoped API key may
   call it.
-- `PRIVILEGED`: requires API-key auth to be enabled and an unscoped full key.
-  If that safe auth configuration is absent, the HTTP route is hidden as 404
-  and the handler is not invoked.
+- `PRIVILEGED`: requires an unscoped full key, independently of broad
+  READ/SUBMIT authentication. If that safe key configuration is absent, the
+  HTTP route is hidden as 404 and the handler is not invoked.
 - `INTERNAL`: reserved, secret-free inventory only. It is not dispatchable by
   HTTP or the public host/library gateway in v1.
 
@@ -235,17 +235,21 @@ allow the bundle id. Select the state-machine contribution by its short
 selector on the app chain. The domain contribution is activated as part of the
 selected bundle and is addressed by bundle id.
 
-For privileged routes configure:
+For privileged routes configure an unscoped full key:
 
 ```properties
-yano.app-chain.api.auth.enabled=true
 yano.app-chain.api.keys=<unscoped-full-key>,<submit-key>=topic-a|topic-b
 ```
 
-Send the unscoped key in `X-API-Key`. Topic-scoped keys can read and submit only
-to their topics; they cannot call privileged routes. Treat all plugin JARs as
-trusted in-process code: manifest validation and centralized HTTP auth do not
-sandbox Java code.
+Send the unscoped key in `X-API-Key`. When broad authentication is enabled,
+topic-scoped keys can read and submit only to their topics; they cannot call
+privileged routes. With broad authentication disabled, `READ` and `SUBMIT` are
+public and only `PRIVILEGED` routes inspect the configured full key. Treat all
+plugin JARs as trusted in-process code: manifest validation and centralized
+HTTP auth do not sandbox Java code.
+
+Set `yano.app-chain.api.auth.enabled=true` as well when READ and SUBMIT routes
+must also require keys.
 
 ## 5. Test before deployment
 

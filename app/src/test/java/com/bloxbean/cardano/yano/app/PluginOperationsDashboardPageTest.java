@@ -13,7 +13,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 class PluginOperationsDashboardPageTest {
 
     @Test
-    void operationsApiFailsClosedWhenPrivilegedAuthenticationIsDisabled() {
+    void operationsApiFailsClosedWithoutConfiguredFullKey() {
         given()
                 .when().get("/api/v1/plugin-operations")
                 .then()

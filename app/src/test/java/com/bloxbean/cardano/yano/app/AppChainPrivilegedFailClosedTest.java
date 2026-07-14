@@ -7,13 +7,13 @@ import org.junit.jupiter.api.Test;
 import static io.restassured.RestAssured.given;
 import static org.hamcrest.Matchers.equalTo;
 
-/** HTTP-level proof that disabling optional auth never publishes privileged operations. */
+/** HTTP-level proof that missing full-key configuration never publishes privileged operations. */
 @QuarkusTest
 @TestProfile(NoAutoStartTestProfile.class)
 class AppChainPrivilegedFailClosedTest {
 
     @Test
-    void privilegedHostOperationIsConfigurationUnavailableWhenAuthIsDisabled() {
+    void privilegedHostOperationIsConfigurationUnavailableWithoutAFullKey() {
         given()
                 .contentType("application/json")
                 .body("{\"executorId\":\"worker\"}")

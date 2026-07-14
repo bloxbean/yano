@@ -89,7 +89,7 @@ class AppChainApiKeyFilterUnitTest {
     }
 
     @Test
-    void staticallyPrivilegedOperationsRequireEnabledAuthAndAFullKey() throws Exception {
+    void staticallyPrivilegedOperationsRequireAFullKeyButNotBroadAuth() throws Exception {
         Method pause = AppChainResource.ChainScopedResource.class.getMethod("pause");
 
         RequestProbe disabled = new RequestProbe("POST", null, null);
@@ -106,10 +106,41 @@ class AppChainApiKeyFilterUnitTest {
         filter(true, "full,restricted=orders", DomainApiAccess.READ,
                 AppChainResource.ChainScopedResource.class, pause).filter(full.context());
         assertNull(full.aborted);
+
+        RequestProbe keyOnlyMissing = new RequestProbe("POST", null, null);
+        filter(false, "full", DomainApiAccess.READ,
+                AppChainResource.ChainScopedResource.class, pause)
+                .filter(keyOnlyMissing.context());
+        assertEquals(401, keyOnlyMissing.aborted.getStatus());
+
+        RequestProbe keyOnlyFull = new RequestProbe("POST", "full", null);
+        filter(false, "full", DomainApiAccess.READ,
+                AppChainResource.ChainScopedResource.class, pause).filter(keyOnlyFull.context());
+        assertNull(keyOnlyFull.aborted);
     }
 
     @Test
-    void pluginOperationsRequireAnEnabledUnscopedFullKey() throws Exception {
+    void adminMembershipInventoryIsPrivilegedInKeyOnlyMode() throws Exception {
+        Method members = AppChainResource.ChainScopedResource.class.getMethod("listMembers");
+
+        RequestProbe missing = new RequestProbe("GET", null, null);
+        filter(false, "full,restricted=orders", DomainApiAccess.READ,
+                AppChainResource.ChainScopedResource.class, members).filter(missing.context());
+        assertEquals(401, missing.aborted.getStatus());
+
+        RequestProbe restricted = new RequestProbe("GET", "restricted", null);
+        filter(false, "full,restricted=orders", DomainApiAccess.READ,
+                AppChainResource.ChainScopedResource.class, members).filter(restricted.context());
+        assertEquals(403, restricted.aborted.getStatus());
+
+        RequestProbe full = new RequestProbe("GET", "full", null);
+        filter(false, "full,restricted=orders", DomainApiAccess.READ,
+                AppChainResource.ChainScopedResource.class, members).filter(full.context());
+        assertNull(full.aborted);
+    }
+
+    @Test
+    void pluginOperationsRequireAnUnscopedFullKeyButNotBroadAuth() throws Exception {
         Method summary = PluginOperationsResource.class.getMethod("summary");
 
         RequestProbe disabled = new RequestProbe("GET", null, null);
@@ -141,6 +172,12 @@ class AppChainApiKeyFilterUnitTest {
                 PluginOperationsResource.class, summary,
                 "plugin-operations").filter(full.context());
         assertNull(full.aborted);
+
+        RequestProbe keyOnlyFull = new RequestProbe("GET", "full", null);
+        filter(false, "full", DomainApiAccess.READ,
+                PluginOperationsResource.class, summary,
+                "plugin-operations").filter(keyOnlyFull.context());
+        assertNull(keyOnlyFull.aborted);
     }
 
     @Test
@@ -228,6 +265,21 @@ class AppChainApiKeyFilterUnitTest {
         filter(true, "full,restricted=orders", DomainApiAccess.PRIVILEGED,
                 PluginDomainResource.class, get).filter(privilegedFull.context());
         assertNull(privilegedFull.aborted);
+
+        RequestProbe keyOnlyMissing = new RequestProbe("GET", null, null);
+        filter(false, "full,restricted=orders", DomainApiAccess.PRIVILEGED,
+                PluginDomainResource.class, get).filter(keyOnlyMissing.context());
+        assertEquals(401, keyOnlyMissing.aborted.getStatus());
+
+        RequestProbe keyOnlyRestricted = new RequestProbe("GET", "restricted", null);
+        filter(false, "full,restricted=orders", DomainApiAccess.PRIVILEGED,
+                PluginDomainResource.class, get).filter(keyOnlyRestricted.context());
+        assertEquals(403, keyOnlyRestricted.aborted.getStatus());
+
+        RequestProbe keyOnlyFull = new RequestProbe("GET", "full", null);
+        filter(false, "full,restricted=orders", DomainApiAccess.PRIVILEGED,
+                PluginDomainResource.class, get).filter(keyOnlyFull.context());
+        assertNull(keyOnlyFull.aborted);
 
         RequestProbe internal = new RequestProbe("GET", "full", null);
         filter(true, "full,restricted=orders", DomainApiAccess.INTERNAL,

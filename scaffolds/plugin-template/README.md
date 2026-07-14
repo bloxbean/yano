@@ -152,10 +152,11 @@ curl -X POST \
 curl 'http://localhost:8080/api/v1/plugins/com.example.appchain.counter/counters/visits?chain=my-chain'
 ```
 
-Enable API-key authentication and configure at least one unscoped full key
-before using a `PRIVILEGED` route. Send it as `X-API-Key`. If authentication is
-disabled, missing, or has only topic-scoped keys, privileged plugin routes are
-hidden as 404 and are never invoked.
+Configure at least one unscoped full key before using a `PRIVILEGED` route and
+send it as `X-API-Key`. If no unscoped full key is configured, privileged
+plugin routes are hidden as 404 and are never invoked. Once one is configured,
+a missing or invalid request header receives 401 and a topic-scoped key
+receives 403. Broad READ/SUBMIT authentication is optional.
 
 ## Health and metrics
 

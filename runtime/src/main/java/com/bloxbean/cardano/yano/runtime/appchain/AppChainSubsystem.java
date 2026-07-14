@@ -3814,12 +3814,11 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         }
         // Security posture (ADR-010 F12 / final review): operator effect
         // actions and external claim/report move real funds. If the REST
-        // surface has auth DISABLED, they are reachable unauthenticated —
-        // warn loudly (the app module enforces auth; the subsystem only sees
-        // the effect config, so this is a best-effort banner).
+        // surface has no full key, it fails closed. The subsystem cannot see
+        // app-module API-key config, so retain a best-effort operator banner.
         if (externalEffectsEnabled()) {
             log.warn("App-chain '{}': effects.external.enabled=true exposes claim/report over "
-                    + "REST — ensure yano.app-chain.api.auth is enabled and restrict network "
+                    + "REST — configure an unscoped yano.app-chain.api.keys full key and restrict network "
                     + "access to the executor/operator network (ADR-010 F12)", config.chainId());
         }
         EffectRuntime createdRuntime = null;

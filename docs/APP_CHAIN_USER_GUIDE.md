@@ -894,22 +894,25 @@ and the node `JacksonCborCodec` are wire-compatible.
 
 ## 12. Security (API-key auth, encrypted bodies, external signers/KMS)
 
-**API-key auth** (off by default) protects the whole `/app-chain/*` REST
-surface, admin endpoints included:
+**API-key auth** has two modes. Configuring an unscoped full key protects and
+enables privileged admin/effect/plugin operations while reads and submissions
+remain public. Enabling broad auth additionally protects the whole
+`/app-chain/*` REST surface:
 
 ```yaml
 yano:
   app-chain:
     api:
+      # Full-access key plus a topic-scoped submit key:
+      keys: "opsKey123,partnerKey456=orders|invoices"
+      # Optional: omit this block to leave READ/SUBMIT public.
       auth:
         enabled: true
-    # full-access key + a key limited to submitting on two topics:
-    # yano.app-chain.api.keys: "opsKey123,partnerKey456=orders|invoices"
 ```
 
-Requests then require the `X-API-Key` header. A key entry of the form
-`key=topicA|topicB` restricts *submissions* to the listed topics; reads stay
-unrestricted per key. This is the only built-in REST auth today — for
+With broad auth enabled, all requests require the `X-API-Key` header. A key
+entry of the form `key=topicA|topicB` restricts *submissions* to the listed
+topics; reads stay unrestricted per key. This is the only built-in REST auth today — for
 mTLS/OIDC put the API behind your standard gateway/reverse-proxy.
 
 **Encrypted bodies** — client-side envelope encryption with a group key; the
@@ -971,8 +974,8 @@ evidence trail survives.
 
 ### 14.1 Admin API
 
-`POST /app-chain[/chains/{id}]/admin/...` — covered by API-key auth when
-enabled (§12):
+`POST /app-chain[/chains/{id}]/admin/...` — always privileged and requires a
+configured unscoped full API key (§12):
 
 - `pause` / `resume` — stop/allow **local** REST submissions (peers and
   finalized replication are unaffected).
@@ -1507,8 +1510,9 @@ failover. Reports are fenced to the lease holder.
 > **Security**: `requeue`/`cancel`/`claim`/`report` move funds or change
 > consensus-visible state — they are **privileged**: a submit-only
 > (topic-restricted) API key may not call them; only a full key can (§12).
-> Enable `yano.app-chain.api.auth` and keep the executor/operator REST surface
-> on a trusted network — external mode logs a warning if auth is off.
+> Configure an unscoped `yano.app-chain.api.keys` full key and keep the
+> executor/operator REST surface on a trusted network. Broad READ/SUBMIT auth
+> is optional; privileged operations always fail closed without the full key.
 
 ### 18.7 Write a custom executor
 

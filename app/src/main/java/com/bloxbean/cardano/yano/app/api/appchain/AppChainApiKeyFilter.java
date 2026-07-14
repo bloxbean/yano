@@ -30,14 +30,17 @@ import java.util.Set;
  * (ADR app-layer/006 E4.1). Disabled by default — when
  * {@code yano.app-chain.api.auth.enabled=true}, every request matched to an
  * app-chain resource method must carry a configured key in the
- * {@code X-API-Key} header. A key entry of the form {@code key=topicA|topicB}
- * is a <b>submit-only, topic-restricted</b> key: it may READ freely and SUBMIT
- * only to the listed topics — it may NOT call any other state-changing
- * operation (admin pause/drain/anchor, key rotation, or the effect operations
- * requeue/cancel/claim/report, which can move real funds). An unscoped key
- * ({@code key} with no {@code =topics}) is a full key.
- * Plugin operations are always privileged: they fail closed when this realm
- * is disabled or has no configured full key.
+ * {@code X-API-Key} header. With keys configured but broad auth disabled,
+ * reads and submissions remain public while privileged operations still
+ * require an unscoped full key. A key entry of the form {@code key=topicA|topicB}
+ * is a <b>submit-only, topic-restricted</b> key when broad authentication is
+ * enabled: it may READ freely and SUBMIT only to the listed topics — it may
+ * NOT call any other state-changing operation (admin pause/drain/anchor, key
+ * rotation, or the effect operations requeue/cancel/claim/report, which can
+ * move real funds). An unscoped key ({@code key} with no {@code =topics}) is a
+ * full key.
+ * Plugin operations are always privileged: they fail closed when no
+ * configured full key is available.
  * <p>
  * Scoping is by the <em>matched resource class</em> ({@link ResourceInfo}), not
  * a URL substring — renaming or re-rooting the resource cannot silently
@@ -113,12 +116,15 @@ public class AppChainApiKeyFilter implements ContainerRequestFilter {
                         .type(MediaType.APPLICATION_JSON)
                         .entity(Map.of("code", "AUTH_UNAVAILABLE",
                                 "error", "Privileged plugin/app-chain operations require "
-                                        + "API-key authentication and a full key"))
+                                        + "a configured unscoped full API key"))
                         .build());
             }
             return;
         }
-        if (!authEnabled()) {
+        // A configured full key is enough to expose privileged capabilities
+        // safely without forcing read/submit authentication. Broad auth keeps
+        // its existing whole-surface semantics when explicitly enabled.
+        if (access != AppChainAccess.Level.PRIVILEGED && !authEnabled()) {
             return;
         }
 
@@ -332,7 +338,7 @@ public class AppChainApiKeyFilter implements ContainerRequestFilter {
     }
 
     private boolean privilegedAuthenticationAvailable() {
-        return authEnabled() && keys().values().stream().anyMatch(Set::isEmpty);
+        return keys().values().stream().anyMatch(Set::isEmpty);
     }
 
     private static void abortDomainNotFound(ContainerRequestContext requestContext) {

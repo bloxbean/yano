@@ -828,6 +828,7 @@ public class AppChainResource {
 
         @GET
         @Path("admin/members")
+        @AppChainAccess(AppChainAccess.Level.PRIVILEGED)
         public Response listMembers() {
             return Response.ok(Map.of("chainId", gateway.chainId(),
                     "members", new ArrayList<>(gateway.members()),

@@ -111,8 +111,9 @@ SPIs.
 - Contributions are assigned an explicit trust tier and failure policy.
 - Lifecycle is restart-based in v1. Runtime hot install/uninstall/reload is not
   supported.
-- App-layer queries first gain a generic, authenticated route to a
-  committed-context `AppStateMachine.query()` overload. The legacy
+- App-layer queries first gain a generic, bounded route governed by the
+  app-chain read policy to a committed-context `AppStateMachine.query()`
+  overload. The legacy
   two-argument method remains linkable but is never presented as a
   root-attested runtime query. Domain API contributions use a constrained
   route registry, not arbitrary runtime JAX-RS resource discovery.
@@ -362,9 +363,9 @@ configuration. The registry owns unique route identity, structural collision che
 canonical-path validation with percent aliases rejected, request limits,
 response media validation, authentication class (`READ`, `PRIVILEGED`, or
 internal-only), metrics and shutdown. Privileged public routes fail closed
-unless authentication is enabled and an unscoped full key exists. Per-bundle
-admission plus a host-wide bound prevents one domain API from exhausting all
-handler capacity. Plugins do not receive the Quarkus router directly.
+unless an unscoped full key exists, independently of broad READ/SUBMIT auth.
+Per-bundle admission plus a host-wide bound prevents one domain API from
+exhausting all handler capacity. Plugins do not receive the Quarkus router directly.
 Schema/OpenAPI contribution is deferred until a bounded, native-compatible
 contract exists; opaque bytes are never advertised as JSON unless the host
 validates them first.
@@ -537,8 +538,9 @@ execution. ADR-010's attestation trust model remains unchanged.
 
 ### ADR-011.3 — Query and domain API extensions (accepted and implemented)
 
-- wire the contextual `AppStateMachine.query()` overload to an authenticated,
-  bounded chain route without invoking the legacy two-argument hook;
+- wire the contextual `AppStateMachine.query()` overload to a bounded chain
+  route governed by the app-chain read policy without invoking the legacy
+  two-argument hook;
 - define request/response encoding and committed-state consistency;
 - specify `DomainApiProvider`, route registry, authorization classes and
   build-time native adapter;

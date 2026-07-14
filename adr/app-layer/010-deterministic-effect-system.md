@@ -913,11 +913,11 @@ footprint.
    requeue/cancel/claim/report move real funds or change consensus-visible
    state. They are gated by the app-chain API-key filter as **privileged
    operations**: a topic-restricted (submit-only) key may read and submit to
-   its topics but may NOT call them — only a full key can. Because API auth is
-   opt-in, a node running the executor or external mode with auth disabled
-   exposes these unauthenticated; the runtime logs a loud warning, and
-   operators MUST enable `yano.app-chain.api.auth` and restrict network access
-   to the executor/operator network. The external-executor fence is the
+   its topics but may NOT call them — only a configured full key can. These
+   operations fail closed even when broad READ/SUBMIT authentication is
+   disabled; operators MUST configure `yano.app-chain.api.keys` with an
+   unscoped full key and restrict network access to the executor/operator
+   network. The external-executor fence is the
    `executorId` string within one trust domain (not a per-worker secret); the
    status surface exposes only that a lease is held, never the id. A payment
    executor SHOULD set `effects.executors.cardano.max-lovelace-per-tx` and be
