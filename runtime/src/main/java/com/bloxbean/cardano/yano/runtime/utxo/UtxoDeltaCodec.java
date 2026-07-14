@@ -29,9 +29,12 @@ final class UtxoDeltaCodec {
         Map map = (Map) CborSerializationUtil.deserializeOne(bytes);
         long blockNumber = CborSerializationUtil.toLong(map.get(new UnsignedInteger(0)));
         long slot = CborSerializationUtil.toLong(map.get(new UnsignedInteger(1)));
+        DataItem hashItem = map.get(new UnsignedInteger(2));
+        String blockHash = hashItem instanceof ByteString hash
+                ? HexUtil.encodeHexString(hash.getBytes()) : null;
         List<OutRef> created = decodeList((Array) map.get(new UnsignedInteger(3)));
         List<OutRef> spent = decodeList((Array) map.get(new UnsignedInteger(4)));
-        return new Decoded(blockNumber, slot, created, spent);
+        return new Decoded(blockNumber, slot, blockHash, created, spent);
     }
 
     private static Array encodeOut(OutRef r) {
@@ -54,6 +57,6 @@ final class UtxoDeltaCodec {
     }
 
     record OutRef(String txHash, int index) {}
-    record Decoded(long blockNumber, long slot, List<OutRef> created, List<OutRef> spent) {}
+    record Decoded(long blockNumber, long slot, String blockHash,
+                   List<OutRef> created, List<OutRef> spent) {}
 }
-

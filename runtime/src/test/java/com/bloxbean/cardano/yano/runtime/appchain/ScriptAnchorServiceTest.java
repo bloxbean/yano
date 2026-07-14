@@ -8,6 +8,7 @@ import com.bloxbean.cardano.yano.api.appchain.AppBlock;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
 import com.bloxbean.cardano.yano.api.appchain.FinalityCert;
 import com.bloxbean.cardano.yano.api.appchain.signer.SignerProvider;
+import com.bloxbean.cardano.yano.api.rollback.RollbackCapableStore;
 import com.bloxbean.cardano.yano.api.utxo.UtxoState;
 import com.bloxbean.cardano.yano.api.utxo.model.AssetAmount;
 import com.bloxbean.cardano.yano.api.utxo.model.Outpoint;
@@ -45,6 +46,7 @@ class ScriptAnchorServiceTest {
 
     private static final Logger log = LoggerFactory.getLogger(ScriptAnchorServiceTest.class);
     private static final String CHAIN_ID = "test-chain";
+    private static final byte[] L1_TIP_HASH = fill(32, 0x55);
 
     /**
      * Real protocol params (full PlutusV3 cost model) from the devnet
@@ -117,7 +119,8 @@ class ScriptAnchorServiceTest {
                 leaderSigner, () -> members, () -> 2,
                 (topic, body) -> deliver(this.follower, leaderSigner.publicKey(), topic, body),
                 true, 42, log);
-        leader.wireTxPricing(() -> DEVNET_PARAMS, () -> 500L);
+        leader.wireTxPricing(() -> DEVNET_PARAMS,
+                () -> new AppChainEngine.L1Ref(500L, L1_TIP_HASH));
         wallet = leader.anchorAddress(); // pre-bootstrap: the wallet address
 
         follower = new ScriptAnchorService(CHAIN_ID, followerConfig, followerLedger,
@@ -129,7 +132,8 @@ class ScriptAnchorServiceTest {
                 followerSigner, () -> members, () -> 2,
                 (topic, body) -> deliver(this.leader, followerSigner.publicKey(), topic, body),
                 false, 42, log);
-        follower.wireTxPricing(() -> DEVNET_PARAMS, () -> 500L);
+        follower.wireTxPricing(() -> DEVNET_PARAMS,
+                () -> new AppChainEngine.L1Ref(500L, L1_TIP_HASH));
     }
 
     private String wallet;
@@ -193,7 +197,9 @@ class ScriptAnchorServiceTest {
         assertThat(anchorOut.getInlineDatum()).isNotNull();
         AnchorDatumCodec.AnchorDatum datum0 = AnchorDatumCodec.decode(anchorOut.getInlineDatum());
         assertThat(datum0.chainId()).isEqualTo(CHAIN_ID);
-        assertThat(datum0.height()).isEqualTo(5);
+        assertThat(datum0.height()).isZero();
+        assertThat(datum0.blockHash()).containsOnly((byte) 0);
+        assertThat(datum0.stateRoot()).containsOnly((byte) 0);
         assertThat(datum0.threshold()).isEqualTo(2);
         assertThat(datum0.memberKeys()).hasSize(2);
         assertThat(bootstrapTx.getBody().getMint().get(0).getPolicyId()).isEqualTo(policyIdHex);
@@ -219,7 +225,9 @@ class ScriptAnchorServiceTest {
         utxoState.put(wallet, List.of(walletUtxo(bootstrapHash, changeIndex,
                 changeOut.getValue().getCoin().longValue())));
 
-        // --- Advance: chain has moved; leader starts a co-sign round.
+        // --- First real anchor: bootstrap is identity-only at h0, so the
+        // leader immediately starts the existing threshold co-sign round for
+        // the current app tip. No extra user transaction/cadence wait needed.
         // The follower (no anchor config at all) adopts the identity from the
         // verified sign request, checks the datum against ITS OWN ledger, and
         // returns a witness; the leader assembles + submits.
@@ -244,14 +252,25 @@ class ScriptAnchorServiceTest {
         assertThat(advanceTx.getBody().getCollateral()).hasSize(1);
         assertThat(advanceTx.getBody().getTotalCollateral()).isNotNull();
 
-        // Follower adopted the identity from the sign request
-        assertThat(follower.bootstrapped()).isTrue();
+        // One authenticated member request records only a candidate. It does
+        // not authoritatively pin the identity or open finality/effect gates.
+        assertThat(follower.bootstrapped()).isFalse();
+        assertThat(follower.lastAnchoredHeight()).isZero();
+        assertThat(follower.status())
+                .containsEntry("identityCandidatePending", true)
+                .containsEntry("anchoredCount", 0L)
+                .containsEntry("observedAnchorCount", 0L)
+                .doesNotContainKeys("lastAnchorTx", "lastAnchorL1Slot");
+        assertThat(followerLedger.metaBytes("anchor_confirmation_history_v1")).isNull();
 
         // --- L1 confirms the advance
         String advanceHash = txHash(submitted.get(1));
+        int nextOutIndex = advanceTx.getBody().getOutputs().indexOf(nextOut);
+        utxoState.put(scriptAddress, List.of(
+                anchorUtxo(advanceHash, nextOutIndex, nextOut, policyIdHex, 200)));
         failBlockLookup[0] = true;
         assertThat(leader.onL1Block(200, List.of(advanceHash))).isNull();
-        assertThat(leader.lastAnchoredHeight()).isEqualTo(5);
+        assertThat(leader.lastAnchoredHeight()).isZero();
         assertThat(leader.status()).containsEntry("confirmationObservedAtL1Slot", 200L);
         assertThat(leader.status().get("lastError").toString())
                 .isEqualTo("Script-anchor L1 confirmation failed (errorType="
@@ -263,13 +282,187 @@ class ScriptAnchorServiceTest {
         assertThat(leader.status()).doesNotContainKey("confirmationObservedAtL1Slot");
         assertThat(submitted).hasSize(2); // the confirmed tx was never resubmitted
 
-        // The follower persisted the inclusion slot of the anchor UTxO it
-        // verified. A rollback below that point clears the adopted identity,
-        // allowing a valid surviving/rebootstrapped identity to be adopted.
-        follower.onL1Rollback(99);
+        // Raw BlockApplied callbacks precede the UTxO-store commit, so a
+        // member never advances from the transaction-hash callback. The
+        // guarded periodic pass reads the committed thread UTxO instead.
+        assertThat(follower.onL1Block(200, List.of(advanceHash))).isNull();
+        assertThat(follower.lastAnchoredHeight()).isZero();
+        AnchorService.ConfirmedAnchor observed = follower.tick();
+        assertThat(observed).isNotNull();
+        assertThat(observed.fromHeight()).isEqualTo(1);
+        assertThat(observed.toHeight()).isEqualTo(9);
+        assertThat(observed.txHash()).isEqualTo(advanceHash);
+        assertThat(observed.l1Slot()).isEqualTo(200);
+        assertThat(follower.lastAnchoredHeight()).isEqualTo(9);
+        assertThat(follower.bootstrapped()).isTrue();
+        assertThat(follower.status())
+                .containsEntry("identityCandidatePending", false)
+                .containsEntry("lastAnchorTx", advanceHash)
+                .containsEntry("lastAnchorL1Slot", 200L)
+                .containsEntry("anchoredCount", 0L)
+                .containsEntry("observedAnchorCount", 1L);
+        assertThat(AnchorService.ConfirmationHistory.decode(
+                followerLedger.metaBytes("anchor_confirmation_history_v1")))
+                .extracting(AnchorService.Confirmation::toHeight)
+                .containsExactly(9L);
+        assertThat(follower.tick()).isNull();
+        assertThat(follower.status())
+                .containsEntry("anchoredCount", 0L)
+                .containsEntry("observedAnchorCount", 1L);
+
+        // The first threshold-confirmed advance is the adopted identity's
+        // trust checkpoint. Rolling it back clears both identity and frontier.
+        follower.onL1Rollback(150);
         assertThat(follower.bootstrapped()).isFalse();
+        assertThat(follower.lastAnchoredHeight()).isZero();
         assertThat(followerLedger.metaBytes("anchor_script_policy_id")).isEmpty();
         assertThat(followerLedger.metaBytes("anchor_script_hash")).isEmpty();
+    }
+
+    @Test
+    void followerPeriodicRepairIsFailClosed_restartSafe_andRollbackSafe() throws Exception {
+        utxoState.put(leader.anchorAddress(), List.of(
+                walletUtxo("cc".repeat(32), 0, 100_000_000)));
+
+        Map<String, Object> boot = leader.bootstrap();
+        Transaction bootstrapTx = Transaction.deserialize(submitted.get(0));
+        String bootstrapHash = (String) boot.get("txHash");
+        String scriptAddress = (String) boot.get("scriptAddress");
+        String policyIdHex = (String) boot.get("threadPolicyId");
+        leader.onL1Block(100, List.of(bootstrapHash));
+
+        TransactionOutput bootstrapOut = outputTo(bootstrapTx, scriptAddress);
+        int bootstrapIndex = bootstrapTx.getBody().getOutputs().indexOf(bootstrapOut);
+        Utxo bootstrapUtxo = anchorUtxo(
+                bootstrapHash, bootstrapIndex, bootstrapOut, policyIdHex, 100);
+        utxoState.put(scriptAddress, List.of(bootstrapUtxo));
+        TransactionOutput changeOut = outputTo(bootstrapTx, wallet);
+        utxoState.put(wallet, List.of(walletUtxo(bootstrapHash,
+                bootstrapTx.getBody().getOutputs().indexOf(changeOut),
+                changeOut.getValue().getCoin().longValue())));
+
+        // The sign request records a non-authoritative candidate. Neither the
+        // current h0 identity output nor proposed h9 opens gates before L1 acceptance.
+        tip[0] = 9;
+        leader.tick();
+        assertThat(submitted).hasSize(2);
+        assertThat(follower.lastAnchoredHeight()).isZero();
+
+        Transaction advanceTx = Transaction.deserialize(submitted.get(1));
+        String advanceHash = txHash(submitted.get(1));
+        TransactionOutput advanceOut = outputTo(advanceTx, scriptAddress);
+        int advanceIndex = advanceTx.getBody().getOutputs().indexOf(advanceOut);
+
+        // A current thread UTxO with a forged state root must never move the
+        // durable frontier, even when its policy/address/outpoint look valid.
+        AnchorDatumCodec.AnchorDatum valid = AnchorDatumCodec.decode(advanceOut.getInlineDatum());
+        AnchorDatumCodec.AnchorDatum forged = new AnchorDatumCodec.AnchorDatum(
+                valid.version(), valid.chainId(), valid.height(), valid.blockHash(),
+                fill(32, 0x7f), valid.memberKeys(), valid.threshold());
+        Utxo forgedUtxo = new Utxo(new Outpoint(advanceHash, advanceIndex), scriptAddress,
+                advanceOut.getValue().getCoin(),
+                List.of(new AssetAmount(policyIdHex, "", BigInteger.ONE)),
+                null, AnchorDatumCodec.encode(forged).serializeToBytes(),
+                null, null, false, 200, 0, null);
+        utxoState.put(scriptAddress, List.of(forgedUtxo));
+        follower.tick();
+        assertThat(follower.lastAnchoredHeight()).isZero();
+
+        // Simulate a restart after the L1 callback was missed/ran before the
+        // UTxO commit. The fresh service has no pendingSubmit and must repair
+        // from the now-committed, independently-validated thread UTxO.
+        Utxo validAdvanceUtxo = anchorUtxo(
+                advanceHash, advanceIndex, advanceOut, policyIdHex, 200);
+        utxoState.put(scriptAddress, List.of(validAdvanceUtxo));
+
+        // If the leader's raw callback was missed, the same committed-view
+        // repair completes its matching pending submission exactly once.
+        assertThat(leader.tick()).isNotNull();
+        assertThat(leader.lastAnchoredHeight()).isEqualTo(9);
+        assertThat(leader.status())
+                .doesNotContainKey("pendingTx")
+                .containsEntry("anchoredCount", 1L);
+        assertThat(submitted).hasSize(2);
+
+        AppChainEngine.L1Ref[] visibleL1Point = {
+                new AppChainEngine.L1Ref(500L, L1_TIP_HASH)};
+        AtomicInteger followerSubmissions = new AtomicInteger();
+        ScriptAnchorService restarted = new ScriptAnchorService(CHAIN_ID,
+                new AppChainConfig.AnchorConfig(false, "", 0, 0, 0), followerLedger,
+                cbor -> {
+                    followerSubmissions.incrementAndGet();
+                    throw new IllegalStateException("Follower must never submit");
+                },
+                () -> utxoState, this::blockAt, () -> tip[0],
+                new AnchorScriptArtifacts(AppChainConfig.AnchorScriptConfig.defaults()),
+                followerSigner, () -> members, () -> 2, (topic, body) -> { },
+                false, 42, log);
+        restarted.wireTxPricing(() -> DEVNET_PARAMS, () -> visibleL1Point[0]);
+
+        restarted.tick();
+        assertThat(restarted.lastAnchoredHeight()).isEqualTo(9);
+        assertThat(restarted.bootstrapped()).isTrue();
+        assertThat(restarted.status())
+                .containsEntry("lastAnchorTx", advanceHash)
+                .containsEntry("lastAnchorL1Slot", 200L)
+                .containsEntry("anchoredCount", 0L)
+                .containsEntry("observedAnchorCount", 1L);
+        assertThat(followerSubmissions).hasValue(0);
+
+        // Repair is idempotent, including its local since-restart counter.
+        restarted.tick();
+        assertThat(restarted.status()).containsEntry("observedAnchorCount", 1L);
+
+        // Startup/snapshot repair is bidirectional: an exact canonical UTxO
+        // point can safely correct stale h9 metadata down to the surviving
+        // h0 identity output, even without the historical RollbackEvent.
+        utxoState.put(scriptAddress, List.of(bootstrapUtxo));
+        visibleL1Point[0] = new AppChainEngine.L1Ref(501L, fill(32, 0x67));
+        utxoState.setAppliedPoint(501L, fill(32, 0x67));
+        restarted.tick();
+        assertThat(restarted.lastAnchoredHeight()).isZero();
+        assertThat(restarted.status()).containsEntry("observedAnchorCount", 2L);
+
+        // Re-observe the later anchor on a canonical point so history contains
+        // both h0 and h9 for the explicit rollback race below.
+        utxoState.put(scriptAddress, List.of(validAdvanceUtxo));
+        visibleL1Point[0] = new AppChainEngine.L1Ref(502L, fill(32, 0x68));
+        utxoState.setAppliedPoint(502L, fill(32, 0x68));
+        restarted.tick();
+        assertThat(restarted.lastAnchoredHeight()).isEqualTo(9);
+        assertThat(restarted.status()).containsEntry("observedAnchorCount", 3L);
+
+        // Model an already-established identity, then reproduce raw rollback
+        // before async UTxO rollback. Exact point correlation rejects stale h9.
+        followerLedger.metaPutLong("anchor_script_bootstrap_slot", 100L);
+        restarted.onL1Rollback(150);
+        visibleL1Point[0] = new AppChainEngine.L1Ref(150L, fill(32, 0x15));
+        restarted.tick();
+        assertThat(restarted.lastAnchoredHeight()).isZero();
+        assertThat(restarted.status())
+                .containsEntry("lastAnchorTx", bootstrapHash)
+                .containsEntry("lastAnchorL1Slot", 100L)
+                .containsEntry("observedAnchorCount", 3L);
+
+        // Even when the new raw fork reaches the SAME numeric slot as the
+        // stale store, a different hash prevents orphan resurrection.
+        visibleL1Point[0] = new AppChainEngine.L1Ref(502L, fill(32, 0x66));
+        restarted.tick();
+        assertThat(restarted.lastAnchoredHeight()).isZero();
+
+        // And advancing beyond the stale anchor slot is still deferred until
+        // the UTxO store commits that exact new-fork point.
+        visibleL1Point[0] = new AppChainEngine.L1Ref(503L, fill(32, 0x69));
+        restarted.tick();
+        assertThat(restarted.lastAnchoredHeight()).isZero();
+
+        // Once the UTxO rollback commits, the surviving thread output and
+        // durable metadata agree and remain stable.
+        utxoState.put(scriptAddress, List.of(bootstrapUtxo));
+        utxoState.setAppliedPoint(503L, fill(32, 0x69));
+        restarted.tick();
+        assertThat(restarted.lastAnchoredHeight()).isZero();
+        assertThat(followerSubmissions).hasValue(0);
     }
 
     @Test
@@ -281,7 +474,7 @@ class ScriptAnchorServiceTest {
         leader.onL1Block(100, List.of(bootstrapHash));
 
         assertThat(leader.bootstrapped()).isTrue();
-        assertThat(leaderLedger.metaLong("anchor_last_height", 0)).isEqualTo(5);
+        assertThat(leaderLedger.metaLong("anchor_last_height", -1)).isZero();
 
         leader.onL1Rollback(99);
 
@@ -359,7 +552,8 @@ class ScriptAnchorServiceTest {
         // No protocol params source (tracked or configured file) → the anchor
         // must NOT silently price against a hardcoded default (wrong cost model
         // = wrong script-integrity hash). It fails closed with a clear message.
-        leader.wireTxPricing(() -> null, () -> 500L);
+        leader.wireTxPricing(() -> null,
+                () -> new AppChainEngine.L1Ref(500L, L1_TIP_HASH));
         utxoState.put(leader.anchorAddress(), List.of(walletUtxo("cc".repeat(32), 0, 100_000_000)));
 
         assertThatThrownBy(leader::bootstrap)
@@ -453,7 +647,8 @@ class ScriptAnchorServiceTest {
                     new AnchorScriptArtifacts(AppChainConfig.AnchorScriptConfig.defaults()),
                     failingSigner, () -> Set.of(signerHex), () -> 1,
                     (topic, body) -> { }, true, 42, safeLog);
-            service.wireTxPricing(() -> DEVNET_PARAMS, () -> 500L);
+            service.wireTxPricing(() -> DEVNET_PARAMS,
+                    () -> new AppChainEngine.L1Ref(500L, L1_TIP_HASH));
             String localWallet = service.anchorAddress();
             utxoState.put(localWallet, List.of(
                     new Utxo(new Outpoint("dd".repeat(32), 0), localWallet,
@@ -510,16 +705,24 @@ class ScriptAnchorServiceTest {
 
     private Utxo anchorUtxo(String txHash, int index, TransactionOutput anchorOut, String policyIdHex)
             throws Exception {
+        return anchorUtxo(txHash, index, anchorOut, policyIdHex, 100);
+    }
+
+    private Utxo anchorUtxo(String txHash, int index, TransactionOutput anchorOut,
+                            String policyIdHex, long slot) throws Exception {
         return new Utxo(new Outpoint(txHash, index), anchorOut.getAddress(),
                 anchorOut.getValue().getCoin(),
                 List.of(new AssetAmount(policyIdHex, "", BigInteger.ONE)),
                 null, anchorOut.getInlineDatum().serializeToBytes(),
-                null, null, false, 100, 0, null);
+                null, null, false, slot, 0, null);
     }
 
     /** Address-keyed UTxO view (the shared fake "L1"). */
-    private static final class AddressedUtxoState implements UtxoState {
+    private static final class AddressedUtxoState
+            implements UtxoState, RollbackCapableStore {
         private final Map<String, List<Utxo>> byAddress = new HashMap<>();
+        private long appliedSlot = 500L;
+        private String appliedBlockHash = HexUtil.encodeHexString(L1_TIP_HASH);
 
         void put(String address, List<Utxo> utxos) {
             byAddress.put(address, new ArrayList<>(utxos));
@@ -527,6 +730,11 @@ class ScriptAnchorServiceTest {
 
         List<Utxo> get(String address) {
             return byAddress.getOrDefault(address, List.of());
+        }
+
+        void setAppliedPoint(long slot, byte[] blockHash) {
+            this.appliedSlot = slot;
+            this.appliedBlockHash = HexUtil.encodeHexString(blockHash);
         }
 
         @Override
@@ -554,5 +762,13 @@ class ScriptAnchorServiceTest {
         public boolean isEnabled() {
             return true;
         }
+
+        @Override public String storeName() { return "test-utxo"; }
+        @Override public long getLatestAppliedSlot() { return appliedSlot; }
+        @Override public AppliedPoint getLatestAppliedPoint() {
+            return new AppliedPoint(appliedSlot, appliedBlockHash);
+        }
+        @Override public long getRollbackFloorSlot() { return 0L; }
+        @Override public void rollbackToSlot(long targetSlot) { appliedSlot = targetSlot; }
     }
 }

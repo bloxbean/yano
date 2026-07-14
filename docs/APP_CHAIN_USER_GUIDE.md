@@ -419,7 +419,11 @@ curl -X POST localhost:7070/api/v1/app-chain/chains/<chain-id>/admin/anchor/boot
 
 The bootstrap consumes a seed UTxO from the wallet and mints a **one-shot
 thread NFT** into the anchor validator's script address with the genesis
-datum. That mint defines the chain's permanent on-chain identity:
+datum at app height `0`. This transaction establishes identity only; it does
+not unilaterally certify the current app tip. On a non-empty chain the leader
+immediately starts the normal threshold-co-sign round for the first real
+advance, without waiting for another user transaction or the configured
+anchor cadence. That mint defines the chain's permanent on-chain identity:
 
 - **thread policy id** — unique per chain (derived from the consumed seed
   UTxO; can never be minted again). Burning is forbidden by the policy.
@@ -442,8 +446,21 @@ Watch progress in `/status` under `anchor` (`bootstrapped`, `threadPolicyId`,
 `scriptAddress`, `walletAddress`, `cosignPending`, `lastAnchorTx`,
 `lagBlocks`), or on the `/ui/app-chain/` page's L1 Anchor card. Anchors fire
 when at least one NEW block exists and `every-blocks` accumulated since the
-last anchor (or `max-interval-minutes` elapsed) — an idle chain anchors
-nothing and costs nothing.
+last anchor (or `max-interval-minutes` elapsed). The first real advance after
+bootstrap is immediate when the app tip is non-zero; an app chain that has
+never produced a block remains at height `0` and has nothing to anchor.
+
+Every script-anchor member independently reconciles `lastAnchoredHeight`,
+`lastAnchorTx`, `lastAnchorL1Slot` and `lagBlocks` from the authenticated
+thread UTxO in its own L1 view.  These durable fields should converge across
+members.  The page's “Anchors Confirmed/Observed (since restart)” value is a
+node-local operational counter and may differ after restarts.
+
+The reconciliation read is accepted only when the UTxO store's committed
+slot and block hash exactly match the node's canonical L1 point.  A follower
+also keeps a first-seen script identity non-authoritative until an exact
+advance transaction that it verified is accepted by the on-chain threshold;
+a single member's sign request cannot by itself open evidence or effect gates.
 
 ### 5.4 Independent verification (auditors, third parties)
 

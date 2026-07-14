@@ -2815,8 +2815,10 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             }
 
             boolean anchorScriptMode = config.anchor() != null && config.anchor().scriptMode();
+            java.util.function.Supplier<AppChainEngine.L1Ref> anchorPointSupplier =
+                    recentL1Points::peekLast;
             java.util.function.Supplier<Long> anchorSlotSupplier = () -> {
-                AppChainEngine.L1Ref last = recentL1Points.peekLast();
+                AppChainEngine.L1Ref last = anchorPointSupplier.get();
                 return last != null ? last.slot() : 0L;
             };
             if (config.anchoringEnabled() && !anchorScriptMode) {
@@ -2878,7 +2880,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                                 var supplier = anchorProtocolParamsSupplier;
                                 return supplier != null ? supplier.get() : null;
                             },
-                            anchorSlotSupplier);
+                            anchorPointSupplier);
                     this.scriptAnchorService = scriptService;
                 } catch (Exception e) {
                     log.warn("Script-anchor service unavailable (errorType={})",
@@ -2943,12 +2945,22 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                     config.anchor().metadataLabel());
         }
         ScriptAnchorService currentScriptAnchor = scriptAnchorService;
-        if (currentScriptAnchor != null && config.anchoringEnabled()
-                && config.anchor() != null && config.anchor().scriptMode()) {
+        boolean metadataAnchorLeader = config.anchoringEnabled()
+                && config.anchor() != null && !config.anchor().scriptMode();
+        if (currentScriptAnchor != null && !metadataAnchorLeader) {
+            // Every member polls its OWN authenticated thread UTxO so
+            // follower status/evidence/finality gates survive missed event
+            // ordering and restart. ScriptAnchorService.tick() keeps all tx
+            // construction/submission leader-only.
             exec.scheduleWithFixedDelay(
-                    () -> generationUseOrNoop(currentScriptAnchor::tick), 10, 10, TimeUnit.SECONDS);
-            log.info("App-chain L1 SCRIPT anchoring enabled (008.4): wallet={}, every {} blocks",
-                    currentScriptAnchor.anchorAddress(), config.anchor().everyBlocks());
+                    () -> generationUseOrNoop(() ->
+                            publishConfirmedAnchor(currentScriptAnchor.tick())),
+                    10, 10, TimeUnit.SECONDS);
+            if (config.anchoringEnabled()
+                    && config.anchor() != null && config.anchor().scriptMode()) {
+                log.info("App-chain L1 SCRIPT anchoring enabled (008.4): wallet={}, every {} blocks",
+                        currentScriptAnchor.anchorAddress(), config.anchor().everyBlocks());
+            }
         }
         if (config.retentionEnabled()) {
             exec.scheduleWithFixedDelay(this::retentionTick, 30, 30, TimeUnit.SECONDS);
@@ -3327,22 +3339,36 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             ScriptAnchorService currentScriptAnchor = services.scriptAnchor();
             if ((currentAnchor != null || currentScriptAnchor != null) && event.block() != null
                     && event.block().getTransactionBodies() != null) {
-                List<String> txHashes = event.block().getTransactionBodies().stream()
-                        .map(com.bloxbean.cardano.yaci.core.model.TransactionBody::getTxHash)
-                        .toList();
+                List<Integer> invalidTransactions = event.block().getInvalidTransactions();
+                java.util.Set<Integer> invalidIndexes = invalidTransactions != null
+                        ? new java.util.HashSet<>(invalidTransactions) : java.util.Set.of();
+                List<String> txHashes = new ArrayList<>();
+                List<com.bloxbean.cardano.yaci.core.model.TransactionBody> transactionBodies =
+                        event.block().getTransactionBodies();
+                for (int index = 0; index < transactionBodies.size(); index++) {
+                    if (!invalidIndexes.contains(index)) {
+                        txHashes.add(transactionBodies.get(index).getTxHash());
+                    }
+                }
                 AnchorService.ConfirmedAnchor confirmed = currentAnchor != null
                         ? currentAnchor.onL1Block(event.slot(), txHashes) : null;
                 if (confirmed == null && currentScriptAnchor != null) {
                     confirmed = currentScriptAnchor.onL1Block(event.slot(), txHashes);
                 }
-                if (confirmed != null && eventBus != null) {
-                    eventBus.publish(new com.bloxbean.cardano.yano.api.events.AppChainAnchoredEvent(
-                                    config.chainId(), confirmed.fromHeight(), confirmed.toHeight(),
-                                    confirmed.txHash(), confirmed.l1Slot()),
-                            EventMetadata.builder().build(), PublishOptions.builder().build());
-                }
+                publishConfirmedAnchor(confirmed);
             }
         });
+    }
+
+    private void publishConfirmedAnchor(AnchorService.ConfirmedAnchor confirmed) {
+        if (confirmed == null || eventBus == null) {
+            return;
+        }
+        runL1Phase("anchor event publication", () ->
+                eventBus.publish(new com.bloxbean.cardano.yano.api.events.AppChainAnchoredEvent(
+                                config.chainId(), confirmed.fromHeight(), confirmed.toHeight(),
+                                confirmed.txHash(), confirmed.l1Slot()),
+                        EventMetadata.builder().build(), PublishOptions.builder().build()));
     }
 
     private void onL1Rollback(

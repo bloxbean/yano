@@ -103,6 +103,24 @@ class AppChainL1CallbackIsolationTest {
     }
 
     @Test
+    void phaseTwoInvalidTransactionCannotConfirmAnchor() throws Exception {
+        Controls controls = new Controls();
+        Logger logger = mock(Logger.class);
+
+        try (StartedHarness harness = startHarness("invalid-anchor-tx", controls, logger)) {
+            harness.publish(applied(100, emptyBlock()));
+
+            harness.publish(applied(101, blockWithInvalidTx(ANCHOR_TX_HASH)));
+            assertThat(anchorHeight(harness.subsystem)).isZero();
+            assertThat(harness.anchoredEvents()).isEmpty();
+
+            harness.publish(applied(102, blockWithTx(ANCHOR_TX_HASH)));
+            assertThat(anchorHeight(harness.subsystem)).isEqualTo(1);
+            assertThat(harness.anchoredEvents()).hasSize(1);
+        }
+    }
+
+    @Test
     void processFatalObservationPhaseRunsBeforeDiagnosticsAndLeavesAnchorForReplay()
             throws Exception {
         Controls controls = new Controls();
@@ -310,12 +328,21 @@ class AppChainL1CallbackIsolationTest {
     }
 
     private static Block emptyBlock() {
-        return Block.builder().transactionBodies(List.of()).build();
+        return Block.builder().transactionBodies(List.of())
+                .invalidTransactions(List.of()).build();
     }
 
     private static Block blockWithTx(String txHash) {
         return Block.builder()
                 .transactionBodies(List.of(TransactionBody.builder().txHash(txHash).build()))
+                .invalidTransactions(List.of())
+                .build();
+    }
+
+    private static Block blockWithInvalidTx(String txHash) {
+        return Block.builder()
+                .transactionBodies(List.of(TransactionBody.builder().txHash(txHash).build()))
+                .invalidTransactions(List.of(0))
                 .build();
     }
 

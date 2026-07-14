@@ -27,6 +27,10 @@ class AppChainStatusPageTest {
                 .body(Matchers.containsString("id=\"heroTip\""))
                 .body(Matchers.containsString("id=\"anchorList\""))
                 .body(Matchers.containsString("id=\"blocksBody\""))
+                // follower anchor progress must use the independently observed counter
+                .body(Matchers.containsString("anchor.leader === false"))
+                .body(Matchers.containsString("Anchors Observed"))
+                .body(Matchers.containsString("anchor.observedAnchorCount"))
                 // links back to the L1 page
                 .body(Matchers.containsString("href=\"../status/\""));
     }
