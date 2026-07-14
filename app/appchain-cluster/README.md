@@ -44,10 +44,12 @@ YANO_NATIVE=/downloads/yano YANO_HOME=/data/yano ./cluster.sh start 3
 | `YANO_HOME` | tree holding `config/` (nodes launch with cwd = here) | the repo's `app/` |
 | `YANO_JAR` | explicit uber-jar path (any location) | auto-detect under `YANO_HOME` |
 | `YANO_NATIVE` | explicit native-binary path | auto-detect under `YANO_HOME` |
+| `YANO_CLUSTER_API_KEY` | full key for privileged local-cluster operations | `yano-local-cluster-full-key` |
 
-`loadtest.sh` and `soaktest.sh` need **no binary at all** — they only hit the
-running cluster's HTTP ports, so they work against any running Yano regardless of
-how it was started.
+`loadtest.sh` and `soaktest.sh` need **no binary at all** — they only hit a
+running cluster's HTTP ports. They target the public READ/SUBMIT policy used by
+this launcher; a separately started node with broad API authentication enabled
+needs an authenticated client instead.
 
 ## Quick start
 
@@ -64,6 +66,28 @@ cd app/appchain-cluster
 That's the whole loop. `status` shows each node's per-chain tip and state root
 and a **consistency** line per chain — `AGREED` means every node finalized the
 same history.
+
+### Local API key
+
+`cluster.sh` keeps reads, submissions, status and live streams public on its
+loopback-only HTTP API, while privileged admin, effect and plugin operations
+require the known local-demo full key `yano-local-cluster-full-key`. This
+mirrors the launcher's known demo member keys. Do not use the default as a
+production credential. Override it for a shared machine or public-network test
+and keep the variable exported for later launcher commands:
+
+```bash
+export YANO_CLUSTER_API_KEY="$(openssl rand -hex 32)"
+./cluster.sh start 3 --network preprod
+./cluster.sh status
+```
+
+Launcher commands add `X-API-Key` only for privileged operations such as
+`anchor-bootstrap`. Direct privileged HTTP calls must add it themselves.
+Outside this demo launcher, configure every real node through a secret source with
+`YANO_APP_CHAIN_API_KEYS=<unscoped-full-key>`. Also set
+`YANO_APP_CHAIN_API_AUTH_ENABLED=true` when reads and submissions must require
+keys too; no production default exists.
 
 ## The chains
 
@@ -174,13 +198,22 @@ Deterministic demo identities: node *i* uses the 32-byte seed `(i+1)` repeated,
 and its member public key is derived from it (`./cluster.sh keys N` prints them).
 These are **demo keys** — do not use them for anything real.
 
-| node | HTTP | n2n (server) | role (devnet) |
+| node | preferred HTTP | preferred n2n (server) | role (devnet) |
 |------|------|--------------|----------------|
 | 0 | 7070 | 13337 | L1 block producer + member (fixed proposer) |
 | i | 7070+i | 13337+i | L1 follower + member |
 
-Override bases with `--http-base` / `--server-base`, or the data dir with
-`--data-dir` (default `/tmp/yano-appchain-cluster`).
+The defaults are preferred ranges. Before touching state, `cluster.sh start`
+checks all ports needed by the requested node count. If a default range is
+occupied, it moves to the first free contiguous range, prints the selected
+ports, and records them in `<data-dir>/cluster.env`. Later `cluster.sh`
+commands read that file automatically. Explicit `--http-base` /
+`--server-base` values (and their `YANO_CLUSTER_*` environment equivalents)
+are strict and fail early when busy or overlapping.
+
+The data directory defaults to `/tmp/yano-appchain-cluster`. When using a
+custom `--data-dir`, pass it to later commands so they can locate that
+cluster's saved ports.
 
 ## Relay to a public network
 
@@ -225,6 +258,7 @@ Two modes (`--anchor-mode metadata|script`):
 
 ```bash
 openssl rand -hex 32                           # generate an anchor wallet seed
+export YANO_CLUSTER_API_KEY="$(openssl rand -hex 32)"  # recommended API key override
 ./cluster.sh start 3 --network preprod --anchor-mode metadata --anchor-key <that-hex>
 # start prints the anchor wallet's enterprise address -> send tADA to it
 # metadata mode: anchors start automatically once funded
@@ -281,7 +315,15 @@ Start options: `--network <net>`, `--jar` | `--native`, `--threshold <t>`,
   `config/application-appchain.yml` and `config/network/<net>/…` genesis.
 - **Consistency shows MISMATCH** — give it a few seconds (`status` again); a
   fresh cluster needs a moment for all nodes to connect and catch up.
-- **Ports busy** — another cluster or process holds 7070+/13337+. `./cluster.sh
-  stop`, or start with `--http-base` / `--server-base`.
+- **Ports busy** — default ports are relocated automatically. An explicitly
+  requested range fails instead, because silently changing an operator choice
+  would make automation target the wrong endpoint.
+- **Retained devnet restart** — `stop` keeps both RocksDB and each node's exact
+  shifted `shelley-genesis.json`; a later `start` preserves and reuses them.
+  Those exact genesis bytes are part of the devnet identity. If retained state
+  is missing that file, or a follower's copy differs from node 0, the launcher
+  refuses to overwrite it: restore the original file or use `clean` for
+  disposable state.
 - Everything lives under `--data-dir` (logs, per-node chainstate, genesis
-  copies); `./cluster.sh clean` wipes it.
+  copies); `./cluster.sh clean` wipes it. Stop the cluster before manually
+  removing its directory so live processes do not become orphaned.
