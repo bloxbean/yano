@@ -477,15 +477,37 @@ There is no typed query API yet (§9). The pattern:
    stem stripped, e.g. `machines.my-machine.foo`).
 3. **Plugin mode** (default distribution, no rebuild): register the provider
    in `META-INF/services/com.bloxbean.cardano.yano.api.appchain.AppStateMachineProvider`,
-   drop the jar into the node's `plugins/` directory, set
-   `state-machine: <your-id>`. Resolution runs ServiceLoader over the plugin
-   classloader; an unknown id fails fast listing available ids. (Native
-   image caveat: Substrate VM cannot load jars dynamically — plugins must be
-   on the classpath at native build time.)
+   and add `META-INF/yano/plugins/<bundle-id>.json`. The manifest declares an
+   `app-state-machine` contribution whose `name` equals the provider `id()`
+   and whose `provider` is the same fully-qualified class as the ServiceLoader
+   entry. For example:
+
+   ```json
+   {
+     "schemaVersion": 1,
+     "id": "com.example.my-machine",
+     "version": "1.0.0",
+     "yanoApi": { "min": 1, "max": 1 },
+     "dependencies": [],
+     "contributions": [
+       {
+         "kind": "app-state-machine",
+         "name": "my-machine",
+         "provider": "com.example.MyMachineProvider"
+       }
+     ]
+   }
+   ```
+
+   Package one self-contained bundle JAR, drop it into the JVM node's
+   `plugins/` directory, and set `state-machine: my-machine`. An unknown id
+   fails fast listing available ids. Native images cannot load directory JARs;
+   include and map the manifested bundle at application build time so catalog
+   and reflection metadata are generated before the native executable.
 4. **Library mode**: pass the machine instance straight to the
    `AppChainSubsystem` constructor — no provider or services file needed.
 5. Start from `scaffolds/plugin-template/` (a complete counter machine +
-   provider + services file), and gate your machine with
+   provider + ServiceLoader entry + bundle manifest), and gate your machine with
    `StateMachineConformance` before trusting it with a multi-node chain.
    The full walkthrough is user guide §6 / tutorial Part 2.
 

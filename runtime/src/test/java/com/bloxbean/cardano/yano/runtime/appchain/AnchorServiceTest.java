@@ -21,8 +21,14 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.LongFunction;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 
 /**
  * ADR app-layer/008.1 I1.5: anchor tx construction — size-based linear fee from
@@ -124,7 +130,130 @@ class AnchorServiceTest {
 
         assertThat(service.forceAnchorNow()).isFalse();
         assertThat(submitted).isEmpty();
-        assertThat(service.status().get("lastError").toString()).contains("fund the anchor wallet");
+        assertThat(service.status().get("lastError").toString())
+                .isEqualTo("Anchor build/submit failed (errorType="
+                        + IllegalStateException.class.getName() + ")");
+    }
+
+    @Test
+    void submitterAssertionIsRedactedAndDoesNotCancelLaterTicks() {
+        String secret = "submit-api-token-must-not-reach-health-or-logs";
+        AssertionError submitFailure = new AssertionError(secret);
+        AtomicInteger submitCalls = new AtomicInteger();
+        Logger safeLog = mock(Logger.class);
+        AppChainConfig.AnchorConfig config = new AppChainConfig.AnchorConfig(
+                true, "aa".repeat(32), 1, 1, 7014);
+        AnchorService service = new AnchorService(
+                "test-chain", config, ledger,
+                ignored -> {
+                    submitCalls.incrementAndGet();
+                    throw submitFailure;
+                },
+                () -> new FixedUtxoState(List.of(utxo(0, 5_000_000))),
+                this::blockAt, () -> tip[0], 42, safeLog);
+        service.wireFees(() -> new AnchorService.FeeParams(MIN_FEE_A, MIN_FEE_B),
+                () -> 500L);
+
+        service.tick();
+        service.tick();
+
+        assertThat(submitCalls).hasValue(2);
+        assertThat(service.status().get("lastError"))
+                .isEqualTo("Anchor build/submit failed (errorType="
+                        + AssertionError.class.getName() + ")");
+        assertThat(service.status().toString()).doesNotContain(secret);
+        verify(safeLog, times(2)).warn("Anchor {} failed (errorType={})",
+                "build/submit", AssertionError.class.getName());
+    }
+
+    @Test
+    void forceAnchorContainsAndRedactsTipAndBlockProviderErrors() {
+        String secret = "force-provider-secret-must-not-reach-health-or-logs";
+        Logger safeLog = mock(Logger.class);
+        AppChainConfig.AnchorConfig config = new AppChainConfig.AnchorConfig(
+                true, "aa".repeat(32), 1, 1, 7014);
+        AnchorService tipFailure = new AnchorService(
+                "test-chain", config, ledger, ignored -> "unused",
+                () -> new FixedUtxoState(List.of(utxo(0, 5_000_000))),
+                this::blockAt, () -> {
+                    throw new AssertionError(secret);
+                }, 42, safeLog);
+
+        assertThat(tipFailure.forceAnchorNow()).isFalse();
+        assertThat(tipFailure.status().get("lastError"))
+                .isEqualTo("Anchor force-anchor failed (errorType="
+                        + AssertionError.class.getName() + ")");
+
+        AnchorService blockFailure = new AnchorService(
+                "test-chain", config, ledger, ignored -> "unused",
+                () -> new FixedUtxoState(List.of(utxo(0, 5_000_000))),
+                ignored -> {
+                    throw new AssertionError(secret);
+                }, () -> tip[0], 42, safeLog);
+        assertThat(blockFailure.forceAnchorNow()).isFalse();
+        assertThat(blockFailure.status().get("lastError"))
+                .isEqualTo("Anchor build/submit failed (errorType="
+                        + AssertionError.class.getName() + ")");
+        assertThat(tipFailure.status().toString()).doesNotContain(secret);
+        assertThat(blockFailure.status().toString()).doesNotContain(secret);
+    }
+
+    @Test
+    void diagnosticLoggerFailureCannotMaskRecoverableCallbackFailure() {
+        Logger hostileLog = mock(Logger.class);
+        doThrow(new AssertionError("diagnostic-secret"))
+                .when(hostileLog)
+                .warn("Anchor {} failed (errorType={})",
+                        "force-anchor", AssertionError.class.getName());
+        AppChainConfig.AnchorConfig config = new AppChainConfig.AnchorConfig(
+                true, "aa".repeat(32), 1, 1, 7014);
+        AnchorService service = new AnchorService(
+                "test-chain", config, ledger, ignored -> "unused",
+                () -> new FixedUtxoState(List.of(utxo(0, 5_000_000))),
+                this::blockAt, () -> {
+                    throw new AssertionError("callback-secret");
+                }, 42, hostileLog);
+
+        assertThat(service.forceAnchorNow()).isFalse();
+        assertThat(service.status().get("lastError"))
+                .isEqualTo("Anchor force-anchor failed (errorType="
+                        + AssertionError.class.getName() + ")");
+        assertThat(service.status().toString())
+                .doesNotContain("callback-secret", "diagnostic-secret");
+    }
+
+    @Test
+    void observedConfirmationRetriesOnTickWithoutReplayOrResubmit() {
+        AtomicInteger blockLookups = new AtomicInteger();
+        LongFunction<AppBlock> transientLookup = height -> {
+            int call = blockLookups.incrementAndGet();
+            // Submission is lookup 1. The one and only L1 observation is
+            // lookup 2 and sees a transiently missing local block.
+            return call == 2 ? null : blockAt(height);
+        };
+        AppChainConfig.AnchorConfig config = new AppChainConfig.AnchorConfig(
+                true, "aa".repeat(32), 1, 1, 7014);
+        AnchorService service = new AnchorService(
+                "test-chain", config, ledger,
+                cbor -> {
+                    submitted.add(cbor);
+                    return "txhash-1";
+                },
+                () -> new FixedUtxoState(List.of(utxo(0, 5_000_000))),
+                transientLookup, () -> tip[0], 42, log);
+        service.wireFees(() -> new AnchorService.FeeParams(MIN_FEE_A, MIN_FEE_B), () -> 500L);
+
+        assertThat(service.forceAnchorNow()).isTrue();
+        assertThat(service.onL1Block(100, List.of("txhash-1"))).isNull();
+        assertThat(service.lastAnchoredHeight()).isZero();
+        assertThat(service.status()).containsEntry("confirmationObservedAtL1Slot", 100L);
+
+        service.tick();
+
+        assertThat(service.lastAnchoredHeight()).isEqualTo(3);
+        assertThat(service.status()).doesNotContainKey("confirmationObservedAtL1Slot");
+        assertThat(submitted).hasSize(1);
+        assertThat(blockLookups).hasValue(3);
     }
 
     @Test
@@ -143,10 +272,75 @@ class AnchorServiceTest {
         assertThat(service.onL1Block(200, List.of("txhash-2"))).isNotNull();
         assertThat(service.lastAnchoredHeight()).isEqualTo(8);
 
-        // Rollback below slot 200 un-confirms the 4..8 anchor → rewind to exactly 3
-        // (the fixed every-blocks step would have wrongly rewound to 0)
+        // A third confirmation means a rollback to 150 must unwind TWO
+        // anchors, not merely rewind the latest range start.
+        tip[0] = 10;
+        assertThat(service.forceAnchorNow()).isTrue();
+        assertThat(service.onL1Block(300, List.of("txhash-3"))).isNotNull();
+        assertThat(service.lastAnchoredHeight()).isEqualTo(10);
+
+        // Simulate a service restart: rollback correctness comes from the
+        // persisted bounded confirmation history, not in-memory last-slot.
+        AnchorService restarted = service(List.of(utxo(0, 50_000_000)), true, 500);
+        restarted.onL1Rollback(150);
+        assertThat(restarted.lastAnchoredHeight()).isEqualTo(3);
+        assertThat(ledger.metaLong("anchor_last_slot", 0)).isEqualTo(100);
+        assertThat(ledger.metaString("anchor_last_tx")).isEqualTo("txhash-1");
+        assertThat(ledger.metaBytes("anchor_last_block_hash")).hasSize(32);
+    }
+
+    @Test
+    void rollbackDropsPendingRangeDerivedFromInvalidatedFrontier() {
+        AnchorService service = service(List.of(utxo(0, 50_000_000)), true, 500);
+        tip[0] = 3;
+        assertThat(service.forceAnchorNow()).isTrue();
+        assertThat(service.onL1Block(100, List.of("txhash-1"))).isNotNull();
+        tip[0] = 8;
+        assertThat(service.forceAnchorNow()).isTrue();
+        assertThat(service.onL1Block(200, List.of("txhash-2"))).isNotNull();
+
+        tip[0] = 12;
+        assertThat(service.forceAnchorNow()).isTrue();
+        assertThat(service.status()).containsEntry("pendingRange", "9..12");
+
         service.onL1Rollback(150);
+
         assertThat(service.lastAnchoredHeight()).isEqualTo(3);
+        assertThat(service.status()).doesNotContainKey("pendingTx");
+        assertThat(service.forceAnchorNow()).isTrue();
+        assertThat(service.status()).containsEntry("pendingRange", "4..12");
+    }
+
+    @Test
+    void rollbackOlderThanBoundedHistoryConservativelyResetsToGenesis() {
+        List<AnchorService.Confirmation> retained = new ArrayList<>();
+        for (int i = 0; i < AnchorService.ConfirmationHistory.MAX_ENTRIES; i++) {
+            long height = i + 1L;
+            retained.add(new AnchorService.Confirmation(
+                    height, height, "tx-" + height, 100L + i, new byte[32]));
+        }
+        AnchorService.Confirmation latest = retained.getLast();
+        ledger.metaPutAll(
+                java.util.Map.of(
+                        "anchor_last_height", latest.toHeight(),
+                        "anchor_last_from_height", latest.fromHeight(),
+                        "anchor_last_slot", latest.l1Slot()),
+                java.util.Map.of(
+                        "anchor_last_block_hash", latest.blockHash(),
+                        "anchor_last_tx", latest.txHash().getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                        "anchor_confirmation_history_v1",
+                        AnchorService.ConfirmationHistory.encode(retained)));
+        AnchorService service = service(List.of(utxo(0, 50_000_000)), true, 500);
+
+        service.onL1Rollback(50);
+
+        assertThat(service.lastAnchoredHeight()).isZero();
+        assertThat(ledger.metaLong("anchor_last_slot", -1)).isZero();
+        assertThat(ledger.metaLong("anchor_last_from_height", -1)).isZero();
+        assertThat(ledger.metaString("anchor_last_tx")).isEmpty();
+        assertThat(ledger.metaBytes("anchor_last_block_hash")).isEmpty();
+        assertThat(AnchorService.ConfirmationHistory.decode(
+                ledger.metaBytes("anchor_confirmation_history_v1"))).isEmpty();
     }
 
     private record FixedUtxoState(List<Utxo> utxos) implements UtxoState {

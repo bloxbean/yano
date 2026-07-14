@@ -8,6 +8,7 @@ import com.bloxbean.cardano.yano.api.appchain.effects.EffectProof;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectProofLookup;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectRecord;
 import com.bloxbean.cardano.yano.api.appchain.effects.FxKeys;
+import com.bloxbean.cardano.yano.runtime.util.LifecycleFailures;
 import org.rocksdb.*;
 import org.slf4j.Logger;
 
@@ -16,6 +17,7 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 
@@ -1305,6 +1307,34 @@ final class AppLedgerStore implements AutoCloseable {
         }
     }
 
+    /** Atomically initialize a group of long-valued metadata entries. */
+    void metaPutLongs(Map<String, Long> values) {
+        metaPutAll(values, Map.of());
+    }
+
+    /** Atomically write a mixed group of long and byte-valued metadata. */
+    void metaPutAll(Map<String, Long> longValues, Map<String, byte[]> byteValues) {
+        Objects.requireNonNull(longValues, "longValues");
+        Objects.requireNonNull(byteValues, "byteValues");
+        if (longValues.isEmpty() && byteValues.isEmpty()) {
+            return;
+        }
+        try (WriteBatch batch = new WriteBatch();
+             WriteOptions writeOptions = new WriteOptions()) {
+            for (var entry : longValues.entrySet()) {
+                batch.put(metaCf, entry.getKey().getBytes(StandardCharsets.UTF_8),
+                        longBytes(entry.getValue()));
+            }
+            for (var entry : byteValues.entrySet()) {
+                batch.put(metaCf, entry.getKey().getBytes(StandardCharsets.UTF_8),
+                        Objects.requireNonNull(entry.getValue(), "metadata value"));
+            }
+            db.write(writeOptions, batch);
+        } catch (RocksDBException e) {
+            throw new RuntimeException("Failed to write app ledger metadata", e);
+        }
+    }
+
     /** Generic byte[] / UTF-8 string meta entries (anchor records etc.). */
     byte[] metaBytes(String key) {
         return getMeta(key.getBytes(StandardCharsets.UTF_8));
@@ -1349,19 +1379,37 @@ final class AppLedgerStore implements AutoCloseable {
 
     @Override
     public void close() {
+        Throwable closeFailure = null;
         for (ColumnFamilyHandle handle : cfHandles) {
             try {
                 handle.close();
-            } catch (Exception ignored) {
+            } catch (Throwable failure) {
+                closeFailure = mergeCloseFailure(closeFailure, failure);
             }
         }
         try {
             db.close();
-        } catch (Exception ignored) {
+        } catch (Throwable failure) {
+            closeFailure = mergeCloseFailure(closeFailure, failure);
         }
         try {
             dbOptions.close();
-        } catch (Exception ignored) {
+        } catch (Throwable failure) {
+            closeFailure = mergeCloseFailure(closeFailure, failure);
         }
+        if (closeFailure instanceof Error error) {
+            throw error;
+        }
+        if (closeFailure instanceof RuntimeException runtime) {
+            throw runtime;
+        }
+        if (closeFailure != null) {
+            throw new IllegalStateException("App ledger close failed", closeFailure);
+        }
+    }
+
+    /** Close every native resource while preserving the strongest failure. */
+    private static Throwable mergeCloseFailure(Throwable aggregate, Throwable next) {
+        return LifecycleFailures.merge(aggregate, next);
     }
 }

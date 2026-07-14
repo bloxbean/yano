@@ -6,6 +6,8 @@ import com.bloxbean.cardano.yano.api.plugin.StorageFilter;
 import org.slf4j.Logger;
 
 import java.util.List;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -18,21 +20,46 @@ final class PluginContextImpl implements PluginContext {
     private final EventBus eventBus;
     private final Logger logger;
     private final Map<String, Object> config;
+    private final Map<String, Object> bundleConfig;
     private final ScheduledExecutorService scheduler;
     private final Optional<ClassLoader> classLoader;
+    private final ClassLoader callbackClassLoader;
+    private final PluginContextFacades.ManagedCallbackResources managedCallbacks;
     private final SharedServiceRegistry registry;
     private final SharedStorageFilterRegistry storageFilters;
     private LifecyclePhase phase = LifecyclePhase.INITIALIZING;
 
     PluginContextImpl(String pluginId, EventBus eventBus, Logger logger, Map<String, Object> config,
                       ScheduledExecutorService scheduler, Optional<ClassLoader> classLoader,
-                      SharedStorageFilterRegistry storageFilters, SharedServiceRegistry registry) {
+                      ClassLoader platformClassLoader,
+                      SharedStorageFilterRegistry storageFilters, SharedServiceRegistry registry,
+                      PluginContextFacades.ManagedCallbackResources managedCallbacks) {
+        this(pluginId, eventBus, logger, config, config, scheduler, classLoader,
+                platformClassLoader, storageFilters, registry, managedCallbacks);
+    }
+
+    PluginContextImpl(String pluginId, EventBus eventBus, Logger logger, Map<String, Object> config,
+                      Map<String, Object> bundleConfig,
+                      ScheduledExecutorService scheduler, Optional<ClassLoader> classLoader,
+                      ClassLoader platformClassLoader,
+                      SharedStorageFilterRegistry storageFilters, SharedServiceRegistry registry,
+                      PluginContextFacades.ManagedCallbackResources managedCallbacks) {
         this.pluginId = Objects.requireNonNull(pluginId, "pluginId");
-        this.eventBus = eventBus;
         this.logger = logger;
-        this.config = config;
-        this.scheduler = scheduler;
-        this.classLoader = classLoader;
+        this.config = immutableMap(config);
+        this.bundleConfig = immutableMap(bundleConfig);
+        this.classLoader = classLoader != null ? classLoader : Optional.empty();
+        this.callbackClassLoader = PluginThreadContext.effective(
+                this.classLoader.orElse(null));
+        this.managedCallbacks = Objects.requireNonNull(
+                managedCallbacks, "managedCallbacks");
+        this.eventBus = PluginContextFacades.eventBus(
+                eventBus, callbackClassLoader,
+                Objects.requireNonNull(platformClassLoader, "platformClassLoader"),
+                managedCallbacks, this::callbackResourceScope);
+        this.scheduler = PluginContextFacades.scheduler(
+                scheduler, callbackClassLoader, platformClassLoader,
+                managedCallbacks, this::callbackResourceScope);
         this.storageFilters = storageFilters;
         this.registry = Objects.requireNonNull(registry, "registry");
     }
@@ -40,13 +67,20 @@ final class PluginContextImpl implements PluginContext {
     @Override public EventBus eventBus() { return eventBus; }
     @Override public Logger logger() { return logger; }
     @Override public Map<String, Object> config() { return config; }
+    @Override public Map<String, Object> bundleConfig() { return bundleConfig; }
     @Override public ScheduledExecutorService scheduler() { return scheduler; }
     @Override public Optional<ClassLoader> pluginClassLoader() { return classLoader; }
+
+    private static Map<String, Object> immutableMap(Map<String, Object> values) {
+        return Collections.unmodifiableMap(new LinkedHashMap<>(values != null ? values : Map.of()));
+    }
 
     @Override
     public synchronized void registerStorageFilter(StorageFilter filter) {
         RegistrationScope scope = filterRegistrationScope();
-        storageFilters.register(pluginId, Objects.requireNonNull(filter, "filter"), scope);
+        storageFilters.register(pluginId, PluginContextFacades.storageFilter(
+                Objects.requireNonNull(filter, "filter"), callbackClassLoader,
+                managedCallbacks), scope);
     }
 
     @Override public synchronized void registerService(String key, Object service) {
@@ -95,6 +129,19 @@ final class PluginContextImpl implements PluginContext {
 
     synchronized void deactivate() {
         phase = LifecyclePhase.INACTIVE;
+    }
+
+    private synchronized PluginContextFacades.ResourceScope callbackResourceScope() {
+        return switch (phase) {
+            case INITIALIZING, READY -> throw new IllegalStateException(
+                    "Plugin context for '" + pluginId
+                            + "' accepts event subscriptions and scheduled tasks only "
+                            + "during start/running; recreate them on every start cycle");
+            case STARTING, RUNNING -> PluginContextFacades.ResourceScope.START_CYCLE;
+            case STOPPING, STOPPED, INACTIVE -> throw new IllegalStateException(
+                    "Plugin context for '" + pluginId
+                            + "' does not accept callback resources in phase " + phase);
+        };
     }
 
     private RegistrationScope serviceRegistrationScope() {

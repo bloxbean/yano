@@ -56,6 +56,11 @@ class CounterStateMachineTest {
         }
 
         @Override
+        public byte[] stateRoot() {
+            return new byte[32];
+        }
+
+        @Override
         public void put(byte[] key, byte[] value) {
             map.put(new String(key, StandardCharsets.UTF_8), value);
         }

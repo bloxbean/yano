@@ -46,6 +46,27 @@ public record L1Observation(String observerId,
         Objects.requireNonNull(txHash, "txHash");
         Objects.requireNonNull(blockHash, "blockHash");
         Objects.requireNonNull(claim, "claim");
+        if (txHash.length != 32 || blockHash.length != 32) {
+            throw new IllegalArgumentException("L1 transaction and block hashes must be 32 bytes");
+        }
+        txHash = txHash.clone();
+        blockHash = blockHash.clone();
+        claim = claim.clone();
+    }
+
+    @Override
+    public byte[] txHash() {
+        return txHash.clone();
+    }
+
+    @Override
+    public byte[] blockHash() {
+        return blockHash.clone();
+    }
+
+    @Override
+    public byte[] claim() {
+        return claim.clone();
     }
 
     public String topic() {

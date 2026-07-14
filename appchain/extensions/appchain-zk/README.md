@@ -23,14 +23,23 @@ See also:
 Proof checks are enforced in `apply()`, so every member re-verifies as part of
 consensus replay. Admission-time verification is only a fast-fail path.
 
-## Build
+## Packaging and build
+
+The stock Yano application intentionally omits this experimental T3 integration.
+For a JVM node, build the self-contained drop-in bundle:
 
 ```bash
-./gradlew :appchain-zk:jar
+./gradlew :appchain-zk:shadowJar
+# appchain/extensions/appchain-zk/build/libs/
+#   yano-appchain-zk-<version>-bundle.jar
 ```
 
-Place the plugin jar and required ZeroJ verifier backend jars in the node plugin
-directory configured by `yaci.plugins.directory`.
+Copy only that `*-bundle.jar` into the JVM node's plugin directory
+configured by `yaci.plugins.directory`. The bundle contains its ZeroJ verifier
+backends and merged ServiceLoader descriptors; adjacent dependency JARs are not
+a catalog-v1 deployment unit. Native images cannot load a directory JAR;
+build with `-PincludeFirstPartyPluginBundles=true` to include it before native
+catalog/reflection generation.
 
 ## `zk-gate` Configuration
 

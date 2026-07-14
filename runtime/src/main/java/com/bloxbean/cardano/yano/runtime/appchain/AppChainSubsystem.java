@@ -13,14 +13,22 @@ import com.bloxbean.cardano.yaci.events.api.EventBus;
 import com.bloxbean.cardano.yaci.events.api.EventMetadata;
 import com.bloxbean.cardano.yaci.events.api.PublishOptions;
 import com.bloxbean.cardano.yano.api.appchain.*;
+import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutorFactory;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectView;
+import com.bloxbean.cardano.yano.api.appchain.sequencer.SequencerModeProvider;
+import com.bloxbean.cardano.yano.api.appchain.sink.FinalizedStreamSinkFactory;
 import com.bloxbean.cardano.yano.api.events.AppBlockFinalizedEvent;
 import com.bloxbean.cardano.yano.api.events.AppMessageReceivedEvent;
+import com.bloxbean.cardano.yano.api.plugin.PluginActivationException;
 import com.bloxbean.cardano.yano.runtime.kernel.Subsystem;
 import com.bloxbean.cardano.yano.runtime.kernel.SubsystemHealth;
+import com.bloxbean.cardano.yano.runtime.plugins.LegacyServiceLoaderProviderRegistry;
+import com.bloxbean.cardano.yano.runtime.plugins.PluginProviderRegistry;
+import com.bloxbean.cardano.yano.runtime.util.LifecycleFailures;
 import org.slf4j.Logger;
 
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -51,7 +59,11 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     private final long protocolMagic;
     private final EventBus eventBus;
     private final Logger log;
-    private final ClassLoader pluginClassLoader;
+    private final PluginProviderRegistry pluginProviders;
+    /** Non-null only for the compatibility constructor that created the registry. */
+    private final AutoCloseable ownedPluginProviders;
+    private final AtomicBoolean permanentlyClosed = new AtomicBoolean(false);
+    private final CompletableFuture<Void> permanentCloseCompletion = new CompletableFuture<>();
 
     private final com.bloxbean.cardano.yano.api.appchain.signer.SignerProvider signer;
     private final MemberGroup group;
@@ -65,7 +77,12 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
 
     private final SeenMessageIds seenMessageIds;
     private final ConcurrentLinkedDeque<ReceivedAppMessage> recentMessages = new ConcurrentLinkedDeque<>();
-    private final List<AppPeerLink> peerClients = new ArrayList<>();
+    // Engine callbacks and admitted API calls can still be iterating while
+    // stop retires the generation. Peer links themselves reject work after
+    // shutdown; snapshot iteration prevents teardown from invalidating an
+    // in-flight relay/status traversal.
+    private final List<AppPeerLink> peerClients =
+            new java.util.concurrent.CopyOnWriteArrayList<>();
     /** Shared L1-session transport (ADR 005 M1 unification); null = dedicated dials. */
     private volatile SharedAppTransport sharedTransport;
     private volatile java.util.Set<String> sharedEndpoints = java.util.Set.of();
@@ -114,10 +131,246 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     private volatile long lastStallEventAt;
 
     private final AtomicBoolean running = new AtomicBoolean(false);
+    /**
+     * Host lifecycle calls are serialized through an explicit transition
+     * protocol. The short lock only claims/publishes state; plugin callbacks,
+     * scheduler shutdown, RocksDB work and completion callbacks always run
+     * after it has been released.
+     */
+    private final Object lifecycleTransitionLock = new Object();
+    private volatile LifecycleState lifecycleState = LifecycleState.STOPPED;
+    private Thread lifecycleTransitionOwner;
+    private CompletableFuture<Void> lifecycleTransitionCompletion =
+            CompletableFuture.completedFuture(null);
+    /**
+     * Threads created by a lifecycle callback inherit this marker. They must
+     * never synchronously re-enter host lifecycle and wait for the transition
+     * that created them. Read-only status/state access remains allowed.
+     */
+    private final InheritableThreadLocal<Boolean> lifecycleTransitionLineage =
+            new InheritableThreadLocal<>();
     private volatile ScheduledExecutorService scheduler;
     private volatile ScheduledExecutorService sinkScheduler;
     private volatile ScheduledExecutorService fxScheduler;
     private volatile EffectRuntime effectRuntime;
+    /**
+     * Per-start admission fence for callers that may retain any resource owned
+     * by the current app-chain generation.  stop() seals the fence before it
+     * starts dismantling that generation; ledger and plugin-provider cleanup
+     * are deferred until every operation admitted before the seal has left.
+     *
+     * <p>The fence is deliberately re-entrant per thread.  An admitted public
+     * operation may call another fenced helper after stop has sealed new root
+     * admissions and must still be allowed to finish against its generation.</p>
+     */
+    private final GenerationUseGate generationUseGate = new GenerationUseGate();
+    /**
+     * A stop may return while an interrupt-ignoring sink or engine callback
+     * drains. A same-instance restart is rejected until callbacks, ledger and
+     * product shutdown have all completed.
+     */
+    private volatile CompletableFuture<Void> deferredRuntimeShutdown =
+            CompletableFuture.completedFuture(null);
+
+    private enum LifecycleState {
+        STOPPED,
+        STARTING,
+        RUNNING,
+        STOPPING
+    }
+
+    private record OpenedGeneration(
+            long token,
+            CompletableFuture<Void> quiescence
+    ) {
+    }
+
+    private final class GenerationUseGate {
+        private final ThreadLocal<UseDepth> localUse = new ThreadLocal<>();
+        private boolean generationOpen;
+        private boolean accepting;
+        private int activeRoots;
+        private long generationSequence;
+        private long generationToken;
+        private CompletableFuture<Void> quiescence = CompletableFuture.completedFuture(null);
+
+        synchronized OpenedGeneration open() {
+            if (generationOpen || accepting || activeRoots != 0 || !quiescence.isDone()) {
+                throw new IllegalStateException("App-chain '" + config.chainId()
+                        + "' cannot open a new resource generation while the previous one drains");
+            }
+            if (quiescence.isCompletedExceptionally()) {
+                throw new IllegalStateException("App-chain '" + config.chainId()
+                        + "' cannot open a new resource generation after failed cleanup");
+            }
+            if (generationSequence == Long.MAX_VALUE) {
+                throw new IllegalStateException("App-chain '" + config.chainId()
+                        + "' exhausted its resource-generation identity space");
+            }
+            generationOpen = true;
+            accepting = false;
+            generationToken = ++generationSequence;
+            quiescence = new CompletableFuture<>();
+            return new OpenedGeneration(generationToken, quiescence);
+        }
+
+        synchronized void activate() {
+            if (!generationOpen || accepting || activeRoots != 0 || quiescence.isDone()) {
+                throw new IllegalStateException("App-chain '" + config.chainId()
+                        + "' cannot activate an invalid resource generation");
+            }
+            accepting = true;
+        }
+
+        GenerationUse tryAcquire() {
+            UseDepth nested = localUse.get();
+            if (nested != null) {
+                nested.depth++;
+                return new GenerationUse(nested, true);
+            }
+            synchronized (this) {
+                if (!accepting || lifecycleState != LifecycleState.RUNNING) {
+                    return new GenerationUse(null, false);
+                }
+                activeRoots++;
+                UseDepth root = new UseDepth(generationToken);
+                localUse.set(root);
+                return new GenerationUse(root, true);
+            }
+        }
+
+        GenerationUse tryAcquire(long expectedGenerationToken) {
+            UseDepth nested = localUse.get();
+            if (nested != null) {
+                if (nested.generationToken != expectedGenerationToken) {
+                    return new GenerationUse(null, false);
+                }
+                nested.depth++;
+                return new GenerationUse(nested, true);
+            }
+            synchronized (this) {
+                if (!accepting || lifecycleState != LifecycleState.RUNNING
+                        || generationToken != expectedGenerationToken) {
+                    return new GenerationUse(null, false);
+                }
+                activeRoots++;
+                UseDepth root = new UseDepth(generationToken);
+                localUse.set(root);
+                return new GenerationUse(root, true);
+            }
+        }
+
+        CompletableFuture<Void> seal() {
+            CompletableFuture<Void> result;
+            CompletableFuture<Void> completion;
+            synchronized (this) {
+                accepting = false;
+                generationOpen = false;
+                result = quiescence;
+                completion = completionIfQuiescent();
+            }
+            // CompletableFuture dependents may run inline and may include
+            // untrusted provider cleanup. Never run them under the gate lock.
+            if (completion != null) {
+                completion.complete(null);
+            }
+            return result;
+        }
+
+        boolean inUseByCurrentThread() {
+            return localUse.get() != null;
+        }
+
+        private void release(UseDepth use) {
+            if (localUse.get() != use) {
+                throw new IllegalStateException("App-chain generation use closed on another thread");
+            }
+            use.depth--;
+            if (use.depth > 0) {
+                return;
+            }
+            localUse.remove();
+            CompletableFuture<Void> completion;
+            synchronized (this) {
+                activeRoots--;
+                completion = completionIfQuiescent();
+            }
+            if (completion != null) {
+                completion.complete(null);
+            }
+        }
+
+        private CompletableFuture<Void> completionIfQuiescent() {
+            return !accepting && activeRoots == 0 ? quiescence : null;
+        }
+
+        private final class UseDepth {
+            private final long generationToken;
+            private int depth = 1;
+
+            private UseDepth(long generationToken) {
+                this.generationToken = generationToken;
+            }
+        }
+
+        final class GenerationUse implements AutoCloseable {
+            private final UseDepth use;
+            private final boolean admitted;
+            private boolean closed;
+
+            private GenerationUse(UseDepth use, boolean admitted) {
+                this.use = use;
+                this.admitted = admitted;
+            }
+
+            boolean admitted() {
+                return admitted;
+            }
+
+            @Override
+            public void close() {
+                if (!closed && admitted) {
+                    closed = true;
+                    release(use);
+                }
+            }
+        }
+    }
+
+    private <T> T generationUseOr(T unavailable, java.util.function.Supplier<T> action) {
+        var generationUse = generationUseGate.tryAcquire();
+        try (generationUse) {
+            return generationUse.admitted() ? action.get() : unavailable;
+        }
+    }
+
+    private <T> T requireGenerationUse(java.util.function.Supplier<T> action) {
+        var generationUse = generationUseGate.tryAcquire();
+        try (generationUse) {
+            if (!generationUse.admitted()) {
+                throw new IllegalStateException("App chain is not running or is stopping");
+            }
+            return action.get();
+        }
+    }
+
+    private void generationUseOrNoop(Runnable action) {
+        var generationUse = generationUseGate.tryAcquire();
+        try (generationUse) {
+            if (generationUse.admitted()) {
+                action.run();
+            }
+        }
+    }
+
+    private void generationUseOrNoop(long expectedGenerationToken, Runnable action) {
+        var generationUse = generationUseGate.tryAcquire(expectedGenerationToken);
+        try (generationUse) {
+            if (generationUse.admitted()) {
+                action.run();
+            }
+        }
+    }
 
     public AppChainSubsystem(AppChainConfig config, long protocolMagic, EventBus eventBus, Logger log) {
         this(config, protocolMagic, eventBus, null, null, log);
@@ -143,56 +396,107 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     public AppChainSubsystem(AppChainConfig config, long protocolMagic, EventBus eventBus,
                              AppStateMachine stateMachine, String ledgerPath,
                              ClassLoader pluginClassLoader, Logger log) {
-        this.config = Objects.requireNonNull(config, "config");
-        this.protocolMagic = protocolMagic;
-        this.eventBus = eventBus;
-        this.log = Objects.requireNonNull(log, "log");
-        this.pluginClassLoader = pluginClassLoader;
-        this.signer = SignerProviders.resolve(config.signingKeyHex(), pluginClassLoader, log);
-        this.group = new MemberGroup(normalizeMemberKeys(config.memberKeysHex()), config.threshold());
-        this.seenMessageIds = new SeenMessageIds(SEEN_IDS_HARD_CAP);
-        this.pool = new AppMsgPool(config.poolMaxMessages());
-        this.stateMachine = stateMachine != null
-                ? stateMachine
-                : resolveStateMachine(config.stateMachineId(), pluginClassLoader,
-                        new com.bloxbean.cardano.yano.api.appchain.AppStateMachineContext() {
-                            @Override public String chainId() { return config.chainId(); }
-                            @Override public java.util.Map<String, String> settings() {
-                                return config.pluginSettings();
-                            }
-                        }, log);
-        this.ledgerPath = (ledgerPath != null ? ledgerPath : "./app-chain") + "/" + config.chainId();
+        this(config, protocolMagic, eventBus, stateMachine, ledgerPath,
+                pluginClassLoader, new LegacyServiceLoaderProviderRegistry(pluginClassLoader),
+                true, log);
+    }
 
-        if (!group.contains(signer.publicKeyHex())) {
-            if (governedMode()) {
-                // Governed bootstrap (008.3): a late-added member starts with
-                // the chain's ORIGINAL genesis list (which predates it) and
-                // becomes a member via the derived governance epochs
-                log.warn("App-chain '{}': this node's key {} is not in the GENESIS member list — "
-                        + "expecting chain-governed epochs to include it (catch-up will derive them)",
-                        config.chainId(), signer.publicKeyHex());
+    /**
+     * Catalog-aware constructor used by normal runtime assembly. The registry
+     * owns and caches provider factories; each factory invocation below still
+     * creates fresh chain-scoped state machines, modes, observers, sinks and
+     * effect executors.
+     *
+     * @param pluginClassLoader retained for source/assembly symmetry; provider
+     *                          discovery is exclusively through
+     *                          {@code pluginProviders}
+     * @param pluginProviders   catalog-selected typed provider registry
+     */
+    public AppChainSubsystem(AppChainConfig config, long protocolMagic, EventBus eventBus,
+                             AppStateMachine stateMachine, String ledgerPath,
+                             ClassLoader pluginClassLoader,
+                             PluginProviderRegistry pluginProviders, Logger log) {
+        this(config, protocolMagic, eventBus, stateMachine, ledgerPath,
+                pluginClassLoader, pluginProviders, false, log);
+    }
+
+    private AppChainSubsystem(AppChainConfig config, long protocolMagic, EventBus eventBus,
+                              AppStateMachine stateMachine, String ledgerPath,
+                              ClassLoader pluginClassLoader,
+                              PluginProviderRegistry pluginProviders,
+                              boolean ownsPluginProviders,
+                              Logger log) {
+        this.pluginProviders = Objects.requireNonNull(pluginProviders, "pluginProviders");
+        this.ownedPluginProviders = ownsPluginProviders
+                ? (AutoCloseable) pluginProviders
+                : null;
+        try {
+            this.config = Objects.requireNonNull(config, "config");
+            this.protocolMagic = protocolMagic;
+            this.eventBus = eventBus;
+            this.log = Objects.requireNonNull(log, "log");
+            this.signer = SignerProviders.resolveFromRegistry(
+                    config.signingKeyHex(), pluginProviders, log);
+            this.group = new MemberGroup(
+                    normalizeMemberKeys(config.memberKeysHex()), config.threshold());
+            this.seenMessageIds = new SeenMessageIds(SEEN_IDS_HARD_CAP);
+            this.pool = new AppMsgPool(config.poolMaxMessages());
+            this.stateMachine = stateMachine != null
+                    ? stateMachine
+                    : resolveStateMachine(config.stateMachineId(), pluginProviders,
+                            new com.bloxbean.cardano.yano.api.appchain.AppStateMachineContext() {
+                                @Override public String chainId() { return config.chainId(); }
+                                @Override public java.util.Map<String, String> settings() {
+                                    return config.pluginSettings();
+                                }
+                            }, log);
+            this.ledgerPath = (ledgerPath != null ? ledgerPath : "./app-chain")
+                    + "/" + config.chainId();
+
+            if (!group.contains(signer.publicKeyHex())) {
+                if (governedMode()) {
+                    // Governed bootstrap (008.3): a late-added member starts with
+                    // the chain's ORIGINAL genesis list (which predates it) and
+                    // becomes a member via the derived governance epochs
+                    log.warn("App-chain '{}': this node's key {} is not in the GENESIS member list — "
+                                    + "expecting chain-governed epochs to include it "
+                                    + "(catch-up will derive them)",
+                            config.chainId(), signer.publicKeyHex());
+                } else {
+                    throw new IllegalArgumentException(
+                            "This node's app-chain public key " + signer.publicKeyHex()
+                                    + " is not in the configured member list "
+                                    + "(yano.app-chain.members)");
+                }
+            }
+            if (config.sequencingEnabled()) {
+                String proposer = config.proposerKeyHex().toLowerCase(Locale.ROOT);
+                if (!proposer.isEmpty() && !group.contains(proposer)) {
+                    throw new IllegalArgumentException(
+                            "Configured proposer " + proposer + " is not in the member list");
+                }
+                if (config.threshold() > group.size()) {
+                    throw new IllegalArgumentException("Finality threshold " + config.threshold()
+                            + " exceeds member count " + group.size());
+                }
+                // Fail fast on an unknown/misconfigured sequencer mode (008.2)
+                this.sequencerMode = resolveSequencerMode();
             } else {
-                throw new IllegalArgumentException(
-                        "This node's app-chain public key " + signer.publicKeyHex()
-                                + " is not in the configured member list (yano.app-chain.members)");
+                this.sequencerMode = null;
             }
+            createPeerLinks();
+        } catch (Throwable constructionFailure) {
+            Throwable outcome = constructionFailure;
+            if (ownedPluginProviders != null) {
+                try {
+                    ownedPluginProviders.close();
+                } catch (Throwable registryFailure) {
+                    outcome = LifecycleFailures.merge(outcome, registryFailure);
+                }
+            }
+            throw propagateLifecycleFailure(outcome,
+                    "App-chain construction failed");
         }
-        if (config.sequencingEnabled()) {
-            String proposer = config.proposerKeyHex().toLowerCase(Locale.ROOT);
-            if (!proposer.isEmpty() && !group.contains(proposer)) {
-                throw new IllegalArgumentException(
-                        "Configured proposer " + proposer + " is not in the member list");
-            }
-            if (config.threshold() > group.size()) {
-                throw new IllegalArgumentException("Finality threshold " + config.threshold()
-                        + " exceeds member count " + group.size());
-            }
-            // Fail fast on an unknown/misconfigured sequencer mode (008.2)
-            this.sequencerMode = resolveSequencerMode();
-        } else {
-            this.sequencerMode = null;
-        }
-        createPeerLinks();
     }
 
     /** Build one outbound link per configured peer (shared where wired, else dedicated). */
@@ -273,8 +577,8 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
 
     /**
      * Resolve the sequencer mode (ADR 008.2 §2.7): built-ins {@code fixed} /
-     * {@code rotating}, then {@code SequencerModeProvider} plugins via
-     * ServiceLoader. Selected by {@code sequencer.mode}; a bare
+     * {@code rotating}, then catalog-selected {@link SequencerModeProvider}
+     * plugins. Selected by {@code sequencer.mode}; a bare
      * {@code sequencer.proposer} keeps meaning {@code fixed} (v1 compat).
      */
     private com.bloxbean.cardano.yano.api.appchain.sequencer.SequencerMode resolveSequencerMode() {
@@ -284,7 +588,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         }
         String modeId = settings.getOrDefault("sequencer.mode",
                 !config.proposerKeyHex().isEmpty() ? FixedSequencerMode.ID : "")
-                .trim().toLowerCase(Locale.ROOT);
+                .trim();
         if (modeId.isEmpty()) {
             throw new IllegalArgumentException("App-chain '" + config.chainId()
                     + "': sequencing requires sequencer.proposer (fixed) or sequencer.mode");
@@ -307,63 +611,172 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             @Override public Map<String, String> settings() { return settings; }
         };
 
-        com.bloxbean.cardano.yano.api.appchain.sequencer.SequencerMode mode = switch (modeId) {
-            case FixedSequencerMode.ID -> new FixedSequencerMode();
-            case RotatingSequencerMode.ID -> new RotatingSequencerMode();
-            default -> {
-                ClassLoader loader = pluginClassLoader != null
-                        ? pluginClassLoader : Thread.currentThread().getContextClassLoader();
-                for (var provider : java.util.ServiceLoader.load(
-                        com.bloxbean.cardano.yano.api.appchain.sequencer.SequencerModeProvider.class, loader)) {
-                    if (modeId.equals(provider.id())) {
-                        yield provider.create(context);
-                    }
-                }
-                throw new IllegalArgumentException("App-chain '" + config.chainId()
-                        + "': unknown sequencer mode '" + modeId
-                        + "' (built-ins: fixed, rotating; plugins via SequencerModeProvider)");
+        com.bloxbean.cardano.yano.api.appchain.sequencer.SequencerMode mode;
+        if (FixedSequencerMode.ID.equals(modeId)) {
+            mode = new FixedSequencerMode();
+        } else if (RotatingSequencerMode.ID.equals(modeId)) {
+            mode = new RotatingSequencerMode();
+        } else {
+            SequencerModeProvider provider = pluginProviders.find(
+                    SequencerModeProvider.class, modeId).orElse(null);
+            if (provider == null) {
+                throw new PluginActivationException("App-chain '" + config.chainId()
+                        + "': configured plugin sequencer mode '" + modeId
+                        + "' is not selected (built-ins: fixed, rotating; selected custom modes: "
+                        + pluginProviders.names(SequencerModeProvider.class) + ")", null);
             }
-        };
+            try {
+                mode = Objects.requireNonNull(provider.create(context),
+                        "SequencerModeProvider.create returned null");
+                String productId = Objects.requireNonNull(
+                        mode.id(), "SequencerMode.id returned null");
+                if (!modeId.equals(productId)) {
+                    throw new IllegalStateException("SequencerModeProvider '" + modeId
+                            + "' returned product id '" + productId + "'");
+                }
+                mode = stableSequencerIdentity(mode, modeId);
+                mode.init(context);
+                return mode;
+            } catch (RuntimeException failure) {
+                throw pluginActivationFailure("sequencer mode '" + modeId + "'", failure);
+            }
+        }
         mode.init(context);
         return mode;
     }
 
     /**
      * Resolve a state machine by id: built-ins first, then
-     * {@link AppStateMachineProvider} implementations discovered via
-     * ServiceLoader on the plugin classloader (custom app chains deployed as
-     * plugin jars on a stock yano distribution) and the context classloader.
+     * catalog-selected {@link AppStateMachineProvider} implementations.
      */
-    private static AppStateMachine resolveStateMachine(String id, ClassLoader pluginClassLoader,
-                                                       com.bloxbean.cardano.yano.api.appchain.AppStateMachineContext ctx,
+    private static AppStateMachine resolveStateMachine(String id,
+                                                       PluginProviderRegistry pluginProviders,
+                                                       AppStateMachineContext ctx,
                                                        Logger log) {
         if (OrderedLogStateMachine.ID.equals(id)) {
             return new OrderedLogStateMachine();
         }
-        List<ClassLoader> classLoaders = new ArrayList<>();
-        if (pluginClassLoader != null) {
-            classLoaders.add(pluginClassLoader);
-        }
-        classLoaders.add(Thread.currentThread().getContextClassLoader());
-        List<String> available = new ArrayList<>();
-        available.add(OrderedLogStateMachine.ID);
-        for (ClassLoader classLoader : classLoaders) {
+        AppStateMachineProvider provider = pluginProviders.find(
+                AppStateMachineProvider.class, id).orElse(null);
+        if (provider != null) {
+            log.info("App-chain state machine '{}' loaded via provider {}",
+                    id, provider.getClass().getName());
             try {
-                for (AppStateMachineProvider provider
-                        : java.util.ServiceLoader.load(AppStateMachineProvider.class, classLoader)) {
-                    if (id.equals(provider.id())) {
-                        log.info("App-chain state machine '{}' loaded via provider {}",
-                                id, provider.getClass().getName());
-                        return provider.create(ctx);
-                    }
-                    available.add(provider.id());
+                AppStateMachine machine = Objects.requireNonNull(provider.create(ctx),
+                        "AppStateMachineProvider.create returned null");
+                String productId = Objects.requireNonNull(
+                        machine.id(), "AppStateMachine.id returned null");
+                if (!id.equals(productId)) {
+                    throw new IllegalStateException("AppStateMachineProvider '" + id
+                            + "' returned product id '" + productId + "'");
                 }
-            } catch (Exception e) {
-                log.warn("AppStateMachineProvider discovery failed on {}: {}", classLoader, e.toString());
+                return startupMarkedStateMachine(machine, id);
+            } catch (RuntimeException failure) {
+                throw pluginActivationFailure("state machine '" + id + "'", failure);
             }
         }
-        throw new IllegalArgumentException("Unknown app-chain state machine: " + id
-                + " (available: " + available + ")");
+        List<String> available = new ArrayList<>();
+        available.add(OrderedLogStateMachine.ID);
+        available.addAll(pluginProviders.names(AppStateMachineProvider.class));
+        throw new PluginActivationException("Configured plugin app-chain state machine '" + id
+                + "' is not selected (available: " + available + ")", null);
+    }
+
+    private static AppStateMachine startupMarkedStateMachine(AppStateMachine delegate, String id) {
+        return new AppStateMachine() {
+            @Override
+            public String id() {
+                return id;
+            }
+
+            @Override
+            public void init(AppStateReader state, AppChainInfo info) {
+                try {
+                    delegate.init(state, info);
+                } catch (RuntimeException failure) {
+                    throw pluginActivationFailure("state machine '" + id + "'", failure);
+                }
+            }
+
+            @Override
+            public AdmissionResult validate(AppMessage message) {
+                return delegate.validate(message);
+            }
+
+            @Override
+            public void apply(AppBlock block, AppStateWriter writer) {
+                delegate.apply(block, writer);
+            }
+
+            @Override
+            public void apply(
+                    AppBlock block,
+                    AppStateWriter writer,
+                    com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter effects
+            ) {
+                delegate.apply(block, writer, effects);
+            }
+
+            @Override
+            public void onEffectResult(
+                    AppBlock block,
+                    com.bloxbean.cardano.yano.api.appchain.effects.EffectResult result,
+                    AppStateWriter writer
+            ) {
+                delegate.onEffectResult(block, result, writer);
+            }
+
+            @Override
+            public byte[] query(String path, byte[] params) {
+                return delegate.query(path, params);
+            }
+        };
+    }
+
+    private static com.bloxbean.cardano.yano.api.appchain.sequencer.SequencerMode
+    stableSequencerIdentity(
+            com.bloxbean.cardano.yano.api.appchain.sequencer.SequencerMode delegate,
+            String id
+    ) {
+        return new com.bloxbean.cardano.yano.api.appchain.sequencer.SequencerMode() {
+            @Override
+            public String id() {
+                return id;
+            }
+
+            @Override
+            public void init(
+                    com.bloxbean.cardano.yano.api.appchain.sequencer.SequencerContext context) {
+                delegate.init(context);
+            }
+
+            @Override
+            public boolean shouldProposeNow(long height) {
+                return delegate.shouldProposeNow(height);
+            }
+
+            @Override
+            public com.bloxbean.cardano.yano.api.appchain.sequencer.SequencerMode.ProposalEligibility
+            checkProposal(byte[] proposerKey, long height) {
+                return delegate.checkProposal(proposerKey, height);
+            }
+
+            @Override
+            public Map<String, Object> status() {
+                return delegate.status();
+            }
+        };
+    }
+
+    private static PluginActivationException pluginActivationFailure(
+            String component,
+            Throwable failure
+    ) {
+        if (failure instanceof PluginActivationException activationFailure) {
+            return activationFailure;
+        }
+        return new PluginActivationException(
+                "Configured plugin " + component + " failed to activate", failure);
     }
 
     private static Set<String> normalizeMemberKeys(Set<String> keys) {
@@ -508,23 +921,36 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         }
         AgentFactory catchUpFactory = () ->
                 new com.bloxbean.cardano.yaci.core.protocol.appchainsync.AppChainSyncServerAgent(
-                        (chainId, fromHeight, toHeight) -> {
-                            AppLedgerStore currentLedger = ledger;
-                            if (currentLedger == null || !config.chainId().equals(chainId)) {
-                                return new com.bloxbean.cardano.yaci.core.protocol.appchainsync
-                                        .AppChainSyncServerAgent.BlockRangeProvider.Range(List.of(), 0);
-                            }
-                            return new com.bloxbean.cardano.yaci.core.protocol.appchainsync
-                                    .AppChainSyncServerAgent.BlockRangeProvider.Range(
-                                    currentLedger.blockBytesRange(fromHeight, toHeight),
-                                    currentLedger.tipHeight());
-                        });
+                        this::catchUpRange);
         return List.of(gossipFactory, catchUpFactory);
     }
 
-    /** The ledger, or null when sequencing is disabled / not started (manager use). */
-    AppLedgerStore ledgerOrNull() {
-        return ledger;
+    com.bloxbean.cardano.yaci.core.protocol.appchainsync.AppChainSyncServerAgent
+            .BlockRangeProvider.Range catchUpRange(String chainId, long fromHeight, long toHeight) {
+        var generationUse = generationUseGate.tryAcquire();
+        try (generationUse) {
+            AppLedgerStore currentLedger = ledger;
+            if (!generationUse.admitted() || currentLedger == null
+                    || !config.chainId().equals(chainId)) {
+                return new com.bloxbean.cardano.yaci.core.protocol.appchainsync
+                        .AppChainSyncServerAgent.BlockRangeProvider.Range(List.of(), 0);
+            }
+            return new com.bloxbean.cardano.yaci.core.protocol.appchainsync
+                    .AppChainSyncServerAgent.BlockRangeProvider.Range(
+                    currentLedger.blockBytesRange(fromHeight, toHeight),
+                    currentLedger.tipHeight());
+        }
+    }
+
+    /** Test seam for retention policy without leaking a ledger past its generation lease. */
+    int pruneBodiesBelowForTesting(long horizon) {
+        return requireGenerationUse(() -> {
+            AppLedgerStore currentLedger = ledger;
+            if (currentLedger == null) {
+                throw new IllegalStateException("App chain has no ledger (sequencing disabled)");
+            }
+            return currentLedger.pruneBodiesBelow(horizon);
+        });
     }
 
     AppChainConfig chainConfig() {
@@ -538,6 +964,11 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
 
     /** Catch-up replies from a peer (protocol 103). */
     private void onCatchUpBlocks(String peerId, List<byte[]> blocks, long serverTipHeight) {
+        generationUseOrNoop(() -> onCatchUpBlocksWithinGeneration(peerId, blocks, serverTipHeight));
+    }
+
+    private void onCatchUpBlocksWithinGeneration(
+            String peerId, List<byte[]> blocks, long serverTipHeight) {
         bestPeerTip = Math.max(bestPeerTip, serverTipHeight);
         AppChainEngine currentEngine = engine;
         if (currentEngine != null && !blocks.isEmpty()) {
@@ -548,6 +979,10 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     }
 
     private void catchUpTick() {
+        generationUseOrNoop(this::catchUpTickWithinGeneration);
+    }
+
+    private void catchUpTickWithinGeneration() {
         AppChainEngine currentEngine = engine;
         if (!running.get() || currentEngine == null) {
             return;
@@ -572,7 +1007,8 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                                     config.chainId(), tip, bestPeerTip),
                             EventMetadata.builder().build(), PublishOptions.builder().build());
                 } catch (Exception e) {
-                    log.warn("Failed to publish AppChainStalledEvent: {}", e.toString());
+                    log.warn("Failed to publish AppChainStalledEvent (errorType={})",
+                            e.getClass().getName());
                 }
             }
         }
@@ -580,6 +1016,10 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
 
     /** Verified messages arriving from a peer: dedup, route, relay. */
     void onInboundMessages(List<AppMessage> messages) {
+        generationUseOrNoop(() -> onInboundMessagesWithinGeneration(messages));
+    }
+
+    private void onInboundMessagesWithinGeneration(List<AppMessage> messages) {
         for (AppMessage message : messages) {
             boolean firstSighting =
                     seenMessageIds.markSeen(message.getMessageIdHex(), message.getExpiresAt());
@@ -705,7 +1145,8 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                 eventBus.publish(new AppMessageReceivedEvent(received),
                         EventMetadata.builder().build(), PublishOptions.builder().build());
             } catch (Exception e) {
-                log.warn("Failed to publish AppMessageReceivedEvent: {}", e.toString());
+                log.warn("Failed to publish AppMessageReceivedEvent (errorType={})",
+                        e.getClass().getName());
             }
         }
     }
@@ -778,7 +1219,8 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                         observation.topic(), observation.slot());
             }
         } catch (Exception e) {
-            log.warn("L1 observation injection failed: {}", e.toString());
+            log.warn("L1 observation injection failed (errorType={})",
+                    e.getClass().getName());
         }
     }
 
@@ -793,6 +1235,10 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
 
     @Override
     public String submit(String topic, byte[] body) {
+        return requireGenerationUse(() -> submitWithinGeneration(topic, body));
+    }
+
+    private String submitWithinGeneration(String topic, byte[] body) {
         if (!running.get())
             throw new IllegalStateException("App chain is not running");
         if (submissionsPaused.get())
@@ -837,39 +1283,51 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
 
     @Override
     public long tipHeight() {
-        AppLedgerStore currentLedger = ledger;
-        return currentLedger != null ? currentLedger.tipHeight() : 0L;
+        return generationUseOr(0L, () -> {
+            AppLedgerStore currentLedger = ledger;
+            return currentLedger != null ? currentLedger.tipHeight() : 0L;
+        });
     }
 
     @Override
     public Optional<AppBlock> block(long height) {
-        AppLedgerStore currentLedger = ledger;
-        return currentLedger != null ? currentLedger.block(height) : Optional.empty();
+        return generationUseOr(Optional.empty(), () -> {
+            AppLedgerStore currentLedger = ledger;
+            return currentLedger != null ? currentLedger.block(height) : Optional.empty();
+        });
     }
 
     @Override
     public byte[] stateRoot() {
-        AppLedgerStore currentLedger = ledger;
-        byte[] root = currentLedger != null ? currentLedger.stateRoot() : null;
-        return root != null ? root : new byte[32];
+        return generationUseOr(new byte[32], () -> {
+            AppLedgerStore currentLedger = ledger;
+            byte[] root = currentLedger != null ? currentLedger.stateRoot() : null;
+            return root != null ? root : new byte[32];
+        });
     }
 
     @Override
     public Optional<byte[]> stateValue(byte[] key) {
-        AppLedgerStore currentLedger = ledger;
-        return currentLedger != null ? currentLedger.stateGet(key) : Optional.empty();
+        return generationUseOr(Optional.empty(), () -> {
+            AppLedgerStore currentLedger = ledger;
+            return currentLedger != null ? currentLedger.stateGet(key) : Optional.empty();
+        });
     }
 
     @Override
     public Optional<byte[]> stateProof(byte[] key) {
-        AppLedgerStore currentLedger = ledger;
-        return currentLedger != null ? currentLedger.stateProofWire(key) : Optional.empty();
+        return generationUseOr(Optional.empty(), () -> {
+            AppLedgerStore currentLedger = ledger;
+            return currentLedger != null ? currentLedger.stateProofWire(key) : Optional.empty();
+        });
     }
 
     @Override
     public Optional<Long> messageHeight(byte[] messageId) {
-        AppLedgerStore currentLedger = ledger;
-        return currentLedger != null ? currentLedger.messageHeight(messageId) : Optional.empty();
+        return generationUseOr(Optional.empty(), () -> {
+            AppLedgerStore currentLedger = ledger;
+            return currentLedger != null ? currentLedger.messageHeight(messageId) : Optional.empty();
+        });
     }
 
     // ------------------------------------------------------------------
@@ -879,10 +1337,12 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     @Override
     public List<com.bloxbean.cardano.yano.api.appchain.MessageRef> messagesByTopic(
             String topic, long fromHeight, int limit) {
-        AppLedgerStore currentLedger = ledger;
-        return currentLedger != null
-                ? currentLedger.messagesByTopic(topic, fromHeight, Math.max(1, Math.min(limit, 1000)))
-                : List.of();
+        return generationUseOr(List.of(), () -> {
+            AppLedgerStore currentLedger = ledger;
+            return currentLedger != null
+                    ? currentLedger.messagesByTopic(topic, fromHeight, Math.max(1, Math.min(limit, 1000)))
+                    : List.of();
+        });
     }
 
     @Override
@@ -890,10 +1350,12 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             byte[] sender, long fromHeight, int limit) {
         if (sender == null || sender.length != 32)
             throw new IllegalArgumentException("sender must be a 32-byte Ed25519 public key");
-        AppLedgerStore currentLedger = ledger;
-        return currentLedger != null
-                ? currentLedger.messagesBySender(sender, fromHeight, Math.max(1, Math.min(limit, 1000)))
-                : List.of();
+        return generationUseOr(List.of(), () -> {
+            AppLedgerStore currentLedger = ledger;
+            return currentLedger != null
+                    ? currentLedger.messagesBySender(sender, fromHeight, Math.max(1, Math.min(limit, 1000)))
+                    : List.of();
+        });
     }
 
     // ------------------------------------------------------------------
@@ -902,39 +1364,49 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
 
     @Override
     public List<EffectView> effects(long fromHeight, int limit) {
-        AppLedgerStore currentLedger = ledger;
-        if (currentLedger == null) {
-            return List.of();
-        }
-        return currentLedger.fxRecordsFrom(fromHeight, Math.max(1, Math.min(limit, 1000))).stream()
-                .map(EffectView::of)
-                .toList();
+        return generationUseOr(List.of(), () -> {
+            AppLedgerStore currentLedger = ledger;
+            if (currentLedger == null) {
+                return List.of();
+            }
+            return currentLedger.fxRecordsFrom(fromHeight, Math.max(1, Math.min(limit, 1000))).stream()
+                    .map(EffectView::of)
+                    .toList();
+        });
     }
 
     @Override
     public Optional<EffectView> effect(long height, int ordinal) {
-        AppLedgerStore currentLedger = ledger;
-        return currentLedger != null
-                ? currentLedger.fxRecord(height, ordinal).map(EffectView::of)
-                : Optional.empty();
+        return generationUseOr(Optional.empty(), () -> {
+            AppLedgerStore currentLedger = ledger;
+            return currentLedger != null
+                    ? currentLedger.fxRecord(height, ordinal).map(EffectView::of)
+                    : Optional.empty();
+        });
     }
 
     @Override
     public com.bloxbean.cardano.yano.api.appchain.effects.EffectProofLookup effectProof(
             long height, int ordinal) {
-        AppLedgerStore currentLedger = ledger;
-        return currentLedger != null
-                ? currentLedger.fxEffectProof(height, ordinal)
-                : com.bloxbean.cardano.yano.api.appchain.effects.EffectProofLookup.notFound(0);
+        var unavailable = com.bloxbean.cardano.yano.api.appchain.effects.EffectProofLookup.notFound(0);
+        return generationUseOr(unavailable, () -> {
+            AppLedgerStore currentLedger = ledger;
+            return currentLedger != null
+                    ? currentLedger.fxEffectProof(height, ordinal)
+                    : unavailable;
+        });
     }
 
     @Override
     public Map<String, Object> effectStats() {
-        EffectRuntime currentFx = effectRuntime;
-        AppLedgerStore currentLedger = ledger;
-        if (currentFx != null) {
-            return currentFx.stats();
-        }
+        return generationUseOr(inactiveEffectStats(null), () -> {
+            EffectRuntime currentFx = effectRuntime;
+            AppLedgerStore currentLedger = ledger;
+            return currentFx != null ? currentFx.stats() : inactiveEffectStats(currentLedger);
+        });
+    }
+
+    private Map<String, Object> inactiveEffectStats(AppLedgerStore currentLedger) {
         Map<String, Object> stats = new java.util.LinkedHashMap<>();
         stats.put("enabled", Boolean.parseBoolean(
                 config.pluginSettings().getOrDefault("effects.enabled", "false")));
@@ -973,14 +1445,18 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
 
     @Override
     public Optional<Map<String, Object>> effectRuntimeStatus(long height, int ordinal) {
-        EffectRuntime currentFx = effectRuntime;
-        return currentFx != null ? currentFx.statusOf(height, ordinal) : Optional.empty();
+        return generationUseOr(Optional.empty(), () -> {
+            EffectRuntime currentFx = effectRuntime;
+            return currentFx != null ? currentFx.statusOf(height, ordinal) : Optional.empty();
+        });
     }
 
     @Override
     public boolean requeueEffect(long height, int ordinal) {
-        EffectRuntime currentFx = effectRuntime;
-        return currentFx != null && currentFx.requeue(height, ordinal);
+        return generationUseOr(false, () -> {
+            EffectRuntime currentFx = effectRuntime;
+            return currentFx != null && currentFx.requeue(height, ordinal);
+        });
     }
 
     private boolean externalEffectsEnabled() {
@@ -991,23 +1467,31 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     @Override
     public List<com.bloxbean.cardano.yano.api.appchain.effects.PendingEffect> claimEffects(
             String executorId, java.util.Set<String> types, int max, long leaseSeconds) {
-        EffectRuntime currentFx = effectRuntime;
-        if (currentFx == null || !externalEffectsEnabled()) {
-            return List.of();
-        }
-        return currentFx.claim(executorId, types, max, leaseSeconds);
+        return generationUseOr(List.of(), () -> {
+            EffectRuntime currentFx = effectRuntime;
+            if (currentFx == null || !externalEffectsEnabled()) {
+                return List.of();
+            }
+            return currentFx.claim(executorId, types, max, leaseSeconds);
+        });
     }
 
     @Override
     public boolean reportEffect(String executorId, long height, int ordinal, boolean success,
                                 byte[] externalRef, String reason) {
-        EffectRuntime currentFx = effectRuntime;
-        return currentFx != null && externalEffectsEnabled()
-                && currentFx.report(executorId, height, ordinal, success, externalRef, reason);
+        return generationUseOr(false, () -> {
+            EffectRuntime currentFx = effectRuntime;
+            return currentFx != null && externalEffectsEnabled()
+                    && currentFx.report(executorId, height, ordinal, success, externalRef, reason);
+        });
     }
 
     @Override
     public boolean cancelEffect(long height, int ordinal, String reason) {
+        return generationUseOr(false, () -> cancelEffectWithinGeneration(height, ordinal, reason));
+    }
+
+    private boolean cancelEffectWithinGeneration(long height, int ordinal, String reason) {
         AppLedgerStore currentLedger = ledger;
         if (!running.get() || currentLedger == null || !config.sequencingEnabled()) {
             return false;
@@ -1079,6 +1563,13 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
 
     @Override
     public void addMember(String publicKeyHex) {
+        requireGenerationUse(() -> {
+            addMemberWithinGeneration(publicKeyHex);
+            return null;
+        });
+    }
+
+    private void addMemberWithinGeneration(String publicKeyHex) {
         if (governedMode()) {
             // Governed mode (008.3): this call SUBMITS a governance command —
             // the change activates once threshold-many members do the same
@@ -1102,6 +1593,13 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
 
     @Override
     public void removeMember(String publicKeyHex) {
+        requireGenerationUse(() -> {
+            removeMemberWithinGeneration(publicKeyHex);
+            return null;
+        });
+    }
+
+    private void removeMemberWithinGeneration(String publicKeyHex) {
         if (governedMode()) {
             String normalized = normalizeMemberKeys(Set.of(publicKeyHex)).iterator().next();
             submitGovernance(GovernedMembership.encodeCommand(GovernedMembership.OP_REMOVE,
@@ -1133,6 +1631,13 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
 
     @Override
     public void setThreshold(int threshold) {
+        requireGenerationUse(() -> {
+            setThresholdWithinGeneration(threshold);
+            return null;
+        });
+    }
+
+    private void setThresholdWithinGeneration(int threshold) {
         if (governedMode()) {
             if (threshold < 1) {
                 throw new IllegalArgumentException("Threshold must be >= 1");
@@ -1154,6 +1659,13 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
 
     @Override
     public void resetMembers() {
+        requireGenerationUse(() -> {
+            resetMembersWithinGeneration();
+            return null;
+        });
+    }
+
+    private void resetMembersWithinGeneration() {
         if (governedMode()) {
             log.warn("App-chain '{}': BREAK-GLASS membership reset on a GOVERNED chain — this "
                     + "node-local override deviates from chain-derived membership until the next "
@@ -1198,14 +1710,20 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
 
     @Override
     public int drainPool() {
-        int dropped = pool.clear();
-        log.info("App-chain '{}' pool drained: {} pending message(s) dropped (admin)",
-                config.chainId(), dropped);
-        return dropped;
+        return requireGenerationUse(() -> {
+            int dropped = pool.clear();
+            log.info("App-chain '{}' pool drained: {} pending message(s) dropped (admin)",
+                    config.chainId(), dropped);
+            return dropped;
+        });
     }
 
     @Override
     public boolean forceAnchor() {
+        return generationUseOr(false, this::forceAnchorWithinGeneration);
+    }
+
+    private boolean forceAnchorWithinGeneration() {
         ScriptAnchorService currentScriptAnchor = scriptAnchorService;
         if (currentScriptAnchor != null && config.anchoringEnabled()
                 && config.anchor() != null && config.anchor().scriptMode()) {
@@ -1224,6 +1742,10 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
      * Only valid on the anchor leader with {@code anchor.mode: script}.
      */
     public Map<String, Object> bootstrapScriptAnchor() {
+        return requireGenerationUse(this::bootstrapScriptAnchorWithinGeneration);
+    }
+
+    private Map<String, Object> bootstrapScriptAnchorWithinGeneration() {
         ScriptAnchorService currentScriptAnchor = scriptAnchorService;
         if (currentScriptAnchor == null)
             throw new IllegalStateException("Script-anchor service is not available on this node");
@@ -1235,6 +1757,10 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
 
     @Override
     public boolean unlockStaleRound() {
+        return requireGenerationUse(this::unlockStaleRoundWithinGeneration);
+    }
+
+    private boolean unlockStaleRoundWithinGeneration() {
         AppChainEngine currentEngine = engine;
         if (currentEngine == null)
             throw new IllegalStateException("Sequencing is not enabled on this node");
@@ -1247,6 +1773,10 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
 
     @Override
     public long snapshot(String snapshotPath) {
+        return requireGenerationUse(() -> snapshotWithinGeneration(snapshotPath));
+    }
+
+    private long snapshotWithinGeneration(String snapshotPath) {
         AppLedgerStore currentLedger = ledger;
         if (currentLedger == null) {
             throw new IllegalStateException("App chain has no ledger (sequencing disabled)");
@@ -1271,6 +1801,11 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
 
     @Override
     public Optional<com.bloxbean.cardano.yano.api.appchain.evidence.EvidenceBundle> evidence(byte[] messageId) {
+        return generationUseOr(Optional.empty(), () -> evidenceWithinGeneration(messageId));
+    }
+
+    private Optional<com.bloxbean.cardano.yano.api.appchain.evidence.EvidenceBundle>
+            evidenceWithinGeneration(byte[] messageId) {
         AppLedgerStore currentLedger = ledger;
         if (currentLedger == null) {
             return Optional.empty();
@@ -1330,6 +1865,11 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
 
     @Override
     public Map<String, Object> status() {
+        var generationUse = generationUseGate.tryAcquire();
+        try (generationUse) {
+            if (!generationUse.admitted()) {
+                return stoppedStatus();
+            }
         Map<String, Object> status = new LinkedHashMap<>();
         status.put("chainId", config.chainId());
         status.put("memberKey", signer.publicKeyHex());
@@ -1417,8 +1957,14 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                 sinkStatus.put("cursor", runner.cursor());
                 sinkStatus.put("delivered", runner.deliveredCount());
                 sinkStatus.put("lagBlocks", Math.max(0, tipHeight() - runner.cursor()));
-                if (runner.lastError() != null) {
-                    sinkStatus.put("lastError", runner.lastError());
+                sinkStatus.put("failureCount", runner.failureCount());
+                String errorType = runner.lastErrorType();
+                sinkStatus.put("state", errorType == null ? "ACTIVE" : "DEGRADED");
+                if (errorType != null) {
+                    // Retain the legacy key but expose only the exception class;
+                    // plugin messages may contain credentials/config values.
+                    sinkStatus.put("lastError", errorType);
+                    sinkStatus.put("lastErrorType", errorType);
                 }
                 sinks.put(runner.id(), sinkStatus);
                 if (runner.id().startsWith("webhook:")) {
@@ -1429,6 +1975,12 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             if (!webhooks.isEmpty()) {
                 status.put("webhooks", webhooks); // pre-Wave-2 consumers
             }
+        }
+        if (!sinkActivationFailures.isEmpty()) {
+            Map<String, Object> failures = new java.util.TreeMap<>();
+            sinkActivationFailures.forEach((scheme, errorType) -> failures.put(
+                    scheme, Map.of("state", "FAILED", "errorType", errorType)));
+            status.put("sinkActivationFailures", Map.copyOf(failures));
         }
         status.put("poolSize", pool.size());
         status.put("poolCapacity", pool.capacity());
@@ -1469,6 +2021,51 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         status.put("peers", peers);
         status.put("peerTransports", peerTransports);
         return status;
+        }
+    }
+
+    private Map<String, Object> stoppedStatus() {
+        Map<String, Object> status = new LinkedHashMap<>();
+        status.put("chainId", config.chainId());
+        status.put("memberKey", signer.publicKeyHex());
+        status.put("members", group.size());
+        status.put("threshold", group.threshold());
+        status.put("running", false);
+        status.put("sequencing", config.sequencingEnabled());
+        status.put("tipHeight", 0L);
+        status.put("stateRoot", HexUtil.encodeHexString(new byte[32]));
+        status.put("poolSize", pool.size());
+        status.put("poolCapacity", pool.capacity());
+        status.put("submissionsPaused", submissionsPaused.get());
+        status.put("peers", Map.of());
+        status.put("peerTransports", Map.of());
+        // Consensus-affecting configuration remains observable before the
+        // first start and between generations. This branch must stay
+        // resource-free because the ledger and plugin products may already be
+        // closed, but operators still need the same transition/effect values
+        // when comparing members prior to activation.
+        Map<String, String> activations = transitionActivationSettings(
+                config.pluginSettings());
+        if (!activations.isEmpty()) {
+            status.put("activations", activations);
+        }
+        EffectsSettings effectsSettings = EffectsSettings.fromSettings(
+                config.pluginSettings());
+        if (effectsSettings.enabled()) {
+            Map<String, Object> effectsStatus = new LinkedHashMap<>();
+            effectsStatus.put("enabled", true);
+            effectsStatus.put("maxPerBlock", effectsSettings.maxPerBlock());
+            effectsStatus.put("maxPayloadBytes", effectsSettings.maxPayloadBytes());
+            effectsStatus.put("maxExpiryBlocks", effectsSettings.maxExpiryBlocks());
+            effectsStatus.put("defaultGate", effectsSettings.defaultGate().name());
+            effectsStatus.put("outcomeCommitment", effectsSettings.outcomeCommitment().name());
+            effectsStatus.put("strictReservedPrefix", effectsSettings.strictReservedPrefix());
+            if (!activations.isEmpty()) {
+                effectsStatus.put("activations", activations);
+            }
+            status.put("effects", effectsStatus);
+        }
+        return status;
     }
 
     // ------------------------------------------------------------------
@@ -1481,9 +2078,186 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     }
 
     @Override
-    public synchronized void start() {
-        if (running.get())
+    public void start() {
+        if (permanentlyClosed.get()) {
+            throw new IllegalStateException("Cannot start a closed app-chain subsystem");
+        }
+        if (!claimLifecycleTransition(LifecycleState.STARTING, "start")) {
             return;
+        }
+
+        Throwable failure = null;
+        try {
+            lifecycleTransitionLineage.set(Boolean.TRUE);
+            startTransition();
+        } catch (Throwable transitionFailure) {
+            failure = transitionFailure;
+        } finally {
+            try {
+                failure = finishLifecycleTransition(
+                        LifecycleState.STARTING,
+                        failure == null ? LifecycleState.RUNNING : LifecycleState.STOPPED,
+                        failure);
+            } finally {
+                lifecycleTransitionLineage.remove();
+            }
+        }
+        if (failure != null) {
+            throw propagateLifecycleFailure(failure, "App-chain startup failed");
+        }
+    }
+
+    private void startTransition() {
+        if (!deferredRuntimeShutdown.isDone()) {
+            throw new IllegalStateException("App-chain '" + config.chainId()
+                    + "' is still draining a previous runtime callback; "
+                    + "retry start after shutdown completes");
+        }
+        try {
+            deferredRuntimeShutdown.join();
+        } catch (java.util.concurrent.CompletionException previousShutdownFailure) {
+            throw new IllegalStateException("App-chain '" + config.chainId()
+                    + "' cannot restart because previous runtime cleanup failed",
+                    previousShutdownFailure.getCause());
+        }
+
+        boolean generationOpened = false;
+        try {
+            OpenedGeneration openedGeneration = generationUseGate.open();
+            generationOpened = true;
+            // A provider product can be retained by any admitted subsystem
+            // operation (for example sequencerStatus()).  Keep the selected
+            // providers and their classloader alive until that whole operation,
+            // not merely the immediately visible callback, has returned.
+            pluginProviders.registerContributionCleanup(openedGeneration.quiescence());
+            startOwnedResources(openedGeneration.token());
+            running.set(true);
+            // Admission is published only after every resource and scheduler
+            // has been constructed. lifecycleState remains STARTING until the
+            // outer finally publishes RUNNING, so workers cannot observe a
+            // partially initialized generation.
+            generationUseGate.activate();
+        } catch (Throwable startupFailure) {
+            // NodeKernel cannot stop a subsystem whose start() failed because
+            // it is never added to the kernel's started list. Unwind here,
+            // including resources acquired before running became true.
+            running.set(false);
+            Throwable outcome = startupFailure;
+            if (generationOpened) {
+                log.warn("Rolling back failed startup of app chain '{}' (errorType={})",
+                        config.chainId(), startupFailure.getClass().getName());
+                try {
+                    releaseOwnedResources(startupFailure);
+                } catch (Throwable cleanupFailure) {
+                    outcome = LifecycleFailures.merge(outcome, cleanupFailure);
+                }
+            }
+            throw propagateLifecycleFailure(outcome, "App-chain startup failed");
+        }
+    }
+
+    /**
+     * Claim one host lifecycle transition, waiting outside the transition lock
+     * for an already-running host operation. Calls originating in plugin/
+     * resource callbacks fail immediately: waiting there can self-deadlock a
+     * start/stop transition that is waiting for that callback to return.
+     */
+    private boolean claimLifecycleTransition(LifecycleState requested, String action) {
+        requireLifecycleHostCaller(action);
+        while (true) {
+            CompletableFuture<Void> waitFor;
+            synchronized (lifecycleTransitionLock) {
+                if (lifecycleTransitionOwner == Thread.currentThread()) {
+                    throw lifecycleReentryFailure(action);
+                }
+                if (requested == LifecycleState.STARTING) {
+                    if (lifecycleState == LifecycleState.RUNNING) {
+                        return false;
+                    }
+                    if (lifecycleState == LifecycleState.STOPPED) {
+                        beginLifecycleTransition(LifecycleState.STARTING);
+                        return true;
+                    }
+                } else if (requested == LifecycleState.STOPPING) {
+                    if (lifecycleState == LifecycleState.STOPPED && !hasOwnedResources()) {
+                        return false;
+                    }
+                    if (lifecycleState == LifecycleState.RUNNING
+                            || lifecycleState == LifecycleState.STOPPED) {
+                        beginLifecycleTransition(LifecycleState.STOPPING);
+                        return true;
+                    }
+                } else {
+                    throw new IllegalArgumentException(
+                            "Unsupported lifecycle transition: " + requested);
+                }
+                waitFor = lifecycleTransitionCompletion;
+            }
+            // Completion dependents and lifecycle work run outside the lock.
+            // A failed operation still publishes a terminal state; re-check it
+            // so this concurrent host call can perform its own requested action.
+            try {
+                waitFor.join();
+            } catch (java.util.concurrent.CompletionException ignored) {
+                // State publication, not the prior caller's result, governs us.
+            }
+        }
+    }
+
+    private void requireLifecycleHostCaller(String action) {
+        pluginProviders.requireContributionTeardownAllowed(
+                action + " app-chain '" + config.chainId() + "'");
+        if (generationUseGate.inUseByCurrentThread()
+                || Boolean.TRUE.equals(lifecycleTransitionLineage.get())) {
+            throw lifecycleReentryFailure(action);
+        }
+    }
+
+    private IllegalStateException lifecycleReentryFailure(String action) {
+        return new IllegalStateException("Cannot " + action + " app-chain '"
+                + config.chainId() + "' from an app-chain callback/lifecycle transition");
+    }
+
+    private void beginLifecycleTransition(LifecycleState transition) {
+        lifecycleState = transition;
+        lifecycleTransitionOwner = Thread.currentThread();
+        lifecycleTransitionCompletion = new CompletableFuture<>();
+    }
+
+    private Throwable finishLifecycleTransition(
+            LifecycleState expected,
+            LifecycleState terminal,
+            Throwable failure
+    ) {
+        CompletableFuture<Void> completion;
+        synchronized (lifecycleTransitionLock) {
+            // Only the claiming thread writes terminal state. Avoid throwing
+            // from this publication path: every Error must still wake waiters.
+            if (lifecycleState != expected
+                    || lifecycleTransitionOwner != Thread.currentThread()) {
+                failure = LifecycleFailures.merge(failure,
+                        new IllegalStateException("App-chain lifecycle transition ownership lost"));
+                terminal = LifecycleState.STOPPED;
+                running.set(false);
+            }
+            lifecycleState = terminal;
+            lifecycleTransitionOwner = null;
+            completion = lifecycleTransitionCompletion;
+        }
+        if (failure == null) {
+            completion.complete(null);
+        } else {
+            completion.completeExceptionally(failure);
+        }
+        return failure;
+    }
+
+    private void startOwnedResources(long generationToken) {
+        // stop() retires peer-link instances. Rebuild them for a supported
+        // stop/start cycle (and after a failed start rollback).
+        if (peerClients.isEmpty() && !config.peers().isEmpty()) {
+            createPeerLinks();
+        }
 
         log.info("Starting app chain '{}' (member: {}, members: {}, peers: {}, sequencing: {})",
                 config.chainId(), signer.publicKeyHex(), group.size(), config.peers(),
@@ -1558,14 +2332,20 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                     config.blockMaxBytes(),
                     (topic, body) -> buildAndDiffuse(topic, body, Math.max(60, config.maxTtlSeconds() / 6)),
                     log);
+            // Publish ownership immediately: AppChainEngine creates its own
+            // executor in the constructor, and later configuration may fail.
+            // Startup rollback must therefore be able to close it.
+            this.engine = chainEngine;
+            pluginProviders.registerContributionCleanup(
+                    chainEngine.closeCompletion().toCompletableFuture());
             chainEngine.setOnBlockFinalized(this::onBlockFinalized);
             chainEngine.setL1RefSupplier(this::stableL1Ref);
             chainEngine.setL1RefValidator(this::checkL1Ref);
             // L1 observations (008.4 I3.2) — misconfiguration fails start:
             // observers are consensus-critical and must match on all members
-            this.observationService = L1ObservationService.fromConfig(
+            this.observationService = L1ObservationService.fromRegistry(
                     config.pluginSettings(), Math.max(config.l1StabilityDepth(), 1) + 64,
-                    pluginClassLoader, log);
+                    pluginProviders, log);
             if (observationService != null) {
                 if (config.l1StabilityDepth() <= 0) {
                     // Injection is gated on the stable L1 ref — without it a
@@ -1592,7 +2372,6 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                         + "member commands on {})", config.chainId(), group.threshold(),
                         GovernedMembership.TOPIC);
             }
-            this.engine = chainEngine;
             // Deliver consensus messages that raced engine wiring (see route())
             AppMessage early;
             while ((early = earlyConsensus.poll()) != null) {
@@ -1666,12 +2445,13 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                             anchorSlotSupplier);
                     this.scriptAnchorService = scriptService;
                 } catch (Exception e) {
-                    log.warn("Script-anchor service unavailable: {}", e.toString());
+                    log.warn("Script-anchor service unavailable (errorType={})",
+                            e.getClass().getName());
                 }
             }
             buildSinks(ledgerStore);
             buildEffectRuntime(ledgerStore);
-            subscribeL1Events();
+            subscribeL1Events(generationToken);
         }
 
         ScheduledExecutorService exec = Executors.newSingleThreadScheduledExecutor(r -> {
@@ -1680,7 +2460,6 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             return t;
         });
         this.scheduler = exec;
-        running.set(true);
 
         exec.scheduleWithFixedDelay(this::connectTick, 0, CONNECT_INTERVAL_SECONDS, TimeUnit.SECONDS);
         exec.scheduleWithFixedDelay(this::keepAliveTick,
@@ -1720,7 +2499,8 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         }
         AnchorService currentAnchor = anchorService;
         if (currentAnchor != null) {
-            exec.scheduleWithFixedDelay(currentAnchor::tick, 10, 10, TimeUnit.SECONDS);
+            exec.scheduleWithFixedDelay(
+                    () -> generationUseOrNoop(currentAnchor::tick), 10, 10, TimeUnit.SECONDS);
             log.info("App-chain L1 anchoring enabled (address: {}, every {} blocks, label {})",
                     currentAnchor.anchorAddress(), config.anchor().everyBlocks(),
                     config.anchor().metadataLabel());
@@ -1728,7 +2508,8 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         ScriptAnchorService currentScriptAnchor = scriptAnchorService;
         if (currentScriptAnchor != null && config.anchoringEnabled()
                 && config.anchor() != null && config.anchor().scriptMode()) {
-            exec.scheduleWithFixedDelay(currentScriptAnchor::tick, 10, 10, TimeUnit.SECONDS);
+            exec.scheduleWithFixedDelay(
+                    () -> generationUseOrNoop(currentScriptAnchor::tick), 10, 10, TimeUnit.SECONDS);
             log.info("App-chain L1 SCRIPT anchoring enabled (008.4): wallet={}, every {} blocks",
                     currentScriptAnchor.anchorAddress(), config.anchor().everyBlocks());
         }
@@ -1748,7 +2529,9 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                 return t;
             });
             this.fxScheduler = fxExec;
-            fxExec.scheduleWithFixedDelay(currentFx::tick, tickMs, tickMs, TimeUnit.MILLISECONDS);
+            fxExec.scheduleWithFixedDelay(
+                    () -> generationUseOrNoop(currentFx::tick), tickMs, tickMs,
+                    TimeUnit.MILLISECONDS);
             if (config.sequencingEnabled()) {
                 // Result loop (ADR-010 F8): locally-terminal CHAIN outcomes are
                 // injected as member-signed ~fx/result messages until the chain
@@ -1805,6 +2588,10 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
 
     /** Prune message bodies below the L1_FINAL anchor horizon (E4.4). */
     private void retentionTick() {
+        generationUseOrNoop(this::retentionTickWithinGeneration);
+    }
+
+    private void retentionTickWithinGeneration() {
         AppLedgerStore currentLedger = ledger;
         if (!running.get() || currentLedger == null) {
             return;
@@ -1821,7 +2608,8 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             try {
                 currentLedger.pruneBodiesBelow(horizon);
             } catch (Exception e) {
-                log.warn("App-chain retention tick failed: {}", e.toString());
+                log.warn("App-chain retention tick failed (errorType={})",
+                        e.getClass().getName());
             }
         }
     }
@@ -1834,6 +2622,10 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
      * deterministic no-ops (first result wins).
      */
     private void fxResultInjectionTick() {
+        generationUseOrNoop(this::fxResultInjectionTickWithinGeneration);
+    }
+
+    private void fxResultInjectionTickWithinGeneration() {
         EffectRuntime currentFx = effectRuntime;
         if (!running.get() || currentFx == null) {
             return;
@@ -1851,11 +2643,12 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                                 injection.confirmed()
                                         ? truncateRef(injection.externalRef())
                                         : truncateReason(injection.reason()),
-                                null);
+                                injection.confirmed() ? injection.detailHash() : null);
                 injectFxResult(body);
             } catch (Exception e) {
-                log.warn("App-chain '{}' result injection for {}/{} failed: {}",
-                        config.chainId(), injection.height(), injection.ordinal(), e.toString());
+                log.warn("App-chain '{}' result injection for {}/{} failed (errorType={})",
+                        config.chainId(), injection.height(), injection.ordinal(),
+                        e.getClass().getName());
             }
         }
     }
@@ -1895,6 +2688,10 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
      * obligations and future-expiry records never prune).
      */
     private void fxRetentionTick() {
+        generationUseOrNoop(this::fxRetentionTickWithinGeneration);
+    }
+
+    private void fxRetentionTickWithinGeneration() {
         AppLedgerStore currentLedger = ledger;
         if (!running.get() || currentLedger == null) {
             return;
@@ -1917,7 +2714,8 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                             config.chainId(), pruned, fxHorizon);
                 }
             } catch (Exception e) {
-                log.warn("App-chain effect retention failed: {}", e.toString());
+                log.warn("App-chain effect retention failed (errorType={})",
+                        e.getClass().getName());
             }
         }
     }
@@ -1959,38 +2757,117 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     }
 
     /** Track applied L1 blocks: stable-depth reference for proposals + anchor confirmation. */
-    private void subscribeL1Events() {
+    private void subscribeL1Events(long generationToken) {
         if (eventBus == null) {
             return;
         }
+        // Bind the subscription to this exact resource generation.  An event
+        // callback admitted before stop may outlive field unpublication, and
+        // a late callback from a retired subscription must never observe the
+        // next generation's services.
+        L1GenerationServices services = new L1GenerationServices(
+                generationToken, anchorService, scriptAnchorService, observationService);
+        eventSubscriptions.addAll(acquireL1Subscriptions(
+                eventBus,
+                event -> onL1BlockApplied(event, services),
+                event -> onL1Rollback(event, services)));
+    }
+
+    private record L1GenerationServices(
+            long generationToken,
+            AnchorService anchor,
+            ScriptAnchorService scriptAnchor,
+            L1ObservationService observations
+    ) {
+    }
+
+    /**
+     * Acquire the applied/rollback pair transactionally. A half-installed L1
+     * view is worse than a failed start: stability, observations and anchors
+     * would evolve from different event streams.
+     */
+    static List<com.bloxbean.cardano.yaci.events.api.SubscriptionHandle>
+            acquireL1Subscriptions(
+                    EventBus eventBus,
+                    java.util.function.Consumer<com.bloxbean.cardano.yano.api.events.BlockAppliedEvent>
+                            applied,
+                    java.util.function.Consumer<com.bloxbean.cardano.yano.api.events.RollbackEvent>
+                            rollback
+            ) {
+        Objects.requireNonNull(eventBus, "eventBus");
+        Objects.requireNonNull(applied, "applied");
+        Objects.requireNonNull(rollback, "rollback");
+        List<com.bloxbean.cardano.yaci.events.api.SubscriptionHandle> acquired =
+                new ArrayList<>(2);
         try {
-            eventSubscriptions.add(eventBus.subscribe(
-                    com.bloxbean.cardano.yano.api.events.BlockAppliedEvent.class,
-                    ctx -> onL1BlockApplied(ctx.event()),
-                    com.bloxbean.cardano.yaci.events.api.SubscriptionOptions.builder().build()));
-            eventSubscriptions.add(eventBus.subscribe(
-                    com.bloxbean.cardano.yano.api.events.RollbackEvent.class,
-                    ctx -> onL1Rollback(ctx.event()),
-                    com.bloxbean.cardano.yaci.events.api.SubscriptionOptions.builder().build()));
-        } catch (Exception e) {
-            log.warn("Failed to subscribe app-chain to L1 events: {}", e.toString());
+            acquired.add(Objects.requireNonNull(eventBus.subscribe(
+                            com.bloxbean.cardano.yano.api.events.BlockAppliedEvent.class,
+                            ctx -> applied.accept(ctx.event()),
+                            com.bloxbean.cardano.yaci.events.api.SubscriptionOptions.builder().build()),
+                    "EventBus returned null BlockAppliedEvent subscription"));
+            acquired.add(Objects.requireNonNull(eventBus.subscribe(
+                            com.bloxbean.cardano.yano.api.events.RollbackEvent.class,
+                            ctx -> rollback.accept(ctx.event()),
+                            com.bloxbean.cardano.yaci.events.api.SubscriptionOptions.builder().build()),
+                    "EventBus returned null RollbackEvent subscription"));
+            return List.copyOf(acquired);
+        } catch (Throwable subscriptionFailure) {
+            Throwable outcome = subscriptionFailure;
+            for (int i = acquired.size() - 1; i >= 0; i--) {
+                try {
+                    acquired.get(i).close();
+                } catch (Throwable closeFailure) {
+                    outcome = LifecycleFailures.merge(outcome, closeFailure);
+                }
+            }
+            throw propagateLifecycleFailure(outcome,
+                    "Failed to install app-chain L1 subscriptions");
         }
     }
 
-    private void onL1BlockApplied(com.bloxbean.cardano.yano.api.events.BlockAppliedEvent event) {
-        try {
+    private static RuntimeException propagateLifecycleFailure(
+            Throwable failure,
+            String message
+    ) {
+        if (failure instanceof Error error) {
+            throw error;
+        }
+        if (failure instanceof RuntimeException runtime) {
+            return runtime;
+        }
+        return new IllegalStateException(message, failure);
+    }
+
+    private void onL1BlockApplied(
+            com.bloxbean.cardano.yano.api.events.BlockAppliedEvent event,
+            L1GenerationServices services) {
+        generationUseOrNoop(services.generationToken(),
+                () -> onL1BlockAppliedWithinGeneration(event, services));
+    }
+
+    private void onL1BlockAppliedWithinGeneration(
+            com.bloxbean.cardano.yano.api.events.BlockAppliedEvent event,
+            L1GenerationServices services) {
+        runL1Phase("reference tracking", () -> {
             recentL1Points.addLast(new AppChainEngine.L1Ref(event.slot(),
                     HexUtil.decodeHexString(event.blockHash())));
             while (recentL1Points.size() > Math.max(config.l1StabilityDepth(), 1) + 64) {
                 recentL1Points.pollFirst();
             }
+        });
+
+        // Observation and anchor confirmation are deliberately independent.
+        // A plugin observer failure must not consume the only event carrying
+        // an anchor transaction, and an anchor failure must not prevent the
+        // local L1 verification window from advancing.
+        runL1Phase("observation", () -> {
             // L1 observations (008.4 I3.2): EVERY member recomputes (feeds the
             // verification window). Injection is STABILITY-GATED for rollback
             // safety — the app chain never rolls back, so a fact may only be
             // sequenced once it is l1.stability-depth confirmations old. All
             // members drain at the same L1 block; the scheduled proposer
             // injects (the message then replicates via the shared pool).
-            L1ObservationService currentObservations = observationService;
+            L1ObservationService currentObservations = services.observations();
             if (currentObservations != null && event.block() != null) {
                 currentObservations.onL1Block(event.slot(),
                         HexUtil.decodeHexString(event.blockHash()), event.block());
@@ -2000,13 +2877,17 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                             currentObservations.drainInjectable(stable.slot());
                     if (!ready.isEmpty() && isScheduledProposer()) {
                         for (var observation : ready) {
-                            injectObservation(observation);
+                            runL1Phase("observation injection",
+                                    () -> injectObservation(observation));
                         }
                     }
                 }
             }
-            AnchorService currentAnchor = anchorService;
-            ScriptAnchorService currentScriptAnchor = scriptAnchorService;
+        });
+
+        runL1Phase("anchor confirmation", () -> {
+            AnchorService currentAnchor = services.anchor();
+            ScriptAnchorService currentScriptAnchor = services.scriptAnchor();
             if ((currentAnchor != null || currentScriptAnchor != null) && event.block() != null
                     && event.block().getTransactionBodies() != null) {
                 List<String> txHashes = event.block().getTransactionBodies().stream()
@@ -2024,29 +2905,71 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                             EventMetadata.builder().build(), PublishOptions.builder().build());
                 }
             }
-        } catch (Exception e) {
-            log.warn("App-chain L1 block handling failed: {}", e.toString());
-        }
+        });
     }
 
-    private void onL1Rollback(com.bloxbean.cardano.yano.api.events.RollbackEvent event) {
+    private void onL1Rollback(
+            com.bloxbean.cardano.yano.api.events.RollbackEvent event,
+            L1GenerationServices services) {
+        generationUseOrNoop(services.generationToken(),
+                () -> onL1RollbackWithinGeneration(event, services));
+    }
+
+    private void onL1RollbackWithinGeneration(
+            com.bloxbean.cardano.yano.api.events.RollbackEvent event,
+            L1GenerationServices services) {
+        final long targetSlot;
         try {
-            long targetSlot = event.target() != null ? event.target().getSlot() : 0;
-            recentL1Points.removeIf(ref -> ref.slot() > targetSlot);
-            AnchorService currentAnchor = anchorService;
+            targetSlot = event.target() != null ? event.target().getSlot() : 0;
+        } catch (Throwable failure) {
+            reportL1PhaseFailure("rollback target", failure);
+            return;
+        }
+        runL1Phase("reference rollback", () ->
+                recentL1Points.removeIf(ref -> ref.slot() > targetSlot));
+        runL1Phase("metadata-anchor rollback", () -> {
+            AnchorService currentAnchor = services.anchor();
             if (currentAnchor != null) {
                 currentAnchor.onL1Rollback(targetSlot);
             }
-            ScriptAnchorService currentScriptAnchor = scriptAnchorService;
+        });
+        runL1Phase("script-anchor rollback", () -> {
+            ScriptAnchorService currentScriptAnchor = services.scriptAnchor();
             if (currentScriptAnchor != null) {
                 currentScriptAnchor.onL1Rollback(targetSlot);
             }
-            L1ObservationService currentObservations = observationService;
+        });
+        runL1Phase("observation rollback", () -> {
+            L1ObservationService currentObservations = services.observations();
             if (currentObservations != null) {
                 currentObservations.onL1Rollback(targetSlot);
             }
-        } catch (Exception e) {
-            log.warn("App-chain L1 rollback handling failed: {}", e.toString());
+        });
+    }
+
+    private void runL1Phase(String phase, Runnable action) {
+        try {
+            action.run();
+        } catch (Throwable failure) {
+            reportL1PhaseFailure(phase, failure);
+        }
+    }
+
+    private void reportL1PhaseFailure(String phase, Throwable failure) {
+        LifecycleFailures.rethrowIfProcessFatal(failure);
+        if (failure instanceof InterruptedException) {
+            Thread.currentThread().interrupt();
+        }
+        try {
+            log.warn("App-chain L1 {} failed (errorType={})",
+                    phase, failure.getClass().getName());
+        } catch (Throwable loggingFailure) {
+            // A recoverable logging backend failure must not cancel the event
+            // subscription or prevent later independent phases from running.
+            LifecycleFailures.rethrowIfProcessFatal(loggingFailure);
+            if (loggingFailure instanceof InterruptedException) {
+                Thread.currentThread().interrupt();
+            }
         }
     }
 
@@ -2118,35 +3041,149 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             new java.util.concurrent.CopyOnWriteArrayList<>();
     private final List<SinkRunner> sinkRunners =
             new java.util.concurrent.CopyOnWriteArrayList<>();
+    /**
+     * Auxiliary activation diagnostics retained for health/ADR-011.4. Values
+     * deliberately contain only exception class names: plugin-supplied error
+     * messages may contain configuration or secret material.
+     */
+    private final java.util.concurrent.ConcurrentMap<String, String> sinkActivationFailures =
+            new java.util.concurrent.ConcurrentHashMap<>();
 
-    /** Build finalized-stream sinks: built-in webhooks + ServiceLoader plugins (E3.2). */
+    /** Build finalized-stream sinks: built-in webhooks + selected plugin factories (E3.2). */
     private void buildSinks(AppLedgerStore ledgerStore) {
+        sinkActivationFailures.clear();
+        Set<String> claimedIds = new HashSet<>();
+        Set<com.bloxbean.cardano.yano.api.appchain.sink.FinalizedStreamSink> claimedInstances =
+                Collections.newSetFromMap(new IdentityHashMap<>());
         for (String url : config.webhookUrls()) {
-            sinkRunners.add(new SinkRunner(new WebhookSink(url, config.chainId(), log), ledgerStore, log));
-        }
-        // Plugin sinks (e.g. Kafka) via ServiceLoader on the plugin classloader.
-        ClassLoader[] classLoaders = pluginClassLoader != null
-                ? new ClassLoader[]{pluginClassLoader}
-                : new ClassLoader[]{Thread.currentThread().getContextClassLoader()};
-        for (ClassLoader classLoader : classLoaders) {
-            for (com.bloxbean.cardano.yano.api.appchain.sink.FinalizedStreamSinkFactory factory :
-                    java.util.ServiceLoader.load(
-                            com.bloxbean.cardano.yano.api.appchain.sink.FinalizedStreamSinkFactory.class,
-                            classLoader)) {
-                java.util.Map<String, String> sinkConfig = sinkConfigFor(factory.scheme());
-                if (sinkConfig.isEmpty()) {
-                    continue;
-                }
-                try {
-                    for (var sink : factory.create(config.chainId(), sinkConfig)) {
-                        sinkRunners.add(new SinkRunner(sink, ledgerStore, log));
-                        log.info("App-chain sink '{}' registered via {} plugin",
-                                sink.id(), factory.scheme());
-                    }
-                } catch (Exception e) {
-                    log.error("Failed to build '{}' sink(s): {}", factory.scheme(), e.toString());
-                }
+            var sink = new WebhookSink(url, config.chainId(), log);
+            String id = requireSinkId(sink);
+            if (!claimedIds.add(id)) {
+                throw new IllegalArgumentException("Duplicate finalized-stream sink id '" + id + "'");
             }
+            claimedInstances.add(sink);
+            SinkRunner runner = new SinkRunner(sink, id, ledgerStore, log);
+            SinkRunner.initializeCursors(ledgerStore, List.of(runner));
+            sinkRunners.add(runner);
+        }
+        // Auxiliary sinks are intentionally isolated: a filtered, broken or
+        // misconfigured sink is diagnosed but cannot take down consensus.
+        for (String scheme : configuredSchemes("sinks.")) {
+            java.util.Map<String, String> sinkConfig = sinkConfigFor(scheme);
+            List<com.bloxbean.cardano.yano.api.appchain.sink.FinalizedStreamSink> stagedSinks =
+                    new ArrayList<>();
+            List<SinkRunner> stagedRunners = new ArrayList<>();
+            try {
+                FinalizedStreamSinkFactory factory = pluginProviders.find(
+                                FinalizedStreamSinkFactory.class, scheme)
+                        .orElseThrow(() -> new IllegalArgumentException(
+                                "No selected FinalizedStreamSinkFactory for scheme '" + scheme
+                                        + "' (available: "
+                                        + pluginProviders.names(FinalizedStreamSinkFactory.class) + ")"));
+                List<com.bloxbean.cardano.yano.api.appchain.sink.FinalizedStreamSink> sinks =
+                        Objects.requireNonNull(factory.create(config.chainId(), sinkConfig),
+                                "FinalizedStreamSinkFactory.create returned null");
+                // Take ownership of every fresh non-null product in the
+                // complete batch before invoking any product callback. If a
+                // malformed/null/duplicate entry appears in the middle, a
+                // valid tail product must still be rolled back.
+                RuntimeException ownershipFailure = null;
+                for (var sink : sinks) {
+                    if (sink == null) {
+                        if (ownershipFailure == null) {
+                            ownershipFailure = new NullPointerException(
+                                    "FinalizedStreamSinkFactory.create returned a null sink");
+                        }
+                        continue;
+                    }
+                    if (!claimedInstances.add(sink)) {
+                        if (ownershipFailure == null) {
+                            ownershipFailure = new IllegalArgumentException(
+                                    "FinalizedStreamSinkFactory '" + scheme
+                                            + "' returned the same sink instance more than once");
+                        }
+                        continue;
+                    }
+                    stagedSinks.add(sink);
+                }
+                if (ownershipFailure != null) {
+                    throw ownershipFailure;
+                }
+                Set<String> stagedIds = new HashSet<>();
+                for (var sink : stagedSinks) {
+                    String id = requireSinkId(sink);
+                    if (claimedIds.contains(id) || !stagedIds.add(id)) {
+                        throw new IllegalArgumentException(
+                                "Duplicate finalized-stream sink id '" + id + "'");
+                    }
+                    // Snapshot the validated identity exactly once. The
+                    // runner never re-enters a stateful plugin id() callback.
+                    stagedRunners.add(new SinkRunner(sink, id, ledgerStore, log));
+                }
+                for (var runner : stagedRunners) {
+                    log.info("App-chain sink '{}' validated via {} plugin", runner.id(), scheme);
+                }
+                // Cursor migration is a two-phase operation: all remaining
+                // plugin callbacks prepare first, then one atomic RocksDB
+                // batch commits only after the whole sink batch validates.
+                SinkRunner.initializeCursors(ledgerStore, stagedRunners);
+                claimedIds.addAll(stagedIds);
+                sinkActivationFailures.remove(scheme);
+                // Final publication step. A malformed or stateful callback
+                // above cannot leave a closed runner live or an inactive
+                // persisted cursor.
+                sinkRunners.addAll(stagedRunners);
+            } catch (Throwable e) {
+                closeUnownedSinks(stagedSinks, e);
+                if (e instanceof Error fatal) {
+                    throw fatal;
+                }
+                sinkActivationFailures.put(scheme, e.getClass().getName());
+                // Plugin messages may include credentials from sink config.
+                log.error("Failed to build '{}' sink(s) (errorType={})",
+                        scheme, e.getClass().getName());
+            }
+        }
+        if (!sinkRunners.isEmpty()) {
+            // One registry-owned lifetime signal covers the complete sink set
+            // published by this start cycle. It remains pending through an
+            // interrupt-resistant delivery and through every product close,
+            // keeping bundle providers/lifecycle/class-loader resources alive.
+            pluginProviders.registerContributionCleanup(CompletableFuture.allOf(
+                    sinkRunners.stream()
+                            .map(SinkRunner::closeCompletion)
+                            .toArray(CompletableFuture[]::new)));
+        }
+    }
+
+    private static String requireSinkId(
+            com.bloxbean.cardano.yano.api.appchain.sink.FinalizedStreamSink sink) {
+        return requireOperationalProductId(
+                sink.id(), "FinalizedStreamSink.id");
+    }
+
+    private void closeUnownedSinks(
+            List<com.bloxbean.cardano.yano.api.appchain.sink.FinalizedStreamSink> sinks,
+            Throwable failure) {
+        Throwable outcome = failure;
+        Set<com.bloxbean.cardano.yano.api.appchain.sink.FinalizedStreamSink> closed =
+                Collections.newSetFromMap(new IdentityHashMap<>());
+        ListIterator<com.bloxbean.cardano.yano.api.appchain.sink.FinalizedStreamSink> iterator =
+                sinks.listIterator(sinks.size());
+        while (iterator.hasPrevious()) {
+            var sink = iterator.previous();
+            if (!closed.add(sink)) {
+                continue;
+            }
+            try {
+                sink.close();
+            } catch (Throwable closeFailure) {
+                outcome = LifecycleFailures.merge(outcome, closeFailure);
+            }
+        }
+        sinks.clear();
+        if (outcome != failure) {
+            throw propagateLifecycleFailure(outcome, "Finalized sink cleanup failed");
         }
     }
 
@@ -2170,70 +3207,147 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         return result;
     }
 
+    /** Configured factory selectors below a namespace, in deterministic order. */
+    private SortedSet<String> configuredSchemes(String prefix) {
+        SortedSet<String> schemes = new TreeSet<>();
+        for (String key : config.pluginSettings().keySet()) {
+            if (!key.startsWith(prefix)) {
+                continue;
+            }
+            String remainder = key.substring(prefix.length());
+            int dot = remainder.indexOf('.');
+            if (dot > 0) {
+                schemes.add(remainder.substring(0, dot));
+            }
+        }
+        return schemes;
+    }
+
     /**
      * Build the Effect Runtime (ADR-010 F5) when this node is an executor:
-     * built-in webhook executor when configured, plus AppEffectExecutorFactory
-     * plugins via ServiceLoader — mirroring buildSinks. OFF by default; at
+     * built-in webhook executor when configured, plus selected
+     * {@link AppEffectExecutorFactory} plugins — mirroring buildSinks. OFF by default; at
      * most one executor node per effect-type partition is the operator's
      * responsibility (ADR-010 F6), with idempotency as the safety net.
      */
     private void buildEffectRuntime(AppLedgerStore ledgerStore) {
+        final boolean executorEnabled;
+        try {
+            executorEnabled = strictBooleanPluginSetting("effects.executor.enabled", false);
+        } catch (RuntimeException e) {
+            throw pluginActivationFailure("effect runtime settings for chain '"
+                    + config.chainId() + "'", e);
+        }
+        if (!executorEnabled) {
+            return;
+        }
         EffectRuntime.Settings runtimeSettings;
         try {
             runtimeSettings = EffectRuntime.Settings.fromSettings(config.pluginSettings());
-        } catch (Exception e) {
-            // Executor settings are node-local — a typo must not take down the chain
-            log.error("App-chain '{}': invalid effects.executor.* settings — continuing without "
-                    + "an executor: {}", config.chainId(), e.toString());
-            return;
+        } catch (RuntimeException e) {
+            throw new PluginActivationException(
+                    "Invalid effects.executor.* settings for app-chain '"
+                            + config.chainId() + "'", e);
         }
-        if (!runtimeSettings.enabled()) {
-            return;
+        final boolean effectsEnabled;
+        try {
+            effectsEnabled = strictBooleanPluginSetting("effects.enabled", false);
+        } catch (RuntimeException e) {
+            throw pluginActivationFailure("effect runtime settings for chain '"
+                    + config.chainId() + "'", e);
         }
-        if (!Boolean.parseBoolean(config.pluginSettings().getOrDefault("effects.enabled", "false"))) {
-            log.warn("App-chain '{}': effects.executor.enabled=true but effects.enabled=false — "
-                    + "executor not started", config.chainId());
-            return;
+        if (!effectsEnabled) {
+            throw new PluginActivationException("App-chain '" + config.chainId()
+                    + "': effects.executor.enabled=true requires effects.enabled=true", null);
         }
         java.util.List<com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutor> executors =
                 new java.util.ArrayList<>();
+        Set<com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutor> executorInstances =
+                Collections.newSetFromMap(new IdentityHashMap<>());
+        Set<String> executorIds = new HashSet<>();
         java.util.Map<String, java.util.Map<String, String>> executorConfigs =
                 new java.util.LinkedHashMap<>();
         java.util.Map<String, String> webhookConfig = executorConfigFor("webhook");
         if (!webhookConfig.isEmpty()) {
-            executors.add(new WebhookEffectExecutor(webhookConfig, log));
-            executorConfigs.put("webhook", webhookConfig);
+            var webhookExecutor = new WebhookEffectExecutor(webhookConfig, log);
+            String id = requireExecutorId(webhookExecutor);
+            executors.add(stableExecutorIdentity(webhookExecutor, id));
+            executorInstances.add(webhookExecutor);
+            executorIds.add(id);
+            executorConfigs.put(id, webhookConfig);
         }
-        ClassLoader[] classLoaders = pluginClassLoader != null
-                ? new ClassLoader[]{pluginClassLoader}
-                : new ClassLoader[]{Thread.currentThread().getContextClassLoader()};
-        for (ClassLoader classLoader : classLoaders) {
-            for (com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutorFactory factory :
-                    java.util.ServiceLoader.load(
-                            com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutorFactory.class,
-                            classLoader)) {
-                java.util.Map<String, String> executorConfig = executorConfigFor(factory.scheme());
-                if (executorConfig.isEmpty()) {
-                    continue;
-                }
-                try {
-                    for (var executor : factory.create(config.chainId(), executorConfig)) {
-                        executors.add(executor);
-                        executorConfigs.put(executor.id(), executorConfig);
-                        log.info("App-chain effect executor '{}' registered via {} plugin",
-                                executor.id(), factory.scheme());
+        SortedSet<String> configuredExecutorSchemes = configuredSchemes("effects.executors.");
+        configuredExecutorSchemes.remove("webhook"); // explicit SYSTEM built-in above wins
+        for (String scheme : configuredExecutorSchemes) {
+            java.util.Map<String, String> executorConfig = executorConfigFor(scheme);
+            try {
+                AppEffectExecutorFactory factory = pluginProviders.find(
+                                AppEffectExecutorFactory.class, scheme)
+                        .orElseThrow(() -> new IllegalArgumentException(
+                                "No selected AppEffectExecutorFactory for scheme '" + scheme
+                                        + "' (available: "
+                                        + pluginProviders.names(AppEffectExecutorFactory.class) + ")"));
+                List<com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutor> created =
+                        Objects.requireNonNull(factory.create(config.chainId(), executorConfig),
+                                "AppEffectExecutorFactory.create returned null");
+                // Pre-own the complete fresh batch before invoking id() on
+                // any product. This guarantees exact rollback even when a
+                // null/duplicate/malformed middle entry precedes valid tail
+                // products returned by the same factory.
+                List<com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutor>
+                        stagedExecutors = new ArrayList<>();
+                RuntimeException ownershipFailure = null;
+                for (var executor : created) {
+                    if (executor == null) {
+                        if (ownershipFailure == null) {
+                            ownershipFailure = new NullPointerException(
+                                    "AppEffectExecutorFactory.create returned a null executor");
+                        }
+                        continue;
                     }
-                } catch (Exception e) {
-                    log.error("Failed to build '{}' effect executor(s): {}",
-                            factory.scheme(), e.toString());
+                    if (!executorInstances.add(executor)) {
+                        if (ownershipFailure == null) {
+                            ownershipFailure = new IllegalArgumentException(
+                                    "AppEffectExecutorFactory '" + scheme
+                                            + "' returned the same executor instance more than once");
+                        }
+                        continue;
+                    }
+                    stagedExecutors.add(executor);
+                    executors.add(executor);
                 }
+                if (ownershipFailure != null) {
+                    throw ownershipFailure;
+                }
+                int ownedIndex = executors.size() - stagedExecutors.size();
+                for (var executor : stagedExecutors) {
+                    String id = requireExecutorId(executor);
+                    if (!executorIds.add(id)) {
+                        throw new IllegalArgumentException(
+                                "Duplicate app-chain effect executor id '" + id + "'");
+                    }
+                    // The validated identity is immutable for this product's
+                    // lifetime. EffectRuntime must not re-enter a stateful
+                    // plugin id() callback when binding config or reporting.
+                    executors.set(ownedIndex, stableExecutorIdentity(executor, id));
+                    ownedIndex++;
+                    executorConfigs.put(id, executorConfig);
+                    log.info("App-chain effect executor '{}' registered via {} plugin",
+                            id, scheme);
+                }
+            } catch (Throwable e) {
+                closeUnownedEffectExecutors(executors, e);
+                if (e instanceof Error fatal) {
+                    throw fatal;
+                }
+                throw pluginActivationFailure("effect executor factory '" + scheme
+                        + "' for chain '" + config.chainId() + "'", e);
             }
         }
         if (executors.isEmpty() && !externalEffectsEnabled()) {
-            log.warn("App-chain '{}': effects.executor.enabled=true but no executors configured "
-                    + "(set effects.executors.<scheme>.*, drop an AppEffectExecutorFactory plugin, "
-                    + "or enable effects.external.enabled for REST claim/report)", config.chainId());
-            return;
+            throw new PluginActivationException("App-chain '" + config.chainId()
+                    + "': effects.executor.enabled=true but no executors are configured "
+                    + "(set effects.executors.<scheme>.* or enable effects.external.enabled)", null);
         }
         // Security posture (ADR-010 F12 / final review): operator effect
         // actions and external claim/report move real funds. If the REST
@@ -2245,22 +3359,131 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                     + "REST — ensure yano.app-chain.api.auth is enabled and restrict network "
                     + "access to the executor/operator network (ADR-010 F12)", config.chainId());
         }
+        EffectRuntime createdRuntime = null;
         try {
             String executorIdentity = resolveEffectExecutorIdentity();
             String runtimeOwner = effectRuntimeOwner(executorIdentity, runtimeSettings.types());
-            this.effectRuntime = new EffectRuntime(ledgerStore, config.chainId(), runtimeSettings,
+            createdRuntime = new EffectRuntime(ledgerStore, config.chainId(), runtimeSettings,
                     executors, executorConfigs, runtimeOwner, log);
-        } catch (Exception e) {
-            // The executor is a node-local optional role — a broken executor
-            // setup must not take down sequencing/anchoring/sinks
-            log.error("App-chain '{}': effect runtime failed to start — continuing without an "
-                    + "executor: {}", config.chainId(), e.toString());
-            return;
+            // Publish ownership before registering the lifetime signal. If a
+            // custom registry rejects registration, startup rollback sees and
+            // closes the runtime instead of directly double-closing products.
+            this.effectRuntime = createdRuntime;
+            pluginProviders.registerContributionCleanup(
+                    createdRuntime.closeCompletion().toCompletableFuture());
+        } catch (Throwable e) {
+            if (createdRuntime == null) {
+                closeUnownedEffectExecutors(executors, e);
+            }
+            if (e instanceof Error fatal) {
+                throw fatal;
+            }
+            throw pluginActivationFailure("effect runtime for chain '"
+                    + config.chainId() + "'", e);
         }
         log.info("App-chain '{}' effect runtime enabled: executors={}, tick={}ms, maxParallel={}",
                 config.chainId(), executors.stream()
                         .map(com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutor::id).toList(),
                 runtimeSettings.tickMs(), runtimeSettings.maxParallel());
+    }
+
+    private void closeUnownedEffectExecutors(
+            List<com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutor> executors,
+            Throwable failure) {
+        Throwable outcome = failure;
+        ListIterator<com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutor> iterator =
+                executors.listIterator(executors.size());
+        Set<com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutor> closed =
+                Collections.newSetFromMap(new IdentityHashMap<>());
+        while (iterator.hasPrevious()) {
+            var executor = iterator.previous();
+            if (!closed.add(executor)) {
+                continue;
+            }
+            try {
+                executor.close();
+            } catch (Throwable closeFailure) {
+                outcome = LifecycleFailures.merge(outcome, closeFailure);
+            }
+        }
+        executors.clear();
+        if (outcome != failure) {
+            throw propagateLifecycleFailure(outcome, "Effect executor cleanup failed");
+        }
+    }
+
+    private static String requireExecutorId(
+            com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutor executor) {
+        return requireOperationalProductId(
+                executor.id(), "AppEffectExecutor.id");
+    }
+
+    private static String requireOperationalProductId(String value, String source) {
+        String id = Objects.requireNonNull(value, source + " returned null");
+        if (id.isEmpty() || id.length() > 128
+                || !isAsciiIdentifierStart(id.charAt(0))) {
+            throw new IllegalArgumentException(source
+                    + " must be 1-128 ASCII identifier characters");
+        }
+        for (int index = 1; index < id.length(); index++) {
+            char character = id.charAt(index);
+            if (!isAsciiIdentifierStart(character)
+                    && character != '.' && character != '_' && character != '-'
+                    && character != ':' && character != '+') {
+                throw new IllegalArgumentException(source
+                        + " must be 1-128 ASCII identifier characters");
+            }
+        }
+        return id;
+    }
+
+    private static boolean isAsciiIdentifierStart(char value) {
+        return value >= 'A' && value <= 'Z'
+                || value >= 'a' && value <= 'z'
+                || value >= '0' && value <= '9';
+    }
+
+    private static com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutor
+    stableExecutorIdentity(
+            com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutor delegate,
+            String id
+    ) {
+        return new com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutor() {
+            @Override
+            public String id() {
+                return id;
+            }
+
+            @Override
+            public boolean supports(String effectType) {
+                return delegate.supports(effectType);
+            }
+
+            @Override
+            public com.bloxbean.cardano.yano.api.appchain.effects.EffectExecution execute(
+                    com.bloxbean.cardano.yano.api.appchain.effects.EffectExecutionContext context,
+                    com.bloxbean.cardano.yano.api.appchain.effects.PendingEffect effect
+            ) throws Exception {
+                return delegate.execute(context, effect);
+            }
+
+            @Override
+            public void close() {
+                delegate.close();
+            }
+        };
+    }
+
+    private boolean strictBooleanPluginSetting(String key, boolean defaultValue) {
+        String raw = config.pluginSettings().get(key);
+        if (raw == null || raw.isBlank()) {
+            return defaultValue;
+        }
+        String normalized = raw.trim().toLowerCase(Locale.ROOT);
+        if (!normalized.equals("true") && !normalized.equals("false")) {
+            throw new IllegalStateException("Invalid boolean value for " + key + ": '" + raw + "'");
+        }
+        return Boolean.parseBoolean(normalized);
     }
 
     /**
@@ -2351,6 +3574,10 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     private final java.util.ArrayDeque<Long> recentBlockIntervals = new java.util.ArrayDeque<>();
 
     private void onBlockFinalized(AppBlock block, byte[] blockHash) {
+        generationUseOrNoop(() -> onBlockFinalizedWithinGeneration(block, blockHash));
+    }
+
+    private void onBlockFinalizedWithinGeneration(AppBlock block, byte[] blockHash) {
         long now = System.currentTimeMillis();
         lastProgressAt = now;
         synchronized (recentBlockIntervals) {
@@ -2366,7 +3593,8 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             try {
                 listener.onFinalized(block, blockHash);
             } catch (Exception e) {
-                log.warn("Finalized-block listener failed: {}", e.toString());
+                log.warn("Finalized-block listener failed (errorType={})",
+                        e.getClass().getName());
             }
         }
         if (eventBus != null) {
@@ -2374,12 +3602,17 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                 eventBus.publish(new AppBlockFinalizedEvent(block, blockHash),
                         EventMetadata.builder().build(), PublishOptions.builder().build());
             } catch (Exception e) {
-                log.warn("Failed to publish AppBlockFinalizedEvent: {}", e.toString());
+                log.warn("Failed to publish AppBlockFinalizedEvent (errorType={})",
+                        e.getClass().getName());
             }
         }
     }
 
     private void connectTick() {
+        generationUseOrNoop(this::connectTickWithinGeneration);
+    }
+
+    private void connectTickWithinGeneration() {
         if (!running.get())
             return;
         for (AppPeerLink peerClient : peerClients) {
@@ -2388,12 +3621,17 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                 // (proposer/anchor/catch-up ticks share it) — 008.2 fix
                 peerClient.ensureConnectedAsync();
             } catch (Exception e) {
-                log.debug("App-peer connect attempt failed for {}: {}", peerClient.peerId(), e.toString());
+                log.debug("App-peer connect attempt failed for {} (errorType={})",
+                        peerClient.peerId(), e.getClass().getName());
             }
         }
     }
 
     private void keepAliveTick() {
+        generationUseOrNoop(this::keepAliveTickWithinGeneration);
+    }
+
+    private void keepAliveTickWithinGeneration() {
         if (!running.get())
             return;
         for (AppPeerLink peerClient : peerClients) {
@@ -2402,81 +3640,523 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     }
 
     private void sinkTick() {
+        generationUseOrNoop(this::sinkTickWithinGeneration);
+    }
+
+    private void sinkTickWithinGeneration() {
         if (!running.get())
             return;
-        for (SinkRunner runner : sinkRunners) {
+        runSinkDeliveryTicks(sinkRunners);
+    }
+
+    /** One periodic-task body, package-visible for deterministic policy tests. */
+    static void runSinkDeliveryTicks(Iterable<SinkRunner> runners) {
+        for (SinkRunner runner : runners) {
             try {
                 runner.deliveryTick();
-            } catch (Exception e) {
-                log.warn("Sink delivery tick failed for {}: {}", runner.id(), e.toString());
+            } catch (Throwable failure) {
+                // ScheduledExecutorService suppresses every later invocation
+                // when a periodic task lets a Throwable escape. Keep one bad
+                // sink isolated and retain a secret-safe health signal.
+                runner.recordTickFailure(failure);
+                SinkRunner.rethrowIfFatal(failure);
             }
         }
     }
 
     @Override
-    public synchronized void stop() {
-        if (!running.getAndSet(false))
+    public void stop() {
+        if (!claimLifecycleTransition(LifecycleState.STOPPING, "stop")) {
             return;
-        log.info("Stopping app chain '{}'", config.chainId());
+        }
+
+        Throwable failure = null;
+        try {
+            lifecycleTransitionLineage.set(Boolean.TRUE);
+            running.set(false);
+            log.info("Stopping app chain '{}'", config.chainId());
+            releaseOwnedResources();
+        } catch (Throwable transitionFailure) {
+            failure = transitionFailure;
+        } finally {
+            // STOPPED is terminal even when teardown reports Error. If an
+            // unexpected early failure retained a resource, a later host stop
+            // can claim STOPPING again because hasOwnedResources() remains true.
+            running.set(false);
+            try {
+                failure = finishLifecycleTransition(
+                        LifecycleState.STOPPING, LifecycleState.STOPPED, failure);
+            } finally {
+                lifecycleTransitionLineage.remove();
+            }
+        }
+        if (failure != null) {
+            throw propagateLifecycleFailure(failure, "App-chain stop failed");
+        }
+    }
+
+    /**
+     * Terminal subsystem release. Ordinary {@link #stop()} remains restartable;
+     * close additionally releases the legacy provider registry created by the
+     * direct compatibility constructor. Catalog registries stay owned by their
+     * enclosing {@code PluginRuntimeEnvironment} and are never closed here.
+     */
+    @Override
+    public void close() {
+        // Fail before publishing terminal ownership when invoked from a
+        // contribution/resource callback. Otherwise close could strand a
+        // still-running subsystem after stop correctly rejects self-teardown.
+        requireLifecycleHostCaller("close");
+        if (!permanentlyClosed.compareAndSet(false, true)) {
+            try {
+                permanentCloseCompletion.join();
+                return;
+            } catch (java.util.concurrent.CompletionException closeFailure) {
+                throw propagateLifecycleFailure(
+                        unwrapCompletionFailure(closeFailure),
+                        "App-chain close failed");
+            }
+        }
+
+        Throwable failure = null;
+        try {
+            stop();
+        } catch (Throwable stopFailure) {
+            failure = LifecycleFailures.merge(failure, stopFailure);
+        }
+        try {
+            deferredRuntimeShutdown.join();
+        } catch (Throwable drainFailure) {
+            failure = LifecycleFailures.merge(
+                    failure, unwrapCompletionFailure(drainFailure));
+        }
+        if (ownedPluginProviders != null) {
+            try {
+                ownedPluginProviders.close();
+            } catch (Throwable providerFailure) {
+                failure = LifecycleFailures.merge(failure, providerFailure);
+            }
+        }
+
+        if (failure == null) {
+            permanentCloseCompletion.complete(null);
+            return;
+        }
+        permanentCloseCompletion.completeExceptionally(failure);
+        throw propagateLifecycleFailure(failure, "App-chain close failed");
+    }
+
+    /**
+     * Release every resource acquired by {@link #startOwnedResources(long)}.
+     * This method deliberately does not consult {@link #running}: failed
+     * startup happens before that flag is set, but still owns a RocksDB handle
+     * and (once the engine is constructed) an executor.
+     */
+    private void releaseOwnedResources() {
+        releaseOwnedResources(null);
+    }
+
+    private void releaseOwnedResources(Throwable primaryFailure) {
+        SynchronousCleanupFailures cleanupFailures =
+                new SynchronousCleanupFailures(primaryFailure);
+        // FIRST: reject every new root operation. Already-admitted operations
+        // remain re-entrant and ledger/provider cleanup waits on this future.
+        CompletableFuture<Void> generationQuiescent = generationUseGate.seal();
+        running.set(false);
+        // Close sink admission before stopping any scheduler. An already
+        // admitted delivery may ignore interruption, so ledger/product close
+        // is fenced on the runner's terminal signals below.
+        List<SinkRunner> retiringSinks = List.copyOf(sinkRunners);
+        for (SinkRunner runner : retiringSinks) {
+            try {
+                runner.requestShutdown();
+            } catch (Throwable cleanupFailure) {
+                recordCleanupFailure("sink admission " + runner.id(), cleanupFailure,
+                        cleanupFailures);
+            }
+        }
+
         for (var subscription : eventSubscriptions) {
             try {
                 subscription.close();
-            } catch (Exception ignored) {
+            } catch (Throwable cleanupFailure) {
+                recordCleanupFailure("event subscription", cleanupFailure, cleanupFailures);
             }
         }
         eventSubscriptions.clear();
-        // Sink runners hold the ledger that is about to close and are re-created
-        // by start(); close + drop them so a restart doesn't tick stale sinks
-        // against a closed RocksDB handle (or double-deliver). External
-        // finalizedListeners (SSE, metrics) are NOT cleared — they survive a restart.
-        for (SinkRunner runner : sinkRunners) {
-            runner.close();
-        }
-        sinkRunners.clear();
+
         // Shutdown ORDER matters (ADR-010 F5 review): stop the tick source and
         // WAIT for it, then close the runtime (waits for workers), and only
         // then may the ledger close — nothing may touch RocksDB afterwards.
         ScheduledExecutorService fxExec = fxScheduler;
         fxScheduler = null;
         if (fxExec != null) {
-            fxExec.shutdown();
             try {
+                fxExec.shutdown();
                 if (!fxExec.awaitTermination(3, TimeUnit.SECONDS)) {
                     fxExec.shutdownNow();
                 }
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 fxExec.shutdownNow();
+            } catch (Throwable cleanupFailure) {
+                recordCleanupFailure("effect scheduler", cleanupFailure, cleanupFailures);
             }
         }
         EffectRuntime currentFx = effectRuntime;
         effectRuntime = null;
+        CompletableFuture<Void> effectsClosed = CompletableFuture.completedFuture(null);
         if (currentFx != null) {
-            currentFx.close();
+            closeResource("effect runtime", currentFx::close, cleanupFailures);
+            effectsClosed = currentFx.closeCompletion().toCompletableFuture();
         }
-        anchorService = null;
+
         ScheduledExecutorService exec = scheduler;
         scheduler = null;
         if (exec != null) {
-            exec.shutdownNow();
+            closeResource("main scheduler", () -> shutdownScheduler(exec, "main"),
+                    cleanupFailures);
         }
         ScheduledExecutorService sinkExec = sinkScheduler;
         sinkScheduler = null;
         if (sinkExec != null) {
-            sinkExec.shutdownNow();
+            closeResource("sink scheduler", () -> shutdownScheduler(sinkExec, "sink"),
+                    cleanupFailures);
         }
+
+        // Sink runners hold the ledger that is about to close and are re-created
+        // by start(); close + drop them so a restart doesn't tick stale sinks
+        // against a closed RocksDB handle (or double-deliver). External
+        // finalizedListeners (SSE, metrics) are NOT cleared — they survive a restart.
+        for (SinkRunner runner : retiringSinks) {
+            if (primaryFailure != null) {
+                // Startup rollback has no admitted delivery in normal
+                // operation. Keep synchronous failure suppression semantics.
+                closeSinkResource(runner, cleanupFailures);
+            } else {
+                try {
+                    runner.closeAsync();
+                } catch (Throwable cleanupFailure) {
+                    recordSinkCleanupFailure(runner, cleanupFailure, cleanupFailures);
+                }
+            }
+        }
+        sinkRunners.clear();
+
         for (AppPeerLink peerClient : peerClients) {
-            peerClient.shutdown();
+            closeResource("peer " + peerClient.peerId(), peerClient::shutdown, cleanupFailures);
         }
+        peerClients.clear();
+
+        anchorService = null;
+        scriptAnchorService = null;
+        observationService = null;
+
         AppChainEngine currentEngine = engine;
         engine = null;
+        CompletableFuture<Void> engineQuiescent = CompletableFuture.completedFuture(null);
         if (currentEngine != null) {
-            currentEngine.close();
+            closeResource("engine", currentEngine::close, cleanupFailures);
+            engineQuiescent = currentEngine.closeCompletion().toCompletableFuture();
         }
         AppLedgerStore currentLedger = ledger;
         ledger = null;
+        CompletableFuture<Void> productsClosed = awaitAllCleanupStages(
+                awaitAllCleanupStages(retiringSinks.stream()
+                        .map(SinkRunner::closeCompletion)
+                        .toArray(CompletableFuture[]::new)),
+                effectsClosed);
+        Throwable synchronousCleanupFailure = cleanupFailures.cleanupOutcome();
+        CompletableFuture<Void> synchronousCleanup = synchronousCleanupFailure == null
+                ? CompletableFuture.completedFuture(null)
+                : CompletableFuture.failedFuture(synchronousCleanupFailure);
+        Throwable deferredPrimary = cleanupFailures.outcome();
         if (currentLedger != null) {
-            currentLedger.close();
+            CompletableFuture<Void> deliveriesQuiescent = awaitAllCleanupStages(
+                    retiringSinks.stream()
+                            .map(SinkRunner::deliveryQuiescence)
+                            .toArray(CompletableFuture[]::new));
+            CompletableFuture<Void> ledgerUsersQuiescent = awaitAllCleanupStages(
+                    deliveriesQuiescent, engineQuiescent, generationQuiescent);
+            // CompletableFuture runs this inline when already quiescent (the
+            // normal fast path), or on the last delivery/engine thread
+            // otherwise. The close must run even when an engine cleanup stage
+            // completes exceptionally: a failed WriteBatch cleanup may poison
+            // restart, but it must never strand the RocksDB lock as well.
+            CompletableFuture<Void> ledgerClosed = closeRestartCriticalResourceAfter(
+                    ledgerUsersQuiescent, "ledger", currentLedger::close, deferredPrimary);
+            deferredRuntimeShutdown = awaitAllCleanupStages(
+                    ledgerClosed, productsClosed, engineQuiescent, generationQuiescent,
+                    synchronousCleanup);
+        } else {
+            deferredRuntimeShutdown = awaitAllCleanupStages(
+                    productsClosed, engineQuiescent, generationQuiescent, synchronousCleanup);
+        }
+        // Every remaining close has now run or has an explicit lifetime
+        // barrier. A process-fatal signal must escape. During failed startup,
+        // a non-process Error from cleanup also replaces an ordinary startup
+        // failure so the synchronous caller observes the strongest outcome.
+        // Ordinary stop-time failures remain on deferredRuntimeShutdown: stop
+        // has released every resource it can and the same instance fails its
+        // next restart closed.
+        cleanupFailures.rethrowImmediateWinner();
+    }
+
+    private boolean hasOwnedResources() {
+        return ledger != null
+                || engine != null
+                || scheduler != null
+                || sinkScheduler != null
+                || fxScheduler != null
+                || effectRuntime != null
+                || anchorService != null
+                || scriptAnchorService != null
+                || observationService != null
+                || !eventSubscriptions.isEmpty()
+                || !sinkRunners.isEmpty();
+    }
+
+    private void closeResource(
+            String resource,
+            Runnable close,
+            SynchronousCleanupFailures cleanupFailures
+    ) {
+        try {
+            close.run();
+        } catch (Throwable cleanupFailure) {
+            recordCleanupFailure(resource, cleanupFailure, cleanupFailures);
+        }
+    }
+
+    /**
+     * Close a resource whose successful release is a prerequisite for opening
+     * the next generation. Throwing from the completion callback makes
+     * {@code deferredRuntimeShutdown} exceptional, so restart fails closed.
+     */
+    private void closeRestartCriticalResource(
+            String resource,
+            Runnable close,
+            Throwable primaryFailure
+    ) {
+        try {
+            close.run();
+        } catch (Throwable cleanupFailure) {
+            Throwable outcome = LifecycleFailures.merge(primaryFailure, cleanupFailure);
+            try {
+                log.warn("Error closing restart-critical app-chain {} for '{}' (errorType={})",
+                        resource, config.chainId(), cleanupFailure.getClass().getName());
+            } catch (Throwable diagnosticFailure) {
+                outcome = LifecycleFailures.merge(outcome, diagnosticFailure);
+            }
+            throw propagateLifecycleFailure(
+                    outcome, "Restart-critical app-chain resource close failed");
+        }
+    }
+
+    /** Package-private for the exceptional-quiescence lifecycle regression. */
+    CompletableFuture<Void> closeRestartCriticalResourceAfter(
+            CompletableFuture<Void> quiescence,
+            String resource,
+            Runnable close,
+            Throwable primaryFailure
+    ) {
+        return quiescence.handle((ignored, quiescenceFailure) -> {
+            Throwable failure = quiescenceFailure;
+            try {
+                failure = unwrapCompletionFailure(quiescenceFailure);
+            } catch (Throwable inspectionFailure) {
+                failure = mergeAsyncCleanupFailure(failure, inspectionFailure);
+            }
+            try {
+                closeRestartCriticalResource(resource, close, primaryFailure);
+            } catch (Throwable closeFailure) {
+                failure = mergeAsyncCleanupFailure(failure, closeFailure);
+            }
+            rethrowAsyncCleanupFailure(failure);
+            return null;
+        });
+    }
+
+    private static Throwable unwrapCompletionFailure(Throwable failure) {
+        Throwable current = failure;
+        Set<Throwable> visited = Collections.newSetFromMap(new IdentityHashMap<>());
+        int inspected = 0;
+        while ((current instanceof java.util.concurrent.CompletionException
+                || current instanceof java.util.concurrent.ExecutionException)) {
+            if (!visited.add(current) || ++inspected > 256) {
+                return failure;
+            }
+            Throwable cause = current.getCause();
+            if (cause == null) {
+                return current;
+            }
+            current = cause;
+        }
+        return current;
+    }
+
+    private static Throwable mergeAsyncCleanupFailure(Throwable current, Throwable next) {
+        return LifecycleFailures.merge(current, next);
+    }
+
+    /**
+     * Wait for every cleanup stage and publish their strongest merged failure.
+     * {@link CompletableFuture#allOf(CompletableFuture[])} waits for all inputs
+     * but exposes only one implementation-selected exception; that can hide a
+     * later {@link Error}. This wrapper retains the barrier semantics and then
+     * deterministically folds every terminal failure in declaration order.
+     */
+    private static CompletableFuture<Void> awaitAllCleanupStages(
+            CompletableFuture<?>... stages
+    ) {
+        if (stages.length == 0) {
+            return CompletableFuture.completedFuture(null);
+        }
+        CompletableFuture<?>[] observed = Arrays.stream(stages)
+                .map(stage -> stage.handle((ignored, failure) -> {
+                    try {
+                        return unwrapCompletionFailure(failure);
+                    } catch (Throwable inspectionFailure) {
+                        return mergeAsyncCleanupFailure(failure, inspectionFailure);
+                    }
+                }))
+                .toArray(CompletableFuture[]::new);
+        return CompletableFuture.allOf(observed).thenApply(ignored -> {
+            Throwable outcome = null;
+            for (CompletableFuture<?> stage : observed) {
+                Throwable failure = (Throwable) stage.join();
+                if (failure != null) {
+                    outcome = mergeAsyncCleanupFailure(outcome, failure);
+                }
+            }
+            rethrowAsyncCleanupFailure(outcome);
+            return null;
+        });
+    }
+
+    private static boolean isJvmFatalCleanup(Throwable failure) {
+        return LifecycleFailures.isProcessFatal(failure);
+    }
+
+    private static void rethrowAsyncCleanupFailure(Throwable failure) {
+        if (failure instanceof Error error) {
+            throw error;
+        }
+        if (failure instanceof RuntimeException runtime) {
+            throw runtime;
+        }
+        if (failure != null) {
+            throw new java.util.concurrent.CompletionException(failure);
+        }
+    }
+
+    private void closeSinkResource(
+            SinkRunner runner,
+            SynchronousCleanupFailures cleanupFailures
+    ) {
+        try {
+            runner.close();
+        } catch (Throwable cleanupFailure) {
+            recordSinkCleanupFailure(runner, cleanupFailure, cleanupFailures);
+        }
+    }
+
+    private void recordSinkCleanupFailure(
+            SinkRunner runner,
+            Throwable cleanupFailure,
+            SynchronousCleanupFailures cleanupFailures
+    ) {
+        cleanupFailures.record(cleanupFailure);
+        // Unlike platform resources, this Throwable originates in plugin code
+        // and its message can contain sink credentials/configuration.
+        try {
+            log.warn("Error closing app-chain sink '{}' for '{}' (errorType={})",
+                    runner.id(), config.chainId(), cleanupFailure.getClass().getName());
+        } catch (Throwable diagnosticFailure) {
+            cleanupFailures.record(diagnosticFailure);
+        }
+    }
+
+    private void recordCleanupFailure(
+            String resource,
+            Throwable cleanupFailure,
+            SynchronousCleanupFailures cleanupFailures
+    ) {
+        // Continue unwinding: one faulty plugin/resource must not retain the
+        // RocksDB lock or mask an actual JVM termination signal. The collector
+        // preserves ranked suppression semantics and delays any required
+        // process-fatal (or stronger startup-cleanup) rethrow until every
+        // lifetime barrier has been installed.
+        cleanupFailures.record(cleanupFailure);
+        try {
+            log.warn("Error closing app-chain {} for '{}' (errorType={})",
+                    resource, config.chainId(), cleanupFailure.getClass().getName());
+        } catch (Throwable diagnosticFailure) {
+            cleanupFailures.record(diagnosticFailure);
+        }
+    }
+
+    private static final class SynchronousCleanupFailures {
+        private final Throwable primaryFailure;
+        private Throwable outcome;
+        private boolean cleanupFailed;
+
+        private SynchronousCleanupFailures(Throwable primaryFailure) {
+            this.primaryFailure = primaryFailure;
+            this.outcome = primaryFailure;
+        }
+
+        private void record(Throwable cleanupFailure) {
+            cleanupFailed = true;
+            if (outcome == null) {
+                outcome = cleanupFailure;
+            } else {
+                outcome = mergeCleanupFailure(outcome, cleanupFailure);
+            }
+        }
+
+        private Throwable outcome() {
+            return outcome;
+        }
+
+        /**
+         * The failure contributed by cleanup, merged with the startup primary
+         * when present so deferred restart diagnostics retain full context.
+         */
+        private Throwable cleanupOutcome() {
+            return cleanupFailed ? outcome : null;
+        }
+
+        private void rethrowImmediateWinner() {
+            if (isJvmFatal(outcome)) {
+                LifecycleFailures.rethrowIfProcessFatal(outcome);
+            }
+            if (primaryFailure != null && outcome != primaryFailure) {
+                rethrowAsyncCleanupFailure(outcome);
+            }
+        }
+
+        private static Throwable mergeCleanupFailure(Throwable current, Throwable next) {
+            return LifecycleFailures.merge(current, next);
+        }
+
+        @SuppressWarnings("removal")
+        private static boolean isJvmFatal(Throwable failure) {
+            return isJvmFatalCleanup(failure);
+        }
+    }
+
+    private void shutdownScheduler(ScheduledExecutorService executor, String schedulerName) {
+        executor.shutdownNow();
+        try {
+            if (!executor.awaitTermination(3, TimeUnit.SECONDS)) {
+                log.warn("App-chain '{}' {} scheduler did not terminate within 3 seconds",
+                        config.chainId(), schedulerName);
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            log.warn("Interrupted while stopping app-chain '{}' {} scheduler",
+                    config.chainId(), schedulerName);
         }
     }
 

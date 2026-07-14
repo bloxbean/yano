@@ -20,6 +20,8 @@ jobs:
         run: chmod +x gradlew
       - name: Build uber-jar distribution
         run: ./gradlew :app:yanoDistZip -PskipSigning=true
+      - name: Smoke test packaged JVM plugin catalog
+        run: ./gradlew :app:packagedJvmPluginCatalogSmoke -PskipSigning=true
       - name: Upload JAR distribution
         uses: actions/upload-artifact@v4
         with:
@@ -59,10 +61,16 @@ jobs:
         run: .\gradlew.bat :app:quarkusBuild "-Dquarkus.native.enabled=true" "-Dquarkus.package.jar.enabled=false" "-PskipSigning=true"
       - name: Package native distribution
         if: runner.os != 'Windows'
-        run: ./gradlew :app:yanoNativeDistZip -PskipSigning=true
+        run: ./gradlew :app:yanoNativeDistZip -Dquarkus.native.enabled=true -Dquarkus.package.jar.enabled=false -PskipSigning=true
       - name: Package native distribution on Windows
         if: runner.os == 'Windows'
-        run: .\gradlew.bat :app:yanoNativeDistZip "-PskipSigning=true"
+        run: .\gradlew.bat :app:yanoNativeDistZip "-Dquarkus.native.enabled=true" "-Dquarkus.package.jar.enabled=false" "-PskipSigning=true"
+      - name: Smoke test packaged native plugin catalog
+        if: runner.os != 'Windows'
+        run: ./gradlew :app:nativePluginCatalogSmoke -PskipSigning=true
+      - name: Smoke test packaged native plugin catalog on Windows
+        if: runner.os == 'Windows'
+        run: .\gradlew.bat :app:nativePluginCatalogSmoke "-PskipSigning=true"
       - name: Upload native distribution
         uses: actions/upload-artifact@v4
         with:

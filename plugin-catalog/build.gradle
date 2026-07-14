@@ -1,0 +1,20 @@
+dependencies {
+    api project(':core-api')
+    implementation libs.jackson.databind
+}
+
+java {
+    sourceCompatibility = 25
+    targetCompatibility = 25
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            pom {
+                name = 'Yano Plugin Catalog'
+                description = 'Manifest model and validation for Yano plugin bundles'
+            }
+        }
+    }
+}

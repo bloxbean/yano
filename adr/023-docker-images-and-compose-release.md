@@ -10,7 +10,9 @@
 Yano currently produces two useful application artifacts:
 
 - JVM distribution zip from `:app:yanoDistZip`, containing `yano.jar`, `bin/yano.sh`, `config/`, and `plugins/`.
-- Native distribution zip from `:app:yanoNativeDistZip`, containing the native `yano` binary, `bin/yano.sh`, `config/`, and `plugins/`.
+- Native distribution zip from `:app:yanoNativeDistZip`, containing the native
+  `yano` binary, `bin/yano.sh`, and `config/`. Native plugins are fixed at
+  build time; the artifact does not advertise a runtime plugin directory.
 
 There is also an existing `app/Dockerfile`, but it builds by cloning `bloxbean/yano` from `main` inside the Docker build. That is not suitable for release packaging because the image content is not tied directly to the checked-out source, tested artifacts, or release tag that triggered the workflow.
 
@@ -334,6 +336,10 @@ yano-docker-<version>/
 ```
 
 The image itself contains the immutable network genesis/config files under `/app/config/network`. The Compose distribution should not bind-mount `../config` over `/app/config`, because that would hide the image's bundled network files. User override files are mounted individually.
+
+The shared Compose layout retains `plugins/` for the JVM flavor. The native
+flavor cannot load those JARs and reports any mounted JARs as ignored; native
+plugin selection is a build-time operation.
 
 If a user needs custom genesis files, document an explicit additional mount for that network subdirectory, for example:
 

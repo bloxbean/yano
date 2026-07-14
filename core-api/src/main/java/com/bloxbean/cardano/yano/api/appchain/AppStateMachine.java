@@ -85,7 +85,10 @@ public interface AppStateMachine {
     default void onEffectResult(AppBlock block, EffectResult result, AppStateWriter writer) {
     }
 
-    /** Optional read path exposed via REST {@code /query} and the Java API. */
+    /**
+     * Reserved optional read hook. ADR app-layer/011.3 wires the bounded Java
+     * and REST query surfaces; current runtimes do not invoke this method.
+     */
     default byte[] query(String path, byte[] params) {
         throw new UnsupportedOperationException("query not supported by " + id());
     }

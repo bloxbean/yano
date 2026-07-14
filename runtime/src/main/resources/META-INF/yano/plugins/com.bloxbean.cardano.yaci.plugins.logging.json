@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "id": "com.bloxbean.cardano.yaci.plugins.logging",
+  "version": "1.0.0",
+  "yanoApi": { "min": 1, "max": 1 },
+  "dependencies": [],
+  "contributions": [
+    {
+      "kind": "node-plugin",
+      "name": "com.bloxbean.cardano.yaci.plugins.logging",
+      "provider": "com.bloxbean.cardano.yano.runtime.plugins.LoggingPlugin"
+    }
+  ]
+}

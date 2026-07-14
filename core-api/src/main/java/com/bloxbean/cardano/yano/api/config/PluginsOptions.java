@@ -26,4 +26,14 @@ public record PluginsOptions(
     public static PluginsOptions defaults() {
         return new PluginsOptions(true, false, Set.of(), Set.of(), Map.of());
     }
+
+    /** Never include plugin configuration values (which may be credentials) in logs. */
+    @Override
+    public String toString() {
+        return "PluginsOptions[enabled=" + enabled
+                + ", autoRegisterAnnotated=" + autoRegisterAnnotated
+                + ", allowList=" + allowList
+                + ", denyList=" + denyList
+                + ", configKeys=" + config.keySet() + "]";
+    }
 }

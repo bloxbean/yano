@@ -33,6 +33,15 @@ public interface PluginContext {
      * - Listen for blockchain events (blocks, transactions, rollbacks)
      * - Publish custom events for other plugins
      * - Implement reactive processing chains
+     *
+     * <p>The returned view does not own the shared bus: calling
+     * {@link EventBus#close()} is rejected. Runtime-managed listener and
+     * subscription-filter callbacks run with this plugin's class loader as
+     * their thread context class loader. Subscriptions may be created only
+     * during {@link NodePlugin#start()} or while that start cycle is running.
+     * The runtime closes them on stop; a plugin must recreate them on every
+     * later start. This generation scope prevents an event queued before stop
+     * from entering plugin code after restart.</p>
      * 
      * @return The configured event bus instance
      */
@@ -51,13 +60,25 @@ public interface PluginContext {
     /**
      * Get the immutable plugin compatibility configuration map.
      *
-     * <p>The current runtime supplies one shared global map to every plugin;
-     * callers must use namespaced keys. Prefix-stripped, per-plugin views are
-     * deferred to the manifested bundle catalog.</p>
+     * <p>This compatibility view is shared across plugins, so callers must use
+     * namespaced keys. New manifested plugins should prefer
+     * {@link #bundleConfig()}, which cannot expose another bundle's settings.</p>
      *
      * @return Immutable shared configuration map
      */
     Map<String, Object> config();
+
+    /**
+     * Immutable configuration owned by this plugin bundle, with the canonical
+     * {@code yano.plugins.bundle."<bundle-id>".} owner segment removed.
+     *
+     * <p>The default preserves binary compatibility for legacy plugins, which
+     * continue to see the shared compatibility map. Manifested runtimes
+     * override this with an owner-scoped view.</p>
+     */
+    default Map<String, Object> bundleConfig() {
+        return config();
+    }
     
     /**
      * Get a shared scheduler for background tasks.
@@ -65,6 +86,12 @@ public interface PluginContext {
      * Plugins should use this scheduler instead of creating their own
      * thread pools to avoid resource exhaustion. The scheduler is
      * configured with appropriate pool size for the deployment.
+     * Submitted and scheduled tasks run with this plugin's class loader as
+     * their thread context class loader. The returned view does not own the
+     * shared scheduler, so shutdown and close operations are rejected. Tasks
+     * may be submitted only during {@link NodePlugin#start()} or while that
+     * start cycle is running. Stop cancels outstanding tasks, and recurring
+     * work must be scheduled again on every later start.
      * 
      * @return Shared scheduled executor service
      */
@@ -113,7 +140,8 @@ public interface PluginContext {
      * {@link NodePlugin#init(PluginContext)} or {@link NodePlugin#start()}
      * before that callback returns. Init-scoped filters remain until close;
      * start-scoped filters are removed after stop and may be registered again
-     * on restart.</p>
+     * on restart. Runtime invocations of both filter methods run with this
+     * plugin's class loader as their thread context class loader.</p>
      *
      * @param filter the storage filter to register
      */
@@ -127,6 +155,9 @@ public interface PluginContext {
      * A service needed during initialization should come from a plugin named
      * in the consumer's {@link NodePlugin#dependsOn()} set so dependency-first
      * initialization guarantees that it is available.
+     * Calls on arbitrary inter-plugin service objects are not runtime-wrapped;
+     * the producing and consuming plugins own that contract, just as a plugin
+     * owns any thread it creates outside {@link #scheduler()}.
      * 
      * @param <T> Expected service type
      * @param key Service identifier

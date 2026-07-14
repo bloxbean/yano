@@ -6,6 +6,8 @@ import com.bloxbean.cardano.yano.api.plugin.NodePlugin;
 import com.bloxbean.cardano.yano.api.plugin.PluginCapability;
 import com.bloxbean.cardano.yano.api.plugin.StorageFilter;
 import com.bloxbean.cardano.yano.runtime.sync.validation.HeaderValidationCustomizer;
+import com.bloxbean.cardano.yano.catalog.PluginIndex;
+import com.bloxbean.cardano.yano.runtime.util.LifecycleFailures;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -13,8 +15,10 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.Deque;
 import java.util.IdentityHashMap;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -28,7 +32,9 @@ import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.function.Consumer;
 
 /**
  * Lifecycle owner for the legacy {@link NodePlugin} SPI.
@@ -39,21 +45,45 @@ import java.util.concurrent.ScheduledExecutorService;
  * before the first lifecycle callback. Selected plugins initialize/start in a
  * deterministic dependency order and stop/close in reverse order.</p>
  *
- * <p>This class is not a dynamic bundle loader. Manifest parsing, API-version
- * compatibility, class-loader isolation and the app-layer typed-SPI catalog
- * remain later ADR-011 work.</p>
+ * <p>This class is not a dynamic bundle loader. ADR-011.2 catalog parsing,
+ * compatibility, policy and provider ownership are supplied by
+ * {@link PluginRuntimeEnvironment}; this class remains the transactional
+ * lifecycle owner for selected {@code NodePlugin} instances.</p>
  *
- * <p>Lifecycle methods are synchronized. Plugin contexts and their shared
- * registry remain safe for concurrent access after initialization.</p>
+ * <p>Lifecycle transitions are serialized. Callback-drain waits deliberately
+ * release the manager monitor so an admitted callback can finish a concurrent
+ * read without deadlocking shutdown. Plugin contexts and their shared registry
+ * remain safe for concurrent access after initialization.</p>
  */
 public final class PluginManager implements AutoCloseable {
     private static final Logger log = LoggerFactory.getLogger(PluginManager.class);
+    static final int MAX_CYCLE_DIAGNOSTIC_LENGTH = 512;
+    private static final int MAX_CYCLE_ID_DISPLAY_LENGTH = 64;
+    private static final String DEPENDENCY_CYCLE_DIAGNOSTIC_PREFIX =
+            "Plugin dependency cycle: ";
+    private static final int MAX_PLUGIN_ID_LENGTH = 160;
+    private static final int MAX_PLUGIN_VERSION_LENGTH = 128;
+    private static final int MAX_PLUGIN_DEPENDENCIES = 256;
+    private static final int MAX_PLUGIN_CAPABILITIES = PluginCapability.values().length;
+    private static final int MAX_DISCOVERED_NODE_PLUGINS = PluginIndex.MAX_LEGACY_PROVIDERS;
 
     private final EventBus eventBus;
     private final ScheduledExecutorService scheduler;
     private final PluginsOptions options;
     private final ClassLoader classLoader;
+    private final ClassLoader platformClassLoader;
     private final List<NodePlugin> suppliedPlugins;
+    /** Instances constructed by the standalone public ServiceLoader path. */
+    private final List<NodePlugin> internallyDiscoveredOrder = new ArrayList<>();
+    private final Set<NodePlugin> internallyOwned =
+            Collections.newSetFromMap(new IdentityHashMap<>());
+    private final Set<String> externallySatisfiedDependencies;
+    private final Map<String, Map<String, Object>> bundleConfigs;
+    private final boolean preserveSuppliedOrder;
+    private final Consumer<NodePlugin> terminalCloseObserver;
+    private final PluginContextFacades.ManagedCallbackResources managedCallbacks;
+    /** Shared catalog admission fence; null for standalone legacy managers. */
+    private final PluginSpiFacades.CallbackTracker catalogCallbacks;
 
     /** Successfully initialized plugins, always in dependency order. */
     private final List<NodePlugin> plugins = new ArrayList<>();
@@ -69,6 +99,7 @@ public final class PluginManager implements AutoCloseable {
             new CopyOnWriteArrayList<>();
 
     private State state = State.NEW;
+    private Thread closingThread;
 
     /**
      * Compatibility constructor for existing embedders. It preserves today's
@@ -78,7 +109,8 @@ public final class PluginManager implements AutoCloseable {
                          Map<String, Object> config, ClassLoader classLoader) {
         this(eventBus, scheduler,
                 new PluginsOptions(true, false, Set.of(), Set.of(), config),
-                classLoader, null);
+                classLoader, null, Set.of(), Map.of(), false,
+                ignored -> { }, ignored -> { }, null);
     }
 
     /**
@@ -90,33 +122,158 @@ public final class PluginManager implements AutoCloseable {
                                             ScheduledExecutorService scheduler,
                                             PluginsOptions options,
                                             ClassLoader classLoader) {
-        return new PluginManager(eventBus, scheduler, options, classLoader, null);
+        return new PluginManager(eventBus, scheduler, options, classLoader,
+                null, Set.of(), Map.of(), false,
+                ignored -> { }, ignored -> { }, null);
+    }
+
+    /**
+     * Construct lifecycle management from an already policy-selected,
+     * structurally validated ADR-011.2 catalog. Dependencies supplied only as
+     * typed bundles satisfy the bundle graph but do not create lifecycle
+     * callbacks. The selected-plugin iteration order must be the projection of
+     * the full catalog order and is preserved for otherwise independent
+     * lifecycle plugins.
+     */
+    static PluginManager fromCatalog(EventBus eventBus,
+                                     ScheduledExecutorService scheduler,
+                                     PluginsOptions options,
+                                     ClassLoader classLoader,
+                                     Collection<NodePlugin> selectedPlugins,
+                                     Set<String> selectedBundleIds,
+                                     Map<String, Map<String, Object>> bundleConfigs) {
+        PluginsOptions catalogPolicy = new PluginsOptions(true,
+                options != null && options.autoRegisterAnnotated(),
+                Set.of(), Set.of(), options != null ? options.config() : Map.of());
+        return new PluginManager(eventBus, scheduler, catalogPolicy, classLoader,
+                Objects.requireNonNull(selectedPlugins, "selectedPlugins"),
+                selectedBundleIds, bundleConfigs, true,
+                ignored -> { }, ignored -> { }, null);
+    }
+
+    /** Catalog lifecycle construction with exact terminal-close accounting. */
+    static PluginManager fromCatalog(EventBus eventBus,
+                                     ScheduledExecutorService scheduler,
+                                     PluginsOptions options,
+                                     ClassLoader classLoader,
+                                     Collection<NodePlugin> selectedPlugins,
+                                     Set<String> selectedBundleIds,
+                                     Map<String, Map<String, Object>> bundleConfigs,
+                                     Consumer<NodePlugin> terminalCloseObserver) {
+        PluginsOptions catalogPolicy = new PluginsOptions(true,
+                options != null && options.autoRegisterAnnotated(),
+                Set.of(), Set.of(), options != null ? options.config() : Map.of());
+        return new PluginManager(eventBus, scheduler, catalogPolicy, classLoader,
+                Objects.requireNonNull(selectedPlugins, "selectedPlugins"),
+                selectedBundleIds, bundleConfigs, true,
+                Objects.requireNonNull(terminalCloseObserver, "terminalCloseObserver"),
+                ignored -> { }, null);
+    }
+
+    /** Catalog lifecycle construction with callback-lifetime registration. */
+    static PluginManager fromCatalog(EventBus eventBus,
+                                     ScheduledExecutorService scheduler,
+                                     PluginsOptions options,
+                                     ClassLoader classLoader,
+                                     Collection<NodePlugin> selectedPlugins,
+                                     Set<String> selectedBundleIds,
+                                     Map<String, Map<String, Object>> bundleConfigs,
+                                     Consumer<NodePlugin> terminalCloseObserver,
+                                     Consumer<CompletableFuture<Void>> callbackRegistrar) {
+        return fromCatalog(eventBus, scheduler, options, classLoader, selectedPlugins,
+                selectedBundleIds, bundleConfigs, terminalCloseObserver,
+                callbackRegistrar, null);
+    }
+
+    /** Catalog lifecycle construction sharing typed-provider callback admission. */
+    static PluginManager fromCatalog(EventBus eventBus,
+                                     ScheduledExecutorService scheduler,
+                                     PluginsOptions options,
+                                     ClassLoader classLoader,
+                                     Collection<NodePlugin> selectedPlugins,
+                                     Set<String> selectedBundleIds,
+                                     Map<String, Map<String, Object>> bundleConfigs,
+                                     Consumer<NodePlugin> terminalCloseObserver,
+                                     Consumer<CompletableFuture<Void>> callbackRegistrar,
+                                     PluginSpiFacades.CallbackTracker catalogCallbacks) {
+        PluginsOptions catalogPolicy = new PluginsOptions(true,
+                options != null && options.autoRegisterAnnotated(),
+                Set.of(), Set.of(), options != null ? options.config() : Map.of());
+        return new PluginManager(eventBus, scheduler, catalogPolicy, classLoader,
+                Objects.requireNonNull(selectedPlugins, "selectedPlugins"),
+                selectedBundleIds, bundleConfigs, true,
+                Objects.requireNonNull(terminalCloseObserver, "terminalCloseObserver"),
+                Objects.requireNonNull(callbackRegistrar, "callbackRegistrar"),
+                catalogCallbacks);
     }
 
     /** Test/programmatic source used without changing the public discovery SPI. */
     PluginManager(EventBus eventBus, ScheduledExecutorService scheduler,
                   PluginsOptions options, ClassLoader classLoader,
                   Collection<NodePlugin> suppliedPlugins) {
+        this(eventBus, scheduler, options, classLoader, suppliedPlugins, Set.of(), Map.of());
+    }
+
+    private PluginManager(EventBus eventBus, ScheduledExecutorService scheduler,
+                          PluginsOptions options, ClassLoader classLoader,
+                          Collection<NodePlugin> suppliedPlugins,
+                          Set<String> externallySatisfiedDependencies,
+                          Map<String, Map<String, Object>> bundleConfigs) {
+        this(eventBus, scheduler, options, classLoader, suppliedPlugins,
+                externallySatisfiedDependencies, bundleConfigs, false,
+                ignored -> { }, ignored -> { }, null);
+    }
+
+    private PluginManager(EventBus eventBus, ScheduledExecutorService scheduler,
+                          PluginsOptions options, ClassLoader classLoader,
+                          Collection<NodePlugin> suppliedPlugins,
+                          Set<String> externallySatisfiedDependencies,
+                          Map<String, Map<String, Object>> bundleConfigs,
+                          boolean preserveSuppliedOrder,
+                          Consumer<NodePlugin> terminalCloseObserver,
+                          Consumer<CompletableFuture<Void>> callbackRegistrar,
+                          PluginSpiFacades.CallbackTracker catalogCallbacks) {
         this.eventBus = Objects.requireNonNull(eventBus, "eventBus");
         this.scheduler = Objects.requireNonNull(scheduler, "scheduler");
         this.options = snapshot(Objects.requireNonNull(options, "options"));
-        this.classLoader = classLoader != null
-                ? classLoader : Thread.currentThread().getContextClassLoader();
+        this.platformClassLoader = PluginThreadContext.effective(
+                Thread.currentThread().getContextClassLoader());
+        this.classLoader = PluginThreadContext.effective(classLoader);
         this.suppliedPlugins = suppliedPlugins != null ? List.copyOf(suppliedPlugins) : null;
+        this.externallySatisfiedDependencies = externallySatisfiedDependencies == null
+                ? Set.of() : Set.copyOf(externallySatisfiedDependencies);
+        this.preserveSuppliedOrder = preserveSuppliedOrder;
+        this.terminalCloseObserver = Objects.requireNonNull(
+                terminalCloseObserver, "terminalCloseObserver");
+        this.catalogCallbacks = catalogCallbacks;
+        this.managedCallbacks = new PluginContextFacades.ManagedCallbackResources(
+                Objects.requireNonNull(callbackRegistrar, "callbackRegistrar"));
+        if (bundleConfigs == null || bundleConfigs.isEmpty()) {
+            this.bundleConfigs = Map.of();
+        } else {
+            Map<String, Map<String, Object>> copy = new LinkedHashMap<>();
+            bundleConfigs.forEach((id, values) -> copy.put(id,
+                    Collections.unmodifiableMap(new LinkedHashMap<>(values))));
+            this.bundleConfigs = Collections.unmodifiableMap(copy);
+        }
     }
 
     /** Discover, validate and initialize the selected plugin set exactly once. */
-    public synchronized void discoverAndInit() {
-        if (state == State.INITIALIZED || state == State.STARTED || state == State.STOPPED) {
-            return;
-        }
-        requireState(State.NEW, "discover and initialize");
-        state = State.DISCOVERING;
+    public void discoverAndInit() {
+        requireNotInCatalogCallback("discover and initialize plugins");
+        synchronized (this) {
+            if (state == State.INITIALIZED || state == State.STARTED
+                    || state == State.STOPPED) {
+                return;
+            }
+            requireState(State.NEW, "discover and initialize");
+            state = State.DISCOVERING;
 
-        if (!options.enabled()) {
-            state = State.INITIALIZED;
-            log.info("Plugin discovery is disabled");
-            return;
+            if (!options.enabled()) {
+                state = State.INITIALIZED;
+                log.info("Plugin discovery is disabled");
+                return;
+            }
         }
         if (options.autoRegisterAnnotated()) {
             // This flag existed before ADR-011.1 but has never owned listener
@@ -129,92 +286,209 @@ public final class PluginManager implements AutoCloseable {
         try {
             ordered = discoverValidateAndOrder();
         } catch (Throwable failure) {
-            state = State.FAILED;
-            clearPublishedState();
-            throw propagate(failure);
+            CompletableFuture<Void> callbackCleanup = managedCallbacks.sealTerminal();
+            managedCallbacks.awaitCompletion(callbackCleanup);
+            List<Throwable> cleanupFailures = new ArrayList<>(
+                    managedCallbacks.drainCleanupFailures());
+            closeInternallyDiscoveredReverse(cleanupFailures);
+            synchronized (this) {
+                state = State.FAILED;
+                clearPublishedState();
+            }
+            throw propagate(mergeFailures(failure, cleanupFailures));
         }
 
         for (PluginDescriptor descriptor : ordered) {
             pluginIds.put(descriptor.plugin(), descriptor.id());
         }
 
-        state = State.INITIALIZING;
+        synchronized (this) {
+            state = State.INITIALIZING;
+        }
         for (PluginDescriptor descriptor : ordered) {
             PluginContextImpl context = new PluginContextImpl(
                     descriptor.id(), eventBus, pluginLogger(descriptor.id()), options.config(),
-                    scheduler, Optional.ofNullable(classLoader), storageFilters, services);
+                    bundleConfig(descriptor.id()),
+                    scheduler, Optional.ofNullable(classLoader), platformClassLoader,
+                    storageFilters, services, managedCallbacks);
             pluginContexts.put(descriptor.plugin(), context);
             try {
-                descriptor.plugin().init(context);
+                runPluginCallback(() -> descriptor.plugin().init(context));
                 context.completeInitialization();
                 plugins.add(descriptor.plugin());
             } catch (Throwable failure) {
                 List<Throwable> cleanupFailures = new ArrayList<>();
-                closeOne(descriptor.plugin(), descriptor.id(), cleanupFailures);
-                closeInitializedReverse(cleanupFailures);
-                state = State.FAILED;
-                clearPublishedState();
+                CompletableFuture<Void> callbackCleanup =
+                        managedCallbacks.sealTerminal();
+                managedCallbacks.awaitCompletion(callbackCleanup);
+                cleanupFailures.addAll(managedCallbacks.drainCleanupFailures());
+                if (suppliedPlugins == null) {
+                    // Standalone ServiceLoader construction owns the complete
+                    // discovered set, including not-yet-initialized tails.
+                    // Release that ownership in exact reverse construction
+                    // order so partial initialization cannot reorder closes.
+                    closeInternallyDiscoveredReverse(cleanupFailures);
+                } else {
+                    closeOne(descriptor.plugin(), descriptor.id(), cleanupFailures);
+                    closeInitializedReverse(cleanupFailures);
+                }
+                synchronized (this) {
+                    state = State.FAILED;
+                    clearPublishedState();
+                }
                 throw startupFailure(FailurePhase.INITIALIZATION, descriptor.id(),
                         "Plugin initialization failed", failure, cleanupFailures);
             }
         }
 
-        refreshHeaderValidationCustomizers();
-        state = State.INITIALIZED;
+        synchronized (this) {
+            refreshHeaderValidationCustomizers();
+            state = State.INITIALIZED;
+        }
         log.info("Initialized plugins in dependency order: {}",
                 ordered.stream().map(PluginDescriptor::id).toList());
     }
 
-    /** Start every initialized plugin transactionally in dependency order. */
-    public synchronized void startAll() {
-        if (state == State.STARTED) {
-            return;
-        }
-        if (state != State.INITIALIZED && state != State.STOPPED) {
-            throw new IllegalStateException("Cannot start plugins from state " + state);
-        }
+    private Map<String, Object> bundleConfig(String pluginId) {
+        // Manifested owners have an entry even when their scoped map is empty.
+        // Legacy plugins retain PluginContext's shared-config compatibility.
+        return bundleConfigs.containsKey(pluginId)
+                ? bundleConfigs.get(pluginId) : options.config();
+    }
 
-        state = State.STARTING;
-        startedPlugins.clear();
+    /** Run all catalog-owned NodePlugin code inside the provider lifetime fence. */
+    private <T, X extends Throwable> T callPluginCallback(
+            PluginThreadContext.ThrowingSupplier<T, X> callback
+    ) throws X {
+        PluginThreadContext.ThrowingSupplier<T, X> tcclCall =
+                () -> PluginThreadContext.call(classLoader, callback);
+        return catalogCallbacks != null
+                ? catalogCallbacks.call(tcclCall)
+                : tcclCall.get();
+    }
+
+    private <X extends Throwable> void runPluginCallback(
+            PluginThreadContext.ThrowingRunnable<X> callback
+    ) throws X {
+        callPluginCallback(() -> {
+            callback.run();
+            return null;
+        });
+    }
+
+    /** Run host-owned NodePlugin teardown after ordinary catalog admission seals. */
+    private <X extends Throwable> void runPluginTeardownCallback(
+            PluginThreadContext.ThrowingRunnable<X> callback
+    ) throws X {
+        PluginThreadContext.ThrowingRunnable<X> tcclRun =
+                () -> PluginThreadContext.run(classLoader, callback);
+        if (catalogCallbacks != null) {
+            catalogCallbacks.runNodePluginTeardown(tcclRun);
+        } else {
+            tcclRun.run();
+        }
+    }
+
+    /** Start every initialized plugin transactionally in dependency order. */
+    public void startAll() {
+        requireNotInCatalogCallback("start plugins");
+        synchronized (this) {
+            if (state == State.STARTED) {
+                return;
+            }
+            if (state != State.INITIALIZED && state != State.STOPPED) {
+                throw new IllegalStateException("Cannot start plugins from state " + state);
+            }
+
+            if (state == State.STOPPED) {
+                managedCallbacks.resumeNewGeneration();
+            }
+
+            state = State.STARTING;
+            startedPlugins.clear();
+        }
         for (NodePlugin plugin : plugins) {
             String id = idOf(plugin);
             try {
                 pluginContexts.get(plugin).beginStartCycle();
-                plugin.start();
+                runPluginCallback(plugin::start);
                 pluginContexts.get(plugin).completeStartCycle();
-                startedPlugins.add(plugin);
+                synchronized (this) {
+                    startedPlugins.add(plugin);
+                }
             } catch (Throwable failure) {
                 List<Throwable> cleanupFailures = new ArrayList<>();
+                CompletableFuture<Void> callbackCleanup =
+                        managedCallbacks.sealTerminal();
+                managedCallbacks.awaitCompletion(callbackCleanup);
+                cleanupFailures.addAll(managedCallbacks.drainCleanupFailures());
                 stopOne(plugin, id, cleanupFailures);
                 stopStartedReverse(cleanupFailures);
                 closeInitializedReverse(cleanupFailures);
-                state = State.FAILED;
-                clearPublishedState();
+                synchronized (this) {
+                    state = State.FAILED;
+                    clearPublishedState();
+                }
                 throw startupFailure(FailurePhase.START, id,
                         "Plugin start failed", failure, cleanupFailures);
             }
         }
-        state = State.STARTED;
+        synchronized (this) {
+            state = State.STARTED;
+        }
     }
 
     /** Stop successfully started plugins in reverse dependency order. */
-    public synchronized void stopAll() {
-        if (state == State.STOPPED || state == State.FAILED || state == State.CLOSED) {
-            return;
+    public void stopAll() {
+        // Check before changing state or sealing. A callback cannot wait for
+        // its own generation completion, and leaving STOPPING behind after
+        // that rejection would make a later host-thread cleanup impossible.
+        requireLifecycleTeardownAllowed("stop plugins");
+
+        CompletableFuture<Void> callbackCleanup;
+        synchronized (this) {
+            if (state == State.STOPPED || state == State.FAILED || state == State.CLOSED) {
+                return;
+            }
+            if (state != State.STARTED) {
+                rejectTransitionalState("stop");
+                return;
+            }
+            state = State.STOPPING;
+            callbackCleanup = managedCallbacks.sealStartCycle();
         }
-        if (state != State.STARTED) {
-            rejectTransitionalState("stop");
-            return;
-        }
-        state = State.STOPPING;
-        List<Throwable> failures = new ArrayList<>();
+
+        // Do not hold the manager monitor here. An admitted callback may make
+        // a synchronized read of the public manager while it finishes.
+        managedCallbacks.awaitCompletion(callbackCleanup);
+        List<Throwable> failures = new ArrayList<>(
+                managedCallbacks.drainCleanupFailures());
+
+        // STOPPING serializes lifecycle ownership; do not hold the monitor
+        // across plugin code because stop() may wait for a worker that performs
+        // a synchronized manager read.
         stopStartedReverse(failures);
-        if (failures.isEmpty()) {
-            state = State.STOPPED;
-            return;
+        synchronized (this) {
+            state = failures.isEmpty() ? State.STOPPED : State.FAILED;
         }
-        state = State.FAILED;
-        throw cleanupFailure(FailurePhase.STOP, "Plugin stop failed", failures);
+        if (!failures.isEmpty()) {
+            throw cleanupFailure(FailurePhase.STOP, "Plugin stop failed", failures);
+        }
+    }
+
+    /**
+     * Stop admitting managed EventBus/filter/scheduler callbacks and cancel
+     * resources owned by this start cycle. The returned signal completes only
+     * after callbacks admitted before the seal return; sealing itself is
+     * bounded and does not wait for interrupt-resistant plugin code.
+     */
+    public synchronized CompletableFuture<Void> sealManagedCallbacks() {
+        return managedCallbacks.sealStartCycle();
+    }
+
+    /** Current managed-callback generation lifetime signal. */
+    public synchronized CompletableFuture<Void> managedCallbacksCompletion() {
+        return managedCallbacks.completion();
     }
 
     /**
@@ -222,26 +496,66 @@ public final class PluginManager implements AutoCloseable {
      * dependents close because owner registrations are removed afterwards.
      */
     @Override
-    public synchronized void close() {
-        if (state == State.CLOSED) {
-            return;
+    public void close() {
+        // Concurrent host closes are idempotent and wait below; only callback
+        // self-wait must be rejected before entering that close protocol.
+        managedCallbacks.requireNotInCallback("close plugins");
+        requireNotInCatalogCallback("close plugins");
+
+        boolean stoppingStartedPlugins;
+        CompletableFuture<Void> callbackCleanup;
+        synchronized (this) {
+            boolean interrupted = false;
+            while (state == State.CLOSING) {
+                if (closingThread == Thread.currentThread()) {
+                    throw new IllegalStateException(
+                            "Cannot close plugins recursively from a plugin close callback");
+                }
+                try {
+                    wait();
+                } catch (InterruptedException ignored) {
+                    interrupted = true;
+                }
+            }
+            if (interrupted) {
+                Thread.currentThread().interrupt();
+            }
+            if (state == State.CLOSED) {
+                return;
+            }
+            rejectTransitionalState("close");
+            stoppingStartedPlugins = state == State.STARTED;
+            state = State.CLOSING;
+            closingThread = Thread.currentThread();
+            callbackCleanup = managedCallbacks.sealTerminal();
         }
-        rejectTransitionalState("close");
+
+        // As in stopAll(), release the manager monitor while callbacks drain.
+        managedCallbacks.awaitCompletion(callbackCleanup);
+        List<Throwable> managedFailures = managedCallbacks.drainCleanupFailures();
 
         List<Throwable> stopFailures = new ArrayList<>();
-        if (state == State.STARTED) {
-            state = State.STOPPING;
+        if (stoppingStartedPlugins) {
+            stopFailures.addAll(managedFailures);
             stopStartedReverse(stopFailures);
-            state = stopFailures.isEmpty() ? State.STOPPED : State.FAILED;
         }
 
-        state = State.CLOSING;
         List<Throwable> closeFailures = new ArrayList<>();
+        if (!stoppingStartedPlugins) {
+            closeFailures.addAll(managedFailures);
+        }
         try {
+            // CLOSING excludes another lifecycle owner while allowing plugin
+            // close callbacks and their workers to inspect manager snapshots.
             closeInitializedReverse(closeFailures);
+            closeInternallyDiscoveredReverse(closeFailures);
         } finally {
-            clearPublishedState();
-            state = State.CLOSED;
+            synchronized (this) {
+                clearPublishedState();
+                state = State.CLOSED;
+                closingThread = null;
+                notifyAll();
+            }
         }
 
         if (!stopFailures.isEmpty()) {
@@ -252,6 +566,30 @@ public final class PluginManager implements AutoCloseable {
         if (!closeFailures.isEmpty()) {
             throw cleanupFailure(FailurePhase.CLOSE, "Plugin close failed", closeFailures);
         }
+    }
+
+    /** Reject teardown that would synchronously wait for the initiating callback. */
+    public void requireLifecycleTeardownAllowed(String action) {
+        managedCallbacks.requireNotInCallback(action);
+        requireNotInCatalogCallback(action);
+        synchronized (this) {
+            if (state == State.DISCOVERING || state == State.INITIALIZING
+                    || state == State.STARTING || state == State.STOPPING
+                    || state == State.CLOSING) {
+                throw new IllegalStateException("Cannot " + action
+                        + " during plugin lifecycle callback/state " + state);
+            }
+        }
+    }
+
+    private void requireNotInCatalogCallback(String action) {
+        if (catalogCallbacks != null) {
+            catalogCallbacks.requireNotInCallback(action);
+        }
+    }
+
+    synchronized boolean isTerminallyClosed() {
+        return state == State.CLOSED;
     }
 
     /** Immutable snapshot of filters from the successfully initialized set. */
@@ -303,7 +641,36 @@ public final class PluginManager implements AutoCloseable {
             }
         }
 
-        return topologicalOrder(selected);
+        Map<String, Integer> preferredOrder = new LinkedHashMap<>();
+        if (preserveSuppliedOrder) {
+            for (int i = 0; i < descriptors.size(); i++) {
+                preferredOrder.put(descriptors.get(i).id(), i);
+            }
+        }
+        List<PluginDescriptor> ordered = topologicalOrder(selected, preferredOrder);
+        if (suppliedPlugins == null) {
+            Set<NodePlugin> selectedInstances = Collections.newSetFromMap(
+                    new IdentityHashMap<>());
+            ordered.forEach(descriptor -> selectedInstances.add(descriptor.plugin()));
+            Map<NodePlugin, String> discoveredIds = new IdentityHashMap<>();
+            descriptors.forEach(descriptor -> discoveredIds.put(
+                    descriptor.plugin(), descriptor.id()));
+            List<Throwable> closeFailures = new ArrayList<>();
+            for (int index = internallyDiscoveredOrder.size() - 1; index >= 0; index--) {
+                NodePlugin plugin = internallyDiscoveredOrder.get(index);
+                if (!selectedInstances.contains(plugin) && internallyOwned.contains(plugin)) {
+                    closeOne(plugin, discoveredIds.getOrDefault(
+                            plugin, plugin.getClass().getName()), closeFailures);
+                }
+            }
+            internallyDiscoveredOrder.removeIf(
+                    plugin -> !internallyOwned.contains(plugin));
+            if (!closeFailures.isEmpty()) {
+                throw cleanupFailure(FailurePhase.DISCOVERY,
+                        "Filtered NodePlugin cleanup failed", closeFailures);
+            }
+        }
+        return ordered;
     }
 
     private List<NodePlugin> discoverCandidates() {
@@ -311,16 +678,47 @@ public final class PluginManager implements AutoCloseable {
             return suppliedPlugins;
         }
         try {
-            List<NodePlugin> result = new ArrayList<>();
-            ServiceLoader<NodePlugin> loader = ServiceLoader.load(NodePlugin.class, classLoader);
-            for (ServiceLoader.Provider<NodePlugin> provider : loader.stream().toList()) {
-                result.add(Objects.requireNonNull(provider.get(), "ServiceLoader returned null plugin"));
-            }
-            return List.copyOf(result);
-        } catch (ServiceConfigurationError | RuntimeException | LinkageError failure) {
+            ServiceLoader<NodePlugin> loader = PluginThreadContext.call(
+                    classLoader, () -> ServiceLoader.load(NodePlugin.class, classLoader));
+            Iterator<ServiceLoader.Provider<NodePlugin>> providers =
+                    PluginThreadContext.call(classLoader,
+                            () -> loader.stream().iterator());
+            return discoverCandidatesForTesting(
+                    providers, MAX_DISCOVERED_NODE_PLUGINS);
+        } catch (Throwable failure) {
+            LifecycleFailures.rethrowIfProcessFatal(failure);
             throw problem(FailurePhase.DISCOVERY, null,
                     "NodePlugin discovery failed", failure);
         }
+    }
+
+    /** Package-private iterator seam for the public compatibility-path bound. */
+    List<NodePlugin> discoverCandidatesForTesting(
+            Iterator<ServiceLoader.Provider<NodePlugin>> providers,
+            int maximumCandidates
+    ) {
+        Objects.requireNonNull(providers, "providers");
+        if (maximumCandidates < 1) {
+            throw new IllegalArgumentException("maximumCandidates must be positive");
+        }
+        List<NodePlugin> result = new ArrayList<>();
+        while (PluginThreadContext.call(classLoader, providers::hasNext)) {
+            if (result.size() == maximumCandidates) {
+                throw new IllegalStateException(
+                        "NodePlugin ServiceLoader discovery exceeds the global limit of "
+                                + maximumCandidates);
+            }
+            ServiceLoader.Provider<NodePlugin> provider = Objects.requireNonNull(
+                    PluginThreadContext.call(classLoader, providers::next),
+                    "ServiceLoader returned a null provider handle");
+            NodePlugin plugin = Objects.requireNonNull(
+                    PluginThreadContext.call(classLoader, provider::get),
+                    "ServiceLoader returned null plugin");
+            result.add(plugin);
+            internallyDiscoveredOrder.add(plugin);
+            internallyOwned.add(plugin);
+        }
+        return List.copyOf(result);
     }
 
     private PluginDescriptor snapshotMetadata(NodePlugin plugin) {
@@ -329,56 +727,90 @@ public final class PluginManager implements AutoCloseable {
                     "Discovered a null NodePlugin", null);
         }
         try {
-            String id = requireIdentifier("plugin id", plugin.id());
-            String version = requireIdentifier("plugin version", plugin.version());
-            Set<String> dependencies = snapshotDependencies(id, plugin.dependsOn());
-            Set<PluginCapability> capabilities = plugin.capabilities();
-            if (capabilities == null || capabilities.stream().anyMatch(Objects::isNull)) {
-                throw new IllegalArgumentException("Plugin capabilities must not be null");
-            }
+            String id = requireIdentifier("plugin id",
+                    callPluginCallback(plugin::id), MAX_PLUGIN_ID_LENGTH);
+            String version = requireIdentifier("plugin version",
+                    callPluginCallback(plugin::version), MAX_PLUGIN_VERSION_LENGTH);
+            Set<String> rawDependencies = callPluginCallback(plugin::dependsOn);
+            Set<String> dependencies = snapshotDependencies(
+                    id, rawDependencies);
+            Set<PluginCapability> rawCapabilities = callPluginCallback(plugin::capabilities);
+            Set<PluginCapability> capabilities = snapshotCapabilities(rawCapabilities);
             PluginDescriptor descriptor = new PluginDescriptor(plugin, id, version,
-                    Collections.unmodifiableSet(new TreeSet<>(dependencies)),
-                    Collections.unmodifiableSet(new LinkedHashSet<>(capabilities)));
+                    dependencies, capabilities);
             log.info("Discovered plugin: {}:{}", id, version);
             return descriptor;
         } catch (Throwable failure) {
-            if (failure instanceof PluginManagerException managerException) {
-                throw managerException;
-            }
-            if (failure instanceof Error error) {
-                throw error;
-            }
+            LifecycleFailures.rethrowIfProcessFatal(failure);
             throw problem(FailurePhase.DISCOVERY, null,
                     "Invalid NodePlugin metadata from " + plugin.getClass().getName(), failure);
         }
     }
 
-    private static Set<String> snapshotDependencies(String id, Set<String> dependencies) {
+    private Set<String> snapshotDependencies(
+            String id,
+            Set<String> dependencies
+    ) {
         if (dependencies == null) {
             throw new IllegalArgumentException("Plugin dependencies must not be null");
         }
         Set<String> snapshot = new TreeSet<>();
-        for (String dependency : dependencies) {
-            String value = requireIdentifier("dependency id", dependency);
+        Iterator<String> iterator = callPluginCallback(dependencies::iterator);
+        int traversed = 0;
+        while (callPluginCallback(iterator::hasNext)) {
+            if (++traversed > MAX_PLUGIN_DEPENDENCIES) {
+                throw new IllegalArgumentException("Plugin dependencies must contain at most "
+                        + MAX_PLUGIN_DEPENDENCIES + " entries");
+            }
+            String dependency = callPluginCallback(iterator::next);
+            String value = requireIdentifier(
+                    "dependency id", dependency, MAX_PLUGIN_ID_LENGTH);
             if (id.equals(value)) {
                 throw new IllegalArgumentException("Plugin '" + id + "' depends on itself");
             }
             snapshot.add(value);
         }
-        return snapshot;
+        return Collections.unmodifiableSet(snapshot);
     }
 
-    private static String requireIdentifier(String label, String value) {
+    private Set<PluginCapability> snapshotCapabilities(
+            Set<PluginCapability> capabilities) {
+        if (capabilities == null) {
+            throw new IllegalArgumentException("Plugin capabilities must not be null");
+        }
+        Set<PluginCapability> snapshot = new LinkedHashSet<>();
+        Iterator<PluginCapability> iterator = callPluginCallback(capabilities::iterator);
+        int traversed = 0;
+        while (callPluginCallback(iterator::hasNext)) {
+            if (++traversed > MAX_PLUGIN_CAPABILITIES) {
+                throw new IllegalArgumentException("Plugin capabilities must contain at most "
+                        + MAX_PLUGIN_CAPABILITIES + " entries");
+            }
+            PluginCapability capability = callPluginCallback(iterator::next);
+            snapshot.add(Objects.requireNonNull(
+                    capability, "Plugin capabilities must not contain null"));
+        }
+        return Collections.unmodifiableSet(snapshot);
+    }
+
+    private static String requireIdentifier(String label, String value, int maxLength) {
         if (value == null || value.isBlank()) {
             throw new IllegalArgumentException(label + " must not be blank");
         }
         if (!value.equals(value.trim())) {
             throw new IllegalArgumentException(label + " must not have surrounding whitespace");
         }
+        if (value.length() > maxLength) {
+            throw new IllegalArgumentException(label + " must not exceed "
+                    + maxLength + " characters");
+        }
         return value;
     }
 
-    private List<PluginDescriptor> topologicalOrder(Map<String, PluginDescriptor> selected) {
+    private List<PluginDescriptor> topologicalOrder(
+            Map<String, PluginDescriptor> selected,
+            Map<String, Integer> preferredOrder
+    ) {
         Map<String, Integer> indegree = new TreeMap<>();
         Map<String, Set<String>> dependents = new TreeMap<>();
         for (String id : selected.keySet()) {
@@ -388,17 +820,25 @@ public final class PluginManager implements AutoCloseable {
 
         for (PluginDescriptor descriptor : selected.values()) {
             for (String dependency : descriptor.dependencies()) {
-                if (!selected.containsKey(dependency)) {
+                if (!selected.containsKey(dependency)
+                        && !externallySatisfiedDependencies.contains(dependency)) {
                     throw problem(FailurePhase.VALIDATION, descriptor.id(),
                             "Plugin '" + descriptor.id() + "' requires unavailable plugin '"
                                     + dependency + "'", null);
                 }
-                indegree.compute(descriptor.id(), (ignored, value) -> value + 1);
-                dependents.get(dependency).add(descriptor.id());
+                if (selected.containsKey(dependency)) {
+                    indegree.compute(descriptor.id(), (ignored, value) -> value + 1);
+                    dependents.get(dependency).add(descriptor.id());
+                }
             }
         }
 
-        PriorityQueue<String> ready = new PriorityQueue<>();
+        Comparator<String> readyOrder = preferredOrder.isEmpty()
+                ? Comparator.naturalOrder()
+                : Comparator.comparingInt(
+                                (String id) -> preferredOrder.getOrDefault(id, Integer.MAX_VALUE))
+                        .thenComparing(Comparator.naturalOrder());
+        PriorityQueue<String> ready = new PriorityQueue<>(readyOrder);
         indegree.forEach((id, degree) -> {
             if (degree == 0) {
                 ready.add(id);
@@ -419,9 +859,55 @@ public final class PluginManager implements AutoCloseable {
 
         if (ordered.size() != selected.size()) {
             throw problem(FailurePhase.VALIDATION, null,
-                    "Plugin dependency cycle: " + findCyclePath(selected), null);
+                    boundedCycleDiagnostic(findCyclePath(selected)), null);
         }
         return List.copyOf(ordered);
+    }
+
+    private static String boundedCycleDiagnostic(List<String> cycle) {
+        long renderedLength = DEPENDENCY_CYCLE_DIAGNOSTIC_PREFIX.length() + 2L;
+        for (int index = 0; index < cycle.size(); index++) {
+            renderedLength += cycle.get(index).length() + (index == 0 ? 0 : 2);
+            if (renderedLength > MAX_CYCLE_DIAGNOSTIC_LENGTH) {
+                return compactCycleDiagnostic(cycle);
+            }
+        }
+        return DEPENDENCY_CYCLE_DIAGNOSTIC_PREFIX + cycle;
+    }
+
+    private static String compactCycleDiagnostic(List<String> cycle) {
+        int traversedNodes = Math.max(0, cycle.size() - 1);
+        if (traversedNodes == 0) {
+            return DEPENDENCY_CYCLE_DIAGNOSTIC_PREFIX + "[]";
+        }
+
+        int headCount = Math.min(2, traversedNodes);
+        int tailCount = Math.min(2, traversedNodes - headCount);
+        int omittedCount = traversedNodes - headCount - tailCount;
+        List<String> displayed = new ArrayList<>(headCount + tailCount + 2);
+        for (int index = 0; index < headCount; index++) {
+            displayed.add(abbreviateCycleId(cycle.get(index)));
+        }
+        if (omittedCount > 0) {
+            displayed.add("... <" + omittedCount + " nodes omitted> ...");
+        }
+        for (int index = traversedNodes - tailCount; index < traversedNodes; index++) {
+            displayed.add(abbreviateCycleId(cycle.get(index)));
+        }
+        // findCyclePath always repeats the first node last; retain that closure
+        // in the compact diagnostic so operators can still recognize a cycle.
+        displayed.add(abbreviateCycleId(cycle.getLast()));
+        return DEPENDENCY_CYCLE_DIAGNOSTIC_PREFIX + displayed;
+    }
+
+    private static String abbreviateCycleId(String id) {
+        if (id.length() <= MAX_CYCLE_ID_DISPLAY_LENGTH) {
+            return id;
+        }
+        int prefixLength = (MAX_CYCLE_ID_DISPLAY_LENGTH - 3) / 2;
+        int suffixLength = MAX_CYCLE_ID_DISPLAY_LENGTH - 3 - prefixLength;
+        return id.substring(0, prefixLength) + "..."
+                + id.substring(id.length() - suffixLength);
     }
 
     private static List<String> findCyclePath(Map<String, PluginDescriptor> selected) {
@@ -429,6 +915,9 @@ public final class PluginManager implements AutoCloseable {
         selected.keySet().forEach(id -> states.put(id, VisitState.NEW));
         Deque<String> path = new ArrayDeque<>();
         for (String id : selected.keySet()) {
+            if (states.get(id) != VisitState.NEW) {
+                continue;
+            }
             List<String> cycle = findCycleFrom(id, selected, states, path);
             if (!cycle.isEmpty()) {
                 return cycle;
@@ -441,36 +930,58 @@ public final class PluginManager implements AutoCloseable {
                                               Map<String, PluginDescriptor> selected,
                                               Map<String, VisitState> states,
                                               Deque<String> path) {
-        VisitState current = states.get(id);
-        if (current == VisitState.DONE) {
-            return List.of();
-        }
-        if (current == VisitState.VISITING) {
-            List<String> active = new ArrayList<>(path);
-            int start = active.indexOf(id);
-            List<String> cycle = new ArrayList<>(active.subList(start, active.size()));
-            cycle.add(id);
-            return List.copyOf(cycle);
-        }
-
         states.put(id, VisitState.VISITING);
         path.addLast(id);
-        for (String dependency : selected.get(id).dependencies()) {
-            List<String> cycle = findCycleFrom(dependency, selected, states, path);
-            if (!cycle.isEmpty()) {
-                return cycle;
+        Deque<ManagerCycleFrame> frames = new ArrayDeque<>();
+        frames.addLast(managerCycleFrame(id, selected));
+
+        while (!frames.isEmpty()) {
+            ManagerCycleFrame frame = frames.getLast();
+            if (!frame.dependencies().hasNext()) {
+                frames.removeLast();
+                path.removeLast();
+                states.put(frame.id(), VisitState.DONE);
+                continue;
             }
+
+            String dependency = frame.dependencies().next();
+            VisitState dependencyState = states.get(dependency);
+            if (dependencyState == null || dependencyState == VisitState.DONE) {
+                continue;
+            }
+            if (dependencyState == VisitState.VISITING) {
+                List<String> active = new ArrayList<>(path);
+                int start = active.indexOf(dependency);
+                List<String> cycle = new ArrayList<>(active.subList(start, active.size()));
+                cycle.add(dependency);
+                return List.copyOf(cycle);
+            }
+
+            states.put(dependency, VisitState.VISITING);
+            path.addLast(dependency);
+            frames.addLast(managerCycleFrame(dependency, selected));
         }
-        path.removeLast();
-        states.put(id, VisitState.DONE);
         return List.of();
+    }
+
+    private static ManagerCycleFrame managerCycleFrame(
+            String id,
+            Map<String, PluginDescriptor> selected
+    ) {
+        Iterator<String> dependencies = selected.get(id).dependencies().stream()
+                .filter(selected::containsKey)
+                .sorted()
+                .iterator();
+        return new ManagerCycleFrame(id, dependencies);
     }
 
     private void refreshHeaderValidationCustomizers() {
         headerValidationCustomizers.clear();
         for (NodePlugin plugin : plugins) {
             if (plugin instanceof HeaderValidationCustomizer customizer) {
-                headerValidationCustomizers.add(customizer);
+                headerValidationCustomizers.add(builder -> managedCallbacks.runOrSkip(
+                        PluginContextFacades.CURRENT_GENERATION,
+                        () -> runPluginCallback(() -> customizer.customize(builder))));
             }
         }
     }
@@ -499,14 +1010,15 @@ public final class PluginManager implements AutoCloseable {
             }
         } catch (Throwable failure) {
             failures.add(failure);
-            log.warn("Plugin contribution stop transition failed for '{}': {}",
-                    id, failure.toString(), failure);
+            log.warn("Plugin contribution stop transition failed for '{}' (errorType={})",
+                    id, failure.getClass().getName());
         }
         try {
-            plugin.stop();
+            runPluginTeardownCallback(plugin::stop);
         } catch (Throwable failure) {
             failures.add(failure);
-            log.warn("Plugin stop failed for '{}': {}", id, failure.toString(), failure);
+            log.warn("Plugin stop failed for '{}' (errorType={})",
+                    id, failure.getClass().getName());
         } finally {
             try {
                 if (context != null) {
@@ -514,26 +1026,45 @@ public final class PluginManager implements AutoCloseable {
                 }
             } catch (Throwable failure) {
                 failures.add(failure);
-                log.warn("Plugin contribution cleanup failed for '{}': {}",
-                        id, failure.toString(), failure);
+                log.warn("Plugin contribution cleanup failed for '{}' (errorType={})",
+                        id, failure.getClass().getName());
             }
         }
     }
 
     private void closeOne(NodePlugin plugin, String id, List<Throwable> failures) {
         try {
-            plugin.close();
+            runPluginTeardownCallback(plugin::close);
         } catch (Throwable failure) {
             failures.add(failure);
-            log.warn("Plugin close failed for '{}': {}", id, failure.toString(), failure);
+            log.warn("Plugin close failed for '{}' (errorType={})",
+                    id, failure.getClass().getName());
         } finally {
+            try {
+                terminalCloseObserver.accept(plugin);
+            } catch (Throwable failure) {
+                failures.add(failure);
+                log.warn("Plugin terminal-close observer failed for '{}' (errorType={})",
+                        id, failure.getClass().getName());
+            }
             PluginContextImpl context = pluginContexts.remove(plugin);
             if (context != null) {
                 context.deactivate();
             }
             services.removeOwner(id);
             storageFilters.removeOwner(id);
+            internallyOwned.remove(plugin);
         }
+    }
+
+    private void closeInternallyDiscoveredReverse(List<Throwable> failures) {
+        for (int index = internallyDiscoveredOrder.size() - 1; index >= 0; index--) {
+            NodePlugin plugin = internallyDiscoveredOrder.get(index);
+            if (internallyOwned.contains(plugin)) {
+                closeOne(plugin, idOf(plugin), failures);
+            }
+        }
+        internallyDiscoveredOrder.clear();
     }
 
     private String idOf(NodePlugin plugin) {
@@ -589,60 +1120,40 @@ public final class PluginManager implements AutoCloseable {
     }
 
     private static RuntimeException propagate(Throwable failure) {
-        if (failure instanceof Error error) {
-            throw error;
-        }
+        LifecycleFailures.rethrowIfProcessFatal(failure);
         if (failure instanceof RuntimeException runtimeException) {
             return runtimeException;
         }
         return problem(FailurePhase.DISCOVERY, null,
-                "Unexpected checked plugin failure", failure);
+                "Unexpected plugin discovery failure", failure);
     }
 
     private static PluginManagerException startupFailure(
             FailurePhase phase, String pluginId, String message, Throwable primary,
             List<Throwable> cleanupFailures) {
-        Error fatal = primary instanceof Error error ? error : cleanupFailures.stream()
-                .filter(Error.class::isInstance)
-                .map(Error.class::cast)
-                .findFirst().orElse(null);
-        if (fatal != null) {
-            if (fatal != primary) {
-                fatal.addSuppressed(primary);
-            }
-            for (Throwable cleanup : cleanupFailures) {
-                if (cleanup != fatal) {
-                    fatal.addSuppressed(cleanup);
-                }
-            }
-            throw fatal;
-        }
-
-        PluginManagerException failure = problem(phase, pluginId,
-                message + " for '" + pluginId + "'", primary);
-        cleanupFailures.forEach(failure::addSuppressed);
-        return failure;
+        Throwable winner = mergeFailures(primary, cleanupFailures);
+        LifecycleFailures.rethrowIfProcessFatal(winner);
+        return problem(phase, pluginId,
+                message + " for '" + pluginId + "'", winner);
     }
 
     private static PluginManagerException cleanupFailure(
             FailurePhase phase, String message, List<Throwable> failures) {
         log.warn("{} with {} callback failure(s)", message, failures.size());
-        Error fatal = failures.stream()
-                .filter(Error.class::isInstance)
-                .map(Error.class::cast)
-                .findFirst().orElse(null);
-        if (fatal != null) {
-            for (Throwable failure : failures) {
-                if (failure != fatal) {
-                    fatal.addSuppressed(failure);
-                }
-            }
-            throw fatal;
+        Throwable winner = mergeFailures(null, failures);
+        LifecycleFailures.rethrowIfProcessFatal(winner);
+        return problem(phase, null, message, winner);
+    }
+
+    private static Throwable mergeFailures(
+            Throwable initial,
+            List<Throwable> additional
+    ) {
+        Throwable winner = initial;
+        for (Throwable failure : additional) {
+            winner = LifecycleFailures.merge(winner, failure);
         }
-        Throwable primary = failures.getFirst();
-        PluginManagerException failure = problem(phase, null, message, primary);
-        failures.stream().skip(1).forEach(failure::addSuppressed);
-        return failure;
+        return winner;
     }
 
     private enum State {
@@ -701,5 +1212,8 @@ public final class PluginManager implements AutoCloseable {
                                     String version,
                                     Set<String> dependencies,
                                     Set<PluginCapability> capabilities) {
+    }
+
+    private record ManagerCycleFrame(String id, Iterator<String> dependencies) {
     }
 }

@@ -93,6 +93,44 @@ class FxEffectsM4Test {
     }
 
     @Test
+    void externalReportsBoundReasonsOwnBuffersAndRejectUnsafeWorkerIds(@TempDir Path dir) {
+        try (Pipeline pipeline = new Pipeline(
+                dir.resolve("failure"), emitting(ResultPolicy.CHAIN), FX_SETTINGS);
+             EffectRuntime runtime = runtime(pipeline.store)) {
+            pipeline.applyNext(1);
+            runtime.tick();
+            assertThat(runtime.claim("worker\nsecret", Set.of(), 10, 60)).isEmpty();
+            assertThat(runtime.claim("x".repeat(129), Set.of(), 10, 60)).isEmpty();
+            assertThat(runtime.claim("worker-safe", Set.of(), 10, 60)).hasSize(1);
+
+            String hostileReason = "denied\n\t" + "x".repeat(400);
+            assertThat(runtime.report(
+                    "worker-safe", 1, 0, false, null, hostileReason)).isTrue();
+            FxStatusRecord status = pipeline.store.fxRuntimeStatus(1, 0).orElseThrow();
+            assertThat(status.lastError()).hasSize(
+                    com.bloxbean.cardano.yano.api.appchain.effects.EffectExecution
+                            .MAX_FAILURE_REASON_CHARACTERS);
+            assertThat(status.lastError()).doesNotContain("\n", "\t");
+            assertThat(runtime.pendingInjections(1, 0).getFirst().reason())
+                    .isEqualTo(status.lastError());
+        }
+
+        try (Pipeline pipeline = new Pipeline(
+                dir.resolve("success"), emitting(ResultPolicy.CHAIN), FX_SETTINGS);
+             EffectRuntime runtime = runtime(pipeline.store)) {
+            pipeline.applyNext(1);
+            runtime.tick();
+            assertThat(runtime.claim("worker-safe", Set.of(), 10, 60)).hasSize(1);
+            byte[] reference = "stable-ref".getBytes(StandardCharsets.UTF_8);
+            assertThat(runtime.report(
+                    "worker-safe", 1, 0, true, reference, null)).isTrue();
+            reference[0] = 0;
+            assertThat(pipeline.store.fxRuntimeStatus(1, 0).orElseThrow().externalRef())
+                    .isEqualTo("stable-ref".getBytes(StandardCharsets.UTF_8));
+        }
+    }
+
+    @Test
     void expiredLease_reopensTheEffect(@TempDir Path dir) throws Exception {
         try (Pipeline pipeline = new Pipeline(dir, emitting(ResultPolicy.NONE), FX_SETTINGS);
              EffectRuntime runtime = runtime(pipeline.store)) {

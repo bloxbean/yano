@@ -7,6 +7,7 @@ import com.bloxbean.cardano.yano.api.appchain.effects.EffectExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectRecord;
 import com.bloxbean.cardano.yano.api.appchain.effects.FinalityGate;
 import com.bloxbean.cardano.yano.api.appchain.effects.PendingEffect;
+import com.bloxbean.cardano.yano.runtime.util.LifecycleFailures;
 import org.slf4j.Logger;
 
 import java.util.ArrayList;
@@ -14,17 +15,25 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.SynchronousQueue;
+import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 /**
@@ -55,6 +64,8 @@ final class EffectRuntime implements AutoCloseable {
     private static final long EXPIRY_SAFETY_BLOCKS = 2;
     /** Shared best-effort join budget for cooperative plugin cleanup. */
     private static final long EXECUTOR_CLOSE_JOIN_MILLIS = 250;
+    /** Bounded, secret-free diagnostic retained for an implicitly failed callback. */
+    private static final int MAX_PLUGIN_FAILURE_TYPE_CHARS = 256;
 
     /** Everything the runtime needs from configuration (effects.executor.*). */
     record Settings(boolean enabled,
@@ -155,6 +166,8 @@ final class EffectRuntime implements AutoCloseable {
     private final Settings settings;
     private final List<ExecutorBinding> executorBindings;
     private final ExecutorService pool;
+    private final ThreadFactory cleanupCoordinatorThreadFactory;
+    private final ThreadFactory executorCloseThreadFactory;
     private final Logger log;
 
     /** Effects currently in flight on the worker pool (in-memory only). */
@@ -169,7 +182,21 @@ final class EffectRuntime implements AutoCloseable {
     private final ReentrantReadWriteLock apiOperations = new ReentrantReadWriteLock(true);
     /** Concurrent close callers wait for the first caller's complete fence. */
     private final Object closeLock = new Object();
+    private final CompletableFuture<Void> closeFence = new CompletableFuture<>();
+    /** A terminal executor callback may re-enter close without waiting on itself. */
+    private final ThreadLocal<Boolean> inExecutorCloseCallback =
+            ThreadLocal.withInitial(() -> false);
+    private volatile Thread closeOwnerThread;
     private final AtomicBoolean executorCleanupScheduled = new AtomicBoolean();
+    /** Exact-once owner for the coordinator, including a failed-handoff fallback. */
+    private final AtomicBoolean executorCleanupCoordinatorClaimed = new AtomicBoolean();
+    /** Infrastructure failures are reported only after the real product lifetime ends. */
+    private final AtomicReference<Throwable> executorCleanupHandoffFailure = new AtomicReference<>();
+    /**
+     * Eventual plugin-lifecycle barrier. Unlike close(), this remains pending
+     * for interrupt-resistant execute/supports/close callbacks.
+     */
+    private final CompletableFuture<Void> executorCleanupCompletion = new CompletableFuture<>();
     /** Tracks plugin capability callbacks that deliberately run outside tickLock. */
     private final Object pluginCallbackLock = new Object();
     private int activePluginCallbacks;
@@ -197,12 +224,46 @@ final class EffectRuntime implements AutoCloseable {
                   List<AppEffectExecutor> executors,
                   Map<String, Map<String, String>> executorConfigs,
                   String runtimeOwner, Logger log) {
+        this(ledger, chainId, settings, executors, executorConfigs, runtimeOwner, log,
+                task -> {
+                    Thread thread = new Thread(task,
+                            "app-chain-fx-executor-cleanup-coordinator-" + chainId);
+                    thread.setDaemon(true);
+                    return thread;
+                });
+    }
+
+    /** Package-private seam for coordinator hand-off lifecycle regressions. */
+    EffectRuntime(AppLedgerStore ledger, String chainId, Settings settings,
+                  List<AppEffectExecutor> executors,
+                  Map<String, Map<String, String>> executorConfigs,
+                  String runtimeOwner, Logger log,
+                  ThreadFactory cleanupCoordinatorThreadFactory) {
+        this(ledger, chainId, settings, executors, executorConfigs, runtimeOwner, log,
+                cleanupCoordinatorThreadFactory, task -> {
+                    Thread thread = new Thread(task, "app-chain-fx-executor-close-" + chainId);
+                    thread.setDaemon(true);
+                    return thread;
+                });
+    }
+
+    /** Package-private seam for per-product close hand-off lifecycle regressions. */
+    EffectRuntime(AppLedgerStore ledger, String chainId, Settings settings,
+                  List<AppEffectExecutor> executors,
+                  Map<String, Map<String, String>> executorConfigs,
+                  String runtimeOwner, Logger log,
+                  ThreadFactory cleanupCoordinatorThreadFactory,
+                  ThreadFactory executorCloseThreadFactory) {
         this.ledger = ledger;
         this.chainId = chainId;
         this.runtimeOwner = runtimeOwner;
         this.settings = settings;
         this.executorBindings = snapshotBindings(executors, executorConfigs);
         this.log = log;
+        this.cleanupCoordinatorThreadFactory = Objects.requireNonNull(
+                cleanupCoordinatorThreadFactory, "cleanupCoordinatorThreadFactory");
+        this.executorCloseThreadFactory = Objects.requireNonNull(
+                executorCloseThreadFactory, "executorCloseThreadFactory");
         AppLedgerStore.FxRuntimeBinding binding = ledger.bindFxRuntimeOwner(runtimeOwner);
         if (binding.discardedState()) {
             log.warn("App-chain '{}' effect runtime owner changed from {} to {} — discarded "
@@ -224,13 +285,29 @@ final class EffectRuntime implements AutoCloseable {
             t.setDaemon(true);
             return t;
         }, new ThreadPoolExecutor.AbortPolicy());
-        initializeCursor();
-        ledger.fxEnsureResultReadyIndex();
-        initializeLatencyBuckets();
+        try {
+            initializeCursor();
+            ledger.fxEnsureResultReadyIndex();
+            initializeLatencyBuckets();
+        } catch (Throwable constructionFailure) {
+            // The caller still owns executor products until this constructor
+            // returns, but this internal worker pool is already ours. Do not
+            // leak it when RocksDB initialization/binding fails.
+            pool.shutdownNow();
+            throw constructionFailure;
+        }
     }
 
-    private record ExecutorBinding(int index, AppEffectExecutor executor, String id,
-                                   Map<String, String> config, AtomicBoolean closeStarted) {
+    private record ExecutorBinding(
+            int index,
+            AppEffectExecutor executor,
+            String id,
+            Map<String, String> config,
+            AtomicBoolean closeClaimed,
+            AtomicBoolean closeTerminated,
+            CountDownLatch closeTerminal,
+            AtomicReference<Throwable> closeFailure
+    ) {
     }
 
     private static List<ExecutorBinding> snapshotBindings(
@@ -244,7 +321,15 @@ final class EffectRuntime implements AutoCloseable {
             // Map.copyOf snapshots the mutable inner config and exposes an
             // immutable view to every execution context.
             Map<String, String> config = source != null ? Map.copyOf(source) : Map.of();
-            bindings.add(new ExecutorBinding(i, executor, id, config, new AtomicBoolean()));
+            bindings.add(new ExecutorBinding(
+                    i,
+                    executor,
+                    id,
+                    config,
+                    new AtomicBoolean(),
+                    new AtomicBoolean(),
+                    new CountDownLatch(1),
+                    new AtomicReference<>()));
         }
         return List.copyOf(bindings);
     }
@@ -270,6 +355,15 @@ final class EffectRuntime implements AutoCloseable {
 
     boolean isClosed() {
         return closed;
+    }
+
+    /**
+     * Completes only after every admitted plugin callback has ended and every
+     * executor close callback has returned. The stage completes exceptionally
+     * when cleanup callbacks fail, but never before those callbacks terminate.
+     */
+    CompletionStage<Void> closeCompletion() {
+        return executorCleanupCompletion.minimalCompletionStage();
     }
 
     /**
@@ -318,11 +412,11 @@ final class EffectRuntime implements AutoCloseable {
                 // scheduler has left its ledger barrier so a non-cooperative
                 // plugin cannot make close() wait indefinitely.
                 resolveAndSubmit(candidates);
-            } catch (Exception e) {
-                if (!closed) {
-                    lastError = e.toString();
-                    log.warn("App-chain '{}' effect runtime tick failed: {}", chainId, e.toString());
+            } catch (Throwable failure) {
+                if (!closed || isFatal(failure)) {
+                    reportFailure("runtime tick", failure);
                 }
+                rethrowIfFatal(failure);
             }
         }
     }
@@ -530,8 +624,11 @@ final class EffectRuntime implements AutoCloseable {
                 }
                 outcome = binding.executor().execute(context,
                         PendingEffect.of(record));
-            } catch (Exception e) {
-                outcome = EffectExecution.failed(e.toString(), true);
+            } catch (Throwable failure) {
+                rethrowIfFatal(failure);
+                String reason = failureType(failure);
+                reportFailure("executor '" + binding.id() + "' execute", failure);
+                outcome = EffectExecution.failed(reason, true);
             }
             if (closed) {
                 return; // never touch the ledger after close() — re-attempted on restart
@@ -555,7 +652,8 @@ final class EffectRuntime implements AutoCloseable {
                 switch (outcome) {
                     case EffectExecution.Confirmed confirmed -> {
                         ledger.fxRuntimeComplete(height, ordinal,
-                                before.done(clampRef(confirmed.externalRef())),
+                                before.done(clampRef(confirmed.externalRef()),
+                                        confirmed.detailHash()),
                                 record.result() == com.bloxbean.cardano.yano.api.appchain.effects
                                         .ResultPolicy.CHAIN);
                         recordTerminal(record, "confirmed");
@@ -602,11 +700,11 @@ final class EffectRuntime implements AutoCloseable {
                                             System.currentTimeMillis() + retry.notBefore().toMillis()));
                 }
             }
-        } catch (Exception e) {
-            if (!closed) {
-                lastError = e.toString();
-                log.warn("App-chain '{}' effect {} handling failed: {}", chainId, key, e.toString());
+        } catch (Throwable failure) {
+            if (!closed || isFatal(failure)) {
+                reportFailure("effect " + key + " handling", failure);
             }
+            rethrowIfFatal(failure);
         } finally {
             inFlight.remove(key);
             statsCachedAt = 0;
@@ -713,6 +811,44 @@ final class EffectRuntime implements AutoCloseable {
         }
     }
 
+    private void reportFailure(String operation, Throwable failure) {
+        String errorType = failureType(failure);
+        lastError = errorType;
+        if (isFatal(failure)) {
+            log.error("App-chain '{}' effect {} failed fatally (errorType={})",
+                    chainId, operation, errorType);
+        } else {
+            log.warn("App-chain '{}' effect {} failed (errorType={})",
+                    chainId, operation, errorType);
+        }
+    }
+
+    private static String failureType(Throwable failure) {
+        String errorType = failure.getClass().getName();
+        return errorType.length() <= MAX_PLUGIN_FAILURE_TYPE_CHARS
+                ? errorType : errorType.substring(0, MAX_PLUGIN_FAILURE_TYPE_CHARS);
+    }
+
+    /**
+     * Plugin linkage/assertion errors are isolated like other plugin failures;
+     * VM-fatal conditions and explicit thread termination must retain JVM
+     * semantics and are rethrown after the runtime has recorded the failure.
+     */
+    @SuppressWarnings("removal")
+    private static boolean isFatal(Throwable failure) {
+        return failure instanceof VirtualMachineError || failure instanceof ThreadDeath;
+    }
+
+    @SuppressWarnings("removal")
+    private static void rethrowIfFatal(Throwable failure) {
+        if (failure instanceof VirtualMachineError fatal) {
+            throw fatal;
+        }
+        if (failure instanceof ThreadDeath fatal) {
+            throw fatal;
+        }
+    }
+
     /**
      * The external call is considered started when this permission is
      * granted. close() closes the same gate under the same monitor, giving a
@@ -757,7 +893,17 @@ final class EffectRuntime implements AutoCloseable {
     }
 
     /** One injectable outcome: a locally-terminal CHAIN effect not yet chain-closed. */
-    record Injection(long height, int ordinal, boolean confirmed, byte[] externalRef, String reason) {
+    record Injection(long height, int ordinal, boolean confirmed, byte[] externalRef,
+                     byte[] detailHash, String reason) {
+        Injection {
+            externalRef = externalRef != null ? externalRef.clone() : new byte[0];
+            detailHash = detailHash != null ? detailHash.clone() : null;
+        }
+
+        @Override public byte[] externalRef() { return externalRef.clone(); }
+        @Override public byte[] detailHash() {
+            return detailHash != null ? detailHash.clone() : null;
+        }
     }
 
     /**
@@ -769,7 +915,7 @@ final class EffectRuntime implements AutoCloseable {
      * duplicates are absorbed by idempotency + first-result-wins.
      */
     List<PendingEffect> claim(String executorId, Set<String> types, int max, long leaseSeconds) {
-        if (executorId == null || executorId.isBlank() || !beginApiOperation()) {
+        if (!validExecutorIdentity(executorId) || !beginApiOperation()) {
             return List.of();
         }
         try {
@@ -848,7 +994,7 @@ final class EffectRuntime implements AutoCloseable {
      */
     boolean report(String executorId, long height, int ordinal, boolean success,
                    byte[] externalRef, String reason) {
-        if (!beginApiOperation()) {
+        if (!validExecutorIdentity(executorId) || !beginApiOperation()) {
             return false;
         }
         try {
@@ -884,12 +1030,14 @@ final class EffectRuntime implements AutoCloseable {
                     recordTerminal(record, "confirmed");
                 } else if (record.result()
                         == com.bloxbean.cardano.yano.api.appchain.effects.ResultPolicy.CHAIN) {
+                    String boundedReason = boundedFailureReason(reason);
                     ledger.fxRuntimeComplete(height, ordinal,
-                            status.doneFailed(reason != null ? reason : "external failure"), true);
+                            status.doneFailed(boundedReason), true);
                     recordTerminal(record, "failed");
                 } else {
+                    String boundedReason = boundedFailureReason(reason);
                     ledger.fxRuntimeComplete(height, ordinal,
-                            status.parked(reason != null ? reason : "external failure"), false);
+                            status.parked(boundedReason), false);
                     recordTerminal(record, "parked");
                 }
                 return true;
@@ -897,6 +1045,29 @@ final class EffectRuntime implements AutoCloseable {
         } finally {
             endApiOperation();
         }
+    }
+
+    private static String boundedFailureReason(String reason) {
+        return new EffectExecution.Failed(
+                reason != null && !reason.isBlank() ? reason : "external failure",
+                false).reason();
+    }
+
+    private static boolean validExecutorIdentity(String value) {
+        if (value == null || value.isEmpty() || value.length() > 128) {
+            return false;
+        }
+        for (int index = 0; index < value.length(); index++) {
+            char character = value.charAt(index);
+            boolean alphaNumeric = character >= 'A' && character <= 'Z'
+                    || character >= 'a' && character <= 'z'
+                    || character >= '0' && character <= '9';
+            if (!alphaNumeric && character != '.' && character != '_'
+                    && character != '-' && character != ':' && character != '+') {
+                return false;
+            }
+        }
+        return true;
     }
 
     private void recordTerminal(EffectRecord record, String outcome) {
@@ -982,7 +1153,7 @@ final class EffectRuntime implements AutoCloseable {
                 }
                 injections.add(new Injection(height, ordinal,
                         status.outcomeCode() == FxStatusRecord.OUTCOME_CONFIRMED,
-                        status.externalRef(), status.lastError()));
+                        status.externalRef(), status.detailHash(), status.lastError()));
             }
             if (!closed && lastVisited != null) {
                 ledger.fxPutResultInjectionCursor(lastVisited[0], (int) lastVisited[1]);
@@ -1230,14 +1401,28 @@ final class EffectRuntime implements AutoCloseable {
 
     /** Package-private timeout override keeps shutdown-failure tests fast. */
     void close(long gracefulWaitMillis, long forcedWaitMillis) {
+        boolean closeOwner = false;
         synchronized (closeLock) {
-            if (closed) {
+            if (!closed) {
+                synchronized (executionStartLock) {
+                    if (!closed) {
+                        closed = true;
+                        closeOwner = true;
+                        closeOwnerThread = Thread.currentThread();
+                    }
+                }
+            }
+        }
+        if (!closeOwner) {
+            if (Boolean.TRUE.equals(inExecutorCloseCallback.get())
+                    || Thread.currentThread() == closeOwnerThread) {
                 return;
             }
-            synchronized (executionStartLock) {
-                closed = true;
-            }
+            closeFence.handle((ignored, failure) -> null).join();
+            return;
+        }
 
+        try {
             // A tick that observed open may already be inside intake/dispatch.
             // Wait until it has noticed closed and left all scheduler store calls.
             synchronized (tickLock) {
@@ -1273,28 +1458,127 @@ final class EffectRuntime implements AutoCloseable {
                 terminated = pool.isTerminated();
             }
 
-            if (!terminated || !pluginCallbacksIdle()) {
-                log.warn("App-chain '{}' effect plugin calls remain active after shutdown grace — "
-                        + "ledger access is fenced and executor close is deferred", chainId);
+            boolean cleanupReady = terminated && pluginCallbacksIdle();
+            if (!cleanupReady) {
+                try {
+                    log.warn("App-chain '{}' effect plugin calls remain active after shutdown grace — "
+                            + "ledger access is fenced and executor close is deferred", chainId);
+                } catch (Throwable diagnosticFailure) {
+                    recordExecutorCleanupHandoffFailure(diagnosticFailure);
+                }
             }
             // Plugin close() is untrusted too. Always invoke it from the
             // daemon cleanup path, even when workers are already idle, so it
             // can never extend the bounded runtime close call.
-            scheduleExecutorCleanup(terminated && pluginCallbacksIdle());
+            scheduleExecutorCleanup();
+            if (cleanupReady) {
+                awaitCooperativeExecutorCleanup();
+            }
+        } finally {
+            closeOwnerThread = null;
+            closeFence.complete(null);
         }
     }
 
-    private void scheduleExecutorCleanup(boolean ready) {
+    private void scheduleExecutorCleanup() {
         if (!executorCleanupScheduled.compareAndSet(false, true)) {
             return;
         }
-        if (ready) {
-            awaitCooperativeExecutorCleanup(startExecutorCloseTasks());
+        Throwable handoffFailure;
+        try {
+            Thread coordinator = Objects.requireNonNull(
+                    cleanupCoordinatorThreadFactory.newThread(
+                            () -> coordinateExecutorCleanup()),
+                    "cleanupCoordinatorThreadFactory returned null");
+            coordinator.start();
             return;
+        } catch (Throwable startFailure) {
+            handoffFailure = reportLifecycleFailure(
+                    "executor cleanup coordinator start", startFailure);
+            recordExecutorCleanupHandoffFailure(handoffFailure);
         }
 
-        Thread coordinator = new Thread(() -> {
-            boolean interrupted = false;
+        if (isFatal(handoffFailure) && pool.isTerminated() && pluginCallbacksIdle()) {
+            // Preserve the fatal on this thread, but only after every actual
+            // product close has ended and the lifetime stage is truthful.
+            if (!coordinateExecutorCleanup()) {
+                executorCleanupCompletion.handle((ignored, failure) -> null).join();
+            }
+            rethrowIfFatal(handoffFailure);
+            return; // unreachable for a process-fatal hand-off
+        }
+
+        // A hand-off failure says nothing about product termination. Prefer a
+        // fresh platform daemon so close() remains bounded while a plugin call
+        // drains. If even that cannot be started, the current thread is the
+        // last possible owner and must perform the cleanup synchronously.
+        try {
+            Thread fallback = new Thread(() -> coordinateExecutorCleanup(),
+                    "app-chain-fx-executor-cleanup-fallback-" + chainId);
+            fallback.setDaemon(true);
+            fallback.start();
+        } catch (Throwable fallbackFailure) {
+            Throwable diagnosedFailure = reportLifecycleFailure(
+                    "executor cleanup coordinator fallback start", fallbackFailure);
+            recordExecutorCleanupHandoffFailure(diagnosedFailure);
+            coordinateExecutorCleanup();
+        }
+
+        // Non-process failures remain visible to the synchronous resource
+        // owner. A process-fatal failure is rethrown by the coordinator only
+        // after every actual executor close callback has terminated and the
+        // lifetime future has become truthful.
+        if (!isFatal(handoffFailure)) {
+            throw propagateLifecycleFailure(
+                    handoffFailure, "Effect executor cleanup coordinator failed to start");
+        }
+    }
+
+    private void recordExecutorCleanupHandoffFailure(Throwable failure) {
+        mergeFailure(executorCleanupHandoffFailure, failure);
+    }
+
+    /** Diagnostics are never allowed to abort terminal callback ownership. */
+    private Throwable reportLifecycleFailure(String operation, Throwable failure) {
+        Throwable outcome = failure;
+        try {
+            reportFailure(operation, failure);
+        } catch (Throwable diagnosticFailure) {
+            outcome = addFailure(outcome, diagnosticFailure);
+        }
+        return outcome;
+    }
+
+    private static RuntimeException propagateLifecycleFailure(
+            Throwable failure,
+            String message
+    ) {
+        if (failure instanceof Error error) {
+            throw error;
+        }
+        if (failure instanceof RuntimeException runtime) {
+            return runtime;
+        }
+        return new IllegalStateException(message, failure);
+    }
+
+    private record ExecutorCloseTask(
+            ExecutorBinding binding,
+            Thread thread,
+            AtomicBoolean started
+    ) {
+    }
+
+    private boolean coordinateExecutorCleanup() {
+        if (!executorCleanupCoordinatorClaimed.compareAndSet(false, true)) {
+            return false;
+        }
+        boolean interrupted = false;
+        Throwable cleanupFailure = null;
+        Throwable coordinatorFailure = null;
+        Throwable terminalOutcome = null;
+        boolean truthfulCompletion = false;
+        try {
             while (!pool.isTerminated()) {
                 try {
                     pool.awaitTermination(1, TimeUnit.DAYS);
@@ -1313,49 +1597,110 @@ final class EffectRuntime implements AutoCloseable {
                     }
                 }
             }
+
+            cleanupFailure = addFailure(
+                    cleanupFailure, executorCleanupHandoffFailure.get());
             startExecutorCloseTasks();
+            for (ExecutorBinding binding : executorBindings) {
+                while (binding.closeTerminal().getCount() != 0) {
+                    try {
+                        binding.closeTerminal().await();
+                    } catch (InterruptedException e) {
+                        interrupted = true;
+                    }
+                }
+                cleanupFailure = addFailure(cleanupFailure, binding.closeFailure().get());
+            }
+            if (isFatal(cleanupFailure)) {
+                coordinatorFailure = cleanupFailure;
+            }
+        } catch (Throwable failure) {
+            Throwable diagnosedFailure = reportLifecycleFailure(
+                    "executor cleanup coordinator", failure);
+            coordinatorFailure = diagnosedFailure;
+            cleanupFailure = addFailure(cleanupFailure, diagnosedFailure);
+        } finally {
+            terminalOutcome = addFailure(
+                    cleanupFailure, executorCleanupHandoffFailure.get());
+            truthfulCompletion = allExecutorClosesTerminated();
+            if (truthfulCompletion) {
+                for (ExecutorBinding binding : executorBindings) {
+                    terminalOutcome = addFailure(
+                            terminalOutcome, binding.closeFailure().get());
+                }
+                if (terminalOutcome == null) {
+                    executorCleanupCompletion.complete(null);
+                } else {
+                    executorCleanupCompletion.completeExceptionally(terminalOutcome);
+                }
+            }
             if (interrupted) {
                 Thread.currentThread().interrupt();
             }
-        }, "app-chain-fx-executor-cleanup-coordinator-" + chainId);
-        coordinator.setDaemon(true);
-        coordinator.start();
+        }
+        rethrowIfFatal(truthfulCompletion
+                ? terminalOutcome
+                : addFailure(coordinatorFailure, terminalOutcome));
+        return true;
     }
 
-    private List<Thread> startExecutorCloseTasks() {
-        List<Thread> tasks = new ArrayList<>(executorBindings.size());
+    private boolean allExecutorClosesTerminated() {
         for (ExecutorBinding binding : executorBindings) {
-            if (!binding.closeStarted().compareAndSet(false, true)) {
+            if (!binding.closeTerminated().get()) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private void startExecutorCloseTasks() {
+        List<ExecutorCloseTask> tasks = new ArrayList<>(executorBindings.size());
+        for (ExecutorBinding binding : executorBindings) {
+            Thread task = null;
+            try {
+                task = Objects.requireNonNull(
+                        executorCloseThreadFactory.newThread(
+                                () -> closeExecutorIfUnclaimed(binding)),
+                        "executorCloseThreadFactory returned null");
+            } catch (Throwable creationFailure) {
+                recordExecutorCloseFailure(binding, reportLifecycleFailure(
+                        "executor cleanup task creation", creationFailure));
+            }
+            tasks.add(new ExecutorCloseTask(binding, task, new AtomicBoolean()));
+        }
+        // Attempt every start before a synchronous fallback. That preserves
+        // fan-out: one failed hand-off followed by a blocking close callback
+        // cannot prevent independent executor products from being closed.
+        for (ExecutorCloseTask task : tasks) {
+            if (task.thread() == null) {
                 continue;
             }
-            Thread task = new Thread(() -> closeExecutor(binding),
-                    "app-chain-fx-executor-close-" + chainId + "-" + binding.index());
-            task.setDaemon(true);
-            tasks.add(task);
-        }
-        tasks.forEach(Thread::start);
-        return tasks;
-    }
-
-    private void awaitCooperativeExecutorCleanup(List<Thread> tasks) {
-        long deadline = System.nanoTime()
-                + TimeUnit.MILLISECONDS.toNanos(EXECUTOR_CLOSE_JOIN_MILLIS);
-        boolean interrupted = false;
-        for (Thread task : tasks) {
-            while (task.isAlive()) {
-                long remainingNanos = deadline - System.nanoTime();
-                if (remainingNanos <= 0) {
-                    break;
-                }
-                try {
-                    task.join(Math.max(1, TimeUnit.NANOSECONDS.toMillis(remainingNanos)));
-                } catch (InterruptedException e) {
-                    interrupted = true;
-                    break;
-                }
+            try {
+                task.thread().start();
+                task.started().set(true);
+            } catch (Throwable startFailure) {
+                recordExecutorCloseFailure(task.binding(), reportLifecycleFailure(
+                        "executor cleanup task start", startFailure));
             }
         }
-        if (interrupted) {
+        // A failed ThreadFactory/Thread.start hand-off does not terminate the
+        // executor product. The coordinator becomes the close owner and only
+        // then may its completion stage become terminal.
+        for (ExecutorCloseTask task : tasks) {
+            if (!task.started().get()) {
+                closeExecutorIfUnclaimed(task.binding());
+            }
+        }
+    }
+
+    private void awaitCooperativeExecutorCleanup() {
+        try {
+            executorCleanupCompletion.get(EXECUTOR_CLOSE_JOIN_MILLIS, TimeUnit.MILLISECONDS);
+        } catch (TimeoutException | ExecutionException ignored) {
+            // Timeout means an untrusted close callback remains active. A
+            // failure was already reported by its task; either way the
+            // eventual completion stage remains the authoritative barrier.
+        } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
     }
@@ -1363,8 +1708,68 @@ final class EffectRuntime implements AutoCloseable {
     private void closeExecutor(ExecutorBinding binding) {
         try {
             binding.executor().close();
-        } catch (Exception e) {
-            log.debug("Error closing executor {}: {}", binding.id(), e.toString());
+        } catch (Throwable failure) {
+            recordExecutorCloseFailure(binding, reportLifecycleFailure(
+                    "executor '" + binding.id() + "' close", failure));
         }
+    }
+
+    private void closeExecutorIfUnclaimed(ExecutorBinding binding) {
+        if (binding.closeClaimed().compareAndSet(false, true)) {
+            boolean callbackMarkerInstalled = false;
+            Throwable markerFailure = null;
+            try {
+                try {
+                    inExecutorCloseCallback.set(true);
+                    callbackMarkerInstalled = true;
+                } catch (Throwable failure) {
+                    markerFailure = failure;
+                }
+                closeExecutor(binding);
+            } finally {
+                try {
+                    if (callbackMarkerInstalled) {
+                        try {
+                            inExecutorCloseCallback.remove();
+                        } catch (Throwable failure) {
+                            markerFailure = addFailure(markerFailure, failure);
+                        }
+                    }
+                    if (markerFailure != null) {
+                        recordExecutorCloseFailure(binding, markerFailure);
+                    }
+                } finally {
+                    binding.closeTerminated().set(true);
+                    binding.closeTerminal().countDown();
+                }
+            }
+        }
+    }
+
+    private void recordExecutorCloseFailure(
+            ExecutorBinding binding,
+            Throwable failure
+    ) {
+        mergeFailure(binding.closeFailure(), failure);
+    }
+
+    private static void mergeFailure(
+            AtomicReference<Throwable> target,
+            Throwable failure
+    ) {
+        while (true) {
+            Throwable current = target.get();
+            Throwable merged = addFailure(current, failure);
+            if (target.compareAndSet(current, merged)) {
+                return;
+            }
+        }
+    }
+
+    static Throwable addFailure(Throwable aggregate, Throwable next) {
+        if (next == null) {
+            return aggregate;
+        }
+        return LifecycleFailures.merge(aggregate, next);
     }
 }

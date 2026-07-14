@@ -28,6 +28,20 @@ app/build/distributions/yano-<version>.zip
 
 The zip contains `yano.jar`, `yano.sh`, config files, network genesis files, and plugin directory scaffolding.
 
+Verify the final uber-JAR, its merged catalog/manifests, and JVM directory
+loading with the build-only conformance bundle:
+
+```bash
+./gradlew :app:packagedJvmPluginCatalogSmoke -PskipSigning=true
+```
+
+This task intentionally uses the default
+`includeNativePluginConformanceFixture=false`: the fixture must be absent from
+the application index so startup can prove it was selected from the external
+plugin directory. The task starts an isolated one-member app chain and asserts
+all six configured fixture products through chain-scoped status; the fixture's
+adversarial TCCL handoff also proves those callbacks crossed catalog facades.
+
 ## Native Zip Distribution
 
 Build a native zip for the current host platform:
@@ -53,7 +67,61 @@ yano-native-0.1.0-pre4-linux-x64.zip
 yano-native-0.1.0-pre4-linux-arm64.zip
 ```
 
-The zip contains the native `yano` executable, `yano.sh`, config files, network genesis files, and plugin directory scaffolding.
+The zip contains the native `yano` executable, `yano.sh`, config files, and
+network genesis files. It deliberately has no plugin directory: native images
+cannot load JARs dynamically. Include first-party T3 providers before native
+catalog/reflection generation with `-PincludeFirstPartyPluginBundles=true`, or
+add another plugin project to the app build-time runtime classpath **and** its
+bundle-id/project entry to `buildTimePluginBundles` in `app/build.gradle`.
+Index generation is intentionally strict: it derives that bundle's actual
+declared root-plus-dependencies closure from the app resolution graph and fails
+an unmapped thin bundle instead of fingerprinting only its provider JAR. A
+plugin must declare every executable dependency; the shared JVM loader cannot
+discover undeclared reflective use of an unrelated app dependency.
+
+After the native zip task finishes, verify the final executable that it copied
+into the distribution:
+
+```bash
+./gradlew :app:nativePluginCatalogSmoke -PskipSigning=true
+```
+
+The smoke task regenerates the current packaged-JVM index and compares both its
+byte SHA-256 and selected-catalog fingerprint with the native executable's
+startup provenance record. This makes an executable built with different
+plugin catalog inputs fail even if it starts and reports healthy; it is not a
+digest of unrelated application code. Pass the same catalog properties to both
+commands; for example, a binary built with
+`-PincludeFirstPartyPluginBundles=true` must be smoked with that property too.
+Use `-PyanoNativeBinary=<path>` only to verify another executable built from
+the same catalog inputs. Release workflows always package first, smoke the
+resulting `app/build/yano` (or `yano.exe`), and only then upload the zip; this
+prevents a distribution-triggered native rebuild from replacing an executable
+that was already tested.
+
+Maintainers can additionally exercise native reachability for every typed
+app-chain plugin SPI with the non-published conformance fixture:
+
+```bash
+./gradlew :app:quarkusBuild \
+  -PincludeFirstPartyPluginBundles=true \
+  -PincludeNativePluginConformanceFixture=true \
+  -Dquarkus.native.enabled=true \
+  -Dquarkus.package.jar.enabled=false \
+  -PskipSigning=true
+
+./gradlew :app:nativePluginCatalogSmoke \
+  -PincludeFirstPartyPluginBundles=true \
+  -PincludeNativePluginConformanceFixture=true \
+  -PskipSigning=true
+```
+
+This property is a verification-only build input. Do not use the resulting
+binary as a release artifact; the dedicated CI job neither publishes nor
+packages it. The smoke starts an isolated one-member, no-peer app chain and
+asserts the configured signer, state machine, sequencer, observer, finalized
+sink, and effect executor through its structured status. It also retains the
+catalog-provenance and ignored-directory-JAR checks.
 
 ## Linux Native Zip From macOS
 

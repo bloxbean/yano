@@ -22,6 +22,7 @@ import com.bloxbean.cardano.yano.runtime.kernel.ServiceRegistry;
 import com.bloxbean.cardano.yano.runtime.kernel.Subsystem;
 import com.bloxbean.cardano.yano.runtime.kernel.SubsystemContext;
 import com.bloxbean.cardano.yano.runtime.kernel.SubsystemHealth;
+import com.bloxbean.cardano.yano.runtime.internal.RuntimeNode;
 import com.bloxbean.cardano.yano.runtime.maintenance.RuntimeMaintenanceGate;
 
 import java.util.List;
@@ -165,6 +166,12 @@ final class RuntimeYano implements Yano, DevnetRuntimeProvider {
     @Override
     public Optional<NodeKernel> kernel() {
         return Optional.of(kernel);
+    }
+
+    @Override
+    public Optional<com.bloxbean.cardano.yano.api.plugin.PluginCatalogView> pluginCatalog() {
+        return nodeLifecycle instanceof RuntimeNode runtimeNode
+                ? Optional.of(runtimeNode.pluginCatalog()) : Optional.empty();
     }
 
     @Override

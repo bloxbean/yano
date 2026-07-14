@@ -7,6 +7,7 @@ import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
 import com.bloxbean.cardano.yano.api.appchain.FinalityCert;
+import com.bloxbean.cardano.yano.api.appchain.signer.SignerProvider;
 import com.bloxbean.cardano.yano.api.utxo.UtxoState;
 import com.bloxbean.cardano.yano.api.utxo.model.AssetAmount;
 import com.bloxbean.cardano.yano.api.utxo.model.Outpoint;
@@ -26,9 +27,13 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 
 /**
  * Full A2 loop without an L1 (ADR 008.4): leader bootstraps the thread NFT,
@@ -73,6 +78,7 @@ class ScriptAnchorServiceTest {
     private AppLedgerStore followerLedger;
     private final List<byte[]> submitted = new ArrayList<>();
     private final long[] tip = {5};
+    private final boolean[] failBlockLookup = {false};
     private final AddressedUtxoState utxoState = new AddressedUtxoState();
 
     private AppMessageSigner leaderSigner;
@@ -146,6 +152,9 @@ class ScriptAnchorServiceTest {
 
     /** Deterministic app block — identical on leader and follower. */
     private AppBlock blockAt(long height) {
+        if (failBlockLookup[0]) {
+            throw new AssertionError("block-provider-secret-must-not-leak");
+        }
         return new AppBlock(AppBlock.BLOCK_VERSION, CHAIN_ID, height, new byte[32],
                 0, new byte[0], 1_000_000 + height, new byte[32], fill(32, (int) height),
                 List.of(), new byte[32], FinalityCert.empty());
@@ -240,10 +249,61 @@ class ScriptAnchorServiceTest {
 
         // --- L1 confirms the advance
         String advanceHash = txHash(submitted.get(1));
-        AnchorService.ConfirmedAnchor confirmed = leader.onL1Block(200, List.of(advanceHash));
-        assertThat(confirmed).isNotNull();
-        assertThat(confirmed.toHeight()).isEqualTo(9);
+        failBlockLookup[0] = true;
+        assertThat(leader.onL1Block(200, List.of(advanceHash))).isNull();
+        assertThat(leader.lastAnchoredHeight()).isEqualTo(5);
+        assertThat(leader.status()).containsEntry("confirmationObservedAtL1Slot", 200L);
+        assertThat(leader.status().get("lastError").toString())
+                .isEqualTo("Script-anchor L1 confirmation failed (errorType="
+                        + AssertionError.class.getName() + ")")
+                .doesNotContain("block-provider-secret");
+        failBlockLookup[0] = false;
+        leader.tick(); // no replay of the L1 block/tx list
         assertThat(leader.lastAnchoredHeight()).isEqualTo(9);
+        assertThat(leader.status()).doesNotContainKey("confirmationObservedAtL1Slot");
+        assertThat(submitted).hasSize(2); // the confirmed tx was never resubmitted
+
+        // The follower persisted the inclusion slot of the anchor UTxO it
+        // verified. A rollback below that point clears the adopted identity,
+        // allowing a valid surviving/rebootstrapped identity to be adopted.
+        follower.onL1Rollback(99);
+        assertThat(follower.bootstrapped()).isFalse();
+        assertThat(followerLedger.metaBytes("anchor_script_policy_id")).isEmpty();
+        assertThat(followerLedger.metaBytes("anchor_script_hash")).isEmpty();
+    }
+
+    @Test
+    void bootstrapRollbackAtomicallyClearsIdentityAndAllowsRebootstrap() {
+        utxoState.put(leader.anchorAddress(), List.of(
+                walletUtxo("cc".repeat(32), 0, 100_000_000)));
+        Map<String, Object> boot = leader.bootstrap();
+        String bootstrapHash = (String) boot.get("txHash");
+        leader.onL1Block(100, List.of(bootstrapHash));
+
+        assertThat(leader.bootstrapped()).isTrue();
+        assertThat(leaderLedger.metaLong("anchor_last_height", 0)).isEqualTo(5);
+
+        leader.onL1Rollback(99);
+
+        assertThat(leader.bootstrapped()).isFalse();
+        assertThat(leaderLedger.metaBytes("anchor_script_policy_id")).isEmpty();
+        assertThat(leaderLedger.metaBytes("anchor_script_hash")).isEmpty();
+        assertThat(leaderLedger.metaLong("anchor_script_bootstrap_slot", -1)).isZero();
+        assertThat(leaderLedger.metaLong("anchor_last_height", -1)).isZero();
+        assertThat(leaderLedger.metaLong("anchor_last_slot", -1)).isZero();
+        assertThat(leaderLedger.metaString("anchor_last_tx")).isEmpty();
+
+        assertThat(leader.bootstrap()).containsKeys("txHash", "threadPolicyId", "scriptHash");
+        assertThat(submitted).hasSize(2);
+    }
+
+    @Test
+    void bootstrappedRequiresCompletePersistedIdentity() {
+        followerLedger.metaPutBytes("anchor_script_policy_id", new byte[28]);
+        assertThat(follower.bootstrapped()).isFalse();
+
+        followerLedger.metaPutBytes("anchor_script_hash", new byte[28]);
+        assertThat(follower.bootstrapped()).isTrue();
     }
 
     @Test
@@ -291,6 +351,7 @@ class ScriptAnchorServiceTest {
         // sign — no advance is submitted (leader-only signature < threshold 2)
         assertThat(submitted).hasSize(1); // bootstrap only
         assertThat(leader.status().toString()).contains("cosignPending");
+        assertThat(divergentFollower.bootstrapped()).isFalse();
     }
 
     @Test
@@ -303,8 +364,134 @@ class ScriptAnchorServiceTest {
 
         assertThatThrownBy(leader::bootstrap)
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("requires protocol parameters");
+                .hasMessageContaining("Script-anchor bootstrap failed")
+                .hasMessageContaining(IllegalStateException.class.getName())
+                .hasMessageNotContaining("requires protocol parameters");
         assertThat(submitted).isEmpty();
+    }
+
+    @Test
+    void tickContainsAndRedactsRecoverableErrorSoLaterTicksStillRun() {
+        String secret = "kms-token-must-not-reach-health-or-logs";
+        AssertionError callbackFailure = new AssertionError(secret);
+        AtomicInteger tipCalls = new AtomicInteger();
+        Logger safeLog = mock(Logger.class);
+        AppLedgerStore ledger = new AppLedgerStore(
+                tempDir.resolve("tick-error-ledger").toString(), log);
+        try {
+            ledger.metaPutBytes("anchor_script_policy_id", new byte[28]);
+            ledger.metaPutBytes("anchor_script_hash", new byte[28]);
+            AppChainConfig.AnchorConfig config = new AppChainConfig.AnchorConfig(
+                    true, "aa".repeat(32), 1, 1, 7014,
+                    AppChainConfig.AnchorConfig.DEFAULT_VALIDITY_SLOTS,
+                    AppChainConfig.AnchorConfig.DEFAULT_FALLBACK_FEE_LOVELACE,
+                    AppChainConfig.AnchorConfig.MODE_SCRIPT, null);
+            ScriptAnchorService service = new ScriptAnchorService(
+                    CHAIN_ID, config, ledger, ignored -> "unused", () -> utxoState,
+                    this::blockAt, () -> {
+                        tipCalls.incrementAndGet();
+                        throw callbackFailure;
+                    },
+                    new AnchorScriptArtifacts(AppChainConfig.AnchorScriptConfig.defaults()),
+                    leaderSigner, () -> members, () -> 2, (topic, body) -> { },
+                    true, 42, safeLog);
+
+            assertThat(service.forceAnchorNow()).isFalse();
+            assertThat(service.status().get("lastError"))
+                    .isEqualTo("Script-anchor force-anchor failed (errorType="
+                            + AssertionError.class.getName() + ")");
+            service.tick();
+            service.tick();
+
+            assertThat(tipCalls).hasValue(3);
+            assertThat(service.status().get("lastError"))
+                    .isEqualTo("Script-anchor tick failed (errorType="
+                            + AssertionError.class.getName() + ")");
+            assertThat(service.status().toString()).doesNotContain(secret);
+            verify(safeLog, times(2)).warn(
+                    "Script-anchor {} failed (errorType={})",
+                    "tick", AssertionError.class.getName());
+        } finally {
+            ledger.close();
+        }
+    }
+
+    @Test
+    void signerAssertionIsRedactedAndDoesNotCancelLaterTicks() throws Exception {
+        String secret = "hsm-pin-must-not-reach-health-or-logs";
+        AssertionError signerFailure = new AssertionError(secret);
+        AtomicInteger signCalls = new AtomicInteger();
+        SignerProvider failingSigner = new SignerProvider() {
+            @Override
+            public byte[] sign(byte[] message) {
+                signCalls.incrementAndGet();
+                throw signerFailure;
+            }
+
+            @Override public byte[] publicKey() { return leaderSigner.publicKey(); }
+            @Override public String publicKeyHex() { return leaderSigner.publicKeyHex(); }
+        };
+        Logger safeLog = mock(Logger.class);
+        List<byte[]> localSubmissions = new ArrayList<>();
+        AppLedgerStore ledger = new AppLedgerStore(
+                tempDir.resolve("signer-error-ledger").toString(), log);
+        try {
+            AppChainConfig.AnchorConfig config = new AppChainConfig.AnchorConfig(
+                    true, "aa".repeat(32), 1, 1, 7014,
+                    AppChainConfig.AnchorConfig.DEFAULT_VALIDITY_SLOTS,
+                    AppChainConfig.AnchorConfig.DEFAULT_FALLBACK_FEE_LOVELACE,
+                    AppChainConfig.AnchorConfig.MODE_SCRIPT, null);
+            String signerHex = failingSigner.publicKeyHex()
+                    .toLowerCase(java.util.Locale.ROOT);
+            ScriptAnchorService service = new ScriptAnchorService(
+                    CHAIN_ID, config, ledger,
+                    cbor -> {
+                        localSubmissions.add(cbor);
+                        return txHash(cbor);
+                    },
+                    () -> utxoState, this::blockAt, () -> tip[0],
+                    new AnchorScriptArtifacts(AppChainConfig.AnchorScriptConfig.defaults()),
+                    failingSigner, () -> Set.of(signerHex), () -> 1,
+                    (topic, body) -> { }, true, 42, safeLog);
+            service.wireTxPricing(() -> DEVNET_PARAMS, () -> 500L);
+            String localWallet = service.anchorAddress();
+            utxoState.put(localWallet, List.of(
+                    new Utxo(new Outpoint("dd".repeat(32), 0), localWallet,
+                            BigInteger.valueOf(100_000_000), List.of(), null,
+                            null, null, null, false, 0, 0, null)));
+
+            Map<String, Object> boot = service.bootstrap();
+            Transaction bootstrapTx = Transaction.deserialize(localSubmissions.getFirst());
+            String bootstrapHash = (String) boot.get("txHash");
+            String scriptAddress = (String) boot.get("scriptAddress");
+            String policyIdHex = (String) boot.get("threadPolicyId");
+            service.onL1Block(100, List.of(bootstrapHash));
+            TransactionOutput anchorOut = outputTo(bootstrapTx, scriptAddress);
+            int anchorIndex = bootstrapTx.getBody().getOutputs().indexOf(anchorOut);
+            utxoState.put(scriptAddress, List.of(
+                    anchorUtxo(bootstrapHash, anchorIndex, anchorOut, policyIdHex)));
+            TransactionOutput changeOut = outputTo(bootstrapTx, localWallet);
+            int changeIndex = bootstrapTx.getBody().getOutputs().indexOf(changeOut);
+            utxoState.put(localWallet, List.of(
+                    new Utxo(new Outpoint(bootstrapHash, changeIndex), localWallet,
+                            changeOut.getValue().getCoin(), List.of(), null,
+                            null, null, null, false, 0, 0, null)));
+
+            tip[0] = 9;
+            service.tick();
+            service.tick();
+
+            assertThat(signCalls).hasValue(2);
+            assertThat(service.status().get("lastError"))
+                    .isEqualTo("Script-anchor co-sign round start failed (errorType="
+                            + AssertionError.class.getName() + ")");
+            assertThat(service.status().toString()).doesNotContain(secret);
+            verify(safeLog, times(2)).warn(
+                    "Script-anchor {} failed (errorType={})",
+                    "co-sign round start", AssertionError.class.getName());
+        } finally {
+            ledger.close();
+        }
     }
 
     // ------------------------------------------------------------------
@@ -327,7 +514,7 @@ class ScriptAnchorServiceTest {
                 anchorOut.getValue().getCoin(),
                 List.of(new AssetAmount(policyIdHex, "", BigInteger.ONE)),
                 null, anchorOut.getInlineDatum().serializeToBytes(),
-                null, null, false, 0, 0, null);
+                null, null, false, 100, 0, null);
     }
 
     /** Address-keyed UTxO view (the shared fake "L1"). */

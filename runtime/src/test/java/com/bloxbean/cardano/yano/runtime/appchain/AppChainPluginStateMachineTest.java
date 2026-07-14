@@ -3,6 +3,7 @@ package com.bloxbean.cardano.yano.runtime.appchain;
 import com.bloxbean.cardano.client.crypto.KeyGenUtil;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
+import com.bloxbean.cardano.yano.api.plugin.PluginActivationException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -85,7 +86,7 @@ class AppChainPluginStateMachineTest {
         org.assertj.core.api.Assertions.assertThatThrownBy(() ->
                         new AppChainSubsystem(badConfig, 42, null, null,
                                 tempDir.resolve("ledger2").toString(), null, log))
-                .isInstanceOf(IllegalArgumentException.class)
+                .isInstanceOf(PluginActivationException.class)
                 .hasMessageContaining("no-such-machine")
                 .hasMessageContaining(TestKvStateMachineProvider.ID);
     }

@@ -44,14 +44,19 @@ public record FxResultBody(int version,
         if (outcome == EffectOutcome.EXPIRED) {
             throw new IllegalArgumentException("EXPIRED is sweep-generated, never a message outcome");
         }
-        externalRef = externalRef != null ? externalRef : new byte[0];
+        externalRef = externalRef != null ? externalRef.clone() : new byte[0];
         if (externalRef.length > MAX_EXTERNAL_REF_BYTES) {
             throw new IllegalArgumentException("externalRef exceeds " + MAX_EXTERNAL_REF_BYTES + " bytes");
         }
-        detailHash = detailHash != null && detailHash.length > 0 ? detailHash : null;
+        detailHash = detailHash != null && detailHash.length > 0 ? detailHash.clone() : null;
         if (detailHash != null && detailHash.length != 32) {
             throw new IllegalArgumentException("detailHash must be 32 bytes when present");
         }
+    }
+
+    @Override public byte[] externalRef() { return externalRef.clone(); }
+    @Override public byte[] detailHash() {
+        return detailHash != null ? detailHash.clone() : null;
     }
 
     public byte[] encode() {

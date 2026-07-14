@@ -12,14 +12,21 @@ import java.util.Set;
  * - Implementing policy decisions
  * 
  * Plugin lifecycle:
- * 1. Discovery - Via ServiceLoader
+ * 1. Discovery - The runtime catalog correlates the bundle manifest with its
+ *    ServiceLoader registration before constructing the provider
  * 2. init() - Receive context and register stable services/contributions
  * 3. start() - Register restartable listeners and begin active processing
  * 4. stop() - Graceful shutdown of processing
  * 5. close() - Release all resources
  * 
  * Plugin discovery:
- * - Automatic: Place plugin JAR in classpath with META-INF/services/NodePlugin
+ * - JVM directory deployment: package a self-contained JAR with
+ *   META-INF/yano/plugins/&lt;bundle-id&gt;.json and the NodePlugin
+ *   META-INF/services entry, then place it in the configured plugin directory
+ * - Packaged JVM/native deployment: include the manifested bundle at build
+ *   time so catalog-index and native reflection metadata are generated
+ * - Unmanifested ServiceLoader providers are a temporary compatibility path
+ *   for JVM directory and explicit library-compatibility modes only
  * 
  * Best practices:
  * - Use unique reverse-DNS naming for plugin IDs (e.g., "com.example.myplugin")
@@ -88,7 +95,10 @@ public interface NodePlugin extends AutoCloseable {
      * {@link #stop()}; they may be registered again on the next start. Work
      * removed by {@code stop()} must be restored by a later call to this method
      * because a clean runtime stop may be followed by another start on the
-     * same plugin instance.
+     * same plugin instance. Event subscriptions and tasks submitted through
+     * {@link PluginContext} are generation-scoped: creating them during
+     * {@link #init(PluginContext)} or between start cycles is rejected, stop
+     * cancels them, and this method must recreate them after restart.
      */
     void start();
     

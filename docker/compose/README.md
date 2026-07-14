@@ -58,6 +58,11 @@ Then restart the service:
 
 `JAVA_OPTS` applies only to the JVM image. For native-image runtime flags, use `YANO_EXTRA_ARGS`.
 
+The shared Compose file still mounts `plugins/` for the JVM flavor. A native
+image cannot load JARs from that mount; any JARs there are reported as ignored.
+Native providers must be selected when the image is built (for the first-party
+T3 set, use `-PincludeFirstPartyPluginBundles=true`).
+
 To inspect the resolved compose file for a network:
 
 ```bash

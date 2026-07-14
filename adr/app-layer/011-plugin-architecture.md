@@ -168,9 +168,10 @@ cannot fork roots.
 
 ### P4 — Validate first, initialize second
 
-No plugin code receives a context until catalog construction, policy
-filtering, compatibility checks, duplicate detection and dependency sorting
-have succeeded.
+No plugin code receives a context until catalog construction, structural and
+compatibility validation, policy filtering, duplicate detection and dependency
+sorting have succeeded. Manifested provider constructors are likewise deferred;
+legacy metadata discovery remains the documented migration exception.
 
 ### P5 — Restart is the lifecycle boundary
 
@@ -180,7 +181,9 @@ coordination tractable.
 
 ## 5. Bundle descriptor and discovery
 
-A JVM bundle contains `META-INF/yano-plugin.json`. Conceptual schema:
+A JVM bundle contains a bundle-qualified
+`META-INF/yano/plugins/<bundle-id>.json` manifest. ADR-011.2 freezes the exact
+schema; the following remains the original conceptual sketch:
 
 ```json
 {
@@ -197,7 +200,7 @@ A JVM bundle contains `META-INF/yano-plugin.json`. Conceptual schema:
     "domain-api",
     "health"
   ],
-  "configPrefix": "yano.plugins.com.example.product-passport",
+  "configPrefix": "yano.plugins.bundle.\"com.example.product-passport\"",
   "nativeMode": "build-time"
 }
 ```
@@ -209,13 +212,21 @@ contribution kinds agree.
 
 Catalog construction order:
 
-1. Scan descriptors and legacy typed providers without invoking plugin code.
-2. Apply configured enablement plus allow/deny policy.
-3. Reject duplicate ids, malformed descriptors and unsupported API ranges.
-4. Resolve required dependencies and version ranges.
-5. Topologically sort bundles; a missing dependency or cycle is fatal for any
+1. Scan manifested descriptors and ServiceLoader provider types without
+   invoking manifested provider constructors. During the migration window,
+   construct unmanifested legacy providers through a bounded, diagnostic-safe
+   adapter because their selector and `NodePlugin` dependency metadata exist
+   only in callbacks.
+2. Reject malformed descriptors/indexes, unsupported schema or plugin API
+   ranges, duplicate bundle identities and manifest/provider correlation drift.
+3. Apply configured enablement plus deny/allow policy. Manifested bundles reach
+   this step without provider construction; the legacy exception is visible in
+   inventory and warnings.
+4. Reject selected contribution conflicts and resolve required dependency
+   identities and version ranges.
+5. Topologically sort selected bundles; a missing dependency or cycle is fatal for any
    selected required/consensus plugin.
-6. Discover and validate typed contributions.
+6. Publish the immutable catalog/provider registry.
 7. Construct scoped contexts, initialize in dependency order, then start only
    after all required initialization succeeds.
 
@@ -257,21 +268,27 @@ DISCOVERED → VALIDATED → INITIALIZED → STARTED → STOPPED → CLOSED
   attribute them to the owning plugin.
 
 ADR-011.1 defines lifecycle correctness for the existing `NodePlugin` SPI.
-ADR-011.2 will decide how that SPI appears in the manifested catalog—as an
-adapted legacy bundle, a typed auxiliary contribution, or a separately
-deprecated mechanism.
+ADR-011.2 represents that SPI as a typed `node-plugin` contribution in a
+manifested bundle and retains an explicit synthetic legacy adapter during the
+migration window.
 
 ## 8. Configuration and secrets
 
 The canonical bundle namespace is:
 
 ```
-yano.plugins.<plugin-id>.*
+yano.plugins.bundle."<plugin-id>".*
 ```
 
-Each context receives an immutable, prefix-stripped view for its bundle, a
-plugin-specific logger and explicit secret references. It does not receive the
-entire global configuration map by default.
+The quoted SmallRye map key is an exact owner even when one reverse-DNS id
+prefixes another or a bundle is removed. The former bracketed spelling remains
+a migration alias. Environment variables use the reversible UTF-8-hex owner
+form `YANO_PLUGINS_BUNDLE_HEX__<UTF8_HEX_ID>__<KEY>`; the former punctuation-
+to-underscore owner form is rejected because it cannot distinguish removed or
+colliding dot/hyphen ids. Each context receives an immutable, owner-stripped
+view for its bundle, a plugin-specific logger and explicit secret references.
+The shared global map remains only as a legacy compatibility view during
+migration.
 
 Existing stable contribution paths remain valid through adapters, including:
 
@@ -444,7 +461,7 @@ execution. ADR-010's attestation trust model remains unchanged.
 - integrate plugin activation with runtime startup, shutdown and construction
   cleanup.
 
-### ADR-011.2 — Manifested bundle catalog and compatibility
+### ADR-011.2 — Manifested bundle catalog and compatibility (accepted and implemented)
 
 - freeze manifest schema and plugin API compatibility rules;
 - implement descriptor scan and synthetic legacy adapters across `NodePlugin`
@@ -472,8 +489,10 @@ execution. ADR-010's attestation trust model remains unchanged.
 
 ## 17. Migration
 
-1. Existing typed ServiceLoader providers continue to work as synthetic
-   legacy bundles with a warning and restricted metadata.
+1. Existing unmanifested typed ServiceLoader providers continue temporarily as
+   synthetic legacy bundles, with a warning and restricted metadata, only for
+   self-contained JVM directory JARs and explicit library-compatibility mode.
+   Packaged JVM/native build-time inclusion requires a manifest.
 2. First-party extensions add manifests and become catalog integration tests.
 3. Duplicate provider/scheme/id behavior changes from discovery-order wins to
    explicit startup failure.
@@ -483,17 +502,15 @@ execution. ADR-010's attestation trust model remains unchanged.
    documented migration window; removal requires a separate compatibility
    decision.
 
-## 18. Open questions for sub-ADRs
+## 18. Remaining questions for sub-ADRs
 
-1. Which per-bundle class-loader model gives useful dependency isolation
-   without duplicating Yano API classes?
-2. Which version-range grammar/library is stable enough for manifests?
-3. What canonical query request/response encoding and proof metadata should
+ADR-011.2 resolved the v1 loader, version-range, `NodePlugin` catalog role and
+catalog-fingerprint questions: v1 uses one lifecycle-owned parent-first loader,
+structured inclusive/exclusive SemVer bounds, a typed manifested `node-plugin`
+contribution plus a migration adapter, and a canonical selected-catalog
+fingerprint. Remaining questions are:
+
+1. What canonical query request/response encoding and proof metadata should
    the generic route use?
-4. Should artifact provenance require signed manifests, signed JARs, or an
+2. Should artifact provenance require signed manifests, signed JARs, or an
    external deployment attestation?
-5. Does `NodePlugin` become a typed auxiliary contribution, an adapter, or a
-   deprecated parallel mechanism?
-6. Which consensus plugin/config fields belong in a member-comparison
-   fingerprint, and should startup optionally require an operator-provided
-   expected fingerprint?

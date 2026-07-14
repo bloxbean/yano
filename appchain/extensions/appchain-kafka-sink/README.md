@@ -13,17 +13,21 @@ See also:
 
 ## Packaging Model
 
-This is a T3 plugin module. The node provides `core-api`; the Kafka sink jar
-brings Kafka client dependencies.
-
-Build the jar:
+The stock Yano application intentionally omits this T3 integration. For a JVM
+node, build the self-contained drop-in bundle (the ordinary `jar` remains thin
+for build-time inclusion):
 
 ```bash
-./gradlew :appchain-kafka-sink:jar
+./gradlew :appchain-kafka-sink:shadowJar
+# appchain/extensions/appchain-kafka-sink/build/libs/
+#   yano-appchain-kafka-sink-<version>-bundle.jar
 ```
 
-Then place it in the node plugin directory configured by
-`yaci.plugins.directory`.
+Copy only that `*-bundle.jar` into the JVM node's plugin directory
+configured by `yaci.plugins.directory`. It contains Kafka dependencies and
+merged ServiceLoader descriptors. Native images cannot load a directory JAR;
+build with `-PincludeFirstPartyPluginBundles=true` to include this provider (and
+the other first-party T3 bundles) before native catalog/reflection generation.
 
 ## Configuration
 

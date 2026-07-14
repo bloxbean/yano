@@ -73,11 +73,25 @@ class AppChainTwoNodeIntegrationTest {
         int portB = freePort();
 
         AppChainSubsystem nodeA = startNode(KEY_A, members, portA, List.of(peer(portB)));
+
+        // Regression: TCPNodeClient reports "running" while its connection is
+        // only retrying, and Yaci resets protocol agents once TCP eventually
+        // connects. A message submitted before B's server exists must stay in
+        // AppPeerClient's replay queue until protocol-100 MsgInitAck, rather
+        // than being placed in the agent and erased by that reset.
+        String earlyIdFromA = nodeA.submit(
+                "orders", "queued before B starts".getBytes(StandardCharsets.UTF_8));
+
         AppChainSubsystem nodeB = startNode(KEY_B, members, portB, List.of(peer(portA)));
 
         // Wait for both nodes to connect to each other's server
         awaitTrue("A connected to B", () -> allPeersConnected(nodeA));
         awaitTrue("B connected to A", () -> allPeersConnected(nodeB));
+        awaitTrue("B received A's pre-connect message",
+                () -> hasPeerMessage(nodeB, earlyIdFromA));
+        assertThat(nodeB.recentMessages(0).stream()
+                .filter(message -> message.messageIdHex().equals(earlyIdFromA)))
+                .hasSize(1);
 
         // A -> B
         String idFromA = nodeA.submit("orders", "hello from A".getBytes(StandardCharsets.UTF_8));

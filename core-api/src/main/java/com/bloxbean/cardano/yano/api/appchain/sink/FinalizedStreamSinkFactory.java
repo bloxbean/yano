@@ -17,7 +17,9 @@ public interface FinalizedStreamSinkFactory {
     /**
      * Create sinks for {@code chainId} from {@code config} (keys with the
      * {@code yano.app-chain.sinks.<scheme>.} prefix stripped). Return an empty
-     * list when nothing is configured.
+     * list when nothing is configured. Every non-null sink must be a fresh
+     * identity owned by this invocation; do not reuse a sink across chains,
+     * calls, or factories.
      */
     List<FinalizedStreamSink> create(String chainId, Map<String, String> config);
 }

@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "id": "com.bloxbean.cardano.yano.appchain.stdlib",
+  "version": "0.1.0-pre9",
+  "yanoApi": { "min": 1, "max": 1 },
+  "dependencies": [],
+  "contributions": [
+    { "kind": "app-state-machine", "name": "approvals", "provider": "com.bloxbean.cardano.yano.appchain.stdlib.StdlibStateMachineProviders$ApprovalsProvider" },
+    { "kind": "app-state-machine", "name": "balances", "provider": "com.bloxbean.cardano.yano.appchain.stdlib.StdlibStateMachineProviders$BalancesProvider" },
+    { "kind": "app-state-machine", "name": "doc-trail", "provider": "com.bloxbean.cardano.yano.appchain.stdlib.StdlibStateMachineProviders$DocTrailProvider" },
+    { "kind": "app-state-machine", "name": "kv-registry", "provider": "com.bloxbean.cardano.yano.appchain.stdlib.StdlibStateMachineProviders$KvRegistryProvider" }
+  ]
+}

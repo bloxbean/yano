@@ -1,0 +1,39 @@
+description = 'Build-only ADR-011.2 native plugin SPI conformance fixture'
+
+dependencies {
+    compileOnly project(':core-api')
+
+    testImplementation project(':core-api')
+    testImplementation project(':plugin-catalog')
+    testImplementation project(':runtime')
+}
+
+java {
+    sourceCompatibility = 25
+    targetCompatibility = 25
+}
+
+// This artifact is an application build fixture, not a supported plugin
+// distribution. It enters the app only through the explicit
+// includeNativePluginConformanceFixture property.
+def fixturePublication = publishing.publications.findByName('mavenJava')
+if (fixturePublication != null) {
+    publishing.publications.remove(fixturePublication)
+}
+tasks.withType(PublishToMavenRepository).configureEach {
+    enabled = false
+}
+tasks.withType(PublishToMavenLocal).configureEach {
+    enabled = false
+}
+
+tasks.named('test') {
+    dependsOn tasks.named('jar')
+    def testWorkDir = layout.buildDirectory.dir('test-workdir')
+    workingDir testWorkDir
+    doFirst {
+        testWorkDir.get().asFile.mkdirs()
+        systemProperty 'yano.plugin.conformance.fixture.jar',
+                tasks.named('jar').get().archiveFile.get().asFile.absolutePath
+    }
+}

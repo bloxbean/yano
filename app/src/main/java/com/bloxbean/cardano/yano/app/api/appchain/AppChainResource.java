@@ -6,6 +6,7 @@ import com.bloxbean.cardano.yano.api.appchain.AppChainGateways;
 import com.bloxbean.cardano.yano.api.appchain.ReceivedAppMessage;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import io.quarkus.runtime.annotations.RegisterForReflection;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.*;
 import jakarta.ws.rs.core.MediaType;
@@ -293,6 +294,7 @@ public class AppChainResource {
      */
     @Produces(MediaType.APPLICATION_JSON)
     @Consumes(MediaType.APPLICATION_JSON)
+    @RegisterForReflection
     public static class ChainScopedResource {
 
         private final AppChainGateway gateway;

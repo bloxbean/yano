@@ -5,7 +5,7 @@ import com.bloxbean.cardano.yano.api.config.PluginsOptions;
 import com.bloxbean.cardano.yano.api.config.RuntimeOptions;
 import com.bloxbean.cardano.yano.api.config.YanoConfig;
 import com.bloxbean.cardano.yano.runtime.internal.RuntimeNode;
-import com.bloxbean.cardano.yano.runtime.plugins.PluginManager;
+import com.bloxbean.cardano.yano.runtime.plugins.PluginCatalogActivationException;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -32,9 +32,10 @@ class RuntimeNodePluginConstructionTest {
                 new PluginsOptions(true, false, Set.of("missing.required.plugin"), Set.of(), Map.of()));
 
         assertThatThrownBy(() -> new RuntimeNode(config, missingRequiredPlugin))
-                .isInstanceOf(PluginManager.PluginManagerException.class)
-                .hasMessageContaining("Allow-listed plugins were not discovered")
-                .hasMessageContaining("missing.required.plugin");
+                .isInstanceOf(PluginCatalogActivationException.class)
+                .hasMessageContaining("Allow-listed plugin bundles were not discovered")
+                .hasMessageContaining("missing.required.plugin")
+                .hasCauseInstanceOf(IllegalStateException.class);
 
         RuntimeOptions pluginsDisabled = runtimeOptions(
                 new PluginsOptions(false, false, Set.of(), Set.of(), Map.of()));
