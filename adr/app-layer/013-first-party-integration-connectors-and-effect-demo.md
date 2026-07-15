@@ -2,14 +2,14 @@
 
 ## Status
 
-Proposed — design for review before implementation
+Accepted — implementation in progress; Phase 1.0 completed on 2026-07-16
 
 The number is local to the `adr/app-layer` series. Root-level ADR-013 is an
 unrelated node plugin and event-gap assessment.
 
 | Milestone | Scope | Status |
 |---|---|---|
-| 1 | First-party connectors, evidence workflow, Compose/host demo, network/data lifecycle | Proposed — no new framework API |
+| 1 | First-party connectors, evidence workflow, Compose/host demo, network/data lifecycle | In progress — Phase 1.0 accepted; Phase 1.1 next |
 | 2 | Effect ownership, result continuation, and executor observability bridge | Planned — requires focused sub-design and minor framework changes |
 | 3 | Out-of-box deterministic composite state machine and stock component preset | Planned — requires a dedicated composition sub-ADR |
 
@@ -185,7 +185,31 @@ A bundle is named for a cohesive external protocol/provider boundary when its
 contributions share client dependencies, endpoint and credential machinery,
 health/metrics semantics, security boundary, and operational owner.
 
-The initial modules are:
+The provider-neutral wire model is a small, published, SDK-free library rather
+than a core/runtime API or a sibling-plugin dependency:
+
+```text
+appchain/appchain-integration-contracts/
+```
+
+It contains only typed v1 codecs, bounds, fingerprints, error codes, detail
+documents/archive conventions, CDDL, and golden vectors. Deterministic state
+machines and all three bundles depend on the same bytes-only contract. It has
+no Kafka, S3, IPFS, runtime, network, or credential dependency.
+
+The published JAR carries the normative CDDL and literal golden vectors under
+`META-INF/yano/contracts/connectors/v1/`. Thin artifacts and native-catalog
+builds use one host-pinned contracts version. Every self-contained drop-in
+bundle must instead relocate the contracts implementation into its own
+connector-specific internal namespace (for example,
+`...kafka.internal.contracts.v1`). Relocated types must never appear in a host
+SPI signature; only the frozen bytes cross that boundary. This prevents two
+independently installed bundles from resolving an unrequested shared contract
+implementation through the ADR-011 parent-first loader. Packaging tests must
+install multiple bundles together and prove that neither unrelocated contract
+classes nor cross-bundle class identity are required.
+
+The initial deployable modules are:
 
 ```text
 appchain/extensions/appchain-kafka/
@@ -456,6 +480,20 @@ while ADR-010.1 governs replay-stable emission changes.
 Canonical CBOR is the normative binary encoding for consensus-generated
 payloads and receipts. A JSON representation may be accepted by client/demo
 tooling, but it must map unambiguously into the same typed model and limits.
+V1 codecs admit only definite arrays, byte/text strings, unsigned integers,
+booleans, and null; maps, tags, negative numbers, floats, indefinite forms,
+and non-preferred encodings are rejected. A raw iterative preflight limits a
+document to 512 data items and eight nested array levels, and validates every
+declared length before the object-building decoder sees it. These fixed safety
+bounds are part of the v1 contract rather than operator settings.
+
+The published aggregate CDDL is the self-contained structural schema. Some
+semantic constraints are not portably expressible in RFC 8610: Kafka header
+ordering, uniqueness, aggregate byte size and reserved-prefix exclusion, plus
+the special `.`/`..` physical-topic exclusion. The CDDL comments, exact rules
+in this ADR, golden vectors, and executable codec negative tests are therefore
+also normative; passing a CDDL validator alone is necessary but not sufficient
+for a conforming encoder.
 
 ### 5.2 Target aliases
 
@@ -471,8 +509,40 @@ topics, credentials, TLS trust, and policy. Missing or disabled aliases are
 definitive policy failures, not invitations to use a payload URL.
 
 Alias syntax is restricted to a small portable character set and bounded
-length. Unknown fields, duplicate CBOR map keys, invalid Unicode, oversized
-values, or non-canonical encodings are rejected consistently.
+length. Unknown fields, invalid Unicode, oversized values, or non-canonical
+encodings are rejected consistently. V1 commands are fixed arrays rather than
+maps, so duplicate or unknown fields are structurally impossible.
+
+V1 aliases and configured `target-id` values are printable lowercase ASCII
+matching `[a-z][a-z0-9-]{0,62}` (1--63 bytes). They are immutable logical
+names: an operator does not repoint `archive-v1` or `primary-v1` while any
+effect using it may still execute. A changed real destination receives a new
+alias, and every failover executor resolves an alias identically.
+
+Each configured profile also has a non-secret immutable `target-id`. It uses
+the same grammar as an alias but is an independently versioned identity, not
+necessarily the payload alias. Every confirmed receipt binds a 32-byte,
+connector-domain-separated fingerprint of
+that id and the resolved resource. Credentials are excluded from the
+fingerprint descriptor. This makes the receipt auditable even though the
+alias-to-real-destination mapping is executor-local rather than consensus
+state.
+
+V1 fingerprints use BLAKE2b-256 over the printable ASCII domain separator
+immediately followed by the indicated bytes (there is no implicit delimiter):
+
+| Fingerprint | Domain | Exact input after domain |
+|---|---|---|
+| Kafka destination | `yano-kafka-destination-v1` | canonical CBOR `[target-id, physical-topic]` |
+| Object destination | `yano-object-destination-v1` | canonical CBOR `[target-id, destination-bucket, normalized-prefix, relative-key, encryption-policy-id, retention-policy-id]` |
+| Object version | `yano-object-version-v1` | 1--1024 printable ASCII bytes of the immutable provider version id |
+| IPFS target | `yano-ipfs-target-v1` | canonical CBOR `[target-id]` |
+| IPFS CID | `yano-ipfs-cid-v1` | canonical binary CIDv1 bytes |
+
+The Kafka physical-topic descriptor matches `[A-Za-z0-9._-]{1,249}` and is
+neither `.` nor `..`. Encryption- and retention-policy ids use the alias
+grammar. Every descriptor is credential-free and its literal preimages and
+expected outputs are part of the published golden vectors.
 
 ### 5.3 Idempotency key
 
@@ -509,12 +579,55 @@ Connector detail documents use canonical CBOR and
 framework-wide detail-document profile supersedes it through an explicit
 version. The domain separator and codec are part of the golden vectors.
 
+The v1 envelope is:
+
+```text
+[ version=1, effectIdHash=bstr32, actionCode=(1 Kafka / 2 object / 3 IPFS),
+  connectorSpecificDetail ]
+```
+
+The action code and detail shape are coupled; a Kafka code cannot wrap an
+object or IPFS detail. Object `retentionMode` is `0` (`NONE`) only with a null
+`retainUntilMs`, and is `1` (`GOVERNANCE`) or `2` (`COMPLIANCE`) only with a
+non-null unsigned millisecond value. Object provider-version ids are 1--1024
+printable ASCII bytes, optional ETags are 1--256 printable ASCII bytes, and
+optional IPFS provider references are 1--256 printable ASCII bytes. Other
+Unicode and control characters are rejected rather than normalized.
+
+Its canonical encoding is at most 8,192 bytes. Connector detail fields are an
+exact allowlist of stable acknowledgement data. Observation time, attempt
+number, and other re-probe-volatile fields are excluded so reconciliation of
+the same success produces the same detail bytes and hash.
+
+The supplied filesystem archive uses create-if-absent durable writes and the
+hash-derived key
+`v1/blake2b-256/<first-two-hex>/<remaining-hex>.cbor`. Retrieval accepts a
+hash, never a path; rehashes and strictly decodes the bytes; and is exposed
+only through an authorized operator surface. If archival is disabled, a
+connector omits `detailHash`. If required archival fails after the external
+action, a retry probes that action before any mutation.
+
+The reference file archive deliberately requires a private POSIX filesystem
+with owner-only directories/files, hard-link create-if-absent, file fsync, and
+directory fsync; it probes those capabilities during construction and fails
+closed. Operators provision a dedicated filesystem quota/high-watermark and
+monitor capacity. Exhaustion is `DETAIL_ARCHIVE_FAILED`, never permission to
+return a hash for non-durable bytes. Provider-native archives may implement
+the same interface only when they preserve these create-if-absent, durability,
+retrieval, and hash-verification semantics.
+
+The reference implementation assumes the runtime UID and its private archive
+tree are trusted against concurrent path replacement; no other process may
+write that tree under the same UID. Crash-left `.detail-*.tmp` files contain
+only private detail documents and are never treated as committed entries.
+Operators may remove them only while all archive writers are stopped.
+
 Receipts and detail documents must not contain credentials, whole source
 documents, unrestricted response bodies, complete client configuration, or
 unbounded vendor error messages.
 
-Service wall-clock time may be included as informational data but cannot
-control deterministic ordering, expiry, or replay behavior.
+Service wall-clock time remains node-local in v1 and cannot control
+deterministic ordering, expiry, replay, or a detail hash.
 
 The 128-byte/32-byte authenticated limits are framework invariants, not
 operator-tunable connector settings. Detail-document and normalized-error
@@ -543,17 +656,24 @@ incorporated Kafka receipt.
 
 ### 5.6 Error classification
 
-Each connector publishes and tests a classification table:
+Only the following bounded ASCII machine codes may enter
+`EffectExecution.Failed.reason`; vendor text remains redacted node-local data:
 
-- malformed/unsupported payload — definitive;
-- unknown/forbidden target — definitive;
-- authentication/authorization failure — parked or definitive according to
-  operator policy, never an unbounded hot retry;
-- rate limit or temporary service unavailable — retryable with backoff;
-- timeout/unknown acknowledgement — probe before another mutation;
-- externally existing matching result — confirmed;
-- externally existing conflicting result — definitive conflict; and
-- local interruption/shutdown — retryable without inventing success.
+| Code | Default classification |
+|---|---|
+| `INVALID_PAYLOAD`, `UNSUPPORTED_VERSION` | Definitive |
+| `UNKNOWN_TARGET`, `TARGET_DISABLED`, `POLICY_DENIED` | Definitive |
+| `TARGET_CHANGED`, `AUTH_UNAVAILABLE` | Retryable then parked for operator action |
+| `RATE_LIMITED`, `SERVICE_UNAVAILABLE` | Retryable with backoff |
+| `ACK_UNKNOWN` | Retryable; probe before another mutation where the protocol permits |
+| `SOURCE_UNAVAILABLE`, `CONTENT_UNAVAILABLE` | Retryable; deterministic expiry remains authoritative |
+| `CONTENT_NOT_FOUND` | Definitive only when configured policy proves no allowed source can supply it |
+| `SOURCE_MISMATCH`, `DESTINATION_CONFLICT`, `PROVIDER_REJECTED` | Definitive |
+| `DETAIL_ARCHIVE_FAILED`, `SHUTDOWN`, `INTERNAL_ERROR` | Retryable then parked |
+
+Codes match `[A-Z][A-Z0-9_]{0,63}`. Failed results cannot carry a
+`detailHash` under ADR-010 v1, so unrestricted failure details are never
+smuggled into `externalRef`.
 
 ### 5.7 Configuration and secrets
 
@@ -683,8 +803,8 @@ version       positive integer, exactly 1
 target        configured Kafka connection profile alias
 topic         configured topic alias
 key           bounded byte/string key
-contentType   bounded registered content type
-body          bounded bytes, or a committed object/CID reference model
+contentType   bounded lowercase media type without parameters
+body          bounded inline opaque bytes
 headers       bounded allowlisted application headers
 ```
 
@@ -697,6 +817,21 @@ It must not contain:
 - a raw unrestricted topic name;
 - caller-supplied `yano-*` headers; or
 - an unbounded document.
+
+V1 never dereferences a body. An application may encode a committed
+object/CID reference inside its own opaque event format, but that does not
+create a connector-side fetch or SSRF boundary. The encoded command is at
+most 12,288 bytes; key at most 256; body at most 8,192; and at most 16 unique,
+sorted application headers use at most 2,048 aggregate bytes. An empty key
+means the executor uses the 32-byte effect id hash.
+
+The `contentType` grammar is exactly
+`[a-z0-9!#$&^_.+-]+/[a-z0-9!#$&^_.+-]+`, 1--127 printable ASCII bytes;
+parameters and whitespace are not valid. An application header name is
+exactly `[a-z0-9][a-z0-9._-]{0,31}` (1--32 bytes) and must not begin with the
+reserved `yano-` prefix. Header values
+are opaque bytes. Duplicate names are rejected and names are encoded in
+lexical order.
 
 The executor injects reserved headers including effect id, chain id, effect
 type, payload schema version, and originating block/ordinal where safe.
@@ -712,8 +847,12 @@ and safe ordering defaults. The compact authenticated `externalRef` is
 canonical CBOR and fits well below 128 bytes:
 
 ```text
-[ version=1, partition, offset ]
+[ version=1, destinationFingerprint=bstr32, partition, offset ]
 ```
+
+`destinationFingerprint` is
+`blake2b-256("yano-kafka-destination-v1" ||
+canonicalCBOR([targetId, configuredPhysicalTopic]))`.
 
 The effect record already commits the target, topic alias, key, body, and
 effect id. An optional archived detail document may additionally retain the
@@ -770,7 +909,7 @@ V1 does not carry document bytes in the effect. The normal flow is:
 1. an authenticated gateway/demo script canonicalizes the document;
 2. it computes the required digest and size;
 3. it places the object in a configured staging location;
-4. it submits only stable aliases, keys, digest, size, and business metadata;
+4. it submits one target alias, relative keys, digest, size, and business metadata;
 5. deterministic state records that commitment and emits `object.put`;
 6. the executor verifies the staging object and conditionally copies/promotes
    it into an immutable/versioned destination; and
@@ -783,9 +922,9 @@ and ambiguous hashing of transformed data.
 
 ```text
 version          exactly 1
-target           configured S3 target alias
-source           configured staging alias + normalized object key
-destination      configured archive alias + normalized object key
+target           configured immutable staging/archive pair alias
+sourceKey        normalized relative staging key
+destinationKey   normalized relative archive key
 digestAlgorithm  fixed/allowlisted algorithm, initially SHA-256
 digest           expected content digest
 size             exact expected byte count
@@ -798,8 +937,20 @@ path, HTTP URL, encryption key, Object Lock duration, ACL, or unrestricted S3
 header.
 
 Keys are normalized and validated. Absolute paths, `..`, control characters,
-ambiguous Unicode, empty segments where forbidden, and configured-prefix
-escape are definitive failures.
+ambiguous Unicode, empty segments, configured-prefix escape, and any attempt
+to encode a separator are definitive failures.
+
+The encoded command is at most 2,048 bytes. Each key is 1--512 printable
+ASCII bytes and contains at most 32 slash-separated segments. Every segment
+is 1--128 bytes and matches
+`[A-Za-z0-9][A-Za-z0-9._~!$'()+,;=@-]{0,127}`; `.` and `..` are forbidden.
+The whole key cannot start or end with `/` and cannot contain backslash or
+percent encoding. A configured destination prefix uses the same key grammar,
+or the empty string for no prefix, and therefore never has a trailing slash.
+The destination bucket used in a fingerprint matches
+`[A-Za-z0-9][A-Za-z0-9._-]{0,254}`. V1 objects are at most 16 MiB; target
+policy may lower that ceiling. SHA-256 is encoded as algorithm code `1` with
+raw 32-byte digest.
 
 ### 7.4 Idempotency and conflict rule
 
@@ -847,11 +998,17 @@ The compact authenticated `externalRef` is canonical CBOR:
 
 ```text
 [ version=1,
-  destinationKeyHash=bstr32,
+  destinationFingerprint=bstr32,
   objectVersionFingerprint=bstr32,
   verifiedDigest=bstr32,
   size=uint ]
 ```
+
+The destination fingerprint commits the non-secret configured target id,
+destination bucket/prefix and relative key, encryption-policy id, and
+retention-policy id under domain `yano-object-destination-v1`. The version
+fingerprint commits the mandatory immutable provider version id under
+`yano-object-version-v1`.
 
 This must remain at most 128 bytes in its canonical encoding. The full
 provider version id, retention response, and allowlisted request fields may be
@@ -877,16 +1034,19 @@ define those parameters explicitly and separately.
 ```text
 version             exactly 1
 target              configured IPFS provider/profile alias
-cid                 canonical CID bytes/string
-expectedCodec       allowlisted codec, optional
-expectedMultihash   expected hash constraints, optional
+cid                 canonical binary CIDv1
 recursive           configured/allowlisted boolean
 replicationPolicy   configured policy alias, optional
 ```
 
 It cannot contain a provider API URL, bearer token, arbitrary gateway URL,
-local path, or plaintext document. V1 accepts canonical binary CIDs of at most
-96 bytes so the confirmed handle can remain inside ADR-010's 128-byte bound.
+local path, or plaintext document. The generic CID parser has a defensive
+96-byte ceiling, but the normative v1 wire policy is narrower: canonical
+binary CIDv1 is exactly 36 bytes because it permits only one-byte raw (`0x55`)
+or dag-pb (`0x70`) codecs with sha2-256/32. Client/demo tooling may accept a
+valid CIDv0 text only by converting its dag-pb/sha2-256 multihash to minimally
+encoded CIDv1; normative payloads never contain text or CIDv0. A target may
+narrow that policy. The encoded command is at most 256 bytes.
 
 ### 8.3 Idempotency and receipt
 
@@ -902,18 +1062,34 @@ The executor:
 
 A remote-pinning request id may be returned as ADR-010 `SUBMITTED` and polled
 on later attempts. A provider-declared malformed/forbidden CID is definitive.
-Temporarily unavailable content is retryable until deterministic effect
-expiry; a provider's terminal content-not-found response is definitive only
-when the configured recoverability policy says no other configured source can
-supply it.
+Temporarily unavailable content is `CONTENT_UNAVAILABLE` and remains retryable
+until deterministic effect expiry. A provider's terminal content-not-found
+response is `CONTENT_NOT_FOUND` and definitive only when the configured
+recoverability policy proves that no other allowed source can supply it.
 
-The compact authenticated `externalRef` is canonical CBOR and always carries
-the canonical **binary** CID, even if client tooling accepted a text CID in the
-effect payload:
+The effect record already carries the canonical CID, so the compact confirmed
+`externalRef` binds the configured provider and the exact CID without
+repeating up to 96 bytes:
 
 ```text
-[ version=1, canonicalCid ]
+[ version=1, targetFingerprint=bstr32, cidFingerprint=bstr32 ]
 ```
+
+The fingerprints use domains `yano-ipfs-target-v1` over `[targetId]` and
+`yano-ipfs-cid-v1` over the canonical CID bytes. A remote pinning provider may
+instead return a pollable ADR-010 `SUBMITTED` ref:
+
+```text
+[ version=1, targetFingerprint=bstr32, providerRequestId=bstr(1..88) ]
+```
+
+Both forms remain canonical and at most 128 bytes.
+
+`providerRequestId` is a non-secret, opaque polling handle only. A provider
+whose polling credential is itself secret must keep that credential in local
+target configuration and expose a separate non-secret handle; bearer tokens,
+signed URLs, and credential-bearing response fields are never valid submitted
+references.
 
 The effect record supplies the target and replication policy, while a
 `CONFIRMED` outcome supplies the status. A remote provider request id and
@@ -1450,6 +1626,7 @@ yano.app-chain.sinks.kafka.acks=all
 Illustrative shape:
 
 ```properties
+yano.app-chain.effects.executors.kafka.targets.primary.target-id=primary-v1
 yano.app-chain.effects.executors.kafka.targets.primary.bootstrap-servers=kafka:9092
 yano.app-chain.effects.executors.kafka.targets.primary.acks=all
 yano.app-chain.effects.executors.kafka.targets.primary.security-profile=local-demo
@@ -1460,11 +1637,14 @@ yano.app-chain.effects.executors.kafka.topics.evidence-ready.name=evidence.avail
 ### 15.3 S3-compatible object executor
 
 ```properties
+yano.app-chain.effects.executors.objectstore-s3.targets.archive.target-id=archive-v1
 yano.app-chain.effects.executors.objectstore-s3.targets.archive.endpoint=http://minio:9000
 yano.app-chain.effects.executors.objectstore-s3.targets.archive.region=us-east-1
 yano.app-chain.effects.executors.objectstore-s3.targets.archive.source-bucket=evidence-staging
 yano.app-chain.effects.executors.objectstore-s3.targets.archive.destination-bucket=evidence-archive
-yano.app-chain.effects.executors.objectstore-s3.targets.archive.destination-prefix=verified/
+yano.app-chain.effects.executors.objectstore-s3.targets.archive.destination-prefix=verified
+yano.app-chain.effects.executors.objectstore-s3.targets.archive.encryption-policy-id=sse-v1
+yano.app-chain.effects.executors.objectstore-s3.targets.archive.retention-policy-id=worm-v1
 yano.app-chain.effects.executors.objectstore-s3.targets.archive.require-versioning=true
 yano.app-chain.effects.executors.objectstore-s3.targets.archive.max-object-bytes=16777216
 ```
@@ -1472,9 +1652,15 @@ yano.app-chain.effects.executors.objectstore-s3.targets.archive.max-object-bytes
 Credentials are intentionally absent from the example and supplied through a
 secret provider/environment binding.
 
+Configured object prefixes are either empty or the same normalized relative
+key form used by commands, without a leading or trailing slash. The executor
+joins a non-empty prefix and relative key with exactly one `/`; `verified/`
+is invalid rather than silently normalized to `verified`.
+
 ### 15.4 IPFS executor
 
 ```properties
+yano.app-chain.effects.executors.ipfs.targets.local.target-id=local-kubo-v1
 yano.app-chain.effects.executors.ipfs.targets.local.api-url=http://ipfs:5001
 yano.app-chain.effects.executors.ipfs.targets.local.allowed-codecs=raw,dag-pb
 yano.app-chain.effects.executors.ipfs.targets.local.max-wait-ms=30000
@@ -1668,6 +1854,42 @@ explicit `evidence.notify` continuation command described in §10.
 - Add reusable executor conformance fixtures for retry, redaction, lifecycle,
   receipt bounds, and existing runtime statistics.
 - Finalize target alias and error-classification conventions.
+
+**Implementation record (accepted 2026-07-16).** The published
+`appchain-integration-contracts` module now contains the exact canonical-CBOR
+codecs, CDDL, golden vectors, bounded receipt/detail models, CID normalization,
+domain-separated fingerprints, error taxonomy, and durable reference detail
+archive. `appchain-testkit` supplies a reusable real-runtime executor harness
+and conformance suite covering invalid-input/no-I/O behavior, retries,
+unknown acknowledgements, reconciliation, idempotency, restart, bounded and
+idempotent shutdown, failed construction, secret redaction through cleanup,
+receipt/detail limits, and runtime statistic/status shapes.
+
+Recorded Phase 1.0 evidence:
+
+- 50 contract/archive/CID tests and 42 focused conformance tests pass, along
+  with the complete `appchain-testkit` test task and both module Javadocs.
+- The generated aggregate CDDL compiles with an independent RFC 8610 tool and
+  validates all ten published command, receipt, submitted-reference, and
+  detail vectors.
+- A hostile-input audit exercised 100,000 malformed values against all seven
+  public decoders without an unexpected throwable; explicit allocation,
+  nesting, item-count, text/binary, snapshot, and diagnostic-work bounds are
+  regression-tested.
+- Published JAR/POM and dependency inspection confirms that the contract
+  module has no runtime, Kafka, S3, IPFS, Cardano client, credential, or
+  network dependency; aside from the shared build convention's SLF4J API, its
+  only direct implementation dependencies are the CBOR codec and BLAKE2b
+  provider.
+- Independent API/design/security reviews found no unresolved correctness or
+  high-severity issue. Their bounded findings—pre-clone limits, archive path
+  handling, post-close/failed-construction log capture, exact numeric metrics,
+  non-zero unknown-ack mutation, and definitive content-not-found
+  classification—are implemented and tested.
+
+Bundle-relocation and multi-bundle class-identity tests remain assigned to
+Phases 1.1--1.3 because only deployable connector bundles can prove those
+packaging boundaries. No core, runtime, or framework SPI changed in Phase 1.0.
 
 #### Phase 1.1 — Broaden the Kafka bundle
 

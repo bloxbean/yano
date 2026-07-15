@@ -27,6 +27,7 @@ include 'epoch-export'
 include 'appchain-stdlib'
 include 'appchain-testkit'
 include 'appchain-client'
+include 'appchain-integration-contracts'
 include 'appchain-kafka-sink'
 include 'appchain-effects-cardano'
 include 'appchain-zk'
@@ -37,6 +38,8 @@ project(':appchain-anchor-onchain').projectDir = file('appchain/onchain/appchain
 project(':appchain-stdlib').projectDir = file('appchain/appchain-stdlib')
 project(':appchain-testkit').projectDir = file('appchain/appchain-testkit')
 project(':appchain-client').projectDir = file('appchain/appchain-client')
+project(':appchain-integration-contracts').projectDir =
+        file('appchain/appchain-integration-contracts')
 project(':appchain-kafka-sink').projectDir = file('appchain/extensions/appchain-kafka-sink')
 project(':appchain-effects-cardano').projectDir = file('appchain/extensions/appchain-effects-cardano')
 project(':appchain-zk').projectDir = file('appchain/extensions/appchain-zk')
