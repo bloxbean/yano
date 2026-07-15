@@ -33,6 +33,7 @@ Don't look for feature docs here — they're centralized:
 | _(Aiken twin)_ | `onchain/aiken/appchain-anchor/` | The same validators in Aiken — the opt-in, auditor-familiar alternative (same ABI). Its own README covers the Aiken build. |
 | `appchain-integration-contracts` | `appchain-integration-contracts/` | Provider-neutral connector wire contracts, CDDL, and golden vectors. |
 | `appchain-kafka` | `extensions/appchain-kafka/` | Plugin: finalized blocks and acknowledged `kafka.publish` effects → Kafka topics. |
+| `appchain-objectstore-s3` | `extensions/appchain-objectstore-s3/` | Plugin: immutable, versioned `object.put` promotion for tested S3-compatible stores. |
 | `appchain-zk` | `extensions/appchain-zk/` | Plugin (EXPERIMENTAL): ZeroJ-based proof-verified state machines. |
 | `appchain-effects-cardano` | `extensions/appchain-effects-cardano/` | Plugin: Cardano payment executor for the app-chain effect system. |
 | `appchain-spring-boot-starter` | `../spring-starters/appchain-spring-boot-starter/` | Spring Boot auto-config for the client SDK. |

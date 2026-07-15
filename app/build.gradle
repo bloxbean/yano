@@ -17,14 +17,21 @@ if (includeFirstPartyPluginBundlesProperty != null
 def includeFirstPartyPluginBundles =
         Boolean.parseBoolean(includeFirstPartyPluginBundlesProperty ?: 'false')
 
-// Quarkus's enforced platform currently selects older Kafka/BC versions than
-// the connector contracts. Opt-in thin/native connector builds must use the
+// Quarkus's enforced platform may select older Kafka/BC/AWS SDK versions than
+// the first-party connectors. Opt-in thin/native connector builds must use the
 // same security-reviewed versions as their self-contained JVM bundles.
 if (includeFirstPartyPluginBundles) {
     configurations.configureEach {
         resolutionStrategy.force(
                 libs.kafka.clients.get(),
                 libs.bouncycastle.bcprov.get())
+        resolutionStrategy.eachDependency { details ->
+            if (details.requested.group == 'software.amazon.awssdk') {
+                details.useVersion(
+                        libs.aws.sdk.s3.get().versionConstraint.requiredVersion)
+                details.because('use one security-reviewed AWS SDK line for first-party connectors')
+            }
+        }
     }
 }
 def includeNativePluginConformanceFixtureProperty =
@@ -53,6 +60,8 @@ if (includeFirstPartyPluginBundles) {
     buildTimePluginBundles.putAll([
             'com.bloxbean.cardano.yano.appchain.kafka':
                     [projectPath: ':appchain-kafka', includeProvided: true],
+            'com.bloxbean.cardano.yano.appchain.objectstore.s3':
+                    [projectPath: ':appchain-objectstore-s3', includeProvided: true],
             'com.bloxbean.cardano.yano.appchain.effects.cardano':
                     [projectPath: ':appchain-effects-cardano', includeProvided: true],
             'com.bloxbean.cardano.yano.appchain.zk':
@@ -120,6 +129,7 @@ dependencies {
     // builds can opt in before catalog-index and reflection generation.
     if (includeFirstPartyPluginBundles) {
         runtimeOnly project(':appchain-kafka')
+        runtimeOnly project(':appchain-objectstore-s3')
         runtimeOnly project(':appchain-effects-cardano')
         runtimeOnly project(':appchain-zk')
     }
@@ -383,11 +393,13 @@ tasks.named('processResources') {
 
 tasks.register('verifyFirstPartyPluginBundles', JavaExec) {
     dependsOn ':appchain-kafka:verifyKafkaArtifactBoundaries',
+            ':appchain-objectstore-s3:verifyObjectStoreS3ArtifactBoundaries',
             ':appchain-effects-cardano:shadowJar', ':appchain-zk:shadowJar'
     def verificationIndex = layout.buildDirectory.file(
             'reports/plugin-catalog/first-party-bundles.json')
     inputs.files({
-        [project(':appchain-kafka'), project(':appchain-effects-cardano'),
+        [project(':appchain-kafka'), project(':appchain-objectstore-s3'),
+         project(':appchain-effects-cardano'),
          project(':appchain-zk')].collect { pluginProject ->
             pluginProject.tasks.named('shadowJar').get().archiveFile.get().asFile
         }
@@ -398,6 +410,7 @@ tasks.register('verifyFirstPartyPluginBundles', JavaExec) {
     doFirst {
         def bundleFiles = [
                 project(':appchain-kafka'),
+                project(':appchain-objectstore-s3'),
                 project(':appchain-effects-cardano'),
                 project(':appchain-zk')
         ].collect { pluginProject ->
@@ -411,6 +424,8 @@ tasks.register('verifyFirstPartyPluginBundles', JavaExec) {
         def index = new groovy.json.JsonSlurper().parse(verificationIndex.get().asFile)
         requireIndexedManifestVersions(index, [
                 'com.bloxbean.cardano.yano.appchain.kafka': declaredPluginManifestVersion,
+                'com.bloxbean.cardano.yano.appchain.objectstore.s3':
+                        declaredPluginManifestVersion,
                 'com.bloxbean.cardano.yano.appchain.effects.cardano':
                         declaredPluginManifestVersion,
                 'com.bloxbean.cardano.yano.appchain.zk': declaredPluginManifestVersion
@@ -426,12 +441,28 @@ tasks.register('verifyFirstPartyPluginBundles', JavaExec) {
             throw new GradleException(
                     "Kafka bundle contribution inventory is incomplete: ${kafkaContributions}")
         }
+        def objectStoreBundle = index.bundles.find {
+            it.manifest?.id == 'com.bloxbean.cardano.yano.appchain.objectstore.s3'
+        }
+        def objectStoreContributions = objectStoreBundle?.manifest?.contributions?.collect {
+            "${it.kind}:${it.name}"
+        }?.toSet()
+        if (objectStoreContributions != Set.of('effect-executor:objectstore-s3')) {
+            throw new GradleException(
+                    "Object-store bundle contribution inventory is incomplete: "
+                            + objectStoreContributions)
+        }
         if (includeFirstPartyPluginBundles) {
             def expectedRuntimeVersions = [
                     'org.apache.kafka:kafka-clients':
                             libs.kafka.clients.get().versionConstraint.requiredVersion,
                     'org.bouncycastle:bcprov-jdk18on':
-                            libs.bouncycastle.bcprov.get().versionConstraint.requiredVersion
+                            libs.bouncycastle.bcprov.get().versionConstraint.requiredVersion,
+                    'software.amazon.awssdk:s3':
+                            libs.aws.sdk.s3.get().versionConstraint.requiredVersion,
+                    'software.amazon.awssdk:url-connection-client':
+                            libs.aws.sdk.url.connection.client.get()
+                                    .versionConstraint.requiredVersion
             ]
             def appRuntimeClasspath = project.configurations.getByName('runtimeClasspath')
             def resolvedRuntimeVersions = appRuntimeClasspath.incoming
@@ -449,12 +480,23 @@ tasks.register('verifyFirstPartyPluginBundles', JavaExec) {
                                     + "expected security-reviewed version ${expectedVersion}")
                 }
             }
+            def expectedAwsVersion = libs.aws.sdk.s3.get()
+                    .versionConstraint.requiredVersion
+            def mixedAwsModules = resolvedRuntimeVersions.findAll { module, version ->
+                module.startsWith('software.amazon.awssdk:')
+                        && version != expectedAwsVersion
+            }
+            if (!mixedAwsModules.isEmpty()) {
+                throw new GradleException(
+                        "First-party plugin runtime mixes AWS SDK versions: ${mixedAwsModules}")
+            }
         }
     }
 }
 
 tasks.register('launchFirstPartyPluginBundles', JavaExec) {
     dependsOn tasks.named('testClasses'), ':appchain-kafka:shadowJar',
+            ':appchain-objectstore-s3:shadowJar',
             ':appchain-effects-cardano:shadowJar', ':appchain-zk:shadowJar'
     // Deliberately omit app.runtimeClasspath: the probe must prove the bundle
     // classifiers work when the corresponding thin provider JARs are absent.
@@ -462,7 +504,8 @@ tasks.register('launchFirstPartyPluginBundles', JavaExec) {
             project(':runtime').sourceSets.main.runtimeClasspath)
     mainClass = 'com.bloxbean.cardano.yano.app.PluginBundleLaunchProbe'
     doFirst {
-        args = [project(':appchain-kafka'), project(':appchain-effects-cardano'),
+        args = [project(':appchain-kafka'), project(':appchain-objectstore-s3'),
+                project(':appchain-effects-cardano'),
                 project(':appchain-zk')].collect { pluginProject ->
             pluginProject.tasks.named('shadowJar').get().archiveFile.get().asFile.absolutePath
         }

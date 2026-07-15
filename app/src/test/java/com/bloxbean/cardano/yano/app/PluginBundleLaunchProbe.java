@@ -24,6 +24,7 @@ import java.util.Set;
 public final class PluginBundleLaunchProbe {
     private static final Set<String> EXPECTED_BUNDLES = Set.of(
             "com.bloxbean.cardano.yano.appchain.kafka",
+            "com.bloxbean.cardano.yano.appchain.objectstore.s3",
             "com.bloxbean.cardano.yano.appchain.effects.cardano",
             "com.bloxbean.cardano.yano.appchain.zk");
 
@@ -32,7 +33,7 @@ public final class PluginBundleLaunchProbe {
 
     public static void main(String[] args) throws Exception {
         if (args.length != EXPECTED_BUNDLES.size()) {
-            throw new IllegalArgumentException("Expected exactly three plugin bundle paths");
+            throw new IllegalArgumentException("Unexpected first-party plugin bundle count");
         }
         Path directory = Files.createTempDirectory("yano-plugin-bundle-probe-");
         ClassLoader originalTccl = Thread.currentThread().getContextClassLoader();
@@ -75,6 +76,38 @@ public final class PluginBundleLaunchProbe {
                             "Kafka effect contribution did not create one configured executor");
                 }
                 kafkaExecutors.getFirst().close();
+                AppEffectExecutorFactory objectStoreEffects = require(
+                        environment, AppEffectExecutorFactory.class, "objectstore-s3");
+                if (!objectStoreEffects.create("probe", Map.of()).isEmpty()) {
+                    throw new IllegalStateException(
+                            "Object-store contribution activated without executor config");
+                }
+                // Construct a configured executor without performing network
+                // I/O. This exercises the relocated contract/fingerprint and
+                // AWS client-factory linkage through the directory bundle.
+                var objectStoreExecutors = objectStoreEffects.create("probe", Map.ofEntries(
+                        Map.entry("enabled", "true"),
+                        Map.entry("targets.probe.target-id", "probe-v1"),
+                        Map.entry("targets.probe.endpoint", "http://127.0.0.1:9000"),
+                        Map.entry("targets.probe.region", "us-east-1"),
+                        Map.entry("targets.probe.security-profile", "local-demo"),
+                        Map.entry("targets.probe.path-style", "true"),
+                        Map.entry("targets.probe.credentials-provider", "static"),
+                        Map.entry("targets.probe.credentials.access-key-id", "probe-access"),
+                        Map.entry("targets.probe.credentials.secret-access-key", "probe-secret"),
+                        Map.entry("targets.probe.source-bucket", "probe-staging"),
+                        Map.entry("targets.probe.source-prefix", "incoming"),
+                        Map.entry("targets.probe.destination-bucket", "probe-archive"),
+                        Map.entry("targets.probe.destination-prefix", "verified"),
+                        Map.entry("targets.probe.encryption-policy-id", "local-none-v1"),
+                        Map.entry("targets.probe.encryption-mode", "none"),
+                        Map.entry("targets.probe.retention-policy-id", "none-v1"),
+                        Map.entry("targets.probe.require-versioning", "true")));
+                if (objectStoreExecutors.size() != 1) {
+                    throw new IllegalStateException(
+                            "Object-store contribution did not create one configured executor");
+                }
+                objectStoreExecutors.getFirst().close();
                 require(environment, AppEffectExecutorFactory.class, "cardano");
                 for (String machine : List.of("credential-registry", "zk-gate", "zk-membership")) {
                     require(environment, AppStateMachineProvider.class, machine);
@@ -100,6 +133,24 @@ public final class PluginBundleLaunchProbe {
                 requireAbsentClass(environment,
                         "com.bloxbean.cardano.yano.appchain.integration.kafka."
                                 + "KafkaPublishCommandV1");
+                requireOwnedClass(environment,
+                        "software.amazon.awssdk.services.s3.S3Client",
+                        "com.bloxbean.cardano.yano.appchain.objectstore.s3");
+                requireOwnedClass(environment,
+                        "com.bloxbean.cardano.yano.appchain.objectstore.s3.internal.contracts."
+                                + "v1.objectstore.ObjectPutCommandV1",
+                        "com.bloxbean.cardano.yano.appchain.objectstore.s3");
+                requireOwnedClass(environment,
+                        "com.bloxbean.cardano.yano.appchain.objectstore.s3.internal.contracts."
+                                + "v1deps.cbor.CborDecoder",
+                        "com.bloxbean.cardano.yano.appchain.objectstore.s3");
+                requireOwnedClass(environment,
+                        "com.bloxbean.cardano.yano.appchain.objectstore.s3.internal.contracts."
+                                + "v1deps.bouncycastle.crypto.digests.Blake2bDigest",
+                        "com.bloxbean.cardano.yano.appchain.objectstore.s3");
+                requireAbsentClass(environment,
+                        "com.bloxbean.cardano.yano.appchain.integration.objectstore."
+                                + "ObjectPutCommandV1");
                 requireOwnedClass(environment,
                         "com.bloxbean.cardano.client.backend.blockfrost.service.BFBackendService",
                         "com.bloxbean.cardano.yano.appchain.effects.cardano");
