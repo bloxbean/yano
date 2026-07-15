@@ -25,6 +25,7 @@ public final class PluginBundleLaunchProbe {
     private static final Set<String> EXPECTED_BUNDLES = Set.of(
             "com.bloxbean.cardano.yano.appchain.kafka",
             "com.bloxbean.cardano.yano.appchain.objectstore.s3",
+            "com.bloxbean.cardano.yano.appchain.ipfs",
             "com.bloxbean.cardano.yano.appchain.effects.cardano",
             "com.bloxbean.cardano.yano.appchain.zk");
 
@@ -108,6 +109,31 @@ public final class PluginBundleLaunchProbe {
                             "Object-store contribution did not create one configured executor");
                 }
                 objectStoreExecutors.getFirst().close();
+                AppEffectExecutorFactory ipfsEffects = require(
+                        environment, AppEffectExecutorFactory.class, "ipfs");
+                if (!ipfsEffects.create("probe", Map.of()).isEmpty()) {
+                    throw new IllegalStateException(
+                            "IPFS contribution activated without executor config");
+                }
+                // Construct and close a configured executor without performing
+                // network I/O. This exercises the directory-loaded factory,
+                // relocated CID contract, and strict Kubo client linkage.
+                var ipfsExecutors = ipfsEffects.create("probe", Map.ofEntries(
+                        Map.entry("enabled", "true"),
+                        Map.entry("targets.probe.target-id", "probe-v1"),
+                        Map.entry("targets.probe.api-url", "http://127.0.0.1:5001"),
+                        Map.entry("targets.probe.security-profile", "local-demo"),
+                        Map.entry("targets.probe.allowed-codecs", "raw,dag-pb"),
+                        Map.entry("targets.probe.recursive", "true"),
+                        Map.entry("targets.probe.replication-policy", "demo-single"),
+                        Map.entry("targets.probe.connect-timeout-ms", "1000"),
+                        Map.entry("targets.probe.request-timeout-ms", "1000"),
+                        Map.entry("targets.probe.close-timeout-ms", "1000")));
+                if (ipfsExecutors.size() != 1) {
+                    throw new IllegalStateException(
+                            "IPFS contribution did not create one configured executor");
+                }
+                ipfsExecutors.getFirst().close();
                 require(environment, AppEffectExecutorFactory.class, "cardano");
                 for (String machine : List.of("credential-registry", "zk-gate", "zk-membership")) {
                     require(environment, AppStateMachineProvider.class, machine);
@@ -151,6 +177,16 @@ public final class PluginBundleLaunchProbe {
                 requireAbsentClass(environment,
                         "com.bloxbean.cardano.yano.appchain.integration.objectstore."
                                 + "ObjectPutCommandV1");
+                requireOwnedClass(environment,
+                        "com.bloxbean.cardano.yano.appchain.ipfs.internal.contracts."
+                                + "v1.ipfs.CanonicalCid",
+                        "com.bloxbean.cardano.yano.appchain.ipfs");
+                requireInitializedOwnedClass(environment,
+                        "com.bloxbean.cardano.yano.appchain.ipfs.internal.kubo."
+                                + "KuboIpfsPinClient",
+                        "com.bloxbean.cardano.yano.appchain.ipfs");
+                requireAbsentClass(environment,
+                        "com.bloxbean.cardano.yano.appchain.integration.ipfs.CanonicalCid");
                 requireOwnedClass(environment,
                         "com.bloxbean.cardano.client.backend.blockfrost.service.BFBackendService",
                         "com.bloxbean.cardano.yano.appchain.effects.cardano");
@@ -256,8 +292,21 @@ public final class PluginBundleLaunchProbe {
     private static void requireOwnedClass(PluginRuntimeEnvironment environment,
                                           String className,
                                           String expectedBundleId) throws Exception {
+        requireOwnedClass(environment, className, expectedBundleId, false);
+    }
+
+    private static void requireInitializedOwnedClass(PluginRuntimeEnvironment environment,
+                                                     String className,
+                                                     String expectedBundleId) throws Exception {
+        requireOwnedClass(environment, className, expectedBundleId, true);
+    }
+
+    private static void requireOwnedClass(PluginRuntimeEnvironment environment,
+                                          String className,
+                                          String expectedBundleId,
+                                          boolean initialize) throws Exception {
         ClassLoader loader = environment.classLoader();
-        Class<?> dependency = Class.forName(className, false, loader);
+        Class<?> dependency = Class.forName(className, initialize, loader);
         Path actual = codeSource(dependency);
         List<Path> providerSources = environment.catalog().bundles().stream()
                 .filter(bundle -> bundle.selected() && bundle.id().equals(expectedBundleId))
