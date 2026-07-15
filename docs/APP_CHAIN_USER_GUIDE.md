@@ -35,7 +35,8 @@ else is opt-in — a plugin jar on the node or a library in your application
 | `yano-appchain-stdlib` | `appchain/appchain-stdlib` | Ready state machines, selected by id (§9); ships in the distribution |
 | `yano-appchain-client` | `appchain/appchain-client` | Java client SDK: REST + SSE + client-side proof verification (§16) |
 | `yano-appchain-testkit` | `appchain/appchain-testkit` | JUnit 5 `@AppChainCluster` embedded clusters for tests (§16) |
-| `yano-appchain-kafka-sink` | `appchain/extensions/appchain-kafka-sink` | Node plugin: finalized blocks → Kafka topics (§10) |
+| `yano-appchain-integration-contracts` | `appchain/appchain-integration-contracts` | Provider-neutral connector payload, receipt, CDDL, and golden-vector contracts |
+| `yano-appchain-kafka` | `appchain/extensions/appchain-kafka` | Node plugin: finalized blocks and acknowledged `kafka.publish` effects → Kafka topics (§10, §18) |
 | `yano-appchain-effects-cardano` | `appchain/extensions/appchain-effects-cardano` | Node plugin: Cardano payment executor for the effect system (§18) |
 | `yano-appchain-zk` | `appchain/extensions/appchain-zk` | Node plugin, EXPERIMENTAL: ZK state machines & verification (§17) |
 | `yano-appchain-spring-boot-starter` | `spring-starters/appchain-spring-boot-starter` | Spring Boot auto-config for the client SDK (§16) |
@@ -844,20 +845,29 @@ carry `X-App-Chain-Id` / `X-App-Chain-Height` headers; delivery progress and
 the last error appear in `/status` under `sinks`.
 
 **Kafka** — the stock application omits this T3 integration. For a JVM node,
-run `./gradlew :appchain-kafka-sink:shadowJar` and copy the resulting
-`yano-appchain-kafka-sink-<version>-bundle.jar` into
+run `./gradlew :appchain-kafka:shadowJar` and copy the resulting
+`yano-appchain-kafka-<version>-bundle.jar` into
 `yaci.plugins.directory`. For a native application, build it in with
 `-PincludeFirstPartyPluginBundles=true`; native binaries cannot load the
 directory bundle.
+
+This is the direct pre-release rename of `yano-appchain-kafka-sink`. Its
+plugin id, Java package, sink scheme, and sink keys remain unchanged. Remove
+the old bundle before installing the renamed one; both declare the same
+plugin identity and cannot coexist.
 
 ```yaml
 yano.app-chain.sinks.kafka.bootstrap-servers: broker:9092
 yano.app-chain.sinks.kafka.topic: my-appchain-blocks
 ```
 
-Blocks are produced as JSON keyed by height (partition-stable) with
+Blocks are produced as JSON keyed by stable chain id (partition-stable even
+for a multi-partition topic) with
 synchronous acks, under the same ordered, at-least-once cursor semantics as
-webhooks.
+webhooks. The same bundle also contributes the independently configured
+`kafka.publish` effect executor described in §18. Configuring the sink does
+not activate that executor, and the two contributions own separate producers
+and shutdown lifecycles.
 
 **Custom sinks** — implement the `FinalizedStreamSink` SPI; ordering, cursor
 persistence and at-least-once redelivery come from the framework
@@ -1393,6 +1403,38 @@ config, not the payload:
 yano.app-chain.effects.executors.webhook.url: https://erp.example/hooks/yano
 yano.app-chain.effects.executors.webhook.timeout-ms: 10000
 ```
+
+**Kafka publish executor** — the optional `yano-appchain-kafka` bundle also
+handles canonical-CBOR `kafka.publish` effects. Payloads select stable target
+and topic aliases; broker endpoints, TLS/SASL credentials, and physical topic
+names remain executor-local configuration:
+
+```yaml
+yano.app-chain.effects.executors.kafka.targets.primary.target-id: primary-v1
+yano.app-chain.effects.executors.kafka.targets.primary.bootstrap-servers: broker:9092
+yano.app-chain.effects.executors.kafka.targets.primary.acks: all
+yano.app-chain.effects.executors.kafka.targets.primary.security-profile: local-demo
+yano.app-chain.effects.executors.kafka.topics.evidence-ready.target: primary
+yano.app-chain.effects.executors.kafka.topics.evidence-ready.name: evidence.available.v1
+```
+
+The shown `local-demo` profile is plaintext and accepts only local/private
+bootstrap hosts. Non-local brokers require the validated `tls`, `mtls`, or
+`sasl-tls` profile and its trust/key configuration.
+
+With no Kafka executor settings, or with `enabled: false`, the effect
+contribution remains inactive even when the finalized sink is configured.
+
+A confirmation records the destination fingerprint, partition, and offset.
+The effect id is injected as lowercase hex in the reserved
+`yano-effect-id` header for consumer deduplication. The other frozen v1
+headers are `yano-chain-id` (UTF-8), `yano-effect-type`,
+`yano-payload-version`, `yano-origin-height`, `yano-origin-ordinal`, and
+`yano-content-type` (US-ASCII). Payloads cannot supply a `yano-*` header.
+Kafka producer idempotence does not guarantee cross-process exactly-once
+delivery after an acknowledgement is lost, so consumers must still
+deduplicate where duplicates matter. The frozen payload/receipt schemas,
+CDDL, and golden vectors ship in `yano-appchain-integration-contracts`.
 
 **Cardano payment executor** — the stock application omits this privileged T3
 integration. A JVM node can run `:appchain-effects-cardano:shadowJar` and copy

@@ -54,6 +54,27 @@ public final class PluginBundleLaunchProbe {
                             + environment.selectedBundleIds());
                 }
                 require(environment, FinalizedStreamSinkFactory.class, "kafka");
+                AppEffectExecutorFactory kafkaEffects = require(
+                        environment, AppEffectExecutorFactory.class, "kafka");
+                if (!kafkaEffects.create("probe", Map.of()).isEmpty()) {
+                    throw new IllegalStateException(
+                            "Kafka effect contribution activated without executor config");
+                }
+                // Exercise the relocated command-fingerprint path without
+                // opening a producer. This proves the bundle-private contract,
+                // CBOR, and BLAKE2b classes link and execute together.
+                var kafkaExecutors = kafkaEffects.create("probe", Map.of(
+                        "enabled", "true",
+                        "targets.probe.target-id", "probe-v1",
+                        "targets.probe.bootstrap-servers", "localhost:9092",
+                        "targets.probe.security-profile", "local-demo",
+                        "topics.events.target", "probe",
+                        "topics.events.name", "probe.events.v1"));
+                if (kafkaExecutors.size() != 1) {
+                    throw new IllegalStateException(
+                            "Kafka effect contribution did not create one configured executor");
+                }
+                kafkaExecutors.getFirst().close();
                 require(environment, AppEffectExecutorFactory.class, "cardano");
                 for (String machine : List.of("credential-registry", "zk-gate", "zk-membership")) {
                     require(environment, AppStateMachineProvider.class, machine);
@@ -64,6 +85,21 @@ public final class PluginBundleLaunchProbe {
                 requireOwnedClass(environment,
                         "org.apache.kafka.clients.producer.KafkaProducer",
                         "com.bloxbean.cardano.yano.appchain.kafka");
+                requireOwnedClass(environment,
+                        "com.bloxbean.cardano.yano.appchain.kafka.internal.contracts.v1."
+                                + "kafka.KafkaPublishCommandV1",
+                        "com.bloxbean.cardano.yano.appchain.kafka");
+                requireOwnedClass(environment,
+                        "com.bloxbean.cardano.yano.appchain.kafka.internal.contracts."
+                                + "v1deps.cbor.CborDecoder",
+                        "com.bloxbean.cardano.yano.appchain.kafka");
+                requireOwnedClass(environment,
+                        "com.bloxbean.cardano.yano.appchain.kafka.internal.contracts."
+                                + "v1deps.bouncycastle.crypto.digests.Blake2bDigest",
+                        "com.bloxbean.cardano.yano.appchain.kafka");
+                requireAbsentClass(environment,
+                        "com.bloxbean.cardano.yano.appchain.integration.kafka."
+                                + "KafkaPublishCommandV1");
                 requireOwnedClass(environment,
                         "com.bloxbean.cardano.client.backend.blockfrost.service.BFBackendService",
                         "com.bloxbean.cardano.yano.appchain.effects.cardano");
@@ -153,6 +189,17 @@ public final class PluginBundleLaunchProbe {
         if (Thread.currentThread().getContextClassLoader() != expected) {
             throw new IllegalStateException(operation + " did not restore the calling TCCL");
         }
+    }
+
+    private static void requireAbsentClass(PluginRuntimeEnvironment environment,
+                                           String className) throws Exception {
+        try {
+            Class.forName(className, false, environment.classLoader());
+        } catch (ClassNotFoundException expected) {
+            return;
+        }
+        throw new IllegalStateException(
+                "Self-contained plugin directory exposes forbidden host contract " + className);
     }
 
     private static void requireOwnedClass(PluginRuntimeEnvironment environment,

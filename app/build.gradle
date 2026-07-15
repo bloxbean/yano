@@ -16,6 +16,17 @@ if (includeFirstPartyPluginBundlesProperty != null
 }
 def includeFirstPartyPluginBundles =
         Boolean.parseBoolean(includeFirstPartyPluginBundlesProperty ?: 'false')
+
+// Quarkus's enforced platform currently selects older Kafka/BC versions than
+// the connector contracts. Opt-in thin/native connector builds must use the
+// same security-reviewed versions as their self-contained JVM bundles.
+if (includeFirstPartyPluginBundles) {
+    configurations.configureEach {
+        resolutionStrategy.force(
+                libs.kafka.clients.get(),
+                libs.bouncycastle.bcprov.get())
+    }
+}
 def includeNativePluginConformanceFixtureProperty =
         providers.gradleProperty('includeNativePluginConformanceFixture').orNull
 if (includeNativePluginConformanceFixtureProperty != null
@@ -41,7 +52,7 @@ def buildTimePluginBundles = [
 if (includeFirstPartyPluginBundles) {
     buildTimePluginBundles.putAll([
             'com.bloxbean.cardano.yano.appchain.kafka':
-                    [projectPath: ':appchain-kafka-sink', includeProvided: true],
+                    [projectPath: ':appchain-kafka', includeProvided: true],
             'com.bloxbean.cardano.yano.appchain.effects.cardano':
                     [projectPath: ':appchain-effects-cardano', includeProvided: true],
             'com.bloxbean.cardano.yano.appchain.zk':
@@ -108,7 +119,7 @@ dependencies {
     // Optional T3 integrations stay out of the stock artifact. Native/custom
     // builds can opt in before catalog-index and reflection generation.
     if (includeFirstPartyPluginBundles) {
-        runtimeOnly project(':appchain-kafka-sink')
+        runtimeOnly project(':appchain-kafka')
         runtimeOnly project(':appchain-effects-cardano')
         runtimeOnly project(':appchain-zk')
     }
@@ -371,12 +382,12 @@ tasks.named('processResources') {
 }
 
 tasks.register('verifyFirstPartyPluginBundles', JavaExec) {
-    dependsOn ':appchain-kafka-sink:shadowJar',
+    dependsOn ':appchain-kafka:verifyKafkaArtifactBoundaries',
             ':appchain-effects-cardano:shadowJar', ':appchain-zk:shadowJar'
     def verificationIndex = layout.buildDirectory.file(
             'reports/plugin-catalog/first-party-bundles.json')
     inputs.files({
-        [project(':appchain-kafka-sink'), project(':appchain-effects-cardano'),
+        [project(':appchain-kafka'), project(':appchain-effects-cardano'),
          project(':appchain-zk')].collect { pluginProject ->
             pluginProject.tasks.named('shadowJar').get().archiveFile.get().asFile
         }
@@ -386,7 +397,7 @@ tasks.register('verifyFirstPartyPluginBundles', JavaExec) {
     mainClass = 'com.bloxbean.cardano.yano.catalog.PluginIndexGenerator'
     doFirst {
         def bundleFiles = [
-                project(':appchain-kafka-sink'),
+                project(':appchain-kafka'),
                 project(':appchain-effects-cardano'),
                 project(':appchain-zk')
         ].collect { pluginProject ->
@@ -404,11 +415,46 @@ tasks.register('verifyFirstPartyPluginBundles', JavaExec) {
                         declaredPluginManifestVersion,
                 'com.bloxbean.cardano.yano.appchain.zk': declaredPluginManifestVersion
         ])
+        def kafkaBundle = index.bundles.find {
+            it.manifest?.id == 'com.bloxbean.cardano.yano.appchain.kafka'
+        }
+        def kafkaContributions = kafkaBundle?.manifest?.contributions?.collect {
+            "${it.kind}:${it.name}"
+        }?.toSet()
+        if (kafkaContributions != Set.of(
+                'finalized-sink:kafka', 'effect-executor:kafka')) {
+            throw new GradleException(
+                    "Kafka bundle contribution inventory is incomplete: ${kafkaContributions}")
+        }
+        if (includeFirstPartyPluginBundles) {
+            def expectedRuntimeVersions = [
+                    'org.apache.kafka:kafka-clients':
+                            libs.kafka.clients.get().versionConstraint.requiredVersion,
+                    'org.bouncycastle:bcprov-jdk18on':
+                            libs.bouncycastle.bcprov.get().versionConstraint.requiredVersion
+            ]
+            def appRuntimeClasspath = project.configurations.getByName('runtimeClasspath')
+            def resolvedRuntimeVersions = appRuntimeClasspath.incoming
+                    .resolutionResult.allComponents.findAll { component ->
+                component.id instanceof ModuleComponentIdentifier
+            }.collectEntries { component ->
+                def id = component.id as ModuleComponentIdentifier
+                [("${id.group}:${id.module}".toString()): id.version]
+            }
+            expectedRuntimeVersions.each { module, expectedVersion ->
+                def actualVersion = resolvedRuntimeVersions[module]
+                if (actualVersion != expectedVersion) {
+                    throw new GradleException(
+                            "First-party plugin runtime resolved ${module}:${actualVersion}; "
+                                    + "expected security-reviewed version ${expectedVersion}")
+                }
+            }
+        }
     }
 }
 
 tasks.register('launchFirstPartyPluginBundles', JavaExec) {
-    dependsOn tasks.named('testClasses'), ':appchain-kafka-sink:shadowJar',
+    dependsOn tasks.named('testClasses'), ':appchain-kafka:shadowJar',
             ':appchain-effects-cardano:shadowJar', ':appchain-zk:shadowJar'
     // Deliberately omit app.runtimeClasspath: the probe must prove the bundle
     // classifiers work when the corresponding thin provider JARs are absent.
@@ -416,7 +462,7 @@ tasks.register('launchFirstPartyPluginBundles', JavaExec) {
             project(':runtime').sourceSets.main.runtimeClasspath)
     mainClass = 'com.bloxbean.cardano.yano.app.PluginBundleLaunchProbe'
     doFirst {
-        args = [project(':appchain-kafka-sink'), project(':appchain-effects-cardano'),
+        args = [project(':appchain-kafka'), project(':appchain-effects-cardano'),
                 project(':appchain-zk')].collect { pluginProject ->
             pluginProject.tasks.named('shadowJar').get().archiveFile.get().asFile.absolutePath
         }

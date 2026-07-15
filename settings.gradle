@@ -28,7 +28,7 @@ include 'appchain-stdlib'
 include 'appchain-testkit'
 include 'appchain-client'
 include 'appchain-integration-contracts'
-include 'appchain-kafka-sink'
+include 'appchain-kafka'
 include 'appchain-effects-cardano'
 include 'appchain-zk'
 include 'appchain-spring-boot-starter'
@@ -40,7 +40,7 @@ project(':appchain-testkit').projectDir = file('appchain/appchain-testkit')
 project(':appchain-client').projectDir = file('appchain/appchain-client')
 project(':appchain-integration-contracts').projectDir =
         file('appchain/appchain-integration-contracts')
-project(':appchain-kafka-sink').projectDir = file('appchain/extensions/appchain-kafka-sink')
+project(':appchain-kafka').projectDir = file('appchain/extensions/appchain-kafka')
 project(':appchain-effects-cardano').projectDir = file('appchain/extensions/appchain-effects-cardano')
 project(':appchain-zk').projectDir = file('appchain/extensions/appchain-zk')
 project(':appchain-plugin-conformance').projectDir =
