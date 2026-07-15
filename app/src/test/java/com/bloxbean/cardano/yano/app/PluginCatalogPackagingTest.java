@@ -74,6 +74,11 @@ class PluginCatalogPackagingTest {
             "yano.test.include-first-party-plugin-bundles";
     private static final String EXPECT_CONFORMANCE =
             "yano.test.include-native-plugin-conformance-fixture";
+    private static final String HOST_KAFKA_CONTRACT =
+            "com.bloxbean.cardano.yano.appchain.integration.kafka.KafkaPublishCommandV1";
+    private static final String RELOCATED_KAFKA_CONTRACT =
+            "com.bloxbean.cardano.yano.appchain.kafka.internal.contracts.v1.kafka."
+                    + "KafkaPublishCommandV1";
 
     @Test
     void generatedIndexRetainsAndCorrelatesSelectedBuildTimeBundlesWithoutChangingTccl()
@@ -117,10 +122,13 @@ class PluginCatalogPackagingTest {
             assertEquals(expectedSinks, Set.copyOf(
                     environment.providers().names(FinalizedStreamSinkFactory.class)));
             Set<String> expectedExecutors = new java.util.HashSet<>();
-            if (optionalIncluded) expectedExecutors.add("cardano");
+            if (optionalIncluded) expectedExecutors.addAll(Set.of("cardano", "kafka"));
             if (conformanceIncluded) expectedExecutors.add("conformance-effect");
             assertEquals(expectedExecutors, Set.copyOf(
                     environment.providers().names(AppEffectExecutorFactory.class)));
+            if (optionalIncluded) {
+                assertBuildTimeKafkaUsesHostConnectorContracts(environment.classLoader());
+            }
             assertEquals(conformanceIncluded ? Set.of("conformance-mode") : Set.of(), Set.copyOf(
                     environment.providers().names(SequencerModeProvider.class)));
             assertEquals(conformanceIncluded ? Set.of("conformance-observer") : Set.of(), Set.copyOf(
@@ -412,6 +420,33 @@ class PluginCatalogPackagingTest {
                 output.closeEntry();
             }
         }
+    }
+
+    private static void assertBuildTimeKafkaUsesHostConnectorContracts(ClassLoader loader)
+            throws Exception {
+        Class<?> contract = Class.forName(HOST_KAFKA_CONTRACT, false, loader);
+        Class<?> provider = Class.forName(
+                "com.bloxbean.cardano.yano.appchain.kafka.effects.KafkaEffectExecutorFactory",
+                false, loader);
+        Path contractSource = codeSource(contract);
+        Path providerSource = codeSource(provider);
+
+        assertTrue(contractSource.toString().replace('\\', '/')
+                        .contains("appchain-integration-contracts"),
+                () -> "build-time Kafka resolved an unexpected contract artifact: "
+                        + contractSource);
+        assertFalse(Files.isSameFile(contractSource, providerSource),
+                "thin/build-time Kafka must use the host contract artifact");
+        assertThrows(ClassNotFoundException.class,
+                () -> Class.forName(RELOCATED_KAFKA_CONTRACT, false, loader),
+                "the bundle-private contract namespace must not enter the thin/native path");
+    }
+
+    private static Path codeSource(Class<?> type) throws Exception {
+        var source = type.getProtectionDomain().getCodeSource();
+        assertTrue(source != null && source.getLocation() != null,
+                () -> "Missing code source for " + type.getName());
+        return Path.of(source.getLocation().toURI());
     }
 
     @Test

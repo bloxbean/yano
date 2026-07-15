@@ -2,14 +2,14 @@
 
 ## Status
 
-Accepted — implementation in progress; Phase 1.0 completed on 2026-07-16
+Accepted — implementation in progress; Phases 1.0--1.1 completed on 2026-07-16
 
 The number is local to the `adr/app-layer` series. Root-level ADR-013 is an
 unrelated node plugin and event-gap assessment.
 
 | Milestone | Scope | Status |
 |---|---|---|
-| 1 | First-party connectors, evidence workflow, Compose/host demo, network/data lifecycle | In progress — Phase 1.0 accepted; Phase 1.1 next |
+| 1 | First-party connectors, evidence workflow, Compose/host demo, network/data lifecycle | In progress — Phases 1.0--1.1 accepted; Phase 1.2 next |
 | 2 | Effect ownership, result continuation, and executor observability bridge | Planned — requires focused sub-design and minor framework changes |
 | 3 | Out-of-box deterministic composite state machine and stock component preset | Planned — requires a dedicated composition sub-ADR |
 
@@ -833,8 +833,21 @@ reserved `yano-` prefix. Header values
 are opaque bytes. Duplicate names are rejected and names are encoded in
 lexical order.
 
-The executor injects reserved headers including effect id, chain id, effect
-type, payload schema version, and originating block/ordinal where safe.
+The executor injects the following exact reserved headers. Their names and
+encodings are v1-stable connector behavior:
+
+| Header | Value encoding |
+|---|---|
+| `yano-effect-id` | lowercase 64-character hex effect-id hash, US-ASCII |
+| `yano-chain-id` | exact effect-record chain id, UTF-8 |
+| `yano-effect-type` | literal `kafka.publish`, US-ASCII |
+| `yano-payload-version` | literal `1`, US-ASCII |
+| `yano-origin-height` | canonical unsigned decimal height, US-ASCII |
+| `yano-origin-ordinal` | canonical unsigned decimal ordinal, US-ASCII |
+| `yano-content-type` | the validated payload content type, US-ASCII |
+
+The application cannot supply or override a `yano-*` header. Reserved values
+are individually bounded to 256 bytes and together to 1,024 bytes.
 The implementation freezes a hard body/header limit below the chain's generic
 effect-payload ceiling. Partition selection is derived from the configured
 topic policy and stable key; a caller cannot inject an arbitrary partitioner
@@ -858,6 +871,14 @@ The effect record already commits the target, topic alias, key, body, and
 effect id. An optional archived detail document may additionally retain the
 resolved-topic fingerprint and allowlisted broker acknowledgement fields; its
 hash is returned only under §5.4.
+
+If the broker acknowledgement is known but detail archival fails, the
+executor returns `Submitted(receipt)` so the runtime persists the receipt. A
+retry with that reference validates its destination and retries only archival;
+it never republishes. Continued archive failure is retryable and eventually
+parks under the normal attempt budget. A malformed or newer node-local
+submitted reference is an operational `INTERNAL_ERROR`, never a definitive
+business failure, and also never authorizes republishing.
 
 Kafka producer idempotence does not provide cross-process exactly-once
 delivery after an acknowledgement is lost. A crash after broker commit and
@@ -1900,6 +1921,49 @@ packaging boundaries. No core, runtime, or framework SPI changed in Phase 1.0.
 - Add `kafka.publish`, separate producer lifecycle, receipts, existing runtime
   statistics, and integration tests.
 
+**Implementation record (accepted 2026-07-16).** The pre-release Kafka sink
+project is now `appchain-kafka`; its plugin identity and runtime namespaces are
+preserved while the same technology-owned bundle contributes both the
+finalized-block sink and acknowledged `kafka.publish` executor. The executor
+implements the frozen Phase 1.0 command, receipt, destination fingerprint,
+error, and optional detail-archive contracts. Strict alias-only configuration,
+local-demo/TLS/mTLS/SASL-TLS profiles, explicit producer ownership, bounded
+acknowledgement/shutdown, effect-id binding, reserved dedupe headers, and
+archive-only submitted-reference recovery are implemented without a core,
+runtime, or SPI change.
+
+Recorded Phase 1.1 evidence:
+
+- The offline module gate passes 46 tests (with the network test skipped),
+  including Phase 1.0 conformance, invalid-input/no-I/O, exact retryability,
+  authentication/authorization/rate-limit normalization, lifecycle races,
+  unknown acknowledgement, no-republish archive recovery, redaction, sink
+  ordering, and artifact-boundary checks. Module Javadoc completes without a
+  warning.
+- An opt-in test against the official Kafka 4.3.1 image passes all 47 tests.
+  It creates three-partition topics, consumes and verifies exact effect keys,
+  bodies, all frozen reserved headers, and receipt partition/offset, and
+  interleaves the finalized sink with the effect executor. It also proves the
+  chain-id sink key retains finalized-block order on one partition.
+- Drop-in launch tests prove merged ServiceLoader contributions and private
+  relocation of connector contracts, CBOR, and BLAKE2b classes. Thin/native
+  catalog tests prove host class identity and execute the relocated
+  fingerprint path. App packaging pins and verifies Kafka 4.3.1 and Bouncy
+  Castle 1.84 rather than accepting older Quarkus BOM selections.
+- The finalized sink's one pre-release observable correction is documented:
+  the record key is now stable `chainId`, not changing block height. JSON and
+  `(chainId,height)` dedupe semantics are unchanged.
+- Independent correctness, security, packaging, and lifecycle review found no
+  unresolved critical or high-severity issue. Findings around acknowledgement
+  archival, effect-id integrity, submitted-state corruption, timeout
+  coherence, native serializer construction, dependency isolation, and
+  partial construction were fixed and regression-tested.
+
+Real broker restart, authentication failure, duplicate-retry fault injection,
+and a configured Kafka-client native-image smoke remain mandatory Milestone 1
+release evidence under Phases 1.5 and 1.7; Phase 1.1 does not claim those later
+system gates.
+
 #### Phase 1.2 — S3-compatible object storage
 
 - Add `appchain-objectstore-s3`.
@@ -2135,6 +2199,12 @@ yano-appchain-kafka-sink-*-bundle.jar
 
 The plugin id and runtime configuration remain unchanged, so plugin policy,
 catalog identity, and sink operator configuration do not migrate.
+
+The pre-release finalized sink formerly used decimal block height as the Kafka
+record key. V1 uses the stable `chainId` instead, ensuring all finalized blocks
+for one chain remain on one partition and therefore ordered on multi-partition
+topics. The JSON body and consumer dedupe tuple `(chainId, height)` are
+unchanged; pre-release consumers that inspected only the Kafka key must update.
 
 If evidence appears that external pre-release consumers require a Maven
 relocation POM, it may be added without shipping two runtime bundles. There is

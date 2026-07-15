@@ -6,7 +6,7 @@ plugins {
 // packaged as a T3 plugin jar: drop it on yaci.plugins.directory and
 // configure yano.app-chain.effects.executors.cardano.* — discovered via
 // ServiceLoader. Kept out of yano-runtime so CCL tx-building/backends stay
-// a plugin concern (mirrors appchain-kafka-sink).
+// a plugin concern (mirrors appchain-kafka).
 dependencies {
     compileOnly project(':core-api')          // provided by the node at runtime
     implementation libs.cardano.client.lib

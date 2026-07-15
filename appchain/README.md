@@ -31,7 +31,8 @@ Don't look for feature docs here — they're centralized:
 | `appchain-testkit` | `appchain-testkit/` | JUnit 5 `@AppChainCluster` embedded multi-node clusters for tests. |
 | `appchain-anchor-onchain` | `onchain/appchain-anchor-onchain/` | **On-chain anchor validators** (Plutus V3), authored in Java via julc — the default. See "On-chain artifacts" below. |
 | _(Aiken twin)_ | `onchain/aiken/appchain-anchor/` | The same validators in Aiken — the opt-in, auditor-familiar alternative (same ABI). Its own README covers the Aiken build. |
-| `appchain-kafka-sink` | `extensions/appchain-kafka-sink/` | Plugin: finalized blocks → Kafka topics. |
+| `appchain-integration-contracts` | `appchain-integration-contracts/` | Provider-neutral connector wire contracts, CDDL, and golden vectors. |
+| `appchain-kafka` | `extensions/appchain-kafka/` | Plugin: finalized blocks and acknowledged `kafka.publish` effects → Kafka topics. |
 | `appchain-zk` | `extensions/appchain-zk/` | Plugin (EXPERIMENTAL): ZeroJ-based proof-verified state machines. |
 | `appchain-effects-cardano` | `extensions/appchain-effects-cardano/` | Plugin: Cardano payment executor for the app-chain effect system. |
 | `appchain-spring-boot-starter` | `../spring-starters/appchain-spring-boot-starter/` | Spring Boot auto-config for the client SDK. |
