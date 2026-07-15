@@ -28,6 +28,9 @@ include 'appchain-stdlib'
 include 'appchain-testkit'
 include 'appchain-client'
 include 'appchain-integration-contracts'
+include 'appchain-evidence-contracts'
+include 'appchain-evidence-registry'
+include 'appchain-evidence-client'
 include 'appchain-kafka'
 include 'appchain-objectstore-s3'
 include 'appchain-ipfs'
@@ -42,6 +45,12 @@ project(':appchain-testkit').projectDir = file('appchain/appchain-testkit')
 project(':appchain-client').projectDir = file('appchain/appchain-client')
 project(':appchain-integration-contracts').projectDir =
         file('appchain/appchain-integration-contracts')
+project(':appchain-evidence-contracts').projectDir =
+        file('appchain/examples/appchain-evidence-contracts')
+project(':appchain-evidence-registry').projectDir =
+        file('appchain/examples/appchain-evidence-registry')
+project(':appchain-evidence-client').projectDir =
+        file('appchain/examples/appchain-evidence-client')
 project(':appchain-kafka').projectDir = file('appchain/extensions/appchain-kafka')
 project(':appchain-objectstore-s3').projectDir =
         file('appchain/extensions/appchain-objectstore-s3')

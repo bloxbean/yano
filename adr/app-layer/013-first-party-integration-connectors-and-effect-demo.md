@@ -2,14 +2,14 @@
 
 ## Status
 
-Accepted — implementation in progress; Phases 1.0--1.3 completed on 2026-07-16
+Accepted — implementation in progress; Phases 1.0--1.4 completed on 2026-07-16
 
 The number is local to the `adr/app-layer` series. Root-level ADR-013 is an
 unrelated node plugin and event-gap assessment.
 
 | Milestone | Scope | Status |
 |---|---|---|
-| 1 | First-party connectors, evidence workflow, Compose/host demo, network/data lifecycle | In progress — Phases 1.0--1.3 accepted; Phase 1.4 next |
+| 1 | First-party connectors, evidence workflow, Compose/host demo, network/data lifecycle | In progress — Phases 1.0--1.4 accepted; Phase 1.5 next |
 | 2 | Effect ownership, result continuation, and executor observability bridge | Planned — requires focused sub-design and minor framework changes |
 | 3 | Out-of-box deterministic composite state machine and stock component preset | Planned — requires a dedicated composition sub-ADR |
 
@@ -1345,39 +1345,98 @@ The demo uses a realistic but bounded product-batch inspection/compliance
 certificate workflow. It is not advertised as a complete DPP standard or a
 generic workflow engine.
 
-A small first-party/reference bundle, provisionally named
-`appchain-evidence-registry`, supplies:
+A small first-party/reference plugin bundle named `appchain-evidence-registry`,
+under `appchain/examples`, supplies:
 
 - a deterministic state machine;
-- versioned command and query contracts;
 - effect emission, result incorporation, and a result-gated continuation
   transition;
 - a domain read API suitable for the demo UI;
 - committed business-status queries, plus Milestone 2 connector
-  observability when available; and
-- sample client encoders/verifiers.
+  observability when available.
 
-It may live under `appchain/examples` until its general-purpose product scope
-is accepted. The connector correctness tests must not depend exclusively on
-this one state machine.
+The separate `appchain-evidence-contracts` artifact owns the canonical
+versioned command, event, query, authenticated-state codecs, CDDL, and golden
+vectors. It contributes no plugin manifest or ServiceLoader entry. This makes
+the public model reusable without activating the executable registry plugin.
+The thin/native registry uses those host-visible contract types. Its
+self-contained directory bundle privately relocates both evidence and nested
+connector contract implementations, because ADR-011 directory loaders are
+parent-first and a separately installed SDK must never shadow the plugin's
+pinned wire implementation. Core API and its networking/runtime dependency
+graph remain host-provided and are excluded from the drop-in bundle.
+
+The non-plugin `appchain-evidence-client` companion contains HTTP orchestration
+and proof verification for the scenario runner. It depends on
+`appchain-client` and `appchain-evidence-contracts`, never on the registry,
+keeping HTTP, certificate, and proof dependencies out of the consensus plugin
+bundle and preventing transitive plugin activation. The generic client gains
+the missing bounded committed-query method and hardens its submit/state-proof
+reads; the gateway gains the minimal atomic proof snapshot described below.
+
+Both remain examples until their general-purpose product scope is accepted.
+The connector correctness tests must not depend exclusively on this one state
+machine.
 
 ### 10.2 Evidence command
 
-The v1 command commits, at minimum:
+The machine accepts only topic `evidence.command.v1`. Wire schema version and
+the monotonically increasing evidence/business version are distinct. V1 uses
+these canonical CBOR arrays, bounded to 4 KiB:
 
 ```text
-version
-evidenceId / productBatchId
-document digest algorithm + digest + exact size
-staging object alias/key commitment
-archive target/key commitment
-canonical IPFS CID
-Kafka notification topic alias
-issuer/domain signature where the scenario enables actor identity
+SUBMIT    [1, 0, evidenceId, evidenceVersion,
+           objectPutCommandCbor, expectedObjectDestinationFingerprint32,
+           ipfsPinCommandCbor, expectedIpfsTargetFingerprint32,
+           kafkaTargetAlias, kafkaTopicAlias,
+           expectedKafkaDestinationFingerprint32]
+
+NOTIFY    [1, 1, evidenceId, evidenceVersion]
+
+REPUBLISH [1, 2, evidenceId, evidenceVersion,
+           objectPutCommandCbor, expectedObjectDestinationFingerprint32,
+           ipfsPinCommandCbor, expectedIpfsTargetFingerprint32,
+           kafkaTargetAlias, kafkaTopicAlias,
+           expectedKafkaDestinationFingerprint32]
 ```
 
-The command carries no document body, external credential, raw service
-endpoint, or unrestricted bucket/topic.
+`evidenceId` is `[a-z][a-z0-9-]{0,62}`. The nested storage commands are the
+exact frozen `ObjectPutCommandV1` and `IpfsPinCommandV1` encodings, so they
+already commit the document digest/size, staging and archive keys, target
+aliases, canonical CID, and policies. They must round-trip to their canonical
+bytes; the evidence codec does not create a second approximation of those
+contracts. Each required 32-byte destination fingerprint is computed from the
+public, immutable connector profile using the connector's canonical
+fingerprint helper. It commits the resolved object destination, IPFS target,
+or Kafka destination without exposing credentials or endpoints in consensus
+state. Kafka command bytes are constructed only after both receipts are
+incorporated.
+
+The published evidence CDDL is the structural schema. This section, the
+strict canonical Java codecs, and their positive/negative golden tests jointly
+define executable v1 semantics, including identifier grammar, nested connector
+canonicality, size limits, and cross-field/state/receipt bindings that CDDL
+alone cannot fully express. Evidence v1 owns its terminal outcome codes
+(`CONFIRMED=1`, `FAILED=2`, `CANCELLED=3`, `EXPIRED=4`) and maximum effect
+ordinal (`1,048,575`) locally; the executable registry maps framework outcomes
+at its boundary. The no-SPI contract and client therefore do not depend on
+`core-api`, and a future framework enum or limit change cannot silently alter
+the frozen evidence wire contract.
+
+`SUBMIT` creates version 1 only. `REPUBLISH` is owner-only, must name
+`latestVersion + 1`, and is accepted only after the previous version reaches a
+terminal business status. Specifically it accepts `PARTIAL`, `STORAGE_FAILED`,
+`EXPIRED`, `READY`, `READY_NOTIFICATION_FAILED`, and
+`READY_NOTIFICATION_EXPIRED`; it rejects `STORAGE_PENDING`, `STORAGE_READY`,
+and `NOTIFICATION_PENDING`. This permits a legitimate corrected/new version
+after success without racing a version whose required actions are still open.
+Exact repeats and conflicting commands for an existing version are
+deterministic no-ops and never overwrite committed state. The authenticated
+`AppMessage.sender` is the v1 issuer/owner identity;
+there is no redundant embedded signature. A separately signed non-member
+domain assertion requires a later schema. The command carries no document
+body, external credential, raw service endpoint, or unrestricted
+bucket/topic.
 
 ### 10.3 State machine
 
@@ -1399,13 +1458,53 @@ NOTIFICATION_PENDING
     |                              |
     | CONFIRMED                    | FAILED / CANCELLED / EXPIRED
     v                              v
-READY                    READY_NOTIFICATION_FAILED / EXPIRED
+READY                    READY_NOTIFICATION_FAILED /
+                         READY_NOTIFICATION_EXPIRED
 ```
+
+The notification-expiry state is named `READY_NOTIFICATION_EXPIRED`, not the
+storage-stage `EXPIRED`, so the committed fact that storage succeeded is never
+lost. The complete derived status set is `STORAGE_PENDING`, `STORAGE_READY`,
+`PARTIAL`, `STORAGE_FAILED`, `EXPIRED`, `NOTIFICATION_PENDING`, `READY`,
+`READY_NOTIFICATION_FAILED`, and `READY_NOTIFICATION_EXPIRED`.
+
+State keys are binary and versioned:
+
+```text
+evidenceIdHash = blake2b256("yano:evidence-id:v1" || utf8(evidenceId))
+headKey         = "evidence/head/v1/"   || evidenceIdHash
+recordKey       = "evidence/record/v1/" || evidenceIdHash || uint64be(version)
+
+object scope = "evidence/<hash-hex>/<version-decimal>/object"
+ipfs scope   = "evidence/<hash-hex>/<version-decimal>/ipfs"
+notify scope = "evidence/<hash-hex>/<version-decimal>/notify"
+```
+
+The head commits `[1, evidenceId, ownerPublicKey32, latestVersion]`. Each
+version-scoped record commits the canonical storage commands, the submit
+message id, all three expected resolved-destination fingerprints, Kafka
+aliases, all three assigned `(height, ordinal)` effect positions, and each
+terminal tuple
+`[outcomeCode, externalRef, detailHashOrEmpty, resultHeight]`. Status is
+derived from these authenticated values and is not a mutable second source of
+truth. The complete terminal tuple permits later reconstruction of the exact
+outcome envelope for per-effect outcome-proof verification.
 
 `object.put` and `ipfs.pin` are independent and may complete in either order.
 The state machine records each expected effect id and accepts a terminal result
 only for the matching evidence version and operation. Duplicate, stale, or
 unrelated results cannot advance state.
+
+A `CONFIRMED` outcome is business-successful only when its external reference
+is a canonical connector receipt and matches the commitments that the machine
+can verify: object destination fingerprint, SHA-256, and exact size; IPFS
+target fingerprint and CID fingerprint; or Kafka destination fingerprint and
+a bounded canonical acknowledgement. A malformed/mismatched confirmed
+receipt is retained as the actual terminal tuple for audit/proof
+reconstruction but is derived as a business failure. The state machine never
+infers provider configuration or credentials that are intentionally absent
+from consensus state; it compares signed executor output with the explicit,
+credential-free commitments carried by the original command.
 
 `onEffectResult()` moves the record to `STORAGE_READY` after both storage
 operations are confirmed; it does not emit another effect because the current
@@ -1417,6 +1516,21 @@ effect id. Replayed or duplicate continuation commands are deterministic
 no-ops or return the already-assigned result; they never emit a second logical
 notification.
 
+`FxKernel` invokes valid result callbacks and the deterministic expiry sweep
+before ordinary `apply()` and the state writer is read-your-writes. Therefore
+both storage results may arrive in one block, and a `NOTIFY` message in that
+same block can observe `STORAGE_READY`; stored notification effect identity
+still suppresses every later notification command.
+
+The Kafka event is canonical CBOR
+`[1, evidenceId, evidenceVersion, digestAlgorithm, digest, size,
+objectTarget, destinationKey, canonicalCid, objectReceipt, ipfsReceipt]`.
+Its key is `evidenceIdHash || uint64be(version)`, content type is
+`application/cbor`, and it has no variable headers. The event is bounded to
+1 KiB. Admission also proves that every accepted storage command can produce
+that bounded event shape; a command that could make a later `NOTIFY`
+transition exceed the bound is rejected before it can enter history.
+
 The automation runner is not trusted to decide readiness. It can only wake the
 state machine, which derives readiness from authenticated state. If the runner
 is unavailable, the record remains visibly `STORAGE_READY` and can be resumed
@@ -1427,6 +1541,73 @@ A terminal connector failure does not cause an executor to mutate business
 state directly. The result is incorporated, the state machine chooses its
 documented failure state, and an explicit authorized retry/republication
 command may create a new version/effect when policy permits.
+
+Consensus-affecting machine settings use the established machine namespace:
+
+```text
+machines.evidence-registry.issuers
+machines.evidence-registry.notify-senders
+machines.evidence-registry.storage-gate
+machines.evidence-registry.storage-expiry-blocks
+machines.evidence-registry.notification-expiry-blocks
+```
+
+An absent issuer set permits any authenticated chain member to create an id;
+republish remains owner-only. An absent notify-sender set permits only the
+owner; the demo explicitly lists its automation-runner member key. Storage
+gate is immutable `APP_FINAL` or `L1_ANCHORED`; notification uses `APP_FINAL`.
+Expiry value 0 selects the deterministic Effect Runtime default. Activation
+fails closed when effects are disabled, fewer than two effects may be emitted
+in a block, the effect payload cap is below 2 KiB, or an explicit expiry
+exceeds the configured result window.
+
+The deployment profile must additionally satisfy
+`block.max-messages <= floor(effects.max-per-block / 2)`, because every
+`SUBMIT` or `REPUBLISH` may emit two effects. The current state-machine context
+does not expose `block.max-messages`, so the provider cannot validate this
+cross-namespace relationship itself; the demo launcher/config generator owns
+and tests the invariant. This is a deployment bound, not permission for the
+machine to drop an already sequenced command when a block is too large.
+
+The committed query path is `evidence/get`, request
+`[1, evidenceId, version]` where version 0 means latest. Its result includes
+the exact head key/value and record key/value, plus a found flag, so the client
+can request and bind proofs for precisely those bytes. The read-only domain
+API presents that query as bounded JSON and always requires/validates an
+explicit chain when the host exposes multiple chains; it never chooses the
+first chain implicitly. The demo profile requires
+`effects.outcome-commitment=per-effect` for direct terminal-outcome proofs.
+
+Phase 1.4 review found that the pre-existing generic state-proof REST handler
+read proof, value, and root separately and exposed `finalizedAtHeight` only for
+message-id keys. That field is the message's inclusion height, not the height
+of the proof snapshot, and evidence state keys do not have one. The compatible
+closure is an atomic `AppStateProofSnapshot` gateway read that captures one
+committed `(height, root)`, then reads the value and inclusion or exclusion
+proof against that immutable root. `/proof/{key}` retains its existing fields
+and optional message `finalizedAtHeight`, adds `committedHeight`, and bounds a
+canonical proof key. This is a correctness fix to the existing proof surface,
+not the broader Milestone 2 framework work. Gateways predating the atomic
+operation fail the capability explicitly and the REST surface returns 503;
+they must implement `stateProofSnapshot` before serving proofs, rather than
+silently composing moving legacy reads or returning an ambiguous missing-key
+response.
+
+The proof-aware evidence client requires both returned leaves, their MPF
+proofs, root, and `committedHeight` to match the query snapshot. A latest block
+may land between the query and the two proof requests, so it retries the whole
+sequence a small bounded number of times and never combines snapshots. A
+not-found result is accepted only after either an MPF exclusion proof for the
+exact head key, or (for an explicitly requested future version) an inclusion
+proof of the same head showing `latestVersion < requestedVersion`, verifies;
+an unauthenticated not-found response is never treated as business truth.
+Query, state-proof, and submit responses are read with hard transport bounds
+and strict, non-reflecting response parsing. State-proof keys are capped at
+256 bytes, and the server and client both reject proof values or wire encodings
+above 1 MiB before JSON hex expansion. Before the third-party MPF decoder sees
+proof bytes, the client performs a non-recursive structural preflight with the
+64-nibble BLAKE2b-256 path bound, exact step shapes, and cumulative skip bound;
+malformed proofs fail closed without recursive-parser exhaustion.
 
 ### 10.4 Demo scenario
 
@@ -1462,7 +1643,9 @@ proof/anchor availability appropriate to the selected network profile.
 Repository layout:
 
 ```text
+appchain/examples/appchain-evidence-contracts/
 appchain/examples/appchain-evidence-registry/
+appchain/examples/appchain-evidence-client/
 app/appchain-effects-demo/
 ├── compose.yaml
 ├── config/
@@ -1521,8 +1704,9 @@ The same workflow is supported when Yano and dependencies are operated
 normally:
 
 1. deploy or select Kafka, S3-compatible storage, and IPFS;
-2. install the three self-contained plugin bundle JARs in the configured JVM
-   plugin directory, or include them at build time for native Yano;
+2. install the three connector bundle JARs plus the evidence-registry bundle
+   in the configured JVM plugin directory, or include them at build time for
+   native Yano;
 3. configure contribution namespaces and target aliases;
 4. start three Yano members through `cluster.sh` or ordinary service
    deployment;
@@ -2075,11 +2259,14 @@ make ordinary offline unit builds depend on internet availability.
 
 ## 19. Staged implementation roadmap
 
-### 19.1 Milestone 1 — Connectors and no-code demo, no framework changes
+### 19.1 Milestone 1 — Connectors and no-code demo, no effect/plugin SPI changes
 
 This is the first implementation target and may be completed, reviewed, and
 released independently. It uses the current ADR-010/011 contracts plus the
 explicit `evidence.notify` continuation command described in §10.
+The only compatible core/API correction is the atomic read-only state-proof
+snapshot described in §10.3; it changes neither effect execution nor plugin
+activation semantics.
 
 #### Phase 1.0 — Freeze contracts and conformance fixtures
 
@@ -2290,10 +2477,64 @@ Phase 1.3 does not claim those later system gates.
 
 #### Phase 1.4 — Evidence reference bundle
 
-- Implement versioned commands/state/queries.
+- Implement a no-SPI contracts artifact plus versioned commands/state/queries.
 - Emit concurrent storage effects, incorporate their results, and gate Kafka
   publication behind an idempotent continuation command.
-- Add proof-aware client/verifier and deterministic replay tests.
+- Add proof-aware client/verifier, an atomic committed-state proof snapshot,
+  bounded submit/query/proof transport, and deterministic replay tests.
+- Prove the client dependency closure cannot activate the plugin, execute
+  golden codecs through the isolated drop-in bundle, and replay the complete
+  SUBMIT/storage-results/NOTIFY/Kafka-result/REPUBLISH workflow across restarts.
+
+**Implementation record (accepted 2026-07-16).** The reference workflow is
+split into three intentionally different artifacts: a public no-SPI contracts
+library, an executable evidence-registry plugin, and a proof-aware client. The
+registry implements strict versioned commands and authenticated state, emits
+the two storage effects concurrently, validates their exact terminal receipts,
+and permits one logical Kafka publication only after an authorized idempotent
+`NOTIFY`. The client performs bounded submit/query/proof orchestration and
+fails closed unless all returned identities, values, heights, roots, and MPF
+inclusion or exclusion proofs bind to one committed snapshot.
+
+The existing generic proof surface now delegates to an atomic
+`AppStateProofSnapshot` gateway operation. Legacy gateways fail explicitly
+instead of composing moving reads. The server and client enforce symmetric
+key/value/proof limits, and a non-recursive canonical-CBOR preflight rejects
+oversized, over-deep, malformed, or path-invalid MPF input before the recursive
+third-party decoder is invoked. The drop-in registry privately relocates its
+pinned evidence and connector codecs, while the typed SDK's complete runtime
+closure contains neither plugin services nor Yano core, Yaci, Netty, or Reactor
+classes.
+
+Recorded Phase 1.4 evidence:
+
+- The serial verification matrix passes 1,764 tests across `core-api`, the
+  complete runtime suite, `appchain-client`, all three evidence modules, and
+  the Quarkus app with zero failures/errors (two unrelated runtime tests are
+  explicitly skipped). First-party bundle verification and isolated launch
+  both pass.
+- The focused evidence suites pass 55 tests: 32 contract/canonicality/golden
+  tests, 10 registry/domain/replay tests, and 13 proof-aware client tests. The
+  real ledger replay covers six committed heights and restarts after heights
+  2, 3, and 5 while preserving exact roots, records, and effect counts.
+- `cddl-cli` 0.10.5 compiles the evidence schema and validates all eight
+  published command/state/event/query vectors in CI-failing mode. The same
+  hardened script mode revalidates all ten connector vectors, preventing a
+  validator diagnostic with a zero process status from being recorded as a
+  success.
+- Hostile proof tests cover deep and very wide CBOR, wrong step shapes and
+  hash sizes, cumulative-path overflow, oversized transport components,
+  exclusion proofs, snapshot races, malformed JSON, and credential/response
+  non-reflection.
+- Independent contract, determinism, query/proof, dependency, packaging, and
+  security review found no unresolved critical, high, or medium issue. The
+  remaining low findings—wire-owned terminal outcome codes, a core-free SDK,
+  privately relocated bundle contracts, exact CDDL bounds, and explicit
+  validator invocation—are implemented and regression-tested.
+
+No Effect Runtime or plugin SPI changed in Phase 1.4. The additive gateway
+default preserves binary compatibility and deliberately reports the missing
+atomic capability until a gateway implements it.
 
 #### Phase 1.5 — Compose and normal deployment demo
 
