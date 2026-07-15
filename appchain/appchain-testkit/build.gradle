@@ -1,5 +1,6 @@
 dependencies {
     api project(':runtime')
+    api project(':appchain-integration-contracts')
     api libs.junit.jupiter.api
 
     implementation libs.cardano.client.crypto
@@ -9,6 +10,12 @@ dependencies {
 java {
     sourceCompatibility = 25
     targetCompatibility = 25
+}
+
+tasks.named('compileJava') {
+    // This module has no annotation processor that consumes the repository-wide
+    // project identity option, so do not emit an irrelevant javac processing warning.
+    options.compilerArgs.removeAll { it.startsWith('-Aproject=') }
 }
 
 publishing {

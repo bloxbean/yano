@@ -3,6 +3,7 @@ yaci = "0.5.0-pre12"
 cardano-client-lib = "0.8.0-pre4"
 julc="0.1.0-pre14"
 zeroj = "0.1.0-pre9"
+bouncycastle = "1.83"
 
 [libraries]
 yaci-core = { module = "com.bloxbean.cardano:yaci-core", version.ref = "yaci" }
@@ -29,6 +30,7 @@ julc-vm-java={ module = "com.bloxbean.cardano:julc-vm-java", version.ref = "julc
 julc-cardano-client-lib={ module = "com.bloxbean.cardano:julc-cardano-client-lib", version.ref = "julc" }
 
 cbor = "co.nstant.in:cbor:0.9"
+bouncycastle-bcprov = { module = "org.bouncycastle:bcprov-jdk18on", version.ref = "bouncycastle" }
 netty = "io.netty:netty-all:4.1.131.Final"
 project-reactor-core = "io.projectreactor:reactor-core:3.6.10"
 project-reactor-test = "io.projectreactor:reactor-test:3.6.10"

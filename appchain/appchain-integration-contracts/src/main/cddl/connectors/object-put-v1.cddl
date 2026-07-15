@@ -1,0 +1,34 @@
+; Canonical fixed-array object.put v1 contract. The target profile resolves
+; the complete staging/archive pair; payloads cannot mix buckets/endpoints.
+; source-key and destination-key use common-v1's exact object-key grammar.
+
+object-put-v1 = [
+  version         : 1,
+  target          : alias,
+  source-key      : object-key,
+  destination-key : object-key,
+  digest-algorithm : 1,              ; SHA-256
+  digest          : hash32,
+  size            : uint .le 16777216,
+  content-type    : content-type,
+  retention-class : alias / null
+]
+
+; Credential-free fingerprint descriptor. Bucket regex:
+; [A-Za-z0-9][A-Za-z0-9._-]{0,254}
+object-destination-descriptor-v1 = [
+  target-id           : target-id,
+  bucket              : tstr .regexp "[A-Za-z0-9][A-Za-z0-9._-]{0,254}",
+  normalized-prefix   : normalized-object-prefix,
+  relative-key        : object-key,
+  encryption-policy   : alias,
+  retention-policy    : alias
+]
+
+object-put-receipt-v1 = [
+  version                    : 1,
+  destination-fingerprint    : hash32,
+  object-version-fingerprint : hash32,
+  verified-sha256            : hash32,
+  size                       : uint .le 16777216
+]

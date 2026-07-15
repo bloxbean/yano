@@ -1,0 +1,25 @@
+; Canonical fixed-array pin-only IPFS v1 contract.
+
+ipfs-pin-v1 = [
+  version            : 1,
+  target             : alias,
+  cid                : canonical-cid-v1,
+  recursive          : bool,
+  replication-policy : alias / null
+]
+
+; Credential-free fingerprint descriptor.
+ipfs-target-descriptor-v1 = [target-id : target-id]
+
+ipfs-pin-receipt-v1 = [
+  version            : 1,
+  target-fingerprint : hash32,
+  cid-fingerprint    : hash32
+]
+
+; Optional remote-pinning poll handle stored by EffectExecution.Submitted.
+ipfs-pin-submitted-ref-v1 = [
+  version             : 1,
+  target-fingerprint  : hash32,
+  provider-request-id : bstr .size (1..88)
+]

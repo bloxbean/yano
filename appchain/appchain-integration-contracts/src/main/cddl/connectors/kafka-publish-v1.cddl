@@ -1,0 +1,35 @@
+; Canonical fixed-array kafka.publish v1 contract.
+
+kafka-publish-v1 = [
+  version      : 1,
+  target       : alias,
+  topic        : alias,
+  key          : bstr .size (0..256),
+  content-type : content-type,
+  body         : bstr .size (0..8192),
+  headers      : [*16 kafka-header]
+]
+
+; At most 16, unique and lexically sorted by name. Exact name regex:
+; [a-z0-9][a-z0-9._-]{0,31}; the executor-reserved yano- prefix is forbidden.
+; Values are <=256 bytes. Sum(ASCII name bytes + value bytes) is <=2048.
+kafka-header = [
+  name  : kafka-header-name,
+  value : bstr .size (0..256)
+]
+
+kafka-header-name = tstr .regexp "[a-z0-9][a-z0-9._-]{0,31}"
+
+; Credential-free fingerprint descriptor. The physical topic is 1..249 ASCII
+; bytes matching the regex and must not be exactly "." or "..".
+kafka-destination-descriptor-v1 = [
+  target-id      : target-id,
+  physical-topic : tstr .regexp "[A-Za-z0-9._-]{1,249}"
+]
+
+kafka-publish-receipt-v1 = [
+  version                 : 1,
+  destination-fingerprint : hash32,
+  partition               : uint .le 2147483647,
+  offset                  : nonnegative-int64
+]
