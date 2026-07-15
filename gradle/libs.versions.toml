@@ -4,6 +4,7 @@ cardano-client-lib = "0.8.0-pre4"
 julc="0.1.0-pre14"
 zeroj = "0.1.0-pre9"
 bouncycastle = "1.84"
+aws-sdk = "2.48.0"
 
 [libraries]
 yaci-core = { module = "com.bloxbean.cardano:yaci-core", version.ref = "yaci" }
@@ -54,6 +55,8 @@ reload4j="ch.qos.reload4j:reload4j:1.2.22"
 jackson-databind = "com.fasterxml.jackson.core:jackson-databind:2.17.0"
 jackson-dataformat-cbor = "com.fasterxml.jackson.dataformat:jackson-dataformat-cbor:2.17.0"
 kafka-clients = "org.apache.kafka:kafka-clients:4.3.1"
+aws-sdk-s3 = { module = "software.amazon.awssdk:s3", version.ref = "aws-sdk" }
+aws-sdk-url-connection-client = { module = "software.amazon.awssdk:url-connection-client", version.ref = "aws-sdk" }
 spring-boot-autoconfigure = "org.springframework.boot:spring-boot-autoconfigure:3.5.6"
 spring-context = "org.springframework:spring-context:6.2.11"
 spring-boot-test = "org.springframework.boot:spring-boot-test:3.5.6"

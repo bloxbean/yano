@@ -66,6 +66,7 @@ class PluginCatalogPackagingTest {
             "com.bloxbean.cardano.yano.appchain.stdlib");
     private static final Set<String> OPTIONAL_BUNDLES = Set.of(
             "com.bloxbean.cardano.yano.appchain.kafka",
+            "com.bloxbean.cardano.yano.appchain.objectstore.s3",
             "com.bloxbean.cardano.yano.appchain.effects.cardano",
             "com.bloxbean.cardano.yano.appchain.zk");
     private static final String CONFORMANCE_BUNDLE =
@@ -79,6 +80,11 @@ class PluginCatalogPackagingTest {
     private static final String RELOCATED_KAFKA_CONTRACT =
             "com.bloxbean.cardano.yano.appchain.kafka.internal.contracts.v1.kafka."
                     + "KafkaPublishCommandV1";
+    private static final String HOST_OBJECTSTORE_CONTRACT =
+            "com.bloxbean.cardano.yano.appchain.integration.objectstore.ObjectPutCommandV1";
+    private static final String RELOCATED_OBJECTSTORE_CONTRACT =
+            "com.bloxbean.cardano.yano.appchain.objectstore.s3.internal.contracts.v1."
+                    + "objectstore.ObjectPutCommandV1";
 
     @Test
     void generatedIndexRetainsAndCorrelatesSelectedBuildTimeBundlesWithoutChangingTccl()
@@ -122,12 +128,15 @@ class PluginCatalogPackagingTest {
             assertEquals(expectedSinks, Set.copyOf(
                     environment.providers().names(FinalizedStreamSinkFactory.class)));
             Set<String> expectedExecutors = new java.util.HashSet<>();
-            if (optionalIncluded) expectedExecutors.addAll(Set.of("cardano", "kafka"));
+            if (optionalIncluded) {
+                expectedExecutors.addAll(Set.of("cardano", "kafka", "objectstore-s3"));
+            }
             if (conformanceIncluded) expectedExecutors.add("conformance-effect");
             assertEquals(expectedExecutors, Set.copyOf(
                     environment.providers().names(AppEffectExecutorFactory.class)));
             if (optionalIncluded) {
                 assertBuildTimeKafkaUsesHostConnectorContracts(environment.classLoader());
+                assertBuildTimeObjectStoreUsesHostConnectorContracts(environment.classLoader());
             }
             assertEquals(conformanceIncluded ? Set.of("conformance-mode") : Set.of(), Set.copyOf(
                     environment.providers().names(SequencerModeProvider.class)));
@@ -424,21 +433,38 @@ class PluginCatalogPackagingTest {
 
     private static void assertBuildTimeKafkaUsesHostConnectorContracts(ClassLoader loader)
             throws Exception {
-        Class<?> contract = Class.forName(HOST_KAFKA_CONTRACT, false, loader);
-        Class<?> provider = Class.forName(
+        assertBuildTimeUsesHostConnectorContracts(loader, HOST_KAFKA_CONTRACT,
                 "com.bloxbean.cardano.yano.appchain.kafka.effects.KafkaEffectExecutorFactory",
-                false, loader);
+                RELOCATED_KAFKA_CONTRACT, "Kafka");
+    }
+
+    private static void assertBuildTimeObjectStoreUsesHostConnectorContracts(ClassLoader loader)
+            throws Exception {
+        assertBuildTimeUsesHostConnectorContracts(loader, HOST_OBJECTSTORE_CONTRACT,
+                "com.bloxbean.cardano.yano.appchain.objectstore.s3.effects."
+                        + "ObjectStoreS3EffectExecutorFactory",
+                RELOCATED_OBJECTSTORE_CONTRACT, "object-store");
+    }
+
+    private static void assertBuildTimeUsesHostConnectorContracts(ClassLoader loader,
+                                                                   String contractName,
+                                                                   String providerName,
+                                                                   String relocatedName,
+                                                                   String label)
+            throws Exception {
+        Class<?> contract = Class.forName(contractName, false, loader);
+        Class<?> provider = Class.forName(providerName, false, loader);
         Path contractSource = codeSource(contract);
         Path providerSource = codeSource(provider);
 
         assertTrue(contractSource.toString().replace('\\', '/')
                         .contains("appchain-integration-contracts"),
-                () -> "build-time Kafka resolved an unexpected contract artifact: "
+                () -> "build-time " + label + " resolved an unexpected contract artifact: "
                         + contractSource);
         assertFalse(Files.isSameFile(contractSource, providerSource),
-                "thin/build-time Kafka must use the host contract artifact");
+                "thin/build-time " + label + " must use the host contract artifact");
         assertThrows(ClassNotFoundException.class,
-                () -> Class.forName(RELOCATED_KAFKA_CONTRACT, false, loader),
+                () -> Class.forName(relocatedName, false, loader),
                 "the bundle-private contract namespace must not enter the thin/native path");
     }
 

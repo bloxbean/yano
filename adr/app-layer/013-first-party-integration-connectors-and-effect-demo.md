@@ -9,7 +9,7 @@ unrelated node plugin and event-gap assessment.
 
 | Milestone | Scope | Status |
 |---|---|---|
-| 1 | First-party connectors, evidence workflow, Compose/host demo, network/data lifecycle | In progress — Phases 1.0--1.1 accepted; Phase 1.2 next |
+| 1 | First-party connectors, evidence workflow, Compose/host demo, network/data lifecycle | In progress — Phases 1.0--1.2 accepted; Phase 1.3 next |
 | 2 | Effect ownership, result continuation, and executor observability bridge | Planned — requires focused sub-design and minor framework changes |
 | 3 | Out-of-box deterministic composite state machine and stock component preset | Planned — requires a dedicated composition sub-ADR |
 
@@ -932,8 +932,8 @@ V1 does not carry document bytes in the effect. The normal flow is:
 3. it places the object in a configured staging location;
 4. it submits one target alias, relative keys, digest, size, and business metadata;
 5. deterministic state records that commitment and emits `object.put`;
-6. the executor verifies the staging object and conditionally copies/promotes
-   it into an immutable/versioned destination; and
+6. the executor verifies the staging object and promotes those exact bytes
+   with a conditional create into an immutable/versioned destination; and
 7. the receipt returns the durable destination identity and integrity data.
 
 This avoids replicated large payloads, executor-side arbitrary HTTP fetches,
@@ -996,12 +996,20 @@ enforce it for server-side copy, the executor uses a bounded verified transfer
 plus conditional destination write or rejects that profile; it never falls
 back to unconditional overwrite.
 
+V1 freezes the bounded verified-transfer path as the baseline: read exactly
+the committed staging length, require EOF, compute SHA-256 locally, then issue
+one `PutObject` with `If-None-Match: *`, exact content length, and SHA-256
+checksum. Server-side `CopyObject` is not a v1 optimization because the command
+does not pin a source version and a mutable staging key would introduce a
+source-check/source-copy race.
+
 ### 7.5 Storage safety and receipt
 
 The target profile controls:
 
 - endpoint and region;
 - allowed source/destination buckets and prefixes;
+- managed-AWS expected source/destination bucket owners;
 - TLS/trust and addressing mode;
 - credential provider;
 - server-side encryption policy;
@@ -1036,6 +1044,132 @@ provider version id, retention response, and allowlisted request fields may be
 placed in a durably archived detail document committed by `detailHash` under
 §5.4. Raw credentials, encryption material, arbitrary response headers, and
 the complete object key are never placed in authenticated receipt state.
+
+### 7.6 Frozen S3-compatible v1 profile
+
+Destination bucket versioning is mandatory. `require-versioning=false` is not
+a supported v1 setting, and the executor checks that the provider still
+reports `ENABLED` before mutation. Every successful or reconciled destination
+must expose a bounded printable immutable provider version id; Java `null` or
+S3's literal unversioned `null` sentinel is target drift, not a successful
+receipt.
+
+The compatibility profile also requires a destination policy with one
+connector writer and no `DeleteObject`/`DeleteObjectVersion` permission for
+that writer or any concurrent application principal. Connector and application
+principals also cannot change bucket lifecycle configuration, and no lifecycle
+expiration or noncurrent-version cleanup rule may apply to the archive prefix.
+Administrative deletion or lifecycle change is an offline, fenced operation.
+S3's `If-None-Match: *` tests only the current
+representation: without this deployment invariant, another principal could
+create and delete between the history probe and PUT, allowing a second version
+behind a delete marker. The executor proves no-resurrection under the declared
+exclusive/create-only policy; it cannot infer an arbitrary bucket IAM policy
+atomically from the object API.
+
+The executor probes the current destination before every mutation. If it is
+absent, it performs a bounded exact-key version-history check. A prior version
+or delete marker is a definitive conflict: v1 does not resurrect a deleted
+object or create a second version after out-of-band deletion. An inaccessible
+probe is never treated as absence. A present candidate is downloaded within
+the command/target bound and independently rehashed; ETag and user metadata
+alone are not content verification.
+
+For provider SHA-256 responses, `FULL_OBJECT` (or a legacy response with no
+declared checksum type) must equal the locally computed whole-object digest.
+AWS multipart `COMPOSITE` checksums use the canonical
+`base64-digest-partCount` shape with a positive part count no greater than
+10,000; the connector validates that bounded shape but never mistakes it for a
+whole-object digest. The command digest and the connector's local hash remain
+authoritative. A successful single-request destination PUT may omit the
+response checksum, but if it supplies one it must be a matching full-object
+checksum; a composite or unknown checksum type makes the acknowledgement
+unknown and forces state reconciliation.
+
+The exact v1 user-metadata set is:
+
+| Key | Value |
+|---|---|
+| `yano-schema` | literal `1` |
+| `yano-action` | literal `object.put` |
+| `yano-effect-id` | lowercase 64-character effect-id hex |
+| `yano-sha256` | lowercase 64-character content-digest hex |
+| `yano-size` | canonical unsigned decimal size |
+| `yano-content-type` | validated command content type |
+| `yano-target-id` | configured non-secret target id |
+| `yano-encryption-policy` | configured encryption-policy id |
+| `yano-retention-policy` | configured retention-policy id |
+| `yano-retention-class` | command alias, or literal `none` |
+| `yano-retain-until` | canonical epoch milliseconds requested for Object Lock, or literal `none` |
+
+Missing, different, or additional user metadata is a destination conflict.
+The content type, actual encryption response, retention mode/deadline, version
+id, bytes, digest, size, and destination fingerprint must also reconcile. The
+provider version id, ETag, content type, metadata fields, and KMS identifier
+must be bounded printable ASCII before receipt or detail construction. The
+provider retention deadline must equal `yano-retain-until`; a known successful
+PUT must additionally equal the deadline requested by that call. On unknown-
+acknowledgement recovery, the mutually matching provider value and immutable
+metadata value preserve the original deadline without recomputing it.
+Changing encryption keys, modes, retention duration/mode, buckets, or prefixes
+requires a new corresponding policy/target id.
+
+Encryption modes are exactly `none`, `sse-s3`, and `sse-kms`. `none` is allowed
+only for an explicit private/local compatibility endpoint; managed/public AWS
+profiles require `sse-s3` or `sse-kms`. The provider-reported KMS key identity
+must exactly equal configured policy; managed AWS therefore requires the full
+key ARN in the configured region, while a custom compatible provider requires
+its exact stable returned key identity. KMS key material/identity remains local
+configuration and is never copied into user metadata, receipts, details, or
+logs.
+
+A null command retention class requires effective mode `NONE`. A configured
+class maps to `GOVERNANCE` or `COMPLIANCE` plus a bounded number of days. The
+initial mutation computes its provider deadline from the executor clock. On
+reconciliation, the existing same-effect/same-policy object and provider-
+reported deadline are authoritative; the executor does not recompute a later
+deadline and thereby reject its own prior write. Bucket-default retention may
+not silently substitute for an unrequested class.
+
+Custom endpoints require explicit static credentials. Plain HTTP is accepted
+only by the `local-demo` profile for loopback/private hosts with path-style
+addressing. Ambient default, environment, or named-profile credentials are
+accepted only when no custom endpoint is supplied and the SDK resolves the
+managed regional AWS endpoint; this prevents instance credentials being sent
+to an arbitrary compatible server. Public/custom non-local endpoints require
+HTTPS and hostname verification.
+
+A managed AWS profile (one with no custom endpoint) requires
+`source-expected-owner` and `destination-expected-owner`, each exactly 12
+decimal digits. The adapter sends the matching AWS `expectedBucketOwner` guard
+on every bucket-versioning, version-inventory, `HEAD`, `GET`, and `PUT`
+operation. If source and destination name the same bucket, both configured
+owners must match. Custom and local compatible endpoints reject these settings
+because they do not provide AWS account-ownership semantics. Expected-owner
+values are executor-local and are omitted from diagnostics, payloads, receipts,
+details, user metadata, and logs. Changing either value requires a new
+`target-id`; it must never silently repoint an existing target identity.
+
+V1 permits one in-flight transfer per configured target, in addition to the
+Effect Runtime's bounded worker pool and retry backoff. Contention returns the
+non-consuming `Retry(100ms)` outcome; it never spends an attempt or queues
+another 16 MiB body inside the connector. To keep executor construction
+bounded, the local-demo profile accepts only canonical private/loopback/ULA
+numeric endpoint literals or the exact name `localhost`, which is canonicalized
+directly to `127.0.0.1` without invoking a resolver. Link-local metadata-service
+space and service-discovery names are rejected. A Compose/host launcher that
+uses service discovery resolves it outside the effect executor under its own
+timeout and injects the resulting literal endpoint. JVM/environment proxy
+discovery is disabled for this profile.
+
+If a conditional write reports 409/412 or its acknowledgement may be lost,
+the executor probes first: exact state confirms, mismatched state conflicts,
+and unresolved absence is `ACK_UNKNOWN`. It never falls back to an
+unconditional write. If a provider acknowledgement is known but optional
+detail archival fails, the executor returns `Submitted(receipt)`. Later
+attempts validate the receipt, re-probe the exact current version, and retry
+only archival; malformed node-local submitted state is retryable
+`INTERNAL_ERROR` and never authorizes another mutation.
 
 ## 8. `appchain-ipfs`
 
@@ -1659,19 +1793,29 @@ yano.app-chain.effects.executors.kafka.topics.evidence-ready.name=evidence.avail
 
 ```properties
 yano.app-chain.effects.executors.objectstore-s3.targets.archive.target-id=archive-v1
-yano.app-chain.effects.executors.objectstore-s3.targets.archive.endpoint=http://minio:9000
+yano.app-chain.effects.executors.objectstore-s3.targets.archive.endpoint=http://127.0.0.1:9000
 yano.app-chain.effects.executors.objectstore-s3.targets.archive.region=us-east-1
+yano.app-chain.effects.executors.objectstore-s3.targets.archive.security-profile=local-demo
+yano.app-chain.effects.executors.objectstore-s3.targets.archive.path-style=true
+yano.app-chain.effects.executors.objectstore-s3.targets.archive.credentials-provider=static
+yano.app-chain.effects.executors.objectstore-s3.targets.archive.credentials.access-key-id=${MINIO_ACCESS_KEY}
+yano.app-chain.effects.executors.objectstore-s3.targets.archive.credentials.secret-access-key=${MINIO_SECRET_KEY}
 yano.app-chain.effects.executors.objectstore-s3.targets.archive.source-bucket=evidence-staging
+yano.app-chain.effects.executors.objectstore-s3.targets.archive.source-prefix=incoming
 yano.app-chain.effects.executors.objectstore-s3.targets.archive.destination-bucket=evidence-archive
 yano.app-chain.effects.executors.objectstore-s3.targets.archive.destination-prefix=verified
-yano.app-chain.effects.executors.objectstore-s3.targets.archive.encryption-policy-id=sse-v1
+yano.app-chain.effects.executors.objectstore-s3.targets.archive.encryption-policy-id=local-none-v1
+yano.app-chain.effects.executors.objectstore-s3.targets.archive.encryption-mode=none
 yano.app-chain.effects.executors.objectstore-s3.targets.archive.retention-policy-id=worm-v1
+yano.app-chain.effects.executors.objectstore-s3.targets.archive.retention-classes.evidence-30d.mode=governance
+yano.app-chain.effects.executors.objectstore-s3.targets.archive.retention-classes.evidence-30d.days=30
 yano.app-chain.effects.executors.objectstore-s3.targets.archive.require-versioning=true
 yano.app-chain.effects.executors.objectstore-s3.targets.archive.max-object-bytes=16777216
 ```
 
-Credentials are intentionally absent from the example and supplied through a
-secret provider/environment binding.
+The example references credentials through environment-backed secret
+substitution; it does not commit their values. Managed AWS profiles omit
+`endpoint` and may instead select an allowlisted ambient credential provider.
 
 Configured object prefixes are either empty or the same normalized relative
 key form used by commands, without a leading or trailing slash. The executor
@@ -1970,6 +2114,50 @@ system gates.
 - Implement the pre-staged immutable/versioned copy model.
 - Add checksum, conflict, policy, receipt, runtime-status, and MinIO
   integration tests.
+
+**Implementation record (accepted 2026-07-16).** The new
+`appchain-objectstore-s3` technology-owned bundle contributes the exact
+`object.put` executor without a core, runtime, effect-runtime, or plugin-SPI
+change. It implements the Phase 1.0 command/receipt/detail contracts and the
+frozen pre-staged, independently hashed, conditional-create, immutable-version
+model. Provider-specific code remains behind a private neutral client boundary;
+the thin artifact supports build-time/native inclusion and the drop-in bundle
+privately relocates connector-contract dependencies.
+
+The accepted profile requires versioning, bounded exact-key history, one
+create-only writer, no applicable lifecycle deletion, no resurrection, and
+exact encryption/retention identity. It includes one-in-flight target lanes,
+bounded timeouts with SDK retries disabled, archive-only submitted recovery,
+full/composite checksum distinction, exact account-owner guards for managed
+AWS, numeric/no-DNS local endpoints, disabled ambient proxies, printable
+provider observations, prompt body zeroization, and stable redacted errors.
+
+Recorded Phase 1.2 evidence:
+
+- The clean offline module gate passes 77 tests with the two opt-in MinIO tests
+  skipped, zero failures/errors, clean Javadoc, and clean artifact-boundary
+  verification. Coverage includes Phase 1.0 conformance, invalid-input/no-I/O,
+  exact retryability, destination conflicts, unknown acknowledgement,
+  no-resurrection, retention and KMS identity, multipart checksum shape,
+  managed bucket ownership, response-close and reconciliation zeroization,
+  lifecycle races, submitted-state recovery, diagnostics, and packaging.
+- Both integration tests pass separately against the exact
+  `minio/minio:RELEASE.2025-09-07T16-13-09Z` image. They verify real conditional
+  versioned promotion, bytes/metadata/receipt identity, restart reconciliation
+  without another version, and delete-marker conflict without resurrection.
+- Application bundle verification, generated catalog correlation, thin/native
+  class identity, and isolated drop-in launch pass. The 18 MiB bundle contains
+  AWS SDK 2.48.0 with only the selected synchronous URLConnection transport;
+  Apache, Netty, and other unused transport stacks are excluded and rejected by
+  the artifact gate.
+- Independent security, correctness, dependency, lifecycle, and packaging
+  review found no unresolved critical, high, or medium issue after the fixes
+  above.
+
+Live Object Lock, explicit timeout/unavailable fault injection, configured
+native-image startup, and a managed public-AWS smoke remain mandatory
+Milestone 1 release evidence under Phases 1.5--1.7; Phase 1.2 does not claim
+those later system gates.
 
 #### Phase 1.3 — IPFS
 
