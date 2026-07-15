@@ -2,14 +2,14 @@
 
 ## Status
 
-Accepted — implementation in progress; Phases 1.0--1.1 completed on 2026-07-16
+Accepted — implementation in progress; Phases 1.0--1.3 completed on 2026-07-16
 
 The number is local to the `adr/app-layer` series. Root-level ADR-013 is an
 unrelated node plugin and event-gap assessment.
 
 | Milestone | Scope | Status |
 |---|---|---|
-| 1 | First-party connectors, evidence workflow, Compose/host demo, network/data lifecycle | In progress — Phases 1.0--1.2 accepted; Phase 1.3 next |
+| 1 | First-party connectors, evidence workflow, Compose/host demo, network/data lifecycle | In progress — Phases 1.0--1.3 accepted; Phase 1.4 next |
 | 2 | Effect ownership, result continuation, and executor observability bridge | Planned — requires focused sub-design and minor framework changes |
 | 3 | Out-of-box deterministic composite state machine and stock component preset | Planned — requires a dedicated composition sub-ADR |
 
@@ -1179,6 +1179,28 @@ only archival; malformed node-local submitted state is retryable
 not accept document bytes, fetch an arbitrary URL, or silently implement
 `add`.
 
+Phase 1.3 ships one synchronous Kubo HTTP RPC adapter using only
+`/api/v0/pin/ls` and `/api/v0/pin/add`. It does not implement the distinct IPFS
+Pinning Service API. Remote pinning, asynchronous provider request handles,
+and provider polling remain technology-internal future work and require a new
+immutable target identity when introduced.
+
+The adapter parses only the three exact Kubo response envelopes it consumes.
+Its dependency-free byte parser enforces strict UTF-8/JSON syntax, decoded
+duplicate-name rejection, canonical CID comparison, and fixed document,
+nesting, token, field-name, string, and number bounds. It is deliberately not
+a reusable JSON library or data-binding surface.
+
+The release/demo compatibility target is the exact official
+`ipfs/kubo:v0.42.0` image, recorded for Phase 1.3 as
+`ipfs/kubo@sha256:8907cb0cc1ad5798f6bb1bb1341a800990c268e021cedfa317e8aa1a33864214`.
+The adapter accepts only a conservative allowlist of
+documented/tested response shapes; a malformed or version-unknown mutation
+acknowledgement is `ACK_UNKNOWN` and is reconciled by probing, never guessed as
+success or treated as a definitive failure. Changing to an untested Kubo RPC
+profile is an explicit operator compatibility decision and release testing
+must record the exact image digest.
+
 Generating a CID depends on chunking, DAG layout, codec, hash algorithm, and
 client version/options. Hiding those choices in `pin` would make the committed
 CID and external result less predictable. A future `ipfs.add-and-pin` must
@@ -1212,8 +1234,16 @@ The executor:
 3. checks current pin state;
 4. returns confirmed if the required pin already exists;
 5. otherwise requests the pin once;
-6. polls/reconciles according to the provider's bounded status model; and
+6. re-probes/reconciles according to the provider's bounded status model; and
 7. returns a receipt only when the required state is reported.
+
+Kubo pin state is an idempotent set. A reported recursive pin satisfies either
+a recursive or direct request; a direct pin satisfies only `recursive=false`.
+An indirect pin does not satisfy either request. The executor may upgrade a
+direct pin to recursive but never unpins or downgrades an existing recursive
+pin. Every Kubo call carries the effect-id hash in a fixed
+`X-Yano-Effect-Id` header for audit correlation; Kubo does not claim that
+header as a provider deduplication mechanism.
 
 A remote-pinning request id may be returned as ADR-010 `SUBMITTED` and polled
 on later attempts. A provider-declared malformed/forbidden CID is definitive.
@@ -1221,6 +1251,10 @@ Temporarily unavailable content is `CONTENT_UNAVAILABLE` and remains retryable
 until deterministic effect expiry. A provider's terminal content-not-found
 response is `CONTENT_NOT_FOUND` and definitive only when the configured
 recoverability policy proves that no other allowed source can supply it.
+For the initial Kubo target, a known `not pinned` probe is simply absent state.
+A missing/unavailable block during `pin/add` is `CONTENT_UNAVAILABLE`, not
+definitive `CONTENT_NOT_FOUND`, because one Kubo node cannot prove that every
+allowed recovery source is exhausted.
 
 The effect record already carries the canonical CID, so the compact confirmed
 `externalRef` binds the configured provider and the exact CID without
@@ -1240,6 +1274,14 @@ instead return a pollable ADR-010 `SUBMITTED` ref:
 
 Both forms remain canonical and at most 128 bytes.
 
+The initial Kubo adapter never emits a remote-pinning submitted handle. If
+detail archival fails after a verified Kubo pin, it stores the already
+confirmed receipt bytes as ADR-010 `SUBMITTED` state, re-probes without
+re-pinning, and retries only archival. Receipt and remote-handle encodings must
+never be guessed from their CBOR shape: a future remote adapter is selected by
+an explicitly different target identity and interprets only its own submitted
+schema.
+
 `providerRequestId` is a non-secret, opaque polling handle only. A provider
 whose polling credential is itself secret must keep that credential in local
 target configuration and expose a separate non-secret handle; bearer tokens,
@@ -1252,11 +1294,19 @@ allowlisted status fields may be placed in a durably archived detail document
 committed by `detailHash`. Provider references and status text are bounded and
 normalized.
 
+`replicationPolicy` is an allowlisted operator policy label, not proof that a
+Kubo node has independent replicas. A null command value requests no extra
+assertion; a non-null value must exactly match the selected target's configured
+label. Changing endpoint, authentication, recursive semantics, allowed codecs,
+or replication policy requires a new `target-id`.
+
 ### 8.4 Availability and confidentiality
 
 A pin receipt proves only that the configured provider reported the CID
 pinned. It is not a guarantee of indefinite global availability. The demo and
 operations surface should expose last reconciliation and provider health.
+Confirmation is a point-in-time result: a later unpin does not rewrite an
+already incorporated app-chain result.
 
 IPFS is public and persistent by default. Confidential DPP, oracle, customer,
 or enterprise documents must either:
@@ -1825,15 +1875,35 @@ is invalid rather than silently normalized to `verified`.
 ### 15.4 IPFS executor
 
 ```properties
+yano.app-chain.effects.executors.ipfs.enabled=true
 yano.app-chain.effects.executors.ipfs.targets.local.target-id=local-kubo-v1
-yano.app-chain.effects.executors.ipfs.targets.local.api-url=http://ipfs:5001
+yano.app-chain.effects.executors.ipfs.targets.local.api-url=http://127.0.0.1:5001
+yano.app-chain.effects.executors.ipfs.targets.local.security-profile=local-demo
 yano.app-chain.effects.executors.ipfs.targets.local.allowed-codecs=raw,dag-pb
-yano.app-chain.effects.executors.ipfs.targets.local.max-wait-ms=30000
+yano.app-chain.effects.executors.ipfs.targets.local.recursive=true
 yano.app-chain.effects.executors.ipfs.targets.local.replication-policy=demo-single
+yano.app-chain.effects.executors.ipfs.targets.local.connect-timeout-ms=5000
+yano.app-chain.effects.executors.ipfs.targets.local.request-timeout-ms=30000
+yano.app-chain.effects.executors.ipfs.targets.local.close-timeout-ms=5000
 ```
 
-Public/provider profiles require TLS and secret authentication. Payloads
-still select only `local` or another configured alias.
+`local-demo` accepts only exact `localhost` or canonical numeric
+private/loopback/ULA HTTP endpoints, rejects link-local and service-discovery
+names, does not invoke DNS inside the executor, and accepts no authentication
+material. Host mode uses the stable loopback literal. Compose assigns Kubo a
+fixed instance-scoped address recorded by the demo identity marker and injects
+that literal before node launch; it does not pass a service-discovery name to
+the executor. If the literal or other target semantics change, the launcher
+must mint a new `target-id` rather than silently repointing the old identity.
+
+The production `bearer-tls` profile requires HTTPS, normal JVM trust and
+hostname verification, and a bounded bearer token held only in local secret
+configuration. Both profiles disable redirects and ambient proxies. The base
+URL is an origin only: user info, paths, query, and fragments are rejected.
+Payloads still select only `local` or another configured alias. The configured
+codec set is a canonical subset of `raw,dag-pb`; `recursive` is exact per
+target, and `replication-policy` is an operator label rather than verified
+replica count.
 
 ## 16. Authentication and security
 
@@ -1917,7 +1987,8 @@ Each connector tests:
 - unknown versions, duplicate keys, malformed encodings, and every bound;
 - alias, endpoint, topic/bucket/prefix/CID policy;
 - normalized error classification;
-- idempotency probes and matching/conflicting external state;
+- idempotency probes and each connector's applicable existing-state model
+  (Kafka consumer dedupe, object match/conflict, or IPFS idempotent pin set);
 - timeout and unknown-acknowledgement behavior;
 - receipt truncation/redaction;
 - concurrent execute/close and failed construction; and
@@ -1930,7 +2001,7 @@ Container-backed integration tests use real compatible services:
 
 - Apache Kafka for publish acknowledgement, broker restart, duplicate retry,
   authentication failure, and sink/effect coexistence;
-- MinIO for conditional copy, checksum, versioning, conflicting destination,
+- MinIO for conditional creation, checksum, versioning, conflicting destination,
   restart, and optional retention profile; and
 - Kubo for already-pinned, new pin, invalid CID, unavailable content,
   restart, and reconciliation.
@@ -2164,6 +2235,58 @@ those later system gates.
 - Add `appchain-ipfs`.
 - Implement pin-only v1, CID policy, probe/reconciliation, receipt,
   runtime-status, and Kubo integration tests.
+
+**Implementation record (accepted 2026-07-16).** The new `appchain-ipfs`
+technology-owned bundle contributes the exact `ipfs.pin` executor without a
+core, runtime, Effect Runtime, or plugin-SPI change. It implements strict
+alias-only target configuration, canonical CID policy, explicit direct/
+recursive/indirect pin reconciliation, lazy per-target client ownership,
+bounded receipt/detail archival, and archive-only submitted-state recovery.
+The initial provider adapter is deliberately limited to synchronous Kubo
+`pin/ls` and `pin/add`; remote pinning remains a different future target
+profile.
+
+The Kubo boundary uses fixed POST routes and query names, no redirects or
+ambient proxies, bounded whole-response deadlines and 16 KiB streaming bodies,
+strict JSON/CID comparison, numeric/no-DNS local targets, and TLS/bearer remote
+targets. Post-dispatch ambiguity is always `ACK_UNKNOWN` and re-probed;
+recognized offline missing content is `CONTENT_UNAVAILABLE`; malformed
+non-success probes stay retryable. Kubo 0.42's exact
+`indirect through <ancestor-cid>` state is validated before the executor
+upgrades it to an explicit pin.
+
+Recorded Phase 1.3 evidence:
+
+- The clean offline module gate passes 75 tests with the one opt-in Kubo test
+  skipped, including the Phase 1.0 runtime conformance suite, invalid-input/
+  no-I/O behavior, target/CID policy, direct and recursive satisfaction,
+  indirect/direct upgrade, unknown acknowledgements, submitted recovery,
+  archival, response bounds, timeouts, interruption, redaction, close races,
+  and exact error retryability. Module Javadoc and artifact-boundary checks
+  complete without a module warning.
+- The opt-in test passes against the telemetry-disabled, offline official
+  `ipfs/kubo:v0.42.0` image at the recorded digest. It provisions deterministic
+  raw and multi-block fixtures outside the executor, proves recursive and real
+  indirect state, absent-to-new pin, already-pinned reconciliation through a
+  fresh client, repeated idempotent add, unavailable content, and cleanup.
+- Thin/native catalog correlation, the first-party bundle scan, and isolated
+  drop-in launch pass. The 56 KiB thin artifact retains host contract identity;
+  the 9.4 MiB bundle privately relocates connector contracts, CBOR, and
+  BLAKE2b, initializes the real Kubo/strict-parser path, contains neither
+  Jackson nor Byte Buddy, excludes host API classes, and exposes one exact
+  manifest/ServiceLoader contribution.
+- Independent correctness, Kubo-compatibility, security, lifecycle, packaging,
+  and dependency reviews found no unresolved critical, high, or medium issue
+  after fixes for mutation acknowledgement uncertainty, indirect state,
+  probe error retryability, body-read deadlines, property forwarding, private
+  dependency isolation, strict response parsing, and stale user-guide
+  configuration. The parser additionally completed 100,000 randomized bounded
+  inputs across all three entry points without an unsanitized exception.
+
+An actual daemon restart during an open attempt, public authenticated proxy
+smoke, configured native-image startup, and the complete multi-service fault
+matrix remain mandatory Milestone 1 release evidence under Phases 1.5--1.7;
+Phase 1.3 does not claim those later system gates.
 
 #### Phase 1.4 — Evidence reference bundle
 
@@ -2567,8 +2690,15 @@ Milestone 1 may move to Accepted only when all of the following are true:
 3. `kafka.publish`, `object.put`, and `ipfs.pin` have frozen v1 codecs, golden
    vectors, policy limits, receipts, error tables, and existing Effect Runtime
    status/metric integration.
-4. Real Kafka, MinIO, and Kubo integration suites pass restart, duplicate,
-   timeout, conflict, and unavailable-service cases.
+4. Real connector integration suites pass their applicable fault matrix:
+   Kafka covers acknowledgement, duplicate/retry, timeout, broker restart,
+   authentication failure, unavailable service, and sink/effect coexistence;
+   MinIO covers conditional creation, exact match, destination conflict,
+   timeout, restart, unavailability, versioning, checksum, and the selected
+   retention profile; Kubo covers new/already/indirect pins, upgrade,
+   unavailable content, unknown acknowledgement, timeout, restart, and
+   reconciliation. A connector is not required to invent a conflict semantic
+   that its external idempotent-set model does not have.
 5. No connector payload or receipt accepts/leaks credentials or arbitrary
    endpoints.
 6. The evidence state machine remains deterministic across replay; it reaches

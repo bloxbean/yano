@@ -1,0 +1,198 @@
+plugins {
+    id 'com.gradleup.shadow'
+}
+
+// Pin-only Kubo/IPFS integration for ADR-013 ipfs.pin effects.
+dependencies {
+    compileOnly project(':core-api')          // provided by the node at runtime
+    implementation project(':appchain-integration-contracts')
+    implementation libs.slf4j.api
+
+    testImplementation project(':core-api')
+    testImplementation project(':appchain-testkit')
+    testImplementation libs.junit.jupiter.api
+    testRuntimeOnly libs.junit.jupiter.engine
+    testRuntimeOnly libs.junit.platform.launcher
+    testImplementation libs.assertj.core
+}
+
+java {
+    sourceCompatibility = 25
+    targetCompatibility = 25
+}
+
+tasks.named('compileJava') {
+    // No annotation processor in this module consumes the repository-wide
+    // project identity option.
+    options.compilerArgs.removeAll { it.startsWith('-Aproject=') }
+}
+
+// Gradle system properties belong to the daemon by default; forward only the
+// explicit opt-in integration controls into the forked JUnit process.
+tasks.withType(Test).configureEach {
+    ['yano.ipfs.integration.enabled', 'yano.ipfs.integration.endpoint'].each { key ->
+        def value = System.getProperty(key)
+        if (value != null) {
+            systemProperty key, value
+        }
+    }
+}
+
+// Keep the ordinary artifact thin for build-time/native inclusion. The bundle
+// classifier is the self-contained drop-in artifact for yaci.plugins.directory.
+tasks.named('shadowJar') {
+    archiveBaseName.set("yano-${project.name}")
+    archiveClassifier.set('bundle')
+    reproducibleFileOrder = true
+    preserveFileTimestamps = false
+    mergeServiceFiles()
+    // A directory-loaded bundle owns a private contract copy; only frozen CBOR
+    // bytes and the host effect SPI cross its class boundary.
+    relocate 'com.bloxbean.cardano.yano.appchain.integration',
+            'com.bloxbean.cardano.yano.appchain.ipfs.internal.contracts.v1'
+    relocate 'co.nstant.in.cbor',
+            'com.bloxbean.cardano.yano.appchain.ipfs.internal.contracts.v1deps.cbor'
+    relocate 'org.bouncycastle',
+            'com.bloxbean.cardano.yano.appchain.ipfs.internal.contracts.v1deps.bouncycastle'
+    exclude 'com/bloxbean/cardano/yano/api/**'
+    exclude 'META-INF/*.SF', 'META-INF/*.RSA', 'META-INF/*.DSA', 'module-info.class'
+}
+
+def unrelocatedContractPrefix =
+        'com/bloxbean/cardano/yano/appchain/integration/'
+def relocatedContractPrefix =
+        'com/bloxbean/cardano/yano/appchain/ipfs/internal/contracts/v1/'
+def relocatedCborPrefix =
+        'com/bloxbean/cardano/yano/appchain/ipfs/internal/contracts/v1deps/cbor/'
+def relocatedBouncyCastlePrefix =
+        'com/bloxbean/cardano/yano/appchain/ipfs/internal/contracts/v1deps/bouncycastle/'
+def forbiddenRuntimePrefixes = ['com/fasterxml/jackson/', 'net/bytebuddy/']
+def effectService =
+        'META-INF/services/com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutorFactory'
+def pluginManifest =
+        'META-INF/yano/plugins/com.bloxbean.cardano.yano.appchain.ipfs.json'
+def factoryClass = 'com.bloxbean.cardano.yano.appchain.ipfs.effects.IpfsEffectExecutorFactory'
+def factoryEntry = factoryClass.replace('.', '/') + '.class'
+
+tasks.register('verifyIpfsArtifactBoundaries') {
+    group = 'verification'
+    description = 'Verifies thin/native and self-contained IPFS bundle boundaries'
+    dependsOn tasks.named('jar'), tasks.named('shadowJar')
+    inputs.files(tasks.named('jar').flatMap { it.archiveFile },
+            tasks.named('shadowJar').flatMap { it.archiveFile })
+
+    doLast {
+        def thin = tasks.named('jar').get().archiveFile.get().asFile
+        def bundle = tasks.named('shadowJar').get().archiveFile.get().asFile
+        if (!thin.name.startsWith('yano-appchain-ipfs-')) {
+            throw new GradleException("Unexpected IPFS thin artifact: ${thin.name}")
+        }
+        if (!bundle.name.startsWith('yano-appchain-ipfs-')
+                || !bundle.name.endsWith('-bundle.jar')) {
+            throw new GradleException("Unexpected IPFS bundle artifact: ${bundle.name}")
+        }
+
+        def entryNames = { File archive ->
+            new java.util.zip.ZipFile(archive).withCloseable { zip ->
+                zip.entries().collect { entry -> entry.name }.toSet()
+            }
+        }
+        def thinEntries = entryNames(thin)
+        def bundleEntries = entryNames(bundle)
+
+        [thinEntries, bundleEntries].each { entries ->
+            if (entries.any { entry -> forbiddenRuntimePrefixes.any {
+                    prefix -> entry.startsWith(prefix)
+            } }) {
+                throw new GradleException(
+                        'IPFS artifact embeds a forbidden JSON or instrumentation runtime')
+            }
+        }
+
+        if (thinEntries.any { it.startsWith(unrelocatedContractPrefix)
+                || it.startsWith(relocatedContractPrefix) }) {
+            throw new GradleException(
+                    'IPFS thin/native artifact embeds a connector contract')
+        }
+        if (!bundleEntries.contains(relocatedContractPrefix
+                + 'ipfs/CanonicalCid.class')) {
+            throw new GradleException(
+                    'IPFS bundle does not contain the relocated canonical CID contract')
+        }
+        if (bundleEntries.any { it.startsWith(unrelocatedContractPrefix) }) {
+            throw new GradleException(
+                    'IPFS bundle exposes an unrelocated contract class')
+        }
+        if (!bundleEntries.contains(relocatedCborPrefix + 'CborDecoder.class')
+                || bundleEntries.any { it.startsWith('co/nstant/in/cbor/') }) {
+            throw new GradleException(
+                    'IPFS bundle does not privately relocate the CBOR codec')
+        }
+        if (!bundleEntries.contains(relocatedBouncyCastlePrefix
+                + 'crypto/digests/Blake2bDigest.class')
+                || bundleEntries.any { it.startsWith('org/bouncycastle/') }) {
+            throw new GradleException(
+                    'IPFS bundle does not privately relocate BLAKE2b')
+        }
+        if (bundleEntries.any { it.startsWith('com/bloxbean/cardano/yano/api/') }) {
+            throw new GradleException('IPFS bundle embeds host Yano API classes')
+        }
+        [thin, bundle].each { artifact ->
+            def entries = entryNames(artifact)
+            if (!entries.contains(factoryEntry)) {
+                throw new GradleException(
+                        "IPFS artifact is missing its declared executor factory")
+            }
+            [effectService, pluginManifest].each { entry ->
+                if (!entries.contains(entry)) {
+                    throw new GradleException(
+                            "IPFS artifact is missing plugin metadata entry ${entry}")
+                }
+            }
+        }
+
+        def readEntry = { File archive, String entryName ->
+            new java.util.zip.ZipFile(archive).withCloseable { zip ->
+                def entry = zip.getEntry(entryName)
+                zip.getInputStream(entry).getText('UTF-8')
+            }
+        }
+        [thin, bundle].each { artifact ->
+            def providers = readEntry(artifact, effectService).readLines()
+                    .collect { it.trim() }
+                    .findAll { !it.isBlank() && !it.startsWith('#') }
+            if (providers != [factoryClass]) {
+                throw new GradleException(
+                        "Unexpected IPFS effect providers in ${artifact.name}: ${providers}")
+            }
+            def manifest = new groovy.json.JsonSlurper().parseText(
+                    readEntry(artifact, pluginManifest))
+            def contributions = manifest.contributions.collect {
+                "${it.kind}:${it.name}:${it.provider}"
+            }
+            if (manifest.id != 'com.bloxbean.cardano.yano.appchain.ipfs'
+                    || contributions != ["effect-executor:ipfs:${factoryClass}"]) {
+                throw new GradleException(
+                        "Unexpected IPFS manifest in ${artifact.name}")
+            }
+        }
+    }
+}
+
+tasks.named('check') {
+    dependsOn tasks.named('verifyIpfsArtifactBoundaries')
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            artifact(tasks.named('shadowJar')) {
+                classifier = 'bundle'
+            }
+            pom {
+                name = 'Yano App-Chain IPFS Integration'
+                description = 'Reconciled pin-only Kubo executor for ipfs.pin app-chain effects'
+            }
+        }
+    }
+}

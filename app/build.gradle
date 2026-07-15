@@ -62,6 +62,8 @@ if (includeFirstPartyPluginBundles) {
                     [projectPath: ':appchain-kafka', includeProvided: true],
             'com.bloxbean.cardano.yano.appchain.objectstore.s3':
                     [projectPath: ':appchain-objectstore-s3', includeProvided: true],
+            'com.bloxbean.cardano.yano.appchain.ipfs':
+                    [projectPath: ':appchain-ipfs', includeProvided: true],
             'com.bloxbean.cardano.yano.appchain.effects.cardano':
                     [projectPath: ':appchain-effects-cardano', includeProvided: true],
             'com.bloxbean.cardano.yano.appchain.zk':
@@ -130,6 +132,7 @@ dependencies {
     if (includeFirstPartyPluginBundles) {
         runtimeOnly project(':appchain-kafka')
         runtimeOnly project(':appchain-objectstore-s3')
+        runtimeOnly project(':appchain-ipfs')
         runtimeOnly project(':appchain-effects-cardano')
         runtimeOnly project(':appchain-zk')
     }
@@ -394,11 +397,13 @@ tasks.named('processResources') {
 tasks.register('verifyFirstPartyPluginBundles', JavaExec) {
     dependsOn ':appchain-kafka:verifyKafkaArtifactBoundaries',
             ':appchain-objectstore-s3:verifyObjectStoreS3ArtifactBoundaries',
+            ':appchain-ipfs:verifyIpfsArtifactBoundaries',
             ':appchain-effects-cardano:shadowJar', ':appchain-zk:shadowJar'
     def verificationIndex = layout.buildDirectory.file(
             'reports/plugin-catalog/first-party-bundles.json')
     inputs.files({
         [project(':appchain-kafka'), project(':appchain-objectstore-s3'),
+         project(':appchain-ipfs'),
          project(':appchain-effects-cardano'),
          project(':appchain-zk')].collect { pluginProject ->
             pluginProject.tasks.named('shadowJar').get().archiveFile.get().asFile
@@ -411,6 +416,7 @@ tasks.register('verifyFirstPartyPluginBundles', JavaExec) {
         def bundleFiles = [
                 project(':appchain-kafka'),
                 project(':appchain-objectstore-s3'),
+                project(':appchain-ipfs'),
                 project(':appchain-effects-cardano'),
                 project(':appchain-zk')
         ].collect { pluginProject ->
@@ -425,6 +431,8 @@ tasks.register('verifyFirstPartyPluginBundles', JavaExec) {
         requireIndexedManifestVersions(index, [
                 'com.bloxbean.cardano.yano.appchain.kafka': declaredPluginManifestVersion,
                 'com.bloxbean.cardano.yano.appchain.objectstore.s3':
+                        declaredPluginManifestVersion,
+                'com.bloxbean.cardano.yano.appchain.ipfs':
                         declaredPluginManifestVersion,
                 'com.bloxbean.cardano.yano.appchain.effects.cardano':
                         declaredPluginManifestVersion,
@@ -451,6 +459,16 @@ tasks.register('verifyFirstPartyPluginBundles', JavaExec) {
             throw new GradleException(
                     "Object-store bundle contribution inventory is incomplete: "
                             + objectStoreContributions)
+        }
+        def ipfsBundle = index.bundles.find {
+            it.manifest?.id == 'com.bloxbean.cardano.yano.appchain.ipfs'
+        }
+        def ipfsContributions = ipfsBundle?.manifest?.contributions?.collect {
+            "${it.kind}:${it.name}"
+        }?.toSet()
+        if (ipfsContributions != Set.of('effect-executor:ipfs')) {
+            throw new GradleException(
+                    "IPFS bundle contribution inventory is incomplete: ${ipfsContributions}")
         }
         if (includeFirstPartyPluginBundles) {
             def expectedRuntimeVersions = [
@@ -497,6 +515,7 @@ tasks.register('verifyFirstPartyPluginBundles', JavaExec) {
 tasks.register('launchFirstPartyPluginBundles', JavaExec) {
     dependsOn tasks.named('testClasses'), ':appchain-kafka:shadowJar',
             ':appchain-objectstore-s3:shadowJar',
+            ':appchain-ipfs:shadowJar',
             ':appchain-effects-cardano:shadowJar', ':appchain-zk:shadowJar'
     // Deliberately omit app.runtimeClasspath: the probe must prove the bundle
     // classifiers work when the corresponding thin provider JARs are absent.
@@ -505,6 +524,7 @@ tasks.register('launchFirstPartyPluginBundles', JavaExec) {
     mainClass = 'com.bloxbean.cardano.yano.app.PluginBundleLaunchProbe'
     doFirst {
         args = [project(':appchain-kafka'), project(':appchain-objectstore-s3'),
+                project(':appchain-ipfs'),
                 project(':appchain-effects-cardano'),
                 project(':appchain-zk')].collect { pluginProject ->
             pluginProject.tasks.named('shadowJar').get().archiveFile.get().asFile.absolutePath

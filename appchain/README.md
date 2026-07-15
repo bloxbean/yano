@@ -34,6 +34,7 @@ Don't look for feature docs here — they're centralized:
 | `appchain-integration-contracts` | `appchain-integration-contracts/` | Provider-neutral connector wire contracts, CDDL, and golden vectors. |
 | `appchain-kafka` | `extensions/appchain-kafka/` | Plugin: finalized blocks and acknowledged `kafka.publish` effects → Kafka topics. |
 | `appchain-objectstore-s3` | `extensions/appchain-objectstore-s3/` | Plugin: immutable, versioned `object.put` promotion for tested S3-compatible stores. |
+| `appchain-ipfs` | `extensions/appchain-ipfs/` | Plugin: reconciled, acknowledged `ipfs.pin` effects against a configured Kubo node. |
 | `appchain-zk` | `extensions/appchain-zk/` | Plugin (EXPERIMENTAL): ZeroJ-based proof-verified state machines. |
 | `appchain-effects-cardano` | `extensions/appchain-effects-cardano/` | Plugin: Cardano payment executor for the app-chain effect system. |
 | `appchain-spring-boot-starter` | `../spring-starters/appchain-spring-boot-starter/` | Spring Boot auto-config for the client SDK. |

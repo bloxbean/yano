@@ -67,6 +67,7 @@ class PluginCatalogPackagingTest {
     private static final Set<String> OPTIONAL_BUNDLES = Set.of(
             "com.bloxbean.cardano.yano.appchain.kafka",
             "com.bloxbean.cardano.yano.appchain.objectstore.s3",
+            "com.bloxbean.cardano.yano.appchain.ipfs",
             "com.bloxbean.cardano.yano.appchain.effects.cardano",
             "com.bloxbean.cardano.yano.appchain.zk");
     private static final String CONFORMANCE_BUNDLE =
@@ -85,6 +86,10 @@ class PluginCatalogPackagingTest {
     private static final String RELOCATED_OBJECTSTORE_CONTRACT =
             "com.bloxbean.cardano.yano.appchain.objectstore.s3.internal.contracts.v1."
                     + "objectstore.ObjectPutCommandV1";
+    private static final String HOST_IPFS_CONTRACT =
+            "com.bloxbean.cardano.yano.appchain.integration.ipfs.CanonicalCid";
+    private static final String RELOCATED_IPFS_CONTRACT =
+            "com.bloxbean.cardano.yano.appchain.ipfs.internal.contracts.v1.ipfs.CanonicalCid";
 
     @Test
     void generatedIndexRetainsAndCorrelatesSelectedBuildTimeBundlesWithoutChangingTccl()
@@ -129,7 +134,7 @@ class PluginCatalogPackagingTest {
                     environment.providers().names(FinalizedStreamSinkFactory.class)));
             Set<String> expectedExecutors = new java.util.HashSet<>();
             if (optionalIncluded) {
-                expectedExecutors.addAll(Set.of("cardano", "kafka", "objectstore-s3"));
+                expectedExecutors.addAll(Set.of("cardano", "kafka", "objectstore-s3", "ipfs"));
             }
             if (conformanceIncluded) expectedExecutors.add("conformance-effect");
             assertEquals(expectedExecutors, Set.copyOf(
@@ -137,6 +142,7 @@ class PluginCatalogPackagingTest {
             if (optionalIncluded) {
                 assertBuildTimeKafkaUsesHostConnectorContracts(environment.classLoader());
                 assertBuildTimeObjectStoreUsesHostConnectorContracts(environment.classLoader());
+                assertBuildTimeIpfsUsesHostConnectorContracts(environment.classLoader());
             }
             assertEquals(conformanceIncluded ? Set.of("conformance-mode") : Set.of(), Set.copyOf(
                     environment.providers().names(SequencerModeProvider.class)));
@@ -444,6 +450,13 @@ class PluginCatalogPackagingTest {
                 "com.bloxbean.cardano.yano.appchain.objectstore.s3.effects."
                         + "ObjectStoreS3EffectExecutorFactory",
                 RELOCATED_OBJECTSTORE_CONTRACT, "object-store");
+    }
+
+    private static void assertBuildTimeIpfsUsesHostConnectorContracts(ClassLoader loader)
+            throws Exception {
+        assertBuildTimeUsesHostConnectorContracts(loader, HOST_IPFS_CONTRACT,
+                "com.bloxbean.cardano.yano.appchain.ipfs.effects.IpfsEffectExecutorFactory",
+                RELOCATED_IPFS_CONTRACT, "IPFS");
     }
 
     private static void assertBuildTimeUsesHostConnectorContracts(ClassLoader loader,

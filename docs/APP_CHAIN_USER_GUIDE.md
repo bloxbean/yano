@@ -37,6 +37,8 @@ else is opt-in — a plugin jar on the node or a library in your application
 | `yano-appchain-testkit` | `appchain/appchain-testkit` | JUnit 5 `@AppChainCluster` embedded clusters for tests (§16) |
 | `yano-appchain-integration-contracts` | `appchain/appchain-integration-contracts` | Provider-neutral connector payload, receipt, CDDL, and golden-vector contracts |
 | `yano-appchain-kafka` | `appchain/extensions/appchain-kafka` | Node plugin: finalized blocks and acknowledged `kafka.publish` effects → Kafka topics (§10, §18) |
+| `yano-appchain-objectstore-s3` | `appchain/extensions/appchain-objectstore-s3` | Node plugin: immutable/versioned `object.put` effects for tested S3-compatible stores (§18) |
+| `yano-appchain-ipfs` | `appchain/extensions/appchain-ipfs` | Node plugin: reconciled pin-only `ipfs.pin` effects through a configured Kubo RPC (§18) |
 | `yano-appchain-effects-cardano` | `appchain/extensions/appchain-effects-cardano` | Node plugin: Cardano payment executor for the effect system (§18) |
 | `yano-appchain-zk` | `appchain/extensions/appchain-zk` | Node plugin, EXPERIMENTAL: ZK state machines & verification (§17) |
 | `yano-appchain-spring-boot-starter` | `spring-starters/appchain-spring-boot-starter` | Spring Boot auto-config for the client SDK (§16) |
@@ -1436,6 +1438,40 @@ delivery after an acknowledgement is lost, so consumers must still
 deduplicate where duplicates matter. The frozen payload/receipt schemas,
 CDDL, and golden vectors ship in `yano-appchain-integration-contracts`.
 
+**S3-compatible object executor** — the optional
+`yano-appchain-objectstore-s3` bundle handles canonical `object.put` effects.
+The document is pre-staged under an allowlisted source prefix; the command
+commits its exact SHA-256 digest and size, while credentials, endpoints,
+buckets, encryption, and retention policy stay in the selected target. The
+executor verifies the source and uses conditional creation of an immutable,
+versioned destination—it does not overwrite or resurrect a conflicting key.
+See the module README for the full required target profile and MinIO/AWS
+examples.
+
+**IPFS pin executor** — the optional `yano-appchain-ipfs` bundle handles
+canonical `ipfs.pin` effects against a configured Kubo node. It pins a known
+CID only: it never accepts document bytes or a caller-selected endpoint, and
+it never hides CID/chunking choices inside the executor.
+
+```yaml
+yano.app-chain.effects.executors.ipfs.enabled: true
+yano.app-chain.effects.executors.ipfs.targets.local.target-id: local-kubo-v1
+yano.app-chain.effects.executors.ipfs.targets.local.api-url: http://127.0.0.1:5001
+yano.app-chain.effects.executors.ipfs.targets.local.security-profile: local-demo
+yano.app-chain.effects.executors.ipfs.targets.local.allowed-codecs: raw,dag-pb
+yano.app-chain.effects.executors.ipfs.targets.local.recursive: true
+yano.app-chain.effects.executors.ipfs.targets.local.replication-policy: demo-single
+yano.app-chain.effects.executors.ipfs.targets.local.connect-timeout-ms: 1000
+yano.app-chain.effects.executors.ipfs.targets.local.request-timeout-ms: 5000
+yano.app-chain.effects.executors.ipfs.targets.local.close-timeout-ms: 1000
+```
+
+The Kubo RPC is an administrative interface and must remain private. A
+confirmed pin is a point-in-time report from the configured target, not proof
+of indefinite global availability or content confidentiality. See
+`appchain/extensions/appchain-ipfs/README.md` for TLS/bearer configuration,
+packaging, policy, and real-Kubo test instructions.
+
 **Cardano payment executor** — the stock application omits this privileged T3
 integration. A JVM node can run `:appchain-effects-cardano:shadowJar` and copy
 `yano-appchain-effects-cardano-<version>-bundle.jar` into the plugins
@@ -1562,30 +1598,32 @@ Any effect type your machines emit can be handled by a plugin implementing two
 interfaces — the same ServiceLoader pattern as custom sinks (§10):
 
 ```java
-public class IpfsPinExecutor implements AppEffectExecutor {
-    private final String apiUrl;
-    IpfsPinExecutor(Map<String, String> config) { this.apiUrl = config.get("api-url"); }
+public class CredentialIssueExecutor implements AppEffectExecutor {
+    private final String issuerUrl;
+    CredentialIssueExecutor(Map<String, String> config) {
+        this.issuerUrl = config.get("issuer-url");
+    }
 
-    @Override public String id() { return "ipfs"; }
-    @Override public boolean supports(String type) { return "ipfs.pin".equals(type); }
+    @Override public String id() { return "credential-issuer"; }
+    @Override public boolean supports(String type) { return "credential.issue".equals(type); }
 
     @Override
     public EffectExecution execute(EffectExecutionContext ctx, PendingEffect effect) throws Exception {
-        String cid = decodeCid(effect.payload());
+        CredentialRequest request = decodeCredentialRequest(effect.payload());
         // MUST be idempotent on effect.idHash() — the same effect may re-run.
         // ctx.submittedRef() is non-empty on a re-poll of a prior Submitted;
         // probe by it instead of acting again.
-        pin(cid, effect.idHash());
-        return EffectExecution.confirmed(cid.getBytes());        // or .failed(reason, retryable),
+        byte[] credentialId = issue(issuerUrl, request, effect.idHash());
+        return EffectExecution.confirmed(credentialId);          // or .failed(reason, retryable),
                                                                  // .submitted(ref), .retry(duration)
     }
 }
 
-public class IpfsExecutorFactory implements AppEffectExecutorFactory {
-    @Override public String scheme() { return "ipfs"; }         // config ns: effects.executors.ipfs.*
+public class CredentialExecutorFactory implements AppEffectExecutorFactory {
+    @Override public String scheme() { return "credential"; }   // config ns: effects.executors.credential.*
     @Override public List<AppEffectExecutor> create(String chainId, Map<String, String> config) {
-        return config.containsKey("api-url")
-                ? List.of(new IpfsPinExecutor(config)) : List.of();
+        return config.containsKey("issuer-url")
+                ? List.of(new CredentialIssueExecutor(config)) : List.of();
     }
 }
 ```
@@ -1593,20 +1631,20 @@ public class IpfsExecutorFactory implements AppEffectExecutorFactory {
 Register it via
 `META-INF/services/com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutorFactory`
 (one line: the factory's fully-qualified name), and add
-`META-INF/yano/plugins/com.example.ipfs.json`:
+`META-INF/yano/plugins/com.example.credential.json`:
 
 ```json
 {
   "schemaVersion": 1,
-  "id": "com.example.ipfs",
+  "id": "com.example.credential",
   "version": "1.0.0",
   "yanoApi": { "min": 1, "max": 1, "minLevel": 1 },
   "dependencies": [],
   "contributions": [
     {
       "kind": "effect-executor",
-      "name": "ipfs",
-      "provider": "com.example.ipfs.IpfsExecutorFactory"
+      "name": "credential",
+      "provider": "com.example.credential.CredentialExecutorFactory"
     }
   ]
 }
@@ -1617,7 +1655,7 @@ the ServiceLoader entry and the factory's `scheme()` exactly. For JVM
 directory deployment, package the provider and all non-host runtime
 dependencies in one self-contained bundle JAR, drop that JAR in the plugin
 directory, and configure
-`yano.app-chain.effects.executors.ipfs.api-url=...`. Adjacent thin dependency
+`yano.app-chain.effects.executors.credential.issuer-url=...`. Adjacent thin dependency
 JARs are separate catalog artifacts, not one bundle. A native deployment must
 include and map the manifested bundle at application build time; an existing
 native executable cannot load it from the plugin directory.

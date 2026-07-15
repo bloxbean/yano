@@ -30,6 +30,7 @@ include 'appchain-client'
 include 'appchain-integration-contracts'
 include 'appchain-kafka'
 include 'appchain-objectstore-s3'
+include 'appchain-ipfs'
 include 'appchain-effects-cardano'
 include 'appchain-zk'
 include 'appchain-spring-boot-starter'
@@ -44,6 +45,7 @@ project(':appchain-integration-contracts').projectDir =
 project(':appchain-kafka').projectDir = file('appchain/extensions/appchain-kafka')
 project(':appchain-objectstore-s3').projectDir =
         file('appchain/extensions/appchain-objectstore-s3')
+project(':appchain-ipfs').projectDir = file('appchain/extensions/appchain-ipfs')
 project(':appchain-effects-cardano').projectDir = file('appchain/extensions/appchain-effects-cardano')
 project(':appchain-zk').projectDir = file('appchain/extensions/appchain-zk')
 project(':appchain-plugin-conformance').projectDir =
