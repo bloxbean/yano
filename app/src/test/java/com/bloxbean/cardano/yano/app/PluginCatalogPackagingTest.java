@@ -68,6 +68,7 @@ class PluginCatalogPackagingTest {
             "com.bloxbean.cardano.yano.appchain.kafka",
             "com.bloxbean.cardano.yano.appchain.objectstore.s3",
             "com.bloxbean.cardano.yano.appchain.ipfs",
+            "com.bloxbean.cardano.yano.appchain.evidence-registry",
             "com.bloxbean.cardano.yano.appchain.effects.cardano",
             "com.bloxbean.cardano.yano.appchain.zk");
     private static final String CONFORMANCE_BUNDLE =
@@ -127,6 +128,8 @@ class PluginCatalogPackagingTest {
                     environment.providers().names(AppStateMachineProvider.class).stream()
                             .filter(Set.of("credential-registry", "zk-gate", "zk-membership")::contains)
                             .collect(Collectors.toSet()));
+            assertEquals(optionalIncluded, environment.providers().find(
+                    AppStateMachineProvider.class, "evidence-registry").isPresent());
             Set<String> expectedSinks = new java.util.HashSet<>();
             if (optionalIncluded) expectedSinks.add("kafka");
             if (conformanceIncluded) expectedSinks.add("conformance-sink");
@@ -164,6 +167,9 @@ class PluginCatalogPackagingTest {
                     FinalizedStreamSinkFactory.class, "conformance-sink").isPresent());
             assertEquals(conformanceIncluded, environment.providers().find(
                     DomainApiProvider.class, CONFORMANCE_BUNDLE).isPresent());
+            assertEquals(optionalIncluded, environment.providers().find(
+                    DomainApiProvider.class,
+                    "com.bloxbean.cardano.yano.appchain.evidence-registry").isPresent());
             if (conformanceIncluded) {
                 exerciseConformanceProviderFacades(environment);
             }

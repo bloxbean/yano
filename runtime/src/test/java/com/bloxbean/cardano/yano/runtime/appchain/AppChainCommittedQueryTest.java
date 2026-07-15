@@ -1,6 +1,8 @@
 package com.bloxbean.cardano.yano.runtime.appchain;
 
 import com.bloxbean.cardano.client.crypto.KeyGenUtil;
+import com.bloxbean.cardano.vds.core.api.NodeStore;
+import com.bloxbean.cardano.vds.mpf.MpfTrie;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
@@ -9,6 +11,7 @@ import com.bloxbean.cardano.yano.api.appchain.AppQueryContext;
 import com.bloxbean.cardano.yano.api.appchain.AppQueryException;
 import com.bloxbean.cardano.yano.api.appchain.AppQueryResult;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
+import com.bloxbean.cardano.yano.api.appchain.AppStateProofSnapshot;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
 import com.bloxbean.cardano.yano.runtime.plugins.PluginProviderRegistry;
 import org.junit.jupiter.api.AfterEach;
@@ -187,6 +190,60 @@ class AppChainCommittedQueryTest {
             machine.releaseQuery.countDown();
             caller.shutdownNow();
         }
+    }
+
+    @Test
+    void proofSnapshotsBindValueProofRootAndHeightAcrossLaterCommits()
+            throws Exception {
+        SnapshotQueryMachine machine = new SnapshotQueryMachine();
+        AppChainSubsystem node = create(
+                "proof-snapshot", machine, PluginProviderRegistry.empty(), 75);
+        byte[] key = "color".getBytes(StandardCharsets.UTF_8);
+        byte[] missingKey = "missing".getBytes(StandardCharsets.UTF_8);
+
+        assertThat(node.stateProofSnapshot(key)).isEmpty();
+        node.start();
+        assertThat(node.stateProofSnapshot(key)).isEmpty();
+
+        node.submit("kv", "color=blue".getBytes(StandardCharsets.UTF_8));
+        awaitTrue("first proof state block", () -> node.tipHeight() >= 1);
+
+        AppStateProofSnapshot first = node.stateProofSnapshot(key).orElseThrow();
+        assertThat(first.key()).containsExactly(key);
+        assertThat(new String(first.value(), StandardCharsets.UTF_8)).isEqualTo("blue");
+        assertThat(first.stateRoot()).containsExactly(
+                node.block(first.committedHeight()).orElseThrow().stateRoot());
+        assertThat(verifies(first, true)).isTrue();
+
+        AppStateProofSnapshot exclusion = node.stateProofSnapshot(missingKey).orElseThrow();
+        assertThat(exclusion.key()).containsExactly(missingKey);
+        assertThat(exclusion.value()).isNull();
+        assertThat(exclusion.committedHeight()).isEqualTo(first.committedHeight());
+        assertThat(exclusion.stateRoot()).containsExactly(first.stateRoot());
+        assertThat(verifies(exclusion, false)).isTrue();
+
+        node.submit("kv", "color=green".getBytes(StandardCharsets.UTF_8));
+        awaitTrue("second proof state block", () -> node.tipHeight() >= 2);
+        AppStateProofSnapshot second = node.stateProofSnapshot(key).orElseThrow();
+
+        assertThat(second.committedHeight()).isGreaterThan(first.committedHeight());
+        assertThat(new String(second.value(), StandardCharsets.UTF_8)).isEqualTo("green");
+        assertThat(second.stateRoot()).containsExactly(
+                node.block(second.committedHeight()).orElseThrow().stateRoot());
+        assertThat(verifies(second, true)).isTrue();
+        assertThat(verifies(first, true)).isTrue();
+
+        byte[] exposedValue = first.value();
+        byte[] exposedWire = first.proofWire();
+        byte[] exposedRoot = first.stateRoot();
+        exposedValue[0] ^= 1;
+        exposedWire[0] ^= 1;
+        exposedRoot[0] ^= 1;
+        assertThat(new String(first.value(), StandardCharsets.UTF_8)).isEqualTo("blue");
+        assertThat(verifies(first, true)).isTrue();
+
+        node.stop();
+        assertThat(node.stateProofSnapshot(key)).isEmpty();
     }
 
     @Test
@@ -380,6 +437,26 @@ class AppChainCommittedQueryTest {
         byte[] bytes = new byte[32];
         Arrays.fill(bytes, (byte) value);
         return bytes;
+    }
+
+    private static boolean verifies(AppStateProofSnapshot snapshot, boolean inclusion) {
+        MpfTrie verifier = new MpfTrie(new NodeStore() {
+            @Override
+            public byte[] get(byte[] hash) {
+                return null;
+            }
+
+            @Override
+            public void put(byte[] hash, byte[] nodeBytes) {
+            }
+
+            @Override
+            public void delete(byte[] hash) {
+            }
+        });
+        return verifier.verifyProofWire(
+                snapshot.stateRoot(), snapshot.key(), snapshot.value(), inclusion,
+                snapshot.proofWire());
     }
 
     @FunctionalInterface

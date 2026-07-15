@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "id": "com.bloxbean.cardano.yano.appchain.evidence-registry",
+  "version": "0.1.0-pre9",
+  "yanoApi": { "min": 1, "max": 1, "minLevel": 1 },
+  "dependencies": [],
+  "contributions": [
+    {
+      "kind": "app-state-machine",
+      "name": "evidence-registry",
+      "provider": "com.bloxbean.cardano.yano.appchain.examples.evidence.EvidenceRegistryStateMachineProvider"
+    },
+    {
+      "kind": "domain-api",
+      "name": "com.bloxbean.cardano.yano.appchain.evidence-registry",
+      "provider": "com.bloxbean.cardano.yano.appchain.examples.evidence.EvidenceRegistryDomainApiProvider"
+    }
+  ]
+}

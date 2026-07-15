@@ -1342,6 +1342,16 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     }
 
     @Override
+    public Optional<AppStateProofSnapshot> stateProofSnapshot(byte[] key) {
+        byte[] keySnapshot = Objects.requireNonNull(key, "key").clone();
+        return generationUseOr(Optional.empty(), () -> {
+            AppLedgerStore currentLedger = ledger;
+            return currentLedger != null
+                    ? currentLedger.stateProofSnapshot(keySnapshot) : Optional.empty();
+        });
+    }
+
+    @Override
     public AppQueryResult query(String path, byte[] request) {
         long deadline = System.nanoTime()
                 + TimeUnit.SECONDS.toNanos(QUERY_TIMEOUT_SECONDS);

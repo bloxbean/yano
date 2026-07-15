@@ -1399,6 +1399,12 @@ public class YanoProducer {
         }
 
         @Override
+        public java.util.Optional<com.bloxbean.cardano.yano.api.appchain.AppStateProofSnapshot>
+                stateProofSnapshot(byte[] key) {
+            throw unavailableRole("AppChainGateway");
+        }
+
+        @Override
         public java.util.Optional<Long> messageHeight(byte[] messageId) {
             throw unavailableRole("AppChainGateway");
         }

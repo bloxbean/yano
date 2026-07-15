@@ -22,7 +22,7 @@ fi
 
 "${REPOSITORY_DIR}/gradlew" \
     :appchain-integration-contracts:generateConnectorAggregateCddl >/dev/null
-"${CDDL_BIN}" compile-cddl --cddl "${AGGREGATE}"
+"${CDDL_BIN}" --ci compile-cddl --cddl "${AGGREGATE}"
 
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/yano-connector-cddl.XXXXXX")"
 trap 'rm -rf "${WORK_DIR}"' EXIT
@@ -61,7 +61,7 @@ for vector_name in "${VECTOR_NAMES[@]}"; do
         sed -n '1,$p' "${AGGREGATE}"
     } >"${schema}"
     printf '%s' "${value}" | xxd -r -p >"${binary}"
-    "${CDDL_BIN}" validate --cddl "${schema}" --cbor "${binary}"
+    "${CDDL_BIN}" --ci validate --cddl "${schema}" --cbor "${binary}"
 done
 
 echo "Validated ${#VECTOR_NAMES[@]} connector vectors with ${CDDL_BIN}."
