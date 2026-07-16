@@ -540,16 +540,7 @@ public class AppChainResource {
                             .entity(Map.of("error", "No app block at height " + height)).build());
         }
 
-        /**
-         * MPF inclusion proof for a state key (hex). For the built-in ordered-log
-         * app the key is the message id; the proof verifies the message's finalized
-         * position against the (anchorable) state root.
-         */
-        /**
-         * Portable, offline-verifiable evidence bundle for a finalized message
-         * (ADR 006 E3.4): block(s) + members + L1 anchor reference. Verify with
-         * core-api's {@code EvidenceVerifier} — no node access needed.
-         */
+        /** Request body for creating an app-chain ledger snapshot. */
         public record SnapshotRequest(String path) {
         }
 
@@ -982,6 +973,12 @@ public class AppChainResource {
             }
         }
 
+        /**
+         * Portable evidence material for a finalized message (ADR 006 E3.4):
+         * block(s), claimed members, and L1 anchor reference. Authenticity
+         * requires an independently pinned trust context plus verification of
+         * the exact Cardano anchor output/datum.
+         */
         @GET
         @Path("evidence/{messageIdHex}")
         public Response evidence(@PathParam("messageIdHex") String messageIdHex) {
@@ -999,6 +996,11 @@ public class AppChainResource {
                             .entity(Map.of("error", "No finalized message with id " + messageIdHex)).build());
         }
 
+        /**
+         * MPF inclusion proof for a state key (hex). For the built-in ordered-log
+         * app the key is the message id; the proof verifies the message's finalized
+         * position against the (anchorable) state root.
+         */
         @GET
         @Path("proof/{keyHex}")
         public Response proof(@Encoded @PathParam("keyHex") String keyHex) {

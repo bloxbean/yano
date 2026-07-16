@@ -140,15 +140,24 @@ Base-roadmap prerequisites (ADR-005 scope, tracked there, blocking items above):
   `subscribeTyped` take encode/decode functions (keeps the SDK decoupled from
   core-api) with a wire-compatible `CborCodec`. Framework stays blob-first.
 - **E3.4 audit export**: `EvidenceBundle`/`EvidenceVerifier`/`EvidenceBundleCodec`
-  — a portable proof (block(s) + members + L1 anchor ref) verified offline:
-  recompute block hashes + messages-root, verify certs against members, confirm
-  inclusion, and (when anchored) that the prev-hash chain links to the anchored
-  block. `AnchorService` persists its confirmed-anchor record. REST
+  — portable proof material (block(s) + bundle-claimed members + L1 anchor ref).
+  The verifier recomputes block hashes and messages-roots, verifies certificates
+  against an independently pinned chain/member/threshold context, confirms
+  message-id inclusion, and checks the prev-hash chain to the claimed anchor.
+  Completing the L1 proof additionally requires fetching the transaction output
+  and matching its exact metadata payload or script state-thread inline datum.
+  The portable segment is capped at 4,096 blocks and at one configured
+  block-byte budget (never above the framework 16 MiB maximum); if the anchor
+  segment exceeds either bound, the export remains a one-block finalized
+  proof without an anchor reference. This bounds CBOR plus its hex/JSON
+  expansion. State-value MPF proofs remain a separate endpoint/artifact.
+  `AnchorService` persists its confirmed-anchor record. REST
   `/evidence/{messageId}`.
 - **E4.4 retention**: `pruneBodiesBelow` strips message bodies below the
-  L1_FINAL anchor while keeping headers, ids, roots and certs — proofs and
-  evidence stay valid (with encrypted bodies, crypto-shredding). Companion to
-  E5.3 for onboarding past the prune horizon.
+  L1_FINAL anchor while keeping headers, ids, roots and certs. Evidence still
+  proves the retained message-id inclusion, but no longer authenticates the
+  original body/envelope content (with encrypted bodies, crypto-shredding).
+  Companion to E5.3 for onboarding past the prune horizon.
 - **E4.2 encrypted bodies**: `BodyCipher` (core-api) + `GroupCipher` (SDK),
   identical AES-256-GCM wire format with the topic as AAD; chain carries
   ciphertext, never the plaintext or key. Encrypt/decrypt at the edges.
@@ -274,7 +283,7 @@ a reference implementation for custom machines.
 | E3.1 | **Push consumption**: SSE/WebSocket stream of finalized messages (`GET /app-chain/stream?topic=...&fromHeight=...`) + webhook sink with per-consumer cursor and at-least-once redelivery | T1 | M |
 | E3.2 | **`FinalizedStreamSink` SPI + Kafka bridge plugin** (finalized blocks → topics, exactly-once per height, optional proof attached per record) | T3 | M |
 | E3.3 | **Query surface**: paged block range API, message lookup by id (height + block position), sender/topic secondary indexes via `StateQueryIndex` | T1/T2 | M |
-| E3.4 | **Signed audit export**: portable evidence bundle per record or range — block header, finality cert, MPF proof, anchor tx reference — as a single JSON/CBOR file an auditor can verify offline with the client SDK | T1 | S–M |
+| E3.4 | **Signed audit export**: portable evidence material per record or range — block header, finality cert, message-id inclusion, and anchor tx reference — as JSON/CBOR verified against an independently trusted chain profile. MPF state proofs and the Cardano output/datum lookup are separate verification inputs. | T1 | S–M |
 
 ### E4 — Enterprise security & compliance
 
@@ -283,7 +292,7 @@ a reference implementation for custom machines.
 | E4.1 | **REST authn/authz**: API-key/mTLS/OIDC via standard Quarkus security for `/app-chain/*`, per-topic submit permissions | T1 (config) | S–M |
 | E4.2 | **Encrypted bodies**: optional envelope encryption of message bodies with a group key (config/KMS-provided); the chain remains blob-first — ordering, proofs and anchors work unchanged over ciphertext; decryption is client/state-machine side. Per-topic keys enable need-to-know inside one chain | T2 + T4 | M |
 | E4.3 | **KMS/HSM signing** via `SignerProvider` plugins (PKCS#11, AWS KMS, Vault) for member and anchor keys — removes raw seeds from config files, usually the first enterprise security review finding | T3 | M |
-| E4.4 | **Retention & pruning with proof preservation**: prune message bodies below the last `L1_FINAL` anchor while keeping headers, roots and the message index — GDPR/data-minimization compatible because anchored roots stay verifiable; combined with E4.2, "crypto-shredding" (destroy the key) erases content while preserving evidence | T1 | M |
+| E4.4 | **Retention & pruning with proof preservation**: prune message bodies below the last `L1_FINAL` anchor while keeping headers, roots and the message index — anchored message-id inclusion stays verifiable, while the original body is explicitly no longer content-verified; combined with E4.2, "crypto-shredding" (destroy the key) erases content while preserving the commitment | T1 | M |
 | E4.5 | **Key rotation runbook + tooling**: staged member-key rotation (add new key, re-threshold, retire old) as an admin API — interim measure until chain-governed membership (005 D6) ships | T1 | M |
 
 ### E5 — Operations

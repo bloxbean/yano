@@ -1,5 +1,6 @@
 package com.bloxbean.cardano.yano.api.appchain;
 
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -88,6 +89,31 @@ public record AppChainConfig(String chainId,
     public static final int DEFAULT_MAX_BLOCK_MESSAGES = 5000;
     public static final String DEFAULT_STATE_MACHINE = "ordered-log";
     public static final int DEFAULT_POOL_MAX_MESSAGES = 10_000;
+    /** Maximum UTF-8 size of a chain identity in blocks, evidence, and anchor datum v1. */
+    public static final int MAX_CHAIN_ID_BYTES = 128;
+    /** Maximum membership size representable by the v1 finality/evidence/anchor profile. */
+    public static final int MAX_MEMBERS = 32;
+    /** Maximum serialized app-block size accepted by the v1 runtime/evidence profile. */
+    public static final long MAX_BLOCK_BYTES = 16L * 1024 * 1024;
+    /** Conservative non-body bytes for one maximal v1 message and block header. */
+    public static final int BLOCK_ENVELOPE_HEADROOM_BYTES = 1_024;
+    /** Conservative encoded bytes reserved per possible finality signature. */
+    public static final int CERT_SIGNATURE_HEADROOM_BYTES = 128;
+    /** Certificate growth reserved for the maximal v1 membership, including governed growth. */
+    public static final int MAX_FINALITY_CERT_HEADROOM_BYTES =
+            CERT_SIGNATURE_HEADROOM_BYTES * MAX_MEMBERS;
+    /** Worst-case headroom for a finalized block under the maximal member profile. */
+    public static final int MAX_FINALIZED_BLOCK_HEADROOM_BYTES =
+            BLOCK_ENVELOPE_HEADROOM_BYTES + MAX_FINALITY_CERT_HEADROOM_BYTES;
+    /** Maximum opaque message body accepted by the v1 runtime/evidence profile. */
+    public static final int MAX_MESSAGE_BYTES =
+            (int) MAX_BLOCK_BYTES - MAX_FINALIZED_BLOCK_HEADROOM_BYTES;
+    /** Maximum messages whose signatures may be verified in one v1 block. */
+    public static final int MAX_BLOCK_MESSAGES = 10_000;
+    /** Maximum UTF-8 topic size in a v1 app-message envelope. */
+    public static final int MAX_TOPIC_BYTES = 256;
+    /** Exact Ed25519 signature/proof size in the v1 message and finality profile. */
+    public static final int ED25519_SIGNATURE_BYTES = 64;
 
     /** Pre-008.1 signature (no pool capacity / seq enforcement) — kept for source compatibility. */
     public AppChainConfig(String chainId, String signingKeyHex, Set<String> memberKeysHex,
@@ -106,13 +132,24 @@ public record AppChainConfig(String chainId,
 
     public AppChainConfig {
         Objects.requireNonNull(chainId, "chainId");
-        if (chainId.isBlank())
-            throw new IllegalArgumentException("chainId must not be blank");
+        if (chainId.isBlank() || chainId.indexOf('\0') >= 0
+                || !StandardCharsets.UTF_8.newEncoder().canEncode(chainId)
+                || chainId.getBytes(StandardCharsets.UTF_8).length > MAX_CHAIN_ID_BYTES) {
+            throw new IllegalArgumentException("chainId must be 1.." + MAX_CHAIN_ID_BYTES
+                    + " valid UTF-8 bytes without NUL");
+        }
         Objects.requireNonNull(signingKeyHex, "signingKeyHex (yano.app-chain.signing-key) is required");
         memberKeysHex = memberKeysHex != null ? Set.copyOf(memberKeysHex) : Set.of();
+        if (memberKeysHex.size() > MAX_MEMBERS) {
+            throw new IllegalArgumentException("members must contain at most " + MAX_MEMBERS
+                    + " keys");
+        }
         peers = peers != null ? List.copyOf(peers) : List.of();
         if (maxMessageBytes <= 0)
             maxMessageBytes = DEFAULT_MAX_MESSAGE_BYTES;
+        if (maxMessageBytes > MAX_MESSAGE_BYTES)
+            throw new IllegalArgumentException("max-message-bytes must be <= "
+                    + MAX_MESSAGE_BYTES);
         if (maxTtlSeconds <= 0)
             maxTtlSeconds = DEFAULT_MAX_TTL_SECONDS;
         if (defaultTtlSeconds <= 0)
@@ -124,11 +161,21 @@ public record AppChainConfig(String chainId,
             blockIntervalMs = DEFAULT_BLOCK_INTERVAL_MS;
         if (maxBlockMessages <= 0)
             maxBlockMessages = DEFAULT_MAX_BLOCK_MESSAGES;
+        if (maxBlockMessages > MAX_BLOCK_MESSAGES)
+            throw new IllegalArgumentException("block.max-messages must be <= "
+                    + MAX_BLOCK_MESSAGES);
         if (blockMaxBytes <= 0)
             blockMaxBytes = DEFAULT_BLOCK_MAX_BYTES;
-        // A block must hold at least one full-size message.
-        if (blockMaxBytes < maxMessageBytes)
-            blockMaxBytes = maxMessageBytes;
+        if (blockMaxBytes > MAX_BLOCK_BYTES)
+            throw new IllegalArgumentException("block.max-bytes must be <= "
+                    + MAX_BLOCK_BYTES);
+        long requiredSingleMessageBytes = (long) maxMessageBytes
+                + BLOCK_ENVELOPE_HEADROOM_BYTES
+                + MAX_FINALITY_CERT_HEADROOM_BYTES;
+        if (blockMaxBytes < requiredSingleMessageBytes)
+            throw new IllegalArgumentException("block.max-bytes must reserve the v1 finalized "
+                    + "envelope/certificate headroom (minimum "
+                    + requiredSingleMessageBytes + " for this profile)");
         if (stateMachineId == null || stateMachineId.isBlank())
             stateMachineId = DEFAULT_STATE_MACHINE;
         webhookUrls = webhookUrls != null ? List.copyOf(webhookUrls) : List.of();
@@ -218,6 +265,16 @@ public record AppChainConfig(String chainId,
 
     public boolean anchoringEnabled() {
         return anchor != null && anchor.enabled();
+    }
+
+    /** Bytes reserved in a proposal so adding a maximal valid certificate stays within the block cap. */
+    public long finalityCertHeadroomBytes() {
+        return MAX_FINALITY_CERT_HEADROOM_BYTES;
+    }
+
+    /** Maximum empty-certificate proposal size for this membership profile. */
+    public long proposalMaxBytes() {
+        return blockMaxBytes - finalityCertHeadroomBytes();
     }
 
     /**

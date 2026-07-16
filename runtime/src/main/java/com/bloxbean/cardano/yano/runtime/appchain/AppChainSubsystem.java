@@ -13,6 +13,8 @@ import com.bloxbean.cardano.yaci.events.api.EventBus;
 import com.bloxbean.cardano.yaci.events.api.EventMetadata;
 import com.bloxbean.cardano.yaci.events.api.PublishOptions;
 import com.bloxbean.cardano.yano.api.appchain.*;
+import com.bloxbean.cardano.yano.api.appchain.codec.AppBlockCodec;
+import com.bloxbean.cardano.yano.api.appchain.evidence.EvidenceBundle;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutorFactory;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectView;
 import com.bloxbean.cardano.yano.api.appchain.sequencer.SequencerModeProvider;
@@ -27,6 +29,7 @@ import com.bloxbean.cardano.yano.runtime.plugins.PluginProviderRegistry;
 import com.bloxbean.cardano.yano.runtime.util.LifecycleFailures;
 import org.slf4j.Logger;
 
+import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CompletableFuture;
@@ -64,9 +67,6 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     private static final int MAX_QUERY_REQUEST_BYTES = 64 * 1024;
     private static final int MAX_QUERY_RESULT_BYTES = 1024 * 1024;
     private static final String SYSTEM_TOPIC_PREFIX = "~";
-    private static final String CONSENSUS_TOPIC_PREFIX = "~consensus/";
-    /** Script-anchor co-signing (008.4): diffusion-only, never pooled/sequenced. */
-    private static final String ANCHOR_TOPIC_PREFIX = "~anchor/";
 
     private final AppChainConfig config;
     private final long protocolMagic;
@@ -838,6 +838,20 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
      * Structural checks (id recompute, size, TTL, chain) already ran in the agent.
      */
     AppMsgValidator.Result verifyEnvelope(AppMessage message) {
+        String topic = message == null ? null : message.getTopic();
+        if (message == null || message.getVersion() != AppMessage.ENVELOPE_VERSION
+                || !config.chainId().equals(message.getChainId())
+                || message.getMessageId() == null || message.getMessageId().length != 32
+                || !validTopic(topic)
+                || message.getSender() == null || message.getSender().length != 32
+                || message.getSenderSeq() < 0 || message.getExpiresAt() < 0
+                || !validEnvelopeBodyProfile(topic, message.getBody())
+                || message.getAuthProof() == null
+                || message.getAuthProof().length != AppChainConfig.ED25519_SIGNATURE_BYTES
+                || !message.hasValidMessageId()) {
+            countDrop("bad_profile");
+            return AppMsgValidator.Result.reject("invalid app-message v1 profile");
+        }
         if (message.getAuthScheme() != AuthScheme.ED25519.getValue()) {
             countDrop("bad_auth");
             return AppMsgValidator.Result.reject("unsupported auth scheme: " + message.getAuthScheme());
@@ -867,6 +881,19 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         }
 
         return AppMsgValidator.Result.accept();
+    }
+
+    boolean validEnvelopeBodyProfile(String topic, byte[] body) {
+        if (body == null) {
+            return false;
+        }
+        long bodyLimit = switch (topic == null ? "" : topic) {
+            case ConsensusCodec.TOPIC_PROPOSE -> config.proposalMaxBytes();
+            case ConsensusCodec.TOPIC_VOTE -> ConsensusCodec.MAX_VOTE_BYTES;
+            case ConsensusCodec.TOPIC_CERT -> ConsensusCodec.MAX_CERT_NOTICE_BYTES;
+            default -> config.maxMessageBytes();
+        };
+        return body.length <= bodyLimit;
     }
 
     /**
@@ -1045,7 +1072,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             String topic = message.getTopic() != null ? message.getTopic() : "";
             // Only ~consensus/* gets the engine fast-path; other system topics
             // (~governance/*) are SEQUENCED like ordinary messages (008.3)
-            if (topic.startsWith(CONSENSUS_TOPIC_PREFIX)) {
+            if (topic.startsWith(AppChainSystemTopics.CONSENSUS_DIFFUSION_PREFIX)) {
                 // Consensus/system messages: relay only on first sighting (loop
                 // control) but ALWAYS route — the engine is idempotent (round
                 // guards, vote locks), and partial-round re-gossip (008.2) must
@@ -1068,7 +1095,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             // ~anchor/* (008.4): diffusion-only co-signing traffic — relayed
             // but never pooled/sequenced; the leader re-diffuses each tick, so
             // first-sighting delivery is enough
-            if (topic.startsWith(ANCHOR_TOPIC_PREFIX)) {
+            if (topic.startsWith(AppChainSystemTopics.ANCHOR_DIFFUSION_PREFIX)) {
                 relay(message);
                 ScriptAnchorService currentScriptAnchor = scriptAnchorService;
                 if (currentScriptAnchor != null) {
@@ -1094,7 +1121,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
 
     private void route(AppMessage message, ReceivedAppMessage.Source source) {
         String topic = message.getTopic() != null ? message.getTopic() : "";
-        if (topic.startsWith(CONSENSUS_TOPIC_PREFIX)) {
+        if (topic.startsWith(AppChainSystemTopics.CONSENSUS_DIFFUSION_PREFIX)) {
             AppChainEngine currentEngine = engine;
             if (currentEngine != null) {
                 currentEngine.onConsensusMessage(message);
@@ -1172,6 +1199,10 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
 
     /** Build and sign an envelope on the given topic — NOT yet diffused. */
     private AppMessage buildSigned(String topic, byte[] body, long ttlSeconds) {
+        if (!validTopic(topic) || !validEnvelopeBodyProfile(topic, body)) {
+            throw new IllegalArgumentException(
+                    "Internal app message is outside the v1 topic/body profile");
+        }
         long expiresAt = System.currentTimeMillis() / 1000 + ttlSeconds;
         long seq = senderSeq.incrementAndGet();
         byte[] signedBody = AppMessage.signedBodyBytes(config.chainId(), topic,
@@ -1271,8 +1302,9 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         String effectiveTopic = topic != null ? topic : "";
         if (effectiveTopic.startsWith(SYSTEM_TOPIC_PREFIX))
             throw new IllegalArgumentException("Topics starting with '~' are reserved for the framework");
-        if (effectiveTopic.indexOf('\u0000') >= 0)
-            throw new IllegalArgumentException("Topics must not contain NUL characters");
+        if (!validTopic(effectiveTopic))
+            throw new IllegalArgumentException("topic must be at most "
+                    + AppChainConfig.MAX_TOPIC_BYTES + " valid UTF-8 bytes without NUL");
 
         // Admit locally BEFORE diffusing — a message this node cannot hold must
         // not be half-way into the network with an "accepted" id (ADR 008.1 I1.1)
@@ -1289,6 +1321,13 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         log.info("App message submitted: id={}, chain={}, topic={}, seq={}",
                 message.getMessageIdHex(), config.chainId(), effectiveTopic, message.getSenderSeq());
         return message.getMessageIdHex();
+    }
+
+    private static boolean validTopic(String topic) {
+        return topic != null && topic.indexOf('\0') < 0
+                && StandardCharsets.UTF_8.newEncoder().canEncode(topic)
+                && topic.getBytes(StandardCharsets.UTF_8).length
+                <= AppChainConfig.MAX_TOPIC_BYTES;
     }
 
     @Override
@@ -2284,15 +2323,54 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         // inside the range would need per-block member sets in the bundle.
         boolean sameEpoch = haveAnchor && group.epochAt(anchoredHeight) == epoch;
         boolean anchored = haveAnchor && sameEpoch
-                && (anchoredHeight - messageHeight) <= MAX_EVIDENCE_CHAIN_BLOCKS;
+                && evidenceChainFits(messageHeight, anchoredHeight);
         if (haveAnchor && !anchored) {
-            log.debug("Evidence for message at height {} omits anchor chain: gap {} exceeds {}",
+            log.debug("Evidence for message at height {} omits anchor chain: gap {} reaches/exceeds {}",
                     messageHeight, anchoredHeight - messageHeight, MAX_EVIDENCE_CHAIN_BLOCKS);
         }
-        long toHeight = anchored ? anchoredHeight : messageHeight;
-        for (long h = messageHeight; h <= toHeight; h++) {
-            Optional<AppBlock> block = currentLedger.block(h);
+        long evidenceByteLimit = Math.min(config.blockMaxBytes(),
+                EvidenceBundle.MAX_TOTAL_BLOCK_CBOR_BYTES);
+        if (anchored) {
+            long accumulatedBytes = 0;
+            for (long h = messageHeight; ; h++) {
+                Optional<AppBlock> block = currentLedger.block(h);
+                if (block.isEmpty()) {
+                    return Optional.empty();
+                }
+                int encodedBytes;
+                try {
+                    encodedBytes = AppBlockCodec.serialize(block.get()).length;
+                } catch (RuntimeException malformed) {
+                    return Optional.empty();
+                }
+                if (!evidenceBytesFit(accumulatedBytes, encodedBytes,
+                        evidenceByteLimit)) {
+                    log.debug("Evidence for message at height {} omits anchor chain: "
+                                    + "canonical segment exceeds {} bytes",
+                            messageHeight, evidenceByteLimit);
+                    anchored = false;
+                    blocks.clear();
+                    break;
+                }
+                accumulatedBytes += encodedBytes;
+                blocks.add(block.get());
+                if (h == anchoredHeight) {
+                    break;
+                }
+            }
+        }
+        if (!anchored) {
+            Optional<AppBlock> block = currentLedger.block(messageHeight);
             if (block.isEmpty()) {
+                return Optional.empty();
+            }
+            int encodedBytes;
+            try {
+                encodedBytes = AppBlockCodec.serialize(block.get()).length;
+            } catch (RuntimeException malformed) {
+                return Optional.empty();
+            }
+            if (!evidenceBytesFit(0, encodedBytes, evidenceByteLimit)) {
                 return Optional.empty();
             }
             blocks.add(block.get());
@@ -2308,6 +2386,16 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     }
 
     private static final long MAX_EVIDENCE_CHAIN_BLOCKS = 4096;
+
+    static boolean evidenceChainFits(long messageHeight, long anchoredHeight) {
+        return messageHeight >= 1 && anchoredHeight >= messageHeight
+                && anchoredHeight - messageHeight < MAX_EVIDENCE_CHAIN_BLOCKS;
+    }
+
+    static boolean evidenceBytesFit(long accumulated, long next, long limit) {
+        return accumulated >= 0 && next >= 0 && limit >= 0
+                && next <= limit && accumulated <= limit - next;
+    }
 
     @Override
     public Map<String, Object> status() {

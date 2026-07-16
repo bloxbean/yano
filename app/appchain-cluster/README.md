@@ -45,6 +45,7 @@ YANO_NATIVE=/downloads/yano YANO_HOME=/data/yano ./cluster.sh start 3
 | `YANO_JAR` | explicit uber-jar path (any location) | auto-detect under `YANO_HOME` |
 | `YANO_NATIVE` | explicit native-binary path | auto-detect under `YANO_HOME` |
 | `YANO_CLUSTER_API_KEY` | full key for privileged local-cluster operations | `yano-local-cluster-full-key` |
+| `YANO_CLUSTER_NODE_CONFIG_DIR` | optional directory of private per-node configuration overlays | unset |
 
 `loadtest.sh` and `soaktest.sh` need **no binary at all** — they only hit a
 running cluster's HTTP ports. They target the public READ/SUBMIT policy used by
@@ -88,6 +89,52 @@ Outside this demo launcher, configure every real node through a secret source wi
 `YANO_APP_CHAIN_API_KEYS=<unscoped-full-key>`. Also set
 `YANO_APP_CHAIN_API_AUTH_ENABLED=true` when reads and submissions must require
 keys too; no production default exists.
+
+### Private per-node configuration overlays
+
+Connector endpoints and credentials can differ by executor node without being
+expanded into process arguments. Put one Java-properties file per node in a
+private directory and opt in with `YANO_CLUSTER_NODE_CONFIG_DIR`:
+
+```bash
+install -d -m 700 /tmp/yano-node-config
+install -m 600 config/node0.properties /tmp/yano-node-config/node0.properties
+install -m 600 config/node1.properties /tmp/yano-node-config/node1.properties
+install -m 600 config/node2.properties /tmp/yano-node-config/node2.properties
+
+YANO_CLUSTER_NODE_CONFIG_DIR=/tmp/yano-node-config ./cluster.sh start 3
+```
+
+For an `N`-node start, the directory's `node*.properties` set must be exactly
+`node0.properties` through `node<N-1>.properties`; stale or malformed node
+overlay names are rejected. Unrelated support files such as trust stores are
+permitted. Each overlay must be a readable regular file, not a symlink, remain
+inside the canonical configured directory, be owned by the launcher account,
+and grant no group or world permissions (`chmod 600` is recommended). The
+canonical directory must likewise be launcher-owned and not group or world
+writable (`chmod 700` is recommended). Its canonical ancestors must be owned by
+root or the launcher account; group/world-writable ancestors are rejected unless
+they are sticky directories such as `/tmp`. All files are checked before any
+cluster state is created, and the selected file's path identity, owner, mode,
+grammar, and ancestor chain are checked again immediately before each node is
+launched. Root and processes running as the launcher account remain trusted.
+
+Each file must contain exactly one literal `config_ordinal=275` line. The
+overlay otherwise uses a deliberately small properties grammar: bounded UTF-8,
+one ASCII key and `=` per physical line, with no key escapes or continuations.
+The launcher validates keys but never interpolates or prints values. It rejects
+every other ordinal spelling/value and configuration-location selector keys;
+otherwise a file could raise its own precedence or recursively select another
+source. The launcher selects the corresponding file through the child process's
+`QUARKUS_CONFIG_LOCATIONS=file:///.../node<N>.properties` environment value.
+The fixed overlay ordinal is above packaged/filesystem application config but
+below direct environment values and system properties. Therefore launcher-owned
+API-authentication environment values and system properties (ports, storage,
+membership, and signing keys) remain authoritative even if an overlay repeats
+one. Selecting the file with `-Dquarkus.config.locations`, or omitting the fixed
+ordinal, would incorrectly let it tie a higher-precedence source. When
+`YANO_CLUSTER_NODE_CONFIG_DIR` is unset, startup arguments and behavior are
+unchanged.
 
 ## The chains
 

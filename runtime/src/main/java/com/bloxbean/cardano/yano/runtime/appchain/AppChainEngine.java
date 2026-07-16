@@ -10,6 +10,7 @@ import com.bloxbean.cardano.yano.runtime.util.LifecycleFailures;
 import org.rocksdb.WriteBatch;
 import org.slf4j.Logger;
 
+import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
@@ -64,6 +65,7 @@ final class AppChainEngine implements AutoCloseable {
             new java.util.concurrent.atomic.AtomicLong();
     private final int maxBlockMessages;
     private final long maxBlockBytes;
+    private final long proposalMaxBytes;
     private final EffectsSettings effectsSettings;
     private final FxKernel fxKernel;
     private final FxKernel.FxReader fxReader;
@@ -177,6 +179,10 @@ final class AppChainEngine implements AutoCloseable {
         this.roundTimeoutMs = roundTimeoutMs;
         this.maxBlockMessages = maxBlockMessages;
         this.maxBlockBytes = maxBlockBytes;
+        this.proposalMaxBytes = maxBlockBytes - config.finalityCertHeadroomBytes();
+        if (proposalMaxBytes <= 0) {
+            throw new IllegalArgumentException("block.max-bytes leaves no room for a v1 finality cert");
+        }
         this.broadcast = broadcast;
         this.log = log;
         this.writeBatchFactory = Objects.requireNonNull(writeBatchFactory, "writeBatchFactory");
@@ -283,7 +289,14 @@ final class AppChainEngine implements AutoCloseable {
         executor.execute(() -> {
             for (byte[] blockCbor : blockCbors) {
                 try {
-                    AppBlock block = AppBlockCodec.deserialize(blockCbor);
+                    if (blockCbor == null || blockCbor.length == 0
+                            || blockCbor.length > config.blockMaxBytes()) {
+                        log.warn("Catch-up block exceeds the configured v1 byte profile — "
+                                + "stopping batch");
+                        return;
+                    }
+                    AppBlock block = AppBlockCodec.deserializeCanonical(
+                            blockCbor, config.blockMaxBytes());
                     if (block.height() <= ledger.tipHeight()) {
                         continue; // already have it
                     }
@@ -301,6 +314,9 @@ final class AppChainEngine implements AutoCloseable {
     }
 
     private boolean applyCertifiedBlock(AppBlock block) {
+        if (!validBlockProfile(block, "Catch-up block", false)) {
+            return false;
+        }
         long expectedHeight = ledger.tipHeight() + 1;
         if (block.height() != expectedHeight) {
             log.warn("Catch-up block height {} but expected {} — stopping batch",
@@ -331,9 +347,12 @@ final class AppChainEngine implements AutoCloseable {
         }
         for (AppMessage message : block.messages()) {
             // No TTL check here: these messages were finalized before expiry
-            if (!message.hasValidMessageId() || !verifyMemberSignature(message, block.height())) {
-                log.warn("Catch-up block contains invalid message {} — rejecting",
-                        message.getMessageIdHex());
+            if (!validFinalizedMessageProfile(message)
+                    || !message.hasValidMessageId()
+                    || !verifyMemberSignature(message, block.height())
+                    || !authorizedResultMessage(message)) {
+                log.warn("Catch-up block contains an invalid message at height {} — rejecting",
+                        block.height());
                 return false;
             }
         }
@@ -436,14 +455,20 @@ final class AppChainEngine implements AutoCloseable {
             // proposal exceeds the transport limit and followers silently drop
             // it, stalling the height. Deferred messages stay pooled for the
             // next block (block-bytes fix).
-            if (AppBlockCodec.serialize(candidate).length > maxBlockBytes) {
+            if (AppBlockCodec.serialize(candidate).length > proposalMaxBytes) {
                 candidates = fitToBlockBytes(height, prevHash, l1Ref, timestamp, candidates);
                 if (candidates.isEmpty()) {
                     log.warn("App-chain '{}': cannot fit even one message under block.max-bytes ({}) "
-                            + "at height {} — skipping this round", config.chainId(), maxBlockBytes, height);
+                            + "at height {} — skipping this round", config.chainId(),
+                            proposalMaxBytes, height);
                     return;
                 }
                 candidate = buildCandidateBlock(height, prevHash, l1Ref, timestamp, candidates);
+            }
+            if (AppBlockCodec.serialize(candidate).length > proposalMaxBytes) {
+                log.error("App-chain '{}' produced a proposal above its v1 byte budget at height {}",
+                        config.chainId(), height);
+                return;
             }
 
             AppliedBlock applied = applyBlock(candidate);
@@ -490,7 +515,7 @@ final class AppChainEngine implements AutoCloseable {
     }
 
     private List<AppMessage> selectMessages() {
-        List<AppMessage> candidates = pool.drainCandidates(maxBlockMessages, maxBlockBytes);
+        List<AppMessage> candidates = pool.drainCandidates(maxBlockMessages, proposalMaxBytes);
         // Exclude anything already finalized (re-gossip after restart)
         candidates.removeIf(m -> ledger.messageHeight(m.getMessageId()).isPresent());
         // Sender-seq replay floor (I1.2): drop stale seqs; with enforcement on,
@@ -578,11 +603,22 @@ final class AppChainEngine implements AutoCloseable {
         while (list.size() > 1) {
             int size = AppBlockCodec.serialize(
                     buildCandidateBlock(height, prevHash, l1Ref, timestamp, list)).length;
-            if (size <= maxBlockBytes) {
+            if (size <= proposalMaxBytes) {
                 break;
             }
-            int drop = Math.max(1, (int) ((long) list.size() * (size - maxBlockBytes) / size));
+            int drop = Math.max(1, (int) ((long) list.size()
+                    * (size - proposalMaxBytes) / size));
             list = new ArrayList<>(list.subList(0, list.size() - drop));
+        }
+        if (!list.isEmpty() && AppBlockCodec.serialize(
+                buildCandidateBlock(height, prevHash, l1Ref, timestamp, list)).length
+                > proposalMaxBytes) {
+            AppMessage impossible = list.getFirst();
+            pool.remove(List.of(impossible));
+            log.warn("App-chain '{}': message {} cannot fit in an otherwise empty v1 block "
+                            + "under the proposal byte budget ({}) — dropping it",
+                    config.chainId(), impossible.getMessageIdHex(), proposalMaxBytes);
+            return List.of();
         }
         if (list.size() < candidates.size()) {
             log.info("App-chain '{}': proposal trimmed to fit block.max-bytes — {} of {} messages "
@@ -612,7 +648,19 @@ final class AppChainEngine implements AutoCloseable {
     }
 
     private void handleProposal(AppMessage envelope) {
-        AppBlock block = AppBlockCodec.deserialize(envelope.getBody());
+        if (envelope.getBody() == null || envelope.getBody().length == 0
+                || envelope.getBody().length > proposalMaxBytes) {
+            oversizedProposalsRejected.incrementAndGet();
+            log.warn("Proposal exceeds the v1 proposal byte budget ({} > {}) — rejecting",
+                    envelope.getBody() == null ? 0 : envelope.getBody().length,
+                    proposalMaxBytes);
+            return;
+        }
+        AppBlock block = AppBlockCodec.deserializeCanonical(
+                envelope.getBody(), proposalMaxBytes);
+        if (!validBlockProfile(block, "Proposal", true)) {
+            return;
+        }
         long expectedHeight = ledger.tipHeight() + 1;
 
         if (block.height() <= ledger.tipHeight()) {
@@ -658,17 +706,6 @@ final class AppChainEngine implements AutoCloseable {
             log.warn("Proposal messages-root mismatch — rejecting");
             return;
         }
-        // Size guard (block-bytes fix): a well-behaved leader trims proposals to
-        // fit block.max-bytes. Reject an oversized proposal loudly (a bug or a
-        // misbehaving proposer) — do not silently drop it as the transport did.
-        // The proposal envelope body IS the serialized block.
-        if (envelope.getBody().length > maxBlockBytes) {
-            oversizedProposalsRejected.incrementAndGet();
-            log.warn("Proposal at height {} exceeds block.max-bytes ({} > {}) — rejecting "
-                    + "(the proposer must cap the block; the round will re-propose or rotate)",
-                    block.height(), envelope.getBody().length, maxBlockBytes);
-            return;
-        }
         if (!verifyProposalL1Ref(envelope, block)) {
             return;
         }
@@ -681,15 +718,11 @@ final class AppChainEngine implements AutoCloseable {
         // proposals — block-bytes fix).
         long now = System.currentTimeMillis() / 1000;
         for (AppMessage message : block.messages()) {
-            if (!message.hasValidMessageId() || message.isExpired(now)
+            if (!validFinalizedMessageProfile(message)
+                    || !message.hasValidMessageId() || message.isExpired(now)
                     || !verifyMemberSignature(message, block.height())) {
-                log.warn("Proposal contains invalid message {} — rejecting block",
-                        message.getMessageIdHex());
-                return;
-            }
-            if (message.getBody() != null && message.getBody().length > config.maxMessageBytes()) {
-                log.warn("Proposal contains an over-limit message {} ({} > {}) — rejecting block",
-                        message.getMessageIdHex(), message.getBody().length, config.maxMessageBytes());
+                log.warn("Proposal contains an invalid message at height {} — rejecting block",
+                        block.height());
                 return;
             }
             if (!authorizedResultMessage(message)) {
@@ -949,7 +982,7 @@ final class AppChainEngine implements AutoCloseable {
                     notice.height());
             return;
         }
-        FinalityCert cert = AppBlockCodec.deserializeCert(notice.certBytes());
+        FinalityCert cert = AppBlockCodec.deserializeCertCanonical(notice.certBytes());
         if (!verifyCert(cert, pendingRound.blockHash, pendingRound.block.height())) {
             log.warn("Cert verification FAILED for height {} — rejecting", notice.height());
             return;
@@ -959,30 +992,42 @@ final class AppChainEngine implements AutoCloseable {
 
     /** Verifies threshold, member uniqueness and every signature. Never trust-by-mode. */
     private boolean verifyCert(FinalityCert cert, byte[] blockHash, long height) {
-        if (cert.scheme() != FinalityCert.SCHEME_ED25519) {
+        if (cert == null || cert.scheme() != FinalityCert.SCHEME_ED25519
+                || cert.signatures().isEmpty()
+                || cert.signatures().size() > AppChainConfig.MAX_MEMBERS) {
             return false;
         }
         Set<String> seen = new HashSet<>();
         int valid = 0;
         for (FinalityCert.Signature signature : cert.signatures()) {
+            if (signature == null || signature.signer() == null
+                    || signature.signer().length != 32
+                    || signature.signature() == null
+                    || signature.signature().length
+                    != AppChainConfig.ED25519_SIGNATURE_BYTES) {
+                return false;
+            }
             String signerHex = HexUtil.encodeHexString(signature.signer()).toLowerCase(Locale.ROOT);
             if (!group.containsAt(signerHex, height) || !seen.add(signerHex)) {
-                continue;
+                return false;
             }
-            if (AppMessageSigner.verify(signature.signature(), blockHash, signature.signer())) {
-                valid++;
+            if (!AppMessageSigner.verify(signature.signature(), blockHash, signature.signer())) {
+                return false;
             }
+            valid++;
         }
         return valid >= group.thresholdAt(height);
     }
 
     private void commitRound(FinalityCert cert) {
         PendingRound round = pendingRound;
+        AppBlock finalBlock = round.block.withCert(cert);
+        if (AppBlockCodec.serialize(finalBlock).length > maxBlockBytes) {
+            throw new IllegalStateException("Finalized app block exceeds block.max-bytes after cert");
+        }
         pendingRound = null;
         deferredProposals.clear(); // height advances — held l1-ref deferrals are moot
-        AppBlock finalBlock;
         try (AppliedBlock applied = round.applied) {
-            finalBlock = round.block.withCert(cert);
             ledger.stageFx(applied.batch, finalBlock.height(), applied.fx);
             ledger.commitBlock(finalBlock, round.blockHash, finalBlock.stateRoot(), applied.batch,
                     governanceWrites(finalBlock));
@@ -1096,10 +1141,80 @@ final class AppChainEngine implements AutoCloseable {
 
 
     private boolean verifyMemberSignature(AppMessage message, long height) {
+        if (message == null || !config.chainId().equals(message.getChainId())
+                || message.getSender() == null || message.getSender().length != 32) {
+            return false;
+        }
         String senderHex = HexUtil.encodeHexString(message.getSender()).toLowerCase(Locale.ROOT);
         return group.containsAt(senderHex, height)
                 && message.getAuthProof() != null
                 && AppMessageSigner.verify(message.getAuthProof(), message.signedBodyBytes(), message.getSender());
+    }
+
+    private boolean validBlockProfile(AppBlock block, String source, boolean proposal) {
+        if (block == null || block.version() != AppBlock.BLOCK_VERSION) {
+            log.warn("{} has unsupported app-block version — rejecting", source);
+            return false;
+        }
+        if (!config.chainId().equals(block.chainId())) {
+            log.warn("{} chain identity does not match local app chain '{}' — rejecting",
+                    source, config.chainId());
+            return false;
+        }
+        if (block.height() < 1 || block.l1Slot() < 0 || block.timestamp() < 0
+                || block.prevHash() == null || block.prevHash().length != 32
+                || block.l1BlockHash() == null
+                || block.l1Slot() == 0 && block.l1BlockHash().length != 0
+                || block.l1Slot() > 0 && block.l1BlockHash().length != 32
+                || block.messagesRoot() == null || block.messagesRoot().length != 32
+                || block.stateRoot() == null || block.stateRoot().length != 32
+                || block.proposer() == null || block.proposer().length != 32
+                || block.messages() == null
+                || block.messages().size() > config.maxBlockMessages()
+                || block.messages().size() > AppChainConfig.MAX_BLOCK_MESSAGES
+                || block.cert() == null
+                || proposal && (block.cert().scheme() != FinalityCert.SCHEME_ED25519
+                || !block.cert().signatures().isEmpty())) {
+            log.warn("{} is outside the app-block v1 structural profile — rejecting", source);
+            return false;
+        }
+        Set<String> messageIds = new HashSet<>();
+        for (AppMessage message : block.messages()) {
+            if (message == null || message.getMessageId() == null
+                    || message.getMessageId().length != 32
+                    || !messageIds.add(HexUtil.encodeHexString(message.getMessageId()))) {
+                log.warn("{} has duplicate or malformed message identities — rejecting", source);
+                return false;
+            }
+            if (ledger.messageHeight(message.getMessageId()).isPresent()) {
+                log.warn("{} replays an already-finalized message identity — rejecting", source);
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private boolean validFinalizedMessageProfile(AppMessage message) {
+        if (message == null || message.getVersion() != AppMessage.ENVELOPE_VERSION
+                || message.getMessageId() == null || message.getMessageId().length != 32
+                || !config.chainId().equals(message.getChainId())
+                || message.getTopic() == null || message.getTopic().indexOf('\0') >= 0
+                || !StandardCharsets.UTF_8.newEncoder().canEncode(message.getTopic())
+                || message.getTopic().getBytes(StandardCharsets.UTF_8).length
+                > AppChainConfig.MAX_TOPIC_BYTES
+                || AppChainSystemTopics.isDiffusionOnly(message.getTopic())
+                || message.getSender() == null || message.getSender().length != 32
+                || message.getSenderSeq() < 0 || message.getExpiresAt() < 0
+                || message.getBody() == null
+                || message.getBody().length > config.maxMessageBytes()
+                || message.getBody().length > AppChainConfig.MAX_MESSAGE_BYTES
+                || message.getAuthScheme() != FinalityCert.SCHEME_ED25519
+                || message.getAuthProof() == null
+                || message.getAuthProof().length
+                != AppChainConfig.ED25519_SIGNATURE_BYTES) {
+            return false;
+        }
+        return true;
     }
 
     private boolean authorizedResultMessage(AppMessage message) {

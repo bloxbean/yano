@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Yano evidence demo</title>
+    <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<main>
+    <header><p class="eyebrow">Yano app chain</p><h1>Evidence workflow</h1></header>
+    <aside class="truth-note">
+        Yano proves which finalized participants approved and published this evidence.
+        It does not prove that the real-world inspection claim is true.
+    </aside>
+    <section id="summary" class="card"><p>Waiting for a scenario report…</p></section>
+    <section class="grid">
+        <article class="card"><h2>Authenticated state</h2><dl id="chain"></dl></article>
+        <article class="card"><h2>External storage</h2><dl id="storage"></dl></article>
+        <article class="card"><h2>Kafka acknowledgement</h2><dl id="kafka"></dl></article>
+        <article class="card"><h2>Cardano anchor</h2><dl id="anchor"></dl></article>
+    </section>
+    <section class="card"><h2>Independent checks</h2><ul id="checks"></ul></section>
+</main>
+<script src="/app.js" defer></script>
+</body>
+</html>

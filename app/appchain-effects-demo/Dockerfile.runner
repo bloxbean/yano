@@ -1,0 +1,21 @@
+ARG RUNNER_BASE_IMAGE
+FROM ${RUNNER_BASE_IMAGE}
+
+ARG RUNNER_UID=10001
+ARG RUNNER_GID=10001
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --gid "${RUNNER_GID}" yano-demo \
+    && useradd --uid "${RUNNER_UID}" --gid "${RUNNER_GID}" \
+        --home-dir /nonexistent --shell /usr/sbin/nologin yano-demo \
+    && install -d -o "${RUNNER_UID}" -g "${RUNNER_GID}" \
+        /opt/yano-demo /var/lib/yano-demo/reports
+
+COPY --chown=${RUNNER_UID}:${RUNNER_GID} runner.jar /opt/yano-demo/runner.jar
+
+USER ${RUNNER_UID}:${RUNNER_GID}
+WORKDIR /opt/yano-demo
+
+ENTRYPOINT ["java", "--add-modules=jdk.httpserver", "-jar", "/opt/yano-demo/runner.jar"]

@@ -7,7 +7,10 @@ import co.nstant.in.cbor.model.UnicodeString;
 import co.nstant.in.cbor.model.UnsignedInteger;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yaci.core.util.CborSerializationUtil;
+import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
+import com.bloxbean.cardano.yano.api.appchain.codec.internal.CborStructurePreflight;
 
+import java.util.Arrays;
 import java.util.List;
 
 /**
@@ -17,6 +20,9 @@ import java.util.List;
  * structures below. All ride the ordinary authenticated app-message envelope.
  */
 final class ConsensusCodec {
+    static final int MAX_VOTE_BYTES = 256;
+    static final int MAX_CERT_NOTICE_BYTES =
+            AppChainConfig.MAX_FINALITY_CERT_HEADROOM_BYTES + 128;
 
     static final String TOPIC_PROPOSE = "~consensus/propose";
     static final String TOPIC_VOTE = "~consensus/vote";
@@ -35,11 +41,29 @@ final class ConsensusCodec {
     }
 
     static Vote decodeVote(byte[] bytes) {
-        List<DataItem> items = ((Array) CborSerializationUtil.deserializeOne(bytes)).getDataItems();
-        return new Vote(
-                ((UnsignedInteger) items.get(0)).getValue().longValue(),
-                ((ByteString) items.get(1)).getBytes(),
-                ((ByteString) items.get(2)).getBytes());
+        if (!CborStructurePreflight.accepts(bytes, MAX_VOTE_BYTES, 4, 16)) {
+            throw invalid("Invalid bounded vote");
+        }
+        try {
+            List<DataItem> items = ((Array) CborSerializationUtil.deserializeOne(bytes))
+                    .getDataItems();
+            if (items.size() != 3) {
+                throw invalid("Invalid vote shape");
+            }
+            Vote vote = new Vote(
+                    ((UnsignedInteger) items.get(0)).getValue().longValueExact(),
+                    ((ByteString) items.get(1)).getBytes(),
+                    ((ByteString) items.get(2)).getBytes());
+            if (vote.blockHash().length != 32
+                    || vote.signature().length != AppChainConfig.ED25519_SIGNATURE_BYTES
+                    || !Arrays.equals(bytes, encodeVote(
+                    vote.height(), vote.blockHash(), vote.signature()))) {
+                throw invalid("Invalid canonical vote");
+            }
+            return vote;
+        } catch (RuntimeException malformed) {
+            throw invalid("Invalid bounded canonical vote");
+        }
     }
 
     /** cert notice = [height, block-hash, cert-cbor] */
@@ -52,17 +76,40 @@ final class ConsensusCodec {
     }
 
     static CertNotice decodeCertNotice(byte[] bytes) {
-        List<DataItem> items = ((Array) CborSerializationUtil.deserializeOne(bytes)).getDataItems();
-        return new CertNotice(
-                ((UnsignedInteger) items.get(0)).getValue().longValue(),
-                ((ByteString) items.get(1)).getBytes(),
-                ((ByteString) items.get(2)).getBytes());
+        if (!CborStructurePreflight.accepts(bytes, MAX_CERT_NOTICE_BYTES, 4, 128)) {
+            throw invalid("Invalid bounded certificate notice");
+        }
+        try {
+            List<DataItem> items = ((Array) CborSerializationUtil.deserializeOne(bytes))
+                    .getDataItems();
+            if (items.size() != 3) {
+                throw invalid("Invalid certificate notice shape");
+            }
+            CertNotice notice = new CertNotice(
+                    ((UnsignedInteger) items.get(0)).getValue().longValueExact(),
+                    ((ByteString) items.get(1)).getBytes(),
+                    ((ByteString) items.get(2)).getBytes());
+            if (notice.blockHash().length != 32 || notice.certBytes().length == 0
+                    || notice.certBytes().length
+                    > AppChainConfig.MAX_FINALITY_CERT_HEADROOM_BYTES
+                    || !Arrays.equals(bytes, encodeCertNotice(
+                    notice.height(), notice.blockHash(), notice.certBytes()))) {
+                throw invalid("Invalid canonical certificate notice");
+            }
+            return notice;
+        } catch (RuntimeException malformed) {
+            throw invalid("Invalid bounded canonical certificate notice");
+        }
     }
 
     record Vote(long height, byte[] blockHash, byte[] signature) {
     }
 
     record CertNotice(long height, byte[] blockHash, byte[] certBytes) {
+    }
+
+    private static IllegalArgumentException invalid(String message) {
+        return new IllegalArgumentException(message);
     }
 
     // ------------------------------------------------------------------
