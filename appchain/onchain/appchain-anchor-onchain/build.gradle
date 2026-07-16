@@ -3,12 +3,13 @@
 // src/main/resources/META-INF/plutus/ are CHECKED IN (not regenerated at
 // build time): the script hash derived from them is the chain's on-chain
 // IDENTITY, so it must be byte-stable across machines and julc versions.
-// (Found 2026-07-12: the released julc 0.1.0-pre14 miscompiles
-// AnchorValidator — fixed post-release in julc main — so a CI-compiled
-// artifact would differ from the one validated on preprod.)
-// To regenerate after deliberate validator/julc changes: run the
-// JulcSourceCompile* conformance tests with -Djulc.source-check=true and,
-// once green, refresh the checked-in JSONs from a local julc compile.
+// The released julc 0.1.0-pre14 miscompiles the validator's loop-carried
+// state. The checked validator was generated with post-release julc commit
+// 94eaecee3220. To regenerate after a deliberate source/compiler change,
+// first run JulcSourceCompile* with -Djulc.source-check=true and
+// --include-build pointing at that julc checkout, then rebuild julc-cli's
+// shadowJar and refresh the JSON from a clean CLI compile. Finally run this
+// module's complete checked-artifact suite and the runtime identity golden.
 plugins {
     id 'java-library'
 }

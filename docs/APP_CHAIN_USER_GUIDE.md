@@ -88,8 +88,8 @@ can prove any record against a public Cardano anchor."
 
 | Term | Meaning |
 |---|---|
-| **Chain id** | Name of your app chain (`yano.app-chain.chain-id`). One group = one chain id. A node can host several chains (section 8). |
-| **Member** | A participant identified by an Ed25519 public key. Only members' messages are accepted; members co-sign blocks. |
+| **Chain id** | Name of your app chain (`yano.app-chain.chain-id`), encoded as 1–128 valid UTF-8 bytes. One group = one chain id. A node can host several chains (section 8). |
+| **Member** | A participant identified by an Ed25519 public key. Only members' messages are accepted; members co-sign blocks. The v1 profile supports at most 32 members. |
 | **Sequencer / proposer** | The one member (by public key) that orders messages into blocks. Fixed, configured. |
 | **Threshold** | How many member signatures a finality certificate needs (e.g. 2 of 2). |
 | **App message** | Envelope with an **opaque body** (your bytes — CBOR/JSON/protobuf/anything), signed by the sender. The framework never parses the body. |
@@ -432,8 +432,9 @@ anchor cadence. That mint defines the chain's permanent on-chain identity:
   UTxO; can never be minted again). Burning is forbidden by the policy.
 - **script address** — the validator is parameterized by the policy id, so
   every chain gets its own address.
-- The NFT's **asset name is the chain-id** (UTF-8, ≤ 32 bytes), so explorers
-  like Cardanoscan show a readable label. Identity and uniqueness come from
+- The NFT's **asset name is the first 32 bytes of the chain-id's UTF-8
+  encoding** (the whole id when it fits), giving explorers a useful label.
+  The full chain id remains in the datum. Identity and uniqueness come from
   the policy id, never the name.
 
 From then on the leader runs threshold **co-sign rounds**: it builds the
@@ -441,9 +442,19 @@ advance tx (spending the thread UTxO, writing the next datum), members verify
 the proposed range against their OWN ledger + L1 view and return Ed25519
 witnesses, and at `threshold` signatures the tx is submitted. The on-chain
 validator independently enforces: exactly one continuing thread output,
-monotonic height, unchanged chain-id, ≥ threshold signatures of the datum's
-member set, and no value drain. Membership changes (§14.2) flow into the
-datum, so the on-chain member set tracks the chain's governance.
+the exact v1 datum profile on both input and successor (seven fields,
+version 1, bounded chain id, non-negative height, 32-byte commitments,
+1--32 sorted unique member keys, and a valid threshold), monotonic height,
+unchanged chain-id, ≥ threshold signatures of the datum's member set, and no
+value drain. Membership changes (§14.2) flow into the datum, so the on-chain
+member set tracks the chain's governance.
+
+> **Preview upgrade note:** the July 2026 pre-release v1-profile hardening
+> changed both bundled spending-validator hashes. An anchor bootstrapped with
+> an earlier preview artifact has a different immutable identity and must be
+> re-bootstrapped after cleaning or migrating that disposable preview state.
+> The thread policy did not change. Released validator identities will use an
+> explicit versioned migration rather than an in-place artifact replacement.
 
 Watch progress in `/status` under `anchor` (`bootstrapped`, `threadPolicyId`,
 `scriptAddress`, `walletAddress`, `cosignPending`, `lastAnchorTx`,
@@ -476,17 +487,31 @@ one-shot mint.
 
 **Any message (e.g. an order on an ordered-log chain):**
 
-1. `GET /api/v1/app-chain/chains/{chainId}/evidence/{messageIdHex}` — a
-   self-contained **evidence bundle**: the message's block, every block up to
-   the next anchored one, finality-cert signatures, member set, anchor tx ref.
-2. Verify **offline** with `EvidenceVerifier.verify(bundle)` from
-   `yano-core-api` (no node needed). It checks: message ∈ block via the
-   recomputed messages-root; prev-hash chain intact; every block carries
-   ≥ threshold valid member signatures (m-of-n — unforgeable by one member);
-   the last block hash equals the anchored block hash.
-3. Close the loop on L1: confirm the bundle's anchor tx exists on Cardano and
-   that the bundle's **member set + threshold match the on-chain datum**
-   (take those from L1, not from the bundle).
+1. `GET /api/v1/app-chain/chains/{chainId}/evidence/{messageIdHex}` — portable
+   **evidence material**: the message's block, every block up to the next
+   anchored one, finality-cert signatures, claimed member set, and anchor ref.
+   A portable segment carries at most 4,096 blocks and at most one configured
+   block-byte budget (with a 16 MiB absolute ceiling). If reaching the current
+   anchor would exceed either bound, the response intentionally contains only
+   the finalized message block and no anchor reference; obtain an archived
+   bundle or a future range proof rather than treating the missing reference
+   as failed finality.
+2. Obtain the expected chain id, member keys, and threshold independently from
+   the trusted chain profile or the exact Cardano anchor datum. Verify with
+   `EvidenceVerifier.verify(bundle, trustContext)` from `yano-core-api`. It
+   checks message-id inclusion via the recomputed messages-root, the prev-hash
+   chain, the independently pinned m-of-n signatures, and the claimed anchor
+   block hash. Never derive the trust context only from the bundle.
+3. Close the loop on L1: fetch the transaction and outputs, require the expected
+   script address and state-thread token, decode the canonical inline datum,
+   and match its chain id, height, block hash, state root, member set, and
+   threshold. Transaction-hash visibility alone is not anchor verification.
+
+Finality signs the block header, whose messages-root commits ordered message
+ids. It does not independently authenticate every serialized message-envelope
+field or the stored proposer field. After body pruning, evidence still proves
+the retained message id was included but reports that original content was not
+verified.
 
 **Any state entry (e.g. a kv-registry key) against the anchored root:**
 
@@ -635,9 +660,9 @@ Flat (single-chain) keys. The same suffixes apply per chain under
 | Property (`yano.app-chain.`) | Default | Description |
 |---|---|---|
 | `enabled` | — | See "Enabling" below |
-| `chain-id` | — | App-chain identity (required) |
+| `chain-id` | — | App-chain identity (required; 1–128 valid UTF-8 bytes, no NUL) |
 | `signing-key` | — | This member's Ed25519 private seed, hex, or a `scheme:reference` external-signer spec (§12) |
-| `members` | — | Comma-separated member public keys, hex (required; must include own key) |
+| `members` | — | Comma-separated member public keys, hex (required; must include own key; at most 32 in v1) |
 | `peers` | — | Comma-separated app-group peers `host:port` (their N2N server ports) |
 | `sequencer.proposer` | empty | Fixed sequencer's public key (implies `sequencer.mode: fixed`). No proposer AND no mode = diffusion-only (messages replicate, but no blocks/ledger) |
 | `sequencer.mode` | `fixed` | Consensus mode: `fixed` (ADR-005 S1), `rotating` (S2 — proposership rotates over L1-slot windows; needs no fixed proposer), or a plugin `SequencerModeProvider` id. **Must match on all members.** Finality (threshold certs, one-vote-per-height) is identical in every mode |
@@ -647,10 +672,10 @@ Flat (single-chain) keys. The same suffixes apply per chain under
 | `membership.approval-window-blocks` | `600` | `governed` only: blocks a half-approved command stays pending before expiring |
 | `transport.mode` | `shared` | Outbound app transport (node-global). `shared`: when the L1 upstream is also an app-group peer, protocols 100/103 ride its session — one TCP connection per peer pair, with an automatic dedicated-dial fallback if the session stays down (~15s grace). `dedicated`: always dial a separate app connection (bandwidth isolation from L1 sync). Peers that are not the upstream always use dedicated dials; inbound is unaffected (the server port multiplexes both since v1). Per-peer transport is visible in `status` under `peerTransports` |
 | `block.interval-ms` | `2000` | Proposer tick (blocks are only made when messages are pending) |
-| `block.max-bytes` | `4194304` (4 MiB) | Primary block-size cap: the proposer trims each block to fit the serialized size; members reject oversized proposals. Tune for throughput |
-| `block.max-messages` | `5000` | Safety backstop against tiny-message floods (the byte cap above is the primary limit) |
+| `block.max-bytes` | `4194304` (4 MiB) | Primary finalized-block-size cap (v1 maximum 16 MiB). The proposer reserves the framework's worst-case 32-member finality-certificate headroom before selecting messages; members reject oversized proposals and finalized blocks. Must exceed `max-message-bytes` by the pinned envelope/certificate headroom. Tune for throughput |
+| `block.max-messages` | `5000` | Safety backstop against tiny-message floods (v1 maximum 10,000; the byte cap above is primary) |
 | `state-machine` | `ordered-log` | Built-in id, a stdlib id (§9) or a plugin provider id |
-| `max-message-bytes` | `65536` | Max opaque body size |
+| `max-message-bytes` | `65536` | Max opaque body size (v1 maximum = 16 MiB minus the pinned block-envelope and worst-case certificate headroom) |
 | `max-ttl-seconds` | `3600` | Max accepted message TTL |
 | `default-ttl-seconds` | `600` | TTL applied to REST submissions |
 | `anchor.enabled` | `false` | L1 anchoring on this node (the anchor leader; script-mode members need NO anchor config) |
@@ -950,20 +975,22 @@ is the supported integration point.
 
 ## 13. Compliance (audit/evidence export, retention & pruning)
 
-**Evidence export** — one call produces a portable, **offline-verifiable**
-evidence bundle for any finalized message:
+**Evidence export** — one call produces portable verification material for any
+finalized message:
 
 ```bash
-curl localhost:8080/api/v1/app-chain/evidence/<messageIdHex> > evidence.json
+curl localhost:8080/api/v1/app-chain/chains/<chainId>/evidence/<messageIdHex> \
+  > evidence.json
 ```
 
-The bundle carries the containing block(s), the member set and threshold in
-effect at that height, and the L1 anchor reference. An auditor verifies it
-with core-api's `EvidenceVerifier` — no node access: block hashes and
-messages-root are recomputed, certificates are checked against the members at
-the chain's full m-of-n threshold, inclusion is confirmed, and the hash chain
-is linked to the anchored block. A message newer than the last confirmed
-anchor yields a finality-only bundle (`anchor: null`) until the next anchor.
+The bundle carries the containing block(s), its claimed member set/threshold,
+and the L1 anchor reference. An auditor supplies an independently trusted
+`EvidenceVerifier.TrustContext`; block hashes and messages-roots are
+recomputed, certificates are checked at that pinned m-of-n threshold,
+message-id inclusion is confirmed, and the hash chain is linked to the claimed
+anchor block. The auditor separately verifies the exact Cardano transaction
+output and inline datum. A message newer than the last confirmed anchor yields
+a finality-only bundle (`anchor: null`) until the next anchor.
 
 **Retention & pruning** — data minimization with proofs preserved:
 
@@ -974,7 +1001,8 @@ yano.app-chain.retention.keep-blocks: 1000
 
 Message **bodies** older than `keep-blocks` and below the last confirmed L1
 anchor are stripped; headers, message ids, roots and certificates remain, so
-existing proofs and evidence bundles stay valid. Pruning never runs ahead of
+message-id inclusion evidence stays valid while original content verification
+is explicitly unavailable. Pruning never runs ahead of
 the slowest configured sink (§10), so at-least-once delivery is unaffected.
 Combined with encrypted bodies (§12), destroying a topic key is
 **crypto-shredding**: content becomes unreadable everywhere while the anchored

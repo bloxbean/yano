@@ -1,0 +1,74 @@
+package com.bloxbean.cardano.yano.appchain.examples.evidence.demo;
+
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
+import java.io.ByteArrayOutputStream;
+import java.io.PrintStream;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+class EvidenceDemoMainTest {
+    @TempDir
+    Path temporary;
+
+    @Test
+    void validateConfigParsesWithoutContactingExternalServices() throws Exception {
+        Path config = DemoTestFiles.config(temporary);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        ByteArrayOutputStream error = new ByteArrayOutputStream();
+
+        int result = EvidenceDemoMain.run(
+                new String[]{"validate-config", "--config", config.toString()},
+                new PrintStream(output), new PrintStream(error));
+
+        assertThat(result).isZero();
+        assertThat(output.toString(StandardCharsets.UTF_8))
+                .isEqualTo("PASS command=validate-config\n");
+        assertThat(error.toString(StandardCharsets.UTF_8)).isEmpty();
+    }
+
+    @Test
+    void cliPrintsOnlyStableFailureCodeForInvalidOrSecretFileFailures() throws Exception {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        ByteArrayOutputStream error = new ByteArrayOutputStream();
+        int invalid = EvidenceDemoMain.run(new String[]{"run", "inline-secret"},
+                new PrintStream(output), new PrintStream(error));
+        assertThat(invalid).isEqualTo(2);
+        assertThat(error.toString(StandardCharsets.UTF_8))
+                .isEqualTo("FAIL code=INVALID_ARGUMENT\n")
+                .doesNotContain("inline-secret");
+
+        Path config = DemoTestFiles.config(temporary);
+        DemoTestFiles.secret(temporary.resolve("secrets/api"), "scoped-key");
+        Files.writeString(config, DemoTestFiles.properties()
+                + "demo.yano.api-key-file=secrets/api\n");
+        Files.delete(temporary.resolve("secrets/api"));
+        error.reset();
+        int unavailable = EvidenceDemoMain.run(
+                new String[]{"run", "--config", config.toString()},
+                new PrintStream(output), new PrintStream(error));
+        assertThat(unavailable).isEqualTo(2);
+        assertThat(error.toString(StandardCharsets.UTF_8))
+                .isEqualTo("FAIL code=INVALID_SECRET_FILE\n")
+                .doesNotContain(config.toString(), "api");
+
+        error.reset();
+        int knownConnectorCommand = EvidenceDemoMain.run(
+                new String[]{"init-connectors", "--config", temporary.resolve("missing").toString()},
+                new PrintStream(output), new PrintStream(error));
+        assertThat(knownConnectorCommand).isEqualTo(2);
+        assertThat(error.toString(StandardCharsets.UTF_8))
+                .isEqualTo("FAIL code=INVALID_CONFIG\n");
+
+        error.reset();
+        EvidenceDemoMain.run(new String[]{"unknown", "--config", "secret-path"},
+                new PrintStream(output), new PrintStream(error));
+        assertThat(error.toString(StandardCharsets.UTF_8))
+                .isEqualTo("FAIL code=INVALID_ARGUMENT\n")
+                .doesNotContain("secret-path");
+    }
+}

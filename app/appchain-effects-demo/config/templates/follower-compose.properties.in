@@ -1,0 +1,6 @@
+yano.block-producer.enabled=false
+yano.dev-mode=false
+yano.client.enabled=true
+yano.remote.host=yano-0
+yano.remote.port=13337
+yano.app-chain.chains[0].effects.executor.enabled=false

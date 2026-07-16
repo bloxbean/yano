@@ -91,10 +91,12 @@ public interface AppChainGateway {
     AutoCloseable subscribeFinalized(FinalizedBlockListener listener);
 
     /**
-     * Build a portable, offline-verifiable evidence bundle for a finalized
-     * message (ADR app-layer/006 E3.4): its block(s), the member key set, and —
-     * when anchored — the L1 anchor reference and prev-hash chain to it. Empty
-     * if the message id is unknown/not finalized.
+     * Build portable verification material for a finalized message (ADR
+     * app-layer/006 E3.4): its block(s), the bundle-claimed member key set, and
+     * — when anchored — the L1 anchor reference and prev-hash chain to it.
+     * Authenticity requires an independently trusted chain/member/threshold
+     * context and independent verification of the exact Cardano anchor output.
+     * Empty if the message id is unknown/not finalized.
      */
     java.util.Optional<com.bloxbean.cardano.yano.api.appchain.evidence.EvidenceBundle> evidence(byte[] messageId);
 

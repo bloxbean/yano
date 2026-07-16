@@ -2,14 +2,14 @@
 
 ## Status
 
-Accepted — implementation in progress; Phases 1.0--1.4 completed on 2026-07-16
+Accepted — implementation in progress; Phases 1.0--1.5 completed on 2026-07-16
 
 The number is local to the `adr/app-layer` series. Root-level ADR-013 is an
 unrelated node plugin and event-gap assessment.
 
 | Milestone | Scope | Status |
 |---|---|---|
-| 1 | First-party connectors, evidence workflow, Compose/host demo, network/data lifecycle | In progress — Phases 1.0--1.4 accepted; Phase 1.5 next |
+| 1 | First-party connectors, evidence workflow, Compose/host demo, network/data lifecycle | In progress — Phases 1.0--1.5 accepted; Phase 1.6 next |
 | 2 | Effect ownership, result continuation, and executor observability bridge | Planned — requires focused sub-design and minor framework changes |
 | 3 | Out-of-box deterministic composite state machine and stock component preset | Planned — requires a dedicated composition sub-ADR |
 
@@ -1629,12 +1629,16 @@ The scenario runner:
 11. waits for the resulting Kafka effect and consumes/deduplicates the
     `evidence.available` event;
 12. queries evidence status and verifies the composed state/effect proof;
-13. displays the applicable Cardano app-chain anchor; and
+13. independently fetches the Cardano anchor transaction/UTxOs from every
+    member and verifies one exact state-thread output: script address, token,
+    and canonical inline datum matching the certified chain, height, block
+    hash, state root, pinned members, and threshold; and
 14. prints stable machine-readable and human-readable PASS/FAIL output.
 
 The script never declares success merely because an HTTP request returned
 2xx. It verifies final business state, external receipts, external state, and
 proof/anchor availability appropriate to the selected network profile.
+Transaction visibility by itself is never reported as anchor verification.
 
 ## 11. Deployment model
 
@@ -2264,9 +2268,10 @@ make ordinary offline unit builds depend on internet availability.
 This is the first implementation target and may be completed, reviewed, and
 released independently. It uses the current ADR-010/011 contracts plus the
 explicit `evidence.notify` continuation command described in §10.
-The only compatible core/API correction is the atomic read-only state-proof
-snapshot described in §10.3; it changes neither effect execution nor plugin
-activation semantics.
+The compatible core/API corrections are the atomic read-only state-proof
+snapshot described in §10.3 and the bounded portable-evidence/anchor-codec
+hardening recorded under Phases 1.4 and 1.5. They change neither effect
+execution nor plugin activation semantics.
 
 #### Phase 1.0 — Freeze contracts and conformance fixtures
 
@@ -2542,6 +2547,159 @@ atomic capability until a gateway implements it.
   one scenario runner.
 - Prove the runner against Compose and independently launched services.
 - Document plugin installation and native inclusion.
+
+**Implementation record (accepted 2026-07-16).** The new
+`app/appchain-effects-demo` distribution supplies one launcher, generated
+configuration, file-backed secrets, sample inspection certificate, three-node
+script-anchored Yano cluster, connector initialization, evidence UI, and
+optional Prometheus/Grafana view. Its Compose deployment owns version-pinned
+Kafka, MinIO, Kubo, Yano, runner, and observability services. Normal deployment
+starts the same Yano JAR and four bundle JARs through the standard host cluster
+launcher and points the same runner at independently provisioned connector
+endpoints. Both paths use the same strict scenario configuration, sample,
+proof verifier, and machine-readable report; deployment code supplies only
+endpoints and process topology.
+
+The end-to-end runner does not infer success from HTTP status or an unsigned
+anchor reference. It verifies exact staged and archived bytes, immutable S3
+version identity, exact Kubo `cat` bytes and pin state, Kafka partition/offset
+and event bytes, all three members' committed roots, composed state/effect
+proofs, threshold-signed finality bundles, and a certified `READY` state. It
+then fetches the raw Cardano transaction and UTxOs from every member and
+requires one exact state-thread output whose script address, token unit, and
+canonical inline datum bind the expected chain, height, block hash, state
+root, pinned member set, and threshold.
+
+Real-system verification exposed an important evidence boundary and produced
+a pre-release corrective public-API change. An `EvidenceBundle` authenticates its
+signed app-block segment only when checked against an independently pinned
+chain/member/threshold `TrustContext`; its transaction reference is not by
+itself proof of an L1 datum. The strict public `AnchorDatumV1` codec now owns
+the canonical ADR-008.4 datum ABI and the runtime delegates to it. Portable
+bundle decoding is bounded and strict at both JSON and CBOR layers, verifies
+canonical block encoding and consecutive signed history, and distinguishes a
+retained envelope whose message id was recomputed from a canonical retention
+tombstone that proves only signed message-id inclusion. The runner requires
+`messageContentVerified=true`. The evidence-chain bound was also corrected so
+its inclusive segment contains at most 4,096 blocks and at most one configured
+block-byte budget, with a 16 MiB absolute ceiling. An over-budget anchor path
+falls back to the single finalized message block without an anchor reference,
+so CBOR plus hex/JSON expansion remains bounded. None of these changes alters
+effect execution, consensus, or plugin activation semantics.
+
+The closure audit also made the framework's v1 structural profile explicit
+and uniform instead of letting each boundary infer it. A chain id is at most
+128 canonical UTF-8 bytes; membership is at most 32 keys; blocks are at most
+16 MiB and 10,000 messages; topics are at most 256 UTF-8 bytes; Ed25519
+message proofs are exactly 64 bytes; and proposals reserve a pinned 4,096-byte
+worst-case finality-certificate budget plus block-envelope headroom. The
+32-member limit is driven by measured mainnet execution budgets for the slower
+of the two bundled validators, not just by an off-chain allocation choice.
+Startup, governed membership, proposal/catch-up handling, message admission,
+portable evidence, the public anchor codec, CDDL, and both on-chain validators
+now enforce the same profile. Every certificate entry must be a unique,
+well-formed, valid member signature—even after quorum is reached—and message
+identities cannot be replayed across finalized blocks.
+Untrusted proposals, catch-up blocks, votes, and certificate notices also pass
+a non-recursive byte/depth/item preflight and exact canonical re-encoding gate
+before any recursive CBOR decoder runs; the runtime and portable-evidence path
+therefore reject the same hostile or non-canonical wire inputs.
+Only the three exact consensus wire topics receive an elevated envelope-body
+limit. Every other reserved topic retains the same `maxMessageBytes` limit at
+transport admission. Reserved topics that enter blocks retain that limit in
+proposal and catch-up validation as well; diffusion-only `~anchor/*` traffic
+does not enter blocks. This prevents an admitted block that another member
+must reject.
+
+Both pre-release spending validators were regenerated to enforce the complete
+input and successor profile. Their script hashes therefore changed; existing
+preview anchors are different immutable identities and must be re-bootstrapped
+when disposable preview state is upgraded. The thread policies are unchanged.
+This is recorded as a preview-only ABI correction, not an in-place migration
+precedent for released validator identities.
+
+Recorded Phase 1.5 evidence:
+
+- A fresh Compose instance `smoke6`, built with the final bounded validator
+  artifacts, passed scenario `inspection-2026-0716-1784156311545`; its
+  immediate idempotent replay passed as
+  `inspection-2026-0716-1784156351919`. Both runs resolved evidence id
+  `inspection-2026-0716`, height 4, state root
+  `050a462d87d1819b54c90f072168f70fe5d133f1e0bf949195d960431de045bc`,
+  anchor transaction
+  `69d223f61d8714b827bf579eb53bb068a9ab8c2b4fde3230ec464930ba5af467`,
+  object-version fingerprint
+  `886c2a144ac1a377b4071f043437e13e9f91096d383d95844763fbeee743d3fd`,
+  CID `bafkreiepu6vvat72kgmhijicqucbu73gglvqh2yaoondfbmkhuucg6ywqu`, and
+  Kafka partition 0/offset 0. The replay created no second logical external
+  result.
+- After the final transport-admission and cumulative-evidence closure fixes,
+  fresh Compose instance `smoke7` passed scenario
+  `inspection-2026-0716-1784159288698` and its immediate idempotent replay
+  `inspection-2026-0716-1784159330338`. The replay retained height 4, state
+  root `b20f6b892568b7407ac48cf2099a9f241bd77c33553d68b9bda491b681401f36`,
+  anchor transaction
+  `da96d372b220229e5c9892ca534365998c012270d78c3fbf5904f4096282c625`,
+  CID `bafkreidpluf7xlakqxmldqdbtmqz34cwzv3h5x6bizswm6vwut3h4vulfm`,
+  and Kafka partition 0/offset 0. All 17 scenario checks passed or reported
+  the intentional `BUSINESS_CLAIM_NOT_EVALUATED` outcome, and the stack was
+  stopped cleanly with retained data.
+- The same Compose instance was stopped completely and started from retained
+  data. All three nodes recovered height 5, the same state root, thread-policy
+  id `3dc194894b699cfc9bf6d5aa627e73fe0c7f43be5aa4f993fa1fbb96`, script
+  hash `f3e9787f4ef1c3f25123e047ab407865571be7e00a6f46dbb78c0ca1`, and anchor
+  transaction
+  `9217074e51e37fa48c977aaf9fecfef53e8dba99885a10f42c598d31eb85d782`.
+  Post-restart scenario `inspection-2026-0716-1784156458196` passed without
+  duplicating the external result.
+- After the launcher moved all template substitutions, including secrets, to
+  the bounded stdin renderer, the evidence HTTP/codec limit was unified, and
+  proposal/catch-up validation began rejecting both diffusion-only namespaces,
+  retained instance `smoke7` was rebuilt and restarted once more. Scenario
+  `inspection-2026-0716-1784163989001` passed at height 6 with the same state
+  root, CID, object version, and Kafka partition 0/offset 0; all authenticated
+  effect, finality, raw L1 visibility, and exact anchor-datum checks passed.
+  The stack then stopped cleanly while preserving its state.
+- A separately launched normal/host instance `host6` passed the identical
+  scenario as `inspection-2026-0716-1784156859628`, then passed its idempotent
+  replay as `inspection-2026-0716-1784156903270`. Both host runs retained
+  height 4, state root
+  `730b25888d128fa819ed863bc085af6fae6e8bfae290149ab9f527df61e2f363`,
+  anchor transaction
+  `80b7b87c1abfa072d90c69831875e76fbc80d6ea4fe7200deb669e1e54e2a9e9`,
+  the same exact object-version fingerprint and CID, and Kafka partition
+  0/offset 1. The host instance deliberately targeted the Compose-provisioned
+  external services with explicit immutable target ids, proving that the
+  runner and executor contracts are deployment-neutral. Different fresh
+  app-chain roots are expected; equality is required within each deployment's
+  replay.
+- Every recorded run verified three agreeing members, six state proofs, three
+  effect proofs, two finality bundles at threshold two, raw anchor transaction
+  visibility and exact datum commitments on every member, exact external
+  content, and terminal `READY`. The report deliberately records
+  `BUSINESS_CLAIM_NOT_EVALUATED`: cryptographic publication proves what the
+  participants approved, not whether the real-world inspection claim is true.
+- Bounded hostile-input processes exercised roughly 30 MiB/six-million-token
+  JSON and deeply nested/oversized CBOR under a 256 MiB heap. They failed
+  closed without `OutOfMemoryError` or `StackOverflowError`; canonical datum,
+  trust-substitution, retention-tombstone, malformed-history, and the exact
+  4,096-block boundary have focused regression coverage.
+- Static Compose-contract, launcher, per-node overlay-safety, focused
+  core/runtime/client/runner, bundle, and documentation gates pass. The
+  operator guide explains directory bundles for JVM deployment and build-time
+  first-party inclusion plus catalog verification for native deployment.
+- The complete tracked runtime test set passed after the profile closure:
+  1,327 tests, 2 skipped, 0 failures, and 0 errors. The
+  Aiken and Julc conformance suites passed all valid, malformed, successor,
+  and 32-of-32 cases; the slower Julc 32-of-32 spend measured
+  2,075,652,138 CPU and 8,205,357 memory units, below the mainnet
+  10,000,000,000/14,000,000 limits that define the v1 membership ceiling.
+
+Phase 1.5 proves restart recovery but does not claim the complete guarded
+lifecycle and granular-cleanup acceptance, network identity markers,
+preview/preprod execution, guarded mainnet validation, the complete connector
+fault matrix, or final release review. Those remain explicit Phase 1.6/1.7
+work.
 
 #### Phase 1.6 — Persistence, cleanup, and public profiles
 

@@ -39,11 +39,11 @@
 
 anchor-datum = [
     version      : uint,             ; ABI version = 1
-    chain-id     : bstr,             ; app-chain identity (UTF-8 bytes)
+    chain-id     : bstr .size (1..128), ; app-chain identity (UTF-8 bytes)
     height       : uint,             ; app-block height this anchor attests
     block-hash   : bstr .size 32,    ; blake2b-256 app-block hash at height
     state-root   : bstr .size 32,    ; MPF root bound by that block
-    member-keys  : [ + bstr .size 32 ], ; Ed25519 member public keys, sorted
+    member-keys  : [ 1*32 bstr .size 32 ], ; Ed25519 member public keys, sorted
     threshold    : uint,             ; finality/advance threshold (1..len)
 ]
 

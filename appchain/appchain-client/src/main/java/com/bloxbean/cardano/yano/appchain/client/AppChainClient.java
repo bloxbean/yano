@@ -10,6 +10,9 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.net.URI;
+import java.net.Proxy;
+import java.net.ProxySelector;
+import java.net.SocketAddress;
 import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -55,6 +58,19 @@ import java.util.function.Consumer;
  */
 public final class AppChainClient {
 
+    private static final ProxySelector DIRECT_PROXY_SELECTOR = new ProxySelector() {
+        @Override
+        public List<Proxy> select(URI uri) {
+            return List.of(Proxy.NO_PROXY);
+        }
+
+        @Override
+        public void connectFailed(URI uri, SocketAddress address,
+                                  java.io.IOException failure) {
+            // No proxy is selected.
+        }
+    };
+
     private static final int MAX_EFFECT_PROOF_RESPONSE_BYTES = 40 * 1024 * 1024;
     private static final int MAX_SUBMIT_RESPONSE_BYTES = 64 * 1024;
     private static final int MAX_STATE_PROOF_KEY_BYTES = 256;
@@ -99,9 +115,12 @@ public final class AppChainClient {
                 : builder.baseUrl;
         this.chainId = builder.chainId;
         this.apiKey = builder.apiKey;
-        this.httpClient = HttpClient.newBuilder()
-                .connectTimeout(Duration.ofSeconds(builder.connectTimeoutSeconds))
-                .build();
+        HttpClient.Builder http = HttpClient.newBuilder()
+                .connectTimeout(Duration.ofSeconds(builder.connectTimeoutSeconds));
+        if (builder.directConnections) {
+            http.proxy(DIRECT_PROXY_SELECTOR);
+        }
+        this.httpClient = http.build();
     }
 
     public static Builder builder(String baseUrl) {
@@ -1326,6 +1345,7 @@ public final class AppChainClient {
         private String chainId;
         private String apiKey;
         private long connectTimeoutSeconds = 10;
+        private boolean directConnections;
 
         private Builder(String baseUrl) {
             if (baseUrl == null || baseUrl.isBlank()) {
@@ -1348,6 +1368,15 @@ public final class AppChainClient {
 
         public Builder connectTimeoutSeconds(long seconds) {
             this.connectTimeoutSeconds = seconds;
+            return this;
+        }
+
+        /**
+         * Ignores ambient JVM proxy selectors for this client. Existing
+         * builders retain their current proxy behavior unless this is called.
+         */
+        public Builder directConnections() {
+            this.directConnections = true;
             return this;
         }
 

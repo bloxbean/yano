@@ -53,6 +53,10 @@ ANCHOR_KEY=""                                     # --anchor-key: funded wallet 
 ANCHOR_EVERY=""                                   # --anchor-every: default 2 devnet / 30 public
 CLUSTER_API_KEY="${YANO_CLUSTER_API_KEY:-}"
 LOCAL_CLUSTER_API_KEY="yano-local-cluster-full-key"
+NODE_CONFIG_DIR="${YANO_CLUSTER_NODE_CONFIG_DIR:-}"
+NODE_CONFIG_DIR_CANON=""
+NODE_CONFIG_URIS=()
+NODE_CONFIG_LOCATION=""
 
 # Deterministic demo member identities: node i uses seed = byte(i+1) x32.
 # Precomputed Ed25519 public keys (standard Ed25519 == Yano app-chain keys).
@@ -80,6 +84,277 @@ c_red()   { printf '\033[31m%s\033[0m\n' "$*"; }
 c_grn()   { printf '\033[32m%s\033[0m\n' "$*"; }
 c_ylw()   { printf '\033[33m%s\033[0m\n' "$*"; }
 die()     { c_red "error: $*" >&2; exit 1; }
+
+# --- Optional per-node configuration overlays -------------------------------
+# Overlay contents may include connector credentials. Keep them in files: the
+# launcher passes only one config-location URI and never expands or logs keys.
+canonical_path() {
+  python3 - "$1" <<'PY' 2>/dev/null
+import os
+import sys
+
+print(os.path.realpath(sys.argv[1]))
+PY
+}
+
+file_uri() {
+  python3 - "$1" <<'PY' 2>/dev/null
+import pathlib
+import sys
+
+print(pathlib.Path(sys.argv[1]).as_uri())
+PY
+}
+
+posix_mode() {
+  local path="$1" mode
+  if mode="$(stat -c '%a' "$path" 2>/dev/null)" && [[ "$mode" =~ ^[0-7]{3,4}$ ]]; then
+    printf '%s' "$mode"
+    return 0
+  fi
+  if mode="$(stat -f '%Lp' "$path" 2>/dev/null)" && [[ "$mode" =~ ^[0-7]{3,4}$ ]]; then
+    printf '%s' "$mode"
+    return 0
+  fi
+  return 1
+}
+
+owned_by_launcher() {
+  python3 - "$1" <<'PY' >/dev/null 2>&1
+import os
+import stat
+import sys
+
+try:
+    item = os.lstat(sys.argv[1])
+except OSError:
+    sys.exit(1)
+sys.exit(0 if stat.S_ISREG(item.st_mode) and item.st_uid == os.geteuid() else 1)
+PY
+}
+
+file_identity() {
+  python3 - "$1" <<'PY' 2>/dev/null
+import os
+import stat
+import sys
+
+try:
+    item = os.lstat(sys.argv[1])
+except OSError:
+    sys.exit(1)
+if not stat.S_ISREG(item.st_mode):
+    sys.exit(1)
+print(f"{item.st_dev}:{item.st_ino}")
+PY
+}
+
+validate_node_config_directory_security() {
+  local path="$1" result
+  python3 - "$path" <<'PY' >/dev/null 2>&1
+import os
+import stat
+import sys
+
+path = sys.argv[1]
+euid = os.geteuid()
+trusted_owners = {0, euid}
+try:
+    directory = os.lstat(path)
+except OSError:
+    sys.exit(1)
+if not stat.S_ISDIR(directory.st_mode):
+    sys.exit(1)
+if directory.st_uid != euid:
+    sys.exit(2)
+
+# The canonical path contains no intentional symlink components. Root and the
+# launcher account are the trust boundary. A sticky writable ancestor (most
+# notably /tmp) is safe only when its immediate child is trusted too.
+child = path
+while True:
+    parent = os.path.dirname(child)
+    if parent == child:
+        break
+    try:
+        parent_stat = os.lstat(parent)
+        child_stat = os.lstat(child)
+    except OSError:
+        sys.exit(3)
+    if not stat.S_ISDIR(parent_stat.st_mode):
+        sys.exit(3)
+    if parent_stat.st_uid not in trusted_owners:
+        sys.exit(3)
+    parent_mode = stat.S_IMODE(parent_stat.st_mode)
+    if parent_mode & 0o022:
+        if not (parent_mode & stat.S_ISVTX):
+            sys.exit(3)
+        if child_stat.st_uid not in trusted_owners:
+            sys.exit(3)
+    child = parent
+sys.exit(0)
+PY
+  result=$?
+  case "$result" in
+    0) return 0;;
+    2) die "per-node config directory must be owned by the launcher user";;
+    *) die "per-node config directory has an unsafe or untrusted canonical ancestor";;
+  esac
+}
+
+validate_node_config_contents() {
+  local path="$1" result
+  python3 - "$path" <<'PY' >/dev/null 2>&1
+import re
+import sys
+
+path = sys.argv[1]
+try:
+    data = open(path, "rb").read(1_048_577)
+    if len(data) > 1_048_576 or b"\x00" in data:
+        sys.exit(1)
+    text = data.decode("utf-8")
+except Exception:
+    sys.exit(1)
+
+key_pattern = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.\-\[\]]{0,511}")
+ordinal_count = 0
+for raw in text.splitlines():
+    stripped = raw.lstrip(" \t\f")
+    if not stripped or stripped.startswith(("#", "!")):
+        continue
+    # Keep the overlay grammar deliberately simpler than java.util.Properties:
+    # one ASCII key, one '=', one physical line. This makes escaped or
+    # continued spellings of reserved source-control keys impossible.
+    if len(raw) > 16_384 or raw.endswith("\\") or "=" not in raw:
+        sys.exit(1)
+    key, _ = raw.split("=", 1)
+    key = key.strip()
+    if not key_pattern.fullmatch(key):
+        sys.exit(1)
+    normalized = key.lower()
+    if normalized == "config_ordinal" or normalized.endswith(".config_ordinal"):
+        # The exact fixed source ordinal is part of the overlay contract. It
+        # sits above Quarkus' packaged/filesystem application config and below
+        # direct environment values and launcher-owned system properties.
+        if raw != "config_ordinal=275":
+            sys.exit(2)
+        ordinal_count += 1
+        continue
+    if "config.locations" in normalized:
+        sys.exit(2)
+if ordinal_count != 1:
+    sys.exit(3)
+sys.exit(0)
+PY
+  result=$?
+  case "$result" in
+    0) return 0;;
+    2) die "node config contains a reserved configuration-control key";;
+    3) die "node config must contain exactly one literal config_ordinal=275 line";;
+    *) die "node config must use bounded UTF-8 key=value lines without key escapes or continuations";;
+  esac
+}
+
+validate_node_config_file() {
+  local i="$1" candidate canonical final_canonical mode uri identity final_identity
+  NODE_CONFIG_LOCATION=""
+  candidate="$NODE_CONFIG_DIR_CANON/node$i.properties"
+  [ ! -L "$candidate" ] || die "node $i config must not be a symbolic link"
+  [ -f "$candidate" ] || die "node $i config is missing or not a regular file"
+  [ -r "$candidate" ] || die "node $i config is not readable"
+
+  canonical="$(canonical_path "$candidate")" || die "cannot resolve node $i config"
+  case "$canonical" in
+    "$NODE_CONFIG_DIR_CANON"/node"$i".properties) ;;
+    *) die "node $i config resolves outside the configured directory";;
+  esac
+  identity="$(file_identity "$candidate")" || die "node $i config changed during validation"
+  owned_by_launcher "$candidate" || die "node $i config must be owned by the launcher user"
+
+  mode="$(posix_mode "$candidate")" || die "cannot inspect node $i config permissions"
+  (( (8#$mode & 077) == 0 )) \
+    || die "node $i config must not grant group or world permissions (use chmod 600)"
+  validate_node_config_contents "$candidate"
+
+  # Repeat identity/ownership/mode after reading. This catches path replacement
+  # during validation; launch_node repeats this whole function immediately
+  # before the child process resolves the file URI.
+  [ ! -L "$candidate" ] && [ -f "$candidate" ] \
+    || die "node $i config changed during validation"
+  final_canonical="$(canonical_path "$candidate")" || die "cannot resolve node $i config"
+  [ "$final_canonical" = "$canonical" ] || die "node $i config changed during validation"
+  final_identity="$(file_identity "$candidate")" || die "node $i config changed during validation"
+  [ "$final_identity" = "$identity" ] || die "node $i config changed during validation"
+  owned_by_launcher "$candidate" || die "node $i config must be owned by the launcher user"
+  mode="$(posix_mode "$candidate")" || die "cannot inspect node $i config permissions"
+  (( (8#$mode & 077) == 0 )) \
+    || die "node $i config must not grant group or world permissions (use chmod 600)"
+
+  uri="$(file_uri "$final_canonical")" || die "cannot encode node $i config location"
+  [ -n "$uri" ] || die "cannot encode node $i config location"
+  NODE_CONFIG_LOCATION="$uri"
+}
+
+validate_node_config_overlays() {
+  local n="$1" i mode entry base index digits
+  NODE_CONFIG_DIR_CANON=""
+  NODE_CONFIG_URIS=()
+  [ -n "$NODE_CONFIG_DIR" ] || return 0
+
+  [ -d "$NODE_CONFIG_DIR" ] || die "per-node config directory does not exist or is not a directory"
+  NODE_CONFIG_DIR_CANON="$(canonical_path "$NODE_CONFIG_DIR")" \
+    || die "cannot resolve per-node config directory"
+  [ -n "$NODE_CONFIG_DIR_CANON" ] && [ -d "$NODE_CONFIG_DIR_CANON" ] \
+    || die "cannot resolve per-node config directory"
+  mode="$(posix_mode "$NODE_CONFIG_DIR_CANON")" \
+    || die "cannot inspect per-node config directory permissions"
+  (( (8#$mode & 022) == 0 )) \
+    || die "per-node config directory must not be group or world writable"
+  validate_node_config_directory_security "$NODE_CONFIG_DIR_CANON"
+
+  for ((i=0;i<n;i++)); do
+    validate_node_config_file "$i"
+    NODE_CONFIG_URIS[$i]="$NODE_CONFIG_LOCATION"
+  done
+
+  # Fail closed on stale/mistyped node overlay names while permitting unrelated
+  # support files (for example trust stores) in the same private directory.
+  for entry in "$NODE_CONFIG_DIR_CANON"/node*.properties; do
+    [ -e "$entry" ] || [ -L "$entry" ] || continue
+    base="${entry##*/}"
+    if [[ "$base" =~ ^node([0-9]+)\.properties$ ]]; then
+      digits="${BASH_REMATCH[1]}"
+      [ "${#digits}" -le 9 ] \
+        || die "unexpected per-node config filename (expected node<N>.properties)"
+      index=$((10#$digits))
+      [ "$base" = "node$index.properties" ] \
+        || die "unexpected per-node config filename (expected node<N>.properties)"
+      [ "$index" -lt "$n" ] || die "unexpected per-node config for node $index"
+    else
+      die "unexpected per-node config filename (expected node<N>.properties)"
+    fi
+  done
+}
+
+revalidate_node_config_for_launch() {
+  local i="$1" mode
+  NODE_CONFIG_LOCATION=""
+  [ -n "$NODE_CONFIG_DIR_CANON" ] || return 0
+  [ -d "$NODE_CONFIG_DIR_CANON" ] || die "per-node config directory changed before launch"
+  mode="$(posix_mode "$NODE_CONFIG_DIR_CANON")" \
+    || die "cannot inspect per-node config directory permissions"
+  (( (8#$mode & 022) == 0 )) \
+    || die "per-node config directory must not be group or world writable"
+  validate_node_config_directory_security "$NODE_CONFIG_DIR_CANON"
+  validate_node_config_file "$i"
+}
+
+node_config_location() {
+  local i="$1"
+  [ -n "$NODE_CONFIG_DIR_CANON" ] || return 0
+  printf '%s' "${NODE_CONFIG_URIS[$i]}"
+}
 
 # --- Identities --------------------------------------------------------------
 # Repeat a 2-hex-digit byte 32 times → a 32-byte hex seed.
@@ -444,6 +719,9 @@ chain_props() {
 # rest follow it (or, with --network <net>, every node relays that network).
 launch_node() {
   local n="$1" i="$2"
+  local overlay_location=""
+  # Fail before creating node state if the preflight-validated file changed.
+  revalidate_node_config_for_launch "$i"
   local api_key; api_key="$(effective_api_key)"
   validate_api_key "$api_key"
   local dir; dir="$(node_dir "$i")"; mkdir -p "$dir"
@@ -481,13 +759,22 @@ launch_node() {
   args+=("${cprops[@]}")
 
   local log; log="$(log_file "$i")"
+  # Recheck at the last practical point and derive the URI from this final
+  # identity, minimizing the validation-to-open window for the child process.
+  revalidate_node_config_for_launch "$i"
+  overlay_location="$NODE_CONFIG_LOCATION"
   if [ "$RUNTIME" = "native" ]; then
     ( cd "$YANO_HOME" || exit
       export YANO_APP_CHAIN_API_AUTH_ENABLED=false YANO_APP_CHAIN_API_KEYS="$api_key"
+      # Select through the environment, never a -D selector. Validation fixes
+      # the file itself at ordinal 275, below direct environment values (300)
+      # and launcher-owned system properties (400).
+      [ -n "$overlay_location" ] && export QUARKUS_CONFIG_LOCATIONS="$overlay_location"
       exec "$NATIVE" "${args[@]}" ${YANO_EXTRA_ARGS:-} ) >"$log" 2>&1 &
   else
     ( cd "$YANO_HOME" || exit
       export YANO_APP_CHAIN_API_AUTH_ENABLED=false YANO_APP_CHAIN_API_KEYS="$api_key"
+      [ -n "$overlay_location" ] && export QUARKUS_CONFIG_LOCATIONS="$overlay_location"
       exec java ${JAVA_OPTS:-} "${args[@]}" -jar "$JAR" ${YANO_EXTRA_ARGS:-} ) >"$log" 2>&1 &
   fi
   echo "$!" > "$(pid_file "$i")"
@@ -564,6 +851,7 @@ cmd_start() {
     die "anchoring on $NETWORK needs your own wallet key: --anchor-key \$(openssl rand -hex 32) — the default demo seed is publicly known"
   fi
   validate_api_key "$(effective_api_key)"
+  validate_node_config_overlays "$n"
   resolve_cluster_ports "$n"
   mkdir -p "$CLUSTER_DIR"
 
@@ -848,6 +1136,12 @@ Environment (run a RELEASED build with no local compile):
                 full key for privileged cluster operations. Reads and
                 submissions remain public on the loopback-only demo API.
                 Default: $LOCAL_CLUSTER_API_KEY (local demo only).
+  YANO_CLUSTER_NODE_CONFIG_DIR
+                optional directory containing exactly node0.properties ...
+                node<N-1>.properties. Files must be regular, non-symlink,
+                owned/readable only by the launcher user (chmod 600), and
+                contain exactly one literal config_ordinal=275 line. Their
+                contents are loaded as per-node Quarkus config overlays.
   Examples:
     # local dev (auto): uses app/build/yano.jar + app/config
     ./cluster.sh start 3

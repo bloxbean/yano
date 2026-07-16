@@ -1,0 +1,146 @@
+plugins {
+    id 'application'
+    id 'com.gradleup.shadow'
+}
+
+dependencies {
+    // Standalone audit tooling: canonical effect decoding and portable
+    // threshold-finality/anchor evidence verification. This executable does
+    // not run inside the node and contributes no SPI.
+    implementation project(':core-api')
+    implementation project(':appchain-evidence-client')
+    implementation project(':appchain-evidence-contracts')
+    implementation project(':appchain-integration-contracts')
+    implementation libs.jackson.databind
+    implementation libs.kafka.clients
+    implementation(libs.aws.sdk.s3) {
+        exclude group: 'software.amazon.awssdk', module: 'netty-nio-client'
+        exclude group: 'software.amazon.awssdk', module: 'apache5-client'
+    }
+    implementation libs.aws.sdk.url.connection.client
+
+    testImplementation libs.junit.jupiter.api
+    testRuntimeOnly libs.junit.jupiter.engine
+    testRuntimeOnly libs.junit.platform.launcher
+    testImplementation libs.assertj.core
+}
+
+java {
+    sourceCompatibility = 25
+    targetCompatibility = 25
+}
+
+application {
+    mainClass = 'com.bloxbean.cardano.yano.appchain.examples.evidence.demo.EvidenceDemoMain'
+    applicationDefaultJvmArgs = ['--add-modules=jdk.httpserver']
+}
+
+tasks.named('compileJava') {
+    options.compilerArgs.removeAll { it.startsWith('-Aproject=') }
+    options.compilerArgs += ['--add-modules', 'jdk.httpserver']
+}
+
+tasks.named('compileTestJava') {
+    options.compilerArgs += ['--add-modules', 'jdk.httpserver']
+}
+
+tasks.withType(Test).configureEach {
+    jvmArgs '--add-modules=jdk.httpserver'
+}
+
+tasks.named('shadowJar') {
+    archiveBaseName.set("yano-${project.name}")
+    archiveClassifier.set('all')
+    reproducibleFileOrder = true
+    preserveFileTimestamps = false
+    mergeServiceFiles()
+    exclude 'META-INF/*.SF', 'META-INF/*.RSA', 'META-INF/*.DSA', 'module-info.class'
+    manifest {
+        attributes 'Main-Class': application.mainClass.get()
+    }
+}
+
+def pluginMetadataPrefixes = [
+        'META-INF/yano/plugins/',
+        'META-INF/services/com.bloxbean.cardano.yano.api.'
+]
+def forbiddenClassPrefixes = [
+        'com/bloxbean/cardano/yano/runtime/',
+        'com/bloxbean/cardano/yano/appchain/kafka/',
+        'com/bloxbean/cardano/yano/appchain/ipfs/',
+        'com/bloxbean/cardano/yano/appchain/objectstore/s3/'
+]
+
+tasks.register('verifyDemoRunnerArtifactBoundary') {
+    group = 'verification'
+    description = 'Verifies that the demo runner cannot activate or embed Yano plugin/runtime implementations'
+    dependsOn tasks.named('jar'), tasks.named('shadowJar')
+    inputs.files(tasks.named('jar').flatMap { it.archiveFile },
+            tasks.named('shadowJar').flatMap { it.archiveFile })
+    inputs.files(configurations.runtimeClasspath)
+
+    doLast {
+        def entryNames = { File artifact ->
+            if (artifact.isDirectory()) {
+                def root = artifact.toPath()
+                def names = [] as Set
+                artifact.eachFileRecurse { candidate ->
+                    if (candidate.isFile()) {
+                        names.add(root.relativize(candidate.toPath()).toString()
+                                .replace(File.separatorChar, '/' as char))
+                    }
+                }
+                return names
+            }
+            if (!artifact.name.endsWith('.jar')) {
+                return [] as Set
+            }
+            return new java.util.zip.ZipFile(artifact).withCloseable { zip ->
+                zip.entries().collect { entry -> entry.name }.toSet()
+            }
+        }
+        [tasks.named('jar').get().archiveFile.get().asFile,
+         tasks.named('shadowJar').get().archiveFile.get().asFile].each { artifact ->
+            def entries = entryNames(artifact)
+            if (entries.any { name -> pluginMetadataPrefixes.any { name.startsWith(it) } }) {
+                throw new GradleException("Demo runner contains plugin metadata: ${artifact.name}")
+            }
+            if (entries.any { name -> forbiddenClassPrefixes.any { name.startsWith(it) } }) {
+                throw new GradleException("Demo runner embeds a plugin/runtime implementation: ${artifact.name}")
+            }
+        }
+
+        def forbiddenProjects = [
+        ':runtime', ':appchain-evidence-registry',
+                ':appchain-kafka', ':appchain-objectstore-s3', ':appchain-ipfs'
+        ] as Set
+        def forbidden = configurations.runtimeClasspath.incoming.resolutionResult.allComponents
+                .findAll { component ->
+                    component.id instanceof
+                            org.gradle.api.artifacts.component.ProjectComponentIdentifier
+                            && forbiddenProjects.contains(component.id.projectPath)
+                }
+        if (!forbidden.isEmpty()) {
+            throw new GradleException('Demo runner dependency closure contains plugin/runtime projects: '
+                    + forbidden.collect { it.id.projectPath }.sort().join(', '))
+        }
+    }
+}
+
+tasks.named('check') {
+    dependsOn tasks.named('verifyDemoRunnerArtifactBoundary')
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            artifact(tasks.named('shadowJar')) {
+                classifier = 'all'
+            }
+            pom {
+                name = 'Yano App-Chain Evidence Demo Runner'
+                description = 'Credential-safe no-code runner and report UI for the ADR-013 evidence scenario'
+            }
+        }
+    }
+}

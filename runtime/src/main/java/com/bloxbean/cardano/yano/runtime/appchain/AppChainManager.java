@@ -170,12 +170,12 @@ public final class AppChainManager implements Subsystem, AppChainGateways {
         // here — otherwise a stricter chain would accept messages a single-chain
         // deployment of it would reject.
         //
-        // Size is capped by topic (block-bytes fix): a framework message on a
-        // reserved '~' topic — notably a ~consensus/propose proposal, whose body
-        // IS the whole serialized block — may legitimately be up to block.max-bytes
-        // (the engine re-checks the block against that authoritative cap, and each
-        // message inside it against max-message-bytes). Ordinary user messages stay
-        // bound by the per-chain max-message-bytes payload limit.
+        // This first pass is deliberately coarse: a framework message on a
+        // reserved '~' topic — notably ~consensus/propose, whose body is the
+        // serialized block — may legitimately exceed max-message-bytes. The
+        // subsystem verification immediately below applies the exact per-topic
+        // proposal/vote/certificate limit and keeps every other topic at the
+        // ordinary max-message-bytes limit.
         var config = subsystem.chainConfig();
         String topic = message.getTopic();
         boolean systemTopic = topic != null && topic.startsWith("~");
