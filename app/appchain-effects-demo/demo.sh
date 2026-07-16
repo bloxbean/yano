@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ADR-013 Phase 1.5 launcher. Phase 1.6 owns public-network guards and cleanup.
+# ADR-013 Milestone 1 launcher: guarded profiles, identity markers, and cleanup.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -16,6 +16,8 @@ load_defaults() {
     case "$line" in ''|'#'*) continue;; esac
     key="${line%%=*}"
     value="${line#*=}"
+    [[ "$key" =~ ^[A-Z][A-Z0-9_]*$ ]] \
+      || die "invalid default key in $file: $key"
     if [ -z "${!key+x}" ]; then
       printf -v "$key" '%s' "$value"
       export "$key"
@@ -23,66 +25,356 @@ load_defaults() {
   done < "$file"
 }
 
+CHAIN_ID_EXPLICIT=false
+[ -z "${DEMO_CHAIN_ID+x}" ] || CHAIN_ID_EXPLICIT=true
 load_defaults "$SCRIPT_DIR/config/common.env"
 load_defaults "$SCRIPT_DIR/config/images.env"
 
+ORIGINAL_ARGS=("$@")
 COMMAND="${1:-help}"
 [ "$#" -eq 0 ] || shift
 MODE="${DEMO_MODE:-compose}"
 INSTANCE="${DEMO_INSTANCE:-default}"
 OBSERVABILITY="${DEMO_OBSERVABILITY:-false}"
+CLEAN_SCOPE=""
+CLEAN_CONFIRMED=false
+ENABLE_MAINNET=false
+ANCHOR_KEY_FILE="${DEMO_ANCHOR_KEY_FILE:-}"
+ANCHOR_KEY_FILE_EXPLICIT=false
+PUBLIC_ANCHOR_CONFIRMATION=""
+PUBLIC_L1_DELETE_CONFIRMATION=""
+NEW_INSTANCE=""
+NEW_CHAIN_ID=""
+TEMP_FILES=()
+MEMBER_SEED_0=""
+MEMBER_SEED_1=""
+MEMBER_SEED_2=""
+ANCHOR_KEY_VALUE=""
+STAGED_SHELLEY=""
+STAGED_GENESIS_TIMESTAMP=""
+STAGED_INSTANCE_IDENTITY=""
+STAGED_LEASE_IDENTITY=""
+
+cleanup_temporary_files() {
+  local file
+  for file in "${TEMP_FILES[@]-}"; do
+    [ -z "$file" ] || rm -f "$file"
+  done
+}
+trap cleanup_temporary_files EXIT
+
+temporary_file() {
+  LAST_TEMP_FILE="$(mktemp "${TMPDIR:-/tmp}/yano-effects-demo.XXXXXX")" \
+    || die "cannot create a private temporary file"
+  chmod 600 "$LAST_TEMP_FILE"
+  TEMP_FILES+=("$LAST_TEMP_FILE")
+}
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --mode|--deployment) MODE="${2:-}"; shift 2;;
     --network) DEMO_NETWORK="${2:-}"; shift 2;;
+    --chain-id) DEMO_CHAIN_ID="${2:-}"; CHAIN_ID_EXPLICIT=true; shift 2;;
+    --data-dir) DEMO_DATA_ROOT="${2:-}"; shift 2;;
     --instance) INSTANCE="${2:-}"; shift 2;;
     --observability) OBSERVABILITY=true; shift;;
     --no-observability) OBSERVABILITY=false; shift;;
+    --anchor-key-file) ANCHOR_KEY_FILE="${2:-}"; ANCHOR_KEY_FILE_EXPLICIT=true; shift 2;;
+    --confirm-public-anchor) PUBLIC_ANCHOR_CONFIRMATION="${2:-}"; shift 2;;
+    --confirm-public-l1-delete) PUBLIC_L1_DELETE_CONFIRMATION="${2:-}"; shift 2;;
+    --enable-mainnet) ENABLE_MAINNET=true; shift;;
+    --scope) CLEAN_SCOPE="${2:-}"; shift 2;;
+    --new-instance) NEW_INSTANCE="${2:-}"; shift 2;;
+    --new-chain-id) NEW_CHAIN_ID="${2:-}"; shift 2;;
+    --yes) CLEAN_CONFIRMED=true; shift;;
     -h|--help) COMMAND=help; shift;;
     *) die "unknown option: $1";;
   esac
 done
 
 case "$MODE" in compose|host) ;; *) die "--mode must be compose or host";; esac
+case "$DEMO_NETWORK" in
+  devnet|preview|preprod|mainnet) ;;
+  *) die "--network must be exactly devnet, preview, preprod, or mainnet";;
+esac
 [[ "$INSTANCE" =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]] \
   || die "--instance must match [a-z0-9][a-z0-9-]{0,31}"
+if [ -n "$NEW_INSTANCE" ]; then
+  [[ "$NEW_INSTANCE" =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]] \
+    || die "--new-instance must match [a-z0-9][a-z0-9-]{0,31}"
+  [ "$NEW_INSTANCE" != "$INSTANCE" ] \
+    || die "--new-instance must differ from the retired instance"
+fi
+if [ -n "$NEW_CHAIN_ID" ]; then
+  [[ "$NEW_CHAIN_ID" =~ ^[a-z][a-z0-9-]{0,62}$ ]] \
+    || die "--new-chain-id must match [a-z][a-z0-9-]{0,62}"
+fi
+if [ "$CHAIN_ID_EXPLICIT" = false ] && [ "$INSTANCE" != default ]; then
+  DEMO_CHAIN_ID="evidence-chain-$INSTANCE"
+fi
 [[ "$DEMO_CHAIN_ID" =~ ^[a-z][a-z0-9-]{0,62}$ ]] \
   || die "DEMO_CHAIN_ID must match [a-z][a-z0-9-]{0,62}"
-[ "$DEMO_NETWORK" = devnet ] \
-  || die "Phase 1.5 supports devnet only; public-network profiles and identity guards are Phase 1.6"
 case "$OBSERVABILITY" in true|false) ;; *) die "DEMO_OBSERVABILITY must be true or false";; esac
 
-DATA_ROOT="${DEMO_DATA_ROOT:-$SCRIPT_DIR/.demo-data}/$DEMO_NETWORK/$INSTANCE"
-SECRET_ROOT="${DEMO_SECRET_ROOT:-$SCRIPT_DIR/.demo-secrets}/$DEMO_NETWORK/$INSTANCE"
-RUNTIME_ROOT="${DEMO_RUNTIME_ROOT:-$SCRIPT_DIR/.demo-runtime}/$DEMO_NETWORK/$INSTANCE"
+validate_decimal() {
+  local name="$1" value="$2" minimum="$3" maximum="$4" number
+  [[ "$value" =~ ^[0-9]+$ ]] || die "$name must be a decimal integer"
+  number=$((10#$value))
+  [ "$number" -ge "$minimum" ] && [ "$number" -le "$maximum" ] \
+    || die "$name must be between $minimum and $maximum"
+}
+
+validate_decimal DEMO_HTTP_BASE "$DEMO_HTTP_BASE" 1 65533
+validate_decimal DEMO_SERVER_BASE "${DEMO_SERVER_BASE:-13337}" 1 65533
+validate_decimal DEMO_UI_PORT "$DEMO_UI_PORT" 1 65535
+validate_decimal DEMO_KAFKA_PORT "$DEMO_KAFKA_PORT" 1 65535
+validate_decimal DEMO_MINIO_PORT "$DEMO_MINIO_PORT" 1 65535
+validate_decimal DEMO_IPFS_PORT "$DEMO_IPFS_PORT" 1 65535
+validate_decimal DEMO_PROMETHEUS_PORT "$DEMO_PROMETHEUS_PORT" 1 65535
+validate_decimal DEMO_GRAFANA_PORT "$DEMO_GRAFANA_PORT" 1 65535
+validate_decimal DEMO_SCENARIO_TIMEOUT_SECONDS "$DEMO_SCENARIO_TIMEOUT_SECONDS" 1 86400
+validate_decimal DEMO_SCENARIO_POLL_INTERVAL_MILLIS "$DEMO_SCENARIO_POLL_INTERVAL_MILLIS" 1 60000
+validate_decimal DEMO_ANCHOR_FUND_TIMEOUT_SECONDS "$DEMO_ANCHOR_FUND_TIMEOUT_SECONDS" 60 86400
+
+load_network_profile() {
+  local file="$SCRIPT_DIR/config/networks/$DEMO_NETWORK.env" line key value seen="|"
+  PROFILE_NETWORK=""; PROFILE_PUBLIC=""; PROFILE_MAINNET=""
+  PROFILE_AUTO_FAUCET=""; PROFILE_DEFAULT_ANCHOR=""; PROFILE_ALLOW_ANCHOR=""
+  PROFILE_L1_MODE=""; PROFILE_WARMUP_SECONDS=""; PROFILE_PROTOCOL_MAGIC=""
+  PROFILE_ANCHOR_EVERY_BLOCKS=""; PROFILE_ANCHOR_MAX_INTERVAL_MINUTES=""
+  PROFILE_SYNC_TIMEOUT_SECONDS=""
+  [ -f "$file" ] || die "unsupported network profile: $DEMO_NETWORK"
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in ''|'#'*) continue;; esac
+    key="${line%%=*}"; value="${line#*=}"
+    [ "$line" != "$key" ] || die "invalid network profile line in $file"
+    case "$seen" in *"|$key|"*) die "duplicate network profile key in $file: $key";; esac
+    seen="$seen$key|"
+    case "$key" in
+      network) PROFILE_NETWORK="$value";;
+      protocol_magic) PROFILE_PROTOCOL_MAGIC="$value";;
+      public) PROFILE_PUBLIC="$value";;
+      mainnet) PROFILE_MAINNET="$value";;
+      auto_faucet) PROFILE_AUTO_FAUCET="$value";;
+      default_anchor) PROFILE_DEFAULT_ANCHOR="$value";;
+      allow_anchor) PROFILE_ALLOW_ANCHOR="$value";;
+      l1_mode) PROFILE_L1_MODE="$value";;
+      warmup_seconds) PROFILE_WARMUP_SECONDS="$value";;
+      anchor_every_blocks) PROFILE_ANCHOR_EVERY_BLOCKS="$value";;
+      anchor_max_interval_minutes) PROFILE_ANCHOR_MAX_INTERVAL_MINUTES="$value";;
+      sync_timeout_seconds) PROFILE_SYNC_TIMEOUT_SECONDS="$value";;
+      *) die "unknown network profile key in $file: $key";;
+    esac
+  done < "$file"
+  [ "$PROFILE_NETWORK" = "$DEMO_NETWORK" ] \
+    || die "network profile identity does not match $DEMO_NETWORK"
+  for value in "$PROFILE_PUBLIC" "$PROFILE_MAINNET" "$PROFILE_AUTO_FAUCET" \
+    "$PROFILE_DEFAULT_ANCHOR" "$PROFILE_ALLOW_ANCHOR"; do
+    case "$value" in true|false) ;; *) die "invalid boolean in network profile: $file";; esac
+  done
+  case "$PROFILE_L1_MODE" in producer|relay) ;; *) die "invalid l1_mode in $file";; esac
+  validate_decimal protocol_magic "$PROFILE_PROTOCOL_MAGIC" 1 4294967295
+  validate_decimal warmup_seconds "$PROFILE_WARMUP_SECONDS" 0 300
+  validate_decimal anchor_every_blocks "$PROFILE_ANCHOR_EVERY_BLOCKS" 1 1000000
+  validate_decimal anchor_max_interval_minutes "$PROFILE_ANCHOR_MAX_INTERVAL_MINUTES" 1 1440
+  validate_decimal sync_timeout_seconds "$PROFILE_SYNC_TIMEOUT_SECONDS" 60 86400
+  case "$DEMO_NETWORK:$PROFILE_PROTOCOL_MAGIC" in
+    devnet:42|preview:2|preprod:1|mainnet:764824073) ;;
+    *) die "protocol_magic does not match the selected built-in network";;
+  esac
+  if [ "$PROFILE_PUBLIC" = true ]; then
+    [ "$PROFILE_AUTO_FAUCET" = false ] && [ "$PROFILE_L1_MODE" = relay ] \
+      || die "public profiles must use relay mode and must never auto-fund"
+  fi
+  [ "$PROFILE_DEFAULT_ANCHOR" = false ] || [ "$PROFILE_ALLOW_ANCHOR" = true ] \
+    || die "a default anchor requires allow_anchor=true"
+  if [ "$PROFILE_MAINNET" = true ]; then
+    [ "$DEMO_NETWORK" = mainnet ] && [ "$PROFILE_PUBLIC" = true ] \
+      && [ "$PROFILE_ALLOW_ANCHOR" = false ] && [ "$PROFILE_DEFAULT_ANCHOR" = false ] \
+      || die "the mainnet profile must be public and forbid automatic anchoring"
+  fi
+}
+
+load_network_profile
+[ "$ANCHOR_KEY_FILE_EXPLICIT" = false ] || [ -n "$ANCHOR_KEY_FILE" ] \
+  || die "--anchor-key-file requires a non-empty path"
+case "$COMMAND" in help|status|stop) SAFE_WITHOUT_MAINNET_GUARD=true;; *) SAFE_WITHOUT_MAINNET_GUARD=false;; esac
+[ "$PROFILE_MAINNET" = false ] || [ "$ENABLE_MAINNET" = true ] \
+  || [ "$SAFE_WITHOUT_MAINNET_GUARD" = true ] \
+  || die "mainnet requires the explicit --enable-mainnet guard"
+ANCHOR_ENABLED="$PROFILE_DEFAULT_ANCHOR"
+if [ "$PROFILE_PUBLIC" = true ]; then
+  if [ -n "$PUBLIC_ANCHOR_CONFIRMATION" ]; then
+    [ "$PUBLIC_ANCHOR_CONFIRMATION" = "$DEMO_NETWORK" ] \
+      || die "--confirm-public-anchor must exactly name the selected network"
+    [ "$PROFILE_ALLOW_ANCHOR" = true ] \
+      || die "the $DEMO_NETWORK profile forbids automatic anchor/value operations"
+    [ -n "$ANCHOR_KEY_FILE" ] \
+      || die "public anchoring also requires --anchor-key-file with an operator-funded wallet"
+    ANCHOR_ENABLED=true
+  elif [ -n "$ANCHOR_KEY_FILE" ]; then
+    die "a public anchor key does not authorize spending; add --confirm-public-anchor $DEMO_NETWORK"
+  fi
+else
+  [ -z "$PUBLIC_ANCHOR_CONFIRMATION" ] \
+    || die "--confirm-public-anchor is only valid for a public network"
+  [ -z "$ANCHOR_KEY_FILE" ] || ANCHOR_ENABLED=true
+fi
+STORAGE_GATE=app-final
+REQUIRE_ANCHOR=false
+if [ "$ANCHOR_ENABLED" = true ]; then
+  STORAGE_GATE=l1-anchored
+  REQUIRE_ANCHOR=true
+fi
+
+command -v python3 >/dev/null 2>&1 || die "required command not found: python3"
+normalize_base_path() {
+  local label="$1" value="$2"
+  [ -n "$value" ] || die "$label must not be empty"
+  case "$value" in *$'\n'*|*$'\r'*|*'$'*) die "$label contains an unsafe character";; esac
+  python3 - "$value" <<'PY'
+import os, sys
+value = os.path.expanduser(sys.argv[1])
+if ".." in value.split(os.sep):
+    raise SystemExit(1)
+print(os.path.realpath(os.path.abspath(value)))
+PY
+}
+normalize_file_path() {
+  local label="$1" value="$2"
+  [ -n "$value" ] || die "$label must not be empty"
+  case "$value" in *$'\n'*|*$'\r'*|*'$'*) die "$label contains an unsafe character";; esac
+  python3 - "$value" <<'PY'
+import os, sys
+value = os.path.expanduser(sys.argv[1])
+if ".." in value.split(os.sep):
+    raise SystemExit(1)
+print(os.path.abspath(value))
+PY
+}
+DATA_BASE="$(normalize_base_path DEMO_DATA_ROOT "${DEMO_DATA_ROOT:-$SCRIPT_DIR/.demo-data}")" \
+  || die "DEMO_DATA_ROOT must be a safe path without '..'"
+SECRET_BASE="$(normalize_base_path DEMO_SECRET_ROOT "${DEMO_SECRET_ROOT:-$SCRIPT_DIR/.demo-secrets}")" \
+  || die "DEMO_SECRET_ROOT must be a safe path without '..'"
+RUNTIME_BASE="$(normalize_base_path DEMO_RUNTIME_ROOT "${DEMO_RUNTIME_ROOT:-$SCRIPT_DIR/.demo-runtime}")" \
+  || die "DEMO_RUNTIME_ROOT must be a safe path without '..'"
+python3 - "$DATA_BASE" "$SECRET_BASE" "$RUNTIME_BASE" <<'PY' \
+  || die "DEMO_DATA_ROOT, DEMO_SECRET_ROOT and DEMO_RUNTIME_ROOT must be pairwise disjoint"
+from pathlib import Path
+import sys
+
+roots = [("data", Path(value).resolve(strict=False)) for value in sys.argv[1:2]]
+roots += [("secrets", Path(value).resolve(strict=False)) for value in sys.argv[2:3]]
+roots += [("runtime", Path(value).resolve(strict=False)) for value in sys.argv[3:4]]
+for index, (left_name, left) in enumerate(roots):
+    for right_name, right in roots[index + 1:]:
+        if left == right or left in right.parents or right in left.parents:
+            raise SystemExit(f"{left_name} and {right_name} roots overlap")
+PY
+NETWORK_ROOT="$DATA_BASE/networks/$DEMO_NETWORK"
+DATA_ROOT="$NETWORK_ROOT/instances/$INSTANCE/$MODE"
+L1_ROOT="$NETWORK_ROOT/l1/$MODE"
+SECRET_ROOT="$SECRET_BASE/networks/$DEMO_NETWORK/$INSTANCE/$MODE"
+RUNTIME_INSTANCE_ROOT="$RUNTIME_BASE/networks/$DEMO_NETWORK/$INSTANCE"
+RUNTIME_ROOT="$RUNTIME_INSTANCE_ROOT/$MODE"
+
 PLUGIN_DIR="$RUNTIME_ROOT/plugins"
 REPORT_DIR="$DATA_ROOT/reports"
 COMPOSE_ENV="$RUNTIME_ROOT/compose.env"
 RUNNER_CONFIG="$RUNTIME_ROOT/runner-$MODE.properties"
 UI_CONFIG="$RUNTIME_ROOT/ui-$MODE.properties"
 NODE_CONFIG_DIR="$SECRET_ROOT/nodes-$MODE"
-SHELLEY_GENESIS_FILE="$DATA_ROOT/l1/shared/shelley-genesis.json"
-GENESIS_TIMESTAMP_FILE="$DATA_ROOT/l1/shared/genesis-timestamp"
+MEMBER_KEY_DIR="$SECRET_ROOT/member-keys"
+NETWORK_MARKER="$NETWORK_ROOT/network-identity.json"
+INSTANCE_MARKER="$DATA_ROOT/appchain-identity.json"
+ANCHOR_BINDING="$DATA_ROOT/anchor-binding.json"
+L1_LEASE="$L1_ROOT/demo-owner.json"
+RETIRE_MARKER="$NETWORK_ROOT/retired/$MODE/$INSTANCE.json"
+if [ "$DEMO_NETWORK" = devnet ]; then
+  SHELLEY_GENESIS_FILE="$NETWORK_ROOT/l1/shared/shelley-genesis.json"
+  GENESIS_TIMESTAMP_FILE="$NETWORK_ROOT/l1/shared/genesis-timestamp"
+else
+  SHELLEY_GENESIS_FILE="$APP_DIR/config/network/$DEMO_NETWORK/shelley-genesis.json"
+  GENESIS_TIMESTAMP_FILE=""
+fi
 
 API_KEY_FILE="$SECRET_ROOT/yano-api-key"
 MINIO_ROOT_USER_FILE="$SECRET_ROOT/minio-root-user"
 MINIO_ROOT_PASSWORD_FILE="$SECRET_ROOT/minio-root-password"
-MINIO_RUNNER_ACCESS_FILE="${DEMO_HOST_S3_RUNNER_ACCESS_KEY_FILE:-$SECRET_ROOT/minio-runner-access-key}"
-MINIO_RUNNER_SECRET_FILE="${DEMO_HOST_S3_RUNNER_SECRET_KEY_FILE:-$SECRET_ROOT/minio-runner-secret-key}"
-MINIO_EXECUTOR_ACCESS_FILE="${DEMO_HOST_S3_EXECUTOR_ACCESS_KEY_FILE:-$SECRET_ROOT/minio-executor-access-key}"
-MINIO_EXECUTOR_SECRET_FILE="${DEMO_HOST_S3_EXECUTOR_SECRET_KEY_FILE:-$SECRET_ROOT/minio-executor-secret-key}"
+MINIO_RUNNER_ACCESS_FILE="$(normalize_file_path DEMO_HOST_S3_RUNNER_ACCESS_KEY_FILE \
+  "${DEMO_HOST_S3_RUNNER_ACCESS_KEY_FILE:-$SECRET_ROOT/minio-runner-access-key}")" \
+  || die "DEMO_HOST_S3_RUNNER_ACCESS_KEY_FILE must be a safe path without '..'"
+MINIO_RUNNER_SECRET_FILE="$(normalize_file_path DEMO_HOST_S3_RUNNER_SECRET_KEY_FILE \
+  "${DEMO_HOST_S3_RUNNER_SECRET_KEY_FILE:-$SECRET_ROOT/minio-runner-secret-key}")" \
+  || die "DEMO_HOST_S3_RUNNER_SECRET_KEY_FILE must be a safe path without '..'"
+MINIO_EXECUTOR_ACCESS_FILE="$(normalize_file_path DEMO_HOST_S3_EXECUTOR_ACCESS_KEY_FILE \
+  "${DEMO_HOST_S3_EXECUTOR_ACCESS_KEY_FILE:-$SECRET_ROOT/minio-executor-access-key}")" \
+  || die "DEMO_HOST_S3_EXECUTOR_ACCESS_KEY_FILE must be a safe path without '..'"
+MINIO_EXECUTOR_SECRET_FILE="$(normalize_file_path DEMO_HOST_S3_EXECUTOR_SECRET_KEY_FILE \
+  "${DEMO_HOST_S3_EXECUTOR_SECRET_KEY_FILE:-$SECRET_ROOT/minio-executor-secret-key}")" \
+  || die "DEMO_HOST_S3_EXECUTOR_SECRET_KEY_FILE must be a safe path without '..'"
 GRAFANA_PASSWORD_FILE="$SECRET_ROOT/grafana-admin-password"
+if [ -n "$ANCHOR_KEY_FILE" ]; then
+  ANCHOR_KEY_FILE="$(normalize_file_path anchor-key-file "$ANCHOR_KEY_FILE")" \
+    || die "--anchor-key-file must be a safe path without '..'"
+fi
+python3 - "$DATA_BASE" "$RUNTIME_BASE" "$API_KEY_FILE" "$MINIO_ROOT_USER_FILE" \
+  "$MINIO_ROOT_PASSWORD_FILE" "$MINIO_RUNNER_ACCESS_FILE" "$MINIO_RUNNER_SECRET_FILE" \
+  "$MINIO_EXECUTOR_ACCESS_FILE" "$MINIO_EXECUTOR_SECRET_FILE" "$GRAFANA_PASSWORD_FILE" \
+  "${ANCHOR_KEY_FILE:-}" <<'PY' \
+  || die "secret material must not be stored below a cleanup-managed data or runtime root"
+from pathlib import Path
+import sys
+
+managed = [Path(value).resolve(strict=False) for value in sys.argv[1:3]]
+for raw in sys.argv[3:]:
+    if not raw:
+        continue
+    path = Path(raw).resolve(strict=False)
+    if any(path == root or root in path.parents for root in managed):
+        raise SystemExit(1)
+PY
 
 HTTP0=$((10#$DEMO_HTTP_BASE))
 HTTP1=$((HTTP0 + 1))
 HTTP2=$((HTTP0 + 2))
 SERVER_BASE="${DEMO_SERVER_BASE:-13337}"
-PROJECT_NAME="yano-effects-${INSTANCE}"
+python3 - "$DEMO_CONNECTOR_SUBNET" "$DEMO_MINIO_IP" "$DEMO_KUBO_IP" <<'PY' \
+  || die "connector subnet/IP values must be distinct canonical private IPv4 addresses"
+import ipaddress, sys
+network = ipaddress.ip_network(sys.argv[1], strict=True)
+addresses = [ipaddress.ip_address(value) for value in sys.argv[2:]]
+if network.version != 4 or not network.is_private or len(set(addresses)) != len(addresses):
+    raise SystemExit(1)
+if any(address.version != 4 or address not in network for address in addresses):
+    raise SystemExit(1)
+if str(network) != sys.argv[1] or any(str(address) != raw for address, raw in zip(addresses, sys.argv[2:])):
+    raise SystemExit(1)
+PY
+python3 - "$MODE" "$HTTP0" "$HTTP1" "$HTTP2" "$DEMO_UI_PORT" "$DEMO_KAFKA_PORT" \
+  "$DEMO_MINIO_PORT" "$DEMO_IPFS_PORT" "$DEMO_PROMETHEUS_PORT" "$DEMO_GRAFANA_PORT" \
+  "$SERVER_BASE" "$((10#$SERVER_BASE + 1))" "$((10#$SERVER_BASE + 2))" <<'PY' \
+  || die "published HTTP/service/server ports must not overlap"
+import sys
+mode, *raw = sys.argv[1:]
+ports = list(map(int, raw[:9]))
+if mode == "host":
+    ports.extend(map(int, raw[9:]))
+if len(ports) != len(set(ports)):
+    raise SystemExit(1)
+PY
+PROJECT_SCOPE_ID="$(python3 - "$DATA_ROOT" <<'PY'
+import hashlib
+import os
+import sys
+print(hashlib.sha256(os.path.abspath(sys.argv[1]).encode("utf-8")).hexdigest()[:8])
+PY
+)"
+PROJECT_NAME="yano-effects-${DEMO_NETWORK}-${INSTANCE}-${PROJECT_SCOPE_ID}"
 INSTANCE_TARGET="$INSTANCE"
-COMPOSE_S3_TARGET_ID="s3-compose-${DEMO_NETWORK}-${INSTANCE_TARGET}"
-COMPOSE_IPFS_TARGET_ID="ipfs-compose-${DEMO_NETWORK}-${INSTANCE_TARGET}"
-COMPOSE_KAFKA_TARGET_ID="kafka-compose-${DEMO_NETWORK}-${INSTANCE_TARGET}"
+COMPOSE_S3_TARGET_ID="s3-compose-${DEMO_NETWORK}-${INSTANCE_TARGET}-${PROJECT_SCOPE_ID}"
+COMPOSE_IPFS_TARGET_ID="ipfs-compose-${DEMO_NETWORK}-${INSTANCE_TARGET}-${PROJECT_SCOPE_ID}"
+COMPOSE_KAFKA_TARGET_ID="kafka-compose-${DEMO_NETWORK}-${INSTANCE_TARGET}-${PROJECT_SCOPE_ID}"
 GIT_ID="$(git -C "$REPO_DIR" rev-parse --short=12 HEAD 2>/dev/null || printf local)"
 DEMO_YANO_IMAGE="${DEMO_YANO_IMAGE:-yano-adr013-node:$GIT_ID}"
 DEMO_RUNNER_IMAGE="${DEMO_RUNNER_IMAGE:-yano-adr013-runner:$GIT_ID}"
@@ -96,15 +388,82 @@ validate_target_id() {
 }
 
 resolve_host_target_ids() {
+  validate_host_connector_locators
   require_host_target_for_override DEMO_HOST_S3_ENDPOINT DEMO_HOST_S3_TARGET_ID
   require_host_target_for_override DEMO_HOST_IPFS_API_URL DEMO_HOST_IPFS_TARGET_ID
   require_host_target_for_override DEMO_HOST_KAFKA_BOOTSTRAP_SERVERS DEMO_HOST_KAFKA_TARGET_ID
-  HOST_S3_TARGET_ID="${DEMO_HOST_S3_TARGET_ID:-s3-host-${DEMO_NETWORK}-${INSTANCE_TARGET}}"
-  HOST_IPFS_TARGET_ID="${DEMO_HOST_IPFS_TARGET_ID:-ipfs-host-${DEMO_NETWORK}-${INSTANCE_TARGET}}"
-  HOST_KAFKA_TARGET_ID="${DEMO_HOST_KAFKA_TARGET_ID:-kafka-host-${DEMO_NETWORK}-${INSTANCE_TARGET}}"
+  HOST_S3_TARGET_ID="${DEMO_HOST_S3_TARGET_ID:-s3-host-${DEMO_NETWORK}-${INSTANCE_TARGET}-${PROJECT_SCOPE_ID}}"
+  HOST_IPFS_TARGET_ID="${DEMO_HOST_IPFS_TARGET_ID:-ipfs-host-${DEMO_NETWORK}-${INSTANCE_TARGET}-${PROJECT_SCOPE_ID}}"
+  HOST_KAFKA_TARGET_ID="${DEMO_HOST_KAFKA_TARGET_ID:-kafka-host-${DEMO_NETWORK}-${INSTANCE_TARGET}-${PROJECT_SCOPE_ID}}"
   validate_target_id DEMO_HOST_S3_TARGET_ID "$HOST_S3_TARGET_ID"
   validate_target_id DEMO_HOST_IPFS_TARGET_ID "$HOST_IPFS_TARGET_ID"
   validate_target_id DEMO_HOST_KAFKA_TARGET_ID "$HOST_KAFKA_TARGET_ID"
+}
+
+validate_host_connector_locators() {
+  local s3="${DEMO_HOST_S3_ENDPOINT:-http://127.0.0.1:$DEMO_MINIO_PORT}"
+  local ipfs="${DEMO_HOST_IPFS_API_URL:-http://127.0.0.1:$DEMO_IPFS_PORT}"
+  local kafka="${DEMO_HOST_KAFKA_BOOTSTRAP_SERVERS:-127.0.0.1:$DEMO_KAFKA_PORT}"
+  python3 - "$s3" "$ipfs" "$kafka" <<'PY' \
+    || die "host connector locators must be bounded credential-free HTTP endpoints and host:port Kafka servers"
+import ipaddress
+import re
+import sys
+from urllib.parse import urlsplit
+
+
+def printable_ascii(value, label):
+    if not 1 <= len(value) <= 2048 or any(ord(char) < 0x21 or ord(char) > 0x7e for char in value):
+        raise ValueError(f"invalid {label}")
+
+
+def endpoint(value, label):
+    printable_ascii(value, label)
+    parsed = urlsplit(value)
+    if (parsed.scheme not in ("http", "https") or not parsed.hostname
+            or parsed.username is not None or parsed.password is not None
+            or parsed.query or parsed.fragment or parsed.path not in ("", "/")):
+        raise ValueError(f"invalid {label}")
+    try:
+        port = parsed.port
+    except ValueError as error:
+        raise ValueError(f"invalid {label}") from error
+    if port is None or not 1 <= port <= 65535:
+        raise ValueError(f"invalid {label}")
+    if parsed.hostname != parsed.hostname.lower():
+        raise ValueError(f"invalid {label}")
+
+
+def kafka_servers(value):
+    printable_ascii(value, "Kafka bootstrap servers")
+    if any(char in value for char in "@/?#;=\\"):
+        raise ValueError("invalid Kafka bootstrap servers")
+    entries = value.split(",")
+    if not 1 <= len(entries) <= 32 or any(not entry for entry in entries):
+        raise ValueError("invalid Kafka bootstrap servers")
+    hostname = re.compile(r"(?=.{1,253}\Z)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))*\Z")
+    for entry in entries:
+        parsed = urlsplit("kafka://" + entry)
+        try:
+            port = parsed.port
+        except ValueError as error:
+            raise ValueError("invalid Kafka bootstrap servers") from error
+        if (not parsed.hostname or port is None or not 1 <= port <= 65535
+                or parsed.path or parsed.query or parsed.fragment
+                or parsed.username is not None or parsed.password is not None):
+            raise ValueError("invalid Kafka bootstrap servers")
+        host = parsed.hostname
+        try:
+            ipaddress.ip_address(host)
+        except ValueError:
+            if not hostname.fullmatch(host):
+                raise ValueError("invalid Kafka bootstrap servers")
+
+
+endpoint(sys.argv[1], "S3 endpoint")
+endpoint(sys.argv[2], "IPFS API endpoint")
+kafka_servers(sys.argv[3])
+PY
 }
 
 require_host_target_for_override() {
@@ -116,57 +475,169 @@ require_host_target_for_override() {
   [ -n "$target_value" ] || die "$target is required when $locator is overridden"
 }
 
+# Complete every pure option/path/locator check before the operation wrapper
+# creates its private lock directory. Invalid input must leave no managed
+# filesystem artifacts behind.
+if [ "$MODE" = host ]; then
+  resolve_host_target_ids
+fi
+
+OPERATION_LOCK_REQUIRED=false
+case "$COMMAND" in
+  prepare|config|up) OPERATION_LOCK_REQUIRED=true;;
+  run|probe|stop|clean)
+    if [ -e "$NETWORK_ROOT" ] || [ -L "$NETWORK_ROOT" ]; then
+      OPERATION_LOCK_REQUIRED=true
+    fi
+    ;;
+esac
+if [ "$OPERATION_LOCK_REQUIRED" = true ]; then
+  EXPECTED_OPERATION_LOCK_ROOT="$DATA_BASE/.yano-operation-locks/$DEMO_NETWORK/$MODE"
+  if [ -n "${YANO_DEMO_OPERATION_LOCK_FD:-}" ] \
+      || [ -n "${YANO_DEMO_OPERATION_LOCK_ROOT:-}" ] \
+      || [ -n "${YANO_DEMO_OPERATION_WATCH_FD:-}" ] \
+      || [ -n "${YANO_DEMO_OPERATION_READY_READ_FD:-}" ] \
+      || [ -n "${YANO_DEMO_OPERATION_READY_WRITE_FD:-}" ]; then
+    [ "${YANO_DEMO_OPERATION_LOCK_ROOT:-}" = "$EXPECTED_OPERATION_LOCK_ROOT" ] \
+      || die "inherited operation lock does not match this network/deployment"
+    [[ "${YANO_DEMO_OPERATION_LOCK_FD:-}" =~ ^[0-9]+$ ]] \
+      || die "inherited operation lock descriptor is invalid"
+    [[ "${YANO_DEMO_OPERATION_WATCH_FD:-}" =~ ^[0-9]+$ ]] \
+      || die "inherited operation watch descriptor is invalid"
+    [[ "${YANO_DEMO_OPERATION_READY_READ_FD:-}" =~ ^[0-9]+$ ]] \
+      || die "inherited operation ready-read descriptor is invalid"
+    [[ "${YANO_DEMO_OPERATION_READY_WRITE_FD:-}" =~ ^[0-9]+$ ]] \
+      || die "inherited operation ready-write descriptor is invalid"
+    python3 "$SCRIPT_DIR/tools/lifecycle.py" operation-validate \
+      --data-root "$DATA_BASE" --network "$DEMO_NETWORK" --deployment "$MODE" \
+      --fd "${YANO_DEMO_OPERATION_LOCK_FD:-}" >/dev/null \
+      || die "deployment command does not hold its exact operation lock"
+
+    # The detached watchdog inherits the same locked open-file-description.
+    # Do not release this shell's copy until the watcher has validated both
+    # pipes, detached from our process group, and explicitly acknowledged it.
+    OPERATION_LOCK_FD="$YANO_DEMO_OPERATION_LOCK_FD"
+    OPERATION_WATCH_FD="$YANO_DEMO_OPERATION_WATCH_FD"
+    OPERATION_READY_READ_FD="$YANO_DEMO_OPERATION_READY_READ_FD"
+    OPERATION_READY_WRITE_FD="$YANO_DEMO_OPERATION_READY_WRITE_FD"
+    python3 "$SCRIPT_DIR/tools/lifecycle.py" operation-watch \
+      --data-root "$DATA_BASE" --network "$DEMO_NETWORK" --deployment "$MODE" \
+      --fd "$OPERATION_WATCH_FD" --lock-fd "$OPERATION_LOCK_FD" \
+      --ready-fd "$OPERATION_READY_WRITE_FD" \
+      --unused-ready-read-fd "$OPERATION_READY_READ_FD" --parent-pid "$$" &
+    OPERATION_WATCH_PID=$!
+    eval "exec ${OPERATION_READY_WRITE_FD}>&-"
+    if ! IFS= read -r -n 1 OPERATION_READY_BYTE <&"$OPERATION_READY_READ_FD" \
+        || [ "$OPERATION_READY_BYTE" != R ]; then
+      die "deployment operation watchdog did not become ready"
+    fi
+    eval "exec ${OPERATION_READY_READ_FD}<&-"
+    eval "exec ${OPERATION_WATCH_FD}<&-"
+    eval "exec ${OPERATION_LOCK_FD}>&-"
+    unset YANO_DEMO_OPERATION_LOCK_ROOT YANO_DEMO_OPERATION_LOCK_FD \
+      YANO_DEMO_OPERATION_WATCH_FD YANO_DEMO_OPERATION_READY_READ_FD \
+      YANO_DEMO_OPERATION_READY_WRITE_FD OPERATION_LOCK_FD OPERATION_WATCH_FD \
+      OPERATION_READY_READ_FD OPERATION_READY_WRITE_FD OPERATION_READY_BYTE
+  else
+    exec python3 "$SCRIPT_DIR/tools/lifecycle.py" operation-run \
+      --data-root "$DATA_BASE" --network "$DEMO_NETWORK" --deployment "$MODE" -- \
+      "$SCRIPT_DIR/demo.sh" "${ORIGINAL_ARGS[@]}"
+  fi
+fi
+
 single_line() {
   local label="$1" value="$2"
   case "$value" in *$'\n'*|*$'\r'*) die "$label must not contain CR or LF";; esac
 }
 
+compose_env_value() {
+  local label="$1" value="$2"
+  single_line "$label" "$value"
+  case "$value" in *'$'*|*'\'*) die "$label contains an unsafe Compose env character";; esac
+}
+
 ensure_secret() {
   local file="$1" value="$2"
-  if [ ! -e "$file" ]; then
-    (umask 077; printf '%s\n' "$value" > "$file")
-  fi
-  [ -f "$file" ] && [ ! -L "$file" ] || die "secret must be a regular non-symlink file: $file"
-  chmod 600 "$file"
+  printf '%s\n' "$value" \
+    | python3 "$SCRIPT_DIR/tools/secret_file.py" --path "$file" \
+    || die "could not securely create or validate secret: $file"
 }
 
 read_secret() {
-  local file="$1" value extra mode
-  [ -f "$file" ] && [ ! -L "$file" ] || die "missing secret file: $file"
-  if mode="$(stat -c '%a' "$file" 2>/dev/null)"; then :
-  else mode="$(stat -f '%Lp' "$file" 2>/dev/null)" || die "cannot inspect secret mode: $file"
-  fi
-  (( (8#$mode & 077) == 0 )) || die "secret file must be owner-only (0400 or 0600): $file"
-  exec 3< "$file"
-  IFS= read -r value <&3 || [ -n "$value" ] || { exec 3<&-; die "empty secret file: $file"; }
-  if IFS= read -r extra <&3; then
-    exec 3<&-
-    die "secret file must contain exactly one line: $file"
-  fi
-  exec 3<&-
-  [ -n "$value" ] || die "empty secret file: $file"
-  if LC_ALL=C printf '%s' "$value" | grep -q '[[:cntrl:]]'; then
-    die "secret file contains control characters: $file"
-  fi
-  printf '%s' "$value"
+  local file="$1"
+  python3 - "$file" <<'PY' || exit 1
+import errno
+import os
+import stat
+import sys
+
+path = os.path.abspath(os.path.expanduser(sys.argv[1]))
+flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+try:
+    descriptor = os.open(path, flags)
+except OSError as error:
+    print(f"error: cannot safely open secret file {path}: {error.strerror}", file=sys.stderr)
+    raise SystemExit(1)
+try:
+    before = os.fstat(descriptor)
+    if not stat.S_ISREG(before.st_mode) or before.st_uid != os.geteuid():
+        raise ValueError("must be a regular file owned by the launcher user")
+    if before.st_nlink != 1:
+        raise ValueError("must have exactly one hard link")
+    mode = stat.S_IMODE(before.st_mode)
+    if mode & 0o077 or not mode & 0o400 or mode & 0o111:
+        raise ValueError("must be owner-only, readable, and non-executable (0400 or 0600)")
+    if before.st_size < 1 or before.st_size > 4096:
+        raise ValueError("must contain one bounded line (1..4096 bytes)")
+    data = b""
+    while len(data) <= 4096:
+        chunk = os.read(descriptor, 4097 - len(data))
+        if not chunk:
+            break
+        data += chunk
+    after = os.fstat(descriptor)
+    if (before.st_dev, before.st_ino, before.st_size) != (after.st_dev, after.st_ino, after.st_size):
+        raise ValueError("changed while it was being read")
+    if data.endswith(b"\n"):
+        data = data[:-1]
+    if not data or b"\n" in data or b"\r" in data:
+        raise ValueError("must contain exactly one non-empty line")
+    if any(byte < 0x21 or byte > 0x7e for byte in data):
+        raise ValueError("must contain printable ASCII without spaces or controls")
+    sys.stdout.buffer.write(data)
+except (OSError, ValueError) as error:
+    print(f"error: invalid secret file {path}: {error}", file=sys.stderr)
+    raise SystemExit(1)
+finally:
+    os.close(descriptor)
+PY
 }
 
-repeat_hex_byte() {
-  local byte="$1" out="" i
-  [[ "$byte" =~ ^[0-9a-f]{2}$ ]] || die "invalid internal seed byte"
-  for ((i=0; i<32; i++)); do out+="$byte"; done
-  printf '%s' "$out"
+ensure_private_directory() {
+  local directory="$1"
+  if [ ! -e "$directory" ]; then
+    (umask 077; mkdir -p "$directory")
+  fi
+  python3 - "$directory" <<'PY' >/dev/null || die "private directory must be launcher-owned 0700: $directory"
+import os
+import stat
+import sys
+path = sys.argv[1]
+info = os.lstat(path)
+if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700:
+    raise SystemExit(1)
+PY
 }
 
 prepare_directories() {
   local dir i
-  mkdir -p "$SECRET_ROOT" "$RUNTIME_ROOT" "$PLUGIN_DIR" "$REPORT_DIR" \
+  mkdir -p "$RUNTIME_ROOT" "$PLUGIN_DIR" "$REPORT_DIR" \
     "$DATA_ROOT/connectors/kafka" "$DATA_ROOT/connectors/minio" \
     "$DATA_ROOT/connectors/ipfs" "$DATA_ROOT/observability/prometheus" \
-    "$DATA_ROOT/observability/grafana" "$DATA_ROOT/l1/shared"
-  chmod 700 "$SECRET_ROOT"
+    "$DATA_ROOT/observability/grafana" "$DATA_ROOT/logs" "$L1_ROOT"
+  chmod 700 "$RUNTIME_ROOT" "$PLUGIN_DIR"
   for i in 0 1 2; do
-    for dir in "$DATA_ROOT/l1/node$i" "$DATA_ROOT/app-chain/node$i" \
+    for dir in "$L1_ROOT/node$i" "$DATA_ROOT/app-chain/node$i" \
       "$DATA_ROOT/logs/node$i"; do
       mkdir -p "$dir"
       chmod u+rwx "$dir"
@@ -178,43 +649,427 @@ prepare_directories() {
 }
 
 prepare_secrets() {
+  local member_mode anchor_value runner_access_default runner_secret_default
+  local executor_access_default executor_secret_default runner_external executor_external
   require openssl
+  ensure_private_directory "$SECRET_ROOT"
+  member_mode=generated
+  MEMBER_KEYS="$(python3 "$SCRIPT_DIR/tools/ed25519_keys.py" \
+    --directory "$MEMBER_KEY_DIR" --mode "$member_mode" --count 3)"
+  [[ "$MEMBER_KEYS" =~ ^[0-9a-f]{64},[0-9a-f]{64},[0-9a-f]{64}$ ]] \
+    || die "member key helper returned an invalid three-member identity"
+  MEMBER_SEED_0="$(read_secret "$MEMBER_KEY_DIR/node0.seed")"
+  MEMBER_SEED_1="$(read_secret "$MEMBER_KEY_DIR/node1.seed")"
+  MEMBER_SEED_2="$(read_secret "$MEMBER_KEY_DIR/node2.seed")"
+  [[ "$MEMBER_SEED_0,$MEMBER_SEED_1,$MEMBER_SEED_2" \
+      =~ ^[0-9a-fA-F]{64},[0-9a-fA-F]{64},[0-9a-fA-F]{64}$ ]] \
+    || die "member key files must each contain one 32-byte hexadecimal seed"
+  PROPOSER_KEY="${MEMBER_KEYS%%,*}"
   ensure_secret "$API_KEY_FILE" "$(openssl rand -hex 32)"
   ensure_secret "$MINIO_ROOT_USER_FILE" "yanoroot$(openssl rand -hex 8)"
   ensure_secret "$MINIO_ROOT_PASSWORD_FILE" "$(openssl rand -hex 32)"
-  if [ "$MINIO_RUNNER_ACCESS_FILE" = "$SECRET_ROOT/minio-runner-access-key" ]; then
+  runner_access_default="$SECRET_ROOT/minio-runner-access-key"
+  runner_secret_default="$SECRET_ROOT/minio-runner-secret-key"
+  executor_access_default="$SECRET_ROOT/minio-executor-access-key"
+  executor_secret_default="$SECRET_ROOT/minio-executor-secret-key"
+  runner_external=false
+  executor_external=false
+  if [ "$MINIO_RUNNER_ACCESS_FILE" != "$runner_access_default" ] \
+      || [ "$MINIO_RUNNER_SECRET_FILE" != "$runner_secret_default" ]; then
+    [ "$MINIO_RUNNER_ACCESS_FILE" != "$runner_access_default" ] \
+      && [ "$MINIO_RUNNER_SECRET_FILE" != "$runner_secret_default" ] \
+      || die "runner S3 access-key and secret-key file overrides must be supplied together"
+    runner_external=true
+  fi
+  if [ "$MINIO_EXECUTOR_ACCESS_FILE" != "$executor_access_default" ] \
+      || [ "$MINIO_EXECUTOR_SECRET_FILE" != "$executor_secret_default" ]; then
+    [ "$MINIO_EXECUTOR_ACCESS_FILE" != "$executor_access_default" ] \
+      && [ "$MINIO_EXECUTOR_SECRET_FILE" != "$executor_secret_default" ] \
+      || die "executor S3 access-key and secret-key file overrides must be supplied together"
+    executor_external=true
+  fi
+  if [ "$runner_external" = false ]; then
     ensure_secret "$MINIO_RUNNER_ACCESS_FILE" "yanorunner$(openssl rand -hex 8)"
     ensure_secret "$MINIO_RUNNER_SECRET_FILE" "$(openssl rand -hex 32)"
   fi
-  if [ "$MINIO_EXECUTOR_ACCESS_FILE" = "$SECRET_ROOT/minio-executor-access-key" ]; then
+  if [ "$executor_external" = false ]; then
     ensure_secret "$MINIO_EXECUTOR_ACCESS_FILE" "yanoexecutor$(openssl rand -hex 8)"
     ensure_secret "$MINIO_EXECUTOR_SECRET_FILE" "$(openssl rand -hex 32)"
   fi
   ensure_secret "$GRAFANA_PASSWORD_FILE" "$(openssl rand -hex 24)"
+  if [ "$ANCHOR_ENABLED" = true ]; then
+    if [ -z "$ANCHOR_KEY_FILE" ]; then
+      [ "$DEMO_NETWORK" = devnet ] \
+        || die "public anchoring requires --anchor-key-file for a funded owner-controlled wallet"
+      ANCHOR_KEY_FILE="$SECRET_ROOT/anchor.seed"
+      ensure_secret "$ANCHOR_KEY_FILE" "$(openssl rand -hex 32)"
+    fi
+    anchor_value="$(read_secret "$ANCHOR_KEY_FILE")"
+    [[ "$anchor_value" =~ ^[0-9a-fA-F]{64}$ ]] \
+      || die "anchor key file must contain one 32-byte hexadecimal seed"
+    ANCHOR_KEY_VALUE="$(printf '%s' "$anchor_value" | tr 'A-F' 'a-f')"
+  else
+    ANCHOR_KEY_VALUE=""
+  fi
   read_secret "$MINIO_RUNNER_ACCESS_FILE" >/dev/null
   read_secret "$MINIO_RUNNER_SECRET_FILE" >/dev/null
   read_secret "$MINIO_EXECUTOR_ACCESS_FILE" >/dev/null
   read_secret "$MINIO_EXECUTOR_SECRET_FILE" >/dev/null
 }
 
-prepare_genesis() {
-  local source="$APP_DIR/config/network/devnet/shelley-genesis.json" now start tmp
+verify_cached_key_material() {
+  [ "$(read_secret "$MEMBER_KEY_DIR/node0.seed")" = "$MEMBER_SEED_0" ] \
+    && [ "$(read_secret "$MEMBER_KEY_DIR/node1.seed")" = "$MEMBER_SEED_1" ] \
+    && [ "$(read_secret "$MEMBER_KEY_DIR/node2.seed")" = "$MEMBER_SEED_2" ] \
+    || die "member key material changed after the immutable instance identity was prepared"
+  if [ "$ANCHOR_ENABLED" = true ]; then
+    [ "$(read_secret "$ANCHOR_KEY_FILE" | tr 'A-F' 'a-f')" = "$ANCHOR_KEY_VALUE" ] \
+      || die "anchor key material changed after the immutable instance identity was prepared"
+  fi
+}
+
+write_network_identity() {
+  local output="$1" selected_shelley="$2"
+  python3 - "$output" "$DEMO_NETWORK" "$PROFILE_PROTOCOL_MAGIC" \
+    "$APP_DIR/config/network/$DEMO_NETWORK/byron-genesis.json" \
+    "$selected_shelley" \
+    "$APP_DIR/config/network/$DEMO_NETWORK/alonzo-genesis.json" \
+    "$APP_DIR/config/network/$DEMO_NETWORK/conway-genesis.json" \
+    "$APP_DIR/config/network/$DEMO_NETWORK/protocol-param.json" <<'PY'
+import hashlib
+import json
+from pathlib import Path
+import sys
+
+output, network, magic, *files = sys.argv[1:]
+names = ("byron", "shelley", "alonzo", "conway", "protocolParameters")
+fingerprints = {}
+for name, raw_path in zip(names, files):
+    path = Path(raw_path)
+    data = path.read_bytes()
+    fingerprints[name] = {"sha256": hashlib.sha256(data).hexdigest(), "size": len(data)}
+document = {
+    "schemaVersion": 1,
+    "kind": "yano.demo.network-identity",
+    "layoutVersion": 1,
+    "networkName": network,
+    "protocolMagic": int(magic),
+    "genesis": fingerprints,
+}
+if network == "devnet":
+    selected = json.loads(Path(files[1]).read_text(encoding="utf-8"))
+    document["generatedSystemStart"] = selected.get("systemStart")
+Path(output).write_text(
+    json.dumps(document, sort_keys=True, separators=(",", ":")) + "\n",
+    encoding="utf-8",
+)
+PY
+}
+
+validate_generated_genesis_pair() {
+  python3 - "$1" "$2" <<'PY' || return 1
+import datetime
+import json
+from pathlib import Path
+import sys
+
+genesis = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+millis = int(Path(sys.argv[2]).read_text(encoding="ascii").strip())
+expected = datetime.datetime.fromtimestamp(
+    millis / 1000, datetime.timezone.utc
+).strftime("%Y-%m-%dT%H:%M:%SZ")
+if genesis.get("systemStart") != expected or genesis.get("epochLength") != 500:
+    raise SystemExit(1)
+PY
+}
+
+prepare_network_identity() {
+  local source="$APP_DIR/config/network/devnet/shelley-genesis.json"
+  local identity now start
   require jq
-  [ -f "$source" ] || die "devnet Shelley genesis not found: $source"
-  if [ -e "$SHELLEY_GENESIS_FILE" ] || [ -e "$GENESIS_TIMESTAMP_FILE" ]; then
-    [ -f "$SHELLEY_GENESIS_FILE" ] && [ -f "$GENESIS_TIMESTAMP_FILE" ] \
-      || die "incomplete shared devnet genesis state under $DATA_ROOT/l1/shared"
-    return
+  temporary_file; STAGED_SHELLEY="$LAST_TEMP_FILE"
+  temporary_file; STAGED_GENESIS_TIMESTAMP="$LAST_TEMP_FILE"
+  temporary_file; identity="$LAST_TEMP_FILE"
+
+  if [ "$DEMO_NETWORK" = devnet ]; then
+    [ -f "$source" ] || die "devnet Shelley genesis not found: $source"
+    if [ -e "$SHELLEY_GENESIS_FILE" ] && [ -e "$GENESIS_TIMESTAMP_FILE" ]; then
+      [ -f "$SHELLEY_GENESIS_FILE" ] && [ ! -L "$SHELLEY_GENESIS_FILE" ] \
+        && [ -f "$GENESIS_TIMESTAMP_FILE" ] && [ ! -L "$GENESIS_TIMESTAMP_FILE" ] \
+        || die "incomplete or unsafe shared devnet genesis state under $NETWORK_ROOT/l1/shared"
+      validate_generated_genesis_pair "$SHELLEY_GENESIS_FILE" "$GENESIS_TIMESTAMP_FILE" \
+        || die "retained devnet genesis and timestamp do not describe the same network identity"
+      cp "$SHELLEY_GENESIS_FILE" "$STAGED_SHELLEY"
+      cp "$GENESIS_TIMESTAMP_FILE" "$STAGED_GENESIS_TIMESTAMP"
+    elif [ -e "$NETWORK_MARKER" ]; then
+      [ -f "$NETWORK_MARKER" ] && [ ! -L "$NETWORK_MARKER" ] \
+        || die "network identity marker is not a regular file"
+      start="$(python3 - "$NETWORK_MARKER" <<'PY'
+import json,sys
+document=json.load(open(sys.argv[1], encoding="utf-8"))
+value=document.get("generatedSystemStart")
+if document.get("kind") != "yano.demo.network-identity" or not isinstance(value, str):
+    raise SystemExit(1)
+print(value)
+PY
+)" || die "retained network marker cannot reconstruct its generated devnet genesis"
+      now="$(python3 - "$start" <<'PY'
+from datetime import datetime
+import sys
+value=sys.argv[1]
+if value.endswith("Z"):
+    value=value[:-1]+"+00:00"
+print(int(datetime.fromisoformat(value).timestamp()))
+PY
+)" || die "retained network marker has an invalid generated systemStart"
+      jq --arg start "$start" '.epochLength = 500 | .systemStart = $start' \
+        "$source" > "$STAGED_SHELLEY"
+      printf '%s\n' "$((now * 1000))" > "$STAGED_GENESIS_TIMESTAMP"
+    else
+      now="$(date +%s)"
+      if start="$(date -u -r "$now" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null)"; then :
+      else start="$(date -u -d "@$now" '+%Y-%m-%dT%H:%M:%SZ')"
+      fi
+      jq --arg start "$start" '.epochLength = 500 | .systemStart = $start' \
+        "$source" > "$STAGED_SHELLEY"
+      printf '%s\n' "$((now * 1000))" > "$STAGED_GENESIS_TIMESTAMP"
+    fi
+  else
+    [ -f "$SHELLEY_GENESIS_FILE" ] && [ ! -L "$SHELLEY_GENESIS_FILE" ] \
+      || die "$DEMO_NETWORK Shelley genesis not found or unsafe: $SHELLEY_GENESIS_FILE"
+    cp "$SHELLEY_GENESIS_FILE" "$STAGED_SHELLEY"
   fi
-  now="$(date +%s)"
-  if start="$(date -u -r "$now" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null)"; then :
-  else start="$(date -u -d "@$now" '+%Y-%m-%dT%H:%M:%SZ')"
+
+  write_network_identity "$identity" "$STAGED_SHELLEY"
+  if ! python3 "$SCRIPT_DIR/tools/lifecycle.py" ensure-network \
+      --allowed-root "$DATA_BASE" --directory "$NETWORK_ROOT" \
+      --identity-file "$identity" >/dev/null; then
+    die "network identity mismatch; use a different --data-dir or restore the exact selected genesis"
   fi
-  tmp="$SHELLEY_GENESIS_FILE.tmp.$$"
-  jq --arg start "$start" '.epochLength = 500 | .systemStart = $start' "$source" > "$tmp"
-  chmod 600 "$tmp"
-  mv "$tmp" "$SHELLEY_GENESIS_FILE"
-  (umask 077; printf '%s\n' "$((now * 1000))" > "$GENESIS_TIMESTAMP_FILE")
+
+}
+
+install_staged_network_material() {
+  local target_dir install_tmp
+  [ "$DEMO_NETWORK" = devnet ] || return 0
+  [ -n "$STAGED_SHELLEY" ] && [ -n "$STAGED_GENESIS_TIMESTAMP" ] \
+    || die "devnet genesis was not staged before deployment acquisition"
+  target_dir="$(dirname "$SHELLEY_GENESIS_FILE")"
+  mkdir -p "$target_dir"
+  chmod 700 "$target_dir"
+  if [ ! -e "$SHELLEY_GENESIS_FILE" ]; then
+    install_tmp="$target_dir/.shelley-genesis.tmp.$$"
+    (umask 077; cp "$STAGED_SHELLEY" "$install_tmp")
+    mv "$install_tmp" "$SHELLEY_GENESIS_FILE"
+  fi
+  if [ ! -e "$GENESIS_TIMESTAMP_FILE" ]; then
+    install_tmp="$target_dir/.genesis-timestamp.tmp.$$"
+    (umask 077; cp "$STAGED_GENESIS_TIMESTAMP" "$install_tmp")
+    mv "$install_tmp" "$GENESIS_TIMESTAMP_FILE"
+  fi
+  cmp -s "$STAGED_SHELLEY" "$SHELLEY_GENESIS_FILE" \
+    && cmp -s "$STAGED_GENESIS_TIMESTAMP" "$GENESIS_TIMESTAMP_FILE" \
+    || die "shared devnet genesis changed during identity installation"
+  validate_generated_genesis_pair "$SHELLEY_GENESIS_FILE" "$GENESIS_TIMESTAMP_FILE" \
+    || die "installed devnet genesis pair is inconsistent"
+}
+
+write_instance_identity() {
+  local output="$1" anchor_fingerprint="none" network_digest s3_id ipfs_id kafka_id
+  local s3_locator ipfs_locator kafka_locator
+  network_digest="$(python3 - "$NETWORK_MARKER" <<'PY'
+import hashlib, sys
+print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())
+PY
+)"
+  if [ "$ANCHOR_ENABLED" = true ]; then
+    anchor_fingerprint="$(printf '%s' "$ANCHOR_KEY_VALUE" | python3 -c \
+      'import hashlib,sys; print(hashlib.sha256(b"yano-demo-anchor-signer-v1\0"+sys.stdin.buffer.read()).hexdigest())')"
+  fi
+  if [ "$MODE" = compose ]; then
+    s3_id="$COMPOSE_S3_TARGET_ID"; ipfs_id="$COMPOSE_IPFS_TARGET_ID"; kafka_id="$COMPOSE_KAFKA_TARGET_ID"
+    s3_locator="http://$DEMO_MINIO_IP:9000"
+    ipfs_locator="http://$DEMO_KUBO_IP:5001"
+    kafka_locator="kafka:9092"
+  else
+    s3_id="$HOST_S3_TARGET_ID"; ipfs_id="$HOST_IPFS_TARGET_ID"; kafka_id="$HOST_KAFKA_TARGET_ID"
+    s3_locator="${DEMO_HOST_S3_ENDPOINT:-http://127.0.0.1:$DEMO_MINIO_PORT}"
+    ipfs_locator="${DEMO_HOST_IPFS_API_URL:-http://127.0.0.1:$DEMO_IPFS_PORT}"
+    kafka_locator="${DEMO_HOST_KAFKA_BOOTSTRAP_SERVERS:-127.0.0.1:$DEMO_KAFKA_PORT}"
+  fi
+  python3 - "$output" "$DEMO_NETWORK" "$network_digest" "$INSTANCE" "$MODE" \
+    "$DEMO_CHAIN_ID" "$MEMBER_KEYS" "$PROPOSER_KEY" "$STORAGE_GATE" "$REQUIRE_ANCHOR" \
+    "$ANCHOR_ENABLED" "$PROFILE_ANCHOR_EVERY_BLOCKS" \
+    "$PROFILE_ANCHOR_MAX_INTERVAL_MINUTES" "$anchor_fingerprint" "$PROJECT_NAME" \
+    "$s3_id" "$s3_locator" "$ipfs_id" "$ipfs_locator" "$kafka_id" "$kafka_locator" <<'PY'
+import hashlib
+import json
+from pathlib import Path
+import sys
+
+(
+    output, network, network_digest, instance, deployment, chain_id, members_csv,
+    proposer, storage_gate, require_anchor, anchor_enabled, anchor_every,
+    anchor_max_interval, anchor_fingerprint, project, s3_id, s3_locator, ipfs_id, ipfs_locator,
+    kafka_id, kafka_locator,
+) = sys.argv[1:]
+members = members_csv.split(",")
+document = {
+    "schemaVersion": 1,
+    "kind": "yano.demo.appchain-identity",
+    "layoutVersion": 1,
+    "networkName": network,
+    "networkIdentitySha256": network_digest,
+    "instanceId": instance,
+    "deployment": deployment,
+    "composeProject": project if deployment == "compose" else None,
+    "chainIds": [chain_id],
+    "stateMachine": {
+        "provider": "evidence-registry",
+        "profileVersion": 1,
+        "effectEmissionVersion": 1,
+    },
+    "membership": {
+        "members": members,
+        "threshold": 2,
+        "proposer": proposer,
+        "resultSigners": [proposer],
+    },
+    "effects": {"storageGate": storage_gate, "requireAnchor": require_anchor == "true"},
+    "anchor": {
+        "enabled": anchor_enabled == "true",
+        "mode": "script" if anchor_enabled == "true" else "none",
+        "everyBlocks": int(anchor_every) if anchor_enabled == "true" else None,
+        "maxIntervalMinutes": int(anchor_max_interval) if anchor_enabled == "true" else None,
+        "signerFingerprint": anchor_fingerprint if anchor_enabled == "true" else None,
+    },
+    "connectors": {
+        "s3": {"targetId": s3_id, "locator": s3_locator, "profile": "local-demo-v1"},
+        "ipfs": {"targetId": ipfs_id, "locator": ipfs_locator, "profile": "kubo-v1"},
+        "kafka": {"targetId": kafka_id, "locator": kafka_locator, "profile": "acknowledged-v1"},
+    },
+}
+Path(output).write_text(
+    json.dumps(document, sort_keys=True, separators=(",", ":")) + "\n",
+    encoding="utf-8",
+)
+PY
+}
+
+validate_anchor_binding_preflight() {
+  local i history=false
+  for i in 0 1 2; do
+    [ ! -e "$DATA_ROOT/app-chain/node$i/$DEMO_CHAIN_ID/CURRENT" ] || history=true
+  done
+  if [ ! -e "$ANCHOR_BINDING" ]; then
+    [ "$ANCHOR_ENABLED" = false ] || [ "$history" = false ] \
+      || die "retained anchored history has no immutable anchor binding; restore it or retire this instance"
+    return 0
+  fi
+  [ "$ANCHOR_ENABLED" = true ] \
+    || die "an anchor binding exists but the selected immutable profile does not enable anchoring"
+  [ -f "$ANCHOR_BINDING" ] && [ ! -L "$ANCHOR_BINDING" ] \
+    || die "anchor binding must be a regular non-symlink file: $ANCHOR_BINDING"
+  validate_private_runtime_file "$ANCHOR_BINDING" \
+    || die "anchor binding must be a bounded launcher-owned private file"
+  for i in 0 1 2; do
+    [ -f "$DATA_ROOT/app-chain/node$i/$DEMO_CHAIN_ID/CURRENT" ] \
+      || die "anchored instance is missing node $i app-chain history; restore it or retire this instance"
+  done
+  python3 - "$ANCHOR_BINDING" "$DEMO_NETWORK" "$INSTANCE" "$MODE" \
+    "$DEMO_CHAIN_ID" <<'PY' \
+    || die "anchor binding identity is invalid or does not match the selected immutable instance"
+import json
+import os
+from pathlib import Path
+import re
+import stat
+import sys
+
+
+def unique(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate key")
+        result[key] = value
+    return result
+
+
+path = Path(sys.argv[1])
+flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+descriptor = os.open(path, flags)
+try:
+    before = os.fstat(descriptor)
+    if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.geteuid()
+            or before.st_nlink != 1 or stat.S_IMODE(before.st_mode) not in (0o400, 0o600)
+            or not 1 <= before.st_size <= 65536):
+        raise SystemExit(1)
+    raw = b""
+    while len(raw) <= 65536:
+        chunk = os.read(descriptor, 65537 - len(raw))
+        if not chunk:
+            break
+        raw += chunk
+    after = os.fstat(descriptor)
+    if ((before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+            != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+            or len(raw) != before.st_size):
+        raise SystemExit(1)
+finally:
+    os.close(descriptor)
+try:
+    document = json.loads(raw.decode("utf-8"), object_pairs_hook=unique)
+except (UnicodeDecodeError, ValueError, json.JSONDecodeError):
+    raise SystemExit(1)
+expected_keys = {
+    "schemaVersion", "kind", "networkName", "instanceId", "deployment", "chainId",
+    "threadPolicyId", "scriptHash", "scriptAddress", "lastAdoptedHeight",
+    "verifiedMembers", "verifiedAtMillis",
+}
+expected = {
+    "schemaVersion": 1,
+    "kind": "yano.demo.anchor-binding",
+    "networkName": sys.argv[2],
+    "instanceId": sys.argv[3],
+    "deployment": sys.argv[4],
+    "chainId": sys.argv[5],
+    "verifiedMembers": 3,
+}
+if set(document) != expected_keys or any(document.get(key) != value for key, value in expected.items()):
+    raise SystemExit(1)
+if not re.fullmatch(r"[0-9a-f]{56}", document.get("threadPolicyId", "")):
+    raise SystemExit(1)
+if not re.fullmatch(r"[0-9a-f]{56}", document.get("scriptHash", "")):
+    raise SystemExit(1)
+address = document.get("scriptAddress")
+if not isinstance(address, str) or not re.fullmatch(r"addr_test1[a-z0-9]{20,240}", address):
+    raise SystemExit(1)
+for key in ("lastAdoptedHeight", "verifiedAtMillis"):
+    value = document.get(key)
+    if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= (1 << 63) - 1:
+        raise SystemExit(1)
+canonical = (json.dumps(document, ensure_ascii=False, allow_nan=False,
+                        sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+if raw != canonical:
+    raise SystemExit(1)
+PY
+}
+
+prepare_instance_identity() {
+  temporary_file; STAGED_INSTANCE_IDENTITY="$LAST_TEMP_FILE"
+  write_instance_identity "$STAGED_INSTANCE_IDENTITY"
+  temporary_file; STAGED_LEASE_IDENTITY="$LAST_TEMP_FILE"
+  write_l1_lease_identity "$STAGED_LEASE_IDENTITY" "$STAGED_INSTANCE_IDENTITY"
+  if ! python3 "$SCRIPT_DIR/tools/lifecycle.py" deployment-acquire \
+      --network-root "$NETWORK_ROOT" --data-root "$DATA_ROOT" --l1-root "$L1_ROOT" \
+      --identity-file "$STAGED_INSTANCE_IDENTITY" \
+      --lease-identity-file "$STAGED_LEASE_IDENTITY" >/dev/null; then
+    die "app-chain identity mismatch, instance is retired and cannot be reused, permanent chain claim, or shared L1 lease conflict; stop its owner, resume cleanup, or choose a new instance/chain"
+  fi
+  STARTUP_LEASE_ACQUIRED=true
+  trap 'demo_exit_handler $?' EXIT
+  validate_anchor_binding_preflight
 }
 
 render_template() {
@@ -256,12 +1111,17 @@ insert_node_settings() {
 }
 
 compose_node_config() {
-  local index="$1" seed="$2" peers="$3" extras="$4" base
+  local index="$1" seed="$2" peers="$3" extras="$4" base genesis_setting
   base="$RUNTIME_ROOT/node$index.base"
+  genesis_setting="# public-network systemStart comes from the selected genesis"
+  if [ "$DEMO_NETWORK" = devnet ]; then
+    genesis_setting="yano.block-producer.genesis-timestamp=$(read_secret "$GENESIS_TIMESTAMP_FILE")"
+  fi
   render_template "$SCRIPT_DIR/config/templates/node-compose.properties.in" "$base" \
     API_KEY "$(read_secret "$API_KEY_FILE")" CHAIN_ID "$DEMO_CHAIN_ID" \
-    SIGNING_KEY "$seed" APP_PEERS "$peers" \
-    GENESIS_TIMESTAMP "$(read_secret "$GENESIS_TIMESTAMP_FILE")"
+    SIGNING_KEY "$seed" APP_PEERS "$peers" MEMBER_KEYS "$MEMBER_KEYS" \
+    PROPOSER_KEY "$PROPOSER_KEY" STORAGE_GATE "$STORAGE_GATE" \
+    GENESIS_TIMESTAMP_SETTING "$genesis_setting"
   insert_node_settings "$base" "$extras" "$NODE_CONFIG_DIR/node$index.properties"
   rm -f "$base"
 }
@@ -283,27 +1143,35 @@ prepare_compose_configs() {
     MINIO_EXECUTOR_ACCESS "$(read_secret "$MINIO_EXECUTOR_ACCESS_FILE")" \
     MINIO_EXECUTOR_SECRET "$(read_secret "$MINIO_EXECUTOR_SECRET_FILE")"
   cp "$executor" "$node0extra"
-  anchor_key="$(repeat_hex_byte 30)"
-  {
-    printf '%s\n' 'yano.app-chain.chains[0].anchor.enabled=true'
-    printf '%s\n' 'yano.app-chain.chains[0].anchor.mode=script'
-    printf 'yano.app-chain.chains[0].anchor.signing-key=%s\n' "$anchor_key"
-    # The READY continuation can be the last app block. Anchor every block so
-    # the proof closes without manufacturing a dummy follow-up command.
-    printf '%s\n' 'yano.app-chain.chains[0].anchor.every-blocks=1'
-    printf '%s\n' 'yano.app-chain.chains[0].anchor.max-interval-minutes=1'
-  } >> "$node0extra"
-  cp "$SCRIPT_DIR/config/templates/follower-compose.properties.in" "$follower"
-  compose_node_config 0 "$(repeat_hex_byte 01)" \
+  if [ "$ANCHOR_ENABLED" = true ]; then
+    anchor_key="$ANCHOR_KEY_VALUE"
+    {
+      printf '%s\n' 'yano.app-chain.chains[0].anchor.enabled=true'
+      printf '%s\n' 'yano.app-chain.chains[0].anchor.mode=script'
+      printf 'yano.app-chain.chains[0].anchor.signing-key=%s\n' "$anchor_key"
+      # Devnet closes the proof quickly; public profiles use a fee-conscious
+      # cadence fixed by the reviewed network profile.
+      printf 'yano.app-chain.chains[0].anchor.every-blocks=%s\n' "$PROFILE_ANCHOR_EVERY_BLOCKS"
+      printf 'yano.app-chain.chains[0].anchor.max-interval-minutes=%s\n' \
+        "$PROFILE_ANCHOR_MAX_INTERVAL_MINUTES"
+    } >> "$node0extra"
+  fi
+  if [ "$PROFILE_L1_MODE" = producer ]; then
+    cp "$SCRIPT_DIR/config/templates/follower-compose.properties.in" "$follower"
+  else
+    cp "$SCRIPT_DIR/config/templates/follower-public-compose.properties.in" "$follower"
+  fi
+  compose_node_config 0 "$MEMBER_SEED_0" \
     'yano-1:13337,yano-2:13337' "$node0extra"
-  compose_node_config 1 "$(repeat_hex_byte 02)" \
+  compose_node_config 1 "$MEMBER_SEED_1" \
     'yano-0:13337,yano-2:13337' "$follower"
-  compose_node_config 2 "$(repeat_hex_byte 03)" \
+  compose_node_config 2 "$MEMBER_SEED_2" \
     'yano-0:13337,yano-1:13337' "$follower"
   render_template "$SCRIPT_DIR/config/templates/runner-compose.properties.in" "$RUNNER_CONFIG" \
     CHAIN_ID "$DEMO_CHAIN_ID" MINIO_IP "$DEMO_MINIO_IP" KUBO_IP "$DEMO_KUBO_IP" \
     S3_TARGET_ID "$COMPOSE_S3_TARGET_ID" IPFS_TARGET_ID "$COMPOSE_IPFS_TARGET_ID" \
     KAFKA_TARGET_ID "$COMPOSE_KAFKA_TARGET_ID" \
+    MEMBER_KEYS "$MEMBER_KEYS" REQUIRE_ANCHOR "$REQUIRE_ANCHOR" \
     TIMEOUT_SECONDS "$DEMO_SCENARIO_TIMEOUT_SECONDS" \
     POLL_INTERVAL_MILLIS "$DEMO_SCENARIO_POLL_INTERVAL_MILLIS"
   chmod 600 "$RUNNER_CONFIG"
@@ -314,7 +1182,7 @@ prepare_compose_configs() {
 }
 
 prepare_host_configs() {
-  local executor follower base i access secret host_home
+  local executor follower base i access secret host_home genesis_setting
   resolve_host_target_ids
   mkdir -p "$NODE_CONFIG_DIR"
   chmod 700 "$NODE_CONFIG_DIR"
@@ -330,10 +1198,16 @@ prepare_host_configs() {
     KAFKA_TARGET_ID "$HOST_KAFKA_TARGET_ID" \
     MINIO_EXECUTOR_ACCESS "$access" MINIO_EXECUTOR_SECRET "$secret"
   cp "$SCRIPT_DIR/config/templates/follower-host.properties.in" "$follower"
+  genesis_setting="# public-network systemStart comes from the selected genesis"
+  if [ "$DEMO_NETWORK" = devnet ]; then
+    genesis_setting="yano.block-producer.genesis-timestamp=$(read_secret "$GENESIS_TIMESTAMP_FILE")"
+  fi
   for i in 0 1 2; do
     base="$RUNTIME_ROOT/node$i-host.base"
     render_template "$SCRIPT_DIR/config/templates/node-host.properties.in" "$base" \
-      PLUGIN_DIR "$PLUGIN_DIR"
+      PLUGIN_DIR "$PLUGIN_DIR" PROPOSER_KEY "$PROPOSER_KEY" STORAGE_GATE "$STORAGE_GATE" \
+      GENESIS_TIMESTAMP_SETTING "$genesis_setting" \
+      ANCHOR_MAX_INTERVAL_MINUTES "$PROFILE_ANCHOR_MAX_INTERVAL_MINUTES"
     insert_node_settings "$base" "$([ "$i" -eq 0 ] && printf '%s' "$executor" || printf '%s' "$follower")" \
       "$NODE_CONFIG_DIR/node$i.properties"
     rm -f "$base"
@@ -349,6 +1223,7 @@ prepare_host_configs() {
     KAFKA_BOOTSTRAP_SERVERS "${DEMO_HOST_KAFKA_BOOTSTRAP_SERVERS:-127.0.0.1:$DEMO_KAFKA_PORT}" \
     S3_TARGET_ID "$HOST_S3_TARGET_ID" IPFS_TARGET_ID "$HOST_IPFS_TARGET_ID" \
     KAFKA_TARGET_ID "$HOST_KAFKA_TARGET_ID" \
+    MEMBER_KEYS "$MEMBER_KEYS" REQUIRE_ANCHOR "$REQUIRE_ANCHOR" \
     TIMEOUT_SECONDS "$DEMO_SCENARIO_TIMEOUT_SECONDS" \
     POLL_INTERVAL_MILLIS "$DEMO_SCENARIO_POLL_INTERVAL_MILLIS" UI_PORT "$DEMO_UI_PORT"
   chmod 600 "$RUNNER_CONFIG"
@@ -372,19 +1247,23 @@ write_compose_env() {
     DEMO_YANO_IMAGE DEMO_RUNNER_IMAGE DEMO_CONNECTOR_SUBNET DEMO_MINIO_IP \
     DEMO_KUBO_IP DEMO_UI_PORT DEMO_KAFKA_PORT DEMO_MINIO_PORT DEMO_IPFS_PORT \
     DEMO_PROMETHEUS_PORT DEMO_GRAFANA_PORT; do
-    single_line "$variable" "${!variable}"
+    compose_env_value "$variable" "${!variable}"
   done
+  compose_env_value DEMO_NETWORK "$DEMO_NETWORK"
+  compose_env_value PROFILE_WARMUP_SECONDS "$PROFILE_WARMUP_SECONDS"
   for variable in "$RUNNER_CONFIG" "$UI_CONFIG" "$PLUGIN_DIR" "$REPORT_DIR" "$API_KEY_FILE" \
     "$MINIO_ROOT_USER_FILE" "$MINIO_ROOT_PASSWORD_FILE" \
     "$MINIO_RUNNER_ACCESS_FILE" "$MINIO_RUNNER_SECRET_FILE" \
     "$MINIO_EXECUTOR_ACCESS_FILE" "$MINIO_EXECUTOR_SECRET_FILE" \
     "$GRAFANA_PASSWORD_FILE" "$SHELLEY_GENESIS_FILE" "$NODE_CONFIG_DIR" \
     "$DATA_ROOT"; do
-    single_line "generated path" "$variable"
+    compose_env_value "generated path" "$variable"
   done
   (umask 077
     {
       printf 'DEMO_PROJECT_NAME=%s\n' "$PROJECT_NAME"
+      printf 'DEMO_YANO_PROFILE=%s\n' "$DEMO_NETWORK"
+      printf 'DEMO_LEADER_WARMUP_SECONDS=%s\n' "$PROFILE_WARMUP_SECONDS"
       printf 'DEMO_HOST_UID=%s\n' "$(id -u)"
       printf 'DEMO_HOST_GID=%s\n' "$(id -g)"
       printf 'DEMO_YANO_IMAGE=%s\n' "$DEMO_YANO_IMAGE"
@@ -414,7 +1293,7 @@ write_compose_env() {
       printf 'DEMO_SHELLEY_GENESIS_FILE=%s\n' "$SHELLEY_GENESIS_FILE"
       for i in 0 1 2; do
         printf 'DEMO_NODE%s_CONFIG=%s\n' "$i" "$NODE_CONFIG_DIR/node$i.properties"
-        printf 'DEMO_YANO%s_DATA_DIR=%s\n' "$i" "$DATA_ROOT/l1/node$i"
+        printf 'DEMO_YANO%s_DATA_DIR=%s\n' "$i" "$L1_ROOT/node$i"
         printf 'DEMO_YANO%s_APP_DATA_DIR=%s\n' "$i" "$DATA_ROOT/app-chain/node$i"
         printf 'DEMO_YANO%s_LOG_DIR=%s\n' "$i" "$DATA_ROOT/logs/node$i"
       done
@@ -428,15 +1307,77 @@ write_compose_env() {
 
 prepare_configuration() {
   require python3
-  prepare_directories
+  prepare_network_identity
   prepare_secrets
-  prepare_genesis
+  if [ "$MODE" = host ]; then
+    resolve_host_target_ids
+  fi
+  prepare_instance_identity
+  install_staged_network_material
+  prepare_directories
   if [ "$MODE" = compose ]; then
     prepare_compose_configs
   else
     prepare_host_configs
   fi
   write_compose_env
+}
+
+write_l1_lease_identity() {
+  local output="$1" instance_identity="${2:-$INSTANCE_MARKER}"
+  python3 - "$output" "$DEMO_NETWORK" "$INSTANCE" "$MODE" "$DEMO_CHAIN_ID" \
+    "$PROJECT_NAME" "$NETWORK_MARKER" "$instance_identity" <<'PY'
+import hashlib
+import json
+from pathlib import Path
+import sys
+
+output, network, instance, deployment, chain_id, project, network_marker, instance_marker = sys.argv[1:]
+digest = lambda path: hashlib.sha256(Path(path).read_bytes()).hexdigest()
+document = {
+    "schemaVersion": 1,
+    "kind": "yano.demo.l1-lease",
+    "networkName": network,
+    "instanceId": instance,
+    "deployment": deployment,
+    "chainIds": [chain_id],
+    "project": project,
+    "networkIdentitySha256": digest(network_marker),
+    "appchainIdentitySha256": digest(instance_marker),
+}
+Path(output).write_text(
+    json.dumps(document, sort_keys=True, separators=(",", ":")) + "\n",
+    encoding="utf-8",
+)
+PY
+}
+
+release_l1_lease() {
+  local identity
+  [ ! -L "$L1_LEASE" ] \
+    || die "L1 lease must not be a symlink: $L1_LEASE"
+  [ ! -e "$L1_LEASE" ] || [ -f "$L1_LEASE" ] \
+    || die "L1 lease is not a regular file: $L1_LEASE"
+  [ -e "$L1_LEASE" ] || return 0
+  temporary_file; identity="$LAST_TEMP_FILE"
+  write_l1_lease_identity "$identity"
+  python3 "$SCRIPT_DIR/tools/lifecycle.py" lease-release \
+    --allowed-root "$NETWORK_ROOT" --directory "$L1_ROOT" \
+    --identity-file "$identity"
+}
+
+validate_l1_lease_owner() {
+  local identity
+  [ -e "$L1_LEASE" ] || return 1
+  [ -f "$L1_LEASE" ] && [ ! -L "$L1_LEASE" ] \
+    || die "L1 lease is not a regular non-symlink file: $L1_LEASE"
+  [ -f "$NETWORK_MARKER" ] && [ -f "$INSTANCE_MARKER" ] \
+    || die "cannot validate L1 ownership without both immutable identity markers"
+  temporary_file; identity="$LAST_TEMP_FILE"
+  write_l1_lease_identity "$identity"
+  python3 "$SCRIPT_DIR/tools/lifecycle.py" lease-validate \
+    --allowed-root "$NETWORK_ROOT" --directory "$L1_ROOT" \
+    --identity-file "$identity" >/dev/null
 }
 
 unique_artifact() {
@@ -502,10 +1443,48 @@ verify_artifacts() {
   [ -f "$RUNTIME_ROOT/yano.jar" ] || die "missing Yano jar; run prepare"
 }
 
+validate_private_runtime_file() {
+  local path="$1"
+  python3 - "$path" <<'PY' >/dev/null || return 1
+import os, stat, sys
+path = sys.argv[1]
+if os.path.islink(path):
+    raise SystemExit(1)
+info = os.stat(path, follow_symlinks=False)
+if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_nlink != 1
+        or stat.S_IMODE(info.st_mode) & 0o077 or info.st_size > 1_048_576):
+    raise SystemExit(1)
+PY
+}
+
 dc() {
-  local args=(docker compose --env-file "$COMPOSE_ENV" -f "$COMPOSE_FILE")
+  validate_private_runtime_file "$COMPOSE_ENV" \
+    || die "Compose environment must be a bounded launcher-owned private file: $COMPOSE_ENV"
+  local args=(docker compose -p "$PROJECT_NAME" --env-file "$COMPOSE_ENV" -f "$COMPOSE_FILE")
   [ "$OBSERVABILITY" = false ] || args+=(--profile observability)
   "${args[@]}" "$@"
+}
+
+compose_project_container_ids() {
+  docker ps -a --filter "label=com.docker.compose.project=$PROJECT_NAME" -q
+}
+
+# `docker compose down` returning zero is not proof that a changed-model orphan
+# disappeared. Release shared L1 ownership only after the Docker daemon reports
+# no container (running or stopped) with this exact Compose project label.
+compose_down_confirmed() {
+  local containers down_status=0
+  validate_private_runtime_file "$COMPOSE_ENV" || return 1
+  docker compose -p "$PROJECT_NAME" --env-file "$COMPOSE_ENV" \
+    -f "$COMPOSE_FILE" down --remove-orphans "$@" || down_status=$?
+  containers="$(compose_project_container_ids)" || return 1
+  if [ -n "$containers" ]; then
+    note "Compose shutdown left project-labelled containers; shared L1 ownership is preserved." >&2
+    return 1
+  fi
+  [ "$down_status" -eq 0 ] \
+    || note "Compose down returned $down_status, but the daemon confirms the project has no containers." >&2
+  return 0
 }
 
 runner_java() {
@@ -516,7 +1495,7 @@ runner_java() {
 api_curl() {
   local key
   key="$(read_secret "$API_KEY_FILE")"
-  curl --config - "$@" <<EOF
+  curl --connect-timeout 5 --max-time 30 --config - "$@" <<EOF
 header = "X-API-Key: $key"
 EOF
 }
@@ -566,53 +1545,290 @@ verify_compose_loopback_surfaces() {
   note "Verified all published Compose surfaces through 127.0.0.1."
 }
 
+wait_for_public_l1_sync() {
+  local deadline next_report i ready status summary
+  [ "$PROFILE_PUBLIC" = true ] || return 0
+  deadline=$((SECONDS + 10#$PROFILE_SYNC_TIMEOUT_SECONDS))
+  next_report=$SECONDS
+  note "WAIT_L1_SYNC: waiting for all three $DEMO_NETWORK members to report initialSyncComplete=true."
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    ready=true
+    summary=""
+    for i in 0 1 2; do
+      status="$(curl -fsS --connect-timeout 3 --max-time 10 \
+        "http://127.0.0.1:$((HTTP0 + i))/api/v1/node/status" 2>/dev/null || true)"
+      if [ -z "$status" ]; then
+        ready=false
+        summary="$summary node$i=unreachable"
+        continue
+      fi
+      read -r is_complete local_tip remote_tip < <(printf '%s' "$status" | python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+print(str(d.get("initialSyncComplete") is True).lower(), d.get("localTipBlockNumber", "?"), d.get("remoteTipBlockNumber", "?"))
+' 2>/dev/null || printf 'false ? ?\n')
+      [ "$is_complete" = true ] || ready=false
+      summary="$summary node$i=$local_tip/$remote_tip"
+    done
+    [ "$ready" = true ] && { note "WAIT_L1_SYNC complete:$summary"; return 0; }
+    if [ "$SECONDS" -ge "$next_report" ]; then
+      note "WAIT_L1_SYNC progress:$summary"
+      next_report=$((SECONDS + 60))
+    fi
+    sleep 10
+  done
+  die "$DEMO_NETWORK L1 sync did not complete within $PROFILE_SYNC_TIMEOUT_SECONDS seconds"
+}
+
+reconcile_anchor_binding() {
+  local deadline status_file i result
+  local -a statuses=()
+  [ "$ANCHOR_ENABLED" = true ] || return 0
+  for i in 0 1 2; do
+    temporary_file
+    statuses+=("$LAST_TEMP_FILE")
+  done
+  deadline=$((SECONDS + 180))
+  note "WAIT_ANCHOR_ADOPTION: verifying one script identity and adopted height on all members."
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    result=0
+    for i in 0 1 2; do
+      curl --connect-timeout 3 --max-time 10 -fsS \
+        "http://127.0.0.1:$((HTTP0 + i))/api/v1/app-chain/chains/$DEMO_CHAIN_ID/status" \
+        > "${statuses[$i]}" || result=1
+    done
+    if [ "$result" -eq 0 ] && python3 - "$ANCHOR_BINDING" "$DEMO_NETWORK" \
+        "$INSTANCE" "$MODE" "$DEMO_CHAIN_ID" "${statuses[@]}" <<'PY'
+import json
+import os
+from pathlib import Path
+import re
+import sys
+import tempfile
+import time
+
+binding_path = Path(sys.argv[1])
+network, instance, deployment, chain_id = sys.argv[2:6]
+documents = [json.loads(Path(path).read_text(encoding="utf-8")) for path in sys.argv[6:]]
+anchors = [document.get("anchor", {}) for document in documents]
+if len(anchors) != 3 or not all(anchor.get("bootstrapped") is True for anchor in anchors):
+    raise SystemExit(1)
+keys = ("threadPolicyId", "scriptHash", "scriptAddress")
+identity = {key: anchors[0].get(key) for key in keys}
+if not re.fullmatch(r"[0-9a-f]{56}", identity["threadPolicyId"] or ""):
+    raise SystemExit(1)
+if not re.fullmatch(r"[0-9a-f]{56}", identity["scriptHash"] or ""):
+    raise SystemExit(1)
+if not isinstance(identity["scriptAddress"], str) or not identity["scriptAddress"]:
+    raise SystemExit(1)
+if any(any(anchor.get(key) != value for key, value in identity.items()) for anchor in anchors):
+    raise SystemExit(1)
+heights = [anchor.get("lastAnchoredHeight") for anchor in anchors]
+if any(not isinstance(height, int) or isinstance(height, bool) or height < 0 for height in heights):
+    raise SystemExit(1)
+if len(set(heights)) != 1:
+    raise SystemExit(1)
+
+fixed = {
+    "schemaVersion": 1,
+    "kind": "yano.demo.anchor-binding",
+    "networkName": network,
+    "instanceId": instance,
+    "deployment": deployment,
+    "chainId": chain_id,
+    **identity,
+}
+if binding_path.exists() or binding_path.is_symlink():
+    if binding_path.is_symlink() or not binding_path.is_file():
+        raise SystemExit("existing anchor binding is not a regular file")
+    existing = json.loads(binding_path.read_text(encoding="utf-8"))
+    for key, value in fixed.items():
+        if existing.get(key) != value:
+            raise SystemExit(f"existing anchor binding changed at {key}")
+document = {
+    **fixed,
+    "lastAdoptedHeight": heights[0],
+    "verifiedMembers": 3,
+    "verifiedAtMillis": int(time.time() * 1000),
+}
+content = (json.dumps(document, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+descriptor, temporary = tempfile.mkstemp(prefix=".anchor-binding.", dir=binding_path.parent)
+try:
+    os.fchmod(descriptor, 0o600)
+    view = memoryview(content)
+    while view:
+        written = os.write(descriptor, view)
+        if written <= 0:
+            raise OSError("short write")
+        view = view[written:]
+    os.fsync(descriptor)
+    os.close(descriptor)
+    descriptor = -1
+    os.replace(temporary, binding_path)
+    directory = os.open(binding_path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+finally:
+    if descriptor >= 0:
+        os.close(descriptor)
+    try:
+        os.unlink(temporary)
+    except FileNotFoundError:
+        pass
+PY
+    then
+      note "Anchor binding verified and recorded at $ANCHOR_BINDING."
+      return 0
+    fi
+    sleep 2
+  done
+  die "members did not converge on one bootstrapped anchor identity/height within 180 seconds"
+}
+
 compose_anchor_bootstrap() {
   local base="http://127.0.0.1:$HTTP0/api/v1" status bootstrapped address deadline
-  status="$(curl -fsS "$base/app-chain/chains/$DEMO_CHAIN_ID/status")"
+  status="$(curl --connect-timeout 3 --max-time 10 -fsS \
+    "$base/app-chain/chains/$DEMO_CHAIN_ID/status")"
   read -r bootstrapped address < <(printf '%s' "$status" | python3 -c '
 import json,sys
 a=json.load(sys.stdin).get("anchor", {})
 print(str(bool(a.get("bootstrapped"))).lower(), a.get("walletAddress", ""))
 ')
-  [ "$bootstrapped" = true ] && return
+  if [ "$bootstrapped" = true ]; then
+    reconcile_anchor_binding
+    return
+  fi
   [ -n "$address" ] || die "node 0 did not report a script-anchor wallet"
-  curl -fsS -X POST "$base/devnet/fund" -H 'Content-Type: application/json' \
-    -d "{\"address\":\"$address\",\"ada\":500}" >/dev/null
-  sleep 6
+  if [ "$PROFILE_AUTO_FAUCET" = true ]; then
+    curl --connect-timeout 3 --max-time 30 -fsS -X POST \
+      "$base/devnet/fund" -H 'Content-Type: application/json' \
+      -d "{\"address\":\"$address\",\"ada\":500}" >/dev/null
+  else
+    note "Using the explicitly enabled $DEMO_NETWORK anchor wallet: $address"
+  fi
+  wait_for_anchor_wallet_funds "$base" "$address"
   api_curl -fsS -X POST \
     "$base/app-chain/chains/$DEMO_CHAIN_ID/admin/anchor/bootstrap" >/dev/null
   deadline=$((SECONDS + 120))
   while [ "$SECONDS" -lt "$deadline" ]; do
-    status="$(curl -fsS "$base/app-chain/chains/$DEMO_CHAIN_ID/status")"
+    status="$(curl --connect-timeout 3 --max-time 10 -fsS \
+      "$base/app-chain/chains/$DEMO_CHAIN_ID/status")"
     bootstrapped="$(printf '%s' "$status" | python3 -c \
       'import json,sys; print(str(bool(json.load(sys.stdin).get("anchor",{}).get("bootstrapped"))).lower())')"
-    [ "$bootstrapped" = true ] && return
+    if [ "$bootstrapped" = true ]; then
+      reconcile_anchor_binding
+      return
+    fi
     sleep 2
   done
   die "script anchor did not confirm within 120 seconds"
 }
 
+wait_for_anchor_wallet_funds() {
+  local base="$1" address="$2" deadline next_report response usable timeout
+  local -a funding_args=()
+  if [ "$PROFILE_PUBLIC" = true ]; then
+    timeout=$((10#$DEMO_ANCHOR_FUND_TIMEOUT_SECONDS))
+    funding_args+=(--public)
+    note "WAIT_ANCHOR_FUNDS: waiting for transaction-ready pure-ADA funding at $address."
+    note "Required: at least two distinct UTxOs (one >= 5000000, another >= 10000000 lovelace) and >= 20000000 total."
+  else
+    timeout=120
+    note "WAIT_ANCHOR_FUNDS: waiting for a pure-ADA UTxO of at least 1000000 lovelace at $address."
+  fi
+  deadline=$((SECONDS + timeout))
+  next_report=$SECONDS
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    response="$(curl --connect-timeout 3 --max-time 10 -fsS \
+      "$base/addresses/$address/utxos?count=50" 2>/dev/null || true)"
+    if printf '%s' "$response" | python3 "$SCRIPT_DIR/tools/anchor_funding.py" \
+        "${funding_args[@]}" 2>/dev/null; then
+      usable=true
+    else
+      usable=false
+    fi
+    [ "$usable" != true ] || { note "WAIT_ANCHOR_FUNDS complete: usable wallet UTxO observed."; return 0; }
+    if [ "$SECONDS" -ge "$next_report" ]; then
+      note "WAIT_ANCHOR_FUNDS pending: fund $address; the launcher will continue after the UTxO is visible."
+      next_report=$((SECONDS + 60))
+    fi
+    sleep 5
+  done
+  die "anchor wallet funding was not observed within $timeout seconds; fund $address and run up again"
+}
+
+host_anchor_bootstrap() {
+  local base="http://127.0.0.1:$HTTP0/api/v1" status bootstrapped address
+  status="$(curl --connect-timeout 3 --max-time 10 -fsS \
+    "$base/app-chain/chains/$DEMO_CHAIN_ID/status")"
+  read -r bootstrapped address < <(printf '%s' "$status" | python3 -c '
+import json,sys
+a=json.load(sys.stdin).get("anchor", {})
+print(str(bool(a.get("bootstrapped"))).lower(), a.get("walletAddress", ""))
+')
+  [ "$bootstrapped" != true ] || return 0
+  [ -n "$address" ] || die "node 0 did not report a script-anchor wallet"
+  if [ "$PROFILE_PUBLIC" = true ]; then
+    note "Using the explicitly enabled $DEMO_NETWORK anchor wallet: $address"
+    wait_for_anchor_wallet_funds "$base" "$address"
+  fi
+  host_cluster anchor-bootstrap "$DEMO_CHAIN_ID"
+}
+
 host_cluster() {
-  local cluster="$APP_DIR/appchain-cluster/cluster.sh" key
+  local cluster="$APP_DIR/appchain-cluster/cluster.sh" key="" devnet_genesis=""
   [ -x "$cluster" ] || die "cluster launcher not executable: $cluster"
-  key="$(read_secret "$API_KEY_FILE")"
+  case "${1:-}" in
+    status|stop) ;;
+    *) key="$(read_secret "$API_KEY_FILE")";;
+  esac
+  [ "$DEMO_NETWORK" != devnet ] || devnet_genesis="$SHELLEY_GENESIS_FILE"
   YANO_HOME="$RUNTIME_ROOT/host-home" \
   YANO_JAR="$RUNTIME_ROOT/yano.jar" \
-  YANO_CLUSTER_DIR="$DATA_ROOT/l1/host-cluster" \
+  YANO_CLUSTER_DIR="$L1_ROOT/host-cluster" \
   YANO_CLUSTER_NODE_CONFIG_DIR="$NODE_CONFIG_DIR" \
+  YANO_CLUSTER_MEMBER_KEY_DIR="$MEMBER_KEY_DIR" \
+  YANO_CLUSTER_ANCHOR_KEY_FILE="$ANCHOR_KEY_FILE" \
+  YANO_CLUSTER_PRIVATE_CONFIG_DIR="$SECRET_ROOT/cluster-private-config" \
+  YANO_CLUSTER_DEVNET_GENESIS_FILE="$devnet_genesis" \
+  YANO_CLUSTER_APPCHAIN_IDENTITY_MARKER="$INSTANCE_MARKER" \
   YANO_CLUSTER_API_KEY="$key" \
   "$cluster" "$@"
 }
 
 prepare_host_state_links() {
-  local i root target link
+  local i root target link status
   for i in 0 1 2; do
-    root="$DATA_ROOT/l1/host-cluster/node$i/chainstate"
+    root="$L1_ROOT/host-cluster/node$i/chainstate"
     target="$DATA_ROOT/app-chain/node$i"
     link="$root/app-chain"
     mkdir -p "$root" "$target"
     if [ -e "$link" ] && [ ! -L "$link" ]; then
       die "host app-chain path is not the managed symlink: $link"
+    fi
+    if [ -L "$link" ]; then
+      if python3 - "$link" "$target" "$NETWORK_ROOT/instances" <<'PY'
+import os, sys
+link, target, allowed = map(os.path.abspath, sys.argv[1:])
+actual = os.path.realpath(link)
+expected = os.path.realpath(target)
+allowed = os.path.realpath(allowed)
+if os.path.commonpath((actual, allowed)) != allowed:
+    raise SystemExit(2)
+raise SystemExit(0 if actual == expected else 1)
+PY
+      then
+        status=0
+      else
+        status=$?
+      fi
+      if [ "$status" -ne 0 ]; then
+        [ "$status" -eq 1 ] \
+          || die "host app-chain link points outside the managed instances root: $link"
+        rm "$link"
+      fi
     fi
     [ -L "$link" ] || ln -s "$target" "$link"
     [ "$(cd "$link" && pwd -P)" = "$(cd "$target" && pwd -P)" ] \
@@ -621,44 +1837,71 @@ prepare_host_state_links() {
 }
 
 start_host_ui() {
-  local pid_file="$RUNTIME_ROOT/host-ui.pid" log="$RUNTIME_ROOT/host-ui.log" pid deadline
-  if [ -f "$pid_file" ]; then
-    pid="$(cat "$pid_file")"
-    if host_ui_process "$pid"; then return; fi
-    rm -f "$pid_file"
-  fi
-  java --add-modules=jdk.httpserver -jar "$RUNTIME_ROOT/runner.jar" serve \
-    --config "$UI_CONFIG" >"$log" 2>&1 &
-  pid=$!
-  printf '%s\n' "$pid" > "$pid_file"
+  local pid deadline
+  resolve_host_ui_command
+  pid="$(python3 "$SCRIPT_DIR/tools/managed_process.py" start \
+    --runtime-root "$RUNTIME_ROOT" --name host-ui --log-file host-ui.log -- \
+    "${HOST_UI_COMMAND[@]}")" \
+    || die "host evidence UI could not be started or recovered safely"
   deadline=$((SECONDS + 30))
   until curl -fsS "http://127.0.0.1:$DEMO_UI_PORT/healthz" >/dev/null 2>&1; do
-    host_ui_process "$pid" || die "host evidence UI exited during startup (see $log)"
+    host_ui_process || die "host evidence UI exited during startup (see $RUNTIME_ROOT/host-ui.log)"
     [ "$SECONDS" -lt "$deadline" ] || die "host evidence UI was not ready within 30 seconds"
     sleep 1
   done
 }
 
+HOST_UI_COMMAND=()
+resolve_host_ui_command() {
+  local java_executable
+  java_executable="$(command -v java 2>/dev/null)" \
+    || die "required command not found: java"
+  [ -n "$java_executable" ] || die "required command not found: java"
+  HOST_UI_COMMAND=("$java_executable" --add-modules=jdk.httpserver \
+    -jar "$RUNTIME_ROOT/runner.jar" serve --config "$UI_CONFIG")
+}
+
 host_ui_process() {
-  local pid="${1:-}" command
-  [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
-  kill -0 "$pid" 2>/dev/null || return 1
-  command="$(ps -p "$pid" -o command= 2>/dev/null || true)"
-  [[ "$command" == *"$RUNTIME_ROOT/runner.jar"* \
-    && "$command" == *"serve"* && "$command" == *"$UI_CONFIG"* ]]
+  resolve_host_ui_command
+  python3 "$SCRIPT_DIR/tools/managed_process.py" status \
+    --runtime-root "$RUNTIME_ROOT" --name host-ui -- \
+    "${HOST_UI_COMMAND[@]}" >/dev/null
+}
+
+HOST_UI_RUNNING=false
+report_host_ui_status() {
+  local output status=0
+  HOST_UI_RUNNING=false
+  resolve_host_ui_command
+  output="$(python3 "$SCRIPT_DIR/tools/managed_process.py" status \
+    --runtime-root "$RUNTIME_ROOT" --name host-ui -- \
+    "${HOST_UI_COMMAND[@]}")" || status=$?
+  case "$status" in
+    0) HOST_UI_RUNNING=true; note "Host evidence UI: $output";;
+    3) note "Host evidence UI: stopped";;
+    *) die "host evidence UI lifecycle artifacts are invalid or untrusted";;
+  esac
 }
 
 stop_host_ui() {
-  local pid_file="$RUNTIME_ROOT/host-ui.pid" pid deadline
-  [ -f "$pid_file" ] || return 0
-  pid="$(cat "$pid_file")"
-  if host_ui_process "$pid"; then
-    kill "$pid"
-    deadline=$((SECONDS + 15))
-    while kill -0 "$pid" 2>/dev/null && [ "$SECONDS" -lt "$deadline" ]; do sleep 1; done
-    kill -0 "$pid" 2>/dev/null && die "host evidence UI did not stop within 15 seconds"
-  fi
-  rm -f "$pid_file"
+  resolve_host_ui_command
+  python3 "$SCRIPT_DIR/tools/managed_process.py" stop \
+    --runtime-root "$RUNTIME_ROOT" --name host-ui \
+    --term-timeout 15 --kill-timeout 5 -- "${HOST_UI_COMMAND[@]}" \
+    || die "host evidence UI could not be proven stopped; lifecycle record was preserved"
+}
+
+host_ui_lifecycle_artifacts() {
+  local artifact
+  for artifact in \
+    "$RUNTIME_ROOT/host-ui.process.json" \
+    "$RUNTIME_ROOT/.host-ui.launch.json" \
+    "$RUNTIME_ROOT/.host-ui.process.tmp" \
+    "$RUNTIME_ROOT/.host-ui.process-update.tmp" \
+    "$RUNTIME_ROOT/.host-ui.launch.tmp"; do
+    [ ! -e "$artifact" ] && [ ! -L "$artifact" ] || return 0
+  done
+  return 1
 }
 
 cmd_prepare() {
@@ -668,27 +1911,114 @@ cmd_prepare() {
   if [ "$MODE" = compose ]; then
     dc config --quiet
   fi
+  release_command_lease
+  trap cleanup_temporary_files EXIT
   note "Prepared $MODE demo instance '$INSTANCE'."
   note "Secrets: $SECRET_ROOT (values are not printed)"
 }
 
-cmd_up() {
-  cmd_prepare
+STARTUP_LEASE_ACQUIRED=false
+STARTUP_MAY_HAVE_SERVICES=false
+
+rollback_host_ui() {
+  host_ui_lifecycle_artifacts || return 0
+  resolve_host_ui_command || return 1
+  python3 "$SCRIPT_DIR/tools/managed_process.py" stop \
+    --runtime-root "$RUNTIME_ROOT" --name host-ui \
+    --term-timeout 15 --kill-timeout 5 -- "${HOST_UI_COMMAND[@]}" >/dev/null 2>&1
+}
+
+rollback_failed_startup() {
+  local stopped=false containers=""
+  [ "$STARTUP_LEASE_ACQUIRED" = true ] || return 0
+  note "ROLLBACK_STARTUP: stopping partial services before deciding whether the shared L1 lease can be released." >&2
   if [ "$MODE" = compose ]; then
-    dc up -d --wait --wait-timeout 360
-    verify_compose_loopback_surfaces
-    compose_anchor_bootstrap
-    dc --profile tools run --rm scenario probe --config /run/demo/runner.properties
+    if command -v docker >/dev/null 2>&1 && [ -f "$COMPOSE_ENV" ] \
+        && validate_private_runtime_file "$COMPOSE_ENV"; then
+      compose_down_confirmed >/dev/null 2>&1 && stopped=true
+    fi
+    if [ "$stopped" = false ] && command -v docker >/dev/null 2>&1; then
+      containers="$(docker ps -a --filter "label=com.docker.compose.project=$PROJECT_NAME" \
+        -q 2>/dev/null || printf __unknown__)"
+      [ -z "$containers" ] && stopped=true
+    fi
   else
+    if rollback_host_ui; then
+      if [ -d "$L1_ROOT/host-cluster" ]; then
+        host_cluster stop >/dev/null 2>&1 && stopped=true
+      else
+        stopped=true
+      fi
+    fi
+  fi
+  if [ "$stopped" = true ] && release_l1_lease >/dev/null 2>&1; then
+    STARTUP_LEASE_ACQUIRED=false
+    note "ROLLBACK_STARTUP complete: partial services stopped and L1 lease released." >&2
+    return 0
+  fi
+  note "ROLLBACK_STARTUP incomplete: L1 lease preserved because a partial service could not be proven stopped; run ./demo.sh stop with the same profile." >&2
+  return 1
+}
+
+release_command_lease() {
+  [ "$STARTUP_LEASE_ACQUIRED" = true ] || return 0
+  release_l1_lease >/dev/null
+  STARTUP_LEASE_ACQUIRED=false
+}
+
+demo_exit_handler() {
+  local status="$1"
+  trap - EXIT
+  set +e
+  if [ "$STARTUP_LEASE_ACQUIRED" = true ]; then
+    if [ "$STARTUP_MAY_HAVE_SERVICES" = true ]; then
+      rollback_failed_startup
+    else
+      release_command_lease
+    fi
+  fi
+  cleanup_temporary_files
+  exit "$status"
+}
+
+cmd_up() {
+  local -a start_args
+  prepare_configuration
+  build_artifacts
+  verify_artifacts
+  if [ "$MODE" = compose ]; then
+    dc config --quiet
+  fi
+  if [ "$MODE" = host ]; then
     require java
     runner_java init-connectors
+  fi
+  verify_cached_key_material
+  if [ "$MODE" = compose ]; then
+    STARTUP_MAY_HAVE_SERVICES=true
+    dc up -d --wait --wait-timeout 360
+    verify_compose_loopback_surfaces
+    wait_for_public_l1_sync
+    [ "$ANCHOR_ENABLED" = false ] || compose_anchor_bootstrap
+    dc --profile tools run --rm scenario probe --config /run/demo/runner.properties
+  else
     prepare_host_state_links
-    host_cluster start 3 --anchor --anchor-every 1 --http-base "$HTTP0" \
-      --server-base "$SERVER_BASE"
-    host_cluster anchor-bootstrap "$DEMO_CHAIN_ID"
+    start_args=(start 3 --network "$DEMO_NETWORK" --http-base "$HTTP0" \
+      --server-base "$SERVER_BASE")
+    if [ "$ANCHOR_ENABLED" = true ]; then
+      start_args+=(--anchor --anchor-every "$PROFILE_ANCHOR_EVERY_BLOCKS")
+    fi
+    STARTUP_MAY_HAVE_SERVICES=true
+    host_cluster "${start_args[@]}"
+    wait_for_public_l1_sync
+    [ "$ANCHOR_ENABLED" = false ] || host_anchor_bootstrap
     runner_java probe
     start_host_ui
   fi
+  [ "$ANCHOR_ENABLED" = false ] || reconcile_anchor_binding
+  STARTUP_MAY_HAVE_SERVICES=false
+  STARTUP_LEASE_ACQUIRED=false
+  trap cleanup_temporary_files EXIT
   note "Yano status: http://127.0.0.1:$HTTP0/ui/app-chain/ (nodes: $HTTP0, $HTTP1, $HTTP2)"
   note "Evidence UI: http://127.0.0.1:$DEMO_UI_PORT/"
   note "API key file: $API_KEY_FILE"
@@ -698,8 +2028,17 @@ cmd_up() {
   fi
 }
 
+validate_running_configuration() {
+  [ -e "$L1_LEASE" ] \
+    || die "instance '$INSTANCE' is not running (shared L1 lease is absent)"
+  validate_persisted_lifecycle_identity true
+  validate_l1_lease_owner \
+    || die "shared L1 state is leased by another instance"
+  verify_cached_key_material
+}
+
 cmd_run() {
-  prepare_configuration
+  validate_running_configuration
   verify_artifacts
   if [ "$MODE" = compose ]; then
     dc --profile tools run --rm scenario run --config /run/demo/runner.properties
@@ -709,7 +2048,7 @@ cmd_run() {
 }
 
 cmd_probe() {
-  prepare_configuration
+  validate_running_configuration
   verify_artifacts
   if [ "$MODE" = compose ]; then
     dc --profile tools run --rm scenario probe --config /run/demo/runner.properties
@@ -719,25 +2058,359 @@ cmd_probe() {
 }
 
 cmd_status() {
-  prepare_configuration
-  if [ "$MODE" = compose ]; then dc ps; else host_cluster status; fi
+  if [ -e "$L1_LEASE" ]; then
+    validate_l1_lease_owner \
+      || die "shared L1 state is leased by another instance"
+  fi
+  if [ "$MODE" = compose ]; then
+    [ -f "$COMPOSE_ENV" ] || { note "Instance '$INSTANCE' is not prepared."; return; }
+    dc ps
+  else
+    [ -f "$RUNNER_CONFIG" ] && [ -d "$L1_ROOT/host-cluster" ] \
+      || { note "Instance '$INSTANCE' is not prepared."; return; }
+    if host_ui_lifecycle_artifacts; then report_host_ui_status; fi
+    [ -e "$L1_LEASE" ] \
+      || {
+        [ "$HOST_UI_RUNNING" = false ] \
+          || die "host evidence UI is running without its required shared L1 lease"
+        note "Instance '$INSTANCE' is stopped (no active L1 lease)."
+        return
+      }
+    host_cluster status
+  fi
 }
 
 cmd_stop() {
-  if [ "$MODE" = compose ]; then
-    [ -f "$COMPOSE_ENV" ] || die "instance is not prepared: $INSTANCE"
-    dc down
-  else
-    stop_host_ui
-    host_cluster stop
+  local containers
+  if [ -e "$L1_LEASE" ]; then
+    validate_l1_lease_owner \
+      || die "shared L1 state is leased by another instance"
   fi
+  if [ "$MODE" = compose ]; then
+    if [ -f "$COMPOSE_ENV" ]; then
+      compose_down_confirmed \
+        || die "Compose services could not be proven absent; L1 lease was preserved"
+    elif [ -e "$L1_LEASE" ]; then
+      require docker
+      containers="$(docker ps -a --filter "label=com.docker.compose.project=$PROJECT_NAME" -q 2>/dev/null)" \
+        || die "cannot inspect the partial Compose deployment; L1 lease was preserved"
+      [ -z "$containers" ] \
+        || die "Compose runtime metadata is missing while containers remain; L1 lease was preserved"
+    else
+      note "Instance '$INSTANCE' is not prepared; nothing to stop."
+      return
+    fi
+  else
+    if [ ! -e "$L1_LEASE" ]; then
+      if host_ui_lifecycle_artifacts; then stop_host_ui; fi
+      # A killed launcher can leave a gated child or exact PID metadata before
+      # the deployment lease is visible. Reconcile the cluster lifecycle even
+      # without a lease; cluster.sh fails closed on malformed/uncertain state.
+      [ ! -d "$L1_ROOT/host-cluster" ] || host_cluster stop
+      if [ -f "$RUNNER_CONFIG" ] || [ -d "$L1_ROOT/host-cluster" ]; then
+        note "Instance '$INSTANCE' is already stopped; data was preserved."
+      else
+        note "Instance '$INSTANCE' is not prepared; nothing to stop."
+      fi
+      return
+    fi
+    if host_ui_lifecycle_artifacts; then stop_host_ui; fi
+    [ ! -d "$L1_ROOT/host-cluster" ] || host_cluster stop
+  fi
+  release_l1_lease
   note "Stopped instance '$INSTANCE'; data was preserved."
+}
+
+managed_services_running() {
+  local artifact containers
+  if [ -L "$L1_LEASE" ]; then
+    die "L1 lease must not be a symlink: $L1_LEASE"
+  fi
+  [ ! -e "$L1_LEASE" ] || return 0
+  if [ "$MODE" = compose ]; then
+    command -v docker >/dev/null 2>&1 \
+      || die "cannot verify Compose is stopped because Docker is unavailable"
+    containers="$(docker ps -a \
+      --filter "label=com.docker.compose.project=$PROJECT_NAME" -q 2>/dev/null)" \
+      || die "cannot verify Compose is stopped because the Docker daemon is unavailable"
+    [ -z "$containers" ] || return 0
+  else
+    # Any durable UI record/fence/temp is active or uncertain until `stop`
+    # reconciles it through the exact PID/start-token/argv manager.
+    host_ui_lifecycle_artifacts && return 0
+    # Cluster stop is the only operation allowed to reconcile these durable
+    # launch/PID records. Even a malformed, stale, symlinked, or temporary
+    # artifact is active/uncertain from cleanup's perspective.
+    for artifact in \
+      "$L1_ROOT/host-cluster"/node*.pid \
+      "$L1_ROOT/host-cluster"/node*.pid.meta \
+      "$L1_ROOT/host-cluster"/node*.launch \
+      "$L1_ROOT/host-cluster"/node*.pid.tmp.* \
+      "$L1_ROOT/host-cluster"/node*.pid.meta.tmp.*; do
+      [ ! -e "$artifact" ] && [ ! -L "$artifact" ] || return 0
+    done
+  fi
+  return 1
+}
+
+validate_persisted_lifecycle_identity() {
+  local require_instance="${1:-true}"
+  [ -f "$NETWORK_MARKER" ] && [ ! -L "$NETWORK_MARKER" ] \
+    || die "cleanup requires the retained immutable network identity marker: $NETWORK_MARKER"
+  if [ "$require_instance" = true ]; then
+    [ -f "$INSTANCE_MARKER" ] && [ ! -L "$INSTANCE_MARKER" ] \
+      || die "cleanup requires the retained immutable app-chain identity marker: $INSTANCE_MARKER"
+  fi
+  python3 - "$NETWORK_MARKER" "$INSTANCE_MARKER" "$require_instance" \
+    "$DEMO_NETWORK" "$PROFILE_PROTOCOL_MAGIC" "$INSTANCE" "$MODE" "$DEMO_CHAIN_ID" <<'PY' \
+    || die "persisted lifecycle identity is invalid or does not match the requested cleanup target"
+import hashlib
+import json
+import os
+import stat
+import sys
+from pathlib import Path
+
+
+def unique(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate key")
+        result[key] = value
+    return result
+
+
+def read_marker(raw_path):
+    path = Path(raw_path)
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    try:
+        before = os.fstat(descriptor)
+        if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.geteuid()
+                or before.st_nlink != 1 or stat.S_IMODE(before.st_mode) != 0o600
+                or not 1 <= before.st_size <= 65536):
+            raise ValueError("unsafe marker")
+        raw = b""
+        while len(raw) <= 65536:
+            chunk = os.read(descriptor, 65537 - len(raw))
+            if not chunk:
+                break
+            raw += chunk
+        after = os.fstat(descriptor)
+        if ((before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+                != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+                or len(raw) != before.st_size):
+            raise ValueError("marker changed while being read")
+    finally:
+        os.close(descriptor)
+    document = json.loads(raw.decode("utf-8"), object_pairs_hook=unique)
+    if not isinstance(document, dict):
+        raise ValueError("marker must be an object")
+    canonical = (json.dumps(document, ensure_ascii=False, allow_nan=False,
+                            sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+    if raw != canonical:
+        raise ValueError("marker is not canonical")
+    return document, raw
+
+
+network_path, instance_path, require_instance, network_name, magic, instance, deployment, chain_id = sys.argv[1:]
+network, network_raw = read_marker(network_path)
+if (network.get("schemaVersion") != 1 or network.get("kind") != "yano.demo.network-identity"
+        or network.get("networkName") != network_name
+        or network.get("protocolMagic") != int(magic)):
+    raise SystemExit(1)
+if require_instance == "true":
+    appchain, _ = read_marker(instance_path)
+    if (appchain.get("schemaVersion") != 1
+            or appchain.get("kind") != "yano.demo.appchain-identity"
+            or appchain.get("networkName") != network_name
+            or appchain.get("networkIdentitySha256") != hashlib.sha256(network_raw).hexdigest()
+            or appchain.get("instanceId") != instance
+            or appchain.get("deployment") != deployment
+            or appchain.get("chainIds") != [chain_id]):
+        raise SystemExit(1)
+    anchor = appchain.get("anchor")
+    if not isinstance(anchor, dict) or not isinstance(anchor.get("enabled"), bool):
+        raise SystemExit(1)
+PY
+}
+
+prepare_cleanup_replacement() {
+  if [ "$CLEAN_SCOPE" = instance ] || [ "$CLEAN_SCOPE" = all ]; then
+    [ -n "$NEW_INSTANCE" ] \
+      || die "--scope $CLEAN_SCOPE requires --new-instance with a distinct replacement identity"
+    [ -n "$NEW_CHAIN_ID" ] || NEW_CHAIN_ID="evidence-chain-$NEW_INSTANCE"
+    [[ "$NEW_CHAIN_ID" =~ ^[a-z][a-z0-9-]{0,62}$ ]] \
+      || die "replacement chain id must match [a-z][a-z0-9-]{0,62}"
+    [ "$NEW_CHAIN_ID" != "$DEMO_CHAIN_ID" ] \
+      || die "replacement chain id must differ from the retired chain id"
+  elif [ -n "$NEW_INSTANCE" ] || [ -n "$NEW_CHAIN_ID" ]; then
+    die "--new-instance/--new-chain-id are only valid with --scope instance or --scope all"
+  fi
+}
+
+cleanup_identity_digest() {
+  if [ -f "$INSTANCE_MARKER" ] && [ ! -L "$INSTANCE_MARKER" ]; then
+    validate_persisted_lifecycle_identity true
+    python3 - "$INSTANCE_MARKER" <<'PY'
+import hashlib
+from pathlib import Path
+import sys
+
+print(hashlib.sha256(Path(sys.argv[1]).read_bytes()).hexdigest())
+PY
+    return
+  fi
+  [ "$CLEAN_SCOPE" = instance ] || [ "$CLEAN_SCOPE" = all ] \
+    || die "cleanup requires the retained immutable app-chain identity marker: $INSTANCE_MARKER"
+  [ ! -e "$DATA_ROOT" ] && [ ! -L "$DATA_ROOT" ] \
+    || die "instance state exists without its immutable identity marker; restore it before cleanup"
+  python3 - "$RETIRE_MARKER" "$DEMO_NETWORK" "$INSTANCE" "$MODE" \
+    "$DEMO_CHAIN_ID" "$NEW_INSTANCE" "$NEW_CHAIN_ID" <<'PY' \
+    || die "durable retirement record does not match the requested cleanup plan"
+import json
+import os
+from pathlib import Path
+import re
+import stat
+import sys
+
+path = Path(sys.argv[1])
+flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+descriptor = os.open(path, flags)
+try:
+    before = os.fstat(descriptor)
+    if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.geteuid()
+            or before.st_nlink != 1 or stat.S_IMODE(before.st_mode) != 0o600
+            or not 1 <= before.st_size <= 65536):
+        raise SystemExit(1)
+    raw = b""
+    while len(raw) <= 65536:
+        chunk = os.read(descriptor, 65537 - len(raw))
+        if not chunk:
+            break
+        raw += chunk
+    after = os.fstat(descriptor)
+    if ((before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+            != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+            or len(raw) != before.st_size):
+        raise SystemExit(1)
+finally:
+    os.close(descriptor)
+
+document = json.loads(raw.decode("utf-8"))
+expected_fields = {
+    "schemaVersion", "kind", "networkName", "instanceId", "deployment", "chainId",
+    "appchainIdentitySha256", "replacementInstanceId", "replacementChainId", "status",
+    "updatedAtMillis",
+}
+expected_values = {
+    "schemaVersion": 1,
+    "kind": "yano.demo.retired-instance",
+    "networkName": sys.argv[2],
+    "instanceId": sys.argv[3],
+    "deployment": sys.argv[4],
+    "chainId": sys.argv[5],
+    "replacementInstanceId": sys.argv[6],
+    "replacementChainId": sys.argv[7],
+}
+if set(document) != expected_fields or any(
+        document.get(key) != value for key, value in expected_values.items()):
+    raise SystemExit(1)
+digest = document.get("appchainIdentitySha256")
+updated = document.get("updatedAtMillis")
+if (not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest)
+        or document.get("status") not in {"retiring", "retired"}
+        or not isinstance(updated, int) or isinstance(updated, bool) or updated < 0):
+    raise SystemExit(1)
+canonical = (json.dumps(document, ensure_ascii=False, allow_nan=False,
+                        sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+if raw != canonical:
+    raise SystemExit(1)
+print(digest)
+PY
+}
+
+write_cleanup_plan() {
+  local output="$1" digest="$2"
+  python3 - "$output" "$DEMO_NETWORK" "$INSTANCE" "$MODE" "$DEMO_CHAIN_ID" \
+    "$digest" "$CLEAN_SCOPE" "$DATA_ROOT" "$L1_ROOT" "$RUNTIME_ROOT" \
+    "$NEW_INSTANCE" "$NEW_CHAIN_ID" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+(
+    output, network, instance, deployment, chain, digest, scope,
+    data_root, l1_root, runtime_root, replacement_instance, replacement_chain,
+) = sys.argv[1:]
+document = {
+    "schemaVersion": 1,
+    "kind": "yano.demo.cleanup-plan",
+    "networkName": network,
+    "instanceId": instance,
+    "deployment": deployment,
+    "chainId": chain,
+    "appchainIdentitySha256": None if digest == "-" else digest,
+    "scope": scope,
+    "dataRoot": data_root,
+    "l1Root": l1_root,
+    "runtimeRoot": runtime_root,
+    "replacementInstanceId": replacement_instance or None,
+    "replacementChainId": replacement_chain or None,
+}
+Path(output).write_text(
+    json.dumps(document, ensure_ascii=False, allow_nan=False,
+               sort_keys=True, separators=(",", ":")) + "\n",
+    encoding="utf-8",
+)
+PY
+}
+
+require_public_l1_delete_confirmation() {
+  [ "$PROFILE_PUBLIC" = false ] || [ "$PUBLIC_L1_DELETE_CONFIRMATION" = "$DEMO_NETWORK" ] \
+    || die "public L1 deletion requires --confirm-public-l1-delete $DEMO_NETWORK"
+}
+
+cmd_clean() {
+  local digest="-" plan
+  case "$CLEAN_SCOPE" in
+    observability|reports|runtime|instance|l1|all) ;;
+    appchain|connectors)
+      die "--scope $CLEAN_SCOPE is unsafe in isolation; retire the whole effect instance with --scope instance --new-instance"
+      ;;
+    '') die "clean requires one explicit --scope";;
+    *) die "unsupported clean scope: $CLEAN_SCOPE";;
+  esac
+  prepare_cleanup_replacement
+  [ "$CLEAN_CONFIRMED" = true ] || die "clean requires --yes; nothing was changed"
+  if managed_services_running; then
+    die "managed services or an L1 lease are active; run stop before clean"
+  fi
+  if [ "$CLEAN_SCOPE" = l1 ] || [ "$CLEAN_SCOPE" = all ]; then
+    require_public_l1_delete_confirmation
+  fi
+  if [ "$CLEAN_SCOPE" != l1 ]; then
+    digest="$(cleanup_identity_digest)"
+  fi
+  temporary_file; plan="$LAST_TEMP_FILE"
+  write_cleanup_plan "$plan" "$digest"
+  python3 "$SCRIPT_DIR/tools/lifecycle.py" cleanup-execute \
+    --network-root "$NETWORK_ROOT" --runtime-allowed-root "$RUNTIME_INSTANCE_ROOT" \
+    --plan-file "$plan" --yes
+  note "Cleanup complete. Secrets were preserved under $SECRET_ROOT."
+  if [ -n "$NEW_INSTANCE" ]; then
+    note "Replacement: ./demo.sh up --network $DEMO_NETWORK --deployment $MODE --instance $NEW_INSTANCE --chain-id $NEW_CHAIN_ID"
+  fi
 }
 
 cmd_config() {
   [ "$MODE" = compose ] || die "config is a Compose-only command"
   prepare_configuration
   dc config
+  release_command_lease
+  trap cleanup_temporary_files EXIT
 }
 
 usage() {
@@ -746,21 +2419,38 @@ Usage: ./demo.sh <command> [options]
 
 Commands:
   prepare   build/stage plugins, runner and images; generate private config
-  up        start the three-node devnet, bootstrap its anchor, and probe it
+  up        start the selected three-node profile and probe it
   run       execute the evidence scenario with the same deployment-neutral runner
   probe     verify Yano, Kafka, S3 and IPFS readiness
   status    show cluster status
   stop      stop processes and preserve all data
   config    render the fully resolved Compose model
+  clean     delete one explicit stopped-instance category
 
 Options:
   --deployment compose|host default: compose (`--mode` remains an alias)
-  --network devnet          Phase 1.5 intentionally supports only devnet
+  --network <profile>       devnet (default), preview, preprod, or mainnet
   --instance <name>         isolated name: [a-z0-9][a-z0-9-]{0,31}
+  --chain-id <id>           explicit app-chain id (non-default instances derive one)
+  --data-dir <base>         bind-data base; network isolation is added below it
   --observability           start pinned Prometheus and Grafana services
+  --anchor-key-file <path>  owner-only funded anchor seed (preview/preprod)
+  --confirm-public-anchor <network>
+                            separately acknowledge preview/preprod anchor spending
+  --enable-mainnet          required for mainnet prepare/config/up/run/probe/clean
 
-There is deliberately no clean command in Phase 1.5. Granular deletion,
-network identity markers, and guarded public-network lifecycle are Phase 1.6.
+Cleanup options:
+  --scope <category>        observability, reports, runtime, instance, l1, or all
+  --yes                     mandatory deletion confirmation
+  --new-instance <name>     mandatory for instance/all retirement
+  --new-chain-id <id>       replacement id (default: evidence-chain-<new-instance>)
+  --confirm-public-l1-delete <network>
+                            second exact acknowledgement for public L1 deletion
+
+App-chain journals and connector durability are one effect-instance boundary;
+they cannot be cleaned independently. Public anchor keys never imply consent
+to spend. Mainnet forbids demo anchoring and automatic value movement. Cleanup
+always preserves secret material.
 EOF
 }
 
@@ -772,7 +2462,7 @@ case "$COMMAND" in
   status) cmd_status;;
   stop) cmd_stop;;
   config) cmd_config;;
-  clean) die "clean is intentionally deferred to Phase 1.6; stop preserves data";;
+  clean) cmd_clean;;
   help|-h|--help) usage;;
   *) usage >&2; die "unknown command: $COMMAND";;
 esac

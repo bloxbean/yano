@@ -2,14 +2,14 @@
 
 ## Status
 
-Accepted — implementation in progress; Phases 1.0--1.5 completed on 2026-07-16
+Accepted — implementation in progress; Phase 1.6 **COMPLETE** as of 2026-07-16
 
 The number is local to the `adr/app-layer` series. Root-level ADR-013 is an
 unrelated node plugin and event-gap assessment.
 
 | Milestone | Scope | Status |
 |---|---|---|
-| 1 | First-party connectors, evidence workflow, Compose/host demo, network/data lifecycle | In progress — Phases 1.0--1.5 accepted; Phase 1.6 next |
+| 1 | First-party connectors, evidence workflow, Compose/host demo, network/data lifecycle | In progress — Phase 1.6 complete; Phase 1.7 release closure pending |
 | 2 | Effect ownership, result continuation, and executor observability bridge | Planned — requires focused sub-design and minor framework changes |
 | 3 | Out-of-box deterministic composite state machine and stock component preset | Planned — requires a dedicated composition sub-ADR |
 
@@ -374,8 +374,8 @@ lifecycle rules, or cross-component invariants.
 8. Support the same demo against normally deployed or managed services.
 9. Make devnet the deterministic CI baseline and public networks opt-in by
    changing a network profile/command rather than application code.
-10. Preserve expensive L1 state while allowing app-chain and demo data to be
-    cleaned independently.
+10. Preserve expensive L1 state while treating app-chain journals and connector
+    durability as one retire-together effect-instance boundary.
 11. Supply unit, connector integration, plugin packaging, three-node, restart,
     and optional public-network verification.
 12. Follow the working v1 with explicit effect-type ownership and an optional
@@ -1717,18 +1717,42 @@ normally:
 5. configure the scenario runner with those endpoints; and
 6. execute the same scenario and verifier used by Compose.
 
-Example:
+Example (with independently provisioned connectors and owner-only credential
+files):
 
 ```bash
-YANO_URL=http://127.0.0.1:7070 \
-MINIO_URL=http://127.0.0.1:9000 \
-IPFS_API_URL=http://127.0.0.1:5001 \
-KAFKA_BOOTSTRAP=127.0.0.1:9092 \
+export DEMO_HOST_KAFKA_BOOTSTRAP_SERVERS=127.0.0.1:9092
+export DEMO_HOST_KAFKA_TARGET_ID=kafka-host-devnet-local
+export DEMO_HOST_S3_ENDPOINT=http://127.0.0.1:9000
+export DEMO_HOST_S3_TARGET_ID=s3-host-devnet-local
+export DEMO_HOST_IPFS_API_URL=http://127.0.0.1:5001
+export DEMO_HOST_IPFS_TARGET_ID=ipfs-host-devnet-local
+export DEMO_HOST_S3_RUNNER_ACCESS_KEY_FILE=/secure/runner-access-key
+export DEMO_HOST_S3_RUNNER_SECRET_KEY_FILE=/secure/runner-secret-key
+export DEMO_HOST_S3_EXECUTOR_ACCESS_KEY_FILE=/secure/executor-access-key
+export DEMO_HOST_S3_EXECUTOR_SECRET_KEY_FILE=/secure/executor-secret-key
+
+./demo.sh prepare --deployment host --network devnet
+./demo.sh up --deployment host --network devnet
 ./demo.sh run --deployment host --network devnet
+./demo.sh stop --deployment host --network devnet
 ```
 
 Normal deployment must not depend on Compose DNS names, Docker-only secret
-paths, or container-specific assumptions.
+paths, or container-specific assumptions. Generated host node overlays live
+under `.demo-secrets/networks/<network>/<instance>/host/nodes-host/`; raw
+member seeds/public keys are in the sibling `member-keys/` directory and
+cluster-owned private files are in `cluster-private-config/`. Staged artifacts
+and non-secret generated host configuration live under
+`.demo-runtime/networks/<network>/<instance>/host/`. The host cluster's L1
+state is under `.demo-data/networks/<network>/l1/host/host-cluster/`, with
+managed links to the selected instance's separate app-chain stores.
+
+Host connector locators are credential-free identity inputs. S3/IPFS accepts
+only a bounded `http`/`https` origin with explicit host and port and no
+user-info, path, query, or fragment. Kafka accepts a bounded list of plain
+`host:port` entries and rejects credential/URL syntax. Credentials remain in
+separate owner-only files and never enter the immutable app-chain marker.
 
 ### 11.4 Executor topology and failover
 
@@ -1779,27 +1803,34 @@ preprod  opt-in public test-network/release profile
 mainnet  guarded configuration/startup profile; no automatic value-moving test
 ```
 
-The command line and environment forms are equivalent:
+The supported entry point is the guarded launcher:
 
 ```bash
 ./demo.sh up --deployment compose --network preview
-
-DEMO_NETWORK=preview \
-docker compose --env-file config/networks/preview.env up -d
 ```
+
+Operators may set the documented `DEMO_*` inputs instead of their equivalent
+launcher flags, but must still invoke `demo.sh`. Direct `docker compose` use
+with a public profile is unsupported because it bypasses immutable identity,
+generated-key, shared-L1 lease, and explicit spending-consent checks.
 
 ### 12.2 Profile contents
 
-Version-controlled network profiles contain only non-secret data:
+Version-controlled network profiles contain only these non-secret controls:
 
 - network name and protocol magic;
-- genesis and topology/relay selection;
-- expected genesis/config fingerprints;
-- L1 stability/finality settings;
-- app-chain anchor policy and default cadence;
-- explorer URL template;
-- default host port base; and
-- safe demo timeouts appropriate to the network.
+- public/mainnet classification;
+- devnet automatic-faucet policy;
+- default/allowed app-chain anchor policy, block cadence, and maximum time
+  interval;
+- L1 producer versus public-relay mode;
+- producer warm-up; and
+- bounded public initial-sync timeout.
+
+The launcher selects the repository's named Yano network configuration and
+commits the actual genesis/config file fingerprints into the immutable network
+marker. Host ports and connector settings remain explicit common/demo inputs,
+not hidden network-profile behavior.
 
 Keys, mnemonics, API tokens, object-store credentials, Kafka credentials, and
 private TLS material are supplied separately.
@@ -1825,8 +1856,8 @@ Preview/preprod use requires:
 - suitable public relays, a configured local upstream, or a prepared
   network-matched L1 state directory;
 - sufficient sync time and disk;
-- an explicitly provided funded anchor wallet when script anchoring is
-  enabled;
+- an explicitly provided funded, owner-only anchor seed file plus
+  `--confirm-public-anchor <network>` when script anchoring is enabled;
 - an explicitly provided result/effect signer policy; and
 - public-network-safe TLS/auth configuration for externally reachable
   services.
@@ -1836,6 +1867,13 @@ startup, anchor wallet funds, stable anchor confirmation, or an external
 connector. It must not display a generic hanging `node 0 ...` message for all
 failure classes.
 
+The implemented preview/preprod anchor profile uses a 30-block cadence with a
+60-minute maximum interval, so a quiet chain does not defer publication
+indefinitely. `WAIT_L1_SYNC` reports every member's local/remote tip until all
+three declare initial sync complete. `WAIT_ANCHOR_FUNDS` reports the wallet
+address and waits for a suitable pure-ADA UTxO before bootstrap. Anchor identity
+convergence is separately reported as `WAIT_ANCHOR_ADOPTION`.
+
 Mainnet additionally requires an explicit command acknowledgement such as:
 
 ```bash
@@ -1843,38 +1881,46 @@ Mainnet additionally requires an explicit command acknowledgement such as:
 ```
 
 No sample/default funded mainnet key is shipped. Until ADR-010.2 is complete,
-the mainnet profile disables value-moving Cardano effects even if the generic
-connector demo is otherwise configured.
+the mainnet profile forbids demo anchoring and disables value-moving Cardano
+effects even if the generic connector demo is otherwise configured. Merely
+providing an anchor key never authorizes public-network spending.
 
 ## 13. Persistent data layout and identity safety
 
 ### 13.1 Default bind-mounted layout
 
-Compose uses a project-local, gitignored bind-mount root by default:
+The launcher uses project-local, gitignored data, runtime, and secret roots by
+default:
 
 ```text
 app/appchain-effects-demo/.demo-data/
-├── devnet/
-│   ├── network-identity.json
-│   ├── l1/
-│   │   ├── node0/
-│   │   ├── node1/
-│   │   └── node2/
-│   └── instances/
-│       └── default/
-│           ├── appchain-identity.json
-│           ├── anchor/
-│           ├── appchain/
-│           │   ├── node0/
-│           │   ├── node1/
-│           │   └── node2/
-│           ├── kafka/
-│           ├── minio/
-│           ├── ipfs/
-│           └── observability/
-├── preview/
-├── preprod/
-└── mainnet/
+└── networks/<network>/
+    ├── network-identity.json
+    ├── l1/
+    │   ├── shared/                         # generated devnet genesis/timestamp
+    │   └── <deployment>/                   # shared sequential L1 store
+    │       ├── node0/ node1/ node2/        # Compose
+    │       ├── host-cluster/               # host mode
+    │       └── demo-owner.json             # active owner lease
+    ├── instances/<instance>/<deployment>/
+    │   ├── appchain-identity.json
+    │   ├── anchor-binding.json             # after anchor adoption
+    │   ├── app-chain/node0/ node1/ node2/
+    │   ├── connectors/kafka/ minio/ ipfs/
+    │   ├── observability/prometheus/ grafana/
+    │   ├── logs/node0/ node1/ node2/
+    │   └── reports/
+    ├── retired/<deployment>/
+    └── reservations/<deployment>/
+
+app/appchain-effects-demo/.demo-runtime/
+└── networks/<network>/<instance>/<deployment>/
+
+app/appchain-effects-demo/.demo-secrets/
+└── networks/<network>/<instance>/<deployment>/
+    ├── member-keys/
+    ├── nodes-<deployment>/
+    └── cluster-private-config/             # host mode
 ```
 
 Operators may move the root, especially for large public-network state:
@@ -1882,12 +1928,19 @@ Operators may move the root, especially for large public-network state:
 ```bash
 ./demo.sh up --network preprod \
   --instance default \
-  --data-dir /Volumes/yano-demo/preprod
+  --data-dir /Volumes/yano-demo
 ```
 
-The L1 store is reusable by several sequential demo instances on the same
-network. App-chain, anchor-binding, and connector data remain instance-scoped.
-Secrets live outside this cleanup-managed tree.
+The launcher adds `networks/<network>` below `--data-dir`. The L1 store is
+reusable by several sequential demo instances on the same network and
+deployment. An immutable lease permits only one such instance at a time;
+Compose and host have separate L1 stores. App-chain, anchor-binding, connector,
+report, and observability data remain instance/deployment-scoped. Runtime and
+secret roots use the same network/instance/deployment hierarchy but are not
+nested under the cleanup-managed data root. The resolved data, runtime, and
+secret base roots must be pairwise disjoint; equality, parent/child overlap,
+and symlink-resolved overlap fail before preparation. Every secret path is also
+rejected if it resolves below the data or runtime root.
 
 ### 13.2 Identity marker
 
@@ -1903,21 +1956,35 @@ demo layout version
 ```
 
 It also creates or validates `appchain-identity.json` for the selected
-instance:
+instance/deployment:
 
 ```text
 schemaVersion
-instance id
-chain ids and app-chain genesis/profile fingerprint
-member-set/configuration digest
-anchor mode
-anchor script/thread-NFT identity and last adopted height, when bootstrapped
+network-marker digest and network name
+instance, deployment, project, and chain ids
+state-machine profile and effect-emission versions
+ordered member keys, threshold, proposer, and result signers
+effect storage gate and anchor requirement
+anchor enablement, cadence, and signer fingerprint
+connector target ids, locators, and profiles
 ```
 
-If an existing marker differs from the selected profile, startup fails with a
-specific diagnostic and the exact safe cleanup/migration commands. Missing or
-inconsistent per-node state must not be silently adopted under another
-network or genesis.
+After script bootstrap/adoption, the separate private
+`anchor-binding.json` records the immutable thread policy, script hash/address,
+chain/instance identity, and one height observed identically on all three
+members. Preflight is strict: the binding must be a canonical, owner-only,
+single-link regular file with the exact schema and selected
+network/instance/deployment/chain identity. If it exists, anchoring must be
+enabled and all three member histories must exist. If retained history belongs
+to an anchor-enabled profile, a missing binding fails closed. Startup writes or
+updates the binding only after all three members converge on one valid thread
+policy, script hash/address, and adopted height.
+
+If an existing identity marker or binding differs from the selected profile,
+startup fails before node launch and directs the operator to restore that exact
+profile, use a different data root, or choose a new instance as applicable.
+Missing or inconsistent per-node state is not silently adopted under another
+network, genesis, membership, connector target, or anchor policy.
 
 The marker is an operator-safety guard, not a security signature. Genesis and
 runtime validation remain authoritative.
@@ -1943,8 +2010,10 @@ anchor binding. Resetting an anchored app chain must choose one explicit path:
 2. create a new instance/chain identity and bootstrap a new anchor while
    preserving the already-synchronized L1 database.
 
-Kafka, MinIO, and IPFS data are also separated so connector scenarios can be
-replayed without deleting either chain state.
+Kafka, MinIO, and IPFS remain physically separated for backup and operation,
+but their durable acknowledgements and the app-chain effect journal are one
+recovery boundary. Deleting only one side can lose reconciliation evidence or
+repeat externally visible work, so neither side has an isolated cleanup scope.
 
 ## 14. Stop, reset, and cleanup
 
@@ -1954,22 +2023,27 @@ replayed without deleting either chain state.
 # Stop processes/containers; preserve everything
 ./demo.sh stop --network devnet --instance default
 
-# Delete app-chain databases only when restoring/replaying the same identity
-./demo.sh clean --network devnet --instance default --appchain \
-  --restore-from /path/to/snapshot-or-history
+# Delete one safely disposable category (all cleanup commands require --yes)
+./demo.sh clean --network devnet --instance default \
+  --scope observability --yes
+./demo.sh clean --network devnet --instance default \
+  --scope reports --yes
+./demo.sh clean --network devnet --instance default \
+  --scope runtime --yes
 
-# Reset an anchored demo safely: remove instance state, preserve L1, and use a
-# new chain/anchor identity on the next start
-./demo.sh clean --network devnet --instance default --demo-state --new-instance next
+# Retire the complete effect instance, delete its data/runtime, preserve L1 and
+# secrets, and reserve a distinct replacement instance/chain identity.
+./demo.sh clean --network devnet --instance default --scope instance \
+  --new-instance next --new-chain-id evidence-chain-next --yes
+./demo.sh up --network devnet --instance next \
+  --chain-id evidence-chain-next
 
-# Delete Kafka, MinIO, IPFS, and demo projection data
-./demo.sh clean --network devnet --instance default --connectors
+# Explicitly delete shared L1 only after every attached instance is retired
+./demo.sh clean --network devnet --instance default --scope l1 --yes
 
-# Explicitly delete shared L1 state
-./demo.sh clean --network devnet --l1
-
-# Delete all non-secret data for the selected network
-./demo.sh clean --network devnet --all
+# Retire instance data/runtime and delete otherwise-unattached L1; secrets remain
+./demo.sh clean --network devnet --instance default --scope all \
+  --new-instance next --yes
 ```
 
 `docker compose down` stops services and preserves bind-mounted data. The
@@ -1978,29 +2052,48 @@ is too coarse and does not uniformly govern bind mounts.
 
 ### 14.2 Cleanup safety invariants
 
-Cleanup:
+Supported scopes are `observability`, `reports`, `runtime`, `instance`, `l1`,
+and `all`. `appchain` and `connectors` are rejected as unsafe in isolation,
+including for an unanchored instance. Cleanup:
 
 - resolves and prints the network, selected categories, and exact paths;
 - refuses an empty path, filesystem root, home directory, repository root, or
   path outside the validated demo-data root;
 - does not follow a symlink outside that root;
-- requires interactive confirmation unless `--yes` is supplied;
-- refuses to act while managed services are running unless `--force` is
-  explicitly selected and safely implemented;
+- always requires `--yes` and otherwise performs no deletion;
+- refuses to act while a managed process/container or shared-L1 lease is
+  active;
 - never deletes the secrets directory;
 - never deletes another network profile's directory; and
 - requires an additional explicit acknowledgement before removing preview,
   preprod, or mainnet L1 state.
 
-In addition, cleanup refuses to delete an anchored instance's complete
-app-chain history while retaining and reusing its old anchor binding unless a
-validated restore/replay source is supplied. A new-instance reset archives or
-removes the old instance binding and creates new chain ids before anchor
-bootstrap; it does not mutate the shared L1 genesis or synchronized chain
-state.
+`instance` and `all` require a distinct `--new-instance` and replacement chain
+id (derived as `evidence-chain-<new-instance>` unless explicitly supplied).
+Retirement is crash-resumable: before deletion, an atomically written and
+fsynced `retiring` fence blocks reuse of the old identity and a separate durable
+reservation binds the replacement. Re-running the exact command validates and
+resumes that plan; after deletion the record atomically advances to `retired`.
+That retirement preserves all old secrets and, for `instance`, the shared L1
+store.
+
+Plain `l1` refuses deletion while *any* retained app-chain instance remains
+attached to that network/deployment. `all` first requires that no retained
+sibling is attached, retires the selected instance, verifies no attachment
+remains, and only then deletes L1. Both require the additional exact
+`--confirm-public-l1-delete <network>` acknowledgement on preview, preprod, or
+mainnet and still preserve secrets.
+
+An `up` failure after lease acquisition invokes bounded startup rollback for
+the partial Compose/host deployment. The launcher releases the shared-L1 lease
+only after it proves the partial services stopped. If shutdown cannot be
+verified, it keeps the lease as a safety fence and directs the operator to run
+`stop` with the identical profile.
 
 Tests use temporary directories and sentinels to prove that every cleanup
-mode deletes exactly its declared category and nothing else.
+mode deletes exactly its declared category and nothing else, retirement resumes
+after each durable boundary, L1 refuses retained attachments, and uncertain
+startup rollback never drops its lease.
 
 ## 15. Configuration examples
 
@@ -2695,18 +2788,118 @@ Recorded Phase 1.5 evidence:
   2,075,652,138 CPU and 8,205,357 memory units, below the mainnet
   10,000,000,000/14,000,000 limits that define the v1 membership ceiling.
 
-Phase 1.5 proves restart recovery but does not claim the complete guarded
-lifecycle and granular-cleanup acceptance, network identity markers,
-preview/preprod execution, guarded mainnet validation, the complete connector
-fault matrix, or final release review. Those remain explicit Phase 1.6/1.7
+At the Phase 1.5 checkpoint, restart recovery was proven but the guarded
+lifecycle, identity-marker, public-profile, complete connector fault-matrix,
+and final-release work was intentionally left to Phases 1.6/1.7. The Phase 1.6
+completed implementation is recorded below; connector fault closure, live
+public-network release evidence, and final independent review remain Phase 1.7
 work.
 
-#### Phase 1.6 — Persistence, cleanup, and public profiles
+#### Phase 1.6 — Persistence, cleanup, and public profiles (**COMPLETE**)
 
-- Add network identity marker and fail-fast validation.
-- Add separated bind mounts and safe granular cleanup.
-- Complete devnet CI and opt-in preview/preprod smoke flows.
-- Validate guarded mainnet configuration without automatic value movement.
+Implementation and review record as of 2026-07-16:
+
+- The launcher atomically installs and validates the network marker, then uses
+  one network-locked `deployment-acquire` operation to authorize the complete
+  instance identity, publish its marker, and acquire its non-reentrant L1
+  lease. The markers bind actual genesis/config fingerprints, network magic,
+  generated membership, state-machine/emission profile, effect/anchor policy,
+  and connector target identities. Retained identity mismatches fail closed.
+- Data now follows
+  `networks/<network>/instances/<instance>/<deployment>`. L1 stores are
+  separately shared by network/deployment and protected by an immutable
+  single-owner lease, so sequential instances can retain an expensive L1 sync
+  without sharing app-chain or connector state. Runtime and secrets use the
+  same network/instance/deployment partition under pairwise-disjoint roots;
+  root overlap and secret placement below cleanup-managed roots fail before
+  preparation. `prepare` and `config` hold and then release the same lease for
+  their complete mutation/build window; `up` retains it until a proven stop.
+  A separate network/deployment operation lock serializes each complete
+  `prepare`/`config`/`up`/`run`/`probe`/`stop`/`clean` command. Its detached
+  watchdog retains the same flock across supervisor crashes, confirms startup
+  by pipe handshake, and removes failed command groups with bounded TERM→KILL
+  before releasing serialization; successful long-lived services do not
+  inherit the lock descriptor.
+  Active markers, retiring/retired records, and reservations form one strict
+  claim snapshot. Chain IDs are network-wide permanent claims, and a losing
+  concurrent claimant leaves no partial deployment directory.
+- Three-member Ed25519 material and the devnet anchor key are generated into
+  owner-only files and revalidated on reuse. Generated secrets use stdin-only,
+  atomic create-only publication with deterministic crash recovery; configured
+  hexadecimal anchor seeds are normalized before rendering and fingerprinting.
+  Host mode passes key directories
+  and an optional anchor-key path to `cluster.sh`; private node overlays and
+  cluster configuration remain outside the data tree. Host connector locators
+  accept only bounded credential-free origins/host-port lists; credentials are
+  separate file inputs and never enter an identity marker.
+- `status` and `stop` are non-mutating for absent instances. `clean` requires
+  an exact `--scope` plus `--yes`, refuses active processes/leases, and enforces
+  exact path/symlink boundaries. Only `observability`, `reports`, `runtime`,
+  `instance`, `l1`, and `all` are supported; isolated `appchain` and
+  `connectors` cleanup are rejected because both form one effect-recovery
+  boundary.
+  The host evidence UI uses a durable gated-launch fence and canonical process
+  record bound to its PID, kernel start token, owner, requested command, and
+  kernel-observed exact argv. Stop, rollback, and cleanup reconcile every
+  recognized publication crash boundary and never signal or discard an
+  untrusted/reused PID.
+- `instance`/`all` retirement requires a different replacement instance and
+  chain identity. An fsynced `retiring` fence and replacement reservation are
+  installed before deletion; rerunning the exact command resumes after a crash
+  and atomically completes the record as `retired`. Secrets are preserved.
+  Plain `l1` refuses every retained app-chain attachment, while `all` refuses
+  retained siblings—including incomplete `retiring` siblings—before retiring
+  the selected instance. Public L1 deletion has a second exact-network
+  acknowledgement. One central cleanup transaction holds the network lock
+  across exact-plan validation, retirement/reservation, attachment and host-link
+  validation, deterministic quarantine deletion, fsync, and completion. A
+  crash resumes only that byte-identical plan; another start or cleanup remains
+  fenced.
+- Anchor binding is strict: retained anchor-enabled history requires a
+  canonical private binding for the exact instance and all three histories,
+  and adoption requires all three members to agree on script/thread identity
+  and height. Failed startup releases its L1 lease only after partial services
+  are proven stopped; otherwise the lease remains as a recovery fence.
+- Preview and preprod profiles run public relays, default to unanchored
+  `APP_FINAL` effects, and never auto-fund. Optional script anchoring requires
+  both an operator-funded owner-only key and
+  `--confirm-public-anchor <network>`, uses a 30-block cadence, and has a
+  60-minute maximum interval. `WAIT_L1_SYNC`, `WAIT_ANCHOR_FUNDS`, and
+  `WAIT_ANCHOR_ADOPTION` distinguish public sync, funding, and convergence.
+  Mainnet configuration/startup requires `--enable-mainnet`, forbids demo
+  anchoring, and renders no automatic value-moving path. Direct public-profile
+  `docker compose` invocation is not supported because it bypasses these
+  guards.
+- Focused offline validation recorded so far on 2026-07-16 includes:
+  `lifecycle-tool-test.sh`, `operation-lock-test.sh`, `managed-process-test.sh`,
+  `key-material-test.sh`, `secret-file-test.sh`, `compose-contract.sh`, and
+  `demo-launcher-test.sh`; the cluster-side `test-private-key-inputs.sh`,
+  `test-node-config-overlay.sh`, `test-cluster-state-safety.sh`, and
+  `test-cluster-identity-lifecycle.sh` also passed. These suites cover
+  network-wide concurrent same-chain claims, clean lease losers, command-lifetime
+  serialization with crash cleanup and lock-FD non-leak, durable host-UI
+  launch fencing with exact PID/start-token/argv shutdown, concurrent
+  marker/key/secret creation, atomic secret publication and crash-artifact
+  recovery, tamper/mismatch and permission rejection, disjoint roots,
+  strict anchor binding, lease ownership and rollback, stopped/orphan Compose
+  detection, exact cleanup boundaries, central-transaction crash recovery,
+  incomplete-retirement attachment refusal, public-anchor double
+  opt-in/cadence/funding shape, guarded mainnet rendering, non-mutating
+  status/stop, credential-free host locators, host key/config inputs, durable
+  cluster identity publication, exact PID shutdown, and resolved Compose
+  configuration.
+- Independent architecture/maintainability and security/operations reviews
+  both passed on the final tree with no remaining blocker or high-severity
+  finding. The reviewers independently reran the lifecycle, process, launcher,
+  Compose, connector-input, and cluster durability suites and confirmed that
+  Phase 1.6 introduces no production core/runtime changes.
+
+The preview/preprod *live* sync, anchor, connector, and restart smoke flows are
+available only as opt-in operator runs and were **not run or claimed** in this
+Phase 1.6 evidence. Mainnet evidence is configuration/guard validation only;
+no mainnet node was started and no value was moved. Milestone 1 therefore
+remains In progress. Phase 1.6 is **COMPLETE**; Phase 1.7 and its recorded
+release matrix follow afterward.
 
 #### Phase 1.7 — Final review and release closure
 
@@ -3052,8 +3245,8 @@ without claiming that configuration invents missing domain rules.
   without changing the business precondition.
 - Compose gives a fast local experience while normal deployment proves real
   plugin portability.
-- Network isolation and granular cleanup prevent genesis mismatch and needless
-  public-network resync.
+- Network isolation and guarded whole-instance retirement prevent genesis
+  mismatch while preserving reusable public-network L1 sync.
 - DPP, oracle, and document/evidence applications gain a shared connector
   foundation.
 - Explicit effect ownership removes classpath-order ambiguity after Milestone
@@ -3107,8 +3300,9 @@ Milestone 1 may move to Accepted only when all of the following are true:
    deterministic state agreement, proof, Cardano anchor, one exact active type
    partition, and an explicitly fenced failover with no overlapping writer.
 8. The identical scenario passes against Compose and normal deployment.
-9. Stop/restart preserves data and all granular cleanup modes pass
-   path/symlink/sibling-network safety tests.
+9. Stop/restart preserves data and every supported cleanup/retirement scope
+   passes path, symlink, crash-resume, retained-attachment, and sibling-network
+   safety tests; app-chain and connector durability cannot be split.
 10. Network identity mismatches fail before node launch with actionable
     diagnostics.
 11. Preview and preprod profiles are documented and have recorded opt-in smoke

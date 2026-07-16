@@ -46,6 +46,8 @@ YANO_NATIVE=/downloads/yano YANO_HOME=/data/yano ./cluster.sh start 3
 | `YANO_NATIVE` | explicit native-binary path | auto-detect under `YANO_HOME` |
 | `YANO_CLUSTER_API_KEY` | full key for privileged local-cluster operations | `yano-local-cluster-full-key` |
 | `YANO_CLUSTER_NODE_CONFIG_DIR` | optional directory of private per-node configuration overlays | unset |
+| `YANO_CLUSTER_DEVNET_GENESIS_FILE` | optional pre-generated shared devnet Shelley genesis | unset |
+| `YANO_CLUSTER_APPCHAIN_IDENTITY_MARKER` | orchestrator-owned app-chain identity marker when app-chain state is stored separately from L1 | unset |
 
 `loadtest.sh` and `soaktest.sh` need **no binary at all** — they only hit a
 running cluster's HTTP ports. They target the public READ/SUBMIT policy used by
@@ -245,6 +247,60 @@ Deterministic demo identities: node *i* uses the 32-byte seed `(i+1)` repeated,
 and its member public key is derived from it (`./cluster.sh keys N` prints them).
 These are **demo keys** — do not use them for anything real.
 
+For operator-provisioned identities, set `YANO_CLUSTER_MEMBER_KEY_DIR` to a
+launcher-owned `chmod 700` directory containing `node0.seed`, `node0.public`,
+... through the requested node count. Each file must be a regular non-symlink
+`chmod 400`/`600` file containing exactly one 64-hex-character value. The
+launcher validates and reads the complete set before creating cluster state,
+proves each public key derives from its paired Ed25519 seed, and rejects
+duplicate members. Supplied private seeds are never placed in the Java/native
+argument vector: the launcher writes per-node `chmod 600` config overlays and
+passes only their file URIs. Set `YANO_CLUSTER_PRIVATE_CONFIG_DIR` to an
+owner-only directory outside the cluster data tree for those generated files.
+Standalone use defaults to `<data-dir>/private-config`, which `clean` removes.
+The `keys` command intentionally continues to print only the known demo keys,
+so it cannot accidentally disclose keys from that directory.
+
+For an orchestrated devnet that must share one network identity with companion
+processes, set `YANO_CLUSTER_DEVNET_GENESIS_FILE` to the pre-generated Shelley
+genesis. The launcher accepts only a launcher-owned, readable regular
+non-symlink file containing at most 1 MiB of valid UTF-8 JSON with unique keys;
+neither the file nor its launcher-owned parent may be writable by other users.
+On a fresh cluster it copies those exact bytes to node 0, and followers receive
+the same identity. The supplied `systemStart` is passed to the producer as an
+explicit timestamp, so the runtime does not rewrite this orchestrator-owned
+genesis. A retained copy must remain byte-identical or startup fails closed.
+This option is valid only for `devnet`; when it is unset, the standalone
+launcher's existing `epochLength = 500` and persisted `systemStart` behavior
+remain unchanged.
+
+### L1 and app-chain identity markers
+
+The launcher treats L1 and app-chain state as separate identities:
+
+- `<data-dir>/cluster-identity.json` binds only the Cardano network and, for an
+  orchestrated devnet, the supplied genesis digest. It can remain unchanged
+  while different app-chain instances attach sequentially to the same stopped
+  host L1 state.
+- Standalone use also writes
+  `<data-dir>/cluster-appchain-identity.json`, binding chain IDs, membership,
+  threshold, proposer, and anchor signer. A restart with different keys or
+  profile is rejected before a node starts.
+- An orchestrator that stores app-chain state outside the L1 tree may set
+  `YANO_CLUSTER_APPCHAIN_IDENTITY_MARKER` to its canonical
+  `yano.demo.appchain-identity` JSON marker. The file must be launcher-owned,
+  non-symlink, single-linked, bounded, and mode `0400` or `0600`; its chain,
+  membership, quorum, proposer, network, and anchor identity must match the
+  selected cluster profile. In this mode the launcher validates the external
+  marker and does not create a standalone app-chain marker in the shared L1
+  directory.
+
+An external marker cannot replace a standalone marker that already exists.
+Use the original standalone profile or a different data directory instead.
+Before attaching another orchestrated instance to shared L1 state, stop the
+current instance and rebind its separately managed app-chain storage; concurrent
+attachments are not supported.
+
 | node | preferred HTTP | preferred n2n (server) | role (devnet) |
 |------|------|--------------|----------------|
 | 0 | 7070 | 13337 | L1 block producer + member (fixed proposer) |
@@ -261,6 +317,13 @@ are strict and fail early when busy or overlapping.
 The data directory defaults to `/tmp/yano-appchain-cluster`. When using a
 custom `--data-dir`, pass it to later commands so they can locate that
 cluster's saved ports.
+
+`cluster.env` and PID metadata are strictly parsed data files; they are never
+sourced as shell code. `status` and `stop` accept a PID only when its record is
+launcher-owned and bounded and the live process has the recorded start token,
+owner UID, storage path, and node ports. Stale, malformed, reused, or unrelated
+PIDs are reported but never signalled. Shutdown escalation targets that same
+validated process only; the launcher never kills an arbitrary port listener.
 
 ## Relay to a public network
 
@@ -311,6 +374,20 @@ export YANO_CLUSTER_API_KEY="$(openssl rand -hex 32)"  # recommended API key ove
 # metadata mode: anchors start automatically once funded
 # script mode:   ./cluster.sh anchor-bootstrap <chain>   (one-time, per chain)
 ```
+
+To keep the anchor seed out of shell history, place the single 64-hex value in
+a launcher-owned `chmod 400`/`600` regular non-symlink file under an owner-only
+directory, then use:
+
+```bash
+YANO_CLUSTER_ANCHOR_KEY_FILE=/private/yano/anchor.seed \
+  ./cluster.sh start 3 --network preprod --anchor-mode metadata
+```
+
+The file replaces `--anchor-key`; specifying both fails closed. Merely setting
+the file does not enable anchoring—`--anchor` or `--anchor-mode` is still
+required. Like member seeds, a file-supplied anchor seed is carried through the
+generated private overlay rather than a process argument.
 
 The anchor wallet is a raw 32-byte Ed25519 seed and its **enterprise address**
 (printed at start). A CIP-1852 wallet mnemonic (Eternl/Lace/devkit) can NOT be
@@ -365,12 +442,13 @@ Start options: `--network <net>`, `--jar` | `--native`, `--threshold <t>`,
 - **Ports busy** — default ports are relocated automatically. An explicitly
   requested range fails instead, because silently changing an operator choice
   would make automation target the wrong endpoint.
-- **Retained devnet restart** — `stop` keeps both RocksDB and each node's exact
-  shifted `shelley-genesis.json`; a later `start` preserves and reuses them.
-  Those exact genesis bytes are part of the devnet identity. If retained state
-  is missing that file, or a follower's copy differs from node 0, the launcher
-  refuses to overwrite it: restore the original file or use `clean` for
-  disposable state.
+- **Retained devnet restart** — in standalone mode, `stop` keeps both RocksDB
+  and each node's shifted `shelley-genesis.json`. With
+  `YANO_CLUSTER_DEVNET_GENESIS_FILE`, it instead keeps the exact supplied bytes
+  and explicit `systemStart`. A later `start` preserves the selected behavior.
+  If retained state is missing that file, a supplied source differs, or a
+  follower's copy differs from node 0, the launcher refuses to overwrite it:
+  restore the original file or use `clean` for disposable state.
 - Everything lives under `--data-dir` (logs, per-node chainstate, genesis
   copies); `./cluster.sh clean` wipes it. Stop the cluster before manually
   removing its directory so live processes do not become orphaned.
