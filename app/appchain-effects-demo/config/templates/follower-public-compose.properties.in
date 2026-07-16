@@ -1,0 +1,2 @@
+# Public-network members independently follow configured upstream relays.
+yano.app-chain.chains[0].effects.executor.enabled=false

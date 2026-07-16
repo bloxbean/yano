@@ -1,6 +1,6 @@
 demo.chain-id=@CHAIN_ID@
 demo.yano.urls=http://yano-0:7070/api/v1,http://yano-1:7070/api/v1,http://yano-2:7070/api/v1
-demo.yano.member-keys=8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c,8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394,ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1
+demo.yano.member-keys=@MEMBER_KEYS@
 demo.yano.threshold=2
 demo.sample-file=/opt/yano-demo/samples/inspection-certificate.json
 demo.report-directory=/var/lib/yano-demo/reports
@@ -29,4 +29,4 @@ kafka.topic-alias=evidence-ready
 kafka.physical-topic=evidence.available.v1
 scenario.timeout-seconds=@TIMEOUT_SECONDS@
 scenario.poll-interval-millis=@POLL_INTERVAL_MILLIS@
-scenario.require-anchor=true
+scenario.require-anchor=@REQUIRE_ANCHOR@

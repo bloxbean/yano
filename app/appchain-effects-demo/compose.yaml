@@ -46,7 +46,7 @@ x-yano: &yano
   <<: *service-security
   restart: unless-stopped
   environment:
-    YANO_PROFILE: devnet
+    YANO_PROFILE: ${DEMO_YANO_PROFILE:?}
     QUARKUS_CONFIG_LOCATIONS: file:/run/demo/node.properties
     JAVA_OPTS: -XX:MaxRAMPercentage=75
   tmpfs:
@@ -348,7 +348,7 @@ services:
     user: ${DEMO_HOST_UID:?}:${DEMO_HOST_GID:?}
     <<: *service-security
     entrypoint: ["/bin/sh", "-ec"]
-    command: ["sleep 25"]
+    command: ["sleep ${DEMO_LEADER_WARMUP_SECONDS:?}"]
     tmpfs:
       - /tmp:size=8m,mode=1777
     depends_on:

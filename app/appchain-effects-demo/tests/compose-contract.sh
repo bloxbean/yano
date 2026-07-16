@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 DEMO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/yano-compose-contract.XXXXXX")"
+TMP="$(cd "$TMP" && pwd -P)"
 trap 'rm -rf "$TMP"' EXIT
 
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
@@ -16,10 +17,24 @@ export DEMO_SECRET_ROOT="$TMP/secrets"
 export DEMO_RUNTIME_ROOT="$TMP/runtime"
 
 "$DEMO_DIR/demo.sh" config --instance contract --observability >/dev/null
-ENV_FILE="$TMP/runtime/devnet/contract/compose.env"
+ENV_FILE="$TMP/runtime/networks/devnet/contract/compose/compose.env"
 JSON="$TMP/compose.json"
 docker compose --env-file "$ENV_FILE" -f "$DEMO_DIR/compose.yaml" \
   --profile observability --profile tools config --format json > "$JSON"
+
+PROJECT_NAME="$(sed -n 's/^DEMO_PROJECT_NAME=//p' "$ENV_FILE")"
+PROJECT_SUFFIX="${PROJECT_NAME##*-}"
+[[ "$PROJECT_SUFFIX" =~ ^[0-9a-f]{8}$ ]] \
+  || fail "Compose project lacks a bounded path-derived suffix"
+[ "$PROJECT_NAME" = "yano-effects-devnet-contract-$PROJECT_SUFFIX" ] \
+  || fail "Compose project is not scoped by network, instance and data path"
+jq -e --arg project "$PROJECT_NAME" '
+  .name == $project
+  and .services."yano-0".environment.YANO_PROFILE == "devnet"
+  and .services."yano-1".environment.YANO_PROFILE == "devnet"
+  and .services."yano-2".environment.YANO_PROFILE == "devnet"
+  and .services."leader-warmup".command == ["sleep 25"]
+' "$JSON" >/dev/null || fail "Compose profile/warmup/project propagation is incorrect"
 
 jq -e '
   . as $root
@@ -103,6 +118,22 @@ jq -e '
       | any(.target == "/app/chainstate/app-chain")))
 ' "$JSON" >/dev/null || fail "L1 and app-chain stores are not separate nested mounts"
 
+EXPECTED_L1="$TMP/data/networks/devnet/l1/compose"
+EXPECTED_APP="$TMP/data/networks/devnet/instances/contract/compose/app-chain"
+EXPECTED_GENESIS="$TMP/data/networks/devnet/l1/shared/shelley-genesis.json"
+jq -e --arg l1 "$EXPECTED_L1" --arg app "$EXPECTED_APP" --arg genesis "$EXPECTED_GENESIS" '
+  . as $root
+  | all([0,1,2][]; . as $i
+      | ($i | tostring) as $n
+      | ($root.services["yano-" + $n].volumes
+          | any(.source == ($l1 + "/node" + $n) and .target == "/app/chainstate"))
+        and ($root.services["yano-" + $n].volumes
+          | any(.source == ($app + "/node" + $n) and .target == "/app/chainstate/app-chain"))
+        and ($root.services["yano-" + $n].volumes
+          | any(.source == $genesis and .target == "/run/demo/shelley-genesis.json"
+              and .read_only == true)))
+' "$JSON" >/dev/null || fail "network/shared-L1/instance app-chain bind layout is incorrect"
+
 jq -e '
   .services.scenario.profiles == ["tools"]
   and .services.prometheus.profiles == ["observability"]
@@ -129,9 +160,18 @@ jq -e '
       [.volumes[] | select(.target == "/run/secrets/yano-api-key")] | length == 0)
 ' "$JSON" >/dev/null || fail "scenario tooling received the full Yano admin key"
 
-NODE_DIR="$TMP/secrets/devnet/contract/nodes-compose"
+NODE_DIR="$TMP/secrets/networks/devnet/contract/compose/nodes-compose"
 [ "$(grep -hF 'effects.executor.enabled=true' "$NODE_DIR"/*.properties | wc -l | tr -d ' ')" -eq 1 ] \
   || fail "exactly one node must own the executor"
+grep -Fxq 'yano.app-chain.chains[0].anchor.max-interval-minutes=60' \
+  "$NODE_DIR/node0.properties" \
+  || fail "Compose anchor does not use the network profile safety interval"
+jq -e '
+  .anchor.enabled == true
+  and .anchor.everyBlocks == 1
+  and .anchor.maxIntervalMinutes == 60
+' "$TMP/data/networks/devnet/instances/contract/compose/appchain-identity.json" >/dev/null \
+  || fail "Compose app-chain identity does not pin its anchor cadence"
 grep -Fq 'objectstore-s3.targets.archive.endpoint=http://172.30.13.10:9000' \
   "$NODE_DIR/node0.properties" || fail "node 0 lacks numeric MinIO endpoint"
 grep -Fq 'ipfs.targets.local.api-url=http://172.30.13.11:5001' \
@@ -141,7 +181,7 @@ if grep -Eq 'effects\.executors\.(kafka|objectstore-s3|ipfs)' \
   fail "a follower received connector configuration"
 fi
 
-RUNNER="$TMP/runtime/devnet/contract/runner-compose.properties"
+RUNNER="$TMP/runtime/networks/devnet/contract/compose/runner-compose.properties"
 grep -Fq '/run/secrets/minio-runner-access-key' "$RUNNER" \
   || fail "runner does not use its dedicated S3 identity"
 if grep -Eq '^ui\.' "$RUNNER"; then
@@ -155,9 +195,9 @@ grep -Fq 'minio-runner' "$NODE_DIR/node0.properties" \
   && fail "executor node received runner credentials"
 
 for spec in \
-  's3.target-id|objectstore-s3.targets.archive.target-id|s3-compose-devnet-contract' \
-  'ipfs.target-id|ipfs.targets.local.target-id|ipfs-compose-devnet-contract' \
-  'kafka.target-id|kafka.targets.primary.target-id|kafka-compose-devnet-contract'; do
+  "s3.target-id|objectstore-s3.targets.archive.target-id|s3-compose-devnet-contract-$PROJECT_SUFFIX" \
+  "ipfs.target-id|ipfs.targets.local.target-id|ipfs-compose-devnet-contract-$PROJECT_SUFFIX" \
+  "kafka.target-id|kafka.targets.primary.target-id|kafka-compose-devnet-contract-$PROJECT_SUFFIX"; do
   IFS='|' read -r runner_key executor_key expected <<EOF
 $spec
 EOF
@@ -167,7 +207,7 @@ EOF
     || fail "runner/executor target identity mismatch for $runner_key"
 done
 
-for secret in "$TMP/secrets/devnet/contract"/*; do
+for secret in "$TMP/secrets/networks/devnet/contract/compose"/*; do
   [ -f "$secret" ] || continue
   value="$(tr -d '\r\n' < "$secret")"
   ! grep -Fq "$value" "$ENV_FILE" || fail "secret value appears in Compose env"

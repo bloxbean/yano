@@ -56,6 +56,7 @@ printf '%s\n' '#!/bin/sh' \
   ': > "$CAPTURE_FILE"' \
   'printf "%s" "${QUARKUS_CONFIG_LOCATIONS-}" > "$CAPTURE_LOCATION_FILE"' \
   'for arg in "$@"; do printf "%s\\n" "$arg" >> "$CAPTURE_FILE"; done' \
+  'sleep 1' \
   > "$FAKE_BIN/capture"
 chmod 700 "$FAKE_BIN/capture"
 cp "$FAKE_BIN/capture" "$FAKE_BIN/java"
@@ -93,6 +94,8 @@ export CAPTURE_FILE CAPTURE_LOCATION_FILE
 RUNTIME="native"; NATIVE="$FAKE_BIN/capture"
 launch_node 2 0
 wait "$(cat "$(pid_file 0)")" || die_test "capture-only native launch failed"
+stop_managed_node_confirmed 0 \
+  || die_test "capture-only native launch records were not safely retired"
 assert_captured_overlay "$CAPTURE_FILE" "$CAPTURE_LOCATION_FILE" "$EXPECTED_URI"
 assert_launcher_props_present "$CAPTURE_FILE"
 [ ! -s "$(log_file 0)" ] || die_test "native launch log exposed config information"
@@ -102,6 +105,8 @@ export CAPTURE_FILE CAPTURE_LOCATION_FILE
 RUNTIME="jar"; JAR="$WORK/yano.jar"; PATH="$FAKE_BIN:$PATH"
 launch_node 2 0
 wait "$(cat "$(pid_file 0)")" || die_test "capture-only jar launch failed"
+stop_managed_node_confirmed 0 \
+  || die_test "capture-only jar launch records were not safely retired"
 assert_captured_overlay "$CAPTURE_FILE" "$CAPTURE_LOCATION_FILE" "$EXPECTED_URI"
 assert_launcher_props_present "$CAPTURE_FILE"
 [ ! -s "$(log_file 0)" ] || die_test "jar launch log exposed config information"
@@ -111,6 +116,8 @@ export CAPTURE_FILE CAPTURE_LOCATION_FILE
 RUNTIME="native"; NODE_CONFIG_DIR_CANON=""
 launch_node 2 1
 wait "$(cat "$(pid_file 1)")" || die_test "capture-only unset launch failed"
+stop_managed_node_confirmed 1 \
+  || die_test "capture-only unset launch records were not safely retired"
 ! grep -q -- '^-Dquarkus.config.locations=' "$CAPTURE_FILE" \
   || die_test "unset overlay changed launch arguments"
 [ ! -s "$CAPTURE_LOCATION_FILE" ] \
