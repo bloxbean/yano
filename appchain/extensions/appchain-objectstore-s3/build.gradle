@@ -36,6 +36,25 @@ tasks.named('compileJava') {
     options.compilerArgs.removeAll { it.startsWith('-Aproject=') }
 }
 
+// Forward only explicit integration controls. Credentials are supplied by
+// owner-only files so they never appear in Gradle/JVM command lines.
+tasks.withType(Test).configureEach {
+    [
+            'yano.s3.integration.enabled',
+            'yano.s3.integration.endpoint',
+            'yano.s3.integration.access-key-file',
+            'yano.s3.integration.secret-key-file',
+            'yano.s3.integration.run-id',
+            'yano.s3.integration.phase',
+            'yano.s3.integration.disposable-service'
+    ].each { key ->
+        def value = System.getProperty(key)
+        if (value != null) {
+            systemProperty key, value
+        }
+    }
+}
+
 // Keep the normal artifact thin for build-time/native inclusion. The bundle
 // classifier is the self-contained drop-in artifact for yaci.plugins.directory.
 tasks.named('shadowJar') {

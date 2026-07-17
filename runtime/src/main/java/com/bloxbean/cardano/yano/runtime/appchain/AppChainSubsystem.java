@@ -741,6 +741,16 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             }
 
             @Override
+            public void onEffectResult(
+                    AppBlock block,
+                    com.bloxbean.cardano.yano.api.appchain.effects.EffectResult result,
+                    AppStateWriter writer,
+                    com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter effects
+            ) {
+                delegate.onEffectResult(block, result, writer, effects);
+            }
+
+            @Override
             public byte[] query(String path, byte[] params) {
                 return delegate.query(path, params);
             }
@@ -3828,6 +3838,8 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         Set<String> executorIds = new HashSet<>();
         java.util.Map<String, java.util.Map<String, String>> executorConfigs =
                 new java.util.LinkedHashMap<>();
+        java.util.Map<String, EffectRuntime.ExecutorSource> executorSources =
+                new java.util.LinkedHashMap<>();
         java.util.Map<String, String> webhookConfig = executorConfigFor("webhook");
         if (!webhookConfig.isEmpty()) {
             var webhookExecutor = new WebhookEffectExecutor(webhookConfig, log);
@@ -3836,6 +3848,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             executorInstances.add(webhookExecutor);
             executorIds.add(id);
             executorConfigs.put(id, webhookConfig);
+            executorSources.put(id, new EffectRuntime.ExecutorSource("system", "webhook"));
         }
         SortedSet<String> configuredExecutorSchemes = configuredSchemes("effects.executors.");
         configuredExecutorSchemes.remove("webhook"); // explicit SYSTEM built-in above wins
@@ -3893,6 +3906,11 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                     executors.set(ownedIndex, stableExecutorIdentity(executor, id));
                     ownedIndex++;
                     executorConfigs.put(id, executorConfig);
+                    String bundleId = pluginProviders.contributionOwner(
+                                    AppEffectExecutorFactory.class, scheme)
+                            .orElse("legacy");
+                    executorSources.put(id,
+                            new EffectRuntime.ExecutorSource(bundleId, scheme));
                     log.info("App-chain effect executor '{}' registered via {} plugin",
                             id, scheme);
                 }
@@ -3924,7 +3942,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             String executorIdentity = resolveEffectExecutorIdentity();
             String runtimeOwner = effectRuntimeOwner(executorIdentity, runtimeSettings.types());
             createdRuntime = new EffectRuntime(ledgerStore, config.chainId(), runtimeSettings,
-                    executors, executorConfigs, runtimeOwner, log);
+                    executors, executorConfigs, executorSources, runtimeOwner, log);
             // Publish ownership before registering the lifetime signal. If a
             // custom registry rejects registration, startup rollback sees and
             // closes the runtime instead of directly double-closing products.
@@ -4017,6 +4035,18 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             @Override
             public boolean supports(String effectType) {
                 return delegate.supports(effectType);
+            }
+
+            @Override
+            public Set<String> effectTypes() {
+                Set<String> declared = delegate.effectTypes();
+                return declared != null ? Set.copyOf(declared) : null;
+            }
+
+            @Override
+            public com.bloxbean.cardano.yano.api.appchain.effects.EffectExecutorOperationalSnapshot
+                    operationalSnapshot() {
+                return delegate.operationalSnapshot();
             }
 
             @Override

@@ -2,14 +2,17 @@ package com.bloxbean.cardano.yano.appchain.examples.evidence.client;
 
 import com.bloxbean.cardano.yano.appchain.client.AppChainClient;
 import com.bloxbean.cardano.yano.appchain.client.ProofVerifier;
+import com.bloxbean.cardano.yano.appchain.composite.contracts.CompositeCommitmentV1;
 import com.bloxbean.cardano.yano.appchain.examples.evidence.EvidenceContract;
 import com.bloxbean.cardano.yano.appchain.examples.evidence.query.EvidenceGetResponseV1;
 import com.bloxbean.cardano.yano.appchain.examples.evidence.state.EvidenceHeadV1;
 import com.bloxbean.cardano.yano.appchain.examples.evidence.state.EvidenceKeys;
+import com.bloxbean.cardano.yano.appchain.examples.evidence.state.EvidenceCompositeKeys;
 import com.bloxbean.cardano.yano.appchain.examples.evidence.state.EvidenceRecordV1;
 import com.bloxbean.cardano.yano.appchain.examples.evidence.state.EvidenceStatus;
 
 import java.util.Arrays;
+import java.security.MessageDigest;
 
 /** Offline binding and cryptographic verification for a found evidence query. */
 public final class EvidenceProofVerifier {
@@ -34,8 +37,30 @@ public final class EvidenceProofVerifier {
                                           String requestedEvidenceId,
                                           long requestedVersion) {
         try {
+            rejectUnboundComposite(query);
             return verifyAttempt(query, response, headProof, recordProof,
-                    expectedChainId, requestedEvidenceId, requestedVersion);
+                    expectedChainId, requestedEvidenceId, requestedVersion, null, null);
+        } catch (SnapshotChangedException changed) {
+            throw failure(EvidenceClientError.PROOF_INVALID);
+        }
+    }
+
+    /** Verifies evidence and the exact authenticated composite profile at one root. */
+    public static VerifiedEvidence verifyComposite(
+            AppChainClient.QueryResult query,
+            EvidenceGetResponseV1 response,
+            AppChainClient.Proof headProof,
+            AppChainClient.Proof recordProof,
+            AppChainClient.Proof profileProof,
+            byte[] expectedProfileDigest,
+            String expectedChainId,
+            String requestedEvidenceId,
+            long requestedVersion
+    ) {
+        try {
+            return verifyAttempt(query, response, headProof, recordProof,
+                    expectedChainId, requestedEvidenceId, requestedVersion,
+                    profileProof, expectedProfileDigest);
         } catch (SnapshotChangedException changed) {
             throw failure(EvidenceClientError.PROOF_INVALID);
         }
@@ -59,8 +84,34 @@ public final class EvidenceProofVerifier {
             throw failure(EvidenceClientError.INVALID_ARGUMENT);
         }
         try {
+            rejectUnboundComposite(query);
             verifyAbsenceAttempt(query, headProof, headKey, expectedChainId,
-                    requestedEvidenceId, requestedVersion);
+                    requestedEvidenceId, requestedVersion, null, null);
+        } catch (SnapshotChangedException changed) {
+            throw failure(EvidenceClientError.PROOF_INVALID);
+        }
+    }
+
+    /** Verifies absence and the exact authenticated composite profile at one root. */
+    public static void verifyCompositeAbsence(
+            AppChainClient.QueryResult query,
+            AppChainClient.Proof headProof,
+            AppChainClient.Proof profileProof,
+            byte[] expectedProfileDigest,
+            String expectedChainId,
+            String requestedEvidenceId,
+            long requestedVersion
+    ) {
+        final byte[] headKey;
+        try {
+            headKey = EvidenceKeys.headKey(requestedEvidenceId);
+        } catch (RuntimeException invalid) {
+            throw failure(EvidenceClientError.INVALID_ARGUMENT);
+        }
+        try {
+            verifyAbsenceAttempt(query, headProof, headKey, expectedChainId,
+                    requestedEvidenceId, requestedVersion, profileProof,
+                    expectedProfileDigest);
         } catch (SnapshotChangedException changed) {
             throw failure(EvidenceClientError.PROOF_INVALID);
         }
@@ -72,7 +123,9 @@ public final class EvidenceProofVerifier {
                                           AppChainClient.Proof recordProof,
                                           String expectedChainId,
                                           String requestedEvidenceId,
-                                          long requestedVersion) {
+                                          long requestedVersion,
+                                          AppChainClient.Proof profileProof,
+                                          byte[] expectedProfileDigest) {
         if (query == null || response == null || headProof == null || recordProof == null
                 || expectedChainId == null || requestedEvidenceId == null
                 || requestedVersion < 0) {
@@ -81,9 +134,11 @@ public final class EvidenceProofVerifier {
         if (!expectedChainId.equals(query.chainId())) {
             throw failure(EvidenceClientError.WRONG_CHAIN);
         }
-        if (!EvidenceContract.STATE_MACHINE_ID.equals(query.stateMachineId())) {
+        if (!supportedStateMachine(query.stateMachineId())) {
             throw failure(EvidenceClientError.WRONG_STATE_MACHINE);
         }
+        byte[] verifiedProfileDigest = verifyCompositeProfile(
+                query, profileProof, expectedProfileDigest, expectedChainId);
         if (!response.found()) {
             throw failure(EvidenceClientError.RESPONSE_MISMATCH);
         }
@@ -112,10 +167,13 @@ public final class EvidenceProofVerifier {
         verifyLeaf(query, response.recordKey(), response.recordValue(), recordProof,
                 expectedChainId);
 
-        return new VerifiedEvidence(query.chainId(), query.committedHeight(),
+        byte[] physicalHeadKey = proofKey(query, response.headKey());
+        byte[] physicalRecordKey = proofKey(query, response.recordKey());
+        return new VerifiedEvidence(query.chainId(), query.stateMachineId(),
+                verifiedProfileDigest, query.committedHeight(),
                 query.stateRoot(), head, record, EvidenceStatus.derive(record),
-                response.headKey(), response.headValue(), response.recordKey(),
-                response.recordValue());
+                response.headKey(), physicalHeadKey, response.headValue(),
+                response.recordKey(), physicalRecordKey, response.recordValue());
     }
 
     static void validateResponseIdentity(EvidenceGetResponseV1 response,
@@ -150,7 +208,9 @@ public final class EvidenceProofVerifier {
                                      byte[] expectedHeadKey,
                                      String expectedChainId,
                                      String requestedEvidenceId,
-                                     long requestedVersion) {
+                                     long requestedVersion,
+                                     AppChainClient.Proof profileProof,
+                                     byte[] expectedProfileDigest) {
         if (query == null || headProof == null || expectedHeadKey == null
                 || expectedChainId == null || requestedEvidenceId == null
                 || requestedVersion < 0) {
@@ -160,9 +220,10 @@ public final class EvidenceProofVerifier {
                 || !expectedChainId.equals(headProof.chainId())) {
             throw failure(EvidenceClientError.WRONG_CHAIN);
         }
-        if (!EvidenceContract.STATE_MACHINE_ID.equals(query.stateMachineId())) {
+        if (!supportedStateMachine(query.stateMachineId())) {
             throw failure(EvidenceClientError.WRONG_STATE_MACHINE);
         }
+        verifyCompositeProfile(query, profileProof, expectedProfileDigest, expectedChainId);
         try {
             EvidenceGetResponseV1 response = EvidenceGetResponseV1.decode(query.payload());
             if (response.found()) {
@@ -174,10 +235,11 @@ public final class EvidenceProofVerifier {
             throw failure(EvidenceClientError.RESPONSE_MISMATCH);
         }
 
+        byte[] physicalHeadKey = proofKey(query, expectedHeadKey);
         byte[] key = decodeCanonicalHex(headProof.keyHex(), MAX_STATE_KEY_BYTES);
         byte[] root = decodeCanonicalHex(headProof.stateRootHex(), HASH_BYTES, HASH_BYTES);
         byte[] wire = decodeCanonicalHex(headProof.proofWireHex(), MAX_PROOF_WIRE_BYTES);
-        if (!Arrays.equals(key, expectedHeadKey)) {
+        if (!Arrays.equals(key, physicalHeadKey)) {
             throw failure(EvidenceClientError.PROOF_INVALID);
         }
         if (!Arrays.equals(root, query.stateRoot())) {
@@ -194,7 +256,7 @@ public final class EvidenceProofVerifier {
             throw failure(EvidenceClientError.PROOF_INVALID);
         }
         if (headProof.valueHex() == null) {
-            if (!ProofVerifier.verifyExclusion(query.stateRoot(), expectedHeadKey, wire)) {
+            if (!ProofVerifier.verifyExclusion(query.stateRoot(), physicalHeadKey, wire)) {
                 throw failure(EvidenceClientError.PROOF_INVALID);
             }
             return;
@@ -210,7 +272,7 @@ public final class EvidenceProofVerifier {
         }
         if (requestedVersion == 0 || !requestedEvidenceId.equals(head.evidenceId())
                 || requestedVersion <= head.latestVersion()
-                || !ProofVerifier.verifyInclusion(query.stateRoot(), expectedHeadKey,
+                || !ProofVerifier.verifyInclusion(query.stateRoot(), physicalHeadKey,
                 headValue, wire)) {
             throw failure(EvidenceClientError.PROOF_INVALID);
         }
@@ -225,11 +287,12 @@ public final class EvidenceProofVerifier {
             throw failure(EvidenceClientError.WRONG_CHAIN);
         }
 
+        byte[] physicalExpectedKey = proofKey(query, expectedKey);
         byte[] key = decodeCanonicalHex(proof.keyHex(), MAX_STATE_KEY_BYTES);
         byte[] value = decodeCanonicalHex(proof.valueHex(), MAX_STATE_VALUE_BYTES);
         byte[] root = decodeCanonicalHex(proof.stateRootHex(), HASH_BYTES, HASH_BYTES);
         byte[] wire = decodeCanonicalHex(proof.proofWireHex(), MAX_PROOF_WIRE_BYTES);
-        if (!Arrays.equals(key, expectedKey)) {
+        if (!Arrays.equals(key, physicalExpectedKey)) {
             throw failure(EvidenceClientError.PROOF_INVALID);
         }
 
@@ -246,8 +309,81 @@ public final class EvidenceProofVerifier {
         if (!Arrays.equals(value, expectedValue) || wire.length == 0) {
             throw failure(EvidenceClientError.PROOF_INVALID);
         }
-        if (!ProofVerifier.verifyInclusion(query.stateRoot(), expectedKey, expectedValue, wire)) {
+        if (!ProofVerifier.verifyInclusion(
+                query.stateRoot(), physicalExpectedKey, expectedValue, wire)) {
             throw failure(EvidenceClientError.PROOF_INVALID);
+        }
+    }
+
+    static boolean supportedStateMachine(String stateMachineId) {
+        return EvidenceContract.STATE_MACHINE_ID.equals(stateMachineId)
+                || CompositeCommitmentV1.STATE_MACHINE_ID.equals(stateMachineId);
+    }
+
+    private static byte[] proofKey(AppChainClient.QueryResult query, byte[] evidenceLocalKey) {
+        return CompositeCommitmentV1.STATE_MACHINE_ID.equals(query.stateMachineId())
+                ? CompositeCommitmentV1.componentKey(
+                EvidenceCompositeKeys.COMPONENT_ID, evidenceLocalKey)
+                : evidenceLocalKey.clone();
+    }
+
+    private static byte[] verifyCompositeProfile(
+            AppChainClient.QueryResult query,
+            AppChainClient.Proof profileProof,
+            byte[] expectedProfileDigest,
+            String expectedChainId
+    ) {
+        if (!CompositeCommitmentV1.STATE_MACHINE_ID.equals(query.stateMachineId())) {
+            if (profileProof != null || expectedProfileDigest != null) {
+                throw failure(EvidenceClientError.INVALID_ARGUMENT);
+            }
+            return null;
+        }
+        if (profileProof == null || expectedProfileDigest == null
+                || expectedProfileDigest.length != CompositeCommitmentV1.DIGEST_BYTES) {
+            throw failure(EvidenceClientError.WRONG_STATE_MACHINE);
+        }
+        if (!expectedChainId.equals(profileProof.chainId())) {
+            throw failure(EvidenceClientError.WRONG_CHAIN);
+        }
+        byte[] expectedKey = CompositeCommitmentV1.profileMarkerKey();
+        byte[] key = decodeCanonicalHex(profileProof.keyHex(), MAX_STATE_KEY_BYTES);
+        byte[] value = decodeCanonicalHex(profileProof.valueHex(),
+                CompositeCommitmentV1.MAX_PROFILE_BYTES);
+        byte[] root = decodeCanonicalHex(profileProof.stateRootHex(), HASH_BYTES, HASH_BYTES);
+        byte[] wire = decodeCanonicalHex(profileProof.proofWireHex(), MAX_PROOF_WIRE_BYTES);
+        if (!Arrays.equals(key, expectedKey) || wire.length == 0) {
+            throw failure(EvidenceClientError.PROOF_INVALID);
+        }
+        if (!Arrays.equals(root, query.stateRoot())) {
+            throw SnapshotChangedException.INSTANCE;
+        }
+        Long proofHeight = profileProof.committedHeight();
+        if (proofHeight == null) {
+            throw failure(EvidenceClientError.PROOF_INVALID);
+        }
+        if (proofHeight != query.committedHeight()) {
+            throw SnapshotChangedException.INSTANCE;
+        }
+        if (!ProofVerifier.verifyInclusion(query.stateRoot(), expectedKey, value, wire)) {
+            throw failure(EvidenceClientError.PROOF_INVALID);
+        }
+        byte[] actualDigest;
+        try {
+            actualDigest = CompositeCommitmentV1.profileDigest(value);
+        } catch (RuntimeException malformed) {
+            throw failure(EvidenceClientError.PROOF_INVALID);
+        }
+        if (!MessageDigest.isEqual(actualDigest, expectedProfileDigest)) {
+            throw failure(EvidenceClientError.WRONG_STATE_MACHINE);
+        }
+        return actualDigest;
+    }
+
+    private static void rejectUnboundComposite(AppChainClient.QueryResult query) {
+        if (query != null
+                && CompositeCommitmentV1.STATE_MACHINE_ID.equals(query.stateMachineId())) {
+            throw failure(EvidenceClientError.WRONG_STATE_MACHINE);
         }
     }
 

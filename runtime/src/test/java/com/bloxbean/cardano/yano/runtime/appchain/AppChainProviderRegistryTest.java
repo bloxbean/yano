@@ -966,6 +966,38 @@ class AppChainProviderRegistryTest {
     }
 
     @Test
+    void duplicateEffectTypeOwnersFailBeforePublicationAndCloseEveryProduct() {
+        List<String> closes = new ArrayList<>();
+        AppEffectExecutor first = declarativeClosingExecutor(
+                "alpha-executor", "shared.action", "alpha", closes);
+        AppEffectExecutor second = declarativeClosingExecutor(
+                "beta-executor", "shared.action", "beta", closes);
+        TestRegistry registry = new TestRegistry()
+                .add(AppEffectExecutorFactory.class, "alpha",
+                        effectFactory("alpha", first))
+                .add(AppEffectExecutorFactory.class, "beta",
+                        effectFactory("beta", second));
+        AppChainSubsystem subsystem = builtInSubsystem(
+                "effect-owner-conflict", tempDir.resolve("effect-owner-conflict"), registry,
+                Map.of(
+                        "effects.enabled", "true",
+                        "effects.executor.enabled", "true",
+                        "effects.executor.identity", "registry-test",
+                        "effects.executors.alpha.enabled", "true",
+                        "effects.executors.beta.enabled", "true"));
+
+        assertThatThrownBy(subsystem::start)
+                .isInstanceOf(PluginActivationException.class)
+                .hasRootCauseMessage("Duplicate declarative effect ownership: "
+                        + "type='shared.action' [bundle=legacy, scheme=alpha, "
+                        + "executor=alpha-executor; bundle=legacy, scheme=beta, "
+                        + "executor=beta-executor]");
+        assertThat(closes).containsExactly("beta", "alpha");
+        subsystem.stop();
+        assertThat(closes).containsExactly("beta", "alpha");
+    }
+
+    @Test
     void assertionAndOrdinaryRollbackFailuresPreserveStrongestOutcomeWithoutLeakingLedger() {
         AtomicInteger closes = new AtomicInteger();
         TestRegistry registry = new TestRegistry().add(FinalizedStreamSinkFactory.class,
@@ -1164,6 +1196,26 @@ class AppChainProviderRegistryTest {
         return new AppEffectExecutor() {
             @Override public String id() { return id; }
             @Override public boolean supports(String effectType) { return true; }
+            @Override public EffectExecution execute(
+                    EffectExecutionContext context, PendingEffect effect) {
+                return EffectExecution.confirmed(new byte[0]);
+            }
+            @Override public void close() { closes.add(closeLabel); }
+        };
+    }
+
+    private static AppEffectExecutor declarativeClosingExecutor(
+            String id,
+            String type,
+            String closeLabel,
+            List<String> closes
+    ) {
+        return new AppEffectExecutor() {
+            @Override public String id() { return id; }
+            @Override public Set<String> effectTypes() { return Set.of(type); }
+            @Override public boolean supports(String effectType) {
+                throw new AssertionError("declarative owner must not use supports");
+            }
             @Override public EffectExecution execute(
                     EffectExecutionContext context, PendingEffect effect) {
                 return EffectExecution.confirmed(new byte[0]);

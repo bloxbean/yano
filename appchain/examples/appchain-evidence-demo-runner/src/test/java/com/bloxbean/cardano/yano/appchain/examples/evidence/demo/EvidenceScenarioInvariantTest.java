@@ -97,6 +97,26 @@ class EvidenceScenarioInvariantTest {
     }
 
     @Test
+    void acceptsBothExplicitAndDirectResultContinuationRecords() {
+        ObjectPutCommandV1 object = objectCommand();
+        IpfsPinCommandV1 ipfs = new IpfsPinCommandV1("local", CID, true, "demo-single");
+        EvidenceEffectRef notification = new EvidenceEffectRef(14, 0);
+        EvidenceTerminalResultV1 terminal = new EvidenceTerminalResultV1(
+                EvidenceTerminalOutcome.CONFIRMED,
+                new KafkaPublishReceiptV1(HASH_C, 0, 7).encode(), null, 15);
+        EvidenceRecordV1 explicit = state(object, ipfs, notification, terminal);
+        EvidenceRecordV1 direct = directState(object, ipfs, notification, terminal);
+
+        assertThat(explicit.notifyMessageId()).isEqualTo(NOTIFY_ID);
+        assertThat(direct.notifyMessageId()).isNull();
+        assertThat(direct.notificationEffect()).isEqualTo(notification);
+        assertThat(direct.notificationTerminal()).isEqualTo(terminal);
+        assertThat(EvidenceRecordV1.decode(direct.encode())).isEqualTo(direct);
+        assertThatCode(() -> EvidenceScenario.requireStableStorage(explicit, direct))
+                .doesNotThrowAnyException();
+    }
+
+    @Test
     void bindsBothPortableBundlesToObservedMembersAndThreshold() {
         Set<String> members = Set.of(hex(1), hex(2), hex(3));
         EvidenceScenario.ClusterAgreement agreement = new EvidenceScenario.ClusterAgreement(
@@ -177,6 +197,20 @@ class EvidenceScenarioInvariantTest {
                         ipfsReceipt, null, 12),
                 "primary", "evidence-ready", HASH_C,
                 notification == null ? null : NOTIFY_ID, notification, notificationTerminal);
+    }
+
+    private static EvidenceRecordV1 directState(ObjectPutCommandV1 object, IpfsPinCommandV1 ipfs,
+                                                 EvidenceEffectRef notification,
+                                                 EvidenceTerminalResultV1 notificationTerminal) {
+        EvidenceRecordV1 explicit = state(object, ipfs, notification, notificationTerminal);
+        return new EvidenceRecordV1(explicit.evidenceId(), explicit.businessVersion(),
+                explicit.ownerPublicKey(), explicit.submitMessageId(), explicit.objectPutCommand(),
+                explicit.expectedObjectDestinationFingerprint(), explicit.objectEffect(),
+                explicit.objectTerminal(), explicit.ipfsPinCommand(),
+                explicit.expectedIpfsTargetFingerprint(), explicit.ipfsEffect(),
+                explicit.ipfsTerminal(), explicit.kafkaTarget(), explicit.kafkaTopic(),
+                explicit.expectedKafkaDestinationFingerprint(), null,
+                explicit.notificationEffect(), explicit.notificationTerminal());
     }
 
     private static ObjectPutCommandV1 objectCommand() {

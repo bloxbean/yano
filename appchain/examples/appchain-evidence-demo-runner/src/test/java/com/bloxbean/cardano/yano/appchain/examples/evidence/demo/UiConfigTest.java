@@ -66,6 +66,22 @@ class UiConfigTest {
     }
 
     @Test
+    void rejectsOversizedAndMalformedUtf8Configuration() throws Exception {
+        Path config = temporary.resolve("ui.properties");
+        Files.write(config, new byte[16_385]);
+        assertThatThrownBy(() -> UiConfig.load(config))
+                .isInstanceOf(DemoException.class)
+                .extracting(failure -> ((DemoException) failure).error())
+                .isEqualTo(DemoError.INVALID_CONFIG);
+
+        Files.write(config, new byte[]{(byte) 0xc3, (byte) 0x28});
+        assertThatThrownBy(() -> UiConfig.load(config))
+                .isInstanceOf(DemoException.class)
+                .extracting(failure -> ((DemoException) failure).error())
+                .isEqualTo(DemoError.INVALID_CONFIG);
+    }
+
+    @Test
     void serveCommandStartsWithoutScenarioConfigOrAnySecretFile() throws Exception {
         int port;
         try (ServerSocket socket = new ServerSocket(0)) {

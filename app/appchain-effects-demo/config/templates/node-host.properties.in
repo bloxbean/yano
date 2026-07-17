@@ -4,7 +4,8 @@ config_ordinal=275
 yano.app-chain.chains[0].anchor.max-interval-minutes=@ANCHOR_MAX_INTERVAL_MINUTES@
 yaci.plugins.enabled=true
 yaci.plugins.directory=@PLUGIN_DIR@
-yaci.plugins.allow-list=com.bloxbean.cardano.yano.appchain.kafka,com.bloxbean.cardano.yano.appchain.ipfs,com.bloxbean.cardano.yano.appchain.objectstore.s3,com.bloxbean.cardano.yano.appchain.evidence-registry
+yaci.plugins.allow-list=com.bloxbean.cardano.yano.appchain.kafka,com.bloxbean.cardano.yano.appchain.ipfs,com.bloxbean.cardano.yano.appchain.objectstore.s3,com.bloxbean.cardano.yano.appchain.evidence-registry,com.bloxbean.cardano.yano.appchain.stdlib,com.bloxbean.cardano.yano.appchain.composite
+yano.app-chain.chains[0].state-machine=@STATE_MACHINE@
 yano.app-chain.chains[0].effects.enabled=true
 yano.app-chain.chains[0].effects.max-per-block=128
 yano.app-chain.chains[0].effects.max-payload-bytes=16384
@@ -12,9 +13,11 @@ yano.app-chain.chains[0].effects.max-expiry-blocks=100000
 yano.app-chain.chains[0].effects.result-window-blocks=100000
 yano.app-chain.chains[0].effects.default-gate=app-final
 yano.app-chain.chains[0].effects.outcome-commitment=per-effect
-yano.app-chain.chains[0].effects.result.signers=@PROPOSER_KEY@
+yano.app-chain.chains[0].effects.result.signers=@RESULT_SIGNERS@
 yano.app-chain.chains[0].effects.metrics.types=object.put,ipfs.pin,kafka.publish
 yano.app-chain.chains[0].machines.evidence-registry.storage-gate=@STORAGE_GATE@
 yano.app-chain.chains[0].machines.evidence-registry.storage-expiry-blocks=0
 yano.app-chain.chains[0].machines.evidence-registry.notification-expiry-blocks=0
+yano.app-chain.chains[0].machines.composite.preset=evidence-v1
+@DIRECT_RESULT_ACTIVATION_SETTING@
 @NODE_SETTINGS@

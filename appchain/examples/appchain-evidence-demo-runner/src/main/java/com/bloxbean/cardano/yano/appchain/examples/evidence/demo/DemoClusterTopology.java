@@ -25,6 +25,13 @@ record DemoClusterTopology(Set<String> memberKeys,
     static DemoClusterTopology verify(List<YanoAuditClient.Status> statuses,
                                       Set<String> expectedMemberKeys,
                                       int expectedThreshold) {
+        return verify(statuses, expectedMemberKeys, expectedThreshold, EXPECTED_STATE_MACHINE);
+    }
+
+    static DemoClusterTopology verify(List<YanoAuditClient.Status> statuses,
+                                      Set<String> expectedMemberKeys,
+                                      int expectedThreshold,
+                                      String expectedStateMachine) {
         if (statuses == null || statuses.size() != EXPECTED_MEMBERS
                 || expectedMemberKeys == null
                 || expectedMemberKeys.size() != EXPECTED_MEMBERS
@@ -38,7 +45,7 @@ record DemoClusterTopology(Set<String> memberKeys,
             if (status == null
                     || status.members() != EXPECTED_MEMBERS
                     || status.threshold() != expectedThreshold
-                    || !EXPECTED_STATE_MACHINE.equals(status.stateMachine())
+                    || !expectedStateMachine.equals(status.stateMachine())
                     || !identities.add(status.memberKey())) {
                 throw new DemoException(DemoError.CLUSTER_DIVERGED);
             }
@@ -55,7 +62,16 @@ record DemoClusterTopology(Set<String> memberKeys,
     static DemoClusterTopology verifyAnchored(List<YanoAuditClient.Status> statuses,
                                               Set<String> expectedMemberKeys,
                                               int expectedThreshold) {
-        DemoClusterTopology base = verify(statuses, expectedMemberKeys, expectedThreshold);
+        return verifyAnchored(statuses, expectedMemberKeys, expectedThreshold,
+                EXPECTED_STATE_MACHINE);
+    }
+
+    static DemoClusterTopology verifyAnchored(List<YanoAuditClient.Status> statuses,
+                                              Set<String> expectedMemberKeys,
+                                              int expectedThreshold,
+                                              String expectedStateMachine) {
+        DemoClusterTopology base = verify(
+                statuses, expectedMemberKeys, expectedThreshold, expectedStateMachine);
         String scriptAddress = statuses.getFirst().anchorScriptAddress();
         String threadPolicyId = statuses.getFirst().anchorThreadPolicyId();
         if (scriptAddress == null || scriptAddress.isBlank()

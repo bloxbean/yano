@@ -1,8 +1,6 @@
 package com.bloxbean.cardano.yano.appchain.examples.evidence.demo;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -10,7 +8,7 @@ import java.util.Set;
 
 /** Strict credential-free configuration for the read-only report server. */
 record UiConfig(Path reportDirectory, String bindAddress, int port) {
-    private static final long MAX_CONFIG_BYTES = 16_384;
+    private static final int MAX_CONFIG_BYTES = 16_384;
     private static final Set<String> KEYS = Set.of(
             "ui.report-directory", "ui.bind-address", "ui.port");
 
@@ -28,12 +26,9 @@ record UiConfig(Path reportDirectory, String bindAddress, int port) {
 
     private static Map<String, String> readStrict(Path path) {
         try {
-            if (path == null || Files.isSymbolicLink(path) || !Files.isRegularFile(path)
-                    || Files.size(path) > MAX_CONFIG_BYTES) {
-                throw new DemoException(DemoError.INVALID_CONFIG);
-            }
             Map<String, String> values = new LinkedHashMap<>();
-            for (String line : Files.readAllLines(path, StandardCharsets.UTF_8)) {
+            for (String line : BoundedFiles.readUtf8(
+                    path, MAX_CONFIG_BYTES, false, false).lines().toList()) {
                 String trimmed = line.trim();
                 if (trimmed.isEmpty() || trimmed.startsWith("#") || trimmed.startsWith("!")) {
                     continue;

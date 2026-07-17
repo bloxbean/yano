@@ -160,6 +160,50 @@ class EvidenceRegistryStateMachineTest {
     }
 
     @Test
+    void directResultEmissionActivatesExactlyAtHeightAndSuppressesDuplicateNotify() {
+        EvidenceRegistryStateMachine machine = machine(Map.of(
+                "machines.evidence-registry.activations.direct-result-emission", "12"));
+        MemoryState state = new MemoryState();
+        AppMessage submit = message(EvidenceFixtures.OWNER, 1,
+                EvidenceFixtures.submit().encode(), EvidenceFixtures.SUBMIT_MESSAGE);
+        machine.apply(block(10, submit), state, new CapturingEmitter(10));
+        EvidenceRecordV1 pending = record(state, 1);
+
+        CapturingEmitter beforeActivation = new CapturingEmitter(11);
+        machine.onEffectResult(block(11), result(pending.objectEffect().height(),
+                pending.objectEffect().ordinal(), ConnectorTypes.OBJECT_PUT,
+                EvidenceEffectOperation.OBJECT, EvidenceFixtures.objectReceipt(), 11),
+                state, beforeActivation);
+        assertThat(beforeActivation.intents).isEmpty();
+        assertThat(record(state, 1).notificationEffect()).isNull();
+
+        EvidenceRecordV1 afterObject = record(state, 1);
+        AppMessage explicitNotify = message(RUNNER, 2,
+                new NotifyEvidenceCommandV1(EvidenceFixtures.ID, 1).encode(),
+                EvidenceFixtures.NOTIFY_MESSAGE);
+        AppBlock activationBlock = block(12, explicitNotify);
+        CapturingEmitter sharedBlockEmitter = new CapturingEmitter(12);
+        machine.onEffectResult(activationBlock, result(afterObject.ipfsEffect().height(),
+                afterObject.ipfsEffect().ordinal(), ConnectorTypes.IPFS_PIN,
+                EvidenceEffectOperation.IPFS, EvidenceFixtures.ipfsReceipt(), 12),
+                state, sharedBlockEmitter);
+        machine.apply(activationBlock, state, sharedBlockEmitter);
+
+        assertThat(sharedBlockEmitter.intents).singleElement().satisfies(intent -> {
+            assertThat(intent.type()).isEqualTo(ConnectorTypes.KAFKA_PUBLISH);
+            assertThat(intent.sourceMessageId()).isNull();
+            assertThat(intent.scope()).isEqualTo(EvidenceKeys.effectScope(
+                    EvidenceFixtures.ID, 1, EvidenceEffectOperation.NOTIFY));
+        });
+        EvidenceRecordV1 notifying = record(state, 1);
+        assertThat(EvidenceStatus.derive(notifying))
+                .isEqualTo(EvidenceStatus.NOTIFICATION_PENDING);
+        assertThat(notifying.notificationEffect().height()).isEqualTo(12);
+        assertThat(notifying.notificationEffect().ordinal()).isZero();
+        assertThat(notifying.notifyMessageId()).isNull();
+    }
+
+    @Test
     void authorizationMalformedCommandsAndForeignResultsFailClosed() {
         EvidenceRegistryStateMachine machine = machine(Map.of(
                 "machines.evidence-registry.issuers", hex(EvidenceFixtures.OWNER)));
@@ -256,6 +300,10 @@ class EvidenceRegistryStateMachineTest {
                 "effects.result-window-blocks", "10",
                 "machines.evidence-registry.storage-expiry-blocks", "11")))
                 .hasMessageContaining("result window");
+        assertThatThrownBy(() -> machineWithSettings(Map.of(
+                "effects.enabled", "true",
+                "machines.evidence-registry.activations.direct-result-emission", "0")))
+                .hasMessageContaining("must be positive");
 
         EvidenceRegistryConfig config = config(Map.of());
         assertThat(config.isIssuer(FOREIGN)).isTrue();
@@ -280,6 +328,20 @@ class EvidenceRegistryStateMachineTest {
         }
     }
 
+    @Test
+    void activatedDirectContinuationIsDeterministicAcrossReplayAndRestart() {
+        for (long restartAt : List.of(2L, 3L, 5L)) {
+            StateMachineConformance.Result result = directWorkflowConformance(restartAt).run();
+
+            assertThat(result.deterministic()).as(result.describeDivergence()).isTrue();
+            Map<Long, StateMachineConformance.HeightOutcome> baseline =
+                    result.outcomesPerRun().getFirst();
+            assertThat(baseline.get(1L).effectHashes()).hasSize(2);
+            assertThat(baseline.get(2L).effectHashes()).isEmpty();
+            assertThat(baseline.get(3L).effectHashes()).hasSize(1);
+        }
+    }
+
     private static StateMachineConformance.Builder evidenceWorkflowConformance(long restartAt) {
         return StateMachineConformance.builder(new EvidenceRegistryStateMachineProvider())
                 .chainId(CHAIN)
@@ -287,6 +349,21 @@ class EvidenceRegistryStateMachineTest {
                         "effects.enabled", "true",
                         "effects.max-per-block", "8",
                         "effects.max-payload-bytes", "4096"))
+                .blocks(6)
+                .messagesPerBlock(2)
+                .runs(2)
+                .restartAtHeight(restartAt)
+                .messageGenerator((height, index, random) -> workflowMessage(height, index));
+    }
+
+    private static StateMachineConformance.Builder directWorkflowConformance(long restartAt) {
+        return StateMachineConformance.builder(new EvidenceRegistryStateMachineProvider())
+                .chainId(CHAIN)
+                .settings(Map.of(
+                        "effects.enabled", "true",
+                        "effects.max-per-block", "8",
+                        "effects.max-payload-bytes", "4096",
+                        "machines.evidence-registry.activations.direct-result-emission", "3"))
                 .blocks(6)
                 .messagesPerBlock(2)
                 .runs(2)

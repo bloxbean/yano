@@ -42,10 +42,23 @@ FENCE_KIND = "yano.demo.managed-process-launch"
 TEST_STOP_ENV = "YANO_MANAGED_PROCESS_TEST_STOP_AFTER"
 TEST_FAIL_ENV = "YANO_MANAGED_PROCESS_TEST_FAIL_AFTER"
 TEST_UNPROVEN_ENV = "YANO_MANAGED_PROCESS_TEST_CLEANUP_UNPROVEN"
+DARWIN_ARGV_SNAPSHOT_ATTEMPTS = 5
+DARWIN_ARGV_RETRY_SECONDS = 0.01
 
 
 class ManagedProcessError(Exception):
     """An operator-actionable validation or lifecycle failure."""
+
+
+class DarwinArgvTransientError(Exception):
+    """A bounded-retry KERN_PROCARGS2 race while a process is executing."""
+
+    def __init__(self, pid: int, operation: str, error: int | None = None):
+        self.pid = pid
+        self.operation = operation
+        self.error = error
+        detail = "" if error is None else f": errno {error}"
+        super().__init__(f"transient Darwin argv {operation} for PID {pid}{detail}")
 
 
 @dataclass(frozen=True)
@@ -446,25 +459,34 @@ def darwin_argv(pid: int) -> tuple[str, ...]:
     size = ctypes.c_size_t(0)
     if sysctl(mib, 3, None, ctypes.byref(size), None, 0) != 0:
         error = ctypes.get_errno()
-        if error in (errno.ESRCH, errno.ENOENT, errno.EINVAL):
+        if error in (errno.ESRCH, errno.ENOENT):
             raise ProcessLookupError(pid)
+        if error in (errno.EINVAL, errno.ENOMEM):
+            raise DarwinArgvTransientError(pid, "size", error)
         raise ManagedProcessError(f"cannot size argv for PID {pid}: errno {error}")
+    if size.value < struct.calcsize("i"):
+        raise DarwinArgvTransientError(pid, "size")
+    capacity = size.value
     buffer = ctypes.create_string_buffer(size.value)
     if sysctl(mib, 3, buffer, ctypes.byref(size), None, 0) != 0:
         error = ctypes.get_errno()
         if error in (errno.ESRCH, errno.ENOENT):
             raise ProcessLookupError(pid)
+        if error in (errno.EINVAL, errno.ENOMEM):
+            raise DarwinArgvTransientError(pid, "read", error)
         raise ManagedProcessError(f"cannot read argv for PID {pid}: errno {error}")
+    if size.value > capacity:
+        raise DarwinArgvTransientError(pid, "growth")
     raw = buffer.raw[: size.value]
     if len(raw) < struct.calcsize("i"):
-        fail(f"kernel returned incomplete argv for PID {pid}")
+        raise DarwinArgvTransientError(pid, "incomplete-read")
     argc = struct.unpack_from("i", raw)[0]
     if argc <= 0 or argc > MAX_ARGV_ITEMS:
-        fail(f"kernel returned an invalid argc for PID {pid}")
+        raise DarwinArgvTransientError(pid, "invalid-argc")
     offset = struct.calcsize("i")
     executable_end = raw.find(b"\0", offset)
     if executable_end < 0:
-        fail(f"kernel returned malformed argv for PID {pid}")
+        raise DarwinArgvTransientError(pid, "malformed-read")
     offset = executable_end + 1
     while offset < len(raw) and raw[offset] == 0:
         offset += 1
@@ -472,10 +494,43 @@ def darwin_argv(pid: int) -> tuple[str, ...]:
     for _ in range(argc):
         end = raw.find(b"\0", offset)
         if end < 0:
-            fail(f"kernel returned truncated argv for PID {pid}")
+            raise DarwinArgvTransientError(pid, "truncated-read")
         values.append(os.fsdecode(raw[offset:end]))
         offset = end + 1
     return tuple(values)
+
+
+def darwin_snapshot(pid: int, include_argv: bool = True) -> ProcessSnapshot | None:
+    """Capture one bounded, identity-consistent Darwin process snapshot."""
+    last_transient: DarwinArgvTransientError | None = None
+    for attempt in range(DARWIN_ARGV_SNAPSHOT_ATTEMPTS):
+        before = darwin_process_info(pid)
+        if before is None:
+            return None
+        uid, token, zombie = before
+        if not include_argv or zombie:
+            return ProcessSnapshot(pid, uid, token, None, zombie)
+        try:
+            argv = darwin_argv(pid)
+        except ProcessLookupError:
+            return None
+        except DarwinArgvTransientError as error:
+            last_transient = error
+        else:
+            after = darwin_process_info(pid)
+            if after is None:
+                return None
+            if after == before:
+                return ProcessSnapshot(pid, uid, token, argv, False)
+            # Never combine argv with a UID/start-token/zombie state sampled
+            # from the other side of an exec, exit, or PID-reuse transition.
+            last_transient = DarwinArgvTransientError(pid, "identity-change")
+        if attempt + 1 < DARWIN_ARGV_SNAPSHOT_ATTEMPTS:
+            time.sleep(DARWIN_ARGV_RETRY_SECONDS)
+    raise ManagedProcessError(
+        f"cannot capture a consistent argv snapshot for PID {pid} after "
+        f"{DARWIN_ARGV_SNAPSHOT_ATTEMPTS} attempts"
+    ) from last_transient
 
 
 def process_snapshot(pid: int, include_argv: bool = True) -> ProcessSnapshot | None:
@@ -484,17 +539,7 @@ def process_snapshot(pid: int, include_argv: bool = True) -> ProcessSnapshot | N
     if sys.platform.startswith("linux"):
         return linux_snapshot(pid, include_argv)
     if sys.platform == "darwin":
-        info = darwin_process_info(pid)
-        if info is None:
-            return None
-        uid, token, zombie = info
-        argv: tuple[str, ...] | None = None
-        if include_argv and not zombie:
-            try:
-                argv = darwin_argv(pid)
-            except ProcessLookupError:
-                return None
-        return ProcessSnapshot(pid, uid, token, argv, zombie)
+        return darwin_snapshot(pid, include_argv)
     fail(f"managed process inspection is unsupported on {sys.platform}")
 
 

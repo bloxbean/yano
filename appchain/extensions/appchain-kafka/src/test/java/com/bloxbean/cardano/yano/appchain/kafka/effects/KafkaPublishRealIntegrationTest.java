@@ -28,7 +28,15 @@ import org.apache.kafka.common.utils.Utils;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.file.Files;
+import java.nio.file.LinkOption;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -37,6 +45,7 @@ import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Properties;
 import java.util.Set;
 import java.util.UUID;
@@ -81,6 +90,94 @@ class KafkaPublishRealIntegrationTest {
             } finally {
                 deleteTopics(admin, effectTopic, sinkTopic);
             }
+        }
+    }
+
+    @Test
+    @EnabledIfSystemProperty(named = "yano.kafka.integration.phase", matches = "seed")
+    @Timeout(value = 45, unit = TimeUnit.SECONDS)
+    void seedsAcknowledgedPublishForBrokerRestart() throws Exception {
+        String bootstrap = requiredProperty("yano.kafka.integration.bootstrap");
+        String topic = restartTopic();
+        Path stateFile = stateFile();
+        boolean seeded = false;
+
+        try (AdminClient admin = AdminClient.create(adminProperties(bootstrap))) {
+            deleteTopics(admin, topic);
+            try {
+                admin.createTopics(List.of(new NewTopic(topic, PARTITION_COUNT, (short) 1)))
+                        .all().get(CLIENT_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
+                PendingEffect effect = restartEffect();
+                try (AppEffectExecutor executor = new KafkaEffectExecutorFactory()
+                        .create(KafkaEffectTestSupport.CHAIN_ID,
+                                effectSettings(bootstrap, topic)).getFirst()) {
+                    EffectExecution.Confirmed result = confirmedExecution(executor.execute(
+                            KafkaEffectTestSupport.context(1), effect));
+                    writeState(stateFile, result.externalRef());
+                    KafkaPublishReceiptV1 receipt = KafkaPublishReceiptV1.decode(
+                            result.externalRef());
+                    List<ConsumerRecord<byte[], byte[]>> records = consume(
+                            bootstrap, List.of(topic), 1);
+                    assertEffectRecord(records, topic, receipt, effect,
+                            restartCommand().body(), effect.idHash(), new byte[]{21, 22, 23});
+                }
+                seeded = true;
+            } finally {
+                if (!seeded) {
+                    deleteTopics(admin, topic);
+                }
+            }
+        }
+    }
+
+    @Test
+    @EnabledIfSystemProperty(named = "yano.kafka.integration.phase", matches = "reconcile")
+    @Timeout(value = 45, unit = TimeUnit.SECONDS)
+    void reconcilesAcknowledgedPublishAfterBrokerRestartWithoutRepublishing() throws Exception {
+        String bootstrap = requiredProperty("yano.kafka.integration.bootstrap");
+        String topic = restartTopic();
+        Path stateFile = stateFile();
+        byte[] submittedRef = readState(stateFile);
+        PendingEffect effect = restartEffect();
+
+        try (AdminClient admin = AdminClient.create(adminProperties(bootstrap))) {
+            try (AppEffectExecutor executor = new KafkaEffectExecutorFactory()
+                    .create(KafkaEffectTestSupport.CHAIN_ID,
+                            effectSettings(bootstrap, topic)).getFirst()) {
+                EffectExecution.Confirmed result = confirmedExecution(executor.execute(
+                        KafkaEffectTestSupport.context(2, submittedRef), effect));
+                assertThat(result.externalRef()).containsExactly(submittedRef);
+
+                KafkaPublishReceiptV1 receipt = KafkaPublishReceiptV1.decode(submittedRef);
+                List<ConsumerRecord<byte[], byte[]>> records = consume(
+                        bootstrap, List.of(topic), 1);
+                assertEffectRecord(records, topic, receipt, effect,
+                        restartCommand().body(), effect.idHash(), new byte[]{21, 22, 23});
+            } finally {
+                deleteTopics(admin, topic);
+            }
+        }
+    }
+
+    @Test
+    @EnabledIfSystemProperty(named = "yano.kafka.integration.phase", matches = "unavailable")
+    @Timeout(value = 15, unit = TimeUnit.SECONDS)
+    void unavailableBrokerReturnsUnknownAcknowledgementWithoutReceipt() throws Exception {
+        String bootstrap = requiredProperty("yano.kafka.integration.bootstrap");
+        String topic = restartTopic();
+        Map<String, String> settings = new LinkedHashMap<>(effectSettings(bootstrap, topic));
+        settings.put("targets.integration.max-block-ms", "1000");
+        settings.put("targets.integration.request-timeout-ms", "1000");
+        settings.put("targets.integration.delivery-timeout-ms", "2000");
+        settings.put("targets.integration.close-timeout-ms", "500");
+
+        try (AppEffectExecutor executor = new KafkaEffectExecutorFactory()
+                .create(KafkaEffectTestSupport.CHAIN_ID, settings).getFirst()) {
+            assertThat(executor.execute(KafkaEffectTestSupport.context(1), restartEffect()))
+                    .isInstanceOfSatisfying(EffectExecution.Failed.class, failed -> {
+                        assertThat(failed.reason()).isEqualTo("ACK_UNKNOWN");
+                        assertThat(failed.retryable()).isTrue();
+                    });
         }
     }
 
@@ -197,6 +294,11 @@ class KafkaPublishRealIntegrationTest {
                 ((EffectExecution.Confirmed) outcome).externalRef());
     }
 
+    private static EffectExecution.Confirmed confirmedExecution(EffectExecution outcome) {
+        assertThat(outcome).isInstanceOf(EffectExecution.Confirmed.class);
+        return (EffectExecution.Confirmed) outcome;
+    }
+
     private static List<ConsumerRecord<byte[], byte[]>> consume(String bootstrap,
                                                                 List<String> topics,
                                                                 int expectedCount) {
@@ -220,6 +322,10 @@ class KafkaPublishRealIntegrationTest {
             assertThat(partitions).hasSize(topics.size() * PARTITION_COUNT);
             consumer.assign(partitions);
             consumer.seekToBeginning(partitions);
+
+            long available = consumer.endOffsets(partitions, CLIENT_TIMEOUT).values().stream()
+                    .mapToLong(Long::longValue).sum();
+            assertThat(available).isEqualTo(expectedCount);
 
             List<ConsumerRecord<byte[], byte[]>> records = new ArrayList<>();
             long deadline = System.nanoTime() + CLIENT_TIMEOUT.toNanos();
@@ -362,6 +468,89 @@ class KafkaPublishRealIntegrationTest {
             // Best-effort cleanup: unique names keep a broker without topic
             // deletion support deterministic on subsequent executions.
         }
+    }
+
+    private static PendingEffect restartEffect() {
+        return effect(77, 2, restartCommand());
+    }
+
+    private static KafkaPublishCommandV1 restartCommand() {
+        return command(new byte[0], jsonBody("restart"), new byte[]{21, 22, 23});
+    }
+
+    private static String restartTopic() {
+        String runId = requiredProperty("yano.kafka.integration.run-id");
+        if (!runId.matches("[a-z0-9]{6,20}")) {
+            throw new IllegalStateException("invalid Kafka integration run id");
+        }
+        String prefix = System.getProperty(
+                "yano.kafka.integration.topic", "yano-kafka-integration-v1").trim();
+        if (!prefix.matches("[A-Za-z0-9._-]{1,180}")) {
+            throw new IllegalStateException("invalid Kafka integration topic prefix");
+        }
+        return prefix + "-restart-" + runId;
+    }
+
+    private static Path stateFile() {
+        Path path = Path.of(requiredProperty("yano.kafka.integration.state-file"))
+                .toAbsolutePath().normalize();
+        if (Files.isSymbolicLink(path)
+                || !Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IllegalStateException("invalid Kafka integration state file");
+        }
+        return path;
+    }
+
+    private static void writeState(Path path, byte[] submittedRef) {
+        try {
+            Files.writeString(path, HexFormat.of().formatHex(submittedRef),
+                    StandardCharsets.US_ASCII,
+                    StandardOpenOption.TRUNCATE_EXISTING,
+                    StandardOpenOption.WRITE);
+        } catch (IOException failure) {
+            throw new IllegalStateException("could not write Kafka integration state", failure);
+        }
+    }
+
+    private static byte[] readState(Path path) {
+        try {
+            BasicFileAttributes before = Files.readAttributes(
+                    path, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+            if (!before.isRegularFile() || before.size() < 1 || before.size() > 512) {
+                throw new IllegalStateException("invalid Kafka integration state");
+            }
+            byte[] content;
+            try (InputStream input = Files.newInputStream(
+                    path, StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS)) {
+                content = input.readNBytes(513);
+            }
+            BasicFileAttributes after = Files.readAttributes(
+                    path, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+            if (content.length > 512 || content.length != before.size()
+                    || before.size() != after.size()
+                    || !before.lastModifiedTime().equals(after.lastModifiedTime())
+                    || !Objects.equals(before.fileKey(), after.fileKey())) {
+                throw new IllegalStateException("invalid Kafka integration state");
+            }
+            String encoded = new String(content, StandardCharsets.US_ASCII).trim();
+            if (encoded.isEmpty() || encoded.length() > 512
+                    || !encoded.matches("[0-9a-f]+") || encoded.length() % 2 != 0) {
+                throw new IllegalStateException("invalid Kafka integration state");
+            }
+            byte[] submittedRef = HexFormat.of().parseHex(encoded);
+            KafkaPublishReceiptV1.decode(submittedRef);
+            return submittedRef;
+        } catch (IOException failure) {
+            throw new IllegalStateException("could not read Kafka integration state", failure);
+        }
+    }
+
+    private static String requiredProperty(String name) {
+        String value = System.getProperty(name, "").trim();
+        if (value.isEmpty()) {
+            throw new IllegalStateException("missing required Kafka integration property: " + name);
+        }
+        return value;
     }
 
     private static byte[] ascii(String value) {

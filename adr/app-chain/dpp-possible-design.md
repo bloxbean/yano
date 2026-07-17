@@ -23,7 +23,7 @@ Yano can support all four architectural patterns described by the Cardano Founda
 
 The underlying architecture is already a strong fit: deterministic app-chain state machines, finalized blocks, authenticated MPF state roots, Cardano L1 anchors, message and state proofs, plugin extension points, effects, finalized-block sinks, encrypted message bodies, and experimental selective-disclosure support.
 
-However, this does **not** mean that DPP is available out of the box today. Yano still needs a first-party DPP bundle, standard contracts and canonicalization rules, storage and publication effect executors, a projection/query tier, and a ready-to-run gateway and verification portal. Exact Cardano representations such as one NFT or CIP-68 datum per product also require DPP-specific Cardano policies and transaction construction.
+However, this does **not** mean that DPP is available out of the box today. ADR-013 now supplies reusable S3-compatible object publication, IPFS pinning, acknowledged Kafka publication, and a stock deterministic composite evidence workflow. Yano still needs a first-party DPP bundle, standard contracts and canonicalization rules, a projection/query tier, and a ready-to-run gateway and verification portal. Exact Cardano representations such as one NFT or CIP-68 datum per product also require DPP-specific Cardano policies and transaction construction.
 
 The recommended outcome is a configurable, first-party DPP solution that covers the blueprint's common scenarios without application code. Users should need custom plugins only for proprietary integrations, non-standard schemas, specialized device attestations, or custom Cardano policies.
 
@@ -49,7 +49,7 @@ There is also tension between the general reference to CIP-25/CIP-68 and the sta
 
 | Blueprint scenario | Yano capability today | Additional work required | Expected support |
 |---|---|---|---|
-| Static Passport Anchor | Deterministic registry state, document hashes, MPF proofs, finalized state roots, and L1 root anchoring | DPP schemas, canonicalization, GS1 identity mapping, storage connectors, portal, and optionally per-product Cardano asset/CIP-68 publication | Full through a DPP bundle; per-product Cardano representation is an optional publication profile |
+| Static Passport Anchor | Deterministic registry state, document hashes, MPF proofs, finalized state roots, L1 root anchoring, and ADR-013 storage connectors | DPP schemas, canonicalization, GS1 identity mapping, connector profile configuration, portal, and optionally per-product Cardano asset/CIP-68 publication | Full through a DPP bundle; per-product Cardano representation is an optional publication profile |
 | Passport updates and versioning | Deterministic state transitions and emission-version rules | DPP status/version/replacement rules; Cardano-specific update, burn-and-mint, or mint-only history executors where chosen | Full, with versioning strategy selected by profile |
 | Anchored Proof / selective disclosure | Authenticated state, state/message proofs, encrypted bodies, and experimental ZK/BBS building blocks | DPP claim Merkle tree and proof format, private storage, claim salts, issuer/subject authorization, verifier tooling, and production hardening | Full in stages; baseline Merkle disclosure first |
 | Append-only Event Log | Best current fit: ordered finalized messages, deterministic state, finalized stream sinks, proofs, and L1 anchors | EPCIS/DPP event contracts, actor/device key registry, domain signatures, deduplication, batch rules, projector, and timeline API | Full through a DPP bundle |
@@ -63,7 +63,28 @@ There is also tension between the general reference to CIP-25/CIP-68 and the sta
 - **Architecturally possible:** all four blueprint patterns.
 - **Strongest immediate fit:** event log and batch-root verification.
 - **Partially available today:** generic registry, approvals, document trail, proofs, finalized streams, and Cardano root anchoring.
-- **Not yet out of the box:** a coherent DPP data model and bundle, GS1/EPCIS support, object/IPFS connectors, public verification portal, and DPP-specific Cardano asset publication.
+- **Reusable out of the box after ADR-013:** immutable S3-compatible object publication, existing-CID IPFS pinning, acknowledged Kafka publication, authenticated evidence state/proofs, and the `evidence-v1` composite registry/approval/document-trail/release workflow.
+- **Not yet out of the box:** a coherent DPP data model and bundle, GS1/EPCIS support, public verification portal, DPP actor/device identity and lifecycle semantics, selective-disclosure claim proofs, and DPP-specific Cardano asset publication.
+
+### ADR-013 reuse boundary
+
+The stock `composite` provider is a reusable mechanics and demo layer, not a
+DPP implementation. A future DPP bundle can reuse:
+
+- the committed composite profile, namespaced component state, exact routing,
+  result ownership, quotas, aggregate queries, and proof translation;
+- registry, approvals, document trail, and evidence-publication component
+  patterns;
+- `object.put`, `ipfs.pin`, and `kafka.publish` executors and receipts; and
+- three-node finality, state/effect proofs, snapshots/restarts, metrics, and
+  Cardano root anchoring.
+
+It must still define and test DPP-specific truth and interoperability rules:
+GS1/EPCIS canonical models, durable actor/device identities and signatures,
+passport version/status/revocation semantics, claim or event Merkle formats,
+recovery and anti-double-counting policy, regulator access, and optional
+Cardano DPP asset/CIP-68 publication. Configuration alone must not pretend
+that the generic evidence preset supplies those domain guarantees.
 
 ## 4. Recommended proof model
 
@@ -150,15 +171,15 @@ Yano libraries and plugins
 |   +-- DPP queries/domain read API
 |   +-- DPP effects, result handling, health, and metrics
 |
-+-- appchain-effects-objectstore-s3
++-- appchain-objectstore-s3
 |   +-- immutable/versioned object publication
 |   +-- integrity verification and durable receipts
 |
-+-- appchain-effects-ipfs
++-- appchain-ipfs
 |   +-- pin an existing CID
 |   +-- integrity verification and durable receipts
 |
-+-- appchain-effects-kafka
++-- appchain-kafka
 |   +-- acknowledged per-action publication
 |   +-- business integration events
 |

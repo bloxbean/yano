@@ -10,6 +10,7 @@ import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutor;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectExecution;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectExecutionContext;
+import com.bloxbean.cardano.yano.api.appchain.effects.EffectExecutorOperationalSnapshot;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectIntent;
 import com.bloxbean.cardano.yano.api.appchain.effects.FinalityGate;
 import com.bloxbean.cardano.yano.api.appchain.effects.PendingEffect;
@@ -23,6 +24,7 @@ import org.slf4j.LoggerFactory;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -63,6 +65,149 @@ class FxEffectsM2Test {
     // ------------------------------------------------------------------
 
     @Test
+    void executorOperations_areSampledOnceAndStatsNeverCallTheProduct(@TempDir Path dir)
+            throws Exception {
+        AtomicInteger samples = new AtomicInteger();
+        EffectExecutorOperationalSnapshot expected = new EffectExecutorOperationalSnapshot(
+                EffectExecutorOperationalSnapshot.Readiness.READY,
+                3, 2, 1, 0, 0,
+                EffectExecutorOperationalSnapshot.AgeBucket.LESS_THAN_ONE_MINUTE,
+                EffectExecutorOperationalSnapshot.AgeBucket.LESS_THAN_FIVE_MINUTES,
+                EffectExecutorOperationalSnapshot.FailureCode.RATE_LIMITED);
+        AppEffectExecutor executor = operationsExecutor("observed", samples, () -> expected);
+        try (Pipeline pipeline = new Pipeline(dir, noOpMachine(), FX_SETTINGS);
+             EffectRuntime runtime = new EffectRuntime(pipeline.store, "fx-chain",
+                     runtimeSettings(3), List.of(executor), Map.of(), Map.of(
+                             "observed", new EffectRuntime.ExecutorSource(
+                                     "bundle-safe", "observed")), "owner", log())) {
+            runtime.tick();
+            awaitOperations(runtime, "FRESH", "READY");
+
+            for (int index = 0; index < 10_000; index++) {
+                runtime.stats();
+            }
+            assertThat(samples).hasValue(1);
+            Map<String, Object> view = executorOperations(runtime).getFirst();
+            assertThat(view).containsEntry("bundleId", "bundle-safe")
+                    .containsEntry("scheme", "observed")
+                    .containsEntry("attempts", 3L)
+                    .containsEntry("failureCode", "RATE_LIMITED");
+            assertThat(view.keySet()).containsExactlyInAnyOrder(
+                    "id", "bundleId", "scheme", "types", "sampleState", "readiness",
+                    "attempts", "successes", "retryableFailures", "terminalFailures",
+                    "inFlight", "lastSuccessAge", "lastFailureAge", "failureCode");
+            assertThat(view.toString()).doesNotContain("password", "endpoint", "payload");
+        }
+    }
+
+    @Test
+    void blockedOperationsSample_degradesCacheAndCannotDelayStatsOrClose(@TempDir Path dir)
+            throws Exception {
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        AtomicInteger samples = new AtomicInteger();
+        AtomicInteger closes = new AtomicInteger();
+        AppEffectExecutor executor = new AppEffectExecutor() {
+            @Override public String id() { return "blocked-observation"; }
+            @Override public Set<String> effectTypes() { return Set.of("test.action"); }
+            @Override public boolean supports(String effectType) { return false; }
+            @Override public EffectExecution execute(
+                    EffectExecutionContext ctx, PendingEffect effect) {
+                return EffectExecution.confirmed(new byte[0]);
+            }
+            @Override public EffectExecutorOperationalSnapshot operationalSnapshot() {
+                samples.incrementAndGet();
+                entered.countDown();
+                boolean interrupted = false;
+                while (release.getCount() != 0) {
+                    try {
+                        release.await();
+                    } catch (InterruptedException ignored) {
+                        interrupted = true;
+                    }
+                }
+                if (interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+                return EffectExecutorOperationalSnapshot.unknown();
+            }
+            @Override public void close() { closes.incrementAndGet(); }
+        };
+
+        try (Pipeline pipeline = new Pipeline(dir, noOpMachine(), FX_SETTINGS)) {
+            EffectRuntime runtime = new EffectRuntime(pipeline.store, "fx-chain",
+                    runtimeSettings(3), List.of(executor), Map.of(), log());
+            runtime.tick();
+            assertThat(entered.await(2, TimeUnit.SECONDS)).isTrue();
+
+            long started = System.nanoTime();
+            for (int index = 0; index < 10_000; index++) {
+                runtime.stats();
+            }
+            assertThat(Duration.ofNanos(System.nanoTime() - started))
+                    .isLessThan(Duration.ofSeconds(1));
+            assertThat(samples).hasValue(1);
+
+            Thread.sleep(1_050);
+            assertThat(executorOperations(runtime).getFirst())
+                    .containsEntry("sampleState", "TIMED_OUT")
+                    .containsEntry("readiness", "DEGRADED")
+                    .containsEntry("failureCode", "CALLBACK_TIMEOUT");
+
+            runtime.close(0, 0);
+            assertThat(runtime.closeCompletion().toCompletableFuture()).isNotDone();
+            assertThat(closes).hasValue(0);
+            release.countDown();
+            runtime.closeCompletion().toCompletableFuture().get(5, TimeUnit.SECONDS);
+            assertThat(closes).hasValue(1);
+            assertThat(runtime.stats()).containsEntry("closed", true);
+        }
+    }
+
+    @Test
+    void executorOperations_rejectCounterRegressionAndBoundInventory(@TempDir Path dir)
+            throws Exception {
+        AtomicInteger samples = new AtomicInteger();
+        AtomicReference<EffectExecutorOperationalSnapshot> observation = new AtomicReference<>(
+                new EffectExecutorOperationalSnapshot(
+                        EffectExecutorOperationalSnapshot.Readiness.READY,
+                        5, 5, 0, 0, 0,
+                        EffectExecutorOperationalSnapshot.AgeBucket.LESS_THAN_ONE_MINUTE,
+                        EffectExecutorOperationalSnapshot.AgeBucket.NEVER,
+                        EffectExecutorOperationalSnapshot.FailureCode.NONE));
+        AppEffectExecutor executor = operationsExecutor("monotonic", samples, observation::get);
+        try (Pipeline pipeline = new Pipeline(dir, noOpMachine(), FX_SETTINGS);
+             EffectRuntime runtime = new EffectRuntime(pipeline.store, "fx-chain",
+                     runtimeSettings(3), List.of(executor), Map.of(), log())) {
+            runtime.tick();
+            awaitOperations(runtime, "FRESH", "READY");
+            observation.set(new EffectExecutorOperationalSnapshot(
+                    EffectExecutorOperationalSnapshot.Readiness.READY,
+                    1, 1, 0, 0, 0,
+                    EffectExecutorOperationalSnapshot.AgeBucket.LESS_THAN_ONE_MINUTE,
+                    EffectExecutorOperationalSnapshot.AgeBucket.NEVER,
+                    EffectExecutorOperationalSnapshot.FailureCode.NONE));
+            Thread.sleep(1_050);
+            runtime.tick();
+            awaitOperations(runtime, "FRESH", "DEGRADED");
+            assertThat(executorOperations(runtime).getFirst())
+                    .containsEntry("attempts", 5L)
+                    .containsEntry("successes", 5L)
+                    .containsEntry("failureCode", "CALLBACK_INVALID");
+            assertThat(samples).hasValue(2);
+        }
+
+        Path overflowDirectory = dir.resolve("overflow");
+        try (Pipeline pipeline = new Pipeline(overflowDirectory, noOpMachine(), FX_SETTINGS)) {
+            assertThatThrownBy(() -> new EffectRuntime(pipeline.store, "fx-chain",
+                    runtimeSettings(3), java.util.Collections.nCopies(257, executor),
+                    Map.of(), log()))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("at most 256 executor products");
+        }
+    }
+
+    @Test
     void executesEffect_endToEnd_withIdempotencyKey(@TempDir Path dir) throws Exception {
         RecordingExecutor executor = new RecordingExecutor("test.action",
                 effect -> EffectExecution.confirmed("ref-1".getBytes(StandardCharsets.UTF_8)));
@@ -79,6 +224,109 @@ class FxEffectsM2Test {
             assertThat(seen.idHash()).isEqualTo(seen.effectId().hash()); // key handed to executor
             assertThat(pipeline.store.fxQueueScan(10)).isEmpty();
             assertThat(runtime.stats().get("executed")).isEqualTo(1L);
+        }
+    }
+
+    @Test
+    void declarativeOwner_routesWithoutCallingLegacyPredicate(@TempDir Path dir)
+            throws Exception {
+        AtomicInteger executions = new AtomicInteger();
+        AppEffectExecutor executor = declaredExecutor(
+                "declared", Set.of("test.action"), () -> {
+                    throw new AssertionError("supports must not be called");
+                }, executions);
+        try (Pipeline pipeline = new Pipeline(dir,
+                emitting("test.action", ResultPolicy.NONE, null), FX_SETTINGS);
+             EffectRuntime runtime = new EffectRuntime(pipeline.store, "fx-chain",
+                     runtimeSettings(3), List.of(executor), Map.of(), log())) {
+            pipeline.applyNext(1);
+            runtime.tick();
+            awaitStatus(pipeline.store, 1, 0, FxStatusRecord.DONE);
+
+            assertThat(executions).hasValue(1);
+        }
+    }
+
+    @Test
+    void declarativeOwner_takesPrecedenceOverLegacyPredicate(@TempDir Path dir)
+            throws Exception {
+        AtomicInteger declaredExecutions = new AtomicInteger();
+        AtomicInteger legacySupports = new AtomicInteger();
+        AtomicInteger legacyExecutions = new AtomicInteger();
+        AppEffectExecutor declared = declaredExecutor(
+                "declared", Set.of("test.action"), () -> false, declaredExecutions);
+        AppEffectExecutor legacy = declaredExecutor(
+                "legacy", Set.of(), () -> {
+                    legacySupports.incrementAndGet();
+                    return true;
+                }, legacyExecutions);
+        try (Pipeline pipeline = new Pipeline(dir,
+                emitting("test.action", ResultPolicy.NONE, null), FX_SETTINGS);
+             EffectRuntime runtime = new EffectRuntime(pipeline.store, "fx-chain",
+                     runtimeSettings(3), List.of(legacy, declared), Map.of(), log())) {
+            pipeline.applyNext(1);
+            runtime.tick();
+            awaitStatus(pipeline.store, 1, 0, FxStatusRecord.DONE);
+
+            assertThat(declaredExecutions).hasValue(1);
+            assertThat(legacySupports).hasValue(0);
+            assertThat(legacyExecutions).hasValue(0);
+        }
+    }
+
+    @Test
+    void duplicateDeclarativeOwners_failBeforeRuntimePublication(@TempDir Path dir) {
+        AppEffectExecutor first = declaredExecutor(
+                "first", Set.of("test.action"), () -> false, new AtomicInteger());
+        AppEffectExecutor second = declaredExecutor(
+                "second", Set.of("test.action"), () -> false, new AtomicInteger());
+        Map<String, EffectRuntime.ExecutorSource> sources = Map.of(
+                "first", new EffectRuntime.ExecutorSource("bundle-a", "alpha"),
+                "second", new EffectRuntime.ExecutorSource("bundle-b", "beta"));
+
+        try (Pipeline pipeline = new Pipeline(dir,
+                emitting("test.action", ResultPolicy.NONE, null), FX_SETTINGS)) {
+            assertThatThrownBy(() -> new EffectRuntime(
+                    pipeline.store, "fx-chain", runtimeSettings(3),
+                    List.of(first, second), Map.of(), sources, "owner", log()))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("Duplicate declarative effect ownership")
+                    .hasMessageContaining("type='test.action'")
+                    .hasMessageContaining("bundle=bundle-a, scheme=alpha, executor=first")
+                    .hasMessageContaining("bundle=bundle-b, scheme=beta, executor=second");
+        }
+    }
+
+    @Test
+    void duplicateDeclarationsOutsideConfiguredPartition_doNotConflict(@TempDir Path dir) {
+        AppEffectExecutor first = declaredExecutor(
+                "first", Set.of("foreign.action"), () -> false, new AtomicInteger());
+        AppEffectExecutor second = declaredExecutor(
+                "second", Set.of("foreign.action"), () -> false, new AtomicInteger());
+        EffectRuntime.Settings ownedOnly = new EffectRuntime.Settings(true,
+                Set.of("owned.action"), 50, 1, 3, 1, 5, 0, 100);
+
+        try (Pipeline pipeline = new Pipeline(dir,
+                emitting("owned.action", ResultPolicy.NONE, null), FX_SETTINGS);
+             EffectRuntime ignored = new EffectRuntime(pipeline.store, "fx-chain", ownedOnly,
+                     List.of(first, second), Map.of(), log())) {
+            assertThat(ignored.isClosed()).isFalse();
+        }
+    }
+
+    @Test
+    void malformedDeclarativeType_failsClosed(@TempDir Path dir) {
+        AppEffectExecutor invalid = declaredExecutor(
+                "invalid", Set.of(" test.action"), () -> false, new AtomicInteger());
+
+        try (Pipeline pipeline = new Pipeline(dir,
+                emitting("test.action", ResultPolicy.NONE, null), FX_SETTINGS)) {
+            assertThatThrownBy(() -> new EffectRuntime(
+                    pipeline.store, "fx-chain", runtimeSettings(3),
+                    List.of(invalid), Map.of(), log()))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("invalid effect type")
+                    .hasMessageNotContaining(" test.action");
         }
     }
 
@@ -1569,6 +1817,7 @@ class FxEffectsM2Test {
             String url = "http://127.0.0.1:" + server.getAddress().getPort() + "/hook";
             WebhookEffectExecutor executor = new WebhookEffectExecutor(
                     Map.of("url", url), LoggerFactory.getLogger("fx"));
+            assertThat(executor.effectTypes()).containsExactly(WebhookEffectExecutor.TYPE);
             PendingEffect effect = PendingEffect.of(
                     new com.bloxbean.cardano.yano.api.appchain.effects.EffectRecord(1, "fx-chain",
                             7, 0, WebhookEffectExecutor.TYPE, "{\"x\":1}".getBytes(StandardCharsets.UTF_8),
@@ -1591,6 +1840,12 @@ class FxEffectsM2Test {
             responseCode.set(503); // transient → retryable
             EffectExecution transientFail = executor.execute(context("fx-chain"), effect);
             assertThat(((EffectExecution.Failed) transientFail).retryable()).isTrue();
+            EffectExecutorOperationalSnapshot operations = executor.operationalSnapshot();
+            assertThat(operations.attempts()).isEqualTo(3);
+            assertThat(operations.successes()).isOne();
+            assertThat(operations.terminalFailures()).isOne();
+            assertThat(operations.retryableFailures()).isOne();
+            assertThat(operations.inFlight()).isZero();
         } finally {
             server.stop(0);
         }
@@ -1631,6 +1886,52 @@ class FxEffectsM2Test {
         };
     }
 
+    private static AppStateMachine noOpMachine() {
+        return new AppStateMachine() {
+            @Override public String id() { return "no-op"; }
+            @Override public void apply(AppBlock block, AppStateWriter writer) { }
+        };
+    }
+
+    private static AppEffectExecutor operationsExecutor(
+            String id,
+            AtomicInteger samples,
+            java.util.function.Supplier<EffectExecutorOperationalSnapshot> snapshot) {
+        return new AppEffectExecutor() {
+            @Override public String id() { return id; }
+            @Override public Set<String> effectTypes() { return Set.of("test.action"); }
+            @Override public boolean supports(String effectType) { return false; }
+            @Override public EffectExecution execute(
+                    EffectExecutionContext ctx, PendingEffect effect) {
+                return EffectExecution.confirmed(new byte[0]);
+            }
+            @Override public EffectExecutorOperationalSnapshot operationalSnapshot() {
+                samples.incrementAndGet();
+                return snapshot.get();
+            }
+        };
+    }
+
+    @SuppressWarnings("unchecked")
+    private static List<Map<String, Object>> executorOperations(EffectRuntime runtime) {
+        return (List<Map<String, Object>>) runtime.stats().get("executorOperations");
+    }
+
+    private static void awaitOperations(EffectRuntime runtime, String state, String readiness)
+            throws InterruptedException {
+        for (int index = 0; index < 100; index++) {
+            List<Map<String, Object>> views = executorOperations(runtime);
+            if (!views.isEmpty()
+                    && state.equals(views.getFirst().get("sampleState"))
+                    && readiness.equals(views.getFirst().get("readiness"))) {
+                return;
+            }
+            Thread.sleep(20);
+        }
+        throw new AssertionError("executor operations did not reach " + state + "/" + readiness
+                + ": " + executorOperations(runtime));
+    }
+
     private static AppStateMachine emittingOnlyTailAsTarget() {
         return new AppStateMachine() {
             @Override public String id() { return "tail-emitter"; }
@@ -1663,6 +1964,35 @@ class FxEffectsM2Test {
 
     private interface Behavior {
         EffectExecution run(PendingEffect effect);
+    }
+
+    private static AppEffectExecutor declaredExecutor(
+            String id,
+            Set<String> types,
+            java.util.concurrent.Callable<Boolean> supports,
+            AtomicInteger executions
+    ) {
+        return new AppEffectExecutor() {
+            @Override public String id() { return id; }
+            @Override public Set<String> effectTypes() { return types; }
+
+            @Override
+            public boolean supports(String effectType) {
+                try {
+                    return supports.call();
+                } catch (RuntimeException | Error failure) {
+                    throw failure;
+                } catch (Exception failure) {
+                    throw new IllegalStateException(failure);
+                }
+            }
+
+            @Override
+            public EffectExecution execute(EffectExecutionContext ctx, PendingEffect effect) {
+                executions.incrementAndGet();
+                return EffectExecution.confirmed(new byte[0]);
+            }
+        };
     }
 
     private static final class RecordingExecutor implements AppEffectExecutor {

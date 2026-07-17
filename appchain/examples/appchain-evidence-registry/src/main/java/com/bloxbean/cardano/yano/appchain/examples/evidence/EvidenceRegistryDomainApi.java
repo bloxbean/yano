@@ -14,6 +14,7 @@ import com.bloxbean.cardano.yano.api.plugin.domain.DomainHttpMethod;
 import com.bloxbean.cardano.yano.appchain.examples.evidence.query.EvidenceGetRequestV1;
 import com.bloxbean.cardano.yano.appchain.examples.evidence.query.EvidenceGetResponseV1;
 import com.bloxbean.cardano.yano.appchain.examples.evidence.state.EvidenceEffectRef;
+import com.bloxbean.cardano.yano.appchain.examples.evidence.state.EvidenceCompositeKeys;
 import com.bloxbean.cardano.yano.appchain.examples.evidence.state.EvidenceRecordV1;
 import com.bloxbean.cardano.yano.appchain.examples.evidence.state.EvidenceStatus;
 import com.bloxbean.cardano.yano.appchain.examples.evidence.state.EvidenceTerminalResultV1;
@@ -77,7 +78,7 @@ public final class EvidenceRegistryDomainApi implements DomainApi {
                     "Evidence query failed", failure);
         }
         if (!chainId.equals(result.chainId())
-                || !EvidenceContract.STATE_MACHINE_ID.equals(result.stateMachineId())) {
+                || !supportedStateMachine(result.stateMachineId())) {
             throw new DomainApiException(DomainApiException.Code.FAILED,
                     "Evidence query identity mismatch");
         }
@@ -156,6 +157,7 @@ public final class EvidenceRegistryDomainApi implements DomainApi {
         StringBuilder json = new StringBuilder(1_024)
                 .append('{')
                 .append("\"chainId\":").append(string(result.chainId()))
+                .append(",\"stateMachineId\":").append(string(result.stateMachineId()))
                 .append(",\"committedHeight\":").append(result.committedHeight())
                 .append(",\"stateRoot\":").append(hexString(result.stateRoot()))
                 .append(",\"evidenceId\":").append(string(record.evidenceId()))
@@ -163,9 +165,11 @@ public final class EvidenceRegistryDomainApi implements DomainApi {
                 .append(",\"latestVersion\":").append(response.head().latestVersion())
                 .append(",\"ownerPublicKey\":").append(hexString(record.ownerPublicKey()))
                 .append(",\"status\":").append(string(EvidenceStatus.derive(record).name()))
-                .append(",\"headKey\":").append(hexString(response.headKey()))
+                .append(",\"headKey\":").append(hexString(
+                        physicalKey(result, response.headKey())))
                 .append(",\"headValue\":").append(hexString(response.headValue()))
-                .append(",\"recordKey\":").append(hexString(response.recordKey()))
+                .append(",\"recordKey\":").append(hexString(
+                        physicalKey(result, response.recordKey())))
                 .append(",\"recordValue\":").append(hexString(response.recordValue()))
                 .append(",\"effects\":{")
                 .append("\"object\":");
@@ -175,6 +179,16 @@ public final class EvidenceRegistryDomainApi implements DomainApi {
         json.append(",\"notification\":");
         appendEffect(json, record.notificationEffect(), record.notificationTerminal());
         return json.append("}}" ).toString();
+    }
+
+    private static boolean supportedStateMachine(String stateMachineId) {
+        return EvidenceContract.STATE_MACHINE_ID.equals(stateMachineId)
+                || EvidenceCompositeKeys.STATE_MACHINE_ID.equals(stateMachineId);
+    }
+
+    private static byte[] physicalKey(AppQueryResult result, byte[] localKey) {
+        return EvidenceCompositeKeys.STATE_MACHINE_ID.equals(result.stateMachineId())
+                ? EvidenceCompositeKeys.physicalKey(localKey) : localKey.clone();
     }
 
     private static void appendEffect(StringBuilder json, EvidenceEffectRef effect,

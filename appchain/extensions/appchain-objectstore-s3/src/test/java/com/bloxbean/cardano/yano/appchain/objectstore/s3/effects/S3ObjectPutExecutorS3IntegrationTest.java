@@ -13,7 +13,9 @@ import com.bloxbean.cardano.yano.appchain.integration.objectstore.ObjectPutComma
 import com.bloxbean.cardano.yano.appchain.integration.objectstore.ObjectPutReceiptV1;
 import com.bloxbean.cardano.yano.appchain.integration.objectstore.ObjectVersionFingerprint;
 import com.bloxbean.cardano.yano.appchain.objectstore.s3.config.ObjectStoreS3EffectConfig;
+import com.bloxbean.cardano.yano.appchain.objectstore.s3.testing.IntegrationSecretFiles;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
@@ -52,12 +54,13 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/** Opt-in executor-level compatibility test against a real MinIO server. */
+/** Opt-in executor-level compatibility test against a real S3-compatible service. */
 @EnabledIfSystemProperty(named = "yano.s3.integration.enabled", matches = "true")
-class S3ObjectPutExecutorMinioIntegrationTest {
+class S3ObjectPutExecutorS3IntegrationTest {
     private static final String TARGET_ALIAS = "archive";
     private static final String TARGET_ID = "archive-v1";
     private static final String SOURCE_KEY = "evidence.json";
@@ -71,10 +74,12 @@ class S3ObjectPutExecutorMinioIntegrationTest {
     @Test
     void executorConfirmsOnceReconcilesAfterRestartAndNeverResurrectsDeletedKey() {
         String endpoint = requiredProperty("yano.s3.integration.endpoint");
-        String accessKey = requiredProperty("yano.s3.integration.access-key");
-        String secretKey = requiredProperty("yano.s3.integration.secret-key");
+        String accessKey = IntegrationSecretFiles.read(
+                "yano.s3.integration.access-key-file");
+        String secretKey = IntegrationSecretFiles.read(
+                "yano.s3.integration.secret-key-file");
         String suffix = UUID.randomUUID().toString().replace("-", "").substring(0, 12);
-        String chainId = "minio-" + suffix;
+        String chainId = "s3-real-" + suffix;
         String sourceBucket = "yano-e2e-src-" + suffix;
         String destinationBucket = "yano-e2e-dst-" + suffix;
         Map<String, String> settings = settings(endpoint, accessKey, secretKey,
@@ -141,6 +146,69 @@ class S3ObjectPutExecutorMinioIntegrationTest {
         }
     }
 
+    @Test
+    @EnabledIfSystemProperty(named = "yano.s3.integration.phase", matches = "seed")
+    @Timeout(value = 45, unit = TimeUnit.SECONDS)
+    void seedsDurableObjectForServiceRestart() {
+        RestartScenario scenario = restartScenario();
+        boolean seeded = false;
+        try (S3Client admin = admin(scenario.endpoint(), scenario.accessKey(),
+                scenario.secretKey())) {
+            deleteBucketAndAllVersions(admin, scenario.destinationBucket());
+            deleteBucketAndAllVersions(admin, scenario.sourceBucket());
+            try {
+                stage(admin, scenario.sourceBucket(), scenario.destinationBucket());
+                executeConfirmed(scenario.chainId(), scenario.settings(), scenario.effect());
+                assertThat(inventory(admin, scenario.destinationBucket(),
+                        COMPOSED_DESTINATION_KEY).versionIds()).hasSize(1);
+                seeded = true;
+            } finally {
+                if (!seeded) {
+                    deleteBucketAndAllVersions(admin, scenario.destinationBucket());
+                    deleteBucketAndAllVersions(admin, scenario.sourceBucket());
+                }
+            }
+        }
+    }
+
+    @Test
+    @EnabledIfSystemProperty(named = "yano.s3.integration.phase", matches = "reconcile")
+    @Timeout(value = 45, unit = TimeUnit.SECONDS)
+    void reconcilesDurableObjectAfterServiceRestartWithoutAnotherVersion() {
+        RestartScenario scenario = restartScenario();
+        try (S3Client admin = admin(scenario.endpoint(), scenario.accessKey(),
+                scenario.secretKey())) {
+            try {
+                Inventory before = inventory(admin, scenario.destinationBucket(),
+                        COMPOSED_DESTINATION_KEY);
+                assertThat(before.versionIds()).hasSize(1);
+                assertThat(before.deleteMarkerIds()).isEmpty();
+
+                executeConfirmed(scenario.chainId(), scenario.settings(), scenario.effect());
+
+                assertThat(inventory(admin, scenario.destinationBucket(),
+                        COMPOSED_DESTINATION_KEY)).isEqualTo(before);
+            } finally {
+                deleteBucketAndAllVersions(admin, scenario.destinationBucket());
+                deleteBucketAndAllVersions(admin, scenario.sourceBucket());
+            }
+        }
+    }
+
+    @Test
+    @EnabledIfSystemProperty(named = "yano.s3.integration.phase", matches = "unavailable")
+    @Timeout(value = 15, unit = TimeUnit.SECONDS)
+    void unavailableServiceFailsClosedWithRetryableNormalizedCode() {
+        RestartScenario scenario = restartScenario();
+
+        assertThat(execute(scenario.chainId(), scenario.settings(), scenario.effect()))
+                .isInstanceOfSatisfying(EffectExecution.Failed.class, failed -> {
+                    assertThat(failed.reason()).isEqualTo(
+                            ConnectorErrorCode.SERVICE_UNAVAILABLE.wireCode());
+                    assertThat(failed.retryable()).isTrue();
+                });
+    }
+
     private static EffectExecution.Confirmed executeConfirmed(String chainId,
                                                                Map<String, String> settings,
                                                                PendingEffect effect) {
@@ -167,7 +235,7 @@ class S3ObjectPutExecutorMinioIntegrationTest {
 
     private static PendingEffect effect(String chainId, ObjectPutCommandV1 command) {
         EffectRecord record = new EffectRecord(EffectRecord.RECORD_VERSION, chainId,
-                17, 0, S3ObjectPutExecutor.TYPE, command.encode(), "minio",
+                17, 0, S3ObjectPutExecutor.TYPE, command.encode(), "s3-compatible",
                 FinalityGate.APP_FINAL, ResultPolicy.CHAIN, 100, null);
         return PendingEffect.of(record);
     }
@@ -273,7 +341,35 @@ class S3ObjectPutExecutorMinioIntegrationTest {
         settings.put(prefix + "retention-policy-id", "none-v1");
         settings.put(prefix + "require-versioning", "true");
         settings.put(prefix + "max-object-bytes", "16777216");
+        settings.put(prefix + "api-call-timeout-ms", "3000");
+        settings.put(prefix + "api-call-attempt-timeout-ms", "2000");
+        settings.put(prefix + "connect-timeout-ms", "500");
+        settings.put(prefix + "socket-timeout-ms", "1500");
+        settings.put(prefix + "close-timeout-ms", "500");
         return Map.copyOf(settings);
+    }
+
+    private static RestartScenario restartScenario() {
+        String runId = requiredProperty("yano.s3.integration.run-id");
+        if (!runId.matches("[a-z0-9]{6,20}")) {
+            throw new IllegalStateException("Invalid S3 integration run id");
+        }
+        String suffix = runId.substring(0, Math.min(runId.length(), 12));
+        String endpoint = requiredProperty("yano.s3.integration.endpoint");
+        String accessKey = IntegrationSecretFiles.read(
+                "yano.s3.integration.access-key-file");
+        String secretKey = IntegrationSecretFiles.read(
+                "yano.s3.integration.secret-key-file");
+        String chainId = "restart-" + suffix;
+        String sourceBucket = "yano-restart-src-" + suffix;
+        String destinationBucket = "yano-restart-dst-" + suffix;
+        Map<String, String> settings = settings(endpoint, accessKey, secretKey,
+                sourceBucket, destinationBucket);
+        ObjectPutCommandV1 command = new ObjectPutCommandV1(TARGET_ALIAS,
+                SOURCE_KEY, DESTINATION_KEY, DigestAlgorithm.SHA_256, sha256(CONTENT),
+                CONTENT.length, CONTENT_TYPE, null);
+        return new RestartScenario(endpoint, accessKey, secretKey, chainId,
+                sourceBucket, destinationBucket, settings, effect(chainId, command));
     }
 
     private static S3Client admin(String endpoint, String accessKey, String secretKey) {
@@ -315,7 +411,23 @@ class S3ObjectPutExecutorMinioIntegrationTest {
             admin.listObjectsV2Paginator(ListObjectsV2Request.builder().bucket(bucket).build())
                     .contents().forEach(object -> admin.deleteObject(DeleteObjectRequest.builder()
                             .bucket(bucket).key(object.key()).build()));
-            admin.deleteBucket(DeleteBucketRequest.builder().bucket(bucket).build());
+            try {
+                admin.deleteBucket(DeleteBucketRequest.builder().bucket(bucket).build());
+            } catch (S3Exception providerQuirk) {
+                if (providerQuirk.statusCode() != 409
+                        || !Boolean.getBoolean("yano.s3.integration.disposable-service")) {
+                    throw providerQuirk;
+                }
+                assertThat(admin.listObjectVersions(
+                        ListObjectVersionsRequest.builder().bucket(bucket).build()).versions())
+                        .isEmpty();
+                assertThat(admin.listObjectVersions(
+                        ListObjectVersionsRequest.builder().bucket(bucket).build()).deleteMarkers())
+                        .isEmpty();
+                assertThat(admin.listObjectsV2(
+                        ListObjectsV2Request.builder().bucket(bucket).build()).contents())
+                        .isEmpty();
+            }
         } catch (S3Exception missing) {
             if (missing.statusCode() != 404) {
                 throw missing;
@@ -337,7 +449,7 @@ class S3ObjectPutExecutorMinioIntegrationTest {
     private static String requiredProperty(String name) {
         String value = System.getProperty(name);
         if (value == null || value.isBlank()) {
-            throw new IllegalStateException("Missing required MinIO integration property: " + name);
+            throw new IllegalStateException("Missing required S3 integration property: " + name);
         }
         return value;
     }
@@ -351,5 +463,15 @@ class S3ObjectPutExecutorMinioIntegrationTest {
     }
 
     private record Inventory(List<String> versionIds, List<String> deleteMarkerIds) {
+    }
+
+    private record RestartScenario(String endpoint,
+                                   String accessKey,
+                                   String secretKey,
+                                   String chainId,
+                                   String sourceBucket,
+                                   String destinationBucket,
+                                   Map<String, String> settings,
+                                   PendingEffect effect) {
     }
 }

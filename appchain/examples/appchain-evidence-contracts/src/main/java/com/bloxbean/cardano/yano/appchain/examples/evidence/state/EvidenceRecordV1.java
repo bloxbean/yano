@@ -22,6 +22,11 @@ import java.util.Objects;
  * deliberately deferred to {@link EvidenceStatus#derive(EvidenceRecordV1)} so
  * a malformed confirmed reference produces a deterministic failure status,
  * never an exception while reading committed state.</p>
+ *
+ * <p>A notification effect may be emitted either by an explicit notify command
+ * ({@code notifyMessageId} is present) or directly while incorporating the
+ * storage result that makes the evidence ready ({@code notifyMessageId} is
+ * absent). A notify message without a notification effect is never valid.</p>
  */
 public record EvidenceRecordV1(String evidenceId,
                                long businessVersion,
@@ -72,7 +77,7 @@ public record EvidenceRecordV1(String evidenceId,
             notifyMessageId = EvidenceValidation.exactBytes(notifyMessageId,
                     EvidenceContract.HASH_BYTES);
         }
-        if ((notifyMessageId == null) != (notificationEffect == null)) {
+        if (notifyMessageId != null && notificationEffect == null) {
             throw EvidenceValidation.invalid();
         }
         if (notificationTerminal != null && notificationEffect == null) {

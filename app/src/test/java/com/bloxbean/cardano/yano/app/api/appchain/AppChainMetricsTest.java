@@ -52,6 +52,16 @@ class AppChainMetricsTest {
                 "parked", 4L));
         effectStats.put("expiredTotal", 9L);
         effectStats.put("latencyByType", latencyByType);
+        effectStats.put("executorOperations", List.of(Map.ofEntries(
+                Map.entry("id", "kafka-publish"),
+                Map.entry("readiness", "READY"),
+                Map.entry("attempts", 8L),
+                Map.entry("successes", 7L),
+                Map.entry("retryableFailures", 1L),
+                Map.entry("terminalFailures", 0L),
+                Map.entry("inFlight", 1),
+                Map.entry("lastSuccessAge", "LESS_THAN_ONE_MINUTE"),
+                Map.entry("lastFailureAge", "LESS_THAN_FIVE_MINUTES"))));
 
         SimpleMeterRegistry registry = new SimpleMeterRegistry();
         AppChainMetrics metrics = metrics(registry, gateway("chain-a", effectStats));
@@ -96,6 +106,22 @@ class AppChainMetricsTest {
         assertEquals(4d, webhookLatency.count(), 0.0001d);
         assertEquals(800d, webhookLatency.totalTime(TimeUnit.MILLISECONDS), 0.0001d);
 
+        assertEquals(1d, registry.get("yano.appchain.effects.executor.readiness")
+                .tags("chain", "chain-a", "executor", "kafka-publish",
+                        "slot", "0", "state", "ready").gauge().value(), 0.0001d);
+        assertEquals(0d, registry.get("yano.appchain.effects.executor.readiness")
+                .tags("chain", "chain-a", "executor", "kafka-publish",
+                        "slot", "0", "state", "degraded").gauge().value(), 0.0001d);
+        assertEquals(1d, registry.get("yano.appchain.effects.executor.in.flight")
+                .tags("chain", "chain-a", "executor", "kafka-publish", "slot", "0")
+                .gauge().value(), 0.0001d);
+        assertEquals(8d, registry.get("yano.appchain.effects.executor.attempts")
+                .tags("chain", "chain-a", "executor", "kafka-publish", "slot", "0")
+                .functionCounter().count(), 0.0001d);
+        assertEquals(60d, registry.get("yano.appchain.effects.executor.age.bucket")
+                .tags("chain", "chain-a", "executor", "kafka-publish",
+                        "slot", "0", "event", "success").gauge().value(), 0.0001d);
+
         // Meter cardinality is fixed at startup. A later stats key is readable
         // data, but it cannot create a new Micrometer series dynamically.
         latencyByType.put("late.dynamic", Map.of("count", 1L, "totalMillis", 5L));
@@ -103,6 +129,43 @@ class AppChainMetricsTest {
                 .tags("chain", "chain-a", "type", "late.dynamic").functionTimer());
         assertEquals(2, registry.find("yano.appchain.effects.execution.latency")
                 .tag("chain", "chain-a").functionTimers().size());
+        metrics.onStop(null);
+    }
+
+    @Test
+    void executorMetersFreezeWhenRuntimeInventoryAppearsAfterStartup() throws Exception {
+        AtomicReference<Map<String, Object>> effectStats = new AtomicReference<>(Map.of());
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        AppChainMetrics metrics = metrics(registry, gateway("chain-late", effectStats::get));
+        metrics.onStart(null);
+
+        assertTrue(registry.find("yano.appchain.effects.executor.readiness")
+                .tag("chain", "chain-late").gauges().isEmpty());
+
+        effectStats.set(Map.of("executorOperations", List.of(Map.ofEntries(
+                Map.entry("id", "kafka-publish"),
+                Map.entry("readiness", "READY"),
+                Map.entry("attempts", 1L),
+                Map.entry("successes", 1L),
+                Map.entry("retryableFailures", 0L),
+                Map.entry("terminalFailures", 0L),
+                Map.entry("inFlight", 0),
+                Map.entry("lastSuccessAge", "LESS_THAN_ONE_MINUTE"),
+                Map.entry("lastFailureAge", "NEVER")))));
+        Thread.sleep(1_050);
+        metrics.refreshExecutorMeters();
+
+        assertEquals(4, registry.find("yano.appchain.effects.executor.readiness")
+                .tags("chain", "chain-late", "executor", "kafka-publish")
+                .gauges().size());
+
+        effectStats.set(Map.of("executorOperations", List.of(
+                Map.of("id", "kafka-publish"), Map.of("id", "late-dynamic"))));
+        metrics.refreshExecutorMeters();
+        assertTrue(registry.find("yano.appchain.effects.executor.readiness")
+                .tags("chain", "chain-late", "executor", "late-dynamic")
+                .gauges().isEmpty());
+        metrics.onStop(null);
     }
 
     @Test
@@ -122,6 +185,7 @@ class AppChainMetricsTest {
                 .gauge().value(), 0.0001d);
         assertTrue(registry.find("yano.appchain.effects.execution.latency")
                 .tag("chain", "chain-empty").functionTimers().isEmpty());
+        metrics.onStop(null);
     }
 
     @Test
@@ -180,6 +244,7 @@ class AppChainMetricsTest {
         assertEquals(10d, expired.count(), 0.0001d);
         assertEquals(3d, latency.count(), 0.0001d);
         assertEquals(1_350d, latency.totalTime(TimeUnit.MILLISECONDS), 0.0001d);
+        metrics.onStop(null);
     }
 
     private static double gauge(SimpleMeterRegistry registry, String name) {

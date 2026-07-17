@@ -57,12 +57,7 @@ public final class ReportStore {
     public byte[] readLatest() {
         Path latest = directory.resolve(LATEST_FILE);
         try {
-            if (Files.isSymbolicLink(latest)
-                    || !Files.isRegularFile(latest, LinkOption.NOFOLLOW_LINKS)
-                    || Files.size(latest) > MAX_REPORT_BYTES) {
-                return null;
-            }
-            return Files.readAllBytes(latest);
+            return BoundedFiles.read(latest, MAX_REPORT_BYTES, true, false);
         } catch (IOException failure) {
             return null;
         }

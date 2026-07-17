@@ -15,12 +15,15 @@ import com.bloxbean.cardano.client.util.HexUtil;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutor;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectExecution;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectExecutionContext;
+import com.bloxbean.cardano.yano.api.appchain.effects.EffectExecutorOperationalSnapshot;
+import com.bloxbean.cardano.yano.api.appchain.effects.EffectExecutorOperationsTracker;
 import com.bloxbean.cardano.yano.api.appchain.effects.PendingEffect;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
+import java.util.Set;
 
 /**
  * {@code cardano.payment} executor (ADR app-layer/010 FX-M4, §8.1): builds,
@@ -54,6 +57,8 @@ public class CardanoPaymentExecutor implements AppEffectExecutor {
     private final Network network;
     private final long metadataLabel;
     private final long maxLovelacePerTx;
+    private final EffectExecutorOperationsTracker operations =
+            new EffectExecutorOperationsTracker();
 
     CardanoPaymentExecutor(BackendService backendService, Account account, Network network,
                            long metadataLabel, long maxLovelacePerTx) {
@@ -70,12 +75,27 @@ public class CardanoPaymentExecutor implements AppEffectExecutor {
     }
 
     @Override
+    public Set<String> effectTypes() {
+        return Set.of(TYPE);
+    }
+
+    @Override
     public boolean supports(String effectType) {
         return TYPE.equals(effectType);
     }
 
     @Override
     public synchronized EffectExecution execute(EffectExecutionContext ctx, PendingEffect effect)
+            throws Exception {
+        return operations.observeChecked(() -> executeAttempt(ctx, effect));
+    }
+
+    @Override
+    public EffectExecutorOperationalSnapshot operationalSnapshot() {
+        return operations.snapshot();
+    }
+
+    private EffectExecution executeAttempt(EffectExecutionContext ctx, PendingEffect effect)
             throws Exception {
         // synchronized: single-flight per payer wallet — parallel payments
         // from one account coin-select the same UTxOs and collide (M4 review)

@@ -1,0 +1,128 @@
+x-service-security: &service-security
+  init: true
+  read_only: true
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+
+services:
+  kafka:
+    image: ${FAULT_KAFKA_IMAGE:?}
+    user: ${FAULT_HOST_UID:?}:${FAULT_HOST_GID:?}
+    <<: *service-security
+    environment:
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:28711
+      KAFKA_LISTENERS: CONTROLLER://:28711,PLAINTEXT_HOST://:9092,PLAINTEXT://:19092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT_HOST://127.0.0.1:${FAULT_KAFKA_PORT:?},PLAINTEXT://kafka:19092
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CLUSTER_ID: 4L6g3nShT-eMCtK--X86sw
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: "0"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_SHARE_COORDINATOR_STATE_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_SHARE_COORDINATOR_STATE_TOPIC_MIN_ISR: "1"
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+      - /opt/kafka/config:size=16m,mode=0700,uid=${FAULT_HOST_UID:?},gid=${FAULT_HOST_GID:?}
+      - /opt/kafka/logs:size=64m,mode=0700,uid=${FAULT_HOST_UID:?},gid=${FAULT_HOST_GID:?}
+    volumes:
+      - type: bind
+        source: ${FAULT_ROOT:?}/data/kafka
+        target: /var/lib/kafka/data
+      - type: bind
+        source: ${FAULT_ROOT:?}/kafka-passwd
+        target: /etc/passwd
+        read_only: true
+      - type: bind
+        source: ${FAULT_ROOT:?}/kafka-group
+        target: /etc/group
+        read_only: true
+    ports:
+      - target: 9092
+        published: ${FAULT_KAFKA_PORT:?}
+        host_ip: 127.0.0.1
+        protocol: tcp
+    healthcheck:
+      test: ["CMD", "/usr/bin/nc", "-z", "-w", "3", "127.0.0.1", "19092"]
+      interval: 2s
+      timeout: 3s
+      start_period: 10s
+      retries: 45
+
+  rustfs:
+    image: ${FAULT_RUSTFS_IMAGE:?}
+    user: ${FAULT_HOST_UID:?}:${FAULT_HOST_GID:?}
+    <<: *service-security
+    environment:
+      RUSTFS_ACCESS_KEY_FILE: /run/secrets/s3-root-access-key
+      RUSTFS_SECRET_KEY_FILE: /run/secrets/s3-root-secret-key
+      RUSTFS_IAM_MASTER_KEY_FILE: /run/secrets/s3-iam-master-key
+      RUSTFS_ADDRESS: 0.0.0.0:9000
+      RUSTFS_CHECK_UPDATE: "false"
+      RUSTFS_CONSOLE_ENABLE: "false"
+      RUSTFS_CONSOLE_CORS_ALLOWED_ORIGINS: ""
+      RUSTFS_OBS_LOG_DIRECTORY: ""
+    tmpfs:
+      - /tmp:size=32m,mode=1777,noexec,nosuid,nodev
+    volumes:
+      - type: bind
+        source: ${FAULT_ROOT:?}/data/rustfs
+        target: /data
+      - type: bind
+        source: ${FAULT_ROOT:?}/secrets/s3-access-key
+        target: /run/secrets/s3-root-access-key
+        read_only: true
+      - type: bind
+        source: ${FAULT_ROOT:?}/secrets/s3-secret-key
+        target: /run/secrets/s3-root-secret-key
+        read_only: true
+      - type: bind
+        source: ${FAULT_ROOT:?}/secrets/s3-iam-master-key
+        target: /run/secrets/s3-iam-master-key
+        read_only: true
+    ports:
+      - target: 9000
+        published: ${FAULT_S3_PORT:?}
+        host_ip: 127.0.0.1
+        protocol: tcp
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9000/health/ready"]
+      interval: 2s
+      timeout: 3s
+      start_period: 15s
+      retries: 60
+
+  kubo:
+    image: ${FAULT_KUBO_IMAGE:?}
+    user: ${FAULT_HOST_UID:?}:${FAULT_HOST_GID:?}
+    <<: *service-security
+    command: ["daemon", "--offline", "--migrate=false", "--enable-gc"]
+    environment:
+      IPFS_PATH: /data/ipfs
+      IPFS_PROFILE: server,test
+      IPFS_TELEMETRY: "off"
+    tmpfs:
+      - /tmp:size=64m,mode=1777,noexec,nosuid,nodev
+    volumes:
+      - type: bind
+        source: ${FAULT_ROOT:?}/data/kubo
+        target: /data/ipfs
+    ports:
+      - target: 5001
+        published: ${FAULT_KUBO_PORT:?}
+        host_ip: 127.0.0.1
+        protocol: tcp
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/ipfs", "--api=/ip4/127.0.0.1/tcp/5001",
+             "diag", "healthy"]
+      interval: 2s
+      timeout: 3s
+      start_period: 5s
+      retries: 45

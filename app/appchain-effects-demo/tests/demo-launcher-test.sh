@@ -65,6 +65,16 @@ grep -Fq 'DEMO_HTTP_BASE must be a decimal integer' "$TMP/invalid-number.out" \
   || fail "invalid numeric rejection is unclear"
 assert_absent "$INVALID_ROOT"
 
+if DEMO_DATA_ROOT="$INVALID_ROOT/data" DEMO_SECRET_ROOT="$INVALID_ROOT/secrets" \
+    DEMO_RUNTIME_ROOT="$INVALID_ROOT/runtime" \
+    "$DEMO_DIR/demo.sh" config --instance invalid-machine --machine unknown \
+    >"$TMP/invalid-machine.out" 2>&1; then
+  fail "invalid state-machine mode unexpectedly succeeded"
+fi
+grep -Fq -- '--machine must be standalone or composite' "$TMP/invalid-machine.out" \
+  || fail "invalid state-machine mode rejection is unclear"
+assert_absent "$INVALID_ROOT"
+
 OVERLAP_ROOT="$TMP/overlap"
 if DEMO_DATA_ROOT="$OVERLAP_ROOT/data" DEMO_SECRET_ROOT="$OVERLAP_ROOT/data/secrets" \
     DEMO_RUNTIME_ROOT="$OVERLAP_ROOT/runtime" \
@@ -103,6 +113,32 @@ fi
 grep -Fq 'host connector locators must be bounded credential-free' "$TMP/bad-locator.out" \
   || fail "credential-bearing connector rejection is unclear"
 assert_absent "$BAD_LOCATOR_ROOT"
+
+# A connector bind root must never follow a pre-positioned symlink and chmod
+# or populate its target outside the managed instance tree.
+SYMLINK_ROOT="$TMP/symlink-state"
+SYMLINK_INSTANCE="$SYMLINK_ROOT/data/networks/devnet/instances/symlinked/compose"
+SYMLINK_OUTSIDE="$SYMLINK_ROOT/outside-rustfs"
+DEMO_DATA_ROOT="$SYMLINK_ROOT/data" DEMO_SECRET_ROOT="$SYMLINK_ROOT/secrets" \
+  DEMO_RUNTIME_ROOT="$SYMLINK_ROOT/runtime" \
+  "$DEMO_DIR/demo.sh" config --instance symlinked >"$TMP/symlink-state-initial.out"
+mkdir -p "$SYMLINK_OUTSIDE"
+chmod 755 "$SYMLINK_OUTSIDE"
+printf 'unchanged\n' > "$SYMLINK_OUTSIDE/sentinel"
+rmdir "$SYMLINK_INSTANCE/connectors/rustfs-v1"
+ln -s "$SYMLINK_OUTSIDE" "$SYMLINK_INSTANCE/connectors/rustfs-v1"
+if DEMO_DATA_ROOT="$SYMLINK_ROOT/data" DEMO_SECRET_ROOT="$SYMLINK_ROOT/secrets" \
+    DEMO_RUNTIME_ROOT="$SYMLINK_ROOT/runtime" \
+    "$DEMO_DIR/demo.sh" config --instance symlinked \
+    >"$TMP/symlink-state.out" 2>&1; then
+  fail "symlinked RustFS bind root unexpectedly succeeded"
+fi
+grep -Fq 'private state directory must be a non-symlink' "$TMP/symlink-state.out" \
+  || fail "symlinked RustFS bind-root rejection is unclear"
+[ "$(cat "$SYMLINK_OUTSIDE/sentinel")" = unchanged ] \
+  || fail "symlinked RustFS rejection mutated the outside sentinel"
+[ "$(mode "$SYMLINK_OUTSIDE")" = 755 ] \
+  || fail "symlinked RustFS rejection changed the outside directory mode"
 
 # Read-only commands for an absent instance must not create data, secrets, or runtime files.
 MISSING_ROOT="$TMP/missing"
@@ -211,6 +247,7 @@ jq -e '
 jq -e '
   .schemaVersion == 1
   and .kind == "yano.demo.appchain-identity"
+  and .layoutVersion == 3
   and .networkName == "devnet"
   and .instanceId == "launcher"
   and .deployment == "compose"
@@ -219,8 +256,78 @@ jq -e '
   and .anchor.enabled == true
   and .anchor.everyBlocks == 1
   and .anchor.maxIntervalMinutes == 60
+  and .stateMachine.profileVersion == 1
+  and .effects.continuationMode == "explicit"
+  and .effects.directResultEmissionActivationHeight == null
   and .effects.storageGate == "l1-anchored"
+  and .connectors.s3.provider == "rustfs"
+  and .connectors.s3.providerVersion == "1.0.0-beta.9"
+  and .connectors.s3.dataLayoutVersion == 2
+  and (.connectors.s3.iamConfigSha256 | test("^[0-9a-f]{64}$"))
 ' "$INSTANCE_MARKER" >/dev/null || fail "instance marker identity is incomplete"
+[ "$(grep -hFx '# direct result emission is not activated' \
+  "$NODE_DIR"/*.properties | wc -l | tr -d ' ')" -eq 3 ] \
+  || fail "legacy profile does not explicitly preserve continuation-command behavior"
+if grep -R -Fq 'activations.direct-result-emission=' "$NODE_DIR"; then
+  fail "legacy profile unexpectedly activates direct result emission"
+fi
+
+# Direct continuation is a distinct immutable state-machine profile. It must
+# activate deterministically from genesis on every member and cannot be
+# retrofitted onto an already prepared legacy instance.
+DIRECT_OUT="$TMP/config-direct.yml"
+"$DEMO_DIR/demo.sh" config --instance launcher-direct --continuation direct > "$DIRECT_OUT"
+DIRECT_ROOT="$NETWORK_ROOT/instances/launcher-direct/compose"
+DIRECT_SECRET_DIR="$TMP/secrets/networks/devnet/launcher-direct/compose"
+DIRECT_MARKER="$DIRECT_ROOT/appchain-identity.json"
+DIRECT_NODE_DIR="$DIRECT_SECRET_DIR/nodes-compose"
+jq -e '
+  .stateMachine.profileVersion == 2
+  and .stateMachine.effectEmissionVersion == 1
+  and .effects.continuationMode == "direct"
+  and .effects.directResultEmissionActivationHeight == 1
+' "$DIRECT_MARKER" >/dev/null || fail "direct-continuation identity is incomplete"
+[ "$(grep -hFx \
+  'yano.app-chain.chains[0].machines.evidence-registry.activations.direct-result-emission=1' \
+  "$DIRECT_NODE_DIR"/*.properties | wc -l | tr -d ' ')" -eq 3 ] \
+  || fail "direct result activation is not identical on all three members"
+if "$DEMO_DIR/demo.sh" config --instance launcher --continuation direct \
+    >"$TMP/profile-mutation.out" 2>&1; then
+  fail "an existing legacy instance accepted an in-place direct-profile mutation"
+fi
+grep -Fq 'app-chain identity mismatch' "$TMP/profile-mutation.out" \
+  || fail "continuation-profile mutation rejection is unclear"
+
+# The stock composite profile is an explicit immutable chain identity and the
+# runner must select its workflow command path without embedding plugin code.
+COMPOSITE_OUT="$TMP/config-composite.yml"
+"$DEMO_DIR/demo.sh" config --instance launcher-composite --machine composite \
+  > "$COMPOSITE_OUT"
+COMPOSITE_ROOT="$NETWORK_ROOT/instances/launcher-composite/compose"
+COMPOSITE_SECRET_DIR="$TMP/secrets/networks/devnet/launcher-composite/compose"
+COMPOSITE_RUNTIME_DIR="$TMP/runtime/networks/devnet/launcher-composite/compose"
+COMPOSITE_MARKER="$COMPOSITE_ROOT/appchain-identity.json"
+COMPOSITE_NODE_DIR="$COMPOSITE_SECRET_DIR/nodes-compose"
+jq -e '
+  .stateMachine.provider == "composite"
+  and .stateMachine.preset == "evidence-v1"
+  and .stateMachine.profileVersion == 1
+' "$COMPOSITE_MARKER" >/dev/null || fail "composite identity is incomplete"
+[ "$(grep -hFx 'yano.app-chain.chains[0].state-machine=composite' \
+  "$COMPOSITE_NODE_DIR"/*.properties | wc -l | tr -d ' ')" -eq 3 ] \
+  || fail "composite state-machine selection is not identical on all members"
+[ "$(grep -hFx 'yano.app-chain.chains[0].machines.composite.preset=evidence-v1' \
+  "$COMPOSITE_NODE_DIR"/*.properties | wc -l | tr -d ' ')" -eq 3 ] \
+  || fail "composite preset is not identical on all members"
+grep -Fxq 'demo.state-machine=composite' \
+  "$COMPOSITE_RUNTIME_DIR/runner-compose.properties" \
+  || fail "runner did not select the composite workflow path"
+if "$DEMO_DIR/demo.sh" config --instance launcher-composite --machine standalone \
+    >"$TMP/composite-mutation.out" 2>&1; then
+  fail "an existing composite instance accepted an in-place machine mutation"
+fi
+grep -Fq 'app-chain identity mismatch' "$TMP/composite-mutation.out" \
+  || fail "composite machine mutation rejection is unclear"
 anchor_fingerprint="$(python3 - "$SECRET_DIR/anchor.seed" <<'PY'
 import hashlib
 from pathlib import Path
@@ -251,9 +358,16 @@ for index in range(3):
 PY
 expected_members="$(for i in 0 1 2; do tr -d '\r\n' < "$MEMBER_DIR/node$i.public"; \
   [ "$i" -eq 2 ] || printf ','; done)"
+expected_result_signers="${expected_members%,*}"
+[ "$(jq -r '.membership.resultSigners | join(",")' "$INSTANCE_MARKER")" \
+    = "$expected_result_signers" ] \
+  || fail "immutable identity does not bind the primary and failover result signers"
 [ "$(grep -hFx "yano.app-chain.chains[0].members=$expected_members" \
   "$NODE_DIR"/*.properties | wc -l | tr -d ' ')" -eq 3 ] \
   || fail "rendered nodes do not use the persisted member public keys"
+[ "$(grep -hFx "yano.app-chain.chains[0].effects.result.signers=$expected_result_signers" \
+  "$NODE_DIR"/*.properties | wc -l | tr -d ' ')" -eq 3 ] \
+  || fail "rendered nodes do not share the immutable primary/failover signer policy"
 grep -Fxq "demo.yano.member-keys=$expected_members" "$RUNTIME_DIR/runner-compose.properties" \
   || fail "runner membership differs from node membership"
 [ "$(grep -hF 'effects.executor.enabled=true' "$NODE_DIR"/*.properties | wc -l | tr -d ' ')" -eq 1 ] \
@@ -267,7 +381,7 @@ grep -Fxq 'yano.app-chain.chains[0].anchor.max-interval-minutes=60' \
   || fail "devnet Compose anchor does not use the profile safety interval"
 
 for file in "$SECRET_DIR"/yano-api-key "$SECRET_DIR"/anchor.seed \
-  "$SECRET_DIR"/minio-*-key "$SECRET_DIR"/minio-*-password "$MEMBER_DIR"/*.seed; do
+  "$SECRET_DIR"/s3-*-key "$MEMBER_DIR"/*.seed; do
   [ -f "$file" ] || continue
   value="$(tr -d '\r\n' < "$file")"
   ! grep -Fq "$value" "$OUT1" || fail "launcher rendered a secret value"
@@ -309,10 +423,12 @@ done
 
 # Re-rendering must preserve all immutable identity and secret material.
 before="$(shasum -a 256 "$NETWORK_MARKER" "$INSTANCE_MARKER" \
-  "$SECRET_DIR/yano-api-key" "$SECRET_DIR/anchor.seed" "$MEMBER_DIR"/*.seed "$genesis")"
+  "$SECRET_DIR/yano-api-key" "$SECRET_DIR/anchor.seed" \
+  "$SECRET_DIR/rustfs-iam-spec.json" "$MEMBER_DIR"/*.seed "$genesis")"
 "$DEMO_DIR/demo.sh" config --instance launcher > "$TMP/config-2.yml"
 after="$(shasum -a 256 "$NETWORK_MARKER" "$INSTANCE_MARKER" \
-  "$SECRET_DIR/yano-api-key" "$SECRET_DIR/anchor.seed" "$MEMBER_DIR"/*.seed "$genesis")"
+  "$SECRET_DIR/yano-api-key" "$SECRET_DIR/anchor.seed" \
+  "$SECRET_DIR/rustfs-iam-spec.json" "$MEMBER_DIR"/*.seed "$genesis")"
 [ "$before" = "$after" ] || fail "re-render changed immutable identity or credentials"
 
 # Once anchored history exists, startup is bound to one canonical script
@@ -325,7 +441,7 @@ done
 python3 - "$ANCHOR_BINDING" <<'PY'
 import json, os, sys
 document = {
-    "schemaVersion": 1,
+    "schemaVersion": 2,
     "kind": "yano.demo.anchor-binding",
     "networkName": "devnet",
     "instanceId": "launcher",
@@ -334,7 +450,8 @@ document = {
     "threadPolicyId": "11" * 28,
     "scriptHash": "22" * 28,
     "scriptAddress": "addr_test1" + "q" * 40,
-    "lastAdoptedHeight": 7,
+    "verificationState": "member-adopted",
+    "verifiedHeight": 7,
     "verifiedMembers": 3,
     "verifiedAtMillis": 1,
 }
@@ -345,6 +462,40 @@ os.chmod(sys.argv[1], 0o600)
 PY
 "$DEMO_DIR/demo.sh" config --instance launcher > "$TMP/config-binding-valid.yml"
 cp "$ANCHOR_BINDING" "$TMP/anchor-binding.saved"
+
+# A stopped instance may retain the canonical leader-only binding produced
+# before its first app message. Only the exact pristine-pending schema is valid.
+python3 - "$ANCHOR_BINDING" <<'PY'
+import json, os, sys
+path = sys.argv[1]
+document = json.load(open(path))
+document["verificationState"] = "pending-genesis"
+document["verifiedHeight"] = 0
+document["verifiedMembers"] = 1
+with open(path, "w") as out:
+    json.dump(document, out, sort_keys=True, separators=(",", ":"))
+    out.write("\n")
+os.chmod(path, 0o600)
+PY
+"$DEMO_DIR/demo.sh" config --instance launcher > "$TMP/config-binding-pending.yml"
+python3 - "$ANCHOR_BINDING" <<'PY'
+import json, os, sys
+path = sys.argv[1]
+document = json.load(open(path))
+document["verifiedHeight"] = 1
+with open(path, "w") as out:
+    json.dump(document, out, sort_keys=True, separators=(",", ":"))
+    out.write("\n")
+os.chmod(path, 0o600)
+PY
+if "$DEMO_DIR/demo.sh" config --instance launcher >"$TMP/nonzero-pending-binding.out" 2>&1; then
+  fail "nonzero pending anchor binding unexpectedly succeeded"
+fi
+grep -Fq 'anchor binding identity is invalid' "$TMP/nonzero-pending-binding.out" \
+  || fail "nonzero pending anchor binding rejection is unclear"
+cp "$TMP/anchor-binding.saved" "$ANCHOR_BINDING"
+chmod 600 "$ANCHOR_BINDING"
+
 python3 - "$ANCHOR_BINDING" <<'PY'
 import json, os, sys
 path = sys.argv[1]
@@ -372,6 +523,24 @@ cp "$TMP/anchor-binding.saved" "$ANCHOR_BINDING"
 chmod 600 "$ANCHOR_BINDING"
 
 cp "$INSTANCE_MARKER" "$TMP/instance-marker.saved"
+python3 - "$INSTANCE_MARKER" <<'PY'
+import json, os, sys
+path = sys.argv[1]
+document = json.load(open(path))
+document["membership"]["resultSigners"] = [document["membership"]["proposer"]]
+with open(path, "w") as out:
+    json.dump(document, out, sort_keys=True, separators=(",", ":"))
+    out.write("\n")
+os.chmod(path, 0o600)
+PY
+if "$DEMO_DIR/demo.sh" config --instance launcher >"$TMP/tampered-result-signers.out" 2>&1; then
+  fail "tampered immutable result signer policy unexpectedly succeeded"
+fi
+grep -Fq 'app-chain identity mismatch' "$TMP/tampered-result-signers.out" \
+  || fail "tampered result signer policy rejection is unclear"
+cp "$TMP/instance-marker.saved" "$INSTANCE_MARKER"
+chmod 600 "$INSTANCE_MARKER"
+
 python3 - "$INSTANCE_MARKER" <<'PY'
 import json, os, sys
 path = sys.argv[1]
@@ -636,7 +805,7 @@ ORPHAN_RUNTIME="$ORPHAN_ROOT/runtime/networks/devnet/$ORPHAN_INSTANCE/compose"
 ORPHAN_NETWORK="$ORPHAN_ROOT/data/networks/devnet"
 ORPHAN_LEASE="$ORPHAN_NETWORK/l1/compose/demo-owner.json"
 mkdir -p "$ORPHAN_RUNTIME/plugins"
-for name in appchain-kafka appchain-ipfs appchain-objectstore-s3 appchain-evidence-registry; do
+for name in appchain-kafka appchain-ipfs appchain-objectstore-s3; do
   : > "$ORPHAN_RUNTIME/plugins/$name-bundle.jar"
 done
 : > "$ORPHAN_RUNTIME/runner.jar"
@@ -940,7 +1109,7 @@ jq -e '.status == "retired" and .replacementInstanceId == "crash-new"' \
 # Exercise host rendering without building or starting a process.
 HOST_RUNTIME="$TMP/runtime/networks/devnet/hosttest/host"
 mkdir -p "$HOST_RUNTIME/plugins"
-for name in appchain-kafka appchain-ipfs appchain-objectstore-s3 appchain-evidence-registry; do
+for name in appchain-kafka appchain-ipfs appchain-objectstore-s3; do
   : > "$HOST_RUNTIME/plugins/$name-bundle.jar"
 done
 : > "$HOST_RUNTIME/runner.jar"
@@ -949,8 +1118,22 @@ PATH="$FAKE_BIN:$PATH" "$DEMO_DIR/demo.sh" prepare --deployment host \
   --instance hosttest > "$TMP/host.out"
 HOST_CONFIG="$HOST_RUNTIME/runner-host.properties"
 HOST_NODES="$TMP/secrets/networks/devnet/hosttest/host/nodes-host"
+HOST_MARKER="$TMP/data/networks/devnet/instances/hosttest/host/appchain-identity.json"
 [ -f "$HOST_CONFIG" ] && [ -f "$HOST_NODES/node0.properties" ] \
   || fail "host mode did not render runner and node overlays"
+jq -e '
+  .layoutVersion == 3
+  and .deployment == "host"
+  and .stateMachine.profileVersion == 1
+  and .effects.continuationMode == "explicit"
+  and .effects.directResultEmissionActivationHeight == null
+  and .connectors.s3.provider == "external-s3-compatible"
+  and .connectors.s3.providerVersion == null
+  and .connectors.s3.dataLayoutVersion == 1
+  and .connectors.s3.profile == "operator-managed-v1"
+  and .connectors.s3.iamConfigSha256 == null
+' "$HOST_MARKER" >/dev/null \
+  || fail "host identity incorrectly claims the local RustFS provider or IAM layout"
 host_members="$(sed -n 's/^demo.yano.member-keys=//p' "$HOST_CONFIG")"
 [ -n "$host_members" ] || fail "host runner has no explicit membership"
 grep -Fxq 'demo.yano.threshold=2' "$HOST_CONFIG" \
@@ -1013,7 +1196,7 @@ assert_absent "$TMP/data/networks/devnet/l1/host/demo-owner.json"
 # The public opt-in anchor renders the same reviewed interval in host mode.
 HOST_PREVIEW_RUNTIME="$TMP/runtime/networks/preview/hostpreview/host"
 mkdir -p "$HOST_PREVIEW_RUNTIME/plugins"
-for name in appchain-kafka appchain-ipfs appchain-objectstore-s3 appchain-evidence-registry; do
+for name in appchain-kafka appchain-ipfs appchain-objectstore-s3; do
   : > "$HOST_PREVIEW_RUNTIME/plugins/$name-bundle.jar"
 done
 : > "$HOST_PREVIEW_RUNTIME/runner.jar"

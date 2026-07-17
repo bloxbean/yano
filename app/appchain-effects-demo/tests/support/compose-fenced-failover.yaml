@@ -1,0 +1,17 @@
+services:
+  yano-0:
+    volumes:
+      - type: bind
+        source: ${DEMO_FENCED_NODE0_CONFIG:?set by effect-failover-e2e.sh}
+        target: /run/demo/node.properties
+        read_only: true
+
+  yano-1:
+    volumes:
+      - type: bind
+        source: ${DEMO_REPLACEMENT_NODE1_CONFIG:?set by effect-failover-e2e.sh}
+        target: /run/demo/node.properties
+        read_only: true
+    networks:
+      - cluster
+      - connectors

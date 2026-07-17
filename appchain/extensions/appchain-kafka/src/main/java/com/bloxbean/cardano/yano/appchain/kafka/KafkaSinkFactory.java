@@ -83,9 +83,10 @@ public final class KafkaSinkFactory implements FinalizedStreamSinkFactory {
         // beyond the SinkRunner's expectations (KafkaStreamSink also caps get()).
         props.put(ProducerConfig.MAX_BLOCK_MS_CONFIG, Integer.toString(maxBlockMs));
         props.put(ProducerConfig.DELIVERY_TIMEOUT_MS_CONFIG, Integer.toString(deliveryTimeoutMs));
-        log.info("Kafka app-chain sink ready for chain '{}' and configured topic", chainId);
-        return List.of(new KafkaStreamSink(chainId, topic,
-                new KafkaProducer<>(props, new StringSerializer(), new StringSerializer()),
+        KafkaProducer<String, String> producer = new KafkaProducer<>(
+                props, new StringSerializer(), new StringSerializer());
+        log.info("Kafka app-chain sink producer initialized for chain '{}'", chainId);
+        return List.of(new KafkaStreamSink(chainId, topic, producer,
                 Duration.ofMillis(deliveryTimeoutMs), Duration.ofMillis(closeTimeoutMs)));
     }
 

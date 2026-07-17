@@ -27,6 +27,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 @Timeout(60)
 class AppChainAutoConfigurationTest {
 
+    private static final String MESSAGE_ID = "aabb".repeat(16);
+
     private final ApplicationContextRunner runner = new ApplicationContextRunner()
             .withConfiguration(AutoConfigurations.of(AppChainAutoConfiguration.class));
 
@@ -52,7 +54,8 @@ class AppChainAutoConfigurationTest {
         server = HttpServer.create(new InetSocketAddress("localhost", 0), 0);
         // REST stub: submit + tip
         server.createContext("/api/v1/app-chain/messages", exchange -> {
-            byte[] response = "{\"messageId\":\"aabb\",\"chainId\":\"c1\",\"topic\":\"orders\"}"
+            byte[] response = ("{\"messageId\":\"" + MESSAGE_ID
+                    + "\",\"chainId\":\"c1\",\"topic\":\"orders\"}")
                     .getBytes(StandardCharsets.UTF_8);
             exchange.getResponseHeaders().set("Content-Type", "application/json");
             exchange.sendResponseHeaders(202, response.length);
@@ -100,7 +103,7 @@ class AppChainAutoConfigurationTest {
 
                     // Template submit against the stub
                     AppChainTemplate template = context.getBean(AppChainTemplate.class);
-                    assertThat(template.send("orders", "hello")).isEqualTo("aabb");
+                    assertThat(template.send("orders", "hello")).isEqualTo(MESSAGE_ID);
 
                     // @AppChainListener methods received the SSE messages,
                     // with String/byte[]/StreamedMessage parameter conversion

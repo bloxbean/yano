@@ -16,7 +16,7 @@ import software.amazon.awssdk.services.s3.model.BucketVersioningStatus;
 import software.amazon.awssdk.services.s3.model.GetBucketVersioningRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectResponse;
-import software.amazon.awssdk.services.s3.model.HeadBucketRequest;
+import software.amazon.awssdk.services.s3.model.ListObjectsV2Request;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.model.S3Exception;
 
@@ -62,18 +62,26 @@ final class S3DemoStore implements AutoCloseable {
     /** Validates pre-provisioned least-privilege buckets and mandatory archive versioning. */
     void validate() {
         try {
-            client.headBucket(HeadBucketRequest.builder().bucket(settings.sourceBucket()).build());
-            client.headBucket(HeadBucketRequest.builder().bucket(settings.destinationBucket()).build());
-            BucketVersioningStatus status = client.getBucketVersioning(
-                    GetBucketVersioningRequest.builder()
-                            .bucket(settings.destinationBucket()).build()).status();
-            if (status != BucketVersioningStatus.ENABLED) {
-                throw new DemoException(DemoError.INITIALIZATION_FAILED);
-            }
+            validateBucket(settings.sourceBucket(), settings.sourcePrefix());
+            validateBucket(settings.destinationBucket(), settings.destinationPrefix());
         } catch (DemoException failure) {
             throw failure;
         } catch (RuntimeException failure) {
             throw new DemoException(DemoError.SERVICE_TIMEOUT);
+        }
+    }
+
+    private void validateBucket(String bucket, String allowedPrefix) {
+        // HeadBucket is authorized as an unconditioned ListBucket operation by
+        // S3-compatible providers, which would force a broader IAM grant than
+        // this runner needs. Prove the exact prefix-scoped list capability and
+        // the versioning invariant used by the workflow instead.
+        client.listObjectsV2(ListObjectsV2Request.builder()
+                .bucket(bucket).prefix(allowedPrefix + "/").maxKeys(1).build());
+        BucketVersioningStatus status = client.getBucketVersioning(
+                GetBucketVersioningRequest.builder().bucket(bucket).build()).status();
+        if (status != BucketVersioningStatus.ENABLED) {
+            throw new DemoException(DemoError.INITIALIZATION_FAILED);
         }
     }
 
@@ -130,14 +138,7 @@ final class S3DemoStore implements AutoCloseable {
         try {
             try (ResponseInputStream<GetObjectResponse> object = client.getObject(
                     GetObjectRequest.builder().bucket(bucket).key(key).build())) {
-                Long declared = object.response().contentLength();
-                if (declared != null && declared > MAX_OBJECT_BYTES) {
-                    throw new DemoException(DemoError.EXTERNAL_STATE_MISMATCH);
-                }
-                byte[] bytes = object.readNBytes(MAX_OBJECT_BYTES + 1);
-                if (bytes.length > MAX_OBJECT_BYTES) {
-                    throw new DemoException(DemoError.EXTERNAL_STATE_MISMATCH);
-                }
+                byte[] bytes = readObjectBody(object, MAX_OBJECT_BYTES);
                 return new Existing(bytes, object.response().versionId());
             }
         } catch (S3Exception absent) {
@@ -152,6 +153,28 @@ final class S3DemoStore implements AutoCloseable {
         } catch (RuntimeException failure) {
             throw new DemoException(DemoError.SERVICE_TIMEOUT);
         }
+    }
+
+    static byte[] readObjectBody(
+            ResponseInputStream<GetObjectResponse> object, int maxObjectBytes)
+            throws IOException {
+        Long declared = object.response().contentLength();
+        if (declared != null && (declared < 0 || declared > maxObjectBytes)) {
+            object.abort();
+            throw new DemoException(DemoError.EXTERNAL_STATE_MISMATCH);
+        }
+        byte[] bytes;
+        try {
+            bytes = object.readNBytes(maxObjectBytes + 1);
+        } catch (IOException failure) {
+            object.abort();
+            throw failure;
+        }
+        if (bytes.length > maxObjectBytes) {
+            object.abort();
+            throw new DemoException(DemoError.EXTERNAL_STATE_MISMATCH);
+        }
+        return bytes;
     }
 
     private static void requireContent(byte[] actual, long expectedSize, byte[] expectedDigest) {

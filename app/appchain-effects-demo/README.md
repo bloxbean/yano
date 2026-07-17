@@ -1,7 +1,7 @@
 # ADR-013 evidence-effects demo
 
 This directory is the Milestone 1 deployment for ADR-013. It runs one
-three-member `evidence-chain`, a single effect owner, Kafka, MinIO, Kubo, and
+three-member `evidence-chain`, a single effect owner, Kafka, RustFS, Kubo, and
 the deployment-neutral evidence runner. The included inspection certificate
 demonstrates the complete no-code path:
 
@@ -10,8 +10,9 @@ demonstrates the complete no-code path:
 3. copy and verify the object in the versioned archive;
 4. pin its CID in Kubo;
 5. incorporate the signed results under the app-chain state root;
-6. submit the idempotent continuation and publish `evidence.available.v1` to
-   Kafka; and
+6. publish `evidence.available.v1` to Kafka, either through the default
+   idempotent continuation command or directly from the second incorporated
+   storage result in the activated profile; and
 7. verify state proof, threshold finality, S3 version, exact CID bytes, Kafka
    acknowledgement, and the Cardano state-thread output/inline datum in one
    report.
@@ -24,11 +25,10 @@ generates and retains distinct member keys, a devnet anchor key, API keys, and
 connector credentials for each instance and deployment. No universal signing
 key is checked in or reused by a public profile.
 
-ADR-013 Phase 1.6 is **COMPLETE**. Its focused offline contracts and independent
-architecture, maintainability, security, and operations reviews passed. No live
-preview/preprod smoke is claimed here. Milestone 1 remains in progress until
-the Phase 1.7 fault matrix, opt-in public-network release evidence, regression
-pass, and independent release reviews are recorded.
+ADR-013 Milestone 1 is **ACCEPTED**. Its connector fault matrix, three-member
+devnet failover, retained restart, Compose/host parity, packaging, cleanup, and
+independent release reviews passed. Live preview/preprod runs remain
+operator-authorized supplemental evidence rather than an automatic test.
 
 ## Quick start (Docker Compose)
 
@@ -42,6 +42,41 @@ Python 3. From this directory:
 ./demo.sh status
 ./demo.sh stop
 ```
+
+The default `explicit` profile preserves the Milestone 1 continuation command.
+To start a fresh chain with direct result-to-effect continuation enabled from
+height 1, pass the same immutable option to every command:
+
+```bash
+./demo.sh prepare --instance direct-demo --continuation direct
+./demo.sh up --instance direct-demo --continuation direct
+./demo.sh run --instance direct-demo --continuation direct
+./demo.sh stop --instance direct-demo --continuation direct
+```
+
+The continuation mode is part of the retained app-chain identity. It cannot be
+changed in place after an instance is prepared; use a new instance and chain
+identity to change profiles.
+
+The same scenario can exercise the stock deterministic composite workflow
+without application code. Use a fresh instance and pass `--machine composite`
+to every lifecycle command:
+
+```bash
+./demo.sh prepare --instance composite-demo --machine composite
+./demo.sh up --instance composite-demo --machine composite
+./demo.sh run --instance composite-demo --machine composite
+./demo.sh stop --instance composite-demo --machine composite
+```
+
+This profile first commits a registry identity, proposes and records an
+approval for the exact evidence command, and then submits
+`evidence.release.v1`. The composite applies the document-trail append and
+evidence submission atomically before the existing S3, IPFS, Kafka, proof, and
+anchor checks continue. The marker pins `provider=composite` and
+`preset=evidence-v1`; switching between standalone and composite on retained
+state is rejected. `--continuation explicit|direct` remains independently
+selectable for a fresh composite instance.
 
 `up` builds the exact working-tree Yano and runner images, starts all services,
 waits through the producer warm-up, funds and bootstraps the devnet script
@@ -64,7 +99,7 @@ The default loopback-only ports are:
 | Yano node 0 / 1 / 2 | `http://127.0.0.1:7070`, `:7071`, `:7072` |
 | Evidence report UI | `http://127.0.0.1:7080/` |
 | Kafka host listener | `127.0.0.1:9092` |
-| MinIO S3 API | `http://127.0.0.1:9000` |
+| RustFS S3 API | `http://127.0.0.1:9000` |
 | Kubo RPC | `http://127.0.0.1:5001` |
 | Prometheus (optional) | `http://127.0.0.1:9090/` |
 | Grafana (optional) | `http://127.0.0.1:3000/` |
@@ -116,19 +151,22 @@ from the public L1 synchronization timeout.
 
 ## Security and ownership model
 
-Only `yano-0` joins the dedicated connector network and only its private node
-configuration enables `object.put`, `ipfs.pin`, and `kafka.publish`. Nodes 1
+The Yano application already contains the deterministic stdlib, evidence, and
+composite providers. Only the Kafka, S3, and IPFS connector implementations are
+staged in the external plugin directory. Only `yano-0` joins the dedicated
+connector network, and only its private node configuration enables
+`object.put`, `ipfs.pin`, and `kafka.publish`. Nodes 1
 and 2 independently validate the deterministic effects and incorporated
 results but hold no connector credential and run no executor.
 
 The local connector profiles deliberately accept only private numeric HTTP
-origins. MinIO and Kubo therefore have fixed addresses on a dedicated bridge;
+origins. RustFS and Kubo therefore have fixed addresses on a dedicated bridge;
 this is not a DNS bypass. Kafka uses its separately validated local broker
 name. Connector, evidence-UI, and observability services remain on three
 separate bridges. Those bridges intentionally are not Docker `internal`
 networks: Docker Desktop cannot route their published ports to the host when
 they are internal. Every published port instead binds to `127.0.0.1`; no
-gateway, MinIO console, KRaft controller, Cardano N2N port, or Docker socket
+gateway, RustFS console, KRaft controller, Cardano N2N port, or Docker socket
 is exposed.
 
 Secrets are generated once per instance under:
@@ -138,12 +176,13 @@ Secrets are generated once per instance under:
 ```
 
 The directory is mode `0700` and secret files are `0600`. Values are never put
-in Compose environment variables, launcher/Yano command arguments, committed
-app-chain state, or the report UI. The isolated one-shot MinIO initializer
-reads mounted secret files and necessarily supplies credentials to its local
-`mc` child process; no other container shares its process namespace. Generated
-node configuration is private because the current S3 executor SPI accepts
-credentials through protected configuration.
+in the rendered Compose environment, launcher/Yano command arguments,
+committed app-chain state, or the report UI. The isolated one-shot S3
+bootstrap process
+reads mounted secret files and uses bounded SigV4 requests directly against
+the private RustFS admin API; it has no shell or child credential-bearing
+process. Generated node configuration is private because the current S3
+executor SPI accepts credentials through protected configuration.
 The generated member material is retained under `member-keys/`; raw seeds and
 public keys are validated before reuse and bound into the immutable instance
 marker. The devnet anchor seed is retained as `anchor.seed`. The full Yano API
@@ -152,21 +191,51 @@ privileged anchor bootstrap; scenario, connector initializer, and report UI
 containers never receive it. The devnet demo leaves ordinary read and submit
 operations unauthenticated.
 
-MinIO has three separate principals:
+RustFS has three effective principals:
 
-- the root identity exists only in MinIO and the one-shot initializer;
+- the built-in root is full administrator, but its credential is mounted only
+  into RustFS and the one-shot bootstrap on the private connector network;
 - the runner identity may write/read the staging prefix and read the archive;
 - the executor identity may read staging and conditionally create/read archive
   versions.
 
-Neither application policy grants delete, lifecycle, user administration, or
-retention changes. The initializer verifies stored credentials on every run
-and fails closed if retained MinIO state no longer matches the private files.
+There is deliberately no canned policy attached to the built-in root: RustFS
+does not enforce such a policy on its owner identity, so presenting one would
+create a false least-privilege boundary. The root remains a full provider
+administrator inside the RustFS process; outside that process its credential
+is mounted only into the fixed one-shot bootstrap on the private connector
+network. The generated IAM specification contains only the two policies that
+RustFS actually enforces for the managed runner and executor identities.
+Neither policy grants delete, lifecycle, user administration, or retention
+changes. On every run the fixed bootstrap code verifies those exact policies,
+exactly the runner and executor users, and an empty service-account/STS
+inventory, then exercises positive and negative S3 operations before accepting
+retained provider state. A separate generated IAM master key encrypts persisted
+IAM records; connector and report bind trees are non-symlink, owner-only `0700`
+state, and the release test scans retained state without printing values to
+ensure credential bytes were not persisted.
 
-Third-party images are tag-and-digest pinned in `config/images.env`. Services
-run with the host's unprivileged UID, no added capabilities,
-`no-new-privileges`, read-only root filesystems, bounded logs, explicit
-healthchecks, and writable mounts/tmpfs only where required.
+Third-party runtime images are official, tag-and-index-digest pinned references
+in `config/images.env`: Apache Kafka 4.3.1, RustFS 1.0.0-beta.9, and Kubo
+v0.42.0. Each published index contains native `linux/amd64` and `linux/arm64`
+manifests. Yano does not compile or publish these dependencies. `prepare` pulls
+the image selected for the Docker server architecture and builds only the Yano
+node and scenario-runner images.
+
+RustFS is a local S3-compatible demo fixture, not a production storage
+recommendation. Normal deployments configure an operator-managed endpoint such
+as AWS S3 or another compatible service. Likewise, the bundled Kubo daemon is a
+demo target; a normal deployment may point the same `ipfs.pin` executor at an
+operator-managed compatible Kubo API.
+
+Compose disables RustFS update checks and the Kubo daemon runs offline with
+telemetry disabled. Services run with the host's unprivileged UID, no added
+capabilities, `no-new-privileges`, read-only root filesystems, bounded logs,
+explicit health checks, and writable mounts/tmpfs only where required.
+
+The `milestone-1-release-acceptance` CI job is the release-evidence join. It
+requires the JVM build/bundle smoke, native plugin catalog, real connector fault
+matrix, and fenced devnet plus Compose/host E2E gates in the same full run.
 
 ## Persistence
 
@@ -187,7 +256,7 @@ by instances using the same network and deployment:
     appchain-identity.json
     anchor-binding.json             after script-anchor adoption
     app-chain/node0/ node1/ node2/
-    connectors/kafka/ minio/ ipfs/
+    connectors/kafka/ rustfs-v1/ ipfs/
     observability/prometheus/ grafana/
     logs/node0/ node1/ node2/
     reports/
@@ -206,7 +275,8 @@ explicit `genesis-timestamp` read-only. L1 and app-chain RocksDB paths remain
 separate. An owner lease permits only one instance to use a network/deployment
 L1 store at a time; stop releases that lease without deleting state. Network
 and app-chain identity markers are created atomically and must match exactly
-on reuse. `prepare` and `config` acquire that same non-reentrant lease for the
+on reuse, including the selected standalone/composite machine and composite
+preset. `prepare` and `config` acquire that same non-reentrant lease for the
 whole mutation/build window and release it only after validation; `up` retains
 it until a proven stop. Active identities, retirement fences, and replacement
 reservations are scanned together under one network lock. A chain id is a
@@ -264,6 +334,13 @@ Every deletion requires a stopped deployment, one explicit scope, and
   --new-instance next --new-chain-id evidence-chain-next --yes
 ```
 
+Pre-guard preview installations may already have a non-empty RustFS build
+context without its managed-context sentinel; this is intentionally not
+auto-adopted. Do not delete an arbitrary context path. Stop the deployment,
+then run `./demo.sh clean --instance default --scope runtime --yes` followed by
+`./demo.sh prepare --instance default` (including the same non-default network,
+deployment, data-directory, and instance options used originally).
+
 Supported scopes are only `observability`, `reports`, `runtime`, `instance`,
 `l1`, and `all`. `appchain` and `connectors` are intentionally rejected even
 for an unanchored instance: deleting either side alone can destroy effect
@@ -313,9 +390,16 @@ export DEMO_HOST_S3_EXECUTOR_SECRET_KEY_FILE=/secure/executor-secret-key
 ./demo.sh stop --mode host
 ```
 
-Before `up`, provision `evidence-staging` and `evidence-archive`, enable
-versioning on both, and apply the least-privilege policies in
-`config/services/minio-*-policy.json` (or equivalent provider policies).
+Before `up`, provision a versioned `evidence-staging` bucket **without** Object
+Lock and a versioned `evidence-archive` bucket **with** Object Lock enabled but
+with **no default retention rule**. Retention is selected per action/profile;
+this demo deliberately uses `none-v1`, which applies no per-object lock.
+Bootstrap rejects a provider-level default retention rule. Install equivalent
+least-privilege runner and executor
+policies. The Compose
+profile generates an instance-bound private RustFS IAM specification and its
+one-shot bootstrap applies and verifies it; host deployments must provide the
+same capability split through their provider's IAM mechanism.
 Milestone 1 currently has no Kafka authentication/TLS settings, so its broker
 must be a local or otherwise private, trusted endpoint shared by the runner
 and executor; authenticated Kafka profiles are a later extension. Restrict
@@ -365,6 +449,8 @@ providers into the app before native catalog/reflection generation:
 ```bash
 ./gradlew :app:yanoNativeDistZip \
   -PincludeFirstPartyPluginBundles=true \
+  -Dquarkus.native.enabled=true \
+  -Dquarkus.package.jar.enabled=false \
   -PskipSigning=true
 ./gradlew :app:nativePluginCatalogSmoke \
   -PincludeFirstPartyPluginBundles=true \
@@ -375,6 +461,26 @@ That flag includes the three connector providers and evidence registry in the
 authoritative build-time plugin catalog. Copying these bundle JARs beside an
 already-built native executable is intentionally ignored. The runner itself
 remains a standalone JVM operator tool.
+
+The release-only configured-client smoke also includes the native conformance
+fixture. It starts an isolated app-chain process, constructs and closes one
+real Kafka, S3, and Kubo client with unreachable loopback endpoints, and keeps
+the disposable S3 credential in a private temporary configuration file:
+
+```bash
+./gradlew :app:yanoNativeDistZip \
+  -PincludeFirstPartyPluginBundles=true \
+  -PincludeNativePluginConformanceFixture=true \
+  -Dquarkus.native.enabled=true -Dquarkus.package.jar.enabled=false \
+  -PskipSigning=true
+./gradlew :app:nativePluginCatalogSmoke \
+  -PincludeFirstPartyPluginBundles=true \
+  -PincludeNativePluginConformanceFixture=true \
+  -PskipSigning=true
+```
+
+The conformance fixture and its double-opt-in client-construction seam are not
+part of the production command above and perform no external mutation.
 
 ## Tests and troubleshooting
 
@@ -390,6 +496,25 @@ Run the static deployment checks without starting services:
 ./tests/secret-file-test.sh
 ./tests/anchor-funding-test.sh
 ```
+
+Run the release-only connector and ownership gates explicitly:
+
+```bash
+# Real pinned Kafka, RustFS, and Kubo: success, restart, reconciliation,
+# unavailability, plus deterministic production-adapter fault boundaries.
+./tests/connector-fault-matrix.sh
+
+# Three-node post-ack crash and fenced executor handoff/requeue. This always
+# creates and removes its own temporary roots, ports, and Compose project.
+YANO_RUN_EFFECT_FAILOVER_E2E=true ./tests/effect-failover-e2e.sh
+
+# The identical scenario through Compose and normally started host processes.
+YANO_RUN_DEPLOYMENT_PARITY_E2E=true ./tests/deployment-parity-e2e.sh
+```
+
+The live gates parse their JUnit/API evidence and fail if an opted-in case
+silently skips. They use isolated temporary state and do not reuse or remove a
+developer's normal demo instance.
 
 The focused lifecycle suites cover immutable identity installation,
 mismatches, concurrent creation, network-wide same-chain contention, exact

@@ -24,6 +24,27 @@ EvidenceClient evidence = new EvidenceClient(transport, "evidence-chain");
 Optional<VerifiedEvidence> result = evidence.queryVerified("batch-2026-07", 0);
 ```
 
+For the generic stock `composite` provider, the machine id alone is not a
+complete identity: different canonical profiles could otherwise share that
+selector. Pin the intended authenticated profile digest:
+
+```java
+byte[] expectedProfileDigest = HexFormat.of().parseHex(
+        "<64-lowercase-hex profile digest>");
+EvidenceClient evidence = new EvidenceClient(
+        transport, "evidence-chain", expectedProfileDigest);
+```
+
+The composite path first proves `~composite/profile/v1`, checks its
+domain-separated digest, and then verifies the evidence head and record in the
+same height/root snapshot. `VerifiedEvidence` returns both the logical
+evidence keys and the exact namespaced `physicalHeadKey` / `physicalRecordKey`
+used by the MPF proofs, plus the verified profile digest. Do not derive the
+expected profile digest from the same untrusted node serving the proof; obtain
+it from reviewed deployment configuration or a separately authenticated
+profile manifest. A client constructed without that digest accepts the
+standalone `evidence-registry` machine only and fails closed on `composite`.
+
 Version `0` means the latest version. A not-found committed query returns
 `Optional.empty()` only after verifying either an MPF exclusion proof for the
 deterministic head key, or (for an explicit future version) a head inclusion
@@ -40,7 +61,8 @@ Credentials remain an `AppChainClient` concern. This module never records,
 logs, reflects, or stores them.
 
 Unlike the drop-in registry plugin, this typed SDK depends only on
-`appchain-client` and `appchain-evidence-contracts`. The contracts module
+`appchain-client`, `appchain-evidence-contracts`, and the lightweight
+`appchain-composite-contracts` proof mapping. The evidence contracts module
 then exposes the frozen connector types and evidence-local terminal outcomes
 used by `EvidenceRecordV1`; it does not depend on Yano `core-api`. Neither
 the client nor its complete runtime dependency closure contains registry

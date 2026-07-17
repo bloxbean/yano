@@ -253,6 +253,8 @@ class NativePluginConformanceVerifierTest {
             assertThat(executors).hasSize(1);
             AppEffectExecutor executor = executors.getFirst();
             assertThat(executor.id()).isEqualTo("conformance-effect-executor");
+            assertThat(executor.effectTypes()).containsExactly("conformance.effect");
+            assertThat(executor.operationalSnapshot().readiness().name()).isEqualTo("READY");
             EffectRecord effect = new EffectRecord(
                     EffectRecord.RECORD_VERSION, "conformance-chain", 1, 0,
                     "probe", new byte[0], "", FinalityGate.APP_FINAL,

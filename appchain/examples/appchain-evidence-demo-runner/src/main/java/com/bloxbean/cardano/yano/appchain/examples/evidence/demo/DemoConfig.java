@@ -3,8 +3,6 @@ package com.bloxbean.cardano.yano.appchain.examples.evidence.demo;
 import java.io.IOException;
 import java.net.URI;
 import java.net.URISyntaxException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -18,6 +16,8 @@ import java.util.regex.Pattern;
 
 /** Strict, secret-file-only configuration shared by host and Compose deployments. */
 public record DemoConfig(String chainId,
+                         String stateMachine,
+                         byte[] expectedCompositeProfileDigest,
                          List<URI> yanoUrls,
                          Set<String> yanoMemberKeys,
                          int yanoThreshold,
@@ -31,13 +31,14 @@ public record DemoConfig(String chainId,
                          Duration timeout,
                          Duration pollInterval,
                          boolean requireAnchor) {
-    private static final long MAX_CONFIG_BYTES = 65_536;
+    private static final int MAX_CONFIG_BYTES = 65_536;
     private static final Pattern IDENTIFIER = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._-]{0,127}");
     private static final Pattern CONNECTOR_ALIAS = Pattern.compile("[a-z][a-z0-9-]{0,62}");
     private static final Pattern OBJECT_SEGMENT = Pattern.compile(
             "[A-Za-z0-9][A-Za-z0-9._~!$'()+,;=@-]{0,127}");
     private static final Set<String> KEYS = Set.of(
-            "demo.chain-id", "demo.yano.urls", "demo.yano.api-key-file",
+            "demo.chain-id", "demo.state-machine", "demo.composite-profile-digest",
+            "demo.yano.urls", "demo.yano.api-key-file",
             "demo.yano.member-keys", "demo.yano.threshold",
             "demo.sample-file", "demo.report-directory", "demo.evidence-id",
             "s3.endpoint", "s3.region", "s3.access-key-file", "s3.secret-key-file",
@@ -51,8 +52,40 @@ public record DemoConfig(String chainId,
             "scenario.require-anchor");
 
     public DemoConfig {
+        if (!"evidence-registry".equals(stateMachine) && !"composite".equals(stateMachine)) {
+            throw new DemoException(DemoError.INVALID_CONFIG);
+        }
+        if ("composite".equals(stateMachine)) {
+            if (expectedCompositeProfileDigest == null
+                    || expectedCompositeProfileDigest.length != 32) {
+                throw new DemoException(DemoError.INVALID_CONFIG);
+            }
+            expectedCompositeProfileDigest = expectedCompositeProfileDigest.clone();
+        } else if (expectedCompositeProfileDigest != null) {
+            throw new DemoException(DemoError.INVALID_CONFIG);
+        }
         yanoUrls = List.copyOf(yanoUrls);
         yanoMemberKeys = Set.copyOf(yanoMemberKeys);
+    }
+
+    /** Source-compatible constructor for standalone evidence-registry callers. */
+    public DemoConfig(String chainId,
+                      List<URI> yanoUrls,
+                      Set<String> yanoMemberKeys,
+                      int yanoThreshold,
+                      SecretValue yanoApiKey,
+                      Path sampleFile,
+                      Path reportDirectory,
+                      String evidenceId,
+                      S3Settings s3,
+                      IpfsSettings ipfs,
+                      KafkaSettings kafka,
+                      Duration timeout,
+                      Duration pollInterval,
+                      boolean requireAnchor) {
+        this(chainId, "evidence-registry", null, yanoUrls, yanoMemberKeys, yanoThreshold,
+                yanoApiKey, sampleFile, reportDirectory, evidenceId, s3, ipfs,
+                kafka, timeout, pollInterval, requireAnchor);
     }
 
     /** Loads a bounded properties file and rejects duplicates, unknown keys, and inline secrets. */
@@ -61,6 +94,14 @@ public record DemoConfig(String chainId,
         Path base = configFile.toAbsolutePath().normalize().getParent();
         try {
             String chainId = identifier(required(values, "demo.chain-id"));
+            String stateMachine = values.getOrDefault("demo.state-machine", "evidence-registry");
+            byte[] compositeProfileDigest = "composite".equals(stateMachine)
+                    ? exactLowerHex(required(values, "demo.composite-profile-digest"), 32)
+                    : null;
+            if (!"composite".equals(stateMachine)
+                    && values.containsKey("demo.composite-profile-digest")) {
+                throw new DemoException(DemoError.INVALID_CONFIG);
+            }
             List<URI> yanoUrls = commaSeparatedUris(required(values, "demo.yano.urls"));
             Set<String> yanoMemberKeys = memberKeys(
                     required(values, "demo.yano.member-keys"));
@@ -96,12 +137,7 @@ public record DemoConfig(String chainId,
                     connectorAlias(required(values, "ipfs.target")),
                     connectorAlias(required(values, "ipfs.target-id")),
                     optionalConnectorAlias(values.get("ipfs.replication-policy")));
-            KafkaSettings kafka = new KafkaSettings(
-                    bounded(required(values, "kafka.bootstrap-servers"), 1, 1_024),
-                    connectorAlias(required(values, "kafka.target")),
-                    connectorAlias(required(values, "kafka.target-id")),
-                    connectorAlias(required(values, "kafka.topic-alias")),
-                    topic(required(values, "kafka.physical-topic")));
+            KafkaSettings kafka = kafkaSettings(values);
 
             Duration timeout = Duration.ofSeconds(unsigned(values.getOrDefault(
                     "scenario.timeout-seconds", "300"), 10, 3_600));
@@ -109,7 +145,8 @@ public record DemoConfig(String chainId,
                     "scenario.poll-interval-millis", "500"), 50, 10_000));
             boolean requireAnchor = bool(values.getOrDefault(
                     "scenario.require-anchor", "true"));
-            return new DemoConfig(chainId, yanoUrls, yanoMemberKeys, yanoThreshold,
+            return new DemoConfig(chainId, stateMachine, compositeProfileDigest,
+                    yanoUrls, yanoMemberKeys, yanoThreshold,
                     apiKey, sample, reports, evidenceId, s3, ipfs, kafka,
                     timeout, poll, requireAnchor);
         } catch (DemoException failure) {
@@ -119,13 +156,36 @@ public record DemoConfig(String chainId,
         }
     }
 
+    @Override
+    public byte[] expectedCompositeProfileDigest() {
+        return expectedCompositeProfileDigest == null
+                ? null : expectedCompositeProfileDigest.clone();
+    }
+
+    /** Loads only non-secret Kafka audit settings from the shared runner config. */
+    static KafkaSettings loadKafkaSettings(Path configFile) {
+        try {
+            return kafkaSettings(readStrict(configFile));
+        } catch (DemoException failure) {
+            throw failure;
+        } catch (RuntimeException failure) {
+            throw new DemoException(DemoError.INVALID_CONFIG);
+        }
+    }
+
+    private static KafkaSettings kafkaSettings(Map<String, String> values) {
+        return new KafkaSettings(
+                bounded(required(values, "kafka.bootstrap-servers"), 1, 1_024),
+                connectorAlias(required(values, "kafka.target")),
+                connectorAlias(required(values, "kafka.target-id")),
+                connectorAlias(required(values, "kafka.topic-alias")),
+                topic(required(values, "kafka.physical-topic")));
+    }
+
     private static Map<String, String> readStrict(Path path) {
         try {
-            if (path == null || Files.isSymbolicLink(path) || !Files.isRegularFile(path)
-                    || Files.size(path) > MAX_CONFIG_BYTES) {
-                throw new DemoException(DemoError.INVALID_CONFIG);
-            }
-            List<String> lines = Files.readAllLines(path, StandardCharsets.UTF_8);
+            List<String> lines = BoundedFiles.readUtf8(
+                    path, MAX_CONFIG_BYTES, false, true).lines().toList();
             Map<String, String> values = new LinkedHashMap<>();
             for (String line : lines) {
                 String trimmed = line.trim();
@@ -318,6 +378,18 @@ public record DemoConfig(String chainId,
             throw new DemoException(DemoError.INVALID_CONFIG);
         }
         return value;
+    }
+
+    private static byte[] exactLowerHex(String value, int bytes) {
+        if (value == null || !value.matches("[0-9a-f]{" + (bytes * 2) + "}")) {
+            throw new DemoException(DemoError.INVALID_CONFIG);
+        }
+        byte[] decoded = new byte[bytes];
+        for (int index = 0; index < bytes; index++) {
+            decoded[index] = (byte) ((Character.digit(value.charAt(index * 2), 16) << 4)
+                    | Character.digit(value.charAt(index * 2 + 1), 16));
+        }
+        return decoded;
     }
 
     private static long unsigned(String value, long minimum, long maximum) {

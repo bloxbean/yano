@@ -49,6 +49,15 @@ final class YanoAuditClient {
                     Set<String> expectedMemberKeys,
                     int expectedThreshold,
                     SecretValue apiKey) {
+        this(baseUrl, chainId, expectedMemberKeys, expectedThreshold, apiKey, null);
+    }
+
+    YanoAuditClient(URI baseUrl,
+                    String chainId,
+                    Set<String> expectedMemberKeys,
+                    int expectedThreshold,
+                    SecretValue apiKey,
+                    byte[] expectedCompositeProfileDigest) {
         this.baseUrl = baseUrl;
         this.chainId = chainId;
         this.apiKey = apiKey;
@@ -69,7 +78,9 @@ final class YanoAuditClient {
             builder.apiKey(apiKey.reveal());
         }
         this.appChain = builder.build();
-        this.evidence = new EvidenceClient(appChain, chainId);
+        this.evidence = expectedCompositeProfileDigest == null
+                ? new EvidenceClient(appChain, chainId)
+                : new EvidenceClient(appChain, chainId, expectedCompositeProfileDigest);
     }
 
     AppChainClient appChain() {

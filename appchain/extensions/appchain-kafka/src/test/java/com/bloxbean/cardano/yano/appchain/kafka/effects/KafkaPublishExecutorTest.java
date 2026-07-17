@@ -422,12 +422,16 @@ class KafkaPublishExecutorTest {
         AppEffectExecutor first = factory.create(CHAIN_ID, KafkaEffectTestSupport.settings()).getFirst();
         AppEffectExecutor second = factory.create(CHAIN_ID, KafkaEffectTestSupport.settings()).getFirst();
         assertThat(first).isNotSameAs(second);
+        assertThat(first.effectTypes()).containsExactly(KafkaPublishExecutor.TYPE);
 
         PendingEffect effect = KafkaEffectTestSupport.effect(KafkaEffectTestSupport.command().encode());
         assertThat(first.execute(KafkaEffectTestSupport.context(1), effect))
                 .isInstanceOf(EffectExecution.Confirmed.class);
         assertThat(second.execute(KafkaEffectTestSupport.context(1), effect))
                 .isInstanceOf(EffectExecution.Confirmed.class);
+        assertThat(first.operationalSnapshot().readiness().name()).isEqualTo("READY");
+        assertThat(first.operationalSnapshot().attempts()).isEqualTo(1);
+        assertThat(first.operationalSnapshot().successes()).isEqualTo(1);
         assertThat(producers).hasSize(2);
         first.close();
         second.close();

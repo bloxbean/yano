@@ -97,7 +97,7 @@ def validate_directory_fd(descriptor: int, display_path: Path) -> None:
         fail(f"member key directory must be owned by the current user with mode 0700: {display_path}")
 
 
-def open_secure_directory(directory: Path) -> int:
+def open_secure_directory(directory: Path, create: bool = True) -> int:
     raw_path = os.fspath(directory)
     if not raw_path or ".." in Path(raw_path).parts:
         fail("member key directory must not contain parent-directory traversal")
@@ -129,6 +129,8 @@ def open_secure_directory(directory: Path) -> int:
             try:
                 child = os.open(component, directory_open_flags(), dir_fd=descriptor)
             except FileNotFoundError:
+                if not create:
+                    fail(f"member key directory does not exist: {absolute_path}")
                 try:
                     os.mkdir(component, 0o700, dir_fd=descriptor)
                     created = True
@@ -319,24 +321,31 @@ def create_file_atomic(directory_descriptor: int, display_path: Path, name: str,
                 fail("could not remove temporary member key material")
 
 
-def open_lock(directory_descriptor: int, display_path: Path) -> int:
+def open_lock(directory_descriptor: int, display_path: Path,
+              create: bool = True) -> int:
     flags = os.O_RDWR | file_open_flags()
     created = False
-    try:
-        descriptor = os.open(
-            LOCK_FILE,
-            flags | os.O_CREAT | os.O_EXCL,
-            0o600,
-            dir_fd=directory_descriptor,
-        )
-        created = True
-    except FileExistsError:
+    if not create:
         try:
             descriptor = os.open(LOCK_FILE, flags, dir_fd=directory_descriptor)
         except OSError:
-            fail(f"member key lock must be a regular non-symlink file: {display_path / LOCK_FILE}")
-    except OSError:
-        fail(f"could not securely create member key lock: {display_path / LOCK_FILE}")
+            fail(f"member key lock does not exist or is unsafe: {display_path / LOCK_FILE}")
+    else:
+        try:
+            descriptor = os.open(
+                LOCK_FILE,
+                flags | os.O_CREAT | os.O_EXCL,
+                0o600,
+                dir_fd=directory_descriptor,
+            )
+            created = True
+        except FileExistsError:
+            try:
+                descriptor = os.open(LOCK_FILE, flags, dir_fd=directory_descriptor)
+            except OSError:
+                fail(f"member key lock must be a regular non-symlink file: {display_path / LOCK_FILE}")
+        except OSError:
+            fail(f"could not securely create member key lock: {display_path / LOCK_FILE}")
 
     try:
         if created:
@@ -379,15 +388,16 @@ def ensure_exact_inventory(directory_descriptor: int, expected: set[str], displa
     return actual
 
 
-def ensure_keys(directory: Path, mode: str, count: int) -> list[str]:
+def ensure_keys(directory: Path, mode: str, count: int,
+                existing_only: bool = False) -> list[str]:
     if count != 3:
         fail("the evidence demo requires exactly three members")
 
     display_path = Path(os.path.abspath(os.fspath(directory)))
-    directory_descriptor = open_secure_directory(directory)
+    directory_descriptor = open_secure_directory(directory, create=not existing_only)
     lock_descriptor = -1
     try:
-        lock_descriptor = open_lock(directory_descriptor, display_path)
+        lock_descriptor = open_lock(directory_descriptor, display_path, create=not existing_only)
         validate_directory_fd(directory_descriptor, display_path)
 
         key_names = [
@@ -401,6 +411,8 @@ def ensure_keys(directory: Path, mode: str, count: int) -> list[str]:
         if present_material and present_material != expected_names - {LOCK_FILE}:
             fail(f"incomplete member key set under {display_path}")
 
+        if not present_material and existing_only:
+            fail(f"member key set does not exist under {display_path}")
         if not present_material:
             create_file_atomic(directory_descriptor, display_path, MODE_FILE, (mode + "\n").encode("ascii"))
             for index in range(count):
@@ -451,8 +463,9 @@ def main() -> int:
     parser.add_argument("--directory", required=True, type=Path)
     parser.add_argument("--mode", choices=("deterministic", "generated"), required=True)
     parser.add_argument("--count", type=int, default=3)
+    parser.add_argument("--existing-only", action="store_true")
     args = parser.parse_args()
-    public_keys = ensure_keys(args.directory, args.mode, args.count)
+    public_keys = ensure_keys(args.directory, args.mode, args.count, args.existing_only)
     sys.stdout.write(",".join(public_keys) + "\n")
     return 0
 

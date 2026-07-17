@@ -31,6 +31,12 @@ run_keys() {
   python3 "$TOOL" --directory "$directory" --mode "$mode" --count 3
 }
 
+run_existing_keys() {
+  directory="$1"
+  mode="$2"
+  python3 "$TOOL" --directory "$directory" --mode "$mode" --count 3 --existing-only
+}
+
 expected_devnet='8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c,8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394,ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1'
 
 # RFC 8032, section 7.1, test vector 1: empty-message Ed25519 key derivation.
@@ -84,6 +90,18 @@ generated_first="$(run_keys "$generated_dir" generated)"
 generated_second="$(run_keys "$generated_dir" generated)"
 [ "$generated_first" = "$generated_second" ] || fail "generated keys were not retained"
 [ "$generated_first" != "$expected_devnet" ] || fail "generated profile reused deterministic identities"
+[ "$(run_existing_keys "$generated_dir" generated)" = "$generated_first" ] \
+  || fail "existing-only key reload changed the persisted identity"
+
+missing_existing_dir="$TEST_ROOT/missing-existing"
+expect_failure "existing-only missing key set" run_existing_keys "$missing_existing_dir" generated
+[ ! -e "$missing_existing_dir" ] \
+  || fail "existing-only key reload created a missing key directory"
+empty_existing_dir="$TEST_ROOT/empty-existing"
+mkdir -m 0700 "$empty_existing_dir"
+expect_failure "existing-only empty key directory" run_existing_keys "$empty_existing_dir" generated
+[ -z "$(find "$empty_existing_dir" -mindepth 1 -maxdepth 1 -print -quit)" ] \
+  || fail "existing-only key reload mutated an empty key directory"
 
 expect_failure "generated-to-deterministic mode switch" run_keys "$generated_dir" deterministic
 expect_failure "deterministic-to-generated mode switch" run_keys "$deterministic_dir" generated

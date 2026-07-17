@@ -2,16 +2,16 @@
 
 ## Status
 
-Accepted — implementation in progress; Phase 1.6 **COMPLETE** as of 2026-07-16
+Accepted — all three milestones **COMPLETE** as of 2026-07-17
 
 The number is local to the `adr/app-layer` series. Root-level ADR-013 is an
 unrelated node plugin and event-gap assessment.
 
 | Milestone | Scope | Status |
 |---|---|---|
-| 1 | First-party connectors, evidence workflow, Compose/host demo, network/data lifecycle | In progress — Phase 1.6 complete; Phase 1.7 release closure pending |
-| 2 | Effect ownership, result continuation, and executor observability bridge | Planned — requires focused sub-design and minor framework changes |
-| 3 | Out-of-box deterministic composite state machine and stock component preset | Planned — requires a dedicated composition sub-ADR |
+| 1 | First-party connectors, evidence workflow, Compose/host demo, network/data lifecycle | **Accepted — complete** |
+| 2 | Effect ownership, result continuation, and executor observability bridge | **Accepted — complete** ([ADR-013.1](013.1-effect-runtime-framework-closure.md)) |
+| 3 | Out-of-box deterministic composite state machine and stock component preset | **Accepted — complete** ([ADR-013.2](013.2-deterministic-composite-state-machine.md)) |
 
 Milestones are accepted and evidenced independently. Completing Milestone 1
 does not silently mark the framework/composition milestones implemented.
@@ -76,7 +76,8 @@ and operational ownership. Their producers, cursor/result semantics, and
 configuration activation remain independent.
 
 The connectors are demonstrated with a no-code product-batch inspection or
-compliance-evidence workflow. A sample certificate is staged in MinIO and
+compliance-evidence workflow. A sample certificate is staged in an
+S3-compatible store and
 added to local IPFS. A deterministic evidence state machine records its hash,
 emits `object.put` and `ipfs.pin`, and waits for both results. A supplied
 automation runner then submits an idempotent continuation command; the state
@@ -167,13 +168,13 @@ SPI explicitly defines shared ownership.
 Yano does not yet ship:
 
 - an acknowledged per-action Kafka effect;
-- an S3/MinIO object publication effect;
+- an S3-compatible object publication effect;
 - a real IPFS executor (the user guide contains only an SPI example);
 - a common first-party connector contract and conformance suite;
 - a deterministic reference state machine that composes several effects and
   their results into a useful business workflow; or
-- a complete no-code environment with Kafka, MinIO, IPFS, observability, data
-  management, and public-network profiles.
+- a complete no-code environment with Kafka, S3-compatible storage, IPFS,
+  observability, data management, and public-network profiles.
 
 ## 2. Decision summary
 
@@ -734,8 +735,8 @@ constructs bundle health/metrics providers independently and gives them no
 executor instance or connector configuration. A bundle must not work around
 that boundary with mutable static registries or duplicate live clients.
 
-Milestone 2 adds the lifecycle-owned executor observability bridge. After that
-bridge, each connector exposes cached bounded-cardinality snapshots containing:
+Milestone 2 added the lifecycle-owned executor observability bridge. Each
+connector now exposes cached bounded-cardinality snapshots containing:
 
 - configured/active state per contribution;
 - last successful probe/attempt age;
@@ -1191,15 +1192,19 @@ duplicate-name rejection, canonical CID comparison, and fixed document,
 nesting, token, field-name, string, and number bounds. It is deliberately not
 a reusable JSON library or data-binding surface.
 
-The release/demo compatibility target is the exact official
-`ipfs/kubo:v0.42.0` image, recorded for Phase 1.3 as
-`ipfs/kubo@sha256:8907cb0cc1ad5798f6bb1bb1341a800990c268e021cedfa317e8aa1a33864214`.
+The Phase 1.7 release/demo compatibility target is the official multi-platform
+`ipfs/kubo:v0.42.0` image pinned by OCI index digest
+`sha256:8907cb0cc1ad5798f6bb1bb1341a800990c268e021cedfa317e8aa1a33864214`.
+The published index contains native `linux/amd64` and `linux/arm64` manifests.
+Yano does not compile or republish Kubo. Compose constrains it to the fixed
+offline daemon command, `server,test` profile, disabled telemetry, a non-root
+runtime identity, a read-only root filesystem, and bounded writable mounts.
 The adapter accepts only a conservative allowlist of
 documented/tested response shapes; a malformed or version-unknown mutation
 acknowledgement is `ACK_UNKNOWN` and is reconciled by probing, never guessed as
 success or treated as a definitive failure. Changing to an untested Kubo RPC
-profile is an explicit operator compatibility decision and release testing
-must record the exact image digest.
+profile is an explicit operator compatibility decision and requires a new
+immutable image identity plus the complete compatibility and release test matrix.
 
 Generating a CID depends on chunking, DAG layout, codec, hash algorithm, and
 client version/options. Hiding those choices in `pin` would make the committed
@@ -1614,11 +1619,11 @@ malformed proofs fail closed without recursive-parser exhaustion.
 The scenario runner:
 
 1. waits for all services to become healthy;
-2. creates configured MinIO staging/archive buckets and Kafka topics through
+2. creates configured S3 staging/archive buckets and Kafka topics through
    an idempotent initializer;
 3. generates or selects a sample inspection certificate;
 4. computes its exact SHA-256 digest and size;
-5. uploads it into the configured MinIO staging prefix;
+5. uploads it into the configured S3 staging prefix;
 6. adds the same bytes to local Kubo with explicit deterministic add options
    and obtains a CID without satisfying the executor's target pin policy;
 7. submits the evidence command to Yano;
@@ -1674,16 +1679,29 @@ The default Compose stack contains:
 - three Yano app-chain members;
 - local Yano/Cardano devnet production and app-chain script anchoring;
 - Apache Kafka in KRaft mode;
-- MinIO;
+- the official digest-pinned, non-root RustFS S3-compatible demo backend;
 - Kubo/IPFS;
 - idempotent bucket/topic/service initialization;
 - the evidence scenario bundle and connector bundles;
 - a lightweight evidence/status UI; and
 - optional Prometheus and Grafana services.
 
-All images are version-pinned. Services have real health checks, bounded
+Third-party connector runtimes are official tag-and-index-digest pinned images:
+Apache Kafka 4.3.1, RustFS 1.0.0-beta.9, and Kubo v0.42.0. Their published
+indexes contain native `linux/amd64` and `linux/arm64` manifests. The demo pulls
+the server-native image and builds only Yano-owned artifacts. RustFS is only an
+S3-compatible demo fixture; production operators may select AWS S3 or another
+compatible provider through the normal deployment configuration.
+
+Services have real health checks, bounded
 startup waits, restart policies appropriate to a demo, non-root operation
 where images permit it, and localhost-only host port exposure by default.
+RustFS's built-in owner remains a full provider administrator; the provider
+does not enforce a canned policy on that identity. Its credential is therefore
+confined to RustFS and the fixed one-shot bootstrap on the private connector
+network. Only the separate runner and executor policies are claimed and
+verified as IAM-enforced boundaries. The demo does not install an unattached
+"bootstrap policy" that could be mistaken for least privilege.
 
 Suggested UX:
 
@@ -1766,9 +1784,20 @@ yano.app-chain.effects.executor.enabled=true
 yano.app-chain.effects.executor.identity=evidence-executor-0
 yano.app-chain.effects.executor.types=kafka.publish,object.put,ipfs.pin
 
+# immutable chain policy on every member
+yano.app-chain.chains[0].effects.result.signers=<member-0>,<member-1>
+
 # all other members
 yano.app-chain.effects.executor.enabled=false
 ```
+
+The result-signer policy pre-authorizes exactly the primary executor member and
+one fenced standby; member 2 is deliberately excluded. This does not activate
+the standby or give it connector credentials. It only permits that member to
+submit the deterministic terminal `~fx/result` after an operator has fenced
+the primary and explicitly transferred the exact executor type partition.
+Because result authorization is consensus-visible, it cannot be added safely
+as an ad-hoc failover-time local override.
 
 Alternatively, an operator may use several executor members only with explicit
 disjoint `effects.executor.types` partitions. An empty type list means all
@@ -1906,7 +1935,7 @@ app/appchain-effects-demo/.demo-data/
     │   ├── appchain-identity.json
     │   ├── anchor-binding.json             # after anchor adoption
     │   ├── app-chain/node0/ node1/ node2/
-    │   ├── connectors/kafka/ minio/ ipfs/
+    │   ├── connectors/kafka/ s3/ ipfs/
     │   ├── observability/prometheus/ grafana/
     │   ├── logs/node0/ node1/ node2/
     │   └── reports/
@@ -2010,9 +2039,9 @@ anchor binding. Resetting an anchored app chain must choose one explicit path:
 2. create a new instance/chain identity and bootstrap a new anchor while
    preserving the already-synchronized L1 database.
 
-Kafka, MinIO, and IPFS remain physically separated for backup and operation,
-but their durable acknowledgements and the app-chain effect journal are one
-recovery boundary. Deleting only one side can lose reconciliation evidence or
+Kafka, S3-compatible storage, and IPFS remain physically separated for backup
+and operation, but their durable acknowledgements and the app-chain effect
+journal are one recovery boundary. Deleting only one side can lose reconciliation evidence or
 repeat externally visible work, so neither side has an isolated cleanup scope.
 
 ## 14. Stop, reset, and cleanup
@@ -2129,8 +2158,8 @@ yano.app-chain.effects.executors.objectstore-s3.targets.archive.region=us-east-1
 yano.app-chain.effects.executors.objectstore-s3.targets.archive.security-profile=local-demo
 yano.app-chain.effects.executors.objectstore-s3.targets.archive.path-style=true
 yano.app-chain.effects.executors.objectstore-s3.targets.archive.credentials-provider=static
-yano.app-chain.effects.executors.objectstore-s3.targets.archive.credentials.access-key-id=${MINIO_ACCESS_KEY}
-yano.app-chain.effects.executors.objectstore-s3.targets.archive.credentials.secret-access-key=${MINIO_SECRET_KEY}
+yano.app-chain.effects.executors.objectstore-s3.targets.archive.credentials.access-key-id=${S3_ACCESS_KEY}
+yano.app-chain.effects.executors.objectstore-s3.targets.archive.credentials.secret-access-key=${S3_SECRET_KEY}
 yano.app-chain.effects.executors.objectstore-s3.targets.archive.source-bucket=evidence-staging
 yano.app-chain.effects.executors.objectstore-s3.targets.archive.source-prefix=incoming
 yano.app-chain.effects.executors.objectstore-s3.targets.archive.destination-bucket=evidence-archive
@@ -2211,7 +2240,7 @@ deployment guidance requires a reverse proxy or service network with TLS,
 OIDC/mTLS/API-key policy, request limits, and audit logging appropriate to the
 operation.
 
-MinIO administration, Kafka administration, and the IPFS RPC API are never
+S3 administration, Kafka administration, and the IPFS RPC API are never
 presented directly as public demo endpoints.
 
 ### 16.3 Supply chain and plugin packaging
@@ -2282,12 +2311,20 @@ Container-backed integration tests use real compatible services:
 
 - Apache Kafka for publish acknowledgement, broker restart, duplicate retry,
   authentication failure, and sink/effect coexistence;
-- MinIO for conditional creation, checksum, versioning, conflicting destination,
-  restart, and optional retention profile; and
+- the pinned RustFS local-demo backend for conditional creation, checksum,
+  versioning, conflicting destination, restart, governance Object Lock, and
+  strict non-recursive bucket deletion; and
 - Kubo for already-pinned, new pin, invalid CID, unavailable content,
   restart, and reconciliation.
 
-Mock-only tests are insufficient for release.
+Real services are mandatory for success, restart, reconciliation, and
+unavailability coverage. Deterministic production-adapter fault seams are
+used for timing-sensitive timeout, authentication, and unknown-acknowledgement
+boundaries that a daemon restart cannot induce repeatably. Those seams must
+exercise the same production adapter and recovery paths, be explicitly
+test-only, and remain disabled in ordinary runtime configuration. Mock-only
+connector testing is insufficient for release, and an opt-in integration test
+that silently skips does not count as evidence.
 
 ### 18.3 Plugin packaging tests
 
@@ -2328,6 +2365,10 @@ The mandatory devnet E2E test:
     and direct scenario service checks; and
 13. stops cleanly while preserving state for a restart pass.
 
+The release E2E pulls the exact official RustFS and Kubo index-digest references,
+verifies that Docker selected a native `linux/amd64` or `linux/arm64` manifest,
+and builds only the Yano node and scenario-runner images.
+
 ### 18.5 Deployment and cleanup tests
 
 Run the same scenario through:
@@ -2336,11 +2377,13 @@ Run the same scenario through:
 - normally started/host endpoints.
 
 Test every network identity mismatch and cleanup category in temporary roots.
-Assert that app-chain cleanup preserves L1, connector cleanup preserves both
-chain layers, stop preserves everything, and secrets/sibling networks are
-never removed. Verify that same-identity restore adopts the expected anchor
-and that new-instance reset produces new chain/anchor identity without
-modifying the preserved L1 database.
+Assert that stop preserves everything; the supported `instance` retirement
+removes app-chain and connector durability together while preserving L1 and
+secrets; and independent app-chain-only or connector-only cleanup is rejected.
+Secrets and sibling networks are never removed. Verify that same-identity
+restore adopts the expected anchor and that replacement-instance retirement
+produces new chain/anchor identity without modifying the preserved L1
+database.
 
 ### 18.6 Network verification matrix
 
@@ -2352,7 +2395,17 @@ modifying the preserved L1 database.
 | Mainnet | Configuration, identity, startup guard, and non-value-moving connector validation only until separately approved |
 
 Public-network failures are reported as external/opt-in evidence and do not
-make ordinary offline unit builds depend on internet availability.
+make ordinary offline unit builds depend on internet availability. Live
+preview/preprod runs require operator-owned funding and explicit consent;
+their absence does not block Milestone 1 acceptance. Devnet is the mandatory
+automated release E2E. Mainnet guards and non-value-moving validation remain
+mandatory, but the demo never starts a funded mainnet flow automatically.
+
+The full Milestone 1 workflow has a distinct fail-closed acceptance job whose
+success requires the JVM build/bundle smoke, native plugin catalog, real
+connector fault matrix, and fenced devnet plus Compose/host E2E gates in the
+same applicable run. Scheduled connector-runtime runs exercise the real fault
+and E2E paths without rebuilding third-party dependencies.
 
 ## 19. Staged implementation roadmap
 
@@ -2510,10 +2563,13 @@ Recorded Phase 1.2 evidence:
   review found no unresolved critical, high, or medium issue after the fixes
   above.
 
-Live Object Lock, explicit timeout/unavailable fault injection, configured
-native-image startup, and a managed public-AWS smoke remain mandatory
-Milestone 1 release evidence under Phases 1.5--1.7; Phase 1.2 does not claim
-those later system gates.
+Live Object Lock against the pinned S3-compatible backend, explicit
+timeout/unavailable fault injection, and configured native-image startup remain
+mandatory Milestone 1 release evidence under Phases 1.5--1.7; Phase 1.2 does
+not claim those later system gates. A managed public-AWS smoke is an
+operator-authorized supplemental interoperability check, not a release
+prerequisite: Milestone 1 specifies an S3-compatible contract and proves the
+selected retention profile against the pinned demo backend.
 
 #### Phase 1.3 — IPFS
 
@@ -2549,8 +2605,9 @@ Recorded Phase 1.3 evidence:
   archival, response bounds, timeouts, interruption, redaction, close races,
   and exact error retryability. Module Javadoc and artifact-boundary checks
   complete without a module warning.
-- The opt-in test passes against the telemetry-disabled, offline official
-  `ipfs/kubo:v0.42.0` image at the recorded digest. It provisions deterministic
+- The Phase 1.3 opt-in test and the Phase 1.7 connector fault matrix pass against
+  the telemetry-disabled, offline official `ipfs/kubo:v0.42.0` image pinned in
+  Section 8.1. The test provisions deterministic
   raw and multi-block fixtures outside the executor, proves recursive and real
   indirect state, absent-to-new pin, already-pinned reconciliation through a
   fresh client, repeated idempotent add, unavailable content, and cleanup.
@@ -2568,10 +2625,13 @@ Recorded Phase 1.3 evidence:
   configuration. The parser additionally completed 100,000 randomized bounded
   inputs across all three entry points without an unsanitized exception.
 
-An actual daemon restart during an open attempt, public authenticated proxy
-smoke, configured native-image startup, and the complete multi-service fault
-matrix remain mandatory Milestone 1 release evidence under Phases 1.5--1.7;
-Phase 1.3 does not claim those later system gates.
+An actual daemon restart during an open attempt, configured native-image
+startup, and the complete multi-service fault matrix remain mandatory
+Milestone 1 release evidence under Phases 1.5--1.7; Phase 1.3 does not claim
+those later system gates. A public authenticated-proxy smoke is an
+operator-authorized supplemental interoperability check, not a release
+prerequisite; authentication, redaction, timeout, and unavailable-service
+boundaries remain mandatory deterministic and real-service evidence.
 
 #### Phase 1.4 — Evidence reference bundle
 
@@ -2646,7 +2706,7 @@ atomic capability until a gateway implements it.
 configuration, file-backed secrets, sample inspection certificate, three-node
 script-anchored Yano cluster, connector initialization, evidence UI, and
 optional Prometheus/Grafana view. Its Compose deployment owns version-pinned
-Kafka, MinIO, Kubo, Yano, runner, and observability services. Normal deployment
+Kafka, RustFS, Kubo, Yano, runner, and observability services. Normal deployment
 starts the same Yano JAR and four bundle JARs through the standard host cluster
 launcher and points the same runner at independently provisioned connector
 endpoints. Both paths use the same strict scenario configuration, sample,
@@ -2792,8 +2852,9 @@ At the Phase 1.5 checkpoint, restart recovery was proven but the guarded
 lifecycle, identity-marker, public-profile, complete connector fault-matrix,
 and final-release work was intentionally left to Phases 1.6/1.7. The Phase 1.6
 completed implementation is recorded below; connector fault closure, live
-public-network release evidence, and final independent review remain Phase 1.7
-work.
+devnet release evidence, and final independent review remain Phase 1.7 work.
+Live preview/preprod evidence remains an operator-authorized supplemental
+smoke and is not a release prerequisite.
 
 #### Phase 1.6 — Persistence, cleanup, and public profiles (**COMPLETE**)
 
@@ -2897,23 +2958,46 @@ Implementation and review record as of 2026-07-16:
 The preview/preprod *live* sync, anchor, connector, and restart smoke flows are
 available only as opt-in operator runs and were **not run or claimed** in this
 Phase 1.6 evidence. Mainnet evidence is configuration/guard validation only;
-no mainnet node was started and no value was moved. Milestone 1 therefore
-remains In progress. Phase 1.6 is **COMPLETE**; Phase 1.7 and its recorded
-release matrix follow afterward.
+no mainnet node was started and no value was moved. Those outcomes match the
+network policy in §18.6. Phase 1.6 was completed before the mandatory devnet
+fault/failover and final release gates recorded below.
 
 #### Phase 1.7 — Final review and release closure
 
-- Run independent architecture, security, operations, and determinism reviews.
-- Fix all correctness and maintainability findings.
-- Run full app-chain regression, JVM bundle, native catalog, Compose, host,
-  restart, and cleanup tests.
-- Update the user/operator guides, mark Milestone 1 Accepted with recorded
-  evidence, and leave Milestones 2/3 visibly Planned.
+**COMPLETE — 2026-07-17.**
+
+- Third-party connector dependencies are official prebuilt images pinned by
+  multi-architecture index digest. Kafka, RustFS, and Kubo are never compiled
+  by the Yano build; both `linux/amd64` and `linux/arm64` are represented by
+  their upstream indexes.
+- The real connector fault matrix passed with acknowledged Kafka publish,
+  bounded physical retry, broker outage/restart and reconciliation; RustFS
+  conditional creation, exact-content replay, conflict, checksum, versioning,
+  retention drift, outage/restart and reconciliation; and Kubo new/already/
+  indirect pin, unavailable content, outage/restart and reconciliation paths.
+- The three-node devnet post-ack fault E2E passed: the original executor was
+  fenced before result persistence, the replacement became the sole owner,
+  already-applied external state was reconciled without duplicate mutation,
+  all members verified effect proofs and anchor linkage, and the complete stack
+  remained stable across retained restart.
+- The identical scenario passed through Compose and normally started host
+  processes. Immediate replay and retained restart/replay preserved logical
+  effects, business state, external data, receipts, proofs, anchors, plugin
+  inventory, metrics, UI reports, and staged Yano artifacts.
+- Release, lifecycle, cleanup, identity, secret, Compose, failover, and
+  deployment-parity contracts passed. Earlier full runtime, JVM bundle, native
+  plugin catalog, and app-chain regression evidence remains green.
+- Independent architecture/maintainability and security/operations reviews
+  found no unresolved correctness or high-severity issue after fixes.
+
+Milestone 1 is therefore Accepted. Milestone 2 is also Accepted with its
+implementation evidence recorded in ADR-013.1. Milestone 3 remains independently
+tracked by ADR-013.2.
 
 Cardano payment hardening, native-asset transfer, DPP publication, and oracle
 publication proceed under their separate ADRs after this connector baseline.
 
-### 19.2 Milestone 2 — Minor framework closure
+### 19.2 Milestone 2 — Minor framework closure (Accepted)
 
 Milestone 2 begins only after the Milestone 1 demo and fault tests establish a
 working baseline. A focused sub-ADR or accepted amendment must freeze the API
@@ -3240,17 +3324,16 @@ without claiming that configuration invents missing domain rules.
   sink/effect semantics.
 - Optional dependencies remain out of the stock runtime.
 - Target aliases and pre-staging create a safer production boundary.
-- The evidence scenario exercises Emit → Execute → Result → explicit
-  continuation → Emit in v1; Milestone 2 can collapse the explicit wake-up
-  without changing the business precondition.
+- The evidence scenario supports both Emit → Execute → Result → explicit
+  continuation → Emit and the activated direct Result → Emit path without
+  changing the business precondition.
 - Compose gives a fast local experience while normal deployment proves real
   plugin portability.
 - Network isolation and guarded whole-instance retirement prevent genesis
   mismatch while preserving reusable public-network L1 sync.
 - DPP, oracle, and document/evidence applications gain a shared connector
   foundation.
-- Explicit effect ownership removes classpath-order ambiguity after Milestone
-  2.
+- Explicit effect ownership removes classpath-order ambiguity.
 - Compatible applications gain reusable, namespaced composition and one
   atomic proof root after Milestone 3.
 
@@ -3285,12 +3368,16 @@ Milestone 1 may move to Accepted only when all of the following are true:
 4. Real connector integration suites pass their applicable fault matrix:
    Kafka covers acknowledgement, duplicate/retry, timeout, broker restart,
    authentication failure, unavailable service, and sink/effect coexistence;
-   MinIO covers conditional creation, exact match, destination conflict,
-   timeout, restart, unavailability, versioning, checksum, and the selected
-   retention profile; Kubo covers new/already/indirect pins, upgrade,
+   the pinned S3-compatible demo backend covers conditional creation, exact
+   match, destination conflict, timeout, restart, unavailability, versioning,
+   checksum, and the selected retention profile; Kubo covers new/already/indirect pins, upgrade,
    unavailable content, unknown acknowledgement, timeout, restart, and
    reconciliation. A connector is not required to invent a conflict semantic
-   that its external idempotent-set model does not have.
+   that its external idempotent-set model does not have. Real services prove
+   success, restart, reconciliation, and unavailability; deterministic
+   test-only production-adapter seams cover timing-sensitive timeout,
+   authentication, and unknown-acknowledgement boundaries. The recorded gate
+   fails if any opted-in integration case silently skips.
 5. No connector payload or receipt accepts/leaks credentials or arbitrary
    endpoints.
 6. The evidence state machine remains deterministic across replay; it reaches
@@ -3305,14 +3392,22 @@ Milestone 1 may move to Accepted only when all of the following are true:
    safety tests; app-chain and connector durability cannot be split.
 10. Network identity mismatches fail before node launch with actionable
     diagnostics.
-11. Preview and preprod profiles are documented and have recorded opt-in smoke
-    evidence; mainnet is explicitly guarded and moves no value automatically.
+11. Preview and preprod profiles are documented as operator-authorized,
+    non-blocking supplemental smokes; mainnet is explicitly guarded and moves
+    no value automatically. Mandatory release evidence covers the full devnet
+    E2E plus public-profile configuration, identity, consent, and no-automatic-
+    value-movement guards.
 12. Plugin inventory, Effect Runtime status/metrics, effect operations,
     scenario service checks, and the evidence UI correctly distinguish intent,
     execution, incorporation, anchoring, and business truth.
 13. Full existing app-chain regression tests remain green.
 14. Independent architecture, determinism, security, and operations reviews
     have no unresolved correctness or high-severity findings.
+15. The release gate verifies exact resolved connector artifacts and requires
+    official third-party runtime images to be immutable multi-architecture
+    index-digest references. Yano does not build or publish Kafka, RustFS, or
+    Kubo; the live compatibility and fault matrices validate their required
+    behavior on the Docker server's native architecture.
 
 ### 24.2 Milestone 2 — minor framework closure
 
@@ -3362,3 +3457,34 @@ Milestone 3 may move to Accepted only when:
 ADR-013 as a complete roadmap is marked fully implemented only after all three
 milestones have their own recorded acceptance evidence. Their implementation
 status remains independently visible in the table at the top of this ADR.
+
+### 24.4 Milestone 3 verification evidence (2026-07-17)
+
+The Milestone 3 acceptance gates produced the following evidence:
+
+- composite contracts, runtime, stock preset, evidence client, proof handling,
+  demo runner, JVM packaging, and artifact-boundary checks passed through their
+  focused Gradle `check` tasks;
+- `release-contracts.sh` passed, including committed profile-digest trust
+  roots, deployment contracts, and documented public surfaces;
+- the composite direct-continuation scenario passed on fresh and retained data
+  in both Docker Compose and ordinary host deployment, ending with
+  `PASS: Compose and normal deployment have identical artifacts, semantics,
+  and retained replay behavior`;
+- all tracked runtime tests passed across the full and isolated reruns. One
+  timing-sensitive rotation test timed out in one repeated full run, after
+  passing in the preceding run, and passed immediately when rerun alone. An
+  unrelated untracked temporary preprod identity test was preserved and
+  excluded from the tracked-suite result;
+- the full application `check` task passed, including first-party plugin
+  bundle launch, packaging, dependency alignment, and API tests; and
+- a fresh Linux ARM64 native executable was built from the current sources
+  with the official prebuilt GraalVM builder. Native smoke constructed every
+  plugin SPI and configured Kafka/S3/Kubo client, then started the same binary
+  with `state-machine=composite` and preset `evidence-v1`. The final catalog
+  provenance was `indexSha256=sha256:868ef510b51f9554ae3fadc588fc37a33d4ce8d7120ec8912a53374f32619c38`
+  and `catalogFingerprint=sha256:797f70a7c3d75eac5b582b5a21fe38f10fdb1b55a9b41b6d44fed2863a6885e6`;
+  and
+- two independent final reviews covered the plugin/client/demo surfaces and
+  consensus/determinism design. Both returned PASS with zero unresolved
+  Critical, High, or Medium findings.

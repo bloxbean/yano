@@ -180,6 +180,18 @@ public final class LegacyServiceLoaderProviderRegistry
     }
 
     @Override
+    public synchronized <P> Optional<String> contributionOwner(
+            Class<P> providerType,
+            String selector
+    ) {
+        Objects.requireNonNull(providerType, "providerType");
+        Objects.requireNonNull(selector, "selector");
+        ensureOpen();
+        return providers.getOrDefault(providerType, Map.of()).containsKey(selector)
+                ? Optional.of("legacy") : Optional.empty();
+    }
+
+    @Override
     public synchronized void registerContributionCleanup(
             CompletableFuture<Void> completion
     ) {

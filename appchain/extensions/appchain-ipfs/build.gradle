@@ -30,7 +30,12 @@ tasks.named('compileJava') {
 // Gradle system properties belong to the daemon by default; forward only the
 // explicit opt-in integration controls into the forked JUnit process.
 tasks.withType(Test).configureEach {
-    ['yano.ipfs.integration.enabled', 'yano.ipfs.integration.endpoint'].each { key ->
+    [
+            'yano.ipfs.integration.enabled',
+            'yano.ipfs.integration.endpoint',
+            'yano.ipfs.integration.run-id',
+            'yano.ipfs.integration.phase'
+    ].each { key ->
         def value = System.getProperty(key)
         if (value != null) {
             systemProperty key, value

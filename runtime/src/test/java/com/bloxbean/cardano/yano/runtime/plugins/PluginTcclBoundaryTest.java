@@ -25,6 +25,7 @@ import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutor;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutorFactory;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectExecution;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectExecutionContext;
+import com.bloxbean.cardano.yano.api.appchain.effects.EffectExecutorOperationalSnapshot;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectResult;
 import com.bloxbean.cardano.yano.api.appchain.effects.PendingEffect;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1Observation;
@@ -168,6 +169,7 @@ class PluginTcclBoundaryTest {
             firstMachine.apply(null, null);
             firstMachine.apply(null, null, null);
             firstMachine.onEffectResult(null, null, null);
+            firstMachine.onEffectResult(null, null, null, null);
             assertThatThrownBy(() -> firstMachine.query("failure", new byte[0]))
                     .isInstanceOf(IllegalStateException.class)
                     .hasMessage("expected query failure");
@@ -225,6 +227,9 @@ class PluginTcclBoundaryTest {
             assertThat(executorProducts.get(1)).isSameAs(executorProducts.getFirst());
             AppEffectExecutor executor = executorProducts.getFirst();
             executor.id();
+            assertThat(executor.effectTypes()).containsExactly("effect");
+            assertThat(executor.operationalSnapshot().readiness())
+                    .isEqualTo(EffectExecutorOperationalSnapshot.Readiness.READY);
             executor.supports("effect");
             executor.execute(null, null);
             executor.close();
@@ -2673,6 +2678,15 @@ class PluginTcclBoundaryTest {
         public void onEffectResult(AppBlock block, EffectResult result, AppStateWriter writer) {
             probe.check();
         }
+        @Override
+        public void onEffectResult(
+                AppBlock block,
+                EffectResult result,
+                AppStateWriter writer,
+                AppEffectEmitter effects
+        ) {
+            probe.check();
+        }
         @Override public byte[] query(String path, byte[] params) {
             probe.check();
             throw new IllegalStateException("expected query failure");
@@ -2844,6 +2858,16 @@ class PluginTcclBoundaryTest {
         private AssertingExecutor(ContextProbe probe) { this.probe = probe; }
 
         @Override public String id() { probe.check(); return "executor"; }
+        @Override public Set<String> effectTypes() { probe.check(); return Set.of("effect"); }
+        @Override public EffectExecutorOperationalSnapshot operationalSnapshot() {
+            probe.check();
+            return new EffectExecutorOperationalSnapshot(
+                    EffectExecutorOperationalSnapshot.Readiness.READY,
+                    1, 1, 0, 0, 0,
+                    EffectExecutorOperationalSnapshot.AgeBucket.LESS_THAN_ONE_MINUTE,
+                    EffectExecutorOperationalSnapshot.AgeBucket.NEVER,
+                    EffectExecutorOperationalSnapshot.FailureCode.NONE);
+        }
         @Override public boolean supports(String effectType) { probe.check(); return true; }
         @Override public EffectExecution execute(EffectExecutionContext ctx, PendingEffect effect) {
             probe.check();

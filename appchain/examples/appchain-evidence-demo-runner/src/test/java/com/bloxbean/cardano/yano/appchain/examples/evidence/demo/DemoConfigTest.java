@@ -21,14 +21,39 @@ class DemoConfigTest {
         DemoConfig config = DemoConfig.load(DemoTestFiles.config(temporary));
 
         assertThat(config.chainId()).isEqualTo("evidence-chain");
+        assertThat(config.stateMachine()).isEqualTo("evidence-registry");
         assertThat(config.yanoUrls()).hasSize(3);
         assertThat(config.yanoApiKey()).isNull();
-        assertThat(config.s3().endpoint().toString()).isEqualTo("http://minio.example:9000");
+        assertThat(config.s3().endpoint().toString()).isEqualTo("http://s3.example:9000");
         assertThat(config.ipfs().apiUrl().toString()).isEqualTo("http://ipfs.example:5001");
         assertThat(config.sampleFile()).isAbsolute();
         assertThat(config.toString())
-                .doesNotContain("super-api-key", "minio-access", "minio-secret")
+                .doesNotContain("super-api-key", "s3-demo-access", "s3-demo-secret")
                 .contains("<redacted>");
+    }
+
+    @Test
+    void selectsOnlyTheExplicitStockCompositeMachine() throws IOException {
+        Path configFile = DemoTestFiles.config(temporary);
+        Files.writeString(configFile, DemoTestFiles.properties()
+                + "demo.state-machine=composite\n"
+                + "demo.composite-profile-digest=" + "ab".repeat(32) + "\n");
+
+        assertThat(DemoConfig.load(configFile).stateMachine()).isEqualTo("composite");
+        assertThat(DemoConfig.load(configFile).expectedCompositeProfileDigest())
+                .isEqualTo(java.util.HexFormat.of().parseHex("ab".repeat(32)));
+
+        Files.writeString(configFile, DemoTestFiles.properties()
+                + "demo.state-machine=custom\n");
+        assertThatThrownBy(() -> DemoConfig.load(configFile))
+                .isInstanceOf(DemoException.class)
+                .extracting(failure -> ((DemoException) failure).error())
+                .isEqualTo(DemoError.INVALID_CONFIG);
+
+        Files.writeString(configFile, DemoTestFiles.properties()
+                + "demo.state-machine=composite\n");
+        assertThatThrownBy(() -> DemoConfig.load(configFile))
+                .isInstanceOf(DemoException.class);
     }
 
     @Test
@@ -43,6 +68,55 @@ class DemoConfigTest {
         assertThat(config.yanoApiKey()).isNotNull();
         assertThat(config.yanoApiKey().toString()).isEqualTo("<redacted>");
         assertThat(config.toString()).doesNotContain("scoped-read-submit-key");
+    }
+
+    @Test
+    void kafkaAuditSettingsDoNotReadUnrelatedConnectorCredentials() throws Exception {
+        Path config = DemoTestFiles.config(temporary);
+        Files.delete(temporary.resolve("secrets/access"));
+        Files.delete(temporary.resolve("secrets/secret"));
+
+        DemoConfig.KafkaSettings kafka = DemoConfig.loadKafkaSettings(config);
+
+        assertThat(kafka.bootstrapServers()).isEqualTo("kafka:9092");
+        assertThat(kafka.physicalTopic()).isEqualTo("evidence.available.v1");
+    }
+
+    @Test
+    void rejectsOversizedAndMalformedUtf8Configuration() throws Exception {
+        Path config = temporary.resolve("runner.properties");
+        Files.write(config, new byte[65_537]);
+        assertThatThrownBy(() -> DemoConfig.load(config))
+                .isInstanceOf(DemoException.class)
+                .extracting(failure -> ((DemoException) failure).error())
+                .isEqualTo(DemoError.INVALID_CONFIG);
+
+        Files.write(config, new byte[]{(byte) 0xc3, (byte) 0x28});
+        if (Files.getFileStore(config).supportsFileAttributeView("posix")) {
+            Files.setPosixFilePermissions(config, Set.of(
+                    PosixFilePermission.OWNER_READ,
+                    PosixFilePermission.OWNER_WRITE));
+        }
+        assertThatThrownBy(() -> DemoConfig.load(config))
+                .isInstanceOf(DemoException.class)
+                .extracting(failure -> ((DemoException) failure).error())
+                .isEqualTo(DemoError.INVALID_CONFIG);
+    }
+
+    @Test
+    void rejectsSharedRunnerConfigurationBecauseItSelectsCredentialDestinations()
+            throws Exception {
+        Path config = DemoTestFiles.config(temporary);
+        if (Files.getFileStore(config).supportsFileAttributeView("posix")) {
+            Files.setPosixFilePermissions(config, Set.of(
+                    PosixFilePermission.OWNER_READ,
+                    PosixFilePermission.OWNER_WRITE,
+                    PosixFilePermission.GROUP_READ));
+            assertThatThrownBy(() -> DemoConfig.load(config))
+                    .isInstanceOf(DemoException.class)
+                    .extracting(failure -> ((DemoException) failure).error())
+                    .isEqualTo(DemoError.INVALID_CONFIG);
+        }
     }
 
     @Test
@@ -63,8 +137,8 @@ class DemoConfigTest {
     void rejectsNonCanonicalEndpointPathsWithoutResolution() throws IOException {
         Path config = DemoTestFiles.config(temporary);
         assertCode(config, DemoTestFiles.properties().replace(
-                        "s3.endpoint=http://minio.example:9000",
-                        "s3.endpoint=http://minio.example:9000/a"), DemoError.INVALID_CONFIG);
+                        "s3.endpoint=http://s3.example:9000",
+                        "s3.endpoint=http://s3.example:9000/a"), DemoError.INVALID_CONFIG);
         assertCode(config, DemoTestFiles.properties().replace(
                         "ipfs.api-url=http://ipfs.example:5001",
                         "ipfs.api-url=http://ipfs.example:5001/%2F"), DemoError.INVALID_CONFIG);

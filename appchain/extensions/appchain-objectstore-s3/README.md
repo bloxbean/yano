@@ -131,25 +131,27 @@ headers, and response bodies are not copied into effect failures or receipts.
 ## Tests
 
 Ordinary `check` is offline and covers the adapter boundary, policy/error
-normalization, lifecycle, and thin/bundle packaging. The real MinIO suite is
-opt-in. One reproducible local invocation is:
+normalization, lifecycle, and thin/bundle packaging. Real S3-compatible tests
+are opt-in. The release invocation starts the digest-pinned local demo backend,
+keeps credentials in owner-only files, exercises restart and unavailability,
+checks that no opted-in test skipped, and removes the disposable service and
+its data:
 
 ```bash
-docker run --rm --name yano-adr013-minio -p 9000:9000 \
-  -e MINIO_ROOT_USER=yano-minio-dev \
-  -e MINIO_ROOT_PASSWORD=yano-minio-secret-change-me \
-  minio/minio:RELEASE.2025-09-07T16-13-09Z server /data
-
-JAVA_TOOL_OPTIONS="-Dyano.s3.integration.enabled=true \
-  -Dyano.s3.integration.endpoint=http://localhost:9000 \
-  -Dyano.s3.integration.access-key=yano-minio-dev \
-  -Dyano.s3.integration.secret-key=yano-minio-secret-change-me" \
-  ./gradlew :appchain-objectstore-s3:test \
-    --tests '*MinioIntegrationTest'
+app/appchain-effects-demo/tests/connector-fault-matrix.sh
 ```
 
-The image tag is exact and the credentials above are development-only values
-for that disposable process. Release evidence additionally exercises
-versioning, exact-key conflict/no-resurrection, checksum mismatch, conditional
-create, restart/reconciliation, and optional Object Lock against a pinned MinIO
-image.
+For a separately managed AWS S3 or compatible service, opt in with
+`yano.s3.integration.enabled`, `endpoint`, `run-id`, `access-key-file`, and
+`secret-key-file` system properties. Both credential files must be regular,
+non-symlink, owner-only files; only their paths, never their values, may appear
+in Gradle or JVM arguments. Release evidence exercises versioning, exact-key
+conflict/no-resurrection, checksum mismatch, conditional create,
+restart/reconciliation, unavailability, and the selected retention profile
+against the exact RustFS release selected by the self-contained demo; that
+preview backend is not a production object-store recommendation. The fault
+harness additionally
+sets `yano.s3.integration.disposable-service=true`: this permits a provider's
+`BucketNotEmpty` cleanup discrepancy only after the tests prove that no
+user-visible object, version, or delete marker remains and only because the
+entire isolated provider data directory is then destroyed.

@@ -65,6 +65,25 @@ class EvidenceDemoMainTest {
                 .isEqualTo("FAIL code=INVALID_CONFIG\n");
 
         error.reset();
+        int invalidAudit = EvidenceDemoMain.run(new String[]{
+                        "audit-kafka", "--config", config.toString(),
+                        "--expected-records", "17",
+                        "--expected-effect-id", "ab".repeat(32)},
+                new PrintStream(output), new PrintStream(error));
+        assertThat(invalidAudit).isEqualTo(2);
+        assertThat(error.toString(StandardCharsets.UTF_8))
+                .isEqualTo("FAIL code=INVALID_ARGUMENT\n")
+                .doesNotContain(config.toString(), "scoped-key");
+
+        error.reset();
+        int knownBootstrapCommand = EvidenceDemoMain.run(
+                new String[]{"bootstrap-s3", "--config", temporary.resolve("missing").toString()},
+                new PrintStream(output), new PrintStream(error));
+        assertThat(knownBootstrapCommand).isEqualTo(2);
+        assertThat(error.toString(StandardCharsets.UTF_8))
+                .isEqualTo("FAIL code=INVALID_CONFIG\n");
+
+        error.reset();
         EvidenceDemoMain.run(new String[]{"unknown", "--config", "secret-path"},
                 new PrintStream(output), new PrintStream(error));
         assertThat(error.toString(StandardCharsets.UTF_8))

@@ -34,9 +34,152 @@ test {
     jvmArgs '--add-opens=java.base/java.lang=ALL-UNNAMED'
 }
 
-// Make all tests use JUnit 5
+// Run every test task on the JUnit Platform; individual modules select their
+// compatible Jupiter engine version.
 tasks.withType(Test) {
     useJUnitPlatform()
+}
+
+// ADR-013 ships the Quarkus host, a standalone evidence runner, and six
+// independently loadable plugin bundles. Keep the Jackson security override
+// observable at build time: a direct catalog upgrade is not enough because
+// Quarkus imports its platform as an enforced BOM.
+def adr013ReleaseScopes = [
+        app: ':app',
+        runner: ':appchain-evidence-demo-runner',
+        'bundle-kafka': ':appchain-kafka',
+        'bundle-objectstore-s3': ':appchain-objectstore-s3',
+        'bundle-ipfs': ':appchain-ipfs',
+        'bundle-evidence-registry': ':appchain-evidence-registry',
+        'bundle-effects-cardano': ':appchain-effects-cardano',
+        'bundle-zk': ':appchain-zk'
+]
+
+tasks.register('verifyAdr013JacksonAlignment') {
+    group = 'verification'
+    description = 'Rejects vulnerable or mixed Jackson versions in ADR-013 runtime closures'
+
+    doLast {
+        def expectedPatchVersion = libs.versions.jackson.get()
+        def expectedAnnotationsVersion = expectedPatchVersion.replaceFirst(/\.\d+$/, '')
+        def expectedAppModules = [
+                'com.fasterxml.jackson:jackson-bom',
+                'com.fasterxml.jackson.core:jackson-annotations',
+                'com.fasterxml.jackson.core:jackson-core',
+                'com.fasterxml.jackson.core:jackson-databind',
+                'com.fasterxml.jackson.dataformat:jackson-dataformat-cbor',
+                'com.fasterxml.jackson.dataformat:jackson-dataformat-yaml',
+                'com.fasterxml.jackson.datatype:jackson-datatype-jdk8',
+                'com.fasterxml.jackson.datatype:jackson-datatype-jsr310',
+                'com.fasterxml.jackson.jakarta.rs:jackson-jakarta-rs-base',
+                'com.fasterxml.jackson.jakarta.rs:jackson-jakarta-rs-json-provider',
+                'com.fasterxml.jackson.module:jackson-module-jakarta-xmlbind-annotations',
+                'com.fasterxml.jackson.module:jackson-module-parameter-names'
+        ] as Set
+        def reportLines = ['scope\tmodule\tversion']
+        def failures = []
+
+        adr013ReleaseScopes.each { scope, projectPath ->
+            def targetProject = project(projectPath)
+            def runtimeClasspath = targetProject.configurations
+                    .getByName('runtimeClasspath')
+            def modules = runtimeClasspath.incoming.resolutionResult.allComponents
+                    .findAll { component ->
+                        component.id instanceof
+                                org.gradle.api.artifacts.component.ModuleComponentIdentifier
+                                && (component.id.group == 'com.fasterxml.jackson'
+                                || component.id.group.startsWith('com.fasterxml.jackson.'))
+                    }.collectEntries { component ->
+                        def id = component.id as
+                                org.gradle.api.artifacts.component.ModuleComponentIdentifier
+                        [("${id.group}:${id.module}".toString()): id.version]
+                    }
+            modules.toSorted().each { module, version ->
+                reportLines.add("${scope}\t${module}\t${version}".toString())
+                def expected = module ==
+                        'com.fasterxml.jackson.core:jackson-annotations'
+                        ? expectedAnnotationsVersion : expectedPatchVersion
+                if (version != expected) {
+                    failures.add("${scope} resolves ${module}:${version}; expected ${expected}")
+                }
+            }
+            if (scope == 'app') {
+                def missing = expectedAppModules - modules.keySet()
+                if (!missing.isEmpty()) {
+                    failures.add("app Jackson module inventory is incomplete: ${missing.sort()}")
+                }
+            }
+        }
+
+        def report = layout.buildDirectory.file(
+                'reports/adr013/jackson-alignment.tsv').get().asFile
+        report.parentFile.mkdirs()
+        report.setText(reportLines.join(System.lineSeparator())
+                + System.lineSeparator(), 'UTF-8')
+        if (!failures.isEmpty()) {
+            throw new GradleException('ADR-013 Jackson alignment failed:\n - '
+                    + failures.join('\n - '))
+        }
+        logger.lifecycle('ADR-013 Jackson alignment passed for {} resolved modules; report={}',
+                reportLines.size() - 1, report)
+    }
+}
+
+tasks.named('check') {
+    dependsOn tasks.named('verifyAdr013JacksonAlignment')
+}
+
+tasks.register('verifyAdr013Slf4jAlignment') {
+    group = 'verification'
+    description = 'Rejects mixed SLF4J APIs or bundled providers in ADR-013 runtime closures'
+
+    doLast {
+        def expectedVersion = libs.slf4j.api.get().versionConstraint.requiredVersion
+        def expectedModules = ['org.slf4j:slf4j-api'] as Set
+        def reportLines = ['scope\tmodule\tversion']
+        def failures = []
+
+        adr013ReleaseScopes.each { scope, projectPath ->
+            def runtimeClasspath = project(projectPath).configurations
+                    .getByName('runtimeClasspath')
+            def modules = runtimeClasspath.incoming.resolutionResult.allComponents
+                    .findAll { component ->
+                        component.id instanceof
+                                org.gradle.api.artifacts.component.ModuleComponentIdentifier
+                                && component.id.group == 'org.slf4j'
+                    }.collectEntries { component ->
+                        def id = component.id as
+                                org.gradle.api.artifacts.component.ModuleComponentIdentifier
+                        [("${id.group}:${id.module}".toString()): id.version]
+                    }
+            modules.toSorted().each { module, version ->
+                reportLines.add("${scope}\t${module}\t${version}".toString())
+                if (version != expectedVersion) {
+                    failures.add("${scope} resolves ${module}:${version}; expected ${expectedVersion}")
+                }
+            }
+            if (modules.keySet() != expectedModules) {
+                failures.add("${scope} SLF4J runtime inventory is ${modules.keySet().sort()}; "
+                        + "expected host-provided API only ${expectedModules}")
+            }
+        }
+
+        def report = layout.buildDirectory.file(
+                'reports/adr013/slf4j-alignment.tsv').get().asFile
+        report.parentFile.mkdirs()
+        report.setText(reportLines.join(System.lineSeparator())
+                + System.lineSeparator(), 'UTF-8')
+        if (!failures.isEmpty()) {
+            throw new GradleException('ADR-013 SLF4J alignment failed:\n - '
+                    + failures.join('\n - '))
+        }
+        logger.lifecycle('ADR-013 SLF4J alignment passed for {} runtime closures; report={}',
+                adr013ReleaseScopes.size(), report)
+    }
+}
+
+tasks.named('check') {
+    dependsOn tasks.named('verifyAdr013Slf4jAlignment')
 }
 
 ext.ossrhUsername = System.getenv('MAVEN_USERNAME')

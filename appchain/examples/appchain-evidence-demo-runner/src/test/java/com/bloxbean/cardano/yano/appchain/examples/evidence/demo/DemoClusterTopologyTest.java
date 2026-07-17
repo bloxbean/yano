@@ -31,6 +31,21 @@ class DemoClusterTopologyTest {
     }
 
     @Test
+    void acceptsCompositeOnlyWhenItIsThePinnedExpectedMachine() {
+        List<YanoAuditClient.Status> statuses = List.of(
+                status(1, 3, 2, "composite"),
+                status(2, 3, 2, "composite"),
+                status(3, 3, 2, "composite"));
+
+        assertThat(DemoClusterTopology.verify(statuses, MEMBERS, 2, "composite")
+                .stateMachine()).isEqualTo("composite");
+        assertThatThrownBy(() -> DemoClusterTopology.verify(statuses, MEMBERS, 2))
+                .isInstanceOf(DemoException.class)
+                .extracting(failure -> ((DemoException) failure).error())
+                .isEqualTo(DemoError.CLUSTER_DIVERGED);
+    }
+
+    @Test
     void genericTopologyAllowsFollowersBeforeAnchorIdentityAdoption() {
         DemoClusterTopology topology = DemoClusterTopology.verify(List.of(
                 status(1, 3, 2, "evidence-registry"),

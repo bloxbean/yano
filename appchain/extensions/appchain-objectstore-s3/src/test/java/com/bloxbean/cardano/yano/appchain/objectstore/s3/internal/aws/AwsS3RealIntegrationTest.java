@@ -8,6 +8,7 @@ import com.bloxbean.cardano.yano.appchain.objectstore.s3.internal.EncryptionMode
 import com.bloxbean.cardano.yano.appchain.objectstore.s3.internal.ObjectStoreClient;
 import com.bloxbean.cardano.yano.appchain.objectstore.s3.internal.ObjectStoreException;
 import com.bloxbean.cardano.yano.appchain.objectstore.s3.internal.PutRequest;
+import com.bloxbean.cardano.yano.appchain.objectstore.s3.testing.IntegrationSecretFiles;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
@@ -26,15 +27,22 @@ import software.amazon.awssdk.services.s3.model.BucketVersioningStatus;
 import software.amazon.awssdk.services.s3.model.CreateBucketRequest;
 import software.amazon.awssdk.services.s3.model.DeleteBucketRequest;
 import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
+import software.amazon.awssdk.services.s3.model.GetObjectLockConfigurationRequest;
+import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
 import software.amazon.awssdk.services.s3.model.ListObjectVersionsRequest;
 import software.amazon.awssdk.services.s3.model.ListObjectVersionsResponse;
+import software.amazon.awssdk.services.s3.model.ListObjectsV2Request;
+import software.amazon.awssdk.services.s3.model.ObjectLockEnabled;
+import software.amazon.awssdk.services.s3.model.ObjectLockMode;
 import software.amazon.awssdk.services.s3.model.PutBucketVersioningRequest;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
+import software.amazon.awssdk.services.s3.model.S3Exception;
 import software.amazon.awssdk.services.s3.model.VersioningConfiguration;
 
 import java.net.URI;
 import java.security.MessageDigest;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.HexFormat;
 import java.util.Arrays;
 import java.util.Map;
@@ -43,20 +51,89 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/** Opt-in real MinIO compatibility test; ordinary check remains offline. */
+/** Opt-in real S3-compatible service test; ordinary check remains offline. */
 @EnabledIfSystemProperty(named = "yano.s3.integration.enabled", matches = "true")
-class AwsS3MinioIntegrationTest {
+class AwsS3RealIntegrationTest {
+    @Test
+    void governanceObjectLockIsActuallyEnforcedAndBypassIsExplicit() {
+        String endpoint = requiredProperty("yano.s3.integration.endpoint");
+        String accessKey = IntegrationSecretFiles.read(
+                "yano.s3.integration.access-key-file");
+        String secretKey = IntegrationSecretFiles.read(
+                "yano.s3.integration.secret-key-file");
+        String suffix = UUID.randomUUID().toString().replace("-", "").substring(0, 12);
+        String bucket = "yano-lock-" + suffix;
+        String key = "locked/evidence.cbor";
+        String versionId = null;
+
+        try (S3Client admin = admin(endpoint, accessKey, secretKey)) {
+            try {
+                admin.createBucket(CreateBucketRequest.builder()
+                        .bucket(bucket).objectLockEnabledForBucket(true).build());
+                assertThat(admin.getBucketVersioning(request -> request.bucket(bucket)).status())
+                        .isEqualTo(BucketVersioningStatus.ENABLED);
+                assertThat(admin.getObjectLockConfiguration(
+                                GetObjectLockConfigurationRequest.builder().bucket(bucket).build())
+                        .objectLockConfiguration().objectLockEnabled())
+                        .isEqualTo(ObjectLockEnabled.ENABLED);
+
+                Instant retainUntil = Instant.now().plus(Duration.ofHours(1));
+                var put = admin.putObject(PutObjectRequest.builder()
+                                .bucket(bucket).key(key)
+                                .objectLockMode(ObjectLockMode.GOVERNANCE)
+                                .objectLockRetainUntilDate(retainUntil).build(),
+                        RequestBody.fromString("locked-evidence"));
+                versionId = put.versionId();
+                assertThat(versionId).isNotBlank();
+                var head = admin.headObject(HeadObjectRequest.builder()
+                        .bucket(bucket).key(key).versionId(versionId).build());
+                assertThat(head.objectLockMode()).isEqualTo(ObjectLockMode.GOVERNANCE);
+                assertThat(head.objectLockRetainUntilDate()).isAfter(Instant.now());
+
+                String retainedVersion = versionId;
+                assertThatThrownBy(() -> admin.deleteObject(DeleteObjectRequest.builder()
+                                .bucket(bucket).key(key).versionId(retainedVersion).build()))
+                        .isInstanceOf(S3Exception.class)
+                        .satisfies(failure -> assertThat(((S3Exception) failure).statusCode())
+                                .isIn(403, 409));
+
+                admin.deleteObject(DeleteObjectRequest.builder()
+                        .bucket(bucket).key(key).versionId(versionId)
+                        .bypassGovernanceRetention(true).build());
+                versionId = null;
+                deleteEmptyBucket(admin, bucket);
+            } finally {
+                if (versionId != null) {
+                    try {
+                        admin.deleteObject(DeleteObjectRequest.builder()
+                                .bucket(bucket).key(key).versionId(versionId)
+                                .bypassGovernanceRetention(true).build());
+                    } catch (RuntimeException ignored) {
+                        // Preserve the primary compatibility failure.
+                    }
+                    try {
+                        deleteEmptyBucket(admin, bucket);
+                    } catch (RuntimeException ignored) {
+                        // Preserve the primary compatibility failure.
+                    }
+                }
+            }
+        }
+    }
+
     @Test
     void conditionalVersionedPromotionAndNoResurrectionProfile() {
         String endpoint = requiredProperty("yano.s3.integration.endpoint");
-        String accessKey = requiredProperty("yano.s3.integration.access-key");
-        String secretKey = requiredProperty("yano.s3.integration.secret-key");
+        String accessKey = IntegrationSecretFiles.read(
+                "yano.s3.integration.access-key-file");
+        String secretKey = IntegrationSecretFiles.read(
+                "yano.s3.integration.secret-key-file");
         String suffix = UUID.randomUUID().toString().replace("-", "").substring(0, 12);
         String sourceBucket = "yano-stage-" + suffix;
         String destinationBucket = "yano-archive-" + suffix;
         String sourceKey = "incoming/evidence.cbor";
         String destinationKey = "verified/evidence.cbor";
-        byte[] content = "phase-1.2-minio-evidence".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        byte[] content = "phase-1.2-s3-evidence".getBytes(java.nio.charset.StandardCharsets.UTF_8);
         byte[] digest = sha256(content);
 
         try (S3Client admin = admin(endpoint, accessKey, secretKey)) {
@@ -174,7 +251,7 @@ class AwsS3MinioIntegrationTest {
                                 String destinationBucket) {
         admin.deleteObject(DeleteObjectRequest.builder()
                 .bucket(sourceBucket).key(sourceKey).build());
-        admin.deleteBucket(DeleteBucketRequest.builder().bucket(sourceBucket).build());
+        deleteEmptyBucket(admin, sourceBucket);
 
         ListObjectVersionsResponse versions = admin.listObjectVersions(
                 ListObjectVersionsRequest.builder().bucket(destinationBucket).build());
@@ -184,13 +261,34 @@ class AwsS3MinioIntegrationTest {
         versions.deleteMarkers().forEach(marker -> admin.deleteObject(
                 DeleteObjectRequest.builder().bucket(destinationBucket).key(marker.key())
                         .versionId(marker.versionId()).build()));
-        admin.deleteBucket(DeleteBucketRequest.builder().bucket(destinationBucket).build());
+        deleteEmptyBucket(admin, destinationBucket);
+    }
+
+    private static void deleteEmptyBucket(S3Client admin, String bucket) {
+        try {
+            admin.deleteBucket(DeleteBucketRequest.builder().bucket(bucket).build());
+        } catch (S3Exception providerQuirk) {
+            if (providerQuirk.statusCode() != 409
+                    || !Boolean.getBoolean("yano.s3.integration.disposable-service")) {
+                throw providerQuirk;
+            }
+            assertNoVisibleObjects(admin, bucket);
+        }
+    }
+
+    private static void assertNoVisibleObjects(S3Client admin, String bucket) {
+        ListObjectVersionsResponse versions = admin.listObjectVersions(
+                ListObjectVersionsRequest.builder().bucket(bucket).build());
+        assertThat(versions.versions()).isEmpty();
+        assertThat(versions.deleteMarkers()).isEmpty();
+        assertThat(admin.listObjectsV2(ListObjectsV2Request.builder().bucket(bucket).build())
+                .contents()).isEmpty();
     }
 
     private static String requiredProperty(String name) {
         String value = System.getProperty(name);
         if (value == null || value.isBlank()) {
-            throw new IllegalStateException("Missing required MinIO integration property: " + name);
+            throw new IllegalStateException("Missing required S3 integration property: " + name);
         }
         return value;
     }

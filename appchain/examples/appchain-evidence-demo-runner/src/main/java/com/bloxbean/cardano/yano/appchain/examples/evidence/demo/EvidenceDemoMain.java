@@ -23,6 +23,13 @@ public final class EvidenceDemoMain {
             if ("serve".equals(parsed.command())) {
                 return serve(UiConfig.load(parsed.config()), output);
             }
+            if ("bootstrap-s3".equals(parsed.command())) {
+                return bootstrapS3(S3BootstrapConfig.load(parsed.config()), output);
+            }
+            if ("audit-kafka".equals(parsed.command())) {
+                return auditKafka(DemoConfig.loadKafkaSettings(parsed.config()),
+                        parsed.expectedRecords(), parsed.expectedEffectId(), output);
+            }
             DemoConfig config = DemoConfig.load(parsed.config());
             return switch (parsed.command()) {
                 case "validate-config" -> validateConfig(output);
@@ -31,6 +38,7 @@ public final class EvidenceDemoMain {
                 case "init" -> initialize(config, output);
                 case "run" -> scenario(config, output);
                 case "serve" -> throw new DemoException(DemoError.INTERNAL_ERROR);
+                case "audit-kafka" -> throw new DemoException(DemoError.INTERNAL_ERROR);
                 default -> throw new DemoException(DemoError.INVALID_ARGUMENT);
             };
         } catch (DemoException failure) {
@@ -66,6 +74,26 @@ public final class EvidenceDemoMain {
     private static int initializeConnectors(DemoConfig config, PrintStream output) {
         DemoInitializer.initializeConnectors(config);
         output.println("PASS command=init-connectors");
+        return 0;
+    }
+
+    private static int bootstrapS3(S3BootstrapConfig config, PrintStream output) {
+        new RustFsAdminBootstrapper(config).bootstrap();
+        try (S3BucketBootstrapper bootstrapper = new S3BucketBootstrapper(config)) {
+            bootstrapper.bootstrap();
+        }
+        new S3IamVerifier(config).verify();
+        output.println("PASS command=bootstrap-s3");
+        return 0;
+    }
+
+    private static int auditKafka(DemoConfig.KafkaSettings settings,
+                                  int expectedRecords,
+                                  String expectedEffectId,
+                                  PrintStream output) {
+        try (KafkaDemoClient kafka = new KafkaDemoClient(settings)) {
+            output.println(kafka.audit(expectedRecords, expectedEffectId).toJson());
+        }
         return 0;
     }
 
@@ -106,18 +134,39 @@ public final class EvidenceDemoMain {
         return 0;
     }
 
-    private record Arguments(String command, Path config) {
+    private record Arguments(String command, Path config,
+                             int expectedRecords, String expectedEffectId) {
         private static final Set<String> COMMANDS = Set.of(
-                "validate-config", "probe", "init-connectors", "init", "run", "serve");
+                "validate-config", "probe", "bootstrap-s3", "audit-kafka", "init-connectors",
+                "init", "run", "serve");
 
         static Arguments parse(String[] args) {
+            if (args != null && args.length > 0 && "audit-kafka".equals(args[0])) {
+                if (args.length != 7 || !"--config".equals(args[1])
+                        || args[2] == null || args[2].isBlank()
+                        || !"--expected-records".equals(args[3])
+                        || args[4] == null || !args[4].matches("0|[1-9][0-9]*")
+                        || !"--expected-effect-id".equals(args[5])
+                        || args[6] == null || !args[6].matches("[0-9a-f]{64}")) {
+                    throw new DemoException(DemoError.INVALID_ARGUMENT);
+                }
+                try {
+                    int expected = Integer.parseInt(args[4]);
+                    if (expected > KafkaDemoClient.MAX_AUDIT_RECORDS) {
+                        throw new DemoException(DemoError.INVALID_ARGUMENT);
+                    }
+                    return new Arguments(args[0], Path.of(args[2]), expected, args[6]);
+                } catch (NumberFormatException failure) {
+                    throw new DemoException(DemoError.INVALID_ARGUMENT);
+                }
+            }
             if (args == null || args.length != 3 || !"--config".equals(args[1])
                     || args[0] == null || args[0].isBlank()
                     || !COMMANDS.contains(args[0])
                     || args[2] == null || args[2].isBlank()) {
                 throw new DemoException(DemoError.INVALID_ARGUMENT);
             }
-            return new Arguments(args[0], Path.of(args[2]));
+            return new Arguments(args[0], Path.of(args[2]), -1, null);
         }
     }
 }

@@ -8,6 +8,11 @@ dependencies {
     compileOnly project(':core-api')          // provided by the node at runtime
     implementation project(':appchain-integration-contracts')
     implementation libs.kafka.clients
+    implementation libs.lz4.java
+    // Kafka's published metadata may lag a security patch of its optional
+    // compression codec. Declare the reviewed codec directly so the thin host
+    // and the self-contained drop-in bundle resolve the same version.
+    implementation libs.snappy.java
     implementation libs.slf4j.api
 
     testImplementation project(':core-api')
@@ -28,6 +33,24 @@ tasks.named('compileJava') {
     // No annotation processor in this module consumes the repository-wide
     // project identity option.
     options.compilerArgs.removeAll { it.startsWith('-Aproject=') }
+}
+
+// Gradle system properties belong to the daemon by default. Forward only the
+// opt-in, non-secret integration controls into the forked JUnit process.
+tasks.withType(Test).configureEach {
+    [
+            'yano.kafka.integration.enabled',
+            'yano.kafka.integration.bootstrap',
+            'yano.kafka.integration.topic',
+            'yano.kafka.integration.run-id',
+            'yano.kafka.integration.phase',
+            'yano.kafka.integration.state-file'
+    ].each { key ->
+        def value = System.getProperty(key)
+        if (value != null) {
+            systemProperty key, value
+        }
+    }
 }
 
 // Keep the normal artifact thin for build-time/native inclusion. The bundle
@@ -94,6 +117,31 @@ tasks.register('verifyKafkaArtifactBoundaries') {
         def thinEntries = entryNames(thin)
         def bundleEntries = entryNames(bundle)
 
+        def snappyVersions = configurations.runtimeClasspath.resolvedConfiguration
+                .resolvedArtifacts.findAll { artifact ->
+            artifact.moduleVersion.id.group == 'org.xerial.snappy'
+                    && artifact.moduleVersion.id.name == 'snappy-java'
+        }.collect { artifact -> artifact.moduleVersion.id.version }.toSet()
+        def expectedSnappyVersion = libs.snappy.java.get()
+                .versionConstraint.requiredVersion
+        if (snappyVersions != Set.of(expectedSnappyVersion)) {
+            throw new GradleException(
+                    "Kafka artifacts resolve Snappy ${snappyVersions}; expected "
+                            + expectedSnappyVersion)
+        }
+        def lz4Versions = configurations.runtimeClasspath.resolvedConfiguration
+                .resolvedArtifacts.findAll { artifact ->
+            artifact.moduleVersion.id.group == 'at.yawk.lz4'
+                    && artifact.moduleVersion.id.name == 'lz4-java'
+        }.collect { artifact -> artifact.moduleVersion.id.version }.toSet()
+        def expectedLz4Version = libs.lz4.java.get()
+                .versionConstraint.requiredVersion
+        if (lz4Versions != Set.of(expectedLz4Version)) {
+            throw new GradleException(
+                    "Kafka artifacts resolve LZ4 ${lz4Versions}; expected "
+                            + expectedLz4Version)
+        }
+
         if (thinEntries.any { it.startsWith(unrelocatedContractPrefix)
                 || it.startsWith(relocatedContractPrefix)
                 || it.startsWith('org/apache/kafka/') }) {
@@ -103,6 +151,14 @@ tasks.register('verifyKafkaArtifactBoundaries') {
         if (!bundleEntries.contains(
                 'org/apache/kafka/clients/producer/KafkaProducer.class')) {
             throw new GradleException('Kafka drop-in bundle does not contain the Kafka client')
+        }
+        if (!bundleEntries.contains('org/xerial/snappy/Snappy.class')) {
+            throw new GradleException(
+                    'Kafka drop-in bundle does not contain its reviewed Snappy codec')
+        }
+        if (!bundleEntries.contains('net/jpountz/lz4/LZ4Factory.class')) {
+            throw new GradleException(
+                    'Kafka drop-in bundle does not contain its reviewed LZ4 codec')
         }
         if (!bundleEntries.contains(relocatedContractPrefix
                 + 'kafka/KafkaPublishCommandV1.class')) {

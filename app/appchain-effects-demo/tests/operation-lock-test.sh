@@ -32,7 +32,7 @@ wait_for_exit() {
 seed_artifacts() {
   local runtime="$1" name
   mkdir -p "$runtime/plugins"
-  for name in appchain-kafka appchain-ipfs appchain-objectstore-s3 appchain-evidence-registry; do
+  for name in appchain-kafka appchain-ipfs appchain-objectstore-s3; do
     : > "$runtime/plugins/$name-bundle.jar"
   done
   : > "$runtime/runner.jar"

@@ -11,6 +11,7 @@ import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutor;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectExecution;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectIntent;
+import com.bloxbean.cardano.yano.api.appchain.effects.EffectLimitExceededException;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectOutcome;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectResult;
 import com.bloxbean.cardano.yano.api.appchain.effects.FxKeys;
@@ -73,6 +74,73 @@ class FxEffectsM3Test {
             assertThat(machine.results.get(0).confirmed()).isTrue();
             assertThat(new String(machine.results.get(0).externalRef(), StandardCharsets.UTF_8))
                     .isEqualTo("tx-abc");
+        }
+    }
+
+    @Test
+    void emitterResultCallback_hasOnePathGlobalOrdinalsAndTerminalOrdering(@TempDir Path dir) {
+        ResultEmittingMachine machine = new ResultEmittingMachine();
+        try (MsgPipeline pipeline = new MsgPipeline(dir, machine, FX_SETTINGS)) {
+            FxKernel.Result seeded = pipeline.apply(
+                    msg("t", "seed-confirmed"),
+                    msg("t", "seed-failed"),
+                    msg("t", "seed-cancelled"),
+                    msg("t", "seed-expired"));
+            assertThat(seeded.emitted()).hasSize(4);
+
+            byte[] confirmed = new FxResultBody(1, 1, 0, EffectOutcome.CONFIRMED,
+                    null, null).encode();
+            byte[] failed = new FxResultBody(1, 1, 1, EffectOutcome.FAILED,
+                    null, null).encode();
+            byte[] cancelled = new FxResultBody(1, 1, 2, EffectOutcome.CANCELLED,
+                    null, null).encode();
+            FxKernel.Result continued = pipeline.apply(
+                    msg(FxResultBody.TOPIC, confirmed),
+                    msg(FxResultBody.TOPIC, failed),
+                    msg(FxResultBody.TOPIC, cancelled),
+                    msg("t", "ordinary"));
+
+            assertThat(continued.incorporated()).extracting(EffectResult::outcome)
+                    .containsExactly(EffectOutcome.CONFIRMED, EffectOutcome.FAILED,
+                            EffectOutcome.CANCELLED, EffectOutcome.EXPIRED);
+            assertThat(continued.records()).extracting(record -> record.type())
+                    .containsExactly("follow.confirmed", "follow.failed",
+                            "follow.cancelled", "follow.expired", "ordinary.action");
+            assertThat(continued.records()).extracting(record -> record.ordinal())
+                    .containsExactly(0, 1, 2, 3, 4);
+            assertThat(machine.emitterCallbacks).isEqualTo(4);
+            assertThat(machine.legacyCallbacks).isZero();
+            assertThat(machine.pendingCounts).containsExactly(3L, 2L, 1L, 0L, 0L);
+        }
+    }
+
+    @Test
+    void resultAndOrdinaryEmissions_shareOneAtomicBlockLimit(@TempDir Path dir) {
+        Map<String, String> bounded = new java.util.LinkedHashMap<>(FX_SETTINGS);
+        bounded.put("effects.max-per-block", "4");
+        ResultEmittingMachine machine = new ResultEmittingMachine();
+        try (MsgPipeline pipeline = new MsgPipeline(dir, machine, bounded)) {
+            pipeline.apply(
+                    msg("t", "seed-confirmed"),
+                    msg("t", "seed-failed"),
+                    msg("t", "seed-cancelled"),
+                    msg("t", "seed-expired"));
+            byte[] confirmed = new FxResultBody(1, 1, 0, EffectOutcome.CONFIRMED,
+                    null, null).encode();
+            byte[] failed = new FxResultBody(1, 1, 1, EffectOutcome.FAILED,
+                    null, null).encode();
+            byte[] cancelled = new FxResultBody(1, 1, 2, EffectOutcome.CANCELLED,
+                    null, null).encode();
+
+            org.assertj.core.api.Assertions.assertThatThrownBy(() -> pipeline.apply(
+                            msg(FxResultBody.TOPIC, confirmed),
+                            msg(FxResultBody.TOPIC, failed),
+                            msg(FxResultBody.TOPIC, cancelled),
+                            msg("t", "ordinary")))
+                    .hasRootCauseInstanceOf(EffectLimitExceededException.class)
+                    .hasRootCauseMessage("effects.max-per-block (4) exceeded at height 2");
+            assertThat(pipeline.store.tipHeight()).isEqualTo(1);
+            assertThat(pipeline.store.fxOpenCount()).isEqualTo(4);
         }
     }
 
@@ -540,6 +608,54 @@ class FxEffectsM3Test {
             results.add(result);
             writer.put(("seen/" + result.effectId().canonical()).getBytes(StandardCharsets.UTF_8),
                     new byte[]{(byte) result.outcome().code()});
+        }
+    }
+
+    private static final class ResultEmittingMachine implements AppStateMachine {
+        int legacyCallbacks;
+        int emitterCallbacks;
+        final List<Long> pendingCounts = new ArrayList<>();
+
+        @Override public String id() { return "result-emitter"; }
+        @Override public void apply(AppBlock block, AppStateWriter writer) { }
+
+        @Override
+        public void apply(AppBlock block, AppStateWriter writer, AppEffectEmitter effects) {
+            for (AppMessage message : block.messages()) {
+                if (message.getTopic().startsWith("~")) {
+                    continue;
+                }
+                String command = new String(message.getBody(), StandardCharsets.UTF_8);
+                if (command.startsWith("seed-")) {
+                    effects.emit(EffectIntent.of("seed.action", message.getBody())
+                            .scope(command)
+                            .result(ResultPolicy.CHAIN)
+                            .expiryBlocks(1)
+                            .build());
+                } else if (command.equals("ordinary")) {
+                    pendingCounts.add(effects.pendingCount());
+                    effects.emit(EffectIntent.of("ordinary.action", message.getBody()).build());
+                }
+            }
+        }
+
+        @Override
+        public void onEffectResult(AppBlock block, EffectResult result, AppStateWriter writer) {
+            legacyCallbacks++;
+        }
+
+        @Override
+        public void onEffectResult(
+                AppBlock block,
+                EffectResult result,
+                AppStateWriter writer,
+                AppEffectEmitter effects
+        ) {
+            emitterCallbacks++;
+            pendingCounts.add(effects.pendingCount());
+            effects.emit(EffectIntent.of(
+                    "follow." + result.outcome().name().toLowerCase(java.util.Locale.ROOT),
+                    new byte[0]).build());
         }
     }
 
