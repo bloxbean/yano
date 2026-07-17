@@ -11,6 +11,7 @@ import com.bloxbean.cardano.yaci.core.util.CborSerializationUtil;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
+import com.bloxbean.cardano.yano.api.appchain.codec.internal.CborStructurePreflight;
 import org.slf4j.Logger;
 
 import java.nio.charset.StandardCharsets;
@@ -54,6 +55,8 @@ final class GovernedMembership {
     static final long DEFAULT_ACTIVATION_LAG = 10;
 
     private static final String META_PENDING = "gov_pending";
+    private static final CborStructurePreflight.Limits COMMAND_CBOR_LIMITS =
+            new CborStructurePreflight.Limits(256, 3, 16, 8, 64);
 
     private final MemberGroup group;
     private final String fixedProposerHex;
@@ -254,7 +257,13 @@ final class GovernedMembership {
     }
 
     static Command decodeCommand(byte[] body) {
+        if (!CborStructurePreflight.accepts(body, COMMAND_CBOR_LIMITS)) {
+            throw new IllegalArgumentException("Invalid bounded governance command CBOR");
+        }
         List<DataItem> items = ((Array) CborSerializationUtil.deserializeOne(body)).getDataItems();
+        if (items.size() != 4) {
+            throw new IllegalArgumentException("Governance command must have 4 fields");
+        }
         long version = ((UnsignedInteger) items.get(0)).getValue().longValue();
         if (version != 1) {
             throw new IllegalArgumentException("Unsupported governance command version: " + version);

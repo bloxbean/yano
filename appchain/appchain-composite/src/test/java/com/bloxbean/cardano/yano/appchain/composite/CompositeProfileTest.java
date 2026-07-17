@@ -12,6 +12,27 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class CompositeProfileTest {
 
     @Test
+    void canonicalProfileStrictlyRoundTripsAndRejectsTrailingOrCorruptLengths() {
+        ComponentDescriptor component = new ComponentDescriptor(
+                "catalog", "1", "cfg", "state-v1", 1, 0,
+                List.of("catalog.v1"), List.of(), 1);
+        CompositeProfile profile = CompositeProfile.of("profile", "1", List.of(component));
+        byte[] encoded = profile.canonicalBytes();
+
+        assertThat(CompositeProfileCodec.decode(encoded)).isEqualTo(profile);
+        assertThat(CompositeProfileCodec.decode(encoded).canonicalBytes()).containsExactly(encoded);
+        assertThatThrownBy(() -> CompositeProfileCodec.decode(
+                java.util.Arrays.copyOf(encoded, encoded.length + 1)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("trailing");
+        byte[] corrupt = encoded.clone();
+        java.nio.ByteBuffer.wrap(corrupt).putInt(Integer.BYTES, Integer.MAX_VALUE);
+        assertThatThrownBy(() -> CompositeProfileCodec.decode(corrupt))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("composite profile text count");
+    }
+
+    @Test
     void canonicalProfileHasFrozenBytesAndDigest() {
         CompositeProfile profile = fixture();
 

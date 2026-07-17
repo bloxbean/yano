@@ -159,8 +159,7 @@ class KafkaEffectConfigTest {
     @Test
     void localDemoAcceptsOnlyExplicitLocalOrPrivateHosts() {
         for (String host : new String[]{
-                "localhost:9092", "broker:9092", "node.local:9092", "node.internal:9092",
-                "127.0.0.1:9092", "10.2.3.4:9092", "172.31.255.1:9092",
+                "localhost:9092", "127.0.0.1:9092", "10.2.3.4:9092", "172.31.255.1:9092",
                 "192.168.10.4:9092", "[::1]:9092", "[fc00::1]:9092", "[fe80::1]:9092"}) {
             Map<String, String> settings = baseSettings();
             settings.put("targets.primary.bootstrap-servers", host);
@@ -168,6 +167,7 @@ class KafkaEffectConfigTest {
         }
 
         for (String host : new String[]{
+                "broker:9092", "node.local:9092", "node.internal:9092",
                 "example.com:9092", "8.8.8.8:9092", "172.32.0.1:9092",
                 "192.169.1.1:9092", "[2001:db8::1]:9092", "010.0.0.1:9092"}) {
             Map<String, String> settings = baseSettings();

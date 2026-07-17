@@ -5,6 +5,7 @@ import co.nstant.in.cbor.model.ByteString;
 import co.nstant.in.cbor.model.DataItem;
 import co.nstant.in.cbor.model.UnsignedInteger;
 import com.bloxbean.cardano.yaci.core.util.CborSerializationUtil;
+import com.bloxbean.cardano.yano.api.appchain.codec.internal.CborStructurePreflight;
 
 import java.util.List;
 
@@ -39,6 +40,10 @@ public record FxResultBody(int version,
     public static final String TOPIC = "~fx/result";
     public static final int BODY_VERSION = 1;
     public static final int MAX_EXTERNAL_REF_BYTES = 128;
+    public static final int MAX_BODY_BYTES = 512;
+    private static final CborStructurePreflight.Limits CBOR_LIMITS =
+            new CborStructurePreflight.Limits(
+                    MAX_BODY_BYTES, 3, 16, 8, MAX_EXTERNAL_REF_BYTES);
 
     public FxResultBody {
         if (outcome == EffectOutcome.EXPIRED) {
@@ -76,9 +81,12 @@ public record FxResultBody(int version,
      * never a stall).
      */
     public static FxResultBody decode(byte[] bytes) {
+        if (!CborStructurePreflight.accepts(bytes, CBOR_LIMITS)) {
+            throw new IllegalArgumentException("invalid bounded ~fx/result CBOR");
+        }
         Array arr = (Array) CborSerializationUtil.deserializeOne(bytes);
         List<DataItem> items = arr.getDataItems();
-        if (items.size() < 6) {
+        if (items.size() != 6) {
             throw new IllegalArgumentException("~fx/result body must have 6 fields");
         }
         int version = ((UnsignedInteger) items.get(0)).getValue().intValue();

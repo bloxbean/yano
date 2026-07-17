@@ -166,6 +166,13 @@ class PluginTcclBoundaryTest {
             firstMachine.id();
             firstMachine.init(null, null);
             firstMachine.validate(null);
+            firstMachine.validateForBlock(null, 1, null);
+            assertThat(firstMachine.validatePrivilegedSystemSubmission(
+                    "~governance/profile", new byte[]{1}).isAccepted()).isTrue();
+            Map<String, Object> machineStatus = firstMachine.operationalStatus();
+            assertThat(machineStatus).containsEntry("profile", "ready");
+            assertThatThrownBy(() -> machineStatus.put("mutate", true))
+                    .isInstanceOf(UnsupportedOperationException.class);
             firstMachine.apply(null, null);
             firstMachine.apply(null, null, null);
             firstMachine.onEffectResult(null, null, null);
@@ -2668,6 +2675,22 @@ class PluginTcclBoundaryTest {
         @Override public AdmissionResult validate(AppMessage message) {
             probe.check();
             return AdmissionResult.accept();
+        }
+        @Override
+        public AdmissionResult validateForBlock(
+                AppMessage message, long candidateHeight, AppStateReader committedState
+        ) {
+            probe.check();
+            return AdmissionResult.accept();
+        }
+        @Override
+        public AdmissionResult validatePrivilegedSystemSubmission(String topic, byte[] body) {
+            probe.check();
+            return AdmissionResult.accept();
+        }
+        @Override public Map<String, Object> operationalStatus() {
+            probe.check();
+            return new ProbeMap<>(probe, Map.of("profile", "ready"));
         }
         @Override public void apply(AppBlock block, AppStateWriter writer) { probe.check(); }
         @Override

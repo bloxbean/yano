@@ -44,7 +44,18 @@ tasks.withType(Test).configureEach {
             'yano.kafka.integration.topic',
             'yano.kafka.integration.run-id',
             'yano.kafka.integration.phase',
-            'yano.kafka.integration.state-file'
+            'yano.kafka.integration.state-file',
+            'yano.kafka.integration.security-profile',
+            'yano.kafka.integration.truststore-path',
+            'yano.kafka.integration.truststore-password-file',
+            'yano.kafka.integration.truststore-type',
+            'yano.kafka.integration.keystore-path',
+            'yano.kafka.integration.keystore-password-file',
+            'yano.kafka.integration.keystore-type',
+            'yano.kafka.integration.key-password-file',
+            'yano.kafka.integration.sasl-mechanism',
+            'yano.kafka.integration.sasl-username',
+            'yano.kafka.integration.sasl-password-file'
     ].each { key ->
         def value = System.getProperty(key)
         if (value != null) {

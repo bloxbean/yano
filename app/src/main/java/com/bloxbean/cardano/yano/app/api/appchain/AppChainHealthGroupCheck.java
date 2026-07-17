@@ -41,6 +41,8 @@ public class AppChainHealthGroupCheck implements HealthCheck {
                 boolean paused = Boolean.TRUE.equals(status.get("submissionsPaused"));
                 boolean anchorError = hasNestedText(status.get("anchor"), "lastError");
                 boolean sinkError = hasSinkError(status.get("sinks"));
+                boolean scheduledProfileMissing = scheduledProfileMissing(
+                        status.get("stateMachineStatus"));
 
                 if (stalled) {
                     up = false;
@@ -57,6 +59,10 @@ public class AppChainHealthGroupCheck implements HealthCheck {
                 if (sinkError) {
                     up = false;
                     builder.withData(chain + ".sinkError", true);
+                }
+                if (scheduledProfileMissing) {
+                    up = false;
+                    builder.withData(chain + ".scheduledProfileMissing", true);
                 }
                 builder.withData(chain + ".tipHeight", gateway.tipHeight());
             }
@@ -82,5 +88,11 @@ public class AppChainHealthGroupCheck implements HealthCheck {
             }
         }
         return false;
+    }
+
+    private static boolean scheduledProfileMissing(Object machineStatus) {
+        return machineStatus instanceof Map<?, ?> status
+                && "SCHEDULED".equals(status.get("proposalStatus"))
+                && Boolean.FALSE.equals(status.get("locallyReady"));
     }
 }

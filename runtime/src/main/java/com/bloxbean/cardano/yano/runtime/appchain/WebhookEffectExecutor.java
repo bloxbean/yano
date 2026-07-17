@@ -7,6 +7,7 @@ import com.bloxbean.cardano.yano.api.appchain.effects.EffectExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectExecutorOperationalSnapshot;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectExecutorOperationsTracker;
 import com.bloxbean.cardano.yano.api.appchain.effects.PendingEffect;
+import com.bloxbean.cardano.yano.api.appchain.codec.internal.CborStructurePreflight;
 import org.slf4j.Logger;
 
 import java.net.URI;
@@ -34,6 +35,9 @@ import java.util.Set;
 final class WebhookEffectExecutor implements AppEffectExecutor {
 
     static final String TYPE = "webhook.post";
+    private static final CborStructurePreflight.Limits COMMAND_CBOR_LIMITS =
+            new CborStructurePreflight.Limits(16 * 1_024 * 1_024,
+                    32, 2_048, 512, 16 * 1_024 * 1_024);
 
     private final String configuredUrl;
     private final boolean allowPayloadUrl;
@@ -125,6 +129,9 @@ final class WebhookEffectExecutor implements AppEffectExecutor {
 
         static WebhookCommand decode(byte[] payload) {
             try {
+                if (!CborStructurePreflight.accepts(payload, COMMAND_CBOR_LIMITS)) {
+                    return new WebhookCommand(null, payload, "application/cbor");
+                }
                 var item = com.bloxbean.cardano.yaci.core.util.CborSerializationUtil
                         .deserializeOne(payload);
                 if (item instanceof co.nstant.in.cbor.model.Map map) {
@@ -135,7 +142,7 @@ final class WebhookEffectExecutor implements AppEffectExecutor {
                             body != null ? body : payload,
                             contentType != null ? contentType : "application/cbor");
                 }
-            } catch (Exception ignored) {
+            } catch (Exception | StackOverflowError ignored) {
                 // not a CBOR map — post verbatim
             }
             return new WebhookCommand(null, payload, "application/cbor");

@@ -99,20 +99,19 @@ public final class AwsS3ObjectStoreClient implements ObjectStoreClient {
             throw new ObjectStoreException(ConnectorErrorCode.POLICY_DENIED);
         }
 
-        int examined = 0;
+        int exactEntriesExamined = 0;
         int pages = 0;
-        boolean found = false;
         String keyMarker = null;
         String versionMarker = null;
         Set<String> observedMarkers = new HashSet<>();
         try {
             while (true) {
                 if (++pages > MAX_LIST_PAGES) {
-                    throw new ObjectStoreException(ConnectorErrorCode.POLICY_DENIED);
+                    throw new ObjectStoreException(ConnectorErrorCode.ACK_UNKNOWN);
                 }
-                int remaining = maxEntries - examined;
+                int remaining = maxEntries - exactEntriesExamined;
                 if (remaining <= 0) {
-                    throw new ObjectStoreException(ConnectorErrorCode.POLICY_DENIED);
+                    throw new ObjectStoreException(ConnectorErrorCode.ACK_UNKNOWN);
                 }
                 ListObjectVersionsRequest.Builder request = ListObjectVersionsRequest.builder()
                         .bucket(safeBucket)
@@ -129,27 +128,68 @@ public final class AwsS3ObjectStoreClient implements ObjectStoreClient {
                 int pageEntries = response.versions().size() + response.deleteMarkers().size();
                 if (pageEntries <= 0 && Boolean.TRUE.equals(response.isTruncated())
                         || pageEntries > remaining) {
-                    throw new ObjectStoreException(ConnectorErrorCode.PROVIDER_REJECTED);
+                    throw new ObjectStoreException(ConnectorErrorCode.ACK_UNKNOWN);
                 }
-                examined += pageEntries;
-                found |= response.versions().stream().anyMatch(version -> safeKey.equals(version.key()));
-                found |= response.deleteMarkers().stream()
-                        .anyMatch(marker -> safeKey.equals(marker.key()));
+
+                int exactOnPage = 0;
+                boolean passedExactKey = false;
+                for (var version : response.versions()) {
+                    KeyPosition position = keyPosition(safeKey, version.key());
+                    exactOnPage += position == KeyPosition.EXACT ? 1 : 0;
+                    passedExactKey |= position == KeyPosition.AFTER;
+                }
+                for (var marker : response.deleteMarkers()) {
+                    KeyPosition position = keyPosition(safeKey, marker.key());
+                    exactOnPage += position == KeyPosition.EXACT ? 1 : 0;
+                    passedExactKey |= position == KeyPosition.AFTER;
+                }
+                exactEntriesExamined += exactOnPage;
+                if (exactOnPage > 0) {
+                    // One exact version or delete marker proves prior history;
+                    // no further page can change that conclusion.
+                    return new VersionInventory(exactEntriesExamined, true);
+                }
+                if (passedExactKey) {
+                    // Version listings are key-ordered. Once the response has
+                    // passed the exact key, prefix-sharing siblings are not
+                    // relevant to the exact-key absence proof.
+                    return new VersionInventory(exactEntriesExamined, false);
+                }
                 if (!Boolean.TRUE.equals(response.isTruncated())) {
-                    return new VersionInventory(examined, found);
+                    return new VersionInventory(exactEntriesExamined, false);
                 }
                 keyMarker = response.nextKeyMarker();
                 versionMarker = response.nextVersionIdMarker();
                 String marker = String.valueOf(keyMarker) + '\u0000' + versionMarker;
                 if (keyMarker == null || !observedMarkers.add(marker)) {
-                    throw new ObjectStoreException(ConnectorErrorCode.PROVIDER_REJECTED);
+                    throw new ObjectStoreException(ConnectorErrorCode.ACK_UNKNOWN);
                 }
             }
         } catch (ObjectStoreException normalized) {
             throw new ObjectStoreException(normalized.code());
         } catch (RuntimeException failure) {
-            throw classify(failure, Operation.READ, false);
+            // This method is used specifically to prove absence before a
+            // create-only mutation. Any inaccessible/malformed/inconclusive
+            // response leaves the acknowledgement state unknown; it must not
+            // be converted into definitive absence or INTERNAL_ERROR.
+            throw new ObjectStoreException(ConnectorErrorCode.ACK_UNKNOWN);
         }
+    }
+
+    private static KeyPosition keyPosition(String exactKey, String observedKey) {
+        if (observedKey == null || !observedKey.startsWith(exactKey)) {
+            throw new ObjectStoreException(ConnectorErrorCode.ACK_UNKNOWN);
+        }
+        int comparison = observedKey.compareTo(exactKey);
+        if (comparison < 0) {
+            throw new ObjectStoreException(ConnectorErrorCode.ACK_UNKNOWN);
+        }
+        return comparison == 0 ? KeyPosition.EXACT : KeyPosition.AFTER;
+    }
+
+    private enum KeyPosition {
+        EXACT,
+        AFTER
     }
 
     @Override

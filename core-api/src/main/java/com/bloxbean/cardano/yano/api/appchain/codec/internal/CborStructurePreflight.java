@@ -1,10 +1,15 @@
 package com.bloxbean.cardano.yano.api.appchain.codec.internal;
 
+import java.util.Arrays;
+
 /**
- * Non-recursive CBOR structure preflight used before recursive third-party
- * decoders see portable evidence. It bounds bytes, nesting, and item work,
- * accepts definite containers plus serializer-produced indefinite arrays,
- * and rejects malformed/trailing or unsupported forms.
+ * Dependency-free, non-recursive CBOR structure preflight for untrusted
+ * app-chain bytes. It rejects malformed, trailing, or over-budget input before
+ * a recursive third-party decoder is entered.
+ *
+ * <p>This scanner validates structure, not application shape or canonical
+ * encoding. Callers must use immutable contract-owned limits and then perform
+ * their normal typed/canonical decode.</p>
  *
  * @hidden defensive implementation detail, not a wire-format API
  */
@@ -12,26 +17,54 @@ public final class CborStructurePreflight {
     private CborStructurePreflight() {
     }
 
+    /** Frozen structural work limits selected by the owning wire contract. */
+    public record Limits(int maximumBytes,
+                         int maximumDepth,
+                         int maximumItems,
+                         int maximumContainerItems,
+                         int maximumStringBytes) {
+        public Limits {
+            if (maximumBytes < 1 || maximumDepth < 1 || maximumItems < 1
+                    || maximumContainerItems < 1 || maximumStringBytes < 0) {
+                throw new IllegalArgumentException("CBOR preflight limits must be positive");
+            }
+        }
+    }
+
+    /**
+     * Compatibility overload. New consensus boundaries should use
+     * {@link #accepts(byte[], Limits)} and freeze all five limits explicitly.
+     */
     public static boolean accepts(byte[] bytes, int maximumBytes,
                                   int maximumDepth, int maximumItems) {
-        if (bytes == null || bytes.length == 0 || bytes.length > maximumBytes
-                || maximumDepth < 1 || maximumItems < 1) {
+        if (maximumBytes < 1 || maximumDepth < 1 || maximumItems < 1) {
+            return false;
+        }
+        return accepts(bytes, new Limits(maximumBytes, maximumDepth,
+                maximumItems, maximumItems, maximumBytes));
+    }
+
+    public static boolean accepts(byte[] bytes, Limits limits) {
+        if (bytes == null || bytes.length == 0 || limits == null
+                || bytes.length > limits.maximumBytes()) {
             return false;
         }
         try {
-            return scan(bytes, maximumDepth, maximumItems);
+            return scan(bytes, limits);
         } catch (IllegalArgumentException malformed) {
             return false;
         }
     }
 
-    private static boolean scan(byte[] bytes, int maximumDepth, int maximumItems) {
+    private static boolean scan(byte[] bytes, Limits limits) {
+        int maximumDepth = limits.maximumDepth();
         long[] remaining = new long[maximumDepth + 1];
         boolean[] indefinite = new boolean[maximumDepth + 1];
         int[] indefiniteChildMajor = new int[maximumDepth + 1];
         int[] indefiniteGroupSize = new int[maximumDepth + 1];
-        int[] indefiniteChildCount = new int[maximumDepth + 1];
-        java.util.Arrays.fill(indefiniteChildMajor, -1);
+        int[] childCount = new int[maximumDepth + 1];
+        long[] stringBytes = new long[maximumDepth + 1];
+        Arrays.fill(indefiniteChildMajor, -1);
         remaining[0] = 1;
         int depth = 0;
         int offset = 0;
@@ -43,14 +76,17 @@ public final class CborStructurePreflight {
                     throw malformed();
                 }
                 if ((bytes[offset] & 0xff) == 0xff) {
-                    if (indefiniteChildCount[depth] % indefiniteGroupSize[depth] != 0) {
+                    if (childCount[depth] % indefiniteGroupSize[depth] != 0) {
                         throw malformed();
                     }
                     offset++;
                     depth--;
                     continue;
                 }
-                indefiniteChildCount[depth]++;
+                if (++childCount[depth] > maximumChildren(
+                        limits.maximumContainerItems(), indefiniteGroupSize[depth])) {
+                    throw malformed();
+                }
             } else if (remaining[depth] == 0) {
                 depth--;
                 continue;
@@ -58,7 +94,7 @@ public final class CborStructurePreflight {
                 remaining[depth]--;
             }
 
-            if (++items > maximumItems || offset >= bytes.length) {
+            if (++items > limits.maximumItems() || offset >= bytes.length) {
                 throw malformed();
             }
             int initial = bytes[offset++] & 0xff;
@@ -78,38 +114,36 @@ public final class CborStructurePreflight {
                         if (indefiniteChildMajor[depth] >= 0) {
                             throw malformed();
                         }
-                        depth = push(depth, argument, 1, maximumDepth,
-                                maximumItems - items, remaining, indefinite,
-                                indefiniteChildMajor, indefiniteGroupSize,
-                                indefiniteChildCount, major);
+                        depth = push(depth, argument, 1, limits,
+                                remaining, indefinite, indefiniteChildMajor,
+                                indefiniteGroupSize, childCount, stringBytes, major);
                     } else {
-                        if (argument.value() > bytes.length - offset) {
+                        if (argument.value() > limits.maximumStringBytes()
+                                || argument.value() > bytes.length - offset) {
                             throw malformed();
+                        }
+                        if (indefiniteChildMajor[depth] >= 0) {
+                            stringBytes[depth] += argument.value();
+                            if (stringBytes[depth] > limits.maximumStringBytes()) {
+                                throw malformed();
+                            }
                         }
                         offset += (int) argument.value();
                     }
                 }
-                case 4 -> depth = push(depth, argument, 1,
-                        maximumDepth, maximumItems - items, remaining, indefinite,
-                        indefiniteChildMajor, indefiniteGroupSize,
-                        indefiniteChildCount, -1);
-                case 5 -> depth = push(depth, argument, 2,
-                        maximumDepth, maximumItems - items, remaining, indefinite,
-                        indefiniteChildMajor, indefiniteGroupSize,
-                        indefiniteChildCount, -1);
+                case 4 -> depth = push(depth, argument, 1, limits,
+                        remaining, indefinite, indefiniteChildMajor,
+                        indefiniteGroupSize, childCount, stringBytes, -1);
+                case 5 -> depth = push(depth, argument, 2, limits,
+                        remaining, indefinite, indefiniteChildMajor,
+                        indefiniteGroupSize, childCount, stringBytes, -1);
                 case 6 -> {
                     requireDefinite(argument);
-                    depth = push(depth, new Argument(1, offset, false), 1,
-                            maximumDepth, maximumItems - items, remaining, indefinite,
-                            indefiniteChildMajor, indefiniteGroupSize,
-                            indefiniteChildCount, -1);
+                    depth = push(depth, new Argument(1, offset, false), 1, limits,
+                            remaining, indefinite, indefiniteChildMajor,
+                            indefiniteGroupSize, childCount, stringBytes, -1);
                 }
-                case 7 -> {
-                    requireDefinite(argument);
-                    if (additional < 20 || additional > 23) {
-                        throw malformed();
-                    }
-                }
+                case 7 -> validateSimple(additional, argument);
                 default -> throw malformed();
             }
         }
@@ -117,24 +151,25 @@ public final class CborStructurePreflight {
     }
 
     private static int push(int depth, Argument argument, int multiplier,
-                            int maximumDepth, int remainingItems,
-                            long[] remaining, boolean[] indefinite,
+                            Limits limits, long[] remaining, boolean[] indefinite,
                             int[] indefiniteChildMajor, int[] indefiniteGroupSize,
-                            int[] indefiniteChildCount, int childMajor) {
-        if (depth >= maximumDepth) {
+                            int[] childCount, long[] stringBytes, int childMajor) {
+        if (depth >= limits.maximumDepth()) {
             throw malformed();
         }
         int childDepth = depth + 1;
+        childCount[childDepth] = 0;
+        stringBytes[childDepth] = 0;
         if (argument.indefinite()) {
             indefinite[childDepth] = true;
             indefiniteChildMajor[childDepth] = childMajor;
             indefiniteGroupSize[childDepth] = multiplier;
-            indefiniteChildCount[childDepth] = 0;
             remaining[childDepth] = -1;
             return childDepth;
         }
-        if (argument.value() > Integer.MAX_VALUE
-                || argument.value() > remainingItems / multiplier) {
+        if (argument.value() > limits.maximumContainerItems()
+                || argument.value() > Integer.MAX_VALUE
+                || argument.value() > (limits.maximumItems() / multiplier)) {
             throw malformed();
         }
         long children = argument.value() * multiplier;
@@ -144,9 +179,13 @@ public final class CborStructurePreflight {
         indefinite[childDepth] = false;
         indefiniteChildMajor[childDepth] = -1;
         indefiniteGroupSize[childDepth] = 1;
-        indefiniteChildCount[childDepth] = 0;
         remaining[childDepth] = children;
         return childDepth;
+    }
+
+    private static int maximumChildren(int maximumContainerItems, int groupSize) {
+        long maximum = (long) maximumContainerItems * groupSize;
+        return maximum > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) maximum;
     }
 
     private static Argument readArgument(byte[] bytes, int offset, int additional) {
@@ -163,15 +202,32 @@ public final class CborStructurePreflight {
             case 27 -> 8;
             default -> throw malformed();
         };
-        if (offset > bytes.length - width
-                || width == 8 && (bytes[offset] & 0x80) != 0) {
+        if (offset > bytes.length - width) {
             throw malformed();
+        }
+        if (width == 8 && (bytes[offset] & 0x80) != 0) {
+            // Scalar uint/nint/tag arguments may use the full unsigned range.
+            // Container and string callers will reject this sentinel against
+            // their much smaller structural limits.
+            return new Argument(Long.MAX_VALUE, offset + width, false);
         }
         long value = 0;
         for (int index = 0; index < width; index++) {
             value = (value << 8) | (bytes[offset + index] & 0xffL);
         }
         return new Argument(value, offset + width, false);
+    }
+
+    private static void validateSimple(int additional, Argument argument) {
+        if (argument.indefinite()) {
+            throw malformed();
+        }
+        // 0..23 are simple values; 24 carries one simple-value byte; 25..27
+        // carry IEEE-754 values. Additional values 28..30 are rejected by
+        // readArgument and break (31) is consumed only by an indefinite frame.
+        if (additional > 27) {
+            throw malformed();
+        }
     }
 
     private static void requireDefinite(Argument argument) {

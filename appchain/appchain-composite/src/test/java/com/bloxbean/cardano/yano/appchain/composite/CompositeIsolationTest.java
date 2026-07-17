@@ -5,6 +5,7 @@ import com.bloxbean.cardano.yano.appchain.composite.contracts.AggregateQueryLimi
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineContext;
+import com.bloxbean.cardano.yano.appchain.testkit.AppChainTestProfiles;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
 import com.bloxbean.cardano.yano.api.appchain.FinalityCert;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
@@ -84,10 +85,10 @@ class CompositeIsolationTest {
         byte[] originalBody = message.getBody().clone();
         byte[] originalPrevHash = block.prevHash().clone();
 
-        assertThat(machine.validate(message).isAccepted()).isTrue();
+        assertThat(machine.validateForBlock(message, 1, new MemoryState()).isAccepted()).isTrue();
         machine.apply(block, new MemoryState(), AppEffectEmitter.rejecting("unused"));
 
-        assertThat(observer.observedBody).isEqualTo("original");
+        assertThat(observer.observedBody).isNull();
         assertThat(message.getMessageId()).isEqualTo(originalMessageId);
         assertThat(message.getBody()).isEqualTo(originalBody);
         assertThat(block.prevHash()).isEqualTo(originalPrevHash);
@@ -122,6 +123,11 @@ class CompositeIsolationTest {
             @Override public String chainId() { return "chain"; }
             @Override public Map<String, String> settings() {
                 return Map.of("effects.max-per-block", Integer.toString(effectCap));
+            }
+            @Override
+            public java.util.Optional<com.bloxbean.cardano.yano.api.appchain.AppChainConsensusProfile>
+            consensusProfile() {
+                return java.util.Optional.of(AppChainTestProfiles.enabledEffects(effectCap));
             }
         };
     }

@@ -134,7 +134,22 @@ class PluginCatalogPackagingTest {
                             return Map.of(
                                     "effects.enabled", "true",
                                     "effects.max-per-block", "128",
-                                    "machines.composite.preset", "evidence-v1");
+                                    "membership.mode", "governed",
+                                    "machines.composite.preset", "evidence-v1-gated",
+                                    "machines.composite.profile-mode", "governed");
+                        }
+                        @Override
+                        public java.util.Optional<com.bloxbean.cardano.yano.api.appchain.AppChainConsensusProfile>
+                        consensusProfile() {
+                            return java.util.Optional.of(
+                                    AppTestConsensusProfiles.enabledEffects(128, 16_384));
+                        }
+                        @Override
+                        public java.util.Optional<com.bloxbean.cardano.yano.api.appchain.AppChainMembershipView>
+                        membershipView() {
+                            var epoch = new com.bloxbean.cardano.yano.api.appchain.AppChainMembershipEpoch(
+                                    0, List.of("11".repeat(32)), 1);
+                            return java.util.Optional.of(ignored -> epoch);
                         }
                     });
             assertEquals("composite", composite.id());

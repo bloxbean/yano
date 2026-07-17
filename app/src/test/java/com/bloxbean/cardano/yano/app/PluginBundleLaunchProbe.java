@@ -170,6 +170,12 @@ public final class PluginBundleLaunchProbe {
                                         "effects.max-per-block", "8",
                                         "effects.max-payload-bytes", "4096");
                             }
+                            @Override
+                            public java.util.Optional<com.bloxbean.cardano.yano.api.appchain.AppChainConsensusProfile>
+                            consensusProfile() {
+                                return java.util.Optional.of(
+                                        AppTestConsensusProfiles.enabledEffects(8, 4096));
+                            }
                         });
                 if (!"evidence-registry".equals(evidenceMachine.id())) {
                     throw new IllegalStateException(

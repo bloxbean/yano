@@ -189,6 +189,53 @@ class AppChainMetricsTest {
     }
 
     @Test
+    void registersBoundedCompositeGovernanceGaugesFromStatusSnapshot() {
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        AppChainGateway gateway = gateway("chain-governed", Map.of());
+        AppChainGateway governed = (AppChainGateway) Proxy.newProxyInstance(
+                AppChainGateway.class.getClassLoader(),
+                new Class<?>[]{AppChainGateway.class},
+                (proxy, method, args) -> switch (method.getName()) {
+                    case "chainId" -> "chain-governed";
+                    case "tipHeight" -> 8L;
+                    case "status" -> Map.of(
+                            "poolSize", 0,
+                            "peers", Map.of(),
+                            "drops", Map.of(),
+                            "stalled", false,
+                            "stateMachineStatus", Map.of(
+                                    "currentEpoch", 2L,
+                                    "proposalStatus", "SCHEDULED",
+                                    "approvals", 2,
+                                    "readiness", 3,
+                                    "locallyReady", true,
+                                    "retiredDrains", 1));
+                    case "effectStats" -> Map.of();
+                    case "subscribeFinalized" -> (AutoCloseable) () -> { };
+                    case "toString" -> gateway.toString();
+                    case "hashCode" -> System.identityHashCode(proxy);
+                    case "equals" -> proxy == args[0];
+                    default -> defaultValue(method.getReturnType());
+                });
+        AppChainMetrics metrics = metrics(registry, governed);
+        metrics.onStart(null);
+
+        assertEquals(2d, registry.get("yano.appchain.composite.profile.epoch")
+                .tag("chain", "chain-governed").gauge().value(), 0.0001d);
+        assertEquals(3d, registry.get("yano.appchain.composite.governance.proposal.state")
+                .tag("chain", "chain-governed").gauge().value(), 0.0001d);
+        assertEquals(2d, registry.get("yano.appchain.composite.governance.approvals")
+                .tag("chain", "chain-governed").gauge().value(), 0.0001d);
+        assertEquals(3d, registry.get("yano.appchain.composite.governance.readiness")
+                .tag("chain", "chain-governed").gauge().value(), 0.0001d);
+        assertEquals(1d, registry.get("yano.appchain.composite.governance.local.ready")
+                .tag("chain", "chain-governed").gauge().value(), 0.0001d);
+        assertEquals(1d, registry.get("yano.appchain.composite.governance.retired.drains")
+                .tag("chain", "chain-governed").gauge().value(), 0.0001d);
+        metrics.onStop(null);
+    }
+
+    @Test
     void cumulativeMetersSurviveTransientFailuresAndRuntimeCounterResets() throws Exception {
         Map<String, Object> initial = Map.of(
                 "metricsGeneration", "generation-a",

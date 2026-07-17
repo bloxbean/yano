@@ -6,6 +6,7 @@ import com.bloxbean.cardano.yano.api.appchain.AppChainGateways;
 import com.bloxbean.cardano.yano.api.appchain.AppQueryPath;
 import com.bloxbean.cardano.yano.api.appchain.AppStateProofSnapshot;
 import com.bloxbean.cardano.yano.api.appchain.ReceivedAppMessage;
+import com.bloxbean.cardano.yano.appchain.composite.contracts.CompositeProfileGovernanceV1;
 import com.fasterxml.jackson.annotation.JsonAnySetter;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.core.JsonParser;
@@ -821,6 +822,56 @@ public class AppChainResource {
         }
 
         public record ThresholdRequest(int threshold) {
+        }
+
+        public record CompositeProfileCommandRequest(String bodyHex, Boolean dryRun) {
+        }
+
+        /** Cached node-local catalog/readiness diagnostics; no plugin callback is executed. */
+        @GET
+        @Path("profile-governance")
+        public Response profileGovernanceStatus() {
+            return Response.ok(Map.of("chainId", gateway.chainId(),
+                    "profileGovernance", gateway.stateMachineStatus())).build();
+        }
+
+        /**
+         * Dry-run or submit one canonical ADR-015 command on the reserved
+         * member-signed topic. Ordinary /messages submission remains unable
+         * to access reserved topics.
+         */
+        @POST
+        @Path("admin/profile-governance/commands")
+        @AppChainAccess(AppChainAccess.Level.PRIVILEGED)
+        public Response submitProfileGovernanceCommand(CompositeProfileCommandRequest request) {
+            if (request == null || isBlank(request.bodyHex())) {
+                return badRequest("'bodyHex' is required");
+            }
+            if (request.bodyHex().length() > CompositeProfileGovernanceV1.MAX_COMMAND_BYTES * 2
+                    || (request.bodyHex().length() & 1) != 0) {
+                return badRequest("bodyHex exceeds the bounded governance command envelope");
+            }
+            byte[] body;
+            try {
+                body = HexUtil.decodeHexString(request.bodyHex());
+            } catch (RuntimeException invalidHex) {
+                return badRequest("Invalid bodyHex");
+            }
+            try {
+                String topic = "~governance/composite-profile";
+                if (Boolean.TRUE.equals(request.dryRun())) {
+                    gateway.validatePrivilegedSystemMessage(topic, body);
+                    return Response.ok(Map.of("chainId", gateway.chainId(),
+                            "valid", true, "submitted", false)).build();
+                }
+                String messageId = gateway.submitPrivilegedSystemMessage(topic, body);
+                return Response.accepted(Map.of("chainId", gateway.chainId(),
+                        "valid", true, "submitted", true, "messageId", messageId)).build();
+            } catch (IllegalArgumentException invalid) {
+                return badRequest(invalid.getMessage());
+            } catch (IllegalStateException unavailable) {
+                throw jsonError(Response.Status.CONFLICT, unavailable.getMessage());
+            }
         }
 
         @GET

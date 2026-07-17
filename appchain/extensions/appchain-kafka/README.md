@@ -49,15 +49,24 @@ catalog/reflection generation.
 ```properties
 yano.app-chain.sinks.kafka.bootstrap-servers=broker1:9092,broker2:9092
 yano.app-chain.sinks.kafka.topic=my-appchain-blocks
+yano.app-chain.sinks.kafka.security-profile=tls
 
 # optional
 yano.app-chain.sinks.kafka.acks=all
-yano.app-chain.sinks.kafka.max-block-ms=15000
+yano.app-chain.sinks.kafka.max-block-ms=5000
+yano.app-chain.sinks.kafka.request-timeout-ms=10000
 yano.app-chain.sinks.kafka.delivery-timeout-ms=30000
 yano.app-chain.sinks.kafka.close-timeout-ms=5000
+yano.app-chain.sinks.kafka.tls.truststore-path=/run/secrets/kafka-trust.p12
+yano.app-chain.sinks.kafka.tls.truststore-password=${KAFKA_TRUSTSTORE_PASSWORD}
+yano.app-chain.sinks.kafka.tls.truststore-type=PKCS12
 ```
 
-The sink is disabled when either `bootstrap-servers` or `topic` is missing.
+The sink is disabled only when its entire namespace is absent. Partial
+configuration, an omitted `security-profile`, or plaintext `local-demo` with a
+non-local/non-private bootstrap host fails startup. The sink accepts the same
+`local-demo`, `tls`, `mtls`, and `sasl-tls` security fields as the effect
+executor below; there is no arbitrary Kafka-client-property pass-through.
 
 ## `kafka.publish` effect configuration
 
@@ -147,6 +156,10 @@ receipt and retries only archival; it does not publish the record again.
 # Release matrix: pinned real broker, restart/reconciliation,
 # unavailability, deterministic fault seams, and a zero-skip XML gate
 app/appchain-effects-demo/tests/connector-fault-matrix.sh
+
+# Real certificate-authenticated TLS and SASL/TLS coverage for both the
+# effect executor and finalized sink (uses a pinned prebuilt Kafka image)
+appchain/extensions/appchain-kafka/src/test/scripts/kafka-secure-integration.sh
 ```
 
 ## Notes

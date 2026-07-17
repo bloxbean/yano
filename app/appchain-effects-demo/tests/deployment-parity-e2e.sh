@@ -94,6 +94,7 @@ CONNECTOR_GRAFANA_PORT="${YANO_DEPLOYMENT_PARITY_GRAFANA_PORT:-33000}"
 CONNECTOR_SUBNET="${YANO_DEPLOYMENT_PARITY_SUBNET:-172.30.116.0/24}"
 CONNECTOR_S3_IP="${YANO_DEPLOYMENT_PARITY_S3_IP:-172.30.116.10}"
 CONNECTOR_KUBO_IP="${YANO_DEPLOYMENT_PARITY_KUBO_IP:-172.30.116.11}"
+CONNECTOR_KAFKA_IP="${YANO_DEPLOYMENT_PARITY_KAFKA_IP:-172.30.116.12}"
 SCENARIO_TIMEOUT="${YANO_DEPLOYMENT_PARITY_TIMEOUT_SECONDS:-600}"
 
 # Validate every environment-controlled number before Bash arithmetic. Bash
@@ -308,6 +309,7 @@ activate_compose() {
   export DEMO_CONNECTOR_SUBNET="$CONNECTOR_SUBNET"
   export DEMO_S3_IP="$CONNECTOR_S3_IP"
   export DEMO_KUBO_IP="$CONNECTOR_KUBO_IP"
+  export DEMO_KAFKA_IP="$CONNECTOR_KAFKA_IP"
   export DEMO_SCENARIO_TIMEOUT_SECONDS="$SCENARIO_TIMEOUT"
   export DEMO_SCENARIO_POLL_INTERVAL_MILLIS=500
   export DEMO_SKIP_BUILD=false
@@ -336,6 +338,7 @@ activate_host() {
   export DEMO_CONNECTOR_SUBNET="$CONNECTOR_SUBNET"
   export DEMO_S3_IP="$CONNECTOR_S3_IP"
   export DEMO_KUBO_IP="$CONNECTOR_KUBO_IP"
+  export DEMO_KAFKA_IP="$CONNECTOR_KAFKA_IP"
   export DEMO_SCENARIO_TIMEOUT_SECONDS="$SCENARIO_TIMEOUT"
   export DEMO_SCENARIO_POLL_INTERVAL_MILLIS=500
   export DEMO_SKIP_BUILD=false
@@ -730,14 +733,26 @@ capture_cluster_state() {
           and (.stateRoot | test("^[0-9a-f]{64}$"))
           and (.memberKey | test("^[0-9a-f]{64}$"))
           and .members == 3 and .threshold == 2
-          and .stateMachine == $machine)
+          and .stateMachine == $machine
+          and ($machine != "composite" or (
+            .stateMachineStatus.mode == "governed"
+            and .stateMachineStatus.currentEpoch == 0
+            and (.stateMachineStatus.activeProfileDigest
+              | test("^[0-9a-f]{64}$"))
+            and (.stateMachineStatus as $machineStatus
+              | ($machineStatus.catalogDigests
+                | index($machineStatus.activeProfileDigest)) != null)
+            and .stateMachineStatus.catalogReady == true
+            and (.stateMachineStatus.currentMembershipDigest
+              | test("^[0-9a-f]{64}$")))))
         and ([.[].tipHeight] | unique | length) == 1
         and ([.[].stateRoot] | unique | length) == 1
         and ([.[].memberKey] | unique | length) == 3' \
         "$ROOT/$phase-node0-status.json" "$ROOT/$phase-node1-status.json" \
         "$ROOT/$phase-node2-status.json" >/dev/null 2>&1; then
       jq -S -c -s '[.[] | {chainId, running, tipHeight, stateRoot, memberKey,
-        members, threshold, stateMachine}]' "$ROOT/$phase-node0-status.json" \
+        members, threshold, stateMachine, stateMachineStatus}]' \
+        "$ROOT/$phase-node0-status.json" \
         "$ROOT/$phase-node1-status.json" "$ROOT/$phase-node2-status.json" \
         > "$output.tmp"
       mv "$output.tmp" "$output"
@@ -786,7 +801,18 @@ assert_replay_advanced_only_tip() {
           and (.stateRoot | test("^[0-9a-f]{64}$"))
           and (.memberKey | test("^[0-9a-f]{64}$"))
           and .members == 3 and .threshold == 2
-          and .stateMachine == $machine)
+          and .stateMachine == $machine
+          and ($machine != "composite" or (
+            .stateMachineStatus.mode == "governed"
+            and .stateMachineStatus.currentEpoch == 0
+            and (.stateMachineStatus.activeProfileDigest
+              | test("^[0-9a-f]{64}$"))
+            and (.stateMachineStatus as $machineStatus
+              | ($machineStatus.catalogDigests
+                | index($machineStatus.activeProfileDigest)) != null)
+            and .stateMachineStatus.catalogReady == true
+            and (.stateMachineStatus.currentMembershipDigest
+              | test("^[0-9a-f]{64}$")))))
         and ([.[].tipHeight] | unique | length) == 1
         and ([.[].stateRoot] | unique | length) == 1
         and ([.[].memberKey] | unique | length) == 3' \
@@ -794,7 +820,7 @@ assert_replay_advanced_only_tip() {
         "$ROOT/replay-wait-$base-node1-status.json" \
         "$ROOT/replay-wait-$base-node2-status.json" >/dev/null 2>&1; then
       jq -S -c -s '[.[] | {chainId, running, tipHeight, stateRoot, memberKey,
-        members, threshold, stateMachine}]' \
+        members, threshold, stateMachine, stateMachineStatus}]' \
         "$ROOT/replay-wait-$base-node0-status.json" \
         "$ROOT/replay-wait-$base-node1-status.json" \
         "$ROOT/replay-wait-$base-node2-status.json" > "$after.tmp"
@@ -856,11 +882,21 @@ run_and_capture() {
   if [ "$deployment" = compose ]; then
     if ! demo_compose run >"$output" 2>&1; then
       sed -n '1,200p' "$output" >&2
+      if [ -f "$report_dir/latest.json" ] && [ ! -L "$report_dir/latest.json" ] \
+          && [ "$(wc -c < "$report_dir/latest.json" | tr -d ' ')" -le 1048576 ]; then
+        jq -c '{outcome, failureCode, checks}' \
+          "$report_dir/latest.json" >&2 || true
+      fi
       fail "$label scenario command failed"
     fi
   else
     if ! demo_host run >"$output" 2>&1; then
       sed -n '1,200p' "$output" >&2
+      if [ -f "$report_dir/latest.json" ] && [ ! -L "$report_dir/latest.json" ] \
+          && [ "$(wc -c < "$report_dir/latest.json" | tr -d ' ')" -le 1048576 ]; then
+        jq -c '{outcome, failureCode, checks}' \
+          "$report_dir/latest.json" >&2 || true
+      fi
       fail "$label scenario command failed"
     fi
   fi

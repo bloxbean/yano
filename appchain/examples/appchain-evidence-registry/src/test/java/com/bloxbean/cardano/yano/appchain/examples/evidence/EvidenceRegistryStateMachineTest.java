@@ -24,6 +24,7 @@ import com.bloxbean.cardano.yano.appchain.examples.evidence.state.EvidenceRecord
 import com.bloxbean.cardano.yano.appchain.examples.evidence.state.EvidenceStatus;
 import com.bloxbean.cardano.yano.appchain.integration.ConnectorTypes;
 import com.bloxbean.cardano.yano.appchain.integration.kafka.KafkaPublishCommandV1;
+import com.bloxbean.cardano.yano.appchain.testkit.AppChainTestProfiles;
 import com.bloxbean.cardano.yano.runtime.appchain.StateMachineConformance;
 import org.junit.jupiter.api.Test;
 
@@ -456,6 +457,11 @@ class EvidenceRegistryStateMachineTest {
         return new AppStateMachineContext() {
             @Override public String chainId() { return CHAIN; }
             @Override public Map<String, String> settings() { return Map.copyOf(settings); }
+            @Override
+            public Optional<com.bloxbean.cardano.yano.api.appchain.AppChainConsensusProfile>
+            consensusProfile() {
+                return Optional.of(AppChainTestProfiles.fromSettings(settings));
+            }
         };
     }
 

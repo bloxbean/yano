@@ -82,55 +82,76 @@ class AwsS3ObjectStoreClientTest {
     }
 
     @Test
-    void inventoriesExactKeyAcrossBoundedPages() {
-        FakeS3 fake = new FakeS3();
-        fake.respond("listObjectVersions", ListObjectVersionsResponse.builder()
-                                .isTruncated(true)
-                                .nextKeyMarker(KEY)
-                                .nextVersionIdMarker("v1")
-                                .versions(ObjectVersion.builder()
-                                        .key(KEY + "/not-the-object").versionId("other").build())
-                                .build(),
-                        ListObjectVersionsResponse.builder()
-                                .isTruncated(false)
-                                .deleteMarkers(DeleteMarkerEntry.builder()
-                                        .key(KEY).versionId("v2").build())
-                                .build());
-        AwsS3ObjectStoreClient client = client(fake.client());
-
-        VersionInventory result = client.listVersions(BUCKET, KEY, 4);
-
-        assertThat(result.entriesExamined()).isEqualTo(2);
-        assertThat(result.anyVersionOrDeleteMarker()).isTrue();
-        List<Call> calls = fake.calls("listObjectVersions");
-        assertThat(calls).hasSize(2);
-        ListObjectVersionsRequest first = calls.get(0).argument(0);
-        ListObjectVersionsRequest second = calls.get(1).argument(0);
-        assertThat(first.prefix()).isEqualTo(KEY);
-        assertThat(first.maxKeys()).isEqualTo(4);
-        assertThat(first.expectedBucketOwner()).isEqualTo(EXPECTED_OWNER);
-        assertThat(second.keyMarker()).isEqualTo(KEY);
-        assertThat(second.versionIdMarker()).isEqualTo("v1");
-        assertThat(second.maxKeys()).isEqualTo(3);
-        assertThat(second.expectedBucketOwner()).isEqualTo(EXPECTED_OWNER);
-    }
-
-    @Test
-    void rejectsTruncatedOrOverBoundVersionInventory() {
+    void exactDeleteMarkerProvesHistoryWithoutScanningPrefixSiblings() {
         FakeS3 fake = new FakeS3();
         fake.respond("listObjectVersions", ListObjectVersionsResponse.builder()
                         .isTruncated(true)
                         .nextKeyMarker(KEY)
-                        .nextVersionIdMarker("v1")
-                        .versions(ObjectVersion.builder().key(KEY).versionId("v1").build())
+                        .nextVersionIdMarker("v2")
+                        .versions(ObjectVersion.builder()
+                                .key(KEY + "/not-the-object").versionId("other").build())
+                        .deleteMarkers(DeleteMarkerEntry.builder()
+                                .key(KEY).versionId("v2").build())
                         .build());
+        AwsS3ObjectStoreClient client = client(fake.client());
+
+        VersionInventory result = client.listVersions(BUCKET, KEY, 4);
+
+        assertThat(result.entriesExamined()).isEqualTo(1);
+        assertThat(result.anyVersionOrDeleteMarker()).isTrue();
+        List<Call> calls = fake.calls("listObjectVersions");
+        assertThat(calls).hasSize(1);
+        ListObjectVersionsRequest first = calls.get(0).argument(0);
+        assertThat(first.prefix()).isEqualTo(KEY);
+        assertThat(first.maxKeys()).isEqualTo(4);
+        assertThat(first.expectedBucketOwner()).isEqualTo(EXPECTED_OWNER);
+    }
+
+    @Test
+    void prefixSharingSiblingDoesNotConsumeExactKeyHistoryBudget() {
+        FakeS3 fake = new FakeS3();
+        fake.respond("listObjectVersions", ListObjectVersionsResponse.builder()
+                        .isTruncated(true)
+                        .nextKeyMarker(KEY + "/sibling")
+                        .nextVersionIdMarker("other")
+                        .versions(ObjectVersion.builder()
+                                .key(KEY + "/sibling").versionId("other").build())
+                        .build());
+        AwsS3ObjectStoreClient client = client(fake.client());
+
+        assertThat(client.listVersions(BUCKET, KEY, 1))
+                .isEqualTo(new VersionInventory(0, false));
+        assertThat(fake.calls("listObjectVersions")).hasSize(1);
+    }
+
+    @Test
+    void inconclusiveTruncatedInventoryIsAcknowledgementUnknown() {
+        FakeS3 fake = new FakeS3();
+        fake.respond("listObjectVersions", ListObjectVersionsResponse.builder()
+                .isTruncated(true)
+                .nextKeyMarker(KEY)
+                .nextVersionIdMarker("v1")
+                .build());
         AwsS3ObjectStoreClient client = client(fake.client());
 
         assertThatThrownBy(() -> client.listVersions(BUCKET, KEY, 1))
                 .isInstanceOfSatisfying(ObjectStoreException.class,
                         failure -> assertThat(failure.code())
-                                .isEqualTo(ConnectorErrorCode.POLICY_DENIED));
+                                .isEqualTo(ConnectorErrorCode.ACK_UNKNOWN));
         assertThat(fake.calls("listObjectVersions")).hasSize(1);
+    }
+
+    @Test
+    void inaccessibleVersionInventoryIsAcknowledgementUnknown() {
+        FakeS3 fake = new FakeS3();
+        fake.respond("listObjectVersions",
+                SdkClientException.create("simulated unavailable object history"));
+        AwsS3ObjectStoreClient client = client(fake.client());
+
+        assertThatThrownBy(() -> client.listVersions(BUCKET, KEY, 4))
+                .isInstanceOfSatisfying(ObjectStoreException.class,
+                        failure -> assertThat(failure.code())
+                                .isEqualTo(ConnectorErrorCode.ACK_UNKNOWN));
     }
 
     @Test

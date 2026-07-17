@@ -1,10 +1,14 @@
 package com.bloxbean.cardano.yano.runtime.appchain;
 
 import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
+import com.bloxbean.cardano.yano.api.appchain.AppChainConsensusProfile;
+import com.bloxbean.cardano.yano.api.appchain.effects.EffectOutcomeCommitment;
 import com.bloxbean.cardano.yano.api.appchain.effects.FinalityGate;
 
+import java.util.HashSet;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Parsed {@code effects.*} chain settings (ADR app-layer/010 F12). The
@@ -26,16 +30,9 @@ record EffectsSettings(boolean enabled,
                        long maxExpiryBlocks,
                        long resultWindowBlocks,
                        FinalityGate defaultGate,
-                       OutcomeCommitment outcomeCommitment,
+                       EffectOutcomeCommitment outcomeCommitment,
                        boolean strictReservedPrefix,
-                       java.util.Set<String> resultSigners) {
-
-    enum OutcomeCommitment {
-        /** One {@code ~fx/done} leaf per incorporated outcome — O(1) open/closed proofs. */
-        PER_EFFECT,
-        /** One {@code ~fx/results/<height>} leaf per block — trie growth O(effectful blocks). */
-        PER_BLOCK
-    }
+                       Set<String> resultSigners) {
 
     static EffectsSettings from(AppChainConfig config) {
         return fromSettings(config.pluginSettings());
@@ -47,7 +44,7 @@ record EffectsSettings(boolean enabled,
         if (!Boolean.parseBoolean(settings.getOrDefault("effects.enabled", "false"))) {
             // Reserved-prefix enforcement is NOT effects-gated (see class javadoc)
             return new EffectsSettings(false, 0, 0, 0, 0, FinalityGate.APP_FINAL,
-                    OutcomeCommitment.PER_EFFECT, strict, java.util.Set.of());
+                    EffectOutcomeCommitment.PER_EFFECT, strict, Set.of());
         }
         FinalityGate defaultGate = switch (
                 settings.getOrDefault("effects.default-gate", "app-final").trim().toLowerCase(Locale.ROOT)) {
@@ -61,21 +58,25 @@ record EffectsSettings(boolean enabled,
         // current member may attest outcomes; else only the listed member keys
         // (the designated executors' keys). Interpreter no-ops results from
         // anyone else — deterministic, never a stall.
-        java.util.Set<String> resultSigners = java.util.Set.of();
+        Set<String> resultSigners = Set.of();
         String signersValue = settings.getOrDefault("effects.result.signers", "").trim();
         if (!signersValue.isEmpty()) {
-            java.util.Set<String> parsed = new java.util.LinkedHashSet<>();
+            Set<String> parsed = new java.util.LinkedHashSet<>();
             for (String key : signersValue.split("\\s*,\\s*")) {
                 if (!key.isBlank()) {
-                    parsed.add(key.toLowerCase(Locale.ROOT));
+                    String normalized = key.toLowerCase(Locale.ROOT);
+                    if (!parsed.add(normalized)) {
+                        throw new IllegalArgumentException(
+                                "effects.result.signers contains duplicate key " + normalized);
+                    }
                 }
             }
-            resultSigners = java.util.Set.copyOf(parsed);
+            resultSigners = Set.copyOf(parsed);
         }
-        OutcomeCommitment commitment = switch (
+        EffectOutcomeCommitment commitment = switch (
                 settings.getOrDefault("effects.outcome-commitment", "per-effect").trim().toLowerCase(Locale.ROOT)) {
-            case "per-effect" -> OutcomeCommitment.PER_EFFECT;
-            case "per-block" -> OutcomeCommitment.PER_BLOCK;
+            case "per-effect" -> EffectOutcomeCommitment.PER_EFFECT;
+            case "per-block" -> EffectOutcomeCommitment.PER_BLOCK;
             default -> throw new IllegalArgumentException(
                     "effects.outcome-commitment must be 'per-effect' or 'per-block'");
         };
@@ -101,6 +102,38 @@ record EffectsSettings(boolean enabled,
         }
         return new EffectsSettings(true, maxPerBlock, maxPayloadBytes, maxExpiryBlocks,
                 resultWindowBlocks, defaultGate, commitment, strict, resultSigners);
+    }
+
+    /** Build the one normalized ADR-016 profile consumed by runtime and plugins. */
+    AppChainConsensusProfile consensusProfile(AppChainConfig config) {
+        Set<String> genesisMembers = new HashSet<>();
+        for (String member : config.memberKeysHex()) {
+            if (member != null) {
+                genesisMembers.add(member.trim().toLowerCase(Locale.ROOT));
+            }
+        }
+        for (String signer : resultSigners) {
+            if (!genesisMembers.contains(signer)) {
+                throw new IllegalArgumentException("effects.result.signers contains nonmember key "
+                        + signer);
+            }
+        }
+        return new AppChainConsensusProfile(
+                AppChainConsensusProfile.SCHEMA_VERSION,
+                config.maxMessageBytes(),
+                config.maxBlockMessages(),
+                config.blockMaxBytes(),
+                config.l1StabilityDepth(),
+                config.enforceSenderSeq(),
+                enabled,
+                maxPerBlock,
+                maxPayloadBytes,
+                maxExpiryBlocks,
+                resultWindowBlocks,
+                defaultGate,
+                outcomeCommitment,
+                strictReservedPrefix,
+                resultSigners.stream().sorted().toList());
     }
 
     /** Shared designated-signer policy for proposal admission and incorporation. */

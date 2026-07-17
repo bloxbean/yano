@@ -6,6 +6,7 @@ import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiResponse;
 import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiRouteInfo;
 import com.bloxbean.cardano.yano.api.plugin.domain.DomainHttpMethod;
 import com.bloxbean.cardano.yano.app.api.plugin.PluginOperationsResource;
+import com.bloxbean.cardano.yano.appchain.composite.contracts.CompositeProfileGovernanceV1;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.ws.rs.container.ContainerRequestContext;
 import jakarta.ws.rs.container.ResourceInfo;
@@ -71,6 +72,19 @@ class AppChainApiKeyFilterUnitTest {
         getFilter.filter(getWithBody.context());
 
         assertEquals(400, getWithBody.aborted.getStatus());
+
+        Method governance = AppChainResource.ChainScopedResource.class.getMethod(
+                "submitProfileGovernanceCommand",
+                AppChainResource.ChainScopedResource.CompositeProfileCommandRequest.class);
+        AppChainApiKeyFilter governanceFilter = filter(false, "full", DomainApiAccess.READ,
+                AppChainResource.ChainScopedResource.class, governance);
+        int governanceJsonLimit = CompositeProfileGovernanceV1.MAX_COMMAND_BYTES * 2 + 1_024;
+        RequestProbe oversizedGovernance = new RequestProbe(
+                "POST", "full", new byte[governanceJsonLimit + 1]);
+
+        governanceFilter.filter(oversizedGovernance.context());
+
+        assertEquals(413, oversizedGovernance.aborted.getStatus());
     }
 
     @Test
@@ -136,6 +150,28 @@ class AppChainApiKeyFilterUnitTest {
         RequestProbe full = new RequestProbe("GET", "full", null);
         filter(false, "full,restricted=orders", DomainApiAccess.READ,
                 AppChainResource.ChainScopedResource.class, members).filter(full.context());
+        assertNull(full.aborted);
+    }
+
+    @Test
+    void compositeProfileGovernanceSubmissionRequiresAFullKey() throws Exception {
+        Method submit = AppChainResource.ChainScopedResource.class.getMethod(
+                "submitProfileGovernanceCommand",
+                AppChainResource.ChainScopedResource.CompositeProfileCommandRequest.class);
+
+        RequestProbe missing = new RequestProbe("POST", null, null);
+        filter(false, "full,restricted=orders", DomainApiAccess.READ,
+                AppChainResource.ChainScopedResource.class, submit).filter(missing.context());
+        assertEquals(401, missing.aborted.getStatus());
+
+        RequestProbe restricted = new RequestProbe("POST", "restricted", null);
+        filter(false, "full,restricted=orders", DomainApiAccess.READ,
+                AppChainResource.ChainScopedResource.class, submit).filter(restricted.context());
+        assertEquals(403, restricted.aborted.getStatus());
+
+        RequestProbe full = new RequestProbe("POST", "full", null);
+        filter(false, "full,restricted=orders", DomainApiAccess.READ,
+                AppChainResource.ChainScopedResource.class, submit).filter(full.context());
         assertNull(full.aborted);
     }
 

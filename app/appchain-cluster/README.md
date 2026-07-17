@@ -414,6 +414,7 @@ a distinct script address.
 ./cluster.sh submit ...            submit a payload to an ordered-log chain
 ./cluster.sh kv ...                set/del on a kv-registry chain
 ./cluster.sh anchor-bootstrap C    bootstrap a script anchor (devnet: auto-funds)
+./profile-governance.py ...        inspect/submit ADR-015 profile commands
 ./cluster.sh logs <node> [-f]      show/tail a node log
 ./cluster.sh keys [N]              print member seeds + pubkeys
 ./cluster.sh chains                list chains from the config
@@ -425,6 +426,15 @@ Start options: `--network <net>`, `--jar` | `--native`, `--threshold <t>`,
 `--transport <shared|dedicated>`,
 `--anchor`, `--anchor-mode <metadata|script>`, `--anchor-key <hex>`,
 `--anchor-every <n>`, `--data-dir <dir>`, `--http-base <p>`, `--server-base <p>`.
+
+`profile-governance.py` is a dependency-free privileged helper for a chain
+whose selected composite bundle was built with an executable profile catalog.
+It supports `status`, `begin`, `chunk`, `seal`, `approve`, `ready`, and
+`cancel`, reads a full API key from `YANO_APPCHAIN_API_KEY` or
+`--api-key-file`, and refuses HTTP redirects. See the
+[profile-governance runbook](../../docs/APP_CHAIN_PROFILE_GOVERNANCE.md) before
+using it; the stock one-entry catalog demonstrates governed genesis but cannot
+activate an unpackaged target.
 
 ## Troubleshooting
 

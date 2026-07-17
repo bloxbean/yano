@@ -40,6 +40,30 @@ class CborStructurePreflightTest {
                 HexFormat.of().parseHex("9f9f01ffff"), 5, 1, 8)).isFalse();
     }
 
+    @Test
+    void enforcesContainerAndAggregateStringBudgetsForDefiniteAndIndefiniteForms() {
+        var limits = new CborStructurePreflight.Limits(64, 8, 32, 2, 3);
+
+        assertThat(CborStructurePreflight.accepts(
+                HexFormat.of().parseHex("820102"), limits)).isTrue();
+        assertThat(CborStructurePreflight.accepts(
+                HexFormat.of().parseHex("83010203"), limits)).isFalse();
+        assertThat(CborStructurePreflight.accepts(
+                HexFormat.of().parseHex("4401020304"), limits)).isFalse();
+        assertThat(CborStructurePreflight.accepts(
+                HexFormat.of().parseHex("5f420102420304ff"), limits)).isFalse();
+        assertThat(CborStructurePreflight.accepts(
+                HexFormat.of().parseHex("9f010203ff"), limits)).isFalse();
+    }
+
+    @Test
+    void acceptsFullWidthScalarsAndFloatsButRejectsIllegalBreaks() {
+        assertThat(accepts("1bffffffffffffffff")).isTrue();
+        assertThat(accepts("fb3ff0000000000000")).isTrue();
+        assertThat(accepts("ff")).isFalse();
+        assertThat(accepts("81ff")).isFalse();
+    }
+
     private static boolean accepts(String hex) {
         byte[] bytes = HexFormat.of().parseHex(hex);
         return CborStructurePreflight.accepts(bytes, bytes.length, 8, 32);

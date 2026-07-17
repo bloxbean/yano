@@ -2,6 +2,7 @@ package com.bloxbean.cardano.yano.runtime.appchain;
 
 import com.bloxbean.cardano.vds.mpf.MpfTrie;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppChainConsensusProfileCommitment;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
@@ -9,6 +10,7 @@ import com.bloxbean.cardano.yano.api.appchain.effects.EffectId;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectIntent;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectLimitExceededException;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectOutcome;
+import com.bloxbean.cardano.yano.api.appchain.effects.EffectOutcomeCommitment;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectRecord;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectResult;
 import com.bloxbean.cardano.yano.api.appchain.effects.FinalityGate;
@@ -89,9 +91,15 @@ final class FxKernel {
     }
 
     private final EffectsSettings settings;
+    private final ConsensusProfileGuard consensusProfileGuard;
 
     FxKernel(EffectsSettings settings) {
+        this(settings, null);
+    }
+
+    FxKernel(EffectsSettings settings, ConsensusProfileGuard consensusProfileGuard) {
         this.settings = settings;
+        this.consensusProfileGuard = consensusProfileGuard;
     }
 
     /**
@@ -104,6 +112,9 @@ final class FxKernel {
      * historical application leaves.
      */
     Result apply(AppStateMachine machine, AppBlock block, MpfTrie trie, FxReader reader) {
+        if (consensusProfileGuard != null) {
+            consensusProfileGuard.apply(block.height(), trie);
+        }
         AppStateWriter machineWriter = guardedWriter(trie, settings.strictReservedPrefix());
 
         if (!settings.enabled()) {
@@ -131,7 +142,7 @@ final class FxKernel {
             if (result == null) {
                 continue; // audit no-op (malformed / unknown / dup / out of window)
             }
-            if (settings.outcomeCommitment() == EffectsSettings.OutcomeCommitment.PER_EFFECT) {
+            if (settings.outcomeCommitment() == EffectOutcomeCommitment.PER_EFFECT) {
                 trie.put(FxKeys.doneKey(result.effectId()), result.envelopeHash());
             }
             closedInBlock.add(positionKey(result.effectId().height(), result.effectId().ordinal()));
@@ -163,7 +174,7 @@ final class FxKernel {
                             + " — rebuild app_fx_records by replay"));
             EffectResult expired = new EffectResult(record.effectId(), record.type(), record.scope(),
                     EffectOutcome.EXPIRED, new byte[0], null, block.height());
-            if (settings.outcomeCommitment() == EffectsSettings.OutcomeCommitment.PER_EFFECT) {
+            if (settings.outcomeCommitment() == EffectOutcomeCommitment.PER_EFFECT) {
                 trie.put(FxKeys.doneKey(expired.effectId()), expired.envelopeHash());
             }
             incorporated.add(expired);
@@ -184,7 +195,7 @@ final class FxKernel {
             effectsRoot = FxKeys.effectsRoot(hashes);
             trie.put(FxKeys.effectsRootKey(block.height()), effectsRoot);
         }
-        if (settings.outcomeCommitment() == EffectsSettings.OutcomeCommitment.PER_BLOCK
+        if (settings.outcomeCommitment() == EffectOutcomeCommitment.PER_BLOCK
                 && !incorporated.isEmpty()) {
             List<byte[]> outcomeHashes = new ArrayList<>(incorporated.size());
             for (EffectResult result : incorporated) {
@@ -227,8 +238,6 @@ final class FxKernel {
      * already-terminal effect, or a same-block duplicate. First result wins.
      */
     /** ~fx/result bodies are tiny ([v,h,ord,outcome,ref≤128,hash≤32]); anything larger is garbage. */
-    private static final int MAX_RESULT_BODY_BYTES = 512;
-
     private EffectResult interpretResult(
             com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage message,
             AppBlock block, FxReader reader, java.util.Set<Long> closedInBlock) {
@@ -239,7 +248,8 @@ final class FxKernel {
             return null;
         }
         byte[] body = message.getBody();
-        if (body == null || body.length > MAX_RESULT_BODY_BYTES) {
+        if (body == null || body.length
+                > com.bloxbean.cardano.yano.api.appchain.effects.FxResultBody.MAX_BODY_BYTES) {
             // Deterministic pre-decode cap — also excludes deeply-nested CBOR
             // whose decode could StackOverflow past the Exception catch
             return null;
@@ -300,6 +310,10 @@ final class FxKernel {
             }
 
             private void rejectReserved(byte[] key) {
+                if (AppChainConsensusProfileCommitment.isReserved(key)) {
+                    throw new IllegalArgumentException(
+                            "Application state keys must not use the reserved '~yano/' prefix (ADR-016)");
+                }
                 if (strict && FxKeys.isReserved(key)) {
                     // Deterministic on every node — a rejected proposal, never a divergence
                     throw new IllegalArgumentException(

@@ -86,6 +86,10 @@ public final class AppBlockCodec {
     }
 
     public static AppBlock deserialize(byte[] bytes) {
+        return deserializeCanonical(bytes, AppChainConfig.MAX_BLOCK_BYTES);
+    }
+
+    private static AppBlock deserializeUnchecked(byte[] bytes) {
         Array arr = (Array) CborSerializationUtil.deserializeOne(bytes);
         List<DataItem> items = arr.getDataItems();
 
@@ -117,12 +121,15 @@ public final class AppBlockCodec {
      */
     public static AppBlock deserializeCanonical(byte[] bytes, long maximumBytes) {
         int boundedMaximum = boundedMaximum(maximumBytes);
-        if (!CborStructurePreflight.accepts(bytes, boundedMaximum,
-                MAX_CANONICAL_CBOR_DEPTH, MAX_CANONICAL_BLOCK_ITEMS)) {
+        var limits = new CborStructurePreflight.Limits(
+                boundedMaximum, MAX_CANONICAL_CBOR_DEPTH,
+                MAX_CANONICAL_BLOCK_ITEMS, AppChainConfig.MAX_BLOCK_MESSAGES,
+                boundedMaximum);
+        if (!CborStructurePreflight.accepts(bytes, limits)) {
             throw invalid("Invalid bounded canonical app block");
         }
         try {
-            AppBlock block = deserialize(bytes);
+            AppBlock block = deserializeUnchecked(bytes);
             if (!Arrays.equals(bytes, serialize(block))) {
                 throw invalid("Non-canonical app block");
             }
@@ -137,18 +144,25 @@ public final class AppBlockCodec {
     }
 
     public static FinalityCert deserializeCert(byte[] bytes) {
+        return deserializeCertCanonical(bytes);
+    }
+
+    private static FinalityCert deserializeCertUnchecked(byte[] bytes) {
         return parseCert((Array) CborSerializationUtil.deserializeOne(bytes));
     }
 
     /** Bounded canonical decoder for an untrusted v1 finality certificate. */
     public static FinalityCert deserializeCertCanonical(byte[] bytes) {
         int maximumBytes = AppChainConfig.MAX_FINALITY_CERT_HEADROOM_BYTES;
-        if (!CborStructurePreflight.accepts(bytes, maximumBytes,
-                MAX_CANONICAL_CBOR_DEPTH, MAX_CANONICAL_CERT_ITEMS)) {
+        var limits = new CborStructurePreflight.Limits(
+                maximumBytes, MAX_CANONICAL_CBOR_DEPTH,
+                MAX_CANONICAL_CERT_ITEMS, AppChainConfig.MAX_MEMBERS + 1,
+                AppChainConfig.ED25519_SIGNATURE_BYTES);
+        if (!CborStructurePreflight.accepts(bytes, limits)) {
             throw invalid("Invalid bounded canonical finality certificate");
         }
         try {
-            FinalityCert cert = deserializeCert(bytes);
+            FinalityCert cert = deserializeCertUnchecked(bytes);
             if (!Arrays.equals(bytes, serializeCert(cert))) {
                 throw invalid("Non-canonical finality certificate");
             }

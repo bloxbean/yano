@@ -131,12 +131,12 @@ Every connector in this ADR must therefore tolerate the same effect being
 presented again after a timeout, process crash, node restart, lost response,
 or executor failover.
 
-### 1.2 Existing Kafka sink
+### 1.2 Pre-ADR Kafka sink
 
-`appchain-kafka-sink` is a T3 plugin bundle contributing
-`FinalizedStreamSinkFactory` under scheme `kafka`. It publishes one JSON
-record for each finalized app block, maintains progress through the runtime's
-durable sink cursor, enables Kafka producer idempotence, and documents
+At the start of this ADR, `appchain-kafka-sink` was a T3 plugin bundle contributing
+`FinalizedStreamSinkFactory` under scheme `kafka`. It published one JSON
+record for each finalized app block, maintained progress through the runtime's
+durable sink cursor, enabled Kafka producer idempotence, and documented
 at-least-once delivery keyed by `(chainId, height)`.
 
 Its current technical identity is already technology-wide rather than
@@ -1071,10 +1071,15 @@ atomically from the object API.
 The executor probes the current destination before every mutation. If it is
 absent, it performs a bounded exact-key version-history check. A prior version
 or delete marker is a definitive conflict: v1 does not resurrect a deleted
-object or create a second version after out-of-band deletion. An inaccessible
-probe is never treated as absence. A present candidate is downloaded within
-the command/target bound and independently rehashed; ETag and user metadata
-alone are not content verification.
+object or create a second version after out-of-band deletion. The bound counts
+only versions and delete markers for the exact destination key; keys that merely
+share its prefix do not consume the exact-key budget. The scan may stop with a
+definitive absence only after the ordered listing has passed the exact key or a
+complete listing ends without it. Pagination gaps, repeated or missing
+continuation markers, provider failures, and any other inconclusive history
+probe produce `ACK_UNKNOWN`; they are never treated as absence. A present
+candidate is downloaded within the command/target bound and independently
+rehashed; ETag and user metadata alone are not content verification.
 
 For provider SHA-256 responses, `FULL_OBJECT` (or a legacy response with no
 declared checksum type) must equal the locally computed whole-object digest.
@@ -2128,13 +2133,26 @@ startup rollback never drops its lease.
 
 ### 15.1 Kafka finalized sink
 
-Existing keys remain valid:
+The sink is inactive only when its complete namespace is absent. Once any sink
+key is present, bootstrap servers, topic, and an explicit fail-closed security
+profile are required:
 
 ```properties
-yano.app-chain.sinks.kafka.bootstrap-servers=kafka:9092
+yano.app-chain.sinks.kafka.bootstrap-servers=broker.example.com:9093
 yano.app-chain.sinks.kafka.topic=appchain-finalized-blocks
 yano.app-chain.sinks.kafka.acks=all
+yano.app-chain.sinks.kafka.security-profile=tls
+yano.app-chain.sinks.kafka.tls.truststore-path=/run/secrets/kafka-trust.p12
+yano.app-chain.sinks.kafka.tls.truststore-password=${KAFKA_TRUSTSTORE_PASSWORD}
+yano.app-chain.sinks.kafka.tls.truststore-type=PKCS12
 ```
+
+The finalized sink and effect executor share the same strict `local-demo`,
+`tls`, `mtls`, and `sasl-tls` transport/authentication contract. There is no
+arbitrary Kafka-client-property pass-through. `local-demo` accepts only exact
+localhost or canonical private numeric bootstrap addresses; remote plaintext,
+partial configuration, TLS/SASL material in the wrong profile, and unknown
+settings fail startup.
 
 ### 15.2 Kafka effect executor
 
@@ -2480,7 +2498,7 @@ preserved while the same technology-owned bundle contributes both the
 finalized-block sink and acknowledged `kafka.publish` executor. The executor
 implements the frozen Phase 1.0 command, receipt, destination fingerprint,
 error, and optional detail-archive contracts. Strict alias-only configuration,
-local-demo/TLS/mTLS/SASL-TLS profiles, explicit producer ownership, bounded
+local-demo/TLS/mTLS/SASL-TLS profiles for both contributions, explicit producer ownership, bounded
 acknowledgement/shutdown, effect-id binding, reserved dedupe headers, and
 archive-only submitted-reference recovery are implemented without a core,
 runtime, or SPI change.
@@ -2498,6 +2516,13 @@ Recorded Phase 1.1 evidence:
   bodies, all frozen reserved headers, and receipt partition/offset, and
   interleaves the finalized sink with the effect executor. It also proves the
   chain-id sink key retains finalized-block order on one partition.
+- A separate pinned, prebuilt multi-arch Kafka 4.3.1 JVM fixture passes the
+  identical effect-plus-sink scenario over certificate-authenticated TLS and
+  over SASL/PLAIN authenticated TLS. It creates topics, obtains broker
+  acknowledgements, consumes and verifies all four records, enforces hostname
+  verification, supplies test secrets through ephemeral files, and cleans up
+  the broker and credentials. The ordinary demo keeps the smaller official
+  native broker; its native runtime cannot execute Kafka's JAAS `Subject` path.
 - Drop-in launch tests prove merged ServiceLoader contributions and private
   relocation of connector contracts, CBOR, and BLAKE2b classes. Thin/native
   catalog tests prove host class identity and execute the relocated
@@ -3232,10 +3257,12 @@ The following are deliberately deferred:
 8. **Production Cardano actions.** ADR-010.2 and domain ADRs govern them.
 9. **Complete DPP product.** The DPP possible-design note consumes these
    connectors but has separate schemas, identity, portal, and Cardano work.
-10. **The exact component SPI and plugin-catalog shape.** Milestone 3 fixes the
-    composition invariants here, while its required sub-ADR decides whether
-    components are a new manifested contribution kind, a library assembled by
-    one provider, or a staged combination with a migration path.
+10. **State-incompatible composite migration.** ADR-015 now implements
+    threshold-approved, all-member-ready, exact-height profile evolution,
+    retained result routing, and bounded retired-generation quota release.
+    Incompatible state/result schemas still require a new component namespace,
+    an application-specific deterministic migration workflow, or a separately
+    audited new-chain migration.
 
 ## 22. Alternatives considered
 

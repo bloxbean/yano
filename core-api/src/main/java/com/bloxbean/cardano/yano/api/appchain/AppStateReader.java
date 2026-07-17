@@ -12,4 +12,14 @@ public interface AppStateReader {
 
     /** Root of the state commitment after the last finalized block. */
     byte[] stateRoot();
+
+    /**
+     * Height represented by this committed view, when known. Legacy readers
+     * default to genesis height; runtime readers expose the exact finalized
+     * tip. State machines must use the candidate height supplied to
+     * {@link AppStateMachine#validateForBlock} for admission decisions.
+     */
+    default long committedHeight() {
+        return 0;
+    }
 }

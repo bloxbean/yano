@@ -1,7 +1,9 @@
 package com.bloxbean.cardano.yano.appchain.examples.evidence;
 
+import com.bloxbean.cardano.yano.api.appchain.AppChainConsensusProfile;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineContext;
 import com.bloxbean.cardano.yano.api.appchain.effects.ActivationSchedule;
+import com.bloxbean.cardano.yano.api.appchain.effects.EffectOutcomeCommitment;
 import com.bloxbean.cardano.yano.api.appchain.effects.FinalityGate;
 import com.bloxbean.cardano.yano.appchain.integration.objectstore.ObjectPutCommandV1;
 
@@ -21,10 +23,6 @@ import java.security.MessageDigest;
 public final class EvidenceRegistryConfig {
     private static final String PREFIX = "machines.evidence-registry.";
     private static final Pattern PUBLIC_KEY = Pattern.compile("[0-9a-fA-F]{64}");
-    private static final int DEFAULT_MAX_EFFECTS = 256;
-    private static final int DEFAULT_MAX_PAYLOAD_BYTES = 16_384;
-    private static final long DEFAULT_EFFECT_WINDOW = 100_000;
-
     private final String chainId;
     private final Set<String> issuers;
     private final Set<String> notifySenders;
@@ -60,7 +58,9 @@ public final class EvidenceRegistryConfig {
         Objects.requireNonNull(context, "context");
         Map<String, String> settings = Map.copyOf(
                 Objects.requireNonNull(context.settings(), "context.settings()"));
-        requireEffects(settings);
+        AppChainConsensusProfile profile = context.consensusProfile().orElseThrow(() ->
+                invalid("evidence-registry requires AppStateMachineContext.consensusProfile() (ADR-016)"));
+        requireEffects(profile);
 
         FinalityGate gate = switch (setting(settings, PREFIX + "storage-gate", "app-final")
                 .toLowerCase(Locale.ROOT)) {
@@ -72,7 +72,7 @@ public final class EvidenceRegistryConfig {
                 PREFIX + "storage-expiry-blocks", 0);
         long notificationExpiry = nonNegativeLong(settings,
                 PREFIX + "notification-expiry-blocks", 0);
-        validateExpiryWindow(settings, storageExpiry, notificationExpiry);
+        validateExpiryWindow(profile, storageExpiry, notificationExpiry);
 
         return new EvidenceRegistryConfig(
                 context.chainId(),
@@ -160,39 +160,34 @@ public final class EvidenceRegistryConfig {
         out.write(encoded);
     }
 
-    private static void requireEffects(Map<String, String> settings) {
-        String enabled = setting(settings, "effects.enabled", "false").toLowerCase(Locale.ROOT);
-        if (!enabled.equals("true") && !enabled.equals("false")) {
-            throw invalid("effects.enabled must be true or false");
-        }
-        if (!Boolean.parseBoolean(enabled)) {
+    private static void requireEffects(AppChainConsensusProfile profile) {
+        if (!profile.effectsEnabled()) {
             throw invalid("effects.enabled must be true");
         }
-
-        int maxEffects = positiveInt(settings, "effects.max-per-block", DEFAULT_MAX_EFFECTS);
-        if (maxEffects < 2) {
+        if (profile.effectsMaxPerBlock() < 2) {
             throw invalid("effects.max-per-block must be at least 2");
         }
-
-        int maxPayload = positiveInt(settings, "effects.max-payload-bytes",
-                DEFAULT_MAX_PAYLOAD_BYTES);
         // Storage commands are at most 2 KiB. The registry's narrower Kafka
         // command (1 KiB event, two 63-byte aliases, 40-byte key, no headers)
         // is also strictly below this bound.
         int requiredPayload = ObjectPutCommandV1.MAX_ENCODED_BYTES;
-        if (maxPayload < requiredPayload) {
+        if (profile.effectsMaxPayloadBytes() < requiredPayload) {
             throw invalid("effects.max-payload-bytes is too small for evidence effects");
+        }
+        long worstCaseEffects = Math.multiplyExact((long) profile.maxBlockMessages(), 2L);
+        if (worstCaseEffects > profile.effectsMaxPerBlock()) {
+            throw invalid("block.max-messages * 2 must be <= effects.max-per-block");
+        }
+        if (profile.effectsOutcomeCommitment() != EffectOutcomeCommitment.PER_EFFECT) {
+            throw invalid("evidence-registry requires effects.outcome-commitment=per-effect");
         }
     }
 
-    private static void validateExpiryWindow(Map<String, String> settings,
+    private static void validateExpiryWindow(AppChainConsensusProfile profile,
                                              long storageExpiry,
                                              long notificationExpiry) {
-        long maxExpiry = positiveLong(settings, "effects.max-expiry-blocks",
-                DEFAULT_EFFECT_WINDOW);
-        long resultWindow = positiveLong(settings, "effects.result-window-blocks",
-                DEFAULT_EFFECT_WINDOW);
-        long limit = Math.min(maxExpiry, resultWindow);
+        long limit = Math.min(profile.effectsMaxExpiryBlocks(),
+                profile.effectsResultWindowBlocks());
         if ((storageExpiry > 0 && storageExpiry > limit)
                 || (notificationExpiry > 0 && notificationExpiry > limit)) {
             throw invalid("evidence expiry exceeds the configured effect result window");
@@ -232,26 +227,10 @@ public final class EvidenceRegistryConfig {
         return value == null || value.isBlank() ? fallback : value.trim();
     }
 
-    private static int positiveInt(Map<String, String> settings, String key, int fallback) {
-        long value = positiveLong(settings, key, fallback);
-        if (value > Integer.MAX_VALUE) {
-            throw invalid(key + " is out of range");
-        }
-        return (int) value;
-    }
-
     private static long nonNegativeLong(Map<String, String> settings, String key, long fallback) {
         long value = parseLong(setting(settings, key, Long.toString(fallback)), key);
         if (value < 0) {
             throw invalid(key + " must be non-negative");
-        }
-        return value;
-    }
-
-    private static long positiveLong(Map<String, String> settings, String key, long fallback) {
-        long value = parseLong(setting(settings, key, Long.toString(fallback)), key);
-        if (value <= 0) {
-            throw invalid(key + " must be positive");
         }
         return value;
     }

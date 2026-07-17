@@ -256,6 +256,8 @@ jq -e '
   and .anchor.enabled == true
   and .anchor.everyBlocks == 1
   and .anchor.maxIntervalMinutes == 60
+  and .stateMachine.provider == "composite"
+  and .stateMachine.preset == "evidence-v1-gated"
   and .stateMachine.profileVersion == 1
   and .effects.continuationMode == "explicit"
   and .effects.directResultEmissionActivationHeight == null
@@ -298,8 +300,8 @@ fi
 grep -Fq 'app-chain identity mismatch' "$TMP/profile-mutation.out" \
   || fail "continuation-profile mutation rejection is unclear"
 
-# The stock composite profile is an explicit immutable chain identity and the
-# runner must select its workflow command path without embedding plugin code.
+# The stock gated composite profile is the new-chain default and an explicit
+# immutable identity. The runner selects the workflow path without plugin code.
 COMPOSITE_OUT="$TMP/config-composite.yml"
 "$DEMO_DIR/demo.sh" config --instance launcher-composite --machine composite \
   > "$COMPOSITE_OUT"
@@ -310,13 +312,13 @@ COMPOSITE_MARKER="$COMPOSITE_ROOT/appchain-identity.json"
 COMPOSITE_NODE_DIR="$COMPOSITE_SECRET_DIR/nodes-compose"
 jq -e '
   .stateMachine.provider == "composite"
-  and .stateMachine.preset == "evidence-v1"
+  and .stateMachine.preset == "evidence-v1-gated"
   and .stateMachine.profileVersion == 1
 ' "$COMPOSITE_MARKER" >/dev/null || fail "composite identity is incomplete"
 [ "$(grep -hFx 'yano.app-chain.chains[0].state-machine=composite' \
   "$COMPOSITE_NODE_DIR"/*.properties | wc -l | tr -d ' ')" -eq 3 ] \
   || fail "composite state-machine selection is not identical on all members"
-[ "$(grep -hFx 'yano.app-chain.chains[0].machines.composite.preset=evidence-v1' \
+[ "$(grep -hFx 'yano.app-chain.chains[0].machines.composite.preset=evidence-v1-gated' \
   "$COMPOSITE_NODE_DIR"/*.properties | wc -l | tr -d ' ')" -eq 3 ] \
   || fail "composite preset is not identical on all members"
 grep -Fxq 'demo.state-machine=composite' \

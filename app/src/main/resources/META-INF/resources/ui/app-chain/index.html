@@ -484,6 +484,17 @@
           </div>
           <div id="peersList"><div class="empty">No peers configured</div></div>
         </section>
+
+        <section class="card ac-cyan" style="--i: 8">
+          <div class="card-head">
+            <div class="card-title">
+              <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18M3 12h18"/><circle cx="12" cy="12" r="8"/></svg></span>
+              <h2>Profile Governance</h2>
+            </div>
+            <span id="profileModeBadge" class="badge">-</span>
+          </div>
+          <div id="profileGovernanceList"><div class="empty">Not available</div></div>
+        </section>
       </div>
 
       <div class="sec-label">Trends</div>
@@ -967,10 +978,35 @@
         text('duplicates', fmt(s.duplicates));
         text('storedMessages', fmt(s.storedMessages));
 
-        const anchor = s.anchor;
         const row = (label, valueHtml) =>
             '<div class="metric"><span>' + label + '</span><span>' + valueHtml + '</span></div>';
         const mono = v => '<span class="mono">' + esc(v == null ? '-' : String(v)) + '</span>';
+
+        const profile = s.stateMachineStatus || {};
+        const profileMode = String(profile.mode || 'n/a').toUpperCase();
+        $('profileModeBadge').textContent = profileMode;
+        $('profileModeBadge').className = 'badge' + (profile.mode === 'governed' ? ' b-ok' : '');
+        const profileRows = [];
+        profileRows.push(row('Mode', mono(profile.mode || 'n/a')));
+        if (profile.activeProfileDigest)
+          profileRows.push(row('Active Profile', copyable(profile.activeProfileDigest, 16)));
+        if (profile.currentEpoch != null)
+          profileRows.push(row('Epoch', mono(fmt(profile.currentEpoch))));
+        if (profile.activeFromHeight != null)
+          profileRows.push(row('Active From', mono(fmt(profile.activeFromHeight))));
+        if (profile.proposalStatus) {
+          profileRows.push(row('Proposal', mono(profile.proposalStatus)));
+          profileRows.push(row('Target', copyable(profile.targetProfileDigest, 16)));
+          profileRows.push(row('Activation', mono(fmt(profile.activationHeight))));
+          profileRows.push(row('Approvals / Ready', mono(
+              fmt(profile.approvals) + ' / ' + fmt(profile.readiness))));
+          profileRows.push(row('Local Catalog', mono(profile.locallyReady ? 'ready' : 'missing')));
+        }
+        if (profile.retiredDrains != null)
+          profileRows.push(row('Retired Drains', mono(fmt(profile.retiredDrains))));
+        setHtml('profileGovernanceList', profileRows.join(''));
+
+        const anchor = s.anchor;
         if (anchor && anchor.enabled) {
           const mode = (anchor.mode || 'metadata').toUpperCase();
           $('anchorBadge').textContent = mode;

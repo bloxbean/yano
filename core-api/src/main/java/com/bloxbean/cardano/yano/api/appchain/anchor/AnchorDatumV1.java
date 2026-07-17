@@ -36,6 +36,9 @@ public record AnchorDatumV1(String chainId,
     /** Maximum canonical v1 inline datum size accepted by the portable codec. */
     public static final int MAX_DATUM_BYTES = 8 * 1024;
     private static final int HASH_BYTES = 32;
+    private static final CborStructurePreflight.Limits DATUM_CBOR_LIMITS =
+            new CborStructurePreflight.Limits(MAX_DATUM_BYTES,
+                    4, 1_024, 64, MAX_DATUM_BYTES);
 
     public AnchorDatumV1 {
         byte[] chainBytes = validatedChainBytes(chainId);
@@ -133,7 +136,7 @@ public record AnchorDatumV1(String chainId,
         if (cbor == null || cbor.length == 0 || cbor.length > MAX_DATUM_BYTES) {
             throw invalid();
         }
-        if (!CborStructurePreflight.accepts(cbor, MAX_DATUM_BYTES, 4, 1_024)) {
+        if (!CborStructurePreflight.accepts(cbor, DATUM_CBOR_LIMITS)) {
             throw invalid();
         }
         try {

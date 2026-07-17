@@ -223,6 +223,8 @@ grep -Fq 'objectstore-s3.targets.archive.endpoint=http://172.30.13.10:9000' \
   "$NODE_DIR/node0.properties" || fail "node 0 lacks numeric RustFS S3 endpoint"
 grep -Fq 'ipfs.targets.local.api-url=http://172.30.13.11:5001' \
   "$NODE_DIR/node0.properties" || fail "node 0 lacks numeric Kubo endpoint"
+grep -Fq 'kafka.targets.primary.bootstrap-servers=172.30.13.12:19092' \
+  "$NODE_DIR/node0.properties" || fail "node 0 lacks numeric Kafka endpoint"
 if grep -Eq 'effects\.executors\.(kafka|objectstore-s3|ipfs)' \
     "$NODE_DIR/node1.properties" "$NODE_DIR/node2.properties"; then
   fail "a follower received connector configuration"

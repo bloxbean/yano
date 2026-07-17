@@ -6,7 +6,7 @@ namespaces, query dispatch, effect quotas and result ownership, and declared
 atomic cross-component workflows. Consensus, MPF roots, finality, snapshots,
 effects, and Cardano anchoring remain framework-owned.
 
-## Stock `evidence-v1` preset
+## Stock evidence presets
 
 The application distribution includes a manifested provider named
 `composite`. Select its no-code preset per chain:
@@ -22,27 +22,39 @@ yano:
         state-machine: composite
         machines:
           composite:
-            preset: evidence-v1
+            preset: evidence-v1-gated
+            profile-mode: governed
+        membership:
+          mode: governed
 ```
 
-The preset commits, in order, `registry`, `approvals`, `doc-trail`, and
+Both presets commit, in order, `registry`, `approvals`, `doc-trail`, and
 `evidence` components plus the `evidence-release` workflow. Its manifested
 bundle depends on the first-party stdlib and evidence-registry bundles. Kafka,
 S3-compatible object storage, and IPFS are separate effect-executor bundles;
 enable only the connectors the selected workflow needs.
 
-For compatibility the stock preset exposes both `evidence.release.v1` and the
-direct `evidence.command.v1` route. The release workflow is optional
-coordination, not an authorization gate: an accepted direct command does not
-need registry/approval prerequisites. A domain bundle that requires mandatory
-DPP or regulatory policy must remove/reject the direct route or enforce the
-equivalent authorization itself.
+`evidence-v1-gated` is the default and exposes only the coordinated
+`evidence.release.v1` creation/republish path. Its command-granular
+`evidence.command.v1` route accepts canonical post-publication notifications
+but rejects direct submit and republish commands. `evidence-v1` is a
+compatibility preset that exposes every direct evidence command; in that preset
+the release workflow is optional coordination, not an authorization gate.
 
 The effective canonical profile is written under
 `~composite/profile/v1` at app height 1. Retained startup and every transition
 require exact equality. Treat its domain-separated SHA-256 digest as a
 deployment trust root: proof clients for the generic `composite` provider must
 pin the intended digest and verify the authenticated marker.
+
+`profile-mode: governed` also commits an epoch-0 record and enables ADR-015's
+deploy-first/activate-second protocol. The stock preset is a one-entry catalog,
+so it demonstrates governed genesis and operations but cannot select an
+unpackaged profile. A custom composite bundle supplies a catalog containing the
+active and dormant target entries. V1 permits 1-64 distinct profile entries and
+requires every historical profile to remain packaged; `max-epochs` separately
+bounds authenticated transitions, including reuse of a packaged profile. See the
+[operator runbook](../../docs/APP_CHAIN_PROFILE_GOVERNANCE.md).
 
 ## Routing, state, and queries
 
@@ -67,12 +79,25 @@ bounded wire implementation and one committed root-fixed context.
 ## Building a custom composition
 
 Create `ComponentDescriptor` values, matching `CompositeComponent` products,
-and optional `WorkflowDescriptor`/`CompositeWorkflow` products. Then construct
-the machine through the mandatory factory:
+and optional `WorkflowDescriptor`/`CompositeWorkflow` products. For a fixed
+one-profile chain, construct the machine through the mandatory factory:
 
 ```java
 CompositeStateMachine machine = CompositeStateMachine.create(
         "my-domain-composite", context, profile, components, workflows);
+```
+
+For a long-lived governed chain, package an immutable digest-keyed catalog and
+select its genesis entry explicitly:
+
+```java
+CompositeProfileCatalog catalog = new CompositeProfileCatalog(
+        List.of(currentEntry, dormantTargetEntry),
+        context.consensusProfile().orElseThrow().effectsMaxPerBlock(),
+        Math.toIntExact(context.consensusProfile().orElseThrow()
+                .effectsResultWindowBlocks()));
+CompositeStateMachine machine = CompositeStateMachine.create(
+        "my-domain-composite", context, catalog, currentProfile.digest());
 ```
 
 The custom `AppStateMachineProvider.id()` and its manifest contribution name
@@ -109,4 +134,6 @@ Run deterministic replay/restart/snapshot coverage with
 ```
 
 See [ADR-013.2](../../adr/app-layer/013.2-deterministic-composite-state-machine.md)
-for the full contract and upgrade model.
+for composition and
+[ADR-015](../../adr/app-layer/015-governed-composite-profile-evolution.md) for
+governed evolution.

@@ -15,6 +15,7 @@ import com.bloxbean.cardano.yano.appchain.integration.kafka.KafkaHeader;
 import com.bloxbean.cardano.yano.appchain.integration.kafka.KafkaPublishCommandV1;
 import com.bloxbean.cardano.yano.appchain.integration.kafka.KafkaPublishReceiptV1;
 import com.bloxbean.cardano.yano.appchain.kafka.KafkaSinkFactory;
+import com.bloxbean.cardano.yano.appchain.kafka.config.KafkaEffectConfig;
 import org.apache.kafka.clients.admin.AdminClient;
 import org.apache.kafka.clients.admin.AdminClientConfig;
 import org.apache.kafka.clients.admin.NewTopic;
@@ -22,6 +23,8 @@ import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.config.SaslConfigs;
+import org.apache.kafka.common.config.SslConfigs;
 import org.apache.kafka.common.header.Header;
 import org.apache.kafka.common.serialization.ByteArrayDeserializer;
 import org.apache.kafka.common.utils.Utils;
@@ -185,12 +188,7 @@ class KafkaPublishRealIntegrationTest {
                                                    String effectTopic,
                                                    String sinkTopic) throws Exception {
         Map<String, String> effectSettings = effectSettings(bootstrap, effectTopic);
-        Map<String, String> sinkSettings = Map.of(
-                "bootstrap-servers", bootstrap,
-                "topic", sinkTopic,
-                "max-block-ms", "2000",
-                "delivery-timeout-ms", "30000",
-                "close-timeout-ms", "1000");
+        Map<String, String> sinkSettings = sinkSettings(bootstrap, sinkTopic);
 
         AppEffectExecutor executor = new KafkaEffectExecutorFactory()
                 .create(KafkaEffectTestSupport.CHAIN_ID, effectSettings).getFirst();
@@ -250,13 +248,26 @@ class KafkaPublishRealIntegrationTest {
         Map<String, String> settings = new LinkedHashMap<>();
         settings.put("targets.integration.target-id", "integration-v1");
         settings.put("targets.integration.bootstrap-servers", bootstrap);
-        settings.put("targets.integration.security-profile", "local-demo");
+        integrationSecuritySettings().forEach((key, value) ->
+                settings.put("targets.integration." + key, value));
         settings.put("targets.integration.max-block-ms", "2000");
         settings.put("targets.integration.request-timeout-ms", "3000");
         settings.put("targets.integration.delivery-timeout-ms", "5000");
         settings.put("targets.integration.close-timeout-ms", "1000");
         settings.put("topics.events.target", "integration");
         settings.put("topics.events.name", topic);
+        return settings;
+    }
+
+    private static Map<String, String> sinkSettings(String bootstrap, String topic) {
+        Map<String, String> settings = new LinkedHashMap<>();
+        settings.put("bootstrap-servers", bootstrap);
+        settings.put("topic", topic);
+        settings.putAll(integrationSecuritySettings());
+        settings.put("max-block-ms", "2000");
+        settings.put("request-timeout-ms", "3000");
+        settings.put("delivery-timeout-ms", "5000");
+        settings.put("close-timeout-ms", "1000");
         return settings;
     }
 
@@ -312,6 +323,7 @@ class KafkaPublishRealIntegrationTest {
         properties.put(ConsumerConfig.DEFAULT_API_TIMEOUT_MS_CONFIG, "10000");
         properties.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, ByteArrayDeserializer.class);
         properties.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, ByteArrayDeserializer.class);
+        properties.putAll(clientSecurityProperties(bootstrap));
 
         try (KafkaConsumer<byte[], byte[]> consumer = new KafkaConsumer<>(properties)) {
             List<TopicPartition> partitions = new ArrayList<>();
@@ -457,7 +469,101 @@ class KafkaPublishRealIntegrationTest {
         properties.put(AdminClientConfig.CLIENT_ID_CONFIG, "yano-kafka-integration-admin");
         properties.put(AdminClientConfig.REQUEST_TIMEOUT_MS_CONFIG, "5000");
         properties.put(AdminClientConfig.DEFAULT_API_TIMEOUT_MS_CONFIG, "10000");
+        properties.putAll(clientSecurityProperties(bootstrap));
         return properties;
+    }
+
+    private static Properties clientSecurityProperties(String bootstrap) {
+        KafkaEffectConfig config = KafkaEffectConfig.parse(effectSettings(
+                bootstrap, "yano-security-probe-v1"));
+        Properties producer = config.target("integration").orElseThrow().producerProperties();
+        Properties client = new Properties();
+        copyProperty(producer, client, "security.protocol");
+        copyProperty(producer, client, SslConfigs.SSL_ENDPOINT_IDENTIFICATION_ALGORITHM_CONFIG);
+        copyProperty(producer, client, SslConfigs.SSL_TRUSTSTORE_LOCATION_CONFIG);
+        copyProperty(producer, client, SslConfigs.SSL_TRUSTSTORE_PASSWORD_CONFIG);
+        copyProperty(producer, client, SslConfigs.SSL_TRUSTSTORE_TYPE_CONFIG);
+        copyProperty(producer, client, SslConfigs.SSL_KEYSTORE_LOCATION_CONFIG);
+        copyProperty(producer, client, SslConfigs.SSL_KEYSTORE_PASSWORD_CONFIG);
+        copyProperty(producer, client, SslConfigs.SSL_KEYSTORE_TYPE_CONFIG);
+        copyProperty(producer, client, SslConfigs.SSL_KEY_PASSWORD_CONFIG);
+        copyProperty(producer, client, SaslConfigs.SASL_MECHANISM);
+        copyProperty(producer, client, SaslConfigs.SASL_JAAS_CONFIG);
+        return client;
+    }
+
+    private static void copyProperty(Properties source, Properties destination, String key) {
+        Object value = source.get(key);
+        if (value != null) {
+            destination.put(key, value);
+        }
+    }
+
+    private static Map<String, String> integrationSecuritySettings() {
+        String profile = System.getProperty(
+                "yano.kafka.integration.security-profile", "local-demo").trim();
+        Map<String, String> settings = new LinkedHashMap<>();
+        settings.put("security-profile", profile);
+        switch (profile) {
+            case "local-demo" -> {
+                return Map.copyOf(settings);
+            }
+            case "tls" -> addTrustStore(settings);
+            case "mtls" -> {
+                addTrustStore(settings);
+                settings.put("tls.keystore-path",
+                        requiredProperty("yano.kafka.integration.keystore-path"));
+                settings.put("tls.keystore-password", readSecretProperty(
+                        "yano.kafka.integration.keystore-password-file"));
+                settings.put("tls.keystore-type", System.getProperty(
+                        "yano.kafka.integration.keystore-type", "PKCS12").trim());
+                settings.put("tls.key-password", readSecretProperty(
+                        "yano.kafka.integration.key-password-file"));
+            }
+            case "sasl-tls" -> {
+                addTrustStore(settings);
+                settings.put("sasl.mechanism", System.getProperty(
+                        "yano.kafka.integration.sasl-mechanism", "PLAIN").trim());
+                settings.put("sasl.username",
+                        requiredProperty("yano.kafka.integration.sasl-username"));
+                settings.put("sasl.password", readSecretProperty(
+                        "yano.kafka.integration.sasl-password-file"));
+            }
+            default -> throw new IllegalStateException(
+                    "invalid Kafka integration security profile: " + profile);
+        }
+        return Map.copyOf(settings);
+    }
+
+    private static void addTrustStore(Map<String, String> settings) {
+        settings.put("tls.truststore-path",
+                requiredProperty("yano.kafka.integration.truststore-path"));
+        settings.put("tls.truststore-password", readSecretProperty(
+                "yano.kafka.integration.truststore-password-file"));
+        settings.put("tls.truststore-type", System.getProperty(
+                "yano.kafka.integration.truststore-type", "PKCS12").trim());
+    }
+
+    private static String readSecretProperty(String property) {
+        Path path = Path.of(requiredProperty(property)).toAbsolutePath().normalize();
+        try {
+            if (Files.isSymbolicLink(path)
+                    || !Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) {
+                throw new IllegalStateException("invalid Kafka integration secret file");
+            }
+            byte[] content = Files.readAllBytes(path);
+            if (content.length < 1 || content.length > 4_096) {
+                throw new IllegalStateException("invalid Kafka integration secret file");
+            }
+            String secret = new String(content, StandardCharsets.UTF_8).trim();
+            if (secret.isEmpty() || secret.indexOf('\0') >= 0
+                    || secret.indexOf('\r') >= 0 || secret.indexOf('\n') >= 0) {
+                throw new IllegalStateException("invalid Kafka integration secret file");
+            }
+            return secret;
+        } catch (IOException failure) {
+            throw new IllegalStateException("could not read Kafka integration secret", failure);
+        }
     }
 
     private static void deleteTopics(AdminClient admin, String... topics) {

@@ -4,6 +4,7 @@ import co.nstant.in.cbor.CborDecoder;
 import co.nstant.in.cbor.model.DataItem;
 import co.nstant.in.cbor.model.UnicodeString;
 import co.nstant.in.cbor.model.UnsignedInteger;
+import com.bloxbean.cardano.yano.api.appchain.codec.internal.CborStructurePreflight;
 
 import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
@@ -17,6 +18,8 @@ import java.util.List;
  * definitively — a broken payload can never succeed).
  */
 record PaymentCommand(String to, long lovelace, String memo) {
+    private static final CborStructurePreflight.Limits CBOR_LIMITS =
+            new CborStructurePreflight.Limits(4096, 4, 16, 8, 2048);
 
     static PaymentCommand decode(byte[] payload) {
         if (payload == null || payload.length == 0 || payload.length > 4096) {
@@ -30,6 +33,9 @@ record PaymentCommand(String to, long lovelace, String memo) {
     }
 
     private static PaymentCommand decodeCbor(byte[] payload) {
+        if (!CborStructurePreflight.accepts(payload, CBOR_LIMITS)) {
+            return null;
+        }
         try {
             List<DataItem> items = new CborDecoder(new ByteArrayInputStream(payload)).decode();
             if (items.isEmpty() || !(items.get(0) instanceof co.nstant.in.cbor.model.Map map)) {

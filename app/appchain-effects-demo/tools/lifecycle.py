@@ -851,7 +851,7 @@ def _validate_active_identity_shape(document: dict[str, Any], marker: Path) -> N
     ) or (
         provider == "composite"
         and state_machine_fields == base_state_machine_fields | {"preset"}
-        and state_machine.get("preset") == "evidence-v1"
+        and state_machine.get("preset") in {"evidence-v1", "evidence-v1-gated"}
     )
     if (
         not isinstance(state_machine, dict)
