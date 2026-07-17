@@ -113,6 +113,7 @@ final class FxKernel {
         }
 
         long committedOpen = reader.openCount();
+        BlockEmitter emitter = new BlockEmitter(block, committedOpen);
 
         // 1. Result incorporation (ADR-010 F8) — BEFORE the sweep and the
         //    machine transition; results always reference strictly older
@@ -135,7 +136,8 @@ final class FxKernel {
             }
             closedInBlock.add(positionKey(result.effectId().height(), result.effectId().ordinal()));
             incorporated.add(result);
-            machine.onEffectResult(block, result, machineWriter);
+            emitter.closedOne();
+            machine.onEffectResult(block, result, machineWriter, emitter);
         }
 
         // 2. Deterministic expiry sweep at this height. Every swept effect is
@@ -166,10 +168,10 @@ final class FxKernel {
             }
             incorporated.add(expired);
             expiredThisBlock++;
-            machine.onEffectResult(block, expired, machineWriter);
+            emitter.closedOne();
+            machine.onEffectResult(block, expired, machineWriter, emitter);
         }
 
-        BlockEmitter emitter = new BlockEmitter(block, committedOpen, incorporated.size());
         machine.apply(block, machineWriter, emitter);
 
         // 4. Commitment leaves.
@@ -310,14 +312,17 @@ final class FxKernel {
     private final class BlockEmitter implements AppEffectEmitter {
         private final AppBlock block;
         private final long committedOpen;
-        private final int closedThisBlock;
         private final List<StagedEffect> emitted = new ArrayList<>();
         private int chainEmitted;
+        private int closedThisBlock;
 
-        BlockEmitter(AppBlock block, long committedOpen, int closedThisBlock) {
+        BlockEmitter(AppBlock block, long committedOpen) {
             this.block = block;
             this.committedOpen = committedOpen;
-            this.closedThisBlock = closedThisBlock;
+        }
+
+        void closedOne() {
+            closedThisBlock++;
         }
 
         @Override

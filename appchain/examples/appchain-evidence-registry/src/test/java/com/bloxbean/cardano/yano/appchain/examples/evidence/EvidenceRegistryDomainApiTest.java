@@ -13,6 +13,7 @@ import com.bloxbean.cardano.yano.api.plugin.domain.DomainQueryService;
 import com.bloxbean.cardano.yano.appchain.examples.evidence.query.EvidenceGetRequestV1;
 import com.bloxbean.cardano.yano.appchain.examples.evidence.query.EvidenceGetResponseV1;
 import com.bloxbean.cardano.yano.appchain.examples.evidence.state.EvidenceHeadV1;
+import com.bloxbean.cardano.yano.appchain.examples.evidence.state.EvidenceCompositeKeys;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
@@ -85,6 +86,26 @@ class EvidenceRegistryDomainApiTest {
         assertThat(missing.status()).isEqualTo(404);
         assertThat(new String(missing.body(), StandardCharsets.UTF_8))
                 .isEqualTo("{\"error\":\"not-found\"}");
+    }
+
+    @Test
+    void compositeAliasReturnsPhysicalProofKeysAndMachineIdentity() {
+        DomainQueryService queries = service(List.of(CHAIN), (chainId, path, params) ->
+                new AppQueryResult(CHAIN, EvidenceCompositeKeys.STATE_MACHINE_ID, 7,
+                        EvidenceFixtures.repeat(0x71),
+                        EvidenceGetResponseV1.found(
+                                new EvidenceHeadV1(EvidenceFixtures.ID, EvidenceFixtures.OWNER, 1),
+                                EvidenceFixtures.storageReadyRecord()).encode()));
+        EvidenceRegistryDomainApi api = new EvidenceRegistryDomainApi(
+                new DomainApiContext(Map.of(), queries));
+
+        String json = new String(api.handle(request(Map.of())).body(), StandardCharsets.UTF_8);
+        assertThat(json)
+                .contains("\"stateMachineId\":\"composite\"")
+                .contains("\"headKey\":\"" + java.util.HexFormat.of().formatHex(
+                        EvidenceCompositeKeys.physicalKey(
+                                com.bloxbean.cardano.yano.appchain.examples.evidence.state.EvidenceKeys
+                                        .headKey(EvidenceFixtures.ID))) + "\"");
     }
 
     @Test

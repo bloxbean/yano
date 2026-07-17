@@ -4,13 +4,14 @@ FROM ${YANO_BASE_IMAGE}
 ARG YANO_UID=10001
 ARG YANO_GID=10001
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl \
-    && rm -rf /var/lib/apt/lists/* \
-    && install -d /app/chainstate /app/logs /app/plugins
+# The exact Temurin base already provides the CA bundle and filesystem tools
+# needed by the node image. Keep assembly network-free: every runtime byte must
+# come from the reviewed base or the local, hash-bound build context.
+RUN install -d /app/chainstate /app/logs /app/plugins
 
 WORKDIR /app
-COPY yano/ /app/
+COPY yano/yano.jar /app/yano.jar
+COPY yano/config/ /app/config/
 COPY entrypoint.sh /entrypoint.sh
 
 RUN chmod 0755 /entrypoint.sh \
@@ -23,7 +24,7 @@ USER ${YANO_UID}:${YANO_GID}
 ENV YANO_PROFILE=devnet \
     HOME=/app \
     QUARKUS_HTTP_HOST=0.0.0.0 \
-    QUARKUS_LOG_FILE_ENABLE=true \
+    QUARKUS_LOG_FILE_ENABLED=true \
     QUARKUS_LOG_FILE_PATH=/app/logs/yano.log \
     YANO_STORAGE_PATH=/app/chainstate \
     YACI_PLUGINS_DIRECTORY=/app/plugins

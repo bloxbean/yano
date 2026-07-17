@@ -1,0 +1,11 @@
+s3.endpoint=http://@S3_IP@:9000
+s3.region=us-east-1
+s3.access-key-file=/run/secrets/s3-bootstrap-access-key
+s3.secret-key-file=/run/secrets/s3-bootstrap-secret-key
+s3.iam-provider=rustfs-v1
+s3.iam-spec-file=/run/secrets/rustfs-iam-spec.json
+s3.runner-secret-key-file=/run/secrets/s3-runner-secret-key
+s3.executor-secret-key-file=/run/secrets/s3-executor-secret-key
+s3.source-bucket=evidence-staging
+s3.destination-bucket=evidence-archive
+s3.path-style=true

@@ -6,6 +6,8 @@ import com.bloxbean.cardano.yano.api.appchain.sink.FinalizedStreamSink;
 import org.apache.kafka.clients.producer.Producer;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
 import java.util.Objects;
@@ -21,6 +23,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * (get on the ack) makes each delivery durable before the cursor advances.
  */
 public final class KafkaStreamSink implements FinalizedStreamSink {
+    private static final Logger LOG = LoggerFactory.getLogger(KafkaStreamSink.class);
 
     private static final Duration DEFAULT_ACK_TIMEOUT = Duration.ofSeconds(30);
     private static final Duration DEFAULT_CLOSE_TIMEOUT = Duration.ofSeconds(5);
@@ -87,6 +90,7 @@ public final class KafkaStreamSink implements FinalizedStreamSink {
     public void close() {
         if (closed.compareAndSet(false, true)) {
             producer.close(closeTimeout);
+            LOG.info("Kafka app-chain sink producer closed for sink '{}'", id);
         }
     }
 

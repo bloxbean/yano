@@ -1,12 +1,14 @@
 package com.bloxbean.cardano.yano.appchain.examples.evidence.client;
 
 import com.bloxbean.cardano.yano.appchain.client.AppChainClient;
+import com.bloxbean.cardano.yano.appchain.composite.contracts.CompositeCommitmentV1;
 import com.bloxbean.cardano.yano.appchain.examples.evidence.EvidenceContract;
 import com.bloxbean.cardano.yano.appchain.examples.evidence.command.EvidenceCommandV1;
 import com.bloxbean.cardano.yano.appchain.examples.evidence.command.NotifyEvidenceCommandV1;
 import com.bloxbean.cardano.yano.appchain.examples.evidence.query.EvidenceGetRequestV1;
 import com.bloxbean.cardano.yano.appchain.examples.evidence.query.EvidenceGetResponseV1;
 import com.bloxbean.cardano.yano.appchain.examples.evidence.state.EvidenceKeys;
+import com.bloxbean.cardano.yano.appchain.examples.evidence.state.EvidenceCompositeKeys;
 
 import java.util.Optional;
 
@@ -24,15 +26,32 @@ public final class EvidenceClient {
     private final AppChainClient client;
     private final String expectedChainId;
     private final int snapshotAttempts;
+    private final byte[] expectedCompositeProfileDigest;
 
     /** Creates a client with three bounded snapshot attempts. */
     public EvidenceClient(AppChainClient client, String expectedChainId) {
-        this(client, expectedChainId, DEFAULT_SNAPSHOT_ATTEMPTS);
+        this(client, expectedChainId, DEFAULT_SNAPSHOT_ATTEMPTS, null);
     }
 
     /** Creates a client with an explicit bounded snapshot-attempt count. */
     public EvidenceClient(AppChainClient client, String expectedChainId,
                           int snapshotAttempts) {
+        this(client, expectedChainId, snapshotAttempts, null);
+    }
+
+    /**
+     * Creates a client that accepts the generic {@code composite} machine only
+     * when its authenticated profile has this exact domain-separated digest.
+     */
+    public EvidenceClient(AppChainClient client, String expectedChainId,
+                          byte[] expectedCompositeProfileDigest) {
+        this(client, expectedChainId, DEFAULT_SNAPSHOT_ATTEMPTS,
+                expectedCompositeProfileDigest);
+    }
+
+    /** Creates a profile-bound composite client with bounded snapshot retries. */
+    public EvidenceClient(AppChainClient client, String expectedChainId,
+                          int snapshotAttempts, byte[] expectedCompositeProfileDigest) {
         if (client == null) {
             throw failure(EvidenceClientError.INVALID_ARGUMENT);
         }
@@ -42,6 +61,12 @@ public final class EvidenceClient {
             throw failure(EvidenceClientError.INVALID_ARGUMENT);
         }
         this.snapshotAttempts = snapshotAttempts;
+        if (expectedCompositeProfileDigest != null
+                && expectedCompositeProfileDigest.length != CompositeCommitmentV1.DIGEST_BYTES) {
+            throw failure(EvidenceClientError.INVALID_ARGUMENT);
+        }
+        this.expectedCompositeProfileDigest = expectedCompositeProfileDigest == null
+                ? null : expectedCompositeProfileDigest.clone();
     }
 
     /** Submits one strict canonical evidence command on the frozen topic. */
@@ -101,12 +126,14 @@ public final class EvidenceClient {
             AppChainClient.QueryResult query = executeQuery(request);
             EvidenceGetResponseV1 response = decodeResponse(query);
             if (!response.found()) {
+                AppChainClient.Proof profileProof = fetchCompositeProfileProof(query);
                 AppChainClient.Proof absenceProof = fetchProof(
-                        EvidenceKeys.headKey(request.evidenceId()));
+                        proofKey(query, EvidenceKeys.headKey(request.evidenceId())));
                 try {
                     EvidenceProofVerifier.verifyAbsenceAttempt(query, absenceProof,
                             EvidenceKeys.headKey(request.evidenceId()), expectedChainId,
-                            request.evidenceId(), request.businessVersion());
+                            request.evidenceId(), request.businessVersion(), profileProof,
+                            expectedCompositeProfileDigest);
                     return Optional.empty();
                 } catch (EvidenceProofVerifier.SnapshotChangedException changed) {
                     continue;
@@ -116,12 +143,14 @@ public final class EvidenceClient {
             EvidenceProofVerifier.validateResponseIdentity(response,
                     request.evidenceId(), request.businessVersion());
 
-            AppChainClient.Proof headProof = fetchProof(response.headKey());
-            AppChainClient.Proof recordProof = fetchProof(response.recordKey());
+            AppChainClient.Proof headProof = fetchProof(proofKey(query, response.headKey()));
+            AppChainClient.Proof recordProof = fetchProof(proofKey(query, response.recordKey()));
+            AppChainClient.Proof profileProof = fetchCompositeProfileProof(query);
             try {
                 return Optional.of(EvidenceProofVerifier.verifyAttempt(
                         query, response, headProof, recordProof, expectedChainId,
-                        request.evidenceId(), request.businessVersion()));
+                        request.evidenceId(), request.businessVersion(), profileProof,
+                        expectedCompositeProfileDigest));
             } catch (EvidenceProofVerifier.SnapshotChangedException changed) {
                 // A newer committed block may land between query and proof reads.
                 // Retry the complete sequence; never combine snapshots.
@@ -143,10 +172,26 @@ public final class EvidenceClient {
         if (!expectedChainId.equals(query.chainId())) {
             throw failure(EvidenceClientError.WRONG_CHAIN);
         }
-        if (!EvidenceContract.STATE_MACHINE_ID.equals(query.stateMachineId())) {
+        if (!EvidenceProofVerifier.supportedStateMachine(query.stateMachineId())) {
+            throw failure(EvidenceClientError.WRONG_STATE_MACHINE);
+        }
+        if (CompositeCommitmentV1.STATE_MACHINE_ID.equals(query.stateMachineId())
+                && expectedCompositeProfileDigest == null) {
             throw failure(EvidenceClientError.WRONG_STATE_MACHINE);
         }
         return query;
+    }
+
+    private static byte[] proofKey(AppChainClient.QueryResult query, byte[] evidenceLocalKey) {
+        return CompositeCommitmentV1.STATE_MACHINE_ID.equals(query.stateMachineId())
+                ? CompositeCommitmentV1.componentKey(
+                EvidenceCompositeKeys.COMPONENT_ID, evidenceLocalKey)
+                : evidenceLocalKey.clone();
+    }
+
+    private AppChainClient.Proof fetchCompositeProfileProof(AppChainClient.QueryResult query) {
+        return CompositeCommitmentV1.STATE_MACHINE_ID.equals(query.stateMachineId())
+                ? fetchProof(CompositeCommitmentV1.profileMarkerKey()) : null;
     }
 
     private static EvidenceGetResponseV1 decodeResponse(AppChainClient.QueryResult query) {

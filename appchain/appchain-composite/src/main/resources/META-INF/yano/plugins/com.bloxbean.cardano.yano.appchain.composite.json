@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "id": "com.bloxbean.cardano.yano.appchain.composite",
+  "version": "0.1.0-pre9",
+  "yanoApi": { "min": 1, "max": 1, "minLevel": 1 },
+  "dependencies": [
+    {
+      "id": "com.bloxbean.cardano.yano.appchain.stdlib",
+      "minVersion": "0.1.0-pre9",
+      "maxVersionExclusive": "0.2.0"
+    },
+    {
+      "id": "com.bloxbean.cardano.yano.appchain.evidence-registry",
+      "minVersion": "0.1.0-pre9",
+      "maxVersionExclusive": "0.2.0"
+    }
+  ],
+  "contributions": [
+    {
+      "kind": "app-state-machine",
+      "name": "composite",
+      "provider": "com.bloxbean.cardano.yano.appchain.composite.CompositeStateMachineProvider"
+    }
+  ]
+}

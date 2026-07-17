@@ -140,8 +140,13 @@ receipt and retries only archival; it does not publish the record again.
 ./gradlew :appchain-kafka:check
 
 # Optional real-broker acknowledgement test
-JAVA_TOOL_OPTIONS=-Dyano.kafka.integration.bootstrap=localhost:9092 \
-  ./gradlew :appchain-kafka:test --tests '*KafkaPublishRealIntegrationTest'
+./gradlew :appchain-kafka:test \
+  -Dyano.kafka.integration.bootstrap=localhost:9092 \
+  --tests '*KafkaPublishRealIntegrationTest'
+
+# Release matrix: pinned real broker, restart/reconciliation,
+# unavailability, deterministic fault seams, and a zero-skip XML gate
+app/appchain-effects-demo/tests/connector-fault-matrix.sh
 ```
 
 ## Notes

@@ -25,6 +25,8 @@ include 'epoch-export'
 // App-chain modules live under appchain/ (plugins under appchain/extensions/);
 // project names are kept flat so artifact ids stay yano-appchain-*.
 include 'appchain-stdlib'
+include 'appchain-composite-contracts'
+include 'appchain-composite'
 include 'appchain-testkit'
 include 'appchain-client'
 include 'appchain-integration-contracts'
@@ -42,6 +44,9 @@ include 'appchain-anchor-onchain'
 include 'appchain-plugin-conformance'
 project(':appchain-anchor-onchain').projectDir = file('appchain/onchain/appchain-anchor-onchain')
 project(':appchain-stdlib').projectDir = file('appchain/appchain-stdlib')
+project(':appchain-composite-contracts').projectDir =
+        file('appchain/appchain-composite-contracts')
+project(':appchain-composite').projectDir = file('appchain/appchain-composite')
 project(':appchain-testkit').projectDir = file('appchain/appchain-testkit')
 project(':appchain-client').projectDir = file('appchain/appchain-client')
 project(':appchain-integration-contracts').projectDir =

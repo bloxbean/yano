@@ -3,6 +3,8 @@ package com.bloxbean.cardano.yano.appchain.ipfs.effects;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutor;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectExecution;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectExecutionContext;
+import com.bloxbean.cardano.yano.api.appchain.effects.EffectExecutorOperationalSnapshot;
+import com.bloxbean.cardano.yano.api.appchain.effects.EffectExecutorOperationsTracker;
 import com.bloxbean.cardano.yano.api.appchain.effects.PendingEffect;
 import com.bloxbean.cardano.yano.appchain.integration.ConnectorContractException;
 import com.bloxbean.cardano.yano.appchain.integration.ConnectorErrorCode;
@@ -29,6 +31,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -53,6 +56,8 @@ public final class IpfsPinExecutor implements AppEffectExecutor {
     private final Object lifecycleLock = new Object();
     private final Map<String, IpfsPinClient> clients = new LinkedHashMap<>();
     private final AtomicBoolean closed = new AtomicBoolean();
+    private final EffectExecutorOperationsTracker operations =
+            new EffectExecutorOperationsTracker();
 
     /**
      * Creates a lifecycle-owned pin executor.
@@ -82,12 +87,26 @@ public final class IpfsPinExecutor implements AppEffectExecutor {
     }
 
     @Override
+    public Set<String> effectTypes() {
+        return Set.of(TYPE);
+    }
+
+    @Override
     public boolean supports(String effectType) {
         return TYPE.equals(effectType);
     }
 
     @Override
     public EffectExecution execute(EffectExecutionContext context, PendingEffect effect) {
+        return operations.observe(() -> executeAttempt(context, effect));
+    }
+
+    @Override
+    public EffectExecutorOperationalSnapshot operationalSnapshot() {
+        return operations.snapshot();
+    }
+
+    private EffectExecution executeAttempt(EffectExecutionContext context, PendingEffect effect) {
         Objects.requireNonNull(context, "context");
         Objects.requireNonNull(effect, "effect");
 

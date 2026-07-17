@@ -17,7 +17,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class ObjectStoreS3EffectConfigTest {
-    private static final String ACCESS_KEY = "minio-demo-access";
+    private static final String ACCESS_KEY = "s3-demo-access";
     private static final String SECRET_KEY = "object-store-secret-canary";
     private static final String SESSION_TOKEN = "object-store-session-canary";
     private static final String KMS_KEY = "arn:aws:kms:us-east-1:123456789012:key/demo-key";
@@ -236,13 +236,13 @@ class ObjectStoreS3EffectConfigTest {
         }
 
         for (String endpoint : new String[]{
-                "http://minio:9000", "http://node.local:9000",
+                "http://storage:9000", "http://node.local:9000",
                 "http://node.localhost:9000", "http://example.com:9000",
                 "http://8.8.8.8:9000",
                 "http://172.32.0.1:9000", "http://169.254.169.254:80",
                 "http://[fe80::1]:9000",
                 "http://010.0.0.1:9000", "http://2130706433:9000",
-                "https://minio:9000"}) {
+                "https://storage:9000"}) {
             Map<String, String> local = localSettings();
             local.put("targets.archive.endpoint", endpoint);
             assertThatThrownBy(() -> ObjectStoreS3EffectConfig.parse(local)).as(endpoint)
@@ -509,7 +509,7 @@ class ObjectStoreS3EffectConfigTest {
                 .containsEntry("detailArchiveConfigured", false);
         assertThat(config.safeDiagnostics().toString())
                 .contains("archive", "local-demo", "customEndpointConfigured")
-                .doesNotContain("minio", "9000", "evidence", "incoming", "verified",
+                .doesNotContain("127.0.0.1", "9000", "evidence", "incoming", "verified",
                         ACCESS_KEY, SECRET_KEY, SESSION_TOKEN, "worm-v1", "demo-encryption-v1");
     }
 

@@ -3,9 +3,11 @@ package com.bloxbean.cardano.yano.appchain.examples.evidence.client;
 import com.bloxbean.cardano.vds.core.api.NodeStore;
 import com.bloxbean.cardano.vds.mpf.MpfTrie;
 import com.bloxbean.cardano.yano.appchain.client.AppChainClient;
+import com.bloxbean.cardano.yano.appchain.composite.contracts.CompositeCommitmentV1;
 import com.bloxbean.cardano.yano.appchain.examples.evidence.EvidenceContract;
 import com.bloxbean.cardano.yano.appchain.examples.evidence.query.EvidenceGetResponseV1;
 import com.bloxbean.cardano.yano.appchain.examples.evidence.state.EvidenceEffectRef;
+import com.bloxbean.cardano.yano.appchain.examples.evidence.state.EvidenceCompositeKeys;
 import com.bloxbean.cardano.yano.appchain.examples.evidence.state.EvidenceHeadV1;
 import com.bloxbean.cardano.yano.appchain.examples.evidence.state.EvidenceKeys;
 import com.bloxbean.cardano.yano.appchain.examples.evidence.state.EvidenceRecordV1;
@@ -38,6 +40,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class EvidenceClientTest {
     private static final String CHAIN = "evidence-chain";
     private static final String ID = "batch-001";
+    private static final byte[] COMPOSITE_PROFILE =
+            "canonical-evidence-v1-profile".getBytes(StandardCharsets.US_ASCII);
+    private static final byte[] COMPOSITE_PROFILE_DIGEST =
+            CompositeCommitmentV1.profileDigest(COMPOSITE_PROFILE);
     private final List<FakeNode> nodes = new ArrayList<>();
 
     @AfterEach
@@ -67,6 +73,48 @@ class EvidenceClientTest {
         leakedValue[0] ^= 1;
         assertThat(result.stateRoot()).isEqualTo(snapshot.root);
         assertThat(result.recordValue()).isEqualTo(snapshot.response.recordValue());
+    }
+
+    @Test
+    void compositeAliasTranslatesLogicalEvidenceKeysToPhysicalProofKeys() {
+        Snapshot snapshot = Snapshot.foundComposite(ID, 1, 27, 1);
+        Plan composite = new Plan(snapshot, snapshot, Mutation.NONE,
+                EvidenceCompositeKeys.STATE_MACHINE_ID, null, null, false, false);
+        FakeNode node = node(composite);
+
+        VerifiedEvidence result = compositeClient(node, 1).queryVerified(ID, 1).orElseThrow();
+
+        assertThat(result.record().evidenceId()).isEqualTo(ID);
+        assertThat(node.queryCount).hasValue(1);
+        assertThat(node.proofCount).hasValue(3);
+        assertThat(result.stateMachineId()).isEqualTo(CompositeCommitmentV1.STATE_MACHINE_ID);
+        assertThat(result.compositeProfileDigest()).isEqualTo(COMPOSITE_PROFILE_DIGEST);
+        assertThat(result.headKey()).isEqualTo(snapshot.response.headKey());
+        assertThat(result.physicalHeadKey()).isEqualTo(
+                CompositeCommitmentV1.componentKey("evidence", snapshot.response.headKey()));
+        EvidenceProofVerifier.verifyComposite(
+                new AppChainClient.QueryResult(CHAIN, EvidenceCompositeKeys.STATE_MACHINE_ID,
+                        snapshot.height, snapshot.root, snapshot.response.encode()),
+                snapshot.response,
+                snapshot.appProof(EvidenceCompositeKeys.physicalKey(snapshot.response.headKey()), CHAIN),
+                snapshot.appProof(EvidenceCompositeKeys.physicalKey(snapshot.response.recordKey()), CHAIN),
+                snapshot.appProof(CompositeCommitmentV1.profileMarkerKey(), CHAIN),
+                COMPOSITE_PROFILE_DIGEST, CHAIN, ID, 1);
+
+        assertFailure(() -> EvidenceProofVerifier.verify(
+                        new AppChainClient.QueryResult(CHAIN,
+                                CompositeCommitmentV1.STATE_MACHINE_ID,
+                                snapshot.height, snapshot.root, snapshot.response.encode()),
+                        snapshot.response,
+                        snapshot.appProof(result.physicalHeadKey(), CHAIN),
+                        snapshot.appProof(result.physicalRecordKey(), CHAIN),
+                        CHAIN, ID, 1),
+                EvidenceClientError.WRONG_STATE_MACHINE);
+        byte[] wrongDigest = COMPOSITE_PROFILE_DIGEST.clone();
+        wrongDigest[0] ^= 1;
+        assertFailure(() -> new EvidenceClient(validTransport(node.baseUrl()), CHAIN,
+                        1, wrongDigest).queryVerified(ID, 1),
+                EvidenceClientError.WRONG_STATE_MACHINE);
     }
 
     @Test
@@ -358,6 +406,11 @@ class EvidenceClientTest {
         return new EvidenceClient(validTransport(node.baseUrl()), CHAIN, attempts);
     }
 
+    private static EvidenceClient compositeClient(FakeNode node, int attempts) {
+        return new EvidenceClient(validTransport(node.baseUrl()), CHAIN,
+                attempts, COMPOSITE_PROFILE_DIGEST);
+    }
+
     private static AppChainClient validTransport(String baseUrl) {
         return AppChainClient.builder(baseUrl).chainId(CHAIN).build();
     }
@@ -554,6 +607,21 @@ class EvidenceClientTest {
             Map<String, byte[]> values = new HashMap<>();
             values.put(hex(response.headKey()), response.headValue());
             values.put(hex(response.recordKey()), response.recordValue());
+            values.put(hex(new byte[]{0x7f, (byte) extra}), new byte[]{(byte) extra});
+            return build(height, response, values);
+        }
+
+        private static Snapshot foundComposite(String evidenceId, long version,
+                                               long height, int extra) {
+            EvidenceHeadV1 head = new EvidenceHeadV1(evidenceId, repeat(0x41), version);
+            EvidenceRecordV1 record = record(evidenceId, version);
+            EvidenceGetResponseV1 response = EvidenceGetResponseV1.found(head, record);
+            Map<String, byte[]> values = new HashMap<>();
+            values.put(hex(EvidenceCompositeKeys.physicalKey(response.headKey())),
+                    response.headValue());
+            values.put(hex(EvidenceCompositeKeys.physicalKey(response.recordKey())),
+                    response.recordValue());
+            values.put(hex(CompositeCommitmentV1.profileMarkerKey()), COMPOSITE_PROFILE);
             values.put(hex(new byte[]{0x7f, (byte) extra}), new byte[]{(byte) extra});
             return build(height, response, values);
         }

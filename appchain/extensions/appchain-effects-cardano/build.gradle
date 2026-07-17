@@ -9,6 +9,9 @@ plugins {
 // a plugin concern (mirrors appchain-kafka).
 dependencies {
     compileOnly project(':core-api')          // provided by the node at runtime
+    // The self-contained bundle owns its CCL runtime closure. Align all
+    // transitive Jackson modules to the same fixed patch as the Yano host.
+    implementation platform(libs.jackson.bom)
     implementation libs.cardano.client.lib
     implementation libs.cardano.client.quicktx
     implementation libs.cardano.client.backend

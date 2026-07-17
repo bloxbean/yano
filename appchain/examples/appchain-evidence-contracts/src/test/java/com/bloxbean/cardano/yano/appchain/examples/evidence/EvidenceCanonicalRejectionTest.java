@@ -100,8 +100,13 @@ class EvidenceCanonicalRejectionTest {
                 EvidenceFixtures.objectReceipt(), 11);
         EvidenceTerminalResultV1 ipfs = EvidenceFixtures.confirmed(
                 EvidenceFixtures.ipfsReceipt(), 12);
-        assertInvalid(() -> EvidenceFixtures.record(
-                object, ipfs, null, new EvidenceEffectRef(12, 0), null));
+        EvidenceRecordV1 directContinuation = EvidenceFixtures.record(
+                object, ipfs, null, new EvidenceEffectRef(12, 0), null);
+        assertThat(EvidenceRecordV1.decode(directContinuation.encode()))
+                .isEqualTo(directContinuation);
+        assertThat(directContinuation.notifyMessageId()).isNull();
+        assertThat(directContinuation.notificationEffect())
+                .isEqualTo(new EvidenceEffectRef(12, 0));
         assertInvalid(() -> EvidenceFixtures.record(
                 object, ipfs, EvidenceFixtures.NOTIFY_MESSAGE, null, null));
         assertInvalid(() -> EvidenceFixtures.record(

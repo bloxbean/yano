@@ -8,6 +8,8 @@ import com.bloxbean.cardano.yano.appchain.ipfs.config.IpfsEffectConfig;
 import com.bloxbean.cardano.yano.appchain.ipfs.internal.IpfsPinClientFactory;
 import com.bloxbean.cardano.yano.appchain.ipfs.internal.kubo.KuboClientConfig;
 import com.bloxbean.cardano.yano.appchain.ipfs.internal.kubo.KuboIpfsPinClientFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.net.URI;
@@ -20,6 +22,8 @@ import java.util.function.Function;
 
 /** ServiceLoader factory for the pin-only {@code ipfs.pin} executor. */
 public final class IpfsEffectExecutorFactory implements AppEffectExecutorFactory {
+    private static final Logger LOG = LoggerFactory.getLogger(IpfsEffectExecutorFactory.class);
+
     private final Function<KuboClientConfig, IpfsPinClientFactory> clientFactoryBuilder;
 
     /** Creates a factory backed by the isolated Kubo RPC adapter. */
@@ -64,6 +68,7 @@ public final class IpfsEffectExecutorFactory implements AppEffectExecutorFactory
                 clients.put(target.alias(), clientFactory);
             }
             Map<String, IpfsPinClientFactory> immutableClients = Map.copyOf(clients);
+            constructTestClients(immutableClients);
             return List.of(new IpfsPinExecutor(parsed,
                     target -> immutableClients.get(target.alias()), archive));
         } catch (IOException | RuntimeException constructionFailure) {
@@ -71,6 +76,19 @@ public final class IpfsEffectExecutorFactory implements AppEffectExecutorFactory
             throw new IllegalArgumentException(
                     "ipfs effect executor construction failed", constructionFailure);
         }
+    }
+
+    private static void constructTestClients(Map<String, IpfsPinClientFactory> clients) {
+        if (!IpfsClientConstructionTestSeam.armed()) {
+            return;
+        }
+        for (IpfsPinClientFactory factory : clients.values()) {
+            try (var client = Objects.requireNonNull(
+                    factory.open(), "client factory product")) {
+                // Construction and bounded close are the native-linkage probe.
+            }
+        }
+        LOG.warn("TEST-ONLY native connector client construction passed: ipfs");
     }
 
     /**

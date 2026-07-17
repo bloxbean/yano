@@ -12,12 +12,17 @@ final class DemoTestFiles {
 
     static Path config(Path directory) throws IOException {
         Files.createDirectories(directory.resolve("secrets"));
-        secret(directory.resolve("secrets/access"), "minio-access");
-        secret(directory.resolve("secrets/secret"), "minio-secret");
+        secret(directory.resolve("secrets/access"), "s3-demo-access");
+        secret(directory.resolve("secrets/secret"), "s3-demo-secret");
         Files.createDirectories(directory.resolve("samples"));
         Files.writeString(directory.resolve("samples/certificate.txt"), "sample evidence\n");
         Path config = directory.resolve("demo.properties");
         Files.writeString(config, properties());
+        if (Files.getFileStore(config).supportsFileAttributeView("posix")) {
+            Files.setPosixFilePermissions(config, Set.of(
+                    PosixFilePermission.OWNER_READ,
+                    PosixFilePermission.OWNER_WRITE));
+        }
         return config;
     }
 
@@ -30,7 +35,7 @@ final class DemoTestFiles {
                 demo.sample-file=samples/certificate.txt
                 demo.report-directory=reports
                 demo.evidence-id=sample-inspection-001
-                s3.endpoint=http://minio.example:9000
+                s3.endpoint=http://s3.example:9000
                 s3.region=us-east-1
                 s3.access-key-file=secrets/access
                 s3.secret-key-file=secrets/secret

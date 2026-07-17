@@ -3,13 +3,23 @@ plugins {
     id 'com.gradleup.shadow'
 }
 
+// The standalone runner uses JDK HttpClient/HttpServer and the AWS SDK's
+// URLConnection client. Core API model dependencies otherwise pull the full
+// Yaci Netty stack into the shaded audit tool even though no Netty path is
+// reachable here.
+configurations.configureEach {
+    exclude group: 'io.netty'
+}
+
 dependencies {
     // Standalone audit tooling: canonical effect decoding and portable
     // threshold-finality/anchor evidence verification. This executable does
     // not run inside the node and contributes no SPI.
+    implementation platform(libs.jackson.bom)
     implementation project(':core-api')
     implementation project(':appchain-evidence-client')
     implementation project(':appchain-evidence-contracts')
+    implementation project(':appchain-composite-contracts')
     implementation project(':appchain-integration-contracts')
     implementation libs.jackson.databind
     implementation libs.kafka.clients
@@ -46,6 +56,20 @@ tasks.named('compileTestJava') {
 
 tasks.withType(Test).configureEach {
     jvmArgs '--add-modules=jdk.httpserver'
+    [
+            'yano.s3.bootstrap.integration.enabled',
+            'yano.s3.bootstrap.integration.endpoint',
+            'yano.s3.bootstrap.integration.access-key-file',
+            'yano.s3.bootstrap.integration.secret-key-file',
+            'yano.kafka.audit.integration.enabled',
+            'yano.kafka.audit.integration.bootstrap',
+            'yano.kafka.audit.integration.topic'
+    ].each { key ->
+        def value = System.getProperty(key)
+        if (value != null) {
+            systemProperty key, value
+        }
+    }
 }
 
 tasks.named('shadowJar') {
@@ -74,6 +98,8 @@ def forbiddenClassPrefixes = [
 tasks.register('verifyDemoRunnerArtifactBoundary') {
     group = 'verification'
     description = 'Verifies that the demo runner cannot activate or embed Yano plugin/runtime implementations'
+    dependsOn rootProject.tasks.named('verifyAdr013JacksonAlignment'),
+            rootProject.tasks.named('verifyAdr013Slf4jAlignment')
     dependsOn tasks.named('jar'), tasks.named('shadowJar')
     inputs.files(tasks.named('jar').flatMap { it.archiveFile },
             tasks.named('shadowJar').flatMap { it.archiveFile })
@@ -111,7 +137,7 @@ tasks.register('verifyDemoRunnerArtifactBoundary') {
         }
 
         def forbiddenProjects = [
-        ':runtime', ':appchain-evidence-registry',
+        ':runtime', ':appchain-evidence-registry', ':appchain-composite', ':appchain-stdlib',
                 ':appchain-kafka', ':appchain-objectstore-s3', ':appchain-ipfs'
         ] as Set
         def forbidden = configurations.runtimeClasspath.incoming.resolutionResult.allComponents
@@ -123,6 +149,15 @@ tasks.register('verifyDemoRunnerArtifactBoundary') {
         if (!forbidden.isEmpty()) {
             throw new GradleException('Demo runner dependency closure contains plugin/runtime projects: '
                     + forbidden.collect { it.id.projectPath }.sort().join(', '))
+        }
+        def forbiddenNetty = configurations.runtimeClasspath.incoming.resolutionResult.allComponents
+                .findAll { component ->
+                    component.moduleVersion != null
+                            && component.moduleVersion.group == 'io.netty'
+                }
+        if (!forbiddenNetty.isEmpty()) {
+            throw new GradleException('Demo runner dependency closure contains unused Netty modules: '
+                    + forbiddenNetty.collect { it.moduleVersion.toString() }.sort().join(', '))
         }
     }
 }

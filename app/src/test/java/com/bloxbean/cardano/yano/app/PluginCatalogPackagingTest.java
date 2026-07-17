@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.app;
 
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
+import com.bloxbean.cardano.yano.api.appchain.AppStateMachineContext;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineProvider;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutor;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutorFactory;
@@ -63,12 +64,13 @@ class PluginCatalogPackagingTest {
 
     private static final Set<String> STOCK_BUNDLES = Set.of(
             "com.bloxbean.cardano.yaci.plugins.logging",
-            "com.bloxbean.cardano.yano.appchain.stdlib");
+            "com.bloxbean.cardano.yano.appchain.stdlib",
+            "com.bloxbean.cardano.yano.appchain.composite",
+            "com.bloxbean.cardano.yano.appchain.evidence-registry");
     private static final Set<String> OPTIONAL_BUNDLES = Set.of(
             "com.bloxbean.cardano.yano.appchain.kafka",
             "com.bloxbean.cardano.yano.appchain.objectstore.s3",
             "com.bloxbean.cardano.yano.appchain.ipfs",
-            "com.bloxbean.cardano.yano.appchain.evidence-registry",
             "com.bloxbean.cardano.yano.appchain.effects.cardano",
             "com.bloxbean.cardano.yano.appchain.zk");
     private static final String CONFORMANCE_BUNDLE =
@@ -122,13 +124,26 @@ class PluginCatalogPackagingTest {
                             && !bundle.legacy()
                             && bundle.digestMode() == PluginDigestMode.ARTIFACT_CLOSURE));
             assertTrue(environment.providers().names(AppStateMachineProvider.class)
-                    .containsAll(Set.of("approvals", "balances", "doc-trail", "kv-registry")));
+                    .containsAll(Set.of(
+                            "approvals", "balances", "doc-trail", "kv-registry", "composite")));
+            AppStateMachine composite = environment.providers().require(
+                    AppStateMachineProvider.class, "composite").create(
+                    new AppStateMachineContext() {
+                        @Override public String chainId() { return "packaged-composite"; }
+                        @Override public Map<String, String> settings() {
+                            return Map.of(
+                                    "effects.enabled", "true",
+                                    "effects.max-per-block", "128",
+                                    "machines.composite.preset", "evidence-v1");
+                        }
+                    });
+            assertEquals("composite", composite.id());
             assertEquals(optionalIncluded
                             ? Set.of("credential-registry", "zk-gate", "zk-membership") : Set.of(),
                     environment.providers().names(AppStateMachineProvider.class).stream()
                             .filter(Set.of("credential-registry", "zk-gate", "zk-membership")::contains)
                             .collect(Collectors.toSet()));
-            assertEquals(optionalIncluded, environment.providers().find(
+            assertTrue(environment.providers().find(
                     AppStateMachineProvider.class, "evidence-registry").isPresent());
             Set<String> expectedSinks = new java.util.HashSet<>();
             if (optionalIncluded) expectedSinks.add("kafka");
@@ -167,7 +182,7 @@ class PluginCatalogPackagingTest {
                     FinalizedStreamSinkFactory.class, "conformance-sink").isPresent());
             assertEquals(conformanceIncluded, environment.providers().find(
                     DomainApiProvider.class, CONFORMANCE_BUNDLE).isPresent());
-            assertEquals(optionalIncluded, environment.providers().find(
+            assertTrue(environment.providers().find(
                     DomainApiProvider.class,
                     "com.bloxbean.cardano.yano.appchain.evidence-registry").isPresent());
             if (conformanceIncluded) {
@@ -230,6 +245,8 @@ class PluginCatalogPackagingTest {
             assertEquals(1, executors.size());
             AppEffectExecutor executor = executors.getFirst();
             assertEquals("conformance-effect-executor", executor.id());
+            assertEquals(Set.of("conformance.effect"), executor.effectTypes());
+            assertEquals("READY", executor.operationalSnapshot().readiness().name());
             assertFalse(executor.supports("probe"));
             EffectRecord record = new EffectRecord(
                     EffectRecord.RECORD_VERSION, "conformance-chain", 1, 0,

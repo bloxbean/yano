@@ -1,0 +1,31 @@
+dependencies {
+    api project(':core-api')
+    api project(':appchain-composite-contracts')
+
+    implementation project(':appchain-stdlib')
+    implementation project(':appchain-evidence-registry')
+    implementation project(':appchain-evidence-contracts')
+    implementation project(':appchain-integration-contracts')
+
+    testImplementation project(':appchain-testkit')
+}
+
+java {
+    sourceCompatibility = 25
+    targetCompatibility = 25
+}
+
+tasks.withType(Test).configureEach {
+    systemProperty 'yano.repo.root', rootProject.projectDir.absolutePath
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            pom {
+                name = 'Yano App-Chain Composite State Machine'
+                description = 'Deterministic state-machine composition, isolation, routing, and workflows for Yano'
+            }
+        }
+    }
+}

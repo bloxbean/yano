@@ -826,7 +826,8 @@ def _validate_active_identity_shape(document: dict[str, Any], marker: Path) -> N
     }
     if set(document) != expected_fields:
         raise LifecycleError(f"app-chain identity marker has an invalid field set: {marker}")
-    if document.get("layoutVersion") != 1:
+    layout_version = document.get("layoutVersion")
+    if layout_version not in {1, 2, 3}:
         raise LifecycleError(f"app-chain identity marker has an invalid layoutVersion: {marker}")
     digest = document.get("networkIdentitySha256")
     if not isinstance(digest, str) or not SHA256_HEX.fullmatch(digest):
@@ -839,11 +840,22 @@ def _validate_active_identity_shape(document: dict[str, Any], marker: Path) -> N
         raise LifecycleError(f"host identity marker must use a null composeProject: {marker}")
 
     state_machine = document.get("stateMachine")
+    state_machine_fields = (
+        set(state_machine) if isinstance(state_machine, dict) else set()
+    )
+    base_state_machine_fields = {"provider", "profileVersion", "effectEmissionVersion"}
+    provider = state_machine.get("provider") if isinstance(state_machine, dict) else None
+    valid_state_machine_profile = (
+        provider == "evidence-registry"
+        and state_machine_fields == base_state_machine_fields
+    ) or (
+        provider == "composite"
+        and state_machine_fields == base_state_machine_fields | {"preset"}
+        and state_machine.get("preset") == "evidence-v1"
+    )
     if (
         not isinstance(state_machine, dict)
-        or set(state_machine) != {"provider", "profileVersion", "effectEmissionVersion"}
-        or not isinstance(state_machine.get("provider"), str)
-        or not state_machine["provider"]
+        or not valid_state_machine_profile
         or not _positive_int(state_machine.get("profileVersion"))
         or not _positive_int(state_machine.get("effectEmissionVersion"))
     ):
@@ -874,11 +886,33 @@ def _validate_active_identity_shape(document: dict[str, Any], marker: Path) -> N
         raise LifecycleError(f"app-chain identity marker has inconsistent membership: {marker}")
 
     effects = document.get("effects")
+    legacy_effect_fields = {"storageGate", "requireAnchor"}
+    current_effect_fields = legacy_effect_fields | {
+        "continuationMode", "directResultEmissionActivationHeight"
+    }
+    if not isinstance(effects, dict):
+        raise LifecycleError(f"app-chain identity marker has invalid effect metadata: {marker}")
+    if layout_version in {1, 2}:
+        valid_effect_shape = set(effects) == legacy_effect_fields
+        valid_continuation_profile = state_machine.get("profileVersion") == 1
+    else:
+        continuation_mode = effects.get("continuationMode")
+        activation_height = effects.get("directResultEmissionActivationHeight")
+        valid_effect_shape = set(effects) == current_effect_fields
+        valid_continuation_profile = (
+            continuation_mode == "explicit"
+            and activation_height is None
+            and state_machine.get("profileVersion") == 1
+        ) or (
+            continuation_mode == "direct"
+            and activation_height == 1
+            and state_machine.get("profileVersion") == 2
+        )
     if (
-        not isinstance(effects, dict)
-        or set(effects) != {"storageGate", "requireAnchor"}
+        not valid_effect_shape
         or effects.get("storageGate") not in {"app-final", "l1-anchored", "zk-settled"}
         or not isinstance(effects.get("requireAnchor"), bool)
+        or not valid_continuation_profile
     ):
         raise LifecycleError(f"app-chain identity marker has invalid effect metadata: {marker}")
 
@@ -910,14 +944,43 @@ def _validate_active_identity_shape(document: dict[str, Any], marker: Path) -> N
     if not isinstance(connectors, dict) or set(connectors) != {"s3", "ipfs", "kafka"}:
         raise LifecycleError(f"app-chain identity marker has invalid connector metadata: {marker}")
     for connector, value in connectors.items():
+        expected_connector_fields = {"targetId", "locator", "profile"}
+        if layout_version >= 2 and connector == "s3":
+            expected_connector_fields |= {
+                "provider", "providerVersion", "dataLayoutVersion", "iamConfigSha256"
+            }
         if (
             not isinstance(value, dict)
-            or set(value) != {"targetId", "locator", "profile"}
+            or set(value) != expected_connector_fields
             or any(not isinstance(value.get(field), str) or not value[field]
                    for field in ("targetId", "locator", "profile"))
         ):
             raise LifecycleError(
                 f"app-chain identity marker has invalid {connector} connector metadata: {marker}"
+            )
+    if layout_version >= 2:
+        s3 = connectors["s3"]
+        if document.get("deployment") == "compose":
+            if (
+                s3.get("provider") != "rustfs"
+                or s3.get("providerVersion") != "1.0.0-beta.9"
+                or s3.get("profile") != "local-demo-v2"
+                or s3.get("dataLayoutVersion") != 2
+                or not isinstance(s3.get("iamConfigSha256"), str)
+                or not SHA256_HEX.fullmatch(s3["iamConfigSha256"])
+            ):
+                raise LifecycleError(
+                    f"compose identity marker has incompatible S3 provider metadata: {marker}"
+                )
+        elif (
+            s3.get("provider") != "external-s3-compatible"
+            or s3.get("providerVersion") is not None
+            or s3.get("profile") != "operator-managed-v1"
+            or s3.get("dataLayoutVersion") != 1
+            or s3.get("iamConfigSha256") is not None
+        ):
+            raise LifecycleError(
+                f"host identity marker has invalid provider-neutral S3 metadata: {marker}"
             )
 
 

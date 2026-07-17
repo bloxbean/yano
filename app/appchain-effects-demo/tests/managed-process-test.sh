@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 DEMO_DIR="$(cd "$SCRIPT_DIR/.." && pwd -P)"
 TOOL="$DEMO_DIR/tools/managed_process.py"
+DARWIN_SNAPSHOT_TEST="$SCRIPT_DIR/managed_process_darwin_snapshot_test.py"
 TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/yano-managed-process-test.XXXXXX")"
 PIDS_FILE="$TEST_ROOT/test-pids"
 
@@ -17,6 +18,8 @@ cleanup() {
   rm -rf "$TEST_ROOT"
 }
 trap cleanup EXIT HUP INT TERM
+
+python3 "$DARWIN_SNAPSHOT_TEST"
 
 fail() {
   echo "FAIL: $*" >&2
@@ -62,6 +65,22 @@ assert_stopped() {
   status_process "$runtime" "$@" >"$TEST_ROOT/status.out" 2>"$TEST_ROOT/status.err" || status=$?
   [ "$status" -eq 3 ] || fail "expected stopped status (3), got $status"
   [ "$(cat "$TEST_ROOT/status.out")" = stopped ] || fail "stopped status output changed"
+}
+
+wait_ready() {
+  local ready_file="$1" expected_pid="$2" deadline ready_value
+  deadline=$((SECONDS + 3))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    kill -0 "$expected_pid" 2>/dev/null \
+      || fail "managed worker exited before publishing its ready marker"
+    ready_value=""
+    if [ -f "$ready_file" ]; then
+      ready_value="$(cat "$ready_file" 2>/dev/null || true)"
+      [ "$ready_value" = "$expected_pid" ] && return 0
+    fi
+    sleep 0.05
+  done
+  fail "managed worker ready marker did not bind its exact PID"
 }
 
 WORKER="$TEST_ROOT/worker.py"
@@ -195,6 +214,7 @@ untrusted_ready="$TEST_ROOT/untrusted.ready"
 untrusted_command=(python3 "$WORKER" exec-on-usr1 "$untrusted_ready")
 untrusted_pid="$(start_process "$untrusted" "${untrusted_command[@]}")"
 echo "$untrusted_pid" >> "$PIDS_FILE"
+wait_ready "$untrusted_ready" "$untrusted_pid"
 kill -USR1 "$untrusted_pid"
 sleep 0.2
 expect_failure "same-token argv replacement" stop_process "$untrusted" "${untrusted_command[@]}"

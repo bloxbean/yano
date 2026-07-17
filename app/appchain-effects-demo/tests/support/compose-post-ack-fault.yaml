@@ -1,0 +1,16 @@
+services:
+  yano-0:
+    environment:
+      # This second, test-only Compose model is never loaded by demo.sh. Both
+      # switches are required by the runtime before the seam can arm.
+      JAVA_OPTS: >-
+        -XX:MaxRAMPercentage=75
+        -Dyano.test.enabled=true
+        -Dyano.test.effect-runtime.post-confirmed-pause=v1
+        -Dyano.test.effect-runtime.post-confirmed-pause.type=kafka.publish
+        -Dyano.test.effect-runtime.post-confirmed-pause.directory=/run/yano-effect-fault
+        -Dyano.test.effect-runtime.post-confirmed-pause.timeout-seconds=600
+    volumes:
+      - type: bind
+        source: ${DEMO_EFFECT_FAULT_DIRECTORY:?set by effect-failover-e2e.sh}
+        target: /run/yano-effect-fault

@@ -25,6 +25,32 @@ load_defaults() {
   done < "$file"
 }
 
+profile_digest_for() {
+  local wanted="$1" file="$SCRIPT_DIR/config/composite-profile-digests.properties"
+  local line key value found=""
+  [ -f "$file" ] || die "composite profile trust-root manifest is missing"
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in ''|'#'*) continue;; esac
+    case "$line" in *=*) ;;
+      *) die "invalid composite profile trust-root manifest";;
+    esac
+    key="${line%%=*}"
+    value="${line#*=}"
+    case "$key" in
+      app-final:explicit|app-final:direct|l1-anchored:explicit|l1-anchored:direct) ;;
+      *) die "unknown composite profile trust-root key";;
+    esac
+    [ "${#value}" -eq 64 ] && [[ "$value" != *[!0-9a-f]* ]] \
+      || die "invalid composite profile trust-root digest"
+    if [ "$key" = "$wanted" ]; then
+      [ -z "$found" ] || die "duplicate composite profile trust-root key"
+      found="$value"
+    fi
+  done < "$file"
+  [ -n "$found" ] || die "composite profile trust root is not declared"
+  printf '%s\n' "$found"
+}
+
 CHAIN_ID_EXPLICIT=false
 [ -z "${DEMO_CHAIN_ID+x}" ] || CHAIN_ID_EXPLICIT=true
 load_defaults "$SCRIPT_DIR/config/common.env"
@@ -49,6 +75,7 @@ TEMP_FILES=()
 MEMBER_SEED_0=""
 MEMBER_SEED_1=""
 MEMBER_SEED_2=""
+RESULT_SIGNERS=""
 ANCHOR_KEY_VALUE=""
 STAGED_SHELLEY=""
 STAGED_GENESIS_TIMESTAMP=""
@@ -64,8 +91,10 @@ cleanup_temporary_files() {
 trap cleanup_temporary_files EXIT
 
 temporary_file() {
-  LAST_TEMP_FILE="$(mktemp "${TMPDIR:-/tmp}/yano-effects-demo.XXXXXX")" \
+  local created
+  created="$(mktemp "${TMPDIR:-/tmp}/yano-effects-demo.XXXXXX")" \
     || die "cannot create a private temporary file"
+  LAST_TEMP_FILE="$(cd "$(dirname "$created")" && pwd -P)/$(basename "$created")"
   chmod 600 "$LAST_TEMP_FILE"
   TEMP_FILES+=("$LAST_TEMP_FILE")
 }
@@ -75,6 +104,9 @@ while [ "$#" -gt 0 ]; do
     --mode|--deployment) MODE="${2:-}"; shift 2;;
     --network) DEMO_NETWORK="${2:-}"; shift 2;;
     --chain-id) DEMO_CHAIN_ID="${2:-}"; CHAIN_ID_EXPLICIT=true; shift 2;;
+    --evidence-id) DEMO_EVIDENCE_ID="${2:-}"; shift 2;;
+    --continuation) DEMO_CONTINUATION_MODE="${2:-}"; shift 2;;
+    --machine) DEMO_MACHINE_MODE="${2:-}"; shift 2;;
     --data-dir) DEMO_DATA_ROOT="${2:-}"; shift 2;;
     --instance) INSTANCE="${2:-}"; shift 2;;
     --observability) OBSERVABILITY=true; shift;;
@@ -114,7 +146,22 @@ if [ "$CHAIN_ID_EXPLICIT" = false ] && [ "$INSTANCE" != default ]; then
 fi
 [[ "$DEMO_CHAIN_ID" =~ ^[a-z][a-z0-9-]{0,62}$ ]] \
   || die "DEMO_CHAIN_ID must match [a-z][a-z0-9-]{0,62}"
+[[ "$DEMO_EVIDENCE_ID" =~ ^[a-z][a-z0-9-]{0,62}$ ]] \
+  || die "DEMO_EVIDENCE_ID must match [a-z][a-z0-9-]{0,62}"
 case "$OBSERVABILITY" in true|false) ;; *) die "DEMO_OBSERVABILITY must be true or false";; esac
+case "$DEMO_CONTINUATION_MODE" in
+  explicit|direct) ;;
+  *) die "--continuation must be explicit or direct";;
+esac
+case "$DEMO_MACHINE_MODE" in
+  standalone) STATE_MACHINE_ID="evidence-registry";;
+  composite) STATE_MACHINE_ID="composite";;
+  *) die "--machine must be standalone or composite";;
+esac
+DIRECT_RESULT_ACTIVATION_SETTING="# direct result emission is not activated"
+if [ "$DEMO_CONTINUATION_MODE" = direct ]; then
+  DIRECT_RESULT_ACTIVATION_SETTING="yano.app-chain.chains[0].machines.evidence-registry.activations.direct-result-emission=1"
+fi
 
 validate_decimal() {
   local name="$1" value="$2" minimum="$3" maximum="$4" number
@@ -128,7 +175,7 @@ validate_decimal DEMO_HTTP_BASE "$DEMO_HTTP_BASE" 1 65533
 validate_decimal DEMO_SERVER_BASE "${DEMO_SERVER_BASE:-13337}" 1 65533
 validate_decimal DEMO_UI_PORT "$DEMO_UI_PORT" 1 65535
 validate_decimal DEMO_KAFKA_PORT "$DEMO_KAFKA_PORT" 1 65535
-validate_decimal DEMO_MINIO_PORT "$DEMO_MINIO_PORT" 1 65535
+validate_decimal DEMO_S3_PORT "$DEMO_S3_PORT" 1 65535
 validate_decimal DEMO_IPFS_PORT "$DEMO_IPFS_PORT" 1 65535
 validate_decimal DEMO_PROMETHEUS_PORT "$DEMO_PROMETHEUS_PORT" 1 65535
 validate_decimal DEMO_GRAFANA_PORT "$DEMO_GRAFANA_PORT" 1 65535
@@ -226,6 +273,12 @@ if [ "$ANCHOR_ENABLED" = true ]; then
   STORAGE_GATE=l1-anchored
   REQUIRE_ANCHOR=true
 fi
+COMPOSITE_PROFILE_DIGEST_SETTING="# standalone machine has no composite profile trust root"
+if [ "$DEMO_MACHINE_MODE" = composite ]; then
+  COMPOSITE_PROFILE_DIGEST="$(profile_digest_for \
+    "$STORAGE_GATE:$DEMO_CONTINUATION_MODE")"
+  COMPOSITE_PROFILE_DIGEST_SETTING="demo.composite-profile-digest=$COMPOSITE_PROFILE_DIGEST"
+fi
 
 command -v python3 >/dev/null 2>&1 || die "required command not found: python3"
 normalize_base_path() {
@@ -282,7 +335,10 @@ PLUGIN_DIR="$RUNTIME_ROOT/plugins"
 REPORT_DIR="$DATA_ROOT/reports"
 COMPOSE_ENV="$RUNTIME_ROOT/compose.env"
 RUNNER_CONFIG="$RUNTIME_ROOT/runner-$MODE.properties"
+S3_BOOTSTRAP_CONFIG="$RUNTIME_ROOT/s3-bootstrap-$MODE.properties"
 UI_CONFIG="$RUNTIME_ROOT/ui-$MODE.properties"
+KAFKA_PASSWD_FILE="$RUNTIME_ROOT/kafka-passwd"
+KAFKA_GROUP_FILE="$RUNTIME_ROOT/kafka-group"
 NODE_CONFIG_DIR="$SECRET_ROOT/nodes-$MODE"
 MEMBER_KEY_DIR="$SECRET_ROOT/member-keys"
 NETWORK_MARKER="$NETWORK_ROOT/network-identity.json"
@@ -299,28 +355,31 @@ else
 fi
 
 API_KEY_FILE="$SECRET_ROOT/yano-api-key"
-MINIO_ROOT_USER_FILE="$SECRET_ROOT/minio-root-user"
-MINIO_ROOT_PASSWORD_FILE="$SECRET_ROOT/minio-root-password"
-MINIO_RUNNER_ACCESS_FILE="$(normalize_file_path DEMO_HOST_S3_RUNNER_ACCESS_KEY_FILE \
-  "${DEMO_HOST_S3_RUNNER_ACCESS_KEY_FILE:-$SECRET_ROOT/minio-runner-access-key}")" \
+S3_BOOTSTRAP_ACCESS_FILE="$SECRET_ROOT/s3-bootstrap-access-key"
+S3_BOOTSTRAP_SECRET_FILE="$SECRET_ROOT/s3-bootstrap-secret-key"
+S3_IAM_MASTER_KEY_FILE="$SECRET_ROOT/s3-iam-master-key"
+S3_RUNNER_ACCESS_FILE="$(normalize_file_path DEMO_HOST_S3_RUNNER_ACCESS_KEY_FILE \
+  "${DEMO_HOST_S3_RUNNER_ACCESS_KEY_FILE:-$SECRET_ROOT/s3-runner-access-key}")" \
   || die "DEMO_HOST_S3_RUNNER_ACCESS_KEY_FILE must be a safe path without '..'"
-MINIO_RUNNER_SECRET_FILE="$(normalize_file_path DEMO_HOST_S3_RUNNER_SECRET_KEY_FILE \
-  "${DEMO_HOST_S3_RUNNER_SECRET_KEY_FILE:-$SECRET_ROOT/minio-runner-secret-key}")" \
+S3_RUNNER_SECRET_FILE="$(normalize_file_path DEMO_HOST_S3_RUNNER_SECRET_KEY_FILE \
+  "${DEMO_HOST_S3_RUNNER_SECRET_KEY_FILE:-$SECRET_ROOT/s3-runner-secret-key}")" \
   || die "DEMO_HOST_S3_RUNNER_SECRET_KEY_FILE must be a safe path without '..'"
-MINIO_EXECUTOR_ACCESS_FILE="$(normalize_file_path DEMO_HOST_S3_EXECUTOR_ACCESS_KEY_FILE \
-  "${DEMO_HOST_S3_EXECUTOR_ACCESS_KEY_FILE:-$SECRET_ROOT/minio-executor-access-key}")" \
+S3_EXECUTOR_ACCESS_FILE="$(normalize_file_path DEMO_HOST_S3_EXECUTOR_ACCESS_KEY_FILE \
+  "${DEMO_HOST_S3_EXECUTOR_ACCESS_KEY_FILE:-$SECRET_ROOT/s3-executor-access-key}")" \
   || die "DEMO_HOST_S3_EXECUTOR_ACCESS_KEY_FILE must be a safe path without '..'"
-MINIO_EXECUTOR_SECRET_FILE="$(normalize_file_path DEMO_HOST_S3_EXECUTOR_SECRET_KEY_FILE \
-  "${DEMO_HOST_S3_EXECUTOR_SECRET_KEY_FILE:-$SECRET_ROOT/minio-executor-secret-key}")" \
+S3_EXECUTOR_SECRET_FILE="$(normalize_file_path DEMO_HOST_S3_EXECUTOR_SECRET_KEY_FILE \
+  "${DEMO_HOST_S3_EXECUTOR_SECRET_KEY_FILE:-$SECRET_ROOT/s3-executor-secret-key}")" \
   || die "DEMO_HOST_S3_EXECUTOR_SECRET_KEY_FILE must be a safe path without '..'"
+RUSTFS_IAM_SPEC_FILE="$SECRET_ROOT/rustfs-iam-spec.json"
 GRAFANA_PASSWORD_FILE="$SECRET_ROOT/grafana-admin-password"
 if [ -n "$ANCHOR_KEY_FILE" ]; then
   ANCHOR_KEY_FILE="$(normalize_file_path anchor-key-file "$ANCHOR_KEY_FILE")" \
     || die "--anchor-key-file must be a safe path without '..'"
 fi
-python3 - "$DATA_BASE" "$RUNTIME_BASE" "$API_KEY_FILE" "$MINIO_ROOT_USER_FILE" \
-  "$MINIO_ROOT_PASSWORD_FILE" "$MINIO_RUNNER_ACCESS_FILE" "$MINIO_RUNNER_SECRET_FILE" \
-  "$MINIO_EXECUTOR_ACCESS_FILE" "$MINIO_EXECUTOR_SECRET_FILE" "$GRAFANA_PASSWORD_FILE" \
+python3 - "$DATA_BASE" "$RUNTIME_BASE" "$API_KEY_FILE" "$S3_BOOTSTRAP_ACCESS_FILE" \
+  "$S3_BOOTSTRAP_SECRET_FILE" "$S3_IAM_MASTER_KEY_FILE" \
+  "$S3_RUNNER_ACCESS_FILE" "$S3_RUNNER_SECRET_FILE" \
+  "$S3_EXECUTOR_ACCESS_FILE" "$S3_EXECUTOR_SECRET_FILE" "$GRAFANA_PASSWORD_FILE" \
   "${ANCHOR_KEY_FILE:-}" <<'PY' \
   || die "secret material must not be stored below a cleanup-managed data or runtime root"
 from pathlib import Path
@@ -339,7 +398,7 @@ HTTP0=$((10#$DEMO_HTTP_BASE))
 HTTP1=$((HTTP0 + 1))
 HTTP2=$((HTTP0 + 2))
 SERVER_BASE="${DEMO_SERVER_BASE:-13337}"
-python3 - "$DEMO_CONNECTOR_SUBNET" "$DEMO_MINIO_IP" "$DEMO_KUBO_IP" <<'PY' \
+python3 - "$DEMO_CONNECTOR_SUBNET" "$DEMO_S3_IP" "$DEMO_KUBO_IP" <<'PY' \
   || die "connector subnet/IP values must be distinct canonical private IPv4 addresses"
 import ipaddress, sys
 network = ipaddress.ip_network(sys.argv[1], strict=True)
@@ -352,7 +411,7 @@ if str(network) != sys.argv[1] or any(str(address) != raw for address, raw in zi
     raise SystemExit(1)
 PY
 python3 - "$MODE" "$HTTP0" "$HTTP1" "$HTTP2" "$DEMO_UI_PORT" "$DEMO_KAFKA_PORT" \
-  "$DEMO_MINIO_PORT" "$DEMO_IPFS_PORT" "$DEMO_PROMETHEUS_PORT" "$DEMO_GRAFANA_PORT" \
+  "$DEMO_S3_PORT" "$DEMO_IPFS_PORT" "$DEMO_PROMETHEUS_PORT" "$DEMO_GRAFANA_PORT" \
   "$SERVER_BASE" "$((10#$SERVER_BASE + 1))" "$((10#$SERVER_BASE + 2))" <<'PY' \
   || die "published HTTP/service/server ports must not overlap"
 import sys
@@ -371,13 +430,25 @@ print(hashlib.sha256(os.path.abspath(sys.argv[1]).encode("utf-8")).hexdigest()[:
 PY
 )"
 PROJECT_NAME="yano-effects-${DEMO_NETWORK}-${INSTANCE}-${PROJECT_SCOPE_ID}"
+DEMO_HOST_UID="$(id -u)"
+DEMO_HOST_GID="$(id -g)"
+[[ "$DEMO_HOST_UID" =~ ^[1-9][0-9]*$ ]] \
+  || die "the Compose demo must run as a non-root host user"
+[[ "$DEMO_HOST_GID" =~ ^[1-9][0-9]*$ ]] \
+  || die "the Compose demo requires a non-root primary host group"
 INSTANCE_TARGET="$INSTANCE"
 COMPOSE_S3_TARGET_ID="s3-compose-${DEMO_NETWORK}-${INSTANCE_TARGET}-${PROJECT_SCOPE_ID}"
 COMPOSE_IPFS_TARGET_ID="ipfs-compose-${DEMO_NETWORK}-${INSTANCE_TARGET}-${PROJECT_SCOPE_ID}"
 COMPOSE_KAFKA_TARGET_ID="kafka-compose-${DEMO_NETWORK}-${INSTANCE_TARGET}-${PROJECT_SCOPE_ID}"
+S3_PROVIDER="rustfs"
+S3_PROVIDER_VERSION="1.0.0-beta.9"
+S3_LAYOUT_VERSION="2"
+S3_CONFIG_HASH=""
 GIT_ID="$(git -C "$REPO_DIR" rev-parse --short=12 HEAD 2>/dev/null || printf local)"
 DEMO_YANO_IMAGE="${DEMO_YANO_IMAGE:-yano-adr013-node:$GIT_ID}"
 DEMO_RUNNER_IMAGE="${DEMO_RUNNER_IMAGE:-yano-adr013-runner:$GIT_ID}"
+: "${DEMO_RUSTFS_IMAGE:?config/images.env must pin the RustFS demo image}"
+: "${DEMO_KUBO_IMAGE:?config/images.env must pin the Kubo demo image}"
 
 require() { command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"; }
 
@@ -401,7 +472,7 @@ resolve_host_target_ids() {
 }
 
 validate_host_connector_locators() {
-  local s3="${DEMO_HOST_S3_ENDPOINT:-http://127.0.0.1:$DEMO_MINIO_PORT}"
+  local s3="${DEMO_HOST_S3_ENDPOINT:-http://127.0.0.1:$DEMO_S3_PORT}"
   local ipfs="${DEMO_HOST_IPFS_API_URL:-http://127.0.0.1:$DEMO_IPFS_PORT}"
   local kafka="${DEMO_HOST_KAFKA_BOOTSTRAP_SERVERS:-127.0.0.1:$DEMO_KAFKA_PORT}"
   python3 - "$s3" "$ipfs" "$kafka" <<'PY' \
@@ -629,13 +700,59 @@ if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE
 PY
 }
 
+prepare_private_state_directory() {
+  local directory="$1"
+  python3 - "$directory" <<'PY' >/dev/null \
+    || die "private state directory must be a non-symlink launcher-owned 0700 directory: $directory"
+import os
+import stat
+import sys
+
+target = os.path.abspath(sys.argv[1])
+parts = [part for part in target.split(os.sep) if part]
+flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0)
+no_follow = getattr(os, "O_NOFOLLOW", 0)
+descriptor = os.open(os.sep, flags)
+try:
+    for index, part in enumerate(parts):
+        try:
+            child = os.open(part, flags | no_follow, dir_fd=descriptor)
+        except FileNotFoundError:
+            os.mkdir(part, mode=0o700, dir_fd=descriptor)
+            child = os.open(part, flags | no_follow, dir_fd=descriptor)
+        info = os.fstat(child)
+        if not stat.S_ISDIR(info.st_mode):
+            os.close(child)
+            raise ValueError("path component is not a directory")
+        os.close(descriptor)
+        descriptor = child
+        if index == len(parts) - 1:
+            if info.st_uid != os.geteuid():
+                raise ValueError("directory has the wrong owner")
+            os.fchmod(descriptor, 0o700)
+            final = os.fstat(descriptor)
+            if stat.S_IMODE(final.st_mode) != 0o700:
+                raise ValueError("directory mode is not private")
+finally:
+    os.close(descriptor)
+PY
+}
+
 prepare_directories() {
   local dir i
-  mkdir -p "$RUNTIME_ROOT" "$PLUGIN_DIR" "$REPORT_DIR" \
-    "$DATA_ROOT/connectors/kafka" "$DATA_ROOT/connectors/minio" \
-    "$DATA_ROOT/connectors/ipfs" "$DATA_ROOT/observability/prometheus" \
+  [ ! -e "$DATA_ROOT/connectors/minio" ] && [ ! -L "$DATA_ROOT/connectors/minio" ] \
+    || die "legacy MinIO connector state is incompatible; retire/clean this preview instance or choose a new instance"
+  [ ! -e "$DATA_ROOT/connectors/seaweedfs-v1" ] && [ ! -L "$DATA_ROOT/connectors/seaweedfs-v1" ] \
+    || die "legacy SeaweedFS connector state is incompatible; retire/clean this preview instance or choose a new instance"
+  mkdir -p "$RUNTIME_ROOT" "$PLUGIN_DIR" \
+    "$DATA_ROOT/observability/prometheus" \
     "$DATA_ROOT/observability/grafana" "$DATA_ROOT/logs" "$L1_ROOT"
   chmod 700 "$RUNTIME_ROOT" "$PLUGIN_DIR"
+  prepare_private_state_directory "$DATA_ROOT/connectors"
+  prepare_private_state_directory "$DATA_ROOT/connectors/kafka"
+  prepare_private_state_directory "$DATA_ROOT/connectors/rustfs-v1"
+  prepare_private_state_directory "$DATA_ROOT/connectors/ipfs"
+  prepare_private_state_directory "$REPORT_DIR"
   for i in 0 1 2; do
     for dir in "$L1_ROOT/node$i" "$DATA_ROOT/app-chain/node$i" \
       "$DATA_ROOT/logs/node$i"; do
@@ -643,8 +760,7 @@ prepare_directories() {
       chmod u+rwx "$dir"
     done
   done
-  chmod u+rwx "$DATA_ROOT/connectors/kafka" "$DATA_ROOT/connectors/minio" \
-    "$DATA_ROOT/connectors/ipfs" "$DATA_ROOT/observability/prometheus" \
+  chmod u+rwx "$DATA_ROOT/observability/prometheus" \
     "$DATA_ROOT/observability/grafana" "$REPORT_DIR"
 }
 
@@ -665,36 +781,40 @@ prepare_secrets() {
       =~ ^[0-9a-fA-F]{64},[0-9a-fA-F]{64},[0-9a-fA-F]{64}$ ]] \
     || die "member key files must each contain one 32-byte hexadecimal seed"
   PROPOSER_KEY="${MEMBER_KEYS%%,*}"
+  RESULT_SIGNERS="${MEMBER_KEYS%,*}"
+  [[ "$RESULT_SIGNERS" =~ ^[0-9a-f]{64},[0-9a-f]{64}$ ]] \
+    || die "result signer policy must pre-authorize the primary and failover members"
   ensure_secret "$API_KEY_FILE" "$(openssl rand -hex 32)"
-  ensure_secret "$MINIO_ROOT_USER_FILE" "yanoroot$(openssl rand -hex 8)"
-  ensure_secret "$MINIO_ROOT_PASSWORD_FILE" "$(openssl rand -hex 32)"
-  runner_access_default="$SECRET_ROOT/minio-runner-access-key"
-  runner_secret_default="$SECRET_ROOT/minio-runner-secret-key"
-  executor_access_default="$SECRET_ROOT/minio-executor-access-key"
-  executor_secret_default="$SECRET_ROOT/minio-executor-secret-key"
+  ensure_secret "$S3_BOOTSTRAP_ACCESS_FILE" "yanobootstrap$(openssl rand -hex 8)"
+  ensure_secret "$S3_BOOTSTRAP_SECRET_FILE" "$(openssl rand -hex 32)"
+  ensure_secret "$S3_IAM_MASTER_KEY_FILE" "$(openssl rand -hex 32)"
+  runner_access_default="$SECRET_ROOT/s3-runner-access-key"
+  runner_secret_default="$SECRET_ROOT/s3-runner-secret-key"
+  executor_access_default="$SECRET_ROOT/s3-executor-access-key"
+  executor_secret_default="$SECRET_ROOT/s3-executor-secret-key"
   runner_external=false
   executor_external=false
-  if [ "$MINIO_RUNNER_ACCESS_FILE" != "$runner_access_default" ] \
-      || [ "$MINIO_RUNNER_SECRET_FILE" != "$runner_secret_default" ]; then
-    [ "$MINIO_RUNNER_ACCESS_FILE" != "$runner_access_default" ] \
-      && [ "$MINIO_RUNNER_SECRET_FILE" != "$runner_secret_default" ] \
+  if [ "$S3_RUNNER_ACCESS_FILE" != "$runner_access_default" ] \
+      || [ "$S3_RUNNER_SECRET_FILE" != "$runner_secret_default" ]; then
+    [ "$S3_RUNNER_ACCESS_FILE" != "$runner_access_default" ] \
+      && [ "$S3_RUNNER_SECRET_FILE" != "$runner_secret_default" ] \
       || die "runner S3 access-key and secret-key file overrides must be supplied together"
     runner_external=true
   fi
-  if [ "$MINIO_EXECUTOR_ACCESS_FILE" != "$executor_access_default" ] \
-      || [ "$MINIO_EXECUTOR_SECRET_FILE" != "$executor_secret_default" ]; then
-    [ "$MINIO_EXECUTOR_ACCESS_FILE" != "$executor_access_default" ] \
-      && [ "$MINIO_EXECUTOR_SECRET_FILE" != "$executor_secret_default" ] \
+  if [ "$S3_EXECUTOR_ACCESS_FILE" != "$executor_access_default" ] \
+      || [ "$S3_EXECUTOR_SECRET_FILE" != "$executor_secret_default" ]; then
+    [ "$S3_EXECUTOR_ACCESS_FILE" != "$executor_access_default" ] \
+      && [ "$S3_EXECUTOR_SECRET_FILE" != "$executor_secret_default" ] \
       || die "executor S3 access-key and secret-key file overrides must be supplied together"
     executor_external=true
   fi
   if [ "$runner_external" = false ]; then
-    ensure_secret "$MINIO_RUNNER_ACCESS_FILE" "yanorunner$(openssl rand -hex 8)"
-    ensure_secret "$MINIO_RUNNER_SECRET_FILE" "$(openssl rand -hex 32)"
+    ensure_secret "$S3_RUNNER_ACCESS_FILE" "yanorunner$(openssl rand -hex 8)"
+    ensure_secret "$S3_RUNNER_SECRET_FILE" "$(openssl rand -hex 32)"
   fi
   if [ "$executor_external" = false ]; then
-    ensure_secret "$MINIO_EXECUTOR_ACCESS_FILE" "yanoexecutor$(openssl rand -hex 8)"
-    ensure_secret "$MINIO_EXECUTOR_SECRET_FILE" "$(openssl rand -hex 32)"
+    ensure_secret "$S3_EXECUTOR_ACCESS_FILE" "yanoexecutor$(openssl rand -hex 8)"
+    ensure_secret "$S3_EXECUTOR_SECRET_FILE" "$(openssl rand -hex 32)"
   fi
   ensure_secret "$GRAFANA_PASSWORD_FILE" "$(openssl rand -hex 24)"
   if [ "$ANCHOR_ENABLED" = true ]; then
@@ -711,10 +831,114 @@ prepare_secrets() {
   else
     ANCHOR_KEY_VALUE=""
   fi
-  read_secret "$MINIO_RUNNER_ACCESS_FILE" >/dev/null
-  read_secret "$MINIO_RUNNER_SECRET_FILE" >/dev/null
-  read_secret "$MINIO_EXECUTOR_ACCESS_FILE" >/dev/null
-  read_secret "$MINIO_EXECUTOR_SECRET_FILE" >/dev/null
+  read_secret "$S3_RUNNER_ACCESS_FILE" >/dev/null
+  read_secret "$S3_RUNNER_SECRET_FILE" >/dev/null
+  read_secret "$S3_EXECUTOR_ACCESS_FILE" >/dev/null
+  read_secret "$S3_EXECUTOR_SECRET_FILE" >/dev/null
+  S3_CONFIG_HASH="$(python3 "$SCRIPT_DIR/tools/rustfs_iam_spec.py" \
+    --output "$RUSTFS_IAM_SPEC_FILE" \
+    --root-access "$S3_BOOTSTRAP_ACCESS_FILE" \
+    --runner-access "$S3_RUNNER_ACCESS_FILE" \
+    --executor-access "$S3_EXECUTOR_ACCESS_FILE")" \
+    || die "could not securely create or validate the RustFS S3 IAM specification"
+  [[ "$S3_CONFIG_HASH" =~ ^[0-9a-f]{64}$ ]] \
+    || die "RustFS S3 IAM specification helper returned an invalid digest"
+}
+
+load_cached_key_material() {
+  local anchor_value
+  MEMBER_KEYS="$(python3 "$SCRIPT_DIR/tools/ed25519_keys.py" \
+    --directory "$MEMBER_KEY_DIR" --mode generated --count 3 --existing-only)" \
+    || die "persisted member key material is missing or unsafe"
+  [[ "$MEMBER_KEYS" =~ ^[0-9a-f]{64},[0-9a-f]{64},[0-9a-f]{64}$ ]] \
+    || die "persisted member key helper returned an invalid three-member identity"
+  MEMBER_SEED_0="$(read_secret "$MEMBER_KEY_DIR/node0.seed")"
+  MEMBER_SEED_1="$(read_secret "$MEMBER_KEY_DIR/node1.seed")"
+  MEMBER_SEED_2="$(read_secret "$MEMBER_KEY_DIR/node2.seed")"
+  [[ "$MEMBER_SEED_0,$MEMBER_SEED_1,$MEMBER_SEED_2" \
+      =~ ^[0-9a-f]{64},[0-9a-f]{64},[0-9a-f]{64}$ ]] \
+    || die "persisted member key files must contain canonical 32-byte seeds"
+  PROPOSER_KEY="${MEMBER_KEYS%%,*}"
+  RESULT_SIGNERS="${MEMBER_KEYS%,*}"
+  [[ "$RESULT_SIGNERS" =~ ^[0-9a-f]{64},[0-9a-f]{64}$ ]] \
+    || die "persisted result signer policy is malformed"
+  if [ "$ANCHOR_ENABLED" = true ]; then
+    if [ -z "$ANCHOR_KEY_FILE" ]; then
+      [ "$DEMO_NETWORK" = devnet ] \
+        || die "public anchored commands require the original --anchor-key-file"
+      ANCHOR_KEY_FILE="$SECRET_ROOT/anchor.seed"
+    fi
+    anchor_value="$(read_secret "$ANCHOR_KEY_FILE")"
+    [[ "$anchor_value" =~ ^[0-9a-fA-F]{64}$ ]] \
+      || die "persisted anchor key file must contain one 32-byte hexadecimal seed"
+    ANCHOR_KEY_VALUE="$(printf '%s' "$anchor_value" | tr 'A-F' 'a-f')"
+  else
+    ANCHOR_KEY_VALUE=""
+  fi
+}
+
+verify_loaded_key_identity() {
+  python3 - "$INSTANCE_MARKER" "$MEMBER_KEYS" "$PROPOSER_KEY" \
+    "$RESULT_SIGNERS" "$ANCHOR_ENABLED" "$ANCHOR_KEY_VALUE" <<'PY' \
+    || die "persisted signing keys do not match the immutable app-chain identity"
+import hashlib
+import json
+import os
+import stat
+import sys
+
+
+def unique(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate key")
+        result[key] = value
+    return result
+
+
+path, members_csv, proposer, result_signers_csv, anchor_enabled, anchor_key = sys.argv[1:]
+flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+descriptor = os.open(path, flags)
+try:
+    before = os.fstat(descriptor)
+    if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.geteuid()
+            or before.st_nlink != 1 or stat.S_IMODE(before.st_mode) != 0o600
+            or not 1 <= before.st_size <= 65536):
+        raise ValueError("unsafe app-chain identity marker")
+    raw = b""
+    while len(raw) <= 65536:
+        chunk = os.read(descriptor, 65537 - len(raw))
+        if not chunk:
+            break
+        raw += chunk
+    after = os.fstat(descriptor)
+    if ((before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+            != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+            or len(raw) != before.st_size):
+        raise ValueError("app-chain identity marker changed while being read")
+finally:
+    os.close(descriptor)
+document = json.loads(raw.decode("utf-8"), object_pairs_hook=unique)
+canonical = (json.dumps(document, ensure_ascii=False, allow_nan=False,
+                        sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+if raw != canonical:
+    raise ValueError("app-chain identity marker is not canonical")
+members = members_csv.split(",")
+result_signers = result_signers_csv.split(",")
+membership = document.get("membership", {})
+if (membership.get("members") != members or membership.get("proposer") != proposer
+        or result_signers != members[:2]
+        or membership.get("resultSigners") != result_signers):
+    raise ValueError("member signing identity changed")
+anchor = document.get("anchor", {})
+enabled = anchor_enabled == "true"
+fingerprint = (hashlib.sha256(b"yano-demo-anchor-signer-v1\0"
+                              + anchor_key.encode("ascii")).hexdigest()
+               if enabled else None)
+if anchor.get("enabled") is not enabled or anchor.get("signerFingerprint") != fingerprint:
+    raise ValueError("anchor signing identity changed")
+PY
 }
 
 verify_cached_key_material() {
@@ -876,7 +1100,8 @@ install_staged_network_material() {
 
 write_instance_identity() {
   local output="$1" anchor_fingerprint="none" network_digest s3_id ipfs_id kafka_id
-  local s3_locator ipfs_locator kafka_locator
+  local s3_locator ipfs_locator kafka_locator s3_provider s3_provider_version
+  local s3_layout_version s3_config_hash
   network_digest="$(python3 - "$NETWORK_MARKER" <<'PY'
 import hashlib, sys
 print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())
@@ -888,20 +1113,27 @@ PY
   fi
   if [ "$MODE" = compose ]; then
     s3_id="$COMPOSE_S3_TARGET_ID"; ipfs_id="$COMPOSE_IPFS_TARGET_ID"; kafka_id="$COMPOSE_KAFKA_TARGET_ID"
-    s3_locator="http://$DEMO_MINIO_IP:9000"
+    s3_locator="http://$DEMO_S3_IP:9000"
+    s3_provider="$S3_PROVIDER"; s3_provider_version="$S3_PROVIDER_VERSION"
+    s3_layout_version="$S3_LAYOUT_VERSION"; s3_config_hash="$S3_CONFIG_HASH"
     ipfs_locator="http://$DEMO_KUBO_IP:5001"
     kafka_locator="kafka:9092"
   else
     s3_id="$HOST_S3_TARGET_ID"; ipfs_id="$HOST_IPFS_TARGET_ID"; kafka_id="$HOST_KAFKA_TARGET_ID"
-    s3_locator="${DEMO_HOST_S3_ENDPOINT:-http://127.0.0.1:$DEMO_MINIO_PORT}"
+    s3_locator="${DEMO_HOST_S3_ENDPOINT:-http://127.0.0.1:$DEMO_S3_PORT}"
+    s3_provider="external-s3-compatible"; s3_provider_version=""
+    s3_layout_version="1"; s3_config_hash=""
     ipfs_locator="${DEMO_HOST_IPFS_API_URL:-http://127.0.0.1:$DEMO_IPFS_PORT}"
     kafka_locator="${DEMO_HOST_KAFKA_BOOTSTRAP_SERVERS:-127.0.0.1:$DEMO_KAFKA_PORT}"
   fi
   python3 - "$output" "$DEMO_NETWORK" "$network_digest" "$INSTANCE" "$MODE" \
-    "$DEMO_CHAIN_ID" "$MEMBER_KEYS" "$PROPOSER_KEY" "$STORAGE_GATE" "$REQUIRE_ANCHOR" \
+    "$DEMO_CHAIN_ID" "$MEMBER_KEYS" "$PROPOSER_KEY" "$RESULT_SIGNERS" \
+    "$STORAGE_GATE" "$REQUIRE_ANCHOR" "$DEMO_CONTINUATION_MODE" \
+    "$STATE_MACHINE_ID" \
     "$ANCHOR_ENABLED" "$PROFILE_ANCHOR_EVERY_BLOCKS" \
     "$PROFILE_ANCHOR_MAX_INTERVAL_MINUTES" "$anchor_fingerprint" "$PROJECT_NAME" \
-    "$s3_id" "$s3_locator" "$ipfs_id" "$ipfs_locator" "$kafka_id" "$kafka_locator" <<'PY'
+    "$s3_id" "$s3_locator" "$ipfs_id" "$ipfs_locator" "$kafka_id" "$kafka_locator" \
+    "$s3_provider" "$s3_provider_version" "$s3_layout_version" "$s3_config_hash" <<'PY'
 import hashlib
 import json
 from pathlib import Path
@@ -909,15 +1141,21 @@ import sys
 
 (
     output, network, network_digest, instance, deployment, chain_id, members_csv,
-    proposer, storage_gate, require_anchor, anchor_enabled, anchor_every,
+    proposer, result_signers_csv, storage_gate, require_anchor, continuation_mode,
+    state_machine,
+    anchor_enabled, anchor_every,
     anchor_max_interval, anchor_fingerprint, project, s3_id, s3_locator, ipfs_id, ipfs_locator,
-    kafka_id, kafka_locator,
+    kafka_id, kafka_locator, s3_provider, s3_provider_version, s3_layout_version,
+    s3_config_hash,
 ) = sys.argv[1:]
 members = members_csv.split(",")
+result_signers = result_signers_csv.split(",")
+if len(members) != 3 or len(set(members)) != 3 or result_signers != members[:2]:
+    raise SystemExit("invalid immutable result signer policy")
 document = {
     "schemaVersion": 1,
     "kind": "yano.demo.appchain-identity",
-    "layoutVersion": 1,
+    "layoutVersion": 3,
     "networkName": network,
     "networkIdentitySha256": network_digest,
     "instanceId": instance,
@@ -925,17 +1163,22 @@ document = {
     "composeProject": project if deployment == "compose" else None,
     "chainIds": [chain_id],
     "stateMachine": {
-        "provider": "evidence-registry",
-        "profileVersion": 1,
+        "provider": state_machine,
+        "profileVersion": 2 if continuation_mode == "direct" else 1,
         "effectEmissionVersion": 1,
     },
     "membership": {
         "members": members,
         "threshold": 2,
         "proposer": proposer,
-        "resultSigners": [proposer],
+        "resultSigners": result_signers,
     },
-    "effects": {"storageGate": storage_gate, "requireAnchor": require_anchor == "true"},
+    "effects": {
+        "storageGate": storage_gate,
+        "requireAnchor": require_anchor == "true",
+        "continuationMode": continuation_mode,
+        "directResultEmissionActivationHeight": 1 if continuation_mode == "direct" else None,
+    },
     "anchor": {
         "enabled": anchor_enabled == "true",
         "mode": "script" if anchor_enabled == "true" else "none",
@@ -944,11 +1187,21 @@ document = {
         "signerFingerprint": anchor_fingerprint if anchor_enabled == "true" else None,
     },
     "connectors": {
-        "s3": {"targetId": s3_id, "locator": s3_locator, "profile": "local-demo-v1"},
+        "s3": {
+            "targetId": s3_id,
+            "locator": s3_locator,
+            "profile": "local-demo-v2" if deployment == "compose" else "operator-managed-v1",
+            "provider": s3_provider,
+            "providerVersion": s3_provider_version or None,
+            "dataLayoutVersion": int(s3_layout_version),
+            "iamConfigSha256": s3_config_hash or None,
+        },
         "ipfs": {"targetId": ipfs_id, "locator": ipfs_locator, "profile": "kubo-v1"},
         "kafka": {"targetId": kafka_id, "locator": kafka_locator, "profile": "acknowledged-v1"},
     },
 }
+if state_machine == "composite":
+    document["stateMachine"]["preset"] = "evidence-v1"
 Path(output).write_text(
     json.dumps(document, sort_keys=True, separators=(",", ":")) + "\n",
     encoding="utf-8",
@@ -976,84 +1229,12 @@ validate_anchor_binding_preflight() {
     [ -f "$DATA_ROOT/app-chain/node$i/$DEMO_CHAIN_ID/CURRENT" ] \
       || die "anchored instance is missing node $i app-chain history; restore it or retire this instance"
   done
-  python3 - "$ANCHOR_BINDING" "$DEMO_NETWORK" "$INSTANCE" "$MODE" \
-    "$DEMO_CHAIN_ID" <<'PY' \
+  python3 "$SCRIPT_DIR/tools/anchor_binding.py" validate \
+    --binding "$ANCHOR_BINDING" --network "$DEMO_NETWORK" \
+    --instance "$INSTANCE" --deployment "$MODE" --chain-id "$DEMO_CHAIN_ID" \
+    --state-machine "$STATE_MACHINE_ID" \
+    >/dev/null \
     || die "anchor binding identity is invalid or does not match the selected immutable instance"
-import json
-import os
-from pathlib import Path
-import re
-import stat
-import sys
-
-
-def unique(pairs):
-    result = {}
-    for key, value in pairs:
-        if key in result:
-            raise ValueError("duplicate key")
-        result[key] = value
-    return result
-
-
-path = Path(sys.argv[1])
-flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
-descriptor = os.open(path, flags)
-try:
-    before = os.fstat(descriptor)
-    if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.geteuid()
-            or before.st_nlink != 1 or stat.S_IMODE(before.st_mode) not in (0o400, 0o600)
-            or not 1 <= before.st_size <= 65536):
-        raise SystemExit(1)
-    raw = b""
-    while len(raw) <= 65536:
-        chunk = os.read(descriptor, 65537 - len(raw))
-        if not chunk:
-            break
-        raw += chunk
-    after = os.fstat(descriptor)
-    if ((before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
-            != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
-            or len(raw) != before.st_size):
-        raise SystemExit(1)
-finally:
-    os.close(descriptor)
-try:
-    document = json.loads(raw.decode("utf-8"), object_pairs_hook=unique)
-except (UnicodeDecodeError, ValueError, json.JSONDecodeError):
-    raise SystemExit(1)
-expected_keys = {
-    "schemaVersion", "kind", "networkName", "instanceId", "deployment", "chainId",
-    "threadPolicyId", "scriptHash", "scriptAddress", "lastAdoptedHeight",
-    "verifiedMembers", "verifiedAtMillis",
-}
-expected = {
-    "schemaVersion": 1,
-    "kind": "yano.demo.anchor-binding",
-    "networkName": sys.argv[2],
-    "instanceId": sys.argv[3],
-    "deployment": sys.argv[4],
-    "chainId": sys.argv[5],
-    "verifiedMembers": 3,
-}
-if set(document) != expected_keys or any(document.get(key) != value for key, value in expected.items()):
-    raise SystemExit(1)
-if not re.fullmatch(r"[0-9a-f]{56}", document.get("threadPolicyId", "")):
-    raise SystemExit(1)
-if not re.fullmatch(r"[0-9a-f]{56}", document.get("scriptHash", "")):
-    raise SystemExit(1)
-address = document.get("scriptAddress")
-if not isinstance(address, str) or not re.fullmatch(r"addr_test1[a-z0-9]{20,240}", address):
-    raise SystemExit(1)
-for key in ("lastAdoptedHeight", "verifiedAtMillis"):
-    value = document.get(key)
-    if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= (1 << 63) - 1:
-        raise SystemExit(1)
-canonical = (json.dumps(document, ensure_ascii=False, allow_nan=False,
-                        sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
-if raw != canonical:
-    raise SystemExit(1)
-PY
 }
 
 prepare_instance_identity() {
@@ -1119,8 +1300,11 @@ compose_node_config() {
   fi
   render_template "$SCRIPT_DIR/config/templates/node-compose.properties.in" "$base" \
     API_KEY "$(read_secret "$API_KEY_FILE")" CHAIN_ID "$DEMO_CHAIN_ID" \
+    STATE_MACHINE "$STATE_MACHINE_ID" \
     SIGNING_KEY "$seed" APP_PEERS "$peers" MEMBER_KEYS "$MEMBER_KEYS" \
-    PROPOSER_KEY "$PROPOSER_KEY" STORAGE_GATE "$STORAGE_GATE" \
+    PROPOSER_KEY "$PROPOSER_KEY" RESULT_SIGNERS "$RESULT_SIGNERS" \
+    STORAGE_GATE "$STORAGE_GATE" \
+    DIRECT_RESULT_ACTIVATION_SETTING "$DIRECT_RESULT_ACTIVATION_SETTING" \
     GENESIS_TIMESTAMP_SETTING "$genesis_setting"
   insert_node_settings "$base" "$extras" "$NODE_CONFIG_DIR/node$index.properties"
   rm -f "$base"
@@ -1137,11 +1321,11 @@ prepare_compose_configs() {
   follower="$RUNTIME_ROOT/follower-compose.properties"
   node0extra="$RUNTIME_ROOT/node0-compose.properties"
   render_template "$SCRIPT_DIR/config/templates/executor-compose.properties.in" "$executor" \
-    MINIO_IP "$DEMO_MINIO_IP" KUBO_IP "$DEMO_KUBO_IP" \
+    S3_IP "$DEMO_S3_IP" KUBO_IP "$DEMO_KUBO_IP" \
     S3_TARGET_ID "$COMPOSE_S3_TARGET_ID" IPFS_TARGET_ID "$COMPOSE_IPFS_TARGET_ID" \
     KAFKA_TARGET_ID "$COMPOSE_KAFKA_TARGET_ID" \
-    MINIO_EXECUTOR_ACCESS "$(read_secret "$MINIO_EXECUTOR_ACCESS_FILE")" \
-    MINIO_EXECUTOR_SECRET "$(read_secret "$MINIO_EXECUTOR_SECRET_FILE")"
+    S3_EXECUTOR_ACCESS "$(read_secret "$S3_EXECUTOR_ACCESS_FILE")" \
+    S3_EXECUTOR_SECRET "$(read_secret "$S3_EXECUTOR_SECRET_FILE")"
   cp "$executor" "$node0extra"
   if [ "$ANCHOR_ENABLED" = true ]; then
     anchor_key="$ANCHOR_KEY_VALUE"
@@ -1168,13 +1352,49 @@ prepare_compose_configs() {
   compose_node_config 2 "$MEMBER_SEED_2" \
     'yano-0:13337,yano-1:13337' "$follower"
   render_template "$SCRIPT_DIR/config/templates/runner-compose.properties.in" "$RUNNER_CONFIG" \
-    CHAIN_ID "$DEMO_CHAIN_ID" MINIO_IP "$DEMO_MINIO_IP" KUBO_IP "$DEMO_KUBO_IP" \
+    CHAIN_ID "$DEMO_CHAIN_ID" S3_IP "$DEMO_S3_IP" KUBO_IP "$DEMO_KUBO_IP" \
+    STATE_MACHINE "$STATE_MACHINE_ID" \
+    COMPOSITE_PROFILE_DIGEST_SETTING "$COMPOSITE_PROFILE_DIGEST_SETTING" \
+    EVIDENCE_ID "$DEMO_EVIDENCE_ID" \
     S3_TARGET_ID "$COMPOSE_S3_TARGET_ID" IPFS_TARGET_ID "$COMPOSE_IPFS_TARGET_ID" \
     KAFKA_TARGET_ID "$COMPOSE_KAFKA_TARGET_ID" \
     MEMBER_KEYS "$MEMBER_KEYS" REQUIRE_ANCHOR "$REQUIRE_ANCHOR" \
     TIMEOUT_SECONDS "$DEMO_SCENARIO_TIMEOUT_SECONDS" \
     POLL_INTERVAL_MILLIS "$DEMO_SCENARIO_POLL_INTERVAL_MILLIS"
   chmod 600 "$RUNNER_CONFIG"
+  render_template "$SCRIPT_DIR/config/templates/s3-bootstrap-compose.properties.in" \
+    "$S3_BOOTSTRAP_CONFIG" S3_IP "$DEMO_S3_IP"
+  chmod 600 "$S3_BOOTSTRAP_CONFIG"
+  render_template "$SCRIPT_DIR/config/templates/kafka-passwd.in" "$KAFKA_PASSWD_FILE" \
+    HOST_UID "$DEMO_HOST_UID" HOST_GID "$DEMO_HOST_GID"
+  render_template "$SCRIPT_DIR/config/templates/kafka-group.in" "$KAFKA_GROUP_FILE" \
+    HOST_GID "$DEMO_HOST_GID"
+  chmod 600 "$KAFKA_PASSWD_FILE" "$KAFKA_GROUP_FILE"
+  python3 - "$KAFKA_PASSWD_FILE" "$KAFKA_GROUP_FILE" \
+    "$DEMO_HOST_UID" "$DEMO_HOST_GID" <<'PY' \
+    || die "generated Kafka NSS compatibility files are unsafe or inconsistent"
+import os
+import stat
+import sys
+
+passwd, group, uid, gid = sys.argv[1:]
+expected = {
+    passwd: f"root:!:0:0:root:/root:/sbin/nologin\nyano-kafka:!:{uid}:{gid}:Yano Kafka:/nonexistent:/sbin/nologin\n",
+    group: f"root:!:0:\nyano-kafka:!:{gid}:\n",
+}
+flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+for path, content in expected.items():
+    descriptor = os.open(path, flags)
+    try:
+        info = os.fstat(descriptor)
+        actual = os.read(descriptor, 4097)
+    finally:
+        os.close(descriptor)
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+            or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) != 0o600
+            or actual != content.encode("ascii")):
+        raise SystemExit(1)
+PY
   render_template "$SCRIPT_DIR/config/templates/runner-ui.properties.in" "$UI_CONFIG" \
     REPORT_DIRECTORY /var/lib/yano-demo/reports BIND_ADDRESS 0.0.0.0 UI_INTERNAL_PORT 7080
   chmod 600 "$UI_CONFIG"
@@ -1188,15 +1408,15 @@ prepare_host_configs() {
   chmod 700 "$NODE_CONFIG_DIR"
   executor="$RUNTIME_ROOT/executor-host.properties"
   follower="$RUNTIME_ROOT/follower-host.properties"
-  access="$(read_secret "$MINIO_EXECUTOR_ACCESS_FILE")"
-  secret="$(read_secret "$MINIO_EXECUTOR_SECRET_FILE")"
+  access="$(read_secret "$S3_EXECUTOR_ACCESS_FILE")"
+  secret="$(read_secret "$S3_EXECUTOR_SECRET_FILE")"
   render_template "$SCRIPT_DIR/config/templates/executor-host.properties.in" "$executor" \
     KAFKA_BOOTSTRAP_SERVERS "${DEMO_HOST_KAFKA_BOOTSTRAP_SERVERS:-127.0.0.1:$DEMO_KAFKA_PORT}" \
-    S3_ENDPOINT "${DEMO_HOST_S3_ENDPOINT:-http://127.0.0.1:$DEMO_MINIO_PORT}" \
+    S3_ENDPOINT "${DEMO_HOST_S3_ENDPOINT:-http://127.0.0.1:$DEMO_S3_PORT}" \
     IPFS_API_URL "${DEMO_HOST_IPFS_API_URL:-http://127.0.0.1:$DEMO_IPFS_PORT}" \
     S3_TARGET_ID "$HOST_S3_TARGET_ID" IPFS_TARGET_ID "$HOST_IPFS_TARGET_ID" \
     KAFKA_TARGET_ID "$HOST_KAFKA_TARGET_ID" \
-    MINIO_EXECUTOR_ACCESS "$access" MINIO_EXECUTOR_SECRET "$secret"
+    S3_EXECUTOR_ACCESS "$access" S3_EXECUTOR_SECRET "$secret"
   cp "$SCRIPT_DIR/config/templates/follower-host.properties.in" "$follower"
   genesis_setting="# public-network systemStart comes from the selected genesis"
   if [ "$DEMO_NETWORK" = devnet ]; then
@@ -1205,7 +1425,10 @@ prepare_host_configs() {
   for i in 0 1 2; do
     base="$RUNTIME_ROOT/node$i-host.base"
     render_template "$SCRIPT_DIR/config/templates/node-host.properties.in" "$base" \
-      PLUGIN_DIR "$PLUGIN_DIR" PROPOSER_KEY "$PROPOSER_KEY" STORAGE_GATE "$STORAGE_GATE" \
+      PLUGIN_DIR "$PLUGIN_DIR" PROPOSER_KEY "$PROPOSER_KEY" \
+      STATE_MACHINE "$STATE_MACHINE_ID" \
+      RESULT_SIGNERS "$RESULT_SIGNERS" STORAGE_GATE "$STORAGE_GATE" \
+      DIRECT_RESULT_ACTIVATION_SETTING "$DIRECT_RESULT_ACTIVATION_SETTING" \
       GENESIS_TIMESTAMP_SETTING "$genesis_setting" \
       ANCHOR_MAX_INTERVAL_MINUTES "$PROFILE_ANCHOR_MAX_INTERVAL_MINUTES"
     insert_node_settings "$base" "$([ "$i" -eq 0 ] && printf '%s' "$executor" || printf '%s' "$follower")" \
@@ -1214,11 +1437,14 @@ prepare_host_configs() {
   done
   render_template "$SCRIPT_DIR/config/templates/runner-host.properties.in" "$RUNNER_CONFIG" \
     CHAIN_ID "$DEMO_CHAIN_ID" HTTP0 "$HTTP0" HTTP1 "$HTTP1" HTTP2 "$HTTP2" \
+    STATE_MACHINE "$STATE_MACHINE_ID" \
+    COMPOSITE_PROFILE_DIGEST_SETTING "$COMPOSITE_PROFILE_DIGEST_SETTING" \
+    EVIDENCE_ID "$DEMO_EVIDENCE_ID" \
     SAMPLE_FILE "$SCRIPT_DIR/samples/inspection-certificate.json" \
     REPORT_DIRECTORY "$REPORT_DIR" \
-    S3_ENDPOINT "${DEMO_HOST_S3_ENDPOINT:-http://127.0.0.1:$DEMO_MINIO_PORT}" \
-    MINIO_RUNNER_ACCESS_FILE "$MINIO_RUNNER_ACCESS_FILE" \
-    MINIO_RUNNER_SECRET_FILE "$MINIO_RUNNER_SECRET_FILE" \
+    S3_ENDPOINT "${DEMO_HOST_S3_ENDPOINT:-http://127.0.0.1:$DEMO_S3_PORT}" \
+    S3_RUNNER_ACCESS_FILE "$S3_RUNNER_ACCESS_FILE" \
+    S3_RUNNER_SECRET_FILE "$S3_RUNNER_SECRET_FILE" \
     IPFS_API_URL "${DEMO_HOST_IPFS_API_URL:-http://127.0.0.1:$DEMO_IPFS_PORT}" \
     KAFKA_BOOTSTRAP_SERVERS "${DEMO_HOST_KAFKA_BOOTSTRAP_SERVERS:-127.0.0.1:$DEMO_KAFKA_PORT}" \
     S3_TARGET_ID "$HOST_S3_TARGET_ID" IPFS_TARGET_ID "$HOST_IPFS_TARGET_ID" \
@@ -1237,24 +1463,27 @@ prepare_host_configs() {
     cp -R "$APP_DIR/config/." "$host_home/config/"
   fi
   render_template "$SCRIPT_DIR/config/templates/application-appchain.yml.in" \
-    "$host_home/config/application-appchain.yml" CHAIN_ID "$DEMO_CHAIN_ID"
+    "$host_home/config/application-appchain.yml" CHAIN_ID "$DEMO_CHAIN_ID" \
+    STATE_MACHINE "$STATE_MACHINE_ID"
 }
 
 write_compose_env() {
   local i variable
-  for variable in DEMO_KAFKA_IMAGE DEMO_MINIO_IMAGE DEMO_MINIO_MC_IMAGE \
+  for variable in DEMO_KAFKA_IMAGE DEMO_RUSTFS_IMAGE \
     DEMO_KUBO_IMAGE DEMO_PROMETHEUS_IMAGE DEMO_GRAFANA_IMAGE \
-    DEMO_YANO_IMAGE DEMO_RUNNER_IMAGE DEMO_CONNECTOR_SUBNET DEMO_MINIO_IP \
-    DEMO_KUBO_IP DEMO_UI_PORT DEMO_KAFKA_PORT DEMO_MINIO_PORT DEMO_IPFS_PORT \
+    DEMO_YANO_IMAGE DEMO_RUNNER_IMAGE DEMO_CONNECTOR_SUBNET DEMO_S3_IP \
+    DEMO_KUBO_IP DEMO_UI_PORT DEMO_KAFKA_PORT DEMO_S3_PORT DEMO_IPFS_PORT \
     DEMO_PROMETHEUS_PORT DEMO_GRAFANA_PORT; do
     compose_env_value "$variable" "${!variable}"
   done
   compose_env_value DEMO_NETWORK "$DEMO_NETWORK"
   compose_env_value PROFILE_WARMUP_SECONDS "$PROFILE_WARMUP_SECONDS"
-  for variable in "$RUNNER_CONFIG" "$UI_CONFIG" "$PLUGIN_DIR" "$REPORT_DIR" "$API_KEY_FILE" \
-    "$MINIO_ROOT_USER_FILE" "$MINIO_ROOT_PASSWORD_FILE" \
-    "$MINIO_RUNNER_ACCESS_FILE" "$MINIO_RUNNER_SECRET_FILE" \
-    "$MINIO_EXECUTOR_ACCESS_FILE" "$MINIO_EXECUTOR_SECRET_FILE" \
+  for variable in "$RUNNER_CONFIG" "$S3_BOOTSTRAP_CONFIG" "$UI_CONFIG" \
+    "$KAFKA_PASSWD_FILE" "$KAFKA_GROUP_FILE" "$PLUGIN_DIR" \
+    "$REPORT_DIR" "$API_KEY_FILE" "$S3_BOOTSTRAP_ACCESS_FILE" \
+    "$S3_BOOTSTRAP_SECRET_FILE" "$S3_IAM_MASTER_KEY_FILE" \
+    "$S3_RUNNER_ACCESS_FILE" "$S3_RUNNER_SECRET_FILE" \
+    "$S3_EXECUTOR_ACCESS_FILE" "$S3_EXECUTOR_SECRET_FILE" "$RUSTFS_IAM_SPEC_FILE" \
     "$GRAFANA_PASSWORD_FILE" "$SHELLEY_GENESIS_FILE" "$NODE_CONFIG_DIR" \
     "$DATA_ROOT"; do
     compose_env_value "generated path" "$variable"
@@ -1264,31 +1493,37 @@ write_compose_env() {
       printf 'DEMO_PROJECT_NAME=%s\n' "$PROJECT_NAME"
       printf 'DEMO_YANO_PROFILE=%s\n' "$DEMO_NETWORK"
       printf 'DEMO_LEADER_WARMUP_SECONDS=%s\n' "$PROFILE_WARMUP_SECONDS"
-      printf 'DEMO_HOST_UID=%s\n' "$(id -u)"
-      printf 'DEMO_HOST_GID=%s\n' "$(id -g)"
+      printf 'DEMO_HOST_UID=%s\n' "$DEMO_HOST_UID"
+      printf 'DEMO_HOST_GID=%s\n' "$DEMO_HOST_GID"
       printf 'DEMO_YANO_IMAGE=%s\n' "$DEMO_YANO_IMAGE"
       printf 'DEMO_RUNNER_IMAGE=%s\n' "$DEMO_RUNNER_IMAGE"
-      for i in KAFKA MINIO MINIO_MC KUBO PROMETHEUS GRAFANA; do
+      printf 'DEMO_RUSTFS_IMAGE=%s\n' "$DEMO_RUSTFS_IMAGE"
+      for i in KAFKA KUBO PROMETHEUS GRAFANA; do
         variable="DEMO_${i}_IMAGE"
         printf 'DEMO_%s_IMAGE=%s\n' "$i" "${!variable}"
       done
       printf 'DEMO_HTTP0=%s\nDEMO_HTTP1=%s\nDEMO_HTTP2=%s\n' "$HTTP0" "$HTTP1" "$HTTP2"
-      printf 'DEMO_UI_PORT=%s\nDEMO_KAFKA_PORT=%s\nDEMO_MINIO_PORT=%s\nDEMO_IPFS_PORT=%s\n' \
-        "$DEMO_UI_PORT" "$DEMO_KAFKA_PORT" "$DEMO_MINIO_PORT" "$DEMO_IPFS_PORT"
+      printf 'DEMO_UI_PORT=%s\nDEMO_KAFKA_PORT=%s\nDEMO_S3_PORT=%s\nDEMO_IPFS_PORT=%s\n' \
+        "$DEMO_UI_PORT" "$DEMO_KAFKA_PORT" "$DEMO_S3_PORT" "$DEMO_IPFS_PORT"
       printf 'DEMO_PROMETHEUS_PORT=%s\nDEMO_GRAFANA_PORT=%s\n' \
         "$DEMO_PROMETHEUS_PORT" "$DEMO_GRAFANA_PORT"
-      printf 'DEMO_CONNECTOR_SUBNET=%s\nDEMO_MINIO_IP=%s\nDEMO_KUBO_IP=%s\n' \
-        "$DEMO_CONNECTOR_SUBNET" "$DEMO_MINIO_IP" "$DEMO_KUBO_IP"
+      printf 'DEMO_CONNECTOR_SUBNET=%s\nDEMO_S3_IP=%s\nDEMO_KUBO_IP=%s\n' \
+        "$DEMO_CONNECTOR_SUBNET" "$DEMO_S3_IP" "$DEMO_KUBO_IP"
       printf 'DEMO_RUNNER_CONFIG=%s\nDEMO_PLUGIN_DIR=%s\nDEMO_REPORT_DIR=%s\n' \
         "$RUNNER_CONFIG" "$PLUGIN_DIR" "$REPORT_DIR"
+      printf 'DEMO_KAFKA_PASSWD_FILE=%s\nDEMO_KAFKA_GROUP_FILE=%s\n' \
+        "$KAFKA_PASSWD_FILE" "$KAFKA_GROUP_FILE"
+      printf 'DEMO_S3_BOOTSTRAP_CONFIG=%s\n' "$S3_BOOTSTRAP_CONFIG"
       printf 'DEMO_UI_CONFIG=%s\n' "$UI_CONFIG"
       printf 'DEMO_API_KEY_FILE=%s\n' "$API_KEY_FILE"
-      printf 'DEMO_MINIO_ROOT_USER_FILE=%s\nDEMO_MINIO_ROOT_PASSWORD_FILE=%s\n' \
-        "$MINIO_ROOT_USER_FILE" "$MINIO_ROOT_PASSWORD_FILE"
-      printf 'DEMO_MINIO_RUNNER_ACCESS_FILE=%s\nDEMO_MINIO_RUNNER_SECRET_FILE=%s\n' \
-        "$MINIO_RUNNER_ACCESS_FILE" "$MINIO_RUNNER_SECRET_FILE"
-      printf 'DEMO_MINIO_EXECUTOR_ACCESS_FILE=%s\nDEMO_MINIO_EXECUTOR_SECRET_FILE=%s\n' \
-        "$MINIO_EXECUTOR_ACCESS_FILE" "$MINIO_EXECUTOR_SECRET_FILE"
+      printf 'DEMO_S3_BOOTSTRAP_ACCESS_FILE=%s\nDEMO_S3_BOOTSTRAP_SECRET_FILE=%s\n' \
+        "$S3_BOOTSTRAP_ACCESS_FILE" "$S3_BOOTSTRAP_SECRET_FILE"
+      printf 'DEMO_S3_IAM_MASTER_KEY_FILE=%s\n' "$S3_IAM_MASTER_KEY_FILE"
+      printf 'DEMO_S3_RUNNER_ACCESS_FILE=%s\nDEMO_S3_RUNNER_SECRET_FILE=%s\n' \
+        "$S3_RUNNER_ACCESS_FILE" "$S3_RUNNER_SECRET_FILE"
+      printf 'DEMO_S3_EXECUTOR_ACCESS_FILE=%s\nDEMO_S3_EXECUTOR_SECRET_FILE=%s\n' \
+        "$S3_EXECUTOR_ACCESS_FILE" "$S3_EXECUTOR_SECRET_FILE"
+      printf 'DEMO_RUSTFS_IAM_SPEC_FILE=%s\n' "$RUSTFS_IAM_SPEC_FILE"
       printf 'DEMO_GRAFANA_PASSWORD_FILE=%s\n' "$GRAFANA_PASSWORD_FILE"
       printf 'DEMO_SHELLEY_GENESIS_FILE=%s\n' "$SHELLEY_GENESIS_FILE"
       for i in 0 1 2; do
@@ -1297,8 +1532,9 @@ write_compose_env() {
         printf 'DEMO_YANO%s_APP_DATA_DIR=%s\n' "$i" "$DATA_ROOT/app-chain/node$i"
         printf 'DEMO_YANO%s_LOG_DIR=%s\n' "$i" "$DATA_ROOT/logs/node$i"
       done
-      printf 'DEMO_KAFKA_DATA_DIR=%s\nDEMO_MINIO_DATA_DIR=%s\nDEMO_IPFS_DATA_DIR=%s\n' \
-        "$DATA_ROOT/connectors/kafka" "$DATA_ROOT/connectors/minio" "$DATA_ROOT/connectors/ipfs"
+      printf 'DEMO_KAFKA_DATA_DIR=%s\nDEMO_S3_DATA_DIR=%s\nDEMO_IPFS_DATA_DIR=%s\n' \
+        "$DATA_ROOT/connectors/kafka" "$DATA_ROOT/connectors/rustfs-v1" \
+        "$DATA_ROOT/connectors/ipfs"
       printf 'DEMO_PROMETHEUS_DATA_DIR=%s\nDEMO_GRAFANA_DATA_DIR=%s\n' \
         "$DATA_ROOT/observability/prometheus" "$DATA_ROOT/observability/grafana"
     } > "$COMPOSE_ENV"
@@ -1399,7 +1635,6 @@ build_artifacts() {
     :appchain-kafka:shadowJar \
     :appchain-ipfs:shadowJar \
     :appchain-objectstore-s3:shadowJar \
-    :appchain-evidence-registry:shadowJar \
     :appchain-evidence-demo-runner:shadowJar \
     :app:prepareYanoDockerJvmContext
   for name in appchain-kafka appchain-ipfs appchain-objectstore-s3; do
@@ -1407,9 +1642,6 @@ build_artifacts() {
       '*-bundle.jar' "$name bundle")"
     install -m 0644 "$source" "$PLUGIN_DIR/$name-bundle.jar"
   done
-  source="$(unique_artifact "$REPO_DIR/appchain/examples/appchain-evidence-registry/build/libs" \
-    '*-bundle.jar' 'evidence-registry bundle')"
-  install -m 0644 "$source" "$PLUGIN_DIR/appchain-evidence-registry-bundle.jar"
   runner="$(unique_artifact "$REPO_DIR/appchain/examples/appchain-evidence-demo-runner/build/libs" \
     '*-all.jar' 'evidence demo runner')"
   install -m 0644 "$runner" "$RUNTIME_ROOT/runner.jar"
@@ -1422,8 +1654,20 @@ build_artifacts() {
 }
 
 build_compose_images() {
-  local yano_context="$1" runner_context
+  local yano_context="$1" runner_context image image_platform server_platform
   require docker
+  require curl
+  server_platform="$(docker version --format '{{.Server.Os}}/{{.Server.Arch}}')"
+  for image in "$DEMO_RUSTFS_IMAGE" "$DEMO_KUBO_IMAGE"; do
+    docker pull "$image" \
+      || die "could not pull a pinned multi-architecture demo dependency: $image"
+    image_platform="$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$image")"
+    case "$image_platform:$server_platform" in
+      linux/amd64:linux/amd64|linux/amd64:linux/x86_64|\
+      linux/arm64:linux/arm64|linux/arm64:linux/aarch64) ;;
+      *) die "the pulled dependency image is not native to the Docker server: $image" ;;
+    esac
+  done
   docker build --pull=false --build-arg "YANO_BASE_IMAGE=$DEMO_RUNNER_BASE_IMAGE" \
     -f "$SCRIPT_DIR/Dockerfile.yano" -t "$DEMO_YANO_IMAGE" "$yano_context"
   runner_context="$RUNTIME_ROOT/runner-image"
@@ -1435,8 +1679,7 @@ build_compose_images() {
 
 verify_artifacts() {
   local name
-  for name in appchain-kafka appchain-ipfs appchain-objectstore-s3 \
-    appchain-evidence-registry; do
+  for name in appchain-kafka appchain-ipfs appchain-objectstore-s3; do
     [ -f "$PLUGIN_DIR/$name-bundle.jar" ] || die "missing staged plugin: $name"
   done
   [ -f "$RUNTIME_ROOT/runner.jar" ] || die "missing runner; run prepare"
@@ -1531,8 +1774,7 @@ PY
 verify_compose_loopback_surfaces() {
   wait_for_loopback_http "Yano node 0" "http://127.0.0.1:$HTTP0/q/health/ready"
   wait_for_loopback_http "evidence UI" "http://127.0.0.1:$DEMO_UI_PORT/healthz"
-  wait_for_loopback_http "MinIO" \
-    "http://127.0.0.1:$DEMO_MINIO_PORT/minio/health/ready"
+  wait_for_loopback_tcp "RustFS S3" "$DEMO_S3_PORT"
   wait_for_loopback_http "Kubo RPC" \
     "http://127.0.0.1:$DEMO_IPFS_PORT/api/v0/version" POST
   wait_for_loopback_tcp "Kafka" "$DEMO_KAFKA_PORT"
@@ -1581,15 +1823,34 @@ print(str(d.get("initialSyncComplete") is True).lower(), d.get("localTipBlockNum
 }
 
 reconcile_anchor_binding() {
-  local deadline status_file i result
+  local require_adopted="${1:-false}" deadline status_file error_file i result
+  local binding_state binding_result binding_error
   local -a statuses=()
+  local -a binding_command
   [ "$ANCHOR_ENABLED" = true ] || return 0
+  [ "$require_adopted" = true ] || [ "$require_adopted" = false ] \
+    || die "internal anchor reconciliation mode is invalid"
   for i in 0 1 2; do
     temporary_file
     statuses+=("$LAST_TEMP_FILE")
   done
+  temporary_file
+  error_file="$LAST_TEMP_FILE"
+  binding_command=(python3 "$SCRIPT_DIR/tools/anchor_binding.py" reconcile \
+    --binding "$ANCHOR_BINDING" --network "$DEMO_NETWORK" \
+    --instance "$INSTANCE" --deployment "$MODE" --chain-id "$DEMO_CHAIN_ID" \
+    --state-machine "$STATE_MACHINE_ID" \
+    --member-keys "$MEMBER_KEYS")
+  [ "$require_adopted" = true ] || binding_command+=(--allow-pristine-pending)
+  for status_file in "${statuses[@]}"; do
+    binding_command+=(--status "$status_file")
+  done
   deadline=$((SECONDS + 180))
-  note "WAIT_ANCHOR_ADOPTION: verifying one script identity and adopted height on all members."
+  if [ "$require_adopted" = true ]; then
+    note "WAIT_ANCHOR_ADOPTION: requiring one adopted script identity and height on all members."
+  else
+    note "WAIT_ANCHOR_ADOPTION: verifying all members; a pristine height-0 identity may remain pending until first activity."
+  fi
   while [ "$SECONDS" -lt "$deadline" ]; do
     result=0
     for i in 0 1 2; do
@@ -1597,94 +1858,30 @@ reconcile_anchor_binding() {
         "http://127.0.0.1:$((HTTP0 + i))/api/v1/app-chain/chains/$DEMO_CHAIN_ID/status" \
         > "${statuses[$i]}" || result=1
     done
-    if [ "$result" -eq 0 ] && python3 - "$ANCHOR_BINDING" "$DEMO_NETWORK" \
-        "$INSTANCE" "$MODE" "$DEMO_CHAIN_ID" "${statuses[@]}" <<'PY'
-import json
-import os
-from pathlib import Path
-import re
-import sys
-import tempfile
-import time
-
-binding_path = Path(sys.argv[1])
-network, instance, deployment, chain_id = sys.argv[2:6]
-documents = [json.loads(Path(path).read_text(encoding="utf-8")) for path in sys.argv[6:]]
-anchors = [document.get("anchor", {}) for document in documents]
-if len(anchors) != 3 or not all(anchor.get("bootstrapped") is True for anchor in anchors):
-    raise SystemExit(1)
-keys = ("threadPolicyId", "scriptHash", "scriptAddress")
-identity = {key: anchors[0].get(key) for key in keys}
-if not re.fullmatch(r"[0-9a-f]{56}", identity["threadPolicyId"] or ""):
-    raise SystemExit(1)
-if not re.fullmatch(r"[0-9a-f]{56}", identity["scriptHash"] or ""):
-    raise SystemExit(1)
-if not isinstance(identity["scriptAddress"], str) or not identity["scriptAddress"]:
-    raise SystemExit(1)
-if any(any(anchor.get(key) != value for key, value in identity.items()) for anchor in anchors):
-    raise SystemExit(1)
-heights = [anchor.get("lastAnchoredHeight") for anchor in anchors]
-if any(not isinstance(height, int) or isinstance(height, bool) or height < 0 for height in heights):
-    raise SystemExit(1)
-if len(set(heights)) != 1:
-    raise SystemExit(1)
-
-fixed = {
-    "schemaVersion": 1,
-    "kind": "yano.demo.anchor-binding",
-    "networkName": network,
-    "instanceId": instance,
-    "deployment": deployment,
-    "chainId": chain_id,
-    **identity,
-}
-if binding_path.exists() or binding_path.is_symlink():
-    if binding_path.is_symlink() or not binding_path.is_file():
-        raise SystemExit("existing anchor binding is not a regular file")
-    existing = json.loads(binding_path.read_text(encoding="utf-8"))
-    for key, value in fixed.items():
-        if existing.get(key) != value:
-            raise SystemExit(f"existing anchor binding changed at {key}")
-document = {
-    **fixed,
-    "lastAdoptedHeight": heights[0],
-    "verifiedMembers": 3,
-    "verifiedAtMillis": int(time.time() * 1000),
-}
-content = (json.dumps(document, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
-descriptor, temporary = tempfile.mkstemp(prefix=".anchor-binding.", dir=binding_path.parent)
-try:
-    os.fchmod(descriptor, 0o600)
-    view = memoryview(content)
-    while view:
-        written = os.write(descriptor, view)
-        if written <= 0:
-            raise OSError("short write")
-        view = view[written:]
-    os.fsync(descriptor)
-    os.close(descriptor)
-    descriptor = -1
-    os.replace(temporary, binding_path)
-    directory = os.open(binding_path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-    try:
-        os.fsync(directory)
-    finally:
-        os.close(directory)
-finally:
-    if descriptor >= 0:
-        os.close(descriptor)
-    try:
-        os.unlink(temporary)
-    except FileNotFoundError:
-        pass
-PY
-    then
-      note "Anchor binding verified and recorded at $ANCHOR_BINDING."
-      return 0
+    if [ "$result" -eq 0 ]; then
+      if binding_state="$("${binding_command[@]}" 2>"$error_file")"; then
+        if [ "$binding_state" = pending-genesis ]; then
+          note "Anchor binding recorded as pending-genesis; the first app-chain activity will require three-member adoption."
+        else
+          note "Anchor binding verified and atomically recorded as member-adopted at $ANCHOR_BINDING."
+        fi
+        return 0
+      else
+        binding_result=$?
+        if [ "$binding_result" -eq 2 ]; then
+          binding_error="$(tr '\n' ' ' < "$error_file")"
+          die "anchor binding reconciliation failed closed: ${binding_error:-invalid binding or member status}"
+        fi
+        [ "$binding_result" -eq 3 ] \
+          || die "anchor binding reconciliation returned unexpected status $binding_result"
+      fi
     fi
     sleep 2
   done
-  die "members did not converge on one bootstrapped anchor identity/height within 180 seconds"
+  if [ "$require_adopted" = true ]; then
+    die "members did not converge on one adopted anchor identity/height within 180 seconds"
+  fi
+  die "members were neither pristine-pending nor converged on one adopted anchor within 180 seconds"
 }
 
 compose_anchor_bootstrap() {
@@ -1695,9 +1892,8 @@ compose_anchor_bootstrap() {
 import json,sys
 a=json.load(sys.stdin).get("anchor", {})
 print(str(bool(a.get("bootstrapped"))).lower(), a.get("walletAddress", ""))
-')
+  ')
   if [ "$bootstrapped" = true ]; then
-    reconcile_anchor_binding
     return
   fi
   [ -n "$address" ] || die "node 0 did not report a script-anchor wallet"
@@ -1718,7 +1914,6 @@ print(str(bool(a.get("bootstrapped"))).lower(), a.get("walletAddress", ""))
     bootstrapped="$(printf '%s' "$status" | python3 -c \
       'import json,sys; print(str(bool(json.load(sys.stdin).get("anchor",{}).get("bootstrapped"))).lower())')"
     if [ "$bootstrapped" = true ]; then
-      reconcile_anchor_binding
       return
     fi
     sleep 2
@@ -1728,10 +1923,8 @@ print(str(bool(a.get("bootstrapped"))).lower(), a.get("walletAddress", ""))
 
 wait_for_anchor_wallet_funds() {
   local base="$1" address="$2" deadline next_report response usable timeout
-  local -a funding_args=()
   if [ "$PROFILE_PUBLIC" = true ]; then
     timeout=$((10#$DEMO_ANCHOR_FUND_TIMEOUT_SECONDS))
-    funding_args+=(--public)
     note "WAIT_ANCHOR_FUNDS: waiting for transaction-ready pure-ADA funding at $address."
     note "Required: at least two distinct UTxOs (one >= 5000000, another >= 10000000 lovelace) and >= 20000000 total."
   else
@@ -1743,8 +1936,15 @@ wait_for_anchor_wallet_funds() {
   while [ "$SECONDS" -lt "$deadline" ]; do
     response="$(curl --connect-timeout 3 --max-time 10 -fsS \
       "$base/addresses/$address/utxos?count=50" 2>/dev/null || true)"
-    if printf '%s' "$response" | python3 "$SCRIPT_DIR/tools/anchor_funding.py" \
-        "${funding_args[@]}" 2>/dev/null; then
+    # macOS still ships Bash 3.2, where expanding an empty local array under
+    # `set -u` raises "unbound variable". Keep the no-argument devnet path
+    # explicit instead of relying on an empty-array expansion.
+    if { [ "$PROFILE_PUBLIC" = true ] \
+          && printf '%s' "$response" | python3 "$SCRIPT_DIR/tools/anchor_funding.py" \
+            --public 2>/dev/null; } \
+        || { [ "$PROFILE_PUBLIC" = false ] \
+          && printf '%s' "$response" | python3 "$SCRIPT_DIR/tools/anchor_funding.py" \
+            2>/dev/null; }; then
       usable=true
     else
       usable=false
@@ -2034,7 +2234,10 @@ validate_running_configuration() {
   validate_persisted_lifecycle_identity true
   validate_l1_lease_owner \
     || die "shared L1 state is leased by another instance"
+  load_cached_key_material
+  verify_loaded_key_identity
   verify_cached_key_material
+  [ "$ANCHOR_ENABLED" = false ] || validate_anchor_binding_preflight
 }
 
 cmd_run() {
@@ -2045,6 +2248,7 @@ cmd_run() {
   else
     runner_java run
   fi
+  [ "$ANCHOR_ENABLED" = false ] || reconcile_anchor_binding true
 }
 
 cmd_probe() {
@@ -2055,6 +2259,7 @@ cmd_probe() {
   else
     runner_java probe
   fi
+  [ "$ANCHOR_ENABLED" = false ] || reconcile_anchor_binding false
 }
 
 cmd_status() {
@@ -2432,6 +2637,11 @@ Options:
   --network <profile>       devnet (default), preview, preprod, or mainnet
   --instance <name>         isolated name: [a-z0-9][a-z0-9-]{0,31}
   --chain-id <id>           explicit app-chain id (non-default instances derive one)
+  --evidence-id <id>        scenario business id (use a fresh id for fault tests)
+  --continuation explicit|direct
+                            explicit notify (legacy/default) or activated direct result emission
+  --machine standalone|composite
+                            standalone evidence registry (default) or evidence-v1 composite preset
   --data-dir <base>         bind-data base; network isolation is added below it
   --observability           start pinned Prometheus and Grafana services
   --anchor-key-file <path>  owner-only funded anchor seed (preview/preprod)

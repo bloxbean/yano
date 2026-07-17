@@ -121,6 +121,25 @@ public final class EvidenceRegistryStateMachine implements AppStateMachine {
 
     @Override
     public void onEffectResult(AppBlock block, EffectResult result, AppStateWriter writer) {
+        applyEffectResult(block, result, writer, null);
+    }
+
+    @Override
+    public void onEffectResult(
+            AppBlock block,
+            EffectResult result,
+            AppStateWriter writer,
+            AppEffectEmitter effects
+    ) {
+        applyEffectResult(block, result, writer, Objects.requireNonNull(effects, "effects"));
+    }
+
+    private void applyEffectResult(
+            AppBlock block,
+            EffectResult result,
+            AppStateWriter writer,
+            AppEffectEmitter effects
+    ) {
         if (block == null || result == null || writer == null
                 || !config.chainId().equals(block.chainId())
                 || !config.chainId().equals(result.effectId().chainId())
@@ -165,7 +184,15 @@ public final class EvidenceRegistryStateMachine implements AppStateMachine {
         } catch (RuntimeException malformed) {
             return;
         }
-        writer.put(scope.recordKey(), withTerminal(record, scope.operation(), terminal).encode());
+        EvidenceRecordV1 updated = withTerminal(record, scope.operation(), terminal);
+        if (effects != null
+                && scope.operation() != EvidenceEffectOperation.NOTIFY
+                && config.directResultEmissionActive(block.height())
+                && EvidenceStatus.storageReady(updated)
+                && updated.notificationEffect() == null) {
+            updated = emitNotification(updated, effects, null);
+        }
+        writer.put(scope.recordKey(), updated.encode());
     }
 
     @Override
@@ -311,6 +338,14 @@ public final class EvidenceRegistryStateMachine implements AppStateMachine {
             return;
         }
 
+        writer.put(recordKey, emitNotification(record, effects, message.getMessageId()).encode());
+    }
+
+    private EvidenceRecordV1 emitNotification(
+            EvidenceRecordV1 record,
+            AppEffectEmitter effects,
+            byte[] sourceMessageId
+    ) {
         EvidenceAvailableEventV1 event = EvidenceAvailableEventV1.fromRecord(record);
         KafkaPublishCommandV1 publish = new KafkaPublishCommandV1(
                 record.kafkaTarget(), record.kafkaTopic(), event.kafkaKey(),
@@ -322,11 +357,10 @@ public final class EvidenceRegistryStateMachine implements AppStateMachine {
                 .gate(FinalityGate.APP_FINAL)
                 .result(ResultPolicy.CHAIN)
                 .expiryBlocks(config.notificationExpiryBlocks())
-                .sourceMessageId(message.getMessageId())
+                .sourceMessageId(sourceMessageId)
                 .build());
-        EvidenceRecordV1 updated = copy(record, record.objectTerminal(), record.ipfsTerminal(),
-                message.getMessageId(), ref(effect), null);
-        writer.put(recordKey, updated.encode());
+        return copy(record, record.objectTerminal(), record.ipfsTerminal(),
+                sourceMessageId, ref(effect), null);
     }
 
     private EffectId emitStorage(AppEffectEmitter effects, AppMessage source,

@@ -21,8 +21,8 @@ yano.app-chain.chains[0].effects.executors.objectstore-s3.targets.archive.region
 yano.app-chain.chains[0].effects.executors.objectstore-s3.targets.archive.security-profile=local-demo
 yano.app-chain.chains[0].effects.executors.objectstore-s3.targets.archive.path-style=true
 yano.app-chain.chains[0].effects.executors.objectstore-s3.targets.archive.credentials-provider=static
-yano.app-chain.chains[0].effects.executors.objectstore-s3.targets.archive.credentials.access-key-id=@MINIO_EXECUTOR_ACCESS@
-yano.app-chain.chains[0].effects.executors.objectstore-s3.targets.archive.credentials.secret-access-key=@MINIO_EXECUTOR_SECRET@
+yano.app-chain.chains[0].effects.executors.objectstore-s3.targets.archive.credentials.access-key-id=@S3_EXECUTOR_ACCESS@
+yano.app-chain.chains[0].effects.executors.objectstore-s3.targets.archive.credentials.secret-access-key=@S3_EXECUTOR_SECRET@
 yano.app-chain.chains[0].effects.executors.objectstore-s3.targets.archive.source-bucket=evidence-staging
 yano.app-chain.chains[0].effects.executors.objectstore-s3.targets.archive.source-prefix=incoming/v1
 yano.app-chain.chains[0].effects.executors.objectstore-s3.targets.archive.destination-bucket=evidence-archive

@@ -86,6 +86,23 @@ public interface AppStateMachine {
     }
 
     /**
+     * Deterministic effect-result callback with the block-scoped emitter
+     * (ADR-013.1). The engine invokes exactly this overload. Its default
+     * delegates to the legacy callback once, preserving existing source and
+     * binary implementations. Emissions share one global ordinal sequence
+     * with other result callbacks and {@link #apply(AppBlock, AppStateWriter,
+     * AppEffectEmitter)} in this block.
+     */
+    default void onEffectResult(
+            AppBlock block,
+            EffectResult result,
+            AppStateWriter writer,
+            AppEffectEmitter effects
+    ) {
+        onEffectResult(block, result, writer);
+    }
+
+    /**
      * Legacy optional read hook retained for source compatibility and direct
      * library callers. The bounded ADR-011.3 runtime never invokes this hook:
      * a payload produced without the committed query context cannot honestly

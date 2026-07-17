@@ -4,6 +4,7 @@ import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutor;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectExecution;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectExecutionContext;
+import com.bloxbean.cardano.yano.api.appchain.effects.EffectExecutorOperationalSnapshot;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectRecord;
 import com.bloxbean.cardano.yano.api.appchain.effects.FinalityGate;
 import com.bloxbean.cardano.yano.api.appchain.effects.PendingEffect;
@@ -25,6 +26,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.SynchronousQueue;
 import java.util.concurrent.ThreadFactory;
@@ -66,6 +68,18 @@ final class EffectRuntime implements AutoCloseable {
     private static final long EXECUTOR_CLOSE_JOIN_MILLIS = 250;
     /** Bounded, secret-free diagnostic retained for an implicitly failed callback. */
     private static final int MAX_PLUGIN_FAILURE_TYPE_CHARS = 256;
+    /** A slow product observation is never accepted as a fresh sample. */
+    private static final long OPERATIONS_CALLBACK_BUDGET_NANOS =
+            TimeUnit.MILLISECONDS.toNanos(100);
+    /** Sampling faster than this adds no operational value. */
+    private static final long OPERATIONS_SAMPLE_INTERVAL_NANOS =
+            TimeUnit.SECONDS.toNanos(1);
+    /** A previously good observation degrades after this host-owned age. */
+    private static final long OPERATIONS_STALE_NANOS = TimeUnit.SECONDS.toNanos(5);
+    /** Defensive bound independent of plugin-provided numeric values. */
+    private static final int MAX_OBSERVED_IN_FLIGHT = 1_000_000;
+    /** Bounds sampler threads, cache entries, status rows, and meter series. */
+    private static final int MAX_EXECUTOR_PRODUCTS = 256;
 
     /** Everything the runtime needs from configuration (effects.executor.*). */
     record Settings(boolean enabled,
@@ -89,6 +103,18 @@ final class EffectRuntime implements AutoCloseable {
         Settings {
             types = types != null ? Set.copyOf(types) : Set.of();
             metricsTypes = metricsTypes != null ? Set.copyOf(metricsTypes) : Set.of();
+            if (types.size() > 256) {
+                throw new IllegalArgumentException(
+                        "effects.executor.types supports at most 256 types");
+            }
+            for (String type : types) {
+                try {
+                    requireEffectType(type, "effects.executor.types");
+                } catch (IllegalArgumentException invalid) {
+                    throw new IllegalArgumentException(
+                            "effects.executor.types contains an invalid effect type");
+                }
+            }
             if (metricsTypes.size() > 32) {
                 throw new IllegalArgumentException("effects.metrics.types supports at most 32 types");
             }
@@ -165,9 +191,13 @@ final class EffectRuntime implements AutoCloseable {
     private final String runtimeOwner;
     private final Settings settings;
     private final List<ExecutorBinding> executorBindings;
+    private final Map<String, ExecutorBinding> declaredOwners;
+    private final List<ExecutorBinding> legacyBindings;
     private final ExecutorService pool;
+    private final ExecutorService operationsPool;
     private final ThreadFactory cleanupCoordinatorThreadFactory;
     private final ThreadFactory executorCloseThreadFactory;
+    private final EffectRuntimeTestFaultSeam testFaultSeam;
     private final Logger log;
 
     /** Effects currently in flight on the worker pool (in-memory only). */
@@ -207,6 +237,7 @@ final class EffectRuntime implements AutoCloseable {
     private final AtomicLong parkedCount = new AtomicLong();
     private final String metricsGeneration = java.util.UUID.randomUUID().toString();
     private final Map<String, LatencyAccumulator> latencyByType = new ConcurrentHashMap<>();
+    private final Set<String> warnedLegacyConflicts = ConcurrentHashMap.newKeySet();
     private final Object statsLock = new Object();
     private volatile Map<String, Object> cachedStats = Map.of();
     private volatile long statsCachedAt;
@@ -233,6 +264,25 @@ final class EffectRuntime implements AutoCloseable {
                 });
     }
 
+    EffectRuntime(AppLedgerStore ledger, String chainId, Settings settings,
+                  List<AppEffectExecutor> executors,
+                  Map<String, Map<String, String>> executorConfigs,
+                  Map<String, ExecutorSource> executorSources,
+                  String runtimeOwner, Logger log) {
+        this(ledger, chainId, settings, executors, executorConfigs, executorSources,
+                runtimeOwner, log, task -> {
+                    Thread thread = new Thread(task,
+                            "app-chain-fx-executor-cleanup-coordinator-" + chainId);
+                    thread.setDaemon(true);
+                    return thread;
+                }, task -> {
+                    Thread thread = new Thread(task,
+                            "app-chain-fx-executor-close-" + chainId);
+                    thread.setDaemon(true);
+                    return thread;
+                });
+    }
+
     /** Package-private seam for coordinator hand-off lifecycle regressions. */
     EffectRuntime(AppLedgerStore ledger, String chainId, Settings settings,
                   List<AppEffectExecutor> executors,
@@ -254,12 +304,28 @@ final class EffectRuntime implements AutoCloseable {
                   String runtimeOwner, Logger log,
                   ThreadFactory cleanupCoordinatorThreadFactory,
                   ThreadFactory executorCloseThreadFactory) {
+        this(ledger, chainId, settings, executors, executorConfigs, Map.of(),
+                runtimeOwner, log, cleanupCoordinatorThreadFactory,
+                executorCloseThreadFactory);
+    }
+
+    private EffectRuntime(AppLedgerStore ledger, String chainId, Settings settings,
+                  List<AppEffectExecutor> executors,
+                  Map<String, Map<String, String>> executorConfigs,
+                  Map<String, ExecutorSource> executorSources,
+                  String runtimeOwner, Logger log,
+                  ThreadFactory cleanupCoordinatorThreadFactory,
+                  ThreadFactory executorCloseThreadFactory) {
         this.ledger = ledger;
         this.chainId = chainId;
         this.runtimeOwner = runtimeOwner;
         this.settings = settings;
-        this.executorBindings = snapshotBindings(executors, executorConfigs);
+        this.executorBindings = snapshotBindings(executors, executorConfigs, executorSources);
+        Ownership ownership = buildOwnership(executorBindings, settings.types());
+        this.declaredOwners = ownership.declaredOwners();
+        this.legacyBindings = ownership.legacyBindings();
         this.log = log;
+        this.testFaultSeam = EffectRuntimeTestFaultSeam.fromSystemProperties(log);
         this.cleanupCoordinatorThreadFactory = Objects.requireNonNull(
                 cleanupCoordinatorThreadFactory, "cleanupCoordinatorThreadFactory");
         this.executorCloseThreadFactory = Objects.requireNonNull(
@@ -285,6 +351,12 @@ final class EffectRuntime implements AutoCloseable {
             t.setDaemon(true);
             return t;
         }, new ThreadPoolExecutor.AbortPolicy());
+        this.operationsPool = Executors.newCachedThreadPool(r -> {
+            Thread thread = new Thread(r,
+                    "app-chain-fx-operations-sampler-" + chainId);
+            thread.setDaemon(true);
+            return thread;
+        });
         try {
             initializeCursor();
             ledger.fxEnsureResultReadyIndex();
@@ -294,6 +366,7 @@ final class EffectRuntime implements AutoCloseable {
             // returns, but this internal worker pool is already ours. Do not
             // leak it when RocksDB initialization/binding fails.
             pool.shutdownNow();
+            operationsPool.shutdownNow();
             throw constructionFailure;
         }
     }
@@ -302,21 +375,66 @@ final class EffectRuntime implements AutoCloseable {
             int index,
             AppEffectExecutor executor,
             String id,
+            Set<String> declaredTypes,
+            ExecutorSource source,
             Map<String, String> config,
             AtomicBoolean closeClaimed,
             AtomicBoolean closeTerminated,
             CountDownLatch closeTerminal,
-            AtomicReference<Throwable> closeFailure
+            AtomicReference<Throwable> closeFailure,
+            AtomicBoolean operationsInFlight,
+            AtomicLong operationsStartedNanos,
+            AtomicLong operationsSampledNanos,
+            AtomicReference<EffectExecutorOperationalSnapshot> operationsSnapshot
+    ) {
+    }
+
+    record ExecutorSource(String bundleId, String scheme) {
+        ExecutorSource {
+            bundleId = boundedDiagnostic(bundleId, "direct");
+            scheme = boundedDiagnostic(scheme, "direct");
+        }
+
+        private static String boundedDiagnostic(String value, String fallback) {
+            if (value == null || value.isBlank()) {
+                return fallback;
+            }
+            String trimmed = value.trim();
+            if (trimmed.length() > 128) {
+                return fallback;
+            }
+            for (int index = 0; index < trimmed.length(); index++) {
+                char character = trimmed.charAt(index);
+                if (!isAsciiIdentifierStart(character)
+                        && character != '.' && character != '_' && character != '-'
+                        && character != ':' && character != '+') {
+                    return fallback;
+                }
+            }
+            return trimmed;
+        }
+    }
+
+    private record Ownership(
+            Map<String, ExecutorBinding> declaredOwners,
+            List<ExecutorBinding> legacyBindings
     ) {
     }
 
     private static List<ExecutorBinding> snapshotBindings(
             List<AppEffectExecutor> executors,
-            Map<String, Map<String, String>> executorConfigs) {
+            Map<String, Map<String, String>> executorConfigs,
+            Map<String, ExecutorSource> executorSources) {
+        if (executors.size() > MAX_EXECUTOR_PRODUCTS) {
+            throw new IllegalArgumentException(
+                    "Effect Runtime supports at most 256 executor products per chain");
+        }
         List<ExecutorBinding> bindings = new ArrayList<>(executors.size());
         for (int i = 0; i < executors.size(); i++) {
-            AppEffectExecutor executor = executors.get(i);
+            AppEffectExecutor executor = Objects.requireNonNull(
+                    executors.get(i), "executor");
             String id = java.util.Objects.requireNonNull(executor.id(), "executor id");
+            Set<String> declaredTypes = snapshotDeclaredTypes(executor.effectTypes(), id);
             Map<String, String> source = executorConfigs.get(id);
             // Map.copyOf snapshots the mutable inner config and exposes an
             // immutable view to every execution context.
@@ -325,13 +443,105 @@ final class EffectRuntime implements AutoCloseable {
                     i,
                     executor,
                     id,
+                    declaredTypes,
+                    executorSources.getOrDefault(id,
+                            new ExecutorSource("direct", "direct")),
                     config,
                     new AtomicBoolean(),
                     new AtomicBoolean(),
                     new CountDownLatch(1),
-                    new AtomicReference<>()));
+                    new AtomicReference<>(),
+                    new AtomicBoolean(),
+                    new AtomicLong(),
+                    new AtomicLong(),
+                    new AtomicReference<>(EffectExecutorOperationalSnapshot.unknown())));
         }
         return List.copyOf(bindings);
+    }
+
+    private static Set<String> snapshotDeclaredTypes(Set<String> types, String executorId) {
+        if (types == null) {
+            throw new IllegalArgumentException("Effect executor '" + executorId
+                    + "' returned a null effectTypes declaration");
+        }
+        if (types.size() > 64) {
+            throw new IllegalArgumentException("Effect executor '" + executorId
+                    + "' declares more than 64 effect types");
+        }
+        Set<String> snapshot = new java.util.TreeSet<>();
+        for (String type : types) {
+            snapshot.add(requireEffectType(type, executorId));
+        }
+        return Set.copyOf(snapshot);
+    }
+
+    private static String requireEffectType(String type, String executorId) {
+        if (type == null || type.isEmpty() || !type.equals(type.trim())
+                || type.length() > 128 || type.charAt(0) == '~'
+                || !isAsciiIdentifierStart(type.charAt(0))) {
+            throw invalidEffectType(executorId);
+        }
+        for (int index = 1; index < type.length(); index++) {
+            char character = type.charAt(index);
+            if (!isAsciiIdentifierStart(character)
+                    && character != '.' && character != '_' && character != '-'
+                    && character != ':' && character != '+') {
+                throw invalidEffectType(executorId);
+            }
+        }
+        return type;
+    }
+
+    private static IllegalArgumentException invalidEffectType(String executorId) {
+        return new IllegalArgumentException("Effect executor '" + executorId
+                + "' declares an invalid effect type; expected 1-128 ASCII identifier "
+                + "characters and no reserved '~' prefix");
+    }
+
+    private static boolean isAsciiIdentifierStart(char value) {
+        return value >= 'A' && value <= 'Z'
+                || value >= 'a' && value <= 'z'
+                || value >= '0' && value <= '9';
+    }
+
+    private static Ownership buildOwnership(
+            List<ExecutorBinding> bindings,
+            Set<String> configuredTypes
+    ) {
+        Map<String, List<ExecutorBinding>> candidates = new java.util.TreeMap<>();
+        List<ExecutorBinding> legacy = new ArrayList<>();
+        for (ExecutorBinding binding : bindings) {
+            if (binding.declaredTypes().isEmpty()) {
+                legacy.add(binding);
+                continue;
+            }
+            for (String type : binding.declaredTypes()) {
+                if (configuredTypes.isEmpty() || configuredTypes.contains(type)) {
+                    candidates.computeIfAbsent(type, ignored -> new ArrayList<>())
+                            .add(binding);
+                }
+            }
+        }
+
+        List<String> conflicts = new ArrayList<>();
+        candidates.forEach((type, owners) -> {
+            if (owners.size() > 1) {
+                String joined = owners.stream()
+                        .map(owner -> "bundle=" + owner.source().bundleId()
+                                + ", scheme=" + owner.source().scheme()
+                                + ", executor=" + owner.id())
+                        .collect(java.util.stream.Collectors.joining("; "));
+                conflicts.add("type='" + type + "' [" + joined + "]");
+            }
+        });
+        if (!conflicts.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "Duplicate declarative effect ownership: " + String.join(", ", conflicts));
+        }
+
+        Map<String, ExecutorBinding> owners = new LinkedHashMap<>();
+        candidates.forEach((type, values) -> owners.put(type, values.getFirst()));
+        return new Ownership(Map.copyOf(owners), List.copyOf(legacy));
     }
 
     private static final class LatencyAccumulator {
@@ -408,6 +618,9 @@ final class EffectRuntime implements AutoCloseable {
                     intake();
                     candidates = !closed ? dispatchCandidates() : List.of();
                 }
+                // Sampling is asynchronous and single-flight per product. It
+                // cannot delay intake, routing, execution, status, or metrics.
+                scheduleOperationsSamples();
                 // supports() is plugin code. Resolve candidates only after the
                 // scheduler has left its ledger barrier so a non-cooperative
                 // plugin cannot make close() wait indefinitely.
@@ -419,6 +632,118 @@ final class EffectRuntime implements AutoCloseable {
                 rethrowIfFatal(failure);
             }
         }
+    }
+
+    private void scheduleOperationsSamples() {
+        if (closed || executorBindings.isEmpty()) {
+            return;
+        }
+        long now = System.nanoTime();
+        for (ExecutorBinding binding : executorBindings) {
+            long lastStarted = binding.operationsStartedNanos().get();
+            if (lastStarted != 0 && now - lastStarted < OPERATIONS_SAMPLE_INTERVAL_NANOS) {
+                continue;
+            }
+            if (!binding.operationsInFlight().compareAndSet(false, true)) {
+                continue;
+            }
+            binding.operationsStartedNanos().set(now);
+            try {
+                operationsPool.execute(() -> sampleOperations(binding, now));
+            } catch (RejectedExecutionException rejected) {
+                binding.operationsInFlight().set(false);
+            }
+        }
+    }
+
+    private void sampleOperations(ExecutorBinding binding, long startedNanos) {
+        boolean admitted = beginPluginCallback();
+        if (!admitted) {
+            binding.operationsInFlight().set(false);
+            return;
+        }
+        try {
+            EffectExecutorOperationalSnapshot sampled = null;
+            Throwable failure = null;
+            try {
+                sampled = binding.executor().operationalSnapshot();
+            } catch (Throwable callbackFailure) {
+                failure = callbackFailure;
+            } finally {
+                endPluginCallback();
+            }
+
+            long completedNanos = System.nanoTime();
+            if (failure != null) {
+                rethrowIfFatal(failure);
+                reportFailure("executor '" + binding.id() + "' operational snapshot", failure);
+                publishOperations(binding, callbackFailureSnapshot(
+                        binding.operationsSnapshot().get(),
+                        EffectExecutorOperationalSnapshot.FailureCode.CALLBACK_FAILED),
+                        completedNanos);
+                return;
+            }
+            if (completedNanos - startedNanos > OPERATIONS_CALLBACK_BUDGET_NANOS) {
+                publishOperations(binding, callbackFailureSnapshot(
+                        binding.operationsSnapshot().get(),
+                        EffectExecutorOperationalSnapshot.FailureCode.CALLBACK_TIMEOUT),
+                        completedNanos);
+                return;
+            }
+            try {
+                publishOperations(binding, sanitizeOperations(
+                        sampled, binding.operationsSnapshot().get()), completedNanos);
+            } catch (RuntimeException invalid) {
+                publishOperations(binding, callbackFailureSnapshot(
+                        binding.operationsSnapshot().get(),
+                        EffectExecutorOperationalSnapshot.FailureCode.CALLBACK_INVALID),
+                        completedNanos);
+            }
+        } finally {
+            // Keep the single-flight gate held through validation/publication,
+            // so an older completion can never overwrite a newer sample.
+            binding.operationsInFlight().set(false);
+        }
+    }
+
+    private void publishOperations(ExecutorBinding binding,
+                                   EffectExecutorOperationalSnapshot snapshot,
+                                   long sampledNanos) {
+        synchronized (executionStartLock) {
+            if (closed) {
+                return;
+            }
+            binding.operationsSnapshot().set(snapshot);
+            binding.operationsSampledNanos().set(sampledNanos);
+            statsCachedAt = 0;
+        }
+    }
+
+    private static EffectExecutorOperationalSnapshot sanitizeOperations(
+            EffectExecutorOperationalSnapshot current,
+            EffectExecutorOperationalSnapshot previous) {
+        Objects.requireNonNull(current, "executor operational snapshot");
+        if (current.inFlight() > MAX_OBSERVED_IN_FLIGHT
+                || current.attempts() < previous.attempts()
+                || current.successes() < previous.successes()
+                || current.retryableFailures() < previous.retryableFailures()
+                || current.terminalFailures() < previous.terminalFailures()) {
+            throw new IllegalArgumentException("invalid executor operational snapshot");
+        }
+        return new EffectExecutorOperationalSnapshot(
+                current.readiness(), current.attempts(), current.successes(),
+                current.retryableFailures(), current.terminalFailures(), current.inFlight(),
+                current.lastSuccessAge(), current.lastFailureAge(), current.failureCode());
+    }
+
+    private static EffectExecutorOperationalSnapshot callbackFailureSnapshot(
+            EffectExecutorOperationalSnapshot previous,
+            EffectExecutorOperationalSnapshot.FailureCode failureCode) {
+        return new EffectExecutorOperationalSnapshot(
+                EffectExecutorOperationalSnapshot.Readiness.DEGRADED,
+                previous.attempts(), previous.successes(), previous.retryableFailures(),
+                previous.terminalFailures(), 0,
+                previous.lastSuccessAge(), previous.lastFailureAge(), failureCode);
     }
 
     private void intake() {
@@ -630,6 +955,8 @@ final class EffectRuntime implements AutoCloseable {
                 reportFailure("executor '" + binding.id() + "' execute", failure);
                 outcome = EffectExecution.failed(reason, true);
             }
+            testFaultSeam.afterConfirmedBeforePersistence(
+                    chainId, runtimeOwner, record, outcome);
             if (closed) {
                 return; // never touch the ledger after close() — re-attempted on restart
             }
@@ -723,9 +1050,12 @@ final class EffectRuntime implements AutoCloseable {
 
     private ExecutionPermit executionPreflight(EffectRecord scheduled,
                                                 ExecutorBinding binding) {
-        // supports() is plugin code and may block. Keep it outside the ledger
-        // section, then recheck closed before the first store access.
-        if (closed || !ownsType(scheduled.type()) || !supports(binding, scheduled.type())) {
+        // A legacy supports() callback is plugin code and may block. Keep it
+        // outside the ledger section, then recheck closed before the first
+        // store access. Declarative ownership is an immutable construction-
+        // time snapshot and never re-enters the product.
+        if (closed || !ownsType(scheduled.type())
+                || !bindingOwns(binding, scheduled.type())) {
             return null;
         }
         synchronized (transitionLock) {
@@ -780,28 +1110,58 @@ final class EffectRuntime implements AutoCloseable {
     }
 
     private ExecutorBinding find(String type) {
-        for (ExecutorBinding binding : executorBindings) {
+        ExecutorBinding declared = declaredOwners.get(type);
+        if (declared != null) {
+            return declared;
+        }
+        ExecutorBinding selected = null;
+        for (ExecutorBinding binding : legacyBindings) {
             if (supports(binding, type)) {
-                return binding;
+                if (selected == null) {
+                    selected = binding;
+                } else if (warnedLegacyConflicts.add(type)) {
+                    log.warn("App-chain '{}' has multiple legacy predicate owners for effect "
+                                    + "type '{}': executors '{}' and '{}'; using stable order. "
+                                    + "Migrate them to effectTypes() declarations",
+                            chainId, type, selected.id(), binding.id());
+                }
             }
         }
-        return null;
+        return selected;
+    }
+
+    private boolean bindingOwns(ExecutorBinding binding, String type) {
+        if (!binding.declaredTypes().isEmpty()) {
+            return declaredOwners.get(type) == binding;
+        }
+        return supports(binding, type);
     }
 
     private boolean supports(ExecutorBinding binding, String type) {
+        if (!beginPluginCallback()) {
+            return false;
+        }
+        try {
+            return binding.executor().supports(type);
+        } finally {
+            endPluginCallback();
+        }
+    }
+
+    private boolean beginPluginCallback() {
         synchronized (pluginCallbackLock) {
             if (closed) {
                 return false;
             }
             activePluginCallbacks++;
+            return true;
         }
-        try {
-            return binding.executor().supports(type);
-        } finally {
-            synchronized (pluginCallbackLock) {
-                activePluginCallbacks--;
-                pluginCallbackLock.notifyAll();
-            }
+    }
+
+    private void endPluginCallback() {
+        synchronized (pluginCallbackLock) {
+            activePluginCallbacks--;
+            pluginCallbackLock.notifyAll();
         }
     }
 
@@ -1343,10 +1703,53 @@ final class EffectRuntime implements AutoCloseable {
         stats.put("metricsGeneration", metricsGeneration);
         stats.put("owner", "v1:" + runtimeOwner);
         stats.put("executors", executorBindings.stream().map(ExecutorBinding::id).toList());
+        stats.put("executorOperations", executorOperationsViews(System.nanoTime()));
         if (lastError != null) {
             stats.put("lastError", lastError);
         }
         return java.util.Collections.unmodifiableMap(stats);
+    }
+
+    private List<Map<String, Object>> executorOperationsViews(long nowNanos) {
+        List<Map<String, Object>> views = new ArrayList<>(executorBindings.size());
+        for (ExecutorBinding binding : executorBindings) {
+            EffectExecutorOperationalSnapshot snapshot = binding.operationsSnapshot().get();
+            long sampledAt = binding.operationsSampledNanos().get();
+            long startedAt = binding.operationsStartedNanos().get();
+            String sampleState;
+            if (binding.operationsInFlight().get() && startedAt != 0
+                    && nowNanos - startedAt > OPERATIONS_CALLBACK_BUDGET_NANOS) {
+                snapshot = callbackFailureSnapshot(snapshot,
+                        EffectExecutorOperationalSnapshot.FailureCode.CALLBACK_TIMEOUT);
+                sampleState = "TIMED_OUT";
+            } else if (sampledAt == 0) {
+                sampleState = "UNKNOWN";
+            } else if (nowNanos - sampledAt > OPERATIONS_STALE_NANOS) {
+                snapshot = callbackFailureSnapshot(snapshot,
+                        EffectExecutorOperationalSnapshot.FailureCode.STALE);
+                sampleState = "STALE";
+            } else {
+                sampleState = "FRESH";
+            }
+
+            Map<String, Object> view = new LinkedHashMap<>();
+            view.put("id", binding.id());
+            view.put("bundleId", binding.source().bundleId());
+            view.put("scheme", binding.source().scheme());
+            view.put("types", binding.declaredTypes().stream().sorted().toList());
+            view.put("sampleState", sampleState);
+            view.put("readiness", snapshot.readiness().name());
+            view.put("attempts", snapshot.attempts());
+            view.put("successes", snapshot.successes());
+            view.put("retryableFailures", snapshot.retryableFailures());
+            view.put("terminalFailures", snapshot.terminalFailures());
+            view.put("inFlight", snapshot.inFlight());
+            view.put("lastSuccessAge", snapshot.lastSuccessAge().name());
+            view.put("lastFailureAge", snapshot.lastFailureAge().name());
+            view.put("failureCode", snapshot.failureCode().name());
+            views.add(java.util.Collections.unmodifiableMap(view));
+        }
+        return List.copyOf(views);
     }
 
     Optional<Map<String, Object>> statusOf(long height, int ordinal) {
@@ -1420,6 +1823,15 @@ final class EffectRuntime implements AutoCloseable {
             }
             closeFence.handle((ignored, failure) -> null).join();
             return;
+        }
+
+        // Seal observation admission before product shutdown. Interrupt is a
+        // best effort only; a non-cooperative callback remains covered by the
+        // plugin-callback lifecycle barrier and cannot republish after close.
+        operationsPool.shutdownNow();
+        for (ExecutorBinding binding : executorBindings) {
+            binding.operationsSnapshot().set(EffectExecutorOperationalSnapshot.unknown());
+            binding.operationsSampledNanos().set(0);
         }
 
         try {

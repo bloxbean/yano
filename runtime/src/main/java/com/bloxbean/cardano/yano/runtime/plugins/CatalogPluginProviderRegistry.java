@@ -133,6 +133,19 @@ final class CatalogPluginProviderRegistry implements PluginProviderRegistry, Aut
         }
     }
 
+    @Override
+    public synchronized <P> Optional<String> contributionOwner(
+            Class<P> providerType,
+            String selector
+    ) {
+        Objects.requireNonNull(providerType, "providerType");
+        Objects.requireNonNull(selector, "selector");
+        requirePublicProviderType(providerType);
+        ensureOpen();
+        Entry entry = entries.getOrDefault(providerType, Map.of()).get(selector);
+        return entry != null ? Optional.of(entry.bundleId()) : Optional.empty();
+    }
+
     private static void requirePublicProviderType(Class<?> providerType) {
         if (providerType == NodePlugin.class) {
             throw new IllegalArgumentException(

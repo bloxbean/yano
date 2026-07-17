@@ -17,11 +17,16 @@ import org.apache.kafka.common.errors.TopicExistsException;
 import org.apache.kafka.common.header.Header;
 import org.apache.kafka.common.serialization.ByteArrayDeserializer;
 
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.HexFormat;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
@@ -29,10 +34,19 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Pattern;
 
-/** Kafka topic initializer and exact acknowledged-event verifier. */
+/** Kafka topic initializer, scenario event verifier, and bounded retry-window auditor. */
 final class KafkaDemoClient implements AutoCloseable {
     private static final Duration API_TIMEOUT = Duration.ofSeconds(20);
+    static final int MAX_AUDIT_RECORDS = 16;
+    private static final int MAX_AUDIT_HEADERS = 32;
+    private static final int MAX_AUDIT_HEADER_BYTES = 4_096;
+    private static final int MAX_AUDIT_KEY_BYTES = 1_024;
+    private static final int MAX_AUDIT_VALUE_BYTES = 65_536;
+    private static final Pattern EFFECT_ID = Pattern.compile("[0-9a-f]{64}");
+    private static final Pattern CHAIN_ID = Pattern.compile(
+            "[A-Za-z0-9][A-Za-z0-9._-]{0,127}");
     private static final Set<String> RESERVED_HEADERS = Set.of(
             "yano-effect-id", "yano-chain-id", "yano-effect-type",
             "yano-payload-version", "yano-origin-height", "yano-origin-ordinal",
@@ -90,9 +104,9 @@ final class KafkaDemoClient implements AutoCloseable {
             TopicDescription description = admin.describeTopics(List.of(settings.physicalTopic()))
                     .allTopicNames().get(API_TIMEOUT.toSeconds(), TimeUnit.SECONDS)
                     .get(settings.physicalTopic());
-            if (description == null || description.partitions().isEmpty()) {
-                throw new DemoException(DemoError.INITIALIZATION_FAILED);
-            }
+            requireExactPartitionZero(description == null ? List.of()
+                    : description.partitions().stream()
+                    .map(partition -> partition.partition()).toList());
         } catch (DemoException failure) {
             throw failure;
         } catch (Exception failure) {
@@ -100,6 +114,197 @@ final class KafkaDemoClient implements AutoCloseable {
                 Thread.currentThread().interrupt();
             }
             throw new DemoException(DemoError.SERVICE_TIMEOUT);
+        }
+    }
+
+    /**
+     * Reads a tiny exact snapshot used only by the destructive failover E2E.
+     * The fresh demo topic must remain partition 0 with offsets [0,n); any
+     * retention, topology, header, offset, or concurrent-append drift fails.
+     */
+    KafkaAudit audit(int expectedRecords, String expectedEffectId) {
+        if (expectedRecords < 0 || expectedRecords > MAX_AUDIT_RECORDS
+                || expectedEffectId == null || !EFFECT_ID.matcher(expectedEffectId).matches()) {
+            throw new DemoException(DemoError.INVALID_ARGUMENT);
+        }
+        validateTopic();
+        TopicPartition partition = new TopicPartition(settings.physicalTopic(), 0);
+        KafkaConsumer<byte[], byte[]> consumer = consumer();
+        try {
+            consumer.assign(List.of(partition));
+            long beginning = onlyOffset(consumer.beginningOffsets(
+                    List.of(partition), API_TIMEOUT), partition);
+            long end = onlyOffset(consumer.endOffsets(
+                    List.of(partition), API_TIMEOUT), partition);
+            requireExactWindow(beginning, end, expectedRecords);
+            consumer.seek(partition, beginning);
+
+            List<AuditRecord> records = new ArrayList<>(expectedRecords);
+            long deadline = System.nanoTime() + API_TIMEOUT.toNanos();
+            while (records.size() < expectedRecords && System.nanoTime() < deadline) {
+                var polled = consumer.poll(Duration.ofMillis(250));
+                for (ConsumerRecord<byte[], byte[]> record : polled.records(partition)) {
+                    long expectedOffset = records.size();
+                    AuditRecord audited = auditRecord(
+                            record, expectedOffset, expectedEffectId);
+                    if (!records.isEmpty()) {
+                        requireSameRetryContent(records.getFirst(), audited);
+                    }
+                    records.add(audited);
+                    if (records.size() > expectedRecords) {
+                        throw new DemoException(DemoError.EXTERNAL_STATE_MISMATCH);
+                    }
+                }
+            }
+            if (records.size() != expectedRecords) {
+                throw new DemoException(DemoError.SERVICE_TIMEOUT);
+            }
+
+            long finalBeginning = onlyOffset(consumer.beginningOffsets(
+                    List.of(partition), API_TIMEOUT), partition);
+            long finalEnd = onlyOffset(consumer.endOffsets(
+                    List.of(partition), API_TIMEOUT), partition);
+            requireExactWindow(finalBeginning, finalEnd, expectedRecords);
+            validateTopic();
+            return new KafkaAudit(settings.physicalTopic(), 0,
+                    finalBeginning, finalEnd, List.copyOf(records));
+        } catch (DemoException failure) {
+            throw failure;
+        } catch (RuntimeException failure) {
+            throw new DemoException(DemoError.SERVICE_TIMEOUT);
+        } finally {
+            consumer.close(Duration.ofSeconds(2));
+        }
+    }
+
+    static void requireExactPartitionZero(List<Integer> partitions) {
+        if (!List.of(0).equals(partitions)) {
+            throw new DemoException(DemoError.EXTERNAL_STATE_MISMATCH);
+        }
+    }
+
+    private static long onlyOffset(Map<TopicPartition, Long> offsets,
+                                   TopicPartition partition) {
+        if (offsets.size() != 1 || !offsets.containsKey(partition)
+                || offsets.get(partition) == null || offsets.get(partition) < 0) {
+            throw new DemoException(DemoError.EXTERNAL_STATE_MISMATCH);
+        }
+        return offsets.get(partition);
+    }
+
+    private static void requireExactWindow(long beginning, long end, int expectedRecords) {
+        if (beginning != 0 || end != expectedRecords) {
+            throw new DemoException(DemoError.EXTERNAL_STATE_MISMATCH);
+        }
+    }
+
+    static AuditRecord auditRecord(ConsumerRecord<byte[], byte[]> record,
+                                   long expectedOffset,
+                                   String expectedEffectId) {
+        if (record == null || expectedEffectId == null
+                || !EFFECT_ID.matcher(expectedEffectId).matches()
+                || record.partition() != 0 || record.offset() != expectedOffset
+                || record.key() == null || record.key().length > MAX_AUDIT_KEY_BYTES
+                || record.value() == null || record.value().length > MAX_AUDIT_VALUE_BYTES) {
+            throw new DemoException(DemoError.EXTERNAL_STATE_MISMATCH);
+        }
+        MessageDigest fingerprint = sha256();
+        fingerprint.update(ByteBuffer.allocate(Integer.BYTES)
+                .putInt(record.partition()).array());
+        updateFingerprint(fingerprint, record.key());
+        updateFingerprint(fingerprint, record.value());
+
+        Map<String, byte[]> values = new LinkedHashMap<>();
+        int count = 0;
+        int totalBytes = 0;
+        for (Header header : record.headers()) {
+            count++;
+            byte[] value = header.value();
+            if (count > MAX_AUDIT_HEADERS || header.key() == null
+                    || header.key().isEmpty() || header.key().length() > 128
+                    || header.key().chars().anyMatch(character -> character < 0x21
+                    || character > 0x7e)
+                    || value == null || value.length > 1_024) {
+                throw new DemoException(DemoError.EXTERNAL_STATE_MISMATCH);
+            }
+            totalBytes = Math.addExact(totalBytes, header.key().length() + value.length);
+            if (totalBytes > MAX_AUDIT_HEADER_BYTES) {
+                throw new DemoException(DemoError.EXTERNAL_STATE_MISMATCH);
+            }
+            if (!RESERVED_HEADERS.contains(header.key())
+                    || values.putIfAbsent(header.key(), value) != null) {
+                throw new DemoException(DemoError.EXTERNAL_STATE_MISMATCH);
+            }
+            updateFingerprint(fingerprint,
+                    header.key().getBytes(StandardCharsets.US_ASCII));
+            updateFingerprint(fingerprint, value);
+        }
+        if (!values.keySet().equals(RESERVED_HEADERS)) {
+            throw new DemoException(DemoError.EXTERNAL_STATE_MISMATCH);
+        }
+        requireAscii(values, "yano-effect-id", expectedEffectId);
+        requireAscii(values, "yano-effect-type", "kafka.publish");
+        requireAscii(values, "yano-payload-version", "1");
+        requireAscii(values, "yano-content-type", "application/cbor");
+        String chainId = printableAscii(values, "yano-chain-id", 128);
+        if (!CHAIN_ID.matcher(chainId).matches()) {
+            throw new DemoException(DemoError.EXTERNAL_STATE_MISMATCH);
+        }
+        requireCanonicalUnsigned(values, "yano-origin-height", Long.MAX_VALUE);
+        requireCanonicalUnsigned(values, "yano-origin-ordinal", Integer.MAX_VALUE);
+        return new AuditRecord(expectedOffset, expectedEffectId,
+                HexFormat.of().formatHex(fingerprint.digest()));
+    }
+
+    static void requireSameRetryContent(AuditRecord first, AuditRecord retry) {
+        if (first == null || retry == null
+                || !first.recordDigest().equals(retry.recordDigest())) {
+            throw new DemoException(DemoError.EXTERNAL_STATE_MISMATCH);
+        }
+    }
+
+    private static MessageDigest sha256() {
+        try {
+            return MessageDigest.getInstance("SHA-256");
+        } catch (NoSuchAlgorithmException unavailable) {
+            throw new IllegalStateException(unavailable);
+        }
+    }
+
+    private static void updateFingerprint(MessageDigest fingerprint, byte[] value) {
+        fingerprint.update(ByteBuffer.allocate(Integer.BYTES).putInt(value.length).array());
+        fingerprint.update(value);
+    }
+
+    private static String printableAscii(Map<String, byte[]> values,
+                                         String name,
+                                         int maximumBytes) {
+        byte[] value = values.get(name);
+        if (value == null || value.length < 1 || value.length > maximumBytes) {
+            throw new DemoException(DemoError.EXTERNAL_STATE_MISMATCH);
+        }
+        for (byte character : value) {
+            int unsigned = Byte.toUnsignedInt(character);
+            if (unsigned < 0x21 || unsigned > 0x7e) {
+                throw new DemoException(DemoError.EXTERNAL_STATE_MISMATCH);
+            }
+        }
+        return new String(value, StandardCharsets.US_ASCII);
+    }
+
+    private static void requireCanonicalUnsigned(Map<String, byte[]> values,
+                                                 String name,
+                                                 long maximum) {
+        String value = printableAscii(values, name, 19);
+        if (!value.matches("0|[1-9][0-9]*")) {
+            throw new DemoException(DemoError.EXTERNAL_STATE_MISMATCH);
+        }
+        try {
+            if (Long.parseLong(value) > maximum) {
+                throw new DemoException(DemoError.EXTERNAL_STATE_MISMATCH);
+            }
+        } catch (NumberFormatException invalid) {
+            throw new DemoException(DemoError.EXTERNAL_STATE_MISMATCH);
         }
     }
 
@@ -200,6 +405,34 @@ final class KafkaDemoClient implements AutoCloseable {
     }
 
     record VerifiedKafkaEvent(int partition, long offset) {
+    }
+
+    record AuditRecord(long offset, String effectId, String recordDigest) {
+    }
+
+    record KafkaAudit(String topic, int partition, long beginningOffset,
+                      long endOffset, List<AuditRecord> records) {
+        String toJson() {
+            StringBuilder json = new StringBuilder(256 + records.size() * 100);
+            json.append("{\"schemaVersion\":1,\"topic\":\"")
+                    .append(topic)
+                    .append("\",\"partition\":").append(partition)
+                    .append(",\"beginningOffset\":").append(beginningOffset)
+                    .append(",\"endOffset\":").append(endOffset)
+                    .append(",\"recordCount\":").append(records.size())
+                    .append(",\"records\":[");
+            for (int index = 0; index < records.size(); index++) {
+                if (index > 0) {
+                    json.append(',');
+                }
+                AuditRecord record = records.get(index);
+                json.append("{\"offset\":").append(record.offset())
+                        .append(",\"effectId\":\"").append(record.effectId())
+                        .append("\",\"recordDigest\":\"")
+                        .append(record.recordDigest()).append("\"}");
+            }
+            return json.append("]}").toString();
+        }
     }
 
     static final class EventWindow implements AutoCloseable {

@@ -1,6 +1,9 @@
 package com.bloxbean.cardano.yano.appchain.examples.evidence.demo;
 
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectRecord;
+import com.bloxbean.cardano.yano.appchain.client.AppChainClient;
+import com.bloxbean.cardano.yano.appchain.composite.contracts.stock.EvidenceReleaseCommandV1;
+import com.bloxbean.cardano.yano.appchain.composite.contracts.stock.EvidenceReleasePrerequisiteCommandsV1;
 import com.bloxbean.cardano.yano.appchain.examples.evidence.client.VerifiedEvidence;
 import com.bloxbean.cardano.yano.appchain.examples.evidence.command.SubmitEvidenceCommandV1;
 import com.bloxbean.cardano.yano.appchain.examples.evidence.event.EvidenceAvailableEventV1;
@@ -21,8 +24,7 @@ import com.bloxbean.cardano.yano.appchain.integration.objectstore.ObjectPutComma
 import com.bloxbean.cardano.yano.appchain.integration.objectstore.ObjectPutReceiptV1;
 
 import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.LinkOption;
+import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -37,7 +39,7 @@ import java.util.function.Predicate;
 
 /** One reusable Emit → Execute → Result → continuation → Emit scenario. */
 final class EvidenceScenario {
-    private static final int MAX_SAMPLE_BYTES = 16_777_216;
+    static final int MAX_SAMPLE_BYTES = 16_777_216;
 
     private final DemoEnvironment environment;
     private final ReportStore reports;
@@ -115,41 +117,47 @@ final class EvidenceScenario {
                 config.kafka().topicAlias(), kafkaDestination);
 
         YanoAuditClient primary = environment.yano.getFirst();
-        try {
-            primary.evidence().submit(submit);
-        } catch (RuntimeException failure) {
-            throw new DemoException(DemoError.SUBMISSION_FAILED);
-        }
-        VerifiedEvidence storageReady = waitEvidence(primary,
-                status -> status == EvidenceStatus.STORAGE_READY
-                        || status == EvidenceStatus.NOTIFICATION_PENDING
-                        || status == EvidenceStatus.READY,
-                true);
-        requireSubmittedState(storageReady.record(), submit,
-                config.kafka().target(), config.kafka().topicAlias());
-        checks.add(pass("AUTHENTICATED_STORAGE_RESULTS"));
-
-        ObjectPutReceiptV1 objectReceipt = ObjectPutReceiptV1.decode(
-                storageReady.record().objectTerminal().externalRef());
-        IpfsPinReceiptV1 ipfsReceipt = IpfsPinReceiptV1.decode(
-                storageReady.record().ipfsTerminal().externalRef());
-        if (!Arrays.equals(objectReceipt.destinationFingerprint(), objectDestination)
-                || objectReceipt.size() != document.length
-                || !Arrays.equals(objectReceipt.verifiedSha256(), digest)
-                || !Arrays.equals(ipfsReceipt.targetFingerprint(), ipfsTarget)
-                || !Arrays.equals(ipfsReceipt.cidFingerprint(),
-                IpfsCidFingerprint.compute(cid).bytes())) {
-            throw new DemoException(DemoError.EXTERNAL_STATE_MISMATCH);
-        }
-        S3DemoStore.DestinationAudit objectAudit = environment.s3.verifyDestination(
-                relativeKey, objectReceipt);
-        if (!environment.kubo.requiredPinPresent(cid, true)) {
-            throw new DemoException(DemoError.EXTERNAL_STATE_MISMATCH);
-        }
-        environment.kubo.requireContent(cid, document);
-        checks.add(pass("EXTERNAL_STORAGE_STATE"));
-
+        // Open before submission: an activated result continuation may publish
+        // Kafka immediately after the second storage result is incorporated.
+        // Opening only after STORAGE_READY can miss that acknowledged record.
         try (KafkaDemoClient.EventWindow window = environment.kafka.openEventWindow()) {
+            String acceptedMessageId = submitInitialCommand(
+                    primary, config, submit, digest, relativeKey);
+            checks.add(pass("composite".equals(config.stateMachine())
+                    ? "COMPOSITE_EVIDENCE_RELEASE_WORKFLOW"
+                    : "DIRECT_EVIDENCE_SUBMISSION"));
+            VerifiedEvidence storageReady = waitEvidence(primary,
+                    status -> status == EvidenceStatus.STORAGE_READY
+                            || status == EvidenceStatus.NOTIFICATION_PENDING
+                            || status == EvidenceStatus.READY,
+                    true);
+            requireSubmittedState(storageReady.record(), submit,
+                    config.kafka().target(), config.kafka().topicAlias());
+            if (!acceptedMessageId.equals(Digests.hex(storageReady.record().submitMessageId()))) {
+                throw new DemoException(DemoError.EXTERNAL_STATE_MISMATCH);
+            }
+            checks.add(pass("AUTHENTICATED_STORAGE_RESULTS"));
+
+            ObjectPutReceiptV1 objectReceipt = ObjectPutReceiptV1.decode(
+                    storageReady.record().objectTerminal().externalRef());
+            IpfsPinReceiptV1 ipfsReceipt = IpfsPinReceiptV1.decode(
+                    storageReady.record().ipfsTerminal().externalRef());
+            if (!Arrays.equals(objectReceipt.destinationFingerprint(), objectDestination)
+                    || objectReceipt.size() != document.length
+                    || !Arrays.equals(objectReceipt.verifiedSha256(), digest)
+                    || !Arrays.equals(ipfsReceipt.targetFingerprint(), ipfsTarget)
+                    || !Arrays.equals(ipfsReceipt.cidFingerprint(),
+                    IpfsCidFingerprint.compute(cid).bytes())) {
+                throw new DemoException(DemoError.EXTERNAL_STATE_MISMATCH);
+            }
+            S3DemoStore.DestinationAudit objectAudit = environment.s3.verifyDestination(
+                    relativeKey, objectReceipt);
+            if (!environment.kubo.requiredPinPresent(cid, true)) {
+                throw new DemoException(DemoError.EXTERNAL_STATE_MISMATCH);
+            }
+            environment.kubo.requireContent(cid, document);
+            checks.add(pass("EXTERNAL_STORAGE_STATE"));
+
             if (storageReady.record().notificationEffect() == null) {
                 try {
                     primary.evidence().notify(config.evidenceId(), 1);
@@ -171,29 +179,33 @@ final class EvidenceScenario {
 
             byte[] submitMessageId = ready.record().submitMessageId();
             byte[] notifyMessageId = ready.record().notifyMessageId();
+            boolean directContinuation = notifyMessageId == null;
             YanoAuditClient.FinalityAudit submitFinality = waitFinality(
                     primary, Digests.hex(submitMessageId), config.requireAnchor());
-            YanoAuditClient.FinalityAudit notifyFinality = waitFinality(
-                    primary, Digests.hex(notifyMessageId), config.requireAnchor());
+            YanoAuditClient.FinalityAudit continuationFinality = directContinuation
+                    ? submitFinality
+                    : waitFinality(primary, Digests.hex(notifyMessageId), config.requireAnchor());
             if (config.requireAnchor()
-                    && (!submitFinality.anchored() || !notifyFinality.anchored())) {
+                    && (!submitFinality.anchored() || !continuationFinality.anchored())) {
                 throw new DemoException(DemoError.ANCHOR_UNAVAILABLE);
             }
             boolean portableAnchorLinkage = submitFinality.anchored()
-                    && notifyFinality.anchored();
+                    && continuationFinality.anchored();
             checks.add(portableAnchorLinkage
                     ? pass("PORTABLE_ANCHOR_LINKAGE")
                     : new ScenarioReport.Check("PORTABLE_ANCHOR_LINKAGE", "NOT_EVALUATED"));
+            checks.add(pass(directContinuation
+                    ? "DIRECT_RESULT_CONTINUATION" : "EXPLICIT_NOTIFY_CONTINUATION"));
 
-            requireFinalityMatchesCluster(agreement, submitFinality, notifyFinality);
+            requireFinalityMatchesCluster(agreement, submitFinality, continuationFinality);
             checks.add(pass("CERTIFIED_READY_STATE_BINDING"));
             requireFinalityMatchesObservedAnchor(
-                    anchoredStatus, submitFinality, notifyFinality, config.requireAnchor());
+                    anchoredStatus, submitFinality, continuationFinality, config.requireAnchor());
             checks.add(pass("THRESHOLD_FINALITY_BUNDLES"));
             checks.add(pass("THREE_NODE_TOPOLOGY"));
             checks.add(pass("THREE_NODE_STATE_AGREEMENT"));
             List<String> portableAnchorTransactions = config.requireAnchor()
-                    ? portableTransactionHashes(submitFinality, notifyFinality) : List.of();
+                    ? portableTransactionHashes(submitFinality, continuationFinality) : List.of();
             boolean portableTransactionsVisible = !portableAnchorTransactions.isEmpty()
                     && waitForL1Visibility(portableAnchorTransactions);
             checks.add(portableTransactionsVisible
@@ -203,7 +215,7 @@ final class EvidenceScenario {
             Map<String, YanoAuditClient.AnchorExpectation> portableExpectations =
                     portableAnchorExpectations(config.requireAnchor(), config.chainId(),
                             agreement, anchoredStatus,
-                            submitFinality, notifyFinality);
+                            submitFinality, continuationFinality);
             boolean portableDatumCommitmentsVerified = !portableExpectations.isEmpty()
                     && waitForAnchorCommitments(portableExpectations);
             checks.add(portableDatumCommitmentsVerified
@@ -213,8 +225,10 @@ final class EvidenceScenario {
 
             if (ready.record().objectEffect().height() != submitFinality.messageHeight()
                     || ready.record().ipfsEffect().height() != submitFinality.messageHeight()
-                    || ready.record().notificationEffect().height()
-                    != notifyFinality.messageHeight()) {
+                    || !directContinuation && ready.record().notificationEffect().height()
+                    != continuationFinality.messageHeight()
+                    || directContinuation && !continuationFinality.certifiedStateRoots()
+                    .containsKey(ready.record().notificationEffect().height())) {
                 throw new DemoException(DemoError.EFFECT_PROOF_FAILED);
             }
             EffectRecord objectEffect = primary.verifyEffect(
@@ -233,7 +247,9 @@ final class EvidenceScenario {
             EffectRecord kafkaEffect = primary.verifyEffect(
                     ready.record().notificationEffect().height(),
                     ready.record().notificationEffect().ordinal(),
-                    notifyFinality.messageStateRoot(), ConnectorTypes.KAFKA_PUBLISH,
+                    continuationFinality.certifiedStateRoots().get(
+                            ready.record().notificationEffect().height()),
+                    ConnectorTypes.KAFKA_PUBLISH,
                     publish.encode(), notifyMessageId);
             checks.add(pass("COMPOSED_EFFECT_PROOFS"));
 
@@ -275,7 +291,7 @@ final class EvidenceScenario {
                     "BUSINESS_CLAIM_NOT_EVALUATED", "NOT_EVALUATED"));
 
             int effectProofsVerified = List.of(objectEffect, ipfsEffect, kafkaEffect).size();
-            int finalityBundlesVerified = List.of(submitFinality, notifyFinality).size();
+            int finalityBundlesVerified = directContinuation ? 1 : 2;
             ScenarioReport.ChainSummary chain = new ScenarioReport.ChainSummary(
                     config.chainId(), agreement.committedHeight(), agreement.stateRoot(),
                     EvidenceStatus.READY.name(), agreement.memberKeys().size(),
@@ -295,6 +311,74 @@ final class EvidenceScenario {
             return new ScenarioReport(ScenarioReport.SCHEMA_VERSION, scenarioId,
                     config.evidenceId(), "PASS", started.toString(), clock.instant().toString(),
                     chain, storage, kafka, anchor, checks, null);
+        }
+    }
+
+    private String submitInitialCommand(
+            YanoAuditClient primary,
+            DemoConfig config,
+            SubmitEvidenceCommandV1 submit,
+            byte[] documentHash,
+            String documentRef
+    ) {
+        try {
+            if (!"composite".equals(config.stateMachine())) {
+                return primary.evidence().submit(submit).messageId();
+            }
+
+            String token = Digests.hex(Digests.sha256(
+                    ("evidence-release-v1\0" + config.evidenceId())
+                            .getBytes(StandardCharsets.UTF_8))).substring(0, 32);
+            byte[] registryKey = ("evidence/" + config.evidenceId())
+                    .getBytes(StandardCharsets.UTF_8);
+            String approvalId = "approval-" + token;
+            byte[] evidenceCommand = submit.encode();
+
+            AppChainClient.SubmitResult registry = primary.appChain().submit(
+                    EvidenceReleasePrerequisiteCommandsV1.REGISTRY_TOPIC,
+                    EvidenceReleasePrerequisiteCommandsV1.registryPut(
+                            registryKey, documentHash));
+            waitFinality(primary, registry.messageId(), false);
+
+            AppChainClient.SubmitResult proposal = primary.appChain().submit(
+                    EvidenceReleasePrerequisiteCommandsV1.APPROVALS_TOPIC,
+                    EvidenceReleasePrerequisiteCommandsV1.approvalPropose(
+                            approvalId, evidenceCommand, 1, 0));
+            waitFinality(primary, proposal.messageId(), false);
+
+            AppChainClient.SubmitResult approval = primary.appChain().submit(
+                    EvidenceReleasePrerequisiteCommandsV1.APPROVALS_TOPIC,
+                    EvidenceReleasePrerequisiteCommandsV1.approvalApprove(approvalId));
+            waitFinality(primary, approval.messageId(), false);
+
+            // Probe only after the profile and evidence component are active,
+            // but before this release can create the record.
+            Optional<VerifiedEvidence> retained = primary.evidence().queryVerified(
+                    config.evidenceId(), 1);
+
+            EvidenceReleaseCommandV1 release = new EvidenceReleaseCommandV1(
+                    "release-" + token,
+                    registryKey,
+                    approvalId,
+                    "document-" + token,
+                    documentHash,
+                    "object:" + documentRef,
+                    evidenceCommand);
+            String releaseMessageId = primary.appChain()
+                    .submit(EvidenceReleaseCommandV1.TOPIC, release.encode()).messageId();
+            // On replay, the release command is deliberately a deterministic
+            // no-op and the authenticated evidence record retains the message
+            // id that originally created it. Still wait for the new release
+            // envelope to finalize so the demo proves idempotent replay rather
+            // than returning immediately from already-ready state.
+            waitFinality(primary, releaseMessageId, false);
+            return retained
+                    .map(existing -> Digests.hex(existing.record().submitMessageId()))
+                    .orElse(releaseMessageId);
+        } catch (DemoException failure) {
+            throw failure;
+        } catch (RuntimeException failure) {
+            throw new DemoException(DemoError.SUBMISSION_FAILED);
         }
     }
 
@@ -383,7 +467,8 @@ final class EvidenceScenario {
                 if (agreed && height != Long.MAX_VALUE) {
                     DemoClusterTopology topology = DemoClusterTopology.verify(statuses,
                             environment.config.yanoMemberKeys(),
-                            environment.config.yanoThreshold());
+                            environment.config.yanoThreshold(),
+                            environment.config.stateMachine());
                     return new ClusterAgreement(height, root, topology.memberKeys(),
                             topology.threshold());
                 }
@@ -432,7 +517,8 @@ final class EvidenceScenario {
                 if (covered) {
                     DemoClusterTopology.verifyAnchored(statuses,
                             environment.config.yanoMemberKeys(),
-                            environment.config.yanoThreshold());
+                            environment.config.yanoThreshold(),
+                            environment.config.stateMachine());
                     return first;
                 }
             } catch (RuntimeException transientFailure) {
@@ -687,21 +773,9 @@ final class EvidenceScenario {
         }
     }
 
-    private static byte[] readSample(java.nio.file.Path path) {
+    static byte[] readSample(java.nio.file.Path path) {
         try {
-            if (Files.isSymbolicLink(path)
-                    || !Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) {
-                throw new DemoException(DemoError.SAMPLE_INVALID);
-            }
-            long size = Files.size(path);
-            if (size <= 0 || size > MAX_SAMPLE_BYTES) {
-                throw new DemoException(DemoError.SAMPLE_INVALID);
-            }
-            byte[] bytes = Files.readAllBytes(path);
-            if (bytes.length != size) {
-                throw new DemoException(DemoError.SAMPLE_INVALID);
-            }
-            return bytes;
+            return BoundedFiles.read(path, MAX_SAMPLE_BYTES, true, false);
         } catch (DemoException failure) {
             throw failure;
         } catch (IOException failure) {

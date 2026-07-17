@@ -3,6 +3,8 @@ package com.bloxbean.cardano.yano.appchain.objectstore.s3.effects;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutor;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectExecution;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectExecutionContext;
+import com.bloxbean.cardano.yano.api.appchain.effects.EffectExecutorOperationalSnapshot;
+import com.bloxbean.cardano.yano.api.appchain.effects.EffectExecutorOperationsTracker;
 import com.bloxbean.cardano.yano.api.appchain.effects.PendingEffect;
 import com.bloxbean.cardano.yano.appchain.integration.ConnectorContractException;
 import com.bloxbean.cardano.yano.appchain.integration.ConnectorErrorCode;
@@ -42,6 +44,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -77,6 +80,8 @@ public final class S3ObjectPutExecutor implements AppEffectExecutor {
     private final Object lifecycleLock = new Object();
     private final Map<String, ObjectStoreClient> clients = new LinkedHashMap<>();
     private final AtomicBoolean closed = new AtomicBoolean();
+    private final EffectExecutorOperationsTracker operations =
+            new EffectExecutorOperationsTracker();
 
     /**
      * Creates an executor that owns every lazily opened client and archive.
@@ -112,12 +117,26 @@ public final class S3ObjectPutExecutor implements AppEffectExecutor {
     }
 
     @Override
+    public Set<String> effectTypes() {
+        return Set.of(TYPE);
+    }
+
+    @Override
     public boolean supports(String effectType) {
         return TYPE.equals(effectType);
     }
 
     @Override
     public EffectExecution execute(EffectExecutionContext context, PendingEffect effect) {
+        return operations.observe(() -> executeAttempt(context, effect));
+    }
+
+    @Override
+    public EffectExecutorOperationalSnapshot operationalSnapshot() {
+        return operations.snapshot();
+    }
+
+    private EffectExecution executeAttempt(EffectExecutionContext context, PendingEffect effect) {
         Objects.requireNonNull(context, "context");
         Objects.requireNonNull(effect, "effect");
 

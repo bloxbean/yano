@@ -6,8 +6,10 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -68,6 +70,20 @@ class ReportStoreTest {
         } catch (UnsupportedOperationException ignored) {
             // Symlinks may be unavailable on some hosts.
         }
+    }
+
+    @Test
+    void refusesToReadAnOversizedLatestReport() throws Exception {
+        Path directory = temporary.resolve("reports");
+        Files.createDirectories(directory);
+        Path latest = directory.resolve(ReportStore.LATEST_FILE);
+        try (var channel = Files.newByteChannel(latest,
+                StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE)) {
+            channel.position(ReportStore.MAX_REPORT_BYTES);
+            channel.write(ByteBuffer.wrap(new byte[]{1}));
+        }
+
+        assertThat(new ReportStore(directory).readLatest()).isNull();
     }
 
     @Test

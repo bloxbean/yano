@@ -1113,6 +1113,17 @@ Type tags come only from the bounded `effects.metrics.types` allowlist (plus
 non-truncated operational scan and may span a concurrent transition; counters
 and timers are normalized to remain monotonic for the life of the node process.
 
+Each lifecycle-owned executor product also contributes cached, node-local
+metrics: `executor_readiness{executor,slot,state}` (one-hot),
+`executor_in_flight{executor,slot}`,
+`executor_age_bucket_seconds{executor,slot,event}`, and monotonic
+`executor_attempts_total`, `executor_successes_total`,
+`executor_retryable_failures_total`, and `executor_terminal_failures_total`.
+The executor inventory is fixed at startup and bounded to 256 products. These
+metrics read a host-owned cache; scrapes never invoke plugin code or contact a
+connector. Endpoints, credentials, payloads, and plugin-provided labels or
+messages are not part of the snapshot contract.
+
 A ready-made Grafana dashboard ships at `docs/grafana/appchain-dashboard.json`.
 
 **Status page**: a built-in dashboard is served at **`/ui/app-chain/`**
@@ -1473,7 +1484,7 @@ commits its exact SHA-256 digest and size, while credentials, endpoints,
 buckets, encryption, and retention policy stay in the selected target. The
 executor verifies the source and uses conditional creation of an immutable,
 versioned destination—it does not overwrite or resurrect a conflicting key.
-See the module README for the full required target profile and MinIO/AWS
+See the module README for the full required target profile and S3-compatible/AWS
 examples.
 
 **IPFS pin executor** — the optional `yano-appchain-ipfs` bundle handles
@@ -1499,6 +1510,92 @@ confirmed pin is a point-in-time report from the configured target, not proof
 of indefinite global availability or content confidentiality. See
 `appchain/extensions/appchain-ipfs/README.md` for TLS/bearer configuration,
 packaging, policy, and real-Kubo test instructions.
+
+### Deterministic composite state machines
+
+Select the first-party stock composition when one chain needs registry,
+approval, document-trail, and evidence publication semantics in one atomic
+state root:
+
+```yaml
+yano:
+  app-chain:
+    effects:
+      enabled: true
+      max-per-block: 128
+    chains:
+      - id: evidence-chain
+        state-machine: composite
+        machines:
+          composite:
+            preset: evidence-v1
+```
+
+The profile, ordered components, routes, activations, workflows, query limits,
+and quotas are canonically committed under `~composite/profile/v1`. The
+generic `composite` selector is therefore not a sufficient proof identity.
+Clients must pin the intended domain-separated profile digest, prove that
+marker, map logical keys through `CompositeCommitmentV1.componentKey(...)`, and
+verify the marker and component leaves at the same height/root. The typed
+evidence client performs this sequence and exposes both logical and physical
+proof keys.
+
+Custom compositions are ordinary ADR-011 manifested state-machine bundles.
+Assemble `CompositeComponent` products and optional declared workflows, call
+`CompositeStateMachine.create("my-distinct-machine-id", context, ...)`, and
+export the same distinct id from the provider and manifest. Construction
+always checks component/workflow reservations against the real
+`effects.max-per-block`. Do not publish arbitrary profiles under the stock
+`composite` identity.
+
+Replacement generations may change a committed `configurationId` only while
+retaining the same `stateAndResultCompatibilityId`. Generations with one
+component id share a physical namespace and may receive late results, so a
+state schema or callback-contract change requires a new component id plus a
+deterministic migration/workflow, or a fresh chain. Admission changes likewise
+use new versioned topics/query paths.
+
+The composite provides deterministic isolation and atomic coordination; it
+does not add DPP actor policy, regulatory validation, or real-world truth. The
+stock preset intentionally exposes both the coordinated `evidence.release.v1`
+workflow and the compatible direct `evidence.command.v1` route. Consequently
+the workflow is opt-in orchestration, not a mandatory authorization gate: an
+accepted direct command bypasses its registry/approval prerequisites. A domain
+bundle requiring those rules must omit/reject the direct route or enforce
+equivalent authorization in its own component.
+See the [composite module guide](../appchain/appchain-composite/README.md),
+[lightweight contracts guide](../appchain/appchain-composite-contracts/README.md),
+and [ADR-013.2](../adr/app-layer/013.2-deterministic-composite-state-machine.md).
+
+**No-code evidence demo** — the
+[ADR-013 evidence-effects demo](../app/appchain-effects-demo/README.md) wires
+the Kafka, S3-compatible object-store, and IPFS connectors into one
+three-member devnet workflow. It stages an inspection certificate, commits its
+digest, archives and pins the exact bytes, publishes the result-gated event,
+and verifies deterministic state, proofs, receipts, and a Cardano script
+anchor. The same scenario runs through Docker Compose or ordinary host-started
+Yano processes; no state-machine or plugin code is required. Its launcher also
+demonstrates both legacy explicit and activated direct continuation, retained
+restart, explicit executor ownership, guarded cleanup,
+private credential files, and the preview/preprod/mainnet safety profiles.
+The self-contained Compose profile pulls the official digest-pinned,
+multi-architecture RustFS beta image selected by ADR-013; Yano does not build
+RustFS, Kafka, or Kubo from source. The image is used only as the local
+S3-compatible demonstration service. Compose configuration disables RustFS's
+upstream startup version check, so the demo does not make that outbound
+request. The launcher uses RustFS's built-in
+full-admin root only inside the provider and one-shot private bootstrap, then
+applies and verifies separate least-privilege runner and executor identities,
+an empty service/STS-key inventory, encrypted IAM state, bucket versioning,
+and Object Lock. There is deliberately no canned policy for the built-in root,
+because RustFS does not enforce one on its owner identity; the fixed one-shot
+code, private secret mounts, and isolated connector network are that
+administrative path's actual boundaries. Only the runner and executor policies
+are described as IAM-enforced. This remains neither a production nor a
+high-availability object-storage recommendation.
+Host deployment stays provider-neutral and can target
+an independently qualified AWS S3 or compatible service without changing the
+effect contract or scenario.
 
 **Cardano payment executor** — the stock application omits this privileged T3
 integration. A JVM node can run `:appchain-effects-cardano:shadowJar` and copy
@@ -1628,15 +1725,23 @@ interfaces — the same ServiceLoader pattern as custom sinks (§10):
 ```java
 public class CredentialIssueExecutor implements AppEffectExecutor {
     private final String issuerUrl;
+    private final EffectExecutorOperationsTracker operations =
+            new EffectExecutorOperationsTracker();
     CredentialIssueExecutor(Map<String, String> config) {
         this.issuerUrl = config.get("issuer-url");
     }
 
     @Override public String id() { return "credential-issuer"; }
+    @Override public Set<String> effectTypes() { return Set.of("credential.issue"); }
     @Override public boolean supports(String type) { return "credential.issue".equals(type); }
 
     @Override
     public EffectExecution execute(EffectExecutionContext ctx, PendingEffect effect) throws Exception {
+        return operations.observeChecked(() -> executeAttempt(ctx, effect));
+    }
+
+    private EffectExecution executeAttempt(EffectExecutionContext ctx, PendingEffect effect)
+            throws Exception {
         CredentialRequest request = decodeCredentialRequest(effect.payload());
         // MUST be idempotent on effect.idHash() — the same effect may re-run.
         // ctx.submittedRef() is non-empty on a re-poll of a prior Submitted;
@@ -1644,6 +1749,10 @@ public class CredentialIssueExecutor implements AppEffectExecutor {
         byte[] credentialId = issue(issuerUrl, request, effect.idHash());
         return EffectExecution.confirmed(credentialId);          // or .failed(reason, retryable),
                                                                  // .submitted(ref), .retry(duration)
+    }
+
+    @Override public EffectExecutorOperationalSnapshot operationalSnapshot() {
+        return operations.snapshot();
     }
 }
 
@@ -1687,6 +1796,14 @@ directory, and configure
 JARs are separate catalog artifacts, not one bundle. A native deployment must
 include and map the manifested bundle at application build time; an existing
 native executable cannot load it from the plugin directory.
+
+`effectTypes()` is the authoritative ownership declaration for new executors.
+Startup fails before publication if two products declare the same type. The
+default empty declaration preserves legacy predicate-based executors, but new
+plugins should not rely on discovery order. `operationalSnapshot()` is
+optional and defaults to a bounded `UNKNOWN` view; the helper shown above
+maintains secret-free fixed counters and age/failure classes without exposing
+the connector client.
 
 The framework supplies discovery, finality gating, retries, backoff, the
 poison lane, and the result loop — you implement only the one attempt.

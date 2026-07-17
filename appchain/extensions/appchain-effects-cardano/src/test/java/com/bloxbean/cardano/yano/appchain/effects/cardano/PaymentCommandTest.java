@@ -13,6 +13,15 @@ import static org.assertj.core.api.Assertions.assertThat;
 class PaymentCommandTest {
 
     @Test
+    void executorDeclaresItsFrozenEffectType() {
+        CardanoPaymentExecutor executor = new CardanoPaymentExecutor(
+                null, null, null, 0, 0);
+
+        assertThat(executor.effectTypes()).containsExactly(CardanoPaymentExecutor.TYPE);
+        assertThat(executor.operationalSnapshot().attempts()).isZero();
+    }
+
+    @Test
     void decodesCborMap() {
         co.nstant.in.cbor.model.Map map = new co.nstant.in.cbor.model.Map();
         map.put(new UnicodeString("to"), new UnicodeString("addr_test1qz..."));

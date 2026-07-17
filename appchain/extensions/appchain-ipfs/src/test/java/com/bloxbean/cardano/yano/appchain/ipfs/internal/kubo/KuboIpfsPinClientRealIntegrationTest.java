@@ -41,7 +41,7 @@ class KuboIpfsPinClientRealIntegrationTest {
 
     @Test
     @Timeout(value = 10, unit = TimeUnit.SECONDS)
-    void provesNewExistingAndMissingPinPathsAgainstRealKubo() throws Exception {
+    void provesNewExistingIndirectUpgradeAndMissingPinPathsAgainstRealKubo() throws Exception {
         URI configuredEndpoint = URI.create(requiredProperty("yano.ipfs.integration.endpoint"));
         KuboClientConfig config = new KuboClientConfig(configuredEndpoint,
                 Duration.ofSeconds(2), Duration.ofSeconds(5), Duration.ofSeconds(1),
@@ -57,6 +57,9 @@ class KuboIpfsPinClientRealIntegrationTest {
                         .isEqualTo(PinState.RECURSIVE);
                 assertThat(client.probe(INDIRECT_CHILD_CID, EFFECT_ID))
                         .isEqualTo(PinState.INDIRECT);
+                client.add(INDIRECT_CHILD_CID, true, EFFECT_ID);
+                assertThat(client.probe(INDIRECT_CHILD_CID, EFFECT_ID))
+                        .isEqualTo(PinState.RECURSIVE);
                 assertThat(client.probe(FIXTURE_CID, EFFECT_ID)).isEqualTo(PinState.ABSENT);
                 client.add(FIXTURE_CID, true, EFFECT_ID);
                 assertThat(client.probe(FIXTURE_CID, EFFECT_ID)).isEqualTo(PinState.RECURSIVE);
@@ -80,6 +83,77 @@ class KuboIpfsPinClientRealIntegrationTest {
             }
         } finally {
             cleanupFixture(endpoint);
+        }
+    }
+
+    @Test
+    @EnabledIfSystemProperty(named = "yano.ipfs.integration.phase", matches = "seed")
+    @Timeout(value = 10, unit = TimeUnit.SECONDS)
+    void seedsDurablePinForDaemonRestart() throws Exception {
+        requiredRunId();
+        URI endpoint = integrationConfig().apiEndpoint();
+        boolean seeded = false;
+        cleanupFixture(endpoint);
+        try {
+            provisionUnpinnedFixture(endpoint);
+            try (IpfsPinClient client = new KuboIpfsPinClient(integrationConfig())) {
+                assertThat(client.probe(FIXTURE_CID, EFFECT_ID)).isEqualTo(PinState.ABSENT);
+                client.add(FIXTURE_CID, true, EFFECT_ID);
+                assertThat(client.probe(FIXTURE_CID, EFFECT_ID)).isEqualTo(PinState.RECURSIVE);
+            }
+            seeded = true;
+        } finally {
+            if (!seeded) {
+                cleanupFixture(endpoint);
+            }
+        }
+    }
+
+    @Test
+    @EnabledIfSystemProperty(named = "yano.ipfs.integration.phase", matches = "reconcile")
+    @Timeout(value = 10, unit = TimeUnit.SECONDS)
+    void reconcilesDurablePinAfterDaemonRestart() {
+        requiredRunId();
+        URI endpoint = integrationConfig().apiEndpoint();
+        try {
+            try (IpfsPinClient client = new KuboIpfsPinClient(integrationConfig())) {
+                assertThat(client.probe(FIXTURE_CID, EFFECT_ID)).isEqualTo(PinState.RECURSIVE);
+                client.add(FIXTURE_CID, true, EFFECT_ID);
+                assertThat(client.probe(FIXTURE_CID, EFFECT_ID)).isEqualTo(PinState.RECURSIVE);
+            }
+        } finally {
+            cleanupFixture(endpoint);
+        }
+    }
+
+    @Test
+    @EnabledIfSystemProperty(named = "yano.ipfs.integration.phase", matches = "unavailable")
+    @Timeout(value = 10, unit = TimeUnit.SECONDS)
+    void unavailableDaemonNormalizesProbeAndMutationUncertainty() {
+        requiredRunId();
+        try (IpfsPinClient client = new KuboIpfsPinClient(integrationConfig())) {
+            assertThatExceptionOfType(IpfsProviderException.class)
+                    .isThrownBy(() -> client.probe(FIXTURE_CID, EFFECT_ID))
+                    .satisfies(failure -> assertThat(failure.code())
+                            .isEqualTo(ConnectorErrorCode.SERVICE_UNAVAILABLE));
+            assertThatExceptionOfType(IpfsProviderException.class)
+                    .isThrownBy(() -> client.add(FIXTURE_CID, true, EFFECT_ID))
+                    .satisfies(failure -> assertThat(failure.code())
+                            .isEqualTo(ConnectorErrorCode.ACK_UNKNOWN));
+        }
+    }
+
+    private static KuboClientConfig integrationConfig() {
+        URI configuredEndpoint = URI.create(requiredProperty("yano.ipfs.integration.endpoint"));
+        return new KuboClientConfig(configuredEndpoint,
+                Duration.ofSeconds(2), Duration.ofSeconds(5), Duration.ofSeconds(1),
+                Optional.empty());
+    }
+
+    private static void requiredRunId() {
+        String runId = requiredProperty("yano.ipfs.integration.run-id");
+        if (!runId.matches("[a-z0-9]{6,20}")) {
+            throw new IllegalStateException("invalid Kubo integration run id");
         }
     }
 
@@ -126,6 +200,8 @@ class KuboIpfsPinClientRealIntegrationTest {
     }
 
     private static void cleanupFixture(URI endpoint) {
+        postIgnoringFailure(endpoint,
+                "/api/v0/pin/rm?arg=" + INDIRECT_CHILD_CID + "&recursive=true");
         postIgnoringFailure(endpoint,
                 "/api/v0/pin/rm?arg=" + FIXTURE_CID + "&recursive=true");
         postIgnoringFailure(endpoint,

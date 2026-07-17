@@ -20,14 +20,15 @@ java -jar build/libs/yano-appchain-evidence-demo-runner-*-all.jar \
 Kafka, validates the pre-provisioned buckets/versioning, and creates the topic.
 It makes no Yano call, so Compose can run it before the nodes. `probe` waits,
 under the configured deadline, for a produced L1 block, every
-configured app-chain node, MinIO/S3, Kubo, and Kafka. `init` additionally
+configured app-chain node, S3-compatible object storage, Kubo, and Kafka. `init` additionally
 creates the Kafka topic idempotently. S3 buckets and their least-privilege
 policy are operator/Compose responsibilities; `init` only validates that both
 buckets exist and archive versioning is enabled.
 
-The Milestone 1 scenario intentionally accepts exactly three distinct Yano
-endpoints. It verifies three distinct status `memberKey` identities, a common
-three-member/threshold-two group, and `stateMachine=evidence-registry`. Both
+The scenario intentionally accepts exactly three distinct Yano endpoints. It
+verifies three distinct status `memberKey` identities, a common
+three-member/threshold-two group, and the exact `demo.state-machine` selection
+(`evidence-registry` by default or the stock `composite` profile). Both
 portable finality bundles must carry that exact member set and at least two
 valid certificate signatures. The exact keys and threshold are independently
 pinned in the runner configuration and compared with every node status and
@@ -42,9 +43,27 @@ and non-secret target identities. The broad-auth demo omits
 scoped READ/SUBMIT key may be supplied through that optional file property;
 the full bootstrap/admin key must never be mounted into the runner. S3
 credentials and any optional scoped key are read only from regular,
-non-symlink secret files. On POSIX systems those files must not be group- or
-world-accessible. Secret values are never accepted on the command line or in
-the properties file.
+non-symlink secret files. Because the runner properties select both connector
+endpoints and secret-file paths, the properties file and every secret file
+must not be group- or world-accessible on POSIX systems. The launcher creates
+them with mode `0600`. Secret values are never accepted on the command line or
+in the properties file.
+
+When `demo.state-machine=composite`, `run` uses only the lightweight
+`appchain-composite-contracts` client artifact. It commits the stock workflow's
+registry and approval prerequisites, waits for threshold finality after each,
+then submits the canonical evidence-release command. The runner JAR is checked
+to contain no runtime, state-machine, or connector plugin implementation.
+
+The destructive failover E2E also uses the runner's internal read-only
+`audit-kafka` command. It accepts only an expected record count (at most 16)
+and one effect-id hash, then fails closed unless the fresh demo topic has
+exactly partition 0 and offsets `[0,count)`. Every physical record must carry
+the exact unique reserved-header set, fixed `kafka.publish`/v1/CBOR values,
+canonical chain/origin values, and the expected `yano-effect-id`. A bounded
+SHA-256 fingerprint over partition, key, value, and ordered headers must match
+across retries. The command exposes only offsets, effect IDs, and fingerprints;
+it does not decode the scenario's CBOR event semantics.
 
 The `run` command succeeds only after it verifies authenticated registry
 state, MPF state proofs on every member, portable threshold-finality evidence,

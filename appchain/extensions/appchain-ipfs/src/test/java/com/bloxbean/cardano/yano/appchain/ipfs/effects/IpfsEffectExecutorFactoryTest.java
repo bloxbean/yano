@@ -7,6 +7,8 @@ import com.bloxbean.cardano.yano.appchain.ipfs.internal.kubo.KuboClientConfig;
 import com.bloxbean.cardano.yano.appchain.ipfs.internal.PinState;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.api.parallel.ResourceLock;
+import org.junit.jupiter.api.parallel.Resources;
 
 import java.net.URI;
 import java.nio.file.Path;
@@ -21,7 +23,14 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+@ResourceLock(Resources.SYSTEM_PROPERTIES)
 class IpfsEffectExecutorFactoryTest {
+
+    @org.junit.jupiter.api.AfterEach
+    void clearConstructionSmokeProperties() {
+        System.clearProperty(IpfsClientConstructionTestSeam.TEST_MODE_PROPERTY);
+        System.clearProperty(IpfsClientConstructionTestSeam.MODE_PROPERTY);
+    }
 
     @Test
     void inactiveConfigurationDeclinesContribution() {
@@ -52,6 +61,7 @@ class IpfsEffectExecutorFactoryTest {
 
         assertThat(products).hasSize(1);
         assertThat(products.getFirst().id()).isEqualTo("ipfs-pin");
+        assertThat(products.getFirst().effectTypes()).containsExactly(IpfsPinExecutor.TYPE);
         assertThat(products.getFirst().supports("ipfs.pin")).isTrue();
         assertThat(captured.get().apiEndpoint())
                 .isEqualTo(URI.create("http://127.0.0.1:5001"));
@@ -63,6 +73,9 @@ class IpfsEffectExecutorFactoryTest {
         assertThat(products.getFirst().execute(IpfsEffectTestSupport.context(1),
                 IpfsEffectTestSupport.effect(IpfsEffectTestSupport.command().encode())))
                 .isInstanceOf(EffectExecution.Confirmed.class);
+        assertThat(products.getFirst().operationalSnapshot().readiness().name())
+                .isEqualTo("READY");
+        assertThat(products.getFirst().operationalSnapshot().attempts()).isEqualTo(1);
         assertThat(opens).hasValue(1);
         products.getFirst().close();
         assertThat(client.closeCalls()).isOne();
@@ -161,5 +174,40 @@ class IpfsEffectExecutorFactoryTest {
 
         assertThat(factories).singleElement()
                 .isInstanceOf(IpfsEffectExecutorFactory.class);
+    }
+
+    @Test
+    void constructionSmokeRequiresTheGlobalTestGate() {
+        System.setProperty(IpfsClientConstructionTestSeam.MODE_PROPERTY,
+                IpfsClientConstructionTestSeam.MODE_V1);
+        IpfsEffectExecutorFactory factory = new IpfsEffectExecutorFactory(config ->
+                () -> new IpfsEffectTestSupport.RecordingClient(PinState.ABSENT));
+
+        assertThatThrownBy(() -> factory.create("chain", IpfsEffectTestSupport.settings()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("ipfs effect executor construction failed")
+                .hasRootCauseMessage("connector client construction smoke requires -D"
+                        + IpfsClientConstructionTestSeam.TEST_MODE_PROPERTY + "=true");
+    }
+
+    @Test
+    void constructionSmokeOpensAndClosesOneFreshClient() {
+        System.setProperty(IpfsClientConstructionTestSeam.TEST_MODE_PROPERTY, "true");
+        System.setProperty(IpfsClientConstructionTestSeam.MODE_PROPERTY,
+                IpfsClientConstructionTestSeam.MODE_V1);
+        AtomicInteger opens = new AtomicInteger();
+        IpfsEffectTestSupport.RecordingClient client =
+                new IpfsEffectTestSupport.RecordingClient(PinState.ABSENT);
+        IpfsEffectExecutorFactory factory = new IpfsEffectExecutorFactory(config -> () -> {
+            opens.incrementAndGet();
+            return client;
+        });
+
+        AppEffectExecutor executor = factory.create(
+                "chain", IpfsEffectTestSupport.settings()).getFirst();
+
+        assertThat(opens).hasValue(1);
+        assertThat(client.closeCalls()).isOne();
+        executor.close();
     }
 }

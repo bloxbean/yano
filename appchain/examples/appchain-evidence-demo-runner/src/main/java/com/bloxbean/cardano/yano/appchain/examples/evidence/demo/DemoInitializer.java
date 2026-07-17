@@ -56,7 +56,8 @@ final class DemoInitializer {
                 }
                 DemoClusterTopology.verify(statuses,
                         environment.config.yanoMemberKeys(),
-                        environment.config.yanoThreshold());
+                        environment.config.yanoThreshold(),
+                        environment.config.stateMachine());
                 environment.s3.validate();
                 environment.kubo.probe();
                 environment.kafka.probeBroker();

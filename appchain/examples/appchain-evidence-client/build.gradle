@@ -1,6 +1,7 @@
 dependencies {
     api project(':appchain-client')
     api project(':appchain-evidence-contracts')
+    api project(':appchain-composite-contracts')
 
     testImplementation libs.junit.jupiter.api
     testRuntimeOnly libs.junit.jupiter.engine

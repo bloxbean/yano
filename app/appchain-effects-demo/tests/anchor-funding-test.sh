@@ -3,6 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TOOL="$SCRIPT_DIR/../tools/anchor_funding.py"
+DEMO_SH="$SCRIPT_DIR/../demo.sh"
 
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 ready() { printf '%s' "$2" | python3 "$TOOL" $1; }
@@ -35,5 +36,10 @@ if ready '' "$TOO_LARGE"; then fail "devnet readiness accepted an out-of-range q
 if ready --public "$DUPLICATE_OUTPOINT"; then fail "public readiness counted one outpoint twice"; fi
 if ready '' "$MISSING_OUTPOINT"; then fail "devnet readiness accepted a UTxO without an identity"; fi
 if printf '%s' '{invalid' | python3 "$TOOL" --public; then fail "invalid JSON was ready"; fi
+
+bash -n "$DEMO_SH" || fail "demo launcher has invalid shell syntax"
+if grep -Fq 'funding_args[@]' "$DEMO_SH"; then
+  fail "demo launcher uses an empty-array expansion that fails under macOS Bash 3.2 with set -u"
+fi
 
 printf 'PASS: anchor funding readiness requires collateral, spend and reserve UTxOs\n'

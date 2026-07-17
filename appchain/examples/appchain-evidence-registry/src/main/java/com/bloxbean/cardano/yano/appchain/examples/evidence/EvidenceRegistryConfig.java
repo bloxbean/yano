@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.appchain.examples.evidence;
 
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineContext;
+import com.bloxbean.cardano.yano.api.appchain.effects.ActivationSchedule;
 import com.bloxbean.cardano.yano.api.appchain.effects.FinalityGate;
 import com.bloxbean.cardano.yano.appchain.integration.objectstore.ObjectPutCommandV1;
 
@@ -11,6 +12,10 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.regex.Pattern;
+import java.io.ByteArrayOutputStream;
+import java.io.DataOutputStream;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 
 /** Immutable, consensus-affecting configuration for the evidence registry. */
 public final class EvidenceRegistryConfig {
@@ -26,13 +31,15 @@ public final class EvidenceRegistryConfig {
     private final FinalityGate storageGate;
     private final long storageExpiryBlocks;
     private final long notificationExpiryBlocks;
+    private final ActivationSchedule activations;
 
     EvidenceRegistryConfig(String chainId,
                            Set<String> issuers,
                            Set<String> notifySenders,
                            FinalityGate storageGate,
                            long storageExpiryBlocks,
-                           long notificationExpiryBlocks) {
+                           long notificationExpiryBlocks,
+                           ActivationSchedule activations) {
         this.chainId = requireChainId(chainId);
         this.issuers = Set.copyOf(Objects.requireNonNull(issuers, "issuers"));
         this.notifySenders = Set.copyOf(Objects.requireNonNull(notifySenders, "notifySenders"));
@@ -45,6 +52,7 @@ public final class EvidenceRegistryConfig {
         }
         this.storageExpiryBlocks = storageExpiryBlocks;
         this.notificationExpiryBlocks = notificationExpiryBlocks;
+        this.activations = Objects.requireNonNull(activations, "activations");
     }
 
     /** Parses and validates the chain context before the machine is activated. */
@@ -72,7 +80,8 @@ public final class EvidenceRegistryConfig {
                 publicKeys(settings, PREFIX + "notify-senders"),
                 gate,
                 storageExpiry,
-                notificationExpiry);
+                notificationExpiry,
+                ActivationSchedule.from(settings, EvidenceRegistryStateMachine.ID));
     }
 
     public String chainId() {
@@ -91,6 +100,10 @@ public final class EvidenceRegistryConfig {
         return notificationExpiryBlocks;
     }
 
+    public boolean directResultEmissionActive(long height) {
+        return activations.isActive("direct-result-emission", height);
+    }
+
     /** An empty issuer allow-list means any already-authenticated chain member. */
     public boolean isIssuer(byte[] sender) {
         String encoded = publicKey(sender);
@@ -103,6 +116,48 @@ public final class EvidenceRegistryConfig {
         String ownerHex = publicKey(owner);
         return senderHex != null && ownerHex != null
                 && (ownerHex.equals(senderHex) || notifySenders.contains(senderHex));
+    }
+
+    /**
+     * Bounded non-secret identity of the fully parsed consensus configuration,
+     * used by the ADR-013.2 composite profile commitment.
+     */
+    public String configurationId() {
+        try {
+            ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+            DataOutputStream out = new DataOutputStream(bytes);
+            writeStrings(out, issuers.stream().sorted().toList());
+            writeStrings(out, notifySenders.stream().sorted().toList());
+            writeString(out, storageGate.name());
+            out.writeLong(storageExpiryBlocks);
+            out.writeLong(notificationExpiryBlocks);
+            var entries = activations.entries().entrySet().stream()
+                    .sorted(Map.Entry.comparingByKey()).toList();
+            out.writeInt(entries.size());
+            for (Map.Entry<String, Long> entry : entries) {
+                writeString(out, entry.getKey());
+                out.writeLong(entry.getValue());
+            }
+            out.flush();
+            byte[] digest = MessageDigest.getInstance("SHA-256").digest(bytes.toByteArray());
+            return "sha256:" + HexFormat.of().formatHex(digest);
+        } catch (Exception impossible) {
+            throw new IllegalStateException("Unable to derive evidence configuration identity", impossible);
+        }
+    }
+
+    private static void writeStrings(DataOutputStream out, java.util.List<String> values)
+            throws java.io.IOException {
+        out.writeInt(values.size());
+        for (String value : values) {
+            writeString(out, value);
+        }
+    }
+
+    private static void writeString(DataOutputStream out, String value) throws java.io.IOException {
+        byte[] encoded = value.getBytes(StandardCharsets.UTF_8);
+        out.writeInt(encoded.length);
+        out.write(encoded);
     }
 
     private static void requireEffects(Map<String, String> settings) {

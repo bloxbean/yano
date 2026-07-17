@@ -4,10 +4,12 @@ import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutor;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutorFactory;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectExecution;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectExecutionContext;
+import com.bloxbean.cardano.yano.api.appchain.effects.EffectExecutorOperationalSnapshot;
 import com.bloxbean.cardano.yano.api.appchain.effects.PendingEffect;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /** Harmless effect-executor fixture used only by the native plugin conformance build. */
@@ -31,6 +33,25 @@ public final class ConformanceEffectExecutorFactory implements AppEffectExecutor
                 ConformanceTcclProbe.productCallback(firstCallback,
                         "effect-executor identity");
                 return EXECUTOR_ID;
+            }
+
+            @Override
+            public Set<String> effectTypes() {
+                ConformanceTcclProbe.productCallback(firstCallback,
+                        "effect-executor type declaration");
+                return Set.of("conformance.effect");
+            }
+
+            @Override
+            public EffectExecutorOperationalSnapshot operationalSnapshot() {
+                ConformanceTcclProbe.productCallback(firstCallback,
+                        "effect-executor operational snapshot");
+                return new EffectExecutorOperationalSnapshot(
+                        EffectExecutorOperationalSnapshot.Readiness.READY,
+                        1, 1, 0, 0, 0,
+                        EffectExecutorOperationalSnapshot.AgeBucket.LESS_THAN_ONE_MINUTE,
+                        EffectExecutorOperationalSnapshot.AgeBucket.NEVER,
+                        EffectExecutorOperationalSnapshot.FailureCode.NONE);
             }
 
             @Override
