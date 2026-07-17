@@ -20,9 +20,11 @@ Don't look for feature docs here — they're centralized:
 | [`docs/APP_CHAIN_OVERVIEW.md`](../docs/APP_CHAIN_OVERVIEW.md) | A diagram-led 10–15 minute explanation of the app-chain value, end-to-end flow, components, no-code path, plugins, effects, composite state machines, use cases, and readiness. |
 | [`docs/YANO_APP_CHAIN_OVERVIEW.pptx`](../docs/YANO_APP_CHAIN_OVERVIEW.pptx) | Editable 13-slide companion deck for a concise architecture and product pitch. |
 | [`docs/APP_CHAIN_USER_GUIDE.md`](../docs/APP_CHAIN_USER_GUIDE.md) | Configuration, REST, anchoring (metadata + script), operations |
+| [`docs/APP_CHAIN_PROFILE_GOVERNANCE.md`](../docs/APP_CHAIN_PROFILE_GOVERNANCE.md) | Governed composite profile deployment, activation, recovery, observability, and proof verification |
 | [`docs/APP_CHAIN_TUTORIAL.md`](../docs/APP_CHAIN_TUTORIAL.md) | Hands-on: run a chain from the distribution + a custom plugin |
 | [`docs/APP_CHAIN_PLUGIN_QUERY_AND_DOMAIN_API.md`](../docs/APP_CHAIN_PLUGIN_QUERY_AND_DOMAIN_API.md) | Plugin-author contract for committed queries and manifested domain APIs |
 | [`docs/APP_CHAIN_CONSENSUS_GUIDE.md`](../docs/APP_CHAIN_CONSENSUS_GUIDE.md) | Developer-level internals: consensus round, state-machine SPI, every built-in machine's wire format |
+| [`adr/app-layer/open_item.md`](../adr/app-layer/open_item.md) | Canonical live tracker for app-layer work that is ready, proposed, blocked, or deliberately deferred. |
 | `adr/app-layer/` | Design history (005 framework, 006 extensions, 008.x consensus/anchoring) |
 | `app/appchain-cluster/README.md` | The multi-node demo cluster launcher |
 
@@ -32,7 +34,8 @@ Don't look for feature docs here — they're centralized:
 |---|---|---|
 | `appchain-stdlib` | `appchain-stdlib/` | Ready `AppStateMachine`s selected by id: `kv-registry`, `approvals`, `balances`, `doc-trail` (`ordered-log` is built into `runtime`). Ships in the distribution. |
 | `appchain-composite-contracts` | `appchain-composite-contracts/` | No-SPI profile commitment, physical-key mapping, aggregate-query wire, and stock workflow submission contracts. |
-| `appchain-composite` | `appchain-composite/` | Deterministic component composition plus the stock manifested `composite` / `evidence-v1` provider. See its README for custom bundle rules. |
+| `appchain-composite-client` | `appchain-composite-client/` | Offline finality, one-root MPF, epoch-chain, and caller authorization-policy verification for governed composite profiles. |
+| `appchain-composite` | `appchain-composite/` | Deterministic component composition plus stock `evidence-v1-gated` and compatibility `evidence-v1` profiles, with fixed or governed profile mode. See its README for custom bundle rules. |
 | `appchain-client` | `appchain-client/` | Java client SDK — REST + SSE + client-side proof verification. |
 | `appchain-testkit` | `appchain-testkit/` | JUnit 5 `@AppChainCluster` embedded multi-node clusters for tests. |
 | `appchain-anchor-onchain` | `onchain/appchain-anchor-onchain/` | **On-chain anchor validators** (Plutus V3), authored in Java via julc — the default. See "On-chain artifacts" below. |

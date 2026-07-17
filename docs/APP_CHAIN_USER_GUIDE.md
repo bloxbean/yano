@@ -1,8 +1,11 @@
 # Yano App Chain — Developer & User Guide
 
 Yano can run an **app chain** next to Cardano L1: a sequenced, replicated,
-application-specific ledger maintained by a trusted or semi-trusted group of
-Yano nodes. The same node keeps syncing/serving Cardano L1; the app chain runs
+application-specific ledger maintained by a known-member, permissioned group
+of Yano nodes. The current pilot posture assumes trusted member operators;
+semi-trusted deployments require the additional co-attestation and independent
+outcome-auditing controls tracked in the app-layer open-items document. The same
+node keeps syncing/serving Cardano L1; the app chain runs
 in parallel over the same node-to-node protocol stack (a CIP-137-derived
 "appmsg" mini-protocol family), commits its state into a Merkle Patricia
 Forestry (MPF) trie, and periodically **anchors the state root to Cardano L1**.
@@ -15,12 +18,15 @@ Forestry (MPF) trie, and periodically **anchors the state root to Cardano L1**.
 │  tx-submission              protocol 103     │    same handshake
 │  RocksDB chain state        RocksDB + MPF    │
 │           └────── anchor tx ──────┘          │
-│        (state root → L1 metadata)            │
+│      (state root → metadata/script anchor)   │
 └──────────────────────────────────────────────┘
 ```
 
-Design references: `adr/app-layer/005-yano-app-chain-framework.md` (core framework)
-and `adr/app-layer/006-appchain-enterprise-extensions-and-zk.md` (extensions & ZK).
+Design references: `adr/app-layer/005-yano-app-chain-framework.md` (core
+framework), `adr/app-layer/006-appchain-enterprise-extensions-and-zk.md`
+(extensions & ZK), and
+`adr/app-layer/015-governed-composite-profile-evolution.md` (governed
+composite profiles).
 Wire format specs (for building compatible implementations in other languages):
 yaci `core/src/main/cddl/appmsg/` and yano `core-api/src/main/cddl/appchain/`.
 
@@ -34,6 +40,7 @@ else is opt-in — a plugin jar on the node or a library in your application
 |---|---|---|
 | `yano-appchain-stdlib` | `appchain/appchain-stdlib` | Ready state machines, selected by id (§9); ships in the distribution |
 | `yano-appchain-client` | `appchain/appchain-client` | Java client SDK: REST + SSE + client-side proof verification (§16) |
+| `yano-appchain-composite-client` | `appchain/appchain-composite-client` | Governed-profile finality, one-root MPF, epoch-chain, and authorization-policy verification |
 | `yano-appchain-testkit` | `appchain/appchain-testkit` | JUnit 5 `@AppChainCluster` embedded clusters for tests (§16) |
 | `yano-appchain-integration-contracts` | `appchain/appchain-integration-contracts` | Provider-neutral connector payload, receipt, CDDL, and golden-vector contracts |
 | `yano-appchain-kafka` | `appchain/extensions/appchain-kafka` | Node plugin: finalized blocks and acknowledged `kafka.publish` effects → Kafka topics (§10, §18) |
@@ -61,14 +68,15 @@ the app chain with configuration flags only; no code required:
   balances, document trails — selected purely by config (section 9).
 - **REST endpoints** to submit and read messages, browse blocks, and fetch
   proofs (section 4).
-- **Sequencing with real finality**: one configured node (the *sequencer*)
-  batches messages into app blocks; every member re-executes the block,
+- **Sequencing with real finality**: fixed mode uses one configured proposer;
+  rotating mode deterministically changes proposer over L1-slot windows. The
+  active proposer batches messages into app blocks; every member re-executes the block,
   verifies the state root byte-for-byte and co-signs. A block is final only
   with a threshold **finality certificate** (n-of-members Ed25519 signatures,
   all verified).
-- **L1 anchoring** (optional): the node itself builds, signs and submits a
-  Cardano transaction embedding the app-chain state root as metadata, and
-  confirms it through its own L1 sync. No external API/provider involved.
+- **L1 anchoring** (optional): the node itself builds, signs and submits either
+  a metadata commitment or a threshold-co-signed script-anchor transaction,
+  then confirms it through its own L1 sync. No external API/provider involved.
 - **Catch-up**: a member that joins late or restarts behind fetches finalized
   blocks from peers (protocol 103) and verifies everything (hash chain,
   certificates, re-executed state roots) before committing.
@@ -90,7 +98,7 @@ can prove any record against a public Cardano anchor."
 |---|---|
 | **Chain id** | Name of your app chain (`yano.app-chain.chain-id`), encoded as 1–128 valid UTF-8 bytes. One group = one chain id. A node can host several chains (section 8). |
 | **Member** | A participant identified by an Ed25519 public key. Only members' messages are accepted; members co-sign blocks. The v1 profile supports at most 32 members. |
-| **Sequencer / proposer** | The one member (by public key) that orders messages into blocks. Fixed, configured. |
+| **Sequencer / proposer** | The member that orders messages into blocks. It is either a configured fixed proposer or the deterministic member selected for the current L1-slot window in rotating mode. |
 | **Threshold** | How many member signatures a finality certificate needs (e.g. 2 of 2). |
 | **App message** | Envelope with an **opaque body** (your bytes — CBOR/JSON/protobuf/anything), signed by the sender. The framework never parses the body. |
 | **Topic** | Optional sub-stream label inside a chain (routing/filtering). Names starting with `~` are reserved. |
@@ -886,6 +894,10 @@ plugin identity and cannot coexist.
 ```yaml
 yano.app-chain.sinks.kafka.bootstrap-servers: broker:9092
 yano.app-chain.sinks.kafka.topic: my-appchain-blocks
+yano.app-chain.sinks.kafka.security-profile: tls
+yano.app-chain.sinks.kafka.tls.truststore-path: /run/secrets/kafka-trust.p12
+yano.app-chain.sinks.kafka.tls.truststore-password: ${KAFKA_TRUSTSTORE_PASSWORD}
+yano.app-chain.sinks.kafka.tls.truststore-type: PKCS12
 ```
 
 Blocks are produced as JSON keyed by stable chain id (partition-stable even
@@ -894,7 +906,11 @@ synchronous acks, under the same ordered, at-least-once cursor semantics as
 webhooks. The same bundle also contributes the independently configured
 `kafka.publish` effect executor described in §18. Configuring the sink does
 not activate that executor, and the two contributions own separate producers
-and shutdown lifecycles.
+and shutdown lifecycles. The sink requires an explicit `local-demo`, `tls`,
+`mtls`, or `sasl-tls` profile and shares the executor's strict security fields.
+`local-demo` is accepted only for exact localhost or canonical private numeric
+bootstrap addresses; remote plaintext and partial sink configuration fail
+startup.
 
 **Custom sinks** — implement the `FinalizedStreamSink` SPI; ordering, cursor
 persistence and at-least-once redelivery come from the framework
@@ -1037,8 +1053,9 @@ from replay. A half-approved command quietly expires after
 removals, invalid thresholds, removing a fixed proposer) void deterministically.
 The config member list is the **genesis epoch only**; a member added later
 starts with the original genesis list and derives its own membership from the
-chain. `POST /admin/members/reset` remains the break-glass local override
-(loudly logged as a trust-model deviation).
+chain. `POST /admin/members/reset` is a loudly logged local trust-model
+deviation for ordinary governed-membership chains and is disabled when a
+governed composite profile requires authenticated membership continuity.
 
 **Static mode runbook (default)** — staged and operator-coordinated: run the
 SAME steps on EVERY node, in this order. The rotated state persists and
@@ -1057,12 +1074,12 @@ override and returns to the configured list).
 4. **Retire the old key everywhere** —
    `POST /app-chain/admin/members/remove {"publicKey":"<oldPub>"}` on each
    node. Guard rails: the configured proposer can't be removed (rotate the
-   proposer via config + restart until rotating sequencing ships) and the set
-   can't drop below the threshold.
+   fixed proposer through an identical config/restart rollout, or select
+   rotating sequencing) and the set can't drop below the threshold.
 
-`GET /app-chain/admin/members` shows the effective set + threshold. This is
-an interim, operator-coordinated mechanism until chain-governed membership
-(ADR 005 D6) makes rotation itself an on-chain action.
+`GET /app-chain/admin/members` shows the effective set + threshold. Use static
+mode only when the deployment accepts this operator-coordinated procedure;
+new long-lived chains should prefer governed mode.
 
 ### 14.3 Snapshots & member onboarding
 
@@ -1528,7 +1545,10 @@ yano:
         state-machine: composite
         machines:
           composite:
-            preset: evidence-v1
+            preset: evidence-v1-gated
+            profile-mode: governed
+        membership:
+          mode: governed
 ```
 
 The profile, ordered components, routes, activations, workflows, query limits,
@@ -1555,14 +1575,22 @@ state schema or callback-contract change requires a new component id plus a
 deterministic migration/workflow, or a fresh chain. Admission changes likewise
 use new versioned topics/query paths.
 
+For long-lived new chains, `profile-mode: governed` commits an authenticated
+profile epoch chain. A reviewed bundle may package current and dormant target
+catalog entries; members deploy that bundle first, then separately approve and
+attest readiness for exact target bytes and a future activation height. Local
+YAML/JAR changes never activate semantics. Existing retained fixed chains
+cannot switch modes by configuration. See the
+[profile-governance operator runbook](APP_CHAIN_PROFILE_GOVERNANCE.md).
+
 The composite provides deterministic isolation and atomic coordination; it
 does not add DPP actor policy, regulatory validation, or real-world truth. The
-stock preset intentionally exposes both the coordinated `evidence.release.v1`
-workflow and the compatible direct `evidence.command.v1` route. Consequently
-the workflow is opt-in orchestration, not a mandatory authorization gate: an
-accepted direct command bypasses its registry/approval prerequisites. A domain
-bundle requiring those rules must omit/reject the direct route or enforce
-equivalent authorization in its own component.
+default `evidence-v1-gated` preset exposes only the coordinated
+`evidence.release.v1` creation/republish path. Its command-granular
+`evidence.command.v1` route accepts only canonical post-publication
+notifications. The compatibility `evidence-v1` preset exposes every direct
+evidence command; there the release workflow is optional orchestration rather
+than a mandatory authorization gate.
 See the [composite module guide](../appchain/appchain-composite/README.md),
 [lightweight contracts guide](../appchain/appchain-composite-contracts/README.md),
 and [ADR-013.2](../adr/app-layer/013.2-deterministic-composite-state-machine.md).
@@ -1880,10 +1908,11 @@ required; a proof already obtained remains verifiable forever.
 - **Member behind / fresh member joining**: automatic — it catches up over
   protocol 103 from any connected peer, verifying certificates and state
   roots block by block. For long histories, restore a snapshot first (§14.3).
-- **Sequencer down**: submissions still replicate, but no new blocks finalize
-  until it returns (fixed-sequencer v1; rotating sequencer is on the roadmap
-  — ADR 005 D2/S2). Restarting the sequencer is safe: vote locks are
-  persisted and finalized history is immutable.
+- **Proposer down**: submissions still replicate. In fixed mode, no new block
+  finalizes until that proposer returns. In rotating mode, progress resumes in
+  a window whose scheduled proposer is available; there is no general BFT
+  view-change protocol. Restart is safe: vote locks are persisted and finalized
+  history is immutable.
 - **L1 impact**: none — the app protocols are invisible to non-Yano peers
   (capability negotiated in the handshake; a Haskell node simply never
   selects it). Run the `test-haskell-sync` skill for the standard L1
@@ -1891,14 +1920,24 @@ required; a proof already obtained remains verifiable forever.
 
 ## 20. Current limitations
 
-- Fixed sequencer (S1); rotating L1-clocked sequencing is designed (ADR 005)
-  but not yet implemented — sequencer availability is an ops concern.
-- Membership changes are operator-coordinated: the admin rotation API
-  (section 14) stages key changes at runtime, but every node must be driven
-  through the same steps. Chain-governed membership (ADR 005 D6) is designed,
-  not shipped.
-- Anchoring is metadata-mode; script-anchor (on-chain proof verification
-  against an anchor UTxO) is designed but not yet shipped.
+- Permissioned membership is implemented; public/stake-based validator sets,
+  slashing, and open participation are not.
+- Fixed and L1-clocked rotating proposer modes are implemented. Rotating mode
+  is schedule-based, not a general BFT view-change protocol, and anchor-leader
+  failover remains an operator action.
+- Both static/operator-coordinated and chain-governed membership are
+  implemented. Profile governance cannot recover a lost membership-governance
+  threshold or bypass membership authority.
+- Metadata and threshold-co-signed script anchors are implemented. They commit
+  and enforce the anchor chain; they do not by themselves implement a
+  domain-specific bridge or withdrawal validator.
+- Effect results are member attestations, not independent proof that an
+  external system told the truth. Co-attestation policy epochs and a continuous
+  independent outcome auditor remain future controls required before claiming
+  semi-trusted-member support.
+- The Cardano payment executor is a preview/tightly capped-wallet profile; use
+  no material funds until the production transaction/reconciliation hardening
+  tracked as `FX-002` is complete.
 - REST protection is API-key only (section 12); use standard gateway
   infrastructure for mTLS/OIDC.
 - All ZK extensions are experimental (section 17) and never on a default code

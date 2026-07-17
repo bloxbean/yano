@@ -197,7 +197,7 @@ flowchart LR
         AP[approvals]
         BA[balances]
         DT[doc-trail]
-        EV[composite / evidence-v1]
+        EV[composite / evidence-v1-gated]
     end
 
     subgraph FP[First-party integration bundles]
@@ -222,10 +222,12 @@ flowchart LR
 ### No-code path
 
 A team can select a stock state machine and configure members, threshold,
-anchoring, retention, and APIs. The `evidence-v1` preset combines registry,
-approvals, document trail, and evidence publication under one state root. The
-first-party Kafka, S3-compatible object-store, and IPFS bundles provide a full
-external publication workflow without custom application code.
+anchoring, retention, and APIs. The default `evidence-v1-gated` preset combines
+registry, approvals, document trail, and approval-coordinated evidence
+publication under one state root. The compatibility `evidence-v1` preset keeps
+direct evidence commands for existing deployments. The first-party Kafka,
+S3-compatible object-store, and IPFS bundles provide a full external
+publication workflow without custom application code.
 
 ### Plugin path
 
@@ -236,8 +238,8 @@ native image includes selected bundles at build time.
 A custom bundle can contribute typed capabilities such as:
 
 - a standalone domain state machine;
-- a custom composite that assembles reusable components in a consensus-fixed
-  order;
+- a custom composite that assembles reusable components in an explicitly
+  versioned order per profile epoch;
 - effect executors and finalized-stream sinks;
 - committed queries and bounded domain APIs; and
 - plugin health, metrics, and operational actions.
@@ -273,6 +275,11 @@ The profile is canonically encoded, committed to authenticated state at height
 1, and verified on restart and every transition. A different component order
 or effective configuration is therefore detected instead of silently creating
 a different application.
+
+Fixed mode retains one immutable profile. Governed mode commits an append-only
+profile epoch chain: operators package reviewed current and dormant targets on
+every member first, then threshold-authorize one exact digest and future
+activation height. YAML or JAR changes alone never change consensus behavior.
 
 Components cannot read or write sibling namespaces directly. Cross-component
 changes use a declared deterministic workflow. Existing `AppStateMachine`
@@ -321,7 +328,7 @@ processes.
 | Multi-party approvals | `approvals` | Custom workflow and external notification |
 | Internal credits or netting | `balances` | Domain authorization and settlement connector |
 | Document or case history | `doc-trail` | Object storage/IPFS evidence publication |
-| Compliance evidence publication | `composite/evidence-v1` plus Kafka, object storage and IPFS | Mandatory domain authorization or regulator-specific policy |
+| Compliance evidence publication | `composite/evidence-v1-gated` plus Kafka, object storage and IPFS | Domain actor authorization or regulator-specific policy |
 | Digital product passport | Registry, approvals, document trail, evidence connectors | DPP actor model, credential policy, product schemas and lifecycle workflows |
 | Oracle observation ledger | Ordered observations, approvals/aggregation, proofs | Source adapters, quorum/outlier rules, and hardened Cardano datum publication |
 | Cross-organization workflow | Custom composite plus effects | ERP, webhook, Kafka, storage, identity and domain APIs |
@@ -390,9 +397,11 @@ The implemented devnet acceptance path covers:
 - executor fencing and failover after an external acknowledgement;
 - fresh and retained deployments through Compose and ordinary host processes;
 - JVM plugin-directory packaging and build-time native plugin inclusion;
-- Linux ARM64 native startup with the stock composite profile; and
+- Linux ARM64 native startup with the stock governed composite profile;
+- authenticated governed-profile activation, retired-generation effect
+  callbacks, replay/restart/snapshot recovery, and governance-aware proofs; and
 - independent consensus/determinism and plugin/security reviews with no
-  unresolved Critical, High, or Medium findings in ADR-013 scope.
+  unresolved Critical, High, or Medium findings in ADR-013/ADR-015 scope.
 
 Before a production launch, plan application-specific public-network soak and
 load testing, key and secret operations, monitoring/SLOs, incident recovery,
@@ -427,5 +436,7 @@ plugin.
   Kafka/object-store/IPFS evidence scenario in Compose and normal deployment.
 - [Composite state-machine guide](../appchain/appchain-composite/README.md) —
   stock preset and custom-composition rules.
+- [Composite profile-governance runbook](APP_CHAIN_PROFILE_GOVERNANCE.md) —
+  deploy-first/activate-second operations and proof verification.
 - [Plugin operations guide](PLUGIN_OPERATIONS.md) — catalog, lifecycle,
   authentication, health, metrics, dashboard, JVM, and native behavior.

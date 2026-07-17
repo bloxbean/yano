@@ -1,12 +1,19 @@
 # ADR-006: App-Chain Enterprise Extensions & ZK Integration (ZeroJ)
 
 ## Status
-Accepted — implementation in progress
+Accepted and implemented — scheduled waves complete; residuals tracked separately
 
 ## Date
 2026-07-08
 
 ## Implementation Status
+
+> **Current-status note (2026-07-17):** The five scheduled delivery waves are
+> complete. The checklist below is the 2026-07-08 delivery snapshot; several
+> listed base prerequisites (rotating sequencing, governed membership, and
+> script anchors) were subsequently delivered by ADR-008. Current open work and
+> revival triggers are authoritative in [open_item.md](open_item.md) and
+> [pending-tasks.md](pending-tasks.md).
 
 Branch strategy: `feat/app_layer_extensions` (created from `feat/app_layer`)
 is the **integration branch** for all ADR-006 work. Each wave is developed,
