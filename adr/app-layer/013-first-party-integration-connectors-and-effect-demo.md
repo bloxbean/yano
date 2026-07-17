@@ -39,7 +39,7 @@ BloxBean Team
   metrics, and operations
 - ADR-012 — an oracle use case that will later consume hardened Cardano
   publication
-- [DPP possible-design note](../app-chain/dpp-possible-design.md) — an
+- [DPP possible-design note](dpp-possible-design.md) — an
   informative downstream consumer of object storage, IPFS, Kafka, and later
   Cardano publication; it is not part of this decision
 

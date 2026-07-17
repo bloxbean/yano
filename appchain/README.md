@@ -1,5 +1,7 @@
 # Yano App Chain — modules & build guide
 
+_**"Verifiable, Cardano-anchored appchain framework"**_
+
 This folder holds the **app-chain module family**: the code for running a
 sequenced, replicated, L1-anchored application ledger next to Cardano. The
 consensus engine and the built-in `ordered-log` state machine live in the
