@@ -11,6 +11,8 @@ import com.bloxbean.cardano.yano.api.appchain.FinalityCert;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectId;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectIntent;
+import com.bloxbean.cardano.yano.api.appchain.effects.EffectOutcome;
+import com.bloxbean.cardano.yano.api.appchain.effects.EffectResult;
 import com.bloxbean.cardano.yano.appchain.composite.CompositeStateKeys;
 import com.bloxbean.cardano.yano.appchain.composite.CompositeStateMachine;
 import com.bloxbean.cardano.yano.appchain.examples.evidence.EvidenceContract;
@@ -20,6 +22,10 @@ import com.bloxbean.cardano.yano.appchain.examples.evidence.command.SubmitEviden
 import com.bloxbean.cardano.yano.appchain.examples.evidence.query.EvidenceGetRequestV1;
 import com.bloxbean.cardano.yano.appchain.examples.evidence.query.EvidenceGetResponseV1;
 import com.bloxbean.cardano.yano.appchain.examples.evidence.state.EvidenceKeys;
+import com.bloxbean.cardano.yano.appchain.examples.evidence.state.EvidenceEffectOperation;
+import com.bloxbean.cardano.yano.appchain.examples.evidence.state.EvidenceRecordV1;
+import com.bloxbean.cardano.yano.appchain.examples.evidence.state.EvidenceStatus;
+import com.bloxbean.cardano.yano.appchain.integration.ConnectorTypes;
 import com.bloxbean.cardano.yano.appchain.integration.ipfs.CanonicalCid;
 import com.bloxbean.cardano.yano.appchain.integration.ipfs.IpfsPinCommandV1;
 import com.bloxbean.cardano.yano.appchain.integration.objectstore.DigestAlgorithm;
@@ -96,6 +102,72 @@ class CompositeStockPresetTest {
                 .containsExactly("evidence-notify", "evidence-release");
         assertThat(machine.profile().queryAliases()).extracting(alias -> alias.aliasPath())
                 .containsExactly(EvidenceContract.GET_QUERY_PATH);
+    }
+
+    @Test
+    void evidenceCapacityDeterministicallyDerivesEveryReservedQuota() {
+        CompositeStateMachine gated = CompositeStockPresets.create(context(Map.of(
+                "machines.composite.evidence-capacity-per-block", "4")));
+        CompositeStateMachine direct = CompositeStockPresets.create(context(Map.of(
+                "machines.composite.preset", CompositeStockPresets.EVIDENCE_V1,
+                "machines.composite.evidence-capacity-per-block", "4")));
+
+        assertThat(gated.profile().components()).filteredOn(component ->
+                        component.componentId().equals(CompositeStockPresets.EVIDENCE_ID))
+                .singleElement().extracting(component -> component.maxEffectsPerBlock())
+                .isEqualTo(4);
+        assertThat(gated.profile().workflows()).extracting(
+                        workflow -> workflow.workflowId() + ":" + workflow.maxEffectsPerBlock())
+                .containsExactly("evidence-notify:4", "evidence-release:8");
+        assertThat(direct.profile().components()).filteredOn(component ->
+                        component.componentId().equals(CompositeStockPresets.EVIDENCE_ID))
+                .singleElement().extracting(component -> component.maxEffectsPerBlock())
+                .isEqualTo(8);
+        assertThat(direct.profile().workflows()).singleElement()
+                .extracting(workflow -> workflow.maxEffectsPerBlock()).isEqualTo(8);
+        assertThat(gated.profile().digest()).isNotEqualTo(
+                CompositeStockPresets.create(context(Map.of())).profile().digest());
+    }
+
+    @Test
+    void defaultCapacityAllowsEightIndependentReleasesInOneBlock() {
+        CompositeStateMachine machine = CompositeStockPresets.create(context(Map.of()));
+        MemoryState state = new MemoryState();
+        List<SubmitEvidenceCommandV1> evidence = new ArrayList<>();
+        List<AppMessage> proposals = new ArrayList<>();
+        List<AppMessage> approvals = new ArrayList<>();
+        List<AppMessage> releases = new ArrayList<>();
+
+        machine.apply(block(1, message(1, CompositeStockPresets.REGISTRY_TOPIC,
+                KvRegistryStateMachine.put(REGISTRY_KEY, bytes("passport")))),
+                state, new CapturingEmitter(1));
+        for (int index = 0; index < 8; index++) {
+            SubmitEvidenceCommandV1 command = evidence("sample-" + index);
+            evidence.add(command);
+            String approvalId = "approval-" + index;
+            proposals.add(message(2 + index, CompositeStockPresets.APPROVALS_TOPIC,
+                    ApprovalsStateMachine.propose(approvalId, command.encode(), 1, 0)));
+            approvals.add(message(10 + index, CompositeStockPresets.APPROVALS_TOPIC,
+                    ApprovalsStateMachine.approve(approvalId)));
+            EvidenceReleaseCommandV1 release = new EvidenceReleaseCommandV1(
+                    "release-" + index, REGISTRY_KEY, approvalId, "product-" + index,
+                    filled(0x61 + index), "object:" + index, command.encode());
+            releases.add(message(18 + index, EvidenceReleaseWorkflow.TOPIC, release.encode()));
+        }
+        machine.apply(block(2, proposals.toArray(AppMessage[]::new)),
+                state, new CapturingEmitter(2));
+        machine.apply(block(3, approvals.toArray(AppMessage[]::new)),
+                state, new CapturingEmitter(3));
+        CapturingEmitter emitted = new CapturingEmitter(4);
+
+        machine.apply(block(4, releases.toArray(AppMessage[]::new)), state, emitted);
+
+        assertThat(emitted.intents).hasSize(16);
+        assertThat(emitted.intents).extracting(EffectIntent::type)
+                .containsOnly("object.put", "ipfs.pin");
+        for (int index = 0; index < evidence.size(); index++) {
+            assertThat(record(state, "sample-" + index, 1).businessVersion()).isEqualTo(1);
+        }
     }
 
     @Test
@@ -210,6 +282,103 @@ class CompositeStockPresetTest {
     }
 
     @Test
+    void gatedReleaseRepublishesExactNextVersionOnlyAfterPriorVersionIsTerminal() {
+        CompositeStateMachine machine = CompositeStockPresets.create(context(Map.of()));
+        MemoryState state = new MemoryState();
+        SubmitEvidenceCommandV1 submit = evidence("sample-42");
+        EvidenceReleaseCommandV1 initial = release(
+                "release-42", submit, "doc://certificate/v1");
+
+        machine.apply(block(1,
+                message(1, CompositeStockPresets.REGISTRY_TOPIC,
+                        KvRegistryStateMachine.put(REGISTRY_KEY, bytes("passport"))),
+                message(2, CompositeStockPresets.APPROVALS_TOPIC,
+                        ApprovalsStateMachine.propose(
+                                "approval-42", submit.encode(), 1, 0))),
+                state, new CapturingEmitter(1));
+        machine.apply(block(2, message(3, CompositeStockPresets.APPROVALS_TOPIC,
+                ApprovalsStateMachine.approve("approval-42"))), state, new CapturingEmitter(2));
+        machine.apply(block(3, message(4, EvidenceReleaseWorkflow.TOPIC, initial.encode())),
+                state, new CapturingEmitter(3));
+
+        RepublishEvidenceCommandV1 republish = republish(submit, 2);
+        EvidenceReleaseCommandV1 next = new EvidenceReleaseCommandV1(
+                "release-43", REGISTRY_KEY, "approval-43", "product-42",
+                filled(0x67), "doc://certificate/v2", republish.encode());
+        machine.apply(block(4, message(5, CompositeStockPresets.APPROVALS_TOPIC,
+                ApprovalsStateMachine.propose("approval-43", republish.encode(), 1, 0))),
+                state, new CapturingEmitter(4));
+        machine.apply(block(5, message(6, CompositeStockPresets.APPROVALS_TOPIC,
+                ApprovalsStateMachine.approve("approval-43"))), state, new CapturingEmitter(5));
+
+        byte[] trailKey = CompositeStateKeys.componentKey("doc-trail",
+                DocTrailStateMachine.entityKey("product-42"));
+        CapturingEmitter premature = new CapturingEmitter(6);
+        machine.apply(block(6, message(7, EvidenceReleaseWorkflow.TOPIC, next.encode())),
+                state, premature);
+        assertThat(premature.intents).isEmpty();
+        assertThat(state.get(CompositeStateKeys.componentKey("evidence",
+                EvidenceKeys.recordKey("sample-42", 2)))).isEmpty();
+        assertThat(DocTrailStateMachine.decodeEntry(state.get(trailKey).orElseThrow()).count())
+                .isEqualTo(1);
+
+        machine.onEffectResult(block(7), failedResult(3, 0,
+                ConnectorTypes.OBJECT_PUT, EvidenceEffectOperation.OBJECT, 7),
+                state, new CapturingEmitter(7));
+        machine.onEffectResult(block(8), failedResult(3, 1,
+                ConnectorTypes.IPFS_PIN, EvidenceEffectOperation.IPFS, 8),
+                state, new CapturingEmitter(8));
+        assertThat(EvidenceStatus.derive(record(state, "sample-42", 1)))
+                .isEqualTo(EvidenceStatus.STORAGE_FAILED);
+
+        CapturingEmitter foreignOwner = new CapturingEmitter(9);
+        machine.apply(block(9, message(8, EvidenceReleaseWorkflow.TOPIC, next.encode(),
+                filled(0x45))), state, foreignOwner);
+        assertThat(foreignOwner.intents).isEmpty();
+        assertThat(state.get(CompositeStateKeys.componentKey("evidence",
+                EvidenceKeys.recordKey("sample-42", 2)))).isEmpty();
+        assertThat(DocTrailStateMachine.decodeEntry(state.get(trailKey).orElseThrow()).count())
+                .isEqualTo(1);
+
+        RepublishEvidenceCommandV1 skipped = republish(submit, 3);
+        EvidenceReleaseCommandV1 skippedRelease = new EvidenceReleaseCommandV1(
+                "release-44", REGISTRY_KEY, "approval-44", "product-42",
+                filled(0x68), "doc://certificate/v3", skipped.encode());
+        machine.apply(block(10, message(9, CompositeStockPresets.APPROVALS_TOPIC,
+                ApprovalsStateMachine.propose("approval-44", skipped.encode(), 1, 0))),
+                state, new CapturingEmitter(10));
+        machine.apply(block(11, message(10, CompositeStockPresets.APPROVALS_TOPIC,
+                ApprovalsStateMachine.approve("approval-44"))), state, new CapturingEmitter(11));
+        CapturingEmitter versionSkip = new CapturingEmitter(12);
+        machine.apply(block(12, message(11, EvidenceReleaseWorkflow.TOPIC,
+                skippedRelease.encode())), state, versionSkip);
+        assertThat(versionSkip.intents).isEmpty();
+        assertThat(state.get(CompositeStateKeys.componentKey("evidence",
+                EvidenceKeys.recordKey("sample-42", 3)))).isEmpty();
+        assertThat(DocTrailStateMachine.decodeEntry(state.get(trailKey).orElseThrow()).count())
+                .isEqualTo(1);
+
+        CapturingEmitter emitted = new CapturingEmitter(13);
+        machine.apply(block(13, message(12, EvidenceReleaseWorkflow.TOPIC, next.encode())),
+                state, emitted);
+
+        assertThat(emitted.intents).extracting(EffectIntent::type)
+                .containsExactly(ConnectorTypes.OBJECT_PUT, ConnectorTypes.IPFS_PIN);
+        assertThat(record(state, "sample-42", 2).businessVersion()).isEqualTo(2);
+        assertThat(DocTrailStateMachine.decodeEntry(state.get(trailKey).orElseThrow()).count())
+                .isEqualTo(2);
+        EvidenceGetResponseV1 latest = EvidenceGetResponseV1.decode(machine.query(
+                EvidenceContract.GET_QUERY_PATH,
+                new EvidenceGetRequestV1("sample-42", 0).encode(), state.atHeight(13)));
+        assertThat(latest.head().latestVersion()).isEqualTo(2);
+        assertThat(latest.record().businessVersion()).isEqualTo(2);
+        EvidenceGetResponseV1 historical = EvidenceGetResponseV1.decode(machine.query(
+                EvidenceContract.GET_QUERY_PATH,
+                new EvidenceGetRequestV1("sample-42", 1).encode(), state.atHeight(13)));
+        assertThat(historical.record().businessVersion()).isEqualTo(1);
+    }
+
+    @Test
     void businessPreconditionFailuresAndConflictingReplayAreFinalizableNoOps() {
         CompositeStateMachine machine = CompositeStockPresets.create(context(Map.of()));
         MemoryState state = new MemoryState();
@@ -255,7 +424,15 @@ class CompositeStockPresetTest {
         assertThatThrownBy(() -> CompositeStockPresets.create(context(Map.of(
                 "effects.max-per-block", "3"))))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining(">= 4");
+                .hasMessageContaining(">= 32");
+        assertThatThrownBy(() -> CompositeStockPresets.create(context(Map.of(
+                "machines.composite.evidence-capacity-per-block", "0"))))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("between 1");
+        assertThatThrownBy(() -> CompositeStockPresets.create(context(Map.of(
+                "machines.composite.evidence-capacity-per-block", "not-a-number"))))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("decimal integer");
         assertThatThrownBy(() -> CompositeStockPresets.create(context(Map.of(
                 "machines.approvals.payments", "true"))))
                 .isInstanceOf(IllegalArgumentException.class)
@@ -284,7 +461,7 @@ class CompositeStockPresetTest {
     private static AppStateMachineContext context(Map<String, String> overrides) {
         Map<String, String> settings = new HashMap<>();
         settings.put("effects.enabled", "true");
-        settings.put("effects.max-per-block", "8");
+        settings.put("effects.max-per-block", "32");
         settings.putAll(overrides);
         int effectCap = Integer.parseInt(settings.get("effects.max-per-block"));
         return new AppStateMachineContext() {
@@ -293,7 +470,7 @@ class CompositeStockPresetTest {
             @Override
             public Optional<com.bloxbean.cardano.yano.api.appchain.AppChainConsensusProfile>
             consensusProfile() {
-                return Optional.of(AppChainTestProfiles.enabledEffects(effectCap));
+                return Optional.of(AppChainTestProfiles.enabledEffects(effectCap, 8));
             }
             @Override
             public Optional<com.bloxbean.cardano.yano.api.appchain.AppChainMembershipView>
@@ -317,6 +494,39 @@ class CompositeStockPresetTest {
                 ipfs.encode(), filled(0x33), "primary", "evidence-ready", filled(0x55));
     }
 
+    private static RepublishEvidenceCommandV1 republish(
+            SubmitEvidenceCommandV1 submit,
+            long version
+    ) {
+        ObjectPutCommandV1 object = new ObjectPutCommandV1(
+                "archive", "staging/certificate-v" + version + ".bin",
+                "evidence/certificate-v" + version + ".bin",
+                DigestAlgorithm.SHA_256, filled(0x12), 33,
+                "application/octet-stream", null);
+        return new RepublishEvidenceCommandV1(submit.evidenceId(), version,
+                object.encode(), submit.expectedObjectDestinationFingerprint(),
+                submit.ipfsPinCommand(), submit.expectedIpfsTargetFingerprint(),
+                submit.kafkaTarget(), submit.kafkaTopic(),
+                submit.expectedKafkaDestinationFingerprint());
+    }
+
+    private static EffectResult failedResult(
+            long effectHeight,
+            int ordinal,
+            String type,
+            EvidenceEffectOperation operation,
+            long resultHeight
+    ) {
+        return new EffectResult(new EffectId(CHAIN, effectHeight, ordinal), type,
+                EvidenceKeys.effectScope("sample-42", 1, operation),
+                EffectOutcome.FAILED, bytes("demo-failure"), filled(0x77), resultHeight);
+    }
+
+    private static EvidenceRecordV1 record(MemoryState state, String id, long version) {
+        return EvidenceRecordV1.decode(state.get(CompositeStateKeys.componentKey(
+                "evidence", EvidenceKeys.recordKey(id, version))).orElseThrow());
+    }
+
     private static EvidenceReleaseCommandV1 release(
             String releaseId,
             SubmitEvidenceCommandV1 evidence,
@@ -327,9 +537,18 @@ class CompositeStockPresetTest {
     }
 
     private static AppMessage message(long sequence, String topic, byte[] body) {
+        return message(sequence, topic, body, SENDER);
+    }
+
+    private static AppMessage message(
+            long sequence,
+            String topic,
+            byte[] body,
+            byte[] sender
+    ) {
         byte[] id = new byte[32];
         id[31] = (byte) sequence;
-        return AppMessage.builder().messageId(id).chainId(CHAIN).topic(topic).sender(SENDER)
+        return AppMessage.builder().messageId(id).chainId(CHAIN).topic(topic).sender(sender)
                 .senderSeq(sequence).expiresAt(Long.MAX_VALUE).body(body)
                 .authScheme(0).authProof(new byte[64]).build();
     }

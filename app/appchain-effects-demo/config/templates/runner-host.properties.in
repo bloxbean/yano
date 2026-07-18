@@ -7,6 +7,7 @@ demo.yano.threshold=2
 demo.sample-file=@SAMPLE_FILE@
 demo.report-directory=@REPORT_DIRECTORY@
 demo.evidence-id=@EVIDENCE_ID@
+demo.evidence-capacity-per-block=@EVIDENCE_CAPACITY_PER_BLOCK@
 s3.endpoint=@S3_ENDPOINT@
 s3.region=us-east-1
 s3.access-key-file=@S3_RUNNER_ACCESS_FILE@

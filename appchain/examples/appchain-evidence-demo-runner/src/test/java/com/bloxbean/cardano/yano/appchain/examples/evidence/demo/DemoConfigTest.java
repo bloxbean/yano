@@ -37,11 +37,13 @@ class DemoConfigTest {
         Path configFile = DemoTestFiles.config(temporary);
         Files.writeString(configFile, DemoTestFiles.properties()
                 + "demo.state-machine=composite\n"
-                + "demo.composite-profile-digest=" + "ab".repeat(32) + "\n");
+                + "demo.composite-profile-digest=" + "ab".repeat(32) + "\n"
+                + "demo.evidence-capacity-per-block=8\n");
 
         assertThat(DemoConfig.load(configFile).stateMachine()).isEqualTo("composite");
         assertThat(DemoConfig.load(configFile).expectedCompositeProfileDigest())
                 .isEqualTo(java.util.HexFormat.of().parseHex("ab".repeat(32)));
+        assertThat(DemoConfig.load(configFile).evidenceCapacityPerBlock()).isEqualTo(8);
 
         Files.writeString(configFile, DemoTestFiles.properties()
                 + "demo.state-machine=custom\n");

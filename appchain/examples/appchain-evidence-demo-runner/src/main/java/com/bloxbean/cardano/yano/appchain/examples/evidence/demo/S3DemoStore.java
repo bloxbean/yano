@@ -131,7 +131,8 @@ final class S3DemoStore implements AutoCloseable {
         if (!Arrays.equals(versionFingerprint, receipt.objectVersionFingerprint())) {
             throw new DemoException(DemoError.EXTERNAL_STATE_MISMATCH);
         }
-        return new DestinationAudit(Digests.hex(versionFingerprint), existing.bytes().length);
+        return new DestinationAudit(
+                Digests.hex(versionFingerprint), existing.bytes().length, existing.bytes());
     }
 
     private Existing read(String bucket, String key) {
@@ -193,7 +194,15 @@ final class S3DemoStore implements AutoCloseable {
         client.close();
     }
 
-    record DestinationAudit(String versionFingerprint, long size) {
+    record DestinationAudit(String versionFingerprint, long size, byte[] bytes) {
+        DestinationAudit {
+            bytes = bytes.clone();
+        }
+
+        @Override
+        public byte[] bytes() {
+            return bytes.clone();
+        }
     }
 
     private record Existing(byte[] bytes, String versionId) {

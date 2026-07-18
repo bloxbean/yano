@@ -8,6 +8,10 @@ import java.util.Objects;
 public record ScenarioReport(int schemaVersion,
                              String scenarioId,
                              String evidenceId,
+                             String operation,
+                             long businessVersion,
+                             boolean authenticatedStateChanged,
+                             int submittedEnvelopes,
                              String outcome,
                              String startedAt,
                              String finishedAt,
@@ -22,6 +26,9 @@ public record ScenarioReport(int schemaVersion,
     public ScenarioReport {
         if (schemaVersion != SCHEMA_VERSION || scenarioId == null || scenarioId.isBlank()
                 || evidenceId == null || evidenceId.isBlank()
+                || operation == null || !operation.matches(
+                "LEGACY|RUN|PUBLISH|REPUBLISH|VERIFY|REPLAY|REPLAY_NOOP")
+                || businessVersion < 0 || submittedEnvelopes < 0
                 || !("PASS".equals(outcome) || "FAIL".equals(outcome))
                 || startedAt == null || finishedAt == null
                 || Instant.parse(finishedAt).isBefore(Instant.parse(startedAt))) {
@@ -31,6 +38,24 @@ public record ScenarioReport(int schemaVersion,
         if ("PASS".equals(outcome) != (failureCode == null)) {
             throw new IllegalArgumentException("invalid report result");
         }
+    }
+
+    /** Source-compatible constructor for iteration-1 reports and test fixtures. */
+    public ScenarioReport(int schemaVersion,
+                          String scenarioId,
+                          String evidenceId,
+                          String outcome,
+                          String startedAt,
+                          String finishedAt,
+                          ChainSummary chain,
+                          StorageSummary storage,
+                          KafkaSummary kafka,
+                          AnchorSummary anchor,
+                          List<Check> checks,
+                          String failureCode) {
+        this(schemaVersion, scenarioId, evidenceId, "LEGACY", 1,
+                "PASS".equals(outcome), 0, outcome, startedAt, finishedAt,
+                chain, storage, kafka, anchor, checks, failureCode);
     }
 
     public record ChainSummary(String chainId,

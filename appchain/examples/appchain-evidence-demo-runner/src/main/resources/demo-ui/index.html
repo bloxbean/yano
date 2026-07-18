@@ -3,25 +3,175 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width,initial-scale=1">
-    <title>Yano evidence demo</title>
+    <meta name="color-scheme" content="dark">
+    <title>Yano evidence explorer</title>
     <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
 <main>
-    <header><p class="eyebrow">Yano app chain</p><h1>Evidence workflow</h1></header>
+    <header class="page-header">
+        <div>
+            <p class="eyebrow">Yano app chain · verified evidence</p>
+            <h1>Evidence explorer</h1>
+            <p class="lede">Follow an immutable record from participant agreement to
+                object storage, IPFS, Kafka, and its Cardano anchor.</p>
+        </div>
+        <div id="refreshState" class="refresh-state" role="status" aria-live="polite">
+            Connecting…
+        </div>
+    </header>
+
     <aside class="truth-note">
-        Yano proves which finalized participants approved and published this evidence.
-        It does not prove that the real-world inspection claim is true.
+        <strong>Proof boundary:</strong> Yano proves which finalized participants approved
+        and published an exact record. It does not prove that the real-world inspection
+        claim is true.
     </aside>
-    <section id="summary" class="card"><p>Waiting for a scenario report…</p></section>
-    <section class="grid">
-        <article class="card"><h2>Authenticated state</h2><dl id="chain"></dl></article>
-        <article class="card"><h2>External storage</h2><dl id="storage"></dl></article>
-        <article class="card"><h2>Kafka acknowledgement</h2><dl id="kafka"></dl></article>
-        <article class="card"><h2>Cardano anchor</h2><dl id="anchor"></dl></article>
+
+    <section class="panel latest-panel" aria-labelledby="latestHeading">
+        <div class="section-heading">
+            <div>
+                <p class="section-kicker">Live overview</p>
+                <h2 id="latestHeading">Latest published evidence</h2>
+            </div>
+            <span id="latestOutcome" class="status-pill neutral">Waiting</span>
+        </div>
+
+        <div id="latestEmpty" class="empty-state">
+            <strong>No completed evidence yet</strong>
+            <span>Publish an evidence record and this panel will update automatically.</span>
+        </div>
+
+        <div id="latestContent" hidden>
+            <div class="identity-row">
+                <div>
+                    <p class="identity-label">Evidence identity</p>
+                    <h3 id="latestEvidenceId" class="evidence-title">—</h3>
+                </div>
+                <button id="latestViewButton" class="primary-action" type="button">
+                    View verified document
+                </button>
+            </div>
+
+            <div class="metric-strip" aria-label="Latest evidence summary">
+                <div><span>Business version</span><strong id="latestVersion">—</strong></div>
+                <div><span>Business status</span><strong id="latestStatus">—</strong></div>
+                <div><span>Published</span><strong id="latestPublished">—</strong></div>
+                <div><span>Document size</span><strong id="latestSize">—</strong></div>
+            </div>
+
+            <div class="detail-grid latest-details">
+                <article class="detail-card"><h3>Authenticated state</h3><dl id="latestChain"></dl></article>
+                <article class="detail-card"><h3>External storage</h3><dl id="latestStorage"></dl></article>
+                <article class="detail-card"><h3>Kafka acknowledgement</h3><dl id="latestKafka"></dl></article>
+                <article class="detail-card"><h3>Cardano anchor</h3><dl id="latestAnchor"></dl></article>
+            </div>
+        </div>
     </section>
-    <section class="card"><h2>Independent checks</h2><ul id="checks"></ul></section>
+
+    <div class="workspace">
+        <section class="panel library-panel" aria-labelledby="libraryHeading">
+            <div class="section-heading library-heading">
+                <div>
+                    <p class="section-kicker">Immutable history</p>
+                    <h2 id="libraryHeading">Evidence library</h2>
+                </div>
+                <span id="evidenceCount" class="count-badge">0 records</span>
+            </div>
+            <p class="section-copy">Select any retained evidence version. New publications
+                may update the latest panel, but they never replace the evidence you opened.</p>
+            <label class="search-field">
+                <span>Find by evidence ID or version</span>
+                <input id="evidenceSearch" type="search" autocomplete="off"
+                       placeholder="For example: inspection-product-a or v2">
+            </label>
+            <div id="catalogNotice" class="catalog-notice" hidden></div>
+            <div id="evidenceList" class="evidence-list"></div>
+            <nav class="pagination" aria-label="Evidence library pages">
+                <button id="previousPageButton" class="secondary-action" type="button" disabled>
+                    Previous
+                </button>
+                <span id="pageStatus" role="status" aria-live="polite">No records</span>
+                <button id="nextPageButton" class="secondary-action" type="button" disabled>
+                    Next
+                </button>
+            </nav>
+        </section>
+
+        <aside class="side-column">
+            <section class="panel" aria-labelledby="loadHeading">
+                <div class="section-heading compact-heading">
+                    <div>
+                        <p class="section-kicker">Workload</p>
+                        <h2 id="loadHeading">Latest load run</h2>
+                    </div>
+                </div>
+                <p class="section-copy">Reports distinguish app-message ingress, pipeline
+                    stages, verified effects, and complete evidence workflows.</p>
+                <dl id="load"><dt>Status</dt><dd>No load report yet</dd></dl>
+            </section>
+
+            <section class="panel" aria-labelledby="activityHeading">
+                <div class="section-heading compact-heading">
+                    <div>
+                        <p class="section-kicker">Operations</p>
+                        <h2 id="activityHeading">Recent activity</h2>
+                    </div>
+                </div>
+                <p class="section-copy">Verification and replay runs are activity; they do
+                    not become a new immutable business version.</p>
+                <ol id="history" class="activity-list"></ol>
+            </section>
+        </aside>
+    </div>
 </main>
+
+<dialog id="evidenceDialog" aria-labelledby="detailTitle">
+    <div class="dialog-shell">
+        <header class="dialog-header">
+            <div>
+                <p id="detailKicker" class="section-kicker">Immutable evidence</p>
+                <h2 id="detailTitle">Evidence details</h2>
+                <p id="detailSubtitle" class="dialog-subtitle"></p>
+            </div>
+            <form method="dialog"><button class="close-button" type="submit" aria-label="Close evidence details">×</button></form>
+        </header>
+
+        <div id="detailLoading" class="detail-loading" role="status">Loading verified evidence…</div>
+        <div id="detailError" class="detail-error" role="alert" hidden></div>
+
+        <div id="detailContent" hidden>
+            <div id="detailBadges" class="proof-badges" aria-label="Verification status"></div>
+
+            <section class="payload-panel" aria-labelledby="payloadHeading">
+                <div class="payload-heading">
+                    <div>
+                        <p class="section-kicker">Actual external bytes</p>
+                        <h3 id="payloadHeading">Verified evidence document</h3>
+                        <p id="payloadExplanation" class="section-copy"></p>
+                    </div>
+                    <button id="copyPayloadButton" class="secondary-action compact-action"
+                            type="button" hidden>Copy JSON</button>
+                </div>
+                <pre id="evidencePayload" tabindex="0"></pre>
+                <div id="payloadUnavailable" class="empty-state compact-empty" hidden></div>
+            </section>
+
+            <div class="detail-grid selected-details">
+                <article class="detail-card"><h3>Authenticated state</h3><dl id="selectedChain"></dl></article>
+                <article class="detail-card"><h3>External storage</h3><dl id="selectedStorage"></dl></article>
+                <article class="detail-card"><h3>Kafka acknowledgement</h3><dl id="selectedKafka"></dl></article>
+                <article class="detail-card"><h3>Cardano anchor</h3><dl id="selectedAnchor"></dl></article>
+            </div>
+
+            <section class="checks-panel" aria-labelledby="checksHeading">
+                <h3 id="checksHeading">Independent verification checks</h3>
+                <ul id="checks" class="check-list"></ul>
+            </section>
+        </div>
+    </div>
+</dialog>
+
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 <script src="/app.js" defer></script>
 </body>
 </html>

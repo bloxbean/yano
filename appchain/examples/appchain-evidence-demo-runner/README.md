@@ -13,6 +13,13 @@ java -jar build/libs/yano-appchain-evidence-demo-runner-*-all.jar \
 java -jar build/libs/yano-appchain-evidence-demo-runner-*-all.jar \
   run --config /absolute/path/demo.properties
 java -jar build/libs/yano-appchain-evidence-demo-runner-*-all.jar \
+  load --config /absolute/path/demo.properties --count 10 --concurrency 3 \
+  --id-prefix load-july --sample-file /absolute/path/certificate.json
+java -jar build/libs/yano-appchain-evidence-demo-runner-*-all.jar \
+  load --config /absolute/path/demo.properties --load-mode pipeline \
+  --count 8 --concurrency 8 --max-in-flight 8 \
+  --id-prefix pipeline-july --sample-file /absolute/path/certificate.json
+java -jar build/libs/yano-appchain-evidence-demo-runner-*-all.jar \
   serve --config /absolute/path/ui.properties
 ```
 
@@ -78,8 +85,46 @@ members, and threshold. The report also
 states `BUSINESS_CLAIM_NOT_EVALUATED`: consensus proves what participants
 approved, not whether the real-world certificate itself is true.
 
+`load` bounds count to 1..50000 and concurrency to 1..16. Every generated
+`<prefix>-NNNNNN` ID runs the ordinary version-1 publish path above. A repeated
+prefix fails existing IDs rather than mutating or resuming them.
+
+`--load-mode lifecycle` is the default and preserves the original bounded
+fixed-worker behavior: one worker finishes an item's entire workflow before
+taking another ID. `--load-mode pipeline` requires the stock composite and
+uses fixed, bounded prepare, prerequisite, approval, release, effects, and
+verify stages. `--max-in-flight` bounds all active and queued items to
+`concurrency..min(count,5000)`. A single environment probe completes before
+either worker model starts; the pipeline does not duplicate that probe for
+every item.
+
+The bound counts evidence workflows rather than mempool messages. One workflow
+submits multiple dependency-ordered messages, and each stage waits for
+finality. Raising it increases queued and active workflow pressure without
+claiming the same number of simultaneously pending mempool messages.
+
+The stock demo commits `evidence-capacity-per-block=8` in its authenticated
+profile. Fair eight-permit release and notification gates are held through
+message finality. They prevent an ingress burst from exceeding the committed
+quota while allowing actual eight-release blocks. Connector execution, result
+incorporation, external verification, and the two workflow lanes still
+overlap. When devnet effects require an L1 anchor, a shared throttle calls the
+existing force-anchor operation while workers wait. These controls are
+load-only and do not alter ordinary scenario commands.
+
+The schema-v2 aggregate retains every sanitized per-item report and records
+mode, capacity, configured/observed in-flight bounds, app-message, release,
+effect, and fully verified workflow rates, per-stage counts/rates/latencies,
+end-to-end p50/p95 latency, failure-stage counts, and at most 32 failure
+samples. Treat these as deployment observations, not universal TPS.
+Active and queued pipeline work remains bounded by `--max-in-flight`, but the
+runner retains one compact completed-item summary in memory and writes one
+scenario report per evidence ID, so memory, report count, and duration still
+grow linearly with `--count`.
+
 `serve` uses a separate strict config containing only `ui.report-directory`,
 `ui.bind-address`, and `ui.port` (see `ui-config.example.properties`). It never
 loads the scenario config or any secret file. It exposes only static assets,
 `/healthz`, and the sanitized latest JSON report; it does not proxy Yano or
-accept an API key.
+accept an API key. The read-only surface also exposes the latest bounded load
+aggregate at `/api/v1/load/latest`.

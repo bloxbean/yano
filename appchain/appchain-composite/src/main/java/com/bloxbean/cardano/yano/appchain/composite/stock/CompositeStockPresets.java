@@ -3,6 +3,7 @@ package com.bloxbean.cardano.yano.appchain.composite.stock;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineContext;
 import com.bloxbean.cardano.yano.api.appchain.effects.ActivationSchedule;
 import com.bloxbean.cardano.yano.appchain.composite.contracts.AggregateQueryLimitsV1;
+import com.bloxbean.cardano.yano.appchain.composite.contracts.stock.EvidenceWorkflowCapacityV1;
 import com.bloxbean.cardano.yano.appchain.composite.ComponentDescriptor;
 import com.bloxbean.cardano.yano.appchain.composite.ComponentGeneration;
 import com.bloxbean.cardano.yano.appchain.composite.CompositeComponent;
@@ -59,14 +60,12 @@ public final class CompositeStockPresets {
                     preset + " keeps approvals payments disabled; use a custom composite profile");
         }
 
-        int frameworkMaxEffects = context.consensusProfile().orElseThrow(() ->
+        var consensusProfile = context.consensusProfile().orElseThrow(() ->
                 new IllegalArgumentException(
-                        "composite preset requires AppStateMachineContext.consensusProfile() (ADR-016)"))
-                .effectsMaxPerBlock();
-        if (frameworkMaxEffects < 4) {
-            throw new IllegalArgumentException(
-                    preset + " requires effects.max-per-block >= 4 for reserved component/workflow quotas");
-        }
+                        "composite preset requires AppStateMachineContext.consensusProfile() (ADR-016)"));
+        EvidenceWorkflowCapacityV1 capacity = evidenceCapacity(settings);
+        capacity.validateAgainst(consensusProfile.maxBlockMessages(),
+                consensusProfile.effectsMaxPerBlock());
         String formatSetting = settings.getOrDefault(
                 "machines.kv-registry.value-format", "raw").trim();
         KvRegistryStateMachine.ValueFormat registryFormat =
@@ -80,7 +79,9 @@ public final class CompositeStockPresets {
                 "payments-disabled-v1", APPROVALS_TOPIC, List.of(), 0);
         ComponentDescriptor docTrailDescriptor = descriptor(DOC_TRAIL_ID,
                 "append-v1", DOC_TRAIL_TOPIC, List.of(), 0);
-        int evidenceQuota = gated ? frameworkMaxEffects - 3 : frameworkMaxEffects - 2;
+        int evidenceQuota = gated
+                ? capacity.gatedEvidenceComponentEffects()
+                : capacity.directEvidenceComponentEffects();
         ComponentDescriptor evidenceDescriptor = descriptor(EVIDENCE_ID,
                 evidenceConfig.configurationId(),
                 gated ? List.of() : List.of(EvidenceContract.COMMAND_TOPIC),
@@ -102,17 +103,19 @@ public final class CompositeStockPresets {
         List<ComponentGeneration> participants = components.stream()
                 .map(component -> component.descriptor().generation()).toList();
         WorkflowDescriptor releaseDescriptor = new WorkflowDescriptor(
-                EvidenceReleaseWorkflow.ID, "1.0.0", EvidenceReleaseWorkflow.TOPIC,
-                1, 0, participants, 2);
+                EvidenceReleaseWorkflow.ID, EvidenceReleaseWorkflow.PRODUCT_VERSION,
+                EvidenceReleaseWorkflow.TOPIC,
+                1, 0, participants, capacity.releaseWorkflowEffects());
         CompositeWorkflow release = new EvidenceReleaseWorkflow(releaseDescriptor,
                 participants.get(0), participants.get(1), participants.get(2), participants.get(3),
-                docTrailMachine, evidenceMachine);
+                docTrailMachine, evidenceMachine, evidenceConfig);
         List<WorkflowDescriptor> workflowDescriptors;
         List<CompositeWorkflow> workflows;
         if (gated) {
             WorkflowDescriptor notifyDescriptor = new WorkflowDescriptor(
                     EvidenceNotifyWorkflow.ID, "1.0.0", EvidenceNotifyWorkflow.TOPIC,
-                    1, 0, List.of(participants.get(3)), 1);
+                    1, 0, List.of(participants.get(3)),
+                    capacity.notificationWorkflowEffects());
             CompositeWorkflow notify = new EvidenceNotifyWorkflow(
                     notifyDescriptor, participants.get(3), evidenceMachine);
             // CompositeProfile canonicalizes workflow order by workflow id;
@@ -130,6 +133,21 @@ public final class CompositeStockPresets {
                         EvidenceContract.GET_QUERY_PATH, EVIDENCE_ID, "get")),
                 AggregateQueryLimitsV1.DEFAULT);
         return CompositeStateMachine.create(context, profile, components, workflows);
+    }
+
+    private static EvidenceWorkflowCapacityV1 evidenceCapacity(Map<String, String> settings) {
+        String raw = settings.getOrDefault(
+                "machines.composite.evidence-capacity-per-block",
+                Integer.toString(EvidenceWorkflowCapacityV1.DEFAULT_CAPACITY)).trim();
+        final int parsed;
+        try {
+            parsed = Integer.parseInt(raw);
+        } catch (NumberFormatException malformed) {
+            throw new IllegalArgumentException(
+                    "machines.composite.evidence-capacity-per-block must be a decimal integer",
+                    malformed);
+        }
+        return new EvidenceWorkflowCapacityV1(parsed);
     }
 
     private static ComponentDescriptor descriptor(

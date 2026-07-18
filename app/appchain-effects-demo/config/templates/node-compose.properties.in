@@ -36,6 +36,7 @@ yano.app-chain.chains[0].machines.evidence-registry.storage-gate=@STORAGE_GATE@
 yano.app-chain.chains[0].machines.evidence-registry.storage-expiry-blocks=0
 yano.app-chain.chains[0].machines.evidence-registry.notification-expiry-blocks=0
 yano.app-chain.chains[0].machines.composite.preset=evidence-v1-gated
+yano.app-chain.chains[0].machines.composite.evidence-capacity-per-block=@EVIDENCE_CAPACITY_PER_BLOCK@
 yano.app-chain.chains[0].membership.mode=governed
 yano.app-chain.chains[0].machines.composite.profile-mode=governed
 @DIRECT_RESULT_ACTIVATION_SETTING@

@@ -827,7 +827,7 @@ def _validate_active_identity_shape(document: dict[str, Any], marker: Path) -> N
     if set(document) != expected_fields:
         raise LifecycleError(f"app-chain identity marker has an invalid field set: {marker}")
     layout_version = document.get("layoutVersion")
-    if layout_version not in {1, 2, 3}:
+    if layout_version not in {1, 2, 3, 4}:
         raise LifecycleError(f"app-chain identity marker has an invalid layoutVersion: {marker}")
     digest = document.get("networkIdentitySha256")
     if not isinstance(digest, str) or not SHA256_HEX.fullmatch(digest):
@@ -844,6 +844,8 @@ def _validate_active_identity_shape(document: dict[str, Any], marker: Path) -> N
         set(state_machine) if isinstance(state_machine, dict) else set()
     )
     base_state_machine_fields = {"provider", "profileVersion", "effectEmissionVersion"}
+    if layout_version == 4:
+        base_state_machine_fields.add("evidenceCapacityPerBlock")
     provider = state_machine.get("provider") if isinstance(state_machine, dict) else None
     valid_state_machine_profile = (
         provider == "evidence-registry"
@@ -858,6 +860,10 @@ def _validate_active_identity_shape(document: dict[str, Any], marker: Path) -> N
         or not valid_state_machine_profile
         or not _positive_int(state_machine.get("profileVersion"))
         or not _positive_int(state_machine.get("effectEmissionVersion"))
+        or (
+            layout_version == 4
+            and state_machine.get("evidenceCapacityPerBlock") != 8
+        )
     ):
         raise LifecycleError(f"app-chain identity marker has invalid stateMachine metadata: {marker}")
 

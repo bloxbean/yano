@@ -1,6 +1,8 @@
 package com.bloxbean.cardano.yano.appchain.composite.contracts.stock;
 
 import com.bloxbean.cardano.yano.appchain.examples.evidence.command.SubmitEvidenceCommandV1;
+import com.bloxbean.cardano.yano.appchain.examples.evidence.command.NotifyEvidenceCommandV1;
+import com.bloxbean.cardano.yano.appchain.examples.evidence.command.RepublishEvidenceCommandV1;
 import com.bloxbean.cardano.yano.appchain.integration.ipfs.CanonicalCid;
 import com.bloxbean.cardano.yano.appchain.integration.ipfs.IpfsPinCommandV1;
 import com.bloxbean.cardano.yano.appchain.integration.objectstore.DigestAlgorithm;
@@ -33,6 +35,30 @@ class EvidenceReleaseCommandV1Test {
                 Arrays.copyOf(encoded, encoded.length + 1)))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("non-canonical");
+    }
+
+    @Test
+    void releaseEnvelopeAcceptsBothFrozenStorageOperationsButRejectsNotify() {
+        SubmitEvidenceCommandV1 submit = evidence();
+        RepublishEvidenceCommandV1 republish = new RepublishEvidenceCommandV1(
+                submit.evidenceId(), 2, submit.objectPutCommand(),
+                submit.expectedObjectDestinationFingerprint(), submit.ipfsPinCommand(),
+                submit.expectedIpfsTargetFingerprint(), submit.kafkaTarget(),
+                submit.kafkaTopic(), submit.expectedKafkaDestinationFingerprint());
+
+        EvidenceReleaseCommandV1 release = new EvidenceReleaseCommandV1(
+                "release-43", "product-42".getBytes(StandardCharsets.US_ASCII),
+                "approval-43", "product-42", filled(0x44),
+                "object:sample-42/v2/inspection-certificate.bin", republish.encode());
+
+        assertThat(release.evidenceStorageCommand()).isEqualTo(republish);
+        assertThat(EvidenceReleaseCommandV1.decode(release.encode())).isEqualTo(release);
+        assertThatThrownBy(() -> new EvidenceReleaseCommandV1(
+                "release-44", "product-42".getBytes(StandardCharsets.US_ASCII),
+                "approval-44", "product-42", filled(0x44), "ref",
+                new NotifyEvidenceCommandV1(submit.evidenceId(), 1).encode()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("submit or republish");
     }
 
     private static SubmitEvidenceCommandV1 evidence() {

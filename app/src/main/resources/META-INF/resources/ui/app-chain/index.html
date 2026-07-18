@@ -304,10 +304,64 @@
       html.anim .live-dot { animation: livePulse 2s ease-in-out infinite; }
       @keyframes livePulse { 0%, 100% { box-shadow: 0 0 0 0 var(--ok-bd); } 50% { box-shadow: 0 0 0 4px transparent; } }
       .feed { max-height: 260px; overflow-y: auto; font-size: 12px; }
-      .feed-row { display: flex; gap: 10px; padding: 5px 2px; border-bottom: 1px solid var(--hairline); align-items: baseline; }
+      .feed-row {
+        width: 100%; display: flex; gap: 10px; padding: 7px 5px;
+        border: 0; border-bottom: 1px solid var(--hairline); align-items: baseline;
+        background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer;
+      }
+      .feed-row:hover { background: var(--chip-bg); }
+      .feed-row:focus-visible { outline: 2px solid #60a5fa; outline-offset: -2px; border-radius: 6px; }
       .feed-row:last-child { border-bottom: none; }
       .feed-pos { color: var(--text-dim); flex-shrink: 0; min-width: 64px; }
       .feed-topic { flex-shrink: 0; }
+      .feed-bytes { margin-left: auto; white-space: nowrap; }
+
+      .message-dialog {
+        width: min(900px, calc(100vw - 32px)); max-height: min(86vh, 900px); padding: 0; overflow: auto;
+        border: 1px solid var(--hairline-strong); border-radius: 18px;
+        background: var(--bg); color: var(--text); box-shadow: 0 28px 90px rgba(0, 0, 0, 0.45);
+      }
+      .message-dialog::backdrop { background: rgba(2, 6, 23, 0.72); backdrop-filter: blur(5px); }
+      .message-dialog-shell { padding: 20px; }
+      .message-dialog-head {
+        display: flex; align-items: flex-start; justify-content: space-between;
+        gap: 16px; padding-bottom: 14px; border-bottom: 1px solid var(--hairline);
+      }
+      .message-dialog-head h2 { margin: 0 0 3px; font-size: 18px; }
+      .message-dialog-head p { margin: 0; color: var(--text-dim); font-size: 12px; }
+      .dialog-close { flex-shrink: 0; }
+      .message-meta {
+        display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px 18px; margin: 16px 0;
+      }
+      .message-meta-item { min-width: 0; }
+      .message-meta-label {
+        display: block; margin-bottom: 2px; color: var(--text-dim);
+        font-size: 10px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase;
+      }
+      .message-meta-value { display: block; overflow-wrap: anywhere; }
+      .message-body-head {
+        display: flex; align-items: center; justify-content: space-between;
+        gap: 10px; margin-top: 14px;
+      }
+      .message-body-head h3 { margin: 0; font-size: 13px; }
+      .message-preview {
+        max-height: 300px; overflow: auto; margin: 8px 0 0; padding: 14px;
+        border: 1px solid var(--hairline); border-radius: 10px; background: var(--chip-bg);
+        color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px;
+      }
+      .message-raw { margin-top: 12px; }
+      .message-raw summary { cursor: pointer; color: var(--text-dim); font-size: 12px; }
+      .message-boundary-note {
+        margin: 16px 0 0; padding: 10px 12px; border-left: 3px solid #3b82f6;
+        border-radius: 5px; background: rgba(59, 130, 246, 0.08); color: var(--text-dim);
+        font-size: 12px;
+      }
+      @media (max-width: 620px) {
+        .message-meta { grid-template-columns: 1fr; }
+        .feed-row { flex-wrap: wrap; }
+        .feed-bytes { margin-left: 0; }
+      }
 
       .foot {
         margin-top: 30px; text-align: center; font-size: 11.5px; color: var(--text-dim);
@@ -526,6 +580,43 @@
         <div id="feed" class="feed"><div class="empty">Waiting for finalized messages…</div></div>
       </section>
 
+      <dialog id="messageDialog" class="message-dialog" aria-labelledby="messageDialogTitle">
+        <div class="message-dialog-shell">
+          <div class="message-dialog-head">
+            <div>
+              <h2 id="messageDialogTitle">Finalized app-chain message</h2>
+              <p id="messageDialogSubtitle">Selected message details remain stable while the live feed updates.</p>
+            </div>
+            <button id="messageDialogClose" type="button" class="icon-btn dialog-close"
+                    aria-label="Close message details" title="Close">&times;</button>
+          </div>
+          <div class="message-meta">
+            <div class="message-meta-item"><span class="message-meta-label">Chain</span><span id="messageChain" class="message-meta-value mono">-</span></div>
+            <div class="message-meta-item"><span class="message-meta-label">Block position</span><span id="messagePosition" class="message-meta-value mono">-</span></div>
+            <div class="message-meta-item"><span class="message-meta-label">Topic</span><span id="messageTopic" class="message-meta-value">-</span></div>
+            <div class="message-meta-item"><span class="message-meta-label">Size</span><span id="messageSize" class="message-meta-value mono">-</span></div>
+            <div class="message-meta-item"><span class="message-meta-label">Message ID</span><span id="messageId" class="message-meta-value mono">-</span></div>
+            <div class="message-meta-item"><span class="message-meta-label">Sender / sequence</span><span id="messageSender" class="message-meta-value mono">-</span></div>
+            <div class="message-meta-item"><span class="message-meta-label">Body SHA-256</span><span id="messageBodySha" class="message-meta-value mono">-</span></div>
+            <div class="message-meta-item"><span class="message-meta-label">Display</span><span id="messageDisplay" class="message-meta-value">-</span></div>
+          </div>
+          <div class="message-body-head">
+            <h3>Bounded body preview</h3>
+            <span id="messagePreviewBadge" class="badge">OPAQUE BYTES</span>
+          </div>
+          <pre id="messageBodyPreview" class="message-preview mono">No message selected.</pre>
+          <details class="message-raw">
+            <summary>Raw hexadecimal bytes</summary>
+            <pre id="messageRawHex" class="message-preview mono">-</pre>
+          </details>
+          <p class="message-boundary-note">
+            This inspector shows the finalized app-chain message envelope. The body is application-defined;
+            external evidence documents remain in object storage/IPFS and are shown by the evidence demo UI
+            only after connector verification.
+          </p>
+        </div>
+      </dialog>
+
       <div class="sec-label">Recent Blocks</div>
       <section class="card ac-blue" style="--i: 12">
         <div class="table-wrap">
@@ -561,6 +652,7 @@
       const fmt = n => n == null ? '-' : Number(n).toLocaleString('en-US');
       const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
       const shortHex = (h, n = 12) => h && h.length > n ? h.slice(0, n) + '…' : (h || '-');
+      const messagePreviewBytes = 64 * 1024;
       const age = ms => {
         if (!ms) return '-';
         const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
@@ -839,6 +931,89 @@
         delete feed.dataset.last;
         feed.innerHTML = '<div class="empty">Waiting for finalized messages…</div>';
       }
+      let messageInspectorGeneration = 0;
+      function setMessageValue(id, value) {
+        $(id).textContent = value == null || value === '' ? '-' : String(value);
+      }
+      function hexPreview(hex) {
+        if (typeof hex !== 'string' || (hex.length & 1) !== 0 || !/^[0-9a-f]*$/i.test(hex)) return null;
+        const totalBytes = hex.length / 2;
+        const shownBytes = Math.min(totalBytes, messagePreviewBytes);
+        const bytes = new Uint8Array(shownBytes);
+        for (let i = 0; i < shownBytes; i++) bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+        return { bytes, totalBytes, truncated: shownBytes < totalBytes,
+          rawHex: hex.slice(0, shownBytes * 2) };
+      }
+      function readableText(bytes) {
+        try {
+          const value = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+          for (let i = 0; i < value.length; i++) {
+            const code = value.charCodeAt(i);
+            if (code < 32 && code !== 9 && code !== 10 && code !== 13) return null;
+          }
+          return value;
+        } catch (e) { return null; }
+      }
+      async function sha256(bytes) {
+        if (!globalThis.crypto?.subtle) return null;
+        const digest = await globalThis.crypto.subtle.digest('SHA-256', bytes);
+        return Array.from(new Uint8Array(digest), value => value.toString(16).padStart(2, '0')).join('');
+      }
+      async function openMessageInspector(message, position) {
+        const generation = ++messageInspectorGeneration;
+        const snapshot = { ...message };
+        const preview = hexPreview(snapshot.bodyHex || '');
+        const dialog = $('messageDialog');
+        setMessageValue('messageChain', snapshot.chainId || selectedChain);
+        setMessageValue('messagePosition', position);
+        setMessageValue('messageTopic', snapshot.topic || 'default');
+        setMessageValue('messageId', snapshot.messageId);
+        setMessageValue('messageSender', (snapshot.sender || '-') + ' / ' + (snapshot.senderSeq ?? '-'));
+        setMessageValue('messageSize', preview ? fmt(preview.totalBytes) + ' bytes' : 'invalid body encoding');
+        setMessageValue('messageBodySha', 'Calculating…');
+        setMessageValue('messageDisplay', preview && preview.truncated
+            ? 'First ' + fmt(preview.bytes.length) + ' bytes of ' + fmt(preview.totalBytes)
+            : 'Complete bounded body');
+
+        let bodyText = 'Body is not valid hexadecimal data.';
+        let badge = 'INVALID';
+        if (preview) {
+          const decoded = readableText(preview.bytes);
+          bodyText = preview.rawHex || '(empty body)';
+          badge = 'HEX';
+          if (decoded != null) {
+            bodyText = decoded || '(empty text body)';
+            badge = 'UTF-8 TEXT';
+            if (!preview.truncated) {
+              try {
+                bodyText = JSON.stringify(JSON.parse(decoded), null, 2);
+                badge = 'JSON';
+              } catch (e) { /* readable application text, not JSON */ }
+            }
+          }
+          if (preview.truncated) bodyText += '\n\n… preview truncated by the 64 KiB UI limit';
+        }
+        $('messageBodyPreview').textContent = bodyText;
+        $('messageRawHex').textContent = preview
+            ? (preview.rawHex || '(empty)') + (preview.truncated ? '\n… truncated' : '') : '-';
+        $('messagePreviewBadge').textContent = badge;
+        if (!dialog.open) dialog.showModal();
+
+        if (!preview || preview.truncated) {
+          setMessageValue('messageBodySha', preview ? 'Not calculated: body exceeds preview limit' : '-');
+          return;
+        }
+        try {
+          const digest = await sha256(preview.bytes);
+          if (generation === messageInspectorGeneration) {
+            setMessageValue('messageBodySha', digest || 'Unavailable in this browser context');
+          }
+        } catch (e) {
+          if (generation === messageInspectorGeneration) setMessageValue('messageBodySha', 'Unavailable');
+        }
+      }
+      $('messageDialogClose').addEventListener('click', () => $('messageDialog').close());
+      $('messageDialog').addEventListener('close', () => { messageInspectorGeneration++; });
       function restartStream() {
         stopStream();
         if (!selectedChain && chains.length !== 1) { pill('streamPill', 'IDLE', '', false); return; }
@@ -918,13 +1093,25 @@
           feedSeen.add(key);
           const feed = $('feed');
           if (feed.firstElementChild && feed.firstElementChild.classList.contains('empty')) feed.innerHTML = '';
-          const row = document.createElement('div');
+          const row = document.createElement('button');
+          row.type = 'button';
           row.className = 'feed-row';
           const bytes = msg.bodyHex ? Math.round(msg.bodyHex.length / 2) : 0;
-          row.innerHTML = '<span class="feed-pos mono">' + esc(position) + '</span>'
-              + '<span class="feed-topic badge">' + esc(msg.topic || 'default') + '</span>'
-              + '<span class="muted">' + (msg.sender ? copyable(msg.sender, 10) : '-') + '</span>'
-              + '<span class="mono" style="margin-left:auto">' + bytes + ' B</span>';
+          const positionEl = document.createElement('span');
+          positionEl.className = 'feed-pos mono';
+          positionEl.textContent = position;
+          const topicEl = document.createElement('span');
+          topicEl.className = 'feed-topic badge';
+          topicEl.textContent = msg.topic || 'default';
+          const senderEl = document.createElement('span');
+          senderEl.className = 'muted mono';
+          senderEl.textContent = shortHex(msg.sender, 10);
+          const bytesEl = document.createElement('span');
+          bytesEl.className = 'feed-bytes mono';
+          bytesEl.textContent = bytes + ' B · View';
+          row.append(positionEl, topicEl, senderEl, bytesEl);
+          row.setAttribute('aria-label', 'Inspect finalized message at ' + position);
+          row.addEventListener('click', () => openMessageInspector(msg, position));
           feed.prepend(row);
           while (feed.children.length > 50) feed.removeChild(feed.lastChild);
         } catch (e) { /* skip malformed */ }

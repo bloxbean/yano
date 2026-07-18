@@ -43,6 +43,150 @@ Python 3. From this directory:
 ./demo.sh stop
 ```
 
+`run` is the safe guided command: it publishes version 1 when the selected ID
+is absent, performs read-only verification when retained state matches the
+supplied bytes and connector identities, and returns `REPUBLISH_REQUIRED`
+before any connector write when the bytes differ. Use the following updated
+ADR-018/020 walkthrough for a realistic lifecycle and capacity demonstration
+while the same three nodes remain running:
+
+```bash
+# Start one retained cluster for every command below.
+./demo.sh prepare --instance manual-demo
+./demo.sh up --instance manual-demo
+
+# Publish two independent products/evidence identities.
+./demo.sh publish --instance manual-demo \
+  --evidence-id inspection-product-a \
+  --sample-file samples/inspection-certificate.json
+./demo.sh publish --instance manual-demo \
+  --evidence-id inspection-product-b \
+  --sample-file samples/inspection-certificate-product-b.json
+
+# Create the exact next immutable version; version 1 remains queryable.
+./demo.sh republish --instance manual-demo \
+  --evidence-id inspection-product-a --business-version 2 \
+  --sample-file samples/inspection-certificate-product-a-v2.json
+
+# Verify latest/history without writes, then explicitly demonstrate replay.
+./demo.sh verify --instance manual-demo --evidence-id inspection-product-a
+./demo.sh verify --instance manual-demo \
+  --evidence-id inspection-product-a --business-version 1
+./demo.sh replay --instance manual-demo \
+  --evidence-id inspection-product-a --business-version 2 \
+  --sample-file samples/inspection-certificate-product-a-v2.json
+
+# Publish eight more independent evidence records. Lifecycle is the default:
+# each worker completes one whole workflow before taking another ID.
+./demo.sh load --instance manual-demo \
+  --count 8 --concurrency 3 --id-prefix lifecycle-july \
+  --sample-file samples/inspection-certificate.json
+
+# Exercise the committed eight-release capacity. Different evidence IDs can
+# occupy prepare, prerequisite, approval, release, effects, and verify stages.
+./demo.sh load --instance manual-demo --load-mode pipeline \
+  --count 8 --concurrency 8 --max-in-flight 8 \
+  --id-prefix pipeline-july \
+  --sample-file samples/inspection-certificate.json
+
+# Independently re-read connectors and verify the last pipeline item.
+./demo.sh verify --instance manual-demo \
+  --evidence-id pipeline-july-000008 --business-version 1
+
+# Inspect individual evidence and aggregate load reports.
+open http://127.0.0.1:7080/
+./demo.sh status --instance manual-demo
+
+./demo.sh stop --instance manual-demo
+```
+
+Use a fresh `--id-prefix` for every load. To generate a longer functional soak
+after the eight-item capacity demonstration, increase `--count` up to 50,000
+and choose `--max-in-flight` up to 5,000; concurrency remains bounded to 16.
+Active and queued work stays bounded, but completed item summaries and
+per-evidence report files grow with `count`. Start small because L1-gated
+devnet runs intentionally wait for real effect results, proofs, and anchors
+rather than measuring raw HTTP admission.
+
+The maximum single-invocation soak shape is:
+
+```bash
+./demo.sh load --instance manual-demo --load-mode pipeline \
+  --count 50000 --concurrency 16 --max-in-flight 5000 \
+  --id-prefix soak-july \
+  --sample-file samples/inspection-certificate.json
+```
+
+This can run for a long time and create 50,000 evidence reports plus external
+objects. Use a fresh prefix and monitor disk, memory, connector health, block
+lag, and anchor lag. It is a workflow soak, not a promise of 5,000 simultaneous
+mempool messages.
+
+The launcher bounded-reads the selected file into a private operation copy;
+Compose mounts only that exact copy read-only. `verify` takes no sample and
+does not submit a message, stage data, add or pin content, publish Kafka data,
+or request an anchor. The Evidence Explorer keeps the newest published
+business version in a stable overview, lists retained evidence/version entries
+in newest-first server-side pages of 20 separately from recent scenario
+activity, and opens a selected version in a modal that polling or page changes
+cannot replace with a newer record. Search is also evaluated across the
+retained catalog rather than only the visible page. Business version is an
+explicit chain field; changing a JSON property such as `batchId` does not
+increment it.
+
+After the runner has re-downloaded the immutable object version and proved
+that the pinned IPFS CID contains the same bytes, it stores an owner-readable,
+bounded presentation copy beside the credential-free report. The detail modal
+pretty-prints JSON up to 256 KiB and independently checks the displayed UTF-8
+bytes against the reported SHA-256 in the browser. The evidence-UI container
+still receives no S3, IPFS, Kafka, Yano API, member, or anchor credential.
+Evidence reports created before this viewer was installed remain selectable;
+run the read-only `verify` command once for that ID/version to materialize its
+verified document preview. New `publish`/`republish` runs create the same
+verified presentation copy automatically after their normal object-store and
+IPFS re-read, so `verify` is not a routine UI prerequisite.
+
+`load` performs normal version-1 publications with IDs such as
+`load-july-000001`; it is not a bulk state-machine bypass. Each item waits for
+finality, effects, connector re-reads, and proof verification. Count is bounded
+to 1..50000 and concurrency to 1..16. The command exits nonzero if any item
+fails and writes a credential-free aggregate load report shown in the Evidence
+UI. Reusing a completed prefix demonstrates immutable-ID rejection rather than
+resuming or overwriting the batch.
+
+`--load-mode lifecycle` is the default: each worker completes one entire item
+before taking its next ID. `--load-mode pipeline` uses bounded prepare,
+prerequisite, approval, release, effects, and verify queues, so different IDs
+occupy different stages simultaneously. `--max-in-flight` bounds all queued and
+active pipeline items; its default is derived from worker count and the profile
+capacity. A stage failure terminates only that item and is named in the report.
+Pipeline mode requires the demo's stock `composite` state machine; it is not
+available with the standalone `evidence-registry` compatibility machine.
+
+An in-flight item is an evidence workflow, not one mempool message. Each
+workflow submits several dependency-ordered messages and waits for stage
+finality. Therefore `--max-in-flight 5000` bounds queued/active workflow
+pressure but does not imply 5,000 simultaneous mempool messages.
+
+The stock demo profile commits capacity for eight releases and eight
+notifications per block. Its canonical quotas reserve 32 of the configured 128
+effect slots. Fair eight-permit release and notification gates are held through
+message finality, preventing a client burst from exceeding the authenticated
+profile while allowing actual multi-release blocks. Connector execution,
+result incorporation, external reads, proof checks, and both lane types still
+overlap. L1-gated devnet loads also share a throttled force-anchor coordinator,
+so a finite batch does not depend on unrelated future traffic. The ordinary
+64-message block cap is unchanged.
+
+The aggregate schema-v2 report separates app messages/second, release and
+verified-evidence workflows/second, verified effects/second, per-stage
+completion rates and latencies, and end-to-end p50/p95 latency. This is still a
+functional capacity/soak runner, not a hardware-independent benchmark claim.
+
+Load is intentionally refused for a public anchor-enabled profile to prevent
+accidental preview/preprod transaction spend; the disposable devnet script
+anchor remains supported.
+
 The default `explicit` profile preserves the Milestone 1 continuation command.
 To start a fresh chain with direct result-to-effect continuation enabled from
 height 1, pass the same immutable option to every command:
@@ -50,13 +194,24 @@ height 1, pass the same immutable option to every command:
 ```bash
 ./demo.sh prepare --instance direct-demo --continuation direct
 ./demo.sh up --instance direct-demo --continuation direct
-./demo.sh run --instance direct-demo --continuation direct
+./demo.sh load --instance direct-demo --continuation direct \
+  --load-mode pipeline --count 8 --concurrency 8 --max-in-flight 8 \
+  --id-prefix direct-july \
+  --sample-file samples/inspection-certificate.json
+./demo.sh verify --instance direct-demo --continuation direct \
+  --evidence-id direct-july-000008 --business-version 1
 ./demo.sh stop --instance direct-demo --continuation direct
 ```
 
 The continuation mode is part of the retained app-chain identity. It cannot be
 changed in place after an instance is prepared; use a new instance and chain
 identity to change profiles.
+
+ADR-018 completed republish in the still-unreleased gated v1 workflow and
+therefore replaced its preview profile digest. Instances prepared with the
+earlier incomplete digest are intentionally not migrated: stop them and use a
+fresh instance/chain (or retire their disposable preview data) before testing
+these lifecycle commands.
 
 The default for each newly prepared demo instance is the stock
 `evidence-v1-gated` deterministic composite workflow. It admits evidence
@@ -83,6 +238,11 @@ with `--machine standalone` as a regression/migration fixture.
 `--continuation explicit|direct` remains independently selectable for a fresh
 composite instance.
 
+The demo's committed `evidence-capacity-per-block=8` is part of the composite
+profile digest and immutable instance identity. It is not a live local tuning
+knob. A different capacity requires a packaged governed target profile for a
+retained production chain, or a fresh disposable preview/demo chain.
+
 The demo starts new composite chains in ADR-015 `governed` profile mode. Its
 stock bundle contains only the selected profile, so the demo exercises
 authenticated epoch 0, status, proofs, restart, JVM/Compose parity, and
@@ -93,9 +253,11 @@ entries; see the
 
 `up` builds the exact working-tree Yano and runner images, starts all services,
 waits through the producer warm-up, funds and bootstraps the devnet script
-anchor, and executes a read-only readiness probe. `run` then stages and submits
-the supplied scenario. Re-running it is safe: the runner and connector
-contracts use stable identities and reconcile acknowledged external state.
+anchor, and executes a read-only readiness probe. `publish` and `republish`
+perform explicit writes; `verify` is read-only; `replay` alone intentionally
+advances finalized envelopes without changing authenticated business state or
+external logical outcomes. Re-running `run` is safe and chooses publish or
+verify, never an implicit replay.
 `status` and `stop` do not prepare an absent instance or create data, runtime,
 or secret directories.
 

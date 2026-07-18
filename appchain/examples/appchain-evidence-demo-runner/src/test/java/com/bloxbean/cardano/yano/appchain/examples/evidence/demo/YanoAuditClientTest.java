@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.appchain.examples.evidence.demo;
 
 import com.bloxbean.cardano.yano.api.appchain.evidence.EvidenceBundleCodec;
+import com.bloxbean.cardano.yano.appchain.composite.contracts.CompositeCommitmentV1;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterEach;
@@ -11,6 +12,7 @@ import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
+import java.util.HexFormat;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -26,6 +28,8 @@ class YanoAuditClientTest {
     private HttpServer server;
     private YanoAuditClient client;
     private final AtomicReference<Response> transaction = new AtomicReference<>();
+    private final AtomicReference<Response> profileQuery = new AtomicReference<>();
+    private final AtomicReference<Response> forceAnchor = new AtomicReference<>();
     private final AtomicReference<String> appStatus = new AtomicReference<>();
     private final AtomicReference<String> receivedApiKey = new AtomicReference<>();
 
@@ -50,6 +54,21 @@ class YanoAuditClientTest {
             receivedApiKey.set(exchange.getRequestHeaders().getFirst("X-API-Key"));
             json(exchange, 200, appStatus.get());
         });
+        server.createContext(
+                "/api/v1/app-chain/chains/evidence-chain/query/composite/active-profile-v1",
+                exchange -> {
+                    Response response = profileQuery.get();
+                    json(exchange, response == null ? 404 : response.status(),
+                            response == null ? "{\"error\":\"not found\"}" : response.body());
+                });
+        forceAnchor.set(new Response(200,
+                "{\"chainId\":\"evidence-chain\",\"anchorTriggered\":true}"));
+        server.createContext(
+                "/api/v1/app-chain/chains/evidence-chain/admin/force-anchor",
+                exchange -> {
+                    Response response = forceAnchor.get();
+                    json(exchange, response.status(), response.body());
+                });
         server.createContext("/api/v1/txs/", exchange -> {
             Response response = transaction.get();
             json(exchange, response.status(), response.body());
@@ -93,6 +112,78 @@ class YanoAuditClientTest {
         assertThat(receivedApiKey.get()).isNull();
         publicClient.appChain().status();
         assertThat(receivedApiKey.get()).isNull();
+    }
+
+    @Test
+    void acceptsOnlyTheExactPristineGenesisSnapshot() {
+        assertThat(client.pristineGenesisReady(genesisStatus("evidence-registry"))).isTrue();
+
+        YanoAuditClient.Status nonGenesis = new YanoAuditClient.Status(
+                1, "00".repeat(32), "02".repeat(32), 3, 2,
+                "evidence-registry", 0, null, 0, null, null);
+        assertThatThrownBy(() -> client.pristineGenesisReady(nonGenesis))
+                .isInstanceOf(DemoException.class)
+                .extracting(failure -> ((DemoException) failure).error())
+                .isEqualTo(DemoError.STATE_PROOF_FAILED);
+    }
+
+    @Test
+    void bindsPristineCompositeGenesisToThePinnedProfileDigest() {
+        byte[] profile = new byte[]{1, 2, 3};
+        profileQuery.set(new Response(200, queryResponse(
+                0, "00".repeat(32), "composite", profile)));
+        YanoAuditClient composite = new YanoAuditClient(URI.create(
+                "http://127.0.0.1:" + server.getAddress().getPort() + "/api/v1"),
+                "evidence-chain", MEMBERS, 2, new SecretValue("api-key"),
+                CompositeCommitmentV1.profileDigest(profile));
+
+        assertThat(composite.pristineGenesisReady(genesisStatus("composite"))).isTrue();
+
+        profileQuery.set(new Response(200, queryResponse(
+                0, "00".repeat(32), "composite", new byte[]{1, 2, 4})));
+        assertThatThrownBy(() -> composite.pristineGenesisReady(genesisStatus("composite")))
+                .isInstanceOf(DemoException.class)
+                .extracting(failure -> ((DemoException) failure).error())
+                .isEqualTo(DemoError.STATE_PROOF_FAILED);
+    }
+
+    @Test
+    void acceptsOnlyTheExactForceAnchorResponse() {
+        assertThat(client.forceAnchor()).isTrue();
+
+        forceAnchor.set(new Response(200,
+                "{\"chainId\":\"evidence-chain\",\"anchorTriggered\":false}"));
+        assertThat(client.forceAnchor()).isFalse();
+
+        forceAnchor.set(new Response(200,
+                "{\"chainId\":\"other-chain\",\"anchorTriggered\":true}"));
+        assertThatThrownBy(client::forceAnchor)
+                .isInstanceOf(DemoException.class)
+                .extracting(failure -> ((DemoException) failure).error())
+                .isEqualTo(DemoError.EXTERNAL_STATE_MISMATCH);
+
+        forceAnchor.set(new Response(503, "{\"error\":\"not ready\"}"));
+        assertThatThrownBy(client::forceAnchor)
+                .isInstanceOf(DemoException.class)
+                .extracting(failure -> ((DemoException) failure).error())
+                .isEqualTo(DemoError.SERVICE_TIMEOUT);
+    }
+
+    private static YanoAuditClient.Status genesisStatus(String stateMachine) {
+        return new YanoAuditClient.Status(0, "00".repeat(32), "02".repeat(32),
+                3, 2, stateMachine, 0, null, 0, null, null);
+    }
+
+    private static String queryResponse(
+            long height,
+            String stateRoot,
+            String stateMachine,
+            byte[] payload
+    ) {
+        return "{\"chainId\":\"evidence-chain\",\"stateMachineId\":\""
+                + stateMachine + "\",\"committedHeight\":" + height
+                + ",\"stateRoot\":\"" + stateRoot + "\",\"payloadHex\":\""
+                + HexFormat.of().formatHex(payload) + "\"}";
     }
 
     @Test

@@ -42,6 +42,45 @@ class EvidenceDemoMainTest {
                 .isEqualTo("FAIL code=INVALID_ARGUMENT\n")
                 .doesNotContain("inline-secret");
 
+        error.reset();
+        int invalidLoad = EvidenceDemoMain.run(new String[]{
+                        "load", "--config", "inline-secret",
+                        "--sample-file", "sample.json", "--id-prefix", "load-case"},
+                new PrintStream(output), new PrintStream(error));
+        assertThat(invalidLoad).isEqualTo(2);
+        assertThat(error.toString(StandardCharsets.UTF_8))
+                .isEqualTo("FAIL code=INVALID_ARGUMENT\n")
+                .doesNotContain("inline-secret", "sample.json");
+
+        error.reset();
+        int unsafeConcurrency = EvidenceDemoMain.run(new String[]{
+                        "load", "--config", "inline-secret", "--sample-file", "sample.json",
+                        "--id-prefix", "load-case", "--count", "2", "--concurrency", "3"},
+                new PrintStream(output), new PrintStream(error));
+        assertThat(unsafeConcurrency).isEqualTo(2);
+        assertThat(error.toString(StandardCharsets.UTF_8))
+                .isEqualTo("FAIL code=INVALID_ARGUMENT\n");
+
+        error.reset();
+        int invalidPipeline = EvidenceDemoMain.run(new String[]{
+                        "load", "--config", "inline-secret", "--sample-file", "sample.json",
+                        "--id-prefix", "load-case", "--count", "4", "--concurrency", "2",
+                        "--load-mode", "pipeline", "--max-in-flight", "1"},
+                new PrintStream(output), new PrintStream(error));
+        assertThat(invalidPipeline).isEqualTo(2);
+        assertThat(error.toString(StandardCharsets.UTF_8))
+                .isEqualTo("FAIL code=INVALID_ARGUMENT\n");
+
+        error.reset();
+        int invalidMode = EvidenceDemoMain.run(new String[]{
+                        "load", "--config", "inline-secret", "--sample-file", "sample.json",
+                        "--id-prefix", "load-case", "--count", "4",
+                        "--load-mode", "unbounded"},
+                new PrintStream(output), new PrintStream(error));
+        assertThat(invalidMode).isEqualTo(2);
+        assertThat(error.toString(StandardCharsets.UTF_8))
+                .isEqualTo("FAIL code=INVALID_ARGUMENT\n");
+
         Path config = DemoTestFiles.config(temporary);
         DemoTestFiles.secret(temporary.resolve("secrets/api"), "scoped-key");
         Files.writeString(config, DemoTestFiles.properties()
