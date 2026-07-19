@@ -37,6 +37,18 @@ run_existing_keys() {
   python3 "$TOOL" --directory "$directory" --mode "$mode" --count 3 --existing-only
 }
 
+run_role_keys() {
+  directory="$1"
+  extra="${2:-}"
+  if [ -n "$extra" ]; then
+    python3 "$TOOL" --directory "$directory" --mode generated --count 5 \
+      --purpose role-actors "$extra"
+  else
+    python3 "$TOOL" --directory "$directory" --mode generated --count 5 \
+      --purpose role-actors
+  fi
+}
+
 expected_devnet='8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c,8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394,ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1'
 
 # RFC 8032, section 7.1, test vector 1: empty-message Ed25519 key derivation.
@@ -225,5 +237,22 @@ while [ "$index" -lt 8 ]; do
 done
 [ "$(run_keys "$concurrent_dir" generated)" = "$(cat "$TEST_ROOT/concurrent-0.out")" ] \
   || fail "concurrently generated keys did not persist"
+
+role_dir="$TEST_ROOT/role-actors"
+role_first="$(run_role_keys "$role_dir")"
+[ "$(printf '%s' "$role_first" | awk -F, '{print NF}')" -eq 5 ] \
+  || fail "role actor helper did not return exactly five public keys"
+[ "$(run_role_keys "$role_dir" --existing-only)" = "$role_first" ] \
+  || fail "role actor key reload changed the persisted identity"
+[ "$(find "$role_dir" -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d ' ')" -eq 12 ] \
+  || fail "role actor key directory differs from the closed five-key inventory"
+expect_failure "role actor wrong count" python3 "$TOOL" \
+  --directory "$TEST_ROOT/role-wrong-count" --mode generated --count 4 \
+  --purpose role-actors
+expect_failure "role actor deterministic mode" python3 "$TOOL" \
+  --directory "$TEST_ROOT/role-deterministic" --mode deterministic --count 5 \
+  --purpose role-actors
+expect_failure "member purpose cannot accept actor count" python3 "$TOOL" \
+  --directory "$TEST_ROOT/member-five" --mode generated --count 5
 
 echo "key-material-test: PASS"

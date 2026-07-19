@@ -854,6 +854,13 @@ def _validate_active_identity_shape(document: dict[str, Any], marker: Path) -> N
         provider == "composite"
         and state_machine_fields == base_state_machine_fields | {"preset"}
         and state_machine.get("preset") in {"evidence-v1", "evidence-v1-gated"}
+    ) or (
+        provider == "role-evidence"
+        and state_machine_fields
+        == base_state_machine_fields | {"preset", "profileDigest"}
+        and state_machine.get("preset") == "evidence-role-v1"
+        and isinstance(state_machine.get("profileDigest"), str)
+        and SHA256_HEX.fullmatch(state_machine["profileDigest"]) is not None
     )
     if (
         not isinstance(state_machine, dict)

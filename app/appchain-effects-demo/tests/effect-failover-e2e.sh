@@ -406,6 +406,7 @@ assert_plugin_operations_all_nodes() {
           "com.bloxbean.cardano.yano.appchain.ipfs",
           "com.bloxbean.cardano.yano.appchain.kafka",
           "com.bloxbean.cardano.yano.appchain.objectstore.s3",
+          "com.bloxbean.cardano.yano.appchain.role-workflow",
           "com.bloxbean.cardano.yano.appchain.stdlib"]
         and (.items | map(select(.selected)) | all(
           .selectionStatus == "SELECTED"
@@ -413,7 +414,7 @@ assert_plugin_operations_all_nodes() {
           and (.health == "UNKNOWN" or .health == "UP")
           and .failure.code == "NONE"
           and .metricsStale == false))
-        and ([.items[] | select(.selected) | .contributionCount] | add) == 11
+        and ([.items[] | select(.selected) | .contributionCount] | add) == 13
         and .nextAfter == null' "$bundles" \
       || fail "node $node plugin inventory is not the exact selected demo catalog"
     fingerprint="$(jq -r '.catalogFingerprint' "$summary")"
@@ -423,7 +424,7 @@ assert_plugin_operations_all_nodes() {
       and (.capturedAtEpochMillis | type == "number" and . > 0)
       and .pluginApiMajor == 1
       and .pluginApiLevel >= 1
-      and .totals.selectedBundles == 6
+      and .totals.selectedBundles == 7
       and .totals.failedBundles == 0
       and .totals.degradedBundles == 0
       and .totals.staleSources == 0
@@ -476,7 +477,7 @@ def sample(name, required_label):
 
 sample("yano_appchain_tip_height", f'chain="{chain}"')
 sample("yano_appchain_effects_open", f'chain="{chain}"')
-if sample("yano_plugin_bundles", 'state="selected"') != 6:
+if sample("yano_plugin_bundles", 'state="selected"') != 7:
     raise SystemExit(1)
 PY
   done

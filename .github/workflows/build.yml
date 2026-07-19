@@ -143,7 +143,7 @@ jobs:
       github.event_name != 'workflow_dispatch' ||
       inputs.scope == 'connector-runtime' || inputs.scope == 'all'
     runs-on: ubuntu-24.04
-    timeout-minutes: 180
+    timeout-minutes: 240
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
@@ -162,6 +162,7 @@ jobs:
           app/appchain-effects-demo/tests/deployment-parity-e2e.sh
           app/appchain-effects-demo/tests/effect-failover-contract.sh
           app/appchain-effects-demo/tests/effect-failover-e2e.sh
+          app/appchain-effects-demo/tests/role-workflow-e2e.sh
       - name: Verify failover and deployment contracts
         run: >-
           app/appchain-effects-demo/tests/effect-failover-contract.sh &&
@@ -176,6 +177,10 @@ jobs:
           YANO_DEPLOYMENT_PARITY_CONTINUATION_MODE: direct
           YANO_DEPLOYMENT_PARITY_MACHINE: composite
         run: app/appchain-effects-demo/tests/deployment-parity-e2e.sh
+      - name: Run mandatory role workflow and one-member catch-up E2E
+        env:
+          YANO_RUN_ROLE_WORKFLOW_E2E: 'true'
+        run: app/appchain-effects-demo/tests/role-workflow-e2e.sh
 
   milestone-1-release-acceptance:
     needs:

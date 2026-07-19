@@ -136,8 +136,11 @@ class ReportServerTest {
                 .contains("src=\"/app.js\"", "does not prove that the real-world inspection",
                         "claim is true",
                         "Latest published evidence", "Evidence library",
-                        "Verified evidence document", "Previous", "Next",
+                        "Verified evidence document", "Business authorization",
+                        "Previous", "Next",
                         "Recent activity", "Latest load run");
+        assertThat(script).contains("Role quorum authenticated", "relayMember",
+                "satisfiedClauses", "acceptedDecisions");
         assertThat(styles)
                 .contains("grid-template-columns: repeat(4, minmax(0, 1fr))",
                         "grid-template-columns: minmax(8.5rem, 39%) minmax(0, 1fr)",

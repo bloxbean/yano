@@ -33,6 +33,10 @@ x-runner: &runner
       target: /run/secrets/s3-runner-secret-key
       read_only: true
     - type: bind
+      source: ${DEMO_ROLE_ACTOR_KEY_DIR:?}
+      target: /run/secrets/role-actors
+      read_only: true
+    - type: bind
       source: ./samples
       target: /opt/yano-demo/samples
       read_only: true

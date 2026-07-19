@@ -20,6 +20,8 @@ dependencies {
     implementation project(':appchain-evidence-client')
     implementation project(':appchain-evidence-contracts')
     implementation project(':appchain-composite-contracts')
+    implementation project(':appchain-role-workflow-contracts')
+    implementation libs.cardano.client.crypto
     implementation project(':appchain-integration-contracts')
     implementation libs.jackson.databind
     implementation libs.kafka.clients
@@ -138,7 +140,8 @@ tasks.register('verifyDemoRunnerArtifactBoundary') {
 
         def forbiddenProjects = [
         ':runtime', ':appchain-evidence-registry', ':appchain-composite', ':appchain-stdlib',
-                ':appchain-kafka', ':appchain-objectstore-s3', ':appchain-ipfs'
+                ':appchain-role-workflow', ':appchain-kafka',
+                ':appchain-objectstore-s3', ':appchain-ipfs'
         ] as Set
         def forbidden = configurations.runtimeClasspath.incoming.resolutionResult.allComponents
                 .findAll { component ->

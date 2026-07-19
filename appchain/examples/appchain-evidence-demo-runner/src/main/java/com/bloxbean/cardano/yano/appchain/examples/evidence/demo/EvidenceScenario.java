@@ -546,7 +546,7 @@ final class EvidenceScenario {
             String documentRef
     ) {
         try {
-            if (!"composite".equals(environment.config.stateMachine())) {
+            if (!environment.config.compositeProfile()) {
                 return primary.evidence().submit(storageCommand).messageId();
             }
             String evidenceToken = releaseToken(storageCommand.evidenceId(), null, null);
@@ -720,6 +720,14 @@ final class EvidenceScenario {
                 config.chainId(), agreement, anchoredStatus, submitFinality)));
         checks.add(new ScenarioReport.Check(
                 "BUSINESS_CLAIM_NOT_EVALUATED", "NOT_EVALUATED"));
+        ScenarioReport.AuthorizationSummary authorization = config.roleAware()
+                ? new RoleDemoWorkflow(environment,
+                (node, messageId) -> waitFinality(node, messageId, false))
+                .auditSummary(request.evidenceId(), version)
+                : null;
+        if (authorization != null) {
+            checks.add(pass("ROLE_AUTHORIZATION_AUDIT"));
+        }
 
         ScenarioReport.ChainSummary chain = new ScenarioReport.ChainSummary(
                 config.chainId(), agreement.committedHeight(), agreement.stateRoot(),
@@ -743,7 +751,7 @@ final class EvidenceScenario {
                 request.evidenceId(), reportOperation(request), version, false,
                 request.operation() == ScenarioRequest.Operation.REPLAY ? 1 : 0,
                 "PASS", started.toString(), clock.instant().toString(),
-                chain, storage, kafka, anchor, checks, null);
+                chain, storage, kafka, anchor, checks, null, authorization);
     }
 
     private ScenarioReport execute(ScenarioRequest requested,
@@ -803,9 +811,10 @@ final class EvidenceScenario {
         try (KafkaDemoClient.EventWindow window = environment.kafka.openEventWindow()) {
             String acceptedMessageId = submitStorageCommandForLoad(
                     primary, config, storageCommand, digest, relativeKey);
-            checks.add(pass("composite".equals(config.stateMachine())
-                    ? "COMPOSITE_EVIDENCE_RELEASE_WORKFLOW"
-                    : "DIRECT_EVIDENCE_SUBMISSION"));
+            checks.add(pass(config.roleAware()
+                    ? "ROLE_GATED_EVIDENCE_RELEASE_WORKFLOW"
+                    : config.compositeProfile()
+                    ? "COMPOSITE_EVIDENCE_RELEASE_WORKFLOW" : "DIRECT_EVIDENCE_SUBMISSION"));
             VerifiedEvidence storageReady = waitEvidence(primary,
                     request.evidenceId(), version,
                     status -> status == EvidenceStatus.STORAGE_READY
@@ -970,6 +979,14 @@ final class EvidenceScenario {
                     "MEMBER_OBSERVED_ANCHOR_DATUM_COMMITMENT_VERIFIED", "NOT_EVALUATED"));
             checks.add(new ScenarioReport.Check(
                     "BUSINESS_CLAIM_NOT_EVALUATED", "NOT_EVALUATED"));
+            ScenarioReport.AuthorizationSummary authorization = config.roleAware()
+                    ? new RoleDemoWorkflow(environment,
+                    (node, messageId) -> waitFinality(node, messageId, false))
+                    .auditSummary(request.evidenceId(), version)
+                    : null;
+            if (authorization != null) {
+                checks.add(pass("ROLE_AUTHORIZATION_AUDIT"));
+            }
 
             int effectProofsVerified = List.of(objectEffect, ipfsEffect, kafkaEffect).size();
             int finalityBundlesVerified = directContinuation ? 1 : 2;
@@ -991,11 +1008,13 @@ final class EvidenceScenario {
                     memberObservedTransactionVisible, memberObservedDatumCommitment);
             return new ScenarioReport(ScenarioReport.SCHEMA_VERSION, scenarioId,
                     request.evidenceId(), request.operation().name(), version, true,
-                    "composite".equals(config.stateMachine())
+                    config.roleAware()
+                            ? request.operation() == ScenarioRequest.Operation.PUBLISH ? 9 : 8
+                            : config.compositeProfile()
                             ? request.operation() == ScenarioRequest.Operation.PUBLISH ? 4 : 3
                             : 1,
                     "PASS", started.toString(), clock.instant().toString(),
-                    chain, storage, kafka, anchor, checks, null);
+                    chain, storage, kafka, anchor, checks, null, authorization);
         }
     }
 
@@ -1007,7 +1026,7 @@ final class EvidenceScenario {
             String documentRef
     ) {
         try {
-            if (!"composite".equals(config.stateMachine())) {
+            if (!config.compositeProfile()) {
                 // A repeated direct submission is a deterministic no-op: the
                 // authenticated record keeps the message id that originally
                 // created it. Still wait for the new envelope to finalize,
@@ -1030,6 +1049,24 @@ final class EvidenceScenario {
                     .getBytes(StandardCharsets.UTF_8);
             String approvalId = "approval-" + versionToken;
             byte[] evidenceCommand = storageCommand.encode();
+            EvidenceReleaseCommandV1 release = new EvidenceReleaseCommandV1(
+                    "release-" + versionToken, registryKey, approvalId,
+                    "document-" + evidenceToken, documentHash,
+                    "object:" + documentRef, evidenceCommand);
+
+            if (config.roleAware()) {
+                Optional<VerifiedEvidence> retained = primary.evidence().queryVerified(
+                        storageCommand.evidenceId(), storageCommand.businessVersion());
+                new RoleDemoWorkflow(environment,
+                        (node, messageId) -> waitFinality(node, messageId, false))
+                        .authorize(release, storageCommand instanceof SubmitEvidenceCommandV1);
+                String releaseMessageId = primary.appChain()
+                        .submit(EvidenceReleaseCommandV1.TOPIC, release.encode()).messageId();
+                waitFinality(primary, releaseMessageId, false);
+                return retained.map(existing -> Digests.hex(
+                                existing.record().submitMessageId()))
+                        .orElse(releaseMessageId);
+            }
 
             if (storageCommand instanceof SubmitEvidenceCommandV1) {
                 AppChainClient.SubmitResult registry = primary.appChain().submit(
@@ -1055,14 +1092,6 @@ final class EvidenceScenario {
             Optional<VerifiedEvidence> retained = primary.evidence().queryVerified(
                     storageCommand.evidenceId(), storageCommand.businessVersion());
 
-            EvidenceReleaseCommandV1 release = new EvidenceReleaseCommandV1(
-                    "release-" + versionToken,
-                    registryKey,
-                    approvalId,
-                    "document-" + evidenceToken,
-                    documentHash,
-                    "object:" + documentRef,
-                    evidenceCommand);
             String releaseMessageId = primary.appChain()
                     .submit(EvidenceReleaseCommandV1.TOPIC, release.encode()).messageId();
             // On replay, the release command is deliberately a deterministic
@@ -1088,7 +1117,7 @@ final class EvidenceScenario {
             byte[] documentHash,
             String documentRef
     ) {
-        if (loadWorkflows == null || !"composite".equals(config.stateMachine())) {
+        if (loadWorkflows == null || !config.compositeProfile()) {
             return submitStorageCommand(
                     primary, config, storageCommand, documentHash, documentRef);
         }
@@ -1103,7 +1132,7 @@ final class EvidenceScenario {
         Runnable submit = () -> {
             try {
                 var result = primary.evidence().notify(evidenceId, businessVersion);
-                if (loadWorkflows != null && "composite".equals(config.stateMachine())) {
+                if (loadWorkflows != null && config.compositeProfile()) {
                     waitFinality(primary, result.messageId(), false);
                 }
             } catch (DemoException failure) {
@@ -1112,7 +1141,7 @@ final class EvidenceScenario {
                 throw new DemoException(DemoError.NOTIFICATION_FAILED);
             }
         };
-        if (loadWorkflows == null || !"composite".equals(config.stateMachine())) {
+        if (loadWorkflows == null || !config.compositeProfile()) {
             submit.run();
         } else {
             loadWorkflows.notification(submit);

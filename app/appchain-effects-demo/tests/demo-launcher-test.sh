@@ -181,8 +181,18 @@ if DEMO_DATA_ROOT="$INVALID_ROOT/data" DEMO_SECRET_ROOT="$INVALID_ROOT/secrets" 
     >"$TMP/invalid-machine.out" 2>&1; then
   fail "invalid state-machine mode unexpectedly succeeded"
 fi
-grep -Fq -- '--machine must be standalone or composite' "$TMP/invalid-machine.out" \
+grep -Fq -- '--machine must be standalone, composite, or role' "$TMP/invalid-machine.out" \
   || fail "invalid state-machine mode rejection is unclear"
+assert_absent "$INVALID_ROOT"
+
+if DEMO_DATA_ROOT="$INVALID_ROOT/data" DEMO_SECRET_ROOT="$INVALID_ROOT/secrets" \
+    DEMO_RUNTIME_ROOT="$INVALID_ROOT/runtime" \
+    "$DEMO_DIR/demo.sh" role-lifecycle --instance invalid-role-command \
+    --machine composite >"$TMP/role-command-machine.out" 2>&1; then
+  fail "role lifecycle command accepted the legacy composite machine"
+fi
+grep -Fq 'role-lifecycle requires --machine role' "$TMP/role-command-machine.out" \
+  || fail "role lifecycle machine rejection is unclear"
 assert_absent "$INVALID_ROOT"
 
 OVERLAP_ROOT="$TMP/overlap"
@@ -443,12 +453,56 @@ grep -Fxq 'demo.state-machine=composite' \
 grep -Fxq 'demo.evidence-capacity-per-block=8' \
   "$COMPOSITE_RUNTIME_DIR/runner-compose.properties" \
   || fail "runner did not select the committed evidence capacity"
+[ "$(find "$COMPOSITE_SECRET_DIR/role-actors" -maxdepth 1 -type f | wc -l | tr -d ' ')" -eq 0 ] \
+  || fail "legacy composite mode generated unused role-actor keys"
 if "$DEMO_DIR/demo.sh" config --instance launcher-composite --machine standalone \
     >"$TMP/composite-mutation.out" 2>&1; then
   fail "an existing composite instance accepted an in-place machine mutation"
 fi
 grep -Fq 'app-chain identity mismatch' "$TMP/composite-mutation.out" \
   || fail "composite machine mutation rejection is unclear"
+
+# The role-aware stock provider is a distinct immutable profile. Actor keys
+# are private runner inputs and are not generated for legacy demo modes.
+ROLE_OUT="$TMP/config-role.yml"
+"$DEMO_DIR/demo.sh" config --instance launcher-role --machine role > "$ROLE_OUT"
+ROLE_ROOT="$NETWORK_ROOT/instances/launcher-role/compose"
+ROLE_SECRET_DIR="$TMP/secrets/networks/devnet/launcher-role/compose"
+ROLE_RUNTIME_DIR="$TMP/runtime/networks/devnet/launcher-role/compose"
+ROLE_MARKER="$ROLE_ROOT/appchain-identity.json"
+ROLE_NODE_DIR="$ROLE_SECRET_DIR/nodes-compose"
+ROLE_ACTOR_DIR="$ROLE_SECRET_DIR/role-actors"
+jq -e '
+  .stateMachine.provider == "role-evidence"
+  and .stateMachine.preset == "evidence-role-v1"
+  and (.stateMachine.profileDigest | test("^[0-9a-f]{64}$"))
+  and .stateMachine.evidenceCapacityPerBlock == 8
+' "$ROLE_MARKER" >/dev/null || fail "role-evidence identity is incomplete"
+[ "$(grep -hFx 'yano.app-chain.chains[0].state-machine=role-evidence' \
+  "$ROLE_NODE_DIR"/*.properties | wc -l | tr -d ' ')" -eq 3 ] \
+  || fail "role-evidence state-machine selection is not identical on all members"
+[ "$(grep -hFx '# role-evidence provider fixes the evidence-role-v1 preset' \
+  "$ROLE_NODE_DIR"/*.properties | wc -l | tr -d ' ')" -eq 3 ] \
+  || fail "role-evidence preset identity is not explicit on all members"
+if grep -hFq 'machines.composite.preset=evidence-v1-gated' "$ROLE_NODE_DIR"/*.properties; then
+  fail "role-evidence nodes retained the unrelated legacy composite preset"
+fi
+grep -Fxq 'demo.state-machine=role-evidence' \
+  "$ROLE_RUNTIME_DIR/runner-compose.properties" \
+  || fail "runner did not select the role-aware workflow path"
+grep -Fxq 'roles.manufacturer-seed-file=/run/secrets/role-actors/node0.seed' \
+  "$ROLE_RUNTIME_DIR/runner-compose.properties" \
+  || fail "runner did not receive the private actor-key mount contract"
+[ "$(find "$ROLE_ACTOR_DIR" -maxdepth 1 -type f | wc -l | tr -d ' ')" -eq 12 ] \
+  || fail "role-aware demo did not create the exact five-key inventory"
+[ "$(env_value DEMO_ROLE_ACTOR_KEY_DIR "$ROLE_RUNTIME_DIR/compose.env")" = "$ROLE_ACTOR_DIR" ] \
+  || fail "Compose does not mount the exact private actor-key directory"
+if "$DEMO_DIR/demo.sh" config --instance launcher-role --machine composite \
+    >"$TMP/role-mutation.out" 2>&1; then
+  fail "an existing role-evidence instance accepted an in-place machine mutation"
+fi
+grep -Fq 'app-chain identity mismatch' "$TMP/role-mutation.out" \
+  || fail "role-evidence machine mutation rejection is unclear"
 anchor_fingerprint="$(python3 - "$SECRET_DIR/anchor.seed" <<'PY'
 import hashlib
 from pathlib import Path

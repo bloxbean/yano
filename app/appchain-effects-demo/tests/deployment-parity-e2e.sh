@@ -77,7 +77,11 @@ case "$MACHINE_MODE" in
     EXPECTED_STATE_MACHINE=composite
     EXPECTED_WORKFLOW_CHECK=COMPOSITE_EVIDENCE_RELEASE_WORKFLOW
     ;;
-  *) fail 'machine mode must be exactly standalone or composite';;
+  role)
+    EXPECTED_STATE_MACHINE=role-evidence
+    EXPECTED_WORKFLOW_CHECK=ROLE_GATED_EVIDENCE_RELEASE_WORKFLOW
+    ;;
+  *) fail 'machine mode must be exactly standalone, composite, or role';;
 esac
 
 COMPOSE_HTTP_BASE="${YANO_DEPLOYMENT_PARITY_COMPOSE_HTTP_BASE:-28070}"
@@ -654,19 +658,20 @@ assert_plugin_inventory() {
           "com.bloxbean.cardano.yano.appchain.ipfs",
           "com.bloxbean.cardano.yano.appchain.kafka",
           "com.bloxbean.cardano.yano.appchain.objectstore.s3",
+          "com.bloxbean.cardano.yano.appchain.role-workflow",
           "com.bloxbean.cardano.yano.appchain.stdlib"]
         and (.items | map(select(.selected)) | all(
           .selectionStatus == "SELECTED"
           and (.lifecycle == "VALIDATED" or .lifecycle == "ACTIVE")
           and (.health == "UNKNOWN" or .health == "UP")
           and .failure.code == "NONE" and .metricsStale == false))
-        and ([.items[] | select(.selected) | .contributionCount] | add) == 11
+        and ([.items[] | select(.selected) | .contributionCount] | add) == 13
         and .nextAfter == null' "$bundles" "$key_file" \
       || fail "$phase node $node plugin inventory differs from the demo catalog"
     fingerprint="$(jq -r '.catalogFingerprint' "$summary")"
     jq -e --arg fingerprint "$fingerprint" '
       .catalogFingerprint == $fingerprint and .pluginApiMajor == 1
-      and .pluginApiLevel >= 1 and .totals.selectedBundles == 6
+      and .pluginApiLevel >= 1 and .totals.selectedBundles == 7
       and .totals.failedBundles == 0 and .totals.degradedBundles == 0
       and .totals.staleSources == 0' "$summary" >/dev/null \
       || fail "$phase node $node plugin summary is unhealthy"
@@ -710,7 +715,7 @@ def sample(name, label):
 
 sample("yano_appchain_tip_height", f'chain="{chain}"')
 sample("yano_appchain_effects_open", f'chain="{chain}"')
-if sample("yano_plugin_bundles", 'state="selected"') != 6:
+if sample("yano_plugin_bundles", 'state="selected"') != 7:
     raise SystemExit(1)
 PY
   done
@@ -734,7 +739,7 @@ capture_cluster_state() {
           and (.memberKey | test("^[0-9a-f]{64}$"))
           and .members == 3 and .threshold == 2
           and .stateMachine == $machine
-          and ($machine != "composite" or (
+          and (($machine != "composite" and $machine != "role-evidence") or (
             .stateMachineStatus.mode == "governed"
             and .stateMachineStatus.currentEpoch == 0
             and (.stateMachineStatus.activeProfileDigest
@@ -802,7 +807,7 @@ assert_replay_advanced_only_tip() {
           and (.memberKey | test("^[0-9a-f]{64}$"))
           and .members == 3 and .threshold == 2
           and .stateMachine == $machine
-          and ($machine != "composite" or (
+          and (($machine != "composite" and $machine != "role-evidence") or (
             .stateMachineStatus.mode == "governed"
             and .stateMachineStatus.currentEpoch == 0
             and (.stateMachineStatus.activeProfileDigest

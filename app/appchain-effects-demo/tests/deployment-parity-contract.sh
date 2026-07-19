@@ -49,7 +49,9 @@ for required in (
         '--continuation "$CONTINUATION_MODE"',
         '--machine "$MACHINE_MODE"',
         'EXPECTED_STATE_MACHINE=composite',
+        'EXPECTED_STATE_MACHINE=role-evidence',
         'EXPECTED_WORKFLOW_CHECK=COMPOSITE_EVIDENCE_RELEASE_WORKFLOW',
+        'EXPECTED_WORKFLOW_CHECK=ROLE_GATED_EVIDENCE_RELEASE_WORKFLOW',
         'EXPECTED_WORKFLOW_CHECK=DIRECT_EVIDENCE_SUBMISSION',
         'EXPECTED_CONTINUATION_CHECK=DIRECT_RESULT_CONTINUATION',
         'EXPECTED_CONTINUATION_CHECK=EXPLICIT_NOTIFY_CONTINUATION',
@@ -255,10 +257,12 @@ def job_block(name):
 
 e2e_job = job_block("effect-failover-e2e")
 for required in (
-        "timeout-minutes: 180",
+        "timeout-minutes: 240",
         "YANO_RUN_DEPLOYMENT_PARITY_E2E: 'true'",
         "YANO_DEPLOYMENT_PARITY_CONTINUATION_MODE: direct",
         "run: app/appchain-effects-demo/tests/deployment-parity-e2e.sh",
+        "YANO_RUN_ROLE_WORKFLOW_E2E: 'true'",
+        "run: app/appchain-effects-demo/tests/role-workflow-e2e.sh",
 ):
     if required not in e2e_job:
         raise SystemExit(f"mandatory deployment-parity CI contract is missing: {required}")

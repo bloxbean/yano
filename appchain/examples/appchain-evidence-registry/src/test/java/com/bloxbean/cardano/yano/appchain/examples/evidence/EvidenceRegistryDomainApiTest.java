@@ -109,6 +109,26 @@ class EvidenceRegistryDomainApiTest {
     }
 
     @Test
+    void roleEvidenceAliasReturnsTheSameCompositePhysicalProofKeys() {
+        DomainQueryService queries = service(List.of(CHAIN), (chainId, path, params) ->
+                new AppQueryResult(CHAIN, "role-evidence", 7,
+                        EvidenceFixtures.repeat(0x71),
+                        EvidenceGetResponseV1.found(
+                                new EvidenceHeadV1(EvidenceFixtures.ID, EvidenceFixtures.OWNER, 1),
+                                EvidenceFixtures.storageReadyRecord()).encode()));
+        EvidenceRegistryDomainApi api = new EvidenceRegistryDomainApi(
+                new DomainApiContext(Map.of(), queries));
+
+        String json = new String(api.handle(request(Map.of())).body(), StandardCharsets.UTF_8);
+        assertThat(json)
+                .contains("\"stateMachineId\":\"role-evidence\"")
+                .contains("\"headKey\":\"" + java.util.HexFormat.of().formatHex(
+                        EvidenceCompositeKeys.physicalKey(
+                                com.bloxbean.cardano.yano.appchain.examples.evidence.state.EvidenceKeys
+                                        .headKey(EvidenceFixtures.ID))) + "\"");
+    }
+
+    @Test
     void queryFailuresAndIdentityMismatchesAreTypedAndRedacted() {
         EvidenceRegistryDomainApi busy = new EvidenceRegistryDomainApi(new DomainApiContext(
                 Map.of(), service(List.of(CHAIN), (chainId, path, params) -> {

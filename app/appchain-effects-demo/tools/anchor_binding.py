@@ -30,7 +30,7 @@ TEST_ADDRESS = re.compile(r"addr_test1[a-z0-9]{20,240}\Z")
 NETWORK = re.compile(r"[a-z][a-z0-9-]{0,31}\Z")
 INSTANCE = re.compile(r"[a-z0-9][a-z0-9-]{0,31}\Z")
 CHAIN_ID = re.compile(r"[a-z][a-z0-9-]{0,62}\Z")
-STATE_MACHINES = frozenset(("evidence-registry", "composite"))
+STATE_MACHINES = frozenset(("evidence-registry", "composite", "role-evidence"))
 FIELDS = {
     "schemaVersion", "kind", "networkName", "instanceId", "deployment",
     "chainId", "threadPolicyId", "scriptHash", "scriptAddress",

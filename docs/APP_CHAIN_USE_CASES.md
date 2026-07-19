@@ -189,6 +189,13 @@ tracks workflow state per item and flips it to `APPROVED` when the required
 approver set is reached (approver identity = envelope sender, already
 authenticated). The full decision trail is provable per item.
 
+That lightweight `approvals` machine is appropriate when validator members
+are the approvers. ADR-019's stock `role-evidence` profile covers the broader
+case: governed non-member business actors sign exact statements, policies
+enforce roles and organization-distinct quorums, and any member may relay the
+command without becoming the recorded approver. See
+`docs/APP_CHAIN_DOMAIN_ROLES.md`.
+
 ### B5. Member-attested oracle feeds
 
 **Problem.** A consortium wants an agreed data feed (prices, weather, sports
@@ -335,6 +342,7 @@ this document's parts don't cover:
 | `balances` stdlib machine (guide §9) | B3 micropayment/receipt netting, loyalty points and internal-credit ledgers with zero custom code |
 | `doc-trail` stdlib machine (guide §9) | A3 DPP/supply-chain trails: one provable chained head per product/case verifies the whole trail |
 | `composite/evidence-v1-gated` (guide §18) | Approval-coordinated S3/IPFS publication followed by acknowledged Kafka notification, all under one root |
+| `role-evidence` (domain-role guide) | Business-actor-signed evidence release with governed organizations, key rotation/revocation, two auditor organizations, and a regulator |
 | Governed composite profiles (profile-governance runbook) | Deploy reviewed dormant component/profile generations first, then threshold-authorize deterministic activation at a future height |
 | `credential-registry` (BBS, guide §17, experimental) | Verifiable credentials on an anchored registry: issuer-signed attribute sets, selective field disclosure |
 | `zk-gate` (guide §17, experimental) | Private policy compliance: prove "amount ≤ limit" / "KYC holds" across orgs without revealing the data |

@@ -87,6 +87,8 @@ def buildTimePluginBundles = [
                 [projectPath: ':appchain-stdlib', includeProvided: false],
         'com.bloxbean.cardano.yano.appchain.composite':
                 [projectPath: ':appchain-composite', includeProvided: false],
+        'com.bloxbean.cardano.yano.appchain.role-workflow':
+                [projectPath: ':appchain-role-workflow', includeProvided: false],
         'com.bloxbean.cardano.yano.appchain.evidence-registry':
                 [projectPath: ':appchain-evidence-registry', includeProvided: true]
 ]
@@ -163,6 +165,10 @@ dependencies {
     }
     // Stock deterministic composition and evidence-v1 preset (ADR-013.2).
     implementation(project(':appchain-composite')) {
+        exclude group: 'io.netty', module: 'netty-all'
+    }
+    // ADR-019 domain actors, role-aware approvals, and role-evidence preset.
+    implementation(project(':appchain-role-workflow')) {
         exclude group: 'io.netty', module: 'netty-all'
     }
     // Optional T3 integrations stay out of the stock artifact. Native/custom

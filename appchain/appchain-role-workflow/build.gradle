@@ -1,0 +1,43 @@
+dependencies {
+    api project(':core-api')
+    api project(':appchain-composite')
+    api project(':appchain-role-workflow-contracts')
+
+    implementation project(':appchain-stdlib')
+    implementation project(':appchain-evidence-registry')
+    implementation project(':appchain-evidence-contracts')
+    implementation project(':appchain-composite-contracts')
+    implementation project(':appchain-integration-contracts')
+    implementation libs.cardano.client.crypto
+    implementation libs.cbor
+
+    testImplementation project(':appchain-testkit')
+    testImplementation libs.assertj.core
+}
+
+java {
+    sourceCompatibility = 25
+    targetCompatibility = 25
+}
+
+tasks.named('compileJava') {
+    options.compilerArgs.removeAll { it.startsWith('-Aproject=') }
+}
+
+tasks.register('roleEvidenceProfileDigest', JavaExec) {
+    group = 'application'
+    description = 'Prints the exact role-evidence composite profile digest'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.bloxbean.cardano.yano.appchain.roles.RoleEvidenceProfileCli'
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            pom {
+                name = 'Yano App-Chain Role Workflow'
+                description = 'Deterministic domain-actor registry and role-aware approval components'
+            }
+        }
+    }
+}
