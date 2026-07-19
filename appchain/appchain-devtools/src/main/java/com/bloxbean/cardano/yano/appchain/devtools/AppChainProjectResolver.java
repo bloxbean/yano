@@ -182,6 +182,8 @@ final class AppChainProjectResolver {
         if (!"static".equals(topology.membership())) {
             throw new IllegalArgumentException("M1 supports static membership");
         }
+        validatePortRange(topology.httpPortBase(), topology.members(), "HTTP");
+        validatePortRange(topology.serverPortBase(), topology.members(), "server");
         List<String> hosts = safeList(topology.nodeHosts());
         if (!hosts.isEmpty()) {
             if (hosts.size() != topology.members()
@@ -197,6 +199,12 @@ final class AppChainProjectResolver {
             }
         }
         return chain;
+    }
+
+    private static void validatePortRange(Integer base, int members, String label) {
+        if (base != null && (base < 1024 || base + members - 1 > 65535)) {
+            throw new IllegalArgumentException(label + " port range is outside [1024, 65535]");
+        }
     }
 
     private static Map<String, String> validatedAnswers(Map<String, String> answers) {

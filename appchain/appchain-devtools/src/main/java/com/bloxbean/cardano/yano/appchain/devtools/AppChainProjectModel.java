@@ -46,7 +46,9 @@ final class AppChainProjectModel {
             List<String> nodeHosts,
             String finality,
             String sequencing,
-            String membership) {
+            String membership,
+            Integer httpPortBase,
+            Integer serverPortBase) {
     }
 
     record CapabilityCatalog(
@@ -94,6 +96,8 @@ final class AppChainProjectModel {
 
     record ReleaseIndex(
             String schemaVersion,
+            String schemaStatus,
+            String stabilizationDecision,
             String tooling,
             List<String> runtimeTypes,
             List<String> deploymentTargets,

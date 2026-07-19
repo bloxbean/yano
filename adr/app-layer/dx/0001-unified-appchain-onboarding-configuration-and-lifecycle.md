@@ -1,8 +1,8 @@
-# ADR-DX-0001 v9: Unified App-Chain Onboarding, Configuration, and Lifecycle
+# ADR-DX-0001 v10: Unified App-Chain Onboarding, Configuration, and Lifecycle
 
 ## Status
 
-Proposed — implementation review draft v9
+Proposed — implementation review draft v10
 
 This consolidated review draft incorporates the findings from the completed
 review rounds. It is the single proposal to use for subsequent review and
@@ -19,6 +19,19 @@ profile-evolution rules.
 
 ## Review history
 
+- **v10:** Records the M3 packaged acceptance boundary. The final JVM archive
+  generates and project-validates every advertised recipe/runtime/deployment
+  combination. A separate final-archive runtime gate starts a generated
+  two-member devnet, submits a typed message, verifies finality, root parity,
+  query, MPF proof, evidence, follower restart/catch-up, secret hygiene, and
+  cleanup. Generated launchers now isolate project configuration from bundled
+  demos, use one immutable devnet genesis, keep storage under the project,
+  allow safe port allocation, sequence readiness, and distinguish local from
+  multi-machine host operation. First-party effects metadata is exercised by
+  the maintained extension suites. The stabilization gate explicitly retains
+  `v1alpha1`: the core contracts have two implementation milestones of use,
+  but browser parity, live identity rollout, and third-party ecosystem usage
+  have not yet supplied enough compatibility evidence for stable v1.
 - **v9:** Records the M2 implementation boundary: complete descriptors for
   packaged first-party state-machine settings; a release capability index
   checked against the actual JVM/native plugin inventory; approval, role-aware
@@ -1606,6 +1619,21 @@ For every advertised recipe/runtime/deployment combination:
 After two milestones of usage and successful packaged acceptance, decide
 whether blueprint, capability, recipe, and lock schemas are ready to move from
 alpha to stable v1. Stabilization is a review gate, not automatic.
+
+The implemented M3 gate separates exhaustive artifact generation from the
+runtime paths that are physically available in the current build environment.
+The final JVM archive generates and validates all 22 advertised combinations;
+native layouts and catalog compatibility remain covered by archive contract
+tests, and Compose output is syntax/contract checked. The final JVM archive is
+also used for an executable two-member generated-project test covering typed
+submission, 2-of-2 finality, matching roots, query, MPF proof, evidence,
+member restart/catch-up, secret scans, and asserted cleanup. Maintained
+app-chain extension regressions cover effects and sinks.
+
+The M3 stabilization decision is `RETAIN_V1ALPHA1`, published in the release
+capability index. This is not a failure of M3: it prevents premature stable-v1
+claims before Studio/shared-engine conformance, live identity adoption, and
+real third-party descriptor compatibility have produced usage evidence.
 
 ### M4 — App-Chain Studio and tutorial deep links
 

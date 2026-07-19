@@ -201,18 +201,30 @@ final class AppChainProjectRenderer {
         outputs.put("docs/VERIFY.md", utf8(verificationDocumentation(resolution)));
         outputs.put("plugins/README.md", utf8(pluginDocumentation(resolution)));
         outputs.put("scripts/validate", utf8(validateScript()));
+        if ("devnet".equals(resolution.blueprint().spec().network())) {
+            outputs.put("scripts/prepare-devnet", utf8(prepareDevnetScript()));
+            outputs.put("runtime/.gitignore", utf8("*\n!.gitignore\n"));
+        }
         if (compose) {
             outputs.put("compose.yaml", utf8(compose(resolution, members)));
-            outputs.put("scripts/start", utf8(composeStartScript()));
+            outputs.put("scripts/start", utf8(composeStartScript(resolution)));
             outputs.put("scripts/stop", utf8(composeStopScript()));
             outputs.put("scripts/status", utf8(composeStatusScript()));
         } else {
             outputs.put("scripts/start-node", utf8(startNodeScript(resolution)));
-            outputs.put("scripts/start", utf8(hostStartScript(members)));
+            outputs.put("scripts/start", utf8(isDistributed(resolution)
+                    ? distributedHostStartScript(resolution)
+                    : hostStartScript(resolution, members)));
             outputs.put("scripts/stop", utf8(hostStopScript()));
             outputs.put("scripts/status", utf8(hostStatusScript(members)));
         }
         return outputs;
+    }
+
+    private static boolean isDistributed(AppChainProjectModel.Resolution resolution) {
+        List<String> hosts = resolution.blueprint().spec().chains().getFirst()
+                .topology().nodeHosts();
+        return hosts != null && !hosts.isEmpty();
     }
 
     private static String properties(Map<String, String> values) {
@@ -228,15 +240,19 @@ final class AppChainProjectRenderer {
         boolean compose) {
         List<String> declaredHosts = resolution.blueprint().spec().chains().getFirst()
                 .topology().nodeHosts();
+        AppChainProjectModel.Topology topology = resolution.blueprint().spec().chains()
+                .getFirst().topology();
         boolean distributed = declaredHosts != null && !declaredHosts.isEmpty();
-        int serverPort = compose || distributed ? 13337 : 13337 + node;
-        int httpPort = compose || distributed ? 8080 : 8080 + node;
+        int httpBase = topology.httpPortBase() == null ? 8080 : topology.httpPortBase();
+        int serverBase = topology.serverPortBase() == null ? 13337 : topology.serverPortBase();
+        int serverPort = compose ? 13337 : distributed ? serverBase : serverBase + node;
+        int httpPort = compose ? 8080 : distributed ? httpBase : httpBase + node;
         List<String> peers = new ArrayList<>();
         for (int index = 0; index < members; index++) {
             if (index == node) continue;
             String peerHost = compose ? "node" + index
                     : distributed ? declaredHosts.get(index) : "127.0.0.1";
-            int peerPort = compose || distributed ? 13337 : 13337 + index;
+            int peerPort = compose ? 13337 : distributed ? serverBase : serverBase + index;
             peers.add(peerHost + ":" + peerPort);
         }
         TreeMap<String, String> values = new TreeMap<>();
@@ -245,7 +261,14 @@ final class AppChainProjectRenderer {
         values.put("yano.server.port", Integer.toString(serverPort));
         values.put("yano.storage.path", compose
                 ? "/project/data/node" + node + "/chainstate"
-                : "data/node" + node + "/chainstate");
+                : "${YANO_APPCHAIN_DATA_ROOT}/node" + node + "/chainstate");
+        if ("devnet".equals(resolution.blueprint().spec().network())) {
+            values.put("yano.genesis.shelley-genesis-file", "${YANO_APPCHAIN_GENESIS_FILE}");
+            if (node == 0) {
+                values.put("yano.block-producer.genesis-timestamp",
+                        "${YANO_APPCHAIN_GENESIS_TIMESTAMP}");
+            }
+        }
         values.put("yano.relay.connection.source-port-reuse", "false");
         values.put("yano.relay.connection.max-connections-per-ip", "500");
         if ("devnet".equals(resolution.blueprint().spec().network()) && node > 0) {
@@ -254,7 +277,7 @@ final class AppChainProjectRenderer {
             values.put("yano.client.enabled", "true");
             values.put("yano.remote.host", compose ? "node0"
                     : distributed ? declaredHosts.getFirst() : "127.0.0.1");
-            values.put("yano.remote.port", "13337");
+            values.put("yano.remote.port", Integer.toString(compose ? 13337 : serverBase));
         }
         values.putAll(resolution.nodePropertyTemplate());
         String prefix = "yano.app-chain.chains[0].";
@@ -373,6 +396,42 @@ final class AppChainProjectRenderer {
                 : "All selected components are first-party artifacts declared by the release index.");
     }
 
+    private static String prepareDevnetScript() {
+        return """
+                #!/usr/bin/env bash
+                set -euo pipefail
+                source_file="${1:?Usage: prepare-devnet SOURCE_GENESIS}"
+                root="$(cd "$(dirname "$0")/.." && pwd)"
+                target="$root/runtime/shelley-genesis.json"
+                mkdir -p "$root/runtime"
+                [ -f "$target" ] && exit 0
+                python3 - "$source_file" "$target" <<'PY'
+                import datetime
+                import json
+                import os
+                import sys
+                import tempfile
+
+                source, target = sys.argv[1:]
+                with open(source, encoding="utf-8") as stream:
+                    genesis = json.load(stream)
+                start = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=10)
+                genesis["systemStart"] = start.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+                genesis["epochLength"] = 500
+                descriptor, temporary = tempfile.mkstemp(prefix="genesis-", dir=os.path.dirname(target))
+                try:
+                    with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                        json.dump(genesis, stream, indent=2, sort_keys=True)
+                        stream.write("\\n")
+                    os.chmod(temporary, 0o600)
+                    os.replace(temporary, target)
+                finally:
+                    if os.path.exists(temporary):
+                        os.unlink(temporary)
+                PY
+                """;
+    }
+
     private static String validateScript() {
         return """
                 #!/usr/bin/env bash
@@ -399,24 +458,82 @@ final class AppChainProjectRenderer {
                 . "$secret"
                 set +a
                 : "${YANO_APPCHAIN_SIGNING_KEY:?Missing signing key in node env file}"
+                export YANO_APPCHAIN_DATA_ROOT="${YANO_APPCHAIN_DATA_ROOT:-$root/data}"
+                mkdir -p "$YANO_APPCHAIN_DATA_ROOT/node${node}"
+                %s
                 export QUARKUS_CONFIG_LOCATIONS="$root/config/shared-consensus.properties,$config"
                 cd "$root"
-                exec "$YANO_HOME/yano.sh" "start:%s,appchain"
-                """.formatted(network);
+                exec "$YANO_HOME/yano.sh" "start:%s"
+                """.formatted("devnet".equals(network) ? """
+                genesis="$root/runtime/shelley-genesis.json"
+                [ -f "$genesis" ] || { echo "Run scripts/start to prepare devnet genesis" >&2; exit 1; }
+                export YANO_APPCHAIN_GENESIS_FILE="$genesis"
+                export YANO_APPCHAIN_GENESIS_TIMESTAMP="$(python3 - "$genesis" <<'PY'
+                import datetime, json, sys
+                with open(sys.argv[1], encoding="utf-8") as stream:
+                    value = json.load(stream)["systemStart"]
+                parsed = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+                print(int(parsed.timestamp() * 1000))
+                PY
+                )"
+                """ : "", network);
     }
 
-    private static String hostStartScript(int members) {
+    private static String hostStartScript(
+            AppChainProjectModel.Resolution resolution,
+            int members) {
+        AppChainProjectModel.Topology topology = resolution.blueprint().spec().chains()
+                .getFirst().topology();
+        int httpBase = topology.httpPortBase() == null ? 8080 : topology.httpPortBase();
+        String prepare = "devnet".equals(resolution.blueprint().spec().network())
+                ? "\"$root/scripts/prepare-devnet\" "
+                        + "\"$YANO_HOME/config/network/devnet/shelley-genesis.json\""
+                : ":";
         return """
                 #!/usr/bin/env bash
                 set -euo pipefail
                 root="$(cd "$(dirname "$0")/.." && pwd)"
+                : "${YANO_HOME:?Set YANO_HOME to the extracted Yano distribution}"
                 mkdir -p "$root/run" "$root/logs"
+                %s
                 for node in $(seq 0 %d); do
                   "$root/scripts/start-node" "$node" >"$root/logs/node${node}.log" 2>&1 &
                   echo $! >"$root/run/node${node}.pid"
+                  port=$((%d + node))
+                  ready=0
+                  for attempt in $(seq 1 90); do
+                    if curl -sf "http://127.0.0.1:${port}/q/health/ready" >/dev/null; then
+                      ready=1
+                      break
+                    fi
+                    kill -0 "$(cat "$root/run/node${node}.pid")" 2>/dev/null || break
+                    sleep 2
+                  done
+                  if [ "$ready" -ne 1 ]; then
+                    echo "node${node} failed readiness; see logs/node${node}.log" >&2
+                    "$root/scripts/stop" || true
+                    exit 1
+                  fi
                 done
-                echo "Started %d node processes; see logs/"
-                """.formatted(members - 1, members);
+                echo "Started %d ready node processes; see logs/"
+                """.formatted(prepare, members - 1, httpBase, members);
+    }
+
+    private static String distributedHostStartScript(
+            AppChainProjectModel.Resolution resolution) {
+        String prepare = "devnet".equals(resolution.blueprint().spec().network())
+                ? "\"$root/scripts/prepare-devnet\" "
+                        + "\"$YANO_HOME/config/network/devnet/shelley-genesis.json\""
+                : ":";
+        return """
+                #!/usr/bin/env bash
+                set -euo pipefail
+                node="${1:?Usage: start NODE_INDEX}"
+                root="$(cd "$(dirname "$0")/.." && pwd)"
+                : "${YANO_HOME:?Set YANO_HOME to the extracted Yano distribution}"
+                %s
+                exec "$root/scripts/start-node" "$node"
+                """.formatted(prepare);
     }
 
     private static String hostStopScript() {
@@ -452,13 +569,29 @@ final class AppChainProjectRenderer {
     private static String compose(AppChainProjectModel.Resolution resolution, int members) {
         StringBuilder output = new StringBuilder(GENERATED).append("services:\n");
         String network = resolution.blueprint().spec().network();
+        AppChainProjectModel.Topology topology = resolution.blueprint().spec().chains()
+                .getFirst().topology();
+        int httpBase = topology.httpPortBase() == null ? 8080 : topology.httpPortBase();
+        int serverBase = topology.serverPortBase() == null ? 13337 : topology.serverPortBase();
         for (int index = 0; index < members; index++) {
             output.append("  node").append(index).append(":\n")
-                    .append("    image: ${YANO_IMAGE:?Set YANO_IMAGE}\n")
+                    .append("    image: ${YANO_IMAGE:?Set YANO_IMAGE}\n");
+            if (index > 0) {
+                output.append("    depends_on:\n")
+                        .append("      node0:\n")
+                        .append("        condition: service_healthy\n");
+            }
+            output
                     .append("    env_file: [./secrets/node").append(index).append(".env]\n")
                     .append("    environment:\n")
-                    .append("      YANO_PROFILE: ").append(network).append(",appchain\n")
-                    .append("      QUARKUS_CONFIG_LOCATIONS: ")
+                    .append("      YANO_PROFILE: ").append(network).append("\n");
+            if ("devnet".equals(network)) {
+                output.append("      YANO_APPCHAIN_GENESIS_FILE: ")
+                        .append("/project/runtime/shelley-genesis.json\n")
+                        .append("      YANO_APPCHAIN_GENESIS_TIMESTAMP: ")
+                        .append("${YANO_APPCHAIN_GENESIS_TIMESTAMP:?Run scripts/start}\n");
+            }
+            output.append("      QUARKUS_CONFIG_LOCATIONS: ")
                     .append("/project/config/shared-consensus.properties,")
                     .append("/project/config/nodes/node").append(index).append(".properties\n")
                     .append("    volumes:\n")
@@ -466,8 +599,14 @@ final class AppChainProjectRenderer {
                     .append("      - node").append(index).append("-data:/project/data/node")
                     .append(index).append("\n")
                     .append("    ports:\n")
-                    .append("      - \"").append(8080 + index).append(":8080\"\n")
-                    .append("      - \"").append(13337 + index).append(":13337\"\n");
+                    .append("      - \"").append(httpBase + index).append(":8080\"\n")
+                    .append("      - \"").append(serverBase + index).append(":13337\"\n")
+                    .append("    healthcheck:\n")
+                    .append("      test: [\"CMD\", \"curl\", \"-fsS\", ")
+                    .append("\"http://localhost:8080/q/health/ready\"]\n")
+                    .append("      interval: 2s\n")
+                    .append("      timeout: 2s\n")
+                    .append("      retries: 90\n");
         }
         output.append("volumes:\n");
         for (int index = 0; index < members; index++) {
@@ -476,14 +615,36 @@ final class AppChainProjectRenderer {
         return output.toString();
     }
 
-    private static String composeStartScript() {
+    private static String composeStartScript(AppChainProjectModel.Resolution resolution) {
+        String prepare = "devnet".equals(resolution.blueprint().spec().network())
+                ? """
+                : "${YANO_IMAGE:?Set YANO_IMAGE}"
+                mkdir -p "$root/runtime"
+                base="$root/runtime/shelley-genesis.base.json"
+                if [ ! -f "$root/runtime/shelley-genesis.json" ]; then
+                  docker run --rm --entrypoint cat "$YANO_IMAGE" \
+                    /app/default-config/network/devnet/shelley-genesis.json >"$base"
+                  "$root/scripts/prepare-devnet" "$base"
+                  rm -f "$base"
+                fi
+                export YANO_APPCHAIN_GENESIS_TIMESTAMP="$(python3 - \
+                  "$root/runtime/shelley-genesis.json" <<'PY'
+                import datetime, json, sys
+                with open(sys.argv[1], encoding="utf-8") as stream:
+                    value = json.load(stream)["systemStart"]
+                parsed = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+                print(int(parsed.timestamp() * 1000))
+                PY
+                )"
+                """ : "";
         return """
                 #!/usr/bin/env bash
                 set -euo pipefail
                 root="$(cd "$(dirname "$0")/.." && pwd)"
+                %s
                 cd "$root"
                 exec docker compose up -d
-                """;
+                """.formatted(prepare);
     }
 
     private static String composeStopScript() {

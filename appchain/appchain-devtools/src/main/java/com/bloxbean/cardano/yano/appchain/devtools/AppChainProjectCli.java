@@ -35,6 +35,8 @@ final class AppChainProjectCli {
               --sequencing <mode>           fixed or rotating
               --runtime <type>              jvm or native
               --deployment <target>         host or docker-compose
+              --http-port-base <port>        same-machine HTTP base (default 8080)
+              --server-port-base <port>      same-machine n2n base (default 13337)
               --capability <id>             repeatable additive capability
               --answer <name=value>         repeatable non-secret recipe input
               --name <project-name>         safe project identifier
@@ -163,7 +165,8 @@ final class AppChainProjectCli {
                                 options.answers(),
                                 new AppChainProjectModel.Topology(
                                         options.members(), options.memberKeys(), options.nodeHosts(),
-                                        options.finality(), options.sequencing(), "static")))));
+                                        options.finality(), options.sequencing(), "static",
+                                        options.httpPortBase(), options.serverPortBase())))));
         AppChainProjectModel.Lock lock = renderer.initialize(output, blueprint);
         writeResult(options.format(), "PROJECT_INITIALIZED", output, lock);
         return AppChainDevtoolsCli.EXIT_OK;
@@ -263,6 +266,8 @@ final class AppChainProjectCli {
                 valueOr(options.deployment(), "host"),
                 options.capabilities(),
                 options.answers(),
+                options.httpPortBase(),
+                options.serverPortBase(),
                 options.name(),
                 options.chainId(),
                 options.yanoVersion(),
@@ -298,6 +303,8 @@ final class AppChainProjectCli {
         List<String> nodeHosts = new ArrayList<>();
         List<String> capabilities = new ArrayList<>();
         Map<String, String> answers = new LinkedHashMap<>();
+        Integer httpPortBase = null;
+        Integer serverPortBase = null;
         for (int cursor = 0; cursor < arguments.length; cursor++) {
             String argument = arguments[cursor];
             switch (argument) {
@@ -315,6 +322,14 @@ final class AppChainProjectCli {
                 case "--deployment" -> deployment = once(deployment, value(arguments, ++cursor, argument), argument);
                 case "--capability" -> capabilities.add(value(arguments, ++cursor, argument));
                 case "--answer" -> parseAnswer(value(arguments, ++cursor, argument), answers);
+                case "--http-port-base" -> {
+                    if (httpPortBase != null) throw new Usage(argument + " may be specified once");
+                    httpPortBase = parsePort(value(arguments, ++cursor, argument), argument);
+                }
+                case "--server-port-base" -> {
+                    if (serverPortBase != null) throw new Usage(argument + " may be specified once");
+                    serverPortBase = parsePort(value(arguments, ++cursor, argument), argument);
+                }
                 case "--name" -> name = once(name, value(arguments, ++cursor, argument), argument);
                 case "--chain-id" -> chainId = once(chainId, value(arguments, ++cursor, argument), argument);
                 case "--yano-version" -> yanoVersion = once(
@@ -332,6 +347,7 @@ final class AppChainProjectCli {
                 List.copyOf(nodeHosts),
                 finality, sequencing, runtime, deployment, List.copyOf(capabilities),
                 Map.copyOf(answers),
+                httpPortBase, serverPortBase,
                 name, chainId, yanoVersion, output, nonInteractive, format);
     }
 
@@ -455,6 +471,16 @@ final class AppChainProjectCli {
         }
     }
 
+    private static int parsePort(String value, String option) {
+        try {
+            int port = Integer.parseInt(value);
+            if (port < 1024 || port > 65535) throw new NumberFormatException();
+            return port;
+        } catch (NumberFormatException failure) {
+            throw new Usage(option + " must be an integer in [1024, 65535]");
+        }
+    }
+
     private static String once(String prior, String value, String option) {
         if (prior != null) throw new Usage(option + " may be specified once");
         return value;
@@ -532,6 +558,8 @@ final class AppChainProjectCli {
             String deployment,
             List<String> capabilities,
             Map<String, String> answers,
+            Integer httpPortBase,
+            Integer serverPortBase,
             String name,
             String chainId,
             String yanoVersion,

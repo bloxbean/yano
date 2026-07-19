@@ -84,16 +84,27 @@ publishing {
 
 def packagedCliInstall = tasks.named('installDist')
 def packagedCliZip = tasks.named('distZip')
+def finalYanoZip = project(':app').tasks.named('yanoDistZip', Zip)
 
 tasks.named('test') {
-    dependsOn packagedCliInstall, packagedCliZip
+    dependsOn packagedCliInstall, packagedCliZip, finalYanoZip
     doFirst {
         systemProperty 'yano.test.repo-root', rootProject.projectDir.absolutePath
         systemProperty 'yano.test.appchain-cli-install-dir',
                 layout.buildDirectory.dir('install/yano-devtools').get().asFile.absolutePath
         systemProperty 'yano.test.appchain-cli-dist-zip',
                 packagedCliZip.get().archiveFile.get().asFile.absolutePath
+        systemProperty 'yano.test.final-yano-dist-zip',
+                finalYanoZip.get().archiveFile.get().asFile.absolutePath
     }
+}
+
+tasks.register('finalDistributionRuntimeAcceptance', Exec) {
+    group = 'verification'
+    description = 'Runs a generated two-node app-chain project from the final Yano archive.'
+    dependsOn finalYanoZip
+    commandLine 'bash', file('src/test/scripts/final-distribution-runtime-acceptance.sh'),
+            finalYanoZip.flatMap { it.archiveFile }.get().asFile
 }
 
 tasks.register('verifySmallRyeConfigRuntimeParity') {

@@ -59,6 +59,9 @@ class AppChainProjectTest {
                         golden("appchain-first-party-metadata.json"))
                 .containsEntry("releaseIndex",
                         golden("appchain-release-capability-index.json"));
+        assertThat(catalog.releaseIndex().schemaStatus()).isEqualTo("alpha");
+        assertThat(catalog.releaseIndex().stabilizationDecision())
+                .isEqualTo("RETAIN_V1ALPHA1");
     }
 
     @Test
@@ -128,6 +131,7 @@ class AppChainProjectTest {
                         "appchain", "init", "--non-interactive",
                         "--recipe", "owned-registry", "--network", "devnet",
                         "--members", "3", "--output", nonInteractive.toString(),
+                        "--http-port-base", "18080", "--server-port-base", "23337",
                         "--format", "json"
                 }, new PrintWriter(output), new PrintWriter(error));
 
@@ -140,7 +144,9 @@ class AppChainProjectTest {
         assertThat(Files.readString(
                 nonInteractive.resolve("config/nodes/node1.properties")))
                 .contains("yano.block-producer.enabled=false")
-                .contains("yano.remote.host=127.0.0.1");
+                .contains("yano.remote.host=127.0.0.1")
+                .contains("quarkus.http.port=18081")
+                .contains("yano.server.port=23338");
 
         output.getBuffer().setLength(0);
         int render = cli.run(new String[]{"render", nonInteractive.toString()},
@@ -185,11 +191,18 @@ class AppChainProjectTest {
                     assertThat(lock.deployment()).isEqualTo(deployment);
                     assertThat(lock.artifacts()).isNotEmpty();
                     assertThat(project.resolve("scripts/start")).isExecutable();
+                    assertShellSyntax(project.resolve("scripts/start"));
+                    assertShellSyntax(project.resolve("scripts/stop"));
+                    assertShellSyntax(project.resolve("scripts/status"));
+                    if (Files.exists(project.resolve("scripts/start-node"))) {
+                        assertShellSyntax(project.resolve("scripts/start-node"));
+                    }
                     assertThat(project.resolve("compose.yaml").toFile().exists())
                             .isEqualTo("docker-compose".equals(deployment));
                     if ("docker-compose".equals(deployment)) {
                         assertThat(Files.readString(project.resolve("compose.yaml")))
-                                .contains("YANO_PROFILE: preprod,appchain")
+                                .contains("YANO_PROFILE: preprod")
+                                .doesNotContain("YANO_PROFILE: preprod,appchain")
                                 .doesNotContain("entrypoint:");
                         assertThat(Files.readString(
                                 project.resolve("config/nodes/node0.properties")))
@@ -198,6 +211,15 @@ class AppChainProjectTest {
                 }
             }
         }
+    }
+
+    private static void assertShellSyntax(Path script) throws Exception {
+        Process process = new ProcessBuilder("bash", "-n", script.toString())
+                .redirectErrorStream(true)
+                .start();
+        String diagnostics = new String(process.getInputStream().readAllBytes(),
+                StandardCharsets.UTF_8);
+        assertThat(process.waitFor()).as("%s: %s", script, diagnostics).isZero();
     }
 
     @Test
@@ -220,6 +242,9 @@ class AppChainProjectTest {
         assertThat(Files.readString(project.resolve("config/nodes/node2.properties")))
                 .contains("yano.app-chain.chains[0].peers=node-a.example:13337,node-b.example:13337")
                 .contains("quarkus.http.port=8080");
+        assertThat(Files.readString(project.resolve("scripts/start")))
+                .contains("Usage: start NODE_INDEX")
+                .doesNotContain("for node in");
     }
 
     @Test
@@ -336,7 +361,7 @@ class AppChainProjectTest {
                                 "product-evidence", recipe, List.of(), Map.of(),
                                 new AppChainProjectModel.Topology(
                                         3, memberKeys, List.of(),
-                                        "two-thirds", sequencing, "static")))));
+                                        "two-thirds", sequencing, "static", null, null)))));
     }
 
     private static AppChainProjectModel.Blueprint withCapabilities(
@@ -374,7 +399,8 @@ class AppChainProjectTest {
         AppChainProjectModel.Topology topology = chain.topology();
         AppChainProjectModel.Topology changedTopology = new AppChainProjectModel.Topology(
                 topology.members(), topology.memberKeys(), hosts, topology.finality(),
-                topology.sequencing(), topology.membership());
+                topology.sequencing(), topology.membership(), topology.httpPortBase(),
+                topology.serverPortBase());
         AppChainProjectModel.ChainIntent changedChain = new AppChainProjectModel.ChainIntent(
                 chain.chainId(), chain.recipe(), chain.capabilities(), chain.answers(), changedTopology);
         return new AppChainProjectModel.Blueprint(
