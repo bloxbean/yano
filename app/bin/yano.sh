@@ -8,6 +8,8 @@
 #   ./yano.sh start:preprod,relay  # Preprod with relay upstream profile
 #   ./yano.sh start:mainnet        # Mainnet relay alias
 #   ./yano.sh start:<profiles>     # Custom comma-separated Quarkus profiles
+#   ./yano.sh appchain config ...  # App-chain configuration tooling
+#   ./yano.sh appchain cluster ... # Local cluster launcher
 #
 
 set -e
@@ -17,7 +19,7 @@ cd "$SCRIPT_DIR"
 
 usage() {
     cat <<EOF
-Usage: ./yano.sh [start|start:<profiles>|help] [args...]
+Usage: ./yano.sh [start|start:<profiles>|appchain|help] [args...]
 
 Examples:
   ./yano.sh start
@@ -28,11 +30,80 @@ Examples:
   ./yano.sh start:sanchonet
   ./yano.sh start:devnet
   ./yano.sh start:mydevnet
+  ./yano.sh appchain config validate --mode template \\
+      --template-contract builtin:cluster config/application-appchain.yml
+  ./yano.sh appchain config explain block.max-bytes
+  ./yano.sh appchain cluster start 3
 
 Environment:
   JAVA_OPTS        JVM options for jar distribution only
   YANO_EXTRA_ARGS  Extra runtime args for jar and native distributions
+  YANO_APPCHAIN_CLI  Optional path to a version-matched yano-appchain launcher
 EOF
+}
+
+appchain_cli() {
+    local configured="${YANO_APPCHAIN_CLI:-}"
+    local candidate
+    local found=""
+
+    if [ -n "$configured" ]; then
+        if [ ! -x "$configured" ]; then
+            echo "Error: YANO_APPCHAIN_CLI is not executable: $configured" >&2
+            exit 1
+        fi
+        printf '%s\n' "$configured"
+        return
+    fi
+
+    candidate="$SCRIPT_DIR/tools/yano-appchain/bin/yano-appchain"
+    if [ -x "$candidate" ]; then
+        printf '%s\n' "$candidate"
+        return
+    fi
+    candidate="$SCRIPT_DIR/yano-devtools/bin/yano-appchain"
+    if [ -x "$candidate" ]; then
+        printf '%s\n' "$candidate"
+        return
+    fi
+
+    for candidate in "$SCRIPT_DIR"/yano-devtools-*/bin/yano-appchain; do
+        if [ -x "$candidate" ]; then
+            if [ -n "$found" ] && [ "$found" != "$candidate" ]; then
+                echo "Error: Multiple yano-devtools installations found." >&2
+                echo "Set YANO_APPCHAIN_CLI to the version-matched launcher." >&2
+                exit 1
+            fi
+            found="$candidate"
+        fi
+    done
+    if [ -z "$found" ]; then
+        echo "Error: App-chain developer tools were not found." >&2
+        echo "The JVM distribution includes them under tools/yano-appchain." >&2
+        echo "For a native distribution, extract the version-matched yano-devtools archive" >&2
+        echo "beside yano.sh or set YANO_APPCHAIN_CLI." >&2
+        exit 1
+    fi
+    printf '%s\n' "$found"
+}
+
+dispatch_appchain() {
+    shift
+    if [ "$#" -eq 0 ]; then
+        echo "Usage: ./yano.sh appchain {config|cluster} ..." >&2
+        exit 64
+    fi
+    if [ "$1" = "cluster" ]; then
+        shift
+        if [ ! -x "$SCRIPT_DIR/appchain-cluster/cluster.sh" ]; then
+            echo "Error: appchain-cluster/cluster.sh is missing or not executable." >&2
+            exit 1
+        fi
+        exec "$SCRIPT_DIR/appchain-cluster/cluster.sh" "$@"
+    fi
+    local cli
+    cli="$(appchain_cli)"
+    exec "$cli" "$@"
 }
 
 validate_profile_name() {
@@ -68,6 +139,10 @@ validate_profile_list() {
 if [ "$#" -eq 0 ]; then
     usage
     exit 0
+fi
+
+if [ "$1" = "appchain" ]; then
+    dispatch_appchain "$@"
 fi
 
 # Parse profile from arguments

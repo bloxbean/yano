@@ -25,6 +25,8 @@ include 'epoch-export'
 // App-chain modules live under appchain/ (plugins under appchain/extensions/);
 // project names are kept flat so artifact ids stay yano-appchain-*.
 include 'appchain-stdlib'
+include 'appchain-config'
+include 'appchain-devtools'
 include 'appchain-composite-contracts'
 include 'appchain-composite-client'
 include 'appchain-composite'
@@ -46,6 +48,8 @@ include 'appchain-spring-boot-starter'
 include 'appchain-anchor-onchain'
 include 'appchain-plugin-conformance'
 project(':appchain-anchor-onchain').projectDir = file('appchain/onchain/appchain-anchor-onchain')
+project(':appchain-config').projectDir = file('appchain/appchain-config')
+project(':appchain-devtools').projectDir = file('appchain/appchain-devtools')
 project(':appchain-stdlib').projectDir = file('appchain/appchain-stdlib')
 project(':appchain-composite-contracts').projectDir =
         file('appchain/appchain-composite-contracts')

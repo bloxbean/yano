@@ -1,0 +1,77 @@
+plugins {
+    id 'application'
+}
+
+dependencies {
+    implementation(project(':appchain-config')) {
+        transitive = false
+    }
+    runtimeOnly(project(':core-api')) {
+        transitive = false
+    }
+    implementation libs.jackson.databind
+    implementation libs.jackson.dataformat.yaml
+}
+
+application {
+    applicationName = 'yano-appchain'
+    mainClass = 'com.bloxbean.cardano.yano.appchain.devtools.AppChainDevtoolsCli'
+}
+
+def generatedMetadataDirectory = layout.buildDirectory.dir('generated/appchain-metadata')
+
+distributions {
+    main {
+        distributionBaseName = 'yano-devtools'
+        contents {
+            from('README.md')
+            from(generatedMetadataDirectory) {
+                into 'metadata'
+            }
+        }
+    }
+}
+
+tasks.register('generateAppChainMetadata', JavaExec) {
+    dependsOn tasks.named('compileJava')
+    classpath = files(sourceSets.main.output.classesDirs) + configurations.runtimeClasspath
+    mainClass = 'com.bloxbean.cardano.yano.appchain.devtools.AppChainMetadataExportMain'
+    args generatedMetadataDirectory.get().asFile.absolutePath
+    inputs.files(sourceSets.main.allJava)
+    outputs.dir(generatedMetadataDirectory)
+}
+
+tasks.named('processResources') {
+    dependsOn tasks.named('generateAppChainMetadata')
+    from(generatedMetadataDirectory)
+}
+
+java {
+    sourceCompatibility = 25
+    targetCompatibility = 25
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            pom {
+                name = 'Yano App-Chain Developer Tools'
+                description = 'Offline app-chain configuration validation, explanation, and project generation CLI'
+            }
+        }
+    }
+}
+
+def packagedCliInstall = tasks.named('installDist')
+def packagedCliZip = tasks.named('distZip')
+
+tasks.named('test') {
+    dependsOn packagedCliInstall, packagedCliZip
+    doFirst {
+        systemProperty 'yano.test.repo-root', rootProject.projectDir.absolutePath
+        systemProperty 'yano.test.appchain-cli-install-dir',
+                layout.buildDirectory.dir('install/yano-devtools').get().asFile.absolutePath
+        systemProperty 'yano.test.appchain-cli-dist-zip',
+                packagedCliZip.get().archiveFile.get().asFile.absolutePath
+    }
+}

@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 1,
+  "id": "yano-appchain-cluster-v1",
+  "suppliedProperties": [
+    {
+      "propertyPattern": "yano.app-chain.chains[*].signing-key",
+      "suppliedBy": "appchain-cluster/member-identity",
+      "requiredBeforeStartup": true,
+      "description": "Per-node app-chain member signing identity"
+    },
+    {
+      "propertyPattern": "yano.app-chain.chains[*].members",
+      "suppliedBy": "appchain-cluster/topology",
+      "requiredBeforeStartup": true,
+      "description": "Shared app-chain member public keys"
+    },
+    {
+      "propertyPattern": "yano.app-chain.chains[*].threshold",
+      "suppliedBy": "appchain-cluster/topology",
+      "requiredBeforeStartup": true,
+      "description": "Finality threshold derived from the cluster size"
+    },
+    {
+      "propertyPattern": "yano.app-chain.chains[*].peers",
+      "suppliedBy": "appchain-cluster/topology",
+      "requiredBeforeStartup": true,
+      "description": "Per-node app-message peer endpoints"
+    },
+    {
+      "propertyPattern": "yano.app-chain.chains[*].sequencer.proposer",
+      "suppliedBy": "appchain-cluster/sequencer",
+      "requiredBeforeStartup": false,
+      "description": "Fixed proposer identity when rotating sequencing is not selected"
+    },
+    {
+      "propertyPattern": "yano.app-chain.chains[*].anchor.enabled",
+      "suppliedBy": "appchain-cluster/anchor-option",
+      "requiredBeforeStartup": false,
+      "description": "Optional command-line override enabling L1 anchoring"
+    },
+    {
+      "propertyPattern": "yano.app-chain.chains[*].anchor.mode",
+      "suppliedBy": "appchain-cluster/anchor-option",
+      "requiredBeforeStartup": false,
+      "description": "Optional L1 anchor mode"
+    },
+    {
+      "propertyPattern": "yano.app-chain.chains[*].anchor.signing-key",
+      "suppliedBy": "appchain-cluster/anchor-identity",
+      "requiredBeforeStartup": false,
+      "description": "Per-node anchor identity when anchoring is enabled"
+    },
+    {
+      "propertyPattern": "yano.app-chain.chains[*].anchor.every-blocks",
+      "suppliedBy": "appchain-cluster/anchor-option",
+      "requiredBeforeStartup": false,
+      "description": "Optional anchor cadence override"
+    }
+  ]
+}

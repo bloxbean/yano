@@ -64,6 +64,7 @@ reload4j="ch.qos.reload4j:reload4j:1.2.22"
 jackson-bom = { module = "com.fasterxml.jackson:jackson-bom", version.ref = "jackson" }
 jackson-databind = { module = "com.fasterxml.jackson.core:jackson-databind", version.ref = "jackson" }
 jackson-dataformat-cbor = { module = "com.fasterxml.jackson.dataformat:jackson-dataformat-cbor", version.ref = "jackson" }
+jackson-dataformat-yaml = { module = "com.fasterxml.jackson.dataformat:jackson-dataformat-yaml", version.ref = "jackson" }
 kafka-clients = "org.apache.kafka:kafka-clients:4.3.1"
 snappy-java = "org.xerial.snappy:snappy-java:1.1.10.8"
 lz4-java = "at.yawk.lz4:lz4-java:1.10.2"

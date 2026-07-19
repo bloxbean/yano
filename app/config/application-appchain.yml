@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=./schema/appchain-runtime.schema.json
 # =============================================================================
 # App-chain cluster demo config  (external — lives in app/config, NOT bundled
 # in the jar). Activated with the `appchain` Quarkus profile, e.g.
