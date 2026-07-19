@@ -1,8 +1,8 @@
-# ADR-DX-0001 v10: Unified App-Chain Onboarding, Configuration, and Lifecycle
+# ADR-DX-0001 v11: Unified App-Chain Onboarding, Configuration, and Lifecycle
 
 ## Status
 
-Proposed — implementation review draft v10
+Proposed — implementation review draft v11
 
 This consolidated review draft incorporates the findings from the completed
 review rounds. It is the single proposal to use for subsequent review and
@@ -19,6 +19,16 @@ profile-evolution rules.
 
 ## Review history
 
+- **v11:** Records the M4 App-Chain Studio boundary: a separate, static
+  `appchain-studio` module; release-pinned schema/catalog assets; progressive
+  recipe/topology/runtime selection; safe blueprint preview/download; an exact
+  deep-link allowlist; strict CSP and no telemetry, persistence, or secret
+  inputs; tutorial initializer links verified against the release catalog; and
+  final JVM/native archive packaging. A downloaded blueprint can be rendered
+  from a directory containing only `appchain.yaml`; the CLI creates the first
+  lock and remains the only project resolver. Cross-frontend conformance runs
+  a Studio-produced blueprint through the final packaged CLI. Complete browser
+  project generation and optional client codestarts remain deferred.
 - **v10:** Records the M3 packaged acceptance boundary. The final JVM archive
   generates and project-validates every advertised recipe/runtime/deployment
   combination. A separate final-archive runtime gate starts a generated
@@ -1644,6 +1654,22 @@ real third-party descriptor compatibility have produced usage evidence.
 - evaluate full browser generation only under the shared-engine/parity rule.
 
 Optional Java/Spring client codestarts may land in this milestone.
+
+The implemented M4 Studio is deliberately a blueprint frontend, not a second
+resolver. It is a separately built static artifact and is embedded under
+`studio/` in JVM and Unix-like native distributions. It loads the exact
+release-pinned recipe, capability, schema, and release-index assets shipped
+beside it. Only an explicit non-secret intent allowlist can enter a URL or
+download; no private-key, credential, telemetry, persistence, remote template,
+or executable-plugin surface exists in the browser.
+
+Every tutorial initializer link is decoded and resolved against the embedded
+release catalogs in CI. A second conformance gate generates `appchain.yaml`
+with the packaged Studio code and materializes it through the final packaged
+CLI. `render` accepts an initial directory only when it contains exactly that
+blueprint; after it creates the first lock, normal digest ownership and
+no-silent-overwrite rules apply. Browser-side lock or complete-project
+generation remains out of scope until a shared resolver engine exists.
 
 ### M5 — live drift and runtime strictness
 

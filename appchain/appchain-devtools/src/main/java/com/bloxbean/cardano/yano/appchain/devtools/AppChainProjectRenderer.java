@@ -71,8 +71,14 @@ final class AppChainProjectRenderer {
         byte[] blueprintBytes = boundedFile(blueprintPath, MAX_BLUEPRINT_BYTES, "blueprint");
         AppChainProjectModel.Blueprint blueprint = yaml.readValue(
                 blueprintBytes, AppChainProjectModel.Blueprint.class);
-        AppChainProjectModel.Lock prior = readPriorLock(root);
-        verifyGeneratedFiles(root, prior.generatedFiles());
+        Path lockPath = root.resolve(LOCK_FILE);
+        AppChainProjectModel.Lock prior = Files.isRegularFile(lockPath)
+                ? readPriorLock(root) : null;
+        if (prior == null) {
+            requireBlueprintOnly(root);
+        } else {
+            verifyGeneratedFiles(root, prior.generatedFiles());
+        }
         return render(root, blueprint, prior, blueprintBytes);
     }
 
@@ -771,6 +777,19 @@ final class AppChainProjectRenderer {
         try (var entries = Files.list(root)) {
             if (entries.findAny().isPresent()) {
                 throw new IOException("Project output directory is not empty");
+            }
+        }
+    }
+
+    private static void requireBlueprintOnly(Path root) throws IOException {
+        try (var entries = Files.list(root)) {
+            List<Path> unexpected = entries
+                    .filter(path -> !BLUEPRINT_FILE.equals(path.getFileName().toString()))
+                    .limit(2)
+                    .toList();
+            if (!unexpected.isEmpty()) {
+                throw new IOException("A blueprint without a lock can only be rendered in a "
+                        + "directory containing appchain.yaml");
             }
         }
     }

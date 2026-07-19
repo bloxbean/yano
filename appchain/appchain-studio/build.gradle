@@ -1,0 +1,38 @@
+plugins {
+    id 'base'
+}
+
+def studioOutput = layout.buildDirectory.dir('studio')
+def metadataRoot = project(':appchain-devtools').file(
+        'src/main/resources/appchain-dx/v1alpha1')
+
+tasks.register('prepareStudio', Sync) {
+    from('src/main/web')
+    from(metadataRoot) {
+        into 'assets'
+        include 'appchain-blueprint.schema.json',
+                'appchain-capability-catalog.json',
+                'appchain-recipe-catalog.json',
+                'appchain-release-capability-index.json'
+    }
+    into studioOutput
+}
+
+tasks.register('studioZip', Zip) {
+    dependsOn tasks.named('prepareStudio')
+    archiveFileName = "yano-appchain-studio-${project.version}.zip"
+    destinationDirectory = layout.buildDirectory.dir('distributions')
+    from(studioOutput)
+}
+
+tasks.register('testStudio', Exec) {
+    commandLine 'node', '--test', file('src/test/studio.test.mjs')
+}
+
+tasks.named('assemble') {
+    dependsOn tasks.named('studioZip')
+}
+
+tasks.named('check') {
+    dependsOn tasks.named('testStudio')
+}

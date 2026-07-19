@@ -1886,6 +1886,7 @@ tasks.register('yanoDistZip', Zip) {
     dependsOn 'quarkusBuild', project(':plugin-catalog').tasks.named('installDist'),
             project(':appchain-devtools').tasks.named('installDist'),
             project(':appchain-devtools').tasks.named('generateAppChainMetadata'),
+            project(':appchain-studio').tasks.named('prepareStudio'),
             tasks.named('verifyAppChainReleaseCapabilityIndex')
     group = 'distribution'
     description = 'Creates a distributable zip with the uber-jar, config, and start script'
@@ -1952,6 +1953,9 @@ tasks.register('yanoDistZip', Zip) {
                 into 'bin'
                 filePermissions { unix('755') }
             }
+        }
+        from(project(':appchain-studio').layout.buildDirectory.dir('studio')) {
+            into 'studio'
         }
     }
 }
@@ -2449,6 +2453,7 @@ gradle.taskGraph.whenReady { graph ->
 tasks.register('yanoNativeDistZip', Zip) {
     dependsOn 'quarkusBuild',
             project(':appchain-devtools').tasks.named('generateAppChainMetadata'),
+            project(':appchain-studio').tasks.named('prepareStudio'),
             tasks.named('verifyAppChainReleaseCapabilityIndex')
     group = 'distribution'
     description = 'Builds the native binary and creates a distributable zip'
@@ -2494,6 +2499,9 @@ tasks.register('yanoNativeDistZip', Zip) {
                 'generated/appchain-metadata/appchain-dx/v1alpha1/'
                         + 'appchain-release-capability-index.json')) {
             into 'config/schema'
+        }
+        from(project(':appchain-studio').layout.buildDirectory.dir('studio')) {
+            into 'studio'
         }
         // App-chain cluster demo/eval scripts (bash) — cluster.sh auto-detects
         // the release layout (native `yano` + config/ beside appchain-cluster/).

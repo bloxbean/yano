@@ -40,6 +40,10 @@ class AppChainFinalDistributionAcceptanceTest {
         assertThat(launcher).isRegularFile();
         assertThat(release.resolve("tools/yano-appchain/bin/yano-appchain")
                 .toFile().setExecutable(true)).isTrue();
+        assertThat(release.resolve("studio/index.html")).isRegularFile();
+        assertThat(release.resolve("studio/assets/appchain-release-capability-index.json"))
+                .isRegularFile();
+        assertStudioBlueprintRoundTrips(release, launcher);
 
         AppChainPropertyRegistry properties = AppChainPropertyRegistry.framework();
         AppChainProjectCatalog catalog = new AppChainProjectCatalog(properties);
@@ -87,6 +91,37 @@ class AppChainFinalDistributionAcceptanceTest {
             }
         }
         assertThat(accepted).isEqualTo(22);
+    }
+
+    private void assertStudioBlueprintRoundTrips(Path release, Path launcher) throws Exception {
+        Path project = Files.createDirectory(temporary.resolve("studio-round-trip"));
+        String script = """
+                import fs from 'node:fs';
+                const core = await import(process.argv[1]);
+                const release = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+                const intent = {
+                  recipe:'audit-log', network:'devnet', members:3,
+                  finality:'two-thirds', sequencing:'fixed', runtime:'jvm',
+                  deployment:'host', name:'studio-round-trip', chainId:'studio-round-trip'
+                };
+                process.stdout.write(core.blueprintYaml(intent, release.yanoVersion));
+                """;
+        Process node = new ProcessBuilder("node", "--input-type=module", "-e", script,
+                release.resolve("studio/studio-core.mjs").toUri().toString(),
+                release.resolve("studio/assets/appchain-release-capability-index.json").toString())
+                .start();
+        assertThat(node.waitFor(PROCESS_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS)).isTrue();
+        String yaml = new String(node.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        String error = new String(node.getErrorStream().readAllBytes(), StandardCharsets.UTF_8);
+        assertThat(node.exitValue()).as(error).isZero();
+        Files.writeString(project.resolve("appchain.yaml"), yaml, StandardCharsets.UTF_8);
+
+        Result rendered = run(launcher, List.of("appchain", "render",
+                project.toString(), "--format", "json"));
+
+        assertThat(rendered.exit()).as(rendered.error()).isZero();
+        assertThat(rendered.output()).contains("PROJECT_RENDERED");
+        assertThat(project.resolve("appchain.lock")).isRegularFile();
     }
 
     private Path extractRelease(Path archive, Path output) throws IOException {

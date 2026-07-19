@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta name="description" content="Choose Yano app-chain capabilities and export a release-pinned blueprint.">
+  <title>Yano App-Chain Studio</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="masthead">
+    <a class="brand" href="#" aria-label="Yano App-Chain Studio home">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span>Yano <strong>App-Chain Studio</strong></span>
+    </a>
+    <span id="release" class="release">Loading release…</span>
+  </header>
+
+  <main>
+    <section class="intro">
+      <p class="eyebrow">Intent first. Runtime-safe output.</p>
+      <h1>Shape an app chain<br>without memorizing config.</h1>
+      <p class="lede">Choose the outcome, topology, and operating model. Studio creates a
+        non-secret blueprint for the version-matched Yano CLI to validate and render.</p>
+      <div class="guardrail"><span aria-hidden="true">✓</span> Studio never requests or stores private keys.</div>
+    </section>
+
+    <section class="workspace" aria-label="App-chain configuration">
+      <form id="intent-form" class="config-panel" novalidate>
+        <div class="step"><span>01</span><div><h2>Application outcome</h2><p>Start from a maintained recipe.</p></div></div>
+        <label>Recipe<select id="recipe" name="recipe"></select></label>
+        <div id="recipe-note" class="note"></div>
+
+        <div class="step"><span>02</span><div><h2>Network and topology</h2><p>Define the shared trust boundary.</p></div></div>
+        <div class="field-grid">
+          <label>Network<select name="network">
+            <option value="devnet">Devnet</option><option value="preview">Preview</option>
+            <option value="preprod">Preprod</option><option value="mainnet">Mainnet</option>
+          </select></label>
+          <label>Members<input name="members" type="number" min="1" max="32" value="3"></label>
+          <label>Finality<select name="finality">
+            <option value="two-thirds">Two thirds</option><option value="majority">Majority</option>
+            <option value="all">All members</option>
+          </select></label>
+          <label>Sequencing<select name="sequencing">
+            <option value="fixed">Fixed proposer</option><option value="rotating">Rotating proposer</option>
+          </select></label>
+        </div>
+
+        <div class="step"><span>03</span><div><h2>Runtime and delivery</h2><p>Choose how operators receive it.</p></div></div>
+        <div class="field-grid">
+          <label>Runtime<select name="runtime"><option value="jvm">JVM</option><option value="native">Native</option></select></label>
+          <label>Deployment<select name="deployment"><option value="host">Host processes</option><option value="docker-compose">Docker Compose</option></select></label>
+          <label>Project name<input name="name" value="my-appchain" pattern="[a-z][a-z0-9-]{1,62}"></label>
+          <label>Chain ID<input name="chainId" value="my-appchain" pattern="[a-z][a-z0-9-]{1,62}"></label>
+        </div>
+        <label id="custom-machine-field" hidden>Custom state-machine ID
+          <input name="stateMachine" placeholder="com.example.my-machine">
+        </label>
+      </form>
+
+      <aside class="review-panel">
+        <div class="review-heading"><div><p class="eyebrow">Resolved plan</p><h2 id="plan-title">Audit log</h2></div><span id="validity" class="status">Ready</span></div>
+        <p id="trust" class="trust"></p>
+        <h3>Capabilities</h3><div id="capabilities" class="chips"></div>
+        <h3>Artifacts</h3><ul id="artifacts" class="artifact-list"></ul>
+        <div id="diagnostics" class="diagnostics" role="status" aria-live="polite"></div>
+        <details><summary>Blueprint preview</summary><pre id="preview"></pre></details>
+        <div class="actions">
+          <button id="download" type="button">Download appchain.yaml</button>
+          <button id="share" class="secondary" type="button">Copy safe link</button>
+        </div>
+        <p class="next-step">Next: place the file in an empty directory, then run
+          <code>yano.sh appchain render .</code></p>
+      </aside>
+    </section>
+  </main>
+  <footer>Release-pinned metadata · no telemetry · authoritative validation stays in the CLI</footer>
+  <script type="module" src="app.mjs"></script>
+</body>
+</html>

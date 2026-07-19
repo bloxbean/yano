@@ -1,5 +1,7 @@
 # Tutorial 7 — Connect an App Proof to Cardano
 
+[Open an evidence chain in App-Chain Studio](../../../appchain/appchain-studio/src/main/web/index.html#recipe=evidence-publication&network=devnet&members=3&finality=all&sequencing=fixed&runtime=jvm&deployment=host&name=anchored-evidence&chainId=anchored-evidence)
+
 - **Level:** intermediate to advanced
 - **Time:** about 20 minutes on local devnet
 - **Outcome:** bootstrap a threshold-enforced script anchor, advance it after app

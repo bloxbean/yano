@@ -1,5 +1,7 @@
 # Tutorial 9 — From Local Demo to a Permissioned Pilot
 
+[Open a pilot starting point in App-Chain Studio](../../../appchain/appchain-studio/src/main/web/index.html#recipe=audit-log&network=preprod&members=3&finality=all&sequencing=rotating&runtime=jvm&deployment=host&name=permissioned-pilot&chainId=permissioned-pilot)
+
 - **Level:** platform, security, and application leads
 - **Outcome:** turn a successful tutorial into an explicit deployment plan
   without inheriting local-demo assumptions.

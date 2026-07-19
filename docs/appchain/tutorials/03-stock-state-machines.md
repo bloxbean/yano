@@ -1,5 +1,7 @@
 # Tutorial 3 — Choose a Stock State Machine
 
+[Open a stock approval workflow in App-Chain Studio](../../../appchain/appchain-studio/src/main/web/index.html#recipe=approval-workflow&network=devnet&members=3&finality=two-thirds&sequencing=fixed&runtime=jvm&deployment=host&name=approval-workflow&chainId=approval-workflow)
+
 - **Level:** beginner for selection, advanced for wire integration
 - **Outcome:** choose the smallest built-in deterministic model that matches
   your application before writing a plugin.

@@ -146,6 +146,7 @@ final class AppChainProjectCatalog {
         if (index == null || !"v1alpha1".equals(index.schemaVersion())
                 || !"alpha".equals(index.schemaStatus())
                 || !"RETAIN_V1ALPHA1".equals(index.stabilizationDecision())
+                || index.yanoVersion() == null || index.yanoVersion().isBlank()
                 || !Set.copyOf(index.artifacts()).equals(artifacts)
                 || !Set.copyOf(index.recipes()).equals(recipes)
                 || !Set.copyOf(index.runtimeTypes()).equals(Set.of("jvm", "native"))

@@ -1,5 +1,7 @@
 # Tutorial 1 — Your First App Chain
 
+[Open this outcome in App-Chain Studio](../../../appchain/appchain-studio/src/main/web/index.html#recipe=audit-log&network=devnet&members=3&finality=two-thirds&sequencing=fixed&runtime=jvm&deployment=host&name=my-appchain&chainId=my-appchain)
+
 - **Level:** beginner
 - **Time:** about 15 minutes
 - **Outcome:** three members finalize the same ordered event and expose the same

@@ -1,5 +1,7 @@
 # Tutorial 2 — A Provable Shared Registry
 
+[Open this outcome in App-Chain Studio](../../../appchain/appchain-studio/src/main/web/index.html#recipe=owned-registry&network=devnet&members=3&finality=two-thirds&sequencing=fixed&runtime=jvm&deployment=host&name=shared-registry&chainId=shared-registry)
+
 - **Level:** beginner to intermediate
 - **Time:** about 15 minutes
 - **Outcome:** write owner-controlled data, demonstrate an unauthorized no-op,

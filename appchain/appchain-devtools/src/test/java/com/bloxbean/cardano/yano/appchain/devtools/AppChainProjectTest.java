@@ -120,6 +120,24 @@ class AppChainProjectTest {
     }
 
     @Test
+    void studioBlueprintCanBeMaterializedWithoutASeedLock() throws Exception {
+        AppChainPropertyRegistry properties = AppChainPropertyRegistry.framework();
+        AppChainProjectCatalog catalog = new AppChainProjectCatalog(properties);
+        AppChainProjectRenderer renderer = new AppChainProjectRenderer(
+                catalog, new AppChainProjectResolver(properties, catalog));
+        Path source = temporary.resolve("studio-source");
+        Path imported = Files.createDirectory(temporary.resolve("studio-import"));
+        renderer.initialize(source, blueprint("audit-log", "fixed", List.of()));
+        Files.copy(source.resolve("appchain.yaml"), imported.resolve("appchain.yaml"));
+
+        AppChainProjectModel.Lock lock = renderer.render(imported);
+
+        assertThat(lock.recipe()).isEqualTo("audit-log:1");
+        assertThat(imported.resolve("appchain.lock")).isRegularFile();
+        assertThat(imported.resolve("scripts/start")).isExecutable();
+    }
+
+    @Test
     void cliSupportsNonInteractiveAndGuidedInitializationAndSafeRegeneration()
             throws Exception {
         Path nonInteractive = temporary.resolve("registry-project");

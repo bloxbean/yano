@@ -1,5 +1,7 @@
 # Tutorial 8 — Extend Yano Without Forking It
 
+[Open the custom-plugin path in App-Chain Studio](../../../appchain/appchain-studio/src/main/web/index.html#recipe=custom-plugin&network=devnet&members=3&finality=two-thirds&sequencing=fixed&runtime=jvm&deployment=host&name=custom-appchain&chainId=custom-appchain&stateMachine=com.example.my-machine)
+
 - **Level:** Java application developer
 - **Time:** 30–60 minutes for a first plugin
 - **Outcome:** choose the correct extension level and deploy versioned business

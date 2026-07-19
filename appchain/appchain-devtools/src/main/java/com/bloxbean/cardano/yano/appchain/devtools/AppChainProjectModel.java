@@ -98,6 +98,7 @@ final class AppChainProjectModel {
             String schemaVersion,
             String schemaStatus,
             String stabilizationDecision,
+            String yanoVersion,
             String tooling,
             List<String> runtimeTypes,
             List<String> deploymentTargets,

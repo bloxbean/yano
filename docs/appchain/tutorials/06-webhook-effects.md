@@ -1,5 +1,7 @@
 # Tutorial 6 — Invoke an External HTTP Endpoint Safely
 
+[Open the effects-ready workflow in App-Chain Studio](../../../appchain/appchain-studio/src/main/web/index.html#recipe=role-evidence&network=devnet&members=3&finality=two-thirds&sequencing=fixed&runtime=jvm&deployment=host&name=webhook-effects&chainId=webhook-effects)
+
 - **Level:** intermediate to advanced
 - **Outcome:** understand when to use a finalized-block webhook sink versus an
   acknowledged `webhook.post` effect, and run the latter from a stock approval
