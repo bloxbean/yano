@@ -188,6 +188,7 @@ For deeper coverage of how to operate and extend Yano, see the application-level
 
 | Doc | What's inside |
 |---|---|
+| **[`docs/appchain/README.md`](docs/appchain/README.md)** | Start here for task-oriented app-chain tutorials, from a first three-member chain through evidence, domain roles, webhooks, proofs, plugins, anchoring, and pilot readiness. |
 | **[`docs/APP_CHAIN_OVERVIEW.md`](docs/APP_CHAIN_OVERVIEW.md)** | Diagram-led 10–15 minute overview of Yano App Chains: value proposition, end-to-end flow, no-code presets, effects, composite state machines, plugins, use cases, trust boundaries, and readiness. |
 | **[`docs/YANO_APP_CHAIN_OVERVIEW.pptx`](docs/YANO_APP_CHAIN_OVERVIEW.pptx)** | Editable 13-slide companion deck for a concise Yano App Chain architecture and product pitch. |
 | **[`docs/APP_CHAIN_PROFILE_GOVERNANCE.md`](docs/APP_CHAIN_PROFILE_GOVERNANCE.md)** | Operator and verifier runbook for governed composite-profile deployment, activation, recovery, and proofs. |

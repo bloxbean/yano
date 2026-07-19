@@ -434,6 +434,8 @@ plugin.
 
 ## 14. Where to go next
 
+- [Start-here tutorial hub](appchain/README.md) — choose a business outcome
+  and follow a runnable beginner-to-advanced path.
 - [App-chain user guide](APP_CHAIN_USER_GUIDE.md) — configuration, APIs,
   anchoring, effects, composite profiles, operations, and troubleshooting.
 - [App-chain tutorial](APP_CHAIN_TUTORIAL.md) — run a cluster and build a

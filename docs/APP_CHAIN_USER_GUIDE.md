@@ -1,5 +1,9 @@
 # Yano App Chain — Developer & User Guide
 
+> New to Yano app chains? Begin with the
+> [task-oriented tutorial hub](appchain/README.md), then return here for the
+> complete API, configuration, security, and operations reference.
+
 Yano can run an **app chain** next to Cardano L1: a sequenced, replicated,
 application-specific ledger maintained by a known-member, permissioned group
 of Yano nodes. The current pilot posture assumes trusted member operators;

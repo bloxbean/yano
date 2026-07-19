@@ -17,6 +17,7 @@ Don't look for feature docs here — they're centralized:
 
 | Doc | Covers |
 |---|---|
+| [`docs/appchain/README.md`](../docs/appchain/README.md) | Beginner-to-advanced start-here hub and scenario tutorials for stock machines, evidence, roles, webhooks, proofs, anchoring, plugins, and pilot planning. |
 | [`docs/APP_CHAIN_OVERVIEW.md`](../docs/APP_CHAIN_OVERVIEW.md) | A diagram-led 10–15 minute explanation of the app-chain value, end-to-end flow, components, no-code path, plugins, effects, composite state machines, use cases, and readiness. |
 | [`docs/YANO_APP_CHAIN_OVERVIEW.pptx`](../docs/YANO_APP_CHAIN_OVERVIEW.pptx) | Editable 13-slide companion deck for a concise architecture and product pitch. |
 | [`docs/APP_CHAIN_USER_GUIDE.md`](../docs/APP_CHAIN_USER_GUIDE.md) | Configuration, REST, anchoring (metadata + script), operations |

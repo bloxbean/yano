@@ -1,5 +1,8 @@
 # Yano App Chain — Use Cases & Practical Examples
 
+For runnable paths from these use cases to a local cluster, proofs, effects,
+and role-aware workflows, use the [app-chain tutorial hub](appchain/README.md).
+
 What you can build **today** with the app-chain framework, organized by how
 much you need to bring:
 

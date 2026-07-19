@@ -1,5 +1,8 @@
 # App Chain Tutorial — Default Yano Distribution
 
+> Looking for task-oriented no-code scenarios rather than a custom-plugin
+> walkthrough? Start with the [app-chain tutorial hub](appchain/README.md).
+
 A hands-on, copy-pasteable walkthrough in two parts:
 
 - **Part 1** — run an app chain with the **out-of-the-box `ordered-log`
