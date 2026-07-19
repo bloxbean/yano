@@ -1,9 +1,38 @@
 # Yano app-chain developer tools
 
 This module provides the offline `yano-appchain` CLI used by
-`yano.sh appchain config`. It supports template validation, SmallRye-backed
-resolved validation, redacted effective configuration, and property
-explanation.
+`yano.sh appchain`. It supports project initialization and deterministic
+rendering, template validation, SmallRye-backed resolved validation, redacted
+effective configuration, and property explanation.
+
+```bash
+# See the release-pinned recipes.
+./yano.sh appchain recipes
+
+# Reproducible non-interactive project generation.
+./yano.sh appchain init --non-interactive \
+  --recipe owned-registry --network preprod --members 3 \
+  --node-host node-a.example --node-host node-b.example \
+  --node-host node-c.example \
+  --deployment host --output product-registry
+
+# Edit appchain.yaml, then safely regenerate derived output. Rendering stops
+# if a generated file contains an unaccounted manual edit.
+./yano.sh appchain render product-registry
+```
+
+`init` without `--non-interactive` prompts for missing core intent. The
+`v1alpha1` blueprint is the user-owned source; `appchain.lock` pins catalog
+digests, capability expansion, consensus values, artifacts, and generated
+file digests. Private values never enter either file. If public member keys
+are not supplied with repeated `--member-key`, the lock records a bootstrap
+acknowledgement and generated secret examples remain intentionally unusable.
+
+Host and Compose targets isolate shared consensus configuration, per-node
+configuration, and secret references. Consensus-shared runtime defaults are
+always explicit, so a later runtime default change cannot silently alter a
+regenerated chain. Omit `--node-host` for a same-machine host project; provide
+exactly one host per member to render portable per-machine overlays.
 
 ```bash
 # Intentionally incomplete shared template
@@ -67,6 +96,10 @@ The build deterministically exports:
 
 - `appchain-runtime.schema.json`
 - `appchain-property-catalog.json`
+- `appchain-blueprint.schema.json`
+- `appchain-lock.schema.json`
+- `appchain-capability-catalog.json`
+- `appchain-recipe-catalog.json`
 
 The files are generated from the same registry used by validation, packaged in
 the CLI, and copied beside release configuration under `config/schema`.

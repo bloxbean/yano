@@ -52,6 +52,11 @@ class AppChainPackagedCliTest {
                 "--format", "json", "--config", resolvedConfig.toString());
         Result effective = run(launcher, "config", "effective", "--mode", "resolved",
                 "--format", "json", "--show-sources", "--config", resolvedConfig.toString());
+        Path project = temporary.resolve("packaged-project");
+        Result initialize = run(launcher, "init", "--non-interactive",
+                "--recipe", "audit-log", "--network", "devnet", "--members", "3",
+                "--output", project.toString(), "--format", "json");
+        Result render = run(launcher, "render", project.toString(), "--format", "json");
 
         assertThat(validate.exitCode()).isZero();
         assertThat(validate.output()).contains("VALID_TEMPLATE");
@@ -67,6 +72,14 @@ class AppChainPackagedCliTest {
                 .doesNotContain(signingKey)
                 .doesNotContain(temporary.toString());
         assertThat(effective.error()).isEmpty();
+        assertThat(initialize.exitCode()).isZero();
+        assertThat(initialize.output()).contains("PROJECT_INITIALIZED")
+                .doesNotContain(temporary.toString());
+        assertThat(initialize.error()).isEmpty();
+        assertThat(render.exitCode()).isZero();
+        assertThat(render.output()).contains("PROJECT_RENDERED");
+        assertThat(project.resolve("appchain.yaml")).isRegularFile();
+        assertThat(project.resolve("appchain.lock")).isRegularFile();
 
         try (ZipFile archive = new ZipFile(distribution.toFile())) {
             List<String> entries = archive.stream().map(entry -> entry.getName()).toList();
@@ -75,6 +88,10 @@ class AppChainPackagedCliTest {
                     name.endsWith("/metadata/appchain-dx/v1/appchain-runtime.schema.json"));
             assertThat(entries).anyMatch(name ->
                     name.endsWith("/metadata/appchain-dx/v1/appchain-property-catalog.json"));
+            assertThat(entries).anyMatch(name ->
+                    name.endsWith("/metadata/appchain-dx/v1alpha1/appchain-blueprint.schema.json"));
+            assertThat(entries).anyMatch(name ->
+                    name.endsWith("/metadata/appchain-dx/v1alpha1/appchain-capability-catalog.json"));
         }
     }
 

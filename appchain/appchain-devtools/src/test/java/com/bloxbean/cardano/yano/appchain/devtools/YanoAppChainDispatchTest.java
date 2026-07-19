@@ -20,7 +20,7 @@ class YanoAppChainDispatchTest {
     Path temporary;
 
     @Test
-    void unifiedLauncherDispatchesConfigAndClusterWithoutStartingNode() throws Exception {
+    void unifiedLauncherDispatchesProjectConfigAndClusterWithoutStartingNode() throws Exception {
         Path root = fakeDistribution();
         Path tool = root.resolve("tools/yano-appchain/bin/yano-appchain");
         executable(tool, "#!/usr/bin/env bash\nprintf 'tool:%s\\n' \"$*\"\n");
@@ -29,11 +29,15 @@ class YanoAppChainDispatchTest {
 
         Result config = run(root.resolve("yano.sh"),
                 "appchain", "config", "explain", "block.max-bytes");
+        Result initialize = run(root.resolve("yano.sh"),
+                "appchain", "init", "--recipe", "audit-log");
         Result clusterResult = run(root.resolve("yano.sh"),
                 "appchain", "cluster", "start", "3");
 
         assertThat(config.exit()).isZero();
         assertThat(config.output()).isEqualTo("tool:config explain block.max-bytes\n");
+        assertThat(initialize.exit()).isZero();
+        assertThat(initialize.output()).isEqualTo("tool:init --recipe audit-log\n");
         assertThat(clusterResult.exit()).isZero();
         assertThat(clusterResult.output()).isEqualTo("cluster:start 3\n");
     }

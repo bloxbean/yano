@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://yano.dev/schema/appchain-lock/v1alpha1",
+  "title": "Yano app-chain project lock",
+  "type": "object",
+  "required": ["apiVersion", "kind", "blueprintDigest", "catalogDigests", "resolvedConfigDigest", "generatedFiles"],
+  "properties": {
+    "apiVersion": {"const": "yano.bloxbean.com/v1alpha1"},
+    "kind": {"const": "AppChainLock"},
+    "blueprintDigest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "catalogDigests": {"type": "object", "additionalProperties": {"type": "string", "pattern": "^[0-9a-f]{64}$"}},
+    "resolvedConfigDigest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "generatedFiles": {"type": "object", "additionalProperties": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}
+  },
+  "additionalProperties": true
+}

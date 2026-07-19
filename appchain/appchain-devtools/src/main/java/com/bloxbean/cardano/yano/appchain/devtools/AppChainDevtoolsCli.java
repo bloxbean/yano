@@ -38,6 +38,9 @@ public final class AppChainDevtoolsCli {
                or: yano appchain config validate --mode resolved --config <file> [options]
                or: yano appchain config effective --mode resolved --config <file> [options]
                or: yano appchain config explain [options] <property>
+               or: yano appchain init [options]
+               or: yano appchain render [project-directory]
+               or: yano appchain recipes [--format text|json]
             Options:
               --config <yml|yaml|properties>             repeatable, later source wins
               --format text|json                         validate/explain
@@ -76,6 +79,28 @@ public final class AppChainDevtoolsCli {
         Objects.requireNonNull(args, "args");
         Objects.requireNonNull(out, "out");
         Objects.requireNonNull(err, "err");
+        if (projectCommand(args)) {
+            try {
+                int exit = new AppChainProjectCli(out).run(args);
+                out.flush();
+                return exit;
+            } catch (AppChainProjectCli.Usage failure) {
+                err.println(safeArgument(bounded(firstLine(failure.getMessage()))));
+                err.println(AppChainProjectCli.USAGE);
+                err.flush();
+                return EXIT_USAGE;
+            } catch (IOException failure) {
+                err.println("App-chain project could not be read or written: "
+                        + safeArgument(bounded(firstLine(failure.getMessage()))));
+                err.flush();
+                return EXIT_IO;
+            } catch (IllegalArgumentException | IllegalStateException failure) {
+                err.println("App-chain project is invalid: "
+                        + safeArgument(bounded(firstLine(failure.getMessage()))));
+                err.flush();
+                return EXIT_INVALID_CONFIG;
+            }
+        }
         if (helpRequested(args)) {
             out.println(USAGE);
             out.flush();
@@ -513,6 +538,15 @@ public final class AppChainDevtoolsCli {
             }
         }
         return false;
+    }
+
+    private static boolean projectCommand(String[] args) {
+        int cursor = args.length > 0 && "appchain".equals(args[0]) ? 1 : 0;
+        if (cursor >= args.length) return false;
+        return switch (args[cursor]) {
+            case "init", "render", "recipes" -> true;
+            default -> false;
+        };
     }
 
     private static String value(String[] args, int index, String option) {

@@ -1,0 +1,44 @@
+{
+  "schemaVersion": "v1alpha1",
+  "recipes": [
+    {
+      "id": "audit-log",
+      "version": "1",
+      "maturity": "stable",
+      "trustStatement": "First-party Yano recipe using only packaged runtime capabilities.",
+      "description": "A replicated append-only audit log.",
+      "capabilities": ["state:ordered-log", "sequencer:fixed"],
+      "recommended": {
+        "blockIntervalMs": "1000"
+      },
+      "runtimeTypes": ["jvm", "native"],
+      "deploymentTargets": ["host", "docker-compose"]
+    },
+    {
+      "id": "owned-registry",
+      "version": "1",
+      "maturity": "stable",
+      "trustStatement": "First-party Yano recipe using only packaged runtime capabilities.",
+      "description": "An owner-guarded key/value registry.",
+      "capabilities": ["state:kv-registry", "sequencer:fixed"],
+      "recommended": {
+        "blockIntervalMs": "2000"
+      },
+      "runtimeTypes": ["jvm", "native"],
+      "deploymentTargets": ["host", "docker-compose"]
+    },
+    {
+      "id": "evidence-publication",
+      "version": "1",
+      "maturity": "experimental",
+      "trustStatement": "First-party alpha recipe; connector selection is completed in a later milestone.",
+      "description": "An ordered evidence log with deterministic publication intents.",
+      "capabilities": ["state:ordered-log", "sequencer:fixed", "effects:publication"],
+      "recommended": {
+        "blockIntervalMs": "1000"
+      },
+      "runtimeTypes": ["jvm", "native"],
+      "deploymentTargets": ["host", "docker-compose"]
+    }
+  ]
+}

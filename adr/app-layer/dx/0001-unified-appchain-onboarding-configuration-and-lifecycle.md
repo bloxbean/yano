@@ -1,8 +1,8 @@
-# ADR-DX-0001 v7: Unified App-Chain Onboarding, Configuration, and Lifecycle
+# ADR-DX-0001 v8: Unified App-Chain Onboarding, Configuration, and Lifecycle
 
 ## Status
 
-Proposed — implementation review draft v7
+Proposed — implementation review draft v8
 
 This consolidated review draft incorporates the findings from the completed
 review rounds. It is the single proposal to use for subsequent review and
@@ -19,6 +19,12 @@ profile-evolution rules.
 
 ## Review history
 
+- **v8:** Records the M1 implementation boundary: versioned data-only
+  blueprint, lock, capability, and recipe contracts; a reusable
+  implication/conflict/artifact resolver; guided and non-interactive
+  initialization; deterministic host/Compose rendering; explicit
+  consensus-default materialization; bootstrap acknowledgements; secret
+  references; and digest-protected generated-file ownership.
 - **v7:** Records the M0b implementation boundary: runtime and tooling share
   the framework/effects parsers and side-effect-free startup rules; resolved
   sources use the runtime-selected SmallRye Config engine with profile,
@@ -1528,6 +1534,20 @@ sink, state-machine, observer, and custom-plugin namespaces remain `PARTIAL`.
 - enforce secret and generated-file ownership policies.
 
 M1 must not use a hard-coded recipe renderer that is replaced in M2.
+
+The implemented M1 catalogs are release-pinned data resources consumed by one
+resolver and renderer. The three initial recipes select capabilities through
+the same descriptor closure used for additive capability choices. Capability
+assignments reference property-registry suffixes; unknown properties,
+exclusive-provider collisions, implication gaps, conflicts, and unsupported
+runtime/deployment combinations fail before files are written. The renderer
+emits `v1alpha1` blueprint and lock contracts, host or Compose node overlays,
+secret-reference examples, and vendored schemas/catalogs. It records a
+bootstrap acknowledgement when public member keys are not yet known and never
+substitutes deterministic demo identities for production membership. Every
+generated non-secret file except the lock itself is digest-pinned, and
+regeneration stops on an unexpected edit. M2 extends these catalogs and
+lifecycle commands without replacing the M1 resolver/render architecture.
 
 ### M2 — full first-party contract and lifecycle tooling
 

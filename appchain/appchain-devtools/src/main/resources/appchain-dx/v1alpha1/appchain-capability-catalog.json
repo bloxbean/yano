@@ -1,0 +1,120 @@
+{
+  "schemaVersion": "v1alpha1",
+  "artifacts": [
+    {
+      "id": "yano-runtime",
+      "runtimeTypes": ["jvm", "native"],
+      "deploymentTargets": ["host", "docker-compose"]
+    },
+    {
+      "id": "appchain-stdlib",
+      "runtimeTypes": ["jvm", "native"],
+      "deploymentTargets": ["host", "docker-compose"]
+    }
+  ],
+  "capabilities": [
+    {
+      "id": "state:ordered-log",
+      "name": "Ordered audit log",
+      "category": "state",
+      "maturity": "stable",
+      "description": "Append-only ordered application messages.",
+      "provides": ["state-machine"],
+      "requires": [],
+      "implies": [],
+      "conflicts": ["state:kv-registry"],
+      "runtimeTypes": ["jvm", "native"],
+      "deploymentTargets": ["host", "docker-compose"],
+      "artifacts": ["yano-runtime", "appchain-stdlib"],
+      "properties": {
+        "state-machine": "ordered-log"
+      }
+    },
+    {
+      "id": "state:kv-registry",
+      "name": "Owned key/value registry",
+      "category": "state",
+      "maturity": "stable",
+      "description": "Owner-guarded key/value state machine.",
+      "provides": ["state-machine"],
+      "requires": [],
+      "implies": [],
+      "conflicts": ["state:ordered-log"],
+      "runtimeTypes": ["jvm", "native"],
+      "deploymentTargets": ["host", "docker-compose"],
+      "artifacts": ["yano-runtime", "appchain-stdlib"],
+      "properties": {
+        "state-machine": "kv-registry",
+        "machines.kv-registry.value-format": "utf8"
+      }
+    },
+    {
+      "id": "sequencer:fixed",
+      "name": "Fixed sequencer",
+      "category": "sequencer",
+      "maturity": "stable",
+      "description": "One declared member proposes blocks.",
+      "provides": ["sequencer"],
+      "requires": [],
+      "implies": [],
+      "conflicts": ["sequencer:rotating"],
+      "runtimeTypes": ["jvm", "native"],
+      "deploymentTargets": ["host", "docker-compose"],
+      "artifacts": ["yano-runtime"],
+      "properties": {
+        "sequencer.mode": "fixed",
+        "sequencer.proposer": "${proposer}"
+      }
+    },
+    {
+      "id": "sequencer:rotating",
+      "name": "Rotating sequencer",
+      "category": "sequencer",
+      "maturity": "experimental",
+      "description": "Proposer rotates using the L1 slot clock.",
+      "provides": ["sequencer"],
+      "requires": [],
+      "implies": ["l1:slot-feed"],
+      "conflicts": ["sequencer:fixed"],
+      "runtimeTypes": ["jvm", "native"],
+      "deploymentTargets": ["host", "docker-compose"],
+      "artifacts": ["yano-runtime"],
+      "properties": {
+        "sequencer.mode": "rotating",
+        "sequencer.window-slots": "10"
+      }
+    },
+    {
+      "id": "l1:slot-feed",
+      "name": "L1 slot feed",
+      "category": "l1",
+      "maturity": "stable",
+      "description": "Uses the local Yano L1 view for slot-aware behavior.",
+      "provides": ["l1-slot-feed"],
+      "requires": [],
+      "implies": [],
+      "conflicts": [],
+      "runtimeTypes": ["jvm", "native"],
+      "deploymentTargets": ["host", "docker-compose"],
+      "artifacts": ["yano-runtime"],
+      "properties": {}
+    },
+    {
+      "id": "effects:publication",
+      "name": "Evidence publication effects",
+      "category": "effects",
+      "maturity": "experimental",
+      "description": "Enables deterministic effect intents for publication workflows.",
+      "provides": ["effects"],
+      "requires": ["state:ordered-log"],
+      "implies": [],
+      "conflicts": [],
+      "runtimeTypes": ["jvm", "native"],
+      "deploymentTargets": ["host", "docker-compose"],
+      "artifacts": ["yano-runtime"],
+      "properties": {
+        "effects.enabled": "true"
+      }
+    }
+  ]
+}

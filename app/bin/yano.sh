@@ -33,6 +33,8 @@ Examples:
   ./yano.sh appchain config validate --mode template \\
       --template-contract builtin:cluster config/application-appchain.yml
   ./yano.sh appchain config explain block.max-bytes
+  ./yano.sh appchain init --recipe owned-registry --network devnet --members 3
+  ./yano.sh appchain render ./owned-registry
   ./yano.sh appchain cluster start 3
 
 Environment:
@@ -90,7 +92,7 @@ appchain_cli() {
 dispatch_appchain() {
     shift
     if [ "$#" -eq 0 ]; then
-        echo "Usage: ./yano.sh appchain {config|cluster} ..." >&2
+        echo "Usage: ./yano.sh appchain {init|render|recipes|config|cluster} ..." >&2
         exit 64
     fi
     if [ "$1" = "cluster" ]; then

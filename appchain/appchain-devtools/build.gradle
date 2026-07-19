@@ -6,6 +6,9 @@ dependencies {
     implementation(project(':appchain-config')) {
         transitive = false
     }
+    compileOnly(project(':core-api')) {
+        transitive = false
+    }
     runtimeOnly(project(':core-api')) {
         transitive = false
     }
@@ -40,12 +43,27 @@ tasks.register('generateAppChainMetadata', JavaExec) {
     mainClass = 'com.bloxbean.cardano.yano.appchain.devtools.AppChainMetadataExportMain'
     args generatedMetadataDirectory.get().asFile.absolutePath
     inputs.files(sourceSets.main.allJava)
+    inputs.dir('src/main/resources/appchain-dx/v1alpha1')
     outputs.dir(generatedMetadataDirectory)
+    doLast {
+        copy {
+            from('src/main/resources/appchain-dx/v1alpha1')
+            into(generatedMetadataDirectory.get().dir('appchain-dx/v1alpha1').asFile)
+        }
+    }
+}
+
+tasks.named('jar') {
+    manifest {
+        attributes('Implementation-Version': project.version)
+    }
 }
 
 tasks.named('processResources') {
     dependsOn tasks.named('generateAppChainMetadata')
-    from(generatedMetadataDirectory)
+    from(generatedMetadataDirectory) {
+        exclude 'appchain-dx/v1alpha1/**'
+    }
 }
 
 java {
