@@ -312,8 +312,61 @@ public final class AppChainPropertyRegistry {
                 "Enable broad READ/SUBMIT API-key authentication"));
         definitions.add(secret(YanoPropertyKeys.AppChain.API_KEYS,
                 "API keys and optional topic scopes", false));
+        definitions.add(runtimeParsed("effects.enabled", PropertyType.BOOLEAN, "false",
+                null, null, Set.of(), PropertyScope.CONSENSUS_SHARED,
+                "Enable deterministic effect intents and results"));
+        definitions.add(runtimeParsed("effects.max-per-block", PropertyType.INTEGER,
+                Integer.toString(AppChainEffectsConfig.DEFAULT_MAX_PER_BLOCK), 1L,
+                (long) com.bloxbean.cardano.yano.api.appchain.effects.FxKeys.MAX_EFFECTS_PER_BLOCK,
+                Set.of(), PropertyScope.CONSENSUS_SHARED,
+                "Maximum effect intents emitted in one app block"));
+        definitions.add(runtimeParsed("effects.max-payload-bytes", PropertyType.INTEGER,
+                Integer.toString(AppChainEffectsConfig.DEFAULT_MAX_PAYLOAD_BYTES), 1L,
+                (long) AppChainEffectsConfig.MAX_PAYLOAD_BYTES, Set.of(),
+                PropertyScope.CONSENSUS_SHARED, "Maximum inline effect payload size"));
+        definitions.add(runtimeParsed("effects.max-expiry-blocks", PropertyType.LONG,
+                Long.toString(AppChainEffectsConfig.DEFAULT_MAX_EXPIRY_BLOCKS), 1L, null,
+                Set.of(), PropertyScope.CONSENSUS_SHARED,
+                "Maximum requested effect expiry horizon"));
+        definitions.add(runtimeParsed("effects.result-window-blocks", PropertyType.LONG,
+                Long.toString(AppChainEffectsConfig.DEFAULT_RESULT_WINDOW_BLOCKS), 1L, null,
+                Set.of(), PropertyScope.CONSENSUS_SHARED,
+                "Deterministic result incorporation window"));
+        definitions.add(runtimeParsed("effects.default-gate", PropertyType.STRING,
+                "app-final", null, null,
+                Set.of("app-final", "l1-anchored", "zk-settled"),
+                PropertyScope.CONSENSUS_SHARED, "Default finality gate for effects"));
+        definitions.add(runtimeParsed("effects.outcome-commitment", PropertyType.STRING,
+                "per-effect", null, null, Set.of("per-effect", "per-block"),
+                PropertyScope.CONSENSUS_SHARED, "Effect outcome commitment strategy"));
+        definitions.add(runtimeParsed("effects.strict-reserved-prefix", PropertyType.BOOLEAN,
+                "true", null, null, Set.of(), PropertyScope.CONSENSUS_SHARED,
+                "Reserve the internal effect state prefix even when effects are disabled"));
+        definitions.add(new AppChainPropertyDefinition(
+                APP_CHAIN_PREFIX + "effects.result.signers", "yano-core/effects",
+                PropertyType.STRING_LIST, null, null, null, null, null,
+                AppChainConfig.MAX_MEMBERS, Set.of(), PropertyScope.CONSENSUS_SHARED,
+                ChangePolicy.NEW_CHAIN_REQUIRED, false, true,
+                ConstraintProvenance.RUNTIME_PARSER_TEST, ValidationCoverage.FULL,
+                "Optional member keys allowed to attest effect results"));
         definitions.sort(Comparator.comparing(AppChainPropertyDefinition::key));
         return List.copyOf(definitions);
+    }
+
+    private static AppChainPropertyDefinition runtimeParsed(
+            String suffix,
+            PropertyType type,
+            String defaultValue,
+            Long minimum,
+            Long maximum,
+            Set<String> allowedValues,
+            PropertyScope scope,
+            String description) {
+        return new AppChainPropertyDefinition(
+                APP_CHAIN_PREFIX + suffix, "yano-core/effects", type, defaultValue,
+                minimum, maximum, null, null, null, allowedValues, scope,
+                ChangePolicy.NEW_CHAIN_REQUIRED, false, true,
+                ConstraintProvenance.RUNTIME_PARSER_TEST, ValidationCoverage.FULL, description);
     }
 
     private static AppChainPropertyDefinition plain(

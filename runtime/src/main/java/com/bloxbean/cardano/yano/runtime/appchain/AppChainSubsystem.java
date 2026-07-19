@@ -22,6 +22,7 @@ import com.bloxbean.cardano.yano.api.appchain.sink.FinalizedStreamSinkFactory;
 import com.bloxbean.cardano.yano.api.events.AppBlockFinalizedEvent;
 import com.bloxbean.cardano.yano.api.events.AppMessageReceivedEvent;
 import com.bloxbean.cardano.yano.api.plugin.PluginActivationException;
+import com.bloxbean.cardano.yano.appchain.config.AppChainConfigSemantics;
 import com.bloxbean.cardano.yano.runtime.kernel.Subsystem;
 import com.bloxbean.cardano.yano.runtime.kernel.SubsystemHealth;
 import com.bloxbean.cardano.yano.runtime.plugins.LegacyServiceLoaderProviderRegistry;
@@ -448,6 +449,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                 : null;
         try {
             this.config = Objects.requireNonNull(config, "config");
+            Set<String> normalizedMembers = AppChainConfigSemantics.validate(config);
             this.effectsSettings = EffectsSettings.from(config);
             this.consensusProfile = effectsSettings.consensusProfile(config);
             this.protocolMagic = protocolMagic;
@@ -455,8 +457,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             this.log = Objects.requireNonNull(log, "log");
             this.signer = SignerProviders.resolveFromRegistry(
                     config.signingKeyHex(), pluginProviders, log);
-            this.group = new MemberGroup(
-                    normalizeMemberKeys(config.memberKeysHex()), config.threshold());
+            this.group = new MemberGroup(normalizedMembers, config.threshold());
             this.seenMessageIds = new SeenMessageIds(SEEN_IDS_HARD_CAP);
             this.pool = new AppMsgPool(config.poolMaxMessages());
             this.stateMachine = stateMachine != null
@@ -502,15 +503,6 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                 }
             }
             if (config.sequencingEnabled()) {
-                String proposer = config.proposerKeyHex().toLowerCase(Locale.ROOT);
-                if (!proposer.isEmpty() && !group.contains(proposer)) {
-                    throw new IllegalArgumentException(
-                            "Configured proposer " + proposer + " is not in the member list");
-                }
-                if (config.threshold() > group.size()) {
-                    throw new IllegalArgumentException("Finality threshold " + config.threshold()
-                            + " exceeds member count " + group.size());
-                }
                 // Fail fast on an unknown/misconfigured sequencer mode (008.2)
                 this.sequencerMode = resolveSequencerMode();
             } else {
@@ -846,16 +838,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     }
 
     private static Set<String> normalizeMemberKeys(Set<String> keys) {
-        Set<String> normalized = new HashSet<>();
-        for (String key : keys) {
-            String k = key.trim().toLowerCase(Locale.ROOT);
-            if (k.length() != 64)
-                throw new IllegalArgumentException("App-chain member key must be a 32-byte hex Ed25519 public key: " + key);
-            normalized.add(k);
-        }
-        if (normalized.isEmpty())
-            throw new IllegalArgumentException("App-chain member list must not be empty");
-        return Set.copyOf(normalized);
+        return AppChainConfigSemantics.normalizeMemberKeys(keys);
     }
 
     /**

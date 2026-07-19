@@ -17,7 +17,11 @@ class AppChainPropertyRegistryTest {
                 .map(AppChainPropertyDefinition::key)
                 .collect(java.util.stream.Collectors.toSet());
 
-        assertThat(registered).isEqualTo(AppChainPropertyRegistry.runtimeKeyConstants());
+        assertThat(registered).containsAll(AppChainPropertyRegistry.runtimeKeyConstants());
+        assertThat(registered).contains(
+                "yano.app-chain.effects.enabled",
+                "yano.app-chain.effects.default-gate",
+                "yano.app-chain.effects.result.signers");
     }
 
     @Test
@@ -41,6 +45,12 @@ class AppChainPropertyRegistryTest {
         assertThat(registry.dynamicNamespaces()).extracting(DynamicNamespaceDefinition::prefix)
                 .containsExactly("effects.", "machines.", "membership.", "observers.",
                         "sequencer.", "sinks.", "transport.", "zk.");
+
+        AppChainPropertyDefinition effects = registry
+                .find("effects.max-per-block").orElseThrow().definition();
+        assertThat(effects.coverage()).isEqualTo(ValidationCoverage.FULL);
+        assertThat(effects.constraintProvenance())
+                .isEqualTo(ConstraintProvenance.RUNTIME_PARSER_TEST);
     }
 
     @Test

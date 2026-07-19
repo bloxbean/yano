@@ -1,5 +1,6 @@
 dependencies {
     api project(':core-api')
+    implementation project(':appchain-config')
     api project(':plugin-catalog')
     api project(':consensus')
     api project(':p2p')

@@ -11,6 +11,7 @@ aws-crt = "0.47.3"
 # security-reviewed patch line. The Quarkus app has an additional alignment
 # rule because its enforced platform otherwise selects 2.21.2.
 jackson = "2.21.4"
+smallrye-config = "3.16.0"
 
 [libraries]
 yaci-core = { module = "com.bloxbean.cardano:yaci-core", version.ref = "yaci" }
@@ -65,6 +66,8 @@ jackson-bom = { module = "com.fasterxml.jackson:jackson-bom", version.ref = "jac
 jackson-databind = { module = "com.fasterxml.jackson.core:jackson-databind", version.ref = "jackson" }
 jackson-dataformat-cbor = { module = "com.fasterxml.jackson.dataformat:jackson-dataformat-cbor", version.ref = "jackson" }
 jackson-dataformat-yaml = { module = "com.fasterxml.jackson.dataformat:jackson-dataformat-yaml", version.ref = "jackson" }
+smallrye-config-core = { module = "io.smallrye.config:smallrye-config-core", version.ref = "smallrye-config" }
+smallrye-config-yaml = { module = "io.smallrye.config:smallrye-config-source-yaml", version.ref = "smallrye-config" }
 kafka-clients = "org.apache.kafka:kafka-clients:4.3.1"
 snappy-java = "org.xerial.snappy:snappy-java:1.1.10.8"
 lz4-java = "at.yawk.lz4:lz4-java:1.10.2"

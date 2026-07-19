@@ -11,6 +11,8 @@ dependencies {
     }
     implementation libs.jackson.databind
     implementation libs.jackson.dataformat.yaml
+    implementation libs.smallrye.config.core
+    implementation libs.smallrye.config.yaml
 }
 
 application {
@@ -74,4 +76,35 @@ tasks.named('test') {
         systemProperty 'yano.test.appchain-cli-dist-zip',
                 packagedCliZip.get().archiveFile.get().asFile.absolutePath
     }
+}
+
+tasks.register('verifySmallRyeConfigRuntimeParity') {
+    group = 'verification'
+    description = 'Verifies the devtools and Quarkus runtime select the same SmallRye Config engine'
+    doLast {
+        def selectedVersion = { configuration, moduleName ->
+            def versions = configuration.resolvedConfiguration.resolvedArtifacts
+                    .findAll { artifact ->
+                        artifact.moduleVersion.id.group == 'io.smallrye.config'
+                                && artifact.moduleVersion.id.name == moduleName
+                    }
+                    .collect { it.moduleVersion.id.version }
+                    .toSet()
+            if (versions.size() != 1) {
+                throw new GradleException("Expected one ${moduleName} version, found ${versions}")
+            }
+            versions.first()
+        }
+        def cliVersion = selectedVersion(configurations.runtimeClasspath, 'smallrye-config-core')
+        def runtimeVersion = selectedVersion(
+                project(':app').configurations.runtimeClasspath, 'smallrye-config-core')
+        if (cliVersion != runtimeVersion) {
+            throw new GradleException(
+                    "SmallRye Config mismatch: devtools=${cliVersion}, runtime=${runtimeVersion}")
+        }
+    }
+}
+
+tasks.named('check') {
+    dependsOn tasks.named('verifySmallRyeConfigRuntimeParity')
 }

@@ -37,11 +37,36 @@ class AppChainPackagedCliTest {
                 config.toString());
         Result explain = run(launcher, "config", "explain", "block.max-bytes");
 
+        String signingKey = "b".repeat(64);
+        Path resolvedConfig = temporary.resolve("resolved-appchain.yml");
+        Files.writeString(resolvedConfig, """
+                yano:
+                  app-chain:
+                    enabled: true
+                    chain-id: packaged-resolved-test
+                    signing-key: %s
+                    members: %s
+                    threshold: 1
+                """.formatted(signingKey, "a".repeat(64)), StandardCharsets.UTF_8);
+        Result resolved = run(launcher, "config", "validate", "--mode", "resolved",
+                "--format", "json", "--config", resolvedConfig.toString());
+        Result effective = run(launcher, "config", "effective", "--mode", "resolved",
+                "--format", "json", "--show-sources", "--config", resolvedConfig.toString());
+
         assertThat(validate.exitCode()).isZero();
         assertThat(validate.output()).contains("VALID_TEMPLATE");
         assertThat(validate.error()).isEmpty();
         assertThat(explain.exitCode()).isZero();
         assertThat(explain.output()).contains("PROPERTY\tyano.app-chain.block.max-bytes");
+        assertThat(resolved.exitCode()).isZero();
+        assertThat(resolved.output()).contains("\"status\":\"VALID_RESOLVED\"")
+                .doesNotContain(signingKey);
+        assertThat(resolved.error()).isEmpty();
+        assertThat(effective.exitCode()).isZero();
+        assertThat(effective.output()).contains("<redacted>", "resolved-appchain.yml")
+                .doesNotContain(signingKey)
+                .doesNotContain(temporary.toString());
+        assertThat(effective.error()).isEmpty();
 
         try (ZipFile archive = new ZipFile(distribution.toFile())) {
             List<String> entries = archive.stream().map(entry -> entry.getName()).toList();

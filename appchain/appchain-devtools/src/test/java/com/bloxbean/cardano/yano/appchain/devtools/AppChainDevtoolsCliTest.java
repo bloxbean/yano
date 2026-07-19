@@ -86,8 +86,9 @@ class AppChainDevtoolsCliTest {
         assertThat(json.readTree(firstEnum.out()).path("property").path("allowedValues"))
                 .extracting(JsonNode::asText).containsExactly("metadata", "script");
         assertThat(namespace.exit()).isZero();
-        assertThat(namespace.out()).contains("DYNAMIC_NAMESPACE\teffects.")
-                .contains("COVERAGE\tPARTIAL");
+        assertThat(namespace.out()).contains("PROPERTY\tyano.app-chain.effects.default-gate")
+                .contains("COVERAGE\tFULL")
+                .contains("PROVENANCE\tRUNTIME_PARSER_TEST");
         assertThat(unknown.exit()).isEqualTo(AppChainDevtoolsCli.EXIT_INVALID_CONFIG);
         assertThat(unknown.out()).contains("did you mean");
     }
@@ -148,7 +149,7 @@ class AppChainDevtoolsCliTest {
                 temporary.resolve("private").resolve("missing.yml").toString());
 
         assertThat(usage.exit()).isEqualTo(AppChainDevtoolsCli.EXIT_USAGE);
-        assertThat(usage.err()).contains("requires '--mode template'")
+        assertThat(usage.err()).contains("validate requires --mode")
                 .contains("Usage: yano appchain");
         assertThat(io.exit()).isEqualTo(AppChainDevtoolsCli.EXIT_IO);
         assertThat(io.err()).contains("could not be read")
@@ -167,6 +168,84 @@ class AppChainDevtoolsCliTest {
         assertThat(command.exit()).isZero();
         assertThat(root.out()).isEqualTo(config.out()).isEqualTo(command.out())
                 .contains("Usage: yano appchain config validate");
+    }
+
+    @Test
+    void resolvedValidationUsesRuntimeSemanticsWithoutPrintingSecrets() throws Exception {
+        String member = "a".repeat(64);
+        String secret = "b".repeat(64);
+        Path config = write("resolved.yml", """
+                yano:
+                  app-chain:
+                    enabled: true
+                    chain-id: orders
+                    signing-key: %s
+                    members: %s
+                    threshold: 1
+                    effects:
+                      enabled: true
+                      max-per-block: 4
+                """.formatted(secret, member));
+
+        Result result = run("config", "validate", "--mode", "resolved",
+                "--format", "json", "--config", config.toString());
+
+        assertThat(result.exit()).isZero();
+        assertThat(result.err()).isEmpty();
+        assertThat(result.out()).doesNotContain(secret).doesNotContain(member);
+        JsonNode output = json.readTree(result.out());
+        assertThat(output.path("status").asText()).isEqualTo("VALID_RESOLVED");
+        assertThat(output.path("chainCount").asInt()).isOne();
+        assertThat(output.path("environmentIncluded").asBoolean()).isFalse();
+    }
+
+    @Test
+    void resolvedValidationReportsTheSharedEffectsParserFailure() throws Exception {
+        Path config = write("invalid-effects.yml", """
+                yano:
+                  app-chain:
+                    enabled: true
+                    chain-id: orders
+                    signing-key: %s
+                    members: %s
+                    effects:
+                      enabled: true
+                      max-payload-bytes: 16777217
+                """.formatted("b".repeat(64), "a".repeat(64)));
+
+        Result result = run("config", "validate", "--mode", "resolved",
+                "--config", config.toString());
+
+        assertThat(result.exit()).isEqualTo(AppChainDevtoolsCli.EXIT_INVALID_CONFIG);
+        assertThat(result.out()).contains("DX_CONFIG_RUNTIME_SEMANTICS")
+                .contains("effects.max-payload-bytes must be <= 16777216")
+                .contains("INVALID_RESOLVED");
+    }
+
+    @Test
+    void effectiveOutputRedactsSecretsAndShowsSafeProvenance() throws Exception {
+        String secret = "b".repeat(64);
+        Path config = write("private-node.yml", """
+                yano:
+                  app-chain:
+                    enabled: true
+                    chain-id: orders
+                    signing-key: %s
+                    members: %s
+                """.formatted(secret, "a".repeat(64)));
+
+        Result result = run("config", "effective", "--mode", "resolved",
+                "--format", "json", "--show-sources", "--config", config.toString());
+
+        assertThat(result.exit()).isZero();
+        assertThat(result.err()).isEmpty();
+        assertThat(result.out()).doesNotContain(secret).doesNotContain(temporary.toString());
+        JsonNode output = json.readTree(result.out());
+        JsonNode signingKey = output.path("values").path("yano.app-chain.signing-key");
+        assertThat(signingKey.path("value").asText()).isEqualTo("<redacted>");
+        assertThat(signingKey.path("source").asText()).contains("private-node.yml");
+        assertThat(output.path("values").path("yano.app-chain.block.max-bytes")
+                .path("explicit").asBoolean()).isFalse();
     }
 
     private Path pluginMetadataJar(ConstraintProvenance provenance) throws Exception {

@@ -1,8 +1,8 @@
-# ADR-DX-0001 v6: Unified App-Chain Onboarding, Configuration, and Lifecycle
+# ADR-DX-0001 v7: Unified App-Chain Onboarding, Configuration, and Lifecycle
 
 ## Status
 
-Proposed — review draft v6
+Proposed — implementation review draft v7
 
 This consolidated review draft incorporates the findings from the completed
 review rounds. It is the single proposal to use for subsequent review and
@@ -19,6 +19,12 @@ profile-evolution rules.
 
 ## Review history
 
+- **v7:** Records the M0b implementation boundary: runtime and tooling share
+  the framework/effects parsers and side-effect-free startup rules; resolved
+  sources use the runtime-selected SmallRye Config engine with profile,
+  ordinal, expression, typed-conversion, provenance, redaction, and explicit
+  ambient-source controls; `config effective` and resolved validation are
+  available without putting Quarkus or runtime storage on the CLI classpath.
 - **v6:** Records the M0a implementation boundary: a lean standalone CLI,
   deterministic schema/catalog exports, a versioned data-only component
   metadata descriptor, explicit custom-plugin metadata loading, and trust
@@ -1497,6 +1503,17 @@ runtime-default parity, or full semantic coverage.
 M0b completion requires real runtime-validator parity for every namespace
 labeled `FULL`. Neither M0 slice requires complete first-party catalog
 coverage, but both must report their actual coverage.
+
+The implemented M0b boundary keeps resolution in `appchain-devtools` and the
+side-effect-free parser/validator contracts in `appchain-config`. The runtime
+depends on the latter and invokes the same `AppChainConfigParser`,
+`AppChainConfigSemantics`, and `AppChainEffectsConfig` used by resolved-mode
+validation. Trusted hosts can explicitly register an `AppChainSemanticValidator`;
+untrusted component archives remain data-only metadata and are never
+class-loaded by validation. A build gate requires the CLI and Quarkus runtime
+to resolve the same SmallRye Config engine version. Only the effects core
+properties whose complete parser is shared are labeled `FULL`; open executor,
+sink, state-machine, observer, and custom-plugin namespaces remain `PARTIAL`.
 
 ### M1 — thin initializer using the final architecture
 

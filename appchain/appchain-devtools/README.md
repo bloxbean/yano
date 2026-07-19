@@ -1,9 +1,31 @@
 # Yano app-chain developer tools
 
 This module provides the offline `yano-appchain` CLI used by
-`yano.sh appchain config`. M0a supports template validation and property
-explanation. It deliberately reports `PARTIAL` coverage until M0b adds
-runtime-resolution and validator parity.
+`yano.sh appchain config`. It supports template validation, SmallRye-backed
+resolved validation, redacted effective configuration, and property
+explanation.
+
+```bash
+# Intentionally incomplete shared template
+./yano.sh appchain config validate --mode template \
+  --template-contract builtin:cluster application-appchain.yml
+
+# Startable node-specific source stack; later --config files have higher
+# default ordinals unless a source declares config_ordinal.
+./yano.sh appchain config validate --mode resolved \
+  --config application-appchain.yml \
+  --config node0.properties \
+  --config private.properties
+
+# Values are always redacted when their property is secret.
+./yano.sh appchain config effective --mode resolved --format yaml \
+  --show-sources --config application-appchain.yml --config private.properties
+```
+
+Environment and system properties are excluded by default for reproducible
+offline results. Add `--include-environment` and/or
+`--include-system-properties` when runtime-parity inspection needs those
+ambient sources. `--profile <name>` activates SmallRye profile resolution.
 
 ## Extending configuration metadata
 
