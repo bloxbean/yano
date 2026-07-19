@@ -31,7 +31,9 @@ class AppChainRepositoryParityTest {
         AppChainPropertyRegistry registry = AppChainPropertyRegistry.framework();
         Set<String> registryDynamic = registry.dynamicNamespaces().stream()
                 .map(namespace -> namespace.prefix()).collect(Collectors.toCollection(TreeSet::new));
-        assertThat(dynamic).isEqualTo(registryDynamic);
+        assertThat(registryDynamic).containsAll(dynamic);
+        assertThat(registryDynamic).allMatch(
+                registered -> dynamic.stream().anyMatch(registered::startsWith));
 
         Set<String> indexed = registry.definitions().stream()
                 .filter(definition -> definition.indexed())

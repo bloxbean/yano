@@ -28,6 +28,7 @@ trap failure EXIT
 unzip -q "$archive" -d "$work/distribution"
 yano_home="$(find "$work/distribution" -mindepth 1 -maxdepth 1 -type d | head -1)"
 export YANO_HOME="$yano_home"
+export YANO_ACCEPTANCE_API_KEY='packaged-acceptance-operator'
 
 "$yano_home/yano.sh" appchain init --non-interactive \
   --recipe audit-log --network devnet --members 2 \
@@ -39,15 +40,28 @@ export YANO_HOME="$yano_home"
 
 printf '%s\n' \
   'YANO_APPCHAIN_SIGNING_KEY=0101010101010101010101010101010101010101010101010101010101010101' \
+  "YANO_APPCHAIN_API_KEYS=$YANO_ACCEPTANCE_API_KEY" \
   >"$project/secrets/node0.env"
 printf '%s\n' \
   'YANO_APPCHAIN_SIGNING_KEY=0202020202020202020202020202020202020202020202020202020202020202' \
+  "YANO_APPCHAIN_API_KEYS=$YANO_ACCEPTANCE_API_KEY" \
   >"$project/secrets/node1.env"
 chmod 600 "$project"/secrets/node*.env
 
 "$project/scripts/start" >/dev/null
 api0="http://127.0.0.1:${http_base}/api/v1/app-chain/chains/acceptance-chain"
 api1="http://127.0.0.1:$((http_base + 1))/api/v1/app-chain/chains/acceptance-chain"
+curl -fsS -H "X-API-Key: $YANO_ACCEPTANCE_API_KEY" "$api0/identity" \
+  | jq -e '.schemaVersion == "v1" and .identityCoverage == "PROJECT_BOUND"
+      and (.consensusProfileDigest | length) == 64
+      and (.pluginCatalogFingerprint | startswith("sha256:"))
+      and (.resolvedConfigDigest | length) == 64
+      and (.releaseCatalogDigest | length) == 64' >/dev/null
+"$yano_home/yano.sh" appchain drift "$project" \
+  --peer "http://127.0.0.1:${http_base}/api/v1/" \
+  --peer "http://127.0.0.1:$((http_base + 1))/api/v1/" \
+  --api-key-env YANO_ACCEPTANCE_API_KEY --format json \
+  | jq -e '.status == "DRIFT_OK" and .peerCount == 2' >/dev/null
 submitted="$(curl -fsS -H 'content-type: application/json' \
   -d '{"topic":"acceptance","body":"packaged-runtime"}' "$api0/messages")"
 message_id="$(jq -er '.messageId' <<<"$submitted")"
@@ -100,15 +114,15 @@ done
 [ "$(jq -r '.stateRoot' <<<"$restarted")" = "$root0" ]
 
 ! grep -ER \
-  '0101010101010101010101010101010101010101010101010101010101010101|0202020202020202020202020202020202020202020202020202020202020202' \
+  '0101010101010101010101010101010101010101010101010101010101010101|0202020202020202020202020202020202020202020202020202020202020202|packaged-acceptance-operator' \
   "$project/logs"
 for record in "$project"/run/node*.pid; do
   pid="$(cat "$record")"
-  ! ps -p "$pid" -o command= | grep -E '010101010101|020202020202'
+  ! ps -p "$pid" -o command= | grep -E '010101010101|020202020202|packaged-acceptance-operator'
 done
 
 "$project/scripts/stop"
 [ ! -e "$project/run/node0.pid" ] && [ ! -e "$project/run/node1.pid" ]
 trap - EXIT
 cleanup
-echo "PASS: final distribution app-chain runtime, proof, restart, and secret gates"
+echo "PASS: final distribution app-chain runtime, identities, drift, proof, restart, and secret gates"

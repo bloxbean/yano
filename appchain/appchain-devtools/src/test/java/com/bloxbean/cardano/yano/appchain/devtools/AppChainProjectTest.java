@@ -108,7 +108,15 @@ class AppChainProjectTest {
                 "config/shared-consensus.properties", "scripts/start", "secrets/.gitignore");
         assertThat(Files.readString(first.resolve("secrets/node0.env.example")))
                 .contains("YANO_APPCHAIN_SIGNING_KEY=")
+                .contains("YANO_APPCHAIN_API_KEYS=")
                 .doesNotContain("a".repeat(64));
+        assertThat(Files.readString(first.resolve("config/nodes/node0.properties")))
+                .contains("yano.app-chain.validation.strict=true")
+                .contains("yano.app-chain.dx.resolved-config-digest="
+                        + firstLock.resolvedConfigDigest())
+                .contains("yano.app-chain.dx.release-catalog-digest="
+                        + firstLock.catalogDigests().get("releaseIndex"))
+                .contains("yano.app-chain.api.keys=${YANO_APPCHAIN_API_KEYS:}");
         assertThat(allText(first)).doesNotContain(temporary.toString());
 
         Files.writeString(first.resolve("config/shared-consensus.properties"),

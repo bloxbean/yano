@@ -80,9 +80,15 @@ public final class AppChainResolvedValidator {
             } else if (registry.dynamicNamespace(key).isPresent()) {
                 recognized++;
                 DynamicNamespaceDefinition namespace = registry.dynamicNamespace(key).orElseThrow();
-                diagnostics.add(warning("DX_CONFIG_PARTIAL_NAMESPACE", key,
-                        "Namespace is owned by " + namespace.owner() + " with "
-                                + namespace.coverage() + " validation coverage"));
+                if (namespace.coverage() == ValidationCoverage.FULL) {
+                    diagnostics.add(error("DX_CONFIG_UNKNOWN_PROPERTY", key,
+                            "Unknown property in fully covered namespace owned by "
+                                    + namespace.owner()));
+                } else {
+                    diagnostics.add(warning("DX_CONFIG_PARTIAL_NAMESPACE", key,
+                            "Namespace is owned by " + namespace.owner() + " with "
+                                    + namespace.coverage() + " validation coverage"));
+                }
             } else {
                 String suggestion = registry.nearestKey(key)
                         .map(candidate -> "; did you mean '" + candidate + "'?")
@@ -147,11 +153,10 @@ public final class AppChainResolvedValidator {
         }
     }
 
-    private static boolean isChainSpecific(String key) {
-        return !key.equals("yano.app-chain.enabled")
-                && !key.equals("yano.app-chain.chains")
-                && !key.equals("yano.app-chain.api.auth.enabled")
-                && !key.equals("yano.app-chain.api.keys");
+    private boolean isChainSpecific(String key) {
+        return registry.find(key)
+                .map(match -> match.definition().indexed())
+                .orElse(true);
     }
 
     private static int parseIndex(

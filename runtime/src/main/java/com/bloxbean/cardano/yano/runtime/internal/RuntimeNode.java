@@ -652,10 +652,13 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
         }
 
         String rocksPath = config.getRocksDBPath() != null ? config.getRocksDBPath() : "./chainstate";
+        boolean strictValidation = resolveBoolean(
+                globals, YanoPropertyKeys.AppChain.VALIDATION_STRICT, false);
         List<com.bloxbean.cardano.yano.runtime.appchain.AppChainSubsystem> subsystems =
                 new java.util.ArrayList<>();
         for (int i = 0; i < chainLookups.size(); i++) {
-            var appChainConfig = buildAppChainConfig(chainLookups.get(i), chainCollectors.get(i));
+            var appChainConfig = buildAppChainConfig(
+                    chainLookups.get(i), chainCollectors.get(i), strictValidation);
             log.info("App chain enabled: {} ({} members, {} peers, sequencing: {}, anchoring: {})",
                     appChainConfig.chainId(), appChainConfig.memberKeysHex().size(),
                     appChainConfig.peers().size(), appChainConfig.sequencingEnabled(),
@@ -687,7 +690,8 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
     /** Builds one chain's config from suffix-keyed lookups (e.g. "chain-id", "sequencer.proposer"). */
     private com.bloxbean.cardano.yano.api.appchain.AppChainConfig buildAppChainConfig(
             java.util.function.Function<String, Object> get,
-            java.util.function.Function<String, Map<String, String>> collectPrefixed) {
+            java.util.function.Function<String, Map<String, String>> collectPrefixed,
+            boolean strictValidation) {
         Map<String, Object> settings = new java.util.LinkedHashMap<>();
         for (String suffix : AppChainConfigParser.frameworkSuffixes()) {
             Object value = get.apply(suffix);
@@ -697,6 +701,9 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
         }
         for (String prefix : AppChainConfigParser.dynamicPrefixes()) {
             settings.putAll(collectPrefixed.apply(prefix));
+        }
+        if (strictValidation) {
+            AppChainConfigParser.validateStrict(settings);
         }
         return AppChainConfigParser.parse(settings);
     }

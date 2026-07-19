@@ -5,6 +5,7 @@ import com.bloxbean.cardano.yano.appchain.config.AppChainPropertyDefinition;
 import com.bloxbean.cardano.yano.appchain.config.AppChainPropertyRegistry;
 import com.bloxbean.cardano.yano.appchain.config.DynamicNamespaceDefinition;
 import com.bloxbean.cardano.yano.appchain.config.PropertyType;
+import com.bloxbean.cardano.yano.appchain.config.ValidationCoverage;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -196,7 +197,7 @@ public final class AppChainMetadataExporter {
             container = objectSchema(current, segment);
             current = container.withObject("properties");
         }
-        container.put("additionalProperties", true);
+        container.put("additionalProperties", namespace.coverage() != ValidationCoverage.FULL);
         container.put("x-yano-owner", namespace.owner());
         container.put("x-yano-validation-coverage", namespace.coverage().name());
         container.put("description", namespace.description());

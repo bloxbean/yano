@@ -40,6 +40,8 @@ public final class AppChainPropertyRegistry {
             dynamic("membership.", "extension/membership", "Membership strategies"),
             dynamic("observers.", "extension/observers", "L1/external observers"),
             dynamic("transport.", "yano-core/transport", "App-message transport"),
+            dynamicFull("effects.result.", "yano-core/effects",
+                    "Runtime-owned effect result admission"),
             dynamic("effects.", "extension/effects", "Deterministic effect runtime"));
 
     private static final AppChainMetadataSource FRAMEWORK_SOURCE = new AppChainMetadataSource(
@@ -69,7 +71,9 @@ public final class AppChainPropertyRegistry {
                 .toList();
         this.byKey = byKey(properties);
         this.definitions = List.copyOf(properties);
-        this.dynamicNamespaces = validateNamespaces(sources);
+        List<DynamicNamespaceDefinition> namespaces = validateNamespaces(sources);
+        validateFullOwnership(properties, namespaces);
+        this.dynamicNamespaces = namespaces;
     }
 
     /** Framework metadata shipped with this Yano release. */
@@ -312,6 +316,15 @@ public final class AppChainPropertyRegistry {
                 "Enable broad READ/SUBMIT API-key authentication"));
         definitions.add(secret(YanoPropertyKeys.AppChain.API_KEYS,
                 "API keys and optional topic scopes", false));
+        definitions.add(runtimeDefined(YanoPropertyKeys.AppChain.VALIDATION_STRICT,
+                PropertyType.BOOLEAN, "false", PropertyScope.NODE_LOCAL,
+                "Reject unknown keys only in FULL runtime-owned namespaces"));
+        definitions.add(runtimeDefined(YanoPropertyKeys.AppChain.DX_RESOLVED_CONFIG_DIGEST,
+                PropertyType.STRING, null, PropertyScope.NODE_LOCAL,
+                "Generated project resolved-configuration identity"));
+        definitions.add(runtimeDefined(YanoPropertyKeys.AppChain.DX_RELEASE_CATALOG_DIGEST,
+                PropertyType.STRING, null, PropertyScope.NODE_LOCAL,
+                "Generated project release-catalog identity"));
         definitions.add(runtimeParsed("effects.enabled", PropertyType.BOOLEAN, "false",
                 null, null, Set.of(), PropertyScope.CONSENSUS_SHARED,
                 "Enable deterministic effect intents and results"));
@@ -367,6 +380,19 @@ public final class AppChainPropertyRegistry {
                 minimum, maximum, null, null, null, allowedValues, scope,
                 ChangePolicy.NEW_CHAIN_REQUIRED, false, true,
                 ConstraintProvenance.RUNTIME_PARSER_TEST, ValidationCoverage.FULL, description);
+    }
+
+    private static AppChainPropertyDefinition runtimeDefined(
+            String key,
+            PropertyType type,
+            String defaultValue,
+            PropertyScope scope,
+            String description) {
+        return new AppChainPropertyDefinition(
+                key, OWNER_CORE, type, defaultValue, null, null, null, null, null,
+                Set.of(), scope, ChangePolicy.RESTART_REQUIRED, false, false,
+                ConstraintProvenance.PUBLIC_RUNTIME_DEFINITION,
+                ValidationCoverage.FULL, description);
     }
 
     private static AppChainPropertyDefinition plain(
@@ -439,6 +465,12 @@ public final class AppChainPropertyRegistry {
                 prefix, owner, ValidationCoverage.PARTIAL, description);
     }
 
+    private static DynamicNamespaceDefinition dynamicFull(
+            String prefix, String owner, String description) {
+        return new DynamicNamespaceDefinition(
+                prefix, owner, ValidationCoverage.FULL, description);
+    }
+
     private static Map<String, AppChainPropertyDefinition> byKey(
             List<AppChainPropertyDefinition> definitions) {
         Map<String, AppChainPropertyDefinition> result = new LinkedHashMap<>();
@@ -467,6 +499,31 @@ public final class AppChainPropertyRegistry {
         return result.values().stream()
                 .sorted(Comparator.comparing(DynamicNamespaceDefinition::prefix))
                 .toList();
+    }
+
+    private static void validateFullOwnership(
+            List<AppChainPropertyDefinition> properties,
+            List<DynamicNamespaceDefinition> namespaces) {
+        for (DynamicNamespaceDefinition full : namespaces) {
+            if (full.coverage() != ValidationCoverage.FULL) continue;
+            for (DynamicNamespaceDefinition candidate : namespaces) {
+                if (candidate != full && candidate.prefix().startsWith(full.prefix())
+                        && !candidate.owner().equals(full.owner())) {
+                    throw new IllegalStateException("FULL namespace '" + full.prefix()
+                            + "' owned by " + full.owner() + " cannot be extended by "
+                            + candidate.owner());
+                }
+            }
+            String canonicalPrefix = APP_CHAIN_PREFIX + full.prefix();
+            for (AppChainPropertyDefinition property : properties) {
+                if (property.key().startsWith(canonicalPrefix)
+                        && !property.owner().equals(full.owner())) {
+                    throw new IllegalStateException("FULL namespace '" + full.prefix()
+                            + "' owned by " + full.owner() + " cannot contain property from "
+                            + property.owner());
+                }
+            }
+        }
     }
 
     private static int editDistance(String left, String right) {

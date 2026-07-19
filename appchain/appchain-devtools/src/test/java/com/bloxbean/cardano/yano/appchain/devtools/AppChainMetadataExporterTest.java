@@ -38,6 +38,11 @@ class AppChainMetadataExporterTest {
         assertThat(appChain.path("patternProperties").path("^chains\\[[0-9]+]$")
                 .path("properties").path("block").path("properties")
                 .path("max-bytes").path("maximum").asLong()).isPositive();
+        JsonNode effects = appChain.path("patternProperties").path("^chains\\[[0-9]+]$")
+                .path("properties").path("effects");
+        assertThat(effects.path("additionalProperties").asBoolean()).isTrue();
+        assertThat(effects.path("properties").path("result")
+                .path("additionalProperties").asBoolean()).isFalse();
 
         JsonNode catalogJson = json.readTree(catalog);
         assertThat(catalogJson.path("properties")).hasSize(registry.definitions().size());

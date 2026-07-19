@@ -114,10 +114,16 @@ public final class AppChainTemplateValidator {
                     sawFlatChainProperty = true;
                 }
                 DynamicNamespaceDefinition owner = namespace.orElseThrow();
-                diagnostics.add(warning("DX_CONFIG_PARTIAL_NAMESPACE", sourceKey,
-                        "Namespace is owned by " + owner.owner() + " with "
-                                + owner.coverage() + " metadata coverage; exact suffix validation "
-                                + "is not available in M0a"));
+                if (owner.coverage() == ValidationCoverage.FULL) {
+                    diagnostics.add(error("DX_CONFIG_UNKNOWN_PROPERTY", sourceKey,
+                            "Unknown property in fully covered namespace owned by "
+                                    + owner.owner()));
+                } else {
+                    diagnostics.add(warning("DX_CONFIG_PARTIAL_NAMESPACE", sourceKey,
+                            "Namespace is owned by " + owner.owner() + " with "
+                                    + owner.coverage() + " metadata coverage; exact suffix "
+                                    + "validation is not available"));
+                }
                 continue;
             }
 

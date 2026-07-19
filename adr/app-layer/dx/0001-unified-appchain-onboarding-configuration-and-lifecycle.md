@@ -1,8 +1,8 @@
-# ADR-DX-0001 v11: Unified App-Chain Onboarding, Configuration, and Lifecycle
+# ADR-DX-0001 v12: Unified App-Chain Onboarding, Configuration, and Lifecycle
 
 ## Status
 
-Proposed — implementation review draft v11
+Proposed — implementation review draft v12
 
 This consolidated review draft incorporates the findings from the completed
 review rounds. It is the single proposal to use for subsequent review and
@@ -19,6 +19,18 @@ profile-evolution rules.
 
 ## Review history
 
+- **v12:** Records the M5 live-identity and strictness boundary. Generated
+  projects bind the resolved-configuration and release-catalog digests into
+  every node overlay. A privileged, fail-closed runtime endpoint exposes only
+  those values plus the consensus-profile, optional composite-profile, and
+  plugin-catalog identities. `appchain drift` reads an API key only from a
+  named environment variable, uses bounded authenticated HTTP requests, and
+  emits category/status results without printing digest values. Runtime
+  strictness is enabled in generated projects but rejects unknown keys only
+  within explicitly enumerated `FULL` ownership domains; this release starts
+  with `effects.result.*`, while open custom-plugin namespaces remain
+  compatible. Final-archive acceptance verifies two-node identity parity,
+  drift, restart, and secret hygiene.
 - **v11:** Records the M4 App-Chain Studio boundary: a separate, static
   `appchain-studio` module; release-pinned schema/catalog assets; progressive
   recipe/topology/runtime selection; safe blueprint preview/download; an exact
@@ -1073,23 +1085,44 @@ availability, source precedence, and documentation.
 
 ### 12.7 Live comparison
 
-Initial live comparison may use identities already exposed by protected status
-surfaces, including consensus-profile and plugin-catalog identities. A
-`resolvedConfigDigest` comparison requires explicit runtime integration: the
-node must receive or derive the lock identity at startup and expose it through
-a protected, redacted status endpoint.
+The generated node overlay binds `resolvedConfigDigest` and the release-index
+catalog digest into node-local diagnostic properties. Runtime exposes the
+following redacted contract at the chain-scoped endpoint
+`/api/v1/app-chain/chains/{chainId}/identity`:
 
-Live comparison may report:
+- `schemaVersion`;
+- `chainId`;
+- `consensusProfileDigest`;
+- optional `compositeProfileDigest`;
+- `pluginCatalogFingerprint`;
+- optional `resolvedConfigDigest` and `releaseCatalogDigest`; and
+- `identityCoverage`, which distinguishes `PROJECT_BOUND` from `RUNTIME_ONLY`.
 
-- chain/member topology;
-- authenticated consensus-profile commitment;
-- composite profile digest;
-- plugin catalog fingerprint;
-- generated resolved-config digest, when runtime integration exists;
-- node role; and
-- safe categories of disagreement.
+The endpoint is `PRIVILEGED`. It fails closed unless the request presents an
+unscoped full API key. It extracts selected digests from runtime status rather
+than returning the status map and silently omits malformed identities.
 
-It never reveals secret values or causes one node to overwrite another.
+Operators compare a validated project and one or more nodes with:
+
+```bash
+export YANO_OPERATOR_API_KEY='provisioned-out-of-band'
+./yano.sh appchain drift . \
+  --peer https://node1.example/api/v1/ \
+  --peer https://node2.example/api/v1/ \
+  --api-key-env YANO_OPERATOR_API_KEY
+```
+
+The client accepts only HTTP(S) base URLs without credentials, query, or
+fragment; applies connect/request timeouts and a 64-KiB response bound; and
+never accepts an API-key value as a command-line argument. It returns
+`DRIFT_OK`, `DRIFT_DETECTED`, or `DRIFT_INCOMPLETE`. Every check contains only
+a category, peer ordinal, and status (`MATCH`, `MISMATCH`, `MISSING`,
+`BASELINE_ONLY`, or `NOT_APPLICABLE`); digest values are never printed.
+
+Live comparison is intentionally narrower than `status`: it reports only
+identity-category agreement. It never reveals secret/configuration values,
+topology, member identities, node roles, or status internals, and it never
+causes one node to overwrite another.
 
 ### 12.8 `diff`
 
@@ -1205,7 +1238,7 @@ It preserves current behavior and routes commands as follows:
 | `./yano.sh start` or `start:<profiles>` | Existing `yano.jar` or native `yano` node |
 | `./yano.sh appchain cluster ...` | Existing `appchain-cluster/cluster.sh` |
 | `./yano.sh appchain config ...` | Separate `appchain-devtools` executable |
-| `./yano.sh appchain init/render/doctor/diff ...` | Separate `appchain-devtools` executable |
+| `./yano.sh appchain init/render/doctor/diff/drift ...` | Separate `appchain-devtools` executable |
 
 The raw native node executable remains named `yano` for compatibility. Because
 that name is already occupied, ADR examples use `./yano.sh appchain ...` for
@@ -1495,7 +1528,18 @@ compatibility rules. If no dev-tools descriptor exists:
 
 Runtime rejection of every unowned dynamic key is not enabled globally until
 first-party descriptor coverage and the third-party compatibility policy are
-complete. Offline strict validation can ship earlier and report coverage.
+complete. Strict mode is instead a release-pinned allowlist of ownership
+domains whose complete key set is runtime parsed and parity tested. Unknown
+keys are rejected only when they fall inside one of those domains.
+
+Generated M5 projects set `yano.app-chain.validation.strict=true`. The first
+strict domain is `effects.result.*`, whose complete supported set currently
+contains `effects.result.signers`. An unknown `effects.result.*` key therefore
+fails before app-chain side effects begin. Open namespaces such as
+`effects.executors.*`, `machines.*`, sinks, observers, transports, and custom
+plugin settings remain accepted and retain their `PARTIAL` or
+`UNSUPPORTED_METADATA` coverage. Adding a strict domain requires `FULL`
+metadata and runtime parser tests in the same release.
 
 ## 19. Delivery plan
 
@@ -1679,6 +1723,24 @@ generation remains out of scope until a shared resolver engine exists.
 - enable runtime strict unknown-key behavior only for fully covered ownership
   domains under a compatible rollout policy.
 
+The implemented M5 identity API is a projection, not a general status or
+effective-config endpoint. It never returns member keys, topology, resolved
+values, filesystem paths, or plugin settings. Generated host and Compose
+projects carry only project/release hashes and an optional API-key reference;
+operators provision the key independently in each node's secret environment.
+
+`appchain drift` validates the project lock before contacting peers. It
+compares project-bound resolved/release identities on every peer and compares
+consensus-profile, plugin-catalog, and optional composite-profile identities
+across peers. A single peer is useful for project binding but yields
+`DRIFT_INCOMPLETE` for cross-member categories. A mismatch exits with the
+invalid-configuration status; incomplete observation is non-zero only when an
+I/O/authentication/protocol failure prevents the report.
+
+Strict rollout remains intentionally narrow. The runtime and shared parser
+own the same strict-domain list, generated projects opt in, and custom plugin
+keys outside a `FULL` domain continue to work without modification.
+
 ### M6+ — AI, GitOps, and third-party ecosystem
 
 - add the schema-pinned AI skill;
@@ -1705,6 +1767,10 @@ generation remains out of scope until a shared resolver engine exists.
   injected or required by their maintained launcher scripts. Contract drift
   fails the build.
 - Runtime and blueprint schema outputs have reviewed golden snapshots.
+- Strict-domain tests prove both rejection of an owned typo and acceptance of
+  representative custom-plugin keys outside that domain.
+- Generated node overlays pin the resolved-config and release-catalog
+  identities that appear in their lock.
 
 ### 20.2 Unknown-key adversarial tests
 
@@ -1768,6 +1834,9 @@ Test at least:
   argument.
 - Windows and native support boundaries in help output match the release
   capability index.
+- The final JVM runtime test authenticates the redacted identity endpoint on
+  two generated nodes and requires packaged `appchain drift` to return
+  `DRIFT_OK` without leaking the API key in logs or process arguments.
 
 ## 21. Acceptance criteria
 
@@ -1815,6 +1884,12 @@ The first stable-v1 decision requires all applicable criteria below:
     without booting the Quarkus node or opening chain state.
 24. The version-matched standalone dev-tools package can validate and generate
     for every native distribution advertised as supported.
+25. A generated multi-node project exposes distinct protected runtime
+    identities and packaged `appchain drift` detects category-level mismatch
+    without printing identity or secret values.
+26. Runtime strict mode rejects an unknown key in each enabled `FULL`
+    ownership domain while representative custom-plugin namespaces remain
+    accepted.
 
 ## 22. Consequences
 
@@ -1834,7 +1909,7 @@ The first stable-v1 decision requires all applicable criteria below:
 ### 22.2 Costs
 
 - Property metadata must be curated and moved closer to parsing.
-- Two new modules and a standalone dev-tools release artifact must be built,
+- Three new modules and a standalone dev-tools release artifact must be built,
   versioned, tested, and packaged.
 - First-party extension authors must maintain dev-tools descriptors alongside
   runtime manifests.
@@ -1844,8 +1919,8 @@ The first stable-v1 decision requires all applicable criteria below:
   matrix.
 - Accurate config-source parity requires deliberate integration with the
   runtime configuration model.
-- Runtime strict mode cannot safely precede descriptor coverage and a
-  third-party policy.
+- Broad runtime strict mode cannot safely precede descriptor coverage and a
+  third-party policy; narrow `FULL` domains require maintained parity tests.
 
 ### 22.3 Risks and mitigations
 
@@ -1877,19 +1952,17 @@ later ADR, but must be resolved before the named stabilization gate:
 1. Which existing config parsers move into `appchain-config` in M0b and which
    migrate incrementally behind the public validator facade.
 2. Stable API group replacing the provisional `yano.bloxbean.com` name.
-3. Canonical encoding and digest algorithm for `resolvedConfigDigest`.
-4. Exact CLI launcher packaging on Windows.
-5. Published native distribution flavors, their release-index identities, and
+3. Exact CLI launcher packaging on Windows.
+4. Published native distribution flavors, their release-index identities, and
    when a platform-native `yano-appchain` tool becomes a release gate.
-6. Protected runtime endpoint fields required for live comparison.
-7. Third-party descriptor signing/trust and namespace-allocation policy.
-8. Whether stable v1 supports multiple chains per project or only preserves
+5. Third-party descriptor signing/trust and namespace-allocation policy.
+6. Whether stable v1 supports multiple chains per project or only preserves
    the array shape.
-9. Whether schemas are vendored only, URL-addressed only, or both. The current
+7. Whether schemas are vendored only, URL-addressed only, or both. The current
    recommendation is both.
-10. Client codestart release timing and language priority.
-11. Exact template-contract schema, discovery order, launcher ownership, and
-    compatibility policy across Yano releases.
+8. Client codestart release timing and language priority.
+9. Exact template-contract schema, discovery order, launcher ownership, and
+   compatibility policy across Yano releases.
 
 These are not permission to weaken the normative safety rules in this ADR.
 

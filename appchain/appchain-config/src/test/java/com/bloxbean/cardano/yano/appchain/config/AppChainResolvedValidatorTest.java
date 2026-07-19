@@ -21,7 +21,10 @@ class AppChainResolvedValidatorTest {
                 "yano.app-chain.chains[0].members", MEMBER,
                 "yano.app-chain.chains[0].threshold", "1",
                 "yano.app-chain.chains[0].effects.enabled", "true",
-                "yano.app-chain.chains[0].effects.max-per-block", "4"));
+                "yano.app-chain.chains[0].effects.max-per-block", "4",
+                "yano.app-chain.validation.strict", "true",
+                "yano.app-chain.dx.resolved-config-digest", "c".repeat(64),
+                "yano.app-chain.dx.release-catalog-digest", "d".repeat(64)));
 
         ResolvedValidationResult result = new AppChainResolvedValidator().validate(values);
 
@@ -75,6 +78,31 @@ class AppChainResolvedValidatorTest {
         assertThat(result.diagnostics()).extracting(ValidationDiagnostic::code)
                 .contains("DX_CONFIG_RUNTIME_SEMANTICS", "DX_CONFIG_UNKNOWN_PROPERTY");
         assertThat(result.diagnostics().toString()).doesNotContain(SIGNING_KEY);
+    }
+
+    @Test
+    void fullOwnedNamespaceRejectsTyposWhileOpenPluginNamespacesRemainCompatible() {
+        Map<String, EffectiveConfigValue> values = values(Map.of(
+                "yano.app-chain.enabled", "true",
+                "yano.app-chain.chain-id", "orders",
+                "yano.app-chain.signing-key", SIGNING_KEY,
+                "yano.app-chain.members", MEMBER,
+                "yano.app-chain.effects.result.signerz", MEMBER,
+                "yano.app-chain.effects.executors.custom.option", "kept"));
+
+        ResolvedValidationResult result = new AppChainResolvedValidator().validate(values);
+
+        assertThat(result.valid()).isFalse();
+        assertThat(result.diagnostics())
+                .filteredOn(diagnostic -> "yano.app-chain.effects.result.signerz"
+                        .equals(diagnostic.key()))
+                .extracting(ValidationDiagnostic::code)
+                .containsExactly("DX_CONFIG_UNKNOWN_PROPERTY");
+        assertThat(result.diagnostics())
+                .filteredOn(diagnostic -> "yano.app-chain.effects.executors.custom.option"
+                        .equals(diagnostic.key()))
+                .extracting(ValidationDiagnostic::code)
+                .containsExactly("DX_CONFIG_PARTIAL_NAMESPACE");
     }
 
     private static Map<String, EffectiveConfigValue> values(Map<String, String> input) {

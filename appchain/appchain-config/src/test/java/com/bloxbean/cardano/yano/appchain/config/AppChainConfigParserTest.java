@@ -55,6 +55,23 @@ class AppChainConfigParserTest {
                 .hasMessageContaining("16777216");
     }
 
+    @Test
+    void strictValidationRejectsUnknownKeysOnlyInFullyOwnedDomains() {
+        Map<String, Object> settings = new LinkedHashMap<>();
+        settings.put("effects.result.signers", MEMBER);
+        settings.put("effects.executors.custom.endpoint", "plugin-owned");
+        settings.put("machines.custom.option", "plugin-owned");
+
+        AppChainConfigParser.validateStrict(settings);
+
+        settings.put("effects.result.signerz", MEMBER);
+        assertThatThrownBy(() -> AppChainConfigParser.validateStrict(settings))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("effects.result.signerz");
+        assertThat(AppChainConfigParser.strictOwnershipDomains())
+                .containsExactly("effects.result.");
+    }
+
     private static Map<String, Object> base() {
         Map<String, Object> values = new LinkedHashMap<>();
         values.put("chain-id", "orders");

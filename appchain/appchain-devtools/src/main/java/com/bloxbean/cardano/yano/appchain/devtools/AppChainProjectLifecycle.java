@@ -11,6 +11,7 @@ import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
+import java.net.URI;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -158,6 +159,23 @@ final class AppChainProjectLifecycle {
                     + validation.lock().apiVersion());
         }
         return dryRun ? "NO_MIGRATION_REQUIRED_DRY_RUN" : "NO_MIGRATION_REQUIRED";
+    }
+
+    AppChainProjectModel.DriftReport drift(
+            Path project,
+            List<URI> peers,
+            String apiKey) throws IOException {
+        Path root = projectRoot(project);
+        AppChainProjectModel.ProjectValidation validation = renderer.validate(root);
+        AppChainProjectModel.Blueprint blueprint = renderer.readBlueprint(root);
+        if (blueprint.spec() == null || blueprint.spec().chains() == null
+                || blueprint.spec().chains().size() != 1) {
+            throw new IllegalArgumentException(
+                    "drift currently requires exactly one chain in the project blueprint");
+        }
+        String chainId = blueprint.spec().chains().getFirst().chainId();
+        return new AppChainDriftClient().compare(
+                validation.lock(), chainId, peers, apiKey);
     }
 
     private DistributionInspection inspectDistribution(Path distribution) throws IOException {

@@ -43,8 +43,24 @@ class AppChainPropertyRegistryTest {
         assertThat(chainId.maximumUtf8Bytes()).isEqualTo(AppChainConfig.MAX_CHAIN_ID_BYTES);
 
         assertThat(registry.dynamicNamespaces()).extracting(DynamicNamespaceDefinition::prefix)
-                .containsExactly("effects.", "machines.", "membership.", "observers.",
-                        "sequencer.", "sinks.", "transport.", "zk.");
+                .containsExactly("effects.", "effects.result.", "machines.", "membership.",
+                        "observers.", "sequencer.", "sinks.", "transport.", "zk.");
+        assertThat(registry.dynamicNamespace("effects.result.unknown"))
+                .get().extracting(DynamicNamespaceDefinition::coverage)
+                .isEqualTo(ValidationCoverage.FULL);
+        assertThat(registry.dynamicNamespace("effects.executors.custom.option"))
+                .get().extracting(DynamicNamespaceDefinition::coverage)
+                .isEqualTo(ValidationCoverage.PARTIAL);
+        assertThat(registry.dynamicNamespaces().stream()
+                .filter(namespace -> namespace.coverage() == ValidationCoverage.FULL)
+                .map(DynamicNamespaceDefinition::prefix))
+                .containsExactlyInAnyOrderElementsOf(
+                        AppChainConfigParser.strictOwnershipDomains());
+        assertThat(registry.definitions().stream()
+                .map(AppChainPropertyDefinition::suffix)
+                .filter(suffix -> AppChainConfigParser.strictOwnershipDomains().stream()
+                        .anyMatch(suffix::startsWith)))
+                .containsExactlyInAnyOrderElementsOf(AppChainConfigParser.strictProperties());
 
         AppChainPropertyDefinition effects = registry
                 .find("effects.max-per-block").orElseThrow().definition();
@@ -99,6 +115,15 @@ class AppChainPropertyRegistryTest {
                 new AppChainMetadataSource("same-id", List.of(), List.of()))))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("Duplicate metadata source id");
+
+        DynamicNamespaceDefinition strictChild = new DynamicNamespaceDefinition(
+                "effects.result.custom.", "custom-effects", ValidationCoverage.PARTIAL,
+                "Invalid strict-domain extension");
+        assertThatThrownBy(() -> AppChainPropertyRegistry.withSources(List.of(
+                new AppChainMetadataSource(
+                        "strict-child", List.of(), List.of(strictChild)))))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("cannot be extended");
     }
 
     private static AppChainPropertyDefinition customProperty(String owner) {

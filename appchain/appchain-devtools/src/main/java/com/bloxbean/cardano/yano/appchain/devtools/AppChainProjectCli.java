@@ -7,6 +7,8 @@ import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.PrintWriter;
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -24,6 +26,7 @@ final class AppChainProjectCli {
                or: yano appchain capabilities [--format text|json]
                or: yano appchain doctor [project-directory] [--distribution <path>]
                or: yano appchain diff <old.lock> <new.lock> [--format text|json]
+               or: yano appchain drift [project-directory] --peer <url> [--peer <url> ...]
                or: yano appchain migrate [project-directory] [--dry-run]
             Init options:
               --recipe <id>                 audit-log, owned-registry, evidence-publication
@@ -45,6 +48,9 @@ final class AppChainProjectCli {
               --output <directory>          generated project directory
               --non-interactive             fail instead of prompting for core intent
               --format text|json            stable command result
+            Drift options:
+              --peer <http(s)-base-url>     repeat for every node to compare
+              --api-key-env <variable>      read the privileged API key from this environment variable
             """.stripTrailing();
 
     private final BufferedReader input;
@@ -98,6 +104,7 @@ final class AppChainProjectCli {
             case "capabilities" -> capabilities(parseFormatOnly(remaining));
             case "doctor" -> doctor(parseDoctor(remaining));
             case "diff" -> diff(parseDiff(remaining));
+            case "drift" -> drift(parseDrift(remaining));
             case "migrate" -> migrate(parseMigrate(remaining));
             default -> throw new Usage("Unknown appchain project command: " + safe(command));
         };
@@ -142,6 +149,29 @@ final class AppChainProjectCli {
             out.println(status + " schema=v1alpha1");
         }
         return AppChainDevtoolsCli.EXIT_OK;
+    }
+
+    private int drift(DriftOptions options) throws IOException {
+        String apiKey = null;
+        if (options.apiKeyEnvironment() != null) {
+            apiKey = System.getenv(options.apiKeyEnvironment());
+            if (apiKey == null || apiKey.isBlank()) {
+                throw new Usage("--api-key-env does not name a populated environment variable");
+            }
+        }
+        AppChainProjectModel.DriftReport report = lifecycle.drift(
+                options.project(), options.peers(), apiKey);
+        if (options.format() == Format.JSON) {
+            out.println(json.writeValueAsString(report));
+        } else {
+            for (AppChainProjectModel.DriftCheck check : report.checks()) {
+                out.printf(Locale.ROOT, "%s\t%s\t%s%n",
+                        check.status(), check.category(), check.peer());
+            }
+            out.printf(Locale.ROOT, "%s peers=%d%n", report.status(), report.peerCount());
+        }
+        return "DRIFT_DETECTED".equals(report.status())
+                ? AppChainDevtoolsCli.EXIT_INVALID_CONFIG : AppChainDevtoolsCli.EXIT_OK;
     }
 
     private int initialize(InitOptions requested) throws IOException {
@@ -453,6 +483,48 @@ final class AppChainProjectCli {
         return new MigrateOptions(project, dryRun, format);
     }
 
+    private static DriftOptions parseDrift(String[] arguments) {
+        Path project = Path.of(".");
+        boolean projectSeen = false;
+        List<URI> peers = new ArrayList<>();
+        String apiKeyEnvironment = null;
+        Format format = Format.TEXT;
+        for (int cursor = 0; cursor < arguments.length; cursor++) {
+            String argument = arguments[cursor];
+            if ("--peer".equals(argument)) {
+                peers.add(uri(value(arguments, ++cursor, argument)));
+                if (peers.size() > 64) {
+                    throw new Usage("drift accepts at most 64 peers");
+                }
+            } else if ("--api-key-env".equals(argument)) {
+                apiKeyEnvironment = once(apiKeyEnvironment,
+                        value(arguments, ++cursor, argument), argument);
+                if (!apiKeyEnvironment.matches("[A-Za-z_][A-Za-z0-9_]*")) {
+                    throw new Usage("--api-key-env must be an environment variable name");
+                }
+            } else if ("--format".equals(argument)) {
+                format = parseFormat(value(arguments, ++cursor, argument));
+            } else if (argument.startsWith("--")) {
+                throw new Usage("Unknown drift option: " + safe(argument));
+            } else if (projectSeen) {
+                throw new Usage("drift accepts one project directory");
+            } else {
+                project = path(argument);
+                projectSeen = true;
+            }
+        }
+        if (peers.isEmpty()) throw new Usage("drift requires at least one --peer");
+        return new DriftOptions(project, List.copyOf(peers), apiKeyEnvironment, format);
+    }
+
+    private static URI uri(String value) {
+        try {
+            return new URI(value);
+        } catch (URISyntaxException failure) {
+            throw new Usage("--peer URL is invalid");
+        }
+    }
+
     private static Format parseFormat(String value) {
         return switch (value) {
             case "text" -> Format.TEXT;
@@ -578,6 +650,13 @@ final class AppChainProjectCli {
     }
 
     record DiffOptions(Path before, Path after, Format format) {
+    }
+
+    record DriftOptions(
+            Path project,
+            List<URI> peers,
+            String apiKeyEnvironment,
+            Format format) {
     }
 
     record MigrateOptions(Path project, boolean dryRun, Format format) {

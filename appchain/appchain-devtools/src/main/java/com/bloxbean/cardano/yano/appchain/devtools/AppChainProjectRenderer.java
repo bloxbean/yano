@@ -128,17 +128,17 @@ final class AppChainProjectRenderer {
             Path root,
             AppChainProjectModel.Blueprint blueprint,
             AppChainProjectModel.Lock prior,
-            byte[] blueprintBytes) throws IOException {
+        byte[] blueprintBytes) throws IOException {
         AppChainProjectModel.Resolution resolution = resolver.resolve(blueprint);
-        TreeMap<String, byte[]> outputs = outputs(resolution);
+        String resolvedDigest = AppChainProjectCatalog.sha256(
+                json.writeValueAsBytes(new TreeMap<>(resolution.consensusProperties())));
+        TreeMap<String, byte[]> outputs = outputs(resolution, resolvedDigest);
         if (prior != null) {
             removeStaleGeneratedFiles(root, prior.generatedFiles(), outputs.keySet());
         }
         TreeMap<String, String> digests = new TreeMap<>();
         outputs.forEach((name, bytes) -> digests.put(name,
                 AppChainProjectCatalog.sha256(bytes)));
-        String resolvedDigest = AppChainProjectCatalog.sha256(
-                json.writeValueAsBytes(new TreeMap<>(resolution.consensusProperties())));
         List<String> acknowledgements = new ArrayList<>();
         if (resolution.bootstrapRequired()) {
             acknowledgements.add("PUBLIC_MEMBER_IDENTITIES_REQUIRED_BEFORE_START");
@@ -176,7 +176,9 @@ final class AppChainProjectRenderer {
         return lock;
     }
 
-    private TreeMap<String, byte[]> outputs(AppChainProjectModel.Resolution resolution)
+    private TreeMap<String, byte[]> outputs(
+            AppChainProjectModel.Resolution resolution,
+            String resolvedConfigDigest)
             throws IOException {
         TreeMap<String, byte[]> outputs = new TreeMap<>();
         outputs.put("schema/appchain-blueprint.schema.json", catalog.blueprintSchemaBytes());
@@ -195,7 +197,8 @@ final class AppChainProjectRenderer {
                 resolution.blueprint().spec().deployment().target());
         for (int index = 0; index < members; index++) {
             outputs.put("config/nodes/node" + index + ".properties",
-                    utf8(nodeProperties(resolution, index, members, compose)));
+                    utf8(nodeProperties(resolution, index, members, compose,
+                            resolvedConfigDigest, catalog.digests().get("releaseIndex"))));
             outputs.put("secrets/node" + index + ".env.example",
                     utf8(secretExample(index)));
         }
@@ -243,7 +246,9 @@ final class AppChainProjectRenderer {
             AppChainProjectModel.Resolution resolution,
             int node,
             int members,
-        boolean compose) {
+            boolean compose,
+            String resolvedConfigDigest,
+            String releaseCatalogDigest) {
         List<String> declaredHosts = resolution.blueprint().spec().chains().getFirst()
                 .topology().nodeHosts();
         AppChainProjectModel.Topology topology = resolution.blueprint().spec().chains()
@@ -277,6 +282,10 @@ final class AppChainProjectRenderer {
         }
         values.put("yano.relay.connection.source-port-reuse", "false");
         values.put("yano.relay.connection.max-connections-per-ip", "500");
+        values.put("yano.app-chain.api.keys", "${YANO_APPCHAIN_API_KEYS:}");
+        values.put("yano.app-chain.validation.strict", "true");
+        values.put("yano.app-chain.dx.resolved-config-digest", resolvedConfigDigest);
+        values.put("yano.app-chain.dx.release-catalog-digest", releaseCatalogDigest);
         if ("devnet".equals(resolution.blueprint().spec().network()) && node > 0) {
             values.put("yano.block-producer.enabled", "false");
             values.put("yano.dev-mode", "false");
@@ -293,7 +302,8 @@ final class AppChainProjectRenderer {
 
     private static String secretExample(int node) {
         return "# Copy to node" + node + ".env, chmod 600, and provide a private seed/reference.\n"
-                + "YANO_APPCHAIN_SIGNING_KEY=\n";
+                + "YANO_APPCHAIN_SIGNING_KEY=\n"
+                + "YANO_APPCHAIN_API_KEYS=\n";
     }
 
     private static String secretsReadme(AppChainProjectModel.Resolution resolution) {
@@ -301,8 +311,10 @@ final class AppChainProjectRenderer {
                 # Secret provisioning
 
                 Generated configuration contains references, never private values. Copy each
-                `nodeN.env.example` to `nodeN.env`, set `YANO_APPCHAIN_SIGNING_KEY`, and restrict
-                it to the owning operator. Never commit `*.env` files.
+                `nodeN.env.example` to `nodeN.env`, set `YANO_APPCHAIN_SIGNING_KEY`, optionally
+                set an unscoped `YANO_APPCHAIN_API_KEYS` value for privileged operator
+                diagnostics, and restrict the file to the owning operator. Never commit `*.env`
+                files.
 
                 The signing value may be a 32-byte Ed25519 seed or a configured
                 `scheme:reference` understood by the selected signer provider.
@@ -379,11 +391,17 @@ final class AppChainProjectRenderer {
                 yano appchain config validate --mode project .
                 yano appchain doctor . --distribution /path/to/yano-release.zip
                 yano appchain diff old/appchain.lock appchain.lock
+                export YANO_OPERATOR_API_KEY='provisioned-out-of-band'
+                yano appchain drift . --peer https://node1.example/api/v1/ \\
+                  --peer https://node2.example/api/v1/ \\
+                  --api-key-env YANO_OPERATOR_API_KEY
                 ```
 
                 Validation coverage is `%s`. A valid result proves blueprint, catalog, lock,
                 resolved consensus values, and generated-file digest consistency. It does not
-                attest private keys or externally supplied custom plugin code.
+                attest private keys or externally supplied custom plugin code. Drift compares
+                only redacted identity categories; it never prints digest values or reads an API
+                key from command-line arguments.
                 """.formatted(resolution.validationCoverage());
     }
 

@@ -45,6 +45,7 @@ public final class AppChainDevtoolsCli {
                or: yano appchain capabilities [--format text|json]
                or: yano appchain doctor [project-directory] [--distribution <path>]
                or: yano appchain diff <old.lock> <new.lock>
+               or: yano appchain drift [project-directory] --peer <url> [--peer <url> ...]
                or: yano appchain migrate [project-directory] [--dry-run]
             Options:
               --config <yml|yaml|properties>             repeatable, later source wins
@@ -581,7 +582,8 @@ public final class AppChainDevtoolsCli {
         int cursor = args.length > 0 && "appchain".equals(args[0]) ? 1 : 0;
         if (cursor >= args.length) return false;
         return switch (args[cursor]) {
-            case "init", "render", "recipes", "capabilities", "doctor", "diff", "migrate" -> true;
+            case "init", "render", "recipes", "capabilities", "doctor", "diff", "drift",
+                    "migrate" -> true;
             default -> false;
         };
     }

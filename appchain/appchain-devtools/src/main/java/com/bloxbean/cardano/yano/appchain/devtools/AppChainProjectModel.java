@@ -168,4 +168,21 @@ final class AppChainProjectModel {
 
     record DoctorReport(String status, List<DoctorCheck> checks) {
     }
+
+    record RuntimeIdentity(
+            String schemaVersion,
+            String chainId,
+            String consensusProfileDigest,
+            String compositeProfileDigest,
+            String pluginCatalogFingerprint,
+            String resolvedConfigDigest,
+            String releaseCatalogDigest,
+            String identityCoverage) {
+    }
+
+    record DriftCheck(String category, String peer, String status) {
+    }
+
+    record DriftReport(String status, int peerCount, List<DriftCheck> checks) {
+    }
 }

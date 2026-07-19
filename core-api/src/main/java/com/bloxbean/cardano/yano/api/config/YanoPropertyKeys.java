@@ -571,6 +571,14 @@ public final class YanoPropertyKeys {
          * broad API authentication is enabled.
          */
         public static final String API_KEYS = "yano.app-chain.api.keys";
+        /** Reject unknown keys only inside runtime-owned namespaces with FULL metadata coverage. */
+        public static final String VALIDATION_STRICT = "yano.app-chain.validation.strict";
+        /** Project lock identity exposed only through the privileged diagnostics endpoint. */
+        public static final String DX_RESOLVED_CONFIG_DIGEST =
+                "yano.app-chain.dx.resolved-config-digest";
+        /** Release catalog identity exposed only through the privileged diagnostics endpoint. */
+        public static final String DX_RELEASE_CATALOG_DIGEST =
+                "yano.app-chain.dx.release-catalog-digest";
 
         private AppChain() {
         }

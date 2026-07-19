@@ -32,6 +32,13 @@ public final class AppChainConfigParser {
             "sinks.", "zk.", "machines.", "sequencer.", "membership.",
             "observers.", "transport.", "effects.");
 
+    /*
+     * Narrow ownership domains whose complete key set is parsed and parity-tested by Yano.
+     * Open plugin namespaces deliberately stay out of this list.
+     */
+    private static final Map<String, Set<String>> STRICT_OWNERSHIP_DOMAINS = Map.of(
+            "effects.result.", Set.of("effects.result.signers"));
+
     private AppChainConfigParser() {
     }
 
@@ -43,6 +50,33 @@ public final class AppChainConfigParser {
     /** Extension namespaces forwarded to app-chain providers. */
     public static List<String> dynamicPrefixes() {
         return DYNAMIC_PREFIXES;
+    }
+
+    /** Prefixes where strict unknown-key rejection is safe for this runtime release. */
+    public static Set<String> strictOwnershipDomains() {
+        return STRICT_OWNERSHIP_DOMAINS.keySet();
+    }
+
+    /** Complete exact property set accepted inside strict ownership domains. */
+    public static Set<String> strictProperties() {
+        return STRICT_OWNERSHIP_DOMAINS.values().stream()
+                .flatMap(Set::stream)
+                .collect(java.util.stream.Collectors.toUnmodifiableSet());
+    }
+
+    /** Reject unknown keys only in FULL, runtime-owned domains. */
+    public static void validateStrict(Map<String, ?> settings) {
+        if (settings == null) {
+            throw new IllegalArgumentException("settings must not be null");
+        }
+        for (String key : settings.keySet()) {
+            for (Map.Entry<String, Set<String>> domain : STRICT_OWNERSHIP_DOMAINS.entrySet()) {
+                if (key.startsWith(domain.getKey()) && !domain.getValue().contains(key)) {
+                    throw new IllegalArgumentException("Unknown app-chain property in strict "
+                            + "runtime-owned domain: " + key);
+                }
+            }
+        }
     }
 
     /** Parse one flat or indexed chain after its canonical prefix has been removed. */
