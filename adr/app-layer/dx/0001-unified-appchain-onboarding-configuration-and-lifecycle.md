@@ -1,8 +1,8 @@
-# ADR-DX-0001 v8: Unified App-Chain Onboarding, Configuration, and Lifecycle
+# ADR-DX-0001 v9: Unified App-Chain Onboarding, Configuration, and Lifecycle
 
 ## Status
 
-Proposed — implementation review draft v8
+Proposed — implementation review draft v9
 
 This consolidated review draft incorporates the findings from the completed
 review rounds. It is the single proposal to use for subsequent review and
@@ -19,6 +19,15 @@ profile-evolution rules.
 
 ## Review history
 
+- **v9:** Records the M2 implementation boundary: complete descriptors for
+  packaged first-party state-machine settings; a release capability index
+  checked against the actual JVM/native plugin inventory; approval, role-aware
+  evidence, and acknowledged custom-plugin recipes; project validation,
+  distribution-aware doctor, policy-classified lock diff, and explicit alpha
+  migration commands; plus generated trust, bootstrap, verification, and
+  plugin-ownership documentation. The version-matched standalone JVM tooling
+  inspects both Unix and Windows native archive layouts without loading node or
+  plugin classes.
 - **v8:** Records the M1 implementation boundary: versioned data-only
   blueprint, lock, capability, and recipe contracts; a reusable
   implication/conflict/artifact resolver; guided and non-interactive
@@ -1560,6 +1569,26 @@ lifecycle commands without replacing the M1 resolver/render architecture.
 - ship `doctor`, `diff`, and project validation;
 - generate trust/bootstrap/verification documentation; and
 - define the migration path for alpha schemas and locks.
+
+The implemented M2 boundary extends the same data-only resolver and renderer
+introduced in M1. Stock stdlib, composite, role-workflow, and evidence settings
+have trusted release-owned metadata while their open subnamespaces remain
+honestly `PARTIAL`; custom plugin descriptors retain the stricter untrusted
+rules. The embedded release index is digest-pinned in generated locks and is
+verified at build time against the plugin catalog actually packaged by the
+runtime. Custom-plugin generation is JVM-only in this release and requires a
+non-secret state-machine answer plus an explicit review/metadata
+acknowledgement.
+
+`config validate --mode project` verifies blueprint, lock, catalog, resolved
+consensus, and every generated-file digest. `doctor` additionally checks Java,
+bootstrap acknowledgements, selected artifacts, and an extracted or zipped JVM
+or native distribution. `diff` reports property keys and conservative
+`ChangePolicy` categories without printing values. `migrate --dry-run` is the
+stable entry point for ordered alpha adapters; v1alpha1 currently reports that
+no migration is required and fails precisely for unsupported schemas. Every
+generated project includes trust, bootstrap, verification, and plugin
+ownership guides.
 
 ### M3 — packaged acceptance matrix and stabilization gate
 

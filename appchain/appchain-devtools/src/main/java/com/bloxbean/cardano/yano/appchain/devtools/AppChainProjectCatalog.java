@@ -26,6 +26,10 @@ final class AppChainProjectCatalog {
     static final String BLUEPRINT_SCHEMA_RESOURCE = RESOURCE_DIRECTORY
             + "/appchain-blueprint.schema.json";
     static final String LOCK_SCHEMA_RESOURCE = RESOURCE_DIRECTORY + "/appchain-lock.schema.json";
+    static final String RELEASE_INDEX_RESOURCE = RESOURCE_DIRECTORY
+            + "/appchain-release-capability-index.json";
+    static final String FIRST_PARTY_METADATA_RESOURCE = RESOURCE_DIRECTORY
+            + "/appchain-first-party-metadata.json";
     static final int MAX_RESOURCE_BYTES = 1_048_576;
 
     private static final Pattern ID = Pattern.compile("[a-z][a-z0-9.-]*(?::[a-z][a-z0-9.-]*)?");
@@ -35,8 +39,11 @@ final class AppChainProjectCatalog {
     private final byte[] recipeBytes;
     private final byte[] blueprintSchemaBytes;
     private final byte[] lockSchemaBytes;
+    private final byte[] releaseIndexBytes;
+    private final byte[] firstPartyMetadataBytes;
     private final AppChainProjectModel.CapabilityCatalog capabilityCatalog;
     private final AppChainProjectModel.RecipeCatalog recipeCatalog;
+    private final AppChainProjectModel.ReleaseIndex releaseIndex;
     private final Map<String, AppChainProjectModel.Artifact> artifacts;
     private final Map<String, AppChainProjectModel.Capability> capabilities;
     private final Map<String, AppChainProjectModel.Recipe> recipes;
@@ -49,12 +56,16 @@ final class AppChainProjectCatalog {
         recipeBytes = resource(RECIPE_RESOURCE);
         blueprintSchemaBytes = resource(BLUEPRINT_SCHEMA_RESOURCE);
         lockSchemaBytes = resource(LOCK_SCHEMA_RESOURCE);
+        releaseIndexBytes = resource(RELEASE_INDEX_RESOURCE);
+        firstPartyMetadataBytes = resource(FIRST_PARTY_METADATA_RESOURCE);
         capabilityCatalog = json.readValue(
                 capabilityBytes, AppChainProjectModel.CapabilityCatalog.class);
         recipeCatalog = json.readValue(recipeBytes, AppChainProjectModel.RecipeCatalog.class);
+        releaseIndex = json.readValue(releaseIndexBytes, AppChainProjectModel.ReleaseIndex.class);
         artifacts = indexArtifacts(capabilityCatalog);
         capabilities = indexCapabilities(capabilityCatalog, properties, artifacts);
         recipes = indexRecipes(recipeCatalog, capabilities);
+        validateReleaseIndex(releaseIndex, artifacts.keySet(), recipes.keySet());
     }
 
     AppChainProjectModel.Capability capability(String id) {
@@ -85,12 +96,22 @@ final class AppChainProjectCatalog {
         return recipes.values().stream().toList();
     }
 
+    List<AppChainProjectModel.Capability> capabilities() {
+        return capabilities.values().stream().toList();
+    }
+
+    AppChainProjectModel.ReleaseIndex releaseIndex() {
+        return releaseIndex;
+    }
+
     Map<String, String> digests() {
         Map<String, String> digests = new LinkedHashMap<>();
         digests.put("capabilities", sha256(capabilityBytes));
         digests.put("recipes", sha256(recipeBytes));
         digests.put("blueprintSchema", sha256(blueprintSchemaBytes));
         digests.put("lockSchema", sha256(lockSchemaBytes));
+        digests.put("releaseIndex", sha256(releaseIndexBytes));
+        digests.put("firstPartyMetadata", sha256(firstPartyMetadataBytes));
         return Map.copyOf(digests);
     }
 
@@ -108,6 +129,35 @@ final class AppChainProjectCatalog {
 
     byte[] lockSchemaBytes() {
         return lockSchemaBytes.clone();
+    }
+
+    byte[] releaseIndexBytes() {
+        return releaseIndexBytes.clone();
+    }
+
+    byte[] firstPartyMetadataBytes() {
+        return firstPartyMetadataBytes.clone();
+    }
+
+    private static void validateReleaseIndex(
+            AppChainProjectModel.ReleaseIndex index,
+            Set<String> artifacts,
+            Set<String> recipes) {
+        if (index == null || !"v1alpha1".equals(index.schemaVersion())
+                || !Set.copyOf(index.artifacts()).equals(artifacts)
+                || !Set.copyOf(index.recipes()).equals(recipes)
+                || !Set.copyOf(index.runtimeTypes()).equals(Set.of("jvm", "native"))
+                || index.distributions() == null || index.distributions().isEmpty()) {
+            throw new IllegalStateException(
+                    "Release capability index must match the embedded catalogs");
+        }
+        for (AppChainProjectModel.DistributionFlavor flavor : index.distributions()) {
+            if (!index.runtimeTypes().contains(flavor.runtimeType())
+                    || flavor.id() == null || flavor.archivePattern() == null
+                    || flavor.tooling() == null || flavor.platforms() == null) {
+                throw new IllegalStateException("Release distribution flavor is invalid");
+            }
+        }
     }
 
     private static Map<String, AppChainProjectModel.Capability> indexCapabilities(

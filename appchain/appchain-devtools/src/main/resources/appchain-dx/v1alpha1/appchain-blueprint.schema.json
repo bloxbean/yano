@@ -42,6 +42,7 @@
               "chainId": {"type": "string", "minLength": 1, "maxLength": 128},
               "recipe": {"type": "string"},
               "capabilities": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+              "answers": {"type": "object", "additionalProperties": {"type": "string", "minLength": 1, "maxLength": 1024}},
               "topology": {
                 "type": "object",
                 "required": ["members", "finality", "sequencing", "membership"],

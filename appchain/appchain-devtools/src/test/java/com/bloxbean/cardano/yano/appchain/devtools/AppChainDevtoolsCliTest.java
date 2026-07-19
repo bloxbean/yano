@@ -75,6 +75,8 @@ class AppChainDevtoolsCliTest {
         Result firstEnum = run("config", "explain", "--format", "json", "anchor.mode");
         Result secondEnum = run("config", "explain", "--format", "json", "anchor.mode");
         Result namespace = run("config", "explain", "effects.default-gate");
+        Result firstParty = run("config", "explain",
+                "machines.kv-registry.value-format");
         Result unknown = run("config", "explain", "block.max-bytez");
 
         assertThat(property.exit()).isZero();
@@ -89,6 +91,11 @@ class AppChainDevtoolsCliTest {
         assertThat(namespace.out()).contains("PROPERTY\tyano.app-chain.effects.default-gate")
                 .contains("COVERAGE\tFULL")
                 .contains("PROVENANCE\tRUNTIME_PARSER_TEST");
+        assertThat(firstParty.exit()).isZero();
+        assertThat(firstParty.out())
+                .contains("OWNER\tyano-first-party/appchain-stdlib")
+                .contains("BOUNDS\tallowed=[cbor, raw, utf8]")
+                .contains("COVERAGE\tPARTIAL");
         assertThat(unknown.exit()).isEqualTo(AppChainDevtoolsCli.EXIT_INVALID_CONFIG);
         assertThat(unknown.out()).contains("did you mean");
     }

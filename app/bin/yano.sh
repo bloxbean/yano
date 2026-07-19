@@ -14,6 +14,7 @@
 
 set -e
 
+CALLER_DIR="$PWD"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
@@ -35,6 +36,8 @@ Examples:
   ./yano.sh appchain config explain block.max-bytes
   ./yano.sh appchain init --recipe owned-registry --network devnet --members 3
   ./yano.sh appchain render ./owned-registry
+  ./yano.sh appchain config validate --mode project ./owned-registry
+  ./yano.sh appchain doctor ./owned-registry --distribution ./yano-release.zip
   ./yano.sh appchain cluster start 3
 
 Environment:
@@ -92,7 +95,7 @@ appchain_cli() {
 dispatch_appchain() {
     shift
     if [ "$#" -eq 0 ]; then
-        echo "Usage: ./yano.sh appchain {init|render|recipes|config|cluster} ..." >&2
+        echo "Usage: ./yano.sh appchain {init|render|recipes|capabilities|doctor|diff|migrate|config|cluster} ..." >&2
         exit 64
     fi
     if [ "$1" = "cluster" ]; then
@@ -105,6 +108,7 @@ dispatch_appchain() {
     fi
     local cli
     cli="$(appchain_cli)"
+    cd "$CALLER_DIR"
     exec "$cli" "$@"
 }
 

@@ -56,6 +56,20 @@ class YanoAppChainDispatchTest {
                 .contains("YANO_APPCHAIN_CLI");
     }
 
+    @Test
+    void unifiedLauncherPreservesCallerRelativePathsForDeveloperTools() throws Exception {
+        Path root = fakeDistribution();
+        Path tool = root.resolve("tools/yano-appchain/bin/yano-appchain");
+        executable(tool, "#!/usr/bin/env bash\nprintf 'cwd:%s\\n' \"$PWD\"\n");
+        Path caller = Files.createDirectory(temporary.resolve("caller"));
+
+        Result result = runFrom(caller, root.resolve("yano.sh"),
+                "appchain", "config", "validate", "--mode", "project", ".");
+
+        assertThat(result.exit()).isZero();
+        assertThat(result.output()).startsWith("cwd:").endsWith("/caller\n");
+    }
+
     private Path fakeDistribution() throws Exception {
         Path repository = Path.of(System.getProperty("yano.test.repo-root"));
         Path root = Files.createDirectory(temporary.resolve("distribution"));
@@ -71,10 +85,16 @@ class YanoAppChainDispatchTest {
     }
 
     private static Result run(Path launcher, String... args) throws Exception {
+        return runFrom(null, launcher, args);
+    }
+
+    private static Result runFrom(Path directory, Path launcher, String... args) throws Exception {
         List<String> command = new java.util.ArrayList<>();
         command.add(launcher.toString());
         command.addAll(List.of(args));
-        Process process = new ProcessBuilder(command).start();
+        ProcessBuilder builder = new ProcessBuilder(command);
+        if (directory != null) builder.directory(directory.toFile());
+        Process process = builder.start();
         if (!process.waitFor(TIMEOUT.toMillis(), TimeUnit.MILLISECONDS)) {
             process.destroyForcibly();
             fail("yano.sh dispatch exceeded " + TIMEOUT);

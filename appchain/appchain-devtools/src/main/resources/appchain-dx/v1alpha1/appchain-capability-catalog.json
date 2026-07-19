@@ -10,6 +10,21 @@
       "id": "appchain-stdlib",
       "runtimeTypes": ["jvm", "native"],
       "deploymentTargets": ["host", "docker-compose"]
+    },
+    {
+      "id": "appchain-evidence-registry",
+      "runtimeTypes": ["jvm", "native"],
+      "deploymentTargets": ["host", "docker-compose"]
+    },
+    {
+      "id": "appchain-composite",
+      "runtimeTypes": ["jvm", "native"],
+      "deploymentTargets": ["host", "docker-compose"]
+    },
+    {
+      "id": "appchain-role-workflow",
+      "runtimeTypes": ["jvm", "native"],
+      "deploymentTargets": ["host", "docker-compose"]
     }
   ],
   "capabilities": [
@@ -22,7 +37,7 @@
       "provides": ["state-machine"],
       "requires": [],
       "implies": [],
-      "conflicts": ["state:kv-registry"],
+      "conflicts": ["state:kv-registry", "state:approval-workflow", "state:role-evidence", "state:custom-plugin"],
       "runtimeTypes": ["jvm", "native"],
       "deploymentTargets": ["host", "docker-compose"],
       "artifacts": ["yano-runtime", "appchain-stdlib"],
@@ -39,13 +54,83 @@
       "provides": ["state-machine"],
       "requires": [],
       "implies": [],
-      "conflicts": ["state:ordered-log"],
+      "conflicts": ["state:ordered-log", "state:approval-workflow", "state:role-evidence", "state:custom-plugin"],
       "runtimeTypes": ["jvm", "native"],
       "deploymentTargets": ["host", "docker-compose"],
       "artifacts": ["yano-runtime", "appchain-stdlib"],
       "properties": {
         "state-machine": "kv-registry",
         "machines.kv-registry.value-format": "utf8"
+      }
+    },
+    {
+      "id": "state:approval-workflow",
+      "name": "Approval workflow",
+      "category": "state",
+      "maturity": "stable",
+      "description": "Deterministic proposals, votes, and threshold approval state.",
+      "provides": ["state-machine"],
+      "requires": [],
+      "implies": [],
+      "conflicts": ["state:ordered-log", "state:kv-registry", "state:role-evidence", "state:custom-plugin"],
+      "runtimeTypes": ["jvm", "native"],
+      "deploymentTargets": ["host", "docker-compose"],
+      "artifacts": ["yano-runtime", "appchain-stdlib"],
+      "properties": {
+        "state-machine": "approvals",
+        "machines.approvals.payments": "false",
+        "machines.approvals.payment-gate": "chain-default",
+        "machines.approvals.payment-type": "cardano.payment",
+        "machines.approvals.payment-expiry-blocks": "1000"
+      }
+    },
+    {
+      "id": "state:role-evidence",
+      "name": "Role-aware evidence workflow",
+      "category": "state",
+      "maturity": "preview",
+      "description": "Composite evidence registry with role-aware approvals and domain APIs.",
+      "provides": ["state-machine"],
+      "requires": [],
+      "implies": [],
+      "conflicts": ["state:ordered-log", "state:kv-registry", "state:approval-workflow", "state:custom-plugin"],
+      "runtimeTypes": ["jvm", "native"],
+      "deploymentTargets": ["host", "docker-compose"],
+      "artifacts": ["yano-runtime", "appchain-stdlib", "appchain-evidence-registry", "appchain-composite", "appchain-role-workflow"],
+      "properties": {
+        "state-machine": "role-evidence",
+        "machines.kv-registry.value-format": "raw",
+        "machines.approvals.payments": "false",
+        "machines.approvals.payment-gate": "chain-default",
+        "machines.approvals.payment-type": "cardano.payment",
+        "machines.approvals.payment-expiry-blocks": "1000",
+        "machines.composite.preset": "role-evidence-v1",
+        "machines.composite.evidence-capacity-per-block": "8",
+        "machines.composite.profile-mode": "fixed",
+        "machines.composite.profile-governance.min-activation-lag": "20",
+        "machines.composite.profile-governance.proposal-ttl-blocks": "600",
+        "machines.composite.profile-governance.max-epochs": "1024",
+        "machines.composite.roles.maximum-mutation-lifetime-blocks": "1000",
+        "machines.evidence-registry.storage-gate": "app-final",
+        "machines.evidence-registry.storage-expiry-blocks": "0",
+        "machines.evidence-registry.notification-expiry-blocks": "0"
+      }
+    },
+    {
+      "id": "state:custom-plugin",
+      "name": "Custom JVM plugin state machine",
+      "category": "state",
+      "maturity": "experimental",
+      "description": "Advanced path for a separately reviewed custom plugin bundle.",
+      "provides": ["state-machine"],
+      "requires": [],
+      "implies": [],
+      "conflicts": ["state:ordered-log", "state:kv-registry", "state:approval-workflow", "state:role-evidence"],
+      "runtimeTypes": ["jvm"],
+      "deploymentTargets": ["host", "docker-compose"],
+      "artifacts": ["yano-runtime"],
+      "properties": {
+        "state-machine": "${stateMachine}"
       }
     },
     {

@@ -82,6 +82,42 @@ final class AppChainProjectRenderer {
         return yaml.readValue(bytes, AppChainProjectModel.Blueprint.class);
     }
 
+    AppChainProjectModel.ProjectValidation validate(Path project) throws IOException {
+        Path root = safeRoot(project);
+        byte[] blueprintBytes = boundedFile(root.resolve(BLUEPRINT_FILE),
+                MAX_BLUEPRINT_BYTES, "blueprint");
+        AppChainProjectModel.Blueprint blueprint = yaml.readValue(
+                blueprintBytes, AppChainProjectModel.Blueprint.class);
+        AppChainProjectModel.Lock lock = readPriorLock(root);
+        verifyGeneratedFiles(root, lock.generatedFiles());
+        requireEqual("blueprint digest", AppChainProjectCatalog.sha256(blueprintBytes),
+                lock.blueprintDigest());
+        requireEqual("catalog digests", catalog.digests(), lock.catalogDigests());
+
+        AppChainProjectModel.Resolution resolution = resolver.resolve(blueprint);
+        requireEqual("Yano version", blueprint.spec().yanoVersion(), lock.yanoVersion());
+        requireEqual("runtime", blueprint.spec().runtime().type(), lock.runtime());
+        requireEqual("deployment", blueprint.spec().deployment().target(), lock.deployment());
+        requireEqual("network", blueprint.spec().network(), lock.network());
+        requireEqual("recipe", resolution.recipe().id() + ":" + resolution.recipe().version(),
+                lock.recipe());
+        requireEqual("selected capabilities", resolution.selectedCapabilities(),
+                lock.selectedCapabilities());
+        requireEqual("implied capabilities", resolution.impliedCapabilities(),
+                lock.impliedCapabilities());
+        requireEqual("artifacts", resolution.artifacts(), lock.artifacts());
+        requireEqual("consensus values", resolution.consensusProperties(), lock.consensusValues());
+        String resolvedDigest = AppChainProjectCatalog.sha256(
+                json.writeValueAsBytes(new TreeMap<>(resolution.consensusProperties())));
+        requireEqual("resolved config digest", resolvedDigest, lock.resolvedConfigDigest());
+        return new AppChainProjectModel.ProjectValidation(lock,
+                lock.generatedFiles().size(), lock.acknowledgements().size());
+    }
+
+    AppChainProjectModel.Lock readLock(Path project) throws IOException {
+        return readPriorLock(safeRoot(project));
+    }
+
     private AppChainProjectModel.Lock render(
             Path root,
             AppChainProjectModel.Blueprint blueprint,
@@ -97,8 +133,13 @@ final class AppChainProjectRenderer {
                 AppChainProjectCatalog.sha256(bytes)));
         String resolvedDigest = AppChainProjectCatalog.sha256(
                 json.writeValueAsBytes(new TreeMap<>(resolution.consensusProperties())));
-        List<String> acknowledgements = resolution.bootstrapRequired()
-                ? List.of("PUBLIC_MEMBER_IDENTITIES_REQUIRED_BEFORE_START") : List.of();
+        List<String> acknowledgements = new ArrayList<>();
+        if (resolution.bootstrapRequired()) {
+            acknowledgements.add("PUBLIC_MEMBER_IDENTITIES_REQUIRED_BEFORE_START");
+        }
+        if (resolution.selectedCapabilities().contains("state:custom-plugin")) {
+            acknowledgements.add("CUSTOM_PLUGIN_REVIEW_AND_METADATA_REQUIRED");
+        }
         AppChainProjectModel.Lock lock = new AppChainProjectModel.Lock(
                 AppChainProjectModel.API_VERSION,
                 AppChainProjectModel.LOCK_KIND,
@@ -117,7 +158,7 @@ final class AppChainProjectRenderer {
                 resolvedDigest,
                 resolution.validationCoverage(),
                 resolution.maturity(),
-                acknowledgements,
+                List.copyOf(acknowledgements),
                 Map.copyOf(digests));
 
         for (Map.Entry<String, byte[]> output : outputs.entrySet()) {
@@ -136,6 +177,10 @@ final class AppChainProjectRenderer {
         outputs.put("schema/appchain-lock.schema.json", catalog.lockSchemaBytes());
         outputs.put("schema/appchain-capability-catalog.json", catalog.capabilityBytes());
         outputs.put("schema/appchain-recipe-catalog.json", catalog.recipeBytes());
+        outputs.put("schema/appchain-release-capability-index.json",
+                catalog.releaseIndexBytes());
+        outputs.put("schema/appchain-first-party-metadata.json",
+                catalog.firstPartyMetadataBytes());
         outputs.put("config/shared-consensus.properties", utf8(properties(
                 resolution.consensusProperties())));
 
@@ -151,6 +196,10 @@ final class AppChainProjectRenderer {
         outputs.put("secrets/README.md", utf8(secretsReadme(resolution)));
         outputs.put("secrets/.gitignore", utf8("*.env\n!.gitignore\n!*.env.example\n"));
         outputs.put("README.md", utf8(readme(resolution)));
+        outputs.put("docs/TRUST.md", utf8(trustDocumentation(resolution)));
+        outputs.put("docs/BOOTSTRAP.md", utf8(bootstrapDocumentation(resolution)));
+        outputs.put("docs/VERIFY.md", utf8(verificationDocumentation(resolution)));
+        outputs.put("plugins/README.md", utf8(pluginDocumentation(resolution)));
         outputs.put("scripts/validate", utf8(validateScript()));
         if (compose) {
             outputs.put("compose.yaml", utf8(compose(resolution, members)));
@@ -256,6 +305,72 @@ final class AppChainProjectRenderer {
                 `config/shared-consensus.properties`; per-node values are isolated in
                 `config/nodes`. Generated files are digest-protected by `appchain.lock`.
                 """.formatted(blueprint.metadata().name(), resolution.recipe().id(), members, target);
+    }
+
+    private static String trustDocumentation(AppChainProjectModel.Resolution resolution) {
+        return """
+                # Trust model
+
+                Recipe: `%s` (%s). %s
+
+                The lock pins selected capabilities, release artifacts, catalogs, and every
+                consensus-shared value. Generated files are digest-protected. Private signing
+                material is deliberately excluded and must be provisioned by each operator.
+
+                Custom plugin metadata is declarative and data-only; the tooling never loads
+                plugin classes while validating or rendering a project.
+                """.formatted(resolution.recipe().id(), resolution.maturity(),
+                resolution.recipe().trustStatement());
+    }
+
+    private static String bootstrapDocumentation(AppChainProjectModel.Resolution resolution) {
+        return """
+                # Bootstrap
+
+                1. Collect one public member identity from each operator.
+                2. Put the identities in `spec.chains[0].topology.memberKeys` in the same reviewed
+                   order on every machine.
+                3. Run `yano appchain config validate --mode project .` and review `appchain.lock`.
+                4. Copy the project to each machine; provision only that node's `secrets/nodeN.env`.
+                5. Start each node with `scripts/start-node N` or use the generated Compose project.
+
+                Current bootstrap requirement: %s
+                """.formatted(resolution.bootstrapRequired()
+                ? "public member identities are still required before start."
+                : "member identities are pinned and ready for operator verification.");
+    }
+
+    private static String verificationDocumentation(AppChainProjectModel.Resolution resolution) {
+        return """
+                # Verification
+
+                Run these checks before deployment and after transferring the project:
+
+                ```bash
+                yano appchain config validate --mode project .
+                yano appchain doctor . --distribution /path/to/yano-release.zip
+                yano appchain diff old/appchain.lock appchain.lock
+                ```
+
+                Validation coverage is `%s`. A valid result proves blueprint, catalog, lock,
+                resolved consensus values, and generated-file digest consistency. It does not
+                attest private keys or externally supplied custom plugin code.
+                """.formatted(resolution.validationCoverage());
+    }
+
+    private static String pluginDocumentation(AppChainProjectModel.Resolution resolution) {
+        boolean custom = resolution.selectedCapabilities().contains("state:custom-plugin");
+        return """
+                # Plugins
+
+                Required release artifacts: %s
+
+                %s
+                """.formatted(String.join(", ", resolution.artifacts()), custom
+                ? "This project uses the advanced custom-plugin path. Package the reviewed JVM "
+                        + "bundle separately, provide its declarative configuration metadata, "
+                        + "and run doctor against the final distribution before deployment."
+                : "All selected components are first-party artifacts declared by the release index.");
     }
 
     private static String validateScript() {
@@ -517,5 +632,12 @@ final class AppChainProjectRenderer {
         return mapper.enable(JsonParser.Feature.STRICT_DUPLICATE_DETECTION)
                 .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
                 .enable(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS);
+    }
+
+    private static void requireEqual(String label, Object expected, Object actual)
+            throws IOException {
+        if (!java.util.Objects.equals(expected, actual)) {
+            throw new IOException("Project " + label + " does not match its blueprint/catalog");
+        }
     }
 }

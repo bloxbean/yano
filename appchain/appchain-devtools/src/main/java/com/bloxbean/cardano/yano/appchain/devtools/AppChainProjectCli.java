@@ -21,6 +21,10 @@ final class AppChainProjectCli {
             Usage: yano appchain init [options]
                or: yano appchain render [project-directory] [--format text|json]
                or: yano appchain recipes [--format text|json]
+               or: yano appchain capabilities [--format text|json]
+               or: yano appchain doctor [project-directory] [--distribution <path>]
+               or: yano appchain diff <old.lock> <new.lock> [--format text|json]
+               or: yano appchain migrate [project-directory] [--dry-run]
             Init options:
               --recipe <id>                 audit-log, owned-registry, evidence-publication
               --network <network>           devnet, preview, preprod, mainnet
@@ -32,6 +36,7 @@ final class AppChainProjectCli {
               --runtime <type>              jvm or native
               --deployment <target>         host or docker-compose
               --capability <id>             repeatable additive capability
+              --answer <name=value>         repeatable non-secret recipe input
               --name <project-name>         safe project identifier
               --chain-id <id>               application chain identifier
               --yano-version <version>      release pin (defaults to this tool)
@@ -45,10 +50,19 @@ final class AppChainProjectCli {
     private final ObjectMapper json;
     private final AppChainProjectCatalog catalog;
     private final AppChainProjectRenderer renderer;
+    private final AppChainProjectLifecycle lifecycle;
 
     AppChainProjectCli(PrintWriter out) throws IOException {
         this(new BufferedReader(new InputStreamReader(System.in)), out,
-                AppChainPropertyRegistry.framework(), new ObjectMapper());
+                builtInRegistry(), new ObjectMapper());
+    }
+
+    private static AppChainPropertyRegistry builtInRegistry() throws IOException {
+        List<com.bloxbean.cardano.yano.appchain.config.AppChainMetadataSource> sources =
+                new AppChainDescriptorLoader().loadBuiltInMetadata().stream()
+                        .map(com.bloxbean.cardano.yano.appchain.config.AppChainMetadataDescriptor::toSource)
+                        .toList();
+        return AppChainPropertyRegistry.withSources(sources);
     }
 
     AppChainProjectCli(
@@ -62,6 +76,7 @@ final class AppChainProjectCli {
         this.catalog = new AppChainProjectCatalog(properties);
         this.renderer = new AppChainProjectRenderer(
                 catalog, new AppChainProjectResolver(properties, catalog));
+        this.lifecycle = new AppChainProjectLifecycle(properties);
     }
 
     int run(String[] arguments) throws IOException {
@@ -78,8 +93,53 @@ final class AppChainProjectCli {
             case "init" -> initialize(parseInit(remaining));
             case "render" -> render(parseRender(remaining));
             case "recipes" -> recipes(parseFormatOnly(remaining));
+            case "capabilities" -> capabilities(parseFormatOnly(remaining));
+            case "doctor" -> doctor(parseDoctor(remaining));
+            case "diff" -> diff(parseDiff(remaining));
+            case "migrate" -> migrate(parseMigrate(remaining));
             default -> throw new Usage("Unknown appchain project command: " + safe(command));
         };
+    }
+
+    private int doctor(DoctorOptions options) throws IOException {
+        AppChainProjectModel.DoctorReport report = lifecycle.doctor(
+                options.project(), options.distribution());
+        if (options.format() == Format.JSON) {
+            out.println(json.writeValueAsString(report));
+        } else {
+            for (AppChainProjectModel.DoctorCheck check : report.checks()) {
+                out.printf(Locale.ROOT, "%s\t%s\t%s%n",
+                        check.status(), check.id(), check.detail());
+            }
+            out.println(report.status());
+        }
+        return "DOCTOR_FAILED".equals(report.status())
+                ? AppChainDevtoolsCli.EXIT_INVALID_CONFIG : AppChainDevtoolsCli.EXIT_OK;
+    }
+
+    private int diff(DiffOptions options) throws IOException {
+        AppChainProjectModel.LockDiff result = lifecycle.diff(options.before(), options.after());
+        if (options.format() == Format.JSON) {
+            out.println(json.writeValueAsString(result));
+        } else {
+            for (AppChainProjectModel.LockChange change : result.changes()) {
+                out.printf(Locale.ROOT, "%s\t%s%n", change.policy(), change.key());
+            }
+            out.printf(Locale.ROOT, "%s changes=%d categories=%s%n",
+                    result.status(), result.changes().size(), result.categories());
+        }
+        return AppChainDevtoolsCli.EXIT_OK;
+    }
+
+    private int migrate(MigrateOptions options) throws IOException {
+        String status = lifecycle.migrate(options.project(), options.dryRun());
+        if (options.format() == Format.JSON) {
+            out.println(json.writeValueAsString(Map.of("status", status,
+                    "schemaVersion", "v1alpha1")));
+        } else {
+            out.println(status + " schema=v1alpha1");
+        }
+        return AppChainDevtoolsCli.EXIT_OK;
     }
 
     private int initialize(InitOptions requested) throws IOException {
@@ -100,6 +160,7 @@ final class AppChainProjectCli {
                                 chainId,
                                 options.recipe(),
                                 options.capabilities(),
+                                options.answers(),
                                 new AppChainProjectModel.Topology(
                                         options.members(), options.memberKeys(), options.nodeHosts(),
                                         options.finality(), options.sequencing(), "static")))));
@@ -125,6 +186,22 @@ final class AppChainProjectCli {
             for (AppChainProjectModel.Recipe recipe : catalog.recipes()) {
                 out.printf(Locale.ROOT, "%s\t%s\t%s%n",
                         recipe.id(), recipe.maturity(), recipe.description());
+            }
+        }
+        return AppChainDevtoolsCli.EXIT_OK;
+    }
+
+    private int capabilities(Format format) throws IOException {
+        if (format == Format.JSON) {
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("status", "CAPABILITY_CATALOG");
+            result.put("schemaVersion", "v1alpha1");
+            result.put("capabilities", catalog.capabilities());
+            out.println(json.writeValueAsString(result));
+        } else {
+            for (AppChainProjectModel.Capability capability : catalog.capabilities()) {
+                out.printf(Locale.ROOT, "%s\t%s\t%s\t%s%n", capability.id(),
+                        capability.category(), capability.maturity(), capability.description());
             }
         }
         return AppChainDevtoolsCli.EXIT_OK;
@@ -185,6 +262,7 @@ final class AppChainProjectCli {
                 valueOr(options.runtime(), "jvm"),
                 valueOr(options.deployment(), "host"),
                 options.capabilities(),
+                options.answers(),
                 options.name(),
                 options.chainId(),
                 options.yanoVersion(),
@@ -219,6 +297,7 @@ final class AppChainProjectCli {
         List<String> memberKeys = new ArrayList<>();
         List<String> nodeHosts = new ArrayList<>();
         List<String> capabilities = new ArrayList<>();
+        Map<String, String> answers = new LinkedHashMap<>();
         for (int cursor = 0; cursor < arguments.length; cursor++) {
             String argument = arguments[cursor];
             switch (argument) {
@@ -235,6 +314,7 @@ final class AppChainProjectCli {
                 case "--runtime" -> runtime = once(runtime, value(arguments, ++cursor, argument), argument);
                 case "--deployment" -> deployment = once(deployment, value(arguments, ++cursor, argument), argument);
                 case "--capability" -> capabilities.add(value(arguments, ++cursor, argument));
+                case "--answer" -> parseAnswer(value(arguments, ++cursor, argument), answers);
                 case "--name" -> name = once(name, value(arguments, ++cursor, argument), argument);
                 case "--chain-id" -> chainId = once(chainId, value(arguments, ++cursor, argument), argument);
                 case "--yano-version" -> yanoVersion = once(
@@ -251,7 +331,20 @@ final class AppChainProjectCli {
         return new InitOptions(recipe, network, members, List.copyOf(memberKeys),
                 List.copyOf(nodeHosts),
                 finality, sequencing, runtime, deployment, List.copyOf(capabilities),
+                Map.copyOf(answers),
                 name, chainId, yanoVersion, output, nonInteractive, format);
+    }
+
+    private static void parseAnswer(String assignment, Map<String, String> answers) {
+        int separator = assignment.indexOf('=');
+        if (separator < 1 || separator == assignment.length() - 1) {
+            throw new Usage("--answer must be name=value");
+        }
+        String name = assignment.substring(0, separator);
+        String value = assignment.substring(separator + 1);
+        if (answers.putIfAbsent(name, value) != null) {
+            throw new Usage("--answer name may be specified once: " + safe(name));
+        }
     }
 
     private static RenderOptions parseRender(String[] arguments) {
@@ -280,6 +373,68 @@ final class AppChainProjectCli {
             return parseFormat(arguments[1]);
         }
         throw new Usage("recipes accepts only --format text|json");
+    }
+
+    private static DoctorOptions parseDoctor(String[] arguments) {
+        Path project = null;
+        Path distribution = null;
+        Format format = Format.TEXT;
+        for (int cursor = 0; cursor < arguments.length; cursor++) {
+            String argument = arguments[cursor];
+            if ("--distribution".equals(argument)) {
+                if (distribution != null) throw new Usage("--distribution may be specified once");
+                distribution = path(value(arguments, ++cursor, argument));
+            } else if ("--format".equals(argument)) {
+                format = parseFormat(value(arguments, ++cursor, argument));
+            } else if (argument.startsWith("--")) {
+                throw new Usage("Unknown doctor option: " + safe(argument));
+            } else if (project != null) {
+                throw new Usage("doctor accepts one project directory");
+            } else {
+                project = path(argument);
+            }
+        }
+        return new DoctorOptions(project, distribution, format);
+    }
+
+    private static DiffOptions parseDiff(String[] arguments) {
+        List<Path> locks = new ArrayList<>();
+        Format format = Format.TEXT;
+        for (int cursor = 0; cursor < arguments.length; cursor++) {
+            String argument = arguments[cursor];
+            if ("--format".equals(argument)) {
+                format = parseFormat(value(arguments, ++cursor, argument));
+            } else if (argument.startsWith("--")) {
+                throw new Usage("Unknown diff option: " + safe(argument));
+            } else {
+                locks.add(path(argument));
+            }
+        }
+        if (locks.size() != 2) throw new Usage("diff requires old.lock and new.lock");
+        return new DiffOptions(locks.get(0), locks.get(1), format);
+    }
+
+    private static MigrateOptions parseMigrate(String[] arguments) {
+        Path project = Path.of(".");
+        boolean projectSeen = false;
+        boolean dryRun = false;
+        Format format = Format.TEXT;
+        for (int cursor = 0; cursor < arguments.length; cursor++) {
+            String argument = arguments[cursor];
+            if ("--dry-run".equals(argument)) {
+                dryRun = true;
+            } else if ("--format".equals(argument)) {
+                format = parseFormat(value(arguments, ++cursor, argument));
+            } else if (argument.startsWith("--")) {
+                throw new Usage("Unknown migrate option: " + safe(argument));
+            } else if (projectSeen) {
+                throw new Usage("migrate accepts one project directory");
+            } else {
+                project = path(argument);
+                projectSeen = true;
+            }
+        }
+        return new MigrateOptions(project, dryRun, format);
     }
 
     private static Format parseFormat(String value) {
@@ -376,6 +531,7 @@ final class AppChainProjectCli {
             String runtime,
             String deployment,
             List<String> capabilities,
+            Map<String, String> answers,
             String name,
             String chainId,
             String yanoVersion,
@@ -388,6 +544,15 @@ final class AppChainProjectCli {
     }
 
     record RenderOptions(Path project, Format format) {
+    }
+
+    record DoctorOptions(Path project, Path distribution, Format format) {
+    }
+
+    record DiffOptions(Path before, Path after, Format format) {
+    }
+
+    record MigrateOptions(Path project, boolean dryRun, Format format) {
     }
 
     static final class Usage extends IllegalArgumentException {

@@ -3,7 +3,7 @@
 This module provides the offline `yano-appchain` CLI used by
 `yano.sh appchain`. It supports project initialization and deterministic
 rendering, template validation, SmallRye-backed resolved validation, redacted
-effective configuration, and property explanation.
+effective configuration, property explanation, and project lifecycle checks.
 
 ```bash
 # See the release-pinned recipes.
@@ -19,6 +19,12 @@ effective configuration, and property explanation.
 # Edit appchain.yaml, then safely regenerate derived output. Rendering stops
 # if a generated file contains an unaccounted manual edit.
 ./yano.sh appchain render product-registry
+
+# Verify the project, inspect a final JVM/native release, and classify changes.
+./yano.sh appchain config validate --mode project product-registry
+./yano.sh appchain doctor product-registry --distribution yano-0.1.0.zip
+./yano.sh appchain diff previous.lock product-registry/appchain.lock
+./yano.sh appchain migrate product-registry --dry-run
 ```
 
 `init` without `--non-interactive` prompts for missing core intent. The
@@ -100,6 +106,8 @@ The build deterministically exports:
 - `appchain-lock.schema.json`
 - `appchain-capability-catalog.json`
 - `appchain-recipe-catalog.json`
+- `appchain-release-capability-index.json`
+- `appchain-first-party-metadata.json`
 
 The files are generated from the same registry used by validation, packaged in
 the CLI, and copied beside release configuration under `config/schema`.

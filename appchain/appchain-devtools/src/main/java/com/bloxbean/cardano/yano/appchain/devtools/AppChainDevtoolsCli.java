@@ -36,11 +36,16 @@ public final class AppChainDevtoolsCli {
     private static final String USAGE = """
             Usage: yano appchain config validate --mode template [options] <config.yml>
                or: yano appchain config validate --mode resolved --config <file> [options]
+               or: yano appchain config validate --mode project <project-directory>
                or: yano appchain config effective --mode resolved --config <file> [options]
                or: yano appchain config explain [options] <property>
                or: yano appchain init [options]
                or: yano appchain render [project-directory]
                or: yano appchain recipes [--format text|json]
+               or: yano appchain capabilities [--format text|json]
+               or: yano appchain doctor [project-directory] [--distribution <path>]
+               or: yano appchain diff <old.lock> <new.lock>
+               or: yano appchain migrate [project-directory] [--dry-run]
             Options:
               --config <yml|yaml|properties>             repeatable, later source wins
               --format text|json                         validate/explain
@@ -149,6 +154,9 @@ public final class AppChainDevtoolsCli {
 
     private AppChainPropertyRegistry registry(List<Path> descriptors) throws IOException {
         List<AppChainMetadataSource> sources = new ArrayList<>();
+        descriptorLoader.loadBuiltInMetadata().stream()
+                .map(com.bloxbean.cardano.yano.appchain.config.AppChainMetadataDescriptor::toSource)
+                .forEach(sources::add);
         for (Path descriptor : descriptors) {
             sources.add(descriptorLoader.loadMetadata(descriptor).toSource());
         }
@@ -161,6 +169,28 @@ public final class AppChainDevtoolsCli {
             PrintWriter out) throws IOException {
         if (parsed.mode() == Mode.TEMPLATE) {
             return validateTemplate(parsed, registry, out);
+        }
+        if (parsed.mode() == Mode.PROJECT) {
+            AppChainProjectModel.ProjectValidation result =
+                    new AppChainProjectLifecycle(registry).validate(parsed.targetPath());
+            if (parsed.format() == Format.JSON) {
+                Map<String, Object> output = validationEnvelope(
+                        "VALID_PROJECT", "project", registry);
+                output.put("recipe", result.lock().recipe());
+                output.put("runtime", result.lock().runtime());
+                output.put("deployment", result.lock().deployment());
+                output.put("generatedFileCount", result.generatedFileCount());
+                output.put("acknowledgements", result.lock().acknowledgements());
+                out.println(json.writeValueAsString(output));
+            } else {
+                out.printf(Locale.ROOT,
+                        "VALID_PROJECT recipe=%s runtime=%s deployment=%s files=%d "
+                                + "acknowledgements=%s%n",
+                        result.lock().recipe(), result.lock().runtime(),
+                        result.lock().deployment(), result.generatedFileCount(),
+                        result.lock().acknowledgements());
+            }
+            return EXIT_OK;
         }
         ResolvedAppChainConfiguration resolved = resolve(parsed, registry);
         ResolvedValidationResult result = new AppChainResolvedValidator(registry, List.of())
@@ -443,7 +473,8 @@ public final class AppChainDevtoolsCli {
                     mode = switch (value(args, cursor++, argument)) {
                         case "template" -> Mode.TEMPLATE;
                         case "resolved" -> Mode.RESOLVED;
-                        default -> throw usage("--mode must be 'template' or 'resolved'");
+                        case "project" -> Mode.PROJECT;
+                        default -> throw usage("--mode must be 'template', 'resolved', or 'project'");
                     };
                 }
                 case "--config" -> configs.add(path(value(args, cursor++, argument)));
@@ -478,7 +509,8 @@ public final class AppChainDevtoolsCli {
             throw usage("Property must be safe text of at most 512 characters");
         }
         return new ParsedArguments(command, mode, format, target,
-                command == Command.VALIDATE && mode == Mode.TEMPLATE ? path(target) : null,
+                command == Command.VALIDATE
+                        && (mode == Mode.TEMPLATE || mode == Mode.PROJECT) ? path(target) : null,
                 templateContract, List.copyOf(metadata), List.copyOf(configs), profile,
                 includeEnvironment, includeSystemProperties, showSources);
     }
@@ -507,13 +539,18 @@ public final class AppChainDevtoolsCli {
         if (command == Command.EFFECTIVE && mode != Mode.RESOLVED) {
             throw usage("effective supports only '--mode resolved'");
         }
-        if (mode == Mode.TEMPLATE) {
+        if (mode == Mode.TEMPLATE || mode == Mode.PROJECT) {
             if (command != Command.VALIDATE || target == null || !configs.isEmpty()) {
-                throw usage("template validate requires one positional configuration file");
+                throw usage(mode.name().toLowerCase(Locale.ROOT)
+                        + " validate requires one positional path");
             }
             if (!profile.isEmpty() || includeEnvironment || includeSystemProperties
                     || showSources || format == Format.YAML) {
-                throw usage("template validate does not accept resolved-mode options");
+                throw usage(mode.name().toLowerCase(Locale.ROOT)
+                        + " validate does not accept resolved-mode options");
+            }
+            if (mode == Mode.PROJECT && templateContract != null) {
+                throw usage("--template-contract is accepted only in template mode");
             }
         } else {
             if (target != null || configs.isEmpty()) {
@@ -544,7 +581,7 @@ public final class AppChainDevtoolsCli {
         int cursor = args.length > 0 && "appchain".equals(args[0]) ? 1 : 0;
         if (cursor >= args.length) return false;
         return switch (args[cursor]) {
-            case "init", "render", "recipes" -> true;
+            case "init", "render", "recipes", "capabilities", "doctor", "diff", "migrate" -> true;
             default -> false;
         };
     }
@@ -605,7 +642,7 @@ public final class AppChainDevtoolsCli {
 
     private enum Command { VALIDATE, EFFECTIVE, EXPLAIN }
 
-    private enum Mode { TEMPLATE, RESOLVED }
+    private enum Mode { TEMPLATE, RESOLVED, PROJECT }
 
     private enum Format { TEXT, JSON, YAML }
 

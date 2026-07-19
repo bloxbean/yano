@@ -57,6 +57,11 @@ class AppChainPackagedCliTest {
                 "--recipe", "audit-log", "--network", "devnet", "--members", "3",
                 "--output", project.toString(), "--format", "json");
         Result render = run(launcher, "render", project.toString(), "--format", "json");
+        Result projectValidation = run(launcher, "config", "validate", "--mode", "project",
+                project.toString(), "--format", "json");
+        Result migrate = run(launcher, "migrate", project.toString(), "--dry-run",
+                "--format", "json");
+        Result capabilities = run(launcher, "capabilities", "--format", "json");
 
         assertThat(validate.exitCode()).isZero();
         assertThat(validate.output()).contains("VALID_TEMPLATE");
@@ -78,6 +83,12 @@ class AppChainPackagedCliTest {
         assertThat(initialize.error()).isEmpty();
         assertThat(render.exitCode()).isZero();
         assertThat(render.output()).contains("PROJECT_RENDERED");
+        assertThat(projectValidation.exitCode()).isZero();
+        assertThat(projectValidation.output()).contains("VALID_PROJECT");
+        assertThat(migrate.exitCode()).isZero();
+        assertThat(migrate.output()).contains("NO_MIGRATION_REQUIRED_DRY_RUN");
+        assertThat(capabilities.exitCode()).isZero();
+        assertThat(capabilities.output()).contains("state:role-evidence", "state:custom-plugin");
         assertThat(project.resolve("appchain.yaml")).isRegularFile();
         assertThat(project.resolve("appchain.lock")).isRegularFile();
 
@@ -92,6 +103,12 @@ class AppChainPackagedCliTest {
                     name.endsWith("/metadata/appchain-dx/v1alpha1/appchain-blueprint.schema.json"));
             assertThat(entries).anyMatch(name ->
                     name.endsWith("/metadata/appchain-dx/v1alpha1/appchain-capability-catalog.json"));
+            assertThat(entries).anyMatch(name ->
+                    name.endsWith("/metadata/appchain-dx/v1alpha1/"
+                            + "appchain-release-capability-index.json"));
+            assertThat(entries).anyMatch(name ->
+                    name.endsWith("/metadata/appchain-dx/v1alpha1/"
+                            + "appchain-first-party-metadata.json"));
         }
     }
 

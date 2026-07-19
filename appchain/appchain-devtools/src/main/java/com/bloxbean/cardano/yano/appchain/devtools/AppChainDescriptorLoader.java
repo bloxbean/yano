@@ -5,6 +5,7 @@ import com.bloxbean.cardano.yano.appchain.config.TemplateContract;
 import com.bloxbean.cardano.yano.appchain.config.ValidationCoverage;
 import com.fasterxml.jackson.core.JsonFactory;
 import com.fasterxml.jackson.core.StreamReadFeature;
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
@@ -13,6 +14,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 
@@ -21,6 +23,8 @@ final class AppChainDescriptorLoader {
     private static final long MAX_DESCRIPTOR_BYTES = 1024 * 1024;
     static final String BUILT_IN_CLUSTER_CONTRACT =
             "/appchain-dx/v1/appchain-cluster-template-contract.json";
+    static final String BUILT_IN_FIRST_PARTY_METADATA =
+            "/appchain-dx/v1alpha1/appchain-first-party-metadata.json";
 
     private final ObjectMapper json = strict(new ObjectMapper(
             JsonFactory.builder()
@@ -70,6 +74,15 @@ final class AppChainDescriptorLoader {
         }
         validateUntrustedMetadata(descriptor);
         return descriptor;
+    }
+
+    List<AppChainMetadataDescriptor> loadBuiltInMetadata() throws IOException {
+        try (InputStream input = AppChainDescriptorLoader.class
+                .getResourceAsStream(BUILT_IN_FIRST_PARTY_METADATA)) {
+            if (input == null) throw new IOException("built-in first-party metadata is missing");
+            return List.copyOf(json.readValue(readBounded(input),
+                    new TypeReference<List<AppChainMetadataDescriptor>>() { }));
+        }
     }
 
     private static boolean isArchive(Path artifact) {

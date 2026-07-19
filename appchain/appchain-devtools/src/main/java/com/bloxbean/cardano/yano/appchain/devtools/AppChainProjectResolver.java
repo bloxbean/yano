@@ -84,7 +84,9 @@ final class AppChainProjectResolver {
         consensus.put(prefix + "members", members);
         consensus.put(prefix + "threshold", Integer.toString(threshold));
 
-        Map<String, String> variables = Map.of("proposer", proposer);
+        Map<String, String> variables = new LinkedHashMap<>();
+        variables.put("proposer", proposer);
+        variables.putAll(validatedAnswers(chain.answers()));
         TreeSet<String> sortedCapabilities = new TreeSet<>(selected);
         TreeSet<String> artifacts = new TreeSet<>();
         String maturity = recipe.maturity();
@@ -197,6 +199,28 @@ final class AppChainProjectResolver {
         return chain;
     }
 
+    private static Map<String, String> validatedAnswers(Map<String, String> answers) {
+        if (answers == null || answers.isEmpty()) return Map.of();
+        Map<String, String> validated = new TreeMap<>();
+        for (Map.Entry<String, String> answer : answers.entrySet()) {
+            String key = answer.getKey();
+            String value = answer.getValue();
+            String normalized = key == null ? "" : key.toLowerCase(Locale.ROOT);
+            if (key == null || !key.matches("[A-Za-z][A-Za-z0-9]{0,63}")
+                    || normalized.contains("secret") || normalized.contains("password")
+                    || normalized.contains("token") || normalized.contains("private")
+                    || normalized.contains("mnemonic")) {
+                throw new IllegalArgumentException("Recipe answer name is invalid or secret-like");
+            }
+            if (value == null || value.isBlank() || value.length() > 1024
+                    || value.contains("${") || value.chars().anyMatch(Character::isISOControl)) {
+                throw new IllegalArgumentException("Recipe answer value must be safe non-secret text");
+            }
+            validated.put(key, value);
+        }
+        return Map.copyOf(validated);
+    }
+
     private void validateConflicts(Set<String> selected) {
         for (String id : selected) {
             for (String conflict : safeList(catalog.capability(id).conflicts())) {
@@ -223,7 +247,8 @@ final class AppChainProjectResolver {
 
     private void materializeConsensusDefaults(Map<String, String> values, String prefix) {
         for (AppChainPropertyDefinition definition : properties.definitions()) {
-            if (definition.scope() != PropertyScope.CONSENSUS_SHARED
+            if (!AppChainPropertyRegistry.OWNER_CORE.equals(definition.owner())
+                    || definition.scope() != PropertyScope.CONSENSUS_SHARED
                     || definition.defaultValue() == null) {
                 continue;
             }

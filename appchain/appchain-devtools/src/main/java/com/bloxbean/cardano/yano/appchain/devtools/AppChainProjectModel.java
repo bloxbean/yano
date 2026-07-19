@@ -36,6 +36,7 @@ final class AppChainProjectModel {
             String chainId,
             String recipe,
             List<String> capabilities,
+            Map<String, String> answers,
             Topology topology) {
     }
 
@@ -91,6 +92,24 @@ final class AppChainProjectModel {
             List<String> deploymentTargets) {
     }
 
+    record ReleaseIndex(
+            String schemaVersion,
+            String tooling,
+            List<String> runtimeTypes,
+            List<String> deploymentTargets,
+            List<String> recipes,
+            List<String> artifacts,
+            List<DistributionFlavor> distributions) {
+    }
+
+    record DistributionFlavor(
+            String id,
+            String runtimeType,
+            String archivePattern,
+            String tooling,
+            List<String> platforms) {
+    }
+
     record Resolution(
             Blueprint blueprint,
             Recipe recipe,
@@ -125,5 +144,23 @@ final class AppChainProjectModel {
             String maturity,
             List<String> acknowledgements,
             Map<String, String> generatedFiles) {
+    }
+
+    record ProjectValidation(
+            Lock lock,
+            int generatedFileCount,
+            int acknowledgementCount) {
+    }
+
+    record LockChange(String key, String policy) {
+    }
+
+    record LockDiff(String status, List<LockChange> changes, Map<String, Integer> categories) {
+    }
+
+    record DoctorCheck(String id, String status, String detail) {
+    }
+
+    record DoctorReport(String status, List<DoctorCheck> checks) {
     }
 }

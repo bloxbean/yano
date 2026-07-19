@@ -16,6 +16,8 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -35,7 +37,8 @@ class AppChainProjectTest {
                 blueprint("evidence-publication", "rotating", List.of()));
 
         assertThat(catalog.recipes()).extracting(AppChainProjectModel.Recipe::id)
-                .containsExactly("audit-log", "owned-registry", "evidence-publication");
+                .containsExactly("audit-log", "owned-registry", "evidence-publication",
+                        "approval-workflow", "role-evidence", "custom-plugin");
         assertThat(resolution.selectedCapabilities()).contains(
                 "state:ordered-log", "effects:publication", "sequencer:rotating", "l1:slot-feed");
         assertThat(resolution.impliedCapabilities()).containsExactly("l1:slot-feed");
@@ -51,7 +54,11 @@ class AppChainProjectTest {
                 golden("appchain-blueprint.schema.json"))
                 .containsEntry("lockSchema", golden("appchain-lock.schema.json"))
                 .containsEntry("capabilities", golden("appchain-capability-catalog.json"))
-                .containsEntry("recipes", golden("appchain-recipe-catalog.json"));
+                .containsEntry("recipes", golden("appchain-recipe-catalog.json"))
+                .containsEntry("firstPartyMetadata",
+                        golden("appchain-first-party-metadata.json"))
+                .containsEntry("releaseIndex",
+                        golden("appchain-release-capability-index.json"));
     }
 
     @Test
@@ -158,11 +165,18 @@ class AppChainProjectTest {
         AppChainProjectRenderer renderer = new AppChainProjectRenderer(
                 catalog, new AppChainProjectResolver(properties, catalog));
         int sequence = 0;
-        for (String recipe : List.of("audit-log", "owned-registry", "evidence-publication")) {
-            for (String runtime : List.of("jvm", "native")) {
+        for (String recipe : List.of("audit-log", "owned-registry", "evidence-publication",
+                "approval-workflow", "role-evidence", "custom-plugin")) {
+            List<String> runtimes = "custom-plugin".equals(recipe)
+                    ? List.of("jvm") : List.of("jvm", "native");
+            for (String runtime : runtimes) {
                 for (String deployment : List.of("host", "docker-compose")) {
                     AppChainProjectModel.Blueprint blueprint = withTarget(
                             blueprint(recipe, "fixed", List.of()), runtime, deployment);
+                    if ("custom-plugin".equals(recipe)) {
+                        blueprint = withAnswers(blueprint,
+                                Map.of("stateMachine", "com.example.custom-machine"));
+                    }
                     Path project = temporary.resolve("matrix-" + sequence++);
 
                     AppChainProjectModel.Lock lock = renderer.initialize(project, blueprint);
@@ -208,6 +222,103 @@ class AppChainProjectTest {
                 .contains("quarkus.http.port=8080");
     }
 
+    @Test
+    void m2ProjectLifecycleValidatesDoctorsDiffsAndMigrates() throws Exception {
+        AppChainPropertyRegistry properties = AppChainPropertyRegistry.framework();
+        AppChainProjectCatalog catalog = new AppChainProjectCatalog(properties);
+        AppChainProjectRenderer renderer = new AppChainProjectRenderer(
+                catalog, new AppChainProjectResolver(properties, catalog));
+        AppChainProjectLifecycle lifecycle = new AppChainProjectLifecycle(properties);
+        Path project = temporary.resolve("lifecycle");
+        renderer.initialize(project, blueprint("approval-workflow", "fixed",
+                List.of("a".repeat(64), "b".repeat(64), "c".repeat(64))));
+
+        AppChainProjectModel.ProjectValidation validation = lifecycle.validate(project);
+        assertThat(validation.lock().recipe()).isEqualTo("approval-workflow:1");
+        assertThat(validation.generatedFileCount()).isGreaterThan(10);
+        assertThat(Files.readString(project.resolve("docs/TRUST.md"))).contains("Trust model");
+        assertThat(Files.readString(project.resolve("docs/BOOTSTRAP.md"))).contains("Bootstrap");
+        assertThat(Files.readString(project.resolve("docs/VERIFY.md")))
+                .contains("validate --mode project");
+
+        Path oldLock = temporary.resolve("old.lock");
+        Files.copy(project.resolve("appchain.lock"), oldLock);
+        String blueprint = Files.readString(project.resolve("appchain.yaml"));
+        Files.writeString(project.resolve("appchain.yaml"),
+                blueprint.replace("two-thirds", "all"));
+        renderer.render(project);
+
+        AppChainProjectModel.LockDiff difference = lifecycle.diff(
+                oldLock, project.resolve("appchain.lock"));
+        assertThat(difference.status()).isEqualTo("CHANGESET");
+        assertThat(difference.changes()).anySatisfy(change -> {
+            assertThat(change.key()).endsWith(".threshold");
+            assertThat(change.policy()).isEqualTo("GOVERNED_ACTIVATION");
+        });
+        assertThat(lifecycle.migrate(project, true)).isEqualTo(
+                "NO_MIGRATION_REQUIRED_DRY_RUN");
+
+        Path distribution = Files.createDirectory(temporary.resolve("release"));
+        Files.write(distribution.resolve("yano.jar"), new byte[]{0});
+        Path index = distribution.resolve(
+                "tools/yano-appchain/metadata/appchain-dx/v1alpha1/"
+                        + "appchain-release-capability-index.json");
+        Files.createDirectories(index.getParent());
+        Files.write(index, catalog.releaseIndexBytes());
+        AppChainProjectModel.DoctorReport doctor = lifecycle.doctor(project, distribution);
+        assertThat(doctor.status()).isEqualTo("DOCTOR_OK");
+        assertThat(doctor.checks()).allMatch(check -> "PASS".equals(check.status()));
+    }
+
+    @Test
+    void customPluginRecipeRequiresAnAnswerAndRejectsNativeRuntime() throws Exception {
+        AppChainPropertyRegistry properties = AppChainPropertyRegistry.framework();
+        AppChainProjectCatalog catalog = new AppChainProjectCatalog(properties);
+        AppChainProjectResolver resolver = new AppChainProjectResolver(properties, catalog);
+        AppChainProjectModel.Blueprint custom = blueprint(
+                "custom-plugin", "fixed", List.of("a".repeat(64), "b".repeat(64), "c".repeat(64)));
+
+        assertThatThrownBy(() -> resolver.resolve(custom))
+                .hasMessageContaining("unknown variable");
+        AppChainProjectModel.Resolution resolved = resolver.resolve(withAnswers(
+                custom, Map.of("stateMachine", "com.example.reviewed")));
+        assertThat(resolved.consensusProperties())
+                .containsEntry("yano.app-chain.chains[0].state-machine",
+                        "com.example.reviewed");
+        assertThatThrownBy(() -> resolver.resolve(withTarget(withAnswers(custom,
+                Map.of("stateMachine", "com.example.reviewed")), "native", "host")))
+                .hasMessageContaining("does not support runtime native");
+    }
+
+    @Test
+    void standaloneJvmToolingInspectsEveryAdvertisedNativeDistributionFlavor() throws Exception {
+        AppChainPropertyRegistry properties = AppChainPropertyRegistry.framework();
+        AppChainProjectCatalog catalog = new AppChainProjectCatalog(properties);
+        AppChainProjectLifecycle lifecycle = new AppChainProjectLifecycle(properties);
+        assertThat(catalog.releaseIndex().distributions())
+                .filteredOn(flavor -> "native".equals(flavor.runtimeType()))
+                .allMatch(flavor -> "external-version-matched".equals(flavor.tooling()));
+
+        for (String executable : List.of("yano-native-test/yano", "yano-native-test/yano.exe")) {
+            Path archive = temporary.resolve(executable.endsWith(".exe")
+                    ? "native-windows.zip" : "native-unix.zip");
+            try (ZipOutputStream output = new ZipOutputStream(Files.newOutputStream(archive))) {
+                output.putNextEntry(new ZipEntry(executable));
+                output.write(0);
+                output.closeEntry();
+                output.putNextEntry(new ZipEntry(
+                        "yano-native-test/config/schema/"
+                                + "appchain-release-capability-index.json"));
+                output.write(catalog.releaseIndexBytes());
+                output.closeEntry();
+            }
+
+            AppChainProjectModel.DoctorReport doctor = lifecycle.doctor(null, archive);
+            assertThat(doctor.status()).isEqualTo("DOCTOR_OK");
+            assertThat(doctor.checks()).allMatch(check -> "PASS".equals(check.status()));
+        }
+    }
+
     private static AppChainProjectModel.Blueprint blueprint(
             String recipe,
             String sequencing,
@@ -222,7 +333,7 @@ class AppChainProjectTest {
                         new AppChainProjectModel.RuntimeSelection("jvm"),
                         new AppChainProjectModel.DeploymentSelection("host"),
                         List.of(new AppChainProjectModel.ChainIntent(
-                                "product-evidence", recipe, List.of(),
+                                "product-evidence", recipe, List.of(), Map.of(),
                                 new AppChainProjectModel.Topology(
                                         3, memberKeys, List.of(),
                                         "two-thirds", sequencing, "static")))));
@@ -233,7 +344,7 @@ class AppChainProjectTest {
             List<String> capabilities) {
         AppChainProjectModel.ChainIntent chain = blueprint.spec().chains().getFirst();
         AppChainProjectModel.ChainIntent changed = new AppChainProjectModel.ChainIntent(
-                chain.chainId(), chain.recipe(), capabilities, chain.topology());
+                chain.chainId(), chain.recipe(), capabilities, chain.answers(), chain.topology());
         AppChainProjectModel.Spec spec = blueprint.spec();
         return new AppChainProjectModel.Blueprint(
                 blueprint.apiVersion(), blueprint.kind(), blueprint.metadata(),
@@ -265,11 +376,24 @@ class AppChainProjectTest {
                 topology.members(), topology.memberKeys(), hosts, topology.finality(),
                 topology.sequencing(), topology.membership());
         AppChainProjectModel.ChainIntent changedChain = new AppChainProjectModel.ChainIntent(
-                chain.chainId(), chain.recipe(), chain.capabilities(), changedTopology);
+                chain.chainId(), chain.recipe(), chain.capabilities(), chain.answers(), changedTopology);
         return new AppChainProjectModel.Blueprint(
                 blueprint.apiVersion(), blueprint.kind(), blueprint.metadata(),
                 new AppChainProjectModel.Spec(spec.yanoVersion(), spec.network(), spec.runtime(),
                         spec.deployment(), List.of(changedChain)));
+    }
+
+    private static AppChainProjectModel.Blueprint withAnswers(
+            AppChainProjectModel.Blueprint blueprint,
+            Map<String, String> answers) {
+        AppChainProjectModel.Spec spec = blueprint.spec();
+        AppChainProjectModel.ChainIntent chain = spec.chains().getFirst();
+        AppChainProjectModel.ChainIntent changed = new AppChainProjectModel.ChainIntent(
+                chain.chainId(), chain.recipe(), chain.capabilities(), answers, chain.topology());
+        return new AppChainProjectModel.Blueprint(
+                blueprint.apiVersion(), blueprint.kind(), blueprint.metadata(),
+                new AppChainProjectModel.Spec(spec.yanoVersion(), spec.network(), spec.runtime(),
+                        spec.deployment(), List.of(changed)));
     }
 
     private static Map<String, String> fileDigests(Path root) throws IOException {
