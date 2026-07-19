@@ -25,6 +25,10 @@ effective configuration, property explanation, and project lifecycle checks.
 ./yano.sh appchain doctor product-registry --distribution yano-0.1.0.zip
 ./yano.sh appchain diff previous.lock product-registry/appchain.lock
 ./yano.sh appchain migrate product-registry --dry-run
+
+# Export reviewed, deterministic deployment derivatives.
+./yano.sh appchain gitops product-registry --target helm --output deploy/helm
+./yano.sh appchain gitops product-registry --target kustomize --output deploy/kustomize
 ```
 
 `init` without `--non-interactive` prompts for missing core intent. The
@@ -96,6 +100,36 @@ descriptors must mark hand-authored constraints as `DOCUMENTED_UNVERIFIED`, so
 their bounds remain warnings. Runtime-enforced errors require public runtime
 definitions or repository-owned parser parity tests.
 
+For distribution or CI use, bind the descriptor to the plugin runtime manifest
+with `META-INF/yano/appchain-config-metadata-v1.sig.json`, following
+`appchain-metadata-trust.schema.json`. Verify it against a vendor key pinned by
+the operator:
+
+```bash
+./yano.sh appchain metadata verify plugins/my-component.jar \
+  --trust-key vendor-release-2026=<64-hex-ed25519-public-key>
+```
+
+Verification authenticates the descriptor/runtime-manifest binding. It does
+not execute the plugin, grant namespace ownership, or upgrade third-party
+validation above `PARTIAL`.
+
+The publisher signs these UTF-8 bytes with Ed25519 (every line, including the
+last, ends in `\n`):
+
+```text
+yano-appchain-config-metadata-trust-v1
+<descriptor id>
+<runtime bundle id>
+<key id>
+<lowercase descriptor SHA-256>
+<lowercase runtime-manifest SHA-256>
+```
+
+The envelope carries the base64 signature. `--trust-key` accepts the raw
+32-byte Ed25519 public key as exactly 64 hexadecimal characters, not a private
+key or certificate.
+
 ## Generated release metadata
 
 The build deterministically exports:
@@ -108,7 +142,13 @@ The build deterministically exports:
 - `appchain-recipe-catalog.json`
 - `appchain-release-capability-index.json`
 - `appchain-first-party-metadata.json`
+- `appchain-metadata-trust.schema.json`
+- `appchain-gitops-lock.schema.json`
 
 The files are generated from the same registry used by validation, packaged in
 the CLI, and copied beside release configuration under `config/schema`.
 Golden SHA-256 snapshots make metadata changes explicit during review.
+
+The distribution and every generated project also include the release-pinned
+`configure-yano-appchain` AI skill. Generated projects include a checksum-pinned
+CI workflow and offline `ci/verify` script.

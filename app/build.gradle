@@ -1912,6 +1912,12 @@ tasks.register('yanoDistZip', Zip) {
             into 'config/schema'
             include 'appchain-runtime.schema.json', 'appchain-property-catalog.json'
         }
+        from(project(':appchain-devtools').layout.buildDirectory.dir(
+                'generated/appchain-metadata/appchain-dx/v1alpha1')) {
+            into 'config/schema'
+            include 'appchain-metadata-trust.schema.json',
+                    'appchain-gitops-lock.schema.json'
+        }
         // App-chain cluster demo/eval scripts: cluster.sh auto-detects this
         // release layout (yano.jar + config/ beside appchain-cluster/), so an
         // unzipped dist runs `./appchain-cluster/cluster.sh start 3` directly.
@@ -1946,13 +1952,17 @@ tasks.register('yanoDistZip', Zip) {
         into('tools/yano-appchain') {
             from(project(':appchain-devtools').layout.buildDirectory.dir(
                     'install/yano-devtools')) {
-                exclude 'bin/yano-appchain'
+                exclude 'bin/yano-appchain', 'skills/**'
             }
             from(project(':appchain-devtools').layout.buildDirectory.file(
                     'install/yano-devtools/bin/yano-appchain')) {
                 into 'bin'
                 filePermissions { unix('755') }
             }
+        }
+        from(project(':appchain-devtools').file(
+                'src/main/resources/appchain-dx/v1alpha1/skills/configure-yano-appchain')) {
+            into 'skills/configure-yano-appchain'
         }
         from(project(':appchain-studio').layout.buildDirectory.dir('studio')) {
             into 'studio'
@@ -2499,6 +2509,16 @@ tasks.register('yanoNativeDistZip', Zip) {
                 'generated/appchain-metadata/appchain-dx/v1alpha1/'
                         + 'appchain-release-capability-index.json')) {
             into 'config/schema'
+        }
+        from(project(':appchain-devtools').layout.buildDirectory.dir(
+                'generated/appchain-metadata/appchain-dx/v1alpha1')) {
+            into 'config/schema'
+            include 'appchain-metadata-trust.schema.json',
+                    'appchain-gitops-lock.schema.json'
+        }
+        from(project(':appchain-devtools').file(
+                'src/main/resources/appchain-dx/v1alpha1/skills/configure-yano-appchain')) {
+            into 'skills/configure-yano-appchain'
         }
         from(project(':appchain-studio').layout.buildDirectory.dir('studio')) {
             into 'studio'

@@ -30,6 +30,15 @@ final class AppChainProjectCatalog {
             + "/appchain-release-capability-index.json";
     static final String FIRST_PARTY_METADATA_RESOURCE = RESOURCE_DIRECTORY
             + "/appchain-first-party-metadata.json";
+    static final String METADATA_TRUST_SCHEMA_RESOURCE = RESOURCE_DIRECTORY
+            + "/appchain-metadata-trust.schema.json";
+    static final String GITOPS_LOCK_SCHEMA_RESOURCE = RESOURCE_DIRECTORY
+            + "/appchain-gitops-lock.schema.json";
+    static final String AI_SKILL_DIRECTORY = RESOURCE_DIRECTORY
+            + "/skills/configure-yano-appchain";
+    static final String AI_SKILL_RESOURCE = AI_SKILL_DIRECTORY + "/SKILL.md";
+    static final String AI_SKILL_OPENAI_RESOURCE = AI_SKILL_DIRECTORY
+            + "/agents/openai.yaml";
     static final int MAX_RESOURCE_BYTES = 1_048_576;
 
     private static final Pattern ID = Pattern.compile("[a-z][a-z0-9.-]*(?::[a-z][a-z0-9.-]*)?");
@@ -41,6 +50,10 @@ final class AppChainProjectCatalog {
     private final byte[] lockSchemaBytes;
     private final byte[] releaseIndexBytes;
     private final byte[] firstPartyMetadataBytes;
+    private final byte[] metadataTrustSchemaBytes;
+    private final byte[] gitOpsLockSchemaBytes;
+    private final byte[] aiSkillBytes;
+    private final byte[] aiSkillOpenAiBytes;
     private final AppChainProjectModel.CapabilityCatalog capabilityCatalog;
     private final AppChainProjectModel.RecipeCatalog recipeCatalog;
     private final AppChainProjectModel.ReleaseIndex releaseIndex;
@@ -58,6 +71,10 @@ final class AppChainProjectCatalog {
         lockSchemaBytes = resource(LOCK_SCHEMA_RESOURCE);
         releaseIndexBytes = resource(RELEASE_INDEX_RESOURCE);
         firstPartyMetadataBytes = resource(FIRST_PARTY_METADATA_RESOURCE);
+        metadataTrustSchemaBytes = resource(METADATA_TRUST_SCHEMA_RESOURCE);
+        gitOpsLockSchemaBytes = resource(GITOPS_LOCK_SCHEMA_RESOURCE);
+        aiSkillBytes = resource(AI_SKILL_RESOURCE);
+        aiSkillOpenAiBytes = resource(AI_SKILL_OPENAI_RESOURCE);
         capabilityCatalog = json.readValue(
                 capabilityBytes, AppChainProjectModel.CapabilityCatalog.class);
         recipeCatalog = json.readValue(recipeBytes, AppChainProjectModel.RecipeCatalog.class);
@@ -112,6 +129,10 @@ final class AppChainProjectCatalog {
         digests.put("lockSchema", sha256(lockSchemaBytes));
         digests.put("releaseIndex", sha256(releaseIndexBytes));
         digests.put("firstPartyMetadata", sha256(firstPartyMetadataBytes));
+        digests.put("metadataTrustSchema", sha256(metadataTrustSchemaBytes));
+        digests.put("gitOpsLockSchema", sha256(gitOpsLockSchemaBytes));
+        digests.put("aiSkill", sha256(aiSkillBytes));
+        digests.put("aiSkillOpenAi", sha256(aiSkillOpenAiBytes));
         return Map.copyOf(digests);
     }
 
@@ -137,6 +158,22 @@ final class AppChainProjectCatalog {
 
     byte[] firstPartyMetadataBytes() {
         return firstPartyMetadataBytes.clone();
+    }
+
+    byte[] metadataTrustSchemaBytes() {
+        return metadataTrustSchemaBytes.clone();
+    }
+
+    byte[] gitOpsLockSchemaBytes() {
+        return gitOpsLockSchemaBytes.clone();
+    }
+
+    byte[] aiSkillBytes() {
+        return aiSkillBytes.clone();
+    }
+
+    byte[] aiSkillOpenAiBytes() {
+        return aiSkillOpenAiBytes.clone();
     }
 
     private static void validateReleaseIndex(

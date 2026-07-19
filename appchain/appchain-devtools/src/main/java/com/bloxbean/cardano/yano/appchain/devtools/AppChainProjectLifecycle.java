@@ -31,13 +31,14 @@ final class AppChainProjectLifecycle {
     private final AppChainPropertyRegistry properties;
     private final AppChainProjectCatalog catalog;
     private final AppChainProjectRenderer renderer;
+    private final AppChainProjectResolver projectResolver;
     private final ObjectMapper json;
 
     AppChainProjectLifecycle(AppChainPropertyRegistry properties) throws IOException {
         this.properties = Objects.requireNonNull(properties, "properties");
         this.catalog = new AppChainProjectCatalog(properties);
-        this.renderer = new AppChainProjectRenderer(catalog,
-                new AppChainProjectResolver(properties, catalog));
+        this.projectResolver = new AppChainProjectResolver(properties, catalog);
+        this.renderer = new AppChainProjectRenderer(catalog, projectResolver);
         this.json = new ObjectMapper()
                 .enable(JsonParser.Feature.STRICT_DUPLICATE_DETECTION)
                 .enable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
@@ -176,6 +177,14 @@ final class AppChainProjectLifecycle {
         String chainId = blueprint.spec().chains().getFirst().chainId();
         return new AppChainDriftClient().compare(
                 validation.lock(), chainId, peers, apiKey);
+    }
+
+    AppChainProjectModel.GitOpsResult gitOps(
+            Path project,
+            AppChainGitOpsExporter.Target target,
+            Path output) throws IOException {
+        return new AppChainGitOpsExporter(renderer, projectResolver)
+                .export(projectRoot(project), target, output);
     }
 
     private DistributionInspection inspectDistribution(Path distribution) throws IOException {

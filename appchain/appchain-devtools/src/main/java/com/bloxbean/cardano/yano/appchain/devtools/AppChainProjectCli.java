@@ -27,6 +27,8 @@ final class AppChainProjectCli {
                or: yano appchain doctor [project-directory] [--distribution <path>]
                or: yano appchain diff <old.lock> <new.lock> [--format text|json]
                or: yano appchain drift [project-directory] --peer <url> [--peer <url> ...]
+               or: yano appchain gitops [project-directory] --target helm|kustomize --output <empty-dir>
+               or: yano appchain metadata verify <plugin.jar> --trust-key <key-id=64-hex-public-key>
                or: yano appchain migrate [project-directory] [--dry-run]
             Init options:
               --recipe <id>                 audit-log, owned-registry, evidence-publication
@@ -51,6 +53,11 @@ final class AppChainProjectCli {
             Drift options:
               --peer <http(s)-base-url>     repeat for every node to compare
               --api-key-env <variable>      read the privileged API key from this environment variable
+            GitOps options:
+              --target <helm|kustomize>     deterministic derivative deployment format
+              --output <directory>          missing or empty destination directory
+            Metadata verification options:
+              --trust-key <id=public-key>   repeatable trusted Ed25519 raw public key
             """.stripTrailing();
 
     private final BufferedReader input;
@@ -105,6 +112,8 @@ final class AppChainProjectCli {
             case "doctor" -> doctor(parseDoctor(remaining));
             case "diff" -> diff(parseDiff(remaining));
             case "drift" -> drift(parseDrift(remaining));
+            case "gitops" -> gitOps(parseGitOps(remaining));
+            case "metadata" -> metadata(parseMetadata(remaining));
             case "migrate" -> migrate(parseMigrate(remaining));
             default -> throw new Usage("Unknown appchain project command: " + safe(command));
         };
@@ -172,6 +181,34 @@ final class AppChainProjectCli {
         }
         return "DRIFT_DETECTED".equals(report.status())
                 ? AppChainDevtoolsCli.EXIT_INVALID_CONFIG : AppChainDevtoolsCli.EXIT_OK;
+    }
+
+    private int gitOps(GitOpsOptions options) throws IOException {
+        AppChainProjectModel.GitOpsResult result = lifecycle.gitOps(
+                options.project(), options.target(), options.output());
+        if (options.format() == Format.JSON) {
+            out.println(json.writeValueAsString(result));
+        } else {
+            out.printf(Locale.ROOT, "%s target=%s files=%d output=%s%n",
+                    result.status(), result.target(), result.generatedFileCount(),
+                    fileName(options.output().toAbsolutePath().normalize()));
+        }
+        return AppChainDevtoolsCli.EXIT_OK;
+    }
+
+    private int metadata(MetadataOptions options) throws IOException {
+        AppChainProjectModel.MetadataTrustResult result =
+                new AppChainMetadataTrustVerifier().verify(
+                        options.artifact(), options.trustKeys());
+        if (options.format() == Format.JSON) {
+            out.println(json.writeValueAsString(result));
+        } else {
+            out.printf(Locale.ROOT,
+                    "%s bundle=%s descriptor=%s key=%s coverage=%s%n",
+                    result.status(), result.bundleId(), result.descriptorId(),
+                    result.keyId(), result.validationCoverage());
+        }
+        return AppChainDevtoolsCli.EXIT_OK;
     }
 
     private int initialize(InitOptions requested) throws IOException {
@@ -517,6 +554,77 @@ final class AppChainProjectCli {
         return new DriftOptions(project, List.copyOf(peers), apiKeyEnvironment, format);
     }
 
+    private static GitOpsOptions parseGitOps(String[] arguments) {
+        Path project = Path.of(".");
+        boolean projectSeen = false;
+        AppChainGitOpsExporter.Target target = null;
+        Path output = null;
+        Format format = Format.TEXT;
+        for (int cursor = 0; cursor < arguments.length; cursor++) {
+            String argument = arguments[cursor];
+            if ("--target".equals(argument)) {
+                if (target != null) throw new Usage("--target may be specified once");
+                target = AppChainGitOpsExporter.Target.parse(
+                        value(arguments, ++cursor, argument));
+            } else if ("--output".equals(argument)) {
+                if (output != null) throw new Usage("--output may be specified once");
+                output = path(value(arguments, ++cursor, argument));
+            } else if ("--format".equals(argument)) {
+                format = parseFormat(value(arguments, ++cursor, argument));
+            } else if (argument.startsWith("--")) {
+                throw new Usage("Unknown gitops option: " + safe(argument));
+            } else if (projectSeen) {
+                throw new Usage("gitops accepts one project directory");
+            } else {
+                project = path(argument);
+                projectSeen = true;
+            }
+        }
+        if (target == null || output == null) {
+            throw new Usage("gitops requires --target and --output");
+        }
+        return new GitOpsOptions(project, target, output, format);
+    }
+
+    private static MetadataOptions parseMetadata(String[] arguments) {
+        if (arguments.length == 0 || !"verify".equals(arguments[0])) {
+            throw new Usage("metadata requires the verify subcommand");
+        }
+        Path artifact = null;
+        Map<String, String> trustKeys = new LinkedHashMap<>();
+        Format format = Format.TEXT;
+        for (int cursor = 1; cursor < arguments.length; cursor++) {
+            String argument = arguments[cursor];
+            if ("--trust-key".equals(argument)) {
+                String assignment = value(arguments, ++cursor, argument);
+                int separator = assignment.indexOf('=');
+                if (separator < 1 || separator == assignment.length() - 1) {
+                    throw new Usage("--trust-key must be key-id=64-hex-public-key");
+                }
+                String id = assignment.substring(0, separator);
+                String key = assignment.substring(separator + 1);
+                if (trustKeys.putIfAbsent(id, key) != null) {
+                    throw new Usage("--trust-key id may be specified once: " + safe(id));
+                }
+                if (trustKeys.size() > 32) {
+                    throw new Usage("metadata verify accepts at most 32 trust keys");
+                }
+            } else if ("--format".equals(argument)) {
+                format = parseFormat(value(arguments, ++cursor, argument));
+            } else if (argument.startsWith("--")) {
+                throw new Usage("Unknown metadata verify option: " + safe(argument));
+            } else if (artifact != null) {
+                throw new Usage("metadata verify accepts one plugin artifact");
+            } else {
+                artifact = path(argument);
+            }
+        }
+        if (artifact == null || trustKeys.isEmpty()) {
+            throw new Usage("metadata verify requires a plugin artifact and --trust-key");
+        }
+        return new MetadataOptions(artifact, Map.copyOf(trustKeys), format);
+    }
+
     private static URI uri(String value) {
         try {
             return new URI(value);
@@ -660,6 +768,19 @@ final class AppChainProjectCli {
     }
 
     record MigrateOptions(Path project, boolean dryRun, Format format) {
+    }
+
+    record GitOpsOptions(
+            Path project,
+            AppChainGitOpsExporter.Target target,
+            Path output,
+            Format format) {
+    }
+
+    record MetadataOptions(
+            Path artifact,
+            Map<String, String> trustKeys,
+            Format format) {
     }
 
     static final class Usage extends IllegalArgumentException {

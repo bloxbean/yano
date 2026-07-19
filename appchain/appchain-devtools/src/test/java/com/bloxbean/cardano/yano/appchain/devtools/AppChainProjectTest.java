@@ -2,6 +2,7 @@ package com.bloxbean.cardano.yano.appchain.devtools;
 
 import com.bloxbean.cardano.yano.appchain.config.AppChainPropertyRegistry;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -58,7 +59,11 @@ class AppChainProjectTest {
                 .containsEntry("firstPartyMetadata",
                         golden("appchain-first-party-metadata.json"))
                 .containsEntry("releaseIndex",
-                        golden("appchain-release-capability-index.json"));
+                        golden("appchain-release-capability-index.json"))
+                .containsEntry("metadataTrustSchema",
+                        golden("appchain-metadata-trust.schema.json"))
+                .containsEntry("gitOpsLockSchema",
+                        golden("appchain-gitops-lock.schema.json"));
         assertThat(catalog.releaseIndex().schemaStatus()).isEqualTo("alpha");
         assertThat(catalog.releaseIndex().stabilizationDecision())
                 .isEqualTo("RETAIN_V1ALPHA1");
@@ -105,7 +110,17 @@ class AppChainProjectTest {
         assertThat(fileDigests(first)).isEqualTo(fileDigests(second));
         assertThat(firstLock).isEqualTo(secondLock);
         assertThat(firstLock.generatedFiles()).containsKeys(
-                "config/shared-consensus.properties", "scripts/start", "secrets/.gitignore");
+                "config/shared-consensus.properties", "scripts/start", "secrets/.gitignore",
+                "ci/verify", ".github/workflows/appchain-verify.yml",
+                "ai/configure-yano-appchain/SKILL.md");
+        assertShellSyntax(first.resolve("ci/verify"));
+        assertThat(Files.readString(first.resolve(".github/workflows/appchain-verify.yml")))
+                .contains("YANO_DISTRIBUTION_SHA256", "sha256sum --check", "download=(curl")
+                .doesNotContain("secrets.");
+        new ObjectMapper(new YAMLFactory()).readTree(
+                Files.readAllBytes(first.resolve(".github/workflows/appchain-verify.yml")));
+        assertThat(Files.readString(first.resolve("ai/configure-yano-appchain/SKILL.md")))
+                .contains("name: configure-yano-appchain", "Never invent configuration keys");
         assertThat(Files.readString(first.resolve("secrets/node0.env.example")))
                 .contains("YANO_APPCHAIN_SIGNING_KEY=")
                 .contains("YANO_APPCHAIN_API_KEYS=")
@@ -370,6 +385,56 @@ class AppChainProjectTest {
         }
     }
 
+    @Test
+    void gitOpsExportsAreDeterministicSecretFreeAndBoundToValidatedSource() throws Exception {
+        AppChainPropertyRegistry properties = AppChainPropertyRegistry.framework();
+        AppChainProjectCatalog catalog = new AppChainProjectCatalog(properties);
+        AppChainProjectResolver resolver = new AppChainProjectResolver(properties, catalog);
+        AppChainProjectRenderer renderer = new AppChainProjectRenderer(catalog, resolver);
+        AppChainProjectLifecycle lifecycle = new AppChainProjectLifecycle(properties);
+        Path project = temporary.resolve("gitops-project");
+        renderer.initialize(project, blueprint("owned-registry", "fixed",
+                List.of("a".repeat(64), "b".repeat(64), "c".repeat(64))));
+
+        Path first = temporary.resolve("kustomize-one");
+        Path second = temporary.resolve("kustomize-two");
+        AppChainProjectModel.GitOpsResult exported = lifecycle.gitOps(
+                project, AppChainGitOpsExporter.Target.KUSTOMIZE, first);
+        lifecycle.gitOps(project, AppChainGitOpsExporter.Target.KUSTOMIZE, second);
+        Path helm = temporary.resolve("helm");
+        lifecycle.gitOps(project, AppChainGitOpsExporter.Target.HELM, helm);
+
+        assertThat(exported.status()).isEqualTo("GITOPS_EXPORTED");
+        assertThat(fileDigests(first)).isEqualTo(fileDigests(second));
+        assertThat(Files.readString(first.resolve("files/node0.properties")))
+                .contains("yano.storage.path=/var/lib/yano/chainstate")
+                .contains("node1:13337,node2:13337");
+        assertThat(Files.readString(first.resolve("node0.yaml")))
+                .contains("secretRef:", "yano-appchain-node0")
+                .doesNotContain("YANO_APPCHAIN_SIGNING_KEY=");
+        assertThat(Files.readString(first.resolve("gitops.lock")))
+                .contains("sourceBlueprintDigest", "sourceResolvedConfigDigest",
+                        "sourceReleaseCatalogDigest");
+        assertThat(helm.resolve("Chart.yaml")).isRegularFile();
+        assertThat(helm.resolve("templates/nodes.yaml")).isRegularFile();
+        assertThat(allText(helm)).doesNotContain("YANO_APPCHAIN_SIGNING_KEY=");
+
+        Path nonEmpty = Files.createDirectory(temporary.resolve("non-empty"));
+        Files.writeString(nonEmpty.resolve("keep"), "user data");
+        assertThatThrownBy(() -> lifecycle.gitOps(
+                project, AppChainGitOpsExporter.Target.HELM, nonEmpty))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("must be empty");
+
+        Path devnet = temporary.resolve("devnet-project");
+        renderer.initialize(devnet, withNetwork(
+                blueprint("audit-log", "fixed", List.of()), "devnet"));
+        assertThatThrownBy(() -> lifecycle.gitOps(devnet,
+                AppChainGitOpsExporter.Target.KUSTOMIZE, temporary.resolve("devnet-export")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("ephemeral genesis");
+    }
+
     private static AppChainProjectModel.Blueprint blueprint(
             String recipe,
             String sequencing,
@@ -415,6 +480,16 @@ class AppChainProjectTest {
                         new AppChainProjectModel.RuntimeSelection(runtime),
                         new AppChainProjectModel.DeploymentSelection(deployment),
                         spec.chains()));
+    }
+
+    private static AppChainProjectModel.Blueprint withNetwork(
+            AppChainProjectModel.Blueprint blueprint,
+            String network) {
+        AppChainProjectModel.Spec spec = blueprint.spec();
+        return new AppChainProjectModel.Blueprint(
+                blueprint.apiVersion(), blueprint.kind(), blueprint.metadata(),
+                new AppChainProjectModel.Spec(spec.yanoVersion(), network, spec.runtime(),
+                        spec.deployment(), spec.chains()));
     }
 
     private static AppChainProjectModel.Blueprint withHosts(

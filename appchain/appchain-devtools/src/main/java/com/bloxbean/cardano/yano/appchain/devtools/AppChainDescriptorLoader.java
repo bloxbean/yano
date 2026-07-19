@@ -90,7 +90,7 @@ final class AppChainDescriptorLoader {
         return name.endsWith(".jar") || name.endsWith(".zip");
     }
 
-    private static void validateUntrustedMetadata(AppChainMetadataDescriptor descriptor) {
+    static void validateUntrustedMetadata(AppChainMetadataDescriptor descriptor) {
         descriptor.properties().stream()
                 .filter(property -> property.constraintProvenance().enforceable())
                 .findFirst()

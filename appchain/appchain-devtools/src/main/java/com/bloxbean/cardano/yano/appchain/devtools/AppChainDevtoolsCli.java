@@ -46,6 +46,8 @@ public final class AppChainDevtoolsCli {
                or: yano appchain doctor [project-directory] [--distribution <path>]
                or: yano appchain diff <old.lock> <new.lock>
                or: yano appchain drift [project-directory] --peer <url> [--peer <url> ...]
+               or: yano appchain gitops [project-directory] --target helm|kustomize --output <empty-dir>
+               or: yano appchain metadata verify <plugin.jar> --trust-key <key-id=64-hex-public-key>
                or: yano appchain migrate [project-directory] [--dry-run]
             Options:
               --config <yml|yaml|properties>             repeatable, later source wins
@@ -583,7 +585,7 @@ public final class AppChainDevtoolsCli {
         if (cursor >= args.length) return false;
         return switch (args[cursor]) {
             case "init", "render", "recipes", "capabilities", "doctor", "diff", "drift",
-                    "migrate" -> true;
+                    "gitops", "metadata", "migrate" -> true;
             default -> false;
         };
     }

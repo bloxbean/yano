@@ -132,7 +132,7 @@ state machine's exact wire format — see the
 
 ---
 
-## 3. Quick start: two-node cluster with the default distribution
+## 3. Quick start: generated project or two-node manual setup
 
 This walkthrough uses `java -jar` with `-D` flags (built from source). The
 **official distributions** work the same way — only where ordinary runtime
@@ -148,6 +148,58 @@ instructions; releases: https://github.com/bloxbean/yano/releases
 The public REST prefix is the exception: it is an immutable artifact input,
 not a `-D` or YAML launch setting. Build it with `-PyanoApiPrefix` as described
 in section 4 and the distribution guide.
+
+### 3.0 Recommended: generate a release-pinned project
+
+The distribution includes the separate app-chain developer tool behind
+`yano.sh`; it does not start the node while generating or validating:
+
+```bash
+unzip yano-<version>.zip && cd yano-<version>
+./yano.sh appchain recipes
+./yano.sh appchain init --non-interactive \
+  --recipe owned-registry --network preprod --members 3 \
+  --deployment host --output product-registry
+```
+
+The user-owned source is `product-registry/appchain.yaml`. The initializer
+materializes all consensus defaults, node overlays, schema/catalog snapshots,
+secret-reference examples, an AI skill, CI checks, and `appchain.lock`. If
+member public keys are not known yet, the lock records
+`PUBLIC_MEMBER_IDENTITIES_REQUIRED_BEFORE_START`; add the three public keys to
+the blueprint and regenerate:
+
+```bash
+./yano.sh appchain render product-registry
+./yano.sh appchain config validate --mode project product-registry
+./yano.sh appchain doctor product-registry --distribution .
+```
+
+Provision each node's private signer only in its untracked
+`secrets/nodeN.env`, then copy the same validated project to the three
+machines. Each operator starts only its node index with
+`scripts/start-node N`; the shared consensus file and lock remain identical.
+
+For Kubernetes delivery, derive reviewed output from the validated project:
+
+```bash
+./yano.sh appchain gitops product-registry \
+  --target helm --output product-registry-helm
+./yano.sh appchain gitops product-registry \
+  --target kustomize --output product-registry-kustomize
+```
+
+The exporter creates Secret references, never Secret values, and writes a
+`gitops.lock` binding the manifests to the blueprint, resolved configuration,
+release catalog, and generated-file hashes. It does not apply manifests or
+operate a cluster. Devnet is intentionally excluded because its current
+launcher generates ephemeral genesis inputs.
+
+The generated `.github/workflows/appchain-verify.yml` requires repository
+variables `YANO_DISTRIBUTION_URL` and `YANO_DISTRIBUTION_SHA256`; it accepts
+only the exact checksum-pinned HTTPS distribution. The same guarded
+`configure-yano-appchain` skill is available under `skills/` in the release
+and `ai/` in the project.
 
 ### 3.1 Generate member keys
 
@@ -237,14 +289,14 @@ without writing any config:
 
 ```bash
 unzip yano-<version>.zip && cd yano-<version>
-./appchain-cluster/cluster.sh start 3        # 3-node devnet: L1 producer + 2 followers,
+./yano.sh appchain cluster start 3          # 3-node devnet: L1 producer + 2 followers,
                                              # 2 demo chains (ordered-log + kv-registry)
-./appchain-cluster/cluster.sh status         # tips + state-root agreement across nodes
-./appchain-cluster/cluster.sh submit orders-chain demo "hello"
-./appchain-cluster/cluster.sh kv registry-chain set color blue
+./yano.sh appchain cluster status           # tips + state-root agreement across nodes
+./yano.sh appchain cluster submit orders-chain demo "hello"
+./yano.sh appchain cluster kv registry-chain set color blue
 ./appchain-cluster/loadtest.sh orders-chain -n 2000 -c 20     # throughput test
 ./appchain-cluster/loadtest.sh registry-chain --kv -n 2000    # kv chains need --kv
-./appchain-cluster/cluster.sh clean          # stop + wipe
+./yano.sh appchain cluster clean            # stop + wipe
 ```
 
 Highlights (full reference: `appchain-cluster/README.md`):
@@ -647,7 +699,21 @@ The plugin template ships this test pre-wired (`CounterConformanceTest`).
    provider class must exactly match the ServiceLoader entry. Package any
    non-host runtime dependencies into the same reproducible bundle JAR; do not
    deploy adjacent thin dependency JARs as one catalog-v1 bundle.
-4. Drop the jar into the JVM node's plugins directory (`yaci.plugins.directory`,
+4. For schema-aware tooling, add the data-only descriptor
+   `META-INF/yano/appchain-config-metadata-v1.json`. For distribution or CI
+   trust, sign the descriptor and exact runtime manifest in
+   `META-INF/yano/appchain-config-metadata-v1.sig.json`, then verify with an
+   operator-pinned raw Ed25519 public key:
+   ```bash
+   ./yano.sh appchain metadata verify plugins/order-book.jar \
+     --trust-key vendor-release-2026=<64-hex-public-key>
+   ```
+   Verification authenticates publisher identity and the byte binding only.
+   It does not load the plugin or raise third-party metadata above `PARTIAL`
+   validation coverage. The envelope schema and canonical payload contract are
+   packaged as `appchain-metadata-trust.schema.json` and documented by the
+   app-chain developer tool.
+5. Drop the jar into the JVM node's plugins directory (`yaci.plugins.directory`,
    default `plugins/`), and select it:
    ```yaml
    yano:

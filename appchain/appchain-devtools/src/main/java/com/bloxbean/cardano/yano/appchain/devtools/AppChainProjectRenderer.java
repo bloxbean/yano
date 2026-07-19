@@ -23,6 +23,8 @@ import java.util.TreeMap;
 
 /** Deterministic, no-silent-overwrite project renderer. */
 final class AppChainProjectRenderer {
+    enum NodeLayout { HOST, COMPOSE, KUBERNETES }
+
     static final String BLUEPRINT_FILE = "appchain.yaml";
     static final String LOCK_FILE = "appchain.lock";
     static final int MAX_BLUEPRINT_BYTES = 1_048_576;
@@ -189,15 +191,23 @@ final class AppChainProjectRenderer {
                 catalog.releaseIndexBytes());
         outputs.put("schema/appchain-first-party-metadata.json",
                 catalog.firstPartyMetadataBytes());
+        outputs.put("schema/appchain-metadata-trust.schema.json",
+                catalog.metadataTrustSchemaBytes());
+        outputs.put("schema/appchain-gitops-lock.schema.json",
+                catalog.gitOpsLockSchemaBytes());
+        outputs.put("ai/configure-yano-appchain/SKILL.md", catalog.aiSkillBytes());
+        outputs.put("ai/configure-yano-appchain/agents/openai.yaml",
+                catalog.aiSkillOpenAiBytes());
         outputs.put("config/shared-consensus.properties", utf8(properties(
                 resolution.consensusProperties())));
 
         int members = resolution.blueprint().spec().chains().getFirst().topology().members();
         boolean compose = "docker-compose".equals(
                 resolution.blueprint().spec().deployment().target());
+        NodeLayout layout = compose ? NodeLayout.COMPOSE : NodeLayout.HOST;
         for (int index = 0; index < members; index++) {
             outputs.put("config/nodes/node" + index + ".properties",
-                    utf8(nodeProperties(resolution, index, members, compose,
+                    utf8(nodeProperties(resolution, index, members, layout,
                             resolvedConfigDigest, catalog.digests().get("releaseIndex"))));
             outputs.put("secrets/node" + index + ".env.example",
                     utf8(secretExample(index)));
@@ -210,6 +220,9 @@ final class AppChainProjectRenderer {
         outputs.put("docs/VERIFY.md", utf8(verificationDocumentation(resolution)));
         outputs.put("plugins/README.md", utf8(pluginDocumentation(resolution)));
         outputs.put("scripts/validate", utf8(validateScript()));
+        outputs.put("ci/verify", utf8(ciVerifyScript()));
+        outputs.put("ci/README.md", utf8(ciReadme()));
+        outputs.put(".github/workflows/appchain-verify.yml", utf8(ciWorkflow()));
         if ("devnet".equals(resolution.blueprint().spec().network())) {
             outputs.put("scripts/prepare-devnet", utf8(prepareDevnetScript()));
             outputs.put("runtime/.gitignore", utf8("*\n!.gitignore\n"));
@@ -242,11 +255,11 @@ final class AppChainProjectRenderer {
         return output.toString();
     }
 
-    private static String nodeProperties(
+    static String nodeProperties(
             AppChainProjectModel.Resolution resolution,
             int node,
             int members,
-            boolean compose,
+            NodeLayout layout,
             String resolvedConfigDigest,
             String releaseCatalogDigest) {
         List<String> declaredHosts = resolution.blueprint().spec().chains().getFirst()
@@ -254,24 +267,29 @@ final class AppChainProjectRenderer {
         AppChainProjectModel.Topology topology = resolution.blueprint().spec().chains()
                 .getFirst().topology();
         boolean distributed = declaredHosts != null && !declaredHosts.isEmpty();
+        boolean compose = layout == NodeLayout.COMPOSE;
+        boolean kubernetes = layout == NodeLayout.KUBERNETES;
         int httpBase = topology.httpPortBase() == null ? 8080 : topology.httpPortBase();
         int serverBase = topology.serverPortBase() == null ? 13337 : topology.serverPortBase();
-        int serverPort = compose ? 13337 : distributed ? serverBase : serverBase + node;
-        int httpPort = compose ? 8080 : distributed ? httpBase : httpBase + node;
+        int serverPort = compose || kubernetes ? 13337
+                : distributed ? serverBase : serverBase + node;
+        int httpPort = compose || kubernetes ? 8080
+                : distributed ? httpBase : httpBase + node;
         List<String> peers = new ArrayList<>();
         for (int index = 0; index < members; index++) {
             if (index == node) continue;
-            String peerHost = compose ? "node" + index
+            String peerHost = compose || kubernetes ? "node" + index
                     : distributed ? declaredHosts.get(index) : "127.0.0.1";
-            int peerPort = compose ? 13337 : distributed ? serverBase : serverBase + index;
+            int peerPort = compose || kubernetes ? 13337
+                    : distributed ? serverBase : serverBase + index;
             peers.add(peerHost + ":" + peerPort);
         }
         TreeMap<String, String> values = new TreeMap<>();
         values.put("quarkus.http.host", "0.0.0.0");
         values.put("quarkus.http.port", Integer.toString(httpPort));
         values.put("yano.server.port", Integer.toString(serverPort));
-        values.put("yano.storage.path", compose
-                ? "/project/data/node" + node + "/chainstate"
+        values.put("yano.storage.path", kubernetes ? "/var/lib/yano/chainstate"
+                : compose ? "/project/data/node" + node + "/chainstate"
                 : "${YANO_APPCHAIN_DATA_ROOT}/node" + node + "/chainstate");
         if ("devnet".equals(resolution.blueprint().spec().network())) {
             values.put("yano.genesis.shelley-genesis-file", "${YANO_APPCHAIN_GENESIS_FILE}");
@@ -290,9 +308,10 @@ final class AppChainProjectRenderer {
             values.put("yano.block-producer.enabled", "false");
             values.put("yano.dev-mode", "false");
             values.put("yano.client.enabled", "true");
-            values.put("yano.remote.host", compose ? "node0"
+            values.put("yano.remote.host", compose || kubernetes ? "node0"
                     : distributed ? declaredHosts.getFirst() : "127.0.0.1");
-            values.put("yano.remote.port", Integer.toString(compose ? 13337 : serverBase));
+            values.put("yano.remote.port", Integer.toString(
+                    compose || kubernetes ? 13337 : serverBase));
         }
         values.putAll(resolution.nodePropertyTemplate());
         String prefix = "yano.app-chain.chains[0].";
@@ -304,6 +323,73 @@ final class AppChainProjectRenderer {
         return "# Copy to node" + node + ".env, chmod 600, and provide a private seed/reference.\n"
                 + "YANO_APPCHAIN_SIGNING_KEY=\n"
                 + "YANO_APPCHAIN_API_KEYS=\n";
+    }
+
+    private static String ciVerifyScript() {
+        return """
+                #!/usr/bin/env bash
+                set -euo pipefail
+                root="$(cd "$(dirname "$0")/.." && pwd)"
+                : "${YANO_HOME:?Set YANO_HOME to the extracted, version-matched Yano distribution}"
+                "$YANO_HOME/yano.sh" appchain config validate --mode project "$root"
+                "$YANO_HOME/yano.sh" appchain doctor "$root" --distribution "$YANO_HOME"
+                """;
+    }
+
+    private static String ciReadme() {
+        return """
+                # CI verification
+
+                `verify` performs offline project validation and confirms that the extracted Yano
+                distribution matches the project runtime and release capability index. It never
+                starts nodes and does not require signing keys or API keys.
+
+                The generated GitHub Actions workflow requires repository variables
+                `YANO_DISTRIBUTION_URL` and `YANO_DISTRIBUTION_SHA256`. Pin both to the exact Yano
+                release selected by `appchain.yaml`; the download is rejected unless its SHA-256
+                matches.
+                """;
+    }
+
+    private static String ciWorkflow() {
+        return """
+                # Generated by yano appchain; edit appchain.yaml, then render.
+                name: App-chain project verification
+                on:
+                  pull_request:
+                  push:
+                    branches: [main]
+                permissions:
+                  contents: read
+                jobs:
+                  verify:
+                    runs-on: ubuntu-latest
+                    steps:
+                      - uses: actions/checkout@v4
+                      - name: Require pinned Yano distribution
+                        env:
+                          YANO_DISTRIBUTION_URL: ${{ vars.YANO_DISTRIBUTION_URL }}
+                          YANO_DISTRIBUTION_SHA256: ${{ vars.YANO_DISTRIBUTION_SHA256 }}
+                        run: |
+                          set -euo pipefail
+                          test -n "$YANO_DISTRIBUTION_URL"
+                          test -n "$YANO_DISTRIBUTION_SHA256"
+                          test "${#YANO_DISTRIBUTION_SHA256}" -eq 64
+                          case "$YANO_DISTRIBUTION_SHA256" in
+                            *[!0-9a-fA-F]*) exit 1 ;;
+                          esac
+                          download=(curl --fail --location --proto '=https' --tlsv1.2)
+                          download+=(--output "$RUNNER_TEMP/yano.zip")
+                          "${download[@]}" -- "$YANO_DISTRIBUTION_URL"
+                          checksum_line="$YANO_DISTRIBUTION_SHA256  $RUNNER_TEMP/yano.zip"
+                          printf '%s' "$checksum_line" | sha256sum --check -
+                          unzip -q "$RUNNER_TEMP/yano.zip" -d "$RUNNER_TEMP/yano"
+                          YANO_HOME="$(find "$RUNNER_TEMP/yano" -mindepth 1 -maxdepth 1 -type d -print -quit)"
+                          test -x "$YANO_HOME/yano.sh"
+                          echo "YANO_HOME=$YANO_HOME" >> "$GITHUB_ENV"
+                      - name: Validate blueprint, lock, generated files, and distribution
+                        run: ./ci/verify
+                """;
     }
 
     private static String secretsReadme(AppChainProjectModel.Resolution resolution) {
@@ -416,7 +502,10 @@ final class AppChainProjectRenderer {
                 """.formatted(String.join(", ", resolution.artifacts()), custom
                 ? "This project uses the advanced custom-plugin path. Package the reviewed JVM "
                         + "bundle separately, provide its declarative configuration metadata, "
-                        + "and run doctor against the final distribution before deployment."
+                        + "bind that descriptor to its runtime manifest with the signed trust "
+                        + "envelope, run `yano appchain metadata verify` with a pinned vendor "
+                        + "public key, and run doctor against the final distribution. A valid "
+                        + "signature authenticates the binding but remains PARTIAL coverage."
                 : "All selected components are first-party artifacts declared by the release index.");
     }
 
@@ -761,7 +850,7 @@ final class AppChainProjectRenderer {
     private static void markScriptsExecutable(Path root, Set<String> names) {
         if (!supportsPosix(root)) return;
         for (String name : names) {
-            if (!name.startsWith("scripts/")) continue;
+            if (!name.startsWith("scripts/") && !"ci/verify".equals(name)) continue;
             try {
                 Files.setPosixFilePermissions(root.resolve(name), EXECUTABLE);
             } catch (IOException failure) {

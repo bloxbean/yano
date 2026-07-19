@@ -185,4 +185,33 @@ final class AppChainProjectModel {
 
     record DriftReport(String status, int peerCount, List<DriftCheck> checks) {
     }
+
+    record GitOpsLock(
+            String apiVersion,
+            String kind,
+            String target,
+            String sourceBlueprintDigest,
+            String sourceResolvedConfigDigest,
+            String sourceReleaseCatalogDigest,
+            Map<String, String> generatedFiles) {
+    }
+
+    record GitOpsResult(
+            String status,
+            String target,
+            int generatedFileCount,
+            GitOpsLock lock) {
+    }
+
+    record MetadataTrustResult(
+            String status,
+            int schemaVersion,
+            String algorithm,
+            String keyId,
+            String bundleId,
+            String descriptorId,
+            String descriptorSha256,
+            String runtimeManifestSha256,
+            String validationCoverage) {
+    }
 }

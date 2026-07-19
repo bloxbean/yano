@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://yano.dev/schema/appchain-metadata-trust/v1alpha1",
+  "title": "Yano app-chain metadata trust envelope",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "algorithm",
+    "keyId",
+    "bundleId",
+    "descriptorSha256",
+    "runtimeManifestSha256",
+    "signature"
+  ],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "algorithm": {"const": "Ed25519"},
+    "keyId": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"},
+    "bundleId": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$"},
+    "descriptorSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "runtimeManifestSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "signature": {"type": "string", "maxLength": 256}
+  }
+}

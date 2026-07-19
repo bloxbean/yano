@@ -1,8 +1,8 @@
-# ADR-DX-0001 v12: Unified App-Chain Onboarding, Configuration, and Lifecycle
+# ADR-DX-0001 v13: Unified App-Chain Onboarding, Configuration, and Ecosystem Lifecycle
 
 ## Status
 
-Proposed — implementation review draft v12
+Proposed — implementation review draft v13
 
 This consolidated review draft incorporates the findings from the completed
 review rounds. It is the single proposal to use for subsequent review and
@@ -15,10 +15,24 @@ profile-evolution rules.
 
 ## Date
 
-2026-07-19
+2026-07-20
 
 ## Review history
 
+- **v13:** Records the bounded M6 ecosystem baseline. Every generated project
+  receives a release-pinned `configure-yano-appchain` AI skill, a non-mutating
+  CI verification script, and a checksum-pinned GitHub Actions workflow.
+  `appchain gitops` derives deterministic, secret-free Helm or Kustomize output
+  from an already validated non-devnet project and binds every generated file
+  to the source blueprint, resolved-config, and release-catalog identities in
+  `gitops.lock`; it does not expand the blueprint deployment target or claim a
+  production operator. `appchain metadata verify` uses an operator-pinned raw
+  Ed25519 public key to authenticate a bounded data-only trust envelope that
+  binds a third-party configuration descriptor to its exact runtime plugin
+  manifest. Signature success proves publisher/binding authenticity only and
+  remains `PARTIAL` validation coverage. A reconciliation operator, automatic
+  cluster lifecycle, additional deployment targets, and client codestarts
+  remain adoption-driven follow-ons.
 - **v12:** Records the M5 live-identity and strictness boundary. Generated
   projects bind the resolved-configuration and release-catalog digests into
   every node overlay. A privileged, fail-closed runtime endpoint exposes only
@@ -1149,6 +1163,8 @@ product-evidence/
   schema/
     appchain-blueprint-schema.json
     appchain-runtime.schema.json
+    appchain-metadata-trust.schema.json
+    appchain-gitops-lock.schema.json
 
   config/
     application-appchain.yml
@@ -1166,6 +1182,16 @@ product-evidence/
 
   plugins/
     plugin-lock.json
+
+  ai/
+    configure-yano-appchain/
+      SKILL.md
+
+  ci/
+    verify
+
+  .github/workflows/
+    appchain-verify.yml
 
   compose.yaml
   scripts/
@@ -1238,7 +1264,7 @@ It preserves current behavior and routes commands as follows:
 | `./yano.sh start` or `start:<profiles>` | Existing `yano.jar` or native `yano` node |
 | `./yano.sh appchain cluster ...` | Existing `appchain-cluster/cluster.sh` |
 | `./yano.sh appchain config ...` | Separate `appchain-devtools` executable |
-| `./yano.sh appchain init/render/doctor/diff/drift ...` | Separate `appchain-devtools` executable |
+| `./yano.sh appchain init/render/doctor/diff/drift/gitops/metadata ...` | Separate `appchain-devtools` executable |
 
 The raw native node executable remains named `yano` for compatibility. Because
 that name is already occupied, ADR examples use `./yano.sh appchain ...` for
@@ -1346,6 +1372,10 @@ the release capability index and verified from final release artifacts.
 ./yano.sh appchain explain recipe:<id>
 ./yano.sh appchain diff <old.lock> <new.lock>
 ./yano.sh appchain migrate <project>
+./yano.sh appchain drift <project> --peer <url>...
+./yano.sh appchain gitops <project> --target helm|kustomize --output <empty-dir>
+./yano.sh appchain metadata verify <plugin.jar> \
+  --trust-key <key-id=64-hex-ed25519-public-key>
 ```
 
 All non-interactive commands provide machine-readable diagnostics, stable
@@ -1363,6 +1393,11 @@ error codes, and a JSON output mode.
 - `diff`: classify a proposed change without applying it.
 - `migrate`: upgrade blueprint/lock formats without changing retained-chain
   semantics.
+- `drift`: compare project and redacted live-node identity categories.
+- `gitops`: derive deterministic deployment manifests from a validated,
+  release-pinned project without mutating the blueprint or running a cluster.
+- `metadata verify`: authenticate a third-party descriptor/runtime-manifest
+  binding against operator-pinned vendor keys without loading plugin code.
 - `cluster`: delegate local demo lifecycle commands to the maintained cluster
   launcher; it is not a production deployment controller.
 
@@ -1418,7 +1453,8 @@ vendor the matching schemas so editor support does not require network access.
 
 ### 15.4 AI-assisted configuration
 
-An optional `configure-appchain` skill may:
+The distribution and generated projects include a version-matched
+`configure-yano-appchain` skill. It may:
 
 1. interview the user at the outcome/trust/deployment level;
 2. select a release-pinned recipe and capabilities;
@@ -1429,6 +1465,16 @@ An optional `configure-appchain` skill may:
 
 The AI path may not invent raw runtime keys, bypass unsupported combinations,
 receive production secrets, or treat prose reasoning as validation.
+
+The skill treats the packaged CLI, recipe/capability catalogs, blueprint, and
+lock as the authority for that release. It edits only `appchain.yaml`, runs
+`render`, project validation, and `doctor`, and reports unresolved operator
+inputs and honest coverage. It never places a secret value in its prompt,
+output, blueprint, command arguments, or generated tracked files. If the
+catalog does not provide a requested capability, it reports the capability as
+unsupported instead of inventing a runtime property. The same skill files are
+packaged in JVM/native distributions and copied byte-for-byte into projects;
+their digests are included in `appchain.lock`.
 
 ### 15.5 Client codestarts
 
@@ -1443,6 +1489,36 @@ The initializer may generate a Java/Spring client that demonstrates:
 Client generation consumes the same chain ID, API-auth policy, topics, and
 proof policy as the node project. It is optional and may ship after the first
 CLI release. Additional languages are separate codestarts, not resolver forks.
+
+### 15.6 CI and GitOps derivatives
+
+Every generated project includes `ci/verify` and a GitHub Actions workflow.
+The script performs project validation and distribution-aware `doctor`
+inspection without starting a node or reading secrets. The workflow downloads
+only the repository-configured HTTPS distribution URL and rejects it unless it
+matches the configured SHA-256. Both values must pin the release selected in
+`appchain.yaml`; no default floating URL exists.
+
+`appchain gitops` first validates the project and then produces either a Helm
+chart or Kustomize base in a missing or empty, non-symlinked directory. It is a
+derived export, not another blueprint deployment target or resolver. Output
+uses Kubernetes DNS peer identities, isolated node configuration, persistent
+storage, readiness probes, and per-node Secret references. It contains no
+Secret values. `gitops.lock` records the target, source blueprint digest,
+source resolved-config digest, source release-catalog digest, and SHA-256 for
+every derivative file.
+
+This first exporter accepts Preview, Preprod, and Mainnet projects. It rejects
+Devnet because current Devnet bootstrap includes an ephemeral genesis
+timestamp and launcher-generated genesis file that are not captured as
+reproducible GitOps inputs. The runtime container image remains an explicit
+operator pin and must satisfy the documented environment, port, config-mount,
+and storage contract.
+
+M6 does not introduce a Kubernetes operator. Reconciliation, upgrades,
+governed membership orchestration, key rotation, backup/restore, and automatic
+runtime-manifest installation require a separate production lifecycle design
+after blueprint stabilization and real deployment feedback.
 
 ## 16. Secrets and trust boundary
 
@@ -1463,6 +1539,9 @@ The following rules are mandatory:
 9. Third-party codestarts/templates are declarative data and cannot execute
    arbitrary code during preview or generation.
 10. Secret scanning is a release gate for every generated golden project.
+11. A third-party metadata signature authenticates publisher identity and the
+    exact descriptor/runtime-manifest byte binding; it does not attest plugin
+    code behavior, allocate a namespace, or grant `FULL` coverage.
 
 The system must not claim that a static website is inherently unable to
 receive secrets. The protection comes from the schema, UX, content policy,
@@ -1523,6 +1602,24 @@ compatibility rules. If no dev-tools descriptor exists:
 - it does not claim strict unknown-key or semantic coverage for that plugin;
 - a generated project cannot carry a fully supported-recipe label; and
 - raw plugin config is preserved only through the explicit advanced path.
+
+A plugin publisher may additionally place
+`META-INF/yano/appchain-config-metadata-v1.sig.json` in the bundle. The strict
+schema-v1 envelope declares `Ed25519`, a safe `keyId`, the runtime `bundleId`,
+the SHA-256 of the exact configuration descriptor bytes, the SHA-256 of the
+exact `META-INF/yano/plugins/<bundleId>.json` bytes, and a base64 signature.
+The canonical signed payload is domain-separated and includes the descriptor
+owner ID, bundle ID, key ID, and both digests.
+
+`appchain metadata verify` accepts only bounded JAR/ZIP input and one or more
+`key-id=raw-public-key` trust anchors supplied by the operator. It rejects
+missing or duplicate resources, oversized archives/resources, unknown
+envelope fields, manifest-ID mismatch, empty/oversized contribution lists,
+digest mismatch, unknown keys, and invalid signatures. It parses data only and
+never loads a plugin class. Trust keys are public values but remain
+configuration owned by the operator; the tool does not download or infer
+them. Signed or unsigned third-party metadata remains `PARTIAL` at most until
+runtime parser parity and namespace ownership are established independently.
 
 ### 18.3 Runtime strict mode
 
@@ -1741,14 +1838,37 @@ Strict rollout remains intentionally narrow. The runtime and shared parser
 own the same strict-domain list, generated projects opt in, and custom plugin
 keys outside a `FULL` domain continue to work without modification.
 
-### M6+ — AI, GitOps, and third-party ecosystem
+### M6 — bounded AI, CI, GitOps, and third-party ecosystem baseline
 
-- add the schema-pinned AI skill;
-- generate CI, Helm, and Kustomize outputs;
-- evaluate an operator after blueprint stabilization;
-- define third-party descriptor signing, trust, maturity, and compatibility;
-- validate third-party capability metadata against runtime manifests; and
-- expand client codestarts and deployment targets based on adoption.
+- package the schema-pinned `configure-yano-appchain` skill in JVM/native
+  distributions and generated projects;
+- generate non-mutating CI verification with an HTTPS URL and mandatory
+  SHA-256 distribution pin supplied by the repository;
+- derive deterministic Helm and Kustomize output from a validated production
+  network project, with per-node Secret references and `gitops.lock` identity
+  binding;
+- publish the v1alpha1 metadata trust-envelope schema;
+- verify bounded Ed25519-signed third-party descriptor/runtime-manifest
+  bindings using only explicitly supplied operator trust keys; and
+- preserve `PARTIAL` coverage for authenticated third-party metadata.
+
+The implemented M6 is deliberately a releasable ecosystem baseline, not an
+unbounded production operator. GitOps export does not add `kubernetes` to the
+blueprint deployment enum, perform `apply`, create a Secret, install plugin
+code, reconcile a cluster, or orchestrate retained-state changes. The skill is
+a guarded frontend over version-matched catalogs and deterministic commands,
+not an alternate resolver. Signature verification authenticates bytes and
+publisher identity, not behavior or runtime parity.
+
+### M6+ — adoption-driven ecosystem expansion
+
+- evaluate a Kubernetes/operator lifecycle only after blueprint stabilization
+  and real Helm/Kustomize operational feedback;
+- define namespace allocation and the evidence required to promote a signed
+  third-party component beyond `PARTIAL`;
+- expand client codestarts and deployment targets based on adoption; and
+- consider additional CI systems as deterministic templates over the same
+  project-validation contract.
 
 ## 20. Verification and build gates
 
@@ -1795,6 +1915,8 @@ Test at least:
 - Timestamps, host paths, locale, and host name do not affect locked output.
 - CLI and any complete web resolver produce the same normalized plan and lock.
 - Generated-file drift is detected before overwrite.
+- Helm and Kustomize exports from the same validated project are byte-identical
+  across output directories and bind every derivative file in `gitops.lock`.
 
 ### 20.4 Security
 
@@ -1805,6 +1927,11 @@ Test at least:
 - Effective/explain/doctor diagnostics and web previews remain redacted.
 - Third-party templates cannot execute code or access filesystem/network
   resources through the generator.
+- Metadata trust tests cover valid Ed25519 signatures, unknown keys, byte
+  tampering, manifest-ID mismatch, unsigned bundles, duplicate resources, and
+  safety bounds. Success remains `PARTIAL`.
+- Generated CI/GitOps output contains no private value and cannot download an
+  unchecked Yano distribution.
 
 ### 20.5 Packaged recipe tests
 
@@ -1837,6 +1964,23 @@ Test at least:
 - The final JVM runtime test authenticates the redacted identity endpoint on
   two generated nodes and requires packaged `appchain drift` to return
   `DRIFT_OK` without leaking the API key in logs or process arguments.
+- Final JVM and native archive contracts include the same release-pinned AI
+  skill. The standalone dev-tools archive includes it as well.
+
+### 20.7 M6 ecosystem gates
+
+- The AI skill passes its structural validator and contains the no-secrets,
+  no-invented-properties, version-matched catalog, and deterministic-validation
+  guardrails.
+- Generated `ci/verify` passes shell syntax checks and the workflow requires a
+  non-empty HTTPS distribution URL plus exact SHA-256.
+- GitOps export refuses Devnet, non-empty output, symlink output, and a project
+  whose blueprint, lock, catalogs, or generated files fail validation.
+- Kubernetes node config uses stable service DNS peer names, isolated storage,
+  project/release identities, readiness checks, and only named Secret
+  references.
+- The trust-envelope schema is vendored, golden-hashed, release-packaged, and
+  copied into generated projects.
 
 ## 21. Acceptance criteria
 
@@ -1890,6 +2034,16 @@ The first stable-v1 decision requires all applicable criteria below:
 26. Runtime strict mode rejects an unknown key in each enabled `FULL`
     ownership domain while representative custom-plugin namespaces remain
     accepted.
+27. Every generated project includes a validated release-pinned AI skill and a
+    non-mutating CI check that verifies the exact distribution checksum.
+28. A validated non-devnet project produces deterministic Helm and Kustomize
+    derivatives whose `gitops.lock` binds source and output identities and
+    whose tracked content contains no Secret values.
+29. A third-party plugin descriptor can be authenticated against an
+    operator-pinned Ed25519 key and exact runtime manifest without loading
+    plugin code, while the result remains visibly `PARTIAL`.
+30. M6 tooling never applies manifests, provisions credentials, mutates a
+    running cluster, or presents the exporter as a production operator.
 
 ## 22. Consequences
 
@@ -1935,8 +2089,10 @@ The first stable-v1 decision requires all applicable criteria below:
 | Static UI diverges from CLI | Blueprint-only first release; shared engine or lock-parity gate later |
 | Browser receives secret data | No secret fields, CSP, no config telemetry, tests, local secret references only |
 | AI invents unsupported config | Blueprint-only changes followed by deterministic validation/rendering |
+| GitOps output is mistaken for a reconciler | Derivative-only command, source/output lock, explicit image/Secret inputs, no apply API |
+| Signed metadata is mistaken for safe code | Signature proves publisher and byte binding only; retain `PARTIAL`, runtime review, and parser parity gates |
 | Config digest is mistaken for consensus proof | Separate names, schemas, UI fields, and documentation |
-| Third-party metadata attacks tooling | Strict resource bounds, escaping, validation, and no executable templates |
+| Third-party metadata attacks tooling | Strict archive/resource bounds, duplicate detection, escaping, validation, signatures, and no class loading |
 | Generated project implies production readiness | Maturity labels, trust statement, pilot checklist, explicit scope |
 | Manual generated-file edits are lost | Digest check and explicit reconciliation before overwrite |
 | Dispatcher breaks existing node launch | Backward-compatibility tests over final JVM/native archives |
@@ -1955,7 +2111,8 @@ later ADR, but must be resolved before the named stabilization gate:
 3. Exact CLI launcher packaging on Windows.
 4. Published native distribution flavors, their release-index identities, and
    when a platform-native `yano-appchain` tool becomes a release gate.
-5. Third-party descriptor signing/trust and namespace-allocation policy.
+5. Third-party namespace allocation, vendor-key rotation/revocation, and the
+   evidence required to promote authenticated metadata beyond `PARTIAL`.
 6. Whether stable v1 supports multiple chains per project or only preserves
    the array shape.
 7. Whether schemas are vendored only, URL-addressed only, or both. The current
@@ -1978,7 +2135,10 @@ The delivery order is:
 3. lock, CLI, lifecycle tooling, and full first-party metadata;
 4. packaged recipe acceptance and schema stabilization;
 5. static discovery UI and optional client codestarts;
-6. live drift, runtime strictness, AI, GitOps, and third-party expansion.
+6. live drift and narrow runtime strictness, followed by the bounded AI, CI,
+   GitOps, and third-party trust baseline.
 
 This sequence provides early value without sacrificing the long-term lifecycle
-model or overstating validation coverage.
+model or overstating validation coverage. A production reconciliation operator,
+additional deployment targets, and client codestarts remain separate,
+adoption-driven decisions rather than conditions for completing M6.

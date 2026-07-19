@@ -33,6 +33,9 @@ distributions {
             from(generatedMetadataDirectory) {
                 into 'metadata'
             }
+            from('src/main/resources/appchain-dx/v1alpha1/skills/configure-yano-appchain') {
+                into 'skills/configure-yano-appchain'
+            }
         }
     }
 }
@@ -45,9 +48,13 @@ tasks.register('generateAppChainMetadata', JavaExec) {
     inputs.files(sourceSets.main.allJava)
     inputs.dir('src/main/resources/appchain-dx/v1alpha1')
     outputs.dir(generatedMetadataDirectory)
+    doFirst {
+        delete generatedMetadataDirectory
+    }
     doLast {
         copy {
             from('src/main/resources/appchain-dx/v1alpha1')
+            exclude 'skills/**'
             into(generatedMetadataDirectory.get().dir('appchain-dx/v1alpha1').asFile)
         }
     }

@@ -43,6 +43,14 @@ class AppChainFinalDistributionAcceptanceTest {
         assertThat(release.resolve("studio/index.html")).isRegularFile();
         assertThat(release.resolve("studio/assets/appchain-release-capability-index.json"))
                 .isRegularFile();
+        assertThat(release.resolve("skills/configure-yano-appchain/SKILL.md"))
+                .isRegularFile();
+        assertThat(release.resolve("skills/configure-yano-appchain/agents/openai.yaml"))
+                .isRegularFile();
+        assertThat(release.resolve("config/schema/appchain-metadata-trust.schema.json"))
+                .isRegularFile();
+        assertThat(release.resolve("config/schema/appchain-gitops-lock.schema.json"))
+                .isRegularFile();
         assertStudioBlueprintRoundTrips(release, launcher);
 
         AppChainPropertyRegistry properties = AppChainPropertyRegistry.framework();

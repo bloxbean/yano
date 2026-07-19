@@ -91,6 +91,21 @@ class AppChainPackagedCliTest {
         assertThat(capabilities.output()).contains("state:role-evidence", "state:custom-plugin");
         assertThat(project.resolve("appchain.yaml")).isRegularFile();
         assertThat(project.resolve("appchain.lock")).isRegularFile();
+        assertThat(project.resolve("ci/verify")).isExecutable();
+        assertThat(project.resolve("ai/configure-yano-appchain/SKILL.md"))
+                .isRegularFile();
+
+        Path productionProject = temporary.resolve("packaged-preprod-project");
+        Result productionInit = run(launcher, "init", "--non-interactive",
+                "--recipe", "audit-log", "--network", "preprod", "--members", "1",
+                "--member-key", "a".repeat(64), "--output", productionProject.toString());
+        Path gitOps = temporary.resolve("packaged-kustomize");
+        Result gitOpsResult = run(launcher, "gitops", productionProject.toString(),
+                "--target", "kustomize", "--output", gitOps.toString());
+        assertThat(productionInit.exitCode()).isZero();
+        assertThat(gitOpsResult.exitCode()).isZero();
+        assertThat(gitOpsResult.output()).contains("GITOPS_EXPORTED");
+        assertThat(gitOps.resolve("gitops.lock")).isRegularFile();
 
         try (ZipFile archive = new ZipFile(distribution.toFile())) {
             List<String> entries = archive.stream().map(entry -> entry.getName()).toList();
@@ -109,6 +124,16 @@ class AppChainPackagedCliTest {
             assertThat(entries).anyMatch(name ->
                     name.endsWith("/metadata/appchain-dx/v1alpha1/"
                             + "appchain-first-party-metadata.json"));
+            assertThat(entries).anyMatch(name ->
+                    name.endsWith("/metadata/appchain-dx/v1alpha1/"
+                            + "appchain-metadata-trust.schema.json"));
+            assertThat(entries).anyMatch(name ->
+                    name.endsWith("/metadata/appchain-dx/v1alpha1/"
+                            + "appchain-gitops-lock.schema.json"));
+            assertThat(entries).anyMatch(name ->
+                    name.endsWith("/skills/configure-yano-appchain/SKILL.md"));
+            assertThat(entries).anyMatch(name ->
+                    name.endsWith("/skills/configure-yano-appchain/agents/openai.yaml"));
         }
     }
 
