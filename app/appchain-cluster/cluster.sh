@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Yano app-chain cluster launcher — spin up an N-node app-chain cluster for a
-# quick demo. Defaults to a self-contained devnet (node 0 produces L1 blocks,
-# the rest follow); can also run every node as a relay to a public network.
+# Yano single-host app-chain cluster launcher — spin up and manage an N-node
+# app-chain cluster. Defaults to a self-contained devnet (node 0 produces L1
+# blocks, the rest follow); can also run every node as a public-network relay.
 #
 # Runs with whatever Yano build is available — the uber-jar (app/build/yano.jar)
 # or the native binary (app/build/yano) — auto-detected.
@@ -876,16 +876,8 @@ write_private_config() {
   validate_generated_private_config "$i" || die "generated private config for node $i is not secure"
 }
 
-prepare_private_configs() {
-  local n="$1" i requested parent cluster_canon
-  PRIVATE_CONFIG_DIR=""
-  PRIVATE_CONFIG_FILES=()
-  PRIVATE_CONFIG_URIS=()
-  PRIVATE_CONFIG_DIGESTS=()
-  [ -n "$MEMBER_KEY_DIR_CANON" ] \
-    || { [ "$ENABLE_ANCHOR" = "1" ] && [ -n "$ANCHOR_KEY_FILE_VALUE" ]; } \
-    || return 0
-
+prepare_private_config_directory() {
+  local requested parent cluster_canon
   requested="${PRIVATE_CONFIG_DIR_REQUESTED:-$CLUSTER_DIR/private-config}"
   if [ -n "$PRIVATE_CONFIG_DIR_REQUESTED" ]; then
     cluster_canon="$(canonical_path "$CLUSTER_DIR")" || die "cannot resolve cluster data directory"
@@ -903,10 +895,33 @@ prepare_private_configs() {
   fi
   validate_private_key_directory "$PRIVATE_CONFIG_DIR" "cluster private-config"
   PRIVATE_CONFIG_DIR="$PRIVATE_KEY_DIR_CANON"
+}
+
+prepare_private_configs() {
+  local n="$1" i
+  PRIVATE_CONFIG_DIR=""
+  PRIVATE_CONFIG_FILES=()
+  PRIVATE_CONFIG_URIS=()
+  PRIVATE_CONFIG_DIGESTS=()
+  [ -n "$MEMBER_KEY_DIR_CANON" ] \
+    || { [ "$ENABLE_ANCHOR" = "1" ] && [ -n "$ANCHOR_KEY_FILE_VALUE" ]; } \
+    || return 0
+  prepare_private_config_directory
   for ((i=0;i<n;i++)); do
     private_config_needed "$i" || continue
     write_private_config "$i"
   done
+}
+
+prepare_private_config_for_node() {
+  local i="$1"
+  PRIVATE_CONFIG_DIR=""
+  PRIVATE_CONFIG_FILES=()
+  PRIVATE_CONFIG_URIS=()
+  PRIVATE_CONFIG_DIGESTS=()
+  private_config_needed "$i" || return 0
+  prepare_private_config_directory
+  write_private_config "$i"
 }
 
 combined_config_location() {
@@ -972,6 +987,135 @@ PY
 # app-chain storage may instead provide its already-validated instance marker.
 cluster_identity_file() { printf '%s' "$CLUSTER_DIR/cluster-identity.json"; }
 cluster_app_identity_file() { printf '%s' "$CLUSTER_DIR/cluster-appchain-identity.json"; }
+
+IDENTITY_NETWORK=""
+IDENTITY_MEMBER_COUNT=""
+IDENTITY_THRESHOLD=""
+IDENTITY_PROPOSER=""
+IDENTITY_MEMBERS=""
+IDENTITY_CHAINS=""
+
+# Read the immutable standalone bootstrap identity without sourcing shell data.
+# Governed epochs live in app-chain history and deliberately do not rewrite
+# this marker; a joining node always starts from these genesis members and then
+# derives later epochs through verified catch-up.
+load_cluster_app_identity() {
+  local marker output line key value seen=""
+  marker="$(cluster_app_identity_file)"
+  [ -e "$marker" ] && [ ! -L "$marker" ] \
+    || die "standalone app-chain identity marker is missing; start a governed cluster first"
+  output="$(python3 - "$marker" <<'PY'
+import json
+import os
+import re
+import stat
+import sys
+
+path = sys.argv[1]
+
+def unique_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate key")
+        result[key] = value
+    return result
+
+descriptor = -1
+try:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    before = os.fstat(descriptor)
+    if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.geteuid()
+            or stat.S_IMODE(before.st_mode) not in (0o400, 0o600)
+            or before.st_nlink != 1 or before.st_size < 1 or before.st_size > 65536):
+        raise ValueError("unsafe marker")
+    raw = b""
+    while len(raw) < before.st_size:
+        chunk = os.read(descriptor, before.st_size - len(raw))
+        if not chunk:
+            break
+        raw += chunk
+    after = os.fstat(descriptor)
+    stable = ("st_dev", "st_ino", "st_uid", "st_mode", "st_nlink", "st_size")
+    if len(raw) != before.st_size or any(
+            getattr(before, field) != getattr(after, field) for field in stable):
+        raise ValueError("marker changed")
+    document = json.loads(raw.decode("utf-8"), object_pairs_hook=unique_object,
+                          parse_constant=lambda _value: (_ for _ in ()).throw(ValueError()))
+    canonical = (json.dumps(document, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    members = document.get("members")
+    chains = document.get("chainIds")
+    anchor = document.get("anchor")
+    count = document.get("memberCount")
+    threshold = document.get("threshold")
+    proposer = document.get("proposer")
+    network = document.get("network")
+    expected_fields = {
+        "schemaVersion", "kind", "network", "memberCount", "members",
+        "threshold", "proposer", "chainIds", "anchor",
+    }
+    if (raw != canonical or set(document) != expected_fields
+            or document.get("schemaVersion") != 1
+            or document.get("kind") != "yano.cluster.appchain-identity"
+            or network not in {"devnet", "preprod", "preview", "mainnet", "sanchonet"}
+            or type(count) is not int or not 1 <= count <= 32
+            or not isinstance(members, list) or len(members) != count
+            or len(set(members)) != count
+            or any(not isinstance(item, str) or not re.fullmatch(r"[0-9a-f]{64}", item)
+                   for item in members)
+            or type(threshold) is not int or not 1 <= threshold <= count
+            or proposer not in members
+            or not isinstance(chains, list) or not chains or len(set(chains)) != len(chains)
+            or any(not isinstance(item, str)
+                   or not re.fullmatch(r"[A-Za-z0-9._~-]{1,128}", item) for item in chains)
+            or not isinstance(anchor, dict)
+            or set(anchor) != {"enabled", "mode", "signerFingerprint"}
+            or type(anchor.get("enabled")) is not bool):
+        raise ValueError("invalid marker")
+    if anchor["enabled"]:
+        if (anchor.get("mode") not in {"metadata", "script"}
+                or not isinstance(anchor.get("signerFingerprint"), str)
+                or not re.fullmatch(r"[0-9a-f]{64}", anchor["signerFingerprint"])):
+            raise ValueError("invalid anchor identity")
+    elif anchor.get("mode") is not None or anchor.get("signerFingerprint") is not None:
+        raise ValueError("invalid disabled anchor identity")
+    print("NETWORK=" + network)
+    print("MEMBER_COUNT=" + str(count))
+    print("THRESHOLD=" + str(threshold))
+    print("PROPOSER=" + proposer)
+    print("MEMBERS=" + ",".join(members))
+    print("CHAINS=" + ",".join(chains))
+except Exception:
+    raise SystemExit(1)
+finally:
+    if descriptor >= 0:
+        os.close(descriptor)
+PY
+)" || die "standalone app-chain identity marker is unsafe or malformed"
+
+  IDENTITY_NETWORK=""; IDENTITY_MEMBER_COUNT=""; IDENTITY_THRESHOLD=""
+  IDENTITY_PROPOSER=""; IDENTITY_MEMBERS=""; IDENTITY_CHAINS=""
+  while IFS= read -r line || [ -n "$line" ]; do
+    key="${line%%=*}"; value="${line#*=}"
+    case "$key" in
+      NETWORK)      [ "${seen#*N}" = "$seen" ] || die "duplicate identity field"; seen+="N"; IDENTITY_NETWORK="$value";;
+      MEMBER_COUNT) [ "${seen#*C}" = "$seen" ] || die "duplicate identity field"; seen+="C"; IDENTITY_MEMBER_COUNT="$value";;
+      THRESHOLD)    [ "${seen#*T}" = "$seen" ] || die "duplicate identity field"; seen+="T"; IDENTITY_THRESHOLD="$value";;
+      PROPOSER)     [ "${seen#*P}" = "$seen" ] || die "duplicate identity field"; seen+="P"; IDENTITY_PROPOSER="$value";;
+      MEMBERS)      [ "${seen#*M}" = "$seen" ] || die "duplicate identity field"; seen+="M"; IDENTITY_MEMBERS="$value";;
+      CHAINS)       [ "${seen#*H}" = "$seen" ] || die "duplicate identity field"; seen+="H"; IDENTITY_CHAINS="$value";;
+      *) die "standalone app-chain identity marker contains an unknown field";;
+    esac
+  done <<< "$output"
+  [ "${#seen}" -eq 6 ] || die "standalone app-chain identity marker is incomplete"
+  [ "$IDENTITY_NETWORK" = "$NETWORK" ] \
+    || die "saved cluster network differs from the app-chain identity marker"
+  local configured_chains
+  configured_chains="$(chain_ids | paste -sd, -)"
+  [ "$configured_chains" = "$IDENTITY_CHAINS" ] \
+    || die "configured chain IDs differ from the retained app-chain identity"
+}
 
 l1_state_present() {
   local path
@@ -2261,10 +2405,10 @@ peers_csv() {
 
 # -D system properties wiring the multi-chain config for node i.
 chain_props() {
-  local n="$1" i="$2" members threshold peers proposer idx
+  local n="$1" i="$2" peer_count="${3:-$1}" members threshold peers proposer idx
   members="$(members_csv "$n")"
   threshold="${THRESHOLD:-$(default_threshold "$n")}"
-  peers="$(peers_csv "$n" "$i")"
+  peers="$(peers_csv "$peer_count" "$i")"
   proposer="$(node_pub 0)"
   # Anchoring is LEADER-ONLY (node 0): script-mode followers co-sign and adopt
   # the identity with zero anchor config (008.4); metadata-mode followers need
@@ -2298,7 +2442,7 @@ chain_props() {
 # Launch node i in the background. Node 0 is the devnet block producer; the
 # rest follow it (or, with --network <net>, every node relays that network).
 launch_node() {
-  local n="$1" i="$2"
+  local n="$1" i="$2" peer_count="${3:-$1}"
   local overlay_location=""
   # Fail before creating node state if the preflight-validated file changed.
   revalidate_node_config_for_launch "$i"
@@ -2338,7 +2482,8 @@ launch_node() {
     fi
   fi
   # App-chain multi-chain wiring (per node).
-  local -a cprops=(); while IFS= read -r p; do cprops+=("$p"); done < <(chain_props "$n" "$i")
+  local -a cprops=(); while IFS= read -r p; do cprops+=("$p"); done \
+    < <(chain_props "$n" "$i" "$peer_count")
   args+=("${cprops[@]}")
 
   local log; log="$(log_file "$i")"
@@ -2417,6 +2562,7 @@ start_follower_resilient() {
 cmd_start() {
   local n="${1:-3}" i indices
   [[ "$n" =~ ^[0-9]+$ && "$n" -ge 1 ]] || die "node count must be a positive integer"
+  [ "$n" -le 32 ] || die "app-chain membership supports at most 32 nodes"
   resolve_runtime
   [ -f "$CONFIG_FILE" ] || die "config not found: $CONFIG_FILE (set YANO_HOME to a tree containing config/application-appchain.yml)"
   local -a cids=(); while IFS= read -r c; do cids+=("$c"); done < <(chain_ids)
@@ -2624,6 +2770,364 @@ cmd_kv() {
   if [ -n "$mid" ]; then echo "kv $op $key -> $cid  (${mid:0:16}...)"; else c_red "kv failed: $resp"; return 1; fi
 }
 
+normalize_member_public_key() {
+  local value="${1:-}"
+  [[ "$value" =~ ^[0-9a-fA-F]{64}$ ]] \
+    || die "member public key must be exactly 64 hexadecimal characters"
+  printf '%s' "$value" | tr 'A-F' 'a-f'
+}
+
+ready_node_indices() {
+  local i indices
+  indices="$(pid_indices)" || return 1
+  for i in $indices; do
+    managed_node_pid "$i" && health_ready "$i" && printf '%s\n' "$i"
+  done
+}
+
+cmd_member_add() {
+  local public_key view_node="" indices cid status members_json threshold
+  local signer request accepted member_key deadline epoch_from active
+  local -a identity_chains=()
+  public_key="$(normalize_member_public_key "${1:-}")" || exit 1
+  [ -d "$CLUSTER_DIR" ] || die "no cluster (start one first)"
+  validate_cluster_directory \
+    || die "cluster data directory must be launcher-owned, non-symlink, and not group/world writable"
+  load_cluster_app_identity
+  indices="$(ready_node_indices)" || die "cannot inspect running cluster nodes"
+  [ -n "$indices" ] || die "no cluster nodes are ready"
+  view_node="${indices%%$'\n'*}"
+  request="$(jq -nc --arg key "$public_key" '{publicKey:$key}')"
+
+  IFS=',' read -r -a identity_chains <<< "$IDENTITY_CHAINS"
+  for cid in "${identity_chains[@]}"; do
+    status="$(curl -fsS --connect-timeout 3 --max-time 10 \
+      "http://localhost:$(http_port "$view_node")/api/v1/app-chain/chains/$cid/status")" \
+      || die "cannot read '$cid' status from node $view_node"
+    [ "$(printf '%s' "$status" | jq -r '.membershipMode // "static"')" = "governed" ] \
+      || die "chain '$cid' uses static membership; configure membership.mode=governed before bootstrap"
+    members_json="$(api_curl -fsS \
+      "http://localhost:$(http_port "$view_node")/api/v1/app-chain/chains/$cid/admin/members")" \
+      || die "cannot read '$cid' membership"
+    threshold="$(printf '%s' "$status" | jq -r '.membershipActiveThreshold // 0')"
+    [[ "$threshold" =~ ^[0-9]+$ ]] && [ "$threshold" -ge 1 ] \
+      || die "chain '$cid' returned an invalid membership threshold"
+    if printf '%s' "$members_json" | jq -e --arg key "$public_key" \
+        '.members | index($key) != null' >/dev/null; then
+      epoch_from="$(printf '%s' "$status" | jq -r '.membershipEpochFromHeight // 0')"
+      active="$(printf '%s' "$status" | jq -r '.membershipEpochActive // false')"
+      c_ylw "member already scheduled/active on $cid" \
+        "(epoch from height $epoch_from, active-for-next-block=$active): $public_key"
+      continue
+    fi
+
+    accepted=0
+    local seen_signers="," node_status
+    for signer in $indices; do
+      node_status="$(curl -fsS --connect-timeout 3 --max-time 10 \
+        "http://localhost:$(http_port "$signer")/api/v1/app-chain/chains/$cid/status")" \
+        || continue
+      [ "$(printf '%s' "$node_status" | jq -r '.memberActiveForNextBlock // false')" = "true" ] \
+        || continue
+      member_key="$(printf '%s' "$node_status" | jq -r '.memberKey // empty')"
+      [[ "$member_key" =~ ^[0-9a-f]{64}$ ]] || continue
+      case "$seen_signers" in *",$member_key,"*) continue;; esac
+      api_curl -fsS -X POST \
+        "http://localhost:$(http_port "$signer")/api/v1/app-chain/chains/$cid/admin/members/add" \
+        -H 'Content-Type: application/json' -d "$request" >/dev/null \
+        || die "member approval failed on '$cid' through node $signer after $accepted/$threshold approvals"
+      seen_signers+="$member_key,"
+      accepted=$((accepted + 1))
+      printf 'membership approval %d/%d for %s via node %d\n' \
+        "$accepted" "$threshold" "$cid" "$signer"
+      [ "$accepted" -ge "$threshold" ] && break
+    done
+    [ "$accepted" -ge "$threshold" ] \
+      || die "chain '$cid' needs $threshold ready current members; only $accepted approved"
+
+    deadline=$(( $(date +%s) + 120 ))
+    while :; do
+      members_json="$(api_curl -fsS \
+        "http://localhost:$(http_port "$view_node")/api/v1/app-chain/chains/$cid/admin/members")" \
+        || members_json=""
+      if [ -n "$members_json" ] && printf '%s' "$members_json" | jq -e --arg key "$public_key" \
+          '.members | index($key) != null' >/dev/null; then
+        break
+      fi
+      [ "$(date +%s)" -le "$deadline" ] \
+        || die "timed out waiting for governed member epoch on '$cid'"
+      sleep 1
+    done
+    status="$(curl -fsS --connect-timeout 3 --max-time 10 \
+      "http://localhost:$(http_port "$view_node")/api/v1/app-chain/chains/$cid/status")" \
+      || die "cannot read '$cid' membership activation status"
+    epoch_from="$(printf '%s' "$status" | jq -r '.membershipEpochFromHeight // 0')"
+    active="$(printf '%s' "$status" | jq -r '.membershipEpochActive // false')"
+    c_grn "member epoch recorded on $cid (from height $epoch_from, active-for-next-block=$active)"
+  done
+}
+
+wait_joined_node_catchup() {
+  local node="$1" reference="$2" deadline cid reference_view joined_view
+  local reference_tip joined_tip reference_root joined_root caught
+  local -a identity_chains=()
+  deadline=$(( $(date +%s) + 180 ))
+  while :; do
+    caught=1
+    IFS=',' read -r -a identity_chains <<< "$IDENTITY_CHAINS"
+    for cid in "${identity_chains[@]}"; do
+      reference_view="$(curl -fsS --connect-timeout 2 --max-time 5 \
+        "http://localhost:$(http_port "$reference")/api/v1/app-chain/chains/$cid/status" 2>/dev/null)" \
+        || { caught=0; break; }
+      joined_view="$(curl -fsS --connect-timeout 2 --max-time 5 \
+        "http://localhost:$(http_port "$node")/api/v1/app-chain/chains/$cid/status" 2>/dev/null)" \
+        || { caught=0; break; }
+      reference_tip="$(printf '%s' "$reference_view" | jq -r '.tipHeight // -1')"
+      joined_tip="$(printf '%s' "$joined_view" | jq -r '.tipHeight // -1')"
+      reference_root="$(printf '%s' "$reference_view" | jq -r '.stateRoot // empty')"
+      joined_root="$(printf '%s' "$joined_view" | jq -r '.stateRoot // empty')"
+      if [ "$joined_tip" != "$reference_tip" ] || [ -z "$reference_root" ] \
+          || [ "$joined_root" != "$reference_root" ]; then
+        caught=0
+        break
+      fi
+    done
+    [ "$caught" -eq 0 ] || return 0
+    [ "$(date +%s)" -le "$deadline" ] || return 1
+    sleep 2
+  done
+}
+
+cmd_node_join() {
+  local index="${1:-}" first_ready existing_indices expected_members public_key j
+  [[ "$index" =~ ^[0-9]+$ ]] || die "node index must be a non-negative integer"
+  index=$((10#$index))
+  [ "$index" -le 31 ] || die "app-chain membership supports node indices 0..31"
+  [ -d "$CLUSTER_DIR" ] || die "no cluster (start one first)"
+  validate_cluster_directory \
+    || die "cluster data directory must be launcher-owned, non-symlink, and not group/world writable"
+  load_cluster_app_identity
+  [ "$index" -ge "$IDENTITY_MEMBER_COUNT" ] \
+    || die "node $index is a bootstrap member; use start/restart rather than join"
+  for ((j=IDENTITY_MEMBER_COUNT;j<index;j++)); do
+    [ -d "$(node_dir "$j")" ] \
+      || die "join nodes in index order; node $j has not been staged"
+  done
+  if managed_node_pid "$index"; then
+    die "node $index is already running"
+  fi
+  node_record_artifacts_exist "$index" \
+    && die "node $index has an incomplete or stale launcher record; inspect it before joining"
+  resolve_runtime
+  [ -f "$CONFIG_FILE" ] || die "config not found: $CONFIG_FILE"
+  validate_cluster_key_inputs "$((index + 1))"
+  expected_members="$(members_csv "$IDENTITY_MEMBER_COUNT")"
+  [ "$expected_members" = "$IDENTITY_MEMBERS" ] \
+    || die "configured demo/member-key identities differ from the retained bootstrap marker"
+  if [ -n "$THRESHOLD" ] && [ "$THRESHOLD" != "$IDENTITY_THRESHOLD" ]; then
+    die "--threshold differs from the retained bootstrap threshold"
+  fi
+  THRESHOLD="$IDENTITY_THRESHOLD"
+  validate_node_config_overlays "$((index + 1))"
+  public_key="$(node_pub "$index")"
+  case ",$IDENTITY_MEMBERS," in *",$public_key,"*)
+    die "node $index key is already part of the immutable bootstrap membership";;
+  esac
+
+  HTTP_BASE="$(validate_port_base "$HTTP_BASE" "$((index + 1))" "HTTP base")" || exit 1
+  SERVER_BASE="$(validate_port_base "$SERVER_BASE" "$((index + 1))" "server base")" || exit 1
+  port_is_busy "$(http_port "$index")" \
+    && die "node $index HTTP port $(http_port "$index") is busy"
+  port_is_busy "$(server_port "$index")" \
+    && die "node $index n2n port $(server_port "$index") is busy"
+  [ "$(http_port "$index")" != "$(server_port "$index")" ] \
+    || die "node $index HTTP and n2n ports overlap"
+
+  existing_indices="$(ready_node_indices)" || die "cannot inspect running cluster nodes"
+  [ -n "$existing_indices" ] || die "no existing cluster node is ready"
+  first_ready="${existing_indices%%$'\n'*}"
+
+  # Governance is recorded before the new signer starts. Existing members keep
+  # the old threshold, so liveness is unchanged while the new node catches up.
+  cmd_member_add "$public_key"
+
+  PROFILE="appchain"
+  [ "$NETWORK" = "devnet" ] && PROFILE="devnet,appchain" || PROFILE="${NETWORK},appchain"
+  if [ "$NETWORK" = "devnet" ]; then
+    prepare_devnet_follower_genesis "$index"
+  fi
+  prepare_private_config_for_node "$index"
+  printf 'node %d (governed joiner) ... ' "$index"
+  launch_node "$IDENTITY_MEMBER_COUNT" "$index" "$((index + 1))"
+  wait_ready "$index"
+  c_grn "ready (http $(http_port "$index"), n2n $(server_port "$index"))"
+  printf 'catching up governed history and state roots ... '
+  if wait_joined_node_catchup "$index" "$first_ready"; then
+    c_grn "agreed"
+  else
+    stop_managed_node_confirmed "$index" >/dev/null 2>&1 || true
+    die "node $index did not converge with node $first_ready within 180s"
+  fi
+  c_grn "node $index joined and caught up with member key $public_key"
+  echo "membership voting activates at the governed per-chain heights reported above"
+}
+
+cbor_head() {
+  local major="$1" length="$2"
+  [ "$length" -ge 0 ] && [ "$length" -le 65535 ] \
+    || die "demo CBOR value exceeds 65535 bytes"
+  if [ "$length" -lt 24 ]; then
+    printf '%02x' "$(( major * 32 + length ))"
+  elif [ "$length" -le 255 ]; then
+    printf '%02x%02x' "$(( major * 32 + 24 ))" "$length"
+  else
+    printf '%02x%04x' "$(( major * 32 + 25 ))" "$length"
+  fi
+}
+
+cbor_text() {
+  local value="$1" length
+  length="$(LC_ALL=C printf '%s' "$value" | wc -c | tr -d ' ')"
+  printf '%s%s' "$(cbor_head 3 "$length")" "$(_hex_of "$value")"
+}
+
+cbor_bytes() {
+  local value="$1" length
+  length="$(LC_ALL=C printf '%s' "$value" | wc -c | tr -d ' ')"
+  printf '%s%s' "$(cbor_head 2 "$length")" "$(_hex_of "$value")"
+}
+
+submit_hex_message() {
+  local cid="$1" topic="$2" body_hex="$3" node="${4:-0}" request response
+  request="$(jq -nc --arg topic "$topic" --arg bodyHex "$body_hex" \
+    '{topic:$topic,bodyHex:$bodyHex}')"
+  response="$(curl -fsS --connect-timeout 5 --max-time 30 -X POST \
+    "http://localhost:$(http_port "$node")/api/v1/app-chain/chains/$cid/messages" \
+    -H 'Content-Type: application/json' -d "$request")" \
+    || die "message submission failed on '$cid'"
+  printf '%s' "$response" | jq -e -r '.messageId' >/dev/null \
+    || die "message submission on '$cid' returned no messageId"
+}
+
+cmd_effect_demo() {
+  local cid="effects-chain" node=0 item payload propose approve deadline effects effect status
+  local worker claim_request claim_response claimed_effect height ordinal external_ref
+  local detail proof payload_text before_tip from_height message="hello from Yano effects"
+  [ "$#" -le 1 ] || die "usage: $0 effect demo [\"message\"]"
+  [ "$#" -eq 0 ] || message="$1"
+  health_ready "$node" || die "node 0 is not ready"
+  status="$(curl -fsS --connect-timeout 3 --max-time 10 \
+    "http://localhost:$(http_port "$node")/api/v1/app-chain/chains/$cid/status")" \
+    || die "cannot inspect '$cid'"
+  printf '%s' "$status" | jq -e '.effects.enabled == true' >/dev/null \
+    || die "'$cid' is missing or effects are not enabled in the default demo config"
+  before_tip="$(printf '%s' "$status" | jq -r '.tipHeight // 0')"
+  [[ "$before_tip" =~ ^[0-9]+$ ]] || die "'$cid' returned an invalid tip height"
+  from_height=$((before_tip + 1))
+
+  item="demo-$(date +%s)-$$"
+  payload="$(jq -nc --arg item "$item" --arg message "$message" \
+    '{event:"demo.effect.requested",itemId:$item,message:$message}')"
+  propose="85"'00'"$(cbor_text "$item")""$(cbor_bytes "$payload")"'01''00'
+  approve="82"'01'"$(cbor_text "$item")"
+  submit_hex_message "$cid" demo-effect "$propose" "$node"
+  submit_hex_message "$cid" demo-effect "$approve" "$node"
+
+  deadline=$(( $(date +%s) + 120 ))
+  effect=""
+  while [ -z "$effect" ]; do
+    effects="$(curl -fsS --connect-timeout 3 --max-time 10 \
+      "http://localhost:$(http_port "$node")/api/v1/app-chain/chains/$cid/effects?fromHeight=$from_height&limit=100")" \
+      || effects='{"effects":[]}'
+    effect="$(printf '%s' "$effects" | jq -c --arg scope "approvals/$item" \
+      '.effects[] | select(.scope == $scope and .type == "demo.webhook")' | tail -1)"
+    [ -n "$effect" ] && break
+    [ "$(date +%s)" -le "$deadline" ] || die "timed out waiting for the demo effect"
+    sleep 1
+  done
+  height="$(printf '%s' "$effect" | jq -r '.height')"
+  ordinal="$(printf '%s' "$effect" | jq -r '.ordinal')"
+  c_grn "Effect emitted       $cid height=$height ordinal=$ordinal"
+  echo  "Effect type          demo.webhook"
+
+  worker="cluster-demo-worker-$item"
+  external_ref=""
+  while [ -z "$external_ref" ]; do
+    claim_request="$(jq -nc --arg id "$worker" \
+      '{executorId:$id,types:["demo.webhook"],max:32,leaseSeconds:60}')"
+    claim_response="$(api_curl -fsS -X POST \
+      "http://localhost:$(http_port "$node")/api/v1/app-chain/chains/$cid/effects/claim" \
+      -H 'Content-Type: application/json' -d "$claim_request")" \
+      || die "external demo worker could not claim effects"
+    while IFS= read -r claimed_effect; do
+      [ -n "$claimed_effect" ] || continue
+      local claimed_height claimed_ordinal claimed_id claimed_scope claimed_ref claimed_report
+      claimed_height="$(printf '%s' "$claimed_effect" | jq -r '.height')"
+      claimed_ordinal="$(printf '%s' "$claimed_effect" | jq -r '.ordinal')"
+      claimed_id="$(printf '%s' "$claimed_effect" | jq -r '.effectId')"
+      claimed_scope="$(printf '%s' "$claimed_effect" | jq -r '.scope')"
+      claimed_ref="demo-worker://confirmed/$claimed_id"
+      claimed_report="$(jq -nc --arg id "$worker" --arg ref "$(_hex_of "$claimed_ref")" \
+        '{executorId:$id,success:true,externalRefHex:$ref}')"
+      api_curl -fsS -X POST \
+        "http://localhost:$(http_port "$node")/api/v1/app-chain/chains/$cid/effects/$claimed_height/$claimed_ordinal/report" \
+        -H 'Content-Type: application/json' -d "$claimed_report" >/dev/null \
+        || die "external demo worker could not report effect $claimed_id"
+      if [ "$claimed_scope" = "approvals/$item" ]; then
+        external_ref="$claimed_ref"
+        payload_text="$(printf '%s' "$claimed_effect" | jq -r '.payloadHex' \
+          | python3 -c 'import sys; print(bytes.fromhex(sys.stdin.read().strip()).decode("utf-8"))')" \
+          || die "demo effect payload was not UTF-8"
+      fi
+    done < <(printf '%s' "$claim_response" | jq -c '.effects[]')
+    if [ -z "$external_ref" ]; then
+      [ "$(date +%s)" -le "$deadline" ] || die "timed out claiming the demo effect"
+      sleep 1
+    fi
+  done
+
+  while :; do
+    detail="$(api_curl -fsS \
+      "http://localhost:$(http_port "$node")/api/v1/app-chain/chains/$cid/effects/$height/$ordinal")" \
+      || detail=""
+    [ "$(printf '%s' "$detail" | jq -r '.execution.status // empty')" = "DONE" ] && break
+    [ "$(date +%s)" -le "$deadline" ] || die "timed out waiting for demo effect completion"
+    sleep 1
+  done
+  proof="$(curl -fsS --connect-timeout 3 --max-time 10 \
+    "http://localhost:$(http_port "$node")/api/v1/app-chain/chains/$cid/effects/$height/$ordinal/proof")" \
+    || die "demo effect proof is unavailable"
+  printf '%s' "$proof" | jq -e '.effectHashHex and .effectsRootHex and .stateRootHex and .stateProofWireHex' \
+    >/dev/null || die "demo effect proof is incomplete"
+  echo  "Executor             external demo worker on node 0"
+  c_grn "Delivery             CONFIRMED"
+  echo  "External reference   $external_ref"
+  echo  "Attempts              $(printf '%s' "$detail" | jq -r '.execution.attempts')"
+  c_grn "Proof                 AVAILABLE ($(printf '%s' "$proof" | jq -r '.effectHashHex[0:16]')...)"
+  echo  "Captured payload      $payload_text"
+}
+
+cmd_member() {
+  case "${1:-}" in
+    add) cmd_member_add "${2:-}";;
+    *) die "usage: $0 member add <public-key>";;
+  esac
+}
+
+cmd_node() {
+  case "${1:-}" in
+    join) cmd_node_join "${2:-}";;
+    *) die "usage: $0 node join <index>";;
+  esac
+}
+
+cmd_effect() {
+  case "${1:-}" in
+    demo) shift; cmd_effect_demo "$@";;
+    *) die "usage: $0 effect demo [\"message\"]";;
+  esac
+}
+
 cmd_anchor_bootstrap() {
   local cid="${1:-}"; [ -n "$cid" ] || die "usage: $0 anchor-bootstrap <chain-id>"
   load_cluster_env
@@ -2712,6 +3216,9 @@ Yano app-chain cluster launcher
 Usage:
   $0 start [N] [options]        start an N-node cluster (default N=3)
   $0 status                     health + per-chain tips/roots + consistency
+  $0 node join <index>          govern, start, and catch up one later member
+  $0 member add <public-key>    governance-only add across configured chains
+  $0 effect demo ["message"]    emit, execute, and prove a demo effect
   $0 submit <chain> <topic> <payload> [--node i] [--count n]
   $0 kv <chain> set <key> <value> [--node i]   put into a kv-registry chain
   $0 kv <chain> del <key> [--node i]           delete from a kv-registry chain
@@ -2858,6 +3365,9 @@ esac
 case "$CMD" in
   start)             cmd_start "${1:-3}";;
   status)            cmd_status;;
+  node)              cmd_node "$@";;
+  member)            cmd_member "$@";;
+  effect)            cmd_effect "$@";;
   submit)            cmd_submit "$@";;
   kv)                cmd_kv "$@";;
   loadtest)          YANO_CLUSTER_HTTP_BASE="$HTTP_BASE" exec "$SCRIPT_DIR/loadtest.sh" "$@";;

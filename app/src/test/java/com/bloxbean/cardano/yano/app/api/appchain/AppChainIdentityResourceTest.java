@@ -64,6 +64,26 @@ class AppChainIdentityResourceTest {
     }
 
     @Test
+    void normalizesValidUppercaseDigestsInsteadOfSilentlyDroppingThem() {
+        String uppercase = "ABCDEF".repeat(10) + "ABCD";
+        AppChainGateway gateway = gateway(Map.of(
+                "consensusProfile", Map.of("digest", uppercase)));
+        var resource = new AppChainResource.ChainScopedResource(gateway,
+                new AppChainResource.RuntimeIdentityContext(
+                        "SHA256:" + uppercase, uppercase, uppercase));
+
+        try (Response response = resource.identity()) {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> entity = (Map<String, Object>) response.getEntity();
+            assertEquals(uppercase.toLowerCase(), entity.get("consensusProfileDigest"));
+            assertEquals("sha256:" + uppercase.toLowerCase(),
+                    entity.get("pluginCatalogFingerprint"));
+            assertEquals(uppercase.toLowerCase(), entity.get("resolvedConfigDigest"));
+            assertEquals("PROJECT_BOUND", entity.get("identityCoverage"));
+        }
+    }
+
+    @Test
     void runtimeFailureDoesNotEchoInternalDetails() {
         AppChainGateway gateway = (AppChainGateway) Proxy.newProxyInstance(
                 AppChainGateway.class.getClassLoader(),

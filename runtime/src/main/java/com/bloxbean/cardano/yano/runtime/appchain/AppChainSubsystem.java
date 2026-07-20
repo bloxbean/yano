@@ -1092,7 +1092,37 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
 
     /** Verified messages arriving from a peer: dedup, route, relay. */
     void onInboundMessages(List<AppMessage> messages) {
-        generationUseOrNoop(() -> onInboundMessagesWithinGeneration(messages));
+        var generationUse = generationUseGate.tryAcquire();
+        try (generationUse) {
+            if (generationUse.admitted()) {
+                onInboundMessagesWithinGeneration(messages);
+                return;
+            }
+        }
+
+        // A NodeServer may accept protocol-100 traffic before start() has
+        // activated this subsystem's resource generation. Keep only bounded
+        // consensus traffic across that lifecycle gap; ordinary application
+        // messages still require an active generation. The engine validates
+        // height, membership, signatures and expiry when start drains this
+        // queue, so stale traffic cannot become a finalized round.
+        queueEarlyConsensus(messages);
+        // Close the race with start() publishing RUNNING between the failed
+        // admission above and this enqueue. If start already won, this caller
+        // drains the queue itself; otherwise start drains it after publication.
+        generationUseOrNoop(this::drainEarlyConsensus);
+    }
+
+    private void queueEarlyConsensus(List<AppMessage> messages) {
+        for (AppMessage message : messages) {
+            String topic = message.getTopic() != null ? message.getTopic() : "";
+            if (!topic.startsWith(AppChainSystemTopics.CONSENSUS_DIFFUSION_PREFIX)) {
+                continue;
+            }
+            if (!offerEarlyConsensus(message)) {
+                return;
+            }
+        }
     }
 
     private void onInboundMessagesWithinGeneration(List<AppMessage> messages) {
@@ -1145,9 +1175,48 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
      * this, a proposal delivered during the race is LOST for the whole
      * session: the transport never re-delivers an acked message id (008.2).
      */
+    private static final int EARLY_CONSENSUS_LIMIT = 256;
     private final java.util.concurrent.ConcurrentLinkedQueue<AppMessage> earlyConsensus =
             new java.util.concurrent.ConcurrentLinkedQueue<>();
-    private static final int EARLY_CONSENSUS_LIMIT = 256;
+    private final java.util.concurrent.Semaphore earlyConsensusSlots =
+            new java.util.concurrent.Semaphore(EARLY_CONSENSUS_LIMIT);
+
+    private boolean offerEarlyConsensus(AppMessage message) {
+        if (!earlyConsensusSlots.tryAcquire()) {
+            return false;
+        }
+        boolean added = false;
+        try {
+            added = earlyConsensus.add(message);
+            return added;
+        } finally {
+            if (!added) {
+                earlyConsensusSlots.release();
+            }
+        }
+    }
+
+    private AppMessage pollEarlyConsensus() {
+        AppMessage message = earlyConsensus.poll();
+        if (message != null) {
+            earlyConsensusSlots.release();
+        }
+        return message;
+    }
+
+    private void drainEarlyConsensus() {
+        AppChainEngine currentEngine = engine;
+        if (currentEngine == null) {
+            return;
+        }
+        AppMessage early;
+        while ((early = pollEarlyConsensus()) != null) {
+            // Re-enter the ordinary admitted path so first-sighting tracking,
+            // counters and relay semantics stay identical to messages that
+            // arrived after startup. Consensus duplicates are always routed.
+            onInboundMessagesWithinGeneration(List.of(early));
+        }
+    }
 
     private void route(AppMessage message, ReceivedAppMessage.Source source) {
         String topic = message.getTopic() != null ? message.getTopic() : "";
@@ -1155,8 +1224,8 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             AppChainEngine currentEngine = engine;
             if (currentEngine != null) {
                 currentEngine.onConsensusMessage(message);
-            } else if (earlyConsensus.size() < EARLY_CONSENSUS_LIMIT) {
-                earlyConsensus.add(message);
+            } else {
+                offerEarlyConsensus(message);
             }
             return;
         }
@@ -2499,6 +2568,13 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         status.put("memberKey", signer.publicKeyHex());
         status.put("members", group.size());
         status.put("threshold", group.threshold());
+        status.put("membershipMode", governedMode() ? "governed" : "static");
+        status.put("membershipEpochFromHeight", group.currentFromHeight());
+        long nextHeight = tipHeight() + 1;
+        status.put("membershipEpochActive", group.currentFromHeight() <= nextHeight);
+        status.put("membershipActiveMembers", group.membersAt(nextHeight).size());
+        status.put("membershipActiveThreshold", group.thresholdAt(nextHeight));
+        status.put("memberActiveForNextBlock", group.containsAt(signer.publicKeyHex(), nextHeight));
         status.put("running", running.get());
         status.put("sequencing", config.sequencingEnabled());
         if (config.sequencingEnabled()) {
@@ -2746,6 +2822,12 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             } finally {
                 lifecycleTransitionLineage.remove();
             }
+        }
+        if (failure == null) {
+            // Inbound protocol traffic can precede lifecycle publication.
+            // Drain only after RUNNING is visible so no message can fall into
+            // the gap between the construction-time drain and activation.
+            generationUseOrNoop(this::drainEarlyConsensus);
         }
         if (failure != null) {
             throw propagateLifecycleFailure(failure, "App-chain startup failed");
@@ -3019,12 +3101,6 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                         + "member commands on {})", config.chainId(), group.threshold(),
                         GovernedMembership.TOPIC);
             }
-            // Deliver consensus messages that raced engine wiring (see route())
-            AppMessage early;
-            while ((early = earlyConsensus.poll()) != null) {
-                chainEngine.onConsensusMessage(early);
-            }
-
             boolean anchorScriptMode = config.anchor() != null && config.anchor().scriptMode();
             java.util.function.Supplier<AppChainEngine.L1Ref> anchorPointSupplier =
                     recentL1Points::peekLast;

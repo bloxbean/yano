@@ -16,7 +16,20 @@ set -e
 
 CALLER_DIR="$PWD"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-cd "$SCRIPT_DIR"
+YANO_ROOT="$SCRIPT_DIR"
+REPOSITORY_ROOT=""
+
+# In a release, this script lives beside yano.jar, config/, and
+# appchain-cluster/. In the source tree, app/yano.sh delegates here while this
+# file remains under app/bin/. Resolve both layouts once so every command uses
+# the same dispatch and argument handling.
+if [ "$(basename "$SCRIPT_DIR")" = "bin" ] \
+    && [ -d "$SCRIPT_DIR/../config" ] \
+    && [ -x "$SCRIPT_DIR/../appchain-cluster/cluster.sh" ]; then
+    YANO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+    REPOSITORY_ROOT="$(cd "$YANO_ROOT/.." && pwd)"
+fi
+cd "$YANO_ROOT"
 
 usage() {
     cat <<EOF
@@ -39,11 +52,52 @@ Examples:
   ./yano.sh appchain config validate --mode project ./owned-registry
   ./yano.sh appchain doctor ./owned-registry --distribution ./yano-release.zip
   ./yano.sh appchain cluster start 3
+  ./yano.sh appchain cluster effect demo "order 42 approved"
+  ./yano.sh appchain cluster node join 3
 
 Environment:
   JAVA_OPTS        JVM options for jar distribution only
   YANO_EXTRA_ARGS  Extra runtime args for jar and native distributions
-  YANO_APPCHAIN_CLI  Optional path to a version-matched yano-appchain launcher
+
+Advanced:
+  YANO_APPCHAIN_CLI  Internal version-matched app-chain tooling override
+EOF
+}
+
+appchain_usage() {
+    cat <<'EOF'
+Usage: ./yano.sh appchain <command> [args...]
+
+Discover capabilities:
+  recipes                         List out-of-box app-chain recipes
+  capabilities                    List selectable components and integrations
+  config explain <property>       Explain a supported configuration property
+
+Create and update a project:
+  init [options]                  Generate appchain.yaml and derived YAML config
+  render [project-directory]      Regenerate safely from appchain.yaml
+  migrate [project-directory]     Inspect or apply a tooling migration
+
+Validate and operate:
+  config validate|effective ...   Validate or inspect effective configuration
+  doctor [project] [options]      Check project/distribution readiness
+  diff <old.lock> <new.lock>      Classify a proposed configuration change
+  drift [project] --peer <url>    Compare redacted live node identities
+  gitops [project] [options]      Export Helm or Kustomize deployment files
+  metadata verify ...             Verify custom-plugin metadata signatures
+
+Run a local cluster:
+  cluster start [members]         Start or resume a same-machine cluster
+  cluster status|stop|clean       Inspect, stop, or clean the local cluster
+  cluster node join <index>       Start a previously staged additional node
+  cluster effect demo [message]   Submit and approve a demonstration effect
+
+Examples:
+  ./yano.sh appchain init --recipe owned-registry --network devnet --members 3
+  ./yano.sh appchain config validate --mode project ./owned-registry
+  ./yano.sh appchain cluster start 3
+
+Use './yano.sh appchain <command> --help' for command-specific options.
 EOF
 }
 
@@ -53,6 +107,10 @@ appchain_cli() {
     local found=""
 
     if [ -n "$configured" ]; then
+        case "$configured" in
+            /*) ;;
+            *) configured="$CALLER_DIR/$configured" ;;
+        esac
         if [ ! -x "$configured" ]; then
             echo "Error: YANO_APPCHAIN_CLI is not executable: $configured" >&2
             exit 1
@@ -61,18 +119,26 @@ appchain_cli() {
         return
     fi
 
-    candidate="$SCRIPT_DIR/tools/yano-appchain/bin/yano-appchain"
+    candidate="$YANO_ROOT/tools/yano-appchain/bin/yano-appchain"
     if [ -x "$candidate" ]; then
         printf '%s\n' "$candidate"
         return
     fi
-    candidate="$SCRIPT_DIR/yano-devtools/bin/yano-appchain"
+    candidate="$YANO_ROOT/yano-devtools/bin/yano-appchain"
     if [ -x "$candidate" ]; then
         printf '%s\n' "$candidate"
         return
     fi
 
-    for candidate in "$SCRIPT_DIR"/yano-devtools-*/bin/yano-appchain; do
+    if [ -n "$REPOSITORY_ROOT" ]; then
+        candidate="$REPOSITORY_ROOT/appchain/appchain-devtools/build/install/yano-devtools/bin/yano-appchain"
+        if [ -x "$candidate" ]; then
+            printf '%s\n' "$candidate"
+            return
+        fi
+    fi
+
+    for candidate in "$YANO_ROOT"/yano-devtools-*/bin/yano-appchain; do
         if [ -x "$candidate" ]; then
             if [ -n "$found" ] && [ "$found" != "$candidate" ]; then
                 echo "Error: Multiple yano-devtools installations found." >&2
@@ -83,10 +149,14 @@ appchain_cli() {
         fi
     done
     if [ -z "$found" ]; then
-        echo "Error: App-chain developer tools were not found." >&2
-        echo "The JVM distribution includes them under tools/yano-appchain." >&2
-        echo "For a native distribution, extract the version-matched yano-devtools archive" >&2
-        echo "beside yano.sh or set YANO_APPCHAIN_CLI." >&2
+        echo "Error: This app-chain command requires version-matched app-chain tooling." >&2
+        if [ -n "$REPOSITORY_ROOT" ]; then
+            echo "Build them with: ./gradlew :appchain-devtools:installDist" >&2
+        else
+            echo "The JVM distribution includes them under tools/yano-appchain." >&2
+        fi
+        echo "For a native distribution, extract the version-matched tooling archive" >&2
+        echo "beside yano.sh. Advanced users may set YANO_APPCHAIN_CLI." >&2
         exit 1
     fi
     printf '%s\n' "$found"
@@ -95,16 +165,25 @@ appchain_cli() {
 dispatch_appchain() {
     shift
     if [ "$#" -eq 0 ]; then
-        echo "Usage: ./yano.sh appchain {init|render|recipes|capabilities|doctor|diff|migrate|config|cluster} ..." >&2
-        exit 64
+        appchain_usage
+        exit 0
     fi
+    case "$1" in
+        help|-h|--help)
+            appchain_usage
+            exit 0
+            ;;
+    esac
     if [ "$1" = "cluster" ]; then
         shift
-        if [ ! -x "$SCRIPT_DIR/appchain-cluster/cluster.sh" ]; then
+        if [ ! -x "$YANO_ROOT/appchain-cluster/cluster.sh" ]; then
             echo "Error: appchain-cluster/cluster.sh is missing or not executable." >&2
             exit 1
         fi
-        exec "$SCRIPT_DIR/appchain-cluster/cluster.sh" "$@"
+        if [ "$#" -eq 0 ]; then
+            set -- help
+        fi
+        exec "$YANO_ROOT/appchain-cluster/cluster.sh" "$@"
     fi
     local cli
     cli="$(appchain_cli)"
@@ -211,23 +290,40 @@ if [ -n "$PROFILE" ]; then
 fi
 
 # Auto-detect mode: native binary or JAR
-if [ -f "$SCRIPT_DIR/yano" ]; then
+if [ -f "$YANO_ROOT/yano" ]; then
     # Native binary mode
     echo "Starting Yano (native)${PROFILE:+ with profile: $PROFILE}..."
     echo "YANO_EXTRA_ARGS=${YANO_EXTRA_ARGS:-}"
     # shellcheck disable=SC2086
-    exec "$SCRIPT_DIR/yano" \
+    exec "$YANO_ROOT/yano" \
         -Dyano.block-producer.script-evaluator=scalus \
         $PROFILE_PROP ${YANO_EXTRA_ARGS:-} "${PASSTHROUGH_ARGS[@]}"
-elif [ -f "$SCRIPT_DIR/yano.jar" ]; then
+elif [ -f "$YANO_ROOT/yano.jar" ]; then
     # Uber-jar mode
     echo "Starting Yano (JVM)${PROFILE:+ with profile: $PROFILE}..."
     echo "JAVA_OPTS=${JAVA_OPTS:-}"
     echo "YANO_EXTRA_ARGS=${YANO_EXTRA_ARGS:-}"
     # shellcheck disable=SC2086
-    exec java ${JAVA_OPTS:-} $PROFILE_PROP -jar "$SCRIPT_DIR/yano.jar" ${YANO_EXTRA_ARGS:-} "${PASSTHROUGH_ARGS[@]}"
+    exec java ${JAVA_OPTS:-} $PROFILE_PROP -jar "$YANO_ROOT/yano.jar" ${YANO_EXTRA_ARGS:-} "${PASSTHROUGH_ARGS[@]}"
+elif [ -n "$REPOSITORY_ROOT" ] && [ -f "$YANO_ROOT/build/yano" ]; then
+    echo "Starting Yano (native)${PROFILE:+ with profile: $PROFILE}..."
+    echo "YANO_EXTRA_ARGS=${YANO_EXTRA_ARGS:-}"
+    # shellcheck disable=SC2086
+    exec "$YANO_ROOT/build/yano" \
+        -Dyano.block-producer.script-evaluator=scalus \
+        $PROFILE_PROP ${YANO_EXTRA_ARGS:-} "${PASSTHROUGH_ARGS[@]}"
+elif [ -n "$REPOSITORY_ROOT" ] && [ -f "$YANO_ROOT/build/yano.jar" ]; then
+    echo "Starting Yano (JVM)${PROFILE:+ with profile: $PROFILE}..."
+    echo "JAVA_OPTS=${JAVA_OPTS:-}"
+    echo "YANO_EXTRA_ARGS=${YANO_EXTRA_ARGS:-}"
+    # shellcheck disable=SC2086
+    exec java ${JAVA_OPTS:-} $PROFILE_PROP -jar "$YANO_ROOT/build/yano.jar" \
+        ${YANO_EXTRA_ARGS:-} "${PASSTHROUGH_ARGS[@]}"
 else
-    echo "Error: Neither 'yano' binary nor 'yano.jar' found in $SCRIPT_DIR"
+    echo "Error: Neither 'yano' binary nor 'yano.jar' found in $YANO_ROOT"
+    if [ -n "$REPOSITORY_ROOT" ]; then
+        echo "Build the development JAR with: ./gradlew :app:quarkusBuild"
+    fi
     echo "Please ensure the distribution is complete."
     exit 1
 fi

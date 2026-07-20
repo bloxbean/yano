@@ -56,6 +56,10 @@ final class MemberGroup {
         return current().members().size();
     }
 
+    long currentFromHeight() {
+        return current().fromHeight();
+    }
+
     boolean contains(String publicKeyHex) {
         return current().members().contains(publicKeyHex.toLowerCase(Locale.ROOT));
     }

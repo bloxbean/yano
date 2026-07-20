@@ -25,6 +25,8 @@ yano:
     chains[0]:
       chain-id: "orders-chain"
       state-machine: ordered-log        # built-in: append-only log (default)
+      membership:
+        mode: governed                  # later members join through finalized governance
       block:
         interval-ms: 1000               # propose a block every ~1s
         # block.max-bytes (default 4 MiB) is the primary size cap; the proposer
@@ -40,6 +42,8 @@ yano:
     chains[1]:
       chain-id: "registry-chain"
       state-machine: kv-registry        # built-in: owner-guarded K/V registry
+      membership:
+        mode: governed
       block:
         interval-ms: 2000
       sequencer:
@@ -49,8 +53,40 @@ yano:
         kv-registry:
           value-format: utf8            # PUT values must be valid UTF-8
 
-    # --- Add more chains here, e.g. a third with L1 anchoring ----------------
-    # chains[2]:
+    # --- Chain 2: approval workflow + dependency-free effects demo ----------
+    # `cluster effect demo ["message"]` submits a one-approval workflow, claims its effect
+    # through the external-worker API, reports success, and checks that the
+    # finalized effect proof is available. No Kafka/S3/IPFS service or
+    # credential is needed.
+    chains[2]:
+      chain-id: "effects-chain"
+      state-machine: approvals
+      membership:
+        mode: governed
+      block:
+        interval-ms: 1000
+      effects:
+        enabled: true
+        default-gate: app-final
+        external:
+          enabled: true
+        executor:
+          enabled: true
+          types: demo.webhook
+          tick-ms: 250
+        metrics:
+          types: demo.webhook
+      machines:
+        approvals:
+          payments: true
+          payment-type: demo.webhook
+          payment-gate: app-final
+          payment-expiry-blocks: 100
+          activations:
+            payments: 1
+
+    # --- Add more chains here, e.g. a fourth with L1 anchoring ---------------
+    # chains[3]:
     #   chain-id: "audit-chain"
     #   state-machine: ordered-log
     #   block:

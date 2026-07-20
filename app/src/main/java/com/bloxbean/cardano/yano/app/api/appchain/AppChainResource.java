@@ -30,6 +30,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.regex.Pattern;
@@ -328,7 +329,8 @@ public class AppChainResource {
         private static final int MAX_PROOF_KEY_BYTES = 256;
         private static final int MAX_PROOF_VALUE_BYTES = 1024 * 1024;
         private static final int MAX_PROOF_WIRE_BYTES = 1024 * 1024;
-        private static final Pattern SHA256 = Pattern.compile("(?:sha256:)?[0-9a-f]{64}");
+        private static final Pattern SHA256 = Pattern.compile(
+                "(?:sha256:)?[0-9a-f]{64}", Pattern.CASE_INSENSITIVE);
 
         private final AppChainGateway gateway;
         private final RuntimeIdentityContext identityContext;
@@ -563,7 +565,7 @@ public class AppChainResource {
             if (value == null) return;
             String digest = String.valueOf(value).trim();
             if (SHA256.matcher(digest).matches()) {
-                output.put(key, digest);
+                output.put(key, digest.toLowerCase(Locale.ROOT));
             }
         }
 
