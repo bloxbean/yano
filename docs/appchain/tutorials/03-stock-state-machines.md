@@ -15,7 +15,7 @@ activation or a new chain.
 
 | Machine | Use it when | Authorization model | Proven state |
 |---|---|---|---|
-| `ordered-log` | You need immutable ordered opaque events | Any admitted member | Message by message ID |
+| [`ordered-log`](../state-machines/ordered-log.md) | You need immutable ordered opaque events | Any admitted member | Message by message ID |
 | `kv-registry` | You need mutable named records | First writer owns a key | Current owner/value per key |
 | `approvals` | Validator members are the approvers | Distinct member keys | Status and decision trail |
 | `balances` | You need internal credits/netting | A member spends its own account | Balance per account |
@@ -115,6 +115,9 @@ Use:
 
 ## Go deeper
 
+- The dedicated [`ordered-log` reference](../state-machines/ordered-log.md)
+  covers topics, payloads, multiple instances, REST/Java submission, proofs,
+  and customization paths.
 - Exact state layouts and Java helper methods are documented in the
   [consensus guide](../../APP_CHAIN_CONSENSUS_GUIDE.md).
 - The [user guide](../../APP_CHAIN_USER_GUIDE.md) covers configuration and

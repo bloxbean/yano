@@ -18,8 +18,14 @@ consensus, proof, or operational details.
 
 ## Tutorial conventions
 
-- Commands are shown from the repository root unless a preceding `cd` changes
-  directory.
+- Tutorial commands run `./yano.sh` from the directory containing it, so
+  release and source commands are identical. Tutorial 1 shows how to use an
+  extracted distribution root or the source checkout's `app/` directory.
+- Treat `./yano.sh` as the product command. Use `./yano.sh appchain cluster ...`
+  for the bundled single-host lifecycle and the same wrapper for `appchain
+  init`, `render`, `config`, `doctor`, `diff`, and `drift`. The internal
+  `appchain-devtools` executable is a packaging/implementation boundary, not a
+  second user-facing CLI to learn.
 - Local devnet data is disposable. `stop` preserves it; `clean` deletes it.
 - Ports `7070`–`7072` are the expected member HTTP ports and `7080` is the
   Evidence Explorer. Launchers report a different range if defaults are busy.

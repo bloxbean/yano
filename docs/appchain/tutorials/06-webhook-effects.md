@@ -90,6 +90,10 @@ Start from a clean tutorial cluster and create three owner-only property files.
 All members receive the same consensus settings; only node 0 runs the
 executor. Each file must begin with `config_ordinal=275`.
 
+These are private overlays consumed only by the local cluster launcher through
+`--node-config-dir`; they are not generated-project configuration. Generated
+app-chain projects and `appchain config` use YAML.
+
 Common settings for `node0.properties`, `node1.properties`, and
 `node2.properties`:
 
@@ -116,15 +120,14 @@ The repository includes those exact tutorial files. Install owner-only copies
 and start the fresh cluster:
 
 ```bash
-cd app/appchain-cluster
 install -d -m 700 /tmp/yano-tutorial-webhook-config
 install -m 600 \
-  ../../docs/appchain/tutorials/config/webhook/node*.properties \
+  ../docs/appchain/tutorials/config/webhook/node*.properties \
   /tmp/yano-tutorial-webhook-config/
 
 export YANO_CLUSTER_DIR=/tmp/yano-tutorial-webhook
 export YANO_CLUSTER_NODE_CONFIG_DIR=/tmp/yano-tutorial-webhook-config
-./cluster.sh start 3
+./yano.sh appchain cluster start 3
 ```
 
 The chain id remains `orders-chain`, but its fresh deterministic profile is
@@ -132,13 +135,14 @@ now `approvals`. Never apply this override to retained `ordered-log` state.
 
 ### 3. Encode and submit a proposal
 
-From `app/appchain-cluster`, encode the supplied HTTP body fixture and canonical
-stock commands:
+The encoding helper and request fixture are source-checkout tutorial assets.
+From the source checkout's `app/` directory, encode the supplied HTTP body and
+canonical stock commands:
 
 ```bash
-TOOL=../../docs/appchain/tutorials/tools/stdlib_command.py
+TOOL=../docs/appchain/tutorials/tools/stdlib_command.py
 WEBHOOK_HEX=$(python3 "$TOOL" webhook \
-  --body-file ../../docs/appchain/tutorials/config/webhook/request.json \
+  --body-file ../docs/appchain/tutorials/config/webhook/request.json \
   --content-type application/json)
 
 PROPOSE_HEX=$(python3 "$TOOL" approvals propose erp-release-001 \
@@ -186,7 +190,7 @@ effects after the `~fx/result` message is incorporated.
 ### 4. Clean up
 
 ```bash
-./cluster.sh clean
+./yano.sh appchain cluster clean
 unset YANO_CLUSTER_DIR YANO_CLUSTER_NODE_CONFIG_DIR
 rm -rf /tmp/yano-tutorial-webhook-config
 ```

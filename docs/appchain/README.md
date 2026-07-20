@@ -18,6 +18,7 @@ credentials unless a guide explicitly says otherwise.
 | I want to… | Start with | Coding required? |
 |---|---|---:|
 | See three members finalize the same events | [Your first app chain](tutorials/01-first-app-chain.md) | No |
+| Use or customize the built-in append-only event log | [`ordered-log` reference](state-machines/ordered-log.md) | No, unless adding business rules |
 | Maintain a provable owner-controlled registry | [Registry and state proofs](tutorials/02-registry-and-proofs.md) | No |
 | Select a stock ledger/workflow capability | [Stock state-machine cookbook](tutorials/03-stock-state-machines.md) | Configuration + typed commands |
 | Publish immutable evidence to object storage/IPFS and notify Kafka | [Evidence publication](tutorials/04-evidence-publication.md) | No |
@@ -82,7 +83,7 @@ business meaning.
 ### Beginner: operate first, understand second
 
 1. Use the self-contained devnet. No Cardano funds or external node is needed.
-2. Submit through `cluster.sh` or `demo.sh` rather than constructing wire bytes.
+2. Submit through `./yano.sh appchain cluster` rather than constructing wire bytes.
 3. Compare tips and roots on all members.
 4. Inspect one proof and one intentional no-op/failure.
 5. Stop while keeping data, restart, and verify the same state.
@@ -127,6 +128,8 @@ Tutorials deliberately stay outcome-focused. Use these references when you
 need full detail:
 
 - [10–15 minute overview](../APP_CHAIN_OVERVIEW.md)
+- [State-machine references](state-machines/README.md)
+- [`ordered-log` state-machine reference](state-machines/ordered-log.md)
 - [Complete user and configuration guide](../APP_CHAIN_USER_GUIDE.md)
 - [Use-case catalogue](../APP_CHAIN_USE_CASES.md)
 - [Consensus and state-machine internals](../APP_CHAIN_CONSENSUS_GUIDE.md)
