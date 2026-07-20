@@ -1,7 +1,8 @@
 # Yano app-chain developer tools
 
-This module provides the offline `yano-appchain` CLI used by
-`yano.sh appchain`. It supports project initialization and deterministic
+This module provides the internal offline `yano-appchain` engine used by
+`yano.sh appchain`; users should treat `yano.sh` as the public CLI. It supports
+project initialization and deterministic
 rendering, template validation, SmallRye-backed resolved validation, redacted
 effective configuration, property explanation, and project lifecycle checks.
 
@@ -41,8 +42,11 @@ acknowledgement and generated secret examples remain intentionally unusable.
 Host and Compose targets isolate shared consensus configuration, per-node
 configuration, and secret references. Consensus-shared runtime defaults are
 always explicit, so a later runtime default change cannot silently alter a
-regenerated chain. Omit `--node-host` for a same-machine host project; provide
-exactly one host per member to render portable per-machine overlays.
+regenerated chain. Generated runtime configuration uses deterministic nested
+YAML (`config/shared-consensus.yaml` and `config/nodes/nodeN.yaml`) while the
+lock retains the exact flattened values. Omit `--node-host` for a same-machine
+host project; provide exactly one host per member to render portable
+per-machine overlays.
 
 ```bash
 # Intentionally incomplete shared template
@@ -50,15 +54,15 @@ exactly one host per member to render portable per-machine overlays.
   --template-contract builtin:cluster application-appchain.yml
 
 # Startable node-specific source stack; later --config files have higher
-# default ordinals unless a source declares config_ordinal.
+# default ordinals unless a YAML source declares config_ordinal.
 ./yano.sh appchain config validate --mode resolved \
-  --config application-appchain.yml \
-  --config node0.properties \
-  --config private.properties
+  --config product-registry/config/shared-consensus.yaml \
+  --config product-registry/config/nodes/node0.yaml \
+  --config private.yaml
 
 # Values are always redacted when their property is secret.
 ./yano.sh appchain config effective --mode resolved --format yaml \
-  --show-sources --config application-appchain.yml --config private.properties
+  --show-sources --config application-appchain.yml --config private.yaml
 ```
 
 Environment and system properties are excluded by default for reproducible

@@ -135,6 +135,8 @@ final class AppChainProjectRenderer {
         String resolvedDigest = AppChainProjectCatalog.sha256(
                 json.writeValueAsBytes(new TreeMap<>(resolution.consensusProperties())));
         TreeMap<String, byte[]> outputs = outputs(resolution, resolvedDigest);
+        verifyOutputOwnership(root, outputs.keySet(), prior == null
+                ? Set.of() : prior.generatedFiles().keySet());
         if (prior != null) {
             removeStaleGeneratedFiles(root, prior.generatedFiles(), outputs.keySet());
         }
@@ -198,7 +200,7 @@ final class AppChainProjectRenderer {
         outputs.put("ai/configure-yano-appchain/SKILL.md", catalog.aiSkillBytes());
         outputs.put("ai/configure-yano-appchain/agents/openai.yaml",
                 catalog.aiSkillOpenAiBytes());
-        outputs.put("config/shared-consensus.properties", utf8(properties(
+        outputs.put("config/shared-consensus.yaml", utf8(yamlConfig(
                 resolution.consensusProperties())));
 
         int members = resolution.blueprint().spec().chains().getFirst().topology().members();
@@ -206,8 +208,8 @@ final class AppChainProjectRenderer {
                 resolution.blueprint().spec().deployment().target());
         NodeLayout layout = compose ? NodeLayout.COMPOSE : NodeLayout.HOST;
         for (int index = 0; index < members; index++) {
-            outputs.put("config/nodes/node" + index + ".properties",
-                    utf8(nodeProperties(resolution, index, members, layout,
+            outputs.put("config/nodes/node" + index + ".yaml",
+                    utf8(nodeYaml(resolution, index, members, layout,
                             resolvedConfigDigest, catalog.digests().get("releaseIndex"))));
             outputs.put("secrets/node" + index + ".env.example",
                     utf8(secretExample(index)));
@@ -249,13 +251,11 @@ final class AppChainProjectRenderer {
         return hosts != null && !hosts.isEmpty();
     }
 
-    private static String properties(Map<String, String> values) {
-        StringBuilder output = new StringBuilder(GENERATED);
-        values.forEach((key, value) -> output.append(key).append('=').append(value).append('\n'));
-        return output.toString();
+    static String yamlConfig(Map<String, String> values) {
+        return AppChainYamlConfigRenderer.render(values, GENERATED);
     }
 
-    static String nodeProperties(
+    static String nodeYaml(
             AppChainProjectModel.Resolution resolution,
             int node,
             int members,
@@ -289,7 +289,7 @@ final class AppChainProjectRenderer {
         values.put("quarkus.http.port", Integer.toString(httpPort));
         values.put("yano.server.port", Integer.toString(serverPort));
         values.put("yano.storage.path", kubernetes ? "/var/lib/yano/chainstate"
-                : compose ? "/project/data/node" + node + "/chainstate"
+                : compose ? "/app/chainstate"
                 : "${YANO_APPCHAIN_DATA_ROOT}/node" + node + "/chainstate");
         if ("devnet".equals(resolution.blueprint().spec().network())) {
             values.put("yano.genesis.shelley-genesis-file", "${YANO_APPCHAIN_GENESIS_FILE}");
@@ -316,7 +316,7 @@ final class AppChainProjectRenderer {
         values.putAll(resolution.nodePropertyTemplate());
         String prefix = "yano.app-chain.chains[0].";
         values.put(prefix + "peers", String.join(",", peers));
-        return properties(values);
+        return yamlConfig(values);
     }
 
     private static String secretExample(int node) {
@@ -429,7 +429,7 @@ final class AppChainProjectRenderer {
                 5. Run `./scripts/start`, `./scripts/status`, and `./scripts/stop`.
 
                 Deployment target: `%s`. Consensus defaults are explicit in
-                `config/shared-consensus.properties`; per-node values are isolated in
+                `config/shared-consensus.yaml`; per-node values are isolated in
                 `config/nodes`. Generated files are digest-protected by `appchain.lock`.
                 """.formatted(blueprint.metadata().name(), resolution.recipe().id(), members, target);
     }
@@ -457,7 +457,7 @@ final class AppChainProjectRenderer {
                 1. Collect one public member identity from each operator.
                 2. Put the identities in `spec.chains[0].topology.memberKeys` in the same reviewed
                    order on every machine.
-                3. Run `yano appchain config validate --mode project .` and review `appchain.lock`.
+                3. Run `./yano.sh appchain config validate --mode project .` and review `appchain.lock`.
                 4. Copy the project to each machine; provision only that node's `secrets/nodeN.env`.
                 5. Start each node with `scripts/start-node N` or use the generated Compose project.
 
@@ -474,11 +474,11 @@ final class AppChainProjectRenderer {
                 Run these checks before deployment and after transferring the project:
 
                 ```bash
-                yano appchain config validate --mode project .
-                yano appchain doctor . --distribution /path/to/yano-release.zip
-                yano appchain diff old/appchain.lock appchain.lock
+                ./yano.sh appchain config validate --mode project .
+                ./yano.sh appchain doctor . --distribution /path/to/yano-release.zip
+                ./yano.sh appchain diff old/appchain.lock appchain.lock
                 export YANO_OPERATOR_API_KEY='provisioned-out-of-band'
-                yano appchain drift . --peer https://node1.example/api/v1/ \\
+                ./yano.sh appchain drift . --peer https://node1.example/api/v1/ \\
                   --peer https://node2.example/api/v1/ \\
                   --api-key-env YANO_OPERATOR_API_KEY
                 ```
@@ -503,7 +503,7 @@ final class AppChainProjectRenderer {
                 ? "This project uses the advanced custom-plugin path. Package the reviewed JVM "
                         + "bundle separately, provide its declarative configuration metadata, "
                         + "bind that descriptor to its runtime manifest with the signed trust "
-                        + "envelope, run `yano appchain metadata verify` with a pinned vendor "
+                        + "envelope, run `./yano.sh appchain metadata verify` with a pinned vendor "
                         + "public key, and run doctor against the final distribution. A valid "
                         + "signature authenticates the binding but remains PARTIAL coverage."
                 : "All selected components are first-party artifacts declared by the release index.");
@@ -564,7 +564,7 @@ final class AppChainProjectRenderer {
                 root="$(cd "$(dirname "$0")/.." && pwd)"
                 : "${YANO_HOME:?Set YANO_HOME to the extracted Yano distribution}"
                 secret="$root/secrets/node${node}.env"
-                config="$root/config/nodes/node${node}.properties"
+                config="$root/config/nodes/node${node}.yaml"
                 [ -f "$secret" ] || { echo "Missing $secret" >&2; exit 1; }
                 [ -f "$config" ] || { echo "Unknown node index: $node" >&2; exit 1; }
                 set -a
@@ -574,7 +574,7 @@ final class AppChainProjectRenderer {
                 export YANO_APPCHAIN_DATA_ROOT="${YANO_APPCHAIN_DATA_ROOT:-$root/data}"
                 mkdir -p "$YANO_APPCHAIN_DATA_ROOT/node${node}"
                 %s
-                export QUARKUS_CONFIG_LOCATIONS="$root/config/shared-consensus.properties,$config"
+                export QUARKUS_CONFIG_LOCATIONS="$root/config/shared-consensus.yaml,$config"
                 cd "$root"
                 exec "$YANO_HOME/yano.sh" "start:%s"
                 """.formatted("devnet".equals(network) ? """
@@ -655,11 +655,30 @@ final class AppChainProjectRenderer {
                 set -euo pipefail
                 root="$(cd "$(dirname "$0")/.." && pwd)"
                 shopt -s nullglob
-                for record in "$root"/run/node*.pid; do
+                records=("$root"/run/node*.pid)
+                for record in "${records[@]}"; do
                   pid="$(cat "$record")"
                   kill "$pid" 2>/dev/null || true
-                  rm -f "$record"
                 done
+                failed=0
+                for record in "${records[@]}"; do
+                  pid="$(cat "$record")"
+                  stopped=0
+                  for attempt in $(seq 1 100); do
+                    if ! kill -0 "$pid" 2>/dev/null; then
+                      stopped=1
+                      break
+                    fi
+                    sleep 0.1
+                  done
+                  if [ "$stopped" -eq 1 ]; then
+                    rm -f "$record"
+                  else
+                    echo "node process $pid did not stop within 10 seconds" >&2
+                    failed=1
+                  fi
+                done
+                exit "$failed"
                 """;
     }
 
@@ -705,12 +724,11 @@ final class AppChainProjectRenderer {
                         .append("${YANO_APPCHAIN_GENESIS_TIMESTAMP:?Run scripts/start}\n");
             }
             output.append("      QUARKUS_CONFIG_LOCATIONS: ")
-                    .append("/project/config/shared-consensus.properties,")
-                    .append("/project/config/nodes/node").append(index).append(".properties\n")
+                    .append("/project/config/shared-consensus.yaml,")
+                    .append("/project/config/nodes/node").append(index).append(".yaml\n")
                     .append("    volumes:\n")
                     .append("      - ./:/project:ro\n")
-                    .append("      - node").append(index).append("-data:/project/data/node")
-                    .append(index).append("\n")
+                    .append("      - node").append(index).append("-data:/app/chainstate\n")
                     .append("    ports:\n")
                     .append("      - \"").append(httpBase + index).append(":8080\"\n")
                     .append("      - \"").append(serverBase + index).append(":13337\"\n")
@@ -817,6 +835,21 @@ final class AppChainProjectRenderer {
         for (String name : new TreeMap<>(prior).keySet()) {
             if (!retained.contains(name)) {
                 Files.deleteIfExists(resolveGenerated(root, name));
+            }
+        }
+    }
+
+    private static void verifyOutputOwnership(
+            Path root,
+            Set<String> outputs,
+            Set<String> priorGenerated) throws IOException {
+        for (String name : new java.util.TreeSet<>(outputs)) {
+            Path path = resolveGenerated(root, name);
+            if (Files.exists(path, LinkOption.NOFOLLOW_LINKS)
+                    && !priorGenerated.contains(name)) {
+                throw new IOException("Refusing to overwrite user-owned path newly claimed by "
+                        + "this renderer version: " + name
+                        + "; move or reconcile the file explicitly");
             }
         }
     }

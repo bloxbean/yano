@@ -212,10 +212,10 @@ final class AppChainProjectLifecycle {
             while (entries.hasMoreElements()) {
                 ZipEntry entry = entries.nextElement();
                 String name = entry.getName();
-                if (!entry.isDirectory() && name.endsWith("/yano.jar")) jvm = true;
-                if (!entry.isDirectory() && (name.endsWith("/yano")
-                        || name.endsWith("/yano.exe"))) nativeRuntime = true;
-                if (!entry.isDirectory() && name.endsWith("/" + RELEASE_INDEX_NAME)) {
+                if (!entry.isDirectory() && archivePathEndsWith(name, "yano.jar")) jvm = true;
+                if (!entry.isDirectory() && (archivePathEndsWith(name, "yano")
+                        || archivePathEndsWith(name, "yano.exe"))) nativeRuntime = true;
+                if (!entry.isDirectory() && archivePathEndsWith(name, RELEASE_INDEX_NAME)) {
                     if (indexEntry != null) {
                         throw new IOException("distribution contains multiple release indexes");
                     }
@@ -238,6 +238,10 @@ final class AppChainProjectLifecycle {
                         AppChainProjectCatalog.sha256(bytes));
             }
         }
+    }
+
+    private static boolean archivePathEndsWith(String path, String fileName) {
+        return path.equals(fileName) || path.endsWith("/" + fileName);
     }
 
     private static Path findReleaseIndex(Path root) throws IOException {

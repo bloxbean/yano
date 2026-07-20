@@ -157,7 +157,7 @@ class AppChainDevtoolsCliTest {
 
         assertThat(usage.exit()).isEqualTo(AppChainDevtoolsCli.EXIT_USAGE);
         assertThat(usage.err()).contains("validate requires --mode")
-                .contains("Usage: yano appchain");
+                .contains("Usage: ./yano.sh appchain");
         assertThat(io.exit()).isEqualTo(AppChainDevtoolsCli.EXIT_IO);
         assertThat(io.err()).contains("could not be read")
                 .doesNotContain(temporary.toString())
@@ -174,7 +174,7 @@ class AppChainDevtoolsCliTest {
         assertThat(config.exit()).isZero();
         assertThat(command.exit()).isZero();
         assertThat(root.out()).isEqualTo(config.out()).isEqualTo(command.out())
-                .contains("Usage: yano appchain config validate");
+                .contains("Usage: ./yano.sh appchain config validate");
     }
 
     @Test

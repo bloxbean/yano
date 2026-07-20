@@ -87,8 +87,7 @@ public final class AppChainTemplateValidator {
                 recognized++;
                 AppChainPropertyRegistry.PropertyMatch propertyMatch = match.orElseThrow();
                 if (!propertyMatch.indexed()
-                        && propertyMatch.definition().indexed()
-                        && !sourceKey.equals("yano.app-chain.enabled")) {
+                        && propertyMatch.definition().indexed()) {
                     sawFlatChainProperty = true;
                 }
                 if (propertyMatch.indexed() && !propertyMatch.definition().indexed()) {

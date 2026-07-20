@@ -24,7 +24,9 @@ public final class AppChainConfigSemantics {
         }
         String proposer = config.proposerKeyHex().toLowerCase(Locale.ROOT);
         if (!proposer.isEmpty() && !members.contains(proposer)) {
-            throw new IllegalArgumentException("Configured proposer is not in the member list");
+            throw new IllegalArgumentException(
+                    "Configured proposer " + safePublicIdentity(proposer)
+                            + " is not in the member list");
         }
         if (config.anchor() != null && config.anchor().enabled()
                 && config.anchor().signingKeyHex().isBlank()) {
@@ -41,7 +43,8 @@ public final class AppChainConfigSemantics {
                 String candidate = key == null ? "" : key.trim().toLowerCase(Locale.ROOT);
                 if (!candidate.matches("[0-9a-f]{64}")) {
                     throw new IllegalArgumentException(
-                            "App-chain member key must be a 32-byte hex Ed25519 public key");
+                            "App-chain member key must be a 32-byte hex Ed25519 public key: "
+                                    + safePublicIdentity(candidate));
                 }
                 normalized.add(candidate);
             }
@@ -63,5 +66,15 @@ public final class AppChainConfigSemantics {
             throw new IllegalArgumentException(
                     "App-chain signing key must be a 32-byte Ed25519 seed or scheme:reference");
         }
+    }
+
+    private static String safePublicIdentity(String value) {
+        StringBuilder safe = new StringBuilder();
+        value.codePoints().limit(96).forEach(codePoint -> safe.appendCodePoint(
+                Character.isISOControl(codePoint) ? '?' : codePoint));
+        if (value.codePointCount(0, value.length()) > 96) {
+            safe.append("...");
+        }
+        return safe.isEmpty() ? "<empty>" : safe.toString();
     }
 }

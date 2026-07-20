@@ -20,16 +20,16 @@ import java.util.Map;
 /** Guided and non-interactive project initialization/render commands. */
 final class AppChainProjectCli {
     static final String USAGE = """
-            Usage: yano appchain init [options]
-               or: yano appchain render [project-directory] [--format text|json]
-               or: yano appchain recipes [--format text|json]
-               or: yano appchain capabilities [--format text|json]
-               or: yano appchain doctor [project-directory] [--distribution <path>]
-               or: yano appchain diff <old.lock> <new.lock> [--format text|json]
-               or: yano appchain drift [project-directory] --peer <url> [--peer <url> ...]
-               or: yano appchain gitops [project-directory] --target helm|kustomize --output <empty-dir>
-               or: yano appchain metadata verify <plugin.jar> --trust-key <key-id=64-hex-public-key>
-               or: yano appchain migrate [project-directory] [--dry-run]
+            Usage: ./yano.sh appchain init [options]
+               or: ./yano.sh appchain render [project-directory] [--format text|json]
+               or: ./yano.sh appchain recipes [--format text|json]
+               or: ./yano.sh appchain capabilities [--format text|json]
+               or: ./yano.sh appchain doctor [project-directory] [--distribution <path>]
+               or: ./yano.sh appchain diff <old.lock> <new.lock> [--format text|json]
+               or: ./yano.sh appchain drift [project-directory] --peer <url> [--peer <url> ...]
+               or: ./yano.sh appchain gitops [project-directory] --target helm|kustomize --output <empty-dir>
+               or: ./yano.sh appchain metadata verify <plugin.jar> --trust-key <key-id=64-hex-public-key>
+               or: ./yano.sh appchain migrate [project-directory] [--dry-run]
             Init options:
               --recipe <id>                 audit-log, owned-registry, evidence-publication
               --network <network>           devnet, preview, preprod, mainnet

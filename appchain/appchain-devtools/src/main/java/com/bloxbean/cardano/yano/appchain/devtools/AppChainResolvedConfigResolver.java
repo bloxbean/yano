@@ -6,7 +6,6 @@ import com.bloxbean.cardano.yano.appchain.config.ConfigSourceKind;
 import com.bloxbean.cardano.yano.appchain.config.EffectiveConfigValue;
 import io.smallrye.config.ConfigValue;
 import io.smallrye.config.EnvConfigSource;
-import io.smallrye.config.PropertiesConfigSource;
 import io.smallrye.config.SmallRyeConfig;
 import io.smallrye.config.SmallRyeConfigBuilder;
 import io.smallrye.config.SysPropConfigSource;
@@ -14,7 +13,6 @@ import io.smallrye.config.source.yaml.YamlConfigSource;
 import org.eclipse.microprofile.config.spi.ConfigSource;
 
 import java.io.IOException;
-import java.io.Reader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -23,7 +21,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Properties;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
@@ -162,18 +159,10 @@ final class AppChainResolvedConfigResolver {
         if (extension.equals("yml") || extension.equals("yaml")) {
             yamlValidator.load(path);
             String content = Files.readString(path, StandardCharsets.UTF_8);
-            int ordinal = declaredOrdinal(content, defaultOrdinal, true);
+            int ordinal = declaredOrdinal(content, defaultOrdinal);
             return new YamlConfigSource(name, content, ordinal);
         }
-        if (extension.equals("properties")) {
-            Properties properties = new Properties();
-            try (Reader reader = Files.newBufferedReader(path, StandardCharsets.UTF_8)) {
-                properties.load(reader);
-            }
-            int ordinal = propertyOrdinal(properties.getProperty("config_ordinal"), defaultOrdinal);
-            return new PropertiesConfigSource(properties, name, ordinal);
-        }
-        throw new IOException("configuration sources must use .yml, .yaml, or .properties");
+        throw new IOException("configuration sources must use .yml or .yaml");
     }
 
     private static TreeSet<String> candidates(
@@ -202,7 +191,7 @@ final class AppChainResolvedConfigResolver {
             Matcher indexed = INDEXED.matcher(key);
             if (indexed.matches()) {
                 indices.add(Integer.parseInt(indexed.group(1)));
-            } else if (isFlatChainProperty(key)) {
+            } else if (isFlatChainProperty(key, registry)) {
                 flat = true;
             }
         }
@@ -214,9 +203,7 @@ final class AppChainResolvedConfigResolver {
                     "yano.app-chain.enabled", Boolean.toString(enabled), profile));
         }
         for (AppChainPropertyDefinition definition : registry.definitions()) {
-            if (definition.defaultValue() == null
-                    || definition.key().equals("yano.app-chain.enabled")
-                    || definition.key().equals("yano.app-chain.chains")) {
+            if (definition.defaultValue() == null) {
                 continue;
             }
             if (!definition.indexed()) {
@@ -244,12 +231,16 @@ final class AppChainResolvedConfigResolver {
                 ConfigSourceKind.RUNTIME_DERIVED, Integer.MIN_VALUE + 1, false, profile);
     }
 
-    private static boolean isFlatChainProperty(String key) {
-        return key.startsWith(AppChainPropertyRegistry.APP_CHAIN_PREFIX)
-                && !key.equals("yano.app-chain.enabled")
-                && !key.equals("yano.app-chain.api.auth.enabled")
-                && !key.equals("yano.app-chain.api.keys")
-                && !key.startsWith("yano.app-chain.chains[");
+    private static boolean isFlatChainProperty(
+            String key,
+            AppChainPropertyRegistry registry) {
+        if (!key.startsWith(AppChainPropertyRegistry.APP_CHAIN_PREFIX)
+                || key.startsWith("yano.app-chain.chains[")) {
+            return false;
+        }
+        return registry.find(key)
+                .map(match -> match.definition().indexed())
+                .orElseGet(() -> registry.dynamicNamespace(key).isPresent());
     }
 
     private static String stripProfile(String property) {
@@ -257,10 +248,7 @@ final class AppChainResolvedConfigResolver {
         return matcher.matches() ? matcher.group(1) : property;
     }
 
-    private static int declaredOrdinal(String content, int defaultOrdinal, boolean yaml) {
-        if (!yaml) {
-            return defaultOrdinal;
-        }
+    private static int declaredOrdinal(String content, int defaultOrdinal) {
         Pattern pattern = Pattern.compile("(?m)^config_ordinal\\s*:\\s*['\"]?(-?\\d+)['\"]?\\s*$");
         Matcher matcher = pattern.matcher(content);
         return matcher.find() ? propertyOrdinal(matcher.group(1), defaultOrdinal) : defaultOrdinal;

@@ -34,23 +34,23 @@ public final class AppChainDevtoolsCli {
     public static final int EXIT_IO = 74;
 
     private static final String USAGE = """
-            Usage: yano appchain config validate --mode template [options] <config.yml>
-               or: yano appchain config validate --mode resolved --config <file> [options]
-               or: yano appchain config validate --mode project <project-directory>
-               or: yano appchain config effective --mode resolved --config <file> [options]
-               or: yano appchain config explain [options] <property>
-               or: yano appchain init [options]
-               or: yano appchain render [project-directory]
-               or: yano appchain recipes [--format text|json]
-               or: yano appchain capabilities [--format text|json]
-               or: yano appchain doctor [project-directory] [--distribution <path>]
-               or: yano appchain diff <old.lock> <new.lock>
-               or: yano appchain drift [project-directory] --peer <url> [--peer <url> ...]
-               or: yano appchain gitops [project-directory] --target helm|kustomize --output <empty-dir>
-               or: yano appchain metadata verify <plugin.jar> --trust-key <key-id=64-hex-public-key>
-               or: yano appchain migrate [project-directory] [--dry-run]
+            Usage: ./yano.sh appchain config validate --mode template [options] <config.yml>
+               or: ./yano.sh appchain config validate --mode resolved --config <file> [options]
+               or: ./yano.sh appchain config validate --mode project <project-directory>
+               or: ./yano.sh appchain config effective --mode resolved --config <file> [options]
+               or: ./yano.sh appchain config explain [options] <property>
+               or: ./yano.sh appchain init [options]
+               or: ./yano.sh appchain render [project-directory]
+               or: ./yano.sh appchain recipes [--format text|json]
+               or: ./yano.sh appchain capabilities [--format text|json]
+               or: ./yano.sh appchain doctor [project-directory] [--distribution <path>]
+               or: ./yano.sh appchain diff <old.lock> <new.lock>
+               or: ./yano.sh appchain drift [project-directory] --peer <url> [--peer <url> ...]
+               or: ./yano.sh appchain gitops [project-directory] --target helm|kustomize --output <empty-dir>
+               or: ./yano.sh appchain metadata verify <plugin.jar> --trust-key <key-id=64-hex-public-key>
+               or: ./yano.sh appchain migrate [project-directory] [--dry-run]
             Options:
-              --config <yml|yaml|properties>             repeatable, later source wins
+              --config <yml|yaml>                        repeatable, later source wins
               --format text|json                         validate/explain
               --format yaml|json                         effective (default: yaml)
               --metadata <descriptor|plugin.jar>         repeatable

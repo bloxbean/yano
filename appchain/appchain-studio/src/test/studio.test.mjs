@@ -40,6 +40,12 @@ test('deep links round trip only explicitly safe non-secret fields',()=>{
   assert.equal(decodeDeepLink(encoded).chainId,'safe-chain');
 });
 
+test('zero members remains invalid instead of being coerced to the default',()=>{
+  const result=normalizeIntent({members:0},recipes,release);
+  assert.equal(result.intent.members,0);
+  assert.ok(result.errors.includes('Members must be from 1 to 32.'));
+});
+
 test('every tutorial deep link is accepted by the pinned release',()=>{
   const tutorials=path.join(repo,'docs/appchain/tutorials');
   for(const name of fs.readdirSync(tutorials).filter(value=>/^\d\d-.*\.md$/.test(value))){

@@ -1,8 +1,8 @@
-# ADR-DX-0001 v13: Unified App-Chain Onboarding, Configuration, and Ecosystem Lifecycle
+# ADR-DX-0001 v17: Unified App-Chain Onboarding, Configuration, and Ecosystem Lifecycle
 
 ## Status
 
-Proposed — implementation review draft v13
+Proposed — implementation review draft v17
 
 This consolidated review draft incorporates the findings from the completed
 review rounds. It is the single proposal to use for subsequent review and
@@ -19,6 +19,52 @@ profile-evolution rules.
 
 ## Review history
 
+- **v17:** Removes `.properties` from the unmerged public devtool input
+  contract. Project generation and resolved configuration tooling now accept
+  only `.yml`/`.yaml`, eliminating the second file parser and mixed-format
+  precedence surface before release. Quarkus system properties and the local
+  cluster launcher's separately permission-checked private `.properties`
+  overlays remain runtime/internal mechanisms, not project formats.
+- **v16:** Makes `./yano.sh appchain` the sole documented user entry point and
+  adds grouped, dependency-free command help while retaining the standalone
+  `yano-appchain` executable as an internal packaging and CI boundary.
+  Generated project and GitOps runtime configuration changes from flat
+  `.properties` files to deterministic, nested `.yaml` files; indexed property
+  paths render as YAML lists and round-trip to the exact flattened values
+  recorded in `appchain.lock`. Ambiguous, malformed, sparse, and unbounded
+  extension paths fail generation. SmallRye-backed resolved validation
+  continues to accept YAML and properties as inputs, and the local cluster's
+  separately secured operator overlays remain properties in this revision.
+- **v15:** Keeps `appchain cluster` as the single-host lifecycle namespace;
+  no competing `demo-cluster` or `yano-cluster.sh` entry point is introduced.
+  The maintained default profile now contains governed ordered-log,
+  key/value, and approvals/effects chains. `cluster node join <index>` records
+  the joining identity through threshold governance on every configured chain,
+  starts the node from the immutable bootstrap identity, catches up finalized
+  membership history, and requires tip/root agreement. `cluster member add
+  <public-key>` remains the lower-level governance-only operation for an
+  externally managed node. `cluster effect demo` exercises an approvals-emitted
+  effect through external claim/report and confirms proof availability without
+  Kafka, S3, IPFS, or payment credentials. The bootstrap identity marker is
+  explicitly immutable across governed membership epochs. The launcher remains
+  a single-host tool rather than a distributed production controller; real
+  keys and public networks do not create independent failure domains.
+- **v14:** Records post-M6 implementation-review hardening without stabilizing
+  the alpha contracts. Generated properties are key-sorted, and regeneration
+  refuses to claim an existing user-owned path introduced by a newer renderer.
+  Resolved configuration derives global-versus-indexed scope from the metadata
+  registry, including strictness and DX identity properties. Distribution ZIP
+  inspection supports rooted and rootless layouts; configured relative CLI
+  paths are resolved consistently from the caller; valid uppercase identity
+  digests are normalized instead of omitted; public member/proposer validation
+  identifies the bounded offending value; and Studio preserves invalid zero
+  membership for validation. Compose nodes now persist directly at the image's
+  owned `/app/chainstate` mount instead of nesting a writable volume beneath
+  the read-only `/project` mount. A real two-node Compose smoke test verified
+  readiness, submission, finality, and root parity. The alleged blank-anchor
+  upgrade regression was rejected: the pre-DX `AnchorConfig` constructor
+  already rejected an enabled anchor without a signing key before a subsystem
+  could be constructed.
 - **v13:** Records the bounded M6 ecosystem baseline. Every generated project
   receives a release-pinned `configure-yano-appchain` AI skill, a non-mutating
   CI verification script, and a checksum-pinned GitHub Actions workflow.
@@ -392,7 +438,7 @@ The normative decisions are:
 
 1. `appchain.yaml` is the durable user-authored intent.
 2. `appchain.lock` is the release-specific resolved result.
-3. Runtime YAML/properties, overlays, plugin selections, and deployment files
+3. Runtime YAML, optional operator overlays, plugin selections, and deployment files
    are regenerable outputs.
 4. The existing `yano.app-chain.*` runtime properties remain the startup path;
    the blueprint is not a second runtime config parser.
@@ -977,8 +1023,8 @@ or complete.
 ```bash
 ./yano.sh appchain config validate --mode resolved \
   --config application-appchain.yml \
-  --config node0.properties \
-  --config private.properties
+  --config node0.yaml \
+  --config private.yaml
 ```
 
 Merges the declared configuration sources using the same precedence and
@@ -1022,7 +1068,7 @@ properties, while runtime-parity diagnostics should include them and show
 redacted provenance.
 
 Every effective field records its winning source. Ambiguous duplicate forms,
-such as equivalent YAML and flattened paths in one effective stack, are
+such as equivalent nested and flattened YAML paths in one effective stack, are
 reported according to an explicit compatibility policy.
 
 ### 12.3 Unknown-key and ownership validation
@@ -1168,13 +1214,13 @@ product-evidence/
 
   config/
     application-appchain.yml
-    shared-consensus.properties
+    shared-consensus.yaml
     nodes/
-      node0.properties
-      node1.properties
-      node2.properties
+      node0.yaml
+      node1.yaml
+      node2.yaml
     executors/
-      executor0.properties
+      executor0.yaml
 
   secrets/
     README.md
@@ -1217,6 +1263,13 @@ The generated shared configuration contains every resolved
 `CONSENSUS_SHARED` property as an explicit value, even when equal to the
 current runtime default. Comments document origin and rationale but are never
 the only record of a consensus value.
+
+Generated project and GitOps runtime files use nested YAML. Indexed flattened
+paths such as `yano.app-chain.chains[0].chain-id` are rendered as entries in a
+`chains` YAML list. Rendering is deterministic, and a strict round-trip gate
+must recover the exact flattened key/value map used to calculate the lock.
+Properties remain a supported input format for existing configurations and
+for separately permission-checked local-cluster operator overlays.
 
 Cluster and node files are generated according to property scope. Private
 values are replaced with reference forms or placeholders that cannot be
@@ -1277,7 +1330,14 @@ uses `exec` to replace itself with the selected node, CLI, or cluster launcher.
 Existing `./yano.sh start`, profile aliases, `JAVA_OPTS`, and
 `YANO_EXTRA_ARGS` remain backward compatible.
 
-### 14.2 Local N-node quick demo
+`./yano.sh appchain` and `./yano.sh appchain help` provide grouped discovery,
+project, validation/operation, and local-cluster help without requiring the
+separate tooling process to be installed. User documentation and generated
+projects reference only `./yano.sh appchain ...`; the raw `yano-appchain`
+launcher remains an internal distribution, testing, and advanced override
+surface.
+
+### 14.2 Single-host N-node lifecycle
 
 Yano does not add a `yano-cluster.sh`. The distribution already contains an
 N-node app-chain launcher, so the public convenience commands delegate to it:
@@ -1286,6 +1346,8 @@ N-node app-chain launcher, so the public convenience commands delegate to it:
 ./yano.sh appchain cluster start 3
 ./yano.sh appchain cluster status
 ./yano.sh appchain cluster submit orders-chain demo "hello"
+./yano.sh appchain cluster effect demo
+./yano.sh appchain cluster node join 3
 ./yano.sh appchain cluster stop
 ./yano.sh appchain cluster clean
 ```
@@ -1296,10 +1358,35 @@ Direct invocation remains supported:
 ./appchain-cluster/cluster.sh start 3
 ```
 
-This is a single-machine demo/evaluation path. Its deterministic demo
-identities, local ports, temporary directories, and default devnet are not a
-production consortium deployment contract. Generated host/Compose projects
-are the supported transition from demo to a reviewable project.
+The maintained profile contains three governed chains: ordered log, key/value,
+and approvals with a dependency-free external-worker effect. `effect demo`
+must emit a finalized effect, claim and report it through the privileged
+external-worker API, observe `DONE`, and require a complete finalized proof.
+It demonstrates the effect contract but does not pretend to call a real
+integration.
+
+`node join <index>` is the high-level same-host path. It validates/stages the
+identity and node-local configuration, submits an identical governed member-add
+through enough distinct current members on every configured chain, starts the
+new node from the original bootstrap member set, derives later membership
+epochs through verified catch-up, and requires per-chain tip and state-root
+agreement. `member add <public-key>` performs only the governance step for a
+node whose configuration and process lifecycle are managed elsewhere. It must
+not copy secrets, rewrite bootstrap identity, or claim that the remote node is
+healthy.
+
+The cluster app-chain identity marker binds immutable bootstrap/genesis
+membership. Governed member epochs are consensus history and never rewrite the
+marker. Existing-member threshold remains unchanged during an add, so the
+governance step does not reduce liveness while the new node catches up.
+
+This is a single-machine lifecycle path. The default deterministic identities,
+local ports, temporary directories, and devnet are for demos and tests.
+Operator-provisioned keys and a public network can support a controlled
+single-host deployment, but do not provide independent failure domains or make
+the launcher a distributed production controller. Generated per-machine
+projects plus an external service/orchestration layer are the supported path
+for a distributed production deployment.
 
 The Bash launcher is packaged only where Bash is supported. Windows users use
 the generated Compose path until a Windows dispatcher and local-process
@@ -1398,8 +1485,9 @@ error codes, and a JSON output mode.
   release-pinned project without mutating the blueprint or running a cluster.
 - `metadata verify`: authenticate a third-party descriptor/runtime-manifest
   binding against operator-pinned vendor keys without loading plugin code.
-- `cluster`: delegate local demo lifecycle commands to the maintained cluster
-  launcher; it is not a production deployment controller.
+- `cluster`: delegate single-host start/stop, governed join, and bounded demo
+  operations to the maintained cluster launcher; it is not a distributed
+  production deployment controller.
 
 ## 15. Frontends
 
@@ -1585,12 +1673,15 @@ their owning ADRs and use `GOVERNED_ACTIVATION`, `NEW_CHAIN_REQUIRED`, or
 
 ### 18.1 Existing hand-authored configuration
 
-Existing YAML/properties workflows remain supported. Users can adopt
+Existing hand-authored YAML workflows remain supported. Users can adopt
 `config validate`, `config effective`, `config explain`, and `doctor` without
 creating a blueprint.
 
 Template mode supports current shared launcher files. Resolved mode supports
-the complete overlay stack. Migration into a generated project is optional.
+the complete YAML overlay stack. `.properties` is not a public devtool project
+format. The local cluster launcher's permission-checked private properties
+overlays remain an internal operational input. Migration into a generated
+project is optional.
 
 ### 18.2 Third-party plugins
 
@@ -1899,7 +1990,7 @@ Test at least:
 - one-character typos under every fully covered dynamic prefix;
 - unselected plugin namespaces;
 - malformed indexed paths;
-- duplicate or ambiguous YAML/properties forms;
+- duplicate or ambiguous YAML forms;
 - overlong aliases and instance names;
 - third-party patterns attempting to claim another namespace;
 - descriptor/catalog duplicate IDs and unknown fields;
@@ -1951,6 +2042,10 @@ Test at least:
   the Quarkus node.
 - `./yano.sh appchain cluster start 3`, status, stop, and clean work from the
   final JVM and supported Unix-like native archives.
+- The packaged launcher runs its dependency-free effects demo and verifies a
+  governed late join reaches identical tips and roots on all maintained chains.
+- Governance-only member add never starts an externally managed node or
+  rewrites the immutable bootstrap identity marker.
 - Direct `appchain-cluster/cluster.sh` invocation remains compatible.
 - The final JVM archive contains exactly one version-matched installed
   dev-tools application and release catalog.
@@ -2022,8 +2117,11 @@ The first stable-v1 decision requires all applicable criteria below:
     accepted for external testing or reports a precise manual migration path.
 21. Existing `./yano.sh start` and `start:<profiles>` commands remain backward
     compatible.
-22. `./yano.sh appchain cluster start 3` starts a local three-node demo from a
-    supported final distribution and `clean` removes its generated data.
+22. `./yano.sh appchain cluster start 3` starts the maintained three-chain
+    local profile from a supported final distribution; `effect demo` confirms
+    effect delivery and proof availability; `node join 3` governs and catches
+    up the fourth node with identical roots; and `clean` removes generated
+    data.
 23. App-chain DX commands execute through the separate dev-tools application
     without booting the Quarkus node or opening chain state.
 24. The version-matched standalone dev-tools package can validate and generate
@@ -2096,7 +2194,7 @@ The first stable-v1 decision requires all applicable criteria below:
 | Generated project implies production readiness | Maturity labels, trust statement, pilot checklist, explicit scope |
 | Manual generated-file edits are lost | Digest check and explicit reconciliation before overwrite |
 | Dispatcher breaks existing node launch | Backward-compatibility tests over final JVM/native archives |
-| Demo launcher is mistaken for production orchestration | Explicit demo labeling and generated project path |
+| Single-host launcher is mistaken for distributed production orchestration | Explicit failure-domain boundary and generated per-machine project path |
 | JVM/native dev-tools outputs diverge | Same sources, conformance vectors, normalized plan/lock parity |
 | Native archive silently requires Java | Separate tools package and explicit release/help support boundary |
 

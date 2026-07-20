@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.appchain.devtools;
 
 import com.bloxbean.cardano.yano.appchain.config.AppChainPropertyRegistry;
+import com.bloxbean.cardano.yano.appchain.config.AppChainResolvedValidator;
 import com.bloxbean.cardano.yano.appchain.config.ConfigSourceKind;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -11,6 +12,7 @@ import java.nio.file.Path;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class AppChainResolvedConfigResolverTest {
     private static final String MEMBER = "a".repeat(64);
@@ -33,9 +35,16 @@ class AppChainResolvedConfigResolverTest {
                     block:
                       max-messages: 4
                 """.formatted(SIGNING_KEY, MEMBER));
-        Path overlay = write("node.properties", """
-                yano.app-chain.block.max-messages=7
-                %prod.yano.app-chain.block.max-messages=9
+        Path overlay = write("node.yaml", """
+                yano:
+                  app-chain:
+                    block:
+                      max-messages: 7
+                "%prod":
+                  yano:
+                    app-chain:
+                      block:
+                        max-messages: 9
                 """);
 
         ResolvedAppChainConfiguration resolved = resolver.resolve(
@@ -46,7 +55,7 @@ class AppChainResolvedConfigResolverTest {
         assertThat(resolved.values().get("yano.app-chain.block.max-messages").value())
                 .isEqualTo("9");
         assertThat(resolved.values().get("yano.app-chain.block.max-messages").source())
-                .contains("node.properties");
+                .contains("node.yaml");
         assertThat(resolved.values().get("yano.app-chain.block.max-bytes").sourceKind())
                 .isEqualTo(ConfigSourceKind.RUNTIME_DEFAULT);
         assertThat(resolved.environmentIncluded()).isFalse();
@@ -103,6 +112,43 @@ class AppChainResolvedConfigResolverTest {
                 .isEqualTo(ConfigSourceKind.RUNTIME_DERIVED);
         assertThat(resolved.values().get(
                 "yano.app-chain.chains[0].block.max-bytes").value()).isEqualTo("4194304");
+    }
+
+    @Test
+    void registryDefinedGlobalPropertiesDoNotCreateAMixedChainForm() throws Exception {
+        Path source = write("generated.yaml", """
+                yano:
+                  app-chain:
+                    chains:
+                      - chain-id: orders
+                        signing-key: %s
+                        members: %s
+                    validation:
+                      strict: true
+                    dx:
+                      resolved-config-digest: %s
+                      release-catalog-digest: %s
+                """.formatted(SIGNING_KEY, MEMBER, "c".repeat(64), "d".repeat(64)));
+        AppChainPropertyRegistry registry = AppChainPropertyRegistry.framework();
+
+        ResolvedAppChainConfiguration resolved = resolver.resolve(
+                List.of(source), "", false, false, registry);
+        var validation = new AppChainResolvedValidator(registry, List.of())
+                .validate(resolved.values());
+
+        assertThat(validation.valid()).isTrue();
+        assertThat(validation.diagnostics())
+                .noneMatch(diagnostic -> diagnostic.code().equals("DX_CONFIG_MIXED_CHAIN_FORMS"));
+    }
+
+    @Test
+    void propertiesFilesAreNotPartOfThePublicResolvedConfigurationContract() throws Exception {
+        Path source = write("legacy.properties", "yano.app-chain.enabled=true\n");
+
+        assertThatThrownBy(() -> resolver.resolve(
+                List.of(source), "", false, false, AppChainPropertyRegistry.framework()))
+                .isInstanceOf(java.io.IOException.class)
+                .hasMessageContaining("must use .yml or .yaml");
     }
 
     private Path write(String name, String value) throws Exception {

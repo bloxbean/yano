@@ -2,6 +2,7 @@ package com.bloxbean.cardano.yano.appchain.devtools;
 
 import com.bloxbean.cardano.yano.appchain.config.AppChainPropertyRegistry;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -110,7 +111,7 @@ class AppChainProjectTest {
         assertThat(fileDigests(first)).isEqualTo(fileDigests(second));
         assertThat(firstLock).isEqualTo(secondLock);
         assertThat(firstLock.generatedFiles()).containsKeys(
-                "config/shared-consensus.properties", "scripts/start", "secrets/.gitignore",
+                "config/shared-consensus.yaml", "scripts/start", "secrets/.gitignore",
                 "ci/verify", ".github/workflows/appchain-verify.yml",
                 "ai/configure-yano-appchain/SKILL.md");
         assertShellSyntax(first.resolve("ci/verify"));
@@ -125,21 +126,52 @@ class AppChainProjectTest {
                 .contains("YANO_APPCHAIN_SIGNING_KEY=")
                 .contains("YANO_APPCHAIN_API_KEYS=")
                 .doesNotContain("a".repeat(64));
-        assertThat(Files.readString(first.resolve("config/nodes/node0.properties")))
-                .contains("yano.app-chain.validation.strict=true")
-                .contains("yano.app-chain.dx.resolved-config-digest="
-                        + firstLock.resolvedConfigDigest())
-                .contains("yano.app-chain.dx.release-catalog-digest="
-                        + firstLock.catalogDigests().get("releaseIndex"))
-                .contains("yano.app-chain.api.keys=${YANO_APPCHAIN_API_KEYS:}");
+        Path nodeConfig = first.resolve("config/nodes/node0.yaml");
+        assertThat(yamlValues(nodeConfig))
+                .containsEntry("yano.app-chain.validation.strict", "true")
+                .containsEntry("yano.app-chain.dx.resolved-config-digest",
+                        firstLock.resolvedConfigDigest())
+                .containsEntry("yano.app-chain.dx.release-catalog-digest",
+                        firstLock.catalogDigests().get("releaseIndex"))
+                .containsEntry("yano.app-chain.api.keys", "${YANO_APPCHAIN_API_KEYS:}");
+        assertThat(Files.readString(nodeConfig))
+                .contains("yano:", "app-chain:", "chains:")
+                .doesNotContain("yano.app-chain.");
+        assertThat(yamlValues(first.resolve("config/shared-consensus.yaml")))
+                .isEqualTo(firstLock.consensusValues());
         assertThat(allText(first)).doesNotContain(temporary.toString());
 
-        Files.writeString(first.resolve("config/shared-consensus.properties"),
+        Files.writeString(first.resolve("config/shared-consensus.yaml"),
                 "# manual edit\n", StandardCharsets.UTF_8,
                 java.nio.file.StandardOpenOption.APPEND);
         assertThatThrownBy(() -> renderer.render(first))
                 .isInstanceOf(IOException.class)
                 .hasMessageContaining("manual edits");
+    }
+
+    @Test
+    void regenerationRefusesAUserFileCollidingWithANewRendererOutput() throws Exception {
+        AppChainPropertyRegistry properties = AppChainPropertyRegistry.framework();
+        AppChainProjectCatalog catalog = new AppChainProjectCatalog(properties);
+        AppChainProjectRenderer renderer = new AppChainProjectRenderer(
+                catalog, new AppChainProjectResolver(properties, catalog));
+        Path project = temporary.resolve("new-output-collision");
+        renderer.initialize(project, blueprint("audit-log", "fixed",
+                List.of("a".repeat(64), "b".repeat(64), "c".repeat(64))));
+
+        ObjectMapper mapper = new ObjectMapper();
+        ObjectNode lock = (ObjectNode) mapper.readTree(project.resolve("appchain.lock").toFile());
+        ((ObjectNode) lock.path("generatedFiles")).remove("README.md");
+        mapper.writerWithDefaultPrettyPrinter().writeValue(
+                project.resolve("appchain.lock").toFile(), lock);
+        Files.writeString(project.resolve("README.md"), "user-owned notes\n");
+
+        assertThatThrownBy(() -> renderer.render(project))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("user-owned path")
+                .hasMessageContaining("README.md");
+        assertThat(Files.readString(project.resolve("README.md")))
+                .isEqualTo("user-owned notes\n");
     }
 
     @Test
@@ -182,12 +214,11 @@ class AppChainProjectTest {
                 .doesNotContain(temporary.toString());
         assertThat(nonInteractive.resolve("appchain.yaml")).isRegularFile();
         assertThat(nonInteractive.resolve("appchain.lock")).isRegularFile();
-        assertThat(Files.readString(
-                nonInteractive.resolve("config/nodes/node1.properties")))
-                .contains("yano.block-producer.enabled=false")
-                .contains("yano.remote.host=127.0.0.1")
-                .contains("quarkus.http.port=18081")
-                .contains("yano.server.port=23338");
+        assertThat(yamlValues(nonInteractive.resolve("config/nodes/node1.yaml")))
+                .containsEntry("yano.block-producer.enabled", "false")
+                .containsEntry("yano.remote.host", "127.0.0.1")
+                .containsEntry("quarkus.http.port", "18081")
+                .containsEntry("yano.server.port", "23338");
 
         output.getBuffer().setLength(0);
         int render = cli.run(new String[]{"render", nonInteractive.toString()},
@@ -235,6 +266,10 @@ class AppChainProjectTest {
                     assertShellSyntax(project.resolve("scripts/start"));
                     assertShellSyntax(project.resolve("scripts/stop"));
                     assertShellSyntax(project.resolve("scripts/status"));
+                    if ("host".equals(deployment)) {
+                        assertThat(Files.readString(project.resolve("scripts/stop")))
+                                .contains("did not stop within 10 seconds");
+                    }
                     if (Files.exists(project.resolve("scripts/start-node"))) {
                         assertShellSyntax(project.resolve("scripts/start-node"));
                     }
@@ -245,9 +280,11 @@ class AppChainProjectTest {
                                 .contains("YANO_PROFILE: preprod")
                                 .doesNotContain("YANO_PROFILE: preprod,appchain")
                                 .doesNotContain("entrypoint:");
-                        assertThat(Files.readString(
-                                project.resolve("config/nodes/node0.properties")))
-                                .contains("yano.storage.path=/project/data/node0/chainstate");
+                        assertThat(yamlValues(project.resolve("config/nodes/node0.yaml")))
+                                .containsEntry("yano.storage.path", "/app/chainstate");
+                        assertThat(Files.readString(project.resolve("compose.yaml")))
+                                .contains("node0-data:/app/chainstate")
+                                .doesNotContain("node0-data:/project");
                     }
                 }
             }
@@ -277,12 +314,14 @@ class AppChainProjectTest {
 
         renderer.initialize(project, blueprint);
 
-        assertThat(Files.readString(project.resolve("config/nodes/node0.properties")))
-                .contains("yano.app-chain.chains[0].peers=node-b.example:13337,node-c.example:13337")
-                .contains("yano.server.port=13337");
-        assertThat(Files.readString(project.resolve("config/nodes/node2.properties")))
-                .contains("yano.app-chain.chains[0].peers=node-a.example:13337,node-b.example:13337")
-                .contains("quarkus.http.port=8080");
+        assertThat(yamlValues(project.resolve("config/nodes/node0.yaml")))
+                .containsEntry("yano.app-chain.chains[0].peers",
+                        "node-b.example:13337,node-c.example:13337")
+                .containsEntry("yano.server.port", "13337");
+        assertThat(yamlValues(project.resolve("config/nodes/node2.yaml")))
+                .containsEntry("yano.app-chain.chains[0].peers",
+                        "node-a.example:13337,node-b.example:13337")
+                .containsEntry("quarkus.http.port", "8080");
         assertThat(Files.readString(project.resolve("scripts/start")))
                 .contains("Usage: start NODE_INDEX")
                 .doesNotContain("for node in");
@@ -386,6 +425,28 @@ class AppChainProjectTest {
     }
 
     @Test
+    void doctorInspectsRootlessJvmDistributionArchives() throws Exception {
+        AppChainPropertyRegistry properties = AppChainPropertyRegistry.framework();
+        AppChainProjectCatalog catalog = new AppChainProjectCatalog(properties);
+        AppChainProjectLifecycle lifecycle = new AppChainProjectLifecycle(properties);
+        Path archive = temporary.resolve("rootless-jvm.zip");
+        try (ZipOutputStream output = new ZipOutputStream(Files.newOutputStream(archive))) {
+            output.putNextEntry(new ZipEntry("yano.jar"));
+            output.write(0);
+            output.closeEntry();
+            output.putNextEntry(new ZipEntry("config/schema/"
+                    + "appchain-release-capability-index.json"));
+            output.write(catalog.releaseIndexBytes());
+            output.closeEntry();
+        }
+
+        AppChainProjectModel.DoctorReport doctor = lifecycle.doctor(null, archive);
+
+        assertThat(doctor.status()).isEqualTo("DOCTOR_OK");
+        assertThat(doctor.checks()).allMatch(check -> "PASS".equals(check.status()));
+    }
+
+    @Test
     void gitOpsExportsAreDeterministicSecretFreeAndBoundToValidatedSource() throws Exception {
         AppChainPropertyRegistry properties = AppChainPropertyRegistry.framework();
         AppChainProjectCatalog catalog = new AppChainProjectCatalog(properties);
@@ -406,9 +467,10 @@ class AppChainProjectTest {
 
         assertThat(exported.status()).isEqualTo("GITOPS_EXPORTED");
         assertThat(fileDigests(first)).isEqualTo(fileDigests(second));
-        assertThat(Files.readString(first.resolve("files/node0.properties")))
-                .contains("yano.storage.path=/var/lib/yano/chainstate")
-                .contains("node1:13337,node2:13337");
+        assertThat(yamlValues(first.resolve("files/node0.yaml")))
+                .containsEntry("yano.storage.path", "/var/lib/yano/chainstate")
+                .containsEntry("yano.app-chain.chains[0].peers",
+                        "node1:13337,node2:13337");
         assertThat(Files.readString(first.resolve("node0.yaml")))
                 .contains("secretRef:", "yano-appchain-node0")
                 .doesNotContain("YANO_APPCHAIN_SIGNING_KEY=");
@@ -521,6 +583,13 @@ class AppChainProjectTest {
                 blueprint.apiVersion(), blueprint.kind(), blueprint.metadata(),
                 new AppChainProjectModel.Spec(spec.yanoVersion(), spec.network(), spec.runtime(),
                         spec.deployment(), List.of(changed)));
+    }
+
+    private static Map<String, String> yamlValues(Path path) throws IOException {
+        Map<String, String> values = new TreeMap<>();
+        new AppChainConfigFileLoader().load(path).forEach((key, value) ->
+                values.put(key, String.valueOf(value)));
+        return values;
     }
 
     private static Map<String, String> fileDigests(Path root) throws IOException {

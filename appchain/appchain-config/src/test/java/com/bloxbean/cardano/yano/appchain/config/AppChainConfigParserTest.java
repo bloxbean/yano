@@ -44,7 +44,8 @@ class AppChainConfigParserTest {
         assertThatThrownBy(() -> AppChainConfigSemantics.validate(
                 AppChainConfigParser.parse(invalidMember)))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("member key");
+                .hasMessageContaining("member key")
+                .hasMessageContaining("not-hex");
 
         Map<String, Object> invalidEffects = base();
         invalidEffects.put("effects.enabled", "true");
@@ -53,6 +54,18 @@ class AppChainConfigParserTest {
         assertThatThrownBy(() -> AppChainEffectsConfig.from(parsed))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("16777216");
+    }
+
+    @Test
+    void semanticFailuresIdentifyTheOffendingPublicProposer() {
+        Map<String, Object> values = base();
+        String proposer = "c".repeat(64);
+        values.put("sequencer.proposer", proposer);
+
+        assertThatThrownBy(() -> AppChainConfigSemantics.validate(
+                AppChainConfigParser.parse(values)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining(proposer);
     }
 
     @Test

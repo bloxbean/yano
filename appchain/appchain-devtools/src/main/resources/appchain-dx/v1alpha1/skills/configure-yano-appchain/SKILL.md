@@ -10,11 +10,11 @@ catalog, recipes, generated lock file, and validation results as authoritative f
 
 ## Workflow
 
-1. Run `yano appchain recipes` and `yano appchain capabilities` before choosing features.
+1. Run `./yano.sh appchain recipes` and `./yano.sh appchain capabilities` before choosing features.
 2. Create or edit only `appchain.yaml`. Do not hand-edit generated runtime files.
-3. Run `yano appchain render`, then `yano appchain config validate --mode project`.
-4. Run `yano appchain doctor` before startup or delivery.
-5. Use `yano appchain diff` before applying a blueprint change and `yano appchain drift`
+3. Run `./yano.sh appchain render`, then `./yano.sh appchain config validate --mode project`.
+4. Run `./yano.sh appchain doctor` before startup or delivery.
+5. Use `./yano.sh appchain diff` before applying a blueprint change and `./yano.sh appchain drift`
    against running nodes when identities are available.
 6. Summarize selected capabilities, generated files, unresolved operator inputs, validation
    coverage, and any warnings.

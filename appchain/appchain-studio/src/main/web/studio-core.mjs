@@ -13,9 +13,11 @@ const SAFE_COMPONENT = /^[A-Za-z0-9._-]{3,160}$/;
 
 export function normalizeIntent(raw, recipes, release) {
   const source = raw || {};
+  const members = source.members === undefined || source.members === null || source.members === ''
+    ? 3 : Number(source.members);
   const intent = {
     recipe: String(source.recipe || 'audit-log'), network:String(source.network || 'devnet'),
-    members:Number(source.members || 3), finality:String(source.finality || 'two-thirds'),
+    members, finality:String(source.finality || 'two-thirds'),
     sequencing:String(source.sequencing || 'fixed'), runtime:String(source.runtime || 'jvm'),
     deployment:String(source.deployment || 'host'), name:String(source.name || 'my-appchain'),
     chainId:String(source.chainId || source.name || 'my-appchain'),
