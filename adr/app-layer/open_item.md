@@ -209,7 +209,10 @@ implementation status.
 
 `DOC-001` was completed on 2026-07-17: historical ADRs now distinguish their
 original rationale from current delivery status without rewriting the decision
-record. Completed rows are removed from the live table by policy.
+record. `DOC-003` was completed on 2026-07-19 with the task-oriented
+`docs/appchain` start-here hub, nine progressive scenario tutorials, a tested
+approval-to-webhook exercise, and navigation from the primary app-chain docs.
+Completed rows are removed from the live table by policy.
 
 | ID | Priority | State | Item | Done when |
 |---|---:|---|---|---|
