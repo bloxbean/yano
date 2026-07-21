@@ -534,6 +534,22 @@ operator to run `stop` with the same profile.
 Every deletion requires a stopped deployment, one explicit scope, and
 `--yes`. Secrets are always preserved:
 
+For disposable local Compose devnets, reset the complete managed devnet in one
+command:
+
+```bash
+./demo.sh reset-devnet --yes
+```
+
+This stops every managed `yano-effects-devnet-*` Compose project and deletes
+the shared devnet L1, all devnet app-chain and connector state, generated
+runtime data, reports, reservations, retirement fences, and the time-bound
+generated devnet network identity. The next launch therefore creates a fresh
+`systemStart`. It preserves credential/key secrets and Docker images, refuses
+public networks, and allows previous devnet instance and chain IDs to be
+reused. Use the granular commands below when retained-state lifecycle behavior
+is under test.
+
 ```bash
 # Independently disposable categories
 ./demo.sh clean --instance default --scope observability --yes
