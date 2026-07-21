@@ -51,6 +51,16 @@ public interface AppChainGateway {
      */
     java.util.Optional<byte[]> stateProof(byte[] key);
 
+    /**
+     * Run the configured state machine's bounded read hook against one
+     * root-fixed committed-state snapshot (ADR app-layer/011.3 gate A).
+     * Implementations execute plugin code away from the consensus executor.
+     */
+    default AppQueryResult query(String path, byte[] request) {
+        throw new AppQueryException(AppQueryException.Code.UNAVAILABLE,
+                "App-chain query service is unavailable");
+    }
+
     /** Height at which a message id was finalized, if it was. */
     java.util.Optional<Long> messageHeight(byte[] messageId);
 

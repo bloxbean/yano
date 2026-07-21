@@ -12,7 +12,6 @@ public class NoAutoStartTestProfile implements QuarkusTestProfile {
     @Override
     public Map<String, String> getConfigOverrides() {
         Map<String, String> overrides = new HashMap<>();
-        overrides.put("yano.api-prefix", "/api/v1");
         overrides.put("yano.auto-sync-start", "false");
         overrides.put("yano.client.enabled", "false");
         overrides.put("yano.server.enabled", "true");

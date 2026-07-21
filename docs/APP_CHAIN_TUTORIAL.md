@@ -47,9 +47,12 @@ from the unzipped directory (network genesis files resolve relative to it).
 `JAVA_OPTS` / `YANO_EXTRA_ARGS` env vars are honored.
 
 Native binaries (`yano-native-<version>-<os>-<arch>.zip`) have the same layout
-with a `yano` binary instead of the jar — same flags, same `config/`. Note:
-**plugin jars (Kafka sink, ZK, custom state machines) require the JVM
-distribution**; the native image cannot load them.
+with a `yano` binary instead of the jar — same flags, same `config/`. A native
+image cannot load a new JAR from `plugins/` after it is built. Manifested
+Kafka, ZK, effect-executor, and custom-state-machine bundles can still be used
+when they are included before native catalog-index/reflection generation and
+the native executable is rebuilt. Use the JVM distribution for drop-in JAR
+deployment.
 
 ### Option B — Docker
 
@@ -67,7 +70,7 @@ flavor), exposes REST on `7070` and N2N on `13337`, and mounts:
 | Host path | In container | Use for |
 |---|---|---|
 | `config/application.yml` | `/app/config/application.yml` | `yano.app-chain.*` settings |
-| `plugins/` | `/app/plugins` | T3 plugin jars (`yaci.plugins.directory` is preset) |
+| `plugins/` | `/app/plugins` | JVM-image plugin bundles (`yaci.plugins.directory` is preset; native images ignore directory JARs) |
 | `chainstate-*/` | `/app/chainstate` | persistent chain + app-chain ledgers |
 
 For the two-node tutorial cluster below, run two copies of the compose bundle
@@ -268,7 +271,8 @@ rm -rf /tmp/appchain-tutorial
 The framework never interprets message bodies — a **state machine** does.
 Here you build one: a replicated **key-value store** where message bodies are
 commands (`set:<key>=<value>` / `del:<key>`), packaged as a plugin jar for the
-default distribution. No Yano rebuild.
+default JVM distribution. No Yano rebuild is needed for that deployment mode;
+a native deployment must instead include the bundle at application build time.
 
 ### 2.1 Plugin project
 
@@ -280,8 +284,11 @@ kv-appchain-plugin/
     ├── java/com/example/kvchain/
     │   ├── KvStateMachine.java
     │   └── KvStateMachineProvider.java
-    └── resources/META-INF/services/
-        └── com.bloxbean.cardano.yano.api.appchain.AppStateMachineProvider
+    └── resources/META-INF/
+        ├── services/
+        │   └── com.bloxbean.cardano.yano.api.appchain.AppStateMachineProvider
+        └── yano/plugins/
+            └── com.example.kvchain.json
 ```
 
 `settings.gradle`:
@@ -302,7 +309,7 @@ repositories { mavenLocal(); mavenCentral() }
 java { sourceCompatibility = 21; targetCompatibility = 21 }
 
 dependencies {
-    compileOnly 'com.bloxbean.cardano:yano-core-api:0.1.0-pre8'   // AppStateMachine SPI
+    compileOnly 'com.bloxbean.cardano:yano-core-api:0.1.0-pre9'   // AppStateMachine SPI
     // yaci-core (AppMessage) comes in transitively via yano-core-api
 }
 ```
@@ -394,6 +401,32 @@ The ServiceLoader manifest —
 com.example.kvchain.KvStateMachineProvider
 ```
 
+Add the bundle manifest at
+`src/main/resources/META-INF/yano/plugins/com.example.kvchain.json`:
+
+```json
+{
+  "schemaVersion": 1,
+  "id": "com.example.kvchain",
+  "version": "0.1.0",
+  "yanoApi": { "min": 1, "max": 1, "minLevel": 1 },
+  "dependencies": [],
+  "contributions": [
+    {
+      "kind": "app-state-machine",
+      "name": "kv-store",
+      "provider": "com.example.kvchain.KvStateMachineProvider"
+    }
+  ]
+}
+```
+
+The manifest filename must equal its `id`. Its contribution must match the
+ServiceLoader entry exactly; Yano validates both before constructing the
+provider. If an operator uses `yaci.plugins.allow-list`, it contains the bundle
+id (`com.example.kvchain`), while `state-machine` continues to select the
+contribution name (`kv-store`).
+
 Build it:
 
 ```bash
@@ -401,7 +434,7 @@ cd kv-appchain-plugin && ./gradlew jar
 # → build/libs/kv-appchain-plugin.jar
 ```
 
-### 2.3 Deploy on the default distribution
+### 2.3 Deploy on the default JVM distribution
 
 Drop the jar into the node's plugins directory and select the machine by id —
 on **every member** (all members must run the same state machine, or their
@@ -411,6 +444,12 @@ state roots diverge and blocks are rejected):
 mkdir -p app/plugins
 cp kv-appchain-plugin/build/libs/kv-appchain-plugin.jar app/plugins/
 ```
+
+Do not copy this JAR beside an already-built native executable: native startup
+will report and ignore it. For native deployment, add the manifested bundle as
+an application build-time dependency and catalog closure, then rebuild the
+native executable so its aggregate index and reflection metadata include the
+provider.
 
 Config (only two things change relative to Part 1):
 

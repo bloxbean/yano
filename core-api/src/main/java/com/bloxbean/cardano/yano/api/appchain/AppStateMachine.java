@@ -85,9 +85,50 @@ public interface AppStateMachine {
     default void onEffectResult(AppBlock block, EffectResult result, AppStateWriter writer) {
     }
 
-    /** Optional read path exposed via REST {@code /query} and the Java API. */
+    /**
+     * Legacy optional read hook retained for source compatibility and direct
+     * library callers. The bounded ADR-011.3 runtime never invokes this hook:
+     * a payload produced without the committed query context cannot honestly
+     * be bound to the height and state root in {@link AppQueryResult}.
+     */
     default byte[] query(String path, byte[] params) {
         throw new UnsupportedOperationException("query not supported by " + id());
+    }
+
+    /**
+     * Query a root-fixed snapshot of committed state outside deterministic
+     * block execution. This callback is off-consensus: it must be read-only,
+     * must not emit effects or mutate state-machine fields, and may overlap a
+     * later {@link #apply} on another thread. Its payload must be a function
+     * only of {@code path}, {@code params}, and the supplied snapshot; external
+     * I/O, wall-clock time, and randomness would not be root-attested. The
+     * supplied reader is valid only for the dynamic extent of this callback and
+     * must not be retained. Its
+     * {@link AppQueryContext#committedHeight()}, {@link AppStateReader#stateRoot()}
+     * and every {@link AppStateReader#get(byte[])} read refer to the same
+     * committed snapshot and never advance while the query runs, even when
+     * later blocks commit concurrently.
+     *
+     * <p>The runtime bounds request/response size, concurrency and execution
+     * time. Implementations must still avoid unbounded CPU or retained work:
+     * timing out a caller interrupts the callback, but its generation remains
+     * alive until the callback actually exits. Child work that survives this
+     * method is forbidden; the host cannot safely manage arbitrary threads
+     * created by an in-process plugin.</p>
+     *
+     * <p>A plugin may deliberately throw {@link AppQueryException} only with
+     * {@link AppQueryException.Code#UNSUPPORTED} for an unknown query path or
+     * {@link AppQueryException.Code#INVALID_REQUEST} for invalid parameters.
+     * Other reason codes are host-owned; unexpected plugin failures are
+     * redacted and mapped to {@link AppQueryException.Code#FAILED}.</p>
+     *
+     * <p>The default reports {@code UNSUPPORTED}. Existing state machines
+     * remain source compatible, but must implement this overload before the
+     * runtime can expose a root-attested query result.</p>
+     */
+    default byte[] query(String path, byte[] params, AppQueryContext state) {
+        throw new AppQueryException(AppQueryException.Code.UNSUPPORTED,
+                "committed query not supported by " + id());
     }
 
     /** Admission verdict for {@link #validate}. */

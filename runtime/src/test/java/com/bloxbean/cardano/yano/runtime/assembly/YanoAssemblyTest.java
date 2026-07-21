@@ -50,6 +50,75 @@ class YanoAssemblyTest {
     Path tempDir;
 
     @Test
+    void buildFailureCleanupRunsEveryActionAndPromotesFirstError() {
+        RuntimeException primary = new RuntimeException("primary");
+        AssertionError fatalCleanup = new AssertionError("fatal cleanup");
+        RuntimeException laterCleanup = new RuntimeException("later cleanup");
+        AtomicInteger cleanupCalls = new AtomicInteger();
+
+        AssertionError thrown = assertThrows(AssertionError.class,
+                () -> YanoAssembly.cleanupBuildFailure(primary,
+                        () -> {
+                            cleanupCalls.incrementAndGet();
+                            throw primary;
+                        },
+                        () -> {
+                            cleanupCalls.incrementAndGet();
+                            throw fatalCleanup;
+                        },
+                        () -> {
+                            cleanupCalls.incrementAndGet();
+                            throw laterCleanup;
+                        }));
+
+        assertSame(fatalCleanup, thrown);
+        assertEquals(3, cleanupCalls.get());
+        assertEquals(List.of(primary, laterCleanup), List.of(thrown.getSuppressed()));
+        assertEquals(0, primary.getSuppressed().length);
+    }
+
+    @Test
+    void buildFailureCleanupPromotesLaterProcessFatalOverEarlierAssertion() {
+        RuntimeException primary = new RuntimeException("primary");
+        AssertionError assertion = new AssertionError("assertion");
+        TestVirtualMachineError fatal = new TestVirtualMachineError();
+
+        TestVirtualMachineError thrown = assertThrows(TestVirtualMachineError.class,
+                () -> YanoAssembly.cleanupBuildFailure(primary,
+                        () -> { throw assertion; },
+                        () -> { throw fatal; }));
+
+        assertSame(fatal, thrown);
+        assertEquals(List.of(assertion), List.of(fatal.getSuppressed()));
+        assertEquals(List.of(primary), List.of(assertion.getSuppressed()));
+    }
+
+    @Test
+    void nonProcessErrorAssemblyFailureClosesRuntimeAndAllowsImmediateRebuild() {
+        YanoConfig config = YanoConfig.serverOnly(0);
+        config.setUseRocksDB(true);
+        config.setRocksDBPath(tempDir.resolve("checked-failure-chainstate").toString());
+        AssertionError failure = new AssertionError("transaction bootstrap assertion");
+
+        AssertionError thrown = assertThrows(AssertionError.class,
+                () -> YanoAssembly.relay(config)
+                        .runtimeOptions(RuntimeOptions.defaults())
+                        .transactionBootstrap(
+                                TransactionBootstrapOptions.enabled(false, false, "aiken"),
+                                (context, options) -> {
+                                    throw failure;
+                                })
+                        .build());
+
+        assertSame(failure, thrown);
+
+        Yano rebuilt = YanoAssembly.relay(config)
+                .runtimeOptions(RuntimeOptions.defaults())
+                .build();
+        rebuilt.close();
+    }
+
+    @Test
     void relayRecipeBuildsRoleBasedNode() {
         Yano node = YanoAssembly.relay(YanoConfig.serverOnly(0))
                 .runtimeOptions(RuntimeOptions.defaults())
@@ -167,6 +236,7 @@ class YanoAssemblyTest {
             assertEquals(List.of(
                     "runtime-resources",
                     "runtime-startup-boundary",
+                    "plugins",
                     "tx",
                     "serve",
                     "runtime-bootstrap-recovery",
@@ -651,5 +721,14 @@ class YanoAssemblyTest {
         } catch (ReflectiveOperationException e) {
             throw new AssertionError(e);
         }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static <T extends Throwable> RuntimeException sneakyThrow(Throwable failure)
+            throws T {
+        throw (T) failure;
+    }
+
+    private static final class TestVirtualMachineError extends VirtualMachineError {
     }
 }

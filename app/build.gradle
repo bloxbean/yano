@@ -1,6 +1,73 @@
+import org.gradle.api.artifacts.ProjectDependency
+import org.gradle.api.artifacts.component.ModuleComponentIdentifier
+import org.gradle.api.artifacts.component.ProjectComponentIdentifier
+import org.gradle.api.artifacts.result.ResolvedDependencyResult
+
 plugins {
     id 'application'
     id 'io.quarkus' version "${quarkusPluginVersion}"
+}
+
+def includeFirstPartyPluginBundlesProperty =
+        providers.gradleProperty('includeFirstPartyPluginBundles').orNull
+if (includeFirstPartyPluginBundlesProperty != null
+        && !['true', 'false'].contains(includeFirstPartyPluginBundlesProperty.toLowerCase())) {
+    throw new GradleException('includeFirstPartyPluginBundles must be true or false')
+}
+def includeFirstPartyPluginBundles =
+        Boolean.parseBoolean(includeFirstPartyPluginBundlesProperty ?: 'false')
+def includeNativePluginConformanceFixtureProperty =
+        providers.gradleProperty('includeNativePluginConformanceFixture').orNull
+if (includeNativePluginConformanceFixtureProperty != null
+        && !['true', 'false'].contains(
+                includeNativePluginConformanceFixtureProperty.toLowerCase())) {
+    throw new GradleException(
+            'includeNativePluginConformanceFixture must be true or false')
+}
+def includeNativePluginConformanceFixture = Boolean.parseBoolean(
+        includeNativePluginConformanceFixtureProperty ?: 'false')
+def declaredPluginManifestVersion = providers.gradleProperty('version').get()
+
+// Every build-time bundle must have an explicit Gradle project root. Mappings
+// with includeProvided also add non-annotation compileOnly dependencies because
+// those are supplied by the host at execution time rather than by the bundle JAR.
+def buildTimePluginBundles = [
+        'com.bloxbean.cardano.yaci.plugins.logging':
+                [projectPath: ':runtime', includeProvided: false,
+                 expectedManifestVersion: '1.0.0'],
+        'com.bloxbean.cardano.yano.appchain.stdlib':
+                [projectPath: ':appchain-stdlib', includeProvided: false]
+]
+if (includeFirstPartyPluginBundles) {
+    buildTimePluginBundles.putAll([
+            'com.bloxbean.cardano.yano.appchain.kafka':
+                    [projectPath: ':appchain-kafka-sink', includeProvided: true],
+            'com.bloxbean.cardano.yano.appchain.effects.cardano':
+                    [projectPath: ':appchain-effects-cardano', includeProvided: true],
+            'com.bloxbean.cardano.yano.appchain.zk':
+                    [projectPath: ':appchain-zk', includeProvided: true]
+    ])
+}
+if (includeNativePluginConformanceFixture) {
+    buildTimePluginBundles.put(
+            'com.bloxbean.cardano.yano.fixture.plugin-conformance',
+            [projectPath: ':appchain-plugin-conformance', includeProvided: true])
+}
+
+def requireIndexedManifestVersions = { index, Map<String, String> expectedVersions ->
+    expectedVersions.toSorted().each { bundleId, expectedVersion ->
+        def bundle = index.bundles.find { it.manifest?.id == bundleId }
+        if (bundle == null) {
+            throw new GradleException(
+                    "Expected build-time plugin bundle ${bundleId} is absent from the index")
+        }
+        def actualVersion = bundle.manifest.version?.toString()
+        if (actualVersion != expectedVersion) {
+            throw new GradleException(
+                    "Plugin bundle ${bundleId} manifest version ${actualVersion} "
+                            + "does not match expected version ${expectedVersion}")
+        }
+    }
 }
 
 dependencies {
@@ -37,6 +104,16 @@ dependencies {
     // activated only by selecting a machine id via yano.app-chain.state-machine
     implementation(project(':appchain-stdlib')) {
         exclude group: 'io.netty', module: 'netty-all'
+    }
+    // Optional T3 integrations stay out of the stock artifact. Native/custom
+    // builds can opt in before catalog-index and reflection generation.
+    if (includeFirstPartyPluginBundles) {
+        runtimeOnly project(':appchain-kafka-sink')
+        runtimeOnly project(':appchain-effects-cardano')
+        runtimeOnly project(':appchain-zk')
+    }
+    if (includeNativePluginConformanceFixture) {
+        runtimeOnly project(':appchain-plugin-conformance')
     }
 
     // App-chain metrics (ADR 006 E5.1); Prometheus endpoint at /q/metrics
@@ -75,9 +152,280 @@ distTar.enabled = false
 startScripts.enabled = false
 
 test {
+    systemProperty 'yano.test.include-first-party-plugin-bundles',
+            Boolean.toString(includeFirstPartyPluginBundles)
+    systemProperty 'yano.test.include-native-plugin-conformance-fixture',
+            Boolean.toString(includeNativePluginConformanceFixture)
     useJUnitPlatform {
         excludeTags 'integration', 'e2e', 'haskell-sync'
     }
+}
+
+// ADR-011.2: preserve artifact ownership before Quarkus flattens dependencies.
+def generatedPluginCatalogDir = layout.buildDirectory.dir('generated/plugin-catalog-resources')
+def generatedPluginReflectionPath =
+        'META-INF/native-image/com.bloxbean.cardano/yano-plugin-catalog/reflect-config.json'
+sourceSets.main.resources.srcDir(generatedPluginCatalogDir)
+
+// RESTEasy fixes its application path during Quarkus augmentation. Generate a
+// tiny immutable marker and the config source that drives that build-time path
+// from the same canonical value. A packaged process may still receive
+// yano.api-prefix at launch, but the application guard rejects any value that
+// differs from this artifact contract before node/plugin startup.
+def generatedApiPrefixDir = layout.buildDirectory.dir('generated/api-prefix-resources')
+def bakedApiPrefixMarkerPath = 'META-INF/yano-api-prefix-v1'
+def bakedApiPrefixConfigPath = 'application.properties'
+def bakedApiPrefixDashboardPath = 'META-INF/resources/ui/plugins/api-prefix.json'
+def maxBakedApiPrefixLength = 256
+def forbiddenApiPrefixBuildInputs = [
+        providers.systemProperty('yano.api-prefix').isPresent(),
+        providers.environmentVariable('YANO_API_PREFIX').isPresent(),
+        providers.systemProperty('quarkus.resteasy.path').isPresent(),
+        providers.environmentVariable('QUARKUS_RESTEASY_PATH').isPresent(),
+        providers.systemProperty('quarkus.http.root-path').isPresent(),
+        providers.environmentVariable('QUARKUS_HTTP_ROOT_PATH').isPresent()
+]
+if (forbiddenApiPrefixBuildInputs.any { it }) {
+    throw new GradleException(
+            'Runtime API-prefix configuration must not influence artifact augmentation; '
+                    + 'unset yano.api-prefix/YANO_API_PREFIX and '
+                    + 'Quarkus REST/root-path overrides, then use '
+                    + '-PyanoApiPrefix=<path>')
+}
+def requestedBuildApiPrefix = providers.gradleProperty('yanoApiPrefix')
+        .orElse('/api/v1')
+def canonicalApiPrefix = { Object value ->
+    String prefix = value.toString()
+    if (prefix.length() > maxBakedApiPrefixLength
+            || prefix.trim() != prefix
+            || !prefix.startsWith('/')
+            || (prefix.length() > 1 && prefix.endsWith('/'))
+            || !(prefix ==~ /\/(?:[A-Za-z0-9._~-]+(?:\/[A-Za-z0-9._~-]+)*)?/)
+            || prefix.split('/', -1).any { it == '.' || it == '..' }) {
+        throw new GradleException(
+                'yanoApiPrefix must be at most 256 characters and a '
+                        + 'canonical absolute path '
+                        + 'made of unescaped URI path segments')
+    }
+    prefix
+}
+def bakedApiPrefix = providers.provider {
+    canonicalApiPrefix(requestedBuildApiPrefix.get())
+}
+sourceSets.main.resources.srcDir(generatedApiPrefixDir)
+
+tasks.register('generateBakedApiPrefixContract') {
+    inputs.property('apiPrefix', bakedApiPrefix)
+    outputs.file(generatedApiPrefixDir.map { it.file(bakedApiPrefixMarkerPath) })
+    outputs.file(generatedApiPrefixDir.map { it.file(bakedApiPrefixConfigPath) })
+    outputs.file(generatedApiPrefixDir.map { it.file(bakedApiPrefixDashboardPath) })
+
+    doLast {
+        String prefix = bakedApiPrefix.get()
+
+        def outputRoot = generatedApiPrefixDir.get()
+        def marker = outputRoot.file(bakedApiPrefixMarkerPath).asFile
+        marker.parentFile.mkdirs()
+        marker.setText(prefix + System.lineSeparator(), 'UTF-8')
+
+        def config = outputRoot.file(bakedApiPrefixConfigPath).asFile
+        config.parentFile.mkdirs()
+        config.setText('quarkus.http.root-path=/' + System.lineSeparator()
+                + 'quarkus.resteasy.path=' + prefix + System.lineSeparator()
+                + 'yano.api-prefix=' + prefix + System.lineSeparator()
+                + 'quarkus.config.build-time-mismatch-at-runtime=fail'
+                + System.lineSeparator(), 'UTF-8')
+
+        def dashboard = outputRoot.file(bakedApiPrefixDashboardPath).asFile
+        dashboard.parentFile.mkdirs()
+        dashboard.setText(groovy.json.JsonOutput.toJson([apiPrefix: prefix])
+                + System.lineSeparator(), 'UTF-8')
+    }
+}
+
+tasks.register('generatePluginCatalogIndex', JavaExec) {
+    dependsOn project(':plugin-catalog').tasks.named('classes')
+    inputs.files(configurations.runtimeClasspath)
+    outputs.file(generatedPluginCatalogDir.map {
+        it.file('META-INF/yano-plugin-index-v1.json')
+    })
+    outputs.file(generatedPluginCatalogDir.map {
+        it.file(generatedPluginReflectionPath)
+    })
+    // Closure ownership comes from resolution-graph edges, not only the global
+    // runtime file set. Always regenerate so an edge reassignment with the same
+    // artifact bytes cannot reuse stale per-bundle evidence.
+    outputs.upToDateWhen { false }
+    outputs.doNotCacheIf('per-bundle resolution-graph ownership is execution input') { true }
+    classpath = project(':plugin-catalog').sourceSets.main.runtimeClasspath
+    mainClass = 'com.bloxbean.cardano.yano.catalog.PluginIndexGenerator'
+    doFirst {
+        def output = generatedPluginCatalogDir.get()
+                .file('META-INF/yano-plugin-index-v1.json').asFile
+        output.parentFile.mkdirs()
+        def runtimeConfiguration = configurations.runtimeClasspath
+        def artifactResults = runtimeConfiguration.incoming.artifactView { }.artifacts.artifacts
+        def artifacts = artifactResults.collect { it.file }
+                .findAll { it.exists() }
+                .sort { left, right -> left.absolutePath <=> right.absolutePath }
+        def components = runtimeConfiguration.incoming.resolutionResult.allComponents
+        def artifactsByComponent = artifactResults.groupBy { it.id.componentIdentifier }
+
+        def projectComponent = { String projectPath ->
+            def component = components.find { candidate ->
+                candidate.id instanceof ProjectComponentIdentifier
+                        && candidate.id.projectPath == projectPath
+            }
+            if (component == null) {
+                throw new GradleException("Build-time plugin project ${projectPath} "
+                        + 'is absent from app runtimeClasspath')
+            }
+            component
+        }
+        def moduleComponent = { String group, String module ->
+            def component = components.find { candidate ->
+                candidate.id instanceof ModuleComponentIdentifier
+                        && candidate.id.group == group
+                        && candidate.id.module == module
+            }
+            if (component == null) {
+                throw new GradleException("Provided plugin dependency ${group}:${module} "
+                        + 'is absent from app runtimeClasspath')
+            }
+            component
+        }
+        def componentClosureFiles = { Collection roots ->
+            def pending = new ArrayDeque(roots)
+            def visited = [] as Set
+            while (!pending.isEmpty()) {
+                def component = pending.removeFirst()
+                if (!visited.add(component.id)) {
+                    continue
+                }
+                component.dependencies.findAll {
+                    it instanceof ResolvedDependencyResult
+                }.each { dependency -> pending.addLast(dependency.selected) }
+            }
+            visited.collectMany { componentId ->
+                (artifactsByComponent[componentId] ?: []).collect { it.file }
+            }.toSet().toList().sort { left, right ->
+                left.absolutePath <=> right.absolutePath
+            }
+        }
+
+        def arguments = ['--output', output.absolutePath, '--strict-bundle-closures']
+        buildTimePluginBundles.toSorted().each { bundleId, specification ->
+            def roots = [projectComponent(specification.projectPath)]
+            if (specification.includeProvided) {
+                project(specification.projectPath).configurations.compileOnly.dependencies
+                        .findAll { dependency -> dependency.name != 'lombok' }
+                        .each { dependency ->
+                            if (dependency instanceof ProjectDependency) {
+                                roots.add(projectComponent(dependency.path))
+                            } else {
+                                roots.add(moduleComponent(dependency.group, dependency.name))
+                            }
+                        }
+            }
+            def closureFiles = componentClosureFiles(roots)
+            if (closureFiles.isEmpty()) {
+                throw new GradleException(
+                        "Build-time plugin ${bundleId} has an empty artifact closure")
+            }
+            closureFiles.each { file ->
+                arguments.addAll(['--bundle-closure', bundleId, file.absolutePath])
+            }
+        }
+        arguments.add('--')
+        arguments.addAll(artifacts.collect { it.absolutePath })
+        args = arguments
+    }
+    doLast {
+        def outputRoot = generatedPluginCatalogDir.get()
+        def indexFile = outputRoot.file('META-INF/yano-plugin-index-v1.json').asFile
+        def index = new groovy.json.JsonSlurper().parse(indexFile)
+        def expectedVersions = buildTimePluginBundles.collectEntries { bundleId, specification ->
+            [(bundleId): (specification.expectedManifestVersion
+                    ?: declaredPluginManifestVersion)]
+        }
+        requireIndexedManifestVersions(index, expectedVersions)
+        def providerNames = [] as Set
+        index.bundles.each { bundle ->
+            bundle.manifest.contributions.each { contribution ->
+                providerNames.add(contribution.provider)
+            }
+        }
+        index.legacyProviders.each { provider -> providerNames.add(provider.provider) }
+        def reflectionEntries = providerNames.toList().sort().collect { provider ->
+            [name: provider, allDeclaredConstructors: true]
+        }
+        def reflectionFile = outputRoot.file(generatedPluginReflectionPath).asFile
+        reflectionFile.parentFile.mkdirs()
+        reflectionFile.setText(groovy.json.JsonOutput.toJson(reflectionEntries), 'UTF-8')
+    }
+}
+
+tasks.named('processResources') {
+    dependsOn tasks.named('generatePluginCatalogIndex'),
+            tasks.named('generateBakedApiPrefixContract')
+}
+
+tasks.register('verifyFirstPartyPluginBundles', JavaExec) {
+    dependsOn ':appchain-kafka-sink:shadowJar',
+            ':appchain-effects-cardano:shadowJar', ':appchain-zk:shadowJar'
+    def verificationIndex = layout.buildDirectory.file(
+            'reports/plugin-catalog/first-party-bundles.json')
+    inputs.files({
+        [project(':appchain-kafka-sink'), project(':appchain-effects-cardano'),
+         project(':appchain-zk')].collect { pluginProject ->
+            pluginProject.tasks.named('shadowJar').get().archiveFile.get().asFile
+        }
+    })
+    outputs.file(verificationIndex)
+    classpath = project(':plugin-catalog').sourceSets.main.runtimeClasspath
+    mainClass = 'com.bloxbean.cardano.yano.catalog.PluginIndexGenerator'
+    doFirst {
+        def bundleFiles = [
+                project(':appchain-kafka-sink'),
+                project(':appchain-effects-cardano'),
+                project(':appchain-zk')
+        ].collect { pluginProject ->
+            pluginProject.tasks.named('shadowJar').get().archiveFile.get().asFile
+        }.sort { left, right -> left.absolutePath <=> right.absolutePath }
+        def output = verificationIndex.get().asFile
+        output.parentFile.mkdirs()
+        args = ['--output', output.absolutePath] + bundleFiles.collect { it.absolutePath }
+    }
+    doLast {
+        def index = new groovy.json.JsonSlurper().parse(verificationIndex.get().asFile)
+        requireIndexedManifestVersions(index, [
+                'com.bloxbean.cardano.yano.appchain.kafka': declaredPluginManifestVersion,
+                'com.bloxbean.cardano.yano.appchain.effects.cardano':
+                        declaredPluginManifestVersion,
+                'com.bloxbean.cardano.yano.appchain.zk': declaredPluginManifestVersion
+        ])
+    }
+}
+
+tasks.register('launchFirstPartyPluginBundles', JavaExec) {
+    dependsOn tasks.named('testClasses'), ':appchain-kafka-sink:shadowJar',
+            ':appchain-effects-cardano:shadowJar', ':appchain-zk:shadowJar'
+    // Deliberately omit app.runtimeClasspath: the probe must prove the bundle
+    // classifiers work when the corresponding thin provider JARs are absent.
+    classpath = files(sourceSets.test.output.classesDirs,
+            project(':runtime').sourceSets.main.runtimeClasspath)
+    mainClass = 'com.bloxbean.cardano.yano.app.PluginBundleLaunchProbe'
+    doFirst {
+        args = [project(':appchain-kafka-sink'), project(':appchain-effects-cardano'),
+                project(':appchain-zk')].collect { pluginProject ->
+            pluginProject.tasks.named('shadowJar').get().archiveFile.get().asFile.absolutePath
+        }
+    }
+}
+
+tasks.named('check') {
+    dependsOn tasks.named('verifyFirstPartyPluginBundles')
+    dependsOn tasks.named('launchFirstPartyPluginBundles')
 }
 
 tasks.register('e2eTest', Test) {
@@ -241,6 +589,741 @@ def nativeBinaryFileName = {
     isWindowsHost() ? 'yano.exe' : 'yano'
 }
 
+// ADR-011.2 packaged/native conformance: activate every typed fixture through
+// the real catalog-owned app-chain path. The fixture deliberately poisons its
+// provider-callback TCCL, so successful product callbacks also prove facade
+// mediation rather than raw ServiceLoader reachability.
+def pluginConformanceBundleId =
+        'com.bloxbean.cardano.yano.fixture.plugin-conformance'
+def pluginConformanceMemberKey = '00' * 32
+def pluginOperationsSmokeApiKey = 'plugin-operations-smoke-full-key'
+def bakedApiPathPrefix = {
+    String prefix = bakedApiPrefix.get()
+    prefix == '/' ? '' : prefix
+}
+
+def pluginOperationsAuthArguments = {
+    [
+            '-Dyano.app-chain.api.auth.enabled=false',
+            "-Dyano.app-chain.api.keys=${pluginOperationsSmokeApiKey}"
+    ].collect { it.toString() }
+}
+
+def allocateLoopbackPortPair = {
+    def address = java.net.InetAddress.getByName('127.0.0.1')
+    java.net.ServerSocket first = null
+    java.net.ServerSocket second = null
+    try {
+        first = new java.net.ServerSocket(0, 1, address)
+        second = new java.net.ServerSocket(0, 1, address)
+        return [first.localPort, second.localPort]
+    } finally {
+        second?.close()
+        first?.close()
+    }
+}
+
+def pluginConformanceRuntimeArguments = { int httpPort, int nodePort,
+                                          java.nio.file.Path stateDirectory,
+                                          java.nio.file.Path pluginDirectory ->
+    def genesisDirectory = project.file('config/network/preprod').toPath()
+            .toAbsolutePath().normalize()
+    return [
+            '-Dquarkus.http.host=127.0.0.1',
+            "-Dquarkus.http.port=${httpPort}",
+            '-Dquarkus.console.color=false',
+            '-Dyano.auto-sync-start=true',
+            '-Dyano.client.enabled=false',
+            '-Dyano.server.enabled=true',
+            "-Dyano.server.port=${nodePort}",
+            '-Dyano.storage.rocksdb=false',
+            "-Dyano.storage.path=${stateDirectory.toAbsolutePath()}",
+            "-Dyano.genesis.shelley-genesis-file=${genesisDirectory.resolve('shelley-genesis.json')}",
+            "-Dyano.genesis.byron-genesis-file=${genesisDirectory.resolve('byron-genesis.json')}",
+            "-Dyano.genesis.alonzo-genesis-file=${genesisDirectory.resolve('alonzo-genesis.json')}",
+            "-Dyano.genesis.conway-genesis-file=${genesisDirectory.resolve('conway-genesis.json')}",
+            "-Dyano.genesis.protocol-parameters-file=${genesisDirectory.resolve('protocol-param.json')}",
+            "-Dyaci.plugins.directory=${pluginDirectory.toAbsolutePath()}",
+            '-Dyaci.plugins.enabled=true',
+            '-Dyano.app-chain.enabled=true',
+            '-Dyano.app-chain.chain-id=conformance-chain',
+            '-Dyano.app-chain.signing-key=conformance-signer:key',
+            "-Dyano.app-chain.members=${pluginConformanceMemberKey}",
+            '-Dyano.app-chain.threshold=1',
+            '-Dyano.app-chain.state-machine=conformance-machine',
+            '-Dyano.app-chain.sequencer.mode=conformance-mode',
+            '-Dyano.app-chain.l1.stability-depth=1',
+            '-Dyano.app-chain.observers.audit.type=conformance-observer',
+            '-Dyano.app-chain.sinks.conformance-sink.enabled=true',
+            '-Dyano.app-chain.effects.enabled=true',
+            '-Dyano.app-chain.effects.executor.enabled=true',
+            '-Dyano.app-chain.effects.executor.tick-ms=60000',
+            '-Dyano.app-chain.effects.executor.identity=conformance-smoke',
+            '-Dyano.app-chain.effects.executors.conformance-effect.enabled=true'
+    ].collect { it.toString() }
+}
+
+def awaitPluginConformanceStatus = { int httpPort, int timeoutSeconds,
+                                     Process process, Closure<String> logTail ->
+    def statusUrl = new URL(
+            "http://127.0.0.1:${httpPort}${bakedApiPathPrefix()}"
+                    + '/app-chain/chains/conformance-chain/status')
+    long deadline = System.nanoTime() +
+            java.util.concurrent.TimeUnit.SECONDS.toNanos(timeoutSeconds)
+    Map status = null
+    String lastResponse = ''
+    while (status == null && System.nanoTime() < deadline && process.isAlive()) {
+        java.net.HttpURLConnection connection = null
+        try {
+            connection = (java.net.HttpURLConnection) statusUrl.openConnection()
+            connection.connectTimeout = 750
+            connection.readTimeout = 750
+            connection.requestMethod = 'GET'
+            connection.setRequestProperty('X-API-Key', pluginOperationsSmokeApiKey)
+            int responseCode = connection.responseCode
+            def response = responseCode >= 400
+                    ? connection.errorStream : connection.inputStream
+            byte[] body = response != null
+                    ? response.withCloseable { it.readAllBytes() } : new byte[0]
+            lastResponse = new String(body, java.nio.charset.StandardCharsets.UTF_8)
+            if (responseCode == 200) {
+                def parsed = new groovy.json.JsonSlurper().parseText(lastResponse)
+                if (parsed instanceof Map && parsed.running == true) {
+                    status = parsed as Map
+                }
+            }
+        } catch (IOException ignored) {
+            // Runtime/app-chain startup is still in progress.
+        } finally {
+            connection?.disconnect()
+        }
+        if (status == null) Thread.sleep(100)
+    }
+    if (status == null) {
+        def state = process.isAlive() ? 'did not publish running status' :
+                "exited with code ${process.exitValue()}"
+        throw new GradleException(
+                "Plugin conformance app chain ${state}; lastResponse=${lastResponse}."
+                        + "${System.lineSeparator()}${logTail.call()}")
+    }
+
+    def failures = []
+    if (status.chainId != 'conformance-chain') failures.add('chainId')
+    if (status.sequencing != true) failures.add('sequencing')
+    if (status.memberKey != pluginConformanceMemberKey) failures.add('signer')
+    if (status.stateMachine != 'conformance-machine') failures.add('stateMachine')
+    if (!(status.sequencer instanceof Map)
+            || status.sequencer.mode != 'conformance-mode') failures.add('sequencer')
+    if (!(status.observers instanceof Map)
+            || !status.observers.containsKey('audit')) failures.add('observer')
+    if (!(status.sinks instanceof Map)
+            || !(status.sinks['conformance-finalized-sink'] instanceof Map)
+            || status.sinks['conformance-finalized-sink'].state != 'ACTIVE') {
+        failures.add('sink')
+    }
+    if (status.containsKey('sinkActivationFailures')) failures.add('sinkActivationFailures')
+    def executors = status.effects instanceof Map
+            && status.effects.executor instanceof Map
+            ? status.effects.executor.executors : null
+    if (!(executors instanceof Collection)
+            || Set.copyOf(executors) != Set.of('conformance-effect-executor')) {
+        failures.add('effectExecutor')
+    }
+    if (!failures.isEmpty()) {
+        throw new GradleException(
+                "Plugin conformance status failed checks ${failures}; status=${status}.")
+    }
+    return status
+}
+
+// Exercise the ADR-011.3 committed query and constrained domain API through
+// the same public HTTP adapter in packaged JVM and native modes.
+def assertPluginConformanceQueryApis = { int httpPort ->
+    String apiPath = bakedApiPathPrefix()
+    def request = { String method, String path, String contentType, byte[] body,
+                    boolean authenticated = false ->
+        def connection = (java.net.HttpURLConnection) new URL(
+                "http://127.0.0.1:${httpPort}${path}").openConnection()
+        try {
+            connection.connectTimeout = 2000
+            connection.readTimeout = 4000
+            connection.requestMethod = method
+            if (authenticated) {
+                connection.setRequestProperty('X-API-Key', pluginOperationsSmokeApiKey)
+            }
+            if (body != null) {
+                connection.doOutput = true
+                connection.setRequestProperty('Content-Type', contentType)
+                connection.outputStream.withCloseable { it.write(body) }
+            }
+            int status = connection.responseCode
+            def stream = status >= 400 ? connection.errorStream : connection.inputStream
+            byte[] responseBody = stream != null
+                    ? stream.withCloseable { it.readAllBytes() } : new byte[0]
+            return [status: status,
+                    text: new String(responseBody, java.nio.charset.StandardCharsets.UTF_8)]
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    def query = request('POST',
+            apiPath + '/app-chain/chains/conformance-chain/query/echo',
+            'application/json',
+            '{"paramsHex":"00ff"}'.getBytes(java.nio.charset.StandardCharsets.UTF_8))
+    if (query.status != 200) {
+        throw new GradleException(
+                "Committed query smoke failed: status=${query.status}, body=${query.text}")
+    }
+    def queryJson = new groovy.json.JsonSlurper().parseText(query.text)
+    if (queryJson.chainId != 'conformance-chain'
+            || queryJson.stateMachineId != 'conformance-machine'
+            || !(queryJson.stateRoot ==~ /[0-9a-f]{64}/)
+            || !(queryJson.payloadHex ==~ /[0-9a-f]+/)) {
+        throw new GradleException("Committed query envelope is invalid: ${queryJson}")
+    }
+    def decodedPayload = new String(java.util.HexFormat.of().parseHex(
+            queryJson.payloadHex.toString()), java.nio.charset.StandardCharsets.UTF_8)
+    if (decodedPayload != "echo:${queryJson.committedHeight}:00ff:${queryJson.stateRoot}") {
+        throw new GradleException("Committed query payload/root binding failed: ${queryJson}")
+    }
+
+    def queryMatrixAlias = request('POST',
+            apiPath + '/app-chain/chains/conformance-chain/query/echo;x=1',
+            'application/json',
+            '{"paramsHex":"00ff"}'.getBytes(java.nio.charset.StandardCharsets.UTF_8))
+    if (queryMatrixAlias.status != 400) {
+        throw new GradleException(
+                "Matrix query alias was not rejected: ${queryMatrixAlias}")
+    }
+    def queryTrailingAlias = request('POST',
+            apiPath + '/app-chain/chains/conformance-chain/query/echo/',
+            'application/json',
+            '{"paramsHex":"00ff"}'.getBytes(java.nio.charset.StandardCharsets.UTF_8))
+    if (queryTrailingAlias.status != 400) {
+        throw new GradleException(
+                "Trailing-slash query alias was not rejected: ${queryTrailingAlias}")
+    }
+
+    def domainStatus = request('GET',
+            "${apiPath}/plugins/${pluginConformanceBundleId}/status", null, null)
+    if (domainStatus.status != 200
+            || new groovy.json.JsonSlurper().parseText(domainStatus.text).status != 'ok') {
+        throw new GradleException(
+                "Domain API status smoke failed: ${domainStatus}")
+    }
+    def domainMatrixAlias = request('GET',
+            "${apiPath}/plugins/${pluginConformanceBundleId}/status;x=1", null, null)
+    if (domainMatrixAlias.status != 404) {
+        throw new GradleException(
+                "Matrix domain alias was not concealed: ${domainMatrixAlias}")
+    }
+    def domainTrailingAlias = request('GET',
+            "${apiPath}/plugins/${pluginConformanceBundleId}/status/", null, null)
+    if (domainTrailingAlias.status != 404) {
+        throw new GradleException(
+                "Trailing-slash domain alias was not concealed: ${domainTrailingAlias}")
+    }
+
+    def domainQuery = request('POST',
+            "${apiPath}/plugins/${pluginConformanceBundleId}/query/echo",
+            'application/octet-stream', [0, (byte) 0xff] as byte[])
+    if (domainQuery.status != 200) {
+        throw new GradleException(
+                "Domain API query smoke failed: ${domainQuery}")
+    }
+    def domainJson = new groovy.json.JsonSlurper().parseText(domainQuery.text)
+    if (domainJson.chainId != queryJson.chainId
+            || domainJson.stateRoot != queryJson.stateRoot
+            || domainJson.payloadHex != queryJson.payloadHex) {
+        throw new GradleException(
+                "Domain API query does not preserve committed query envelope: ${domainJson}")
+    }
+
+    def privileged = request('GET',
+            "${apiPath}/plugins/${pluginConformanceBundleId}/operator", null, null, false)
+    if (privileged.status != 401) {
+        throw new GradleException(
+                "Privileged domain route did not require its configured key: ${privileged}")
+    }
+    def internal = request('GET',
+            "${apiPath}/plugins/${pluginConformanceBundleId}/internal", null, null)
+    if (internal.status != 404) {
+        throw new GradleException(
+                "Internal domain route became HTTP-visible: ${internal}")
+    }
+}
+
+// Assert ADR-011.4's live host adapters against the packaged JVM/native process.
+// Every read is cache-only; the optional conformance fixture supplies one
+// deterministic custom health source and counter for end-to-end verification.
+def assertPluginOperationsAdapters = { int httpPort, int timeoutSeconds,
+                                       boolean expectConformanceFixture ->
+    String apiPath = bakedApiPathPrefix()
+    def request = { String path, boolean authenticated ->
+        def connection = (java.net.HttpURLConnection) new URL(
+                "http://127.0.0.1:${httpPort}${path}").openConnection()
+        try {
+            connection.connectTimeout = 2000
+            connection.readTimeout = 4000
+            connection.requestMethod = 'GET'
+            if (authenticated) {
+                connection.setRequestProperty('X-API-Key', pluginOperationsSmokeApiKey)
+            }
+            int status = connection.responseCode
+            def stream = status >= 400 ? connection.errorStream : connection.inputStream
+            byte[] body = stream != null
+                    ? stream.withCloseable { it.readAllBytes() } : new byte[0]
+            def headers = connection.headerFields.findAll { key, ignored -> key != null }
+                    .collectEntries { key, values ->
+                        [key.toLowerCase(java.util.Locale.ROOT), values.join(',')]
+                    }
+            return [status: status,
+                    text: new String(body, java.nio.charset.StandardCharsets.UTF_8),
+                    headers: headers]
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    def unauthenticated = request(apiPath + '/plugin-operations', false)
+    if (unauthenticated.status != 401) {
+        throw new GradleException(
+                "Plugin operations smoke expected missing-key 401: ${unauthenticated}")
+    }
+
+    def summaryResponse = request(apiPath + '/plugin-operations', true)
+    if (summaryResponse.status != 200) {
+        throw new GradleException(
+                "Plugin operations summary smoke failed: ${summaryResponse}")
+    }
+    def summary = new groovy.json.JsonSlurper().parseText(summaryResponse.text)
+    if (!(summary.catalogFingerprint ==~ /sha256:[0-9a-f]{64}/)
+            || summary.pluginApiMajor != 1
+            || summary.pluginApiLevel != 1
+            || !(summary.generation instanceof Number)
+            || !(summary.totals instanceof Map)
+            || !summary.totals.containsKey('observedContributions')
+            || !summary.totals.containsKey('observedActiveContributions')
+            || !(summary.healthCounts instanceof Map)) {
+        throw new GradleException(
+                "Plugin operations summary envelope is invalid: ${summary}")
+    }
+
+    [
+            '/ui/plugins/index.html': ['Yano · Plugin Operations', 'id="dashboard" hidden'],
+            '/ui/plugins/app.js'    : ['yano-plugin-operations-session', 'textContent',
+                                       '/ui/plugins/api-prefix.json', 'response.json()'],
+            '/ui/plugins/api-prefix.json': [
+                    groovy.json.JsonOutput.toJson([apiPrefix: bakedApiPrefix.get()])],
+            '/ui/plugins/styles.css': ['.bundle-list', '.badge']
+    ].each { path, markers ->
+        def asset = request(path, false)
+        if (asset.status != 200 || !markers.every { asset.text.contains(it) }) {
+            throw new GradleException(
+                    "Plugin dashboard asset smoke failed for ${path}: status=${asset.status}")
+        }
+        if (path.endsWith('/app.js')
+                && (asset.text.contains('URLSearchParams')
+                || asset.text.contains('location.search'))) {
+            throw new GradleException(
+                    'Plugin dashboard must not accept a query-controlled API prefix')
+        }
+        def csp = asset.headers['content-security-policy']
+        if (csp == null || !csp.contains("frame-ancestors 'none'")
+                || asset.headers['x-frame-options'] != 'DENY'
+                || asset.headers['x-content-type-options'] != 'nosniff'
+                || asset.headers['referrer-policy'] != 'no-referrer') {
+            throw new GradleException(
+                    "Plugin dashboard security headers are incomplete for ${path}: "
+                            + "${asset.headers}")
+        }
+    }
+
+    long deadline = System.nanoTime() +
+            java.util.concurrent.TimeUnit.SECONDS.toNanos(timeoutSeconds)
+    Map lastHealth = null
+    Map lastDetail = null
+    String lastMetrics = ''
+    boolean ready = false
+    while (!ready && System.nanoTime() < deadline) {
+        def healthResponse = request('/q/health/group/plugins', false)
+        if (healthResponse.status == 200) {
+            def parsed = new groovy.json.JsonSlurper().parseText(healthResponse.text)
+            if (parsed instanceof Map) {
+                lastHealth = parsed as Map
+            }
+        }
+
+        def metricsResponse = request('/q/metrics', false)
+        if (metricsResponse.status == 200) {
+            lastMetrics = metricsResponse.text
+        }
+
+        boolean healthReady = lastHealth instanceof Map
+                && lastHealth.status == 'UP'
+                && lastHealth.checks instanceof Collection
+                && lastHealth.checks.any { it.name == 'plugins' && it.status == 'UP' }
+        boolean standardMetricsReady = lastMetrics.contains('yano_plugin_bundles')
+                && lastMetrics.contains('yano_plugin_bundle_health')
+        boolean customReady = !expectConformanceFixture
+        if (expectConformanceFixture) {
+            def detailResponse = request(
+                    "${apiPath}/plugin-operations/bundles/${pluginConformanceBundleId}", true)
+            if (detailResponse.status == 200) {
+                def parsed = new groovy.json.JsonSlurper().parseText(detailResponse.text)
+                if (parsed instanceof Map) {
+                    lastDetail = parsed as Map
+                }
+            }
+            def bundle = lastDetail?.bundle
+            customReady = bundle instanceof Map
+                    && bundle.health == 'UP'
+                    && bundle.healthChecks instanceof Collection
+                    && bundle.healthChecks.any {
+                        it.id == 'fixture'
+                                && it.description == 'Conformance fixture is available'
+                                && it.status == 'UP' && it.stale == false
+                    }
+                    && bundle.metrics instanceof Collection
+                    && bundle.metrics.any {
+                        it.id == 'samples' && it.type == 'COUNTER'
+                                && it.stale == false && it.total instanceof Number
+                                && it.total.doubleValue() >= 1d
+                    }
+                    && lastMetrics.contains('yano_plugin_custom_counter')
+                    && lastMetrics.contains("plugin=\"${pluginConformanceBundleId}\"")
+                    && lastMetrics.contains('metric="samples"')
+        }
+        ready = healthReady && standardMetricsReady && customReady
+        if (!ready) {
+            Thread.sleep(200)
+        }
+    }
+    if (!ready) {
+        throw new GradleException(
+                "Plugin operations adapters did not become ready; health=${lastHealth}, "
+                        + "detail=${lastDetail}, metricsTail="
+                        + lastMetrics.readLines().takeRight(40).join(System.lineSeparator()))
+    }
+}
+
+def nativePluginCatalogExpectationFile = layout.buildDirectory.file(
+        'reports/plugin-catalog/native-smoke-expectation.properties')
+
+tasks.register('generateNativePluginCatalogExpectation', JavaExec) {
+    group = 'verification'
+    description = 'Computes current packaged-JVM catalog provenance for the native smoke test'
+    dependsOn tasks.named('testClasses')
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.bloxbean.cardano.yano.app.PluginCatalogProvenanceProbe'
+    outputs.file(nativePluginCatalogExpectationFile)
+    outputs.upToDateWhen { false }
+    doFirst {
+        args = [nativePluginCatalogExpectationFile.get().asFile.absolutePath]
+    }
+}
+
+tasks.register('nativePluginCatalogSmoke') {
+    group = 'verification'
+    description = 'Checks native catalog startup, real SPI activation, and directory-JAR diagnostics'
+    dependsOn tasks.named('generateNativePluginCatalogExpectation')
+    mustRunAfter tasks.named('quarkusBuild')
+    outputs.upToDateWhen { false }
+
+    doLast {
+        def expectedProvenance = [:]
+        nativePluginCatalogExpectationFile.get().asFile.readLines('UTF-8').each { line ->
+            if (line.isBlank()) {
+                return
+            }
+            int separator = line.indexOf('=')
+            if (separator <= 0 || separator == line.length() - 1) {
+                throw new GradleException(
+                        "Malformed native catalog expectation line: ${line}")
+            }
+            def key = line.substring(0, separator)
+            def value = line.substring(separator + 1)
+            if (!(key ==~ /[A-Za-z][A-Za-z0-9]*/)
+                    || !(value ==~ /sha256:[0-9a-f]{64}/)) {
+                throw new GradleException(
+                        "Malformed native catalog expectation entry: ${line}")
+            }
+            if (expectedProvenance.put(key, value) != null) {
+                throw new GradleException(
+                        "Duplicate native catalog expectation key: ${key}")
+            }
+        }
+        if (!expectedProvenance.keySet().containsAll(
+                ['catalogFingerprint', 'indexSha256'])) {
+            throw new GradleException(
+                    "Incomplete native catalog expectation: ${expectedProvenance.keySet()}")
+        }
+
+        def binaryOverride = providers.gradleProperty('yanoNativeBinary')
+                .orElse(providers.environmentVariable('YANO_NATIVE_BINARY'))
+                .orNull
+        def binary = binaryOverride == null || binaryOverride.isBlank()
+                ? layout.buildDirectory.file(nativeBinaryFileName()).get().asFile
+                : rootProject.file(binaryOverride)
+        if (!binary.isFile()) {
+            throw new GradleException(
+                    "Native binary not found at ${binary.absolutePath}. Build it first or set "
+                            + '-PyanoNativeBinary=/absolute/or/root-relative/path.'
+            )
+        }
+        if (!isWindowsHost() && !binary.canExecute()) {
+            throw new GradleException("Native binary is not executable: ${binary.absolutePath}")
+        }
+
+        def timeoutText = providers.gradleProperty('yanoNativeSmokeTimeoutSeconds')
+                .getOrElse('90')
+        int timeoutSeconds
+        try {
+            timeoutSeconds = Integer.parseInt(timeoutText)
+        } catch (NumberFormatException e) {
+            throw new GradleException(
+                    "yanoNativeSmokeTimeoutSeconds must be a positive integer: ${timeoutText}", e)
+        }
+        if (timeoutSeconds <= 0) {
+            throw new GradleException(
+                    "yanoNativeSmokeTimeoutSeconds must be positive: ${timeoutSeconds}")
+        }
+
+        def tempParent = layout.buildDirectory.dir('tmp').get().asFile
+        tempParent.mkdirs()
+        def smokeRoot = java.nio.file.Files.createTempDirectory(
+                tempParent.toPath(), 'native-plugin-catalog-smoke-')
+        def pluginDirectory = java.nio.file.Files.createDirectory(smokeRoot.resolve('plugins'))
+        def chainState = smokeRoot.resolve('chainstate')
+        def logFile = smokeRoot.resolve('native.log')
+        Process process = null
+        Throwable primaryFailure = null
+
+        def logTail = {
+            if (!java.nio.file.Files.isRegularFile(logFile)) {
+                return '<native process produced no log>'
+            }
+            def lines = java.nio.file.Files.readAllLines(
+                    logFile, java.nio.charset.StandardCharsets.UTF_8)
+            return lines.takeRight(200).join(System.lineSeparator())
+        }
+
+        try {
+            def manifest = new java.util.jar.Manifest()
+            manifest.mainAttributes.put(
+                    java.util.jar.Attributes.Name.MANIFEST_VERSION, '1.0')
+            def dummyJar = pluginDirectory.resolve('ignored-native-plugin.jar')
+            new java.util.jar.JarOutputStream(
+                    java.nio.file.Files.newOutputStream(dummyJar), manifest).withCloseable { jar ->
+                def marker = new java.util.jar.JarEntry('native-smoke-marker.txt')
+                marker.time = 0L
+                jar.putNextEntry(marker)
+                jar.write('ignored by native runtime'.getBytes(
+                        java.nio.charset.StandardCharsets.UTF_8))
+                jar.closeEntry()
+            }
+
+            def ports = allocateLoopbackPortPair.call()
+            int httpPort = ports[0]
+            int nodePort = ports[1]
+            def command = [binary.absolutePath]
+            command.addAll(pluginOperationsAuthArguments())
+            if (includeNativePluginConformanceFixture) {
+                command.addAll(pluginConformanceRuntimeArguments(
+                        httpPort, nodePort, chainState, pluginDirectory))
+            }
+            def processBuilder = new ProcessBuilder(command)
+                    .directory(smokeRoot.toFile())
+                    .redirectErrorStream(true)
+                    .redirectOutput(logFile.toFile())
+            processBuilder.environment().remove('YACI_PLUGINS_ALLOW_LIST')
+            processBuilder.environment().remove('YACI_PLUGINS_DENY_LIST')
+            processBuilder.environment().remove('YANO_API_PREFIX')
+            processBuilder.environment().remove('QUARKUS_RESTEASY_PATH')
+            def runtimeEnvironment = [
+                    'QUARKUS_HTTP_HOST'       : '127.0.0.1',
+                    'QUARKUS_HTTP_PORT'       : Integer.toString(httpPort),
+                    'QUARKUS_CONSOLE_COLOR'   : 'false',
+                    'YANO_STORAGE_PATH'       : chainState.toAbsolutePath().toString(),
+                    'YACI_PLUGINS_DIRECTORY'  : pluginDirectory.toAbsolutePath().toString(),
+                    'YACI_PLUGINS_ENABLED'    : 'true'
+            ]
+            if (!includeNativePluginConformanceFixture) {
+                runtimeEnvironment['YANO_AUTO_SYNC_START'] = 'false'
+            }
+            processBuilder.environment().putAll(runtimeEnvironment)
+            process = processBuilder.start()
+
+            def liveUrl = new URL("http://127.0.0.1:${httpPort}/q/health/live")
+            long startupDeadline = System.nanoTime() +
+                    java.util.concurrent.TimeUnit.SECONDS.toNanos(timeoutSeconds)
+            boolean live = false
+            while (!live && System.nanoTime() < startupDeadline && process.isAlive()) {
+                java.net.HttpURLConnection connection = null
+                try {
+                    connection = (java.net.HttpURLConnection) liveUrl.openConnection()
+                    connection.connectTimeout = 750
+                    connection.readTimeout = 750
+                    connection.requestMethod = 'GET'
+                    int status = connection.responseCode
+                    def response = status >= 400 ? connection.errorStream : connection.inputStream
+                    if (response != null) {
+                        response.withCloseable { it.readAllBytes() }
+                    }
+                    live = status == 200
+                } catch (IOException ignored) {
+                    // The HTTP listener is not ready yet.
+                } finally {
+                    connection?.disconnect()
+                }
+                if (!live) {
+                    Thread.sleep(250)
+                }
+            }
+            if (!live) {
+                def state = process.isAlive()
+                        ? "did not become live within ${timeoutSeconds}s"
+                        : "exited with code ${process.exitValue()} before becoming live"
+                throw new GradleException(
+                        "Native plugin catalog smoke ${state}.${System.lineSeparator()}${logTail()}")
+            }
+
+            if (includeNativePluginConformanceFixture) {
+                awaitPluginConformanceStatus(
+                        httpPort, timeoutSeconds, process, logTail)
+                assertPluginConformanceQueryApis(httpPort)
+            }
+            assertPluginOperationsAdapters(
+                    httpPort, timeoutSeconds, includeNativePluginConformanceFixture)
+
+            def requiredDiagnostics = [
+                    'Native image ignores plugin-directory JARs;',
+                    'jarCount=1',
+                    'scanTruncated=false',
+                    'Running in native image mode - dynamic plugin loading disabled'
+            ]
+            long diagnosticsDeadline = System.nanoTime() +
+                    java.util.concurrent.TimeUnit.SECONDS.toNanos(5)
+            String output = ''
+            while (System.nanoTime() < diagnosticsDeadline) {
+                output = java.nio.file.Files.readString(
+                        logFile, java.nio.charset.StandardCharsets.UTF_8)
+                if (requiredDiagnostics.every { output.contains(it) }) {
+                    break
+                }
+                if (!process.isAlive()) {
+                    break
+                }
+                Thread.sleep(100)
+            }
+            def missingDiagnostics = requiredDiagnostics.findAll { !output.contains(it) }
+            if (!missingDiagnostics.isEmpty()) {
+                throw new GradleException(
+                        "Native plugin catalog smoke missed diagnostics ${missingDiagnostics}."
+                                + "${System.lineSeparator()}${logTail()}")
+            }
+
+            def conformanceMarker =
+                    'ADR-011.2 node-plugin conformance activated through catalog'
+            int conformanceMarkerCount = output.readLines().count {
+                it.contains(conformanceMarker)
+            }
+            int expectedConformanceMarkerCount =
+                    includeNativePluginConformanceFixture ? 1 : 0
+            if (conformanceMarkerCount != expectedConformanceMarkerCount) {
+                throw new GradleException(
+                        "Native plugin catalog smoke expected "
+                                + "${expectedConformanceMarkerCount} conformance marker(s), found "
+                                + "${conformanceMarkerCount}.${System.lineSeparator()}${logTail()}")
+            }
+            def obsoleteMarker = 'ADR-011.2 plugin SPI conformance passed: ' +
+                    '6/6 providers and products constructed'
+            if (output.contains(obsoleteMarker)) {
+                throw new GradleException(
+                        'Native smoke observed the obsolete raw-ServiceLoader conformance marker.'
+                                + "${System.lineSeparator()}${logTail()}")
+            }
+            if (includeNativePluginConformanceFixture
+                    && output.contains('Script-anchor service unavailable')) {
+                throw new GradleException(
+                        'Native app-chain startup could not load its bundled anchor artifacts.'
+                                + "${System.lineSeparator()}${logTail()}")
+            }
+
+            def provenancePrefix = 'YANO_PLUGIN_CATALOG_PROVENANCE '
+            def provenanceLines = output.readLines().findAll {
+                it.contains(provenancePrefix)
+            }
+            if (provenanceLines.size() != 1) {
+                throw new GradleException(
+                        "Native plugin catalog smoke expected one provenance line, found "
+                                + "${provenanceLines.size()}.${System.lineSeparator()}${logTail()}")
+            }
+            def encodedProvenance = provenanceLines.getFirst()
+                    .substring(provenanceLines.getFirst().indexOf(provenancePrefix)
+                            + provenancePrefix.length())
+                    .trim()
+            def actualProvenance = [:]
+            encodedProvenance.split(/\s+/).each { token ->
+                int separator = token.indexOf('=')
+                if (separator <= 0 || separator == token.length() - 1) {
+                    throw new GradleException(
+                            "Malformed native catalog provenance token: ${token}")
+                }
+                def key = token.substring(0, separator)
+                def value = token.substring(separator + 1)
+                if (actualProvenance.put(key, value) != null) {
+                    throw new GradleException(
+                            "Duplicate native catalog provenance key: ${key}")
+                }
+            }
+            if (actualProvenance != expectedProvenance) {
+                throw new GradleException(
+                        "Native binary plugin catalog provenance is stale or mismatched. "
+                                + "expected=${expectedProvenance}, actual=${actualProvenance}. "
+                                + "Rebuild the native binary before running this smoke test.")
+            }
+
+            logger.lifecycle(
+                    "Native plugin catalog smoke passed for ${binary.absolutePath} "
+                            + "on ${liveUrl}; provenance=${actualProvenance}")
+        } catch (Throwable failure) {
+            primaryFailure = failure
+            throw failure
+        } finally {
+            try {
+                if (process != null && process.isAlive()) {
+                    process.destroy()
+                    if (!process.waitFor(10, java.util.concurrent.TimeUnit.SECONDS)) {
+                        process.destroyForcibly()
+                        if (!process.waitFor(10, java.util.concurrent.TimeUnit.SECONDS)) {
+                            throw new GradleException(
+                                    "Native smoke process did not terminate: ${process.pid()}")
+                        }
+                    }
+                }
+            } catch (Throwable cleanupFailure) {
+                if (primaryFailure != null) {
+                    primaryFailure.addSuppressed(cleanupFailure)
+                } else {
+                    throw cleanupFailure
+                }
+            } finally {
+                try {
+                    project.delete(smokeRoot.toFile())
+                } catch (Throwable cleanupFailure) {
+                    if (primaryFailure != null) {
+                        primaryFailure.addSuppressed(cleanupFailure)
+                    } else {
+                        throw cleanupFailure
+                    }
+                }
+            }
+        }
+    }
+}
+
 def getNativeBuilderImage = {
     def raw = System.getProperty('quarkus.native.builder-image')
     if (raw == null || raw.isBlank()) {
@@ -309,7 +1392,7 @@ def configureNativeGc = {
 }
 
 tasks.register('yanoDistZip', Zip) {
-    dependsOn 'quarkusBuild'
+    dependsOn 'quarkusBuild', project(':plugin-catalog').tasks.named('installDist')
     group = 'distribution'
     description = 'Creates a distributable zip with the uber-jar, config, and start script'
 
@@ -342,7 +1425,462 @@ tasks.register('yanoDistZip', Zip) {
             include '*.md'
         }
         into('plugins') {
-            from({ [] }) // empty directory
+            from('plugins/README.md')
+        }
+        into('tools/yano-plugins') {
+            from(project(':plugin-catalog').layout.buildDirectory.dir(
+                    'install/yano-plugins')) {
+                exclude 'bin/yano-plugins'
+            }
+            from(project(':plugin-catalog').layout.buildDirectory.file(
+                    'install/yano-plugins/bin/yano-plugins')) {
+                into 'bin'
+                filePermissions { unix('755') }
+            }
+        }
+    }
+}
+
+tasks.register('packagedJvmPluginCatalogSmoke') {
+    group = 'verification'
+    description = 'Starts the final uber-JAR and activates every directory-plugin SPI on an app chain'
+    dependsOn tasks.named('yanoDistZip'), project(':appchain-plugin-conformance').tasks.named('jar')
+    outputs.upToDateWhen { false }
+
+    doFirst {
+        if (includeNativePluginConformanceFixture) {
+            throw new GradleException(
+                    'packagedJvmPluginCatalogSmoke requires '
+                            + '-PincludeNativePluginConformanceFixture=false because it loads '
+                            + 'that fixture from the JVM plugin directory')
+        }
+    }
+
+    doLast {
+        def uberJar = layout.buildDirectory.file('yano.jar').get().asFile
+        if (!uberJar.isFile()) {
+            throw new GradleException("Quarkus uber-JAR not found: ${uberJar.absolutePath}")
+        }
+
+        def indexPath = 'META-INF/yano-plugin-index-v1.json'
+        def manifestPrefix = 'META-INF/yano/plugins/'
+        new java.util.jar.JarFile(uberJar).withCloseable { archive ->
+            def indexEntries = archive.entries().findAll { it.name == indexPath }
+            if (indexEntries.size() != 1) {
+                throw new GradleException(
+                        "Final uber-JAR must contain exactly one ${indexPath}; found "
+                                + indexEntries.size())
+            }
+            def index = archive.getInputStream(indexEntries.getFirst()).withCloseable { stream ->
+                new groovy.json.JsonSlurper().parse(stream)
+            }
+            if (!(index.bundles instanceof Collection) || index.bundles.size() < 2) {
+                throw new GradleException(
+                        'Final uber-JAR aggregate index must retain at least two bundles')
+            }
+            def manifestEntries = archive.entries().findAll {
+                it.name.startsWith(manifestPrefix) && it.name.endsWith('.json')
+            }
+            if (manifestEntries.size() < 2) {
+                throw new GradleException(
+                        'Final uber-JAR must retain at least two bundle manifests')
+            }
+            if (index.bundles.any {
+                it.manifest?.id == 'com.bloxbean.cardano.yano.fixture.plugin-conformance'
+            }) {
+                throw new GradleException(
+                        'JVM directory smoke fixture was unexpectedly embedded in the uber-JAR')
+            }
+        }
+
+        def distribution = tasks.named('yanoDistZip', Zip).get().archiveFile.get().asFile
+        new java.util.zip.ZipFile(distribution).withCloseable { archive ->
+            def pluginReadmes = archive.entries().findAll {
+                it.name.endsWith('/plugins/README.md')
+            }
+            if (pluginReadmes.size() != 1) {
+                throw new GradleException(
+                        'Final JVM distribution must contain one documented plugins directory')
+            }
+            def cliLaunchers = archive.entries().findAll {
+                it.name.endsWith('/tools/yano-plugins/bin/yano-plugins')
+            }
+            if (cliLaunchers.size() != 1) {
+                throw new GradleException(
+                        'Final JVM distribution must contain one yano-plugins launcher')
+            }
+            def cliLibraries = archive.entries().findAll {
+                it.name.matches('.*/tools/yano-plugins/lib/yano-plugin-catalog-[^/]+\\.jar')
+            }
+            if (cliLibraries.size() != 1) {
+                throw new GradleException(
+                        'Final JVM distribution must contain one yano-plugin-catalog CLI library')
+            }
+        }
+        org.apache.commons.compress.archivers.zip.ZipFile.builder()
+                .setFile(distribution).get().withCloseable { archive ->
+            def cliLauncher = archive.getEntry(
+                    "yano-${distVersion}/tools/yano-plugins/bin/yano-plugins")
+            if (cliLauncher == null || (cliLauncher.unixMode & 0111) == 0) {
+                throw new GradleException(
+                        'Final JVM distribution yano-plugins launcher must be executable')
+            }
+        }
+
+        def smokeParent = layout.buildDirectory.dir('tmp').get().asFile
+        smokeParent.mkdirs()
+        def smokeRoot = java.nio.file.Files.createTempDirectory(
+                smokeParent.toPath(),
+                'packaged-jvm-plugin-catalog-smoke-')
+        def pluginDirectory = java.nio.file.Files.createDirectory(smokeRoot.resolve('plugins'))
+        def stateDirectory = smokeRoot.resolve('chainstate')
+        def logFile = smokeRoot.resolve('jvm.log')
+        def fixtureJar = project(':appchain-plugin-conformance').tasks.named('jar').get()
+                .archiveFile.get().asFile.toPath()
+        java.nio.file.Files.copy(fixtureJar, pluginDirectory.resolve(fixtureJar.fileName))
+
+        def ports = allocateLoopbackPortPair.call()
+        int httpPort = ports[0]
+        int nodePort = ports[1]
+        def javaExecutable = new File(System.getProperty('java.home'),
+                isWindowsHost() ? 'bin/java.exe' : 'bin/java')
+        def command = [javaExecutable.absolutePath]
+        command.addAll(pluginOperationsAuthArguments())
+        command.addAll(pluginConformanceRuntimeArguments(
+                httpPort, nodePort, stateDirectory, pluginDirectory))
+        command.addAll(['-jar', uberJar.absolutePath])
+        def processBuilder = new ProcessBuilder(command)
+                .directory(smokeRoot.toFile())
+                .redirectErrorStream(true)
+                .redirectOutput(logFile.toFile())
+        processBuilder.environment().remove('YACI_PLUGINS_DENY_LIST')
+        processBuilder.environment().remove('YANO_API_PREFIX')
+        processBuilder.environment().remove('QUARKUS_RESTEASY_PATH')
+        processBuilder.environment().putAll([
+                'QUARKUS_HTTP_HOST'       : '127.0.0.1',
+                'QUARKUS_HTTP_PORT'       : Integer.toString(httpPort),
+                'QUARKUS_CONSOLE_COLOR'   : 'false',
+                'YANO_STORAGE_PATH'       : stateDirectory.toAbsolutePath().toString(),
+                'YACI_PLUGINS_DIRECTORY'  : pluginDirectory.toAbsolutePath().toString(),
+                'YACI_PLUGINS_ENABLED'    : 'true',
+                'YACI_PLUGINS_ALLOW_LIST' :
+                        'com.bloxbean.cardano.yano.fixture.plugin-conformance'
+        ])
+
+        Process process = null
+        Throwable primaryFailure = null
+        def logTail = {
+            if (!java.nio.file.Files.isRegularFile(logFile)) {
+                return '<packaged JVM process produced no log>'
+            }
+            java.nio.file.Files.readAllLines(logFile).takeRight(200)
+                    .join(System.lineSeparator())
+        }
+        try {
+            process = processBuilder.start()
+            def liveUrl = new URL("http://127.0.0.1:${httpPort}/q/health/live")
+            long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(90)
+            boolean live = false
+            while (!live && System.nanoTime() < deadline && process.isAlive()) {
+                java.net.HttpURLConnection connection = null
+                try {
+                    connection = (java.net.HttpURLConnection) liveUrl.openConnection()
+                    connection.connectTimeout = 750
+                    connection.readTimeout = 750
+                    int status = connection.responseCode
+                    def response = status >= 400 ? connection.errorStream : connection.inputStream
+                    response?.withCloseable { it.readAllBytes() }
+                    live = status == 200
+                } catch (IOException ignored) {
+                    // Listener is not ready yet.
+                } finally {
+                    connection?.disconnect()
+                }
+                if (!live) Thread.sleep(250)
+            }
+            if (!live) {
+                def state = process.isAlive() ? 'did not become live' :
+                        "exited with code ${process.exitValue()}"
+                throw new GradleException(
+                        "Packaged JVM plugin catalog smoke ${state}.${System.lineSeparator()}"
+                                + logTail())
+            }
+
+            awaitPluginConformanceStatus(httpPort, 90, process, logTail)
+            assertPluginConformanceQueryApis(httpPort)
+            assertPluginOperationsAdapters(httpPort, 90, true)
+
+            def provenancePrefix = 'YANO_PLUGIN_CATALOG_PROVENANCE '
+            def marker = 'ADR-011.2 node-plugin conformance activated through catalog'
+            long evidenceDeadline = System.nanoTime() +
+                    java.util.concurrent.TimeUnit.SECONDS.toNanos(5)
+            String output = ''
+            while (System.nanoTime() < evidenceDeadline && process.isAlive()) {
+                output = java.nio.file.Files.readString(logFile)
+                if (output.contains(provenancePrefix) && output.contains(marker)) break
+                Thread.sleep(100)
+            }
+            def provenanceLines = output.readLines().findAll { it.contains(provenancePrefix) }
+            if (provenanceLines.size() != 1) {
+                throw new GradleException(
+                        "Packaged JVM smoke expected one provenance line, found "
+                                + "${provenanceLines.size()}.${System.lineSeparator()}${logTail()}")
+            }
+            if (output.readLines().count { it.contains(marker) } != 1) {
+                throw new GradleException(
+                        'Packaged JVM directory plugin was not selected and activated exactly once.'
+                                + "${System.lineSeparator()}${logTail()}")
+            }
+            def obsoleteMarker = 'ADR-011.2 plugin SPI conformance passed: ' +
+                    '6/6 providers and products constructed'
+            if (output.contains(obsoleteMarker)) {
+                throw new GradleException(
+                        'Packaged JVM smoke observed the obsolete raw-ServiceLoader marker.'
+                                + "${System.lineSeparator()}${logTail()}")
+            }
+            logger.lifecycle(
+                    "Packaged JVM plugin catalog smoke passed for ${uberJar.absolutePath}")
+        } catch (Throwable failure) {
+            primaryFailure = failure
+            throw failure
+        } finally {
+            try {
+                if (process != null && process.isAlive()) {
+                    process.destroy()
+                    if (!process.waitFor(10, java.util.concurrent.TimeUnit.SECONDS)) {
+                        process.destroyForcibly()
+                        if (!process.waitFor(10, java.util.concurrent.TimeUnit.SECONDS)) {
+                            throw new GradleException(
+                                    "Packaged JVM smoke process did not terminate: ${process.pid()}")
+                        }
+                    }
+                }
+            } catch (Throwable cleanupFailure) {
+                if (primaryFailure != null) primaryFailure.addSuppressed(cleanupFailure)
+                else throw cleanupFailure
+            } finally {
+                try {
+                    project.delete(smokeRoot.toFile())
+                } catch (Throwable cleanupFailure) {
+                    if (primaryFailure != null) primaryFailure.addSuppressed(cleanupFailure)
+                    else throw cleanupFailure
+                }
+            }
+        }
+    }
+}
+
+// Build/run this task once per artifact prefix. CI exercises the three public
+// contracts with separate augmentations:
+//   :app:packagedApiPrefixContractSmoke
+//   :app:packagedApiPrefixContractSmoke -PyanoApiPrefix=/bf
+//   :app:packagedApiPrefixContractSmoke -PyanoApiPrefix=/
+tasks.register('packagedApiPrefixContractSmoke') {
+    group = 'verification'
+    description = 'Verifies the baked API prefix and rejects packaged launch-time overrides'
+    dependsOn tasks.named('quarkusBuild')
+    outputs.upToDateWhen { false }
+
+    doLast {
+        String expectedPrefix = bakedApiPrefix.get()
+        String apiBase = expectedPrefix == '/' ? '' : expectedPrefix
+        def uberJar = layout.buildDirectory.file('yano.jar').get().asFile
+        if (!uberJar.isFile()) {
+            throw new GradleException("Quarkus uber-JAR not found: ${uberJar.absolutePath}")
+        }
+
+        new java.util.jar.JarFile(uberJar).withCloseable { archive ->
+            def markerEntries = archive.entries().findAll {
+                it.name == bakedApiPrefixMarkerPath
+            }
+            if (markerEntries.size() != 1) {
+                throw new GradleException(
+                        "Expected one baked API-prefix marker, found ${markerEntries.size()}")
+            }
+            String marker = archive.getInputStream(markerEntries.getFirst()).withCloseable {
+                new String(it.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8).trim()
+            }
+            if (marker != expectedPrefix) {
+                throw new GradleException('Baked API-prefix marker does not match build input')
+            }
+            def discovery = archive.getJarEntry(bakedApiPrefixDashboardPath)
+            if (discovery == null) {
+                throw new GradleException('Baked dashboard prefix document is absent')
+            }
+            def discoveryJson = archive.getInputStream(discovery).withCloseable {
+                new groovy.json.JsonSlurper().parse(it)
+            }
+            if (discoveryJson.apiPrefix != expectedPrefix) {
+                throw new GradleException('Dashboard prefix document does not match build input')
+            }
+        }
+
+        def smokeParent = layout.buildDirectory.dir('tmp').get().asFile
+        smokeParent.mkdirs()
+        def smokeRoot = java.nio.file.Files.createTempDirectory(
+                smokeParent.toPath(), 'packaged-api-prefix-smoke-')
+        def javaExecutable = new File(System.getProperty('java.home'),
+                isWindowsHost() ? 'bin/java.exe' : 'bin/java')
+
+        def launch = { String name, List<String> overrides ->
+            def directories = java.nio.file.Files.createDirectories(smokeRoot.resolve(name))
+            def stateDirectory = directories.resolve('chainstate')
+            def logFile = directories.resolve('process.log')
+            def ports = allocateLoopbackPortPair.call()
+            def command = [javaExecutable.absolutePath]
+            command.addAll(pluginOperationsAuthArguments())
+            command.addAll([
+                    '-Dquarkus.http.host=127.0.0.1',
+                    "-Dquarkus.http.port=${ports[0]}",
+                    '-Dquarkus.console.color=false',
+                    '-Dyano.auto-sync-start=false',
+                    '-Dyano.client.enabled=false',
+                    '-Dyano.server.enabled=true',
+                    "-Dyano.server.port=${ports[1]}",
+                    '-Dyano.storage.rocksdb=false',
+                    "-Dyano.storage.path=${stateDirectory.toAbsolutePath()}",
+                    '-Dyaci.plugins.enabled=false'
+            ].collect { it.toString() })
+            command.addAll(overrides)
+            command.addAll(['-jar', uberJar.absolutePath])
+            def builder = new ProcessBuilder(command)
+                    .directory(directories.toFile())
+                    .redirectErrorStream(true)
+                    .redirectOutput(logFile.toFile())
+            builder.environment().remove('YANO_API_PREFIX')
+            builder.environment().remove('QUARKUS_RESTEASY_PATH')
+            builder.environment().remove('QUARKUS_HTTP_ROOT_PATH')
+            [process: builder.start(), httpPort: ports[0] as int, log: logFile]
+        }
+
+        def readLog = { run ->
+            java.nio.file.Files.isRegularFile(run.log)
+                    ? java.nio.file.Files.readString(run.log) : ''
+        }
+        def stop = { run ->
+            if (run?.process?.isAlive()) {
+                run.process.destroy()
+                if (!run.process.waitFor(10, java.util.concurrent.TimeUnit.SECONDS)) {
+                    run.process.destroyForcibly()
+                    run.process.waitFor(10, java.util.concurrent.TimeUnit.SECONDS)
+                }
+            }
+        }
+        def request = { int port, String path, boolean authenticated ->
+            def connection = (java.net.HttpURLConnection) new URL(
+                    "http://127.0.0.1:${port}${path}").openConnection()
+            try {
+                connection.connectTimeout = 750
+                connection.readTimeout = 1500
+                if (authenticated) {
+                    connection.setRequestProperty('X-API-Key', pluginOperationsSmokeApiKey)
+                }
+                int status = connection.responseCode
+                def stream = status >= 400 ? connection.errorStream : connection.inputStream
+                String body = stream != null ? stream.withCloseable {
+                    new String(it.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8)
+                } : ''
+                [status: status, body: body]
+            } finally {
+                connection.disconnect()
+            }
+        }
+
+        Throwable primaryFailure = null
+        def positive = null
+        try {
+            positive = launch('positive', [])
+            Map discovery = null
+            boolean operationsRoute = false
+            for (int attempt = 0;
+                 attempt < 450 && positive.process.isAlive()
+                         && (discovery == null || !operationsRoute);
+                 attempt++) {
+                try {
+                    def discoveryResponse = request(
+                            positive.httpPort as int, '/ui/plugins/api-prefix.json', false)
+                    if (discoveryResponse.status == 200) {
+                        def parsed = new groovy.json.JsonSlurper().parseText(
+                                discoveryResponse.body)
+                        if (parsed.apiPrefix == expectedPrefix) discovery = parsed as Map
+                    }
+                    def operationsResponse = request(
+                            positive.httpPort as int, apiBase + '/plugin-operations', false)
+                    operationsRoute = operationsResponse.status == 401
+                } catch (IOException ignored) {
+                    // HTTP listener/runtime catalog is still starting.
+                }
+                if (discovery == null || !operationsRoute) Thread.sleep(200)
+            }
+            if (discovery == null || !operationsRoute) {
+                String processState = positive.process.isAlive()
+                        ? 'alive' : "exit=${positive.process.exitValue()}"
+                throw new GradleException(
+                        "Packaged API-prefix ${expectedPrefix} did not become usable "
+                                + "(${processState}, log=${positive.log}).\n"
+                                + readLog(positive).readLines().takeRight(150).join('\n'))
+            }
+            if (apiBase != '/api/v1') {
+                def legacyRoute = request(
+                        positive.httpPort as int, '/api/v1/plugin-operations', false)
+                if (legacyRoute.status != 404) {
+                    throw new GradleException(
+                            "Non-baked /api/v1 route remained active for ${expectedPrefix}")
+                }
+            }
+            stop(positive)
+
+            [
+                    ['runtime-yano', '-Dyano.api-prefix=/launch-only-prefix'],
+                    ['runtime-resteasy', '-Dquarkus.resteasy.path=/launch-only-route'],
+                    ['runtime-http-root', '-Dquarkus.http.root-path=/launch-only-root']
+            ].each { specification ->
+                def mismatch = launch(specification[0] as String,
+                        [specification[1] as String])
+                try {
+                    if (!mismatch.process.waitFor(30, java.util.concurrent.TimeUnit.SECONDS)) {
+                        throw new GradleException(
+                                "Packaged ${specification[0]} prefix mismatch did not exit")
+                    }
+                    if (mismatch.process.exitValue() == 0) {
+                        throw new GradleException(
+                                "Packaged ${specification[0]} prefix mismatch exited successfully")
+                    }
+                    String output = readLog(mismatch)
+                    if (output.contains('Creating Yano with network:')
+                            || output.contains('YANO_PLUGIN_CATALOG_PROVENANCE ')
+                            || output.contains(
+                                    'ADR-011.2 node-plugin conformance activated through catalog')) {
+                        throw new GradleException(
+                                "Packaged ${specification[0]} mismatch reached node/plugin startup")
+                    }
+                    if (!output.contains(
+                            'The configured API prefix does not match the prefix baked into')) {
+                        throw new GradleException(
+                                "Packaged ${specification[0]} mismatch lacked sanitized diagnostic.\n"
+                                        + output.readLines().takeRight(100).join('\n'))
+                    }
+                } finally {
+                    stop(mismatch)
+                }
+            }
+            logger.lifecycle(
+                    "Packaged API-prefix contract smoke passed for ${expectedPrefix}")
+        } catch (Throwable failure) {
+            primaryFailure = failure
+            throw failure
+        } finally {
+            try {
+                stop(positive)
+                if (primaryFailure == null) {
+                    project.delete(smokeRoot.toFile())
+                } else {
+                    logger.lifecycle("Preserved failed API-prefix smoke at ${smokeRoot}")
+                }
+            } catch (Throwable cleanupFailure) {
+                if (primaryFailure != null) primaryFailure.addSuppressed(cleanupFailure)
+                else throw cleanupFailure
+            }
         }
     }
 }
@@ -428,10 +1966,13 @@ tasks.register('yanoNativeDistZip', Zip) {
             into 'appchain-cluster'
             include '*.md'
         }
-        into('plugins') {
-            from({ [] }) // empty directory
-        }
     }
+}
+
+// A combined package+smoke invocation must verify the final executable copied
+// into the distribution, not an earlier quarkusBuild output.
+tasks.named('nativePluginCatalogSmoke') {
+    mustRunAfter tasks.named('yanoNativeDistZip')
 }
 
 def stripTopLevelDirectory = { details ->

@@ -6,7 +6,7 @@ ARG YANO_GID=10001
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl libstdc++6 zlib1g \
     && rm -rf /var/lib/apt/lists/* \
-    && mkdir -p /app/chainstate /app/logs /app/plugins
+    && mkdir -p /app/chainstate /app/logs
 
 WORKDIR /app
 
@@ -25,11 +25,10 @@ ENV YANO_PROFILE=preprod \
     QUARKUS_HTTP_HOST=0.0.0.0 \
     QUARKUS_LOG_FILE_ENABLE=true \
     QUARKUS_LOG_FILE_PATH=/app/logs/yano.log \
-    YANO_STORAGE_PATH=/app/chainstate \
-    YACI_PLUGINS_DIRECTORY=/app/plugins
+    YANO_STORAGE_PATH=/app/chainstate
 
 EXPOSE 7070 13337
-VOLUME ["/app/chainstate", "/app/logs", "/app/plugins"]
+VOLUME ["/app/chainstate", "/app/logs"]
 
 HEALTHCHECK --interval=20s --timeout=5s --retries=12 \
     CMD curl -fsS http://localhost:7070/q/health/ready || exit 1

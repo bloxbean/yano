@@ -522,6 +522,8 @@
         <span class="mono" id="apiBase">/api/v1</span>
         <span class="sep">·</span>
         <a href="../status/" style="color: inherit">L1 node status</a>
+        <span class="sep">·</span>
+        <a href="../plugins/" style="color: inherit">Plugin operations</a>
       </div>
     </main>
 
@@ -600,7 +602,8 @@
         if (value !== null) {
           value ? localStorage.setItem('yano-appchain-key', value)
                 : localStorage.removeItem('yano-appchain-key');
-          refresh(); restartStream();
+          stopStream();
+          refresh().then(restartStream);
         }
       });
 
@@ -626,12 +629,16 @@
       let selectedChain = localStorage.getItem('yano-appchain-selected') || '';
       const chainSelect = $('chainSelect');
       chainSelect.addEventListener('change', () => {
+        stopStream();
         selectedChain = chainSelect.value;
         localStorage.setItem('yano-appchain-selected', selectedChain);
         firstRender = true;
         resetHistory();
-        refresh();
-        restartStream();
+        lastStreamHeight = null;
+        feedSeenHeight = null;
+        feedSeen.clear();
+        clearFeed();
+        refresh().then(restartStream);
       });
       function chainBase() {
         return selectedChain ? '/app-chain/chains/' + encodeURIComponent(selectedChain) : '/app-chain';
@@ -796,19 +803,44 @@
 
       // ------------------------------ live message feed (SSE over fetch) ------------------------------
       let streamAbort = null;
+      let streamGeneration = 0;
+      let lastStreamHeight = null;
+      let feedSeenHeight = null;
       const feedSeen = new Set();
+      function stopStream() {
+        streamGeneration++;
+        if (streamAbort) streamAbort.abort();
+        streamAbort = null;
+      }
+      function clearFeed() {
+        const feed = $('feed');
+        delete feed.dataset.last;
+        feed.innerHTML = '<div class="empty">Waiting for finalized messages…</div>';
+      }
       function restartStream() {
-        if (streamAbort) { streamAbort.abort(); streamAbort = null; }
+        stopStream();
         if (!selectedChain && chains.length !== 1) { pill('streamPill', 'IDLE', '', false); return; }
         streamAbort = new AbortController();
-        streamLoop(streamAbort.signal);
+        const generation = streamGeneration;
+        // The independently-polled tip is only the first connection's bounded
+        // replay seed. Retries must use the consumed SSE cursor below.
+        const initialHeight = lastStreamHeight == null
+            ? (hist.lastTip == null ? -1 : Math.max(1, hist.lastTip))
+            : lastStreamHeight;
+        streamLoop(streamAbort.signal, generation, initialHeight);
       }
-      async function streamLoop(signal) {
-        while (!signal.aborted) {
+      async function streamLoop(signal, generation, initialHeight) {
+        while (!signal.aborted && generation === streamGeneration) {
           try {
             pill('streamPill', 'CONNECTING', 'warn', false);
-            const res = await fetch(apiPrefix + chainBase() + '/stream?fromHeight=-1',
+            // Replay one bounded recent block on first load. Reconnect from
+            // the last parsed height (inclusive), with per-message deduping,
+            // so a disconnect in the middle of a block cannot lose messages.
+            const fromHeight = lastStreamHeight == null
+                ? initialHeight : Math.max(1, lastStreamHeight);
+            const res = await fetch(apiPrefix + chainBase() + '/stream?fromHeight=' + fromHeight,
                 { headers: { ...headers(), 'Accept': 'text/event-stream' }, signal, cache: 'no-store' });
+            if (signal.aborted || generation !== streamGeneration) return;
             if (!res.ok || !res.body) throw new Error('stream http ' + res.status);
             pill('streamPill', 'LIVE', 'ok', true);
             const reader = res.body.getReader();
@@ -816,6 +848,7 @@
             let buffer = '';
             for (;;) {
               const { done, value } = await reader.read();
+              if (signal.aborted || generation !== streamGeneration) return;
               if (done) break;
               buffer += decoder.decode(value, { stream: true });
               let idx;
@@ -826,7 +859,7 @@
             }
             throw new Error('stream ended');
           } catch (e) {
-            if (signal.aborted) return;
+            if (signal.aborted || generation !== streamGeneration) return;
             pill('streamPill', 'RETRYING', 'bad', false);
             await new Promise(resolve => setTimeout(resolve, 3000));
           }
@@ -838,19 +871,35 @@
           if (line.startsWith('event:')) event = line.slice(6).trim();
           else if (line.startsWith('data:')) data += line.slice(5).trim();
         }
+        // A heartbeat carries the server's current tip, not necessarily the
+        // last block delivered to this subscriber. It keeps the connection
+        // alive but must never advance the replay cursor.
+        if (event === 'heartbeat') return;
         if (event !== 'app-message' || !data) return;
         try {
           const msg = JSON.parse(data);
-          const key = msg.height + ':' + msg.index;
+          if (!Number.isSafeInteger(msg.height) || msg.height < 1
+              || !Number.isSafeInteger(msg.index) || msg.index < 0) return;
+          const position = msg.height + ':' + msg.index;
+          const key = (msg.chainId || selectedChain) + ':' + position;
+          // The server emits in height order and reconnects only from the
+          // latest parsed height, so retaining one block is sufficient and
+          // remains bounded even when that block contains a large load test.
+          if (feedSeenHeight == null || msg.height > feedSeenHeight) {
+            feedSeen.clear();
+            feedSeenHeight = msg.height;
+          }
+          if (lastStreamHeight == null || msg.height > lastStreamHeight) {
+            lastStreamHeight = msg.height;
+          }
           if (feedSeen.has(key)) return;
           feedSeen.add(key);
-          if (feedSeen.size > 500) feedSeen.clear();
           const feed = $('feed');
           if (feed.firstElementChild && feed.firstElementChild.classList.contains('empty')) feed.innerHTML = '';
           const row = document.createElement('div');
           row.className = 'feed-row';
           const bytes = msg.bodyHex ? Math.round(msg.bodyHex.length / 2) : 0;
-          row.innerHTML = '<span class="feed-pos mono">' + esc(key) + '</span>'
+          row.innerHTML = '<span class="feed-pos mono">' + esc(position) + '</span>'
               + '<span class="feed-topic badge">' + esc(msg.topic || 'default') + '</span>'
               + '<span class="muted">' + (msg.sender ? copyable(msg.sender, 10) : '-') + '</span>'
               + '<span class="mono" style="margin-left:auto">' + bytes + ' B</span>';
@@ -859,7 +908,7 @@
         } catch (e) { /* skip malformed */ }
       }
       document.addEventListener('visibilitychange', () => {
-        if (document.hidden) { if (streamAbort) { streamAbort.abort(); streamAbort = null; } }
+        if (document.hidden) stopStream();
         else restartStream();
       });
 
@@ -929,7 +978,11 @@
           if (wallet) rows.push(row('Wallet (fees)', copyable(wallet, 18)));
           rows.push(row('Last Anchored Height', mono(fmt(anchor.lastAnchoredHeight))));
           rows.push(row('Lag (blocks)', mono(fmt(anchor.lagBlocks))));
-          rows.push(row('Anchors Confirmed <span class="muted" title="In-memory counter since the last restart — durable progress is Last Anchored Height">(since restart)</span>', mono(fmt(anchor.anchoredCount))));
+          if (anchor.mode === 'script' && anchor.leader === false) {
+            rows.push(row('Anchors Observed <span class="muted" title="Locally verified L1 observations since the last restart — durable progress is Last Anchored Height">(since restart)</span>', mono(fmt(anchor.observedAnchorCount))));
+          } else {
+            rows.push(row('Anchors Confirmed <span class="muted" title="In-memory counter since the last restart — durable progress is Last Anchored Height">(since restart)</span>', mono(fmt(anchor.anchoredCount))));
+          }
           if (anchor.cosignPending)
             rows.push(row('Co-sign', mono(anchor.cosignPending
                 + (anchor.cosignRange ? ' · blocks ' + anchor.cosignRange : ''))));

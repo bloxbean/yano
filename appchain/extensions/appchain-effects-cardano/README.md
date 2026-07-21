@@ -23,18 +23,23 @@ See also:
 
 ## Packaging model
 
-A T3 plugin module: the node provides `core-api`; this jar brings the
-cardano-client-lib tx-building and backend dependencies.
-
-Build the jar:
+The stock Yano application intentionally omits this privileged T3 integration.
+For a JVM node, build the self-contained drop-in bundle (the ordinary `jar`
+remains thin for build-time inclusion):
 
 ```bash
-./gradlew :appchain-effects-cardano:jar
+./gradlew :appchain-effects-cardano:shadowJar
+# appchain/extensions/appchain-effects-cardano/build/libs/
+#   yano-appchain-effects-cardano-<version>-bundle.jar
 ```
 
-Then place it in the node plugin directory configured by
-`yaci.plugins.directory` (default `plugins/`), on the node that runs the effect
-executor (`yano.app-chain.effects.executor.enabled=true`).
+Copy only that `*-bundle.jar` into the JVM node's plugin directory
+configured by `yaci.plugins.directory` (default `plugins/`), on the node that
+runs the effect executor (`yano.app-chain.effects.executor.enabled=true`). It
+contains the Cardano client/backend dependencies and merged ServiceLoader
+descriptors. Native images cannot load a directory JAR; build with
+`-PincludeFirstPartyPluginBundles=true` to include it before native
+catalog/reflection generation.
 
 ## Configuration
 

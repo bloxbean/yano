@@ -73,7 +73,7 @@ class AppChainRetentionTest {
         long firstHeight = node.messageHeight(HexUtil.decodeHexString(firstId)).orElseThrow();
 
         // Prune bodies below the tip (simulating an L1_FINAL anchor at the tip)
-        int pruned = node.ledgerOrNull().pruneBodiesBelow(tip - 1);
+        int pruned = node.pruneBodiesBelowForTesting(tip - 1);
         assertThat(pruned).isGreaterThan(0);
 
         // Body of the first block is gone...
@@ -96,7 +96,7 @@ class AppChainRetentionTest {
         assertThat(EvidenceVerifier.verify(bundle).valid()).isTrue();
 
         // Idempotent: re-pruning the same range is a no-op
-        assertThat(node.ledgerOrNull().pruneBodiesBelow(tip - 1)).isEqualTo(0);
+        assertThat(node.pruneBodiesBelowForTesting(tip - 1)).isEqualTo(0);
     }
 
     private static void awaitTrue(String what, BooleanSupplier condition) throws InterruptedException {

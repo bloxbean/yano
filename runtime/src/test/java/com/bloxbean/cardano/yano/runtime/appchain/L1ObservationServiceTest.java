@@ -11,6 +11,7 @@ import com.bloxbean.cardano.yaci.core.model.TransactionOutput;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1Observation;
+import com.bloxbean.cardano.yano.api.appchain.l1view.L1Observer;
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -19,9 +20,16 @@ import java.io.ByteArrayOutputStream;
 import java.math.BigInteger;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
 
 /**
  * L1 observation recomputation + verification-window semantics (ADR 008.4
@@ -111,6 +119,180 @@ class L1ObservationServiceTest {
         service.onL1Block(100, fill(32, 1),
                 block("bb".repeat(32), "addr_test1qother", 5_000_000, null));
         assertThat(service.drainInjectable(Long.MAX_VALUE)).isEmpty();
+    }
+
+    @Test
+    void observerFailureLogRetainsOnlyTheExceptionType() {
+        String secret = "https://user:password@example.test/?token=do-not-log";
+        Logger logger = mock(Logger.class);
+        L1Observer observer = new L1Observer() {
+            @Override
+            public String observerId() {
+                return "failing-observer";
+            }
+
+            @Override
+            public List<L1Observation> observe(long slot, byte[] blockHash, Block block) {
+                throw new IllegalStateException(secret);
+            }
+        };
+        L1ObservationService service = new L1ObservationService(List.of(observer), 64, logger);
+
+        service.onL1Block(123, fill(32, 7), null);
+
+        verify(logger).warn("L1 observer failed on slot {} (errorType={})",
+                123L, IllegalStateException.class.getName());
+        verifyNoMoreInteractions(logger);
+        assertThat(service.drainInjectable(Long.MAX_VALUE)).isEmpty();
+    }
+
+    @Test
+    void containableObserverErrorDoesNotStarveHealthyObserver() {
+        AtomicBoolean healthyCalled = new AtomicBoolean();
+        L1Observer failing = new L1Observer() {
+            @Override public String observerId() { return "asserting-observer"; }
+            @Override
+            public List<L1Observation> observe(long slot, byte[] blockHash, Block block) {
+                throw new AssertionError("sensitive assertion");
+            }
+        };
+        L1Observer healthy = new L1Observer() {
+            @Override public String observerId() { return "healthy-observer"; }
+            @Override
+            public List<L1Observation> observe(long slot, byte[] blockHash, Block block) {
+                healthyCalled.set(true);
+                return List.of();
+            }
+        };
+        Logger logger = mock(Logger.class);
+        L1ObservationService service =
+                new L1ObservationService(List.of(failing, healthy), 64, logger);
+
+        service.onL1Block(321, fill(32, 8), null);
+
+        assertThat(healthyCalled).isTrue();
+        verify(logger).warn("L1 observer failed on slot {} (errorType={})",
+                321L, AssertionError.class.getName());
+    }
+
+    @Test
+    void interruptedObserverRestoresInterruptBeforeDiagnosticsAndContinues() {
+        AtomicBoolean interruptedWhenLogged = new AtomicBoolean();
+        AtomicBoolean healthyCalled = new AtomicBoolean();
+        L1Observer interrupted = new L1Observer() {
+            @Override public String observerId() { return "interrupted-observer"; }
+            @Override
+            public List<L1Observation> observe(long slot, byte[] blockHash, Block block) {
+                return sneakyThrow(new InterruptedException("sensitive interrupt detail"));
+            }
+        };
+        L1Observer healthy = new L1Observer() {
+            @Override public String observerId() { return "healthy-observer"; }
+            @Override
+            public List<L1Observation> observe(long slot, byte[] blockHash, Block block) {
+                healthyCalled.set(true);
+                return List.of();
+            }
+        };
+        Logger logger = mock(Logger.class);
+        doAnswer(ignored -> {
+            interruptedWhenLogged.set(Thread.currentThread().isInterrupted());
+            return null;
+        }).when(logger).warn("L1 observer failed on slot {} (errorType={})",
+                323L, InterruptedException.class.getName());
+        L1ObservationService service =
+                new L1ObservationService(List.of(interrupted, healthy), 64, logger);
+
+        try {
+            service.onL1Block(323, fill(32, 10), null);
+
+            assertThat(interruptedWhenLogged).isTrue();
+            assertThat(healthyCalled).isTrue();
+            assertThat(Thread.currentThread().isInterrupted()).isTrue();
+        } finally {
+            // Do not leak the deliberately restored flag into the JUnit worker.
+            Thread.interrupted();
+        }
+    }
+
+    @Test
+    void recoverableDiagnosticErrorDoesNotStarveHealthyObserver() {
+        AtomicBoolean healthyCalled = new AtomicBoolean();
+        L1Observer failing = new L1Observer() {
+            @Override public String observerId() { return "failing-observer"; }
+            @Override
+            public List<L1Observation> observe(long slot, byte[] blockHash, Block block) {
+                throw new IllegalStateException("sensitive observer detail");
+            }
+        };
+        L1Observer healthy = new L1Observer() {
+            @Override public String observerId() { return "healthy-observer"; }
+            @Override
+            public List<L1Observation> observe(long slot, byte[] blockHash, Block block) {
+                healthyCalled.set(true);
+                return List.of();
+            }
+        };
+        Logger logger = mock(Logger.class);
+        doThrow(new AssertionError("diagnostic backend failure")).when(logger)
+                .warn("L1 observer failed on slot {} (errorType={})",
+                        324L, IllegalStateException.class.getName());
+        L1ObservationService service =
+                new L1ObservationService(List.of(failing, healthy), 64, logger);
+
+        service.onL1Block(324, fill(32, 11), null);
+
+        assertThat(healthyCalled).isTrue();
+    }
+
+    @Test
+    void processFatalDiagnosticFailureIsRethrown() {
+        AtomicBoolean healthyCalled = new AtomicBoolean();
+        L1Observer failing = new L1Observer() {
+            @Override public String observerId() { return "failing-observer"; }
+            @Override
+            public List<L1Observation> observe(long slot, byte[] blockHash, Block block) {
+                throw new IllegalStateException("sensitive observer detail");
+            }
+        };
+        L1Observer healthy = new L1Observer() {
+            @Override public String observerId() { return "healthy-observer"; }
+            @Override
+            public List<L1Observation> observe(long slot, byte[] blockHash, Block block) {
+                healthyCalled.set(true);
+                return List.of();
+            }
+        };
+        TestVirtualMachineError fatal = new TestVirtualMachineError();
+        Logger logger = mock(Logger.class);
+        doThrow(fatal).when(logger).warn(
+                "L1 observer failed on slot {} (errorType={})",
+                325L, IllegalStateException.class.getName());
+        L1ObservationService service =
+                new L1ObservationService(List.of(failing, healthy), 64, logger);
+
+        assertThatThrownBy(() -> service.onL1Block(325, fill(32, 12), null))
+                .isSameAs(fatal);
+        assertThat(healthyCalled).isFalse();
+    }
+
+    @Test
+    void processFatalObserverFailureIsRethrown() {
+        TestVirtualMachineError fatal = new TestVirtualMachineError();
+        L1Observer observer = new L1Observer() {
+            @Override public String observerId() { return "fatal-observer"; }
+            @Override
+            public List<L1Observation> observe(long slot, byte[] blockHash, Block block) {
+                throw fatal;
+            }
+        };
+        Logger logger = mock(Logger.class);
+        L1ObservationService service =
+                new L1ObservationService(List.of(observer), 64, logger);
+
+        assertThatThrownBy(() -> service.onL1Block(322, fill(32, 9), null))
+                .isSameAs(fatal);
+        verifyNoInteractions(logger);
     }
 
     @Test
@@ -218,13 +400,22 @@ class L1ObservationServiceTest {
     void misconfiguredObserver_failsFast() {
         assertThatThrownBy(() -> L1ObservationService.fromConfig(Map.of(
                 "observers.x.type", "no-such-type"), 128, null, log))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("Unknown L1 observer type");
+                .isInstanceOf(com.bloxbean.cardano.yano.api.plugin.PluginActivationException.class)
+                .hasMessageContaining("plugin L1 observer type 'no-such-type'")
+                .hasMessageContaining("is not selected");
         assertThatThrownBy(() -> L1ObservationService.fromConfig(Map.of(
                 "observers.x.type", "address-deposit"), 128, null, log))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("address is required");
         assertThat(L1ObservationService.fromConfig(Map.of("sinks.a.b", "c"), 128, null, log))
                 .isNull();
+    }
+
+    private static final class TestVirtualMachineError extends VirtualMachineError {
+    }
+
+    @SuppressWarnings("unchecked")
+    private static <T, E extends Throwable> T sneakyThrow(Throwable failure) throws E {
+        throw (E) failure;
     }
 }

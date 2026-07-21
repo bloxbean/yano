@@ -1,10 +1,13 @@
 package com.bloxbean.cardano.yano.runtime.appchain;
 
 import com.bloxbean.cardano.yaci.core.network.TCPNodeClient;
+import com.bloxbean.cardano.yaci.core.protocol.Agent;
+import com.bloxbean.cardano.yaci.core.protocol.appchainsync.AppChainSyncClientAgent;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.n2n.AppMsgSubmissionAgent;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.n2n.AppMsgSubmissionConfig;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.n2n.AppMsgSubmissionListener;
+import com.bloxbean.cardano.yaci.core.protocol.appmsg.n2n.messages.MsgInitAck;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.n2n.messages.MsgRequestMessageIds;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.n2n.messages.MsgRequestMessages;
 import com.bloxbean.cardano.yaci.core.protocol.handshake.HandshakeAgent;
@@ -13,6 +16,7 @@ import com.bloxbean.cardano.yaci.core.protocol.handshake.messages.Reason;
 import com.bloxbean.cardano.yaci.core.protocol.handshake.util.N2NVersionTableConstant;
 import com.bloxbean.cardano.yaci.core.protocol.keepalive.KeepAliveAgent;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
+import com.bloxbean.cardano.yano.runtime.util.LifecycleFailures;
 import org.slf4j.Logger;
 
 import java.util.ArrayDeque;
@@ -30,10 +34,29 @@ import java.util.Objects;
  */
 final class AppPeerClient implements AppPeerLink {
     private static final int REPLAY_QUEUE_LIMIT = 200;
+    private static final Runnable NOOP = () -> { };
 
     /** Callback for catch-up replies fetched over protocol 103. */
     interface CatchUpHandler {
         void onBlocks(String peerId, java.util.List<byte[]> blocks, long serverTipHeight);
+    }
+
+    /** Small transport boundary used to make publication/start races deterministic in tests. */
+    interface PeerTransport {
+        void start();
+
+        boolean isRunning();
+
+        void shutdown();
+    }
+
+    @FunctionalInterface
+    interface PeerTransportFactory {
+        PeerTransport create(AppChainConfig.AppPeer peer,
+                             HandshakeAgent handshakeAgent,
+                             AppMsgSubmissionAgent appMsgAgent,
+                             KeepAliveAgent keepAliveAgent,
+                             AppChainSyncClientAgent syncAgent);
     }
 
     private final AppChainConfig.AppPeer peer;
@@ -41,21 +64,38 @@ final class AppPeerClient implements AppPeerLink {
     private final AppMsgSubmissionConfig appMsgConfig;
     private final CatchUpHandler catchUpHandler;
     private final Logger log;
+    private final PeerTransportFactory transportFactory;
+    private final Runnable beforeTransportStart;
+    private final Runnable beforeDelegateStart;
 
-    /** Messages to re-offer after a reconnect (agents are recreated per connection). */
+    /**
+     * Bounded recent-message cache. Entries remain here after being offered so
+     * an agent reset during TCP reconnect cannot lose an unacknowledged body.
+     */
     private final Deque<AppMessage> replayQueue = new ArrayDeque<>();
 
-    private volatile TCPNodeClient client;
+    private volatile PeerTransport client;
     private volatile AppMsgSubmissionAgent agent;
+    /**
+     * The agent whose protocol-100 negotiation and replay hand-off have
+     * completed. Keeping the identity (rather than a boolean) prevents a late
+     * callback from an old client from making its replacement appear ready.
+     */
+    private volatile AppMsgSubmissionAgent readyAgent;
     private volatile KeepAliveAgent keepAliveAgent;
     private volatile com.bloxbean.cardano.yaci.core.protocol.appchainsync.AppChainSyncClientAgent syncAgent;
     private volatile boolean shutdown;
+    /** Guarded by {@link #replayQueue}; distinguishes internal reconnects that reuse an agent. */
+    private long connectionEpoch;
+    /** Epoch whose protocol-100 MsgInitAck is currently expected. Guarded by replayQueue. */
+    private long awaitingInitAckEpoch = -1;
 
     AppPeerClient(AppChainConfig.AppPeer peer,
                   long protocolMagic,
                   AppMsgSubmissionConfig appMsgConfig,
                   Logger log) {
-        this(peer, protocolMagic, appMsgConfig, null, log);
+        this(peer, protocolMagic, appMsgConfig, null, log,
+                AppPeerClient::createTcpTransport, NOOP, NOOP);
     }
 
     AppPeerClient(AppChainConfig.AppPeer peer,
@@ -63,11 +103,26 @@ final class AppPeerClient implements AppPeerLink {
                   AppMsgSubmissionConfig appMsgConfig,
                   CatchUpHandler catchUpHandler,
                   Logger log) {
+        this(peer, protocolMagic, appMsgConfig, catchUpHandler, log,
+                AppPeerClient::createTcpTransport, NOOP, NOOP);
+    }
+
+    AppPeerClient(AppChainConfig.AppPeer peer,
+                  long protocolMagic,
+                  AppMsgSubmissionConfig appMsgConfig,
+                  CatchUpHandler catchUpHandler,
+                  Logger log,
+                  PeerTransportFactory transportFactory,
+                  Runnable beforeTransportStart,
+                  Runnable beforeDelegateStart) {
         this.peer = Objects.requireNonNull(peer, "peer");
         this.protocolMagic = protocolMagic;
         this.appMsgConfig = Objects.requireNonNull(appMsgConfig, "appMsgConfig");
         this.catchUpHandler = catchUpHandler;
         this.log = Objects.requireNonNull(log, "log");
+        this.transportFactory = Objects.requireNonNull(transportFactory, "transportFactory");
+        this.beforeTransportStart = Objects.requireNonNull(beforeTransportStart, "beforeTransportStart");
+        this.beforeDelegateStart = Objects.requireNonNull(beforeDelegateStart, "beforeDelegateStart");
     }
 
     /**
@@ -93,7 +148,15 @@ final class AppPeerClient implements AppPeerLink {
 
     @Override
     public boolean isConnected() {
-        TCPNodeClient c = client;
+        PeerTransport c = client;
+        AppMsgSubmissionAgent currentAgent = agent;
+        return c != null && c.isRunning()
+                && currentAgent != null && readyAgent == currentAgent;
+    }
+
+    /** A running transport may still be negotiating its app protocols. */
+    private boolean isTransportRunning() {
+        PeerTransport c = client;
         return c != null && c.isRunning();
     }
 
@@ -106,17 +169,36 @@ final class AppPeerClient implements AppPeerLink {
      */
     @Override
     public void enqueue(AppMessage message) {
+        Objects.requireNonNull(message, "message");
         if (shutdown)
             return;
-        AppMsgSubmissionAgent a = agent;
-        if (a != null && isConnected()) {
-            a.enqueueMessage(message);
-        } else {
-            synchronized (replayQueue) {
-                if (replayQueue.size() >= REPLAY_QUEUE_LIMIT) {
-                    replayQueue.pollFirst();
-                }
-                replayQueue.addLast(message);
+        synchronized (replayQueue) {
+            // Close the admission race with shutdown(), whose final queue
+            // clear uses this same monitor.
+            if (shutdown) {
+                return;
+            }
+            long now = System.currentTimeMillis() / 1000;
+            replayQueue.removeIf(queued -> queued.isExpired(now));
+            if (message.isExpired(now)
+                    || message.getSize() > appMsgConfig.getMaxMessageSize()
+                    || (!appMsgConfig.getChainIds().isEmpty()
+                    && !appMsgConfig.getChainIds().contains(message.getChainId()))) {
+                return;
+            }
+            if (replayQueue.contains(message)) {
+                return;
+            }
+            if (replayQueue.size() >= REPLAY_QUEUE_LIMIT) {
+                replayQueue.pollFirst();
+            }
+            replayQueue.addLast(message);
+
+            AppMsgSubmissionAgent currentAgent = agent;
+            PeerTransport currentClient = client;
+            if (currentAgent != null && readyAgent == currentAgent
+                    && currentClient != null && currentClient.isRunning()) {
+                currentAgent.enqueueMessage(message);
             }
         }
     }
@@ -133,7 +215,7 @@ final class AppPeerClient implements AppPeerLink {
      */
     @Override
     public void ensureConnectedAsync() {
-        if (shutdown || isConnected() || !connecting.compareAndSet(false, true)) {
+        if (shutdown || isTransportRunning() || !connecting.compareAndSet(false, true)) {
             return;
         }
         Thread connector = new Thread(() -> {
@@ -149,13 +231,43 @@ final class AppPeerClient implements AppPeerLink {
 
     /** Connect if not connected; blocking — use {@link #ensureConnectedAsync()}. */
     synchronized void ensureConnected() {
-        if (shutdown || isConnected())
+        if (shutdown || isTransportRunning())
             return;
 
         disposeClient();
 
         AppMsgSubmissionAgent newAgent = new AppMsgSubmissionAgent(appMsgConfig);
         newAgent.addListener(new AppMsgSubmissionListener() {
+            @Override
+            public void onDisconnect() {
+                synchronized (replayQueue) {
+                    if (agent == newAgent) {
+                        readyAgent = null;
+                        awaitingInitAckEpoch = -1;
+                        connectionEpoch++;
+                    }
+                }
+            }
+
+            @Override
+            public void handleInitAck(MsgInitAck ack) {
+                // MsgInitAck, rather than the outer N2N handshake, is the
+                // readiness boundary for protocol 100.  The replay offer and
+                // publication are one atomic hand-off with enqueue(): a
+                // submitter either joins the replay queue or uses this fully
+                // negotiated agent, never a transport that is merely retrying
+                // or an app protocol still in Init/InitAck.
+                synchronized (replayQueue) {
+                    if (shutdown || agent != newAgent
+                            || awaitingInitAckEpoch != connectionEpoch) {
+                        return;
+                    }
+                    offerReplayQueueLocked(newAgent);
+                    readyAgent = newAgent;
+                    awaitingInitAckEpoch = -1;
+                }
+            }
+
             @Override
             public void handleRequestMessageIds(MsgRequestMessageIds request) {
                 newAgent.sendNextMessage();
@@ -188,8 +300,13 @@ final class AppPeerClient implements AppPeerLink {
             @Override
             public void handshakeOk() {
                 log.info("App-peer handshake OK: {} — activating app message protocol", peer);
+                synchronized (replayQueue) {
+                    if (shutdown || agent != newAgent) {
+                        return;
+                    }
+                    awaitingInitAckEpoch = connectionEpoch;
+                }
                 newAgent.sendNextMessage(); // MsgInit with our chain-ids
-                drainReplayQueue(newAgent);
             }
 
             @Override
@@ -198,47 +315,82 @@ final class AppPeerClient implements AppPeerLink {
             }
         });
 
+        PeerTransport newClient = new TerminalPeerTransport(
+                Objects.requireNonNull(
+                        transportFactory.create(peer, handshakeAgent, newAgent, newKeepAlive, newSyncAgent),
+                        "transportFactory result"),
+                beforeDelegateStart);
+        boolean published = false;
         try {
-            TCPNodeClient newClient = newSyncAgent != null
-                    ? new TCPNodeClient(peer.host(), peer.port(),
-                            handshakeAgent, newAgent, newKeepAlive, newSyncAgent)
-                    : new TCPNodeClient(peer.host(), peer.port(),
-                            handshakeAgent, newAgent, newKeepAlive);
-            // Publish the client BEFORE start(): start() retries an unreachable
-            // peer indefinitely, and shutdown() must be able to reach and close
-            // the in-progress client to break that loop (008.2 fix)
-            this.client = newClient;
-            newClient.start();
-            if (shutdown) {
-                disposeClient();
+            // Publish the complete transport tuple BEFORE start().  start()
+            // retries an unreachable peer indefinitely, so shutdown() must be
+            // able to reach the in-progress client.  Publish under the same
+            // lock as queue hand-off/disposal so enqueue never observes a
+            // partially installed connection tuple.
+            boolean aborted;
+            synchronized (replayQueue) {
+                aborted = shutdown;
+                if (!aborted) {
+                    this.client = newClient;
+                    this.agent = newAgent;
+                    this.readyAgent = null;
+                    this.keepAliveAgent = newKeepAlive;
+                    this.syncAgent = newSyncAgent;
+                    this.connectionEpoch++;
+                    this.awaitingInitAckEpoch = -1;
+                    published = true;
+                }
+            }
+            if (aborted) {
+                shutdownClient(newClient);
                 return;
             }
-            this.agent = newAgent;
-            this.keepAliveAgent = newKeepAlive;
-            this.syncAgent = newSyncAgent;
+
+            synchronized (replayQueue) {
+                if (shutdown || client != newClient || agent != newAgent) {
+                    return;
+                }
+            }
+
+            // Deliberate deterministic seam in the final publication-to-start
+            // gap. TerminalPeerTransport makes this late start a no-op if
+            // shutdown wins while the hook is running.
+            beforeTransportStart.run();
+            newClient.start();
+            if (shutdown) {
+                if (clearConnectionIfCurrent(newAgent)) {
+                    shutdownClient(newClient);
+                }
+                return;
+            }
             log.info("App-peer connection started: {}", peer);
-        } catch (Exception e) {
-            log.warn("App-peer connection to {} failed: {}", peer, e.toString());
-            this.client = null;
-            this.agent = null;
-            this.keepAliveAgent = null;
-            this.syncAgent = null;
+        } catch (Throwable startFailure) {
+            boolean cleanupOwnedHere = !published || clearConnectionIfCurrent(newAgent);
+            Throwable cleanupFailure = null;
+            if (cleanupOwnedHere) {
+                try {
+                    shutdownClient(newClient);
+                } catch (Throwable failure) {
+                    cleanupFailure = failure;
+                }
+            }
+
+            Throwable failure = cleanupFailure == null
+                    ? startFailure
+                    : LifecycleFailures.merge(startFailure, cleanupFailure);
+            if (cleanupFailure != null || startFailure instanceof Error) {
+                throwUnchecked(failure);
+            }
+            log.warn("App-peer connection to {} failed: {}", peer, startFailure.toString());
         }
     }
 
-    private void drainReplayQueue(AppMsgSubmissionAgent target) {
+    /** Caller owns {@link #replayQueue}'s monitor. */
+    private void offerReplayQueueLocked(AppMsgSubmissionAgent target) {
         long now = System.currentTimeMillis() / 1000;
-        while (true) {
-            AppMessage queued;
-            synchronized (replayQueue) {
-                queued = replayQueue.pollFirst();
-            }
-            if (queued == null) {
-                return;
-            }
-            if (!queued.isExpired(now)) {
-                target.enqueueMessage(queued);
-            }
+        replayQueue.removeIf(queued -> queued.isExpired(now));
+        for (AppMessage queued : replayQueue) {
+            target.enqueueMessage(queued);
         }
     }
 
@@ -264,24 +416,243 @@ final class AppPeerClient implements AppPeerLink {
     @Override
     public void shutdown() {
         shutdown = true;
-        disposeClient();
-        synchronized (replayQueue) {
-            replayQueue.clear();
+        Throwable failure = null;
+        try {
+            disposeClient();
+        } catch (Throwable shutdownFailure) {
+            failure = shutdownFailure;
+        } finally {
+            synchronized (replayQueue) {
+                replayQueue.clear();
+            }
+        }
+        if (failure != null) {
+            throwUnchecked(failure);
         }
     }
 
     private void disposeClient() {
-        TCPNodeClient c = client;
-        client = null;
-        agent = null;
-        keepAliveAgent = null;
-        syncAgent = null;
-        if (c != null) {
+        PeerTransport c;
+        synchronized (replayQueue) {
+            c = client;
+            client = null;
+            agent = null;
+            readyAgent = null;
+            keepAliveAgent = null;
+            syncAgent = null;
+            awaitingInitAckEpoch = -1;
+            connectionEpoch++;
+        }
+        shutdownClient(c);
+    }
+
+    private boolean clearConnectionIfCurrent(AppMsgSubmissionAgent expectedAgent) {
+        synchronized (replayQueue) {
+            if (agent == expectedAgent) {
+                client = null;
+                agent = null;
+                readyAgent = null;
+                keepAliveAgent = null;
+                syncAgent = null;
+                awaitingInitAckEpoch = -1;
+                connectionEpoch++;
+                return true;
+            }
+            return false;
+        }
+    }
+
+    private void shutdownClient(PeerTransport target) {
+        if (target != null) {
+            target.shutdown();
+        }
+    }
+
+    private static PeerTransport createTcpTransport(AppChainConfig.AppPeer peer,
+                                                    HandshakeAgent handshakeAgent,
+                                                    AppMsgSubmissionAgent appMsgAgent,
+                                                    KeepAliveAgent keepAliveAgent,
+                                                    AppChainSyncClientAgent syncAgent) {
+        Agent[] agents = syncAgent == null
+                ? new Agent[] {appMsgAgent, keepAliveAgent}
+                : new Agent[] {appMsgAgent, keepAliveAgent, syncAgent};
+        return new YaciPeerTransport(new TCPNodeClient(
+                peer.host(), peer.port(), handshakeAgent, agents));
+    }
+
+    /** Thin adapter; terminal lifecycle semantics are supplied by {@link TerminalPeerTransport}. */
+    private record YaciPeerTransport(TCPNodeClient delegate) implements PeerTransport {
+        @Override
+        public void start() {
+            delegate.start();
+        }
+
+        @Override
+        public boolean isRunning() {
+            return delegate.isRunning();
+        }
+
+        @Override
+        public void shutdown() {
+            delegate.shutdown();
+        }
+    }
+
+    /**
+     * Gives an otherwise restartable transport a terminal shutdown state.
+     * In particular, shutdown-before-start cannot be undone by a late caller,
+     * and shutdown racing an in-progress start interrupts that blocking start
+     * before performing a final cleanup pass.
+     */
+    private static final class TerminalPeerTransport implements PeerTransport {
+        private final PeerTransport delegate;
+        private final Runnable beforeDelegateStart;
+        private final Object lifecycleMonitor = new Object();
+
+        private boolean terminal;
+        private Thread starter;
+        private Thread cleanupOwner;
+        private boolean cleanupFinished;
+        private Throwable terminalCleanupFailure;
+
+        private TerminalPeerTransport(PeerTransport delegate, Runnable beforeDelegateStart) {
+            this.delegate = delegate;
+            this.beforeDelegateStart = beforeDelegateStart;
+        }
+
+        @Override
+        public void start() {
+            synchronized (lifecycleMonitor) {
+                if (terminal) {
+                    return;
+                }
+                starter = Thread.currentThread();
+            }
+
+            Throwable failure = null;
             try {
-                c.shutdown();
-            } catch (Exception e) {
-                log.debug("Error shutting down app-peer client {}: {}", peer, e.toString());
+                boolean startAllowed;
+                synchronized (lifecycleMonitor) {
+                    startAllowed = !terminal;
+                }
+                // Deterministic seam for the final cancellation race: a
+                // shutdown here interrupts this registered owner. The Yaci
+                // Session.start path observes interruption in connect/sleep,
+                // and this owner's finally is the sole delegate cleaner.
+                beforeDelegateStart.run();
+                if (startAllowed) {
+                    delegate.start();
+                }
+            } catch (Throwable startFailure) {
+                failure = startFailure;
+            } finally {
+                boolean ownsCleanup;
+                synchronized (lifecycleMonitor) {
+                    ownsCleanup = cleanupOwner == Thread.currentThread() && !cleanupFinished;
+                }
+                Throwable cleanupFailure = null;
+                if (ownsCleanup) {
+                    try {
+                        delegate.shutdown();
+                    } catch (Throwable caught) {
+                        cleanupFailure = caught;
+                    }
+                }
+                synchronized (lifecycleMonitor) {
+                    if (ownsCleanup) {
+                        terminalCleanupFailure = cleanupFailure;
+                        cleanupFinished = true;
+                    }
+                    starter = null;
+                    lifecycleMonitor.notifyAll();
+                }
+                if (cleanupFailure != null) {
+                    failure = LifecycleFailures.merge(failure, cleanupFailure);
+                }
+            }
+            if (failure != null) {
+                throwUnchecked(failure);
             }
         }
+
+        @Override
+        public boolean isRunning() {
+            synchronized (lifecycleMonitor) {
+                return !terminal && delegate.isRunning();
+            }
+        }
+
+        @Override
+        public void shutdown() {
+            Thread startThread;
+            boolean cleanupHere;
+            synchronized (lifecycleMonitor) {
+                terminal = true;
+                startThread = starter;
+                if (cleanupOwner == null) {
+                    cleanupOwner = startThread != null ? startThread : Thread.currentThread();
+                }
+                cleanupHere = cleanupOwner == Thread.currentThread()
+                        && startThread == null && !cleanupFinished;
+            }
+            if (startThread != null && startThread != Thread.currentThread()) {
+                startThread.interrupt();
+            } else if (startThread == Thread.currentThread()) {
+                Thread.currentThread().interrupt();
+            }
+
+            if (cleanupHere) {
+                Throwable cleanupFailure = null;
+                try {
+                    delegate.shutdown();
+                } catch (Throwable failure) {
+                    cleanupFailure = failure;
+                }
+                synchronized (lifecycleMonitor) {
+                    terminalCleanupFailure = cleanupFailure;
+                    cleanupFinished = true;
+                    lifecycleMonitor.notifyAll();
+                }
+                if (cleanupFailure != null) {
+                    throwUnchecked(cleanupFailure);
+                }
+                return;
+            }
+
+            // A re-entrant shutdown from the starter cannot wait for its own
+            // finally; that finally remains responsible for cleanup.
+            if (startThread == Thread.currentThread()) {
+                return;
+            }
+
+            boolean interrupted = false;
+            Throwable cleanupFailure;
+            synchronized (lifecycleMonitor) {
+                while (!cleanupFinished) {
+                    try {
+                        lifecycleMonitor.wait();
+                    } catch (InterruptedException ignored) {
+                        interrupted = true;
+                    }
+                }
+                cleanupFailure = terminalCleanupFailure;
+            }
+            if (interrupted) {
+                Thread.currentThread().interrupt();
+            }
+            if (cleanupFailure != null) {
+                throwUnchecked(cleanupFailure);
+            }
+        }
+    }
+
+    private static void throwUnchecked(Throwable failure) {
+        if (failure instanceof RuntimeException runtimeFailure) {
+            throw runtimeFailure;
+        }
+        if (failure instanceof Error error) {
+            throw error;
+        }
+        throw new IllegalStateException(failure);
     }
 }

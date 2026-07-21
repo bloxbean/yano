@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.runtime.plugins;
 
 import com.bloxbean.cardano.yaci.events.api.DomainEventListener;
+import com.bloxbean.cardano.yaci.events.api.EventBus;
 import com.bloxbean.cardano.yaci.events.api.SubscriptionHandle;
 import com.bloxbean.cardano.yaci.events.api.SubscriptionOptions;
 import com.bloxbean.cardano.yaci.events.api.support.AnnotationListenerRegistrar;
@@ -27,11 +28,12 @@ import java.util.Set;
  * - Logs all block received/applied events with chain coordinates
  * - Tracks sync status changes (initial sync, live, catching up)
  * - Records rollback events with classification (real vs expected)
- * - Can be enabled/disabled via system property
+ * - Can be enabled/disabled through plugin configuration
  * 
  * Configuration:
- * - Enable: -Dyaci.plugins.logging.enabled=true
- * - Disable: -Dyaci.plugins.logging.enabled=false (default)
+ * - Context key: plugins.logging.enabled=true|false
+ * - The packaged Quarkus node maps yaci.plugins.logging.enabled to that key.
+ * - Library embedders set the context key in PluginsOptions.config().
  * 
  * Log format:
  * All events are prefixed with [EVT] for easy filtering in log aggregators.
@@ -49,7 +51,9 @@ import java.util.Set;
  */
 public final class LoggingPlugin implements NodePlugin {
     private Logger log;
-    private List<SubscriptionHandle> handles;
+    private EventBus eventBus;
+    private boolean enabled;
+    private List<SubscriptionHandle> handles = List.of();
 
     @Override public String id() { return "com.bloxbean.cardano.yaci.plugins.logging"; }
     @Override public String version() { return "1.0.0"; }
@@ -58,22 +62,36 @@ public final class LoggingPlugin implements NodePlugin {
     @Override
     public void init(PluginContext ctx) {
         this.log = ctx.logger();
+        this.eventBus = ctx.eventBus();
         Object val = ctx.config() != null ? ctx.config().get("plugins.logging.enabled") : null;
-        boolean enabled = false;
-        if (val instanceof Boolean b) enabled = b;
-        else if (val instanceof String s) enabled = Boolean.parseBoolean(s);
+        enabled = val instanceof Boolean b ? b
+                : val instanceof String s && Boolean.parseBoolean(s);
         if (!enabled) {
             log.info("LoggingPlugin disabled via yaci.plugins.logging.enabled=false");
-            this.handles = List.of();
+        }
+    }
+
+    @Override
+    public synchronized void start() {
+        if (!enabled || !handles.isEmpty()) {
             return;
         }
         SubscriptionOptions defaults = SubscriptionOptions.builder().build();
-        this.handles = AnnotationListenerRegistrar.register(ctx.eventBus(), this, defaults);
-        log.info("LoggingPlugin initialized; registered {} listeners", handles.size());
+        handles = AnnotationListenerRegistrar.register(eventBus, this, defaults);
+        log.info("LoggingPlugin started; registered {} listeners", handles.size());
     }
 
-    @Override public void start() {}
-    @Override public void stop() { if (handles != null) handles.forEach(h -> { try { h.close(); } catch (Exception ignored) {} }); }
+    @Override
+    public synchronized void stop() {
+        handles.forEach(handle -> {
+            try {
+                handle.close();
+            } catch (Exception ignored) {
+            }
+        });
+        handles = List.of();
+    }
+
     @Override public void close() { stop(); }
 
     @DomainEventListener(order = 0)

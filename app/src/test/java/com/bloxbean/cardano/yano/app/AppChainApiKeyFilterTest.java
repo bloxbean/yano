@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Test;
 import java.util.Map;
 
 import static io.restassured.RestAssured.given;
+import static org.hamcrest.Matchers.startsWith;
 
 /**
  * ADR-006 E4.1: opt-in API-key auth for the /app-chain REST surface,
@@ -107,11 +108,52 @@ class AppChainApiKeyFilterTest {
     }
 
     @Test
+    void restrictedKey_postQueryIsSemanticallyReadOnly() {
+        given()
+                .header("X-API-Key", "restricted-key")
+                .contentType("application/json")
+                .body("{\"paramsHex\":\"00ff\"}")
+                .when().post("/api/v1/app-chain/chains/not-hosted/query/by-id")
+                .then()
+                .statusCode(404); // past auth; unknown chain is resolved downstream
+    }
+
+    @Test
     void otherEndpoints_remainOpen() {
         given()
                 .when().get("/api/v1/node/status")
                 .then()
                 .statusCode(200);
+    }
+
+    @Test
+    void pluginOperationsRequireAFullKey() {
+        given()
+                .when().get("/api/v1/plugin-operations")
+                .then()
+                .statusCode(401);
+
+        given()
+                .header("X-API-Key", "restricted-key")
+                .when().get("/api/v1/plugin-operations")
+                .then()
+                .statusCode(403);
+
+        given()
+                .header("X-API-Key", "full-access-key")
+                .when().get("/api/v1/plugin-operations")
+                .then()
+                .statusCode(200)
+                .body("catalogFingerprint", startsWith("sha256:"));
+    }
+
+    @Test
+    void pluginOperationsTrailingSlashAliasIsRejected() {
+        given()
+                .header("X-API-Key", "full-access-key")
+                .when().get("/api/v1/plugin-operations/")
+                .then()
+                .statusCode(404);
     }
 
     @Test

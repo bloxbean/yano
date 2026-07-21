@@ -8,6 +8,7 @@ import com.bloxbean.cardano.yano.api.appchain.effects.EffectProof;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectProofLookup;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectRecord;
 import com.bloxbean.cardano.yano.api.appchain.effects.FxKeys;
+import com.bloxbean.cardano.yano.runtime.util.LifecycleFailures;
 import org.rocksdb.*;
 import org.slf4j.Logger;
 
@@ -15,7 +16,9 @@ import java.io.File;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 
@@ -104,6 +107,63 @@ final class AppLedgerStore implements AutoCloseable {
     long tipHeight() {
         byte[] value = getMeta(KEY_TIP_HEIGHT);
         return value != null ? ByteBuffer.wrap(value).getLong() : 0L;
+    }
+
+    /**
+     * Capture the finalized height and its block-bound state root from one
+     * RocksDB snapshot. The snapshot is released immediately: historical MPF
+     * nodes are immutable, so query reads can subsequently remain fixed to the
+     * captured root while new blocks commit.
+     */
+    CommittedStateSnapshot captureCommittedState() {
+        Snapshot snapshot = db.getSnapshot();
+        try (ReadOptions readOptions = new ReadOptions().setSnapshot(snapshot)) {
+            byte[] heightBytes = db.get(metaCf, readOptions, KEY_TIP_HEIGHT);
+            if (heightBytes == null) {
+                return new CommittedStateSnapshot(0L, new byte[32]);
+            }
+            if (heightBytes.length != Long.BYTES) {
+                throw new IllegalStateException("Committed app-chain height is malformed");
+            }
+            long height = ByteBuffer.wrap(heightBytes).getLong();
+            if (height <= 0) {
+                throw new IllegalStateException("Committed app-chain height must be positive");
+            }
+            byte[] blockBytes = db.get(blocksCf, readOptions, heightKey(height));
+            if (blockBytes == null) {
+                throw new IllegalStateException(
+                        "Committed app-chain tip block is unavailable at height " + height);
+            }
+            AppBlock block = AppBlockCodec.deserialize(blockBytes);
+            if (block.height() != height || block.stateRoot().length != 32) {
+                throw new IllegalStateException(
+                        "Committed app-chain tip block identity is malformed at height " + height);
+            }
+            byte[] metaRoot = db.get(metaCf, readOptions, KEY_STATE_ROOT);
+            if (metaRoot == null || !Arrays.equals(metaRoot, block.stateRoot())) {
+                throw new IllegalStateException(
+                        "Committed app-chain tip block and state root disagree at height " + height);
+            }
+            return new CommittedStateSnapshot(height, block.stateRoot());
+        } catch (RocksDBException e) {
+            throw new RuntimeException("Failed to capture committed app-chain state", e);
+        } finally {
+            db.releaseSnapshot(snapshot);
+        }
+    }
+
+    record CommittedStateSnapshot(long height, byte[] stateRoot) {
+        CommittedStateSnapshot {
+            if (height < 0 || stateRoot == null || stateRoot.length != 32) {
+                throw new IllegalArgumentException("Invalid committed app-chain state snapshot");
+            }
+            stateRoot = stateRoot.clone();
+        }
+
+        @Override
+        public byte[] stateRoot() {
+            return stateRoot.clone();
+        }
     }
 
     byte[] tipHash() {
@@ -1305,6 +1365,34 @@ final class AppLedgerStore implements AutoCloseable {
         }
     }
 
+    /** Atomically initialize a group of long-valued metadata entries. */
+    void metaPutLongs(Map<String, Long> values) {
+        metaPutAll(values, Map.of());
+    }
+
+    /** Atomically write a mixed group of long and byte-valued metadata. */
+    void metaPutAll(Map<String, Long> longValues, Map<String, byte[]> byteValues) {
+        Objects.requireNonNull(longValues, "longValues");
+        Objects.requireNonNull(byteValues, "byteValues");
+        if (longValues.isEmpty() && byteValues.isEmpty()) {
+            return;
+        }
+        try (WriteBatch batch = new WriteBatch();
+             WriteOptions writeOptions = new WriteOptions()) {
+            for (var entry : longValues.entrySet()) {
+                batch.put(metaCf, entry.getKey().getBytes(StandardCharsets.UTF_8),
+                        longBytes(entry.getValue()));
+            }
+            for (var entry : byteValues.entrySet()) {
+                batch.put(metaCf, entry.getKey().getBytes(StandardCharsets.UTF_8),
+                        Objects.requireNonNull(entry.getValue(), "metadata value"));
+            }
+            db.write(writeOptions, batch);
+        } catch (RocksDBException e) {
+            throw new RuntimeException("Failed to write app ledger metadata", e);
+        }
+    }
+
     /** Generic byte[] / UTF-8 string meta entries (anchor records etc.). */
     byte[] metaBytes(String key) {
         return getMeta(key.getBytes(StandardCharsets.UTF_8));
@@ -1349,19 +1437,37 @@ final class AppLedgerStore implements AutoCloseable {
 
     @Override
     public void close() {
+        Throwable closeFailure = null;
         for (ColumnFamilyHandle handle : cfHandles) {
             try {
                 handle.close();
-            } catch (Exception ignored) {
+            } catch (Throwable failure) {
+                closeFailure = mergeCloseFailure(closeFailure, failure);
             }
         }
         try {
             db.close();
-        } catch (Exception ignored) {
+        } catch (Throwable failure) {
+            closeFailure = mergeCloseFailure(closeFailure, failure);
         }
         try {
             dbOptions.close();
-        } catch (Exception ignored) {
+        } catch (Throwable failure) {
+            closeFailure = mergeCloseFailure(closeFailure, failure);
         }
+        if (closeFailure instanceof Error error) {
+            throw error;
+        }
+        if (closeFailure instanceof RuntimeException runtime) {
+            throw runtime;
+        }
+        if (closeFailure != null) {
+            throw new IllegalStateException("App ledger close failed", closeFailure);
+        }
+    }
+
+    /** Close every native resource while preserving the strongest failure. */
+    private static Throwable mergeCloseFailure(Throwable aggregate, Throwable next) {
+        return LifecycleFailures.merge(aggregate, next);
     }
 }

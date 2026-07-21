@@ -36,6 +36,12 @@ CONFIG_FILE="$YANO_HOME/config/application-appchain.yml"
 CLUSTER_DIR="${YANO_CLUSTER_DIR:-/tmp/yano-appchain-cluster}"
 HTTP_BASE="${YANO_CLUSTER_HTTP_BASE:-7070}"       # node i HTTP  = HTTP_BASE + i
 SERVER_BASE="${YANO_CLUSTER_SERVER_BASE:-13337}"  # node i n2n   = SERVER_BASE + i
+HTTP_BASE_EXPLICIT=0
+SERVER_BASE_EXPLICIT=0
+# Environment overrides are operator choices, just like the CLI flags: never
+# silently move them. Literal defaults are preferences and may be relocated.
+[ -n "${YANO_CLUSTER_HTTP_BASE:-}" ] && HTTP_BASE_EXPLICIT=1
+[ -n "${YANO_CLUSTER_SERVER_BASE:-}" ] && SERVER_BASE_EXPLICIT=1
 NETWORK="devnet"
 NETWORK_EXPLICIT=0                                # set when --network is passed
 RUNTIME="auto"                                    # auto | jar | native
@@ -45,6 +51,8 @@ ENABLE_ANCHOR=0
 ANCHOR_MODE="script"                              # metadata | script (--anchor-mode)
 ANCHOR_KEY=""                                     # --anchor-key: funded wallet seed (hex, 32 bytes)
 ANCHOR_EVERY=""                                   # --anchor-every: default 2 devnet / 30 public
+CLUSTER_API_KEY="${YANO_CLUSTER_API_KEY:-}"
+LOCAL_CLUSTER_API_KEY="yano-local-cluster-full-key"
 
 # Deterministic demo member identities: node i uses seed = byte(i+1) x32.
 # Precomputed Ed25519 public keys (standard Ed25519 == Yano app-chain keys).
@@ -161,20 +169,219 @@ node_dir()    { echo "$CLUSTER_DIR/node$1"; }
 pid_file()    { echo "$CLUSTER_DIR/node$1.pid"; }
 log_file()    { echo "$(node_dir "$1")/node.log"; }
 
+# This launcher is a local/demo environment, so it has one known full key just
+# like its known member and anchor seeds. Override it for any shared machine;
+# production nodes do not inherit this launcher-only default.
+effective_api_key() {
+  if [ -n "$CLUSTER_API_KEY" ]; then
+    printf '%s' "$CLUSTER_API_KEY"
+  else
+    printf '%s' "$LOCAL_CLUSTER_API_KEY"
+  fi
+}
+
+validate_api_key() {
+  local key="$1"
+  [[ "$key" =~ ^[A-Za-z0-9._~-]+$ ]] \
+    && [ "${#key}" -ge 16 ] && [ "${#key}" -le 256 ] \
+    || die "YANO_CLUSTER_API_KEY must be 16-256 characters from A-Z, a-z, 0-9, . _ ~ -"
+}
+
+api_curl() {
+  local key; key="$(effective_api_key)"
+  validate_api_key "$key"
+  command curl --config - "$@" <<EOF
+header = "X-API-Key: $key"
+EOF
+}
+
+range_end() { echo $(( $1 + $2 - 1 )); }
+
+validate_port_base() {
+  local value="$1" count="$2" label="$3"
+  [[ "$value" =~ ^[0-9]+$ ]] || die "$label must be a decimal TCP port"
+  # Force base-10: bash arithmetic treats a leading zero as octal.
+  value=$((10#$value))
+  [ "$value" -ge 1 ] || die "$label must be at least 1"
+  [ "$value" -le 65535 ] || die "$label must be at most 65535"
+  [ "$(( value + count - 1 ))" -le 65535 ] \
+    || die "$label=$value cannot fit $count contiguous ports below 65536"
+  printf '%s' "$value"
+}
+
+ranges_overlap() {
+  local a="$1" ac="$2" b="$3" bc="$4"
+  [ "$a" -le "$(( b + bc - 1 ))" ] && [ "$b" -le "$(( a + ac - 1 ))" ]
+}
+
+port_is_busy() {
+  local port="$1"
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1
+    return $?
+  fi
+  # Portable fallback when lsof is unavailable. Binding all IPv4 interfaces
+  # detects the conflicts relevant to Quarkus/NodeServer's wildcard binds.
+  python3 - "$port" <<'PY' >/dev/null 2>&1
+import socket, sys
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+try:
+    s.bind(("0.0.0.0", int(sys.argv[1])))
+except OSError:
+    sys.exit(0)  # busy
+finally:
+    s.close()
+sys.exit(1)      # free
+PY
+}
+
+port_range_is_free() {
+  local base="$1" count="$2" i
+  for ((i=0;i<count;i++)); do
+    port_is_busy "$(( base + i ))" && return 1
+  done
+  return 0
+}
+
+first_busy_port() {
+  local base="$1" count="$2" i
+  for ((i=0;i<count;i++)); do
+    if port_is_busy "$(( base + i ))"; then
+      printf '%s' "$(( base + i ))"
+      return 0
+    fi
+  done
+  return 1
+}
+
+find_free_port_base() {
+  local start="$1" count="$2" avoid_base="${3:-}" avoid_count="${4:-0}"
+  local candidate="$start" max=$(( 65535 - count + 1 ))
+  while [ "$candidate" -le "$max" ]; do
+    if { [ -z "$avoid_base" ] || ! ranges_overlap "$candidate" "$count" "$avoid_base" "$avoid_count"; } \
+        && port_range_is_free "$candidate" "$count"; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+    candidate=$(( candidate + 1 ))
+  done
+  return 1
+}
+
+resolve_cluster_ports() {
+  local count="$1" requested_http requested_server busy selected
+  HTTP_BASE="$(validate_port_base "$HTTP_BASE" "$count" "HTTP base")" || exit 1
+  SERVER_BASE="$(validate_port_base "$SERVER_BASE" "$count" "server base")" || exit 1
+  requested_http="$HTTP_BASE"; requested_server="$SERVER_BASE"
+
+  # An explicit server range owns its ports; move only the default HTTP range
+  # if the two requested ranges overlap.
+  if [ "$HTTP_BASE_EXPLICIT" = "1" ]; then
+    if ! port_range_is_free "$HTTP_BASE" "$count"; then
+      busy="$(first_busy_port "$HTTP_BASE" "$count")"
+      die "explicit HTTP range $HTTP_BASE-$(range_end "$HTTP_BASE" "$count") is busy (port $busy)"
+    fi
+  elif ! port_range_is_free "$HTTP_BASE" "$count" \
+      || { [ "$SERVER_BASE_EXPLICIT" = "1" ] && ranges_overlap "$HTTP_BASE" "$count" "$SERVER_BASE" "$count"; }; then
+    selected="$(find_free_port_base "$HTTP_BASE" "$count" \
+      "$([ "$SERVER_BASE_EXPLICIT" = "1" ] && printf '%s' "$SERVER_BASE")" \
+      "$([ "$SERVER_BASE_EXPLICIT" = "1" ] && printf '%s' "$count" || printf '0')")" \
+      || die "no free contiguous HTTP range of $count ports at or above $HTTP_BASE"
+    HTTP_BASE="$selected"
+    c_ylw "HTTP range $requested_http-$(range_end "$requested_http" "$count") unavailable; using $HTTP_BASE-$(range_end "$HTTP_BASE" "$count")"
+  fi
+
+  if [ "$SERVER_BASE_EXPLICIT" = "1" ]; then
+    ranges_overlap "$HTTP_BASE" "$count" "$SERVER_BASE" "$count" \
+      && die "explicit server range $SERVER_BASE-$(range_end "$SERVER_BASE" "$count") overlaps HTTP range $HTTP_BASE-$(range_end "$HTTP_BASE" "$count")"
+    if ! port_range_is_free "$SERVER_BASE" "$count"; then
+      busy="$(first_busy_port "$SERVER_BASE" "$count")"
+      die "explicit server range $SERVER_BASE-$(range_end "$SERVER_BASE" "$count") is busy (port $busy)"
+    fi
+  elif ! port_range_is_free "$SERVER_BASE" "$count" \
+      || ranges_overlap "$HTTP_BASE" "$count" "$SERVER_BASE" "$count"; then
+    selected="$(find_free_port_base "$SERVER_BASE" "$count" "$HTTP_BASE" "$count")" \
+      || die "no free contiguous server range of $count ports at or above $SERVER_BASE"
+    SERVER_BASE="$selected"
+    c_ylw "N2N range $requested_server-$(range_end "$requested_server" "$count") unavailable; using $SERVER_BASE-$(range_end "$SERVER_BASE" "$count")"
+  fi
+}
+
+chain_state_present() {
+  [ -f "$(node_dir "$1")/chainstate/CURRENT" ]
+}
+
+prepare_devnet_node0_genesis() {
+  local target source tmp
+  target="$(node_dir 0)/shelley-genesis.json"
+  source="$YANO_HOME/config/network/devnet/shelley-genesis.json"
+  [ -f "$source" ] || die "devnet genesis not found: $source"
+  mkdir -p "$(node_dir 0)"
+
+  if [ -f "$target" ]; then
+    # The runtime shifts systemStart in this exact file on first boot. Its raw
+    # bytes are part of the devnet identity and must survive retained restarts.
+    return 0
+  fi
+  chain_state_present 0 && die "retained node 0 state has no shelley-genesis.json; restore the exact original file or run clean"
+
+  tmp="${target}.tmp.$$"
+  if ! jq '.epochLength = 500' "$source" > "$tmp" 2>/dev/null; then
+    cp "$source" "$tmp" || { rm -f "$tmp"; die "cannot create node 0 devnet genesis"; }
+  fi
+  mv "$tmp" "$target"
+}
+
+validate_retained_devnet_followers() {
+  local count="$1" i leader target
+  leader="$(node_dir 0)/shelley-genesis.json"
+  for ((i=1;i<count;i++)); do
+    chain_state_present "$i" || continue
+    target="$(node_dir "$i")/shelley-genesis.json"
+    [ -f "$target" ] || die "retained node $i state has no shelley-genesis.json; restore it or run clean"
+    cmp -s "$leader" "$target" \
+      || die "retained node $i genesis differs from node 0; refusing to start or overwrite existing chain identity"
+  done
+}
+
+prepare_devnet_follower_genesis() {
+  local i="$1" leader target
+  leader="$(node_dir 0)/shelley-genesis.json"
+  target="$(node_dir "$i")/shelley-genesis.json"
+  mkdir -p "$(node_dir "$i")"
+
+  if chain_state_present "$i"; then
+    [ -f "$target" ] || die "retained node $i state has no shelley-genesis.json; restore it or run clean"
+    cmp -s "$leader" "$target" \
+      || die "retained node $i genesis differs from node 0; refusing to overwrite existing chain identity"
+    return 0
+  fi
+  cp "$leader" "$target" || die "cannot copy devnet genesis to node $i"
+}
+
 # `start` records the cluster's network/anchor settings here so later commands
 # (anchor-bootstrap, ...) act on the RUNNING cluster without re-passing flags.
 env_file()    { echo "$CLUSTER_DIR/cluster.env"; }
 save_cluster_env() {
   { echo "NETWORK=$NETWORK"; echo "ENABLE_ANCHOR=$ENABLE_ANCHOR"
-    echo "ANCHOR_MODE=$ANCHOR_MODE"; } > "$(env_file)"
+    echo "ANCHOR_MODE=$ANCHOR_MODE"; echo "HTTP_BASE=$HTTP_BASE"
+    echo "SERVER_BASE=$SERVER_BASE"; } > "$(env_file)"
 }
+
 load_cluster_env() {
   [ -f "$(env_file)" ] || return 0
-  local saved_network="$NETWORK"
+  local saved_network="$NETWORK" saved_http="$HTTP_BASE" saved_server="$SERVER_BASE"
   # shellcheck disable=SC1090
   . "$(env_file)"
-  # An explicit --network on THIS invocation still wins over the saved value.
+  # Explicit options on THIS invocation still win over saved values.
   [ "$NETWORK_EXPLICIT" = "1" ] && NETWORK="$saved_network"
+  [ "$HTTP_BASE_EXPLICIT" = "1" ] && HTTP_BASE="$saved_http"
+  [ "$SERVER_BASE_EXPLICIT" = "1" ] && SERVER_BASE="$saved_server"
+}
+
+health_ready() {
+  command curl -sf --connect-timeout 1 --max-time 3 \
+    "http://localhost:$(http_port "$1")/q/health/ready" >/dev/null 2>&1
 }
 
 # Anchor wallet address for chain $1: from node 0's status when the build
@@ -237,9 +444,12 @@ chain_props() {
 # rest follow it (or, with --network <net>, every node relays that network).
 launch_node() {
   local n="$1" i="$2"
+  local api_key; api_key="$(effective_api_key)"
+  validate_api_key "$api_key"
   local dir; dir="$(node_dir "$i")"; mkdir -p "$dir"
   local -a args=(
     "-Dquarkus.profile=${PROFILE}"
+    "-Dquarkus.http.host=127.0.0.1"
     "-Dquarkus.http.port=$(http_port "$i")"
     "-Dyano.server.port=$(server_port "$i")"
     "-Dyano.storage.path=$dir/chainstate"
@@ -272,20 +482,30 @@ launch_node() {
 
   local log; log="$(log_file "$i")"
   if [ "$RUNTIME" = "native" ]; then
-    ( cd "$YANO_HOME" && exec "$NATIVE" "${args[@]}" ${YANO_EXTRA_ARGS:-} ) >"$log" 2>&1 &
+    ( cd "$YANO_HOME" || exit
+      export YANO_APP_CHAIN_API_AUTH_ENABLED=false YANO_APP_CHAIN_API_KEYS="$api_key"
+      exec "$NATIVE" "${args[@]}" ${YANO_EXTRA_ARGS:-} ) >"$log" 2>&1 &
   else
-    ( cd "$YANO_HOME" && exec java ${JAVA_OPTS:-} "${args[@]}" -jar "$JAR" ${YANO_EXTRA_ARGS:-} ) >"$log" 2>&1 &
+    ( cd "$YANO_HOME" || exit
+      export YANO_APP_CHAIN_API_AUTH_ENABLED=false YANO_APP_CHAIN_API_KEYS="$api_key"
+      exec java ${JAVA_OPTS:-} "${args[@]}" -jar "$JAR" ${YANO_EXTRA_ARGS:-} ) >"$log" 2>&1 &
   fi
   echo "$!" > "$(pid_file "$i")"
 }
 
 wait_ready() {
-  local i="$1" port; port="$(http_port "$i")"
+  local i="$1" port pid; port="$(http_port "$i")"
   local deadline=$(( $(date +%s) + 180 ))
-  until curl -sf "http://localhost:$port/q/health/ready" >/dev/null 2>&1; do
+  until health_ready "$i"; do
     [ "$(date +%s)" -gt "$deadline" ] && die "node $i not ready within 180s (see $(log_file "$i"))"
-    if ! kill -0 "$(cat "$(pid_file "$i")" 2>/dev/null)" 2>/dev/null; then
+    pid="$(cat "$(pid_file "$i")" 2>/dev/null)"
+    if ! kill -0 "$pid" 2>/dev/null; then
       die "node $i exited during startup (see $(log_file "$i"))"
+    fi
+    if grep -qE 'Failed to initialize or auto-start Yano|Failed to start application' "$(log_file "$i")" 2>/dev/null; then
+      kill "$pid" 2>/dev/null || true
+      rm -f "$(pid_file "$i")"
+      die "node $i runtime failed during startup (see the first ERROR in $(log_file "$i"))"
     fi
     sleep 2
   done
@@ -295,7 +515,7 @@ wait_ready() {
 wait_ready_soft() {
   local i="$1" secs="${2:-90}" port; port="$(http_port "$i")"
   local deadline=$(( $(date +%s) + secs ))
-  until curl -sf "http://localhost:$port/q/health/ready" >/dev/null 2>&1; do
+  until health_ready "$i"; do
     [ "$(date +%s)" -gt "$deadline" ] && return 1
     kill -0 "$(cat "$(pid_file "$i")" 2>/dev/null)" 2>/dev/null || return 1
     sleep 2
@@ -343,7 +563,17 @@ cmd_start() {
   if [ "$ENABLE_ANCHOR" = "1" ] && [ "$NETWORK" != "devnet" ] && [ -z "$ANCHOR_KEY" ]; then
     die "anchoring on $NETWORK needs your own wallet key: --anchor-key \$(openssl rand -hex 32) — the default demo seed is publicly known"
   fi
+  validate_api_key "$(effective_api_key)"
+  resolve_cluster_ports "$n"
   mkdir -p "$CLUSTER_DIR"
+
+  if [ "$NETWORK" = "devnet" ]; then
+    # Node 0 shifts + persists systemStart in this exact file on first boot.
+    # Validate every retained identity before any JVM can mutate chain state.
+    prepare_devnet_node0_genesis
+    validate_retained_devnet_followers "$n"
+  fi
+
   save_cluster_env
 
   c_grn "Starting $n-node app-chain cluster"
@@ -354,16 +584,13 @@ cmd_start() {
   echo  "  members : $n   threshold: ${THRESHOLD:-$(default_threshold "$n")}"
   [ "$ENABLE_ANCHOR" = "1" ] && echo "  anchor  : $ANCHOR_MODE mode (leader: node 0)"
   echo  "  data    : $CLUSTER_DIR"
-  echo
-
-  if [ "$NETWORK" = "devnet" ]; then
-    # Node 0 (dev-mode) shifts + persists the genesis systemStart in place;
-    # followers must reuse node 0's shifted copy, so we copy AFTER it is ready.
-    mkdir -p "$(node_dir 0)"
-    jq '.epochLength = 500' "$YANO_HOME/config/network/devnet/shelley-genesis.json" \
-        > "$(node_dir 0)/shelley-genesis.json" 2>/dev/null \
-        || cp "$YANO_HOME/config/network/devnet/shelley-genesis.json" "$(node_dir 0)/shelley-genesis.json"
+  echo  "  ports   : http $HTTP_BASE-$(range_end "$HTTP_BASE" "$n")   n2n $SERVER_BASE-$(range_end "$SERVER_BASE" "$n")"
+  if [ -n "$CLUSTER_API_KEY" ]; then
+    echo "  admin API key: configured by YANO_CLUSTER_API_KEY"
+  else
+    echo "  admin API key: $LOCAL_CLUSTER_API_KEY (known local-demo key; override with YANO_CLUSTER_API_KEY)"
   fi
+  echo
 
   printf 'node 0 (%s) ... ' "$([ "$NETWORK" = devnet ] && echo 'L1 producer + member' || echo 'relay + member')"
   launch_node "$n" 0; wait_ready 0; c_grn "ready (http $(http_port 0), n2n $(server_port 0))"
@@ -380,8 +607,7 @@ cmd_start() {
   local i
   for ((i=1;i<n;i++)); do
     if [ "$NETWORK" = "devnet" ]; then
-      mkdir -p "$(node_dir "$i")"
-      cp "$(node_dir 0)/shelley-genesis.json" "$(node_dir "$i")/shelley-genesis.json"
+      prepare_devnet_follower_genesis "$i"
     fi
     printf 'node %d (follower + member) ... ' "$i"
     start_follower_resilient "$n" "$i"; c_grn "ready (http $(http_port "$i"), n2n $(server_port "$i"))"
@@ -523,8 +749,8 @@ cmd_anchor_bootstrap() {
     echo " 'No usable UTxO', send tADA/ADA there and re-run; a just-sent tx may"
     echo " also need a minute to land in the node's UTxO view)"
   fi
-  curl -s -X POST "http://localhost:$port/api/v1/app-chain/chains/$cid/admin/anchor/bootstrap" | python3 -m json.tool 2>/dev/null \
-    || die "bootstrap failed"
+  api_curl -fsS -X POST "http://localhost:$port/api/v1/app-chain/chains/$cid/admin/anchor/bootstrap" | python3 -m json.tool 2>/dev/null \
+    || die "bootstrap failed (check YANO_CLUSTER_API_KEY and node log)"
 }
 
 cmd_logs() {
@@ -604,8 +830,11 @@ start options:
                      to this seed — generate one: openssl rand -hex 32).
   --anchor-every <n> anchor cadence in app blocks (default: 2 devnet, 30 public)
   --data-dir <dir>   cluster data/logs dir (default: $CLUSTER_DIR)
-  --http-base <p>    node i HTTP port = p + i (default: $HTTP_BASE)
-  --server-base <p>  node i n2n  port = p + i (default: $SERVER_BASE)
+  --http-base <p>    node i HTTP port = p + i. The default ($HTTP_BASE) moves
+                     automatically to a free contiguous range when occupied;
+                     an explicit value is strict and fails when busy.
+  --server-base <p>  node i n2n port = p + i. The default ($SERVER_BASE) moves
+                     automatically; an explicit value is strict.
 
 Chains come from \$YANO_HOME/config/application-appchain.yml — edit it to add/
 remove app chains or change their state machine / sequencer. See ./README.md.
@@ -615,6 +844,10 @@ Environment (run a RELEASED build with no local compile):
                 genesis). Nodes launch with cwd=HOME. Default: the repo's app/.
   YANO_JAR      path to a yano uber-jar (overrides auto-detect; any location).
   YANO_NATIVE   path to a yano native binary (overrides auto-detect).
+  YANO_CLUSTER_API_KEY
+                full key for privileged cluster operations. Reads and
+                submissions remain public on the loopback-only demo API.
+                Default: $LOCAL_CLUSTER_API_KEY (local demo only).
   Examples:
     # local dev (auto): uses app/build/yano.jar + app/config
     ./cluster.sh start 3
@@ -647,19 +880,26 @@ while [ $# -gt 0 ]; do
     --anchor-key)   ANCHOR_KEY="$2"; ENABLE_ANCHOR=1; shift 2;;
     --anchor-every) ANCHOR_EVERY="$2"; shift 2;;
     --data-dir)     CLUSTER_DIR="$2"; shift 2;;
-    --http-base)    HTTP_BASE="$2"; shift 2;;
-    --server-base)  SERVER_BASE="$2"; shift 2;;
+    --http-base)    HTTP_BASE="$2"; HTTP_BASE_EXPLICIT=1; shift 2;;
+    --server-base)  SERVER_BASE="$2"; SERVER_BASE_EXPLICIT=1; shift 2;;
     *)              POS+=("$1"); shift;;
   esac
 done
 set -- "${POS[@]:-}"
+
+# Cluster-dependent commands discover the selected ports and anchor settings
+# from the start invocation. CLI/environment port overrides remain authoritative.
+case "$CMD" in
+  start|keys|chains|help|-h|--help) ;;
+  *) load_cluster_env;;
+esac
 
 case "$CMD" in
   start)             cmd_start "${1:-3}";;
   status)            cmd_status;;
   submit)            cmd_submit "$@";;
   kv)                cmd_kv "$@";;
-  loadtest)          exec "$SCRIPT_DIR/loadtest.sh" "$@";;
+  loadtest)          YANO_CLUSTER_HTTP_BASE="$HTTP_BASE" exec "$SCRIPT_DIR/loadtest.sh" "$@";;
   anchor-bootstrap)  cmd_anchor_bootstrap "${1:-}";;
   logs)              cmd_logs "${1:-0}" "${2:-}";;
   keys)              cmd_keys "${1:-3}";;

@@ -170,6 +170,7 @@ A distributable zip (`yano-native-<version>-<platform>.zip`) is produced under
 ```
 yano/
 ├── core-api/            # Public node interfaces + plugin SPI
+├── plugin-catalog/      # Manifest validation + JVM-only yano-plugins CLI
 ├── runtime/             # Main node implementation (RocksDB-backed)
 ├── ledger-state/        # Account / delegation / governance state stores
 ├── ledger-rules/        # Validation rule interfaces
@@ -189,6 +190,7 @@ For deeper coverage of how to operate and extend Yano, see the application-level
 |---|---|
 | **[`app/README.md`](app/README.md)** | Operator's guide — run modes (relay, devnet, native), `start.sh` / `start-devnet.sh`, configuration knobs, REST API reference, profiles, Swagger UI, integration with [yaci-store](https://github.com/bloxbean/yaci-store), and the test tiers (unit / integration / e2e). |
 | **[`app/ARCHITECTURE.md`](app/ARCHITECTURE.md)** | Internal architecture — high-level topology, header/body split sync pipeline, event system, plugin system, module overview, REST API surface, configuration modes, and extension points. |
+| **[`docs/PLUGIN_OPERATIONS.md`](docs/PLUGIN_OPERATIONS.md)** | Plugin catalog validation, operations API authentication, health/metrics exposure, dashboard behavior, and JVM/native deployment notes. |
 
 Architecture decision records covering specific design choices live under
 [`adr/`](adr/) — notably `adr/ledger-state/` for the state-store implementation

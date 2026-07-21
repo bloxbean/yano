@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.devnet;
 
 import com.bloxbean.cardano.yano.api.config.YanoConfig;
+import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiGateway;
 import com.bloxbean.cardano.yano.runtime.assembly.YanoAssembly;
 import com.bloxbean.cardano.yano.runtime.assembly.Yano;
 import org.junit.jupiter.api.Test;
@@ -9,6 +10,7 @@ import org.junit.jupiter.api.io.TempDir;
 import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 
 class YanoDevnetAssemblyTest {
     @TempDir
@@ -33,6 +35,9 @@ class YanoDevnetAssemblyTest {
         try {
             assertTrue(node.producerControl().isPresent());
             assertTrue(node.devnetControl().isPresent());
+            assertTrue(node.pluginCatalog().isPresent());
+            assertTrue(node.pluginOperations().isPresent());
+            assertNotSame(DomainApiGateway.empty(), node.domainApis());
         } finally {
             node.close();
         }

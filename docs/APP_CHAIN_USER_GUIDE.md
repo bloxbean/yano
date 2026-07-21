@@ -111,13 +111,19 @@ state machine's exact wire format — see the
 ## 3. Quick start: two-node cluster with the default distribution
 
 This walkthrough uses `java -jar` with `-D` flags (built from source). The
-**official distributions** work the same way — only where config lives differs:
+**official distributions** work the same way — only where ordinary runtime
+config lives differs:
 the release zip (`yano-<ver>.zip`) has a `./yano.sh start:<profile>` launcher
 plus `config/application.yml`; the Docker bundle (`yano-docker-<ver>.zip`)
 mounts `config/application.yml` and a `plugins/` directory into the
 `bloxbean/yano` image; native binaries mirror the zip layout (but cannot load
-plugin jars). See the tutorial's Part 0 for per-distribution instructions;
-releases: https://github.com/bloxbean/yano/releases
+directory plugin JARs after build; manifested bundles may be included when the
+native application is built). See the tutorial's Part 0 for per-distribution
+instructions; releases: https://github.com/bloxbean/yano/releases
+
+The public REST prefix is the exception: it is an immutable artifact input,
+not a `-D` or YAML launch setting. Build it with `-PyanoApiPrefix` as described
+in section 4 and the distribution guide.
 
 ### 3.1 Generate member keys
 
@@ -236,7 +242,12 @@ Highlights (full reference: `appchain-cluster/README.md`):
 
 ## 4. REST API
 
-Base path: `${yano.api-prefix}/app-chain` (default `/api/v1/app-chain`).
+Base path: `<artifact-api-prefix>/app-chain` (default
+`/api/v1/app-chain`). The prefix is fixed into each JVM/native/container
+artifact with strict `-PyanoApiPrefix=<path>`; it is not editable launch
+configuration. `/` and canonical paths up to 256 characters are supported.
+Changing it requires a rebuild; see
+[`BUILD_DISTRIBUTIONS.md`](BUILD_DISTRIBUTIONS.md#artifact-api-prefix).
 
 Every chain endpoint below is also available **chain-scoped** as
 `/app-chain/chains/{chainId}/...` on a multi-chain node (section 8). The
@@ -408,7 +419,11 @@ curl -X POST localhost:7070/api/v1/app-chain/chains/<chain-id>/admin/anchor/boot
 
 The bootstrap consumes a seed UTxO from the wallet and mints a **one-shot
 thread NFT** into the anchor validator's script address with the genesis
-datum. That mint defines the chain's permanent on-chain identity:
+datum at app height `0`. This transaction establishes identity only; it does
+not unilaterally certify the current app tip. On a non-empty chain the leader
+immediately starts the normal threshold-co-sign round for the first real
+advance, without waiting for another user transaction or the configured
+anchor cadence. That mint defines the chain's permanent on-chain identity:
 
 - **thread policy id** — unique per chain (derived from the consumed seed
   UTxO; can never be minted again). Burning is forbidden by the policy.
@@ -431,8 +446,21 @@ Watch progress in `/status` under `anchor` (`bootstrapped`, `threadPolicyId`,
 `scriptAddress`, `walletAddress`, `cosignPending`, `lastAnchorTx`,
 `lagBlocks`), or on the `/ui/app-chain/` page's L1 Anchor card. Anchors fire
 when at least one NEW block exists and `every-blocks` accumulated since the
-last anchor (or `max-interval-minutes` elapsed) — an idle chain anchors
-nothing and costs nothing.
+last anchor (or `max-interval-minutes` elapsed). The first real advance after
+bootstrap is immediate when the app tip is non-zero; an app chain that has
+never produced a block remains at height `0` and has nothing to anchor.
+
+Every script-anchor member independently reconciles `lastAnchoredHeight`,
+`lastAnchorTx`, `lastAnchorL1Slot` and `lagBlocks` from the authenticated
+thread UTxO in its own L1 view.  These durable fields should converge across
+members.  The page's “Anchors Confirmed/Observed (since restart)” value is a
+node-local operational counter and may differ after restarts.
+
+The reconciliation read is accepted only when the UTxO store's committed
+slot and block hash exactly match the node's canonical L1 point.  A follower
+also keeps a first-seen script identity non-authoritative until an exact
+advance transaction that it verified is accepted by the on-chain threshold;
+a single member's sign request cannot by itself open evidence or effect gates.
 
 ### 5.4 Independent verification (auditors, third parties)
 
@@ -559,10 +587,15 @@ The plugin template ships this test pre-wired (`CounterConformanceTest`).
        public AppStateMachine create() { return new OrderBookStateMachine(); }
    }
    ```
-2. Add the ServiceLoader manifest to your jar:
+2. Add the ServiceLoader entry to your jar:
    `META-INF/services/com.bloxbean.cardano.yano.api.appchain.AppStateMachineProvider`
    containing the provider class name.
-3. Drop the jar into the node's plugins directory (`yaci.plugins.directory`,
+3. Add the bundle manifest
+   `META-INF/yano/plugins/<bundle-id>.json`; its contribution kind, name and
+   provider class must exactly match the ServiceLoader entry. Package any
+   non-host runtime dependencies into the same reproducible bundle JAR; do not
+   deploy adjacent thin dependency JARs as one catalog-v1 bundle.
+4. Drop the jar into the JVM node's plugins directory (`yaci.plugins.directory`,
    default `plugins/`), and select it:
    ```yaml
    yano:
@@ -573,6 +606,13 @@ The plugin template ships this test pre-wired (`CounterConformanceTest`).
    Compile against the `yano-core-api` artifact (`AppStateMachine`,
    `AppMessage`, `AppStateWriter` live there / in `yaci-core`).
    A ready Gradle project for this is `scaffolds/plugin-template`.
+
+ServiceLoader-only legacy providers remain a temporary compatibility path for
+self-contained JARs loaded from the JVM plugin directory (and for explicit
+library compatibility mode). Packaged JVM/native build-time inclusion requires
+the bundle manifest: strict index generation cannot safely assign an
+unmanifested provider's external dependencies to a bundle closure and tells
+the developer to add a manifest or use the JVM directory bundle.
 
 ### 6.2 Embed programmatically (library mode)
 
@@ -630,7 +670,7 @@ Flat (single-chain) keys. The same suffixes apply per chain under
 | `effects.outcome-commitment` | `per-effect` | `per-effect` (O(1) proofs) \| `per-block` (trie growth O(effectful blocks); ZK-friendly) |
 | `effects.strict-reserved-prefix` | `true` | Reject app writes to the `~fx/` trie prefix (consensus-affecting; active even when effects are off) |
 | `effects.result.signers` | empty | Restrict who may attest `~fx/result` to these member keys (default: any member; §18.5) |
-| `effects.executor.enabled` | `false` | This node RUNS effects (execution plane, §18.3). Node-local — not consensus |
+| `effects.executor.enabled` | `false` | This node RUNS effects (execution plane, §18.3). Node-local — not consensus. When explicitly enabled, invalid settings, missing executors or runtime initialization failure make startup fail; the node never silently drops this role |
 | `effects.executor.types` / `tick-ms` / `max-parallel` / `max-attempts` / `backoff-initial-ms` / `backoff-max-ms` | ` ` / `2000` / `4` / `8` / `2000` / `300000` | Executor tuning (§18.3) |
 | `effects.executor.identity` | generated node-local sidecar | Stable identity for this node's disposable execution progress. The generated file lives beside the checkpointed chain directory, so member-key rotation preserves work but restoring onto another executor resets/quarantines it. Set an explicit unique value when storage is relocated; never clone it across physical executors (§18.3) |
 | `effects.external.enabled` | `false` | Expose the external-executor claim/report REST surface (§18.6) |
@@ -803,9 +843,12 @@ and a failing sink halts and retries rather than skipping blocks. Requests
 carry `X-App-Chain-Id` / `X-App-Chain-Height` headers; delivery progress and
 the last error appear in `/status` under `sinks`.
 
-**Kafka** — drop the `yano-appchain-kafka-sink` plugin jar into the node's
-plugins directory (`yaci.plugins.directory`, default `plugins/`) and
-configure:
+**Kafka** — the stock application omits this T3 integration. For a JVM node,
+run `./gradlew :appchain-kafka-sink:shadowJar` and copy the resulting
+`yano-appchain-kafka-sink-<version>-bundle.jar` into
+`yaci.plugins.directory`. For a native application, build it in with
+`-PincludeFirstPartyPluginBundles=true`; native binaries cannot load the
+directory bundle.
 
 ```yaml
 yano.app-chain.sinks.kafka.bootstrap-servers: broker:9092
@@ -851,22 +894,25 @@ and the node `JacksonCborCodec` are wire-compatible.
 
 ## 12. Security (API-key auth, encrypted bodies, external signers/KMS)
 
-**API-key auth** (off by default) protects the whole `/app-chain/*` REST
-surface, admin endpoints included:
+**API-key auth** has two modes. Configuring an unscoped full key protects and
+enables privileged admin/effect/plugin operations while reads and submissions
+remain public. Enabling broad auth additionally protects the whole
+`/app-chain/*` REST surface:
 
 ```yaml
 yano:
   app-chain:
     api:
+      # Full-access key plus a topic-scoped submit key:
+      keys: "opsKey123,partnerKey456=orders|invoices"
+      # Optional: omit this block to leave READ/SUBMIT public.
       auth:
         enabled: true
-    # full-access key + a key limited to submitting on two topics:
-    # yano.app-chain.api.keys: "opsKey123,partnerKey456=orders|invoices"
 ```
 
-Requests then require the `X-API-Key` header. A key entry of the form
-`key=topicA|topicB` restricts *submissions* to the listed topics; reads stay
-unrestricted per key. This is the only built-in REST auth today — for
+With broad auth enabled, all requests require the `X-API-Key` header. A key
+entry of the form `key=topicA|topicB` restricts *submissions* to the listed
+topics; reads stay unrestricted per key. This is the only built-in REST auth today — for
 mTLS/OIDC put the API behind your standard gateway/reverse-proxy.
 
 **Encrypted bodies** — client-side envelope encryption with a group key; the
@@ -928,8 +974,8 @@ evidence trail survives.
 
 ### 14.1 Admin API
 
-`POST /app-chain[/chains/{id}]/admin/...` — covered by API-key auth when
-enabled (§12):
+`POST /app-chain[/chains/{id}]/admin/...` — always privileged and requires a
+configured unscoped full API key (§12):
 
 - `pause` / `resume` — stop/allow **local** REST submissions (peers and
   finalized replication are unaffected).
@@ -1036,7 +1082,12 @@ traffic/anchor/sinks/peers panels, four trend charts, a live SSE message feed
 and a recent-blocks table. Query params: `?api=` (API prefix), `?poll=` (ms),
 `?noanim=1`. When API-key auth is enabled, set the key via the key button
 (stored in the browser; the live feed uses fetch-streaming so the key applies
-there too).
+there too). The `?api=` value only tells this app-chain page where to call; it
+does not reconfigure server routing and must match the prefix baked into the
+artifact. The privileged plugin dashboard at `/ui/plugins/` does not accept
+such an override: it uses immutable `/ui/plugins/api-prefix.json` and fails
+closed if discovery is missing or invalid. See
+[`PLUGIN_OPERATIONS.md`](PLUGIN_OPERATIONS.md).
 
 `GET /status` also reports `lastBlockAtMillis`, `blockIntervalMs` (rolling
 average), `stalled`, `drops` (by reason), `anchor.lagBlocks` and per-sink
@@ -1138,8 +1189,13 @@ class OrderFlowTest {
 ## 17. Zero-knowledge extensions (EXPERIMENTAL)
 
 All ZK ships as one **experimental** plugin, `yano-appchain-zk` (depends on
-ZeroJ). Drop it on `yaci.plugins.directory`. The node only **verifies**
-proofs — proving happens client-side, where the secrets live. Circuits are
+ZeroJ). The stock application omits it. A JVM node can deploy the self-contained
+`yano-appchain-zk-<version>-bundle.jar` produced by
+`:appchain-zk:shadowJar`; no adjacent ZeroJ JARs are needed or accepted as the
+same catalog-v1 bundle. Native builds opt in before catalog/reflection
+generation with `-PincludeFirstPartyPluginBundles=true`. The node only
+**verifies** proofs — proving happens
+client-side, where the secrets live. Circuits are
 chain configuration: each `circuitId → VK hash` is pinned and loaded
 fail-closed at startup, and every member enforces verification in `apply()`
 (consensus-critical, not just admission).
@@ -1338,8 +1394,12 @@ yano.app-chain.effects.executors.webhook.url: https://erp.example/hooks/yano
 yano.app-chain.effects.executors.webhook.timeout-ms: 10000
 ```
 
-**Cardano payment executor** — the `yano-appchain-effects-cardano` plugin jar
-(drop it in the plugins directory); handles `cardano.payment` effects with a
+**Cardano payment executor** — the stock application omits this privileged T3
+integration. A JVM node can run `:appchain-effects-cardano:shadowJar` and copy
+`yano-appchain-effects-cardano-<version>-bundle.jar` into the plugins
+directory. Native builds opt in with
+`-PincludeFirstPartyPluginBundles=true`. It handles `cardano.payment` effects
+with a
 `{"to": <bech32>, "lovelace": <n>, "memo"?: <str>}` payload, stamps the effect
 id into tx metadata, and confirms by tx hash. Secrets live here, never in
 payloads:
@@ -1450,8 +1510,9 @@ failover. Reports are fenced to the lease holder.
 > **Security**: `requeue`/`cancel`/`claim`/`report` move funds or change
 > consensus-visible state — they are **privileged**: a submit-only
 > (topic-restricted) API key may not call them; only a full key can (§12).
-> Enable `yano.app-chain.api.auth` and keep the executor/operator REST surface
-> on a trusted network — external mode logs a warning if auth is off.
+> Configure an unscoped `yano.app-chain.api.keys` full key and keep the
+> executor/operator REST surface on a trusted network. Broad READ/SUBMIT auth
+> is optional; privileged operations always fail closed without the full key.
 
 ### 18.7 Write a custom executor
 
@@ -1489,13 +1550,45 @@ public class IpfsExecutorFactory implements AppEffectExecutorFactory {
 
 Register it via
 `META-INF/services/com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutorFactory`
-(one line: the factory's fully-qualified name), package as a jar, drop it in
-the plugins directory, and configure
-`yano.app-chain.effects.executors.ipfs.api-url=...`. The framework supplies
-discovery, finality gating, retries, backoff, the poison lane, and the result
-loop — you implement only the one attempt. Contract: **idempotent on
-`idHash`**, secrets from config not payloads, `Confirmed`/`Failed` are
-definitive, `Submitted` re-polls, throwing means retry.
+(one line: the factory's fully-qualified name), and add
+`META-INF/yano/plugins/com.example.ipfs.json`:
+
+```json
+{
+  "schemaVersion": 1,
+  "id": "com.example.ipfs",
+  "version": "1.0.0",
+  "yanoApi": { "min": 1, "max": 1, "minLevel": 1 },
+  "dependencies": [],
+  "contributions": [
+    {
+      "kind": "effect-executor",
+      "name": "ipfs",
+      "provider": "com.example.ipfs.IpfsExecutorFactory"
+    }
+  ]
+}
+```
+
+The manifest name must equal its bundle id, and its contribution must match
+the ServiceLoader entry and the factory's `scheme()` exactly. For JVM
+directory deployment, package the provider and all non-host runtime
+dependencies in one self-contained bundle JAR, drop that JAR in the plugin
+directory, and configure
+`yano.app-chain.effects.executors.ipfs.api-url=...`. Adjacent thin dependency
+JARs are separate catalog artifacts, not one bundle. A native deployment must
+include and map the manifested bundle at application build time; an existing
+native executable cannot load it from the plugin directory.
+
+The framework supplies discovery, finality gating, retries, backoff, the
+poison lane, and the result loop — you implement only the one attempt.
+Contract: **idempotent on `idHash`**, secrets from config not payloads,
+`Confirmed`/`Failed` are definitive, `Submitted` re-polls, throwing means
+retry.
+
+Factory schemes are exact and case-sensitive. Sink/effect schemes cannot
+contain `.` because the first dot separates the scheme from its configuration
+key; signer schemes cannot contain `:` because it separates the key reference.
 
 ### 18.8 REST surface
 

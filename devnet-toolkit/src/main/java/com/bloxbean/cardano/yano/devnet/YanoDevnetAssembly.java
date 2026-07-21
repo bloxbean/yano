@@ -18,6 +18,7 @@ import com.bloxbean.cardano.yano.runtime.devnet.spi.DevnetRuntime;
 import com.bloxbean.cardano.yano.runtime.devnet.spi.DevnetRuntimeProvider;
 import com.bloxbean.cardano.yano.runtime.kernel.NodeKernel;
 import com.bloxbean.cardano.yano.runtime.maintenance.RuntimeMaintenanceGate;
+import com.bloxbean.cardano.yano.runtime.plugins.PluginLoaderHandle;
 import com.bloxbean.cardano.yano.runtime.tx.TransactionBootstrapOptions;
 import com.bloxbean.cardano.yano.runtime.tx.TransactionServicesFactory;
 
@@ -110,6 +111,12 @@ public final class YanoDevnetAssembly {
          */
         public Builder bootstrapDataProvider(BootstrapDataProvider bootstrapDataProvider) {
             delegate.bootstrapDataProvider(bootstrapDataProvider);
+            return this;
+        }
+
+        /** Transfers an explicit ADR-011 plugin loader into runtime assembly. */
+        public Builder pluginLoader(PluginLoaderHandle pluginLoader) {
+            delegate.pluginLoader(pluginLoader);
             return this;
         }
 
@@ -224,6 +231,11 @@ public final class YanoDevnetAssembly {
         }
 
         @Override
+        public com.bloxbean.cardano.yano.api.plugin.domain.DomainApiGateway domainApis() {
+            return delegate.domainApis();
+        }
+
+        @Override
         public Optional<RuntimeMaintenanceGate> maintenanceGate() {
             return delegate.maintenanceGate();
         }
@@ -231,6 +243,17 @@ public final class YanoDevnetAssembly {
         @Override
         public Optional<DebugLedgerStateAccess> debugLedgerStateAccess() {
             return delegate.debugLedgerStateAccess();
+        }
+
+        @Override
+        public Optional<com.bloxbean.cardano.yano.api.plugin.PluginCatalogView> pluginCatalog() {
+            return delegate.pluginCatalog();
+        }
+
+        @Override
+        public Optional<com.bloxbean.cardano.yano.api.plugin.operations.PluginOperationsView>
+                pluginOperations() {
+            return delegate.pluginOperations();
         }
 
         @Override

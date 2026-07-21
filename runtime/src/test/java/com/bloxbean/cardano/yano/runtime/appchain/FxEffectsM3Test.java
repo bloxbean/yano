@@ -230,6 +230,54 @@ class FxEffectsM3Test {
     }
 
     @Test
+    void executorDetailCommitmentIsDefensivelyPersistedAndInjected(@TempDir Path dir)
+            throws Exception {
+        byte[] externalRef = "tx-detail".getBytes(StandardCharsets.UTF_8);
+        byte[] detailHash = new byte[32];
+        java.util.Arrays.fill(detailHash, (byte) 7);
+        EffectExecution confirmed = EffectExecution.confirmed(externalRef, detailHash);
+        externalRef[0] = 0;
+        detailHash[0] = 0;
+        AppEffectExecutor executor = new AppEffectExecutor() {
+            @Override public String id() { return "detail"; }
+            @Override public boolean supports(String type) { return "test.action".equals(type); }
+            @Override public EffectExecution execute(
+                    com.bloxbean.cardano.yano.api.appchain.effects.EffectExecutionContext ctx,
+                    com.bloxbean.cardano.yano.api.appchain.effects.PendingEffect effect) {
+                return confirmed;
+            }
+        };
+
+        RecordingMachine machine = new RecordingMachine(0);
+        try (MsgPipeline pipeline = new MsgPipeline(dir, machine, FX_SETTINGS);
+             EffectRuntime runtime = new EffectRuntime(pipeline.store, "fx-chain",
+                     new EffectRuntime.Settings(true, Set.of(), 25, 1, 3, 1, 5, 0, 100),
+                     List.of(executor), Map.of(), LoggerFactory.getLogger("fx-detail"))) {
+            pipeline.apply(msg("t", "emit-detail"));
+            EffectRuntime.Injection injection = null;
+            long deadline = System.currentTimeMillis() + 10_000;
+            while (System.currentTimeMillis() < deadline && injection == null) {
+                runtime.tick();
+                List<EffectRuntime.Injection> ready = runtime.pendingInjections(1, 0);
+                if (!ready.isEmpty()) {
+                    injection = ready.getFirst();
+                } else {
+                    Thread.sleep(20);
+                }
+            }
+
+            assertThat(injection).isNotNull();
+            assertThat(injection.externalRef())
+                    .isEqualTo("tx-detail".getBytes(StandardCharsets.UTF_8));
+            assertThat(injection.detailHash()).containsOnly((byte) 7);
+            byte[] leaked = injection.detailHash();
+            leaked[0] = 99;
+            assertThat(pipeline.store.fxRuntimeStatus(1, 0).orElseThrow().detailHash())
+                    .containsOnly((byte) 7);
+        }
+    }
+
+    @Test
     void resultReadyIndex_preventsOldStatusRowsFromStarvingInjection(@TempDir Path dir)
             throws Exception {
         AppEffectExecutor executor = new AppEffectExecutor() {

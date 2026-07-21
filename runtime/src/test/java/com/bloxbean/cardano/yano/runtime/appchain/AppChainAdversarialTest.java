@@ -83,6 +83,13 @@ class AppChainAdversarialTest {
         // C submits a message and (as self-proclaimed proposer) proposes blocks
         String idFromC = nodeC.submit("attack", "rogue payload".getBytes(StandardCharsets.UTF_8));
 
+        // Transport status becomes connected when the session is ready, just
+        // before the first application message is necessarily delivered. Wait
+        // for that independent precondition instead of making the security
+        // assertion depend on scheduler timing under a busy full-suite run.
+        awaitTrue("rogue member message reached B", () -> nodeB.recentMessages(10).stream()
+                .anyMatch(m -> m.messageIdHex().equals(idFromC)));
+
         // Give C several proposer ticks; B must never finalize anything
         Thread.sleep(8000);
 

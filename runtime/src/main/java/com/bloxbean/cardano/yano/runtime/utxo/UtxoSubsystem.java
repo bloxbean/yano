@@ -218,6 +218,7 @@ public final class UtxoSubsystem implements Subsystem {
 
         boolean filterEnabled = resolveBoolean(runtimeOptions.globals(), YanoPropertyKeys.UtxoFilter.ENABLED, false);
         if (!filterEnabled) {
+            defaultStore.setFilterChain(null);
             log.info("UTXO storage filtering disabled");
             return;
         }
@@ -257,9 +258,13 @@ public final class UtxoSubsystem implements Subsystem {
             filters.addAll(pluginFilters);
         }
 
-        if (!filters.isEmpty()) {
-            defaultStore.setFilterChain(new StorageFilterChain(filters));
+        StorageFilterChain filterChain = filters.isEmpty()
+                ? null : new StorageFilterChain(filters);
+        defaultStore.setFilterChain(filterChain);
+        if (filterChain != null) {
             log.info("UTXO storage filter chain active with {} filter(s)", filters.size());
+        } else {
+            log.info("UTXO storage filter chain inactive (no configured filters)");
         }
     }
 

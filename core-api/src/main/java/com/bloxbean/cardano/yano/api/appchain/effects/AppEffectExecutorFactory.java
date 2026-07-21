@@ -20,7 +20,9 @@ public interface AppEffectExecutorFactory {
     /**
      * Create this factory's executors for a chain. {@code config} is the
      * scheme's sub-map with the prefix stripped. Return an empty list to
-     * decline (e.g. required settings missing).
+     * decline (e.g. required settings missing). Every non-null executor must
+     * be a fresh identity owned by this invocation; do not reuse an executor
+     * across chains, calls, or factories.
      */
     List<AppEffectExecutor> create(String chainId, Map<String, String> config);
 }

@@ -18,7 +18,8 @@ public interface SignerProviderFactory {
 
     /**
      * Create a signer for {@code keyReference} (the part after {@code scheme:}).
-     * Must fail fast if the key is unavailable.
+     * Must fail fast if the key is unavailable and return a fresh instance
+     * that is not shared with another invocation or provider.
      */
     SignerProvider create(String keyReference);
 }

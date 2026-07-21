@@ -1,5 +1,6 @@
 dependencies {
     api project(':core-api')
+    api project(':plugin-catalog')
     api project(':consensus')
     api project(':p2p')
     api libs.yaci.core

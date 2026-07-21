@@ -31,8 +31,16 @@ public record EffectResult(EffectId effectId,
         Objects.requireNonNull(type, "type");
         scope = scope != null ? scope : "";
         Objects.requireNonNull(outcome, "outcome");
-        externalRef = externalRef != null ? externalRef : new byte[0];
-        detailHash = detailHash != null && detailHash.length > 0 ? detailHash : null;
+        externalRef = externalRef != null ? externalRef.clone() : new byte[0];
+        detailHash = detailHash != null && detailHash.length > 0 ? detailHash.clone() : null;
+        if (detailHash != null && detailHash.length != 32) {
+            throw new IllegalArgumentException("detailHash must be 32 bytes when present");
+        }
+    }
+
+    @Override public byte[] externalRef() { return externalRef.clone(); }
+    @Override public byte[] detailHash() {
+        return detailHash != null ? detailHash.clone() : null;
     }
 
     public boolean confirmed() {

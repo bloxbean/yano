@@ -27,8 +27,11 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -36,6 +39,8 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.mock;
 
 /**
  * FX-M2 execution plane (ADR app-layer/010 F5–F7, F9, F10): intake cursor,
@@ -240,6 +245,37 @@ class FxEffectsM2Test {
             runtime.tick();
             awaitStatus(pipeline.store, 1, 0, FxStatusRecord.PARKED);
             assertThat(executor.invocations).hasSize(1); // no retries on definitive rejection
+            assertThat(pipeline.store.fxRuntimeStatus(1, 0).orElseThrow().lastError())
+                    .isEqualTo("HTTP 400");
+            assertThat(runtime.statusOf(1, 0).orElseThrow())
+                    .containsEntry("lastError", "HTTP 400");
+        }
+    }
+
+    @Test
+    void thrownExecutorFailureRetainsOnlyBoundedClassName(@TempDir Path dir) throws Exception {
+        String secret = "api-token=must-not-leak";
+        RecordingExecutor executor = new RecordingExecutor("test.action", effect -> {
+            throw new IllegalStateException(secret);
+        });
+        String errorType = IllegalStateException.class.getName();
+
+        try (Pipeline pipeline = new Pipeline(dir, emitting("test.action", ResultPolicy.NONE, null),
+                FX_SETTINGS);
+             EffectRuntime runtime = new EffectRuntime(pipeline.store, "fx-chain",
+                     runtimeSettings(1), List.of(executor), Map.of(), LoggerFactory.getLogger("fx"))) {
+            pipeline.applyNext(1);
+            runtime.tick();
+            awaitStatus(pipeline.store, 1, 0, FxStatusRecord.PARKED);
+
+            FxStatusRecord persisted = pipeline.store.fxRuntimeStatus(1, 0).orElseThrow();
+            assertThat(persisted.lastError()).isEqualTo(errorType).doesNotContain(secret);
+            assertThat(runtime.statusOf(1, 0).orElseThrow())
+                    .containsEntry("lastError", errorType)
+                    .doesNotContainValue(secret);
+            assertThat(runtime.stats())
+                    .containsEntry("lastError", errorType)
+                    .doesNotContainValue(secret);
         }
     }
 
@@ -388,6 +424,111 @@ class FxEffectsM2Test {
     }
 
     @Test
+    void nonFatalSupportsError_doesNotCancelRecurringDispatch(@TempDir Path dir)
+            throws Exception {
+        AtomicInteger supportsCalls = new AtomicInteger();
+        AtomicInteger executions = new AtomicInteger();
+        AppEffectExecutor executor = new AppEffectExecutor() {
+            @Override public String id() { return "flaky-supports"; }
+
+            @Override
+            public boolean supports(String effectType) {
+                if (supportsCalls.getAndIncrement() == 0) {
+                    throw new LinkageError("transient plugin linkage failure");
+                }
+                return "test.action".equals(effectType);
+            }
+
+            @Override
+            public EffectExecution execute(EffectExecutionContext context, PendingEffect effect) {
+                executions.incrementAndGet();
+                return EffectExecution.confirmed(new byte[0]);
+            }
+        };
+        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+        try (Pipeline pipeline = new Pipeline(dir,
+                emitting("test.action", ResultPolicy.NONE, null), FX_SETTINGS);
+             EffectRuntime runtime = new EffectRuntime(pipeline.store, "fx-chain",
+                     runtimeSettings(3), List.of(executor), Map.of(), log())) {
+            pipeline.applyNext(1);
+            try {
+                scheduler.scheduleWithFixedDelay(runtime::tick, 0, 5, TimeUnit.MILLISECONDS);
+                awaitStatus(pipeline.store, 1, 0, FxStatusRecord.DONE);
+            } finally {
+                scheduler.shutdownNow();
+                assertThat(scheduler.awaitTermination(5, TimeUnit.SECONDS)).isTrue();
+            }
+
+            assertThat(supportsCalls).hasValueGreaterThanOrEqualTo(3);
+            assertThat(executions).hasValue(1);
+        } finally {
+            scheduler.shutdownNow();
+        }
+    }
+
+    @Test
+    void nonFatalExecuteError_isRecordedAsRetryAndCanRecover(@TempDir Path dir)
+            throws Exception {
+        AtomicInteger executions = new AtomicInteger();
+        AppEffectExecutor executor = new AppEffectExecutor() {
+            @Override public String id() { return "flaky-execute"; }
+            @Override public boolean supports(String effectType) {
+                return "test.action".equals(effectType);
+            }
+
+            @Override
+            public EffectExecution execute(EffectExecutionContext context, PendingEffect effect) {
+                if (executions.getAndIncrement() == 0) {
+                    throw new AssertionError("executor assertion");
+                }
+                return EffectExecution.confirmed(new byte[0]);
+            }
+        };
+
+        try (Pipeline pipeline = new Pipeline(dir,
+                emitting("test.action", ResultPolicy.NONE, null), FX_SETTINGS);
+             EffectRuntime runtime = new EffectRuntime(pipeline.store, "fx-chain",
+                     runtimeSettings(3), List.of(executor), Map.of(), log())) {
+            pipeline.applyNext(1);
+            runtime.tick();
+            awaitStatus(pipeline.store, 1, 0, FxStatusRecord.RETRY);
+            assertThat(pipeline.store.fxRuntimeStatus(1, 0).orElseThrow().lastError())
+                    .isEqualTo(AssertionError.class.getName())
+                    .doesNotContain("executor assertion");
+
+            Thread.sleep(10);
+            runtime.tick();
+            awaitStatus(pipeline.store, 1, 0, FxStatusRecord.DONE);
+            assertThat(executions).hasValue(2);
+        }
+    }
+
+    @Test
+    void fatalVmError_isReportedAndRethrown(@TempDir Path dir) {
+        TestVirtualMachineError failure = new TestVirtualMachineError("fatal plugin failure");
+        AppEffectExecutor executor = new AppEffectExecutor() {
+            @Override public String id() { return "fatal-supports"; }
+            @Override public boolean supports(String effectType) { throw failure; }
+            @Override public EffectExecution execute(
+                    EffectExecutionContext context, PendingEffect effect) {
+                throw new AssertionError("not executed");
+            }
+        };
+
+        try (Pipeline pipeline = new Pipeline(dir,
+                emitting("test.action", ResultPolicy.NONE, null), FX_SETTINGS);
+             EffectRuntime runtime = new EffectRuntime(pipeline.store, "fx-chain",
+                     runtimeSettings(3), List.of(executor), Map.of(), log())) {
+            pipeline.applyNext(1);
+
+            assertThatThrownBy(runtime::tick).isSameAs(failure);
+            assertThat(runtime.stats().get("lastError").toString())
+                    .isEqualTo(TestVirtualMachineError.class.getName())
+                    .doesNotContain("fatal plugin failure");
+        }
+    }
+
+    @Test
     void closeDoesNotWaitForBlockedSupports_andPreventsItsDispatch(@TempDir Path dir)
             throws Exception {
         CountDownLatch supportsStarted = new CountDownLatch(1);
@@ -447,6 +588,9 @@ class FxEffectsM2Test {
                 // its executor is not closed underneath the live callback.
                 assertThat(closeReturned.await(5, TimeUnit.SECONDS)).isTrue();
                 assertThat(executorClosed.getCount()).isEqualTo(1);
+                CompletableFuture<Void> closeCompletion =
+                        runtime.closeCompletion().toCompletableFuture();
+                assertThat(closeCompletion.isDone()).isFalse();
 
                 pipeline.close();
                 ledgerClosed = true;
@@ -457,6 +601,7 @@ class FxEffectsM2Test {
                 assertThat(tickFailure.get()).isNull();
                 assertThat(executions).hasValue(0);
                 assertThat(executorClosed.await(5, TimeUnit.SECONDS)).isTrue();
+                closeCompletion.get(5, TimeUnit.SECONDS);
             } finally {
                 releaseSupports.countDown();
                 runtime.close(0, 0);
@@ -545,10 +690,14 @@ class FxEffectsM2Test {
                 assertThat(runtimeCloseReturned.await(1, TimeUnit.SECONDS)).isTrue();
                 assertThat(cooperativeClosedAtReturn).isTrue();
                 assertThat(blockingCloseFinished.getCount()).isEqualTo(1);
+                CompletableFuture<Void> closeCompletion =
+                        runtime.closeCompletion().toCompletableFuture();
+                assertThat(closeCompletion.isDone()).isFalse();
 
                 runtime.close(0, 0); // idempotent: never schedules a second callback
                 releaseBlockingClose.countDown();
                 assertThat(blockingCloseFinished.await(5, TimeUnit.SECONDS)).isTrue();
+                closeCompletion.get(5, TimeUnit.SECONDS);
                 assertThat(blockingCloseCalls).hasValue(1);
                 assertThat(cooperativeCloseCalls).hasValue(1);
             } finally {
@@ -557,6 +706,353 @@ class FxEffectsM2Test {
                 runtime.close(0, 0);
             }
         }
+    }
+
+    @Test
+    void closeCompletion_reportsThrowableAfterAllCloseCallbacksEnd(@TempDir Path dir)
+            throws Exception {
+        IllegalStateException ordinaryFailure =
+                new IllegalStateException("ordinary close failure");
+        AssertionError closeFailure = new AssertionError("close assertion");
+        AtomicInteger healthyCloseCalls = new AtomicInteger();
+        AppEffectExecutor ordinaryFailing = new AppEffectExecutor() {
+            @Override public String id() { return "ordinary-failing-close"; }
+            @Override public boolean supports(String effectType) { return false; }
+            @Override public EffectExecution execute(
+                    EffectExecutionContext context, PendingEffect effect) {
+                throw new AssertionError("not executed");
+            }
+            @Override public void close() { throw ordinaryFailure; }
+        };
+        AppEffectExecutor failing = new AppEffectExecutor() {
+            @Override public String id() { return "failing-close"; }
+            @Override public boolean supports(String effectType) { return false; }
+            @Override public EffectExecution execute(
+                    EffectExecutionContext context, PendingEffect effect) {
+                throw new AssertionError("not executed");
+            }
+            @Override public void close() { throw closeFailure; }
+        };
+        AppEffectExecutor healthy = new AppEffectExecutor() {
+            @Override public String id() { return "healthy-close"; }
+            @Override public boolean supports(String effectType) { return false; }
+            @Override public EffectExecution execute(
+                    EffectExecutionContext context, PendingEffect effect) {
+                throw new AssertionError("not executed");
+            }
+            @Override public void close() { healthyCloseCalls.incrementAndGet(); }
+        };
+
+        try (Pipeline pipeline = new Pipeline(dir,
+                emitting("test.action", ResultPolicy.NONE, null), FX_SETTINGS)) {
+            EffectRuntime runtime = new EffectRuntime(pipeline.store, "fx-chain",
+                    runtimeSettings(3), List.of(ordinaryFailing, failing, healthy), Map.of(), log());
+            try {
+                runtime.close(0, 0);
+                CompletableFuture<Void> closeCompletion =
+                        runtime.closeCompletion().toCompletableFuture();
+
+                assertThatThrownBy(() -> closeCompletion.get(5, TimeUnit.SECONDS))
+                        .hasCause(closeFailure);
+                assertThat(closeFailure.getSuppressed()).containsExactly(ordinaryFailure);
+                assertThat(healthyCloseCalls).hasValue(1);
+            } finally {
+                runtime.close(0, 0);
+            }
+        }
+    }
+
+    @Test
+    void cleanupCoordinatorStartFailureClosesProductsBeforeLifetimeAndFatalEscape(
+            @TempDir Path dir
+    ) {
+        TestVirtualMachineError fatal = new TestVirtualMachineError("coordinator start");
+        AtomicInteger closeCalls = new AtomicInteger();
+        AtomicBoolean lifetimeDoneInsideClose = new AtomicBoolean();
+        AtomicReference<CompletableFuture<Void>> lifetime = new AtomicReference<>();
+        AppEffectExecutor executor = new AppEffectExecutor() {
+            @Override public String id() { return "coordinator-fallback"; }
+            @Override public boolean supports(String effectType) { return false; }
+            @Override public EffectExecution execute(
+                    EffectExecutionContext context, PendingEffect effect) {
+                throw new AssertionError("not executed");
+            }
+            @Override public void close() {
+                closeCalls.incrementAndGet();
+                lifetimeDoneInsideClose.set(lifetime.get().isDone());
+            }
+        };
+        try (Pipeline pipeline = new Pipeline(dir,
+                emitting("test.action", ResultPolicy.NONE, null), FX_SETTINGS)) {
+            EffectRuntime runtime = new EffectRuntime(
+                    pipeline.store,
+                    "fx-chain",
+                    runtimeSettings(1),
+                    List.of(executor),
+                    Map.of(),
+                    "coordinator-start-owner",
+                    log(),
+                    task -> { throw fatal; });
+            CompletableFuture<Void> completion = runtime.closeCompletion().toCompletableFuture();
+            lifetime.set(completion);
+
+            assertThatThrownBy(() -> runtime.close(0, 0)).isSameAs(fatal);
+            assertThat(completion).isCompletedExceptionally();
+            assertThatThrownBy(completion::join).hasCause(fatal);
+            assertThat(closeCalls).hasValue(1);
+            assertThat(lifetimeDoneInsideClose).isFalse();
+        }
+    }
+
+    @Test
+    void executorCloseTaskStartFailureFallsBackWithoutOutrunningAnyProductLifetime(
+            @TempDir Path dir
+    ) throws Exception {
+        AssertionError startFailure = new AssertionError("executor close start");
+        CountDownLatch fallbackCloseStarted = new CountDownLatch(1);
+        CountDownLatch releaseFallbackClose = new CountDownLatch(1);
+        CountDownLatch parallelCloseFinished = new CountDownLatch(1);
+        AtomicInteger fallbackCloseCalls = new AtomicInteger();
+        AtomicInteger parallelCloseCalls = new AtomicInteger();
+        AppEffectExecutor fallback = new AppEffectExecutor() {
+            @Override public String id() { return "failed-close-handoff"; }
+            @Override public boolean supports(String effectType) { return false; }
+            @Override public EffectExecution execute(
+                    EffectExecutionContext context, PendingEffect effect) {
+                throw new AssertionError("not executed");
+            }
+            @Override public void close() {
+                fallbackCloseCalls.incrementAndGet();
+                fallbackCloseStarted.countDown();
+                awaitLatch(releaseFallbackClose, "release fallback executor close");
+            }
+        };
+        AppEffectExecutor parallel = new AppEffectExecutor() {
+            @Override public String id() { return "parallel-close"; }
+            @Override public boolean supports(String effectType) { return false; }
+            @Override public EffectExecution execute(
+                    EffectExecutionContext context, PendingEffect effect) {
+                throw new AssertionError("not executed");
+            }
+            @Override public void close() {
+                parallelCloseCalls.incrementAndGet();
+                parallelCloseFinished.countDown();
+            }
+        };
+        AtomicInteger closeThreadIndex = new AtomicInteger();
+
+        try (Pipeline pipeline = new Pipeline(dir,
+                emitting("test.action", ResultPolicy.NONE, null), FX_SETTINGS)) {
+            EffectRuntime runtime = new EffectRuntime(
+                    pipeline.store,
+                    "fx-chain",
+                    runtimeSettings(1),
+                    List.of(fallback, parallel),
+                    Map.of(),
+                    "executor-task-start-owner",
+                    log(),
+                    task -> Thread.ofPlatform().daemon(true).unstarted(task),
+                    task -> {
+                        if (closeThreadIndex.getAndIncrement() == 0) {
+                            return new Thread(task) {
+                                @Override
+                                public synchronized void start() {
+                                    throw startFailure;
+                                }
+                            };
+                        }
+                        return Thread.ofPlatform().daemon(true).unstarted(task);
+                    });
+            CompletableFuture<Void> completion = runtime.closeCompletion().toCompletableFuture();
+            try {
+                runtime.close(0, 0);
+                assertThat(fallbackCloseStarted.await(5, TimeUnit.SECONDS)).isTrue();
+                assertThat(parallelCloseFinished.await(5, TimeUnit.SECONDS)).isTrue();
+                assertThat(completion.isDone()).isFalse();
+
+                releaseFallbackClose.countDown();
+                assertThatThrownBy(() -> completion.get(5, TimeUnit.SECONDS))
+                        .hasCause(startFailure);
+                assertThat(fallbackCloseCalls).hasValue(1);
+                assertThat(parallelCloseCalls).hasValue(1);
+            } finally {
+                releaseFallbackClose.countDown();
+                runtime.close(0, 0);
+            }
+        }
+    }
+
+    @Test
+    void cleanupDiagnosticFatalCannotPublishLifetimeBeforeEveryActualCloseEnds(
+            @TempDir Path dir
+    ) throws Exception {
+        IllegalStateException startFailure = new IllegalStateException("close task start");
+        TestVirtualMachineError diagnosticFatal =
+                new TestVirtualMachineError("cleanup diagnostic");
+        CountDownLatch blockingCloseStarted = new CountDownLatch(1);
+        CountDownLatch releaseBlockingClose = new CountDownLatch(1);
+        CountDownLatch fatalEscaped = new CountDownLatch(1);
+        AtomicInteger blockingCloseCalls = new AtomicInteger();
+        AtomicInteger parallelCloseCalls = new AtomicInteger();
+        AtomicReference<Throwable> escapedFailure = new AtomicReference<>();
+        AtomicBoolean lifetimeDoneAtFatalEscape = new AtomicBoolean();
+        AtomicReference<CompletableFuture<Void>> lifetime = new AtomicReference<>();
+        AppEffectExecutor blocking = new AppEffectExecutor() {
+            @Override public String id() { return "diagnostic-blocking-close"; }
+            @Override public boolean supports(String effectType) { return false; }
+            @Override public EffectExecution execute(
+                    EffectExecutionContext context, PendingEffect effect) {
+                throw new AssertionError("not executed");
+            }
+            @Override public void close() {
+                blockingCloseCalls.incrementAndGet();
+                blockingCloseStarted.countDown();
+                awaitLatch(releaseBlockingClose, "release diagnostic close");
+            }
+        };
+        AppEffectExecutor parallel = new AppEffectExecutor() {
+            @Override public String id() { return "diagnostic-parallel-close"; }
+            @Override public boolean supports(String effectType) { return false; }
+            @Override public EffectExecution execute(
+                    EffectExecutionContext context, PendingEffect effect) {
+                throw new AssertionError("not executed");
+            }
+            @Override public void close() { parallelCloseCalls.incrementAndGet(); }
+        };
+        org.slf4j.Logger failingLogger = mock(org.slf4j.Logger.class, invocation -> {
+            if ("warn".equals(invocation.getMethod().getName())) {
+                throw diagnosticFatal;
+            }
+            return null;
+        });
+        AtomicInteger closeThreadIndex = new AtomicInteger();
+
+        try (Pipeline pipeline = new Pipeline(dir,
+                emitting("test.action", ResultPolicy.NONE, null), FX_SETTINGS)) {
+            EffectRuntime runtime = new EffectRuntime(
+                    pipeline.store,
+                    "fx-chain",
+                    runtimeSettings(1),
+                    List.of(blocking, parallel),
+                    Map.of(),
+                    "diagnostic-lifetime-owner",
+                    failingLogger,
+                    task -> {
+                        Thread thread = new Thread(task, "diagnostic-cleanup-coordinator");
+                        thread.setDaemon(true);
+                        thread.setUncaughtExceptionHandler((ignored, failure) -> {
+                            escapedFailure.set(failure);
+                            lifetimeDoneAtFatalEscape.set(lifetime.get().isDone());
+                            fatalEscaped.countDown();
+                        });
+                        return thread;
+                    },
+                    task -> {
+                        if (closeThreadIndex.getAndIncrement() == 0) {
+                            return new Thread(task) {
+                                @Override
+                                public synchronized void start() {
+                                    throw startFailure;
+                                }
+                            };
+                        }
+                        return Thread.ofPlatform().daemon(true).unstarted(task);
+                    });
+            CompletableFuture<Void> completion = runtime.closeCompletion().toCompletableFuture();
+            lifetime.set(completion);
+            try {
+                runtime.close(0, 0);
+                assertThat(blockingCloseStarted.await(5, TimeUnit.SECONDS)).isTrue();
+                assertThat(completion.isDone()).isFalse();
+                assertThat(fatalEscaped.getCount()).isEqualTo(1);
+                assertThat(parallelCloseCalls).hasValue(1);
+
+                releaseBlockingClose.countDown();
+                assertThat(fatalEscaped.await(5, TimeUnit.SECONDS)).isTrue();
+                assertThat(escapedFailure).hasValue(diagnosticFatal);
+                assertThat(lifetimeDoneAtFatalEscape).isTrue();
+                assertThatThrownBy(completion::join).hasCause(diagnosticFatal);
+                assertThat(blockingCloseCalls).hasValue(1);
+                assertThat(parallelCloseCalls).hasValue(1);
+            } finally {
+                releaseBlockingClose.countDown();
+                runtime.close(0, 0);
+            }
+        }
+    }
+
+    @Test
+    void synchronousCoordinatorFallbackAllowsExecutorCloseToReenterRuntimeClose(
+            @TempDir Path dir
+    ) throws Exception {
+        TestVirtualMachineError coordinatorFailure =
+                new TestVirtualMachineError("coordinator handoff");
+        AtomicReference<EffectRuntime> runtimeRef = new AtomicReference<>();
+        AtomicInteger closeCalls = new AtomicInteger();
+        CountDownLatch reentrantCloseReturned = new CountDownLatch(1);
+        CountDownLatch outerCloseReturned = new CountDownLatch(1);
+        AtomicReference<Throwable> outerFailure = new AtomicReference<>();
+        AppEffectExecutor executor = new AppEffectExecutor() {
+            @Override public String id() { return "reentrant-runtime-close"; }
+            @Override public boolean supports(String effectType) { return false; }
+            @Override public EffectExecution execute(
+                    EffectExecutionContext context, PendingEffect effect) {
+                throw new AssertionError("not executed");
+            }
+            @Override public void close() {
+                closeCalls.incrementAndGet();
+                runtimeRef.get().close(0, 0);
+                reentrantCloseReturned.countDown();
+            }
+        };
+
+        try (Pipeline pipeline = new Pipeline(dir,
+                emitting("test.action", ResultPolicy.NONE, null), FX_SETTINGS)) {
+            EffectRuntime runtime = new EffectRuntime(
+                    pipeline.store,
+                    "fx-chain",
+                    runtimeSettings(1),
+                    List.of(executor),
+                    Map.of(),
+                    "reentrant-close-owner",
+                    log(),
+                    task -> { throw coordinatorFailure; });
+            runtimeRef.set(runtime);
+            Thread closer = Thread.ofPlatform().start(() -> {
+                try {
+                    runtime.close(0, 0);
+                } catch (Throwable failure) {
+                    outerFailure.set(failure);
+                } finally {
+                    outerCloseReturned.countDown();
+                }
+            });
+            try {
+                assertThat(reentrantCloseReturned.await(5, TimeUnit.SECONDS)).isTrue();
+                assertThat(outerCloseReturned.await(5, TimeUnit.SECONDS)).isTrue();
+                closer.join(5_000);
+                assertThat(closer.isAlive()).isFalse();
+                assertThat(outerFailure).hasValue(coordinatorFailure);
+                assertThat(closeCalls).hasValue(1);
+                assertThat(runtime.closeCompletion().toCompletableFuture())
+                        .isCompletedExceptionally();
+            } finally {
+                closer.interrupt();
+                closer.join(5_000);
+                runtime.close(0, 0);
+            }
+        }
+    }
+
+    @Test
+    void cleanupAggregationPromotesProcessFatalAboveEarlierAssertion() {
+        AssertionError assertion = new AssertionError("assertion");
+        TestVirtualMachineError fatal = new TestVirtualMachineError("fatal cleanup");
+
+        Throwable outcome = EffectRuntime.addFailure(assertion, fatal);
+
+        assertThat(outcome).isSameAs(fatal);
+        assertThat(fatal.getSuppressed()).containsExactly(assertion);
     }
 
     @Test
@@ -690,6 +1186,9 @@ class FxEffectsM2Test {
 
             runtime.close(25, 25);
             assertThat(executorClosed.getCount()).isEqualTo(1);
+            CompletableFuture<Void> closeCompletion =
+                    runtime.closeCompletion().toCompletableFuture();
+            assertThat(closeCompletion.isDone()).isFalse();
 
             // The subsystem owns the store and closes it immediately after
             // runtime.close(); the still-live plugin may safely consult only
@@ -700,6 +1199,7 @@ class FxEffectsM2Test {
 
             assertThat(executionFinished.await(5, TimeUnit.SECONDS)).isTrue();
             assertThat(executorClosed.await(5, TimeUnit.SECONDS)).isTrue();
+            closeCompletion.get(5, TimeUnit.SECONDS);
             assertThat(contextFailure.get()).isNull();
             assertThat(observedTip).hasValue(1);
             assertThat(observedAnchor).hasValue(1);
@@ -1297,6 +1797,12 @@ class FxEffectsM2Test {
         @Override
         public void close() {
             store.close();
+        }
+    }
+
+    private static final class TestVirtualMachineError extends VirtualMachineError {
+        private TestVirtualMachineError(String message) {
+            super(message);
         }
     }
 }

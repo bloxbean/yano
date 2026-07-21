@@ -21,6 +21,7 @@ import java.util.List;
  * @param lastError       last failure, for operators ("" = none)
  * @param submittedRef    external ref of an in-flight Submitted action
  * @param externalRef     external ref of the final outcome (DONE)
+ * @param detailHash      optional 32-byte commitment for the final outcome
  * @param updatedAt       epoch millis of the last transition
  */
 record FxStatusRecord(int status,
@@ -29,6 +30,7 @@ record FxStatusRecord(int status,
                       String lastError,
                       byte[] submittedRef,
                       byte[] externalRef,
+                      byte[] detailHash,
                       long updatedAt,
                       int outcomeCode,
                       long injectedAt) {
@@ -59,12 +61,22 @@ record FxStatusRecord(int status,
 
     FxStatusRecord {
         lastError = lastError != null ? lastError : "";
-        submittedRef = submittedRef != null ? submittedRef : new byte[0];
-        externalRef = externalRef != null ? externalRef : new byte[0];
+        submittedRef = submittedRef != null ? submittedRef.clone() : new byte[0];
+        externalRef = externalRef != null ? externalRef.clone() : new byte[0];
+        detailHash = detailHash != null && detailHash.length > 0 ? detailHash.clone() : null;
+        if (detailHash != null && detailHash.length != 32) {
+            throw new IllegalArgumentException("detailHash must be 32 bytes when present");
+        }
+    }
+
+    @Override public byte[] submittedRef() { return submittedRef.clone(); }
+    @Override public byte[] externalRef() { return externalRef.clone(); }
+    @Override public byte[] detailHash() {
+        return detailHash != null ? detailHash.clone() : null;
     }
 
     static FxStatusRecord pending() {
-        return new FxStatusRecord(PENDING, 0, 0, "", null, null, System.currentTimeMillis(),
+        return new FxStatusRecord(PENDING, 0, 0, "", null, null, null, System.currentTimeMillis(),
                 OUTCOME_NONE, 0);
     }
 
@@ -81,55 +93,60 @@ record FxStatusRecord(int status,
     /** External claim: leased to {@code executorId} until {@code leaseUntilMillis}. */
     FxStatusRecord external(String executorId, long leaseUntilMillis) {
         return new FxStatusRecord(EXTERNAL, attempts, leaseUntilMillis, executorId, submittedRef,
-                null, System.currentTimeMillis(), OUTCOME_NONE, injectedAt);
+                null, null, System.currentTimeMillis(), OUTCOME_NONE, injectedAt);
     }
 
     /** A REAL failed attempt — the only transition that consumes attempt budget. */
     FxStatusRecord retry(String error, long nextAt) {
-        return new FxStatusRecord(RETRY, attempts + 1, nextAt, error, submittedRef, null,
+        return new FxStatusRecord(RETRY, attempts + 1, nextAt, error, submittedRef, null, null,
                 System.currentTimeMillis(), OUTCOME_NONE, injectedAt);
     }
 
     /** Precondition not met (EffectExecution.Retry) — no attempt consumed. */
     FxStatusRecord deferred(String reason, long nextAt) {
-        return new FxStatusRecord(RETRY, attempts, nextAt, reason, submittedRef, null,
+        return new FxStatusRecord(RETRY, attempts, nextAt, reason, submittedRef, null, null,
                 System.currentTimeMillis(), OUTCOME_NONE, injectedAt);
     }
 
     /** Long-running action started — polling it is not an attempt; {@code nextAt} paces re-polls. */
     FxStatusRecord submitted(byte[] ref, long nextAt) {
-        return new FxStatusRecord(SUBMITTED, attempts, nextAt, "", ref, null,
+        return new FxStatusRecord(SUBMITTED, attempts, nextAt, "", ref, null, null,
                 System.currentTimeMillis(), OUTCOME_NONE, injectedAt);
     }
 
-    FxStatusRecord done(byte[] ref) {
+    FxStatusRecord done(byte[] ref, byte[] resultDetailHash) {
         return new FxStatusRecord(DONE, attempts + 1, 0, "", submittedRef, ref,
+                resultDetailHash,
                 System.currentTimeMillis(), OUTCOME_CONFIRMED, injectedAt);
+    }
+
+    FxStatusRecord done(byte[] ref) {
+        return done(ref, null);
     }
 
     /** Definitive external failure of a CHAIN effect — local terminal, FAILED injectable. */
     FxStatusRecord doneFailed(String reason) {
-        return new FxStatusRecord(DONE, attempts + 1, 0, reason, submittedRef, null,
+        return new FxStatusRecord(DONE, attempts + 1, 0, reason, submittedRef, null, null,
                 System.currentTimeMillis(), OUTCOME_FAILED, injectedAt);
     }
 
     FxStatusRecord parked(String error) {
-        return new FxStatusRecord(PARKED, attempts + 1, 0, error, submittedRef, null,
+        return new FxStatusRecord(PARKED, attempts + 1, 0, error, submittedRef, null, null,
                 System.currentTimeMillis(), OUTCOME_NONE, injectedAt);
     }
 
     FxStatusRecord requeued() {
-        return new FxStatusRecord(PENDING, attempts, 0, lastError, submittedRef, null,
+        return new FxStatusRecord(PENDING, attempts, 0, lastError, submittedRef, null, null,
                 System.currentTimeMillis(), OUTCOME_NONE, injectedAt);
     }
 
     FxStatusRecord injected(long atMillis) {
         return new FxStatusRecord(status, attempts, nextAttemptAt, lastError, submittedRef,
-                externalRef, updatedAt, outcomeCode, atMillis);
+                externalRef, detailHash, updatedAt, outcomeCode, atMillis);
     }
 
     static FxStatusRecord quarantined() {
-        return new FxStatusRecord(QUARANTINED, 0, 0, "", null, null, System.currentTimeMillis(),
+        return new FxStatusRecord(QUARANTINED, 0, 0, "", null, null, null, System.currentTimeMillis(),
                 OUTCOME_NONE, 0);
     }
 
@@ -155,6 +172,7 @@ record FxStatusRecord(int status,
         arr.add(new UnicodeString(lastError));
         arr.add(new ByteString(submittedRef));
         arr.add(new ByteString(externalRef));
+        arr.add(new ByteString(detailHash != null ? detailHash : new byte[0]));
         arr.add(new UnsignedInteger(Math.max(0, updatedAt)));
         arr.add(new UnsignedInteger(outcomeCode));
         arr.add(new UnsignedInteger(Math.max(0, injectedAt)));
@@ -171,9 +189,24 @@ record FxStatusRecord(int status,
                 ((UnicodeString) items.get(3)).getString(),
                 ((ByteString) items.get(4)).getBytes(),
                 ((ByteString) items.get(5)).getBytes(),
-                ((UnsignedInteger) items.get(6)).getValue().longValue(),
+                items.size() > 9
+                        ? nullableBytes((ByteString) items.get(6)) : null,
+                ((UnsignedInteger) items.get(items.size() > 9 ? 7 : 6)).getValue().longValue(),
                 // Lenient on pre-M3 rows (runtime CF is node-local/disposable)
-                items.size() > 7 ? ((UnsignedInteger) items.get(7)).getValue().intValue() : OUTCOME_NONE,
-                items.size() > 8 ? ((UnsignedInteger) items.get(8)).getValue().longValue() : 0);
+                items.size() > 9
+                        ? ((UnsignedInteger) items.get(8)).getValue().intValue()
+                        : items.size() > 7
+                                ? ((UnsignedInteger) items.get(7)).getValue().intValue()
+                                : OUTCOME_NONE,
+                items.size() > 9
+                        ? ((UnsignedInteger) items.get(9)).getValue().longValue()
+                        : items.size() > 8
+                                ? ((UnsignedInteger) items.get(8)).getValue().longValue()
+                                : 0);
+    }
+
+    private static byte[] nullableBytes(ByteString value) {
+        byte[] bytes = value.getBytes();
+        return bytes.length == 0 ? null : bytes;
     }
 }

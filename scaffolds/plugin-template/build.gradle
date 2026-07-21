@@ -1,6 +1,6 @@
 // Standalone Gradle project template for a custom Yano app-chain state-machine
 // plugin (ADR app-layer/006 E1.5). Build a jar, drop it on the node's
-// yano.plugins.directory, and select it via yano.app-chain.state-machine.
+// yaci.plugins.directory, and select it via yano.app-chain.state-machine.
 plugins {
     id 'java'
 }
@@ -8,20 +8,37 @@ plugins {
 group = 'com.example'
 version = '0.1.0'
 
+def yanoVersion = providers.gradleProperty('yanoVersion')
+        .orElse('0.1.0-pre9')
+        .get()
+
 repositories {
     mavenLocal()   // resolves locally-published yano artifacts
     mavenCentral()
 }
 
-dependencies {
-    // The node provides these at runtime — compile against them only.
-    compileOnly 'com.bloxbean.cardano:yano-node-api:0.1.0-pre1-SNAPSHOT'
-    compileOnly 'com.bloxbean.cardano:cardano-client-crypto:0.7.0-beta2'
+// This source set is deliberately isolated from sourceSets.main.output. Its
+// process-level probe must load the provider from the built plugin JAR through
+// Yano's real directory catalog, not accidentally from the parent classpath.
+sourceSets {
+    catalogProbe {
+        java.srcDir 'src/catalogProbe/java'
+    }
+}
 
-    testImplementation 'com.bloxbean.cardano:yano-node-api:0.1.0-pre1-SNAPSHOT'
+dependencies {
+    // The node provides the public SPI at runtime — never package it in the plugin.
+    compileOnly "com.bloxbean.cardano:yano-core-api:${yanoVersion}"
+
+    testImplementation "com.bloxbean.cardano:yano-core-api:${yanoVersion}"
+    // StateMachineConformance is a runtime test utility, not part of core-api.
+    testImplementation "com.bloxbean.cardano:yano-runtime:${yanoVersion}"
     testImplementation platform('org.junit:junit-bom:5.10.2')
     testImplementation 'org.junit.jupiter:junit-jupiter'
     testImplementation 'org.assertj:assertj-core:3.25.3'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+
+    catalogProbeImplementation "com.bloxbean.cardano:yano-runtime:${yanoVersion}"
 }
 
 java {
@@ -35,8 +52,147 @@ test {
 }
 
 // Produces build/libs/appchain-plugin-<version>.jar — copy it to the node's
-// plugins directory. If your plugin has extra runtime deps, shade them or
-// place them alongside the jar.
+// plugins directory. If your plugin has extra runtime dependencies, produce
+// one shaded artifact without Yano API classes; adjacent dependency JARs are
+// not one manifested/digested bundle in catalog v1.
 jar {
     archiveBaseName = 'appchain-plugin'
+}
+
+tasks.register('verifyPluginJar') {
+    group = 'verification'
+    description = 'Verifies the standalone plugin jar discovery metadata and API isolation.'
+    dependsOn tasks.named('jar')
+    inputs.file(tasks.named('jar').flatMap { it.archiveFile })
+
+    doLast {
+        def archive = tasks.named('jar').get().archiveFile.get().asFile
+        def contents = zipTree(archive)
+        def stateMachineServicePath = 'META-INF/services/' +
+                'com.bloxbean.cardano.yano.api.appchain.AppStateMachineProvider'
+        def domainApiServicePath = 'META-INF/services/' +
+                'com.bloxbean.cardano.yano.api.plugin.domain.DomainApiProvider'
+        def healthServicePath = 'META-INF/services/' +
+                'com.bloxbean.cardano.yano.api.plugin.operations.PluginHealthProvider'
+        def metricsServicePath = 'META-INF/services/' +
+                'com.bloxbean.cardano.yano.api.plugin.operations.PluginMetricsProvider'
+        def manifestPath = 'META-INF/yano/plugins/com.example.appchain.counter.json'
+        [stateMachineServicePath, domainApiServicePath, healthServicePath,
+         metricsServicePath, manifestPath].each { requiredPath ->
+            if (contents.matching { include requiredPath }.isEmpty()) {
+                throw new GradleException("Plugin jar is missing ${requiredPath}")
+            }
+        }
+        def expectedStateMachineProvider =
+                'com.example.appchain.CounterStateMachineProvider'
+        def expectedDomainApiProvider =
+                'com.example.appchain.CounterDomainApiProvider'
+        def expectedHealthProvider =
+                'com.example.appchain.CounterHealthProvider'
+        def expectedMetricsProvider =
+                'com.example.appchain.CounterMetricsProvider'
+        def stateMachineProviders = contents.matching {
+            include stateMachineServicePath
+        }.singleFile
+                .readLines('UTF-8')
+                .collect { it.trim() }
+                .findAll { !it.isEmpty() && !it.startsWith('#') }
+        if (stateMachineProviders != [expectedStateMachineProvider]) {
+            throw new GradleException(
+                    "State-machine service entry must contain exactly "
+                            + expectedStateMachineProvider)
+        }
+        def domainApiProviders = contents.matching {
+            include domainApiServicePath
+        }.singleFile
+                .readLines('UTF-8')
+                .collect { it.trim() }
+                .findAll { !it.isEmpty() && !it.startsWith('#') }
+        if (domainApiProviders != [expectedDomainApiProvider]) {
+            throw new GradleException(
+                    "Domain API service entry must contain exactly "
+                            + expectedDomainApiProvider)
+        }
+        def healthProviders = contents.matching {
+            include healthServicePath
+        }.singleFile.readLines('UTF-8')
+                .collect { it.trim() }
+                .findAll { !it.isEmpty() && !it.startsWith('#') }
+        if (healthProviders != [expectedHealthProvider]) {
+            throw new GradleException(
+                    "Health service entry must contain exactly ${expectedHealthProvider}")
+        }
+        def metricsProviders = contents.matching {
+            include metricsServicePath
+        }.singleFile.readLines('UTF-8')
+                .collect { it.trim() }
+                .findAll { !it.isEmpty() && !it.startsWith('#') }
+        if (metricsProviders != [expectedMetricsProvider]) {
+            throw new GradleException(
+                    "Metrics service entry must contain exactly ${expectedMetricsProvider}")
+        }
+        def manifest = new groovy.json.JsonSlurper().parse(
+                contents.matching { include manifestPath }.singleFile)
+        def stateMachineContributions = manifest.contributions.findAll { contribution ->
+            contribution.kind == 'app-state-machine' &&
+                    contribution.name == 'counter' &&
+                    contribution.provider == expectedStateMachineProvider
+        }
+        def domainApiContributions = manifest.contributions.findAll { contribution ->
+            contribution.kind == 'domain-api' &&
+                    contribution.name == manifest.id &&
+                    contribution.provider == expectedDomainApiProvider
+        }
+        def healthContributions = manifest.contributions.findAll { contribution ->
+            contribution.kind == 'health' &&
+                    contribution.name == manifest.id &&
+                    contribution.provider == expectedHealthProvider
+        }
+        def metricsContributions = manifest.contributions.findAll { contribution ->
+            contribution.kind == 'metrics' &&
+                    contribution.name == manifest.id &&
+                    contribution.provider == expectedMetricsProvider
+        }
+        if (manifest.id != 'com.example.appchain.counter'
+                || manifest.yanoApi?.min != 1
+                || manifest.yanoApi?.max != 1
+                || manifest.yanoApi?.minLevel != 1
+                || stateMachineContributions.size() != 1
+                || domainApiContributions.size() != 1
+                || healthContributions.size() != 1
+                || metricsContributions.size() != 1
+                || manifest.contributions.size() != 4) {
+            throw new GradleException(
+                    'Plugin manifest identity, API level, or provider declaration is invalid')
+        }
+        if (manifest.version != project.version.toString()) {
+            throw new GradleException(
+                    "Plugin manifest version ${manifest.version} must match project version "
+                            + project.version)
+        }
+        if (!contents.matching { include 'com/bloxbean/cardano/yano/**' }.isEmpty()) {
+            throw new GradleException('Plugin jar must not package Yano API/runtime classes')
+        }
+    }
+}
+
+tasks.register('verifyPluginCatalogLaunch', JavaExec) {
+    group = 'verification'
+    description = 'Loads the built plugin JAR through the production Yano catalog.'
+    dependsOn tasks.named('jar'), tasks.named('catalogProbeClasses')
+    classpath = sourceSets.catalogProbe.runtimeClasspath
+    mainClass = 'com.example.catalog.PluginCatalogLaunchProbe'
+    inputs.file(tasks.named('jar').flatMap { it.archiveFile })
+
+    doFirst {
+        args = [
+                tasks.named('jar').get().archiveFile.get().asFile.absolutePath,
+                project.version.toString()
+        ]
+    }
+}
+
+tasks.named('check') {
+    dependsOn tasks.named('verifyPluginJar')
+    dependsOn tasks.named('verifyPluginCatalogLaunch')
 }

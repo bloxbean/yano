@@ -39,7 +39,8 @@ final class WebhookSink implements FinalizedStreamSink {
 
     @Override
     public String id() {
-        return "webhook:" + url;
+        return "webhook:" + HexUtil.encodeHexString(
+                Blake2bUtil.blake2bHash224(url.getBytes(StandardCharsets.UTF_8)));
     }
 
     /**

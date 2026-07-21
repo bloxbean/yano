@@ -49,4 +49,4 @@ curl localhost:18083/api/v1/app-chain/proof/<keyHex>
 - **Push/anchor/auth/retention**: add the corresponding `YANO_APP_CHAIN_*`
   environment variables (see `docs/APP_CHAIN_USER_GUIDE.md`).
 - **Plugins**: mount a directory of plugin jars and set
-  `YANO_PLUGINS_DIRECTORY=/plugins`.
+  `YACI_PLUGINS_DIRECTORY=/plugins`.

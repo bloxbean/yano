@@ -33,3 +33,36 @@ jobs:
         run: chmod +x gradlew
       - name: Build with Gradle
         run: ./gradlew build -PskipSigning=true --stacktrace
+      - name: Smoke final JVM plugin catalog and directory loading
+        run: ./gradlew :app:packagedJvmPluginCatalogSmoke -PskipSigning=true --stacktrace
+      - name: Verify and catalog-launch standalone plugin scaffold
+        run: ./gradlew -p scaffolds/plugin-template clean build -PyanoSource="$PWD" -PskipSigning=true --stacktrace
+
+  native-plugin-conformance:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: 'true'
+      - name: Set up GraalVM 25
+        uses: graalvm/setup-graalvm@v1
+        with:
+          java-version: '25'
+          distribution: 'graalvm'
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+      - name: Build native plugin conformance image
+        run: >-
+          ./gradlew :app:quarkusBuild
+          -PincludeFirstPartyPluginBundles=true
+          -PincludeNativePluginConformanceFixture=true
+          -Dquarkus.native.enabled=true
+          -Dquarkus.package.jar.enabled=false
+          -PskipSigning=true
+      - name: Smoke test all native app-chain plugin SPIs
+        run: >-
+          ./gradlew :app:nativePluginCatalogSmoke
+          -PincludeFirstPartyPluginBundles=true
+          -PincludeNativePluginConformanceFixture=true
+          -PskipSigning=true

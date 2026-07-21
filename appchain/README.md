@@ -17,6 +17,7 @@ Don't look for feature docs here — they're centralized:
 |---|---|
 | [`docs/APP_CHAIN_USER_GUIDE.md`](../docs/APP_CHAIN_USER_GUIDE.md) | Configuration, REST, anchoring (metadata + script), operations |
 | [`docs/APP_CHAIN_TUTORIAL.md`](../docs/APP_CHAIN_TUTORIAL.md) | Hands-on: run a chain from the distribution + a custom plugin |
+| [`docs/APP_CHAIN_PLUGIN_QUERY_AND_DOMAIN_API.md`](../docs/APP_CHAIN_PLUGIN_QUERY_AND_DOMAIN_API.md) | Plugin-author contract for committed queries and manifested domain APIs |
 | [`docs/APP_CHAIN_CONSENSUS_GUIDE.md`](../docs/APP_CHAIN_CONSENSUS_GUIDE.md) | Developer-level internals: consensus round, state-machine SPI, every built-in machine's wire format |
 | `adr/app-layer/` | Design history (005 framework, 006 extensions, 008.x consensus/anchoring) |
 | `app/appchain-cluster/README.md` | The multi-node demo cluster launcher |

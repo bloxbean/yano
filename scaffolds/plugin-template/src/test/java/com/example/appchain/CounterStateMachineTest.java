@@ -2,6 +2,8 @@ package com.example.appchain;
 
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppQueryContext;
+import com.bloxbean.cardano.yano.api.appchain.AppQueryException;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
 import org.junit.jupiter.api.Test;
 
@@ -12,6 +14,7 @@ import java.util.Map;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Unit-test a custom state machine's apply() with a tiny in-memory writer —
@@ -33,6 +36,28 @@ class CounterStateMachineTest {
         assertThat(new String(writer.map.get("c/visits"), StandardCharsets.UTF_8)).isEqualTo("3");
     }
 
+    @Test
+    void committedQueryReadsOnlyTheSuppliedRootFixedContext() {
+        CounterStateMachine machine = new CounterStateMachine();
+        MapWriter committed = new MapWriter();
+        machine.apply(block("visits", "visits"), committed);
+
+        assertThat(machine.query("counter/read",
+                "visits".getBytes(StandardCharsets.US_ASCII), committed))
+                .asString(StandardCharsets.UTF_8)
+                .isEqualTo("2");
+        assertThatThrownBy(() -> machine.query(
+                "unknown", new byte[0], committed))
+                .isInstanceOfSatisfying(AppQueryException.class,
+                        failure -> assertThat(failure.code())
+                                .isEqualTo(AppQueryException.Code.UNSUPPORTED));
+        assertThatThrownBy(() -> machine.query(
+                "counter/read", new byte[]{'/'}, committed))
+                .isInstanceOfSatisfying(AppQueryException.class,
+                        failure -> assertThat(failure.code())
+                                .isEqualTo(AppQueryException.Code.INVALID_REQUEST));
+    }
+
     private static AppBlock block(String... bodies) {
         List<AppMessage> messages = java.util.Arrays.stream(bodies)
                 .map(b -> AppMessage.builder()
@@ -47,12 +72,22 @@ class CounterStateMachineTest {
     }
 
     /** Minimal AppStateWriter backed by a HashMap. */
-    static final class MapWriter implements AppStateWriter {
+    static final class MapWriter implements AppStateWriter, AppQueryContext {
         final Map<String, byte[]> map = new HashMap<>();
 
         @Override
         public Optional<byte[]> get(byte[] key) {
             return Optional.ofNullable(map.get(new String(key, StandardCharsets.UTF_8)));
+        }
+
+        @Override
+        public byte[] stateRoot() {
+            return new byte[32];
+        }
+
+        @Override
+        public long committedHeight() {
+            return 1;
         }
 
         @Override

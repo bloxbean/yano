@@ -8,3 +8,4 @@ This module contains Yano's public node-level contracts and plugin SPI:
 For a step‑by‑step developer guide covering events, plugins, build‑time listener binding, and example publication points, see:
 
 - ../runtime/docs/events-and-plugins-guide.md
+- ../docs/APP_CHAIN_PLUGIN_QUERY_AND_DOMAIN_API.md

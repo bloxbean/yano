@@ -3,9 +3,18 @@ package com.bloxbean.cardano.yano.app.api.appchain;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.appchain.AppChainGateway;
 import com.bloxbean.cardano.yano.api.appchain.AppChainGateways;
+import com.bloxbean.cardano.yano.api.appchain.AppQueryPath;
 import com.bloxbean.cardano.yano.api.appchain.ReceivedAppMessage;
+import com.fasterxml.jackson.annotation.JsonAnySetter;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.core.JsonParser;
+import com.fasterxml.jackson.core.JsonToken;
+import com.fasterxml.jackson.databind.DeserializationContext;
+import com.fasterxml.jackson.databind.JsonDeserializer;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import io.quarkus.runtime.annotations.RegisterForReflection;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.*;
 import jakarta.ws.rs.core.MediaType;
@@ -71,6 +80,7 @@ public class AppChainResource {
     @POST
     @Operation(hidden = true)
     @Path("messages")
+    @AppChainAccess(AppChainAccess.Level.SUBMIT)
     public Response submit(ChainScopedResource.SubmitRequest request) {
         return singleChain().submit(request);
     }
@@ -293,6 +303,7 @@ public class AppChainResource {
      */
     @Produces(MediaType.APPLICATION_JSON)
     @Consumes(MediaType.APPLICATION_JSON)
+    @RegisterForReflection
     public static class ChainScopedResource {
 
         private final AppChainGateway gateway;
@@ -304,8 +315,33 @@ public class AppChainResource {
         public record SubmitRequest(String topic, String body, String bodyHex) {
         }
 
+        /** ADR-011.3 query parameters; omitted or empty hex means empty bytes. */
+        @JsonIgnoreProperties(ignoreUnknown = false)
+        public record QueryRequest(
+                @JsonDeserialize(using = StrictStringDeserializer.class) String paramsHex) {
+
+            /** Keep the envelope strict even if the host mapper ignores unknown properties. */
+            @JsonAnySetter
+            public void rejectUnknownField(String name, Object ignored) {
+                throw new IllegalArgumentException("Unknown app-chain query field: " + name);
+            }
+        }
+
+        /** Prevent Jackson's scalar-to-string coercion in the strict query envelope. */
+        public static final class StrictStringDeserializer extends JsonDeserializer<String> {
+            @Override
+            public String deserialize(JsonParser parser, DeserializationContext context)
+                    throws java.io.IOException {
+                if (!parser.hasToken(JsonToken.VALUE_STRING)) {
+                    return (String) context.handleUnexpectedToken(String.class, parser);
+                }
+                return parser.getText();
+            }
+        }
+
         @POST
         @Path("messages")
+        @AppChainAccess(AppChainAccess.Level.SUBMIT)
         public Response submit(SubmitRequest request) {
             if (request == null || (isBlank(request.body()) && isBlank(request.bodyHex()))) {
                 return badRequest("Either 'body' (text) or 'bodyHex' (hex bytes) is required");
@@ -335,6 +371,84 @@ public class AppChainResource {
                         .entity(Map.of("error", e.getMessage())).build();
             } catch (IllegalArgumentException e) {
                 return badRequest(e.getMessage());
+            }
+        }
+
+        /**
+         * Execute the machine's read hook against one root-fixed committed
+         * snapshot. This POST is semantically READ: the body carries bounded
+         * opaque parameters and no state transition is performed.
+         */
+        @POST
+        @Path("query/{path: .+}")
+        @AppChainAccess(AppChainAccess.Level.READ)
+        public Response query(@Encoded @PathParam("path") String path, QueryRequest request) {
+            if (path != null && path.length() > AppQueryPath.MAX_LENGTH) {
+                return Response.status(413)
+                        .entity(Map.of("code", "REQUEST_TOO_LARGE",
+                                "error", "App-chain query path exceeds the size limit"))
+                        .build();
+            }
+            try {
+                path = AppQueryPath.validate(path);
+            } catch (IllegalArgumentException invalidPath) {
+                return Response.status(Response.Status.BAD_REQUEST)
+                        .entity(Map.of("code", "INVALID_REQUEST",
+                                "error", "App-chain query path is invalid"))
+                        .build();
+            }
+            byte[] params;
+            try {
+                String encoded = request != null ? request.paramsHex() : null;
+                if (encoded == null || encoded.isEmpty()) {
+                    params = new byte[0];
+                } else {
+                    if (encoded.length() > 2 * 64 * 1024) {
+                        throw new com.bloxbean.cardano.yano.api.appchain.AppQueryException(
+                                com.bloxbean.cardano.yano.api.appchain.AppQueryException.Code.REQUEST_TOO_LARGE,
+                                "App-chain query request exceeds the size limit");
+                    }
+                    if ((encoded.length() & 1) != 0
+                            || !encoded.matches("[0-9a-f]+")) {
+                        return badRequest("paramsHex must be canonical lowercase hex");
+                    }
+                    params = HexUtil.decodeHexString(encoded);
+                }
+            } catch (com.bloxbean.cardano.yano.api.appchain.AppQueryException tooLarge) {
+                return Response.status(413)
+                        .entity(Map.of("code", tooLarge.code().name(),
+                                "error", tooLarge.getMessage()))
+                        .build();
+            } catch (Exception invalidHex) {
+                return badRequest("Invalid paramsHex");
+            }
+
+            try {
+                var result = gateway.query(path, params);
+                Map<String, Object> response = new LinkedHashMap<>();
+                response.put("chainId", result.chainId());
+                response.put("stateMachineId", result.stateMachineId());
+                response.put("committedHeight", result.committedHeight());
+                response.put("stateRoot", HexUtil.encodeHexString(result.stateRoot()));
+                response.put("payloadHex", HexUtil.encodeHexString(result.payload()));
+                return Response.ok(response).build();
+            } catch (com.bloxbean.cardano.yano.api.appchain.AppQueryException failure) {
+                int status = switch (failure.code()) {
+                    case INVALID_REQUEST -> 400;
+                    case REQUEST_TOO_LARGE -> 413;
+                    case UNSUPPORTED -> 404;
+                    case BUSY -> 429;
+                    case RESULT_TOO_LARGE -> 502;
+                    case UNAVAILABLE -> 503;
+                    case TIMEOUT -> 504;
+                    case FAILED -> 500;
+                };
+                String message = failure.code()
+                        == com.bloxbean.cardano.yano.api.appchain.AppQueryException.Code.FAILED
+                        ? "Query execution failed" : failure.getMessage();
+                return Response.status(status)
+                        .entity(Map.of("code", failure.code().name(), "error", message))
+                        .build();
             }
         }
 
@@ -714,6 +828,7 @@ public class AppChainResource {
 
         @GET
         @Path("admin/members")
+        @AppChainAccess(AppChainAccess.Level.PRIVILEGED)
         public Response listMembers() {
             return Response.ok(Map.of("chainId", gateway.chainId(),
                     "members", new ArrayList<>(gateway.members()),

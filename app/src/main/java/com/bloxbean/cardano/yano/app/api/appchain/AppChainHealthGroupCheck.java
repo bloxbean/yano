@@ -39,8 +39,8 @@ public class AppChainHealthGroupCheck implements HealthCheck {
                 String chain = gateway.chainId();
                 boolean stalled = Boolean.TRUE.equals(status.get("stalled"));
                 boolean paused = Boolean.TRUE.equals(status.get("submissionsPaused"));
-                String anchorError = nestedString(status.get("anchor"), "lastError");
-                String sinkError = firstSinkError(status.get("sinks"));
+                boolean anchorError = hasNestedText(status.get("anchor"), "lastError");
+                boolean sinkError = hasSinkError(status.get("sinks"));
 
                 if (stalled) {
                     up = false;
@@ -50,38 +50,37 @@ public class AppChainHealthGroupCheck implements HealthCheck {
                     up = false;
                     builder.withData(chain + ".submissionsPaused", true);
                 }
-                if (anchorError != null) {
+                if (anchorError) {
                     up = false;
-                    builder.withData(chain + ".anchorError", anchorError);
+                    builder.withData(chain + ".anchorError", true);
                 }
-                if (sinkError != null) {
+                if (sinkError) {
                     up = false;
-                    builder.withData(chain + ".sinkError", sinkError);
+                    builder.withData(chain + ".sinkError", true);
                 }
                 builder.withData(chain + ".tipHeight", gateway.tipHeight());
             }
-        } catch (Exception e) {
-            return builder.down().withData("error", e.toString()).build();
+        } catch (RuntimeException unavailable) {
+            return builder.down().withData("error", "STATUS_UNAVAILABLE").build();
         }
         return up ? builder.up().build() : builder.down().build();
     }
 
-    private static String nestedString(Object map, String key) {
+    private static boolean hasNestedText(Object map, String key) {
         if (map instanceof Map<?, ?> m && m.get(key) instanceof String s && !s.isBlank()) {
-            return s;
+            return true;
         }
-        return null;
+        return false;
     }
 
-    private static String firstSinkError(Object sinks) {
+    private static boolean hasSinkError(Object sinks) {
         if (sinks instanceof Map<?, ?> sinkMap) {
             for (Object value : sinkMap.values()) {
-                String error = nestedString(value, "lastError");
-                if (error != null) {
-                    return error;
+                if (hasNestedText(value, "lastError")) {
+                    return true;
                 }
             }
         }
-        return null;
+        return false;
     }
 }

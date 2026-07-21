@@ -24,6 +24,8 @@ import com.bloxbean.cardano.yano.api.config.UpstreamValidationConfig;
 import com.bloxbean.cardano.yano.api.config.UpstreamValidationStartConfig;
 import com.bloxbean.cardano.yano.api.config.YanoConfig;
 import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
+import com.bloxbean.cardano.yano.api.plugin.PluginCatalogView;
+import com.bloxbean.cardano.yano.api.plugin.operations.PluginOperationsView;
 import com.bloxbean.cardano.yano.app.bootstrap.BootstrapConfigParser;
 import com.bloxbean.cardano.yano.bootstrap.providers.DefaultBootstrapDataProviderFactory;
 import com.bloxbean.cardano.yano.devnet.YanoDevnetAssembly;
@@ -38,6 +40,11 @@ import com.bloxbean.cardano.yano.runtime.config.RollbackRetentionSettings;
 import com.bloxbean.cardano.yano.runtime.debug.DebugLedgerStateAccess;
 import com.bloxbean.cardano.yano.runtime.kernel.NodeKernel;
 import com.bloxbean.cardano.yano.runtime.maintenance.RuntimeMaintenanceGate;
+import com.bloxbean.cardano.yano.api.plugin.PluginActivationException;
+import com.bloxbean.cardano.yano.runtime.plugins.PluginCatalogActivationException;
+import com.bloxbean.cardano.yano.runtime.plugins.PluginLoaderHandle;
+import com.bloxbean.cardano.yano.runtime.plugins.PluginManager;
+import com.bloxbean.cardano.yano.runtime.util.LifecycleFailures;
 import com.bloxbean.cardano.yano.runtime.tx.TransactionBootstrapOptions;
 import com.bloxbean.cardano.yano.tx.DefaultTransactionServicesFactory;
 import com.bloxbean.cardano.yano.api.model.DevnetRestoreResult;
@@ -149,6 +156,9 @@ public class YanoProducer {
 
     @ConfigProperty(name = YanoPropertyKeys.API_PREFIX, defaultValue = "/api/v1")
     String apiPrefix;
+
+    @Inject
+    ApiPrefixContract apiPrefixContract;
 
     @ConfigProperty(name = YanoPropertyKeys.Events.ENABLED, defaultValue = "true")
     boolean eventsEnabled;
@@ -498,14 +508,23 @@ public class YanoProducer {
     @ConfigProperty(name = YanoPropertyKeys.Genesis.PROTOCOL_PARAMETERS_FILE)
     java.util.Optional<String> protocolParametersFile;
 
-    private final ClassLoader pluginClassLoader;
+    private final PluginLoaderHandle pluginLoader;
     private Yano yano;
 
-    public YanoProducer(@Named("pluginClassLoader") ClassLoader pluginClassLoader) {
-        this.pluginClassLoader = pluginClassLoader;
+    @jakarta.inject.Inject
+    public YanoProducer(@Named("pluginClassLoader") PluginLoaderHandle pluginLoader) {
+        this.pluginLoader = pluginLoader;
     }
 
-    private Yano ensureYano() {
+    /** Source-compatible test/embedder constructor using a non-owned loader. */
+    public YanoProducer(ClassLoader pluginClassLoader) {
+        this(PluginLoaderHandle.classpath(pluginClassLoader));
+    }
+
+    Yano ensureYano() {
+        if (apiPrefixContract != null) {
+            apiPrefixContract.verify();
+        }
         if (yano != null) {
             return yano;
         }
@@ -583,10 +602,7 @@ public class YanoProducer {
         EventsOptions eventsOptions = new EventsOptions(
                 eventsEnabled, 8192, SubscriptionOptions.Overflow.BLOCK);
 
-        Map<String, Object> pluginConfigMap = new HashMap<>();
-        pluginConfigMap.put("plugins.logging.enabled", pluginsLoggingEnabled);
-        PluginsOptions pluginsOptions = new PluginsOptions(
-                pluginsEnabled, false, Set.of(), Set.of(), pluginConfigMap);
+        PluginsOptions pluginsOptions = pluginOptions();
 
         RollbackRetentionGenesisValues rollbackRetentionGenesisValues = rollbackRetentionEpochs.orElse(0) > 0
                 ? resolveRollbackRetentionGenesisValues(resolvedShelleyGenesis)
@@ -754,11 +770,9 @@ public class YanoProducer {
                 yaciConfig,
                 new RuntimeOptions(eventsOptions, pluginsOptions, globals));
 
-        // Set plugin classloader on thread context so PluginManager picks it up
-        Thread.currentThread().setContextClassLoader(pluginClassLoader);
-
         YanoDevnetAssembly.Builder assembly = YanoDevnetAssembly.fromConfig(yaciConfig)
-                .runtimeOptions(runtimeOptions);
+                .runtimeOptions(runtimeOptions)
+                .pluginLoader(pluginLoader);
 
         if (debugRollbackToSlot >= 0 || debugRollbackToEpoch >= 0) {
             assembly.adhocRollback(debugRollbackToSlot, debugRollbackToEpoch);
@@ -835,6 +849,26 @@ public class YanoProducer {
     @ApplicationScoped
     public com.bloxbean.cardano.yano.api.appchain.AppChainGateways createAppChainGateways() {
         return ensureYano().appChains();
+    }
+
+    @Produces
+    @ApplicationScoped
+    public com.bloxbean.cardano.yano.api.plugin.domain.DomainApiGateway createDomainApiGateway() {
+        return ensureYano().domainApis();
+    }
+
+    @Produces
+    @ApplicationScoped
+    public PluginCatalogView createPluginCatalogView() {
+        return ensureYano().pluginCatalog()
+                .orElseThrow(() -> unavailableRole("PluginCatalogView"));
+    }
+
+    @Produces
+    @ApplicationScoped
+    public PluginOperationsView createPluginOperationsView() {
+        return ensureYano().pluginOperations()
+                .orElseThrow(() -> unavailableRole("PluginOperationsView"));
     }
 
     /**
@@ -929,32 +963,133 @@ public class YanoProducer {
     }
 
     void onStart(@Observes StartupEvent event) {
+        if (apiPrefixContract != null) {
+            apiPrefixContract.verify();
+        }
         log.info("Yano application starting up...");
         log.info("Auto-sync-start enabled: {}", autoSyncStart);
 
-        if (autoSyncStart) {
-            try {
+        try {
+            Yano assembledYano = ensureYano();
+            if (autoSyncStart) {
                 log.info("Auto-starting Yano synchronization...");
-                ensureYano().start();
+                assembledYano.start();
                 log.info("Yano started automatically and syncing with {} network", network);
                 log.info("REST API available at {}/ for manual control", nodeApiBaseUrl());
-            } catch (Exception e) {
-                log.error("Failed to auto-start Yano: {}", e.getMessage(), e);
-                if (bootstrapEnabled) {
-                    log.error("Bootstrap mode is enabled but failed. "
-                            + "The node cannot start without bootstrap state. Shutting down.");
-                    throw new RuntimeException("Bootstrap failed, cannot start node", e);
-                }
-                log.info("You can still start manually via: curl -X POST {}/start", nodeApiBaseUrl());
+            } else {
+                log.info("Auto-sync is disabled. Start manually via: curl -X POST {}/start", nodeApiBaseUrl());
+                log.info("REST API available at {}/", nodeApiBaseUrl());
             }
-        } else {
-            log.info("Auto-sync is disabled. Start manually via: curl -X POST {}/start", nodeApiBaseUrl());
-            log.info("REST API available at {}/", nodeApiBaseUrl());
+        } catch (Throwable e) {
+            // Do not inspect or allocate diagnostics around a process-fatal
+            // root. Runtime layers preserve the same terminal distinction.
+            LifecycleFailures.rethrowIfProcessFatal(e);
+            Throwable pluginFailure = pluginStartupFailure(e);
+            if (pluginFailure != null) {
+                // Plugin exception messages and cause chains can contain
+                // credentials or endpoint tokens. Runtime/library layers keep
+                // those causes for rollback and programmatic inspection, but
+                // Quarkus renders any exception escaping this observer. Cross
+                // the application boundary with a new cause-free exception so
+                // neither a wrapper nor suppressed cleanup failures leak.
+                PluginStartupException sanitized = sanitizedPluginStartupFailure(pluginFailure);
+                log.error(sanitized.getMessage());
+                throw sanitized;
+            }
+            if (e instanceof Error error) {
+                throw error;
+            }
+            log.error("Failed to initialize or auto-start Yano: {}", e.getMessage(), e);
+            if (bootstrapEnabled) {
+                log.error("Bootstrap mode is enabled but failed. "
+                        + "The node cannot start without bootstrap state. Shutting down.");
+                throw new RuntimeException("Bootstrap failed, cannot start node", e);
+            }
+            log.info("Inspect the startup failure before retrying; a process restart may be required");
         }
     }
 
+    static boolean isPluginStartupFailure(Throwable failure) {
+        return pluginStartupFailure(failure) != null;
+    }
+
+    private static Throwable pluginStartupFailure(Throwable failure) {
+        if (failure == null) {
+            return null;
+        }
+        final int maximumThrowableGraphNodes = 256;
+        java.util.ArrayDeque<Throwable> pending = new java.util.ArrayDeque<>();
+        java.util.Set<Throwable> visited = java.util.Collections.newSetFromMap(
+                new java.util.IdentityHashMap<>());
+        boolean truncated = false;
+        Throwable firstPluginFailure = null;
+        pending.add(failure);
+        while (!pending.isEmpty() && visited.size() < maximumThrowableGraphNodes) {
+            Throwable current = pending.removeFirst();
+            if (!visited.add(current)) {
+                continue;
+            }
+            // A wrapper does not make an OOME/ThreadDeath recoverable. Scan the
+            // complete bounded graph before returning a plugin classification
+            // so an earlier plugin sibling cannot hide a later fatal signal.
+            LifecycleFailures.rethrowIfProcessFatal(current);
+            if (current instanceof PluginActivationException
+                    || current instanceof PluginManager.PluginManagerException) {
+                if (firstPluginFailure == null) {
+                    firstPluginFailure = current;
+                }
+            }
+            Throwable cause;
+            Throwable[] suppressed;
+            try {
+                // getCause() is overridable application/plugin code.
+                cause = current.getCause();
+                suppressed = current.getSuppressed();
+            } catch (Throwable graphFailure) {
+                LifecycleFailures.rethrowIfProcessFatal(graphFailure);
+                return failure;
+            }
+            if (cause != null) {
+                if (pending.size() + visited.size() < maximumThrowableGraphNodes) {
+                    pending.addLast(cause);
+                } else {
+                    truncated = true;
+                }
+            }
+            for (Throwable nested : suppressed) {
+                if (nested != null && pending.size() + visited.size()
+                        < maximumThrowableGraphNodes) {
+                    pending.addLast(nested);
+                } else if (nested != null) {
+                    truncated = true;
+                }
+            }
+        }
+        // A hostile or pathological exception graph must not force the app to
+        // render an uninspected tail that may contain plugin credentials.
+        if (truncated || !pending.isEmpty()) {
+            return failure;
+        }
+        return firstPluginFailure;
+    }
+
+    private static PluginStartupException sanitizedPluginStartupFailure(Throwable failure) {
+        if (failure instanceof PluginCatalogActivationException) {
+            return new PluginStartupException(
+                    PluginCatalogActivationException.class.getName(), null);
+        }
+        if (failure instanceof PluginManager.PluginManagerException managerFailure) {
+            return new PluginStartupException(
+                    PluginManager.PluginManagerException.class.getName(),
+                    managerFailure.phase().name());
+        }
+        return new PluginStartupException(PluginActivationException.class.getName(), null);
+    }
+
     private String nodeApiBaseUrl() {
-        return "http://localhost:" + httpPort + normalizedApiPrefix() + "/node";
+        String prefix = apiPrefixContract != null
+                ? apiPrefixContract.pathPrefix() : normalizedApiPrefix();
+        return "http://localhost:" + httpPort + prefix + "/node";
     }
 
     private String normalizedApiPrefix() {
@@ -1159,6 +1294,44 @@ public class YanoProducer {
                         .filter(item -> !item.isBlank())
                         .toList())
                 .orElse(List.of());
+    }
+
+    /** Map packaged-node configuration to the complete existing plugin policy. */
+    PluginsOptions pluginOptions() {
+        Map<String, Object> pluginConfigMap = new java.util.LinkedHashMap<>();
+        if (appConfig != null) {
+            for (String property : appConfig.getPropertyNames()) {
+                if (isPluginConfigurationProperty(property)) {
+                    appConfig.getOptionalValue(property, String.class)
+                            .ifPresent(value -> pluginConfigMap.put(property, value));
+                }
+            }
+        }
+        // Compatibility key consumed by the built-in logging NodePlugin.
+        pluginConfigMap.put("plugins.logging.enabled", pluginsLoggingEnabled);
+        return new PluginsOptions(
+                pluginsEnabled,
+                configBoolean(YanoPropertyKeys.Plugins.AUTO_REGISTER_ANNOTATED, false),
+                new java.util.LinkedHashSet<>(
+                        configStringList(YanoPropertyKeys.Plugins.ALLOW_LIST)),
+                new java.util.LinkedHashSet<>(
+                        configStringList(YanoPropertyKeys.Plugins.DENY_LIST)),
+                pluginConfigMap);
+    }
+
+    private static boolean isPluginConfigurationProperty(String property) {
+        if (property == null) {
+            return false;
+        }
+        if (property.startsWith("yano.plugins.")) {
+            return true;
+        }
+        // SmallRye enumerates both a best-effort dotted name and the original
+        // environment name. Retain the reversible hex-owner spelling. Retain
+        // the obsolete lossy spelling too so the catalog can reject it with a
+        // deterministic migration diagnostic instead of silently ignoring it.
+        return property.startsWith("YANO_PLUGINS_BUNDLE_HEX__")
+                || property.startsWith("YANO_PLUGINS_BUNDLE__");
     }
 
     void onStop(@Observes ShutdownEvent event) {
@@ -1459,8 +1632,10 @@ public class YanoProducer {
      * use it. Otherwise, for known networks (mainnet/preprod/preview), extract the bundled
      * classpath resource to a temp file.
      */
-    private String resolveGenesisFile(String userPath, long magic, String filename) {
-        return GenesisFileResolver.resolve(
-                userPath, magic, filename, Thread.currentThread().getContextClassLoader());
+    String resolveGenesisFile(String userPath, long magic, String filename) {
+        // Genesis is host bootstrap input, not a plugin contribution. Never
+        // resolve it through selected (or, especially, denied) directory JARs.
+        return GenesisFileResolver.resolveHostOnly(
+                userPath, magic, filename, pluginLoader.hostClassLoader());
     }
 }

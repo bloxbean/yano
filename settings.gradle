@@ -7,6 +7,7 @@ pluginManagement {
 
 rootProject.name = 'yano'
 include 'core-api'
+include 'plugin-catalog'
 include 'consensus'
 include 'p2p'
 include 'runtime'
@@ -31,6 +32,7 @@ include 'appchain-effects-cardano'
 include 'appchain-zk'
 include 'appchain-spring-boot-starter'
 include 'appchain-anchor-onchain'
+include 'appchain-plugin-conformance'
 project(':appchain-anchor-onchain').projectDir = file('appchain/onchain/appchain-anchor-onchain')
 project(':appchain-stdlib').projectDir = file('appchain/appchain-stdlib')
 project(':appchain-testkit').projectDir = file('appchain/appchain-testkit')
@@ -38,4 +40,6 @@ project(':appchain-client').projectDir = file('appchain/appchain-client')
 project(':appchain-kafka-sink').projectDir = file('appchain/extensions/appchain-kafka-sink')
 project(':appchain-effects-cardano').projectDir = file('appchain/extensions/appchain-effects-cardano')
 project(':appchain-zk').projectDir = file('appchain/extensions/appchain-zk')
+project(':appchain-plugin-conformance').projectDir =
+        file('appchain/fixtures/appchain-plugin-conformance')
 project(':appchain-spring-boot-starter').projectDir = file('spring-starters/appchain-spring-boot-starter')
