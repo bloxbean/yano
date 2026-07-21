@@ -1,0 +1,11 @@
+apiVersion: 1
+
+providers:
+  - name: Yano demo
+    orgId: 1
+    folder: Yano
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false
+    options:
+      path: /var/lib/grafana/dashboards

@@ -15,6 +15,7 @@ import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutor;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutorFactory;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectExecution;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectExecutionContext;
+import com.bloxbean.cardano.yano.api.appchain.effects.EffectExecutorOperationalSnapshot;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectResult;
 import com.bloxbean.cardano.yano.api.appchain.effects.PendingEffect;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1Observation;
@@ -1195,6 +1196,17 @@ final class PluginSpiFacades {
         }
 
         @Override
+        public void onEffectResult(
+                AppBlock block,
+                EffectResult result,
+                AppStateWriter writer,
+                AppEffectEmitter effects
+        ) {
+            pluginRun(callbacks, loader,
+                    () -> delegate.onEffectResult(block, result, writer, effects));
+        }
+
+        @Override
         public byte[] query(String path, byte[] params) {
             byte[] input = params != null ? params.clone() : null;
             byte[] response = pluginCall(callbacks, loader,
@@ -1568,6 +1580,20 @@ final class PluginSpiFacades {
         public boolean supports(String effectType) {
             return pluginCall(callbacks, loader,
                     () -> delegate.supports(effectType));
+        }
+
+        @Override
+        public Set<String> effectTypes() {
+            return activation.call("declare effect-executor types",
+                    () -> pluginCall(callbacks, loader, () -> {
+                        Set<String> declared = delegate.effectTypes();
+                        return declared != null ? Set.copyOf(declared) : null;
+                    }));
+        }
+
+        @Override
+        public EffectExecutorOperationalSnapshot operationalSnapshot() {
+            return pluginCall(callbacks, loader, delegate::operationalSnapshot);
         }
 
         @Override

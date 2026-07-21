@@ -3,21 +3,23 @@
 ; =============================================================================
 ; One finalized app-chain block: a batch of verified app messages given a
 ; total order by the sequencer, binding the post-state commitment root.
-; Canonical CBOR — the same bytes are gossiped (proposals on system topic
-; "~consensus/propose"), stored in the app ledger, and hashed.
+; Canonical CBOR — the same complete block bytes are gossiped (proposals on
+; system topic "~consensus/propose") and stored in the app ledger. Finality
+; signs the separately encoded app-block-header, not the complete block bytes.
 ;
 ; block-hash = blake2b-256( cbor(app-block-header) )
-;   The header binds the full message list via messages-root and the whole
-;   history via prev-hash; the certificate is NOT part of the hash (it signs
-;   the hash).
+;   The header binds the ordered message ids via messages-root and the committed
+;   history via prev-hash. It does not bind every app-message envelope field,
+;   proposer, or certificate container; the certificate signs this header hash.
 ;
 ; messages-root: binary merkle tree (blake2b-256 over left||right) built over
 ;   the ordered message-ids; empty list -> 32 zero bytes; odd level width ->
 ;   last node duplicated.
 ;
 ; state-root: Merkle Patricia Forestry root (Aiken-compatible, blake2b-256)
-;   AFTER applying this block — followers re-execute the block and must
-;   reproduce it byte-for-byte before voting.
+;   AFTER applying this block — followers validate the authenticated proposal
+;   and messages, re-execute them, and must reproduce the committed header
+;   fields before voting.
 ;
 ; Consensus messages ride the ordinary authenticated app-message envelope
 ; (see app-message-envelope.cddl) on reserved system topics:
@@ -28,16 +30,17 @@
 
 app-block = [
     version       : uint,             ; block format version, currently 1
-    chain-id      : tstr,
+    chain-id      : tstr .size (1..128), ; valid UTF-8, byte length bound
     height        : uint,             ; global per-chain sequence, first block = 1
     prev-hash     : bstr .size 32,    ; 32 zero bytes at height 1
     l1-slot       : uint,             ; stable L1 reference slot (0 = unavailable)
-    l1-block-hash : bstr,             ; stable L1 reference block hash ("" = unavailable)
+    l1-block-hash : (bstr .size 0) / (bstr .size 32), ; empty = unavailable
     timestamp     : uint,             ; proposer wall clock, unix millis
     messages-root : bstr .size 32,
     state-root    : bstr .size 32,
-    messages      : [ *app-message ], ; ordered full envelopes
-    proposer      : bstr .size 32,    ; proposer's Ed25519 public key
+    messages      : [ *10000 app-message ], ; ordered full envelopes
+    proposer      : bstr .size 32,    ; proposal-time identity; authenticated by
+                                      ; the consensus envelope, not block-hash
     cert          : finality-cert
 ]
 
@@ -48,18 +51,18 @@ app-block-header = [
 
 finality-cert = [
     scheme     : uint,                ; 0 = Ed25519 threshold signatures over block-hash
-    signatures : [ *cert-signature ]
+    signatures : [ *32 cert-signature ] ; empty only while proposed; finalized >= 1
 ]
 
 cert-signature = [
     signer    : bstr .size 32,        ; member Ed25519 public key
-    signature : bstr                  ; Ed25519 signature over block-hash
+    signature : bstr .size 64         ; Ed25519 signature over block-hash
 ]
 
 vote = [
     height     : uint,
     block-hash : bstr .size 32,
-    signature  : bstr                 ; voter's Ed25519 signature over block-hash
+    signature  : bstr .size 64        ; voter's Ed25519 signature over block-hash
 ]
 
 cert-notice = [

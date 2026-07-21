@@ -3,6 +3,7 @@ package com.bloxbean.cardano.yano.runtime.appchain;
 import com.bloxbean.cardano.vds.mpf.MpfTrie;
 import com.bloxbean.cardano.vds.mpf.rocksdb.RocksDbNodeStore;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppStateProofSnapshot;
 import com.bloxbean.cardano.yano.api.appchain.codec.AppBlockCodec;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectProof;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectProofLookup;
@@ -341,7 +342,7 @@ final class AppLedgerStore implements AutoCloseable {
         return Optional.ofNullable(trie.get(key));
     }
 
-    /** MPF inclusion proof (wire format) for a key against the committed root. */
+    /** MPF inclusion or exclusion proof for a key against the committed root. */
     Optional<byte[]> stateProofWire(byte[] key) {
         byte[] root = stateRoot();
         if (root == null) {
@@ -358,12 +359,33 @@ final class AppLedgerStore implements AutoCloseable {
         return Optional.ofNullable(new MpfTrie(mpfNodeStore, root).get(key));
     }
 
-    /** Build an inclusion proof against a retained historical MPF root. */
+    /** Build an inclusion or exclusion proof against a retained historical root. */
     Optional<byte[]> stateProofWireAtRoot(byte[] root, byte[] key) {
         if (root == null || root.length != 32) {
             return Optional.empty();
         }
         return new MpfTrie(mpfNodeStore, root).getProofWire(key);
+    }
+
+    /**
+     * Build one inclusion or exclusion proof from a single committed root.
+     * Historical MPF nodes are immutable, so value and proof remain fixed to
+     * the captured root while a later block commits concurrently.
+     */
+    Optional<AppStateProofSnapshot> stateProofSnapshot(byte[] key) {
+        byte[] keySnapshot = Objects.requireNonNull(key, "key").clone();
+        CommittedStateSnapshot committed = captureCommittedState();
+        if (committed.height() == 0) {
+            return Optional.empty();
+        }
+        byte[] root = committed.stateRoot();
+        Optional<byte[]> proof = stateProofWireAtRoot(root, keySnapshot);
+        if (proof.isEmpty()) {
+            return Optional.empty();
+        }
+        byte[] value = stateGetAtRoot(root, keySnapshot).orElse(null);
+        return Optional.of(new AppStateProofSnapshot(
+                keySnapshot, value, proof.orElseThrow(), root, committed.height()));
     }
 
     /**

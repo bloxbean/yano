@@ -70,6 +70,8 @@ public final class StateMachineConformance {
     private final MessageGenerator messageGenerator;
     private final int runs;
     private final long restartAtHeight;
+    private final long snapshotAtHeight;
+    private final List<StateProbe> stateProbes;
 
     /** Deterministic command generator: same (height, index, seeded random) → same body. */
     @FunctionalInterface
@@ -108,6 +110,20 @@ public final class StateMachineConformance {
         }
     }
 
+    /** One authenticated state leaf captured after every committed corpus height. */
+    public record StateProbe(String name, byte[] key) {
+        public StateProbe {
+            if (name == null || name.isBlank() || name.length() > 128) {
+                throw new IllegalArgumentException("state probe name must contain 1-128 characters");
+            }
+            key = Objects.requireNonNull(key, "key").clone();
+            if (key.length == 0 || key.length > 1024) {
+                throw new IllegalArgumentException("state probe key must contain 1-1024 bytes");
+            }
+        }
+        @Override public byte[] key() { return key.clone(); }
+    }
+
     private StateMachineConformance(Builder builder) {
         this.provider = builder.provider;
         this.settings = builder.settings;
@@ -118,6 +134,8 @@ public final class StateMachineConformance {
         this.messageGenerator = builder.messageGenerator;
         this.runs = builder.runs;
         this.restartAtHeight = builder.restartAtHeight;
+        this.snapshotAtHeight = builder.snapshotAtHeight;
+        this.stateProbes = builder.stateProbes;
     }
 
     public static Builder builder(AppStateMachineProvider provider) {
@@ -142,6 +160,8 @@ public final class StateMachineConformance {
                         .getBytes(StandardCharsets.UTF_8));
         private int runs = 3;
         private long restartAtHeight = -1; // default: mid-corpus
+        private long snapshotAtHeight = -1;
+        private List<StateProbe> stateProbes = List.of();
 
         private Builder(AppStateMachineProvider provider) {
             this.provider = provider;
@@ -167,6 +187,18 @@ public final class StateMachineConformance {
         public Builder runs(int value) { this.runs = Math.max(2, value); return this; }
         /** Close and reopen the ledger at this height in the replay run (default: middle). */
         public Builder restartAtHeight(long value) { this.restartAtHeight = value; return this; }
+        /**
+         * Add an independent replay that checkpoints at this height, opens the
+         * checkpoint as a fresh ledger, recreates the machine, and continues.
+         */
+        public Builder snapshotAtHeight(long value) { this.snapshotAtHeight = value; return this; }
+        /** Capture one exact state leaf after every commit and compare it across all runs. */
+        public Builder stateProbe(String name, byte[] key) {
+            List<StateProbe> updated = new ArrayList<>(stateProbes);
+            updated.add(new StateProbe(name, key));
+            stateProbes = List.copyOf(updated);
+            return this;
+        }
 
         public Result run() {
             return new StateMachineConformance(this).execute();
@@ -203,7 +235,11 @@ public final class StateMachineConformance {
     }
 
     /** State root and the block's ordered effect hashes (hex). */
-    public record HeightOutcome(String root, List<String> effectHashes) {
+    public record HeightOutcome(
+            String root,
+            List<String> effectHashes,
+            Map<String, String> stateValues
+    ) {
     }
 
     public record Divergence(String kind, long height, int run, String baseline, String divergent) {
@@ -222,7 +258,11 @@ public final class StateMachineConformance {
                         ? (restartAtHeight > 0 ? restartAtHeight : Math.max(1, blocks / 2))
                         : -1;
                 outcomesPerRun.add(applyCorpus(provider, settings, chainId, corpus,
-                        workDir.resolve("run-" + run), restartAt));
+                        workDir.resolve("run-" + run), restartAt, -1, stateProbes));
+            }
+            if (snapshotAtHeight > 0) {
+                outcomesPerRun.add(applyCorpus(provider, settings, chainId, corpus,
+                        workDir.resolve("snapshot-run"), -1, snapshotAtHeight, stateProbes));
             }
         } catch (Exception e) {
             throw new RuntimeException("Conformance harness failed", e);
@@ -252,6 +292,11 @@ public final class StateMachineConformance {
                 if (!expected.effectHashes().equals(actual.effectHashes())) {
                     return new Divergence("effect-emission", height, run,
                             String.valueOf(expected.effectHashes()), String.valueOf(actual.effectHashes()));
+                }
+                if (!expected.stateValues().equals(actual.stateValues())) {
+                    return new Divergence("state-probe", height, run,
+                            String.valueOf(expected.stateValues()),
+                            String.valueOf(actual.stateValues()));
                 }
             }
         }
@@ -307,7 +352,9 @@ public final class StateMachineConformance {
                                                         Map<String, String> settings,
                                                         String chainId,
                                                         List<AppBlock> corpus,
-                                                        Path dir, long restartAt) throws Exception {
+                                                        Path dir, long restartAt,
+                                                        long snapshotAt,
+                                                        List<StateProbe> stateProbes) throws Exception {
         Map<Long, HeightOutcome> outcomes = new LinkedHashMap<>();
         AppStateMachine machine = provider.create(contextFor(chainId, settings));
         AppLedgerStore store = new AppLedgerStore(dir.toString(), log);
@@ -321,7 +368,16 @@ public final class StateMachineConformance {
                     machine = provider.create(contextFor(chainId, settings));
                     machine.init(readerFor(store), new AppChainInfo(chainId, "00".repeat(32), 1));
                 }
-                outcomes.put(block.height(), applyAndCommit(store, machine, settings, block));
+                if (snapshotAt > 0 && block.height() == snapshotAt + 1) {
+                    Path checkpoint = dir.resolveSibling(dir.getFileName() + "-checkpoint");
+                    store.createSnapshot(checkpoint.toString());
+                    store.close();
+                    store = new AppLedgerStore(checkpoint.toString(), log);
+                    machine = provider.create(contextFor(chainId, settings));
+                    machine.init(readerFor(store), new AppChainInfo(chainId, "00".repeat(32), 1));
+                }
+                outcomes.put(block.height(), applyAndCommit(
+                        store, machine, settings, block, stateProbes));
             }
         } finally {
             store.close();
@@ -331,14 +387,24 @@ public final class StateMachineConformance {
 
     /** Same pipeline as production, via the shared applier (FxKernel + MPF batch staging). */
     private static HeightOutcome applyAndCommit(AppLedgerStore store, AppStateMachine machine,
-                                                Map<String, String> settings, AppBlock block) {
+                                                Map<String, String> settings, AppBlock block,
+                                                List<StateProbe> stateProbes) {
         FxKernel kernel = new FxKernel(EffectsSettings.fromSettings(settings));
         FxBlockApplier.Applied applied = FxBlockApplier.applyAndCommit(store, kernel, machine, block);
         List<String> effectHashes = new ArrayList<>(applied.fx().emitted().size());
         for (FxKernel.StagedEffect staged : applied.fx().emitted()) {
             effectHashes.add(HexUtil.encodeHexString(staged.effectHash()));
         }
-        return new HeightOutcome(HexUtil.encodeHexString(applied.block().stateRoot()), effectHashes);
+        Map<String, String> stateValues = new LinkedHashMap<>();
+        for (StateProbe probe : stateProbes) {
+            String value = store.stateGet(probe.key())
+                    .map(HexUtil::encodeHexString).orElse("<absent>");
+            if (stateValues.putIfAbsent(probe.name(), value) != null) {
+                throw new IllegalArgumentException("duplicate state probe name: " + probe.name());
+            }
+        }
+        return new HeightOutcome(HexUtil.encodeHexString(applied.block().stateRoot()),
+                effectHashes, Map.copyOf(stateValues));
     }
 
     private static AppStateMachineContext contextFor(String chainId, Map<String, String> settings) {
@@ -450,11 +516,11 @@ public final class StateMachineConformance {
             try {
                 Path workDir = Files.createTempDirectory("appchain-upgrade-conformance");
                 Map<Long, HeightOutcome> baseline = applyCorpus(oldProvider, settings, chainId,
-                        corpus, workDir.resolve("baseline"), -1);
+                        corpus, workDir.resolve("baseline"), -1, -1, List.of());
                 List<Map<Long, HeightOutcome>> newRuns = new ArrayList<>();
                 for (int run = 0; run < runs; run++) {
                     newRuns.add(applyCorpus(newProvider, upgraded, chainId, corpus,
-                            workDir.resolve("upgraded-" + run), -1));
+                            workDir.resolve("upgraded-" + run), -1, -1, List.of()));
                 }
                 // Exercise crash recovery on both sides of the boundary. A restart
                 // point is the last committed height before reopen, so A-1 reopens
@@ -469,7 +535,8 @@ public final class StateMachineConformance {
                 int restartRun = 0;
                 for (long restartAt : restartPoints) {
                     newRuns.add(applyCorpus(newProvider, upgraded, chainId, corpus,
-                            workDir.resolve("upgraded-restart-" + restartRun++), restartAt));
+                            workDir.resolve("upgraded-restart-" + restartRun++), restartAt, -1,
+                            List.of()));
                 }
                 // Replay stability below the activation: new version vs OLD baseline
                 List<Map<Long, HeightOutcome>> vsBaseline = new ArrayList<>();

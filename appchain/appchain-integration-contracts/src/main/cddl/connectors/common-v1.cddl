@@ -1,0 +1,38 @@
+; ADR-013 connector common types. Every tstr below is printable ASCII or an
+; explicitly narrower ASCII grammar; lengths therefore mean both characters
+; and UTF-8 bytes. Java codecs enforce these semantic rules on encode/decode.
+
+version-v1 = 1
+hash32 = bstr .size 32
+nonnegative-int64 = uint .le 9223372036854775807
+
+; Exact regex: [a-z][a-z0-9-]{0,62}
+alias = tstr .regexp "[a-z][a-z0-9-]{0,62}"
+
+; Configuration target ids and payload aliases have the same portable grammar.
+target-id = alias
+
+; Exact regex: [a-z0-9!#$&^_.+-]+/[a-z0-9!#$&^_.+-]+
+; Parameters, whitespace, uppercase, and non-ASCII are forbidden; <=127 bytes.
+content-type = (tstr .size (1..127)) .and
+               (tstr .regexp "[a-z0-9!#$&^_.+-]+/[a-z0-9!#$&^_.+-]+")
+
+; Segment regex: [A-Za-z0-9][A-Za-z0-9._~!$'()+,;=@-]{0,127}
+; object-key grammar: object-segment ("/" object-segment){0,31}
+; Thus: 1..512 bytes, 1..32 segments, each 1..128 bytes. Empty, dot,
+; dot-dot, leading/trailing slash, backslash, percent, and non-ASCII are
+; forbidden. A normalized destination prefix uses the same grammar or is the
+; empty string; it never has a trailing slash.
+object-key = tstr .size (1..512)
+object-segment = tstr .regexp "[A-Za-z0-9][A-Za-z0-9._~!$'()+,;=@-]{0,127}"
+normalized-object-prefix = "" / object-key
+
+; Printable US-ASCII U+0020..U+007E. These aliases additionally freeze bounds
+; used by stable provider fields in detail documents and fingerprint preimages.
+printable-ascii-256 = tstr .regexp "[ -~]{1,256}"
+printable-ascii-1024 = tstr .regexp "[ -~]{1,1024}"
+
+; Canonical binary CIDv1. V1 policy permits one-byte raw/dag-pb codecs with
+; sha2-256/32 only, hence exactly 36 bytes. Text CIDv0 is normalized by client
+; tooling before emit.
+canonical-cid-v1 = bstr .size 36

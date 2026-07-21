@@ -4,6 +4,7 @@ import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.appchain.AppChainGateway;
 import com.bloxbean.cardano.yano.api.appchain.AppChainGateways;
 import com.bloxbean.cardano.yano.api.appchain.AppQueryPath;
+import com.bloxbean.cardano.yano.api.appchain.AppStateProofSnapshot;
 import com.bloxbean.cardano.yano.api.appchain.ReceivedAppMessage;
 import com.fasterxml.jackson.annotation.JsonAnySetter;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
@@ -26,6 +27,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 /**
  * REST surface for the app chain(s). Chain-scoped paths
@@ -117,7 +119,7 @@ public class AppChainResource {
     @GET
     @Operation(hidden = true)
     @Path("proof/{keyHex}")
-    public Response proof(@PathParam("keyHex") String keyHex) {
+    public Response proof(@Encoded @PathParam("keyHex") String keyHex) {
         return singleChain().proof(keyHex);
     }
 
@@ -305,6 +307,10 @@ public class AppChainResource {
     @Consumes(MediaType.APPLICATION_JSON)
     @RegisterForReflection
     public static class ChainScopedResource {
+
+        private static final int MAX_PROOF_KEY_BYTES = 256;
+        private static final int MAX_PROOF_VALUE_BYTES = 1024 * 1024;
+        private static final int MAX_PROOF_WIRE_BYTES = 1024 * 1024;
 
         private final AppChainGateway gateway;
 
@@ -534,16 +540,7 @@ public class AppChainResource {
                             .entity(Map.of("error", "No app block at height " + height)).build());
         }
 
-        /**
-         * MPF inclusion proof for a state key (hex). For the built-in ordered-log
-         * app the key is the message id; the proof verifies the message's finalized
-         * position against the (anchorable) state root.
-         */
-        /**
-         * Portable, offline-verifiable evidence bundle for a finalized message
-         * (ADR 006 E3.4): block(s) + members + L1 anchor reference. Verify with
-         * core-api's {@code EvidenceVerifier} — no node access needed.
-         */
+        /** Request body for creating an app-chain ledger snapshot. */
         public record SnapshotRequest(String path) {
         }
 
@@ -976,6 +973,12 @@ public class AppChainResource {
             }
         }
 
+        /**
+         * Portable evidence material for a finalized message (ADR 006 E3.4):
+         * block(s), claimed members, and L1 anchor reference. Authenticity
+         * requires an independently pinned trust context plus verification of
+         * the exact Cardano anchor output/datum.
+         */
         @GET
         @Path("evidence/{messageIdHex}")
         public Response evidence(@PathParam("messageIdHex") String messageIdHex) {
@@ -993,30 +996,79 @@ public class AppChainResource {
                             .entity(Map.of("error", "No finalized message with id " + messageIdHex)).build());
         }
 
+        /**
+         * MPF inclusion proof for a state key (hex). For the built-in ordered-log
+         * app the key is the message id; the proof verifies the message's finalized
+         * position against the (anchorable) state root.
+         */
         @GET
         @Path("proof/{keyHex}")
-        public Response proof(@PathParam("keyHex") String keyHex) {
-            byte[] key;
-            try {
-                key = HexUtil.decodeHexString(keyHex);
-            } catch (Exception e) {
-                return badRequest("Invalid key hex");
+        public Response proof(@Encoded @PathParam("keyHex") String keyHex) {
+            if (keyHex != null && keyHex.length() > MAX_PROOF_KEY_BYTES * 2) {
+                return Response.status(413)
+                        .entity(Map.of("error", "State proof key exceeds the size limit"))
+                        .build();
             }
-            var proof = gateway.stateProof(key);
-            if (proof.isEmpty()) {
+            if (!isCanonicalProofKey(keyHex)) {
+                return badRequest("State proof key must be canonical lowercase hex");
+            }
+            byte[] key = HexUtil.decodeHexString(keyHex);
+            final Optional<AppStateProofSnapshot> snapshot;
+            try {
+                snapshot = gateway.stateProofSnapshot(key);
+            } catch (UnsupportedOperationException unavailable) {
+                return Response.status(Response.Status.SERVICE_UNAVAILABLE)
+                        .entity(Map.of(
+                                "code", "STATE_PROOF_UNAVAILABLE",
+                                "error", "Atomic state proof snapshots are unavailable"))
+                        .build();
+            }
+            if (snapshot.isEmpty()) {
                 return Response.status(Response.Status.NOT_FOUND)
-                        .entity(Map.of("error", "No state entry for key")).build();
+                        .entity(Map.of("error", "No committed state proof available for key"))
+                        .build();
+            }
+            var proof = snapshot.orElseThrow();
+            byte[] proofKey = proof.key();
+            if (!java.util.Arrays.equals(key, proofKey)) {
+                return Response.status(Response.Status.INTERNAL_SERVER_ERROR)
+                        .entity(Map.of("error", "State proof snapshot identity mismatch"))
+                        .build();
+            }
+            byte[] proofWire = proof.proofWire();
+            byte[] proofValue = proof.value();
+            if (proofWire.length > MAX_PROOF_WIRE_BYTES
+                    || (proofValue != null && proofValue.length > MAX_PROOF_VALUE_BYTES)) {
+                return Response.status(413)
+                        .entity(Map.of("error", "State proof response exceeds the size limit"))
+                        .build();
             }
             Map<String, Object> result = new LinkedHashMap<>();
-            result.put("key", keyHex);
+            result.put("key", HexUtil.encodeHexString(proofKey));
             result.put("chainId", gateway.chainId());
-            result.put("stateRoot", HexUtil.encodeHexString(gateway.stateRoot()));
-            result.put("proofWireHex", HexUtil.encodeHexString(proof.get()));
-            gateway.stateValue(key)
-                    .ifPresent(v -> result.put("valueHex", HexUtil.encodeHexString(v)));
-            gateway.messageHeight(key)
+            result.put("committedHeight", proof.committedHeight());
+            result.put("stateRoot", HexUtil.encodeHexString(proof.stateRoot()));
+            result.put("proofWireHex", HexUtil.encodeHexString(proofWire));
+            if (proofValue != null) {
+                result.put("valueHex", HexUtil.encodeHexString(proofValue));
+            }
+            gateway.messageHeight(proofKey)
+                    .filter(height -> height <= proof.committedHeight())
                     .ifPresent(h -> result.put("finalizedAtHeight", h));
             return Response.ok(result).build();
+        }
+
+        private static boolean isCanonicalProofKey(String value) {
+            if (value == null || value.isEmpty() || (value.length() & 1) != 0) {
+                return false;
+            }
+            for (int i = 0; i < value.length(); i++) {
+                char c = value.charAt(i);
+                if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) {
+                    return false;
+                }
+            }
+            return true;
         }
 
         /**

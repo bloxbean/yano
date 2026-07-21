@@ -9,6 +9,7 @@ import io.micrometer.core.instrument.FunctionTimer;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
+import io.quarkus.runtime.ShutdownEvent;
 import io.quarkus.runtime.StartupEvent;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
@@ -20,6 +21,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -45,6 +48,8 @@ import java.util.concurrent.TimeUnit;
  *   yano_appchain_effects_execution_total     function counter (tag: outcome)
  *   yano_appchain_effects_expired_total       function counter
  *   yano_appchain_effects_execution_latency_seconds function timer (tag: type)
+ *   yano_appchain_effects_executor_readiness  gauge (tags: executor, slot, state)
+ *   yano_appchain_effects_executor_attempts_total function counter
  * </pre>
  *
  * Status-backed gauges read ONE memoized {@code status()} snapshot (~1s TTL)
@@ -76,6 +81,7 @@ public class AppChainMetrics {
     // devnet regression run, 008.1 I1.8)
     private final List<StatusSnapshot> snapshots = new CopyOnWriteArrayList<>();
     private final List<EffectStatsSnapshot> effectSnapshots = new CopyOnWriteArrayList<>();
+    private volatile ScheduledExecutorService executorMeterRefresher;
 
     /** Fixed runtime states: tag cardinality cannot grow with workload data. */
     private static final List<String> EFFECT_STATUSES = List.of(
@@ -84,6 +90,9 @@ public class AppChainMetrics {
     /** Fixed terminal outcomes exposed by the runtime's monotonic counters. */
     private static final List<String> EFFECT_OUTCOMES = List.of(
             "confirmed", "failed", "parked");
+    /** Fixed executor readiness values from ADR-013.1. */
+    private static final List<String> EXECUTOR_READINESS = List.of(
+            "ready", "degraded", "unavailable", "unknown");
 
     void onStart(@Observes StartupEvent event) {
         if (!appChainEnabled && firstChainId.isEmpty()) {
@@ -93,8 +102,58 @@ public class AppChainMetrics {
             for (AppChainGateway gateway : appChainGateways.all()) {
                 register(gateway);
             }
+            startExecutorMeterRefresh();
         } catch (Exception e) {
             log.warnf("App-chain metrics registration failed: %s", e.toString());
+        }
+    }
+
+    void onStop(@Observes ShutdownEvent event) {
+        ScheduledExecutorService current = executorMeterRefresher;
+        executorMeterRefresher = null;
+        if (current != null) {
+            current.shutdownNow();
+        }
+    }
+
+    private void startExecutorMeterRefresh() {
+        refreshExecutorMetersSafely();
+        try {
+            executorMeterRefresher = Executors.newSingleThreadScheduledExecutor(
+                    Thread.ofPlatform().daemon(true)
+                            .name("appchain-executor-metrics-cache").factory());
+            executorMeterRefresher.scheduleWithFixedDelay(
+                    this::refreshExecutorMetersSafely, 1, 1, TimeUnit.SECONDS);
+        } catch (RuntimeException schedulingFailed) {
+            executorMeterRefresher = null;
+            log.warn("App-chain executor metrics refresh scheduling failed");
+        }
+    }
+
+    private void refreshExecutorMetersSafely() {
+        try {
+            refreshExecutorMeters();
+        } catch (RuntimeException registrationFailed) {
+            // Public/log diagnostics intentionally exclude plugin-controlled text.
+            log.warn("App-chain executor metrics registration failed");
+        }
+    }
+
+    /**
+     * Freeze the first complete non-empty executor inventory for each chain.
+     * The app-chain runtime is assembled after {@link StartupEvent} observers
+     * begin, so a startup-only read can legitimately be empty. This bounded
+     * cache refresh never calls executor/plugin products; it reads only the
+     * runtime-owned snapshot exposed by {@link AppChainGateway#effectStats()}.
+     */
+    void refreshExecutorMeters() {
+        for (EffectStatsSnapshot snapshot : effectSnapshots) {
+            List<EffectStatsSnapshot.ExecutorDescriptor> descriptors =
+                    snapshot.executorDescriptorsToRegister();
+            if (descriptors != null) {
+                registerExecutorMetrics(snapshot.chain(), snapshot, descriptors);
+                snapshot.markExecutorDescriptorsRegistered();
+            }
         }
     }
 
@@ -102,7 +161,7 @@ public class AppChainMetrics {
         String chain = gateway.chainId();
         StatusSnapshot snapshot = new StatusSnapshot(gateway);
         snapshots.add(snapshot); // strong ref — see field comment
-        EffectStatsSnapshot effectSnapshot = new EffectStatsSnapshot(gateway);
+        EffectStatsSnapshot effectSnapshot = new EffectStatsSnapshot(chain, gateway);
         effectSnapshots.add(effectSnapshot); // Micrometer also holds these weakly
 
         Gauge.builder("yano.appchain.tip.height", gateway, g -> (double) g.tipHeight())
@@ -260,6 +319,60 @@ public class AppChainMetrics {
                     .description("Emission-to-local-terminal effect latency by bounded type bucket")
                     .register(registry);
         }
+
+        List<EffectStatsSnapshot.ExecutorDescriptor> descriptors =
+                snapshot.executorDescriptorsToRegister();
+        if (descriptors != null) {
+            registerExecutorMetrics(chain, snapshot, descriptors);
+            snapshot.markExecutorDescriptorsRegistered();
+        }
+    }
+
+    private void registerExecutorMetrics(
+            String chain,
+            EffectStatsSnapshot snapshot,
+            List<EffectStatsSnapshot.ExecutorDescriptor> descriptors
+    ) {
+        for (EffectStatsSnapshot.ExecutorDescriptor executor : descriptors) {
+            for (String readiness : EXECUTOR_READINESS) {
+                Gauge.builder("yano.appchain.effects.executor.readiness", snapshot,
+                                s -> s.executorReadiness(executor.slot(), readiness))
+                        .tag("chain", chain)
+                        .tag("executor", executor.id())
+                        .tag("slot", executor.slot())
+                        .tag("state", readiness)
+                        .description("One-hot cached readiness of a lifecycle-owned effect executor")
+                        .register(registry);
+            }
+            Gauge.builder("yano.appchain.effects.executor.in.flight", snapshot,
+                            s -> s.executorNumber(executor.slot(), "inFlight"))
+                    .tag("chain", chain)
+                    .tag("executor", executor.id())
+                    .tag("slot", executor.slot())
+                    .description("Work currently in flight inside the executor product")
+                    .register(registry);
+            for (String age : List.of("lastSuccessAge", "lastFailureAge")) {
+                Gauge.builder("yano.appchain.effects.executor.age.bucket", snapshot,
+                                s -> s.executorAgeBucketSeconds(executor.slot(), age))
+                        .tag("chain", chain)
+                        .tag("executor", executor.id())
+                        .tag("slot", executor.slot())
+                        .tag("event", age.equals("lastSuccessAge") ? "success" : "failure")
+                        .baseUnit("seconds")
+                        .description("Upper bound of the cached normalized executor event-age bucket")
+                        .register(registry);
+            }
+            for (String counter : List.of("attempts", "successes",
+                    "retryableFailures", "terminalFailures")) {
+                FunctionCounter.builder("yano.appchain.effects.executor." + counter, snapshot,
+                                s -> s.monotonicExecutorNumber(executor.slot(), counter))
+                        .tag("chain", chain)
+                        .tag("executor", executor.id())
+                        .tag("slot", executor.slot())
+                        .description("Cached lifecycle-owned executor counter")
+                        .register(registry);
+            }
+        }
     }
 
     /** Memoized status() snapshot: one gateway call feeds all gauges per scrape. */
@@ -328,13 +441,20 @@ public class AppChainMetrics {
     /** Memoized effectStats() snapshot: one gateway call feeds every effect meter per scrape. */
     private static final class EffectStatsSnapshot {
         private static final long TTL_MS = 1_000;
+        private final String chain;
         private final AppChainGateway gateway;
         private final Map<String, MonotonicReading> monotonicReadings = new ConcurrentHashMap<>();
         private volatile Map<String, Object> cached = Map.of();
         private volatile long cachedAt;
+        private boolean executorDescriptorsFrozen;
 
-        EffectStatsSnapshot(AppChainGateway gateway) {
+        EffectStatsSnapshot(String chain, AppChainGateway gateway) {
+            this.chain = chain;
             this.gateway = gateway;
+        }
+
+        String chain() {
+            return chain;
         }
 
         Map<String, Object> get() {
@@ -425,6 +545,94 @@ public class AppChainMetrics {
             }
             return monotonic("latency." + type + "." + key,
                     nonNegativeOrNull(raw), true);
+        }
+
+        record ExecutorDescriptor(String slot, String id) {
+        }
+
+        List<ExecutorDescriptor> executorDescriptors() {
+            Object value = get().get("executorOperations");
+            if (!(value instanceof List<?> list)) {
+                return List.of();
+            }
+            List<ExecutorDescriptor> descriptors = new java.util.ArrayList<>();
+            for (int index = 0; index < Math.min(list.size(), 256); index++) {
+                Object entry = list.get(index);
+                if (!(entry instanceof Map<?, ?> map)) {
+                    continue;
+                }
+                Object rawId = map.get("id");
+                String id = rawId != null ? String.valueOf(rawId) : "unknown";
+                if (!id.matches("[A-Za-z0-9][A-Za-z0-9._:+-]{0,127}")) {
+                    id = "unknown";
+                }
+                descriptors.add(new ExecutorDescriptor(Integer.toString(index), id));
+            }
+            return List.copyOf(descriptors);
+        }
+
+        /** Null means already frozen or the runtime inventory is not ready yet. */
+        synchronized List<ExecutorDescriptor> executorDescriptorsToRegister() {
+            if (executorDescriptorsFrozen) {
+                return null;
+            }
+            List<ExecutorDescriptor> descriptors = executorDescriptors();
+            if (descriptors.isEmpty()) {
+                return null;
+            }
+            return descriptors;
+        }
+
+        synchronized void markExecutorDescriptorsRegistered() {
+            executorDescriptorsFrozen = true;
+        }
+
+        double executorNumber(String slot, String key) {
+            Map<?, ?> executor = executor(slot);
+            return executor != null ? nonNegative(executor.get(key)) : 0d;
+        }
+
+        double monotonicExecutorNumber(String slot, String key) {
+            Map<?, ?> executor = executor(slot);
+            Object raw = executor != null ? executor.get(key) : null;
+            return monotonic("executor." + slot + "." + key,
+                    nonNegativeOrNull(raw), true);
+        }
+
+        double executorReadiness(String slot, String expected) {
+            Map<?, ?> executor = executor(slot);
+            Object raw = executor != null ? executor.get("readiness") : null;
+            return raw != null && expected.equalsIgnoreCase(String.valueOf(raw)) ? 1d : 0d;
+        }
+
+        double executorAgeBucketSeconds(String slot, String key) {
+            Map<?, ?> executor = executor(slot);
+            Object raw = executor != null ? executor.get(key) : null;
+            if (raw == null) {
+                return 0d;
+            }
+            return switch (String.valueOf(raw)) {
+                case "LESS_THAN_ONE_MINUTE" -> 60d;
+                case "LESS_THAN_FIVE_MINUTES" -> 300d;
+                case "LESS_THAN_FIFTEEN_MINUTES" -> 900d;
+                case "LESS_THAN_ONE_HOUR" -> 3_600d;
+                case "LESS_THAN_SIX_HOURS", "SIX_HOURS_OR_MORE" -> 21_600d;
+                default -> 0d;
+            };
+        }
+
+        private Map<?, ?> executor(String slot) {
+            Object value = get().get("executorOperations");
+            if (!(value instanceof List<?> list)) {
+                return null;
+            }
+            try {
+                int index = Integer.parseInt(slot);
+                return index >= 0 && index < list.size() && list.get(index) instanceof Map<?, ?> map
+                        ? map : null;
+            } catch (NumberFormatException ignored) {
+                return null;
+            }
         }
 
         private double monotonic(String key, Double raw, boolean runtimeScoped) {

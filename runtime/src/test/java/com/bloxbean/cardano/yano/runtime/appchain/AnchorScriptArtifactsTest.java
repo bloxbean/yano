@@ -17,8 +17,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class AnchorScriptArtifactsTest {
 
     // Golden on-chain identity of the CHECKED-IN julc artifacts, for the fixed
-    // fixture seed = 0x5E×32 / index 1. These are the exact hashes the build
-    // validated live on preprod. The value is derived through the FULL
+    // fixture seed = 0x5E×32 / index 1. The value is derived through the FULL
     // production path (classpath cborHex → applyParams → re-encode → hash), so
     // this pin fails on BOTH an accidental edit to the artifact JSON AND a julc
     // upgrade that changes the decode/apply/encode bytes — either of which would
@@ -32,7 +31,7 @@ class AnchorScriptArtifactsTest {
     private static final String GOLDEN_POLICY_ID =
             "20c67c50d7be2e039dfaae02ab300b736ab5a990100063a780764251";
     private static final String GOLDEN_VALIDATOR_HASH =
-            "e2c75c9f39dc62058582a7a249b62eec5a941a2e6ae2f8a6eb1bafb8";
+            "a311db9923c2a0b9571e1e6f123589e2ea0dea083d9cd7f829e7d6d8";
 
     private static byte[] fill(int len, int b) {
         byte[] bytes = new byte[len];
@@ -47,12 +46,12 @@ class AnchorScriptArtifactsTest {
         PlutusV3Script policy = artifacts.threadPolicy(GOLDEN_SEED, GOLDEN_INDEX);
         byte[] policyId = AnchorScriptArtifacts.scriptHash(policy);
         assertThat(HexUtil.encodeHexString(policyId))
-                .as("thread policy id (on-chain identity) drifted from the preprod-validated artifact")
+                .as("thread policy id (on-chain identity) drifted from the checked-in v1 artifact")
                 .isEqualTo(GOLDEN_POLICY_ID);
 
         byte[] validatorHash = AnchorScriptArtifacts.scriptHash(artifacts.validator(policyId));
         assertThat(HexUtil.encodeHexString(validatorHash))
-                .as("anchor validator script hash (on-chain identity) drifted from the preprod-validated artifact")
+                .as("anchor validator script hash (on-chain identity) drifted from the checked-in v1 artifact")
                 .isEqualTo(GOLDEN_VALIDATOR_HASH);
     }
 

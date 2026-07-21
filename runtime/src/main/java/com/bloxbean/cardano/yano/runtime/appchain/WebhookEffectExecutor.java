@@ -4,6 +4,8 @@ import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutor;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectExecution;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectExecutionContext;
+import com.bloxbean.cardano.yano.api.appchain.effects.EffectExecutorOperationalSnapshot;
+import com.bloxbean.cardano.yano.api.appchain.effects.EffectExecutorOperationsTracker;
 import com.bloxbean.cardano.yano.api.appchain.effects.PendingEffect;
 import org.slf4j.Logger;
 
@@ -14,6 +16,7 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Built-in {@code webhook.post} executor (ADR app-layer/010 F5/F12): POSTs an
@@ -37,6 +40,8 @@ final class WebhookEffectExecutor implements AppEffectExecutor {
     private final Duration requestTimeout;
     private final HttpClient httpClient;
     private final Logger log;
+    private final EffectExecutorOperationsTracker operations =
+            new EffectExecutorOperationsTracker();
 
     WebhookEffectExecutor(Map<String, String> config, Logger log) {
         this.configuredUrl = config.getOrDefault("url", "").trim();
@@ -55,12 +60,27 @@ final class WebhookEffectExecutor implements AppEffectExecutor {
     }
 
     @Override
+    public Set<String> effectTypes() {
+        return Set.of(TYPE);
+    }
+
+    @Override
     public boolean supports(String effectType) {
         return TYPE.equals(effectType);
     }
 
     @Override
     public EffectExecution execute(EffectExecutionContext ctx, PendingEffect effect) throws Exception {
+        return operations.observeChecked(() -> executeAttempt(ctx, effect));
+    }
+
+    @Override
+    public EffectExecutorOperationalSnapshot operationalSnapshot() {
+        return operations.snapshot();
+    }
+
+    private EffectExecution executeAttempt(EffectExecutionContext ctx, PendingEffect effect)
+            throws Exception {
         WebhookCommand command = WebhookCommand.decode(effect.payload());
         String url = configuredUrl;
         if (command.url() != null && !command.url().isBlank()) {

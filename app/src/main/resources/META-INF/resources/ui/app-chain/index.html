@@ -464,7 +464,18 @@
           <div id="sinksList"><div class="empty">No sinks configured</div></div>
         </section>
 
-        <section class="card ac-rose" style="--i: 6">
+        <section class="card ac-violet" style="--i: 6">
+          <div class="card-head">
+            <div class="card-title">
+              <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 9l3 3-3 3"/><path d="M13 15h3"/><rect x="3" y="4" width="18" height="16" rx="2"/></svg></span>
+              <h2>Effect Executors</h2>
+            </div>
+            <span id="effectExecutorsBadge" class="badge">-</span>
+          </div>
+          <div id="effectExecutorsList"><div class="empty">No in-process executors configured</div></div>
+        </section>
+
+        <section class="card ac-rose" style="--i: 7">
           <div class="card-head">
             <div class="card-title">
               <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="12" r="2.5"/><circle cx="19" cy="5" r="2.5"/><circle cx="19" cy="19" r="2.5"/><path d="M7.3 10.9l9.4-4.7M7.3 13.1l9.4 4.7"/></svg></span>
@@ -1016,6 +1027,31 @@
                     + ' · sent ' + fmt(sink.delivered) + '</span></div>' + err;
               }).join('')
             : '<div class="empty">No sinks configured</div>';
+
+        const effectRuntime = s.effects && s.effects.executor;
+        const executorOperations = effectRuntime && Array.isArray(effectRuntime.executorOperations)
+            ? effectRuntime.executorOperations : [];
+        $('effectExecutorsBadge').textContent = executorOperations.length
+            ? executorOperations.length + ' ACTIVE' : 'NONE';
+        $('effectExecutorsBadge').className = 'badge' + (executorOperations.length ? ' b-ok' : '');
+        $('effectExecutorsList').innerHTML = executorOperations.length
+            ? executorOperations.map(executor => {
+                const readiness = String(executor.readiness || 'UNKNOWN').toUpperCase();
+                const kind = readiness === 'READY' ? 'b-ok'
+                    : readiness === 'UNAVAILABLE' ? 'b-bad' : 'b-warn';
+                const sample = String(executor.sampleState || 'UNKNOWN').toUpperCase();
+                const failure = executor.failureCode && executor.failureCode !== 'NONE'
+                    ? ' · ' + esc(executor.failureCode) : '';
+                const types = Array.isArray(executor.types) && executor.types.length
+                    ? executor.types.join(', ') : 'legacy predicate';
+                return '<div class="metric"><span>' + esc(executor.id || '-')
+                    + '<br><span class="muted mono" style="font-size:10px">' + esc(types) + '</span></span>'
+                    + '<span><span class="badge ' + kind + '">' + esc(readiness) + '</span>'
+                    + '<br><span class="muted mono" style="font-size:10px">' + esc(sample)
+                    + ' · ' + fmt(executor.successes) + '/' + fmt(executor.attempts)
+                    + failure + '</span></span></div>';
+              }).join('')
+            : '<div class="empty">No in-process executors configured</div>';
 
         const peers = s.peers || {};
         const peerIds = Object.keys(peers);

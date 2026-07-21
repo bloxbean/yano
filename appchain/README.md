@@ -1,5 +1,7 @@
 # Yano App Chain — modules & build guide
 
+_**"Verifiable, Cardano-anchored appchain framework"**_
+
 This folder holds the **app-chain module family**: the code for running a
 sequenced, replicated, L1-anchored application ledger next to Cardano. The
 consensus engine and the built-in `ordered-log` state machine live in the
@@ -15,6 +17,8 @@ Don't look for feature docs here — they're centralized:
 
 | Doc | Covers |
 |---|---|
+| [`docs/APP_CHAIN_OVERVIEW.md`](../docs/APP_CHAIN_OVERVIEW.md) | A diagram-led 10–15 minute explanation of the app-chain value, end-to-end flow, components, no-code path, plugins, effects, composite state machines, use cases, and readiness. |
+| [`docs/YANO_APP_CHAIN_OVERVIEW.pptx`](../docs/YANO_APP_CHAIN_OVERVIEW.pptx) | Editable 13-slide companion deck for a concise architecture and product pitch. |
 | [`docs/APP_CHAIN_USER_GUIDE.md`](../docs/APP_CHAIN_USER_GUIDE.md) | Configuration, REST, anchoring (metadata + script), operations |
 | [`docs/APP_CHAIN_TUTORIAL.md`](../docs/APP_CHAIN_TUTORIAL.md) | Hands-on: run a chain from the distribution + a custom plugin |
 | [`docs/APP_CHAIN_PLUGIN_QUERY_AND_DOMAIN_API.md`](../docs/APP_CHAIN_PLUGIN_QUERY_AND_DOMAIN_API.md) | Plugin-author contract for committed queries and manifested domain APIs |
@@ -27,11 +31,20 @@ Don't look for feature docs here — they're centralized:
 | Module (`:project`) | Path | Purpose |
 |---|---|---|
 | `appchain-stdlib` | `appchain-stdlib/` | Ready `AppStateMachine`s selected by id: `kv-registry`, `approvals`, `balances`, `doc-trail` (`ordered-log` is built into `runtime`). Ships in the distribution. |
+| `appchain-composite-contracts` | `appchain-composite-contracts/` | No-SPI profile commitment, physical-key mapping, aggregate-query wire, and stock workflow submission contracts. |
+| `appchain-composite` | `appchain-composite/` | Deterministic component composition plus the stock manifested `composite` / `evidence-v1` provider. See its README for custom bundle rules. |
 | `appchain-client` | `appchain-client/` | Java client SDK — REST + SSE + client-side proof verification. |
 | `appchain-testkit` | `appchain-testkit/` | JUnit 5 `@AppChainCluster` embedded multi-node clusters for tests. |
 | `appchain-anchor-onchain` | `onchain/appchain-anchor-onchain/` | **On-chain anchor validators** (Plutus V3), authored in Java via julc — the default. See "On-chain artifacts" below. |
 | _(Aiken twin)_ | `onchain/aiken/appchain-anchor/` | The same validators in Aiken — the opt-in, auditor-familiar alternative (same ABI). Its own README covers the Aiken build. |
-| `appchain-kafka-sink` | `extensions/appchain-kafka-sink/` | Plugin: finalized blocks → Kafka topics. |
+| `appchain-integration-contracts` | `appchain-integration-contracts/` | Provider-neutral connector wire contracts, CDDL, and golden vectors. |
+| `appchain-evidence-contracts` | `examples/appchain-evidence-contracts/` | Frozen, no-plugin evidence command/query/state codecs. |
+| `appchain-evidence-registry` | `examples/appchain-evidence-registry/` | Reference evidence state machine, domain API, and composite component implementation. |
+| `appchain-evidence-client` | `examples/appchain-evidence-client/` | Proof-aware typed evidence client for standalone or profile-bound composite chains. |
+| `appchain-evidence-demo-runner` | `examples/appchain-evidence-demo-runner/` | Credential-separated no-code scenario runner and read-only report UI. |
+| `appchain-kafka` | `extensions/appchain-kafka/` | Plugin: finalized blocks and acknowledged `kafka.publish` effects → Kafka topics. |
+| `appchain-objectstore-s3` | `extensions/appchain-objectstore-s3/` | Plugin: immutable, versioned `object.put` promotion for tested S3-compatible stores. |
+| `appchain-ipfs` | `extensions/appchain-ipfs/` | Plugin: reconciled, acknowledged `ipfs.pin` effects against a configured Kubo node. |
 | `appchain-zk` | `extensions/appchain-zk/` | Plugin (EXPERIMENTAL): ZeroJ-based proof-verified state machines. |
 | `appchain-effects-cardano` | `extensions/appchain-effects-cardano/` | Plugin: Cardano payment executor for the app-chain effect system. |
 | `appchain-spring-boot-starter` | `../spring-starters/appchain-spring-boot-starter/` | Spring Boot auto-config for the client SDK. |

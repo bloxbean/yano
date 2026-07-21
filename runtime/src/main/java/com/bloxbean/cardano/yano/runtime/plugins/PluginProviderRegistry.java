@@ -23,6 +23,17 @@ public interface PluginProviderRegistry {
     <P> List<String> names(Class<P> providerType);
 
     /**
+     * Bundle identity that owns a selected contribution. Direct/legacy
+     * registries may return empty; callers use a bounded compatibility label.
+     */
+    default <P> Optional<String> contributionOwner(
+            Class<P> providerType,
+            String selector
+    ) {
+        return Optional.empty();
+    }
+
+    /**
      * Register the terminal cleanup signal for a product callback owner.
      * Catalog environments use these barriers to keep bundle lifecycle and
      * class-loader resources alive until every returned product is quiescent.

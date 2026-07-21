@@ -46,10 +46,27 @@ public interface AppChainGateway {
     java.util.Optional<byte[]> stateValue(byte[] key);
 
     /**
-     * MPF inclusion proof (wire format) for a key against the committed root;
-     * verifiable off-chain and on-chain (Aiken MPF validator).
+     * MPF inclusion or exclusion proof (wire format) for a key against the
+     * committed root; verifiable off-chain and on-chain (Aiken MPF validator).
      */
     java.util.Optional<byte[]> stateProof(byte[] key);
+
+    /**
+     * Atomic inclusion or exclusion proof for one key, bound to the exact
+     * committed height and state root used to read its value. Implementations
+     * predating this capability must override this method before exposing the
+     * proof endpoint. The default fails explicitly: composing {@link #stateRoot()},
+     * {@link #stateValue(byte[])}, and {@link #stateProof(byte[])} can race a
+     * concurrently finalized block and must never be presented as one proof
+     * snapshot.
+     *
+     * @throws UnsupportedOperationException when the gateway has not implemented
+     *                                       atomic proof snapshots
+     */
+    default java.util.Optional<AppStateProofSnapshot> stateProofSnapshot(byte[] key) {
+        throw new UnsupportedOperationException(
+                "Atomic app-chain state proof snapshots are unavailable");
+    }
 
     /**
      * Run the configured state machine's bounded read hook against one
@@ -74,10 +91,12 @@ public interface AppChainGateway {
     AutoCloseable subscribeFinalized(FinalizedBlockListener listener);
 
     /**
-     * Build a portable, offline-verifiable evidence bundle for a finalized
-     * message (ADR app-layer/006 E3.4): its block(s), the member key set, and —
-     * when anchored — the L1 anchor reference and prev-hash chain to it. Empty
-     * if the message id is unknown/not finalized.
+     * Build portable verification material for a finalized message (ADR
+     * app-layer/006 E3.4): its block(s), the bundle-claimed member key set, and
+     * — when anchored — the L1 anchor reference and prev-hash chain to it.
+     * Authenticity requires an independently trusted chain/member/threshold
+     * context and independent verification of the exact Cardano anchor output.
+     * Empty if the message id is unknown/not finalized.
      */
     java.util.Optional<com.bloxbean.cardano.yano.api.appchain.evidence.EvidenceBundle> evidence(byte[] messageId);
 

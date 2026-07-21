@@ -1,0 +1,535 @@
+name: ${DEMO_PROJECT_NAME:?set DEMO_PROJECT_NAME through demo.sh}
+
+x-service-security: &service-security
+  init: true
+  read_only: true
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  logging:
+    driver: local
+    options:
+      max-size: 10m
+      max-file: "3"
+
+x-runner: &runner
+  image: ${DEMO_RUNNER_IMAGE:?run demo.sh prepare first}
+  user: ${DEMO_HOST_UID:?}:${DEMO_HOST_GID:?}
+  <<: *service-security
+  tmpfs:
+    - /tmp:size=32m,mode=1777
+  volumes:
+    - type: bind
+      source: ${DEMO_RUNNER_CONFIG:?}
+      target: /run/demo/runner.properties
+      read_only: true
+    - type: bind
+      source: ${DEMO_S3_RUNNER_ACCESS_FILE:?}
+      target: /run/secrets/s3-runner-access-key
+      read_only: true
+    - type: bind
+      source: ${DEMO_S3_RUNNER_SECRET_FILE:?}
+      target: /run/secrets/s3-runner-secret-key
+      read_only: true
+    - type: bind
+      source: ./samples
+      target: /opt/yano-demo/samples
+      read_only: true
+    - type: bind
+      source: ${DEMO_REPORT_DIR:?}
+      target: /var/lib/yano-demo/reports
+
+x-yano: &yano
+  image: ${DEMO_YANO_IMAGE:?run demo.sh prepare first}
+  user: ${DEMO_HOST_UID:?}:${DEMO_HOST_GID:?}
+  <<: *service-security
+  restart: unless-stopped
+  environment:
+    YANO_PROFILE: ${DEMO_YANO_PROFILE:?}
+    QUARKUS_CONFIG_LOCATIONS: file:/run/demo/node.properties
+    JAVA_OPTS: -XX:MaxRAMPercentage=75
+  tmpfs:
+    # RocksDB extracts and loads its JNI library here. Keep this exec exception
+    # scoped to Yano; every other service retains a noexec tmpfs.
+    - /tmp:size=128m,mode=1777,exec
+  volumes:
+    - type: bind
+      source: ${DEMO_PLUGIN_DIR:?}
+      target: /app/plugins
+      read_only: true
+  healthcheck:
+    test:
+      - CMD
+      - /bin/bash
+      - -ec
+      - |
+        exec 3<>/dev/tcp/127.0.0.1/7070
+        printf 'GET /q/health/ready HTTP/1.0\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n' >&3
+        IFS=' ' read -r protocol status remainder <&3
+        [[ "$$protocol" == HTTP/* && "$$status" == 200 ]]
+    interval: 5s
+    timeout: 3s
+    start_period: 20s
+    retries: 36
+  networks:
+    - cluster
+
+services:
+  kafka:
+    image: ${DEMO_KAFKA_IMAGE:?}
+    user: ${DEMO_HOST_UID:?}:${DEMO_HOST_GID:?}
+    <<: *service-security
+    restart: unless-stopped
+    environment:
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:28711
+      KAFKA_LISTENERS: CONTROLLER://:28711,PLAINTEXT_HOST://:9092,PLAINTEXT://:19092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT_HOST://127.0.0.1:${DEMO_KAFKA_PORT:?},PLAINTEXT://kafka:19092
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CLUSTER_ID: 4L6g3nShT-eMCtK--X86sw
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: "0"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_SHARE_COORDINATOR_STATE_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_SHARE_COORDINATOR_STATE_TOPIC_MIN_ISR: "1"
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+      - /opt/kafka/config:size=16m,mode=0700,uid=${DEMO_HOST_UID:?},gid=${DEMO_HOST_GID:?}
+      - /opt/kafka/logs:size=64m,mode=0700,uid=${DEMO_HOST_UID:?},gid=${DEMO_HOST_GID:?}
+    volumes:
+      - type: bind
+        source: ${DEMO_KAFKA_DATA_DIR:?}
+        target: /var/lib/kafka/data
+      - type: bind
+        source: ${DEMO_KAFKA_PASSWD_FILE:?}
+        target: /etc/passwd
+        read_only: true
+      - type: bind
+        source: ${DEMO_KAFKA_GROUP_FILE:?}
+        target: /etc/group
+        read_only: true
+    ports:
+      - target: 9092
+        published: ${DEMO_KAFKA_PORT:?}
+        host_ip: 127.0.0.1
+        protocol: tcp
+    healthcheck:
+      test: ["CMD", "/usr/bin/nc", "-z", "-w", "3", "127.0.0.1", "19092"]
+      interval: 5s
+      timeout: 5s
+      start_period: 15s
+      retries: 24
+    networks:
+      - connectors
+
+  rustfs:
+    image: ${DEMO_RUSTFS_IMAGE:?run demo.sh prepare first}
+    user: ${DEMO_HOST_UID:?}:${DEMO_HOST_GID:?}
+    <<: *service-security
+    restart: unless-stopped
+    environment:
+      RUSTFS_ACCESS_KEY_FILE: /run/secrets/s3-root-access-key
+      RUSTFS_SECRET_KEY_FILE: /run/secrets/s3-root-secret-key
+      RUSTFS_IAM_MASTER_KEY_FILE: /run/secrets/s3-iam-master-key
+      RUSTFS_ADDRESS: 0.0.0.0:9000
+      RUSTFS_CHECK_UPDATE: "false"
+      RUSTFS_CONSOLE_ENABLE: "false"
+      RUSTFS_CONSOLE_CORS_ALLOWED_ORIGINS: ""
+      RUSTFS_OBS_LOG_DIRECTORY: ""
+    tmpfs:
+      - /tmp:size=32m,mode=1777,noexec,nosuid,nodev
+    volumes:
+      - type: bind
+        source: ${DEMO_S3_DATA_DIR:?}
+        target: /data
+      - type: bind
+        source: ${DEMO_S3_BOOTSTRAP_ACCESS_FILE:?}
+        target: /run/secrets/s3-root-access-key
+        read_only: true
+      - type: bind
+        source: ${DEMO_S3_BOOTSTRAP_SECRET_FILE:?}
+        target: /run/secrets/s3-root-secret-key
+        read_only: true
+      - type: bind
+        source: ${DEMO_S3_IAM_MASTER_KEY_FILE:?}
+        target: /run/secrets/s3-iam-master-key
+        read_only: true
+    ports:
+      - target: 9000
+        published: ${DEMO_S3_PORT:?}
+        host_ip: 127.0.0.1
+        protocol: tcp
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9000/health/ready"]
+      interval: 5s
+      timeout: 3s
+      start_period: 20s
+      retries: 36
+    networks:
+      connectors:
+        ipv4_address: ${DEMO_S3_IP:?}
+
+  s3-bootstrap:
+    image: ${DEMO_RUNNER_IMAGE:?run demo.sh prepare first}
+    user: ${DEMO_HOST_UID:?}:${DEMO_HOST_GID:?}
+    <<: *service-security
+    depends_on:
+      rustfs:
+        condition: service_healthy
+    command: ["bootstrap-s3", "--config", "/run/demo/s3-bootstrap.properties"]
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    volumes:
+      - type: bind
+        source: ${DEMO_S3_BOOTSTRAP_CONFIG:?}
+        target: /run/demo/s3-bootstrap.properties
+        read_only: true
+      - type: bind
+        source: ${DEMO_S3_BOOTSTRAP_ACCESS_FILE:?}
+        target: /run/secrets/s3-bootstrap-access-key
+        read_only: true
+      - type: bind
+        source: ${DEMO_S3_BOOTSTRAP_SECRET_FILE:?}
+        target: /run/secrets/s3-bootstrap-secret-key
+        read_only: true
+      - type: bind
+        source: ${DEMO_RUSTFS_IAM_SPEC_FILE:?}
+        target: /run/secrets/rustfs-iam-spec.json
+        read_only: true
+      - type: bind
+        source: ${DEMO_S3_RUNNER_SECRET_FILE:?}
+        target: /run/secrets/s3-runner-secret-key
+        read_only: true
+      - type: bind
+        source: ${DEMO_S3_EXECUTOR_SECRET_FILE:?}
+        target: /run/secrets/s3-executor-secret-key
+        read_only: true
+    networks:
+      - connectors
+
+  kubo:
+    image: ${DEMO_KUBO_IMAGE:?}
+    user: ${DEMO_HOST_UID:?}:${DEMO_HOST_GID:?}
+    <<: *service-security
+    restart: unless-stopped
+    command: ["daemon", "--offline", "--migrate=false", "--enable-gc"]
+    environment:
+      IPFS_PATH: /data/ipfs
+      IPFS_PROFILE: server,test
+      IPFS_TELEMETRY: "off"
+    tmpfs:
+      - /tmp:size=64m,mode=1777,noexec,nosuid,nodev
+    volumes:
+      - type: bind
+        source: ${DEMO_IPFS_DATA_DIR:?}
+        target: /data/ipfs
+    ports:
+      - target: 5001
+        published: ${DEMO_IPFS_PORT:?}
+        host_ip: 127.0.0.1
+        protocol: tcp
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/ipfs", "--api=/ip4/127.0.0.1/tcp/5001",
+             "diag", "healthy"]
+      interval: 5s
+      timeout: 3s
+      start_period: 10s
+      retries: 24
+    networks:
+      connectors:
+        ipv4_address: ${DEMO_KUBO_IP:?}
+
+  connector-init:
+    <<: *runner
+    command: ["init-connectors", "--config", "/run/demo/runner.properties"]
+    depends_on:
+      kafka:
+        condition: service_healthy
+      s3-bootstrap:
+        condition: service_completed_successfully
+      kubo:
+        condition: service_healthy
+    networks:
+      - connectors
+
+  yano-0:
+    <<: *yano
+    depends_on:
+      connector-init:
+        condition: service_completed_successfully
+    volumes:
+      - type: bind
+        source: ${DEMO_PLUGIN_DIR:?}
+        target: /app/plugins
+        read_only: true
+      - type: bind
+        source: ${DEMO_NODE0_CONFIG:?}
+        target: /run/demo/node.properties
+        read_only: true
+      - type: bind
+        source: ${DEMO_SHELLEY_GENESIS_FILE:?}
+        target: /run/demo/shelley-genesis.json
+        read_only: true
+      - type: bind
+        source: ${DEMO_YANO0_DATA_DIR:?}
+        target: /app/chainstate
+      - type: bind
+        source: ${DEMO_YANO0_APP_DATA_DIR:?}
+        target: /app/chainstate/app-chain
+      - type: bind
+        source: ${DEMO_YANO0_LOG_DIR:?}
+        target: /app/logs
+    ports:
+      - target: 7070
+        published: ${DEMO_HTTP0:?}
+        host_ip: 127.0.0.1
+        protocol: tcp
+    networks:
+      - cluster
+      - connectors
+
+  yano-1:
+    <<: *yano
+    depends_on:
+      leader-warmup:
+        condition: service_completed_successfully
+    volumes:
+      - type: bind
+        source: ${DEMO_PLUGIN_DIR:?}
+        target: /app/plugins
+        read_only: true
+      - type: bind
+        source: ${DEMO_NODE1_CONFIG:?}
+        target: /run/demo/node.properties
+        read_only: true
+      - type: bind
+        source: ${DEMO_SHELLEY_GENESIS_FILE:?}
+        target: /run/demo/shelley-genesis.json
+        read_only: true
+      - type: bind
+        source: ${DEMO_YANO1_DATA_DIR:?}
+        target: /app/chainstate
+      - type: bind
+        source: ${DEMO_YANO1_APP_DATA_DIR:?}
+        target: /app/chainstate/app-chain
+      - type: bind
+        source: ${DEMO_YANO1_LOG_DIR:?}
+        target: /app/logs
+    ports:
+      - target: 7070
+        published: ${DEMO_HTTP1:?}
+        host_ip: 127.0.0.1
+        protocol: tcp
+    networks:
+      - cluster
+
+  leader-warmup:
+    image: ${DEMO_YANO_IMAGE:?run demo.sh prepare first}
+    user: ${DEMO_HOST_UID:?}:${DEMO_HOST_GID:?}
+    <<: *service-security
+    entrypoint: ["/bin/sh", "-ec"]
+    command: ["sleep ${DEMO_LEADER_WARMUP_SECONDS:?}"]
+    tmpfs:
+      - /tmp:size=8m,mode=1777
+    depends_on:
+      yano-0:
+        condition: service_healthy
+    networks:
+      - cluster
+
+  yano-2:
+    <<: *yano
+    depends_on:
+      yano-1:
+        condition: service_healthy
+    volumes:
+      - type: bind
+        source: ${DEMO_PLUGIN_DIR:?}
+        target: /app/plugins
+        read_only: true
+      - type: bind
+        source: ${DEMO_NODE2_CONFIG:?}
+        target: /run/demo/node.properties
+        read_only: true
+      - type: bind
+        source: ${DEMO_SHELLEY_GENESIS_FILE:?}
+        target: /run/demo/shelley-genesis.json
+        read_only: true
+      - type: bind
+        source: ${DEMO_YANO2_DATA_DIR:?}
+        target: /app/chainstate
+      - type: bind
+        source: ${DEMO_YANO2_APP_DATA_DIR:?}
+        target: /app/chainstate/app-chain
+      - type: bind
+        source: ${DEMO_YANO2_LOG_DIR:?}
+        target: /app/logs
+    ports:
+      - target: 7070
+        published: ${DEMO_HTTP2:?}
+        host_ip: 127.0.0.1
+        protocol: tcp
+    networks:
+      - cluster
+
+  evidence-ui:
+    image: ${DEMO_RUNNER_IMAGE:?run demo.sh prepare first}
+    user: ${DEMO_HOST_UID:?}:${DEMO_HOST_GID:?}
+    <<: *service-security
+    command: ["serve", "--config", "/run/demo/runner.properties"]
+    restart: unless-stopped
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    volumes:
+      - type: bind
+        source: ${DEMO_UI_CONFIG:?}
+        target: /run/demo/runner.properties
+        read_only: true
+      - type: bind
+        source: ${DEMO_REPORT_DIR:?}
+        target: /var/lib/yano-demo/reports
+        read_only: true
+    depends_on:
+      yano-2:
+        condition: service_healthy
+    ports:
+      - target: 7080
+        published: ${DEMO_UI_PORT:?}
+        host_ip: 127.0.0.1
+        protocol: tcp
+    healthcheck:
+      test:
+        - CMD
+        - /bin/bash
+        - -ec
+        - |
+          exec 3<>/dev/tcp/127.0.0.1/7080
+          printf 'GET /healthz HTTP/1.0\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n' >&3
+          IFS=' ' read -r protocol status remainder <&3
+          [[ "$$protocol" == HTTP/* && "$$status" == 200 ]]
+      interval: 5s
+      timeout: 3s
+      start_period: 10s
+      retries: 24
+    networks:
+      - evidence_ui
+
+  scenario:
+    <<: *runner
+    profiles: ["tools"]
+    command: ["run", "--config", "/run/demo/runner.properties"]
+    networks:
+      - cluster
+      - connectors
+
+  prometheus:
+    image: ${DEMO_PROMETHEUS_IMAGE:?}
+    user: ${DEMO_HOST_UID:?}:${DEMO_HOST_GID:?}
+    <<: *service-security
+    profiles: ["observability"]
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=7d
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    volumes:
+      - type: bind
+        source: ./config/services/prometheus.yml
+        target: /etc/prometheus/prometheus.yml
+        read_only: true
+      - type: bind
+        source: ${DEMO_PROMETHEUS_DATA_DIR:?}
+        target: /prometheus
+    ports:
+      - target: 9090
+        published: ${DEMO_PROMETHEUS_PORT:?}
+        host_ip: 127.0.0.1
+        protocol: tcp
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:9090/-/ready"]
+      interval: 10s
+      timeout: 3s
+      start_period: 10s
+      retries: 12
+    networks:
+      - cluster
+      - observability
+
+  grafana:
+    image: ${DEMO_GRAFANA_IMAGE:?}
+    user: ${DEMO_HOST_UID:?}:${DEMO_HOST_GID:?}
+    <<: *service-security
+    profiles: ["observability"]
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: yano-admin
+      GF_SECURITY_ADMIN_PASSWORD__FILE: /run/secrets/grafana-admin-password
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    volumes:
+      - type: bind
+        source: ${DEMO_GRAFANA_DATA_DIR:?}
+        target: /var/lib/grafana
+      - type: bind
+        source: ./config/services/grafana/provisioning
+        target: /etc/grafana/provisioning
+        read_only: true
+      - type: bind
+        source: ./dashboards
+        target: /var/lib/grafana/dashboards
+        read_only: true
+      - type: bind
+        source: ${DEMO_GRAFANA_PASSWORD_FILE:?}
+        target: /run/secrets/grafana-admin-password
+        read_only: true
+    ports:
+      - target: 3000
+        published: ${DEMO_GRAFANA_PORT:?}
+        host_ip: 127.0.0.1
+        protocol: tcp
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/api/health"]
+      interval: 10s
+      timeout: 3s
+      start_period: 20s
+      retries: 18
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    networks:
+      - observability
+
+networks:
+  cluster:
+    driver: bridge
+    internal: false
+  evidence_ui:
+    driver: bridge
+    # Docker Desktop cannot route a published host port from an internal
+    # bridge. Isolation comes from this dedicated network plus the loopback-
+    # only port binding, not from an internal network that strands the UI.
+    internal: false
+  connectors:
+    driver: bridge
+    # Kafka, RustFS S3, and Kubo deliberately expose loopback-only host ports for
+    # the host deployment and manual inspection. Keep their bridge separate
+    # from the cluster while allowing Docker's port-publishing gateway.
+    internal: false
+    ipam:
+      config:
+        - subnet: ${DEMO_CONNECTOR_SUBNET:?}
+  observability:
+    driver: bridge
+    # Prometheus and Grafana remain on their own bridge; a non-internal
+    # gateway is required for their 127.0.0.1-published ports to be reachable.
+    internal: false

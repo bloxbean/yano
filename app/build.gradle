@@ -16,6 +16,54 @@ if (includeFirstPartyPluginBundlesProperty != null
 }
 def includeFirstPartyPluginBundles =
         Boolean.parseBoolean(includeFirstPartyPluginBundlesProperty ?: 'false')
+def jacksonPatchVersion = libs.versions.jackson.get()
+def jacksonAnnotationsVersion = jacksonPatchVersion.replaceFirst(/\.\d+$/, '')
+def isJacksonModule = { String group ->
+    group == 'com.fasterxml.jackson' || group?.startsWith('com.fasterxml.jackson.')
+}
+
+// Quarkus owns the application logging provider. The standalone runtime's
+// reload4j backend must not compete with Quarkus' JBoss provider in either the
+// packaged application or its test classpath.
+configurations.configureEach {
+    exclude group: 'org.slf4j', module: 'slf4j-reload4j'
+    exclude group: 'ch.qos.reload4j', module: 'reload4j'
+    // Keep the Quarkus host and every opt-in connector on the same SLF4J API
+    // patch even when first-party bundles are not included.
+    resolutionStrategy.force(libs.slf4j.api.get())
+    // Quarkus 3.33 is retained as the stable LTS baseline, but its enforced
+    // platform selects the vulnerable Jackson 2.21.2 patch. Align every
+    // Jackson family, not only databind, to the reviewed 2.21.4 BOM line.
+    // jackson-annotations intentionally follows Jackson's official 2.21 BOM
+    // convention and therefore has no patch component.
+    resolutionStrategy.eachDependency { details ->
+        if (isJacksonModule(details.requested.group)) {
+            details.useVersion(details.requested.name == 'jackson-annotations'
+                    ? jacksonAnnotationsVersion : jacksonPatchVersion)
+            details.because('ADR-013 release image requires the fixed Jackson 2.21.4 family')
+        }
+    }
+}
+
+// Quarkus's enforced platform may select older Kafka/BC/AWS SDK versions than
+// the first-party connectors. Opt-in thin/native connector builds must use the
+// same security-reviewed versions as their self-contained JVM bundles.
+if (includeFirstPartyPluginBundles) {
+    configurations.configureEach {
+        resolutionStrategy.force(
+                libs.kafka.clients.get(),
+                libs.bouncycastle.bcprov.get(),
+                libs.lz4.java.get(),
+                libs.snappy.java.get())
+        resolutionStrategy.eachDependency { details ->
+            if (details.requested.group == 'software.amazon.awssdk') {
+                details.useVersion(
+                        libs.aws.sdk.s3.get().versionConstraint.requiredVersion)
+                details.because('use one security-reviewed AWS SDK line for first-party connectors')
+            }
+        }
+    }
+}
 def includeNativePluginConformanceFixtureProperty =
         providers.gradleProperty('includeNativePluginConformanceFixture').orNull
 if (includeNativePluginConformanceFixtureProperty != null
@@ -36,12 +84,20 @@ def buildTimePluginBundles = [
                 [projectPath: ':runtime', includeProvided: false,
                  expectedManifestVersion: '1.0.0'],
         'com.bloxbean.cardano.yano.appchain.stdlib':
-                [projectPath: ':appchain-stdlib', includeProvided: false]
+                [projectPath: ':appchain-stdlib', includeProvided: false],
+        'com.bloxbean.cardano.yano.appchain.composite':
+                [projectPath: ':appchain-composite', includeProvided: false],
+        'com.bloxbean.cardano.yano.appchain.evidence-registry':
+                [projectPath: ':appchain-evidence-registry', includeProvided: true]
 ]
 if (includeFirstPartyPluginBundles) {
     buildTimePluginBundles.putAll([
             'com.bloxbean.cardano.yano.appchain.kafka':
-                    [projectPath: ':appchain-kafka-sink', includeProvided: true],
+                    [projectPath: ':appchain-kafka', includeProvided: true],
+            'com.bloxbean.cardano.yano.appchain.objectstore.s3':
+                    [projectPath: ':appchain-objectstore-s3', includeProvided: true],
+            'com.bloxbean.cardano.yano.appchain.ipfs':
+                    [projectPath: ':appchain-ipfs', includeProvided: true],
             'com.bloxbean.cardano.yano.appchain.effects.cardano':
                     [projectPath: ':appchain-effects-cardano', includeProvided: true],
             'com.bloxbean.cardano.yano.appchain.zk':
@@ -105,12 +161,24 @@ dependencies {
     implementation(project(':appchain-stdlib')) {
         exclude group: 'io.netty', module: 'netty-all'
     }
+    // Stock deterministic composition and evidence-v1 preset (ADR-013.2).
+    implementation(project(':appchain-composite')) {
+        exclude group: 'io.netty', module: 'netty-all'
+    }
     // Optional T3 integrations stay out of the stock artifact. Native/custom
     // builds can opt in before catalog-index and reflection generation.
     if (includeFirstPartyPluginBundles) {
-        runtimeOnly project(':appchain-kafka-sink')
+        runtimeOnly project(':appchain-kafka')
+        runtimeOnly project(':appchain-objectstore-s3')
+        runtimeOnly project(':appchain-ipfs')
         runtimeOnly project(':appchain-effects-cardano')
         runtimeOnly project(':appchain-zk')
+        // AWS SDK 2.48.0 compiles its checksum fallback against these optional
+        // CRT types. A JVM can defer the absent branch, but native-image links
+        // every reachable checksum implementation and therefore requires the
+        // SDK-aligned artifact. Keep it host-only: the directory-loaded S3
+        // bundle continues to use the pure-Java URLConnection path.
+        runtimeOnly libs.aws.crt
     }
     if (includeNativePluginConformanceFixture) {
         runtimeOnly project(':appchain-plugin-conformance')
@@ -127,7 +195,7 @@ dependencies {
     compileOnly libs.lombok
     annotationProcessor libs.lombok
 
-    testImplementation 'io.quarkus:quarkus-junit5'
+    testImplementation 'io.quarkus:quarkus-junit'
     testImplementation 'io.rest-assured:rest-assured'
 
     testImplementation project(':testkit')
@@ -371,22 +439,37 @@ tasks.named('processResources') {
 }
 
 tasks.register('verifyFirstPartyPluginBundles', JavaExec) {
-    dependsOn ':appchain-kafka-sink:shadowJar',
+    dependsOn rootProject.tasks.named('verifyAdr013JacksonAlignment'),
+            rootProject.tasks.named('verifyAdr013Slf4jAlignment')
+    dependsOn ':appchain-kafka:verifyKafkaArtifactBoundaries',
+            ':appchain-objectstore-s3:verifyObjectStoreS3ArtifactBoundaries',
+            ':appchain-ipfs:verifyIpfsArtifactBoundaries',
+            ':appchain-evidence-registry:verifyEvidenceRegistryArtifactBoundaries',
             ':appchain-effects-cardano:shadowJar', ':appchain-zk:shadowJar'
     def verificationIndex = layout.buildDirectory.file(
             'reports/plugin-catalog/first-party-bundles.json')
     inputs.files({
-        [project(':appchain-kafka-sink'), project(':appchain-effects-cardano'),
+        [project(':appchain-kafka'), project(':appchain-objectstore-s3'),
+         project(':appchain-ipfs'),
+         project(':appchain-evidence-registry'),
+         project(':appchain-effects-cardano'),
          project(':appchain-zk')].collect { pluginProject ->
             pluginProject.tasks.named('shadowJar').get().archiveFile.get().asFile
         }
     })
+    // The verification below also asserts the versions selected on the host
+    // runtime classpath. Track that classpath as an input so a BOM, force, or
+    // dependency change cannot leave an UP-TO-DATE report with stale results.
+    inputs.files(configurations.runtimeClasspath)
     outputs.file(verificationIndex)
     classpath = project(':plugin-catalog').sourceSets.main.runtimeClasspath
     mainClass = 'com.bloxbean.cardano.yano.catalog.PluginIndexGenerator'
     doFirst {
         def bundleFiles = [
-                project(':appchain-kafka-sink'),
+                project(':appchain-kafka'),
+                project(':appchain-objectstore-s3'),
+                project(':appchain-ipfs'),
+                project(':appchain-evidence-registry'),
                 project(':appchain-effects-cardano'),
                 project(':appchain-zk')
         ].collect { pluginProject ->
@@ -400,23 +483,130 @@ tasks.register('verifyFirstPartyPluginBundles', JavaExec) {
         def index = new groovy.json.JsonSlurper().parse(verificationIndex.get().asFile)
         requireIndexedManifestVersions(index, [
                 'com.bloxbean.cardano.yano.appchain.kafka': declaredPluginManifestVersion,
+                'com.bloxbean.cardano.yano.appchain.objectstore.s3':
+                        declaredPluginManifestVersion,
+                'com.bloxbean.cardano.yano.appchain.ipfs':
+                        declaredPluginManifestVersion,
+                'com.bloxbean.cardano.yano.appchain.evidence-registry':
+                        declaredPluginManifestVersion,
                 'com.bloxbean.cardano.yano.appchain.effects.cardano':
                         declaredPluginManifestVersion,
                 'com.bloxbean.cardano.yano.appchain.zk': declaredPluginManifestVersion
         ])
+        def kafkaBundle = index.bundles.find {
+            it.manifest?.id == 'com.bloxbean.cardano.yano.appchain.kafka'
+        }
+        def kafkaContributions = kafkaBundle?.manifest?.contributions?.collect {
+            "${it.kind}:${it.name}"
+        }?.toSet()
+        if (kafkaContributions != Set.of(
+                'finalized-sink:kafka', 'effect-executor:kafka')) {
+            throw new GradleException(
+                    "Kafka bundle contribution inventory is incomplete: ${kafkaContributions}")
+        }
+        def objectStoreBundle = index.bundles.find {
+            it.manifest?.id == 'com.bloxbean.cardano.yano.appchain.objectstore.s3'
+        }
+        def objectStoreContributions = objectStoreBundle?.manifest?.contributions?.collect {
+            "${it.kind}:${it.name}"
+        }?.toSet()
+        if (objectStoreContributions != Set.of('effect-executor:objectstore-s3')) {
+            throw new GradleException(
+                    "Object-store bundle contribution inventory is incomplete: "
+                            + objectStoreContributions)
+        }
+        def ipfsBundle = index.bundles.find {
+            it.manifest?.id == 'com.bloxbean.cardano.yano.appchain.ipfs'
+        }
+        def ipfsContributions = ipfsBundle?.manifest?.contributions?.collect {
+            "${it.kind}:${it.name}"
+        }?.toSet()
+        if (ipfsContributions != Set.of('effect-executor:ipfs')) {
+            throw new GradleException(
+                    "IPFS bundle contribution inventory is incomplete: ${ipfsContributions}")
+        }
+        def evidenceBundle = index.bundles.find {
+            it.manifest?.id == 'com.bloxbean.cardano.yano.appchain.evidence-registry'
+        }
+        def evidenceContributions = evidenceBundle?.manifest?.contributions?.collect {
+            "${it.kind}:${it.name}"
+        }?.toSet()
+        if (evidenceContributions != Set.of(
+                'app-state-machine:evidence-registry',
+                'domain-api:com.bloxbean.cardano.yano.appchain.evidence-registry')) {
+            throw new GradleException(
+                    "Evidence-registry bundle contribution inventory is incomplete: "
+                            + evidenceContributions)
+        }
+        if (includeFirstPartyPluginBundles) {
+            def expectedRuntimeVersions = [
+                    'org.apache.kafka:kafka-clients':
+                            libs.kafka.clients.get().versionConstraint.requiredVersion,
+                    'org.bouncycastle:bcprov-jdk18on':
+                            libs.bouncycastle.bcprov.get().versionConstraint.requiredVersion,
+                    'at.yawk.lz4:lz4-java':
+                            libs.lz4.java.get().versionConstraint.requiredVersion,
+                    'org.xerial.snappy:snappy-java':
+                            libs.snappy.java.get().versionConstraint.requiredVersion,
+                    'org.slf4j:slf4j-api':
+                            libs.slf4j.api.get().versionConstraint.requiredVersion,
+                    'software.amazon.awssdk:s3':
+                            libs.aws.sdk.s3.get().versionConstraint.requiredVersion,
+                    'software.amazon.awssdk:url-connection-client':
+                            libs.aws.sdk.url.connection.client.get()
+                                    .versionConstraint.requiredVersion,
+                    'software.amazon.awssdk.crt:aws-crt':
+                            libs.aws.crt.get().versionConstraint.requiredVersion
+            ]
+            def appRuntimeClasspath = project.configurations.getByName('runtimeClasspath')
+            def resolvedRuntimeVersions = appRuntimeClasspath.incoming
+                    .resolutionResult.allComponents.findAll { component ->
+                component.id instanceof ModuleComponentIdentifier
+            }.collectEntries { component ->
+                def id = component.id as ModuleComponentIdentifier
+                [("${id.group}:${id.module}".toString()): id.version]
+            }
+            expectedRuntimeVersions.each { module, expectedVersion ->
+                def actualVersion = resolvedRuntimeVersions[module]
+                if (actualVersion != expectedVersion) {
+                    throw new GradleException(
+                            "First-party plugin runtime resolved ${module}:${actualVersion}; "
+                                    + "expected security-reviewed version ${expectedVersion}")
+                }
+            }
+            def expectedAwsVersion = libs.aws.sdk.s3.get()
+                    .versionConstraint.requiredVersion
+            def mixedAwsModules = resolvedRuntimeVersions.findAll { module, version ->
+                module.startsWith('software.amazon.awssdk:')
+                        && version != expectedAwsVersion
+            }
+            if (!mixedAwsModules.isEmpty()) {
+                throw new GradleException(
+                        "First-party plugin runtime mixes AWS SDK versions: ${mixedAwsModules}")
+            }
+        }
     }
 }
 
 tasks.register('launchFirstPartyPluginBundles', JavaExec) {
-    dependsOn tasks.named('testClasses'), ':appchain-kafka-sink:shadowJar',
+    dependsOn tasks.named('testClasses'), ':appchain-kafka:shadowJar',
+            ':appchain-objectstore-s3:shadowJar',
+            ':appchain-ipfs:shadowJar',
+            ':appchain-evidence-contracts:jar',
+            ':appchain-evidence-registry:shadowJar',
             ':appchain-effects-cardano:shadowJar', ':appchain-zk:shadowJar'
     // Deliberately omit app.runtimeClasspath: the probe must prove the bundle
     // classifiers work when the corresponding thin provider JARs are absent.
     classpath = files(sourceSets.test.output.classesDirs,
+            project(':appchain-evidence-contracts').tasks.named('jar')
+                    .flatMap { it.archiveFile },
             project(':runtime').sourceSets.main.runtimeClasspath)
     mainClass = 'com.bloxbean.cardano.yano.app.PluginBundleLaunchProbe'
     doFirst {
-        args = [project(':appchain-kafka-sink'), project(':appchain-effects-cardano'),
+        args = [project(':appchain-kafka'), project(':appchain-objectstore-s3'),
+                project(':appchain-ipfs'),
+                project(':appchain-evidence-registry'),
+                project(':appchain-effects-cardano'),
                 project(':appchain-zk')].collect { pluginProject ->
             pluginProject.tasks.named('shadowJar').get().archiveFile.get().asFile.absolutePath
         }
@@ -609,26 +799,32 @@ def pluginOperationsAuthArguments = {
     ].collect { it.toString() }
 }
 
-def allocateLoopbackPortPair = {
+def allocateLoopbackPorts = { int count ->
+    if (count <= 0) {
+        throw new IllegalArgumentException('loopback port count must be positive')
+    }
     def address = java.net.InetAddress.getByName('127.0.0.1')
-    java.net.ServerSocket first = null
-    java.net.ServerSocket second = null
+    def sockets = []
     try {
-        first = new java.net.ServerSocket(0, 1, address)
-        second = new java.net.ServerSocket(0, 1, address)
-        return [first.localPort, second.localPort]
+        count.times {
+            sockets.add(new java.net.ServerSocket(0, 1, address))
+        }
+        return sockets.collect { it.localPort }
     } finally {
-        second?.close()
-        first?.close()
+        sockets.reverseEach { it.close() }
     }
 }
 
 def pluginConformanceRuntimeArguments = { int httpPort, int nodePort,
                                           java.nio.file.Path stateDirectory,
-                                          java.nio.file.Path pluginDirectory ->
+                                          java.nio.file.Path pluginDirectory,
+                                          Integer kafkaBootstrapPort,
+                                          Integer s3EndpointPort,
+                                          Integer ipfsEndpointPort,
+                                          java.nio.file.Path connectorSecretConfig ->
     def genesisDirectory = project.file('config/network/preprod').toPath()
             .toAbsolutePath().normalize()
-    return [
+    def arguments = [
             '-Dquarkus.http.host=127.0.0.1',
             "-Dquarkus.http.port=${httpPort}",
             '-Dquarkus.console.color=false',
@@ -660,11 +856,86 @@ def pluginConformanceRuntimeArguments = { int httpPort, int nodePort,
             '-Dyano.app-chain.effects.executor.tick-ms=60000',
             '-Dyano.app-chain.effects.executor.identity=conformance-smoke',
             '-Dyano.app-chain.effects.executors.conformance-effect.enabled=true'
-    ].collect { it.toString() }
+    ]
+    if (kafkaBootstrapPort != null) {
+        // The endpoint is operator configuration, never an authenticated
+        // effect payload field. Activating both Kafka contribution kinds
+        // proves native catalog mediation and constructs the real producer
+        // client through the finalized-stream factory without a live broker.
+        arguments.addAll([
+                "-Dyano.app-chain.sinks.kafka.bootstrap-servers=127.0.0.1:${kafkaBootstrapPort}",
+                '-Dyano.app-chain.sinks.kafka.topic=yano-native-smoke-blocks',
+                '-Dyano.app-chain.sinks.kafka.max-block-ms=1000',
+                '-Dyano.app-chain.sinks.kafka.delivery-timeout-ms=30000',
+                '-Dyano.app-chain.sinks.kafka.close-timeout-ms=1',
+                '-Dyano.app-chain.effects.executors.kafka.enabled=true',
+                '-Dyano.app-chain.effects.executors.kafka.targets.native.target-id=native',
+                "-Dyano.app-chain.effects.executors.kafka.targets.native.bootstrap-servers=127.0.0.1:${kafkaBootstrapPort}",
+                '-Dyano.app-chain.effects.executors.kafka.targets.native.security-profile=local-demo',
+                '-Dyano.app-chain.effects.executors.kafka.targets.native.max-block-ms=100',
+                '-Dyano.app-chain.effects.executors.kafka.targets.native.request-timeout-ms=1000',
+                '-Dyano.app-chain.effects.executors.kafka.targets.native.delivery-timeout-ms=1000',
+                '-Dyano.app-chain.effects.executors.kafka.targets.native.close-timeout-ms=100',
+                '-Dyano.app-chain.effects.executors.kafka.topics.smoke.target=native',
+                '-Dyano.app-chain.effects.executors.kafka.topics.smoke.name=yano-native-effect-smoke'
+        ])
+    }
+    if (s3EndpointPort != null || ipfsEndpointPort != null
+            || connectorSecretConfig != null) {
+        if (s3EndpointPort == null || ipfsEndpointPort == null
+                || connectorSecretConfig == null) {
+            throw new GradleException(
+                    'native connector construction smoke requires its complete configuration')
+        }
+        // These two flags are deliberately awkward and test-only. They make
+        // each configured connector open and immediately close one real client
+        // without performing network I/O. S3 credential values live only in
+        // the private temporary config file, never in argv or the process log.
+        arguments.addAll([
+                '-Dyano.test.enabled=true',
+                '-Dyano.test.connector-client-construction-smoke=v1',
+                "-Dquarkus.config.locations=${connectorSecretConfig.toUri()}",
+                '-Dyano.app-chain.effects.executors.objectstore-s3.enabled=true',
+                '-Dyano.app-chain.effects.executors.objectstore-s3.targets.native.target-id=native',
+                '-Dyano.app-chain.effects.executors.objectstore-s3.targets.native.endpoint='
+                        + "http://127.0.0.1:${s3EndpointPort}",
+                '-Dyano.app-chain.effects.executors.objectstore-s3.targets.native.region=us-east-1',
+                '-Dyano.app-chain.effects.executors.objectstore-s3.targets.native.security-profile=local-demo',
+                '-Dyano.app-chain.effects.executors.objectstore-s3.targets.native.path-style=true',
+                '-Dyano.app-chain.effects.executors.objectstore-s3.targets.native.credentials-provider=static',
+                '-Dyano.app-chain.effects.executors.objectstore-s3.targets.native.source-bucket=native-source',
+                '-Dyano.app-chain.effects.executors.objectstore-s3.targets.native.'
+                        + 'destination-bucket=native-destination',
+                '-Dyano.app-chain.effects.executors.objectstore-s3.targets.native.encryption-policy-id=native-none',
+                '-Dyano.app-chain.effects.executors.objectstore-s3.targets.native.encryption-mode=none',
+                '-Dyano.app-chain.effects.executors.objectstore-s3.targets.native.retention-policy-id=native-none',
+                '-Dyano.app-chain.effects.executors.objectstore-s3.targets.native.require-versioning=true',
+                '-Dyano.app-chain.effects.executors.objectstore-s3.targets.native.max-object-bytes=1024',
+                '-Dyano.app-chain.effects.executors.objectstore-s3.targets.native.api-call-timeout-ms=1000',
+                '-Dyano.app-chain.effects.executors.objectstore-s3.targets.native.api-call-attempt-timeout-ms=750',
+                '-Dyano.app-chain.effects.executors.objectstore-s3.targets.native.connect-timeout-ms=250',
+                '-Dyano.app-chain.effects.executors.objectstore-s3.targets.native.socket-timeout-ms=500',
+                '-Dyano.app-chain.effects.executors.objectstore-s3.targets.native.close-timeout-ms=500',
+                '-Dyano.app-chain.effects.executors.ipfs.enabled=true',
+                '-Dyano.app-chain.effects.executors.ipfs.targets.native.target-id=native',
+                "-Dyano.app-chain.effects.executors.ipfs.targets.native.api-url=http://127.0.0.1:${ipfsEndpointPort}",
+                '-Dyano.app-chain.effects.executors.ipfs.targets.native.security-profile=local-demo',
+                '-Dyano.app-chain.effects.executors.ipfs.targets.native.allowed-codecs=raw',
+                '-Dyano.app-chain.effects.executors.ipfs.targets.native.recursive=false',
+                '-Dyano.app-chain.effects.executors.ipfs.targets.native.replication-policy=local',
+                '-Dyano.app-chain.effects.executors.ipfs.targets.native.connect-timeout-ms=250',
+                '-Dyano.app-chain.effects.executors.ipfs.targets.native.request-timeout-ms=1000',
+                '-Dyano.app-chain.effects.executors.ipfs.targets.native.close-timeout-ms=500'
+        ])
+    }
+    return arguments.collect { it.toString() }
 }
 
 def awaitPluginConformanceStatus = { int httpPort, int timeoutSeconds,
-                                     Process process, Closure<String> logTail ->
+                                     Process process, Closure<String> logTail,
+                                     boolean expectFirstPartyClients,
+                                     String expectedStateMachine = 'conformance-machine',
+                                     String expectedSequencerMode = 'conformance-mode' ->
     def statusUrl = new URL(
             "http://127.0.0.1:${httpPort}${bakedApiPathPrefix()}"
                     + '/app-chain/chains/conformance-chain/status')
@@ -711,9 +982,9 @@ def awaitPluginConformanceStatus = { int httpPort, int timeoutSeconds,
     if (status.chainId != 'conformance-chain') failures.add('chainId')
     if (status.sequencing != true) failures.add('sequencing')
     if (status.memberKey != pluginConformanceMemberKey) failures.add('signer')
-    if (status.stateMachine != 'conformance-machine') failures.add('stateMachine')
+    if (status.stateMachine != expectedStateMachine) failures.add('stateMachine')
     if (!(status.sequencer instanceof Map)
-            || status.sequencer.mode != 'conformance-mode') failures.add('sequencer')
+            || status.sequencer.mode != expectedSequencerMode) failures.add('sequencer')
     if (!(status.observers instanceof Map)
             || !status.observers.containsKey('audit')) failures.add('observer')
     if (!(status.sinks instanceof Map)
@@ -721,12 +992,24 @@ def awaitPluginConformanceStatus = { int httpPort, int timeoutSeconds,
             || status.sinks['conformance-finalized-sink'].state != 'ACTIVE') {
         failures.add('sink')
     }
+    if (expectFirstPartyClients
+            && (!(status.sinks instanceof Map)
+            || !(status.sinks['kafka:yano-native-smoke-blocks:conformance-chain']
+                    instanceof Map)
+            || status.sinks['kafka:yano-native-smoke-blocks:conformance-chain'].state
+                    != 'ACTIVE')) {
+        failures.add('kafkaSink')
+    }
     if (status.containsKey('sinkActivationFailures')) failures.add('sinkActivationFailures')
     def executors = status.effects instanceof Map
             && status.effects.executor instanceof Map
             ? status.effects.executor.executors : null
+    def expectedExecutors = expectFirstPartyClients
+            ? Set.of('conformance-effect-executor', 'kafka-publish',
+                    'objectstore-s3-object-put', 'ipfs-pin')
+            : Set.of('conformance-effect-executor')
     if (!(executors instanceof Collection)
-            || Set.copyOf(executors) != Set.of('conformance-effect-executor')) {
+            || Set.copyOf(executors) != expectedExecutors) {
         failures.add('effectExecutor')
     }
     if (!failures.isEmpty()) {
@@ -1032,6 +1315,8 @@ tasks.register('nativePluginCatalogSmoke') {
     outputs.upToDateWhen { false }
 
     doLast {
+        boolean exerciseFirstPartyClients = includeFirstPartyPluginBundles
+                && includeNativePluginConformanceFixture
         def expectedProvenance = [:]
         nativePluginCatalogExpectationFile.get().asFile.readLines('UTF-8').each { line ->
             if (line.isBlank()) {
@@ -1124,14 +1409,40 @@ tasks.register('nativePluginCatalogSmoke') {
                 jar.closeEntry()
             }
 
-            def ports = allocateLoopbackPortPair.call()
+            def ports = allocateLoopbackPorts.call(exerciseFirstPartyClients ? 5 : 2)
             int httpPort = ports[0]
             int nodePort = ports[1]
+            Integer kafkaBootstrapPort = exerciseFirstPartyClients ? ports[2] : null
+            Integer s3EndpointPort = exerciseFirstPartyClients ? ports[3] : null
+            Integer ipfsEndpointPort = exerciseFirstPartyClients ? ports[4] : null
+            java.nio.file.Path connectorSecretConfig = null
+            if (exerciseFirstPartyClients) {
+                connectorSecretConfig = smokeRoot.resolve('connector-secrets.properties')
+                byte[] secretBytes = new byte[32]
+                new java.security.SecureRandom().nextBytes(secretBytes)
+                def connectorSecretText = [
+                        'yano.app-chain.effects.executors.objectstore-s3.targets.native.'
+                                + 'credentials.access-key-id=native-smoke-access',
+                        'yano.app-chain.effects.executors.objectstore-s3.targets.native.credentials.secret-access-key='
+                                + java.util.HexFormat.of().formatHex(secretBytes)
+                ].join(System.lineSeparator()) + System.lineSeparator()
+                java.util.Arrays.fill(secretBytes, (byte) 0)
+                java.nio.file.Files.writeString(
+                        connectorSecretConfig, connectorSecretText,
+                        java.nio.charset.StandardCharsets.UTF_8,
+                        java.nio.file.StandardOpenOption.CREATE_NEW,
+                        java.nio.file.StandardOpenOption.WRITE)
+                java.nio.file.Files.setPosixFilePermissions(
+                        connectorSecretConfig,
+                        java.nio.file.attribute.PosixFilePermissions.fromString('rw-------'))
+            }
             def command = [binary.absolutePath]
             command.addAll(pluginOperationsAuthArguments())
             if (includeNativePluginConformanceFixture) {
                 command.addAll(pluginConformanceRuntimeArguments(
-                        httpPort, nodePort, chainState, pluginDirectory))
+                        httpPort, nodePort, chainState, pluginDirectory,
+                        kafkaBootstrapPort, s3EndpointPort, ipfsEndpointPort,
+                        connectorSecretConfig))
             }
             def processBuilder = new ProcessBuilder(command)
                     .directory(smokeRoot.toFile())
@@ -1191,7 +1502,8 @@ tasks.register('nativePluginCatalogSmoke') {
 
             if (includeNativePluginConformanceFixture) {
                 awaitPluginConformanceStatus(
-                        httpPort, timeoutSeconds, process, logTail)
+                        httpPort, timeoutSeconds, process, logTail,
+                        exerciseFirstPartyClients)
                 assertPluginConformanceQueryApis(httpPort)
             }
             assertPluginOperationsAdapters(
@@ -1250,6 +1562,22 @@ tasks.register('nativePluginCatalogSmoke') {
                         'Native app-chain startup could not load its bundled anchor artifacts.'
                                 + "${System.lineSeparator()}${logTail()}")
             }
+            if (exerciseFirstPartyClients) {
+                def expectedClientMarkers = [
+                        "Kafka app-chain sink producer initialized for chain 'conformance-chain'",
+                        'TEST-ONLY native connector client construction passed: objectstore-s3',
+                        'TEST-ONLY native connector client construction passed: ipfs'
+                ]
+                def invalidClientMarkers = expectedClientMarkers.findAll { marker ->
+                    output.readLines().count { it.contains(marker) } != 1
+                }
+                if (!invalidClientMarkers.isEmpty()) {
+                    throw new GradleException(
+                            'Native smoke did not construct exactly one client for '
+                                    + "every first-party connector; invalid=${invalidClientMarkers}."
+                                    + "${System.lineSeparator()}${logTail()}")
+                }
+            }
 
             def provenancePrefix = 'YANO_PLUGIN_CATALOG_PROVENANCE '
             def provenanceLines = output.readLines().findAll {
@@ -1285,6 +1613,76 @@ tasks.register('nativePluginCatalogSmoke') {
                                 + "Rebuild the native binary before running this smoke test.")
             }
 
+            // The catalog/provenance fixture above exercises every SPI kind,
+            // but its state machine is intentionally synthetic. Start the
+            // same packaged native binary a second time with the real stock
+            // composite provider so native reflection/catalog closure proves
+            // provider creation, profile construction, init, and running
+            // app-chain status rather than only catalog presence.
+            if (includeNativePluginConformanceFixture) {
+                process.destroy()
+                if (!process.waitFor(10, java.util.concurrent.TimeUnit.SECONDS)) {
+                    process.destroyForcibly()
+                    if (!process.waitFor(10, java.util.concurrent.TimeUnit.SECONDS)) {
+                        throw new GradleException(
+                                "Native conformance process did not terminate before "
+                                        + "composite activation: ${process.pid()}")
+                    }
+                    throw new GradleException(
+                            'Native conformance process required forcible termination before '
+                                    + 'composite activation')
+                }
+
+                def compositePorts = allocateLoopbackPorts.call(2)
+                int compositeHttpPort = compositePorts[0]
+                int compositeNodePort = compositePorts[1]
+                def compositeState = smokeRoot.resolve('composite-chainstate')
+                def compositeLog = smokeRoot.resolve('native-composite.log')
+                def compositeLogTail = {
+                    if (!java.nio.file.Files.isRegularFile(compositeLog)) {
+                        return '<native composite process produced no log>'
+                    }
+                    java.nio.file.Files.readAllLines(
+                            compositeLog, java.nio.charset.StandardCharsets.UTF_8)
+                            .takeRight(200).join(System.lineSeparator())
+                }
+                def compositeCommand = [binary.absolutePath]
+                compositeCommand.addAll(pluginOperationsAuthArguments())
+                compositeCommand.addAll(pluginConformanceRuntimeArguments(
+                        compositeHttpPort, compositeNodePort, compositeState,
+                        pluginDirectory, null, null, null, null))
+                compositeCommand.addAll([
+                        '-Dyano.app-chain.state-machine=composite',
+                        '-Dyano.app-chain.sequencer.mode=fixed',
+                        '-Dyano.app-chain.sequencer.proposer=' + pluginConformanceMemberKey,
+                        '-Dyano.app-chain.effects.max-per-block=128',
+                        '-Dyano.app-chain.machines.composite.preset=evidence-v1'
+                ])
+                def compositeBuilder = new ProcessBuilder(compositeCommand)
+                        .directory(smokeRoot.toFile())
+                        .redirectErrorStream(true)
+                        .redirectOutput(compositeLog.toFile())
+                compositeBuilder.environment().remove('YACI_PLUGINS_ALLOW_LIST')
+                compositeBuilder.environment().remove('YACI_PLUGINS_DENY_LIST')
+                compositeBuilder.environment().remove('YANO_API_PREFIX')
+                compositeBuilder.environment().remove('QUARKUS_RESTEASY_PATH')
+                compositeBuilder.environment().putAll([
+                        'QUARKUS_HTTP_HOST'      : '127.0.0.1',
+                        'QUARKUS_HTTP_PORT'      : Integer.toString(compositeHttpPort),
+                        'QUARKUS_CONSOLE_COLOR'  : 'false',
+                        'YANO_STORAGE_PATH'      : compositeState.toAbsolutePath().toString(),
+                        'YACI_PLUGINS_DIRECTORY' : pluginDirectory.toAbsolutePath().toString(),
+                        'YACI_PLUGINS_ENABLED'   : 'true'
+                ])
+                process = compositeBuilder.start()
+                awaitPluginConformanceStatus(
+                        compositeHttpPort, timeoutSeconds, process,
+                        compositeLogTail, false, 'composite', 'fixed')
+                logger.lifecycle(
+                        "Native stock composite activation passed for ${binary.absolutePath} "
+                                + "on http://127.0.0.1:${compositeHttpPort}")
+            }
+
             logger.lifecycle(
                     "Native plugin catalog smoke passed for ${binary.absolutePath} "
                             + "on ${liveUrl}; provenance=${actualProvenance}")
@@ -1301,6 +1699,20 @@ tasks.register('nativePluginCatalogSmoke') {
                             throw new GradleException(
                                     "Native smoke process did not terminate: ${process.pid()}")
                         }
+                        throw new GradleException(
+                                "Native smoke process required forcible termination: ${process.pid()}")
+                    }
+                }
+                if (exerciseFirstPartyClients && primaryFailure == null) {
+                    def closedMarker = "Kafka app-chain sink producer closed for sink " +
+                            "'kafka:yano-native-smoke-blocks:conformance-chain'"
+                    def output = java.nio.file.Files.readString(
+                            logFile, java.nio.charset.StandardCharsets.UTF_8)
+                    int closeCount = output.readLines().count { it.contains(closedMarker) }
+                    if (closeCount != 1) {
+                        throw new GradleException(
+                                "Native smoke expected one graceful Kafka sink close marker, "
+                                        + "found ${closeCount}.${System.lineSeparator()}${logTail()}")
                     }
                 }
             } catch (Throwable cleanupFailure) {
@@ -1539,7 +1951,7 @@ tasks.register('packagedJvmPluginCatalogSmoke') {
                 .archiveFile.get().asFile.toPath()
         java.nio.file.Files.copy(fixtureJar, pluginDirectory.resolve(fixtureJar.fileName))
 
-        def ports = allocateLoopbackPortPair.call()
+        def ports = allocateLoopbackPorts.call(2)
         int httpPort = ports[0]
         int nodePort = ports[1]
         def javaExecutable = new File(System.getProperty('java.home'),
@@ -1547,7 +1959,8 @@ tasks.register('packagedJvmPluginCatalogSmoke') {
         def command = [javaExecutable.absolutePath]
         command.addAll(pluginOperationsAuthArguments())
         command.addAll(pluginConformanceRuntimeArguments(
-                httpPort, nodePort, stateDirectory, pluginDirectory))
+                httpPort, nodePort, stateDirectory, pluginDirectory,
+                null, null, null, null))
         command.addAll(['-jar', uberJar.absolutePath])
         def processBuilder = new ProcessBuilder(command)
                 .directory(smokeRoot.toFile())
@@ -1606,7 +2019,7 @@ tasks.register('packagedJvmPluginCatalogSmoke') {
                                 + logTail())
             }
 
-            awaitPluginConformanceStatus(httpPort, 90, process, logTail)
+            awaitPluginConformanceStatus(httpPort, 90, process, logTail, false)
             assertPluginConformanceQueryApis(httpPort)
             assertPluginOperationsAdapters(httpPort, 90, true)
 
@@ -1726,7 +2139,7 @@ tasks.register('packagedApiPrefixContractSmoke') {
             def directories = java.nio.file.Files.createDirectories(smokeRoot.resolve(name))
             def stateDirectory = directories.resolve('chainstate')
             def logFile = directories.resolve('process.log')
-            def ports = allocateLoopbackPortPair.call()
+            def ports = allocateLoopbackPorts.call(2)
             def command = [javaExecutable.absolutePath]
             command.addAll(pluginOperationsAuthArguments())
             command.addAll([

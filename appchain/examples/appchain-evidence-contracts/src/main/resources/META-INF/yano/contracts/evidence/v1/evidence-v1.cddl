@@ -1,0 +1,66 @@
+; ADR-013 evidence-registry v1. All enclosing values use preferred canonical CBOR.
+; This is the structural schema. The Java codecs, negative contract tests, and
+; ADR-013 section 10.2 jointly define executable v1 semantics that CDDL cannot
+; fully express, including nested connector canonicality and cross-field/key,
+; receipt, destination-fingerprint, owner, version, and state bindings.
+
+evidence-id = tstr .regexp "[a-z][a-z0-9-]{0,62}"
+business-version = 1..9223372036854775807
+republish-version = 2..9223372036854775807
+fingerprint32 = bytes .size 32
+message-id32 = bytes .size 32
+effect-ordinal = uint .le 1048575
+external-ref-bytes = bytes .size (0..128)
+optional-detail-hash = (bytes .size 0) / fingerprint32
+
+evidence-command-v1 = evidence-submit-v1 / evidence-notify-v1 / evidence-republish-v1
+evidence-submit-v1 = [schema: 1, operation: 0, id: evidence-id, version: 1,
+                      object-put-v1: bytes, object-destination: fingerprint32,
+                      ipfs-pin-v1: bytes, ipfs-target: fingerprint32,
+                      kafka-target: tstr, kafka-topic: tstr,
+                      kafka-destination: fingerprint32]
+evidence-notify-v1 = [schema: 1, operation: 1, id: evidence-id,
+                      version: business-version]
+evidence-republish-v1 = [schema: 1, operation: 2, id: evidence-id,
+                         version: republish-version,
+                         object-put-v1: bytes, object-destination: fingerprint32,
+                         ipfs-pin-v1: bytes, ipfs-target: fingerprint32,
+                         kafka-target: tstr, kafka-topic: tstr,
+                         kafka-destination: fingerprint32]
+
+effect-ref = [height: business-version, ordinal: effect-ordinal]
+terminal-result = [outcome: 1..4, external-ref: external-ref-bytes,
+                   detail-hash-or-empty: optional-detail-hash,
+                   result-height: business-version]
+maybe-terminal = terminal-result / null
+
+evidence-head-v1 = [schema: 1, id: evidence-id,
+                    owner-public-key: bytes .size 32,
+                    latest-version: business-version]
+evidence-record-v1 = [schema: 1, id: evidence-id,
+                      version: business-version,
+                      owner-public-key: bytes .size 32, submit-message-id: message-id32,
+                      object-put-v1: bytes, object-destination: fingerprint32,
+                      object-effect: effect-ref, object-terminal: maybe-terminal,
+                      ipfs-pin-v1: bytes, ipfs-target: fingerprint32,
+                      ipfs-effect: effect-ref, ipfs-terminal: maybe-terminal,
+                      kafka-target: tstr, kafka-topic: tstr,
+                      kafka-destination: fingerprint32,
+                      notify-message-id: message-id32 / null,
+                      notification-effect: effect-ref / null,
+                      notification-terminal: maybe-terminal]
+
+evidence-available-v1 = [schema: 1, id: evidence-id,
+                         version: business-version,
+                         digest-algorithm: 1, digest: fingerprint32,
+                         size: uint .le 16777216,
+                         object-target: tstr, destination-key: tstr,
+                         canonical-cid: bytes .size 36,
+                         object-receipt: bytes .size (1..128),
+                         ipfs-receipt: bytes .size (1..128)]
+
+evidence-get-request-v1 = [schema: 1, id: evidence-id,
+                           version-or-latest-zero: 0..9223372036854775807]
+evidence-get-response-v1 = [schema: 1, found: bool,
+                            head-key: bytes, head-value: bytes,
+                            record-key: bytes, record-value: bytes]

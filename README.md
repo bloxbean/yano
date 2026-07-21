@@ -188,6 +188,8 @@ For deeper coverage of how to operate and extend Yano, see the application-level
 
 | Doc | What's inside |
 |---|---|
+| **[`docs/APP_CHAIN_OVERVIEW.md`](docs/APP_CHAIN_OVERVIEW.md)** | Diagram-led 10–15 minute overview of Yano App Chains: value proposition, end-to-end flow, no-code presets, effects, composite state machines, plugins, use cases, trust boundaries, and readiness. |
+| **[`docs/YANO_APP_CHAIN_OVERVIEW.pptx`](docs/YANO_APP_CHAIN_OVERVIEW.pptx)** | Editable 13-slide companion deck for a concise Yano App Chain architecture and product pitch. |
 | **[`app/README.md`](app/README.md)** | Operator's guide — run modes (relay, devnet, native), `start.sh` / `start-devnet.sh`, configuration knobs, REST API reference, profiles, Swagger UI, integration with [yaci-store](https://github.com/bloxbean/yaci-store), and the test tiers (unit / integration / e2e). |
 | **[`app/ARCHITECTURE.md`](app/ARCHITECTURE.md)** | Internal architecture — high-level topology, header/body split sync pipeline, event system, plugin system, module overview, REST API surface, configuration modes, and extension points. |
 | **[`docs/PLUGIN_OPERATIONS.md`](docs/PLUGIN_OPERATIONS.md)** | Plugin catalog validation, operations API authentication, health/metrics exposure, dashboard behavior, and JVM/native deployment notes. |

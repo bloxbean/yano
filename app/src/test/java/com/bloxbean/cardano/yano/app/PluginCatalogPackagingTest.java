@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.app;
 
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
+import com.bloxbean.cardano.yano.api.appchain.AppStateMachineContext;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineProvider;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutor;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutorFactory;
@@ -63,9 +64,13 @@ class PluginCatalogPackagingTest {
 
     private static final Set<String> STOCK_BUNDLES = Set.of(
             "com.bloxbean.cardano.yaci.plugins.logging",
-            "com.bloxbean.cardano.yano.appchain.stdlib");
+            "com.bloxbean.cardano.yano.appchain.stdlib",
+            "com.bloxbean.cardano.yano.appchain.composite",
+            "com.bloxbean.cardano.yano.appchain.evidence-registry");
     private static final Set<String> OPTIONAL_BUNDLES = Set.of(
             "com.bloxbean.cardano.yano.appchain.kafka",
+            "com.bloxbean.cardano.yano.appchain.objectstore.s3",
+            "com.bloxbean.cardano.yano.appchain.ipfs",
             "com.bloxbean.cardano.yano.appchain.effects.cardano",
             "com.bloxbean.cardano.yano.appchain.zk");
     private static final String CONFORMANCE_BUNDLE =
@@ -74,6 +79,20 @@ class PluginCatalogPackagingTest {
             "yano.test.include-first-party-plugin-bundles";
     private static final String EXPECT_CONFORMANCE =
             "yano.test.include-native-plugin-conformance-fixture";
+    private static final String HOST_KAFKA_CONTRACT =
+            "com.bloxbean.cardano.yano.appchain.integration.kafka.KafkaPublishCommandV1";
+    private static final String RELOCATED_KAFKA_CONTRACT =
+            "com.bloxbean.cardano.yano.appchain.kafka.internal.contracts.v1.kafka."
+                    + "KafkaPublishCommandV1";
+    private static final String HOST_OBJECTSTORE_CONTRACT =
+            "com.bloxbean.cardano.yano.appchain.integration.objectstore.ObjectPutCommandV1";
+    private static final String RELOCATED_OBJECTSTORE_CONTRACT =
+            "com.bloxbean.cardano.yano.appchain.objectstore.s3.internal.contracts.v1."
+                    + "objectstore.ObjectPutCommandV1";
+    private static final String HOST_IPFS_CONTRACT =
+            "com.bloxbean.cardano.yano.appchain.integration.ipfs.CanonicalCid";
+    private static final String RELOCATED_IPFS_CONTRACT =
+            "com.bloxbean.cardano.yano.appchain.ipfs.internal.contracts.v1.ipfs.CanonicalCid";
 
     @Test
     void generatedIndexRetainsAndCorrelatesSelectedBuildTimeBundlesWithoutChangingTccl()
@@ -105,22 +124,44 @@ class PluginCatalogPackagingTest {
                             && !bundle.legacy()
                             && bundle.digestMode() == PluginDigestMode.ARTIFACT_CLOSURE));
             assertTrue(environment.providers().names(AppStateMachineProvider.class)
-                    .containsAll(Set.of("approvals", "balances", "doc-trail", "kv-registry")));
+                    .containsAll(Set.of(
+                            "approvals", "balances", "doc-trail", "kv-registry", "composite")));
+            AppStateMachine composite = environment.providers().require(
+                    AppStateMachineProvider.class, "composite").create(
+                    new AppStateMachineContext() {
+                        @Override public String chainId() { return "packaged-composite"; }
+                        @Override public Map<String, String> settings() {
+                            return Map.of(
+                                    "effects.enabled", "true",
+                                    "effects.max-per-block", "128",
+                                    "machines.composite.preset", "evidence-v1");
+                        }
+                    });
+            assertEquals("composite", composite.id());
             assertEquals(optionalIncluded
                             ? Set.of("credential-registry", "zk-gate", "zk-membership") : Set.of(),
                     environment.providers().names(AppStateMachineProvider.class).stream()
                             .filter(Set.of("credential-registry", "zk-gate", "zk-membership")::contains)
                             .collect(Collectors.toSet()));
+            assertTrue(environment.providers().find(
+                    AppStateMachineProvider.class, "evidence-registry").isPresent());
             Set<String> expectedSinks = new java.util.HashSet<>();
             if (optionalIncluded) expectedSinks.add("kafka");
             if (conformanceIncluded) expectedSinks.add("conformance-sink");
             assertEquals(expectedSinks, Set.copyOf(
                     environment.providers().names(FinalizedStreamSinkFactory.class)));
             Set<String> expectedExecutors = new java.util.HashSet<>();
-            if (optionalIncluded) expectedExecutors.add("cardano");
+            if (optionalIncluded) {
+                expectedExecutors.addAll(Set.of("cardano", "kafka", "objectstore-s3", "ipfs"));
+            }
             if (conformanceIncluded) expectedExecutors.add("conformance-effect");
             assertEquals(expectedExecutors, Set.copyOf(
                     environment.providers().names(AppEffectExecutorFactory.class)));
+            if (optionalIncluded) {
+                assertBuildTimeKafkaUsesHostConnectorContracts(environment.classLoader());
+                assertBuildTimeObjectStoreUsesHostConnectorContracts(environment.classLoader());
+                assertBuildTimeIpfsUsesHostConnectorContracts(environment.classLoader());
+            }
             assertEquals(conformanceIncluded ? Set.of("conformance-mode") : Set.of(), Set.copyOf(
                     environment.providers().names(SequencerModeProvider.class)));
             assertEquals(conformanceIncluded ? Set.of("conformance-observer") : Set.of(), Set.copyOf(
@@ -141,6 +182,9 @@ class PluginCatalogPackagingTest {
                     FinalizedStreamSinkFactory.class, "conformance-sink").isPresent());
             assertEquals(conformanceIncluded, environment.providers().find(
                     DomainApiProvider.class, CONFORMANCE_BUNDLE).isPresent());
+            assertTrue(environment.providers().find(
+                    DomainApiProvider.class,
+                    "com.bloxbean.cardano.yano.appchain.evidence-registry").isPresent());
             if (conformanceIncluded) {
                 exerciseConformanceProviderFacades(environment);
             }
@@ -201,6 +245,8 @@ class PluginCatalogPackagingTest {
             assertEquals(1, executors.size());
             AppEffectExecutor executor = executors.getFirst();
             assertEquals("conformance-effect-executor", executor.id());
+            assertEquals(Set.of("conformance.effect"), executor.effectTypes());
+            assertEquals("READY", executor.operationalSnapshot().readiness().name());
             assertFalse(executor.supports("probe"));
             EffectRecord record = new EffectRecord(
                     EffectRecord.RECORD_VERSION, "conformance-chain", 1, 0,
@@ -412,6 +458,57 @@ class PluginCatalogPackagingTest {
                 output.closeEntry();
             }
         }
+    }
+
+    private static void assertBuildTimeKafkaUsesHostConnectorContracts(ClassLoader loader)
+            throws Exception {
+        assertBuildTimeUsesHostConnectorContracts(loader, HOST_KAFKA_CONTRACT,
+                "com.bloxbean.cardano.yano.appchain.kafka.effects.KafkaEffectExecutorFactory",
+                RELOCATED_KAFKA_CONTRACT, "Kafka");
+    }
+
+    private static void assertBuildTimeObjectStoreUsesHostConnectorContracts(ClassLoader loader)
+            throws Exception {
+        assertBuildTimeUsesHostConnectorContracts(loader, HOST_OBJECTSTORE_CONTRACT,
+                "com.bloxbean.cardano.yano.appchain.objectstore.s3.effects."
+                        + "ObjectStoreS3EffectExecutorFactory",
+                RELOCATED_OBJECTSTORE_CONTRACT, "object-store");
+    }
+
+    private static void assertBuildTimeIpfsUsesHostConnectorContracts(ClassLoader loader)
+            throws Exception {
+        assertBuildTimeUsesHostConnectorContracts(loader, HOST_IPFS_CONTRACT,
+                "com.bloxbean.cardano.yano.appchain.ipfs.effects.IpfsEffectExecutorFactory",
+                RELOCATED_IPFS_CONTRACT, "IPFS");
+    }
+
+    private static void assertBuildTimeUsesHostConnectorContracts(ClassLoader loader,
+                                                                   String contractName,
+                                                                   String providerName,
+                                                                   String relocatedName,
+                                                                   String label)
+            throws Exception {
+        Class<?> contract = Class.forName(contractName, false, loader);
+        Class<?> provider = Class.forName(providerName, false, loader);
+        Path contractSource = codeSource(contract);
+        Path providerSource = codeSource(provider);
+
+        assertTrue(contractSource.toString().replace('\\', '/')
+                        .contains("appchain-integration-contracts"),
+                () -> "build-time " + label + " resolved an unexpected contract artifact: "
+                        + contractSource);
+        assertFalse(Files.isSameFile(contractSource, providerSource),
+                "thin/build-time " + label + " must use the host contract artifact");
+        assertThrows(ClassNotFoundException.class,
+                () -> Class.forName(relocatedName, false, loader),
+                "the bundle-private contract namespace must not enter the thin/native path");
+    }
+
+    private static Path codeSource(Class<?> type) throws Exception {
+        var source = type.getProtectionDomain().getCodeSource();
+        assertTrue(source != null && source.getLocation() != null,
+                () -> "Missing code source for " + type.getName());
+        return Path.of(source.getLocation().toURI());
     }
 
     @Test

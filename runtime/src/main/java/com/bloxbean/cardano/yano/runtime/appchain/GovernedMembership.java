@@ -10,6 +10,7 @@ import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yaci.core.util.CborSerializationUtil;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
 import org.slf4j.Logger;
 
 import java.nio.charset.StandardCharsets;
@@ -189,10 +190,17 @@ final class GovernedMembership {
         switch (command.op()) {
             case OP_ADD -> {
                 String key = HexUtil.encodeHexString(command.memberKey()).toLowerCase(Locale.ROOT);
-                if (!members.add(key)) {
+                if (members.contains(key)) {
                     log.info("Governance: add of existing member {} at height {} — no-op", key, height);
                     return null;
                 }
+                if (members.size() >= AppChainConfig.MAX_MEMBERS) {
+                    log.warn("Governance: adding a member would exceed the v1 limit of {} "
+                                    + "at height {} — void",
+                            AppChainConfig.MAX_MEMBERS, height);
+                    return null;
+                }
+                members.add(key);
                 log.info("Governance ACTIVATED: add member {} from height {}", key, fromHeight);
             }
             case OP_REMOVE -> {

@@ -4,7 +4,7 @@ quarkus:
     port: 7070
   log:
     file:
-      enable: true
+      enabled: true
       path: /app/logs/yano.log
 
 yano:

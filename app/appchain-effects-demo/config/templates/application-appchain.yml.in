@@ -1,0 +1,8 @@
+yano:
+  app-chain:
+    chains[0]:
+      chain-id: "@CHAIN_ID@"
+      state-machine: "@STATE_MACHINE@"
+      block:
+        interval-ms: 1000
+        max-messages: 64

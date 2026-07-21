@@ -93,7 +93,10 @@ class AppChainRetentionTest {
 
         // Evidence for the pruned message still verifies (finality + inclusion)
         EvidenceBundle bundle = node.evidence(HexUtil.decodeHexString(firstId)).orElseThrow();
-        assertThat(EvidenceVerifier.verify(bundle).valid()).isTrue();
+        EvidenceVerifier.Result retained = EvidenceVerifier.verify(
+                bundle, "retention-chain", Set.of(pubA), 1);
+        assertThat(retained.valid()).isTrue();
+        assertThat(retained.messageContentVerified()).isFalse();
 
         // Idempotent: re-pruning the same range is a no-op
         assertThat(node.pruneBodiesBelowForTesting(tip - 1)).isEqualTo(0);

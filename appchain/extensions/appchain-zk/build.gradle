@@ -9,6 +9,9 @@ plugins {
 dependencies {
     compileOnly project(':core-api')          // provided by the node at runtime
 
+    // ZeroJ currently requests an older Jackson family. The drop-in bundle is
+    // self-contained, so carry the reviewed Jackson BOM into its own closure.
+    implementation platform(libs.jackson.bom)
     api libs.zeroj.api
     api libs.zeroj.verifier.core
     api libs.zeroj.bbs                         // E7.2 BBS selective disclosure

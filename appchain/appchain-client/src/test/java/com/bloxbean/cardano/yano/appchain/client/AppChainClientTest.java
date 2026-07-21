@@ -41,7 +41,8 @@ class AppChainClientTest {
             byte[] response;
             int status;
             if ("POST".equals(exchange.getRequestMethod())) {
-                response = "{\"messageId\":\"aabb\",\"chainId\":\"c1\",\"topic\":\"orders\"}"
+                response = ("{\"messageId\":\"" + "aa".repeat(32)
+                        + "\",\"chainId\":\"c1\",\"topic\":\"orders\"}")
                         .getBytes(StandardCharsets.UTF_8);
                 status = 202;
             } else {
@@ -71,7 +72,7 @@ class AppChainClientTest {
                 .build();
 
         AppChainClient.SubmitResult submit = client.submitText("orders", "hi");
-        assertThat(submit.messageId()).isEqualTo("aabb");
+        assertThat(submit.messageId()).isEqualTo("aa".repeat(32));
 
         List<AppChainClient.Message> messages = client.messages(10, "orders");
         assertThat(messages).hasSize(1);
