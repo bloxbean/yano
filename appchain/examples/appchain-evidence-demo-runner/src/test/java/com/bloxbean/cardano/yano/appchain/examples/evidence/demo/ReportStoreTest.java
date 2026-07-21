@@ -271,6 +271,34 @@ class ReportStoreTest {
         }
     }
 
+    @Test
+    void writesCredentialFreeRoleAuthorizationWithoutConflatingActorAndRelay() {
+        ReportStore store = new ReportStore(temporary.resolve("reports"));
+        ScenarioReport base = report("role-report", "PASS", null);
+        ScenarioReport.AuthorizationSummary authorization =
+                new ScenarioReport.AuthorizationSummary(
+                        "approval-evidence-1", "evidence-release", 1, "APPROVED",
+                        "evidence.release.v1", "11".repeat(32), 200,
+                        "22".repeat(32), "manufacturer-a", "manufacturer-org",
+                        "manufacturer", List.of(new ScenarioReport.ClauseSummary(
+                        "auditors", "auditor", 2, "ORGANIZATION", 2)),
+                        List.of(new ScenarioReport.DecisionSummary(
+                                "auditor-a", "audit-org-a", "auditor", "auditors",
+                                "auditor-key", 20)));
+        ScenarioReport role = new ScenarioReport(base.schemaVersion(), base.scenarioId(),
+                base.evidenceId(), base.operation(), base.businessVersion(),
+                base.authenticatedStateChanged(), base.submittedEnvelopes(), base.outcome(),
+                base.startedAt(), base.finishedAt(), base.chain(), base.storage(), base.kafka(),
+                base.anchor(), base.checks(), base.failureCode(), authorization);
+
+        store.write(role);
+
+        String json = new String(store.readLatest(), StandardCharsets.UTF_8);
+        assertThat(json).contains("\"relayMember\"", "\"proposerActor\"",
+                        "\"acceptedCount\" : 2", "\"actor\" : \"auditor-a\"")
+                .doesNotContain("seed", "privateKey", "apiKey");
+    }
+
     static ScenarioReport report(String id, String outcome, String failure) {
         return new ScenarioReport(1, id, "evidence-1", outcome,
                 Instant.EPOCH.toString(), Instant.EPOCH.plusSeconds(1).toString(),

@@ -20,7 +20,8 @@ public record ScenarioReport(int schemaVersion,
                              KafkaSummary kafka,
                              AnchorSummary anchor,
                              List<Check> checks,
-                             String failureCode) {
+                             String failureCode,
+                             AuthorizationSummary authorization) {
     public static final int SCHEMA_VERSION = 1;
 
     public ScenarioReport {
@@ -40,6 +41,28 @@ public record ScenarioReport(int schemaVersion,
         }
     }
 
+    /** Source-compatible constructor for reports without domain authorization. */
+    public ScenarioReport(int schemaVersion,
+                          String scenarioId,
+                          String evidenceId,
+                          String operation,
+                          long businessVersion,
+                          boolean authenticatedStateChanged,
+                          int submittedEnvelopes,
+                          String outcome,
+                          String startedAt,
+                          String finishedAt,
+                          ChainSummary chain,
+                          StorageSummary storage,
+                          KafkaSummary kafka,
+                          AnchorSummary anchor,
+                          List<Check> checks,
+                          String failureCode) {
+        this(schemaVersion, scenarioId, evidenceId, operation, businessVersion,
+                authenticatedStateChanged, submittedEnvelopes, outcome, startedAt,
+                finishedAt, chain, storage, kafka, anchor, checks, failureCode, null);
+    }
+
     /** Source-compatible constructor for iteration-1 reports and test fixtures. */
     public ScenarioReport(int schemaVersion,
                           String scenarioId,
@@ -55,7 +78,7 @@ public record ScenarioReport(int schemaVersion,
                           String failureCode) {
         this(schemaVersion, scenarioId, evidenceId, "LEGACY", 1,
                 "PASS".equals(outcome), 0, outcome, startedAt, finishedAt,
-                chain, storage, kafka, anchor, checks, failureCode);
+                chain, storage, kafka, anchor, checks, failureCode, null);
     }
 
     public record ChainSummary(String chainId,
@@ -96,6 +119,41 @@ public record ScenarioReport(int schemaVersion,
         public AnchorSummary {
             portableTransactionHashes = List.copyOf(portableTransactionHashes);
         }
+    }
+
+    /** Credential-free authenticated business-authorization audit. */
+    public record AuthorizationSummary(String proposalId,
+                                       String policyId,
+                                       long policyRevision,
+                                       String status,
+                                       String payloadDomain,
+                                       String payloadHash,
+                                       long deadlineHeight,
+                                       String relayMember,
+                                       String proposerActor,
+                                       String proposerOrganization,
+                                       String proposerRole,
+                                       List<ClauseSummary> clauses,
+                                       List<DecisionSummary> decisions) {
+        public AuthorizationSummary {
+            clauses = List.copyOf(clauses);
+            decisions = List.copyOf(decisions);
+        }
+    }
+
+    public record ClauseSummary(String clauseId,
+                                String role,
+                                int requiredCount,
+                                String distinctBy,
+                                int acceptedCount) {
+    }
+
+    public record DecisionSummary(String actor,
+                                  String organization,
+                                  String role,
+                                  String clauseId,
+                                  String keyId,
+                                  long acceptedHeight) {
     }
 
     public record Check(String name, String status) {

@@ -39,6 +39,7 @@ public final class EvidenceDemoMain {
                 case "probe" -> probe(config, output);
                 case "init-connectors" -> initializeConnectors(config, output);
                 case "init" -> initialize(config, output);
+                case "role-lifecycle" -> roleLifecycle(config, output);
                 case "run", "publish", "republish", "verify", "replay" ->
                         scenario(config, parsed.scenarioRequest(config), output);
                 case "load" -> load(config, parsed.loadRequest(config), output, error);
@@ -79,6 +80,23 @@ public final class EvidenceDemoMain {
     private static int initializeConnectors(DemoConfig config, PrintStream output) {
         DemoInitializer.initializeConnectors(config);
         output.println("PASS command=init-connectors");
+        return 0;
+    }
+
+    private static int roleLifecycle(DemoConfig config, PrintStream output) {
+        if (!config.roleAware()) {
+            throw new DemoException(DemoError.INVALID_CONFIG);
+        }
+        RoleDemoWorkflow.LifecycleResult result;
+        try (DemoEnvironment environment = new DemoEnvironment(config)) {
+            result = new DemoInitializer(environment).roleLifecycle();
+        }
+        output.println("PASS command=role-lifecycle actor=" + result.actorId()
+                + " revision=" + result.revision()
+                + " rotation=verified revocation=verified"
+                + " proposalsCreated=" + result.proposalsCreated()
+                + " proposalsPending=" + result.proposalsPending()
+                + " proposalsCancelled=" + result.proposalsCancelled());
         return 0;
     }
 
@@ -172,7 +190,8 @@ public final class EvidenceDemoMain {
                              String loadMode, Integer maxInFlight) {
         private static final Set<String> COMMANDS = Set.of(
                 "validate-config", "probe", "bootstrap-s3", "audit-kafka", "init-connectors",
-                "init", "run", "publish", "republish", "verify", "replay", "load", "serve");
+                "init", "role-lifecycle", "run", "publish", "republish", "verify", "replay",
+                "load", "serve");
         private static final Set<String> SCENARIO_COMMANDS = Set.of(
                 "run", "publish", "republish", "verify", "replay");
 

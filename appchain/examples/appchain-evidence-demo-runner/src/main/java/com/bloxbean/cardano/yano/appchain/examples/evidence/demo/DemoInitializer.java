@@ -17,6 +17,19 @@ final class DemoInitializer {
 
     void initialize() {
         await(true);
+        if (environment.config.roleAware()) {
+            new RoleDemoWorkflow(environment, this::awaitFinality).bootstrap();
+        }
+    }
+
+    RoleDemoWorkflow.LifecycleResult roleLifecycle() {
+        if (!environment.config.roleAware()) {
+            throw new DemoException(DemoError.INVALID_CONFIG);
+        }
+        await(false);
+        RoleDemoWorkflow workflow = new RoleDemoWorkflow(environment, this::awaitFinality);
+        workflow.bootstrap();
+        return workflow.demonstrateActorLifecycle();
     }
 
     static void initializeConnectors(DemoConfig config) {
@@ -75,6 +88,20 @@ final class DemoInitializer {
         }
         throw new DemoException(last == DemoError.INITIALIZATION_FAILED
                 ? DemoError.INITIALIZATION_FAILED : DemoError.SERVICE_TIMEOUT);
+    }
+
+    private void awaitFinality(YanoAuditClient node, String messageId) {
+        long deadline = System.nanoTime() + environment.config.timeout().toNanos();
+        while (System.nanoTime() < deadline) {
+            try {
+                node.verifyMessageEvidence(messageId, false);
+                return;
+            } catch (DemoException pending) {
+                if (pending.error() != DemoError.STATE_PROOF_FAILED) throw pending;
+            }
+            sleep(environment.config.pollInterval());
+        }
+        throw new DemoException(DemoError.STATE_PROOF_FAILED);
     }
 
     static void sleep(java.time.Duration duration) {

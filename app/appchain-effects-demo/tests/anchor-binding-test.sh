@@ -189,6 +189,31 @@ state="$(python3 "$TOOL" reconcile "${composite_args[@]}" \
 [ "$state" = pending-genesis ] \
   || fail 'composite height-0 cluster was not recorded as pending'
 
+ROLE_BINDING="$TMP/role-anchor-binding.json"
+python3 - "$STATUS_DIR" <<'PY'
+import json
+import os
+from pathlib import Path
+import sys
+
+for path in Path(sys.argv[1]).glob("node*.json"):
+    document = json.loads(path.read_text(encoding="utf-8"))
+    document["stateMachine"] = "role-evidence"
+    path.write_text(json.dumps(document, sort_keys=True, separators=(",", ":")) + "\n",
+                    encoding="utf-8")
+    os.chmod(path, 0o600)
+PY
+role_args=(--binding "$ROLE_BINDING" --network devnet \
+  --instance binding-test --deployment compose --chain-id evidence-chain-binding-test \
+  --state-machine role-evidence)
+state="$(python3 "$TOOL" reconcile "${role_args[@]}" \
+  "${member_args[@]}" --allow-pristine-pending "${status_args[@]}")"
+[ "$state" = pending-genesis ] \
+  || fail 'role-evidence height-0 cluster was not recorded as pending'
+
+# Restore the main fixture expected by the remaining evidence-registry tests.
+write_statuses pending
+
 expect_fatal_status_mutation duplicate-member 'duplicate member identity'
 expect_fatal_status_mutation wrong-topology 'wrong membership topology'
 expect_fatal_status_mutation wrong-state-machine 'wrong state machine'

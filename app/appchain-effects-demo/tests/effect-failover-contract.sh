@@ -79,7 +79,7 @@ for required in (
         "--max-filesize \"$max_bytes\"",
         "printf 'header = \"X-API-Key: %s\"\\n' \"$api_key\"",
         "/api/v1/plugin-operations/bundles?limit=100",
-        'and .totals.selectedBundles == 6',
+        'and .totals.selectedBundles == 7',
         'and .totals.failedBundles == 0',
         'sample("yano_appchain_tip_height", f\'chain="{chain}"\')',
         'sample("yano_appchain_effects_open", f\'chain="{chain}"\')',
@@ -189,13 +189,15 @@ def job_block(name):
 e2e_job = job_block("effect-failover-e2e")
 for required in (
         "runs-on: ubuntu-24.04",
-        "timeout-minutes: 180",
+        "timeout-minutes: 240",
         "github.event_name == 'schedule'",
         "inputs.scope == 'connector-runtime' || inputs.scope == 'all'",
         "actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5",
         "actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9",
         "YANO_RUN_EFFECT_FAILOVER_E2E: 'true'",
-        "run: app/appchain-effects-demo/tests/effect-failover-e2e.sh"):
+        "run: app/appchain-effects-demo/tests/effect-failover-e2e.sh",
+        "YANO_RUN_ROLE_WORKFLOW_E2E: 'true'",
+        "run: app/appchain-effects-demo/tests/role-workflow-e2e.sh"):
     if required not in e2e_job:
         raise SystemExit(f"mandatory devnet E2E workflow contract is missing: {required}")
 if "\n    if: >-" not in e2e_job:

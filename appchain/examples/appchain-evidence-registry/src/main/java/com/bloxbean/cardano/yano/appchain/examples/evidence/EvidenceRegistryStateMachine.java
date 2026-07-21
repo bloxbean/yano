@@ -5,6 +5,7 @@ import com.bloxbean.cardano.yano.api.appchain.AppBlock;
 import com.bloxbean.cardano.yano.api.appchain.AppQueryContext;
 import com.bloxbean.cardano.yano.api.appchain.AppQueryException;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
+import com.bloxbean.cardano.yano.api.appchain.AppStateReader;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectId;
@@ -231,19 +232,9 @@ public final class EvidenceRegistryStateMachine implements AppStateMachine {
 
     private void applySubmit(AppBlock block, AppStateWriter writer, AppEffectEmitter effects,
                              AppMessage message, SubmitEvidenceCommandV1 command) {
-        if (!config.isIssuer(message.getSender())) {
-            return;
-        }
-        try {
-            requireNotificationShape(command);
-        } catch (RuntimeException invalid) {
-            return;
-        }
+        if (!canApplyStorage(message, command, writer)) return;
         byte[] headKey = EvidenceKeys.headKey(command.evidenceId());
         byte[] recordKey = EvidenceKeys.recordKey(command.evidenceId(), command.businessVersion());
-        if (writer.get(headKey).isPresent() || writer.get(recordKey).isPresent()) {
-            return;
-        }
 
         EffectId object = emitStorage(effects, message, command.evidenceId(),
                 command.businessVersion(), EvidenceEffectOperation.OBJECT,
@@ -259,47 +250,12 @@ public final class EvidenceRegistryStateMachine implements AppStateMachine {
 
     private void applyRepublish(AppBlock block, AppStateWriter writer, AppEffectEmitter effects,
                                 AppMessage message, RepublishEvidenceCommandV1 command) {
-        try {
-            requireNotificationShape(command);
-        } catch (RuntimeException invalid) {
-            return;
-        }
+        if (!canApplyStorage(message, command, writer)) return;
         byte[] headKey = EvidenceKeys.headKey(command.evidenceId());
-        Optional<byte[]> encodedHead = writer.get(headKey);
-        if (encodedHead.isEmpty()) {
-            return;
-        }
-        EvidenceHeadV1 head = EvidenceHeadV1.decode(encodedHead.get());
-        if (!head.evidenceId().equals(command.evidenceId())
-                || !MessageDigest.isEqual(head.ownerPublicKey(), message.getSender())) {
-            return;
-        }
-        final long nextVersion;
-        try {
-            nextVersion = Math.addExact(head.latestVersion(), 1);
-        } catch (ArithmeticException exhausted) {
-            return;
-        }
-        if (command.businessVersion() != nextVersion) {
-            return;
-        }
+        EvidenceHeadV1 head = EvidenceHeadV1.decode(writer.get(headKey).orElseThrow());
+        long nextVersion = head.latestVersion() + 1;
 
         byte[] recordKey = EvidenceKeys.recordKey(command.evidenceId(), nextVersion);
-        if (writer.get(recordKey).isPresent()) {
-            return;
-        }
-        Optional<byte[]> previous = writer.get(EvidenceKeys.recordKey(
-                command.evidenceId(), head.latestVersion()));
-        if (previous.isEmpty()) {
-            return;
-        }
-        EvidenceRecordV1 priorRecord = EvidenceRecordV1.decode(previous.get());
-        if (!priorRecord.evidenceId().equals(command.evidenceId())
-                || priorRecord.businessVersion() != head.latestVersion()
-                || !MessageDigest.isEqual(priorRecord.ownerPublicKey(), head.ownerPublicKey())
-                || !EvidenceStatus.derive(priorRecord).permitsRepublish()) {
-            return;
-        }
 
         EffectId object = emitStorage(effects, message, command.evidenceId(), nextVersion,
                 EvidenceEffectOperation.OBJECT, ConnectorTypes.OBJECT_PUT,
@@ -311,6 +267,58 @@ public final class EvidenceRegistryStateMachine implements AppStateMachine {
         writer.put(recordKey, record.encode());
         writer.put(headKey, new EvidenceHeadV1(command.evidenceId(),
                 head.ownerPublicKey(), nextVersion).encode());
+    }
+
+    /** Shared deterministic precondition used by stock composite release workflows. */
+    public boolean canApplyStorage(AppMessage message, EvidenceCommandV1 command,
+                                   AppStateReader state) {
+        if (message == null || command == null || state == null
+                || !EvidenceContract.COMMAND_TOPIC.equals(message.getTopic())
+                || !validSender(message.getSender())) return false;
+        try {
+            requireNotificationShape(command);
+        } catch (RuntimeException invalidCommand) {
+            return false;
+        }
+        if (command instanceof SubmitEvidenceCommandV1 submit) {
+            return config.isIssuer(message.getSender())
+                    && state.get(EvidenceKeys.headKey(submit.evidenceId())).isEmpty()
+                    && state.get(EvidenceKeys.recordKey(
+                    submit.evidenceId(), submit.businessVersion())).isEmpty();
+        }
+        if (!(command instanceof RepublishEvidenceCommandV1 republish)) return false;
+        byte[] headBytes = state.get(EvidenceKeys.headKey(republish.evidenceId())).orElse(null);
+        if (headBytes == null) return false;
+        final EvidenceHeadV1 head;
+        try {
+            head = EvidenceHeadV1.decode(headBytes);
+        } catch (RuntimeException corrupt) {
+            throw new IllegalStateException("corrupt evidence head", corrupt);
+        }
+        if (!head.evidenceId().equals(republish.evidenceId())
+                || !MessageDigest.isEqual(head.ownerPublicKey(), message.getSender())) return false;
+        final long nextVersion;
+        try {
+            nextVersion = Math.addExact(head.latestVersion(), 1);
+        } catch (ArithmeticException exhausted) {
+            return false;
+        }
+        if (republish.businessVersion() != nextVersion
+                || state.get(EvidenceKeys.recordKey(
+                republish.evidenceId(), nextVersion)).isPresent()) return false;
+        byte[] priorBytes = state.get(EvidenceKeys.recordKey(
+                republish.evidenceId(), head.latestVersion())).orElse(null);
+        if (priorBytes == null) return false;
+        final EvidenceRecordV1 prior;
+        try {
+            prior = EvidenceRecordV1.decode(priorBytes);
+        } catch (RuntimeException corrupt) {
+            throw new IllegalStateException("corrupt prior evidence record", corrupt);
+        }
+        return prior.evidenceId().equals(republish.evidenceId())
+                && prior.businessVersion() == head.latestVersion()
+                && MessageDigest.isEqual(prior.ownerPublicKey(), head.ownerPublicKey())
+                && EvidenceStatus.derive(prior).permitsRepublish();
     }
 
     private void applyNotify(AppBlock block, AppStateWriter writer, AppEffectEmitter effects,

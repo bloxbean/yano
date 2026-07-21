@@ -59,6 +59,41 @@ class DemoConfigTest {
     }
 
     @Test
+    void roleEvidenceRequiresFiveSecretFileBackedActorsAndAnExactProfileDigest()
+            throws IOException {
+        Path configFile = DemoTestFiles.config(temporary);
+        for (int index = 0; index < 5; index++) {
+            DemoTestFiles.secret(temporary.resolve("secrets/actor-" + index),
+                    String.format("%02x", index + 1).repeat(32));
+        }
+        String roleProperties = DemoTestFiles.properties()
+                + "demo.state-machine=role-evidence\n"
+                + "demo.composite-profile-digest=" + "cd".repeat(32) + "\n"
+                + "demo.evidence-capacity-per-block=8\n"
+                + "roles.manufacturer-seed-file=secrets/actor-0\n"
+                + "roles.auditor-a1-seed-file=secrets/actor-1\n"
+                + "roles.auditor-a2-seed-file=secrets/actor-2\n"
+                + "roles.auditor-b-seed-file=secrets/actor-3\n"
+                + "roles.regulator-seed-file=secrets/actor-4\n";
+        Files.writeString(configFile, roleProperties);
+
+        DemoConfig config = DemoConfig.load(configFile);
+
+        assertThat(config.stateMachine()).isEqualTo("role-evidence");
+        assertThat(config.roleAware()).isTrue();
+        assertThat(config.roles()).isNotNull();
+        assertThat(config.toString()).doesNotContain("01010101", "05050505")
+                .contains("<redacted>");
+
+        Files.writeString(configFile, roleProperties.replace(
+                "roles.regulator-seed-file=secrets/actor-4\n", ""));
+        assertThatThrownBy(() -> DemoConfig.load(configFile))
+                .isInstanceOfSatisfying(DemoException.class,
+                        failure -> assertThat(failure.error())
+                                .isEqualTo(DemoError.MISSING_CONFIG_KEY));
+    }
+
+    @Test
     void optionallyLoadsOnlyASecretFileBackedScopedYanoKey() throws IOException {
         Path configFile = DemoTestFiles.config(temporary);
         DemoTestFiles.secret(temporary.resolve("secrets/api"), "scoped-read-submit-key");

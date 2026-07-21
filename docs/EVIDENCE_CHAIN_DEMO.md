@@ -403,7 +403,7 @@ systems:
    work without domain code; custom rules, APIs, workflows, and executors can
    be supplied through manifested plugins.
 
-## 12. No-code today, domain plugins when needed
+## 12. No-code today, role-aware policy, and domain plugins when needed
 
 The demo itself requires no application Java code. It uses:
 
@@ -414,9 +414,8 @@ The demo itself requires no application Java code. It uses:
 
 A production domain can later add a manifested plugin for:
 
-- actor roles and credential validation;
 - product, inspection, or compliance schemas;
-- additional approval or quorum rules;
+- terminal actions or approval semantics beyond the stock bounded AND policy;
 - domain queries and REST APIs;
 - a custom composite profile with an explicitly committed order;
 - new effect executors; or
@@ -426,6 +425,28 @@ The deterministic state-machine/profile identity is consensus-critical. A new
 profile or continuation mode is selected for a new chain or activated through
 governed profile evolution; it is not silently changed by replacing YAML or a
 JAR on one member.
+
+ADR-019 now also ships the `role-evidence` preset. It separates business
+actors from consensus members and proves a manufacturer proposal, two auditor
+organizations, and one regulator authorized the exact evidence bytes. No
+application code is required for the stock flow:
+
+```bash
+./demo.sh up --instance evidence-roles --machine role --continuation direct
+./demo.sh publish --instance evidence-roles --machine role --continuation direct \
+  --evidence-id inspection-role-001 \
+  --sample-file samples/inspection-certificate.json
+./demo.sh verify --instance evidence-roles --machine role --continuation direct \
+  --evidence-id inspection-role-001
+./demo.sh role-lifecycle --instance evidence-roles --machine role \
+  --continuation direct
+./demo.sh stop --instance evidence-roles --machine role --continuation direct
+```
+
+The lifecycle command demonstrates governed onboarding, key rotation,
+stale-key rejection, new-key acceptance, revocation, post-revocation rejection,
+and historical state proofs. The complete operator/developer explanation is
+in [Domain actors and role-aware approvals](APP_CHAIN_DOMAIN_ROLES.md).
 
 ## 13. Suggested 30-minute presentation and demo
 

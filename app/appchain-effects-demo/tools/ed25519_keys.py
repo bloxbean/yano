@@ -389,9 +389,11 @@ def ensure_exact_inventory(directory_descriptor: int, expected: set[str], displa
 
 
 def ensure_keys(directory: Path, mode: str, count: int,
-                existing_only: bool = False) -> list[str]:
-    if count != 3:
+                existing_only: bool = False, purpose: str = "members") -> list[str]:
+    if purpose == "members" and count != 3:
         fail("the evidence demo requires exactly three members")
+    if purpose == "role-actors" and (count != 5 or mode != "generated"):
+        fail("the role-aware evidence demo requires exactly five generated actor keys")
 
     display_path = Path(os.path.abspath(os.fspath(directory)))
     directory_descriptor = open_secure_directory(directory, create=not existing_only)
@@ -418,7 +420,8 @@ def ensure_keys(directory: Path, mode: str, count: int,
             for index in range(count):
                 seed = bytes([index + 1]) * 32 if mode == "deterministic" else generate_seed()
                 public = private_to_public(seed)
-                if mode == "deterministic" and public.hex() != DEVNET_PUBLIC_KEYS[index]:
+                if purpose == "members" and mode == "deterministic" \
+                        and public.hex() != DEVNET_PUBLIC_KEYS[index]:
                     fail("deterministic devnet member identity does not match the frozen profile")
                 create_file_atomic(
                     directory_descriptor,
@@ -446,7 +449,7 @@ def ensure_keys(directory: Path, mode: str, count: int,
             derived = private_to_public(bytes.fromhex(seed_hex)).hex()
             if derived != public_hex:
                 fail(f"member public key does not match node{index}.seed")
-            if mode == "deterministic" and (
+            if purpose == "members" and mode == "deterministic" and (
                 seed_hex != f"{index + 1:02x}" * 32 or public_hex != DEVNET_PUBLIC_KEYS[index]
             ):
                 fail("retained devnet member identity differs from the frozen deterministic profile")
@@ -463,9 +466,11 @@ def main() -> int:
     parser.add_argument("--directory", required=True, type=Path)
     parser.add_argument("--mode", choices=("deterministic", "generated"), required=True)
     parser.add_argument("--count", type=int, default=3)
+    parser.add_argument("--purpose", choices=("members", "role-actors"), default="members")
     parser.add_argument("--existing-only", action="store_true")
     args = parser.parse_args()
-    public_keys = ensure_keys(args.directory, args.mode, args.count, args.existing_only)
+    public_keys = ensure_keys(args.directory, args.mode, args.count,
+                              args.existing_only, args.purpose)
     sys.stdout.write(",".join(public_keys) + "\n")
     return 0
 

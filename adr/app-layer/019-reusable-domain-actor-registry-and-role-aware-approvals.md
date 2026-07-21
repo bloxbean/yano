@@ -2,7 +2,8 @@
 
 ## Status
 
-Proposed — architecture and phased delivery plan
+Accepted and implemented — v1 contracts, reusable components, stock preset,
+proof/API surface, and no-code evidence/recovery demonstration
 
 The number is local to the `adr/app-layer` series. Root-level ADR-019, if one
 exists, is unrelated.
@@ -10,6 +11,8 @@ exists, is unrelated.
 ## Date
 
 2026-07-18
+
+Implementation closure: 2026-07-19
 
 ## Parent and related decisions
 
@@ -26,7 +29,8 @@ exists, is unrelated.
   current member-approved evidence lifecycle and its no-code demonstration.
 - [DPP possible design](dpp-possible-design.md) identifies the need for
   durable non-member business actors, roles, rotation, and revocation.
-- [App-layer open items](open_item.md) tracks delivery as `IAM-001`.
+- [App-layer open items](open_item.md) records v1 completion in the ADR
+  inventory and retains only the deliberately deferred extensions.
 
 ## 0. In plain words
 
@@ -321,6 +325,14 @@ the complete deterministic verification during application. Invalid finalized
 input is a deterministic no-op with a stable reason for diagnostics; it cannot
 escape `apply()` and stall the block.
 
+V1 verification is total for every 32-byte public-key candidate. It captures
+the strict JDK `SunEC` provider instance at contract initialization and also
+requires a concrete CCL Ed25519 verifier; it does not resolve through CCL's
+mutable global `CryptoConfiguration`. Invalid curve points, non-canonical
+signatures, or verifier failures return `false`. Preferred definite CBOR is
+required, and every set-like array must already use its frozen sorted order;
+decoders reject rather than normalize alternative bytes.
+
 ## 5. Authorization and governance semantics
 
 ### 5.1 Registry administration
@@ -346,6 +358,11 @@ rules without changing the actor or approval query contracts.
 Changing the administrator policy itself is a composite-profile change and
 uses ADR-015. It is not a node-local configuration toggle.
 
+V1 admits at most 1,024 simultaneously pending governed mutations. Expiration
+is materialized by a command naming that mutation; there is no unbounded
+background scan. Operators therefore activate, cancel, or touch abandoned
+mutations to reclaim capacity.
+
 ### 5.2 Key registration and proof of possession
 
 Registering or rotating to a domain key requires both:
@@ -355,7 +372,9 @@ Registering or rotating to a domain key requires both:
   actor, key ID, public key, and validity interval.
 
 This prevents an administrator typo from registering a key that nobody
-controls. Private actor keys never enter Yano configuration or state.
+controls. Private actor keys never enter production Yano node configuration or
+state. The isolated no-code demo references owner-only actor seed files from
+runner configuration; those secrets are not mounted into member containers.
 
 ### 5.3 Temporal rules
 
@@ -368,8 +387,11 @@ controls. Private actor keys never enter Yano configuration or state.
 - A suspected compromised key requires revocation plus explicit cancellation
   or rejection of affected still-pending proposals. Terminal outcomes remain
   immutable and auditable.
-- Proposal deadlines use deterministic block height or app-block time as
-  frozen by the v1 contract; wall-clock checks in a gateway are advisory only.
+- Proposal deadlines and key validity use deterministic app-block height in
+  v1; wall-clock checks in a gateway are advisory only.
+- Expiry is materialized lazily by the first later command naming a pending
+  proposal after its deadline. V1 never scans an unbounded proposal set on
+  every block; until materialized, the retained status/count remains PENDING.
 - Policy changes create a new revision. A proposal remains bound to the exact
   revision selected at creation.
 
@@ -468,6 +490,18 @@ Reaching an approval threshold does not synthesize an ordinary app message.
 As in the current gated evidence flow, an external application or orchestrator
 submits the final release command. From accepted release onward, deterministic
 state application and configured effects are automatic.
+
+For the stock evidence profile, the approved payload hash is BLAKE2b-256 over
+the full canonical `EvidenceReleaseCommandV1`, not only its nested evidence
+storage command. Registry prerequisite, approval/release IDs, document
+entity/hash/reference, and connector-bearing storage instructions therefore
+cannot be substituted after actor approval.
+
+That profile does not expose `doc-trail.command.v1` as a public route. The
+document-trail component is workflow-only, so arbitrary member messages cannot
+interleave unaudited entries with the approved release trail. A profile that
+needs a public free-form trail must declare that different trust contract
+explicitly.
 
 Other composites reuse the same outcome but define their own terminal action:
 
@@ -627,6 +661,7 @@ in a reviewed stock preset or manifested application plugin.
 
 The components provide bounded exact queries for:
 
+- current organization/actor/policy revision pointers;
 - organization by ID and revision;
 - actor by ID and revision;
 - actor-key epoch and status;
@@ -639,6 +674,12 @@ Authenticated state keys must support MPF proofs for these exact records. A
 domain API plugin may aggregate them for UI convenience, but an aggregate JSON
 response is not itself a proof unless it returns and verifies the underlying
 root-fixed records.
+
+For a current organization, actor, or policy projection, the v1 domain API
+returns both the immutable revision record (`proofKey`, `recordValue`) and the
+same-root current pointer (`currentPointerProofKey`, `currentPointerValue`). A
+revision proof alone proves existence, not currency. Explicit historical
+revision queries intentionally omit current-pointer material.
 
 Audit output distinguishes:
 
@@ -685,8 +726,9 @@ real-world-source auditing.
 ### 9.3 Required hardening
 
 - Bounded CBOR preflight and decoding in both admission and apply paths.
-- Domain-separated signatures with golden vectors and a second independent
-  verifier implementation before declaring the wire stable.
+- Domain-separated signatures with golden vectors, an independent Python
+  verifier, and a runtime dual-verification profile pinned to a captured strict
+  JDK provider plus a concrete CCL verifier.
 - Constant/bounded work per command, bounded roles/keys/clauses/decisions, and
   deterministic quota enforcement.
 - No remote identity resolution, certificate fetching, DNS, wall clock, or
@@ -696,6 +738,24 @@ real-world-source auditing.
 - KMS/HSM/Vault-compatible client signing interfaces and documented recovery.
 - Governance tests for malicious administrator proposals, duplicate votes,
   threshold drift, and partial activation.
+
+### 9.4 V1 threat disposition
+
+| Threat | V1 control and residual boundary |
+|---|---|
+| Relay substitution | The outer member may change, but the inner signature binds the actor and exact statement; relay identity never becomes the approver. |
+| Cross-chain/policy/payload replay | The signature binds chain, action, proposal, policy revision, payload domain/hash, deadline, actor revision, key, and clause. |
+| Key substitution during onboarding | Every new public key requires proof-of-possession over its exact governed record fields. Real-world identity vetting remains external. |
+| Stale or revoked credential | Eligibility requires the current actor revision, active actor/organization, and key epoch active at the accepted block height. |
+| Role escalation or organization reassignment | Full record revisions and policies are threshold governed; accepted decisions snapshot the exact historical facts used. |
+| Same-organization quorum inflation | Each clause explicitly chooses actor or organization distinctness; the stock auditor clause uses organization. |
+| Proposal-selected weak policy | Proposals name an existing current policy revision; counts and rejection mode cannot be supplied per proposal. |
+| Governance threshold self-lowering | Registry/policy mutations cannot alter the committed administrator set or threshold; that requires ADR-015 profile governance. |
+| Malformed or hostile CBOR | Dependency-light bounded raw-byte preflight and bounded decode run in admission and apply; invalid finalized input is a deterministic no-op. |
+| Hostile Ed25519 key/signature | Verification is total, pinned independently of mutable global CCL configuration, and requires two verifiers; invalid points/signatures return false. |
+| Proof/UI projection confusion | Exact physical composite `proofKey` and encoded `recordValue` accompany JSON projections; current projections also carry the same-root current-pointer key/value so existence cannot be mistaken for currency. |
+| Actor-key leakage | Production signing is external/KMS/HSM/Vault compatible. The demo alone uses owner-only runner seed files that are not mounted into member containers. |
+| Compromised finalized authorization | Revocation blocks future use and pending proposals can be cancelled; terminal history is intentionally immutable and requires a new remediation action. |
 
 ## 10. Compatibility and evolution
 
@@ -711,6 +771,14 @@ real-world-source auditing.
   version and governed profile activation.
 - Registry governance-authority changes use the governed composite profile;
   ordinary role/key changes use the registry's own governed mutation flow.
+- V1 retains at most 16 key epochs per actor. Retained epochs cannot be
+  dropped, a revoked key cannot be reactivated, and a finite validity bound
+  cannot be removed or extended. Operators must plan a governed identity or
+  contract-version transition before the bound is exhausted.
+- V1 caps retained PENDING approval proposals at 10,000 and PENDING governed
+  mutations at 1,024. Reaching either cap makes new creation a deterministic
+  no-op. Targeted activation/cancellation/expiry reclaims the governed-mutation
+  budget; v1 deliberately performs no unbounded expiry scan.
 - Prototype databases remain disposable until the v1 wire and state contracts
   pass the acceptance gates below. Once released, incompatible changes require
   explicit migration or a new component namespace.
@@ -763,8 +831,10 @@ real-world-source auditing.
 - Provide Java SDK examples plus CLI/no-code signing and submission commands.
 - Document actor-key custody, registry onboarding, rotation, compromise,
   revocation, pending-proposal cancellation, and disaster recovery.
-- Add metrics for pending/terminal proposals and sanitized rejection classes;
-  never label a relay member as the business approver.
+- Add authenticated counts for pending/terminal proposals and use bounded host
+  admission/runtime telemetry for invalid no-ops; never write
+  attacker-controlled rejection traffic into consensus state or label a relay
+  member as the business approver.
 
 ## 12. Acceptance criteria
 
@@ -855,10 +925,149 @@ On a three-member cluster:
 
 ## 15. Recommendation
 
-Accept this ADR as the application-layer direction, but keep it `Proposed`
-until Phase 19.1 freezes and independently validates the v1 contracts.
+Accept the implemented v1 architecture. It is delivered as reusable
+role-workflow contracts and deterministic components plus a complete stock
+plugin; it does not retrofit domain roles into app-chain membership, treat REST
+API keys as approver identities, or weaken outer member authentication.
 
-Implement it as reusable role-workflow contracts and deterministic components,
-then expose complete stock/custom composite plugins. Do not retrofit domain
-roles into app-chain membership, treat REST API keys as approver identities,
-or weaken outer member authentication.
+## 16. Implementation outcome
+
+### 16.1 Delivered artifacts
+
+| Artifact | Delivered responsibility |
+|---|---|
+| `appchain-role-workflow-contracts` | Frozen bounded CBOR/state/signature contracts, CDDL, stable codes, typed Java signers/verifiers, CLI, golden vectors, and independent Python verification. |
+| `appchain-role-workflow` | Actor registry, governed mutations, role approval workflow, authenticated proposal statistics, stock evidence integration, exact queries, domain API, and manifested provider. |
+| `role-evidence` | Committed `evidence-role-v1` profile with actor registry, role approvals, evidence/doc trail, and connector workflows. It is a distinct new-chain/profile identity. |
+| Evidence runner/UI | Five-actor role scenario, arbitrary relays, negative controls, policy/decision proof audit, actor/organization/role presentation, and idempotent rotation/revocation exercise. |
+| Operator/developer guide | `docs/APP_CHAIN_DOMAIN_ROLES.md` plus module and demo guides for signing, onboarding, recovery, proofs, and custom-composite reuse. |
+
+The implementation required no app-chain consensus-core or runtime-framework
+change. It uses the ADR-013.2 workflow coordinator, ADR-011 manifest/domain API
+SPIs, existing query/proof endpoints, and existing member-governance identity.
+
+### 16.2 Frozen v1 surface
+
+- Topics: `actors.command.v1` and `role-approvals.command.v1`.
+- Exact queries: current organization/actor/policy pointers, immutable
+  organization/actor/policy revisions, proposal, evidence-approval link, and
+  authenticated proposal statistics.
+- Policy semantics: bounded conjunctive clauses, count, actor/organization
+  distinctness, explicit proposer roles, `DISABLED`/`ANY_ELIGIBLE` rejection,
+  and block-height lifetime.
+- Actor crypto: Ed25519 v1, total dual verification using a captured strict JDK
+  provider and concrete CCL verifier, immutable full revisions, bounded
+  retained key epochs, proof-of-possession for every new key, and SHA-256
+  statement digest.
+- Governance: profile-committed administrator member set/threshold/lifetime,
+  exact mutation-hash binding, and `PROPOSE -> APPROVE -> ACTIVATE`.
+- API proofs: every record projection carries the exact composite physical key
+  and encoded record value required for MPF verification; current projections
+  also carry their same-root current-pointer key/value.
+- Stock document trail: workflow-only; `doc-trail.command.v1` is not a public
+  route in `evidence-role-v1`.
+
+### 16.3 Review-driven iterations
+
+Implementation, adversarial review, and real-cluster testing found and
+corrected the following integration defects before acceptance:
+
+1. a pristine height-zero chain has no committed query snapshot, so bootstrap
+   now treats absence specially only at height zero and uses committed queries
+   after the first governed mutation; and
+2. demo anchor-binding validation originally accepted only standalone and
+   composite providers, so `role-evidence` now has an explicit accepted binding
+   and regression case; and
+3. the first role integration bound only the nested evidence-storage command,
+   so v1 now binds the full canonical release command and rejects substitution
+   of document, registry, identifier, or storage fields after approval;
+4. hostile Ed25519 point encodings could make the original CCL verifier throw
+   during `apply()`, so verification is now total, pinned independently of the
+   mutable global provider, and covered through the finalized apply path;
+5. set-like CBOR arrays were normalized after decode, so v1 now rejects every
+   unsorted representation before the wire is frozen;
+6. current API projections proved revision existence but not currency, so
+   current organization/actor/policy responses now include a root-matched
+   pointer record; and
+7. the packaged role bundle raised the demo catalog inventory from 6/11 to
+   7/13 bundles/contributions, so failover/parity acceptance assertions were
+   updated instead of silently testing the obsolete catalog.
+
+The final design uses an authenticated aggregate statistics record rather than
+node-local counters. This makes pending/terminal counts deterministic and
+replayable. Invalid/unauthorized no-ops stay out of authenticated state to
+avoid attacker-controlled state growth; they remain an operational admission
+telemetry concern.
+
+### 16.4 Acceptance evidence
+
+The focused suite covers malformed/hostile encodings through decode and apply,
+every consensus collection/payload/depth/item bound, canonical set ordering,
+total/pinned signature verification, golden vectors, independent Python
+decoding/signature verification, deterministic replay, role and organization
+distinctness, one actor relayed through two members, wrong
+chain/payload/policy/role, duplicate actors, rotation, revocation, suspension,
+rejection, cancellation, expiration, proposal/governance state budgets,
+statistics invariants, full-release-wrapper substitution, retained-governance
+record corruption, current-pointer API projection, packaging, owner-only key
+material, and anchor-binding selection.
+
+A packaged three-member devnet run completed:
+
+1. role bootstrap and threshold-governed policy/registry state;
+2. evidence publish and mutation-free verification with two distinct auditor
+   organizations plus one regulator;
+3. exact policy, actor, organization, decision-signature, evidence, effect,
+   connector, finality, anchor, and MPF verification;
+4. one-member restart/catch-up with identical root/query results on all
+   members;
+5. governed `recovery-probe` onboarding, rotation, stale-key rejection,
+   new-key acceptance, revocation, post-revocation rejection, cancellation,
+   and historical proofs; and
+6. an immediate idempotent rerun over retained state; then a full three-node
+   deployment stop/restart from persisted state followed by the same proof and
+   lifecycle verification.
+
+The resulting authenticated statistics were `created=3`, `pending=0`,
+`approved=1`, and `cancelled=2`. The repeatable
+`tests/role-workflow-e2e.sh` gate verified all three member roots, current
+pointer material, and the same statistics before and after restarting only
+member 1. It is opt-in locally and mandatory in the repository's
+connector/runtime CI job.
+
+After the external-review hardening, a fresh `./gradlew clean build
+--no-daemon` passed all 260 executed tasks. The role contract `check` also
+passed its independently implemented Python vectors, and
+`tests/release-contracts.sh` passed the launcher, packaging, deployment,
+anchor, key-material, lifecycle, and cleanup contracts.
+
+### 16.5 Deliberate future extensions
+
+The items in §14 remain versioned/demand-driven extensions, not incomplete v1
+acceptance. Rich nested/weighted policy expressions, DID/VC adapters,
+delegation, privacy proofs, federation, and large read indexes require new
+contracts or profiles. Production legal-identity onboarding, KMS/HSM/Vault
+deployment, and independent real-world/outcome verification remain deployment
+responsibilities described in §§9 and 13.
+
+### 16.6 External review disposition (2026-07-19)
+
+| Finding | Disposition |
+|---|---|
+| B1 hostile public key can throw from `apply()` | Confirmed and fixed. Both actor-command and proof-of-possession verification are total; hostile `0x7f...` keys are exercised through component apply and produce no state. |
+| M1 unsorted canonical sets accepted | Confirmed and fixed before v1 freeze. Roles, keys, key proofs, proposer roles, clauses, decisions, and governance approvals must arrive in frozen order. |
+| M2 mutable global signature provider | Confirmed and fixed. Runtime verification captures the strict JDK provider and uses a concrete CCL verifier; changing `CryptoConfiguration.INSTANCE` cannot change consensus acceptance. |
+| M3 public doc-trail route weakens approved-only history | Confirmed for the inherited preset and closed for `evidence-role-v1`; the trail is workflow-only. |
+| M4 “current” projection proves only existence | Confirmed and fixed with same-root current-pointer query/key/value material. |
+| M5 untyped/leaky identifier errors | Confirmed and fixed with sanitized `RoleWorkflowException(INVALID_PAYLOAD)`. |
+| Pending-state growth | Bounded at 10,000 proposals and 1,024 governed mutations. Targeted governed expiry remains an explicit operational boundary; no unbounded scan was introduced. |
+| Duplicated evidence release preconditions | Fixed by sharing `EvidenceRegistryStateMachine.canApplyStorage()` between the workflow preflight and actual state transition. |
+| Proposal/statistics partial update risk | Fixed by computing the validated successor statistics before the first proposal write. |
+| Ambiguous governed state-key helpers | Fixed with one generic `governedMutation()` layout matching the frozen `g/{id}` domain. |
+| Bounds/apply/relay/restart coverage gaps | Closed with adversarial bound tests, hostile finalized-input tests, two-relay actor dedup, and the mandatory isolated three-member role E2E including one-member catch-up. |
+
+The intentionally retained facts are not defects: the administrator set is
+the genesis membership until an ADR-015 profile evolution; expiry
+materialization is a safe lazy write triggered by a command naming the
+proposal; and an actor reaching the 16-key-epoch history bound needs a
+successor identity or versioned profile transition.

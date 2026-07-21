@@ -127,6 +127,33 @@ function anchorView(anchor) {
   } : {};
 }
 
+function authorizationView(authorization) {
+  if (!authorization) return {};
+  const clauses = (authorization.clauses || []).map((clause) =>
+    `${clause.clauseId}: ${clause.acceptedCount}/${clause.requiredCount} ${clause.role}`
+      + ` · distinct ${String(clause.distinctBy || '').toLowerCase()}`);
+  const decisions = (authorization.decisions || []).map((decision) =>
+    `${decision.actor} (${decision.role}, ${decision.organization}) → ${decision.clauseId}`);
+  return {
+    status: authorization.status,
+    policy: `${authorization.policyId} · revision ${authorization.policyRevision}`,
+    proposer: `${authorization.proposerActor} (${authorization.proposerRole}, ${authorization.proposerOrganization})`,
+    satisfiedClauses: clauses,
+    acceptedDecisions: decisions,
+    payloadDomain: authorization.payloadDomain,
+    payloadHash: authorization.payloadHash,
+    relayMember: shortHash(authorization.relayMember, 10),
+    deadlineHeight: authorization.deadlineHeight
+  };
+}
+
+function renderAuthorization(cardId, listId, authorization) {
+  const card = byId(cardId);
+  card.hidden = !authorization;
+  if (authorization) fillList(listId, authorizationView(authorization));
+  else byId(listId).replaceChildren();
+}
+
 function setOutcome(element, value) {
   element.className = `status-pill ${statusClass(value)}`;
   element.textContent = valueText(value);
@@ -147,6 +174,7 @@ function renderLatest(detail, item) {
   fillList('latestStorage', storageView(report.storage));
   fillList('latestKafka', kafkaView(report.kafka));
   fillList('latestAnchor', anchorView(report.anchor));
+  renderAuthorization('latestAuthorizationCard', 'latestAuthorization', report.authorization);
   byId('latestViewButton').disabled = false;
 }
 
@@ -334,6 +362,9 @@ function renderSelected(detail, selectedKey) {
   addProofBadge(badges, `${report.chain?.membersVerified || 0} members agreed`, true);
   addProofBadge(badges, 'Object version verified', content.objectStoreVerified === true);
   addProofBadge(badges, 'IPFS bytes and pin verified', content.ipfsVerified === true);
+  if (report.authorization) {
+    addProofBadge(badges, 'Role quorum authenticated', report.authorization.status === 'APPROVED');
+  }
   addProofBadge(badges, 'Checking displayed SHA-256…', content.integrityVerified === true,
     'browserDigestBadge');
 
@@ -341,6 +372,7 @@ function renderSelected(detail, selectedKey) {
   fillList('selectedStorage', storageView(report.storage));
   fillList('selectedKafka', kafkaView(report.kafka));
   fillList('selectedAnchor', anchorView(report.anchor));
+  renderAuthorization('selectedAuthorizationCard', 'selectedAuthorization', report.authorization);
   renderChecks(report.checks);
 
   const payload = byId('evidencePayload');

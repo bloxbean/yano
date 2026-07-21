@@ -21,6 +21,7 @@ Don't look for feature docs here — they're centralized:
 | [`docs/YANO_APP_CHAIN_OVERVIEW.pptx`](../docs/YANO_APP_CHAIN_OVERVIEW.pptx) | Editable 13-slide companion deck for a concise architecture and product pitch. |
 | [`docs/APP_CHAIN_USER_GUIDE.md`](../docs/APP_CHAIN_USER_GUIDE.md) | Configuration, REST, anchoring (metadata + script), operations |
 | [`docs/APP_CHAIN_PROFILE_GOVERNANCE.md`](../docs/APP_CHAIN_PROFILE_GOVERNANCE.md) | Governed composite profile deployment, activation, recovery, observability, and proof verification |
+| [`docs/APP_CHAIN_DOMAIN_ROLES.md`](../docs/APP_CHAIN_DOMAIN_ROLES.md) | Domain actors, governed role policies, signing, rotation/revocation, proof audit, stock demo, and custom-plugin reuse |
 | [`docs/APP_CHAIN_TUTORIAL.md`](../docs/APP_CHAIN_TUTORIAL.md) | Hands-on: run a chain from the distribution + a custom plugin |
 | [`docs/APP_CHAIN_PLUGIN_QUERY_AND_DOMAIN_API.md`](../docs/APP_CHAIN_PLUGIN_QUERY_AND_DOMAIN_API.md) | Plugin-author contract for committed queries and manifested domain APIs |
 | [`docs/APP_CHAIN_CONSENSUS_GUIDE.md`](../docs/APP_CHAIN_CONSENSUS_GUIDE.md) | Developer-level internals: consensus round, state-machine SPI, every built-in machine's wire format |
@@ -45,6 +46,8 @@ Don't look for feature docs here — they're centralized:
 | `appchain-evidence-registry` | `examples/appchain-evidence-registry/` | Reference evidence state machine, domain API, and composite component implementation. |
 | `appchain-evidence-client` | `examples/appchain-evidence-client/` | Proof-aware typed evidence client for standalone or profile-bound composite chains. |
 | `appchain-evidence-demo-runner` | `examples/appchain-evidence-demo-runner/` | Credential-separated no-code scenario runner and read-only report UI. |
+| `appchain-role-workflow-contracts` | `appchain-role-workflow-contracts/` | Frozen ADR-019 organization/actor/policy/approval codecs, CDDL, signing CLI, and independently verified golden vectors. |
+| `appchain-role-workflow` | `appchain-role-workflow/` | Reusable actor registry and role-aware approvals plus the manifested `role-evidence` stock preset and proof-oriented domain API. |
 | `appchain-kafka` | `extensions/appchain-kafka/` | Plugin: finalized blocks and acknowledged `kafka.publish` effects → Kafka topics. |
 | `appchain-objectstore-s3` | `extensions/appchain-objectstore-s3/` | Plugin: immutable, versioned `object.put` promotion for tested S3-compatible stores. |
 | `appchain-ipfs` | `extensions/appchain-ipfs/` | Plugin: reconciled, acknowledged `ipfs.pin` effects against a configured Kubo node. |

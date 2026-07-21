@@ -42,6 +42,7 @@ final class YanoAuditClient {
     private final SecretValue apiKey;
     private final Set<String> expectedMemberKeys;
     private final int expectedThreshold;
+    private final String expectedStateMachineId;
     private final EvidenceVerifier.TrustContext trustContext;
     private final byte[] expectedCompositeProfileDigest;
     private final BoundedHttp http;
@@ -62,6 +63,20 @@ final class YanoAuditClient {
                     int expectedThreshold,
                     SecretValue apiKey,
                     byte[] expectedCompositeProfileDigest) {
+        this(baseUrl, chainId, expectedMemberKeys, expectedThreshold, apiKey,
+                expectedCompositeProfileDigest == null
+                        ? EvidenceContract.STATE_MACHINE_ID
+                        : CompositeCommitmentV1.STATE_MACHINE_ID,
+                expectedCompositeProfileDigest);
+    }
+
+    YanoAuditClient(URI baseUrl,
+                    String chainId,
+                    Set<String> expectedMemberKeys,
+                    int expectedThreshold,
+                    SecretValue apiKey,
+                    String expectedStateMachineId,
+                    byte[] expectedCompositeProfileDigest) {
         this.baseUrl = baseUrl;
         this.chainId = chainId;
         this.apiKey = apiKey;
@@ -73,6 +88,7 @@ final class YanoAuditClient {
         }
         this.expectedMemberKeys = this.trustContext.memberKeysHex();
         this.expectedThreshold = this.trustContext.threshold();
+        this.expectedStateMachineId = expectedStateMachineId;
         this.expectedCompositeProfileDigest = expectedCompositeProfileDigest == null
                 ? null : expectedCompositeProfileDigest.clone();
         this.http = new BoundedHttp(Duration.ofSeconds(5), Duration.ofSeconds(30));
@@ -86,7 +102,8 @@ final class YanoAuditClient {
         this.appChain = builder.build();
         this.evidence = expectedCompositeProfileDigest == null
                 ? new EvidenceClient(appChain, chainId)
-                : new EvidenceClient(appChain, chainId, expectedCompositeProfileDigest);
+                : new EvidenceClient(appChain, chainId, expectedStateMachineId,
+                expectedCompositeProfileDigest);
     }
 
     AppChainClient appChain() {
@@ -109,7 +126,7 @@ final class YanoAuditClient {
         if (EvidenceContract.STATE_MACHINE_ID.equals(status.stateMachine())) {
             return true;
         }
-        if (!CompositeCommitmentV1.STATE_MACHINE_ID.equals(status.stateMachine())
+        if (!expectedStateMachineId.equals(status.stateMachine())
                 || expectedCompositeProfileDigest == null) {
             throw new DemoException(DemoError.STATE_PROOF_FAILED);
         }

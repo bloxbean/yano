@@ -21,8 +21,9 @@ exists, is unrelated.
   owns the framework-wide block and effect caps consumed here.
 - [ADR-018](018-evidence-demo-iteration-2-publish-republish-verify.md) owns the
   lifecycle commands and the first bounded full-workflow load command.
-- [ADR-019](019-reusable-domain-actor-registry-and-role-aware-approvals.md) is
-  deliberately deferred and is not a dependency of this work.
+- [ADR-019](019-reusable-domain-actor-registry-and-role-aware-approvals.md) was
+  deliberately not a dependency of this work; its role-aware preset was
+  implemented afterward as a separate committed profile.
 - [App-layer open items](open_item.md) tracks delivery as `PERF-001`.
 
 ## 0. In plain words
@@ -94,7 +95,8 @@ re-reads, or proofs.
 - Bypassing registry, approval, release, finality, connectors, result
   incorporation, independent external reads, or proof verification.
 - Running high-count public-network anchor transactions implicitly.
-- Changing ADR-019 or simulating domain actors before it is implemented.
+- Simulating domain actors in this legacy composite capacity runner. ADR-019
+  later delivered a separate real actor-signature profile and recovery demo.
 - Turning the demo into a generic load-testing framework.
 - Guaranteeing that connector capacity equals consensus capacity.
 

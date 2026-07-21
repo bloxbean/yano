@@ -104,6 +104,15 @@ class EvidenceDemoMainTest {
                 .isEqualTo("FAIL code=INVALID_CONFIG\n");
 
         error.reset();
+        Path nonRoleConfig = DemoTestFiles.config(temporary.resolve("non-role"));
+        int roleLifecycleOnNonRoleProfile = EvidenceDemoMain.run(
+                new String[]{"role-lifecycle", "--config", nonRoleConfig.toString()},
+                new PrintStream(output), new PrintStream(error));
+        assertThat(roleLifecycleOnNonRoleProfile).isEqualTo(2);
+        assertThat(error.toString(StandardCharsets.UTF_8))
+                .isEqualTo("FAIL code=INVALID_CONFIG\n");
+
+        error.reset();
         int invalidAudit = EvidenceDemoMain.run(new String[]{
                         "audit-kafka", "--config", config.toString(),
                         "--expected-records", "17",

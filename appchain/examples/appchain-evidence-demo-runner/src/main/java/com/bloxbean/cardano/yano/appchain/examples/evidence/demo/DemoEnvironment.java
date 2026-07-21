@@ -15,7 +15,8 @@ final class DemoEnvironment implements AutoCloseable {
         this.yano = config.yanoUrls().stream()
                 .map(uri -> new YanoAuditClient(uri, config.chainId(),
                         config.yanoMemberKeys(), config.yanoThreshold(),
-                        config.yanoApiKey(), config.expectedCompositeProfileDigest()))
+                        config.yanoApiKey(), config.stateMachine(),
+                        config.expectedCompositeProfileDigest()))
                 .toList();
         S3DemoStore newS3 = null;
         KafkaDemoClient newKafka = null;

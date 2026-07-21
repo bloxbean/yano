@@ -572,7 +572,10 @@ like any messages: `GET .../messages/by-topic/~l1%2Fdeposits`.
 
 The framework never interprets message bodies — a **state machine** does.
 Before writing one, check the standard library (section 9): registry,
-approvals, balances and document-trail machines ship in the distribution.
+approvals, balances and document-trail machines ship in the distribution. The
+separate packaged role-workflow bundle also supplies the complete
+`role-evidence` preset for non-member business actors; see
+[Domain Actors and Role-Aware Approvals](APP_CHAIN_DOMAIN_ROLES.md).
 For everything else, implement
 `com.bloxbean.cardano.yano.api.appchain.AppStateMachine`:
 
@@ -834,6 +837,14 @@ sign-off.
 ```yaml
 yano.app-chain.state-machine: approvals
 ```
+
+Use `approvals` when app-chain member keys are intentionally the business
+approvers. Do not treat a REST API key or relay member as an employee/auditor
+identity. For governed organizations, actor-key revisions, roles,
+organization-distinct clauses, portable signatures, and the stock evidence
+flow, select the separate `role-evidence` preset for a new chain and follow
+[the domain-role guide](APP_CHAIN_DOMAIN_ROLES.md). Existing chains require an
+ADR-015 governed profile activation rather than a local YAML switch.
 
 **`balances`** — account balances with `mint` / `transfer` commands: a member
 spends only its own account, non-negativity is enforced deterministically in

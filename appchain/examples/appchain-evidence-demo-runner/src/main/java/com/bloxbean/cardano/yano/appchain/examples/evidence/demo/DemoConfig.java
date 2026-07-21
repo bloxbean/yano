@@ -28,6 +28,7 @@ public record DemoConfig(String chainId,
                          Path reportDirectory,
                          String evidenceId,
                          int evidenceCapacityPerBlock,
+                         RoleSettings roles,
                          S3Settings s3,
                          IpfsSettings ipfs,
                          KafkaSettings kafka,
@@ -45,6 +46,9 @@ public record DemoConfig(String chainId,
             "demo.yano.member-keys", "demo.yano.threshold",
             "demo.sample-file", "demo.report-directory", "demo.evidence-id",
             "demo.evidence-capacity-per-block",
+            "roles.manufacturer-seed-file", "roles.auditor-a1-seed-file",
+            "roles.auditor-a2-seed-file", "roles.auditor-b-seed-file",
+            "roles.regulator-seed-file",
             "s3.endpoint", "s3.region", "s3.access-key-file", "s3.secret-key-file",
             "s3.source-bucket", "s3.source-prefix", "s3.destination-bucket",
             "s3.destination-prefix", "s3.target", "s3.target-id",
@@ -56,10 +60,11 @@ public record DemoConfig(String chainId,
             "scenario.require-anchor");
 
     public DemoConfig {
-        if (!"evidence-registry".equals(stateMachine) && !"composite".equals(stateMachine)) {
+        if (!"evidence-registry".equals(stateMachine) && !"composite".equals(stateMachine)
+                && !"role-evidence".equals(stateMachine)) {
             throw new DemoException(DemoError.INVALID_CONFIG);
         }
-        if ("composite".equals(stateMachine)) {
+        if (!"evidence-registry".equals(stateMachine)) {
             if (expectedCompositeProfileDigest == null
                     || expectedCompositeProfileDigest.length != 32) {
                 throw new DemoException(DemoError.INVALID_CONFIG);
@@ -68,12 +73,39 @@ public record DemoConfig(String chainId,
         } else if (expectedCompositeProfileDigest != null) {
             throw new DemoException(DemoError.INVALID_CONFIG);
         }
+        if ("role-evidence".equals(stateMachine) != (roles != null)) {
+            throw new DemoException(DemoError.INVALID_CONFIG);
+        }
         yanoUrls = List.copyOf(yanoUrls);
         yanoMemberKeys = Set.copyOf(yanoMemberKeys);
         if (evidenceCapacityPerBlock < 1
                 || evidenceCapacityPerBlock > EvidenceWorkflowCapacityV1.MAX_CAPACITY) {
             throw new DemoException(DemoError.INVALID_CONFIG);
         }
+    }
+
+    /** Source-compatible constructor for standalone and legacy composite callers. */
+    public DemoConfig(String chainId,
+                      String stateMachine,
+                      byte[] expectedCompositeProfileDigest,
+                      List<URI> yanoUrls,
+                      Set<String> yanoMemberKeys,
+                      int yanoThreshold,
+                      SecretValue yanoApiKey,
+                      Path sampleFile,
+                      Path reportDirectory,
+                      String evidenceId,
+                      int evidenceCapacityPerBlock,
+                      S3Settings s3,
+                      IpfsSettings ipfs,
+                      KafkaSettings kafka,
+                      Duration timeout,
+                      Duration pollInterval,
+                      boolean requireAnchor) {
+        this(chainId, stateMachine, expectedCompositeProfileDigest, yanoUrls,
+                yanoMemberKeys, yanoThreshold, yanoApiKey, sampleFile, reportDirectory,
+                evidenceId, evidenceCapacityPerBlock, null, s3, ipfs, kafka,
+                timeout, pollInterval, requireAnchor);
     }
 
     /** Source-compatible constructor for standalone evidence-registry callers. */
@@ -92,7 +124,7 @@ public record DemoConfig(String chainId,
                       Duration pollInterval,
                       boolean requireAnchor) {
         this(chainId, "evidence-registry", null, yanoUrls, yanoMemberKeys, yanoThreshold,
-                yanoApiKey, sampleFile, reportDirectory, evidenceId, 1, s3, ipfs,
+                yanoApiKey, sampleFile, reportDirectory, evidenceId, 1, null, s3, ipfs,
                 kafka, timeout, pollInterval, requireAnchor);
     }
 
@@ -103,10 +135,14 @@ public record DemoConfig(String chainId,
         try {
             String chainId = identifier(required(values, "demo.chain-id"));
             String stateMachine = values.getOrDefault("demo.state-machine", "evidence-registry");
-            byte[] compositeProfileDigest = "composite".equals(stateMachine)
+            if (!"evidence-registry".equals(stateMachine) && !"composite".equals(stateMachine)
+                    && !"role-evidence".equals(stateMachine)) {
+                throw new DemoException(DemoError.INVALID_CONFIG);
+            }
+            byte[] compositeProfileDigest = !"evidence-registry".equals(stateMachine)
                     ? exactLowerHex(required(values, "demo.composite-profile-digest"), 32)
                     : null;
-            if (!"composite".equals(stateMachine)
+            if ("evidence-registry".equals(stateMachine)
                     && values.containsKey("demo.composite-profile-digest")) {
                 throw new DemoException(DemoError.INVALID_CONFIG);
             }
@@ -128,10 +164,23 @@ public record DemoConfig(String chainId,
             int evidenceCapacity = (int) unsigned(values.getOrDefault(
                     "demo.evidence-capacity-per-block", "1"), 1,
                     EvidenceWorkflowCapacityV1.MAX_CAPACITY);
-            if ("composite".equals(stateMachine)
+            if (!"evidence-registry".equals(stateMachine)
                     && !values.containsKey("demo.evidence-capacity-per-block")) {
                 throw new DemoException(DemoError.MISSING_CONFIG_KEY);
             }
+            RoleSettings roles = "role-evidence".equals(stateMachine)
+                    ? new RoleSettings(
+                    SecretFiles.read(resolve(base, required(values,
+                            "roles.manufacturer-seed-file"))),
+                    SecretFiles.read(resolve(base, required(values,
+                            "roles.auditor-a1-seed-file"))),
+                    SecretFiles.read(resolve(base, required(values,
+                            "roles.auditor-a2-seed-file"))),
+                    SecretFiles.read(resolve(base, required(values,
+                            "roles.auditor-b-seed-file"))),
+                    SecretFiles.read(resolve(base, required(values,
+                            "roles.regulator-seed-file"))))
+                    : null;
 
             S3Settings s3 = new S3Settings(
                     origin(required(values, "s3.endpoint")),
@@ -162,7 +211,8 @@ public record DemoConfig(String chainId,
                     "scenario.require-anchor", "true"));
             return new DemoConfig(chainId, stateMachine, compositeProfileDigest,
                     yanoUrls, yanoMemberKeys, yanoThreshold,
-                    apiKey, sample, reports, evidenceId, evidenceCapacity, s3, ipfs, kafka,
+                    apiKey, sample, reports, evidenceId, evidenceCapacity, roles,
+                    s3, ipfs, kafka,
                     timeout, poll, requireAnchor);
         } catch (DemoException failure) {
             throw failure;
@@ -454,5 +504,28 @@ public record DemoConfig(String chainId,
                                 String targetId,
                                 String topicAlias,
                                 String physicalTopic) {
+    }
+
+    /** Demo-only actor seed handles; values remain redacted and never enter reports. */
+    public record RoleSettings(SecretValue manufacturer,
+                               SecretValue auditorA1,
+                               SecretValue auditorA2,
+                               SecretValue auditorB,
+                               SecretValue regulator) {
+        public RoleSettings {
+            java.util.Objects.requireNonNull(manufacturer, "manufacturer");
+            java.util.Objects.requireNonNull(auditorA1, "auditorA1");
+            java.util.Objects.requireNonNull(auditorA2, "auditorA2");
+            java.util.Objects.requireNonNull(auditorB, "auditorB");
+            java.util.Objects.requireNonNull(regulator, "regulator");
+        }
+    }
+
+    boolean compositeProfile() {
+        return !"evidence-registry".equals(stateMachine);
+    }
+
+    boolean roleAware() {
+        return "role-evidence".equals(stateMachine);
     }
 }

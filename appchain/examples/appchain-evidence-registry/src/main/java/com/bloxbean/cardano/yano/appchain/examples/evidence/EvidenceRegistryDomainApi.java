@@ -28,6 +28,7 @@ import java.util.Set;
 
 /** Stateless JSON projection over the root-fixed {@code evidence/get} query. */
 public final class EvidenceRegistryDomainApi implements DomainApi {
+    private static final String ROLE_EVIDENCE_STATE_MACHINE_ID = "role-evidence";
     static final String GET_ROUTE = "get-evidence";
     private static final Set<String> QUERY_PARAMETERS = Set.of("chain", "version");
     private static final List<DomainApiRoute> ROUTES = List.of(new DomainApiRoute(
@@ -183,11 +184,12 @@ public final class EvidenceRegistryDomainApi implements DomainApi {
 
     private static boolean supportedStateMachine(String stateMachineId) {
         return EvidenceContract.STATE_MACHINE_ID.equals(stateMachineId)
-                || EvidenceCompositeKeys.STATE_MACHINE_ID.equals(stateMachineId);
+                || EvidenceCompositeKeys.STATE_MACHINE_ID.equals(stateMachineId)
+                || ROLE_EVIDENCE_STATE_MACHINE_ID.equals(stateMachineId);
     }
 
     private static byte[] physicalKey(AppQueryResult result, byte[] localKey) {
-        return EvidenceCompositeKeys.STATE_MACHINE_ID.equals(result.stateMachineId())
+        return !EvidenceContract.STATE_MACHINE_ID.equals(result.stateMachineId())
                 ? EvidenceCompositeKeys.physicalKey(localKey) : localKey.clone();
     }
 

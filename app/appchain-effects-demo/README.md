@@ -243,6 +243,52 @@ profile digest and immutable instance identity. It is not a live local tuning
 knob. A different capacity requires a packaged governed target profile for a
 retained production chain, or a fresh disposable preview/demo chain.
 
+## Role-aware evidence and actor recovery
+
+ADR-019 adds the separate `role-evidence` stock machine. It preserves the
+evidence/connectors flow but replaces member-count approval with portable
+business-actor signatures under a governed policy: manufacturer proposer, two
+auditors from distinct organizations, and one regulator. The relay member and
+business approver remain distinct in the report and UI.
+
+Use a fresh instance and pass the immutable machine selection to every
+command:
+
+```bash
+./demo.sh up --instance role-demo --machine role --continuation direct
+
+./demo.sh publish --instance role-demo --machine role --continuation direct \
+  --evidence-id role-inspection-001 \
+  --sample-file samples/inspection-certificate.json
+
+./demo.sh verify --instance role-demo --machine role --continuation direct \
+  --evidence-id role-inspection-001
+
+./demo.sh role-lifecycle --instance role-demo --machine role \
+  --continuation direct
+
+./demo.sh stop --instance role-demo --machine role --continuation direct
+```
+
+`publish` finalizes wrong-role, wrong-payload, and same-organization controls
+as deterministic no-ops before the valid quorum releases the evidence. Its
+read-only audit verifies the exact policy, historical actor/organization
+revisions, decision signatures, state proofs, effects, connector data,
+finality, and configured anchor gate.
+
+`role-lifecycle` is an idempotent recovery exercise on a dedicated
+`recovery-probe` actor. It governs onboarding, rotates to a new key, proves a
+stale revision cannot authorize while the new revision can, revokes the actor,
+proves the revoked credential cannot authorize, cancels both probe proposals,
+and verifies all three retained actor revisions plus the proposal trail with
+root-matched MPF proofs. It never changes the five normal scenario actors.
+
+Role mode uses five generated owner-only demo actor seed files mounted only
+into the scenario runner, never into Yano member containers. This convenience
+is for the isolated demo. Production actors sign the frozen contract in their
+own application/KMS/HSM/Vault. Pipeline load remains a `composite`-profile
+capacity tool and is deliberately not offered for role mode.
+
 The demo starts new composite chains in ADR-015 `governed` profile mode. Its
 stock bundle contains only the selected profile, so the demo exercises
 authenticated epoch 0, status, proofs, restart, JVM/Compose parity, and
@@ -687,6 +733,10 @@ YANO_RUN_EFFECT_FAILOVER_E2E=true ./tests/effect-failover-e2e.sh
 
 # The identical scenario through Compose and normally started host processes.
 YANO_RUN_DEPLOYMENT_PARITY_E2E=true ./tests/deployment-parity-e2e.sh
+
+# Role governance, actor-signed release, rotation/revocation, current-pointer
+# proof material, and one-member retained restart/catch-up.
+YANO_RUN_ROLE_WORKFLOW_E2E=true ./tests/role-workflow-e2e.sh
 ```
 
 The live gates parse their JUnit/API evidence and fail if an opted-in case

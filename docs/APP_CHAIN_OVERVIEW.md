@@ -198,6 +198,7 @@ flowchart LR
         BA[balances]
         DT[doc-trail]
         EV[composite / evidence-v1-gated]
+        RA[role-evidence<br/>domain actors + policy]
     end
 
     subgraph FP[First-party integration bundles]
@@ -228,6 +229,12 @@ publication under one state root. The compatibility `evidence-v1` preset keeps
 direct evidence commands for existing deployments. The first-party Kafka,
 S3-compatible object-store, and IPFS bundles provide a full external
 publication workflow without custom application code.
+
+For applications that need business approvers rather than validator-member
+approvers, the stock `role-evidence` profile adds governed organizations,
+actor/key revisions, role policies, organization-distinct quorums, and
+portable actor signatures. See the
+[domain-role guide](APP_CHAIN_DOMAIN_ROLES.md).
 
 ### Plugin path
 
@@ -325,11 +332,12 @@ processes.
 |---|---|---|
 | Consortium audit log | `ordered-log`, proofs, optional Cardano anchor | Domain-specific message codec or query API |
 | Shared registry or allow-list | `kv-registry` | Validation rules and domain API |
-| Multi-party approvals | `approvals` | Custom workflow and external notification |
+| Member multi-party approvals | `approvals` | Custom workflow and external notification |
+| Business-role approvals | `role-evidence` actor registry and bounded policy | Another stock terminal action or a small custom composite plugin |
 | Internal credits or netting | `balances` | Domain authorization and settlement connector |
 | Document or case history | `doc-trail` | Object storage/IPFS evidence publication |
-| Compliance evidence publication | `composite/evidence-v1-gated` plus Kafka, object storage and IPFS | Domain actor authorization or regulator-specific policy |
-| Digital product passport | Registry, approvals, document trail, evidence connectors | DPP actor model, credential policy, product schemas and lifecycle workflows |
+| Compliance evidence publication | `role-evidence` plus Kafka, object storage and IPFS | Regulator-specific schemas or terminal policy semantics beyond bounded v1 |
+| Digital product passport | Domain actors, role approvals, document trail, evidence connectors | DPP credential policy, product schemas and lifecycle workflows |
 | Oracle observation ledger | Ordered observations, approvals/aggregation, proofs | Source adapters, quorum/outlier rules, and hardened Cardano datum publication |
 | Cross-organization workflow | Custom composite plus effects | ERP, webhook, Kafka, storage, identity and domain APIs |
 | Application-specific settlement | Deterministic balances/approvals | Production-hardened Cardano transaction and reconciliation plugin |

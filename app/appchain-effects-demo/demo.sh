@@ -196,6 +196,10 @@ case "$COMMAND" in
     [ -n "$LOAD_COUNT" ] || die "load requires --count"
     [ -n "$LOAD_ID_PREFIX" ] || die "load requires --id-prefix"
     ;;
+  role-lifecycle)
+    [ "$DEMO_MACHINE_MODE" = role ] \
+      || die "role-lifecycle requires --machine role"
+    ;;
   run) [ -z "$BUSINESS_VERSION" ] || die "run does not accept --business-version";;
   *)
     [ -z "$SCENARIO_SAMPLE_FILE" ] \
@@ -216,9 +220,19 @@ case "$DEMO_CONTINUATION_MODE" in
   *) die "--continuation must be explicit or direct";;
 esac
 case "$DEMO_MACHINE_MODE" in
-  standalone) STATE_MACHINE_ID="evidence-registry";;
-  composite) STATE_MACHINE_ID="composite";;
-  *) die "--machine must be standalone or composite";;
+  standalone)
+    STATE_MACHINE_ID="evidence-registry"
+    MACHINE_PRESET_SETTING="# standalone evidence registry has no composite preset"
+    ;;
+  composite)
+    STATE_MACHINE_ID="composite"
+    MACHINE_PRESET_SETTING="yano.app-chain.chains[0].machines.composite.preset=evidence-v1-gated"
+    ;;
+  role)
+    STATE_MACHINE_ID="role-evidence"
+    MACHINE_PRESET_SETTING="# role-evidence provider fixes the evidence-role-v1 preset"
+    ;;
+  *) die "--machine must be standalone, composite, or role";;
 esac
 DIRECT_RESULT_ACTIVATION_SETTING="# direct result emission is not activated"
 if [ "$DEMO_CONTINUATION_MODE" = direct ]; then
@@ -423,6 +437,7 @@ KAFKA_PASSWD_FILE="$RUNTIME_ROOT/kafka-passwd"
 KAFKA_GROUP_FILE="$RUNTIME_ROOT/kafka-group"
 NODE_CONFIG_DIR="$SECRET_ROOT/nodes-$MODE"
 MEMBER_KEY_DIR="$SECRET_ROOT/member-keys"
+ROLE_ACTOR_KEY_DIR="$SECRET_ROOT/role-actors"
 NETWORK_MARKER="$NETWORK_ROOT/network-identity.json"
 INSTANCE_MARKER="$DATA_ROOT/appchain-identity.json"
 ANCHOR_BINDING="$DATA_ROOT/anchor-binding.json"
@@ -638,7 +653,7 @@ fi
 OPERATION_LOCK_REQUIRED=false
 case "$COMMAND" in
   prepare|config|up) OPERATION_LOCK_REQUIRED=true;;
-  run|publish|republish|verify|replay|load|probe|stop|clean)
+  run|publish|republish|verify|replay|load|role-lifecycle|probe|stop|clean)
     if [ -e "$NETWORK_ROOT" ] || [ -L "$NETWORK_ROOT" ]; then
       OPERATION_LOCK_REQUIRED=true
     fi
@@ -866,6 +881,14 @@ prepare_secrets() {
   RESULT_SIGNERS="${MEMBER_KEYS%,*}"
   [[ "$RESULT_SIGNERS" =~ ^[0-9a-f]{64},[0-9a-f]{64}$ ]] \
     || die "result signer policy must pre-authorize the primary and failover members"
+  if [ "$DEMO_MACHINE_MODE" = role ]; then
+    python3 "$SCRIPT_DIR/tools/ed25519_keys.py" \
+      --directory "$ROLE_ACTOR_KEY_DIR" --mode generated --count 5 \
+      --purpose role-actors >/dev/null \
+      || die "could not create or validate demo role-actor keys"
+  else
+    ensure_private_directory "$ROLE_ACTOR_KEY_DIR"
+  fi
   ensure_secret "$API_KEY_FILE" "$(openssl rand -hex 32)"
   ensure_secret "$S3_BOOTSTRAP_ACCESS_FILE" "yanobootstrap$(openssl rand -hex 8)"
   ensure_secret "$S3_BOOTSTRAP_SECRET_FILE" "$(openssl rand -hex 32)"
@@ -944,6 +967,12 @@ load_cached_key_material() {
   RESULT_SIGNERS="${MEMBER_KEYS%,*}"
   [[ "$RESULT_SIGNERS" =~ ^[0-9a-f]{64},[0-9a-f]{64}$ ]] \
     || die "persisted result signer policy is malformed"
+  if [ "$DEMO_MACHINE_MODE" = role ]; then
+    python3 "$SCRIPT_DIR/tools/ed25519_keys.py" \
+      --directory "$ROLE_ACTOR_KEY_DIR" --mode generated --count 5 --existing-only \
+      --purpose role-actors \
+      >/dev/null || die "persisted role-actor key material is missing or unsafe"
+  fi
   if [ "$ANCHOR_ENABLED" = true ]; then
     if [ -z "$ANCHOR_KEY_FILE" ]; then
       [ "$DEMO_NETWORK" = devnet ] \
@@ -1031,6 +1060,12 @@ verify_cached_key_material() {
   if [ "$ANCHOR_ENABLED" = true ]; then
     [ "$(read_secret "$ANCHOR_KEY_FILE" | tr 'A-F' 'a-f')" = "$ANCHOR_KEY_VALUE" ] \
       || die "anchor key material changed after the immutable instance identity was prepared"
+  fi
+  if [ "$DEMO_MACHINE_MODE" = role ]; then
+    python3 "$SCRIPT_DIR/tools/ed25519_keys.py" \
+      --directory "$ROLE_ACTOR_KEY_DIR" --mode generated --count 5 --existing-only \
+      --purpose role-actors \
+      >/dev/null || die "role-actor key material changed after the immutable instance identity was prepared"
   fi
 }
 
@@ -1215,7 +1250,8 @@ PY
     "$ANCHOR_ENABLED" "$PROFILE_ANCHOR_EVERY_BLOCKS" \
     "$PROFILE_ANCHOR_MAX_INTERVAL_MINUTES" "$anchor_fingerprint" "$PROJECT_NAME" \
     "$s3_id" "$s3_locator" "$ipfs_id" "$ipfs_locator" "$kafka_id" "$kafka_locator" \
-    "$s3_provider" "$s3_provider_version" "$s3_layout_version" "$s3_config_hash" <<'PY'
+    "$s3_provider" "$s3_provider_version" "$s3_layout_version" "$s3_config_hash" \
+    "${COMPOSITE_PROFILE_DIGEST:-}" <<'PY'
 import hashlib
 import json
 from pathlib import Path
@@ -1228,7 +1264,7 @@ import sys
     anchor_enabled, anchor_every,
     anchor_max_interval, anchor_fingerprint, project, s3_id, s3_locator, ipfs_id, ipfs_locator,
     kafka_id, kafka_locator, s3_provider, s3_provider_version, s3_layout_version,
-    s3_config_hash,
+    s3_config_hash, profile_digest,
 ) = sys.argv[1:]
 members = members_csv.split(",")
 result_signers = result_signers_csv.split(",")
@@ -1285,6 +1321,9 @@ document = {
 }
 if state_machine == "composite":
     document["stateMachine"]["preset"] = "evidence-v1-gated"
+elif state_machine == "role-evidence":
+    document["stateMachine"]["preset"] = "evidence-role-v1"
+    document["stateMachine"]["profileDigest"] = profile_digest
 Path(output).write_text(
     json.dumps(document, sort_keys=True, separators=(",", ":")) + "\n",
     encoding="utf-8",
@@ -1387,6 +1426,7 @@ compose_node_config() {
     SIGNING_KEY "$seed" APP_PEERS "$peers" MEMBER_KEYS "$MEMBER_KEYS" \
     PROPOSER_KEY "$PROPOSER_KEY" RESULT_SIGNERS "$RESULT_SIGNERS" \
     STORAGE_GATE "$STORAGE_GATE" \
+    MACHINE_PRESET_SETTING "$MACHINE_PRESET_SETTING" \
     EVIDENCE_CAPACITY_PER_BLOCK "$EVIDENCE_CAPACITY_PER_BLOCK" \
     DIRECT_RESULT_ACTIVATION_SETTING "$DIRECT_RESULT_ACTIVATION_SETTING" \
     GENESIS_TIMESTAMP_SETTING "$genesis_setting"
@@ -1513,6 +1553,7 @@ prepare_host_configs() {
     render_template "$SCRIPT_DIR/config/templates/node-host.properties.in" "$base" \
       PLUGIN_DIR "$PLUGIN_DIR" PROPOSER_KEY "$PROPOSER_KEY" \
       STATE_MACHINE "$STATE_MACHINE_ID" \
+      MACHINE_PRESET_SETTING "$MACHINE_PRESET_SETTING" \
       RESULT_SIGNERS "$RESULT_SIGNERS" STORAGE_GATE "$STORAGE_GATE" \
       EVIDENCE_CAPACITY_PER_BLOCK "$EVIDENCE_CAPACITY_PER_BLOCK" \
       DIRECT_RESULT_ACTIVATION_SETTING "$DIRECT_RESULT_ACTIVATION_SETTING" \
@@ -1539,7 +1580,8 @@ prepare_host_configs() {
     KAFKA_TARGET_ID "$HOST_KAFKA_TARGET_ID" \
     MEMBER_KEYS "$MEMBER_KEYS" REQUIRE_ANCHOR "$REQUIRE_ANCHOR" \
     TIMEOUT_SECONDS "$DEMO_SCENARIO_TIMEOUT_SECONDS" \
-    POLL_INTERVAL_MILLIS "$DEMO_SCENARIO_POLL_INTERVAL_MILLIS" UI_PORT "$DEMO_UI_PORT"
+    POLL_INTERVAL_MILLIS "$DEMO_SCENARIO_POLL_INTERVAL_MILLIS" UI_PORT "$DEMO_UI_PORT" \
+    ROLE_ACTOR_KEY_DIR "$ROLE_ACTOR_KEY_DIR"
   chmod 600 "$RUNNER_CONFIG"
   render_template "$SCRIPT_DIR/config/templates/runner-ui.properties.in" "$UI_CONFIG" \
     REPORT_DIRECTORY "$REPORT_DIR" BIND_ADDRESS 127.0.0.1 UI_INTERNAL_PORT "$DEMO_UI_PORT"
@@ -1574,7 +1616,7 @@ write_compose_env() {
     "$S3_RUNNER_ACCESS_FILE" "$S3_RUNNER_SECRET_FILE" \
     "$S3_EXECUTOR_ACCESS_FILE" "$S3_EXECUTOR_SECRET_FILE" "$RUSTFS_IAM_SPEC_FILE" \
     "$GRAFANA_PASSWORD_FILE" "$SHELLEY_GENESIS_FILE" "$NODE_CONFIG_DIR" \
-    "$DATA_ROOT" "$default_scenario_input"; do
+    "$ROLE_ACTOR_KEY_DIR" "$DATA_ROOT" "$default_scenario_input"; do
     compose_env_value "generated path" "$variable"
   done
   (umask 077
@@ -1600,6 +1642,7 @@ write_compose_env() {
         "$DEMO_CONNECTOR_SUBNET" "$DEMO_S3_IP" "$DEMO_KUBO_IP" "$DEMO_KAFKA_IP"
       printf 'DEMO_RUNNER_CONFIG=%s\nDEMO_PLUGIN_DIR=%s\nDEMO_REPORT_DIR=%s\n' \
         "$RUNNER_CONFIG" "$PLUGIN_DIR" "$REPORT_DIR"
+      printf 'DEMO_ROLE_ACTOR_KEY_DIR=%s\n' "$ROLE_ACTOR_KEY_DIR"
       printf 'DEMO_SCENARIO_INPUT_FILE=%s\n' "$default_scenario_input"
       printf 'DEMO_KAFKA_PASSWD_FILE=%s\nDEMO_KAFKA_GROUP_FILE=%s\n' \
         "$KAFKA_PASSWD_FILE" "$KAFKA_GROUP_FILE"
@@ -1635,6 +1678,15 @@ prepare_configuration() {
   require python3
   prepare_network_identity
   prepare_secrets
+  if [ "$DEMO_MACHINE_MODE" = role ]; then
+    COMPOSITE_PROFILE_DIGEST="$("$REPO_DIR/gradlew" -q -p "$REPO_DIR" --no-daemon \
+      :appchain-role-workflow:roleEvidenceProfileDigest \
+      --args="--chain $DEMO_CHAIN_ID --members $MEMBER_KEYS --threshold 2 --storage-gate $STORAGE_GATE --continuation $DEMO_CONTINUATION_MODE --evidence-capacity $EVIDENCE_CAPACITY_PER_BLOCK" \
+      | tail -n 1)"
+    [[ "$COMPOSITE_PROFILE_DIGEST" =~ ^[0-9a-f]{64}$ ]] \
+      || die "role-evidence profile calculator returned an invalid trust root"
+    COMPOSITE_PROFILE_DIGEST_SETTING="demo.composite-profile-digest=$COMPOSITE_PROFILE_DIGEST"
+  fi
   if [ "$MODE" = host ]; then
     resolve_host_target_ids
   fi
@@ -2343,7 +2395,11 @@ cmd_up() {
     verify_compose_loopback_surfaces
     wait_for_public_l1_sync
     [ "$ANCHOR_ENABLED" = false ] || compose_anchor_bootstrap
-    dc --profile tools run --rm scenario probe --config /run/demo/runner.properties
+    if [ "$DEMO_MACHINE_MODE" = role ]; then
+      dc --profile tools run --rm scenario init --config /run/demo/runner.properties
+    else
+      dc --profile tools run --rm scenario probe --config /run/demo/runner.properties
+    fi
   else
     prepare_host_state_links
     start_args=(start 3 --network "$DEMO_NETWORK" --http-base "$HTTP0" \
@@ -2355,7 +2411,7 @@ cmd_up() {
     host_cluster "${start_args[@]}"
     wait_for_public_l1_sync
     [ "$ANCHOR_ENABLED" = false ] || host_anchor_bootstrap
-    runner_java probe
+    if [ "$DEMO_MACHINE_MODE" = role ]; then runner_java init; else runner_java probe; fi
     start_host_ui
   fi
   [ "$ANCHOR_ENABLED" = false ] || reconcile_anchor_binding
@@ -2450,6 +2506,18 @@ cmd_probe() {
     runner_java probe
   fi
   [ "$ANCHOR_ENABLED" = false ] || reconcile_anchor_binding false
+}
+
+cmd_role_lifecycle() {
+  validate_running_configuration
+  verify_artifacts
+  if [ "$MODE" = compose ]; then
+    dc --profile tools run --rm scenario role-lifecycle \
+      --config /run/demo/runner.properties
+  else
+    runner_java role-lifecycle
+  fi
+  [ "$ANCHOR_ENABLED" = false ] || reconcile_anchor_binding true
 }
 
 cmd_status() {
@@ -2821,6 +2889,8 @@ Commands:
   verify    read-only verification of latest or one historical evidence version
   replay    explicitly finalize the accepted command as a deterministic no-op
   load      publish many unique evidence records with bounded concurrency
+  role-lifecycle
+            prove governed actor onboarding, key rotation and revocation
   probe     verify Yano, Kafka, S3 and IPFS readiness
   status    show cluster status
   stop      stop processes and preserve all data
@@ -2843,8 +2913,8 @@ Options:
   --max-in-flight <n>       pipeline workflow bound, concurrency..min(count,5000)
   --continuation explicit|direct
                             explicit notify (legacy/default) or activated direct result emission
-  --machine standalone|composite
-                            evidence-v1-gated composite (default) or standalone regression profile
+  --machine standalone|composite|role
+                            legacy composite (default), role-gated evidence, or standalone regression
   --data-dir <base>         bind-data base; network isolation is added below it
   --observability           start pinned Prometheus and Grafana services
   --anchor-key-file <path>  owner-only funded anchor seed (preview/preprod)
@@ -2872,6 +2942,7 @@ case "$COMMAND" in
   up) cmd_up;;
   run|publish|republish|verify|replay) cmd_scenario;;
   load) cmd_load;;
+  role-lifecycle) cmd_role_lifecycle;;
   probe) cmd_probe;;
   status) cmd_status;;
   stop) cmd_stop;;

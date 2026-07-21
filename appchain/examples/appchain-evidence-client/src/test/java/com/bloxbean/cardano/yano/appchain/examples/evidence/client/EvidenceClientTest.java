@@ -118,6 +118,26 @@ class EvidenceClientTest {
     }
 
     @Test
+    void explicitlyBoundRoleEvidenceProviderUsesCompositeProofsWithoutTrustingOtherProviders() {
+        Snapshot snapshot = Snapshot.foundComposite(ID, 1, 27, 1);
+        FakeNode node = node(new Plan(snapshot, snapshot, Mutation.NONE,
+                "role-evidence", null, null, false, false));
+        EvidenceClient client = new EvidenceClient(validTransport(node.baseUrl()), CHAIN,
+                "role-evidence", 1, COMPOSITE_PROFILE_DIGEST);
+
+        VerifiedEvidence result = client.queryVerified(ID, 1).orElseThrow();
+
+        assertThat(result.stateMachineId()).isEqualTo("role-evidence");
+        assertThat(result.compositeProfileDigest()).isEqualTo(COMPOSITE_PROFILE_DIGEST);
+        assertThat(node.proofCount).hasValue(3);
+        FakeNode wrongProvider = node(new Plan(snapshot, snapshot, Mutation.NONE,
+                "role-evidence", null, null, false, false));
+        assertFailure(() -> new EvidenceClient(validTransport(wrongProvider.baseUrl()), CHAIN,
+                        "composite", 1, COMPOSITE_PROFILE_DIGEST).queryVerified(ID, 1),
+                EvidenceClientError.WRONG_STATE_MACHINE);
+    }
+
+    @Test
     void offlineVerifierBindsPayloadAndSupportsProvenAbsence() {
         Snapshot found = Snapshot.found(ID, 1, 28, 15);
         AppChainClient.QueryResult query = found.queryResult(CHAIN);

@@ -28,6 +28,8 @@ include 'appchain-stdlib'
 include 'appchain-composite-contracts'
 include 'appchain-composite-client'
 include 'appchain-composite'
+include 'appchain-role-workflow-contracts'
+include 'appchain-role-workflow'
 include 'appchain-testkit'
 include 'appchain-client'
 include 'appchain-integration-contracts'
@@ -50,6 +52,9 @@ project(':appchain-composite-contracts').projectDir =
 project(':appchain-composite-client').projectDir =
         file('appchain/appchain-composite-client')
 project(':appchain-composite').projectDir = file('appchain/appchain-composite')
+project(':appchain-role-workflow-contracts').projectDir =
+        file('appchain/appchain-role-workflow-contracts')
+project(':appchain-role-workflow').projectDir = file('appchain/appchain-role-workflow')
 project(':appchain-testkit').projectDir = file('appchain/appchain-testkit')
 project(':appchain-client').projectDir = file('appchain/appchain-client')
 project(':appchain-integration-contracts').projectDir =
