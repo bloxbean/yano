@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Focused launcher regression: occupied default port, saved-port discovery,
-# and a retained devnet restart with byte-identical genesis.
+# retained devnet identity, governed node join, and the built-in effects demo.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -76,6 +76,36 @@ SYSTEM_START2="$(jq -r .systemStart "$DATA/node0/shelley-genesis.json")"
 tip="$(curl -s "http://localhost:$HTTP2/api/v1/app-chain/chains/orders-chain/status" \
   | jq -r '.tipHeight // 0' 2>/dev/null)"
 [ "$tip" -ge 1 ] || die "app-chain tip was not retained across restart"
+
+"$CLUSTER" effect demo --data-dir "$DATA" >"$WORK/effect-demo.log" 2>&1 \
+  || { cat "$WORK/effect-demo.log"; die "default effects demo failed"; }
+grep -q 'Delivery.*CONFIRMED' "$WORK/effect-demo.log" \
+  || die "effects demo did not confirm delivery"
+grep -q 'Proof.*AVAILABLE' "$WORK/effect-demo.log" \
+  || die "effects demo did not expose a finalized proof"
+default_payload="$(sed -n 's/^Captured payload      //p' "$WORK/effect-demo.log")"
+printf '%s' "$default_payload" | jq -e '.message == "hello from Yano effects"' >/dev/null \
+  || die "default effects demo did not preserve its default message"
+
+custom_effect_message='custom approval payload: "ready" & replicated'
+"$CLUSTER" effect demo "$custom_effect_message" --data-dir "$DATA" \
+  >"$WORK/effect-demo-custom.log" 2>&1 \
+  || { cat "$WORK/effect-demo-custom.log"; die "custom effects demo failed"; }
+custom_payload="$(sed -n 's/^Captured payload      //p' "$WORK/effect-demo-custom.log")"
+printf '%s' "$custom_payload" | jq -e --arg message "$custom_effect_message" \
+  '.message == $message' >/dev/null \
+  || die "custom effects demo did not preserve the supplied message"
+
+"$CLUSTER" node join 1 --data-dir "$DATA" >"$WORK/node-join.log" 2>&1 \
+  || { cat "$WORK/node-join.log"; die "governed node join failed"; }
+grep -q 'node 1 joined and caught up with member key' "$WORK/node-join.log" \
+  || die "governed join did not report the joined identity"
+"$CLUSTER" status --data-dir "$DATA" >"$WORK/status-joined.log" 2>&1 \
+  || die "joined-cluster status failed"
+grep -q 'node 1  \[ready\]' "$WORK/status-joined.log" \
+  || die "joined node is not ready"
+[ "$(grep -c 'AGREED' "$WORK/status-joined.log")" -eq 3 ] \
+  || die "joined node did not agree on all three default chain roots"
 
 "$CLUSTER" stop --data-dir "$DATA" >/dev/null || die "second stop failed"
 

@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://yano.dev/schema/appchain-gitops-lock/v1alpha1",
+  "title": "Yano app-chain GitOps derivative lock",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "apiVersion",
+    "kind",
+    "target",
+    "sourceBlueprintDigest",
+    "sourceResolvedConfigDigest",
+    "sourceReleaseCatalogDigest",
+    "generatedFiles"
+  ],
+  "properties": {
+    "apiVersion": {"const": "yano.bloxbean.com/v1alpha1"},
+    "kind": {"const": "AppChainGitOpsLock"},
+    "target": {"enum": ["helm", "kustomize"]},
+    "sourceBlueprintDigest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "sourceResolvedConfigDigest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "sourceReleaseCatalogDigest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "generatedFiles": {
+      "type": "object",
+      "additionalProperties": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+    }
+  }
+}

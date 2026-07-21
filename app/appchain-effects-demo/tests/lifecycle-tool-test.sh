@@ -973,6 +973,68 @@ grep -Fq 'retained app-chain attachments' "$TMP/failure.err" \
 assert_file "$ALL_BLOCK_NETWORK/instances/selected/compose/appchain-identity.json"
 assert_absent "$ALL_BLOCK_NETWORK/.yano-cleanup-transaction.json"
 
+# The explicit devnet factory reset removes every disposable data/runtime
+# namespace. The old network identity authorizes cleanup and is then replaced
+# by an exact reset marker so the next launch can safely create a current
+# devnet system start. Its transaction resumes after quarantining a target.
+RESET_BASE="$TMP/devnet-reset-data"
+RESET_NETWORK="$(make_atomic_network "$RESET_BASE")"
+RESET_RUNTIME="$TMP/devnet-reset-runtime"
+make_app_identity "$TMP/reset-app.json" "$RESET_NETWORK" reset-a compose chain-reset-a
+make_lease_identity "$TMP/reset-lease.json" "$TMP/reset-app.json"
+atomic_acquire "$RESET_NETWORK" reset-a compose \
+  "$TMP/reset-app.json" "$TMP/reset-lease.json" >/dev/null
+mkdir -p "$RESET_NETWORK/retired/compose" \
+  "$RESET_NETWORK/reservations/compose" \
+  "$RESET_RUNTIME/networks/devnet/reset-a/compose"
+printf 'retired\n' > "$RESET_NETWORK/retired/compose/sentinel"
+printf 'reserved\n' > "$RESET_NETWORK/reservations/compose/sentinel"
+printf 'runtime\n' > "$RESET_RUNTIME/networks/devnet/reset-a/compose/sentinel"
+
+expect_failure "devnet reset without confirmation" python3 "$TOOL" reset-devnet \
+  --data-base "$RESET_BASE" --runtime-base "$RESET_RUNTIME" --compose-stopped
+grep -Fq 'reset-devnet requires explicit --yes' "$TMP/failure.err" \
+  || fail "devnet reset confirmation rejection is missing"
+assert_file "$RESET_NETWORK/instances/reset-a/compose/appchain-identity.json"
+
+expect_failure "interrupted devnet reset" env \
+  YANO_LIFECYCLE_TEST_STOP_AFTER=quarantine:devnet-instances \
+  python3 "$TOOL" reset-devnet --data-base "$RESET_BASE" \
+  --runtime-base "$RESET_RUNTIME" --compose-stopped --yes
+grep -Fq 'test-requested stop after durable phase quarantine:devnet-instances' \
+  "$TMP/failure.err" || fail "devnet reset did not reach its durable quarantine boundary"
+assert_file "$RESET_NETWORK/.yano-devnet-reset-transaction.json"
+assert_dir "$RESET_NETWORK/.instances.yano-devnet-reset-quarantine"
+
+python3 "$TOOL" reset-devnet --data-base "$RESET_BASE" \
+  --runtime-base "$RESET_RUNTIME" --compose-stopped --yes \
+  > "$TMP/devnet-reset-resumed.out"
+grep -Fq 'DEVNET RESET COMPLETE network=devnet secrets=preserved identity=regenerate' \
+  "$TMP/devnet-reset-resumed.out" || fail "resumed devnet reset did not complete"
+assert_file "$RESET_NETWORK/network-identity.json"
+jq -e '.factoryResetPending == true and .networkName == "devnet"' \
+  "$RESET_NETWORK/network-identity.json" >/dev/null \
+  || fail "devnet reset did not publish its exact network reseed marker"
+assert_file "$RESET_NETWORK/.yano-lifecycle.lock"
+for removed in instances l1 retired reservations; do
+  assert_absent "$RESET_NETWORK/$removed"
+done
+assert_absent "$RESET_RUNTIME/networks/devnet"
+assert_absent "$RESET_NETWORK/.yano-devnet-reset-transaction.json"
+assert_absent "$RESET_NETWORK/.instances.yano-devnet-reset-quarantine"
+
+# Repeating the reset is harmless. Replacing the reset marker with a normal
+# network identity then proves a previous disposable instance id is reusable.
+python3 "$TOOL" reset-devnet --data-base "$RESET_BASE" \
+  --runtime-base "$RESET_RUNTIME" --compose-stopped --yes >/dev/null
+python3 "$TOOL" ensure-network --allowed-root "$RESET_BASE" \
+  --directory "$RESET_NETWORK" --identity-file "$RESET_BASE/network-input.json" \
+  --replace-factory-reset-pending >/dev/null
+atomic_acquire "$RESET_NETWORK" reset-a compose \
+  "$TMP/reset-app.json" "$TMP/reset-lease.json" >/dev/null
+assert_file "$RESET_NETWORK/instances/reset-a/compose/appchain-identity.json"
+atomic_release "$RESET_NETWORK" compose "$TMP/reset-lease.json"
+
 # CLI help exposes only the supported atomic lifecycle surface. Superseded
 # partial operations reject at argument parsing and cannot bypass invariants.
 python3 "$TOOL" --help > "$TMP/help.out"
@@ -981,6 +1043,7 @@ grep -Fq 'deployment-acquire' "$TMP/help.out" || fail "deployment-acquire help i
 grep -Fq 'lease-validate' "$TMP/help.out" || fail "lease-validate help is missing"
 grep -Fq 'lease-release' "$TMP/help.out" || fail "lease-release help is missing"
 grep -Fq 'cleanup-execute' "$TMP/help.out" || fail "cleanup-execute help is missing"
+grep -Fq 'reset-devnet' "$TMP/help.out" || fail "reset-devnet help is missing"
 for removed in ensure-instance lease-acquire retirement-begin retirement-complete; do
   if grep -Fq "$removed" "$TMP/help.out"; then
     fail "removed lifecycle command remains in help: $removed"

@@ -1,5 +1,7 @@
 # Tutorial 9 — From Local Demo to a Permissioned Pilot
 
+[Open a pilot starting point in App-Chain Studio](../../../appchain/appchain-studio/src/main/web/index.html#recipe=audit-log&network=preprod&members=3&finality=all&sequencing=rotating&runtime=jvm&deployment=host&name=permissioned-pilot&chainId=permissioned-pilot)
+
 - **Level:** platform, security, and application leads
 - **Outcome:** turn a successful tutorial into an explicit deployment plan
   without inheriting local-demo assumptions.
@@ -8,7 +10,64 @@ This is a decision checklist rather than one launch command. Yano remains
 pre-release; the target posture is a controlled permissioned pilot, not an
 unqualified production or trustless-public-chain claim.
 
-## 1. Freeze the application contract
+## 1. Generate a reviewable pilot project
+
+Use the developer tools behind `./yano.sh` to move from remembered YAML options
+to a blueprint, rendered configuration, and lock file:
+
+```bash
+./yano.sh appchain recipes
+./yano.sh appchain capabilities
+
+./yano.sh appchain init \
+  --recipe audit-log \
+  --network preprod \
+  --members 3 \
+  --finality all \
+  --sequencing rotating \
+  --runtime jvm \
+  --deployment host \
+  --name permissioned-pilot \
+  --chain-id permissioned-pilot \
+  --output permissioned-pilot \
+  --non-interactive
+```
+
+Expected initialization output begins with `PROJECT_INITIALIZED`. Review and
+edit `permissioned-pilot/appchain.yaml`, especially the real member public
+keys and deployment hosts, then regenerate and validate:
+
+The generated runtime files are nested YAML:
+
+- `config/shared-consensus.yaml` contains explicit consensus-shared values;
+- `config/nodes/nodeN.yaml` contains node-local ports, peers, paths, and secret
+  references; and
+- `appchain.lock` records the exact flattened values and generated-file
+  digests.
+
+Customize `appchain.yaml`, not those derived files.
+
+```bash
+./yano.sh appchain render permissioned-pilot
+./yano.sh appchain config validate --mode project permissioned-pilot
+./yano.sh appchain doctor permissioned-pilot \
+  --distribution /path/to/yano-{suffix}.zip
+```
+
+Expected success markers are `PROJECT_RENDERED`, `VALID_PROJECT`, and
+`DOCTOR_OK`. Doctor deliberately fails with
+`PUBLIC_MEMBER_IDENTITIES_REQUIRED_BEFORE_START` until production member
+identities replace the unresolved bootstrap acknowledgement.
+
+`./yano.sh` is the public command for both paths. Internally, project and
+configuration commands use the separately packaged `appchain-devtools`
+engine, while `./yano.sh appchain cluster ...` invokes the bundled single-host
+launcher directly. Users should not invoke the internal executable. Cluster
+startup does not implicitly run `init`, `render`, or project validation. Use
+the generated project for multi-machine production bootstrap, and the cluster
+command for the packaged local acceptance environment.
+
+## 2. Freeze the application contract
 
 Record and review:
 
@@ -23,7 +82,7 @@ Record and review:
 All consensus-affecting values must be identical and profile-committed where
 required. Node-local YAML drift must not decide application semantics.
 
-## 2. Separate every identity and secret
+## 3. Separate every identity and secret
 
 | Material | Purpose | Recommended owner/storage |
 |---|---|---|
@@ -37,7 +96,7 @@ required. Node-local YAML drift must not decide application semantics.
 Never copy the deterministic demo keys, launcher API key, sample actor seeds,
 or local connector credentials into a shared environment.
 
-## 3. Choose the trust statement
+## 4. Choose the trust statement
 
 Document what the system actually proves:
 
@@ -52,7 +111,7 @@ Do not claim that an inspection, oracle value, shipment, API response, or
 payment outcome is independently true unless a separate auditor/source check
 establishes it.
 
-## 4. Replace demo infrastructure deliberately
+## 5. Replace demo infrastructure deliberately
 
 | Demo component | Pilot decision |
 |---|---|
@@ -66,7 +125,7 @@ establishes it.
 Changing an executor destination does not change deterministic effect intent,
 but it does change operational identity, reconciliation, and credentials.
 
-## 5. Establish operations before traffic
+## 6. Establish operations before traffic
 
 - Health/readiness for every member and plugin.
 - Root/profile parity gate across members.
@@ -79,7 +138,7 @@ but it does change operational identity, reconciliation, and credentials.
 - Evidence/proof archival before configured pruning horizons.
 - Explicit maintenance and governed-upgrade process.
 
-## 6. Run acceptance in layers
+## 7. Run acceptance in layers
 
 1. Clean deterministic unit/conformance suites.
 2. Three-member packaged local cluster.
@@ -94,7 +153,7 @@ but it does change operational identity, reconciliation, and credentials.
 Keep acceptance artifacts with the release rather than relying on screenshots
 or a remembered manual session.
 
-## 7. Know the current escalation gates
+## 8. Know the current escalation gates
 
 - Material Cardano funds require the production action hardening tracked for
   `cardano.payment` and native assets.
@@ -106,7 +165,7 @@ or a remembered manual session.
 - Public validator participation and general BFT view change are outside the
   current permissioned model.
 
-## 8. Choose the deployment shape
+## 9. Choose the deployment shape
 
 - **JVM distribution:** supports plugin-directory installation and is the
   simplest extensible pilot shape.

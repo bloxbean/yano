@@ -1,0 +1,174 @@
+package com.bloxbean.cardano.yano.appchain.devtools;
+
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.TimeUnit;
+import java.util.zip.ZipFile;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
+
+class AppChainPackagedCliTest {
+    private static final Duration TIMEOUT = Duration.ofSeconds(30);
+
+    @TempDir
+    Path temporary;
+
+    @Test
+    void installedAndStandaloneZipLaunchersContainRunnableVersionedMetadata() throws Exception {
+        Path install = configuredPath("yano.test.appchain-cli-install-dir");
+        Path distribution = configuredPath("yano.test.appchain-cli-dist-zip");
+        Path launcher = launcher(install);
+        Path config = temporary.resolve("application-appchain.yml");
+        Files.writeString(config, """
+                yano:
+                  app-chain:
+                    chain-id: packaged-test
+                """, StandardCharsets.UTF_8);
+
+        Result validate = run(launcher, "config", "validate", "--mode", "template",
+                config.toString());
+        Result explain = run(launcher, "config", "explain", "block.max-bytes");
+
+        String signingKey = "b".repeat(64);
+        Path resolvedConfig = temporary.resolve("resolved-appchain.yml");
+        Files.writeString(resolvedConfig, """
+                yano:
+                  app-chain:
+                    enabled: true
+                    chain-id: packaged-resolved-test
+                    signing-key: %s
+                    members: %s
+                    threshold: 1
+                """.formatted(signingKey, "a".repeat(64)), StandardCharsets.UTF_8);
+        Result resolved = run(launcher, "config", "validate", "--mode", "resolved",
+                "--format", "json", "--config", resolvedConfig.toString());
+        Result effective = run(launcher, "config", "effective", "--mode", "resolved",
+                "--format", "json", "--show-sources", "--config", resolvedConfig.toString());
+        Path project = temporary.resolve("packaged-project");
+        Result initialize = run(launcher, "init", "--non-interactive",
+                "--recipe", "audit-log", "--network", "devnet", "--members", "3",
+                "--output", project.toString(), "--format", "json");
+        Result render = run(launcher, "render", project.toString(), "--format", "json");
+        Result projectValidation = run(launcher, "config", "validate", "--mode", "project",
+                project.toString(), "--format", "json");
+        Result migrate = run(launcher, "migrate", project.toString(), "--dry-run",
+                "--format", "json");
+        Result capabilities = run(launcher, "capabilities", "--format", "json");
+
+        assertThat(validate.exitCode()).isZero();
+        assertThat(validate.output()).contains("VALID_TEMPLATE");
+        assertThat(validate.error()).isEmpty();
+        assertThat(explain.exitCode()).isZero();
+        assertThat(explain.output()).contains("PROPERTY\tyano.app-chain.block.max-bytes");
+        assertThat(resolved.exitCode()).isZero();
+        assertThat(resolved.output()).contains("\"status\":\"VALID_RESOLVED\"")
+                .doesNotContain(signingKey);
+        assertThat(resolved.error()).isEmpty();
+        assertThat(effective.exitCode()).isZero();
+        assertThat(effective.output()).contains("<redacted>", "resolved-appchain.yml")
+                .doesNotContain(signingKey)
+                .doesNotContain(temporary.toString());
+        assertThat(effective.error()).isEmpty();
+        assertThat(initialize.exitCode()).isZero();
+        assertThat(initialize.output()).contains("PROJECT_INITIALIZED")
+                .doesNotContain(temporary.toString());
+        assertThat(initialize.error()).isEmpty();
+        assertThat(render.exitCode()).isZero();
+        assertThat(render.output()).contains("PROJECT_RENDERED");
+        assertThat(projectValidation.exitCode()).isZero();
+        assertThat(projectValidation.output()).contains("VALID_PROJECT");
+        assertThat(migrate.exitCode()).isZero();
+        assertThat(migrate.output()).contains("NO_MIGRATION_REQUIRED_DRY_RUN");
+        assertThat(capabilities.exitCode()).isZero();
+        assertThat(capabilities.output()).contains("state:role-evidence", "state:custom-plugin");
+        assertThat(project.resolve("appchain.yaml")).isRegularFile();
+        assertThat(project.resolve("appchain.lock")).isRegularFile();
+        assertThat(project.resolve("ci/verify")).isExecutable();
+        assertThat(project.resolve("ai/configure-yano-appchain/SKILL.md"))
+                .isRegularFile();
+
+        Path productionProject = temporary.resolve("packaged-preprod-project");
+        Result productionInit = run(launcher, "init", "--non-interactive",
+                "--recipe", "audit-log", "--network", "preprod", "--members", "1",
+                "--member-key", "a".repeat(64), "--output", productionProject.toString());
+        Path gitOps = temporary.resolve("packaged-kustomize");
+        Result gitOpsResult = run(launcher, "gitops", productionProject.toString(),
+                "--target", "kustomize", "--output", gitOps.toString());
+        assertThat(productionInit.exitCode()).isZero();
+        assertThat(gitOpsResult.exitCode()).isZero();
+        assertThat(gitOpsResult.output()).contains("GITOPS_EXPORTED");
+        assertThat(gitOps.resolve("gitops.lock")).isRegularFile();
+
+        try (ZipFile archive = new ZipFile(distribution.toFile())) {
+            List<String> entries = archive.stream().map(entry -> entry.getName()).toList();
+            assertThat(entries).anyMatch(name -> name.endsWith("/bin/yano-appchain"));
+            assertThat(entries).anyMatch(name ->
+                    name.endsWith("/metadata/appchain-dx/v1/appchain-runtime.schema.json"));
+            assertThat(entries).anyMatch(name ->
+                    name.endsWith("/metadata/appchain-dx/v1/appchain-property-catalog.json"));
+            assertThat(entries).anyMatch(name ->
+                    name.endsWith("/metadata/appchain-dx/v1alpha1/appchain-blueprint.schema.json"));
+            assertThat(entries).anyMatch(name ->
+                    name.endsWith("/metadata/appchain-dx/v1alpha1/appchain-capability-catalog.json"));
+            assertThat(entries).anyMatch(name ->
+                    name.endsWith("/metadata/appchain-dx/v1alpha1/"
+                            + "appchain-release-capability-index.json"));
+            assertThat(entries).anyMatch(name ->
+                    name.endsWith("/metadata/appchain-dx/v1alpha1/"
+                            + "appchain-first-party-metadata.json"));
+            assertThat(entries).anyMatch(name ->
+                    name.endsWith("/metadata/appchain-dx/v1alpha1/"
+                            + "appchain-metadata-trust.schema.json"));
+            assertThat(entries).anyMatch(name ->
+                    name.endsWith("/metadata/appchain-dx/v1alpha1/"
+                            + "appchain-gitops-lock.schema.json"));
+            assertThat(entries).anyMatch(name ->
+                    name.endsWith("/skills/configure-yano-appchain/SKILL.md"));
+            assertThat(entries).anyMatch(name ->
+                    name.endsWith("/skills/configure-yano-appchain/agents/openai.yaml"));
+        }
+    }
+
+    private static Path configuredPath(String property) {
+        String value = System.getProperty(property);
+        assertThat(value).as(property).isNotBlank();
+        return Path.of(value).toAbsolutePath().normalize();
+    }
+
+    private static Path launcher(Path install) {
+        boolean windows = System.getProperty("os.name", "")
+                .toLowerCase(java.util.Locale.ROOT).contains("win");
+        Path path = install.resolve("bin").resolve(windows ? "yano-appchain.bat" : "yano-appchain");
+        assertThat(path).isRegularFile();
+        return path;
+    }
+
+    private Result run(Path launcher, String... arguments) throws Exception {
+        boolean windows = launcher.getFileName().toString().endsWith(".bat");
+        List<String> command = new ArrayList<>();
+        if (windows) {
+            command.addAll(List.of("cmd.exe", "/d", "/c"));
+        }
+        command.add(launcher.toString());
+        command.addAll(List.of(arguments));
+        Process process = new ProcessBuilder(command).directory(temporary.toFile()).start();
+        if (!process.waitFor(TIMEOUT.toMillis(), TimeUnit.MILLISECONDS)) {
+            process.destroyForcibly();
+            fail("packaged app-chain CLI exceeded " + TIMEOUT);
+        }
+        return new Result(process.exitValue(),
+                new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8),
+                new String(process.getErrorStream().readAllBytes(), StandardCharsets.UTF_8));
+    }
+
+    private record Result(int exitCode, String output, String error) {
+    }
+}

@@ -40,6 +40,13 @@ RETIRED_INSTANCE_KIND = "yano.demo.retired-instance"
 RESET_RESERVATION_KIND = "yano.demo.reset-reservation"
 CLEANUP_TRANSACTION_KIND = "yano.demo.cleanup-transaction"
 CLEANUP_PLAN_KIND = "yano.demo.cleanup-plan"
+DEVNET_RESET_KIND = "yano.demo.devnet-reset-transaction"
+DEVNET_RESET_PENDING_NETWORK_IDENTITY = {
+    "schemaVersion": SCHEMA_VERSION,
+    "kind": NETWORK_KIND,
+    "networkName": "devnet",
+    "factoryResetPending": True,
+}
 DEFAULT_NETWORK_MARKER = "network-identity.json"
 DEFAULT_INSTANCE_MARKER = "appchain-identity.json"
 DEFAULT_LEASE_MARKER = "demo-owner.json"
@@ -72,6 +79,7 @@ CLEANUP_PLAN_FIELDS = {
     "replacementChainId",
 }
 CENTRAL_CLEANUP_MARKER = ".yano-cleanup-transaction.json"
+DEVNET_RESET_MARKER = ".yano-devnet-reset-transaction.json"
 OPERATION_LOCK_DIRECTORY = ".yano-operation-locks"
 
 
@@ -1858,6 +1866,54 @@ def _ensure_marker(args: argparse.Namespace, expected_kind: str) -> None:
             if current_bytes != current_canonical:
                 raise LifecycleError(f"identity marker is not canonical JSON: {marker}")
             if current_canonical != canonical:
+                replace_reset_pending = bool(
+                    getattr(args, "replace_factory_reset_pending", False)
+                )
+                if replace_reset_pending:
+                    if state_directory != root / "networks" / "devnet":
+                        raise LifecycleError(
+                            "factory-reset devnet marker is outside its exact managed directory"
+                        )
+                    with _exclusive_lock(state_directory):
+                        current_bytes = _read_regular_file(
+                            marker,
+                            "factory-reset network identity marker",
+                            owner_safe=True,
+                        )
+                        current = _parse_identity(
+                            current_bytes,
+                            "factory-reset network identity marker",
+                            NETWORK_KIND,
+                        )
+                        if (
+                            current_bytes != _canonical_json(current)
+                            or expected_kind != NETWORK_KIND
+                            or marker_name != DEFAULT_NETWORK_MARKER
+                            or current != DEVNET_RESET_PENDING_NETWORK_IDENTITY
+                            or supplied.get("networkName") != "devnet"
+                            or supplied.get("factoryResetPending") is not None
+                        ):
+                            raise LifecycleError(
+                                "network identity is not an exact devnet factory-reset "
+                                f"marker: {marker}"
+                            )
+                        unexpected = {
+                            path
+                            for path in state_directory.iterdir()
+                            if path not in {marker, state_directory / LOCK_NAME}
+                        }
+                        if unexpected:
+                            rendered = ", ".join(str(path) for path in sorted(unexpected))
+                            raise LifecycleError(
+                                "devnet factory-reset identity cannot be replaced while "
+                                f"state exists: {rendered}"
+                            )
+                        _atomic_replace_marker(marker, canonical)
+                    print(
+                        f"RESEEDED {expected_kind} {marker} "
+                        f"sha256={_identity_digest(canonical)}"
+                    )
+                    return
                 raise LifecycleError(
                     "identity marker mismatch at "
                     f"{marker} (expected sha256={_identity_digest(canonical)}, "
@@ -2717,6 +2773,207 @@ def _cleanup_execute(args: argparse.Namespace) -> None:
         print(f"CLEANUP COMPLETE planSha256={plan_digest}")
 
 
+def _devnet_reset_targets(
+    root: Path,
+    runtime_base: Path,
+    runtime_base_present: bool,
+) -> list[CleanupTarget]:
+    targets = [
+        CleanupTarget(
+            f"devnet-{name}",
+            root,
+            True,
+            root / name,
+            root / f".{name}.yano-devnet-reset-quarantine",
+        )
+        for name in ("instances", "l1", "retired", "reservations")
+    ]
+    runtime_target = runtime_base / "networks" / "devnet"
+    targets.append(
+        CleanupTarget(
+            "devnet-runtime",
+            runtime_base,
+            runtime_base_present,
+            runtime_target,
+            runtime_target.parent / ".devnet.yano-devnet-reset-quarantine",
+        )
+    )
+    _reject_overlapping_targets([(target.category, target.target) for target in targets])
+    return targets
+
+
+def _validate_devnet_reset_lease(root: Path, compose_stopped: bool) -> None:
+    l1_root = root / "l1"
+    expected = {
+        l1_root / "compose" / DEFAULT_LEASE_MARKER,
+        l1_root / "host" / DEFAULT_LEASE_MARKER,
+    }
+    if l1_root.exists():
+        discovered = {
+            path for path in l1_root.glob(f"*/{DEFAULT_LEASE_MARKER}")
+            if path.exists() or path.is_symlink()
+        }
+        unexpected = discovered - expected
+        if unexpected:
+            rendered = ", ".join(str(path) for path in sorted(unexpected))
+            raise LifecycleError(f"unexpected devnet L1 lease location: {rendered}")
+
+    host_lease = l1_root / "host" / DEFAULT_LEASE_MARKER
+    if host_lease.exists() or host_lease.is_symlink():
+        raise LifecycleError(
+            "host devnet is active or uncertain; stop the host deployment before reset-devnet"
+        )
+
+    compose_lease = l1_root / "compose" / DEFAULT_LEASE_MARKER
+    if not compose_lease.exists() and not compose_lease.is_symlink():
+        return
+    if not compose_stopped:
+        raise LifecycleError("Compose devnet lease remains without proven Docker shutdown")
+    _final_component_is_symlink(compose_lease, "Compose devnet lease")
+    raw = _read_regular_file(compose_lease, "Compose devnet lease", owner_safe=True)
+    document = _parse_identity(raw, "Compose devnet lease", LEASE_KIND)
+    canonical = _canonical_json(document)
+    if raw != canonical:
+        raise LifecycleError(f"Compose devnet lease is not canonical JSON: {compose_lease}")
+    _validate_lease_identity_shape(document, "Compose devnet lease")
+    if document.get("networkName") != "devnet" or document.get("deployment") != "compose":
+        raise LifecycleError(f"Compose devnet lease identity is inconsistent: {compose_lease}")
+
+
+def _reject_active_host_devnet_artifacts(root: Path, runtime_base: Path) -> None:
+    host_cluster = root / "l1" / "host" / "host-cluster"
+    patterns = (
+        "node*.pid",
+        "node*.pid.meta",
+        "node*.launch",
+        "node*.pid.tmp.*",
+        "node*.pid.meta.tmp.*",
+    )
+    active: set[Path] = set()
+    if host_cluster.exists():
+        for pattern in patterns:
+            active.update(host_cluster.glob(pattern))
+
+    runtime_network = runtime_base / "networks" / "devnet"
+    if runtime_network.exists():
+        for instance_root in runtime_network.iterdir():
+            host_runtime = instance_root / "host"
+            for name in (
+                "host-ui.process.json",
+                ".host-ui.launch.json",
+                ".host-ui.process.tmp",
+                ".host-ui.process-update.tmp",
+                ".host-ui.launch.tmp",
+            ):
+                path = host_runtime / name
+                if path.exists() or path.is_symlink():
+                    active.add(path)
+    if active:
+        rendered = ", ".join(str(path) for path in sorted(active))
+        raise LifecycleError(
+            "host devnet process state is active or uncertain; stop it before reset-devnet: "
+            f"{rendered}"
+        )
+
+
+def _devnet_reset_document(targets: Sequence[CleanupTarget]) -> dict[str, Any]:
+    return {
+        "schemaVersion": SCHEMA_VERSION,
+        "kind": DEVNET_RESET_KIND,
+        "networkName": "devnet",
+        "targets": [
+            {
+                "category": target.category,
+                "target": str(target.target),
+                "quarantine": str(target.quarantine),
+            }
+            for target in targets
+        ],
+    }
+
+
+def _reset_devnet(args: argparse.Namespace) -> None:
+    if not args.yes:
+        raise LifecycleError("reset-devnet requires explicit --yes; nothing was changed")
+    if not args.compose_stopped:
+        raise LifecycleError("reset-devnet requires proven Compose shutdown")
+
+    raw_data, data_base = _prepare_allowed_root(args.data_base, create=False)
+    _, runtime_base, runtime_base_present = _prepare_optional_allowed_root(
+        args.runtime_base
+    )
+    if _is_relative_to(runtime_base, data_base) or _is_relative_to(data_base, runtime_base):
+        raise LifecycleError("devnet data and runtime roots must be disjoint")
+
+    raw_network = raw_data / "networks" / "devnet"
+    if not raw_network.exists() and not raw_network.is_symlink():
+        print("DEVNET RESET SKIP: no retained devnet data exists")
+        return
+    _, root = _prepare_allowed_root(str(raw_network), create=False)
+    expected_root = data_base / "networks" / "devnet"
+    if root != expected_root:
+        raise LifecycleError(f"devnet network root must be exactly {expected_root}")
+
+    targets = _devnet_reset_targets(root, runtime_base, runtime_base_present)
+    marker = root / DEVNET_RESET_MARKER
+    expected_document = _devnet_reset_document(targets)
+    expected_content = _canonical_json(expected_document)
+
+    with _exclusive_lock(root):
+        network_marker = root / DEFAULT_NETWORK_MARKER
+        _validate_network_root_identity(root, "devnet")
+        _reject_active_cleanup(root)
+        _validate_devnet_reset_lease(root, args.compose_stopped)
+        _reject_active_host_devnet_artifacts(root, runtime_base)
+
+        allowed_entries = {
+            root / DEFAULT_NETWORK_MARKER,
+            root / LOCK_NAME,
+            marker,
+            *(target.target for target in targets if target.allowed_root == root),
+            *(target.quarantine for target in targets if target.allowed_root == root),
+        }
+        unexpected = {
+            path for path in root.iterdir()
+            if path not in allowed_entries
+        }
+        if unexpected:
+            rendered = ", ".join(str(path) for path in sorted(unexpected))
+            raise LifecycleError(f"unknown devnet state blocks factory reset: {rendered}")
+
+        if marker.exists() or marker.is_symlink():
+            current = _read_canonical_record(
+                marker,
+                "devnet reset transaction",
+                DEVNET_RESET_KIND,
+            )
+            if current != expected_document:
+                raise LifecycleError(f"devnet reset transaction does not match: {marker}")
+        else:
+            _prevalidate_cleanup_targets(targets, [])
+            _atomic_write_marker(marker, expected_content)
+            print(f"DEVNET RESET START marker={marker}")
+
+        _prevalidate_cleanup_targets(targets, [])
+        for target in targets:
+            _execute_central_cleanup_target(target)
+
+        _atomic_replace_marker(
+            network_marker,
+            _canonical_json(DEVNET_RESET_PENDING_NETWORK_IDENTITY),
+        )
+        _test_stop("network-identity-reset")
+        try:
+            marker.unlink()
+            _fsync_directory(marker.parent)
+        except OSError as error:
+            raise LifecycleError(
+                f"devnet reset completed but transaction marker could not be removed {marker}: "
+                f"{error.strerror}"
+            ) from error
+        print("DEVNET RESET COMPLETE network=devnet secrets=preserved identity=regenerate")
+
+
 def _add_identity_arguments(
     parser: argparse.ArgumentParser,
     default_marker: str,
@@ -2783,6 +3040,11 @@ def _parser(include_internal: bool = False) -> argparse.ArgumentParser:
         help="atomically create or validate a network identity marker",
     )
     _add_identity_arguments(network, DEFAULT_NETWORK_MARKER)
+    network.add_argument(
+        "--replace-factory-reset-pending",
+        action="store_true",
+        help="replace only the exact empty devnet factory-reset marker",
+    )
     network.set_defaults(handler=lambda args: _ensure_marker(args, NETWORK_KIND))
 
     acquire = subparsers.add_parser(
@@ -2837,6 +3099,32 @@ def _parser(include_internal: bool = False) -> argparse.ArgumentParser:
         help="required explicit acknowledgement for deletion",
     )
     cleanup_execute.set_defaults(handler=_cleanup_execute)
+
+    reset_devnet = subparsers.add_parser(
+        "reset-devnet",
+        help="factory-reset all retained local devnet demo state",
+    )
+    reset_devnet.add_argument(
+        "--data-base",
+        required=True,
+        help="exact demo data base containing networks/devnet",
+    )
+    reset_devnet.add_argument(
+        "--runtime-base",
+        required=True,
+        help="exact demo runtime base containing networks/devnet",
+    )
+    reset_devnet.add_argument(
+        "--compose-stopped",
+        action="store_true",
+        help="internal assertion that all managed devnet Compose projects are absent",
+    )
+    reset_devnet.add_argument(
+        "--yes",
+        action="store_true",
+        help="required explicit acknowledgement for deletion",
+    )
+    reset_devnet.set_defaults(handler=_reset_devnet)
     return parser
 
 

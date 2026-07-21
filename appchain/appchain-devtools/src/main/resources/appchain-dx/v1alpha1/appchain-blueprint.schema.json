@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://yano.dev/schema/appchain-blueprint/v1alpha1",
+  "title": "Yano app-chain project blueprint",
+  "type": "object",
+  "required": ["apiVersion", "kind", "metadata", "spec"],
+  "properties": {
+    "apiVersion": {"const": "yano.bloxbean.com/v1alpha1"},
+    "kind": {"const": "AppChainProject"},
+    "metadata": {
+      "type": "object",
+      "required": ["name"],
+      "properties": {"name": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,62}$"}},
+      "additionalProperties": false
+    },
+    "spec": {
+      "type": "object",
+      "required": ["yanoVersion", "network", "runtime", "deployment", "chains"],
+      "properties": {
+        "yanoVersion": {"type": "string", "minLength": 1},
+        "network": {"enum": ["devnet", "preview", "preprod", "mainnet"]},
+        "runtime": {
+          "type": "object",
+          "required": ["type"],
+          "properties": {"type": {"enum": ["jvm", "native"]}},
+          "additionalProperties": false
+        },
+        "deployment": {
+          "type": "object",
+          "required": ["target"],
+          "properties": {"target": {"enum": ["host", "docker-compose"]}},
+          "additionalProperties": false
+        },
+        "chains": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["chainId", "recipe", "topology"],
+            "properties": {
+              "chainId": {"type": "string", "minLength": 1, "maxLength": 128},
+              "recipe": {"type": "string"},
+              "capabilities": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+              "answers": {"type": "object", "additionalProperties": {"type": "string", "minLength": 1, "maxLength": 1024}},
+              "topology": {
+                "type": "object",
+                "required": ["members", "finality", "sequencing", "membership"],
+                "properties": {
+                  "members": {"type": "integer", "minimum": 1, "maximum": 32},
+                  "memberKeys": {"type": "array", "items": {"type": "string", "pattern": "^[0-9a-fA-F]{64}$"}, "uniqueItems": true},
+                  "nodeHosts": {"type": "array", "items": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9.-]{0,252}$"}, "uniqueItems": true},
+                  "finality": {"enum": ["majority", "two-thirds", "all"]},
+                  "sequencing": {"enum": ["fixed", "rotating"]},
+                  "membership": {"enum": ["static"]},
+                  "httpPortBase": {"type": "integer", "minimum": 1024, "maximum": 65535},
+                  "serverPortBase": {"type": "integer", "minimum": 1024, "maximum": 65535}
+                },
+                "additionalProperties": false
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

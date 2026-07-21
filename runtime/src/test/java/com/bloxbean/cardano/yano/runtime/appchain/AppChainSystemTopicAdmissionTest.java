@@ -131,6 +131,34 @@ class AppChainSystemTopicAdmissionTest {
                 .isEqualTo(finalizedTip);
     }
 
+    @Test
+    void consensusReceivedBeforeStartIsDrainedAfterLifecycleActivation() {
+        AppMessageSigner signer = new AppMessageSigner(
+                HexUtil.encodeHexString(MEMBER_SEED));
+        AppChainConfig config = AppChainConfig.builder("system-topic-bounds")
+                .signingKeyHex(HexUtil.encodeHexString(MEMBER_SEED))
+                .memberKeysHex(Set.of(signer.publicKeyHex()))
+                .proposerKeyHex(signer.publicKeyHex())
+                .threshold(1)
+                .build();
+        subsystem = new AppChainSubsystem(config, 42, null, null,
+                directory.resolve("early-ledger").toString(), null,
+                LoggerFactory.getLogger(getClass()));
+
+        byte[] blockHash = filled(91);
+        AppMessage earlyVote = message(signer, ConsensusCodec.TOPIC_VOTE,
+                ConsensusCodec.encodeVote(1, blockHash, signer.sign(blockHash)), 1);
+        AppMessage earlyOrdinary = message(signer, "ordinary", new byte[]{1}, 2);
+
+        subsystem.onInboundMessages(List.of(earlyVote, earlyOrdinary));
+        subsystem.start();
+
+        assertThat(subsystem.status())
+                .containsEntry("received", 1L)
+                .containsEntry("duplicates", 0L)
+                .containsEntry("poolSize", 0);
+    }
+
     private void assertBodyBoundary(String topic, int limit) {
         assertThat(subsystem.validEnvelopeBodyProfile(topic, new byte[limit]))
                 .as("%s exact body limit", topic)

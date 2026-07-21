@@ -3,6 +3,7 @@ dependencies {
     api project(':appchain-composite-contracts')
 
     implementation project(':appchain-stdlib')
+    implementation project(':appchain-config')
     implementation project(':appchain-evidence-registry')
     implementation project(':appchain-evidence-contracts')
     implementation project(':appchain-integration-contracts')

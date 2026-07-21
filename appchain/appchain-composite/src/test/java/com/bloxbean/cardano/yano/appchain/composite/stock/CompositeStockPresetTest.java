@@ -15,6 +15,7 @@ import com.bloxbean.cardano.yano.api.appchain.effects.EffectOutcome;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectResult;
 import com.bloxbean.cardano.yano.appchain.composite.CompositeStateKeys;
 import com.bloxbean.cardano.yano.appchain.composite.CompositeStateMachine;
+import com.bloxbean.cardano.yano.appchain.config.AppChainApprovalsConfig;
 import com.bloxbean.cardano.yano.appchain.examples.evidence.EvidenceContract;
 import com.bloxbean.cardano.yano.appchain.examples.evidence.command.NotifyEvidenceCommandV1;
 import com.bloxbean.cardano.yano.appchain.examples.evidence.command.RepublishEvidenceCommandV1;
@@ -224,9 +225,9 @@ class CompositeStockPresetTest {
         Map<String, String> forward = new LinkedHashMap<>();
         forward.put("machines.composite.preset", "evidence-v1");
         forward.put("machines.kv-registry.value-format", "raw");
-        forward.put("machines.approvals.payments", "false");
+        forward.put(AppChainApprovalsConfig.ENABLED, "false");
         Map<String, String> reverse = new LinkedHashMap<>();
-        reverse.put("machines.approvals.payments", "false");
+        reverse.put(AppChainApprovalsConfig.ENABLED, "false");
         reverse.put("machines.kv-registry.value-format", "raw");
         reverse.put("machines.composite.preset", "evidence-v1");
 
@@ -434,11 +435,14 @@ class CompositeStockPresetTest {
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("decimal integer");
         assertThatThrownBy(() -> CompositeStockPresets.create(context(Map.of(
-                "machines.approvals.payments", "true"))))
+                "effects.enabled", "true",
+                AppChainApprovalsConfig.ENABLED, "true",
+                AppChainApprovalsConfig.TYPE, "demo.webhook",
+                AppChainApprovalsConfig.ACTIVATION, "1"))))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("payments disabled");
+                .hasMessageContaining("on-approved effect disabled");
         assertThatThrownBy(() -> CompositeStockPresets.create(context(Map.of(
-                "machines.approvals.payments", "yes"))))
+                AppChainApprovalsConfig.ENABLED, "yes"))))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("must be true or false");
     }

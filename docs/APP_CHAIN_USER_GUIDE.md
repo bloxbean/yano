@@ -132,7 +132,7 @@ state machine's exact wire format — see the
 
 ---
 
-## 3. Quick start: two-node cluster with the default distribution
+## 3. Quick start: generated project or two-node manual setup
 
 This walkthrough uses `java -jar` with `-D` flags (built from source). The
 **official distributions** work the same way — only where ordinary runtime
@@ -148,6 +148,58 @@ instructions; releases: https://github.com/bloxbean/yano/releases
 The public REST prefix is the exception: it is an immutable artifact input,
 not a `-D` or YAML launch setting. Build it with `-PyanoApiPrefix` as described
 in section 4 and the distribution guide.
+
+### 3.0 Recommended: generate a release-pinned project
+
+The distribution includes the separate app-chain developer tool behind
+`yano.sh`; it does not start the node while generating or validating:
+
+```bash
+unzip yano-<version>.zip && cd yano-<version>
+./yano.sh appchain recipes
+./yano.sh appchain init --non-interactive \
+  --recipe owned-registry --network preprod --members 3 \
+  --deployment host --output product-registry
+```
+
+The user-owned source is `product-registry/appchain.yaml`. The initializer
+materializes all consensus defaults, node overlays, schema/catalog snapshots,
+secret-reference examples, an AI skill, CI checks, and `appchain.lock`. If
+member public keys are not known yet, the lock records
+`PUBLIC_MEMBER_IDENTITIES_REQUIRED_BEFORE_START`; add the three public keys to
+the blueprint and regenerate:
+
+```bash
+./yano.sh appchain render product-registry
+./yano.sh appchain config validate --mode project product-registry
+./yano.sh appchain doctor product-registry --distribution .
+```
+
+Provision each node's private signer only in its untracked
+`secrets/nodeN.env`, then copy the same validated project to the three
+machines. Each operator starts only its node index with
+`scripts/start-node N`; the shared consensus file and lock remain identical.
+
+For Kubernetes delivery, derive reviewed output from the validated project:
+
+```bash
+./yano.sh appchain gitops product-registry \
+  --target helm --output product-registry-helm
+./yano.sh appchain gitops product-registry \
+  --target kustomize --output product-registry-kustomize
+```
+
+The exporter creates Secret references, never Secret values, and writes a
+`gitops.lock` binding the manifests to the blueprint, resolved configuration,
+release catalog, and generated-file hashes. It does not apply manifests or
+operate a cluster. Devnet is intentionally excluded because its current
+launcher generates ephemeral genesis inputs.
+
+The generated `.github/workflows/appchain-verify.yml` requires repository
+variables `YANO_DISTRIBUTION_URL` and `YANO_DISTRIBUTION_SHA256`; it accepts
+only the exact checksum-pinned HTTPS distribution. The same guarded
+`configure-yano-appchain` skill is available under `skills/` in the release
+and `ai/` in the project.
 
 ### 3.1 Generate member keys
 
@@ -237,14 +289,14 @@ without writing any config:
 
 ```bash
 unzip yano-<version>.zip && cd yano-<version>
-./appchain-cluster/cluster.sh start 3        # 3-node devnet: L1 producer + 2 followers,
+./yano.sh appchain cluster start 3          # 3-node devnet: L1 producer + 2 followers,
                                              # 2 demo chains (ordered-log + kv-registry)
-./appchain-cluster/cluster.sh status         # tips + state-root agreement across nodes
-./appchain-cluster/cluster.sh submit orders-chain demo "hello"
-./appchain-cluster/cluster.sh kv registry-chain set color blue
+./yano.sh appchain cluster status           # tips + state-root agreement across nodes
+./yano.sh appchain cluster submit orders-chain demo "hello"
+./yano.sh appchain cluster kv registry-chain set color blue
 ./appchain-cluster/loadtest.sh orders-chain -n 2000 -c 20     # throughput test
 ./appchain-cluster/loadtest.sh registry-chain --kv -n 2000    # kv chains need --kv
-./appchain-cluster/cluster.sh clean          # stop + wipe
+./yano.sh appchain cluster clean            # stop + wipe
 ```
 
 Highlights (full reference: `appchain-cluster/README.md`):
@@ -647,7 +699,21 @@ The plugin template ships this test pre-wired (`CounterConformanceTest`).
    provider class must exactly match the ServiceLoader entry. Package any
    non-host runtime dependencies into the same reproducible bundle JAR; do not
    deploy adjacent thin dependency JARs as one catalog-v1 bundle.
-4. Drop the jar into the JVM node's plugins directory (`yaci.plugins.directory`,
+4. For schema-aware tooling, add the data-only descriptor
+   `META-INF/yano/appchain-config-metadata-v1.json`. For distribution or CI
+   trust, sign the descriptor and exact runtime manifest in
+   `META-INF/yano/appchain-config-metadata-v1.sig.json`, then verify with an
+   operator-pinned raw Ed25519 public key:
+   ```bash
+   ./yano.sh appchain metadata verify plugins/order-book.jar \
+     --trust-key vendor-release-2026=<64-hex-public-key>
+   ```
+   Verification authenticates publisher identity and the byte binding only.
+   It does not load the plugin or raise third-party metadata above `PARTIAL`
+   validation coverage. The envelope schema and canonical payload contract are
+   packaged as `appchain-metadata-trust.schema.json` and documented by the
+   app-chain developer tool.
+5. Drop the jar into the JVM node's plugins directory (`yaci.plugins.directory`,
    default `plugins/`), and select it:
    ```yaml
    yano:
@@ -728,7 +794,7 @@ Flat (single-chain) keys. The same suffixes apply per chain under
 | `effects.external.enabled` | `false` | Expose the external-executor claim/report REST surface (§18.6) |
 | `effects.executors.<scheme>.*` | — | Executor plugin config (built-in `webhook`; `cardano` via the plugin jar) — passed to the executor with the prefix stripped (§18.3) |
 | `effects.retention.keep-blocks` | `100000` | Prune resolved effect records older than this behind the tip |
-| `machines.approvals.payments` (+ `payment-type` / `payment-gate` / `payment-expiry-blocks`) | `false` | Stdlib approvals→payment effect (§18.3); also requires `machines.approvals.activations.payments=<height>` |
+| `machines.approvals.on-approved-effect.enabled` (+ `type` / `gate` / `expiry-blocks`) | `false` | Emit one generic CHAIN-result effect after final approval (§18.3); also requires `machines.approvals.activations.on-approved-effect=<height>` |
 
 **Enabling.** Three states, checked in this order:
 
@@ -1699,27 +1765,25 @@ yano.app-chain.effects.executors.cardano.max-lovelace-per-tx: 500000000         
 > buggy or compromised machine that emits an oversized payment cannot then
 > drain the hot wallet in one tx.
 
-**Stdlib approvals → payment** — no code: the `approvals` machine emits a
-`cardano.payment` on final approval, and records `STATUS_PAID` with the tx hash
-when it confirms.
+**Stdlib approvals → generic effect** — no state-machine code is needed. The
+`approvals` machine can emit one exact effect type on final approval. The item
+decision remains `APPROVED`; a separate provable effect record moves from
+`PENDING` to `CONFIRMED` or `FAILED`. Using `cardano.payment` routes the opaque
+proposal payload to the Cardano payment executor.
 
 ```yaml
 yano.app-chain.state-machine: approvals
-yano.app-chain.machines.approvals.payments: true
-yano.app-chain.machines.approvals.activations.payments: 1       # new chain: active from genesis
-yano.app-chain.machines.approvals.payment-type: cardano.payment
-yano.app-chain.machines.approvals.payment-gate: l1-anchored     # provable before funds move
-yano.app-chain.machines.approvals.payment-expiry-blocks: 1000
-# Live chain: replace 1 with a future height deployed identically to every member (ADR-010.1).
+yano.app-chain.effects.enabled: true
+yano.app-chain.machines.approvals.on-approved-effect.enabled: true
+yano.app-chain.machines.approvals.on-approved-effect.type: cardano.payment
+yano.app-chain.machines.approvals.on-approved-effect.gate: l1-anchored
+yano.app-chain.machines.approvals.on-approved-effect.expiry-blocks: 1000
+yano.app-chain.machines.approvals.activations.on-approved-effect: 1
 ```
 
-> **Legacy migration:** if this chain already ran a binary where
-> `payments=true` worked without an activation key, first deploy
-> `activations.payments=1` identically to every member, then deploy this binary
-> and validate full replay or snapshot restoration. Do **not** choose a future
-> height for that migration: doing so would change historical payload parking
-> and emissions. A future height is only for enabling payments for the first
-> time on a live chain.
+The generic type can instead be `webhook.post`, `kafka.publish`, `object.put`,
+`ipfs.pin`, or a custom plugin routing type. Configuration selects one action;
+multiple or conditional actions belong in a composite/custom state machine.
 
 ### 18.4 Finality gates and expiry
 

@@ -26,6 +26,7 @@ import com.bloxbean.cardano.yano.api.SyncPhase;
 import com.bloxbean.cardano.yano.api.TxEvaluationGateway;
 import com.bloxbean.cardano.yano.api.TxGateway;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
+import com.bloxbean.cardano.yano.appchain.config.AppChainConfigParser;
 import com.bloxbean.cardano.yano.api.config.RuntimeOptions;
 import com.bloxbean.cardano.yano.api.config.UpstreamPeerConfig;
 import com.bloxbean.cardano.yano.api.config.YanoConfig;
@@ -651,10 +652,13 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
         }
 
         String rocksPath = config.getRocksDBPath() != null ? config.getRocksDBPath() : "./chainstate";
+        boolean strictValidation = resolveBoolean(
+                globals, YanoPropertyKeys.AppChain.VALIDATION_STRICT, false);
         List<com.bloxbean.cardano.yano.runtime.appchain.AppChainSubsystem> subsystems =
                 new java.util.ArrayList<>();
         for (int i = 0; i < chainLookups.size(); i++) {
-            var appChainConfig = buildAppChainConfig(chainLookups.get(i), chainCollectors.get(i));
+            var appChainConfig = buildAppChainConfig(
+                    chainLookups.get(i), chainCollectors.get(i), strictValidation);
             log.info("App chain enabled: {} ({} members, {} peers, sequencing: {}, anchoring: {})",
                     appChainConfig.chainId(), appChainConfig.memberKeysHex().size(),
                     appChainConfig.peers().size(), appChainConfig.sequencingEnabled(),
@@ -686,68 +690,22 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
     /** Builds one chain's config from suffix-keyed lookups (e.g. "chain-id", "sequencer.proposer"). */
     private com.bloxbean.cardano.yano.api.appchain.AppChainConfig buildAppChainConfig(
             java.util.function.Function<String, Object> get,
-            java.util.function.Function<String, Map<String, String>> collectPrefixed) {
-        java.util.Set<String> memberKeys = new java.util.HashSet<>();
-        for (String member : stringOf(get.apply("members"), "").split(",")) {
-            if (!member.isBlank()) memberKeys.add(member.trim());
+            java.util.function.Function<String, Map<String, String>> collectPrefixed,
+            boolean strictValidation) {
+        Map<String, Object> settings = new java.util.LinkedHashMap<>();
+        for (String suffix : AppChainConfigParser.frameworkSuffixes()) {
+            Object value = get.apply(suffix);
+            if (value != null) {
+                settings.put(suffix, value);
+            }
         }
-        List<com.bloxbean.cardano.yano.api.appchain.AppChainConfig.AppPeer> appPeers = new java.util.ArrayList<>();
-        for (String peer : stringOf(get.apply("peers"), "").split(",")) {
-            if (!peer.isBlank())
-                appPeers.add(com.bloxbean.cardano.yano.api.appchain.AppChainConfig.AppPeer.parse(peer.trim()));
+        for (String prefix : AppChainConfigParser.dynamicPrefixes()) {
+            settings.putAll(collectPrefixed.apply(prefix));
         }
-        boolean anchorEnabled = booleanOf(get.apply("anchor.enabled"), false);
-        List<String> webhookUrls = new java.util.ArrayList<>();
-        for (String url : stringOf(get.apply("webhooks"), "").split(",")) {
-            if (!url.isBlank()) webhookUrls.add(url.trim());
+        if (strictValidation) {
+            AppChainConfigParser.validateStrict(settings);
         }
-        return new com.bloxbean.cardano.yano.api.appchain.AppChainConfig(
-                stringOf(get.apply("chain-id"), ""),
-                stringOf(get.apply("signing-key"), ""),
-                memberKeys,
-                appPeers,
-                (int) parseLong(get.apply("max-message-bytes"),
-                        com.bloxbean.cardano.yano.api.appchain.AppChainConfig.DEFAULT_MAX_MESSAGE_BYTES),
-                parseLong(get.apply("max-ttl-seconds"),
-                        com.bloxbean.cardano.yano.api.appchain.AppChainConfig.DEFAULT_MAX_TTL_SECONDS),
-                parseLong(get.apply("default-ttl-seconds"),
-                        com.bloxbean.cardano.yano.api.appchain.AppChainConfig.DEFAULT_DEFAULT_TTL_SECONDS),
-                stringOf(get.apply("sequencer.proposer"), ""),
-                (int) parseLong(get.apply("threshold"), 1),
-                parseLong(get.apply("block.interval-ms"),
-                        com.bloxbean.cardano.yano.api.appchain.AppChainConfig.DEFAULT_BLOCK_INTERVAL_MS),
-                (int) parseLong(get.apply("block.max-messages"),
-                        com.bloxbean.cardano.yano.api.appchain.AppChainConfig.DEFAULT_MAX_BLOCK_MESSAGES),
-                parseLong(get.apply("block.max-bytes"),
-                        com.bloxbean.cardano.yano.api.appchain.AppChainConfig.DEFAULT_BLOCK_MAX_BYTES),
-                stringOf(get.apply("state-machine"),
-                        com.bloxbean.cardano.yano.api.appchain.AppChainConfig.DEFAULT_STATE_MACHINE),
-                null,
-                anchorEnabled
-                        ? new com.bloxbean.cardano.yano.api.appchain.AppChainConfig.AnchorConfig(
-                                true,
-                                stringOf(get.apply("anchor.signing-key"), ""),
-                                parseLong(get.apply("anchor.every-blocks"), 10),
-                                parseLong(get.apply("anchor.max-interval-minutes"), 60),
-                                parseLong(get.apply("anchor.metadata-label"), 7014),
-                                parseLong(get.apply("anchor.validity-slots"),
-                                        com.bloxbean.cardano.yano.api.appchain.AppChainConfig.AnchorConfig.DEFAULT_VALIDITY_SLOTS),
-                                parseLong(get.apply("anchor.fallback-fee-lovelace"),
-                                        com.bloxbean.cardano.yano.api.appchain.AppChainConfig.AnchorConfig.DEFAULT_FALLBACK_FEE_LOVELACE),
-                                stringOf(get.apply("anchor.mode"),
-                                        com.bloxbean.cardano.yano.api.appchain.AppChainConfig.AnchorConfig.MODE_METADATA),
-                                new com.bloxbean.cardano.yano.api.appchain.AppChainConfig.AnchorScriptConfig(
-                                        stringOf(get.apply("anchor.script.validator"), ""),
-                                        stringOf(get.apply("anchor.script.thread-policy"), "")))
-                        : null,
-                (int) parseLong(get.apply("l1.stability-depth"), 0),
-                webhookUrls,
-                booleanOf(get.apply("retention.enabled"), false),
-                (int) parseLong(get.apply("retention.keep-blocks"), 0),
-                (int) parseLong(get.apply("pool.max-messages"),
-                        com.bloxbean.cardano.yano.api.appchain.AppChainConfig.DEFAULT_POOL_MAX_MESSAGES),
-                booleanOf(get.apply("message.enforce-sender-seq"), false),
-                appChainPluginSettings(collectPrefixed));
+        return AppChainConfigParser.parse(settings);
     }
 
     /**
@@ -830,31 +788,18 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
         return result;
     }
 
-    /** Union of the dynamic plugin config sub-maps under the given prefixes. */
-    private static Map<String, String> pluginSettings(
-            java.util.function.Function<String, Map<String, String>> collectPrefixed, String... prefixes) {
-        Map<String, String> merged = new java.util.LinkedHashMap<>();
-        for (String prefix : prefixes) {
-            merged.putAll(collectPrefixed.apply(prefix));
-        }
-        return merged;
-    }
-
     /** All extension namespaces copied into {@link AppChainConfig#pluginSettings()}. */
     static Map<String, String> appChainPluginSettings(
             java.util.function.Function<String, Map<String, String>> collectPrefixed) {
-        return pluginSettings(collectPrefixed, "sinks.", "zk.", "machines.", "sequencer.",
-                "membership.", "observers.", "transport.", "effects.");
+        Map<String, Object> settings = new java.util.LinkedHashMap<>();
+        for (String prefix : AppChainConfigParser.dynamicPrefixes()) {
+            settings.putAll(collectPrefixed.apply(prefix));
+        }
+        return AppChainConfigParser.pluginSettings(settings);
     }
 
     private static String stringOf(Object value, String def) {
         return value != null && !String.valueOf(value).isBlank() ? String.valueOf(value).trim() : def;
-    }
-
-    private static boolean booleanOf(Object value, boolean def) {
-        if (value == null) return def;
-        if (value instanceof Boolean b) return b;
-        return Boolean.parseBoolean(String.valueOf(value));
     }
 
     /** Single app-chain gateway (back-compat), or null when disabled or multiple chains. */

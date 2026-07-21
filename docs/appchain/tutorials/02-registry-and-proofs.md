@@ -1,5 +1,7 @@
 # Tutorial 2 — A Provable Shared Registry
 
+[Open this outcome in App-Chain Studio](../../../appchain/appchain-studio/src/main/web/index.html#recipe=owned-registry&network=devnet&members=3&finality=two-thirds&sequencing=fixed&runtime=jvm&deployment=host&name=shared-registry&chainId=shared-registry)
+
 - **Level:** beginner to intermediate
 - **Time:** about 15 minutes
 - **Outcome:** write owner-controlled data, demonstrate an unauthorized no-op,
@@ -14,9 +16,8 @@ member can update or delete it.
 Skip this section if Tutorial 1's cluster is still running.
 
 ```bash
-cd app/appchain-cluster
 export YANO_CLUSTER_DIR=/tmp/yano-tutorial-registry
-./cluster.sh start 3
+./yano.sh appchain cluster start 3
 ```
 
 ## 2. Create a registry entry
@@ -24,9 +25,9 @@ export YANO_CLUSTER_DIR=/tmp/yano-tutorial-registry
 Write through node 1 so that node 1 becomes the authenticated owner:
 
 ```bash
-./cluster.sh kv registry-chain set supplier-42 active --node 1
+./yano.sh appchain cluster kv registry-chain set supplier-42 active --node 1
 sleep 3
-./cluster.sh status
+./yano.sh appchain cluster status
 ```
 
 The command body is CBOR, but the launcher builds it for you. Application
@@ -57,7 +58,7 @@ Capture the root, attempt an update through node 2, and compare:
 ROOT_BEFORE=$(curl -s http://127.0.0.1:7070/api/v1/app-chain/chains \
   | jq -r '.[] | select(.chainId == "registry-chain") | .stateRoot')
 
-./cluster.sh kv registry-chain set supplier-42 suspended --node 2
+./yano.sh appchain cluster kv registry-chain set supplier-42 suspended --node 2
 sleep 3
 
 ROOT_AFTER=$(curl -s http://127.0.0.1:7070/api/v1/app-chain/chains \
@@ -82,7 +83,7 @@ curl -s \
 Now update through the owner and verify the proof changes:
 
 ```bash
-./cluster.sh kv registry-chain set supplier-42 suspended --node 1
+./yano.sh appchain cluster kv registry-chain set supplier-42 suspended --node 1
 sleep 3
 curl -s \
   "http://127.0.0.1:7070/api/v1/app-chain/chains/registry-chain/proof/$KEY_HEX" \
@@ -92,7 +93,7 @@ curl -s \
 ## 5. Clean up
 
 ```bash
-./cluster.sh clean
+./yano.sh appchain cluster clean
 unset YANO_CLUSTER_DIR
 ```
 
@@ -109,6 +110,9 @@ authorization model is richer than “first writer owns this key.”
 
 ## Go deeper
 
+- Continue with the dedicated [`kv-registry` reference](../state-machines/kv-registry.md)
+  for configuration, raw REST submission, Java encoding/decoding, and design
+  guidance.
 - Verify the returned `proofWireHex` using the Java app-chain client rather
   than trusting the serving node.
 - Start with `--anchor-mode metadata`, fund the printed anchor wallet on a

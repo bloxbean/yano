@@ -444,6 +444,41 @@ tasks.named('processResources') {
             tasks.named('generateBakedApiPrefixContract')
 }
 
+tasks.register('verifyAppChainReleaseCapabilityIndex') {
+    dependsOn tasks.named('generatePluginCatalogIndex'),
+            project(':appchain-devtools').tasks.named('generateAppChainMetadata')
+    group = 'verification'
+    description = 'Checks the app-chain release index against the actual packaged plugin catalog'
+    def releaseIndexFile = project(':appchain-devtools').layout.buildDirectory.file(
+            'generated/appchain-metadata/appchain-dx/v1alpha1/'
+                    + 'appchain-release-capability-index.json')
+    def pluginIndexFile = generatedPluginCatalogDir.map {
+        it.file('META-INF/yano-plugin-index-v1.json')
+    }
+    inputs.files(releaseIndexFile, pluginIndexFile)
+    doLast {
+        def releaseIndex = new groovy.json.JsonSlurper().parse(releaseIndexFile.get().asFile)
+        def pluginIndex = new groovy.json.JsonSlurper().parse(pluginIndexFile.get().asFile)
+        def packagedBundleIds = pluginIndex.bundles.collect { it.manifest?.id }.toSet()
+        def artifactBundles = [
+                'appchain-stdlib': 'com.bloxbean.cardano.yano.appchain.stdlib',
+                'appchain-evidence-registry':
+                        'com.bloxbean.cardano.yano.appchain.evidence-registry',
+                'appchain-composite': 'com.bloxbean.cardano.yano.appchain.composite',
+                'appchain-role-workflow':
+                        'com.bloxbean.cardano.yano.appchain.role-workflow'
+        ]
+        def missing = artifactBundles.findAll { artifact, bundle ->
+            releaseIndex.artifacts.contains(artifact) && !packagedBundleIds.contains(bundle)
+        }
+        def expectedArtifacts = artifactBundles.keySet() + ['yano-runtime']
+        if (releaseIndex.artifacts.toSet() != expectedArtifacts.toSet() || !missing.isEmpty()) {
+            throw new GradleException(
+                    "Release capability index does not match packaged artifacts: ${missing}")
+        }
+    }
+}
+
 tasks.register('verifyFirstPartyPluginBundles', JavaExec) {
     dependsOn rootProject.tasks.named('verifyAdr013JacksonAlignment'),
             rootProject.tasks.named('verifyAdr013Slf4jAlignment')
@@ -622,6 +657,7 @@ tasks.register('launchFirstPartyPluginBundles', JavaExec) {
 tasks.named('check') {
     dependsOn tasks.named('verifyFirstPartyPluginBundles')
     dependsOn tasks.named('launchFirstPartyPluginBundles')
+    dependsOn tasks.named('verifyAppChainReleaseCapabilityIndex')
 }
 
 tasks.register('e2eTest', Test) {
@@ -1847,7 +1883,11 @@ def configureNativeGc = {
 }
 
 tasks.register('yanoDistZip', Zip) {
-    dependsOn 'quarkusBuild', project(':plugin-catalog').tasks.named('installDist')
+    dependsOn 'quarkusBuild', project(':plugin-catalog').tasks.named('installDist'),
+            project(':appchain-devtools').tasks.named('installDist'),
+            project(':appchain-devtools').tasks.named('generateAppChainMetadata'),
+            project(':appchain-studio').tasks.named('prepareStudio'),
+            tasks.named('verifyAppChainReleaseCapabilityIndex')
     group = 'distribution'
     description = 'Creates a distributable zip with the uber-jar, config, and start script'
 
@@ -1866,6 +1906,17 @@ tasks.register('yanoDistZip', Zip) {
             into 'config'
             include 'application.yml', 'application.yaml', 'application-*.yml', 'application-*.yaml', 'network/**'
             exclude '**/*.bak', '**/*.working'
+        }
+        from(project(':appchain-devtools').layout.buildDirectory.dir(
+                'generated/appchain-metadata/appchain-dx/v1')) {
+            into 'config/schema'
+            include 'appchain-runtime.schema.json', 'appchain-property-catalog.json'
+        }
+        from(project(':appchain-devtools').layout.buildDirectory.dir(
+                'generated/appchain-metadata/appchain-dx/v1alpha1')) {
+            into 'config/schema'
+            include 'appchain-metadata-trust.schema.json',
+                    'appchain-gitops-lock.schema.json'
         }
         // App-chain cluster demo/eval scripts: cluster.sh auto-detects this
         // release layout (yano.jar + config/ beside appchain-cluster/), so an
@@ -1897,6 +1948,24 @@ tasks.register('yanoDistZip', Zip) {
                 into 'bin'
                 filePermissions { unix('755') }
             }
+        }
+        into('tools/yano-appchain') {
+            from(project(':appchain-devtools').layout.buildDirectory.dir(
+                    'install/yano-devtools')) {
+                exclude 'bin/yano-appchain', 'skills/**'
+            }
+            from(project(':appchain-devtools').layout.buildDirectory.file(
+                    'install/yano-devtools/bin/yano-appchain')) {
+                into 'bin'
+                filePermissions { unix('755') }
+            }
+        }
+        from(project(':appchain-devtools').file(
+                'src/main/resources/appchain-dx/v1alpha1/skills/configure-yano-appchain')) {
+            into 'skills/configure-yano-appchain'
+        }
+        from(project(':appchain-studio').layout.buildDirectory.dir('studio')) {
+            into 'studio'
         }
     }
 }
@@ -2392,7 +2461,10 @@ gradle.taskGraph.whenReady { graph ->
 }
 
 tasks.register('yanoNativeDistZip', Zip) {
-    dependsOn 'quarkusBuild'
+    dependsOn 'quarkusBuild',
+            project(':appchain-devtools').tasks.named('generateAppChainMetadata'),
+            project(':appchain-studio').tasks.named('prepareStudio'),
+            tasks.named('verifyAppChainReleaseCapabilityIndex')
     group = 'distribution'
     description = 'Builds the native binary and creates a distributable zip'
 
@@ -2427,6 +2499,29 @@ tasks.register('yanoNativeDistZip', Zip) {
             into 'config'
             include 'application.yml', 'application.yaml', 'application-*.yml', 'application-*.yaml', 'network/**'
             exclude '**/*.bak', '**/*.working'
+        }
+        from(project(':appchain-devtools').layout.buildDirectory.dir(
+                'generated/appchain-metadata/appchain-dx/v1')) {
+            into 'config/schema'
+            include 'appchain-runtime.schema.json', 'appchain-property-catalog.json'
+        }
+        from(project(':appchain-devtools').layout.buildDirectory.file(
+                'generated/appchain-metadata/appchain-dx/v1alpha1/'
+                        + 'appchain-release-capability-index.json')) {
+            into 'config/schema'
+        }
+        from(project(':appchain-devtools').layout.buildDirectory.dir(
+                'generated/appchain-metadata/appchain-dx/v1alpha1')) {
+            into 'config/schema'
+            include 'appchain-metadata-trust.schema.json',
+                    'appchain-gitops-lock.schema.json'
+        }
+        from(project(':appchain-devtools').file(
+                'src/main/resources/appchain-dx/v1alpha1/skills/configure-yano-appchain')) {
+            into 'skills/configure-yano-appchain'
+        }
+        from(project(':appchain-studio').layout.buildDirectory.dir('studio')) {
+            into 'studio'
         }
         // App-chain cluster demo/eval scripts (bash) — cluster.sh auto-detects
         // the release layout (native `yano` + config/ beside appchain-cluster/).

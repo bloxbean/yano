@@ -1074,6 +1074,29 @@ if PATH="$FAKE_BIN:$PATH" "$DEMO_DIR/demo.sh" clean --instance launcher \
 fi
 grep -Fq 'clean requires --yes' "$TMP/clean-noyes.out" \
   || fail "missing cleanup confirmation rejection is unclear"
+
+# The convenience reset is devnet-only, requires explicit confirmation, and
+# rejects invalid requests before creating any managed filesystem state.
+RESET_INVALID_ROOT="$TMP/reset-invalid"
+if DEMO_DATA_ROOT="$RESET_INVALID_ROOT/data" \
+    DEMO_SECRET_ROOT="$RESET_INVALID_ROOT/secrets" \
+    DEMO_RUNTIME_ROOT="$RESET_INVALID_ROOT/runtime" PATH="$FAKE_BIN:$PATH" \
+    "$DEMO_DIR/demo.sh" reset-devnet --network preview --yes \
+    > "$TMP/reset-preview.out" 2>&1; then
+  fail "devnet reset accepted a public network"
+fi
+grep -Fq 'reset-devnet is available only for --network devnet' \
+  "$TMP/reset-preview.out" || fail "public-network reset rejection is unclear"
+assert_absent "$RESET_INVALID_ROOT"
+if DEMO_DATA_ROOT="$RESET_INVALID_ROOT/data" \
+    DEMO_SECRET_ROOT="$RESET_INVALID_ROOT/secrets" \
+    DEMO_RUNTIME_ROOT="$RESET_INVALID_ROOT/runtime" PATH="$FAKE_BIN:$PATH" \
+    "$DEMO_DIR/demo.sh" reset-devnet > "$TMP/reset-noyes.out" 2>&1; then
+  fail "devnet reset without --yes unexpectedly succeeded"
+fi
+grep -Fq 'reset-devnet requires --yes; nothing was changed' \
+  "$TMP/reset-noyes.out" || fail "devnet reset confirmation rejection is unclear"
+assert_absent "$RESET_INVALID_ROOT"
 if PATH="$FAKE_BIN:$PATH" "$DEMO_DIR/demo.sh" clean --instance launcher \
     --scope reports --new-instance unrelated --yes \
     >"$TMP/clean-unrelated-replacement.out" 2>&1; then
@@ -1257,6 +1280,49 @@ assert_exists "$ALL_SECRET"
 jq -e '.status == "retired" and .replacementInstanceId == "all-new"' \
   "$ALL_NETWORK/retired/compose/all-old.json" >/dev/null \
   || fail "all-scope cleanup did not durably retire its instance"
+
+# One confirmed reset removes all disposable devnet instances, shared L1,
+# runtime data, reports/connectors nested below instances, and retirement
+# fences. Secret material remains byte-for-byte unchanged, and old ids can be
+# rendered again immediately.
+RESET_ROOT="$TMP/devnet-reset"
+RESET_ENV=(DEMO_DATA_ROOT="$RESET_ROOT/data" DEMO_SECRET_ROOT="$RESET_ROOT/secrets" \
+  DEMO_RUNTIME_ROOT="$RESET_ROOT/runtime")
+env "${RESET_ENV[@]}" "$DEMO_DIR/demo.sh" config --instance reset-a \
+  --chain-id evidence-chain-reset-a > "$TMP/reset-config.yml"
+RESET_NETWORK="$RESET_ROOT/data/networks/devnet"
+RESET_SECRET="$RESET_ROOT/secrets/networks/devnet/reset-a/compose/yano-api-key"
+RESET_SECRET_DIGEST="$(shasum -a 256 "$RESET_SECRET")"
+mkdir -p "$RESET_NETWORK/retired/compose" \
+  "$RESET_NETWORK/reservations/compose" \
+  "$RESET_ROOT/runtime/networks/devnet/reset-a/compose"
+touch "$RESET_NETWORK/retired/compose/sentinel" \
+  "$RESET_NETWORK/reservations/compose/sentinel" \
+  "$RESET_ROOT/runtime/networks/devnet/reset-a/compose/sentinel"
+env "${RESET_ENV[@]}" PATH="$FAKE_BIN:$PATH" \
+  "$DEMO_DIR/demo.sh" reset-devnet --yes > "$TMP/reset-devnet.out"
+grep -Fq 'DEVNET RESET COMPLETE network=devnet secrets=preserved identity=regenerate' \
+  "$TMP/reset-devnet.out" || fail "devnet factory reset did not complete"
+grep -Fq 'You may now reuse any previous devnet instance and chain id.' \
+  "$TMP/reset-devnet.out" || fail "devnet reset did not explain id reuse"
+assert_exists "$RESET_NETWORK/network-identity.json"
+jq -e '.factoryResetPending == true and .networkName == "devnet"' \
+  "$RESET_NETWORK/network-identity.json" >/dev/null \
+  || fail "devnet factory reset did not stage a fresh network identity"
+for removed in instances l1 retired reservations; do
+  assert_absent "$RESET_NETWORK/$removed"
+done
+assert_absent "$RESET_ROOT/runtime/networks/devnet"
+assert_exists "$RESET_SECRET"
+[ "$RESET_SECRET_DIGEST" = "$(shasum -a 256 "$RESET_SECRET")" ] \
+  || fail "devnet factory reset changed preserved secrets"
+env "${RESET_ENV[@]}" "$DEMO_DIR/demo.sh" config --instance reset-a \
+  --chain-id evidence-chain-reset-a > "$TMP/reset-reuse-config.yml"
+assert_exists "$RESET_NETWORK/network-identity.json"
+jq -e '.generatedSystemStart != null and has("factoryResetPending") == false' \
+  "$RESET_NETWORK/network-identity.json" >/dev/null \
+  || fail "first post-reset config did not create a normal network identity"
+assert_exists "$RESET_NETWORK/instances/reset-a/compose/appchain-identity.json"
 
 # If the real launcher cleanup is interrupted after publishing its durable
 # retirement fence and deleting instance data, the exact command resumes the

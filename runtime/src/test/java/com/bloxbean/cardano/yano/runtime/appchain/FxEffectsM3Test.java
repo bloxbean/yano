@@ -17,6 +17,7 @@ import com.bloxbean.cardano.yano.api.appchain.effects.EffectResult;
 import com.bloxbean.cardano.yano.api.appchain.effects.FxKeys;
 import com.bloxbean.cardano.yano.api.appchain.effects.FxResultBody;
 import com.bloxbean.cardano.yano.api.appchain.effects.ResultPolicy;
+import com.bloxbean.cardano.yano.appchain.config.AppChainApprovalsConfig;
 import com.bloxbean.cardano.yano.appchain.stdlib.ApprovalsStateMachine;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -38,7 +39,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * FX-M3 result loop (ADR app-layer/010 F8/F9): fail-closed ~fx/result
  * incorporation (first result wins), the consensus result window, the
  * result-beats-expiry ordering, onEffectResult delivery, injection
- * surfacing, and the stdlib approvals payments flow (ADR-010 §8.1).
+ * surfacing, and the stdlib generic on-approved effect flow (ADR-021).
  */
 @Timeout(120)
 class FxEffectsM3Test {
@@ -447,65 +448,87 @@ class FxEffectsM3Test {
     }
 
     // ------------------------------------------------------------------
-    // Approvals payments flow (ADR-010 §8.1)
+    // Approvals generic on-approved effect flow (ADR-021)
     // ------------------------------------------------------------------
 
     @Test
-    void approvalsPayments_emitOnApproval_paidOnResult(@TempDir Path dir) {
+    void approvalsEffect_emitsOnApproval_andKeepsDecisionApprovedOnResult(@TempDir Path dir) {
         Map<String, String> approvalsSettings = Map.of(
-                "machines.approvals.payments", "true",
-                "machines.approvals.payment-expiry-blocks", "100",
-                "machines.approvals.activations.payments", "1");
+                "effects.enabled", "true",
+                "machines.approvals.on-approved-effect.enabled", "true",
+                "machines.approvals.on-approved-effect.type", "demo.webhook",
+                "machines.approvals.on-approved-effect.gate", "app-final",
+                "machines.approvals.on-approved-effect.expiry-blocks", "100",
+                "machines.approvals.activations.on-approved-effect", "1");
         ApprovalsStateMachine machine = new ApprovalsStateMachine(
-                ApprovalsStateMachine.PaymentsConfig.from(approvalsSettings),
+                AppChainApprovalsConfig.fromSettings(approvalsSettings),
                 ActivationSchedule.from(approvalsSettings, ApprovalsStateMachine.ID));
         try (MsgPipeline pipeline = new MsgPipeline(dir, machine, FX_SETTINGS)) {
-            byte[] payment = "{\"to\":\"addr1..\",\"lovelace\":100}".getBytes(StandardCharsets.UTF_8);
+            byte[] payload = "{\"event\":\"order.approved\",\"id\":\"A-42\"}"
+                    .getBytes(StandardCharsets.UTF_8);
             // h1: propose (2-of-n) + first approval; h2: second approval → APPROVED + emit
             pipeline.apply(
-                    msg("t", ApprovalsStateMachine.propose("rel-42", payment, 2, 0), "alice"),
+                    msg("t", ApprovalsStateMachine.propose("rel-42", payload, 2, 0), "alice"),
                     msg("t", ApprovalsStateMachine.approve("rel-42"), "alice"));
             FxKernel.Result fx = pipeline.apply(
                     msg("t", ApprovalsStateMachine.approve("rel-42"), "bob"));
 
             assertThat(fx.emitted()).hasSize(1);
             var record = fx.emitted().get(0).record();
-            assertThat(record.type()).isEqualTo("cardano.payment");
-            assertThat(record.scope()).isEqualTo("approvals/rel-42");
-            assertThat(record.payload()).isEqualTo(payment);
-            // parked payment body deleted; link written
-            assertThat(pipeline.store.stateGet(ApprovalsStateMachine.paymentKey("rel-42"))).isEmpty();
-            assertThat(pipeline.store.stateGet(ApprovalsStateMachine.effectLinkKey("rel-42")))
-                    .isPresent();
+            assertThat(record.type()).isEqualTo("demo.webhook");
+            assertThat(record.scope()).isEqualTo("approvals/on-approved/rel-42");
+            assertThat(record.payload()).isEqualTo(payload);
+            assertThat(record.gate()).isEqualTo(
+                    com.bloxbean.cardano.yano.api.appchain.effects.FinalityGate.APP_FINAL);
+            assertThat(record.expiryHeight()).isEqualTo(record.height() + 100);
+            assertThat(pipeline.store.stateGet(
+                    ApprovalsStateMachine.stagedEffectPayloadKey("rel-42"))).isEmpty();
+            var pending = ApprovalsStateMachine.decodeEffectState(pipeline.store.stateGet(
+                    ApprovalsStateMachine.effectStateKey("rel-42")).orElseThrow());
+            assertThat(pending.status()).isEqualTo(ApprovalsStateMachine.EFFECT_STATUS_PENDING);
+            assertThat(pending.effectId()).isEqualTo("fx-chain/2/0");
 
-            // Payment result → PAID with the tx ref recorded
             byte[] result = new FxResultBody(1, record.height(), record.ordinal(),
                     EffectOutcome.CONFIRMED, "3f9c".getBytes(StandardCharsets.UTF_8), null).encode();
             pipeline.apply(msg(FxResultBody.TOPIC, result));
             var item = ApprovalsStateMachine.decodeItem(
                     pipeline.store.stateGet(ApprovalsStateMachine.itemKey("rel-42")).orElseThrow());
-            assertThat(item.status()).isEqualTo(ApprovalsStateMachine.STATUS_PAID);
-            assertThat(pipeline.store.stateGet(ApprovalsStateMachine.paymentRefKey("rel-42")))
-                    .isPresent();
+            assertThat(item.status()).isEqualTo(ApprovalsStateMachine.STATUS_APPROVED);
+            var confirmed = ApprovalsStateMachine.decodeEffectState(pipeline.store.stateGet(
+                    ApprovalsStateMachine.effectStateKey("rel-42")).orElseThrow());
+            assertThat(confirmed.status()).isEqualTo(
+                    ApprovalsStateMachine.EFFECT_STATUS_CONFIRMED);
+            assertThat(confirmed.outcome()).isEqualTo(EffectOutcome.CONFIRMED);
+            assertThat(confirmed.externalRef()).isEqualTo(
+                    "3f9c".getBytes(StandardCharsets.UTF_8));
         }
     }
 
     @Test
-    void approvalsPayments_missingActivation_doesNotEmitOrParkPayload(@TempDir Path dir) {
+    void approvalsEffect_missingActivation_doesNotEmitOrStagePayload(@TempDir Path dir) {
+        Map<String, String> settings = new java.util.HashMap<>();
+        settings.put("effects.enabled", "true");
+        settings.put("machines.approvals.on-approved-effect.enabled", "true");
+        settings.put("machines.approvals.on-approved-effect.type", "demo.webhook");
+        // Config construction requires the activation declaration. The empty
+        // schedule models a replay/context in which the activation is absent.
+        settings.put("machines.approvals.activations.on-approved-effect", "1");
         ApprovalsStateMachine machine = new ApprovalsStateMachine(
-                ApprovalsStateMachine.PaymentsConfig.from(Map.of(
-                        "machines.approvals.payments", "true")),
+                AppChainApprovalsConfig.fromSettings(settings),
                 ActivationSchedule.empty());
         try (MsgPipeline pipeline = new MsgPipeline(dir, machine, FX_SETTINGS)) {
-            byte[] payment = "{\"to\":\"addr1..\",\"lovelace\":100}"
+            byte[] payload = "notification"
                     .getBytes(StandardCharsets.UTF_8);
-            pipeline.apply(msg("t", ApprovalsStateMachine.propose("rel-old", payment, 1, 0), "alice"));
+            pipeline.apply(msg("t",
+                    ApprovalsStateMachine.propose("rel-old", payload, 1, 0), "alice"));
             FxKernel.Result fx = pipeline.apply(
                     msg("t", ApprovalsStateMachine.approve("rel-old"), "alice"));
 
             assertThat(fx.emitted()).isEmpty();
-            assertThat(pipeline.store.stateGet(ApprovalsStateMachine.paymentKey("rel-old"))).isEmpty();
-            assertThat(pipeline.store.stateGet(ApprovalsStateMachine.effectLinkKey("rel-old"))).isEmpty();
+            assertThat(pipeline.store.stateGet(
+                    ApprovalsStateMachine.stagedEffectPayloadKey("rel-old"))).isEmpty();
+            assertThat(pipeline.store.stateGet(
+                    ApprovalsStateMachine.effectStateKey("rel-old"))).isEmpty();
             var item = ApprovalsStateMachine.decodeItem(
                     pipeline.store.stateGet(ApprovalsStateMachine.itemKey("rel-old")).orElseThrow());
             assertThat(item.status()).isEqualTo(ApprovalsStateMachine.STATUS_APPROVED);
@@ -513,13 +536,15 @@ class FxEffectsM3Test {
     }
 
     @Test
-    void approvalsPayments_activateExactlyAtConfiguredHeight_withoutRetroactivePayload(
+    void approvalsEffect_activatesExactlyAtHeight_withoutRetroactivePayload(
             @TempDir Path dir) {
         Map<String, String> approvalsSettings = Map.of(
-                "machines.approvals.payments", "true",
-                "machines.approvals.activations.payments", "2");
+                "effects.enabled", "true",
+                "machines.approvals.on-approved-effect.enabled", "true",
+                "machines.approvals.on-approved-effect.type", "demo.webhook",
+                "machines.approvals.activations.on-approved-effect", "2");
         ApprovalsStateMachine machine = new ApprovalsStateMachine(
-                ApprovalsStateMachine.PaymentsConfig.from(approvalsSettings),
+                AppChainApprovalsConfig.fromSettings(approvalsSettings),
                 ActivationSchedule.from(approvalsSettings, ApprovalsStateMachine.ID));
         try (MsgPipeline pipeline = new MsgPipeline(dir, machine, FX_SETTINGS)) {
             byte[] oldPayment = "old-payment".getBytes(StandardCharsets.UTF_8);
@@ -534,25 +559,27 @@ class FxEffectsM3Test {
                     msg("t", ApprovalsStateMachine.approve("active"), "alice"));
 
             assertThat(atActivation.emitted()).singleElement().satisfies(staged -> {
-                assertThat(staged.record().scope()).isEqualTo("approvals/active");
+                assertThat(staged.record().scope()).isEqualTo("approvals/on-approved/active");
                 assertThat(staged.record().payload()).isEqualTo(activePayment);
             });
             var beforeItem = ApprovalsStateMachine.decodeItem(
                     pipeline.store.stateGet(ApprovalsStateMachine.itemKey("before")).orElseThrow());
             assertThat(beforeItem.status()).isEqualTo(ApprovalsStateMachine.STATUS_APPROVED);
-            assertThat(pipeline.store.stateGet(ApprovalsStateMachine.effectLinkKey("before"))).isEmpty();
+            assertThat(pipeline.store.stateGet(
+                    ApprovalsStateMachine.effectStateKey("before"))).isEmpty();
         }
     }
 
     @Test
-    void approvalsPayments_isDeterministic_viaConformance() {
+    void approvalsEffect_isDeterministic_viaConformance() {
         StateMachineConformance.builder(
                         new com.bloxbean.cardano.yano.appchain.stdlib.StdlibStateMachineProviders
                                 .ApprovalsProvider())
                 .settings(Map.of(
                         "effects.enabled", "true",
-                        "machines.approvals.payments", "true",
-                        "machines.approvals.activations.payments", "1"))
+                        "machines.approvals.on-approved-effect.enabled", "true",
+                        "machines.approvals.on-approved-effect.type", "test.action",
+                        "machines.approvals.activations.on-approved-effect", "1"))
                 .blocks(12)
                 .messagesPerBlock(2)
                 .bodyGenerator((height, index, random) -> {

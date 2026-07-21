@@ -1,9 +1,10 @@
-# Yano app-chain cluster — quick demo
+# Yano app-chain cluster — single-host lifecycle
 
 Spin up an *N*-node [app-chain](../../adr/app-layer/) cluster in one command and
 watch messages get sequenced, voted, and finalized across every node — with
-their state roots agreeing. Great for a demo, a manual test, or kicking the
-tires on multi-chain / sequencer / anchoring behaviour.
+their state roots agreeing. The same command surface supports a disposable
+demo, repeatable integration tests, and a controlled single-host deployment
+with operator-provisioned identities.
 
 By default it runs a **self-contained devnet**: node 0 produces L1 blocks and
 the other nodes follow it. No external network, no funds, no setup. You can
@@ -12,6 +13,12 @@ also point every node at a **public network** as a relay.
 > A Docker/compose version will come later; this launcher is the scriptable
 > foundation. It runs against **whichever Yano build you have** — the uber-jar
 > or the native binary — auto-detected.
+>
+> This is deliberately a **single-host** launcher. Real keys and public
+> networks make it production-capable on one machine, but they do not create
+> independent failure domains. Use generated per-machine project overlays and
+> your normal service/orchestration layer for a distributed production
+> deployment.
 
 ## Prerequisites
 
@@ -20,8 +27,9 @@ also point every node at a **public network** as a relay.
   - uber-jar: `./gradlew :app:quarkusBuild` → `app/build/yano.jar`, **or**
   - native: `./gradlew :app:build -Dquarkus.native.enabled=true` → `app/build/yano`
 - `jq`, `python3`, `curl` on `PATH` (all standard).
-- For clusters **larger than 16 nodes**, python's `cryptography` package (used to
-  derive extra member keys); 1–16 nodes need nothing extra.
+- For 17–32-node clusters, python's `cryptography` package (used to derive
+  extra member keys); 1–16 nodes need nothing extra. The runtime membership
+  limit is 32.
 
 ### Running a released build (no local compile)
 
@@ -62,6 +70,8 @@ cd app/appchain-cluster
 ./cluster.sh start 3                 # 3-node devnet with the chains below
 ./cluster.sh status                  # tips + roots + cross-node agreement
 ./cluster.sh submit orders-chain orders '{"id":1}'
+./cluster.sh effect demo             # emit + externally execute one effect
+./cluster.sh node join 3             # govern, start, and catch up node 3
 ./cluster.sh status                  # tip advanced on every node
 ./cluster.sh stop                    # stop, keep data   (clean = stop + wipe)
 ```
@@ -148,9 +158,10 @@ Chains are defined **once**, shared by every node, in
 |-------|---------------|-----------|------|
 | `orders-chain` | `ordered-log` | fixed (node 0) | append-only log |
 | `registry-chain` | `kv-registry` | rotating | owner-guarded key/value store |
+| `effects-chain` | `approvals` | fixed (node 0) | external-worker effects demo |
 
 Edit that file to add, remove, or reshape chains — change the state machine,
-block cadence, sequencer mode, or add a third chain. The launcher
+block cadence, sequencer mode, or add another chain. The launcher
 **auto-discovers** however many `chains[i]` you define and injects the
 per-cluster values for you:
 
@@ -160,6 +171,79 @@ per-cluster values for you:
   `threshold`, this node's `signing-key`, `peers`, and — for fixed chains — the
   `proposer`. So the same YAML runs unchanged on a 3-node or a 9-node cluster;
   you never hand-edit member lists.
+
+All three maintained chains use governed membership. The initially supplied
+members are the immutable bootstrap epoch; later membership changes are
+finalized in each app chain's history.
+
+## Adding a member after bootstrap
+
+For a new node on this host, use the high-level command:
+
+```bash
+./cluster.sh start 3
+./cluster.sh node join 3
+```
+
+`node join 3` derives or loads node 3's identity, obtains the existing
+threshold of approvals on every configured chain, records the new membership
+epoch, starts node 3 from the immutable bootstrap configuration, catches up the
+governed history, and verifies that its tip and state root match an existing
+node on all chains. Join indices are sequential. The built-in identity table
+supports nodes 0 through 15; indices 16 through 31 require python's
+`cryptography` package unless operator key files are supplied. With
+`YANO_CLUSTER_MEMBER_KEY_DIR`, supply the matching `node3.seed` and
+`node3.public` before joining. The new process can catch up before its delayed
+membership epoch becomes active; the command prints each chain's activation
+height instead of generating dummy blocks to force it.
+
+For an externally managed node, use the lower-level governance operation:
+
+```bash
+./cluster.sh member add <64-hex-ed25519-public-key>
+```
+
+This records the member across all configured chains but does not create
+configuration, copy state, or start a process. The operator must configure that
+node with the same immutable bootstrap members, chain definitions, threshold,
+and network identity; its verified catch-up derives the later governed epoch.
+The immutable `cluster-appchain-identity.json` marker intentionally remains a
+bootstrap/genesis identity and is not rewritten after governance changes.
+
+## Default effects demonstration
+
+The maintained `effects-chain` shows the complete effect lifecycle without an
+external broker, object store, or credentials:
+
+```bash
+./cluster.sh start 3
+./cluster.sh effect demo
+./cluster.sh effect demo "order 42 approved"
+```
+
+With no message argument, the payload contains `"hello from Yano effects"`.
+Supply one quoted argument to replace it; quotes, spaces, and other JSON string
+content are escaped by the launcher and preserved in the finalized effect.
+
+The command submits a one-approval workflow, waits for the finalized
+`demo.webhook` effect, acts as a bounded external worker through the privileged
+claim/report API, confirms the runtime result, and checks that the finalized
+effect proof is available. The approval decision remains `APPROVED`; its
+separate generic effect state moves from `PENDING` to `CONFIRMED`. Expected
+output includes:
+
+```text
+Effect emitted       effects-chain height=... ordinal=...
+Effect type          demo.webhook
+Delivery             CONFIRMED
+Proof                 AVAILABLE (...)
+Captured payload      {"event":"demo.effect.requested",...}
+```
+
+This demonstrates Yano's effect contract and delivery lifecycle; it does not
+send a real webhook. The larger `app/appchain-effects-demo` remains the example
+for actual Kafka, S3-compatible storage, IPFS, webhook, and Cardano-payment
+integrations.
 
 ## Submitting payloads
 
@@ -283,9 +367,11 @@ The launcher treats L1 and app-chain state as separate identities:
   while different app-chain instances attach sequentially to the same stopped
   host L1 state.
 - Standalone use also writes
-  `<data-dir>/cluster-appchain-identity.json`, binding chain IDs, membership,
-  threshold, proposer, and anchor signer. A restart with different keys or
-  profile is rejected before a node starts.
+  `<data-dir>/cluster-appchain-identity.json`, binding chain IDs, bootstrap
+  membership, bootstrap threshold, proposer, and anchor signer. A restart with
+  a different bootstrap identity is rejected before a node starts. Governed
+  member epochs live in finalized app-chain history and do not rewrite this
+  immutable marker.
 - An orchestrator that stores app-chain state outside the L1 tree may set
   `YANO_CLUSTER_APPCHAIN_IDENTITY_MARKER` to its canonical
   `yano.demo.appchain-identity` JSON marker. The file must be launcher-owned,
@@ -411,6 +497,9 @@ a distinct script address.
 ```
 ./cluster.sh start [N] [options]   start an N-node cluster (default 3)
 ./cluster.sh status                health + per-chain tips/roots + consistency
+./cluster.sh node join <index>     govern, start, catch up, and verify one node
+./cluster.sh member add <pubkey>   governance-only add across all chains
+./cluster.sh effect demo           run the dependency-free effects lifecycle
 ./cluster.sh submit ...            submit a payload to an ordered-log chain
 ./cluster.sh kv ...                set/del on a kv-registry chain
 ./cluster.sh anchor-bootstrap C    bootstrap a script anchor (devnet: auto-funds)

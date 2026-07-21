@@ -6,6 +6,8 @@ import com.bloxbean.cardano.yano.api.appchain.AppChainGateways;
 import com.bloxbean.cardano.yano.api.appchain.AppQueryPath;
 import com.bloxbean.cardano.yano.api.appchain.AppStateProofSnapshot;
 import com.bloxbean.cardano.yano.api.appchain.ReceivedAppMessage;
+import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
+import com.bloxbean.cardano.yano.api.plugin.PluginCatalogView;
 import com.bloxbean.cardano.yano.appchain.composite.contracts.CompositeProfileGovernanceV1;
 import com.fasterxml.jackson.annotation.JsonAnySetter;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
@@ -21,14 +23,17 @@ import jakarta.inject.Inject;
 import jakarta.ws.rs.*;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.eclipse.microprofile.openapi.annotations.Operation;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.regex.Pattern;
 
 /**
  * REST surface for the app chain(s). Chain-scoped paths
@@ -49,6 +54,15 @@ public class AppChainResource {
 
     @Inject
     AppChainGateways appChainGateways;
+
+    @Inject
+    PluginCatalogView pluginCatalog;
+
+    @ConfigProperty(name = YanoPropertyKeys.AppChain.DX_RESOLVED_CONFIG_DIGEST)
+    Optional<String> resolvedConfigDigest = Optional.empty();
+
+    @ConfigProperty(name = YanoPropertyKeys.AppChain.DX_RELEASE_CATALOG_DIGEST)
+    Optional<String> releaseCatalogDigest = Optional.empty();
 
     // ------------------------------------------------------------------
     // Multi-chain surface
@@ -73,7 +87,10 @@ public class AppChainResource {
     public ChainScopedResource chain(@PathParam("chainId") String chainId) {
         AppChainGateway gateway = appChainGateways.byId(chainId)
                 .orElseThrow(() -> jsonError(Response.Status.NOT_FOUND, "Unknown app chain: " + chainId));
-        return new ChainScopedResource(gateway);
+        return new ChainScopedResource(gateway, new RuntimeIdentityContext(
+                pluginCatalog.fingerprint(),
+                resolvedConfigDigest.orElse(null),
+                releaseCatalogDigest.orElse(null)));
     }
 
     // ------------------------------------------------------------------
@@ -312,11 +329,19 @@ public class AppChainResource {
         private static final int MAX_PROOF_KEY_BYTES = 256;
         private static final int MAX_PROOF_VALUE_BYTES = 1024 * 1024;
         private static final int MAX_PROOF_WIRE_BYTES = 1024 * 1024;
+        private static final Pattern SHA256 = Pattern.compile(
+                "(?:sha256:)?[0-9a-f]{64}", Pattern.CASE_INSENSITIVE);
 
         private final AppChainGateway gateway;
+        private final RuntimeIdentityContext identityContext;
 
         ChainScopedResource(AppChainGateway gateway) {
+            this(gateway, RuntimeIdentityContext.empty());
+        }
+
+        ChainScopedResource(AppChainGateway gateway, RuntimeIdentityContext identityContext) {
             this.gateway = gateway;
+            this.identityContext = identityContext;
         }
 
         public record SubmitRequest(String topic, String body, String bodyHex) {
@@ -496,6 +521,51 @@ public class AppChainResource {
             } catch (IllegalStateException e) {
                 return Response.status(Response.Status.SERVICE_UNAVAILABLE)
                         .entity(Map.of("error", e.getMessage())).build();
+            }
+        }
+
+        /** Redacted identities for operator drift checks; no raw configuration is returned. */
+        @GET
+        @Path("identity")
+        @AppChainAccess(AppChainAccess.Level.PRIVILEGED)
+        public Response identity() {
+            try {
+                Map<String, Object> status = gateway.status();
+                Map<String, Object> result = new LinkedHashMap<>();
+                result.put("schemaVersion", "v1");
+                result.put("chainId", gateway.chainId());
+                putDigest(result, "consensusProfileDigest",
+                        nestedValue(status, "consensusProfile", "digest"));
+                putDigest(result, "compositeProfileDigest",
+                        nestedValue(status, "stateMachineStatus", "activeProfileDigest"));
+                putDigest(result, "pluginCatalogFingerprint",
+                        identityContext.pluginCatalogFingerprint());
+                putDigest(result, "resolvedConfigDigest",
+                        identityContext.resolvedConfigDigest());
+                putDigest(result, "releaseCatalogDigest",
+                        identityContext.releaseCatalogDigest());
+                result.put("identityCoverage",
+                        result.containsKey("resolvedConfigDigest")
+                                && result.containsKey("releaseCatalogDigest")
+                                ? "PROJECT_BOUND" : "RUNTIME_ONLY");
+                return Response.ok(result).build();
+            } catch (IllegalStateException e) {
+                return Response.status(Response.Status.SERVICE_UNAVAILABLE)
+                        .entity(Map.of("error", "App-chain identity is unavailable")).build();
+            }
+        }
+
+        private static Object nestedValue(
+                Map<String, Object> source, String objectKey, String valueKey) {
+            Object nested = source.get(objectKey);
+            return nested instanceof Map<?, ?> map ? map.get(valueKey) : null;
+        }
+
+        private static void putDigest(Map<String, Object> output, String key, Object value) {
+            if (value == null) return;
+            String digest = String.valueOf(value).trim();
+            if (SHA256.matcher(digest).matches()) {
+                output.put(key, digest.toLowerCase(Locale.ROOT));
             }
         }
 
@@ -1233,6 +1303,16 @@ public class AppChainResource {
         private static Response badRequest(String message) {
             return Response.status(Response.Status.BAD_REQUEST)
                     .entity(Map.of("error", message)).build();
+        }
+    }
+
+    record RuntimeIdentityContext(
+            String pluginCatalogFingerprint,
+            String resolvedConfigDigest,
+            String releaseCatalogDigest) {
+
+        static RuntimeIdentityContext empty() {
+            return new RuntimeIdentityContext(null, null, null);
         }
     }
 }

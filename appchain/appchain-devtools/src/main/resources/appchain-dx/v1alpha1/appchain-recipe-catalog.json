@@ -1,0 +1,77 @@
+{
+  "schemaVersion": "v1alpha1",
+  "recipes": [
+    {
+      "id": "audit-log",
+      "version": "1",
+      "maturity": "stable",
+      "trustStatement": "First-party Yano recipe using only packaged runtime capabilities.",
+      "description": "A replicated append-only audit log.",
+      "capabilities": ["state:ordered-log", "sequencer:fixed"],
+      "recommended": {
+        "blockIntervalMs": "1000"
+      },
+      "runtimeTypes": ["jvm", "native"],
+      "deploymentTargets": ["host", "docker-compose"]
+    },
+    {
+      "id": "owned-registry",
+      "version": "1",
+      "maturity": "stable",
+      "trustStatement": "First-party Yano recipe using only packaged runtime capabilities.",
+      "description": "An owner-guarded key/value registry.",
+      "capabilities": ["state:kv-registry", "sequencer:fixed"],
+      "recommended": {
+        "blockIntervalMs": "2000"
+      },
+      "runtimeTypes": ["jvm", "native"],
+      "deploymentTargets": ["host", "docker-compose"]
+    },
+    {
+      "id": "evidence-publication",
+      "version": "1",
+      "maturity": "experimental",
+      "trustStatement": "First-party alpha recipe; connector selection is completed in a later milestone.",
+      "description": "An ordered evidence log with deterministic publication intents.",
+      "capabilities": ["state:ordered-log", "sequencer:fixed", "effects:publication"],
+      "recommended": {
+        "blockIntervalMs": "1000"
+      },
+      "runtimeTypes": ["jvm", "native"],
+      "deploymentTargets": ["host", "docker-compose"]
+    },
+    {
+      "id": "approval-workflow",
+      "version": "1",
+      "maturity": "stable",
+      "trustStatement": "First-party Yano recipe using the packaged approval state machine.",
+      "description": "A threshold approval workflow.",
+      "capabilities": ["state:approval-workflow", "sequencer:fixed"],
+      "recommended": {"blockIntervalMs": "1000"},
+      "runtimeTypes": ["jvm", "native"],
+      "deploymentTargets": ["host", "docker-compose"]
+    },
+    {
+      "id": "role-evidence",
+      "version": "1",
+      "maturity": "preview",
+      "trustStatement": "First-party Yano recipe using packaged composite and role-workflow bundles.",
+      "description": "Role-aware evidence registration and approval workflow.",
+      "capabilities": ["state:role-evidence", "sequencer:fixed"],
+      "recommended": {"blockIntervalMs": "1000"},
+      "runtimeTypes": ["jvm", "native"],
+      "deploymentTargets": ["host", "docker-compose"]
+    },
+    {
+      "id": "custom-plugin",
+      "version": "1",
+      "maturity": "experimental",
+      "trustStatement": "Advanced JVM-only path; the operator owns plugin code review and compatibility.",
+      "description": "A JVM project prepared for a custom state-machine plugin.",
+      "capabilities": ["state:custom-plugin", "sequencer:fixed"],
+      "recommended": {"blockIntervalMs": "1000"},
+      "runtimeTypes": ["jvm"],
+      "deploymentTargets": ["host", "docker-compose"]
+    }
+  ]
+}

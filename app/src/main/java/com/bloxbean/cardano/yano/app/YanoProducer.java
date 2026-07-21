@@ -307,6 +307,9 @@ public class YanoProducer {
     @ConfigProperty(name = YanoPropertyKeys.AppChain.DEFAULT_TTL_SECONDS, defaultValue = "600")
     long appChainDefaultTtlSeconds;
 
+    @ConfigProperty(name = YanoPropertyKeys.AppChain.VALIDATION_STRICT, defaultValue = "false")
+    boolean appChainValidationStrict;
+
     @ConfigProperty(name = YanoPropertyKeys.Tx.DIFFUSION_MODE)
     java.util.Optional<String> txDiffusionMode = java.util.Optional.empty();
 
@@ -701,6 +704,7 @@ public class YanoProducer {
         globals.put(YanoPropertyKeys.AppChain.RETENTION_KEEP_BLOCKS, appChainRetentionKeepBlocks);
         globals.put(YanoPropertyKeys.AppChain.POOL_MAX_MESSAGES, appChainPoolMaxMessages);
         globals.put(YanoPropertyKeys.AppChain.MESSAGE_ENFORCE_SENDER_SEQ, appChainEnforceSenderSeq);
+        globals.put(YanoPropertyKeys.AppChain.VALIDATION_STRICT, appChainValidationStrict);
         // Dynamic plugin config is copied verbatim so extension settings can
         // be enabled from node-app config, not only through direct runtime
         // construction in tests. Keep this list shared with indexed-chain

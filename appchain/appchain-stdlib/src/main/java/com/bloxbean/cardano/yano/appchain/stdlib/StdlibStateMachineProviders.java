@@ -3,6 +3,7 @@ package com.bloxbean.cardano.yano.appchain.stdlib;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineContext;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineProvider;
+import com.bloxbean.cardano.yano.appchain.config.AppChainApprovalsConfig;
 
 /**
  * ServiceLoader providers for the standard-library state machines.
@@ -50,7 +51,7 @@ public final class StdlibStateMachineProviders {
         @Override
         public AppStateMachine create(AppStateMachineContext context) {
             return new ApprovalsStateMachine(
-                    ApprovalsStateMachine.PaymentsConfig.from(context.settings()),
+                    AppChainApprovalsConfig.fromSettings(context.settings()),
                     com.bloxbean.cardano.yano.api.appchain.effects.ActivationSchedule
                             .from(context.settings(), ApprovalsStateMachine.ID));
         }

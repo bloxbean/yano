@@ -1,0 +1,47 @@
+{
+  "schemaVersion": "v1alpha1",
+  "schemaStatus": "alpha",
+  "stabilizationDecision": "RETAIN_V1ALPHA1",
+  "yanoVersion": "0.1.0-pre9",
+  "tooling": "standalone-jvm",
+  "runtimeTypes": ["jvm", "native"],
+  "deploymentTargets": ["host", "docker-compose"],
+  "recipes": [
+    "audit-log",
+    "owned-registry",
+    "evidence-publication",
+    "approval-workflow",
+    "role-evidence",
+    "custom-plugin"
+  ],
+  "artifacts": [
+    "yano-runtime",
+    "appchain-stdlib",
+    "appchain-evidence-registry",
+    "appchain-composite",
+    "appchain-role-workflow"
+  ],
+  "distributions": [
+    {
+      "id": "jvm",
+      "runtimeType": "jvm",
+      "archivePattern": "yano-{version}.zip",
+      "tooling": "bundled",
+      "platforms": ["java-25"]
+    },
+    {
+      "id": "native-unix",
+      "runtimeType": "native",
+      "archivePattern": "yano-native-{version}-{platform}.zip",
+      "tooling": "external-version-matched",
+      "platforms": ["linux-amd64", "linux-aarch64", "macos-aarch64"]
+    },
+    {
+      "id": "native-windows",
+      "runtimeType": "native",
+      "archivePattern": "yano-native-{version}-windows-{arch}.zip",
+      "tooling": "external-version-matched",
+      "platforms": ["windows-amd64"]
+    }
+  ]
+}

@@ -1,0 +1,228 @@
+{
+  "schemaVersion": "v1alpha1",
+  "artifacts": [
+    {
+      "id": "yano-runtime",
+      "runtimeTypes": ["jvm", "native"],
+      "deploymentTargets": ["host", "docker-compose"]
+    },
+    {
+      "id": "appchain-stdlib",
+      "runtimeTypes": ["jvm", "native"],
+      "deploymentTargets": ["host", "docker-compose"]
+    },
+    {
+      "id": "appchain-evidence-registry",
+      "runtimeTypes": ["jvm", "native"],
+      "deploymentTargets": ["host", "docker-compose"]
+    },
+    {
+      "id": "appchain-composite",
+      "runtimeTypes": ["jvm", "native"],
+      "deploymentTargets": ["host", "docker-compose"]
+    },
+    {
+      "id": "appchain-role-workflow",
+      "runtimeTypes": ["jvm", "native"],
+      "deploymentTargets": ["host", "docker-compose"]
+    }
+  ],
+  "capabilities": [
+    {
+      "id": "state:ordered-log",
+      "name": "Ordered audit log",
+      "category": "state",
+      "maturity": "stable",
+      "description": "Append-only ordered application messages.",
+      "provides": ["state-machine"],
+      "requires": [],
+      "implies": [],
+      "conflicts": ["state:kv-registry", "state:approval-workflow", "state:role-evidence", "state:custom-plugin"],
+      "runtimeTypes": ["jvm", "native"],
+      "deploymentTargets": ["host", "docker-compose"],
+      "artifacts": ["yano-runtime", "appchain-stdlib"],
+      "properties": {
+        "state-machine": "ordered-log"
+      }
+    },
+    {
+      "id": "state:kv-registry",
+      "name": "Owned key/value registry",
+      "category": "state",
+      "maturity": "stable",
+      "description": "Owner-guarded key/value state machine.",
+      "provides": ["state-machine"],
+      "requires": [],
+      "implies": [],
+      "conflicts": ["state:ordered-log", "state:approval-workflow", "state:role-evidence", "state:custom-plugin"],
+      "runtimeTypes": ["jvm", "native"],
+      "deploymentTargets": ["host", "docker-compose"],
+      "artifacts": ["yano-runtime", "appchain-stdlib"],
+      "properties": {
+        "state-machine": "kv-registry",
+        "machines.kv-registry.value-format": "utf8"
+      }
+    },
+    {
+      "id": "state:approval-workflow",
+      "name": "Approval workflow",
+      "category": "state",
+      "maturity": "stable",
+      "description": "Deterministic proposals, votes, and threshold approval state.",
+      "provides": ["state-machine"],
+      "requires": [],
+      "implies": [],
+      "conflicts": ["state:ordered-log", "state:kv-registry", "state:role-evidence", "state:custom-plugin"],
+      "runtimeTypes": ["jvm", "native"],
+      "deploymentTargets": ["host", "docker-compose"],
+      "artifacts": ["yano-runtime", "appchain-stdlib"],
+      "properties": {
+        "state-machine": "approvals"
+      }
+    },
+    {
+      "id": "state:role-evidence",
+      "name": "Role-aware evidence workflow",
+      "category": "state",
+      "maturity": "preview",
+      "description": "Composite evidence registry with role-aware approvals and domain APIs.",
+      "provides": ["state-machine"],
+      "requires": [],
+      "implies": [],
+      "conflicts": ["state:ordered-log", "state:kv-registry", "state:approval-workflow", "state:custom-plugin"],
+      "runtimeTypes": ["jvm", "native"],
+      "deploymentTargets": ["host", "docker-compose"],
+      "artifacts": ["yano-runtime", "appchain-stdlib", "appchain-evidence-registry", "appchain-composite", "appchain-role-workflow"],
+      "properties": {
+        "state-machine": "role-evidence",
+        "block.max-messages": "100",
+        "effects.enabled": "true",
+        "effects.max-per-block": "200",
+        "effects.max-payload-bytes": "16384",
+        "effects.max-expiry-blocks": "100000",
+        "effects.result-window-blocks": "100000",
+        "effects.default-gate": "app-final",
+        "effects.outcome-commitment": "per-effect",
+        "effects.strict-reserved-prefix": "true",
+        "machines.kv-registry.value-format": "raw",
+        "machines.composite.preset": "role-evidence-v1",
+        "machines.composite.evidence-capacity-per-block": "8",
+        "machines.composite.profile-mode": "fixed",
+        "machines.composite.profile-governance.min-activation-lag": "20",
+        "machines.composite.profile-governance.proposal-ttl-blocks": "600",
+        "machines.composite.profile-governance.max-epochs": "1024",
+        "machines.composite.roles.maximum-mutation-lifetime-blocks": "1000",
+        "machines.evidence-registry.storage-gate": "app-final",
+        "machines.evidence-registry.storage-expiry-blocks": "0",
+        "machines.evidence-registry.notification-expiry-blocks": "0"
+      }
+    },
+    {
+      "id": "state:custom-plugin",
+      "name": "Custom JVM plugin state machine",
+      "category": "state",
+      "maturity": "experimental",
+      "description": "Advanced path for a separately reviewed custom plugin bundle.",
+      "provides": ["state-machine"],
+      "requires": [],
+      "implies": [],
+      "conflicts": ["state:ordered-log", "state:kv-registry", "state:approval-workflow", "state:role-evidence"],
+      "runtimeTypes": ["jvm"],
+      "deploymentTargets": ["host", "docker-compose"],
+      "artifacts": ["yano-runtime"],
+      "properties": {
+        "state-machine": "${stateMachine}"
+      }
+    },
+    {
+      "id": "sequencer:fixed",
+      "name": "Fixed sequencer",
+      "category": "sequencer",
+      "maturity": "stable",
+      "description": "One declared member proposes blocks.",
+      "provides": ["sequencer"],
+      "requires": [],
+      "implies": [],
+      "conflicts": ["sequencer:rotating"],
+      "runtimeTypes": ["jvm", "native"],
+      "deploymentTargets": ["host", "docker-compose"],
+      "artifacts": ["yano-runtime"],
+      "properties": {
+        "sequencer.mode": "fixed",
+        "sequencer.proposer": "${proposer}"
+      }
+    },
+    {
+      "id": "sequencer:rotating",
+      "name": "Rotating sequencer",
+      "category": "sequencer",
+      "maturity": "experimental",
+      "description": "Proposer rotates using the L1 slot clock.",
+      "provides": ["sequencer"],
+      "requires": [],
+      "implies": ["l1:slot-feed"],
+      "conflicts": ["sequencer:fixed"],
+      "runtimeTypes": ["jvm", "native"],
+      "deploymentTargets": ["host", "docker-compose"],
+      "artifacts": ["yano-runtime"],
+      "properties": {
+        "sequencer.mode": "rotating",
+        "sequencer.window-slots": "10"
+      }
+    },
+    {
+      "id": "l1:slot-feed",
+      "name": "L1 slot feed",
+      "category": "l1",
+      "maturity": "stable",
+      "description": "Uses the local Yano L1 view for slot-aware behavior.",
+      "provides": ["l1-slot-feed"],
+      "requires": [],
+      "implies": [],
+      "conflicts": [],
+      "runtimeTypes": ["jvm", "native"],
+      "deploymentTargets": ["host", "docker-compose"],
+      "artifacts": ["yano-runtime"],
+      "properties": {}
+    },
+    {
+      "id": "effects:on-approved",
+      "name": "Generic on-approved effect",
+      "category": "effects",
+      "maturity": "preview",
+      "description": "Emits one typed CHAIN-result effect after threshold approval.",
+      "provides": ["effects"],
+      "requires": ["state:approval-workflow"],
+      "implies": [],
+      "conflicts": [],
+      "runtimeTypes": ["jvm", "native"],
+      "deploymentTargets": ["host", "docker-compose"],
+      "artifacts": ["yano-runtime", "appchain-stdlib"],
+      "properties": {
+        "effects.enabled": "true",
+        "machines.approvals.on-approved-effect.enabled": "true",
+        "machines.approvals.on-approved-effect.type": "${effectType}",
+        "machines.approvals.on-approved-effect.gate": "chain-default",
+        "machines.approvals.on-approved-effect.expiry-blocks": "0",
+        "machines.approvals.activations.on-approved-effect": "1"
+      }
+    },
+    {
+      "id": "effects:publication",
+      "name": "Evidence publication effects",
+      "category": "effects",
+      "maturity": "experimental",
+      "description": "Enables deterministic effect intents for publication workflows.",
+      "provides": ["effects"],
+      "requires": ["state:ordered-log"],
+      "implies": [],
+      "conflicts": [],
+      "runtimeTypes": ["jvm", "native"],
+      "deploymentTargets": ["host", "docker-compose"],
+      "artifacts": ["yano-runtime"],
+      "properties": {
+        "effects.enabled": "true"
+      }
+    }
+  ]
+}

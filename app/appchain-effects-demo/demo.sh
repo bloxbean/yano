@@ -200,6 +200,16 @@ case "$COMMAND" in
     [ "$DEMO_MACHINE_MODE" = role ] \
       || die "role-lifecycle requires --machine role"
     ;;
+  reset-devnet)
+    [ "$DEMO_NETWORK" = devnet ] \
+      || die "reset-devnet is available only for --network devnet"
+    [ "$MODE" = compose ] \
+      || die "reset-devnet currently supports the Compose deployment only"
+    [ "$CLEAN_CONFIRMED" = true ] \
+      || die "reset-devnet requires --yes; nothing was changed"
+    [ -z "$CLEAN_SCOPE" ] && [ -z "$NEW_INSTANCE" ] && [ -z "$NEW_CHAIN_ID" ] \
+      || die "reset-devnet does not accept cleanup scope or replacement options"
+    ;;
   run) [ -z "$BUSINESS_VERSION" ] || die "run does not accept --business-version";;
   *)
     [ -z "$SCENARIO_SAMPLE_FILE" ] \
@@ -653,7 +663,7 @@ fi
 OPERATION_LOCK_REQUIRED=false
 case "$COMMAND" in
   prepare|config|up) OPERATION_LOCK_REQUIRED=true;;
-  run|publish|republish|verify|replay|load|role-lifecycle|probe|stop|clean)
+  run|publish|republish|verify|replay|load|role-lifecycle|probe|stop|clean|reset-devnet)
     if [ -e "$NETWORK_ROOT" ] || [ -L "$NETWORK_ROOT" ]; then
       OPERATION_LOCK_REQUIRED=true
     fi
@@ -1126,7 +1136,7 @@ PY
 
 prepare_network_identity() {
   local source="$APP_DIR/config/network/devnet/shelley-genesis.json"
-  local identity now start
+  local identity now start marker_state=""
   require jq
   temporary_file; STAGED_SHELLEY="$LAST_TEMP_FILE"
   temporary_file; STAGED_GENESIS_TIMESTAMP="$LAST_TEMP_FILE"
@@ -1148,13 +1158,30 @@ prepare_network_identity() {
       start="$(python3 - "$NETWORK_MARKER" <<'PY'
 import json,sys
 document=json.load(open(sys.argv[1], encoding="utf-8"))
+pending={
+    "schemaVersion": 1,
+    "kind": "yano.demo.network-identity",
+    "networkName": "devnet",
+    "factoryResetPending": True,
+}
+if document == pending:
+    print("__YANO_FACTORY_RESET_PENDING__")
+    raise SystemExit(0)
 value=document.get("generatedSystemStart")
-if document.get("kind") != "yano.demo.network-identity" or not isinstance(value, str):
+if (document.get("kind") != "yano.demo.network-identity"
+        or "factoryResetPending" in document or not isinstance(value, str)):
     raise SystemExit(1)
 print(value)
 PY
 )" || die "retained network marker cannot reconstruct its generated devnet genesis"
-      now="$(python3 - "$start" <<'PY'
+      if [ "$start" = __YANO_FACTORY_RESET_PENDING__ ]; then
+        marker_state=reset-pending
+        now="$(date +%s)"
+        if start="$(date -u -r "$now" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null)"; then :
+        else start="$(date -u -d "@$now" '+%Y-%m-%dT%H:%M:%SZ')"
+        fi
+      else
+        now="$(python3 - "$start" <<'PY'
 from datetime import datetime
 import sys
 value=sys.argv[1]
@@ -1163,6 +1190,7 @@ if value.endswith("Z"):
 print(int(datetime.fromisoformat(value).timestamp()))
 PY
 )" || die "retained network marker has an invalid generated systemStart"
+      fi
       jq --arg start "$start" '.epochLength = 500 | .systemStart = $start' \
         "$source" > "$STAGED_SHELLEY"
       printf '%s\n' "$((now * 1000))" > "$STAGED_GENESIS_TIMESTAMP"
@@ -1182,7 +1210,13 @@ PY
   fi
 
   write_network_identity "$identity" "$STAGED_SHELLEY"
-  if ! python3 "$SCRIPT_DIR/tools/lifecycle.py" ensure-network \
+  if [ "$marker_state" = reset-pending ]; then
+    if ! python3 "$SCRIPT_DIR/tools/lifecycle.py" ensure-network \
+        --allowed-root "$DATA_BASE" --directory "$NETWORK_ROOT" \
+        --identity-file "$identity" --replace-factory-reset-pending >/dev/null; then
+      die "factory-reset devnet identity could not be safely regenerated"
+    fi
+  elif ! python3 "$SCRIPT_DIR/tools/lifecycle.py" ensure-network \
       --allowed-root "$DATA_BASE" --directory "$NETWORK_ROOT" \
       --identity-file "$identity" >/dev/null; then
     die "network identity mismatch; use a different --data-dir or restore the exact selected genesis"
@@ -1870,6 +1904,53 @@ compose_down_confirmed() {
   [ "$down_status" -eq 0 ] \
     || note "Compose down returned $down_status, but the daemon confirms the project has no containers." >&2
   return 0
+}
+
+list_managed_devnet_compose_projects() {
+  local output="$1" raw project
+  temporary_file; raw="$LAST_TEMP_FILE"
+  docker ps -a --filter 'label=com.docker.compose.project' \
+    --format '{{.Label "com.docker.compose.project"}}' > "$raw" \
+    || die "cannot inspect Docker Compose projects before devnet reset"
+  : > "$output"
+  while IFS= read -r project; do
+    [[ "$project" =~ ^yano-effects-devnet-[a-z0-9][a-z0-9-]{0,31}-[0-9a-f]{8}$ ]] \
+      || continue
+    printf '%s\n' "$project" >> "$output"
+  done < "$raw"
+  sort -u "$output" -o "$output"
+  chmod 600 "$output"
+}
+
+stop_all_managed_devnet_compose_projects() {
+  local projects project container_ids network_ids volume_ids remaining
+  require docker
+  temporary_file; projects="$LAST_TEMP_FILE"
+  list_managed_devnet_compose_projects "$projects"
+  while IFS= read -r project; do
+    [ -n "$project" ] || continue
+    note "Stopping disposable devnet Compose project: $project"
+    container_ids="$(docker ps -a \
+      --filter "label=com.docker.compose.project=$project" -q)" \
+      || die "cannot inspect containers for Compose project $project"
+    [ -z "$container_ids" ] || docker container rm -f $container_ids >/dev/null \
+      || die "cannot remove containers for Compose project $project"
+    network_ids="$(docker network ls \
+      --filter "label=com.docker.compose.project=$project" -q)" \
+      || die "cannot inspect networks for Compose project $project"
+    [ -z "$network_ids" ] || docker network rm $network_ids >/dev/null \
+      || die "cannot remove networks for Compose project $project"
+    volume_ids="$(docker volume ls \
+      --filter "label=com.docker.compose.project=$project" -q)" \
+      || die "cannot inspect volumes for Compose project $project"
+    [ -z "$volume_ids" ] || docker volume rm -f $volume_ids >/dev/null \
+      || die "cannot remove volumes for Compose project $project"
+  done < "$projects"
+
+  temporary_file; remaining="$LAST_TEMP_FILE"
+  list_managed_devnet_compose_projects "$remaining"
+  [ ! -s "$remaining" ] \
+    || die "managed devnet Compose projects remain after shutdown; state was preserved"
 }
 
 runner_java() {
@@ -2868,6 +2949,16 @@ cmd_clean() {
   fi
 }
 
+cmd_reset_devnet() {
+  stop_all_managed_devnet_compose_projects
+  python3 "$SCRIPT_DIR/tools/lifecycle.py" reset-devnet \
+    --data-base "$DATA_BASE" --runtime-base "$RUNTIME_BASE" \
+    --compose-stopped --yes
+  note "Devnet factory reset complete. Credential and key secrets were preserved under $SECRET_BASE/networks/devnet."
+  note "The next devnet launch will generate a fresh network identity and systemStart."
+  note "You may now reuse any previous devnet instance and chain id."
+}
+
 cmd_config() {
   [ "$MODE" = compose ] || die "config is a Compose-only command"
   prepare_configuration
@@ -2896,6 +2987,8 @@ Commands:
   stop      stop processes and preserve all data
   config    render the fully resolved Compose model
   clean     delete one explicit stopped-instance category
+  reset-devnet
+            stop and factory-reset every local Compose devnet demo state
 
 Options:
   --deployment compose|host default: compose (`--mode` remains an alias)
@@ -2930,6 +3023,12 @@ Cleanup options:
   --confirm-public-l1-delete <network>
                             second exact acknowledgement for public L1 deletion
 
+Devnet factory reset:
+  ./demo.sh reset-devnet --yes
+                            deletes L1, instances, connectors, runtime data and
+                            lifecycle fences; regenerates devnet systemStart on
+                            next launch; credential/key secrets and images remain
+
 App-chain journals and connector durability are one effect-instance boundary;
 they cannot be cleaned independently. Public anchor keys never imply consent
 to spend. Mainnet forbids demo anchoring and automatic value movement. Cleanup
@@ -2948,6 +3047,7 @@ case "$COMMAND" in
   stop) cmd_stop;;
   config) cmd_config;;
   clean) cmd_clean;;
+  reset-devnet) cmd_reset_devnet;;
   help|-h|--help) usage;;
   *) usage >&2; die "unknown command: $COMMAND";;
 esac

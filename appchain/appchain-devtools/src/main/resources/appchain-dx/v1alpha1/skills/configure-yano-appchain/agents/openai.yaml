@@ -1,0 +1,4 @@
+interface:
+  display_name: "Configure Yano App-Chain"
+  short_description: "Generate and validate safe app-chain blueprints"
+  default_prompt: "Use $configure-yano-appchain to create or update a validated Yano app-chain project."

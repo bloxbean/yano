@@ -1,5 +1,7 @@
 # Tutorial 3 — Choose a Stock State Machine
 
+[Open a stock approval workflow in App-Chain Studio](../../../appchain/appchain-studio/src/main/web/index.html#recipe=approval-workflow&network=devnet&members=3&finality=two-thirds&sequencing=fixed&runtime=jvm&deployment=host&name=approval-workflow&chainId=approval-workflow)
+
 - **Level:** beginner for selection, advanced for wire integration
 - **Outcome:** choose the smallest built-in deterministic model that matches
   your application before writing a plugin.
@@ -13,11 +15,11 @@ activation or a new chain.
 
 | Machine | Use it when | Authorization model | Proven state |
 |---|---|---|---|
-| `ordered-log` | You need immutable ordered opaque events | Any admitted member | Message by message ID |
-| `kv-registry` | You need mutable named records | First writer owns a key | Current owner/value per key |
-| `approvals` | Validator members are the approvers | Distinct member keys | Status and decision trail |
+| [`ordered-log`](../state-machines/ordered-log.md) | You need immutable ordered opaque events | Any admitted member | Message by message ID |
+| [`kv-registry`](../state-machines/kv-registry.md) | You need mutable named records | First writer owns a key | Current owner/value per key |
+| [`approvals`](../state-machines/approvals.md) | Validator members are the approvers | Distinct member keys | Status and decision trail |
 | `balances` | You need internal credits/netting | A member spends its own account | Balance per account |
-| `doc-trail` | You need ordered history per product/case | Admitted member appends | Count and chained trail head |
+| [`doc-trail`](../state-machines/doc-trail.md) | You need ordered history per product/case | Admitted member appends | Count and chained trail head |
 | `evidence-v1-gated` | Approval coordinates S3/IPFS/Kafka publication | Stock composite workflow | One root across components/effects |
 | `role-evidence` | Business actors differ from validator members | Governed actors, organizations, roles | Registry, policy, decisions, evidence |
 
@@ -113,10 +115,17 @@ Use:
 
 ## Go deeper
 
+- The dedicated [`ordered-log` reference](../state-machines/ordered-log.md)
+  covers topics, payloads, multiple instances, REST/Java submission, proofs,
+  and customization paths.
+- The dedicated [`kv-registry`](../state-machines/kv-registry.md),
+  [`approvals`](../state-machines/approvals.md), and
+  [`doc-trail`](../state-machines/doc-trail.md) references provide complete
+  REST, Java, state, proof, and customization examples.
 - Exact state layouts and Java helper methods are documented in the
   [consensus guide](../../APP_CHAIN_CONSENSUS_GUIDE.md).
-- The [user guide](../../APP_CHAIN_USER_GUIDE.md) covers configuration and
-  payment-effect activation for `approvals`.
+- The [user guide](../../APP_CHAIN_USER_GUIDE.md) covers the generic
+  on-approved effect and activation for `approvals`.
 - For organization-distinct business authorization, continue with
   [domain-role approvals](05-domain-role-approvals.md).
 - For coordinated document publication, continue with

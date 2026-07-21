@@ -1,5 +1,7 @@
 # Tutorial 7 — Connect an App Proof to Cardano
 
+[Open an evidence chain in App-Chain Studio](../../../appchain/appchain-studio/src/main/web/index.html#recipe=evidence-publication&network=devnet&members=3&finality=all&sequencing=fixed&runtime=jvm&deployment=host&name=anchored-evidence&chainId=anchored-evidence)
+
 - **Level:** intermediate to advanced
 - **Time:** about 20 minutes on local devnet
 - **Outcome:** bootstrap a threshold-enforced script anchor, advance it after app
@@ -12,10 +14,9 @@ discoverable through Cardano. These are related but distinct proofs.
 ## 1. Start an anchored local cluster
 
 ```bash
-cd app/appchain-cluster
 export YANO_CLUSTER_DIR=/tmp/yano-tutorial-anchor
 
-./cluster.sh start 3 \
+./yano.sh appchain cluster start 3 \
   --anchor-mode script \
   --anchor-every 2
 ```
@@ -27,7 +28,7 @@ devnet faucet.
 ## 2. Bootstrap one chain's immutable anchor identity
 
 ```bash
-./cluster.sh anchor-bootstrap orders-chain
+./yano.sh appchain cluster anchor-bootstrap orders-chain
 ```
 
 Bootstrap consumes a seed UTxO, mints the one-shot thread NFT, and creates the
@@ -41,16 +42,16 @@ and lag.
 ## 3. Produce application progress
 
 ```bash
-./cluster.sh submit orders-chain audit '{"event":"certificate-issued","id":"C-1"}'
-./cluster.sh submit orders-chain audit '{"event":"certificate-published","id":"C-1"}'
-./cluster.sh submit orders-chain audit '{"event":"certificate-acknowledged","id":"C-1"}'
+./yano.sh appchain cluster submit orders-chain audit '{"event":"certificate-issued","id":"C-1"}'
+./yano.sh appchain cluster submit orders-chain audit '{"event":"certificate-published","id":"C-1"}'
+./yano.sh appchain cluster submit orders-chain audit '{"event":"certificate-acknowledged","id":"C-1"}'
 ```
 
 Wait for app finality and the local L1 transaction:
 
 ```bash
 sleep 20
-./cluster.sh status
+./yano.sh appchain cluster status
 
 curl -s \
   http://127.0.0.1:7070/api/v1/app-chain/chains/orders-chain/status \
@@ -122,7 +123,7 @@ API key as the anchor wallet.
 ## 5. Clean up
 
 ```bash
-./cluster.sh clean
+./yano.sh appchain cluster clean
 unset YANO_CLUSTER_DIR
 ```
 

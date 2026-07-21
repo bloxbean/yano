@@ -13,6 +13,7 @@ import com.bloxbean.cardano.yano.appchain.composite.CompositeWorkflow;
 import com.bloxbean.cardano.yano.appchain.composite.LegacyQueryAlias;
 import com.bloxbean.cardano.yano.appchain.composite.StateMachineComponentAdapter;
 import com.bloxbean.cardano.yano.appchain.composite.WorkflowDescriptor;
+import com.bloxbean.cardano.yano.appchain.config.AppChainApprovalsConfig;
 import com.bloxbean.cardano.yano.appchain.examples.evidence.EvidenceContract;
 import com.bloxbean.cardano.yano.appchain.examples.evidence.EvidenceRegistryConfig;
 import com.bloxbean.cardano.yano.appchain.examples.evidence.EvidenceRegistryStateMachine;
@@ -49,15 +50,12 @@ public final class CompositeStockPresets {
             throw new IllegalArgumentException("Unsupported composite preset: " + preset);
         }
         boolean gated = EVIDENCE_V1_GATED.equals(preset);
-        String approvalsPayments = settings.getOrDefault(
-                "machines.approvals.payments", "false").trim().toLowerCase(Locale.ROOT);
-        if (!approvalsPayments.equals("true") && !approvalsPayments.equals("false")) {
+        AppChainApprovalsConfig approvalsConfig =
+                AppChainApprovalsConfig.fromSettings(settings);
+        if (approvalsConfig.enabled()) {
             throw new IllegalArgumentException(
-                    "machines.approvals.payments must be true or false");
-        }
-        if (approvalsPayments.equals("true")) {
-            throw new IllegalArgumentException(
-                    preset + " keeps approvals payments disabled; use a custom composite profile");
+                    preset + " keeps the approvals on-approved effect disabled; "
+                            + "use a custom composite profile");
         }
 
         var consensusProfile = context.consensusProfile().orElseThrow(() ->
@@ -76,7 +74,7 @@ public final class CompositeStockPresets {
                 "value-format:" + registryFormat.name().toLowerCase(Locale.ROOT),
                 REGISTRY_TOPIC, List.of(), 0);
         ComponentDescriptor approvalsDescriptor = descriptor(APPROVALS_ID,
-                "payments-disabled-v1", APPROVALS_TOPIC, List.of(), 0);
+                "on-approved-effect-disabled-v1", APPROVALS_TOPIC, List.of(), 0);
         ComponentDescriptor docTrailDescriptor = descriptor(DOC_TRAIL_ID,
                 "append-v1", DOC_TRAIL_TOPIC, List.of(), 0);
         int evidenceQuota = gated
@@ -89,7 +87,7 @@ public final class CompositeStockPresets {
 
         KvRegistryStateMachine registryMachine = new KvRegistryStateMachine(registryFormat);
         ApprovalsStateMachine approvalsMachine = new ApprovalsStateMachine(
-                ApprovalsStateMachine.PaymentsConfig.DISABLED, ActivationSchedule.empty());
+                AppChainApprovalsConfig.DISABLED, ActivationSchedule.empty());
         DocTrailStateMachine docTrailMachine = new DocTrailStateMachine();
         EvidenceRegistryStateMachine evidenceMachine =
                 new EvidenceRegistryStateMachine(evidenceConfig);

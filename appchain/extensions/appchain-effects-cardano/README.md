@@ -19,7 +19,7 @@ node only — never in effect payloads.
 See also:
 
 - [ADR-010: deterministic effect system](../../../adr/app-layer/010-deterministic-effect-system.md) (§8.1 payment use case, FX-M4)
-- [App-chain user guide §18](../../../docs/APP_CHAIN_USER_GUIDE.md) — effects, executors, and the approvals→payment flow
+- [App-chain user guide §18](../../../docs/APP_CHAIN_USER_GUIDE.md) — effects, executors, and generic approvals→effect routing
 
 ## Packaging model
 
@@ -62,8 +62,7 @@ The executor is disabled when `backend-url` or a signing credential is missing.
 
 ## Effect payload
 
-The `cardano.payment` effect payload is a CBOR map (what the stdlib approvals
-payments flow emits) or a minimal flat JSON object:
+The `cardano.payment` effect payload is a CBOR map or a minimal flat JSON object:
 
 ```json
 { "to": "addr_test1...", "lovelace": 1500000, "memo": "invoice-42" }
@@ -71,16 +70,11 @@ payments flow emits) or a minimal flat JSON object:
 
 `to` and a positive `lovelace` are required; `memo` (optional) becomes public
 L1 metadata. The stdlib `approvals` machine emits this automatically on final
-approval when `yano.app-chain.machines.approvals.payments=true` and the explicit
-`yano.app-chain.machines.approvals.activations.payments=<height>` has been
-reached. Use height `1` only for a new chain that enables payments from genesis;
-use a future height, identical on every member, for a live-chain rollout.
-
-Legacy migration is different: if a chain already used `payments=true` under a
-binary that treated a missing activation as active, set
-`activations.payments=1` on every member **before** deploying the corrected
-binary, then validate replay or snapshot restoration. A future height would
-change historical emission behavior.
+approval when `machines.approvals.on-approved-effect.enabled=true`, its type is
+`cardano.payment`, and
+`machines.approvals.activations.on-approved-effect=<height>` has been reached.
+The proposal payload is routed unchanged. Use height `1` for a new chain that
+enables the action from its first app block.
 
 ## Execution semantics
 

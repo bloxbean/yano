@@ -64,6 +64,13 @@ class AppChainAdminTest {
         // Not paused by default
         assertThat(node.submissionsPaused()).isFalse();
         assertThat(node.status().get("submissionsPaused")).isEqualTo(false);
+        assertThat(node.status())
+                .containsEntry("membershipMode", "static")
+                .containsEntry("membershipEpochFromHeight", 0L)
+                .containsEntry("membershipEpochActive", true)
+                .containsEntry("membershipActiveMembers", 2)
+                .containsEntry("membershipActiveThreshold", 2)
+                .containsEntry("memberActiveForNextBlock", true);
 
         // Submissions land in the pool (no proposer running → not finalized)
         node.submit("t", "m1".getBytes(StandardCharsets.UTF_8));
