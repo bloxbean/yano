@@ -1,5 +1,7 @@
 package com.bloxbean.cardano.yano.appchain.examples.evidence.demo;
 
+import com.bloxbean.cardano.yano.appchain.composite.contracts.stock.EvidenceWorkflowCapacityV1;
+
 import java.io.IOException;
 import java.net.URI;
 import java.net.URISyntaxException;
@@ -25,6 +27,7 @@ public record DemoConfig(String chainId,
                          Path sampleFile,
                          Path reportDirectory,
                          String evidenceId,
+                         int evidenceCapacityPerBlock,
                          S3Settings s3,
                          IpfsSettings ipfs,
                          KafkaSettings kafka,
@@ -41,6 +44,7 @@ public record DemoConfig(String chainId,
             "demo.yano.urls", "demo.yano.api-key-file",
             "demo.yano.member-keys", "demo.yano.threshold",
             "demo.sample-file", "demo.report-directory", "demo.evidence-id",
+            "demo.evidence-capacity-per-block",
             "s3.endpoint", "s3.region", "s3.access-key-file", "s3.secret-key-file",
             "s3.source-bucket", "s3.source-prefix", "s3.destination-bucket",
             "s3.destination-prefix", "s3.target", "s3.target-id",
@@ -66,6 +70,10 @@ public record DemoConfig(String chainId,
         }
         yanoUrls = List.copyOf(yanoUrls);
         yanoMemberKeys = Set.copyOf(yanoMemberKeys);
+        if (evidenceCapacityPerBlock < 1
+                || evidenceCapacityPerBlock > EvidenceWorkflowCapacityV1.MAX_CAPACITY) {
+            throw new DemoException(DemoError.INVALID_CONFIG);
+        }
     }
 
     /** Source-compatible constructor for standalone evidence-registry callers. */
@@ -84,7 +92,7 @@ public record DemoConfig(String chainId,
                       Duration pollInterval,
                       boolean requireAnchor) {
         this(chainId, "evidence-registry", null, yanoUrls, yanoMemberKeys, yanoThreshold,
-                yanoApiKey, sampleFile, reportDirectory, evidenceId, s3, ipfs,
+                yanoApiKey, sampleFile, reportDirectory, evidenceId, 1, s3, ipfs,
                 kafka, timeout, pollInterval, requireAnchor);
     }
 
@@ -117,6 +125,13 @@ public record DemoConfig(String chainId,
             Path sample = resolve(base, required(values, "demo.sample-file"));
             Path reports = resolve(base, required(values, "demo.report-directory"));
             String evidenceId = evidenceId(required(values, "demo.evidence-id"));
+            int evidenceCapacity = (int) unsigned(values.getOrDefault(
+                    "demo.evidence-capacity-per-block", "1"), 1,
+                    EvidenceWorkflowCapacityV1.MAX_CAPACITY);
+            if ("composite".equals(stateMachine)
+                    && !values.containsKey("demo.evidence-capacity-per-block")) {
+                throw new DemoException(DemoError.MISSING_CONFIG_KEY);
+            }
 
             S3Settings s3 = new S3Settings(
                     origin(required(values, "s3.endpoint")),
@@ -147,7 +162,7 @@ public record DemoConfig(String chainId,
                     "scenario.require-anchor", "true"));
             return new DemoConfig(chainId, stateMachine, compositeProfileDigest,
                     yanoUrls, yanoMemberKeys, yanoThreshold,
-                    apiKey, sample, reports, evidenceId, s3, ipfs, kafka,
+                    apiKey, sample, reports, evidenceId, evidenceCapacity, s3, ipfs, kafka,
                     timeout, poll, requireAnchor);
         } catch (DemoException failure) {
             throw failure;

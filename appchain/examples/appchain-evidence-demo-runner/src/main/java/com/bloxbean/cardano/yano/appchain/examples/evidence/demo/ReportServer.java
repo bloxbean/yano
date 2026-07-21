@@ -8,12 +8,16 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.util.HashMap;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /** Credential-free, read-only report UI using only the JDK HTTP server. */
 public final class ReportServer implements AutoCloseable {
@@ -24,6 +28,8 @@ public final class ReportServer implements AutoCloseable {
             "/styles.css", new Asset("/demo-ui/styles.css", "text/css; charset=utf-8"));
     private static final byte[] HEALTH = "{\"status\":\"UP\"}\n"
             .getBytes(StandardCharsets.UTF_8);
+    private static final Pattern EVIDENCE_DETAIL = Pattern.compile(
+            "^/api/v1/evidence/([a-z0-9][a-z0-9-]{0,63})/versions/([1-9][0-9]{0,18})$");
 
     private final HttpServer server;
     private final ExecutorService executor;
@@ -69,11 +75,12 @@ public final class ReportServer implements AutoCloseable {
                 send(exchange, 405, "text/plain; charset=utf-8", new byte[0], "HEAD");
                 return;
             }
-            if (exchange.getRequestURI().getRawQuery() != null) {
+            String path = exchange.getRequestURI().getRawPath();
+            String rawQuery = exchange.getRequestURI().getRawQuery();
+            if (rawQuery != null && !"/api/v1/evidence".equals(path)) {
                 send(exchange, 404, "text/plain; charset=utf-8", new byte[0], method);
                 return;
             }
-            String path = exchange.getRequestURI().getRawPath();
             if ("/healthz".equals(path)) {
                 send(exchange, 200, "application/json; charset=utf-8", HEALTH, method);
                 return;
@@ -83,6 +90,48 @@ public final class ReportServer implements AutoCloseable {
                 send(exchange, report == null ? 404 : 200,
                         "application/json; charset=utf-8",
                         report == null ? new byte[0] : report, method);
+                return;
+            }
+            if ("/api/v1/reports".equals(path)) {
+                send(exchange, 200, "application/json; charset=utf-8",
+                        reports.readRecent(), method);
+                return;
+            }
+            if ("/api/v1/load/latest".equals(path)) {
+                byte[] report = reports.readLatestLoad();
+                send(exchange, report == null ? 404 : 200,
+                        "application/json; charset=utf-8",
+                        report == null ? new byte[0] : report, method);
+                return;
+            }
+            if ("/api/v1/evidence".equals(path)) {
+                EvidenceCatalogRequest request;
+                try {
+                    request = parseEvidenceCatalogRequest(rawQuery);
+                } catch (IllegalArgumentException invalidQuery) {
+                    send(exchange, 404, "application/json; charset=utf-8", new byte[0], method);
+                    return;
+                }
+                send(exchange, 200, "application/json; charset=utf-8",
+                        reports.readEvidenceCatalog(request.page(), request.pageSize(),
+                                request.query()), method);
+                return;
+            }
+            Matcher evidenceDetail = EVIDENCE_DETAIL.matcher(path);
+            if (evidenceDetail.matches()) {
+                final long version;
+                try {
+                    version = Long.parseLong(evidenceDetail.group(2));
+                } catch (NumberFormatException invalidVersion) {
+                    send(exchange, 404, "application/json; charset=utf-8",
+                            new byte[0], method);
+                    return;
+                }
+                byte[] detail = reports.readEvidenceDetail(
+                        evidenceDetail.group(1), version);
+                send(exchange, detail == null ? 404 : 200,
+                        "application/json; charset=utf-8",
+                        detail == null ? new byte[0] : detail, method);
                 return;
             }
             Asset asset = ASSETS.get(path);
@@ -110,6 +159,50 @@ public final class ReportServer implements AutoCloseable {
         } catch (IOException failure) {
             throw new DemoException(DemoError.UI_START_FAILED);
         }
+    }
+
+    private static EvidenceCatalogRequest parseEvidenceCatalogRequest(String rawQuery) {
+        if (rawQuery == null) {
+            return new EvidenceCatalogRequest(1, ReportStore.DEFAULT_CATALOG_PAGE_SIZE, null);
+        }
+        if (rawQuery.isEmpty() || rawQuery.length() > 128) {
+            throw new IllegalArgumentException("invalid catalog query");
+        }
+        Map<String, String> parameters = new HashMap<>();
+        for (String part : rawQuery.split("&", -1)) {
+            int separator = part.indexOf('=');
+            if (separator < 1 || separator != part.lastIndexOf('=')
+                    || separator == part.length() - 1) {
+                throw new IllegalArgumentException("invalid catalog query");
+            }
+            String name = part.substring(0, separator);
+            String value = part.substring(separator + 1);
+            if (!(name.equals("page") || name.equals("pageSize") || name.equals("q"))
+                    || parameters.putIfAbsent(name, value) != null) {
+                throw new IllegalArgumentException("invalid catalog query");
+            }
+        }
+        int page = positiveInt(parameters.getOrDefault("page", "1"));
+        int pageSize = positiveInt(parameters.getOrDefault(
+                "pageSize", Integer.toString(ReportStore.DEFAULT_CATALOG_PAGE_SIZE)));
+        if (pageSize > ReportStore.MAX_CATALOG_PAGE_SIZE) {
+            throw new IllegalArgumentException("invalid catalog page size");
+        }
+        String query = parameters.get("q");
+        if (query != null) {
+            query = query.toLowerCase(Locale.ROOT);
+            if (query.length() > 64 || !query.matches("[a-z0-9-]+")) {
+                throw new IllegalArgumentException("invalid catalog filter");
+            }
+        }
+        return new EvidenceCatalogRequest(page, pageSize, query);
+    }
+
+    private static int positiveInt(String value) {
+        if (value == null || !value.matches("[1-9][0-9]{0,8}")) {
+            throw new IllegalArgumentException("invalid positive integer");
+        }
+        return Integer.parseInt(value);
     }
 
     private static void secureHeaders(Headers headers) {
@@ -143,5 +236,8 @@ public final class ReportServer implements AutoCloseable {
     }
 
     private record Asset(String resource, String contentType) {
+    }
+
+    private record EvidenceCatalogRequest(int page, int pageSize, String query) {
     }
 }

@@ -1,6 +1,6 @@
 # App-Layer Open Items
 
-**Last updated:** 2026-07-17
+**Last updated:** 2026-07-18
 
 **Purpose:** canonical live index of app-layer work that is open, in progress,
 blocked, or intentionally deferred.
@@ -90,8 +90,21 @@ These are the recommended next items after ADR-013 release closure.
 | INT-005 | P3 | Deferred | Object deletion/overwrite semantics. | ADR-013 §21.6; outside immutable `object.put` |
 | INT-006 | P2 | Deferred | Kubernetes/Helm/cloud provisioning for the packaged demo/runtime contracts. | ADR-013 §21.7; revive for managed deployment work |
 | INT-007 | P2 | Deferred | Shared connector-support library to reduce repeated lifecycle/config boilerplate before a fourth connector. | ADR-014 §4.3 |
-| INT-008 | P2 | Proposed | Complete DPP product profile: actor/credential schemas, gated workflow, portal, policy, and Cardano publication. | [DPP possible design](dpp-possible-design.md); consumes ADR-013/015 and FX-002 |
+| INT-008 | P2 | Proposed | Complete DPP product profile: actor/credential schemas, gated workflow, portal, policy, and Cardano publication. | [DPP possible design](dpp-possible-design.md); consumes ADR-013/015/019 and FX-002 |
 | INT-009 | P2 | Deferred | A generic migration-precondition/workflow contract for state-incompatible composite upgrades. | ADR-015 §9.2; revive with the first concrete migration consumer |
+
+### 5.1 Identity and role-aware workflow
+
+| ID | Priority | State | Item | Owner/source / trigger |
+|---|---:|---|---|---|
+| IAM-001 | P2 | Proposed | Implement a reusable domain actor/organization registry and role-aware approval component with governed policies, actor-signed decisions, key rotation/revocation, and organization-distinct quorum rules. | [ADR-019](019-reusable-domain-actor-registry-and-role-aware-approvals.md); required before claiming application-role enforcement or non-member business approvals |
+
+### 5.2 Performance and capacity validation
+
+ADR-020 completed `PERF-001` on 2026-07-18. The authenticated stock capacity,
+bounded pipeline, schema-v2 reports, UI, focused tests, and real explicit/direct
+three-member acceptance runs are recorded in ADR-020 §8.1. Broader packaged
+profile load/soak characterization remains `APP-010`.
 
 ## 6. Plugin architecture v2 backlog
 
@@ -194,6 +207,9 @@ implementation status.
 | 015 | Accepted/implemented governed composite-profile evolution; independent closure review has no unresolved Critical/High/Medium implementation finding. | `INT-009` for future incompatible-state migration; external release evidence remains `APP-009` |
 | 016 | Accepted/implemented authenticated app-chain consensus profile and typed runtime limits. | `FX-001` for future framework-profile epochs |
 | 017 | Placeholder for the post-P0/P1 Fable review-closure pass. | `APP-008/010`, `REV-*` |
+| 018 | Accepted/implemented evidence lifecycle for multi-item publish, immutable republish, mutation-free verification, explicit replay, and bounded full-workflow load. | `INT-010` complete |
+| 019 | Proposed reusable domain actor registry and role-aware approval design. | `IAM-001` |
+| 020 | Accepted/implemented pipelined evidence load and committed workflow capacity. | `PERF-001` complete; broader load/soak envelope remains `APP-010` |
 
 ## 11. Tracker/documentation hygiene
 

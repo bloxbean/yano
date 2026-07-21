@@ -7,6 +7,7 @@ demo.yano.threshold=2
 demo.sample-file=/opt/yano-demo/samples/inspection-certificate.json
 demo.report-directory=/var/lib/yano-demo/reports
 demo.evidence-id=@EVIDENCE_ID@
+demo.evidence-capacity-per-block=@EVIDENCE_CAPACITY_PER_BLOCK@
 s3.endpoint=http://@S3_IP@:9000
 s3.region=us-east-1
 s3.access-key-file=/run/secrets/s3-runner-access-key

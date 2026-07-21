@@ -12,8 +12,15 @@ import com.bloxbean.cardano.yano.appchain.composite.CompositeWorkflowContext;
 import com.bloxbean.cardano.yano.appchain.composite.WorkflowDescriptor;
 import com.bloxbean.cardano.yano.appchain.composite.contracts.stock.EvidenceReleaseCommandV1;
 import com.bloxbean.cardano.yano.appchain.examples.evidence.EvidenceContract;
+import com.bloxbean.cardano.yano.appchain.examples.evidence.EvidenceRegistryConfig;
 import com.bloxbean.cardano.yano.appchain.examples.evidence.EvidenceRegistryStateMachine;
+import com.bloxbean.cardano.yano.appchain.examples.evidence.command.EvidenceCommandV1;
+import com.bloxbean.cardano.yano.appchain.examples.evidence.command.RepublishEvidenceCommandV1;
+import com.bloxbean.cardano.yano.appchain.examples.evidence.command.SubmitEvidenceCommandV1;
+import com.bloxbean.cardano.yano.appchain.examples.evidence.state.EvidenceHeadV1;
 import com.bloxbean.cardano.yano.appchain.examples.evidence.state.EvidenceKeys;
+import com.bloxbean.cardano.yano.appchain.examples.evidence.state.EvidenceRecordV1;
+import com.bloxbean.cardano.yano.appchain.examples.evidence.state.EvidenceStatus;
 import com.bloxbean.cardano.yano.appchain.stdlib.ApprovalsStateMachine;
 import com.bloxbean.cardano.yano.appchain.stdlib.DocTrailStateMachine;
 
@@ -24,6 +31,7 @@ import java.util.Objects;
 /** Stock atomic registry + approval + document-trail + evidence release coordinator. */
 final class EvidenceReleaseWorkflow implements CompositeWorkflow {
     public static final String ID = "evidence-release";
+    public static final String PRODUCT_VERSION = "1.1.0";
     public static final String TOPIC = EvidenceReleaseCommandV1.TOPIC;
 
     private final WorkflowDescriptor descriptor;
@@ -33,6 +41,7 @@ final class EvidenceReleaseWorkflow implements CompositeWorkflow {
     private final ComponentGeneration evidence;
     private final DocTrailStateMachine docTrailMachine;
     private final EvidenceRegistryStateMachine evidenceMachine;
+    private final EvidenceRegistryConfig evidenceConfig;
 
     EvidenceReleaseWorkflow(
             WorkflowDescriptor descriptor,
@@ -41,7 +50,8 @@ final class EvidenceReleaseWorkflow implements CompositeWorkflow {
             ComponentGeneration docTrail,
             ComponentGeneration evidence,
             DocTrailStateMachine docTrailMachine,
-            EvidenceRegistryStateMachine evidenceMachine
+            EvidenceRegistryStateMachine evidenceMachine,
+            EvidenceRegistryConfig evidenceConfig
     ) {
         this.descriptor = Objects.requireNonNull(descriptor, "descriptor");
         this.registry = registry;
@@ -50,6 +60,7 @@ final class EvidenceReleaseWorkflow implements CompositeWorkflow {
         this.evidence = evidence;
         this.docTrailMachine = Objects.requireNonNull(docTrailMachine, "docTrailMachine");
         this.evidenceMachine = Objects.requireNonNull(evidenceMachine, "evidenceMachine");
+        this.evidenceConfig = Objects.requireNonNull(evidenceConfig, "evidenceConfig");
         if (!descriptor.workflowId().equals(ID) || !descriptor.topic().equals(TOPIC)
                 || !descriptor.participants().equals(
                 List.of(registry, approvals, docTrail, evidence))) {
@@ -109,10 +120,7 @@ final class EvidenceReleaseWorkflow implements CompositeWorkflow {
                     || !evidenceMachine.validate(evidenceMessage).isAccepted()) {
                 continue;
             }
-            var submit = command.evidenceSubmit();
-            if (evidenceState.get(EvidenceKeys.headKey(submit.evidenceId())).isPresent()
-                    || evidenceState.get(EvidenceKeys.recordKey(
-                    submit.evidenceId(), submit.businessVersion())).isPresent()) {
+            if (!canApply(command.evidenceStorageCommand(), source, evidenceState)) {
                 continue;
             }
             if (context.claim(command.releaseId(), command.commandHash())
@@ -124,6 +132,53 @@ final class EvidenceReleaseWorkflow implements CompositeWorkflow {
             evidenceMachine.apply(withMessages(block, List.of(evidenceMessage)), evidenceState,
                     context.effects(evidence));
         }
+    }
+
+    private boolean canApply(
+            EvidenceCommandV1 command,
+            AppMessage source,
+            AppStateWriter evidenceState
+    ) {
+        if (command instanceof SubmitEvidenceCommandV1 submit) {
+            return evidenceConfig.isIssuer(source.getSender())
+                    && evidenceState.get(EvidenceKeys.headKey(submit.evidenceId())).isEmpty()
+                    && evidenceState.get(EvidenceKeys.recordKey(
+                    submit.evidenceId(), submit.businessVersion())).isEmpty();
+        }
+        if (!(command instanceof RepublishEvidenceCommandV1 republish)) {
+            return false;
+        }
+        byte[] headBytes = evidenceState.get(
+                EvidenceKeys.headKey(republish.evidenceId())).orElse(null);
+        if (headBytes == null) {
+            return false;
+        }
+        EvidenceHeadV1 head = EvidenceHeadV1.decode(headBytes);
+        if (!head.evidenceId().equals(republish.evidenceId())
+                || !MessageDigest.isEqual(head.ownerPublicKey(), source.getSender())) {
+            return false;
+        }
+        final long nextVersion;
+        try {
+            nextVersion = Math.addExact(head.latestVersion(), 1);
+        } catch (ArithmeticException exhausted) {
+            return false;
+        }
+        if (republish.businessVersion() != nextVersion
+                || evidenceState.get(EvidenceKeys.recordKey(
+                republish.evidenceId(), nextVersion)).isPresent()) {
+            return false;
+        }
+        byte[] priorBytes = evidenceState.get(EvidenceKeys.recordKey(
+                republish.evidenceId(), head.latestVersion())).orElse(null);
+        if (priorBytes == null) {
+            return false;
+        }
+        EvidenceRecordV1 prior = EvidenceRecordV1.decode(priorBytes);
+        return prior.evidenceId().equals(republish.evidenceId())
+                && prior.businessVersion() == head.latestVersion()
+                && MessageDigest.isEqual(prior.ownerPublicKey(), head.ownerPublicKey())
+                && EvidenceStatus.derive(prior).permitsRepublish();
     }
 
     private static AppMessage routed(AppMessage source, String topic, byte[] body) {

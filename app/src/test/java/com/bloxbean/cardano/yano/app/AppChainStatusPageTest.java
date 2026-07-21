@@ -28,7 +28,7 @@ class AppChainStatusPageTest {
         assertTrue(page.contains("Yano · App Chain"));
         for (String panel : new String[]{"chainSelect", "heroTip", "anchorList",
                 "effectExecutorsList", "profileModeBadge", "profileGovernanceList",
-                "blocksBody"}) {
+                "blocksBody", "messageDialog", "messageBodyPreview", "messageRawHex"}) {
             assertTrue(page.contains("id=\"" + panel + "\""), panel);
         }
         assertTrue(page.contains("href=\"../status/\""));
@@ -59,6 +59,10 @@ class AppChainStatusPageTest {
         assertTrue(handler.contains("event === 'heartbeat'"));
         assertTrue(handler.contains("lastStreamHeight"));
         assertTrue(handler.contains("msg.chainId || selectedChain"));
+        assertTrue(handler.contains("openMessageInspector(msg, position)"));
+        assertTrue(handler.contains("document.createElement('button')"));
+        assertTrue(handler.contains("row.setAttribute('aria-label'"));
+        assertFalse(handler.contains("row.innerHTML"));
         String heartbeat = between(handler, "if (event === 'heartbeat')",
                 "if (event !== 'app-message'");
         assertFalse(heartbeat.contains("lastStreamHeight"),
@@ -74,6 +78,14 @@ class AppChainStatusPageTest {
         assertTrue(page.contains("executor.sampleState"));
         assertTrue(page.contains("executor.failureCode"));
         assertTrue(page.contains("stateMachineStatus"));
+
+        String inspector = between(page, "function hexPreview", "$('messageDialogClose')");
+        assertTrue(inspector.contains("messagePreviewBytes"));
+        assertTrue(inspector.contains("TextDecoder('utf-8', { fatal: true })"));
+        assertTrue(inspector.contains("JSON.stringify(JSON.parse(decoded), null, 2)"));
+        assertTrue(inspector.contains("textContent = bodyText"));
+        assertTrue(inspector.contains("preview.truncated"));
+        assertTrue(page.contains("external evidence documents remain in object storage/IPFS"));
     }
 
     @Test

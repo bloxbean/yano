@@ -28,4 +28,17 @@ class EvidenceScenarioFileBoundaryTest {
                 .extracting(failure -> ((DemoException) failure).error())
                 .isEqualTo(DemoError.SAMPLE_INVALID);
     }
+
+    @Test
+    void rejectsASymlinkedSample() throws Exception {
+        Path target = temporary.resolve("sample");
+        Files.writeString(target, "evidence");
+        Path link = temporary.resolve("sample-link");
+        Files.createSymbolicLink(link, target.getFileName());
+
+        assertThatThrownBy(() -> EvidenceScenario.readSample(link))
+                .isInstanceOf(DemoException.class)
+                .extracting(failure -> ((DemoException) failure).error())
+                .isEqualTo(DemoError.SAMPLE_INVALID);
+    }
 }

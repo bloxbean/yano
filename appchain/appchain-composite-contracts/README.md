@@ -14,7 +14,8 @@ Public v1 surfaces are:
   bounded `composite/aggregate-v1` request/response wire used by both clients
   and runtime; and
 - `EvidenceReleaseCommandV1` and prerequisite encoders — frozen stock workflow
-  submission contracts.
+  submission contracts for approved `SUBMIT` and `REPUBLISH` commands;
+  `NOTIFY` remains on its dedicated gated route.
 
 Example aggregate request:
 

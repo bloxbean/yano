@@ -7,10 +7,13 @@ import com.bloxbean.cardano.yano.api.appchain.evidence.EvidenceBundleCodec;
 import com.bloxbean.cardano.yano.api.appchain.evidence.EvidenceVerifier;
 import com.bloxbean.cardano.yano.appchain.client.AppChainClient;
 import com.bloxbean.cardano.yano.appchain.client.EffectProofVerifier;
+import com.bloxbean.cardano.yano.appchain.composite.contracts.CompositeCommitmentV1;
+import com.bloxbean.cardano.yano.appchain.examples.evidence.EvidenceContract;
 import com.bloxbean.cardano.yano.appchain.examples.evidence.client.EvidenceClient;
 import com.fasterxml.jackson.databind.JsonNode;
 
 import java.net.URI;
+import java.security.MessageDigest;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.HashSet;
@@ -40,6 +43,7 @@ final class YanoAuditClient {
     private final Set<String> expectedMemberKeys;
     private final int expectedThreshold;
     private final EvidenceVerifier.TrustContext trustContext;
+    private final byte[] expectedCompositeProfileDigest;
     private final BoundedHttp http;
     private final AppChainClient appChain;
     private final EvidenceClient evidence;
@@ -69,6 +73,8 @@ final class YanoAuditClient {
         }
         this.expectedMemberKeys = this.trustContext.memberKeysHex();
         this.expectedThreshold = this.trustContext.threshold();
+        this.expectedCompositeProfileDigest = expectedCompositeProfileDigest == null
+                ? null : expectedCompositeProfileDigest.clone();
         this.http = new BoundedHttp(Duration.ofSeconds(5), Duration.ofSeconds(30));
         AppChainClient.Builder builder = AppChainClient.builder(baseUrl.toString())
                 .chainId(chainId)
@@ -89,6 +95,40 @@ final class YanoAuditClient {
 
     EvidenceClient evidence() {
         return evidence;
+    }
+
+    /**
+     * Confirms absence at the one snapshot where an MPF profile marker cannot
+     * exist yet: a pristine chain with no committed app block.
+     */
+    boolean pristineGenesisReady(Status status) {
+        if (status == null || status.height() != 0
+                || !status.stateRoot().equals("0".repeat(64))) {
+            throw new DemoException(DemoError.STATE_PROOF_FAILED);
+        }
+        if (EvidenceContract.STATE_MACHINE_ID.equals(status.stateMachine())) {
+            return true;
+        }
+        if (!CompositeCommitmentV1.STATE_MACHINE_ID.equals(status.stateMachine())
+                || expectedCompositeProfileDigest == null) {
+            throw new DemoException(DemoError.STATE_PROOF_FAILED);
+        }
+        final AppChainClient.QueryResult query;
+        try {
+            query = appChain.query("composite/active-profile-v1", new byte[0]);
+        } catch (RuntimeException failure) {
+            throw new DemoException(DemoError.STATE_PROOF_FAILED);
+        }
+        boolean emptyRoot = Arrays.equals(query.stateRoot(), new byte[32]);
+        if (!chainId.equals(query.chainId())
+                || !status.stateMachine().equals(query.stateMachineId())
+                || query.committedHeight() != 0 || !emptyRoot
+                || !MessageDigest.isEqual(
+                CompositeCommitmentV1.profileDigest(query.payload()),
+                expectedCompositeProfileDigest)) {
+            throw new DemoException(DemoError.STATE_PROOF_FAILED);
+        }
+        return true;
     }
 
     long l1BlockNumber() {
@@ -197,6 +237,23 @@ final class YanoAuditClient {
                 membersNode.intValue(), thresholdNode.intValue(),
                 stateMachineNode.textValue(), anchoredHeight, anchorTx, anchorSlot,
                 anchorScriptAddress, anchorThreadPolicyId);
+    }
+
+    boolean forceAnchor() {
+        BoundedHttp.Response response = http.post(chainUri("/admin/force-anchor"),
+                headers(), new byte[0], MAX_STATUS_BYTES);
+        if (response.status() != 200) {
+            throw new DemoException(DemoError.SERVICE_TIMEOUT);
+        }
+        JsonNode root = StrictJson.parse(response.body());
+        JsonNode chain = root.get("chainId");
+        JsonNode triggered = root.get("anchorTriggered");
+        if (!root.isObject() || root.size() != 2
+                || chain == null || !chain.isTextual() || !chainId.equals(chain.textValue())
+                || triggered == null || !triggered.isBoolean()) {
+            throw new DemoException(DemoError.EXTERNAL_STATE_MISMATCH);
+        }
+        return triggered.booleanValue();
     }
 
     boolean anchorTransactionVisible(String transactionHash) {

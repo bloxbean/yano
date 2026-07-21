@@ -107,6 +107,15 @@ can prove any record against a public Cardano anchor."
 | **State machine** | The only component that interprets message bodies. Built-in: `ordered-log` + the standard library (section 9). Custom ones plug in (section 6). |
 | **Anchor leader** | The one node with `anchor.enabled` — it drives L1 anchoring (builds/pays/submits anchor txs). A coordination + fee-paying role, orthogonal to the proposer and NOT a trust point (§5.1); it does not rotate. |
 
+The app-chain status page (`/ui/app-chain/`) includes a bounded inspector for
+messages in its live finalized stream. Selecting a row freezes that message in
+the inspector while new events continue arriving. The inspector shows envelope
+metadata and, when safe, a strict UTF-8 or formatted JSON view; otherwise it
+shows bounded hexadecimal bytes. This is a technical view of the opaque
+app-chain body, not a domain-document viewer. Documents referenced by a message
+remain in their external system (for example object storage or IPFS); a domain
+UI must retrieve and verify those bytes under its own authorization policy.
+
 Trust model: **fail closed**. Envelope signatures, membership, vote
 signatures, and certificate thresholds are cryptographically verified on every
 node, always. A non-member's messages are dropped; a non-sequencer's blocks
@@ -1606,6 +1615,34 @@ Yano processes; no state-machine or plugin code is required. Its launcher also
 demonstrates both legacy explicit and activated direct continuation, retained
 restart, explicit executor ownership, guarded cleanup,
 private credential files, and the preview/preprod/mainnet safety profiles.
+While one cluster remains running, `demo.sh publish` creates version 1 for a
+new evidence ID, `demo.sh republish --business-version N` creates only the
+exact next immutable version, `demo.sh verify` checks latest or historical
+state and connector observations without submitting a message, and
+`demo.sh replay` explicitly demonstrates the deterministic no-op boundary.
+The compatibility command `demo.sh run` publishes an absent ID, verifies
+matching retained bytes, and returns `REPUBLISH_REQUIRED` for changed content.
+`demo.sh load --count N --concurrency C --id-prefix P` publishes bounded,
+independent version-1 IDs through the same full workflow. Lifecycle mode is
+the default: each worker completes an entire item. Optional
+`--load-mode pipeline --max-in-flight M` keeps bounded prepare, prerequisite,
+approval, release, effects, and verify stages busy across different IDs. It
+does not bypass application rules, finality, connector reconciliation, proofs,
+or anchoring. The stock profile commits eight releases per block and derives
+its release, notification, component, and total effect quotas from that value;
+the capacity is authenticated profile identity rather than local tuning.
+The runner accepts up to 50,000 items per invocation and 5,000 in-flight
+workflow items. In-flight workflows are not a 1:1 mempool-message measure:
+each workflow submits several messages across finality-separated stages.
+
+The schema-v2 aggregate records app-message, release, effect, and fully
+verified workflow rates, per-stage metrics, in-flight observations, latency
+percentiles, and stable failure counts. It is a functional capacity/soak tool
+rather than a raw consensus benchmark. L1-gated devnet loads use the existing
+force-anchor action through a shared throttle; ordinary commands are
+unchanged. Load is disabled for public anchor-enabled profiles to avoid
+implicit spending. The disposable devnet scripted anchor remains supported.
+See the demo README for complete commands and safe sample-file handling.
 The self-contained Compose profile pulls the official digest-pinned,
 multi-architecture RustFS beta image selected by ADR-013; Yano does not build
 RustFS, Kafka, or Kubo from source. The image is used only as the local

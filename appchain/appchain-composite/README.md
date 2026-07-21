@@ -24,6 +24,7 @@ yano:
           composite:
             preset: evidence-v1-gated
             profile-mode: governed
+            evidence-capacity-per-block: 8
         membership:
           mode: governed
 ```
@@ -40,6 +41,14 @@ enable only the connectors the selected workflow needs.
 but rejects direct submit and republish commands. `evidence-v1` is a
 compatibility preset that exposes every direct evidence command; in that preset
 the release workflow is optional coordination, not an authorization gate.
+
+The stock v1 capacity defaults to eight workflows per block and is committed
+through descriptor quotas in the canonical profile. For gated capacity `C`,
+the release workflow reserves `2C`, notification reserves `C`, and the evidence
+component reserves `C` effect slots. The direct compatibility preset reserves
+`2C` for release plus `2C` for the evidence component. Startup rejects
+`C > block.max-messages` or `4C > effects.max-per-block`. Changing capacity
+therefore changes the profile digest; it is not node-local tuning.
 
 The effective canonical profile is written under
 `~composite/profile/v1` at app height 1. Retained startup and every transition

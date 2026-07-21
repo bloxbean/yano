@@ -56,6 +56,116 @@ grep -Fq -- '--network must be exactly' "$TMP/invalid-network.out" \
 assert_absent "$INVALID_ROOT"
 
 if DEMO_DATA_ROOT="$INVALID_ROOT/data" DEMO_SECRET_ROOT="$INVALID_ROOT/secrets" \
+    DEMO_RUNTIME_ROOT="$INVALID_ROOT/runtime" \
+    "$DEMO_DIR/demo.sh" publish --sample-file "$DEMO_DIR/samples/inspection-certificate.json" \
+    >"$TMP/publish-missing-id.out" 2>&1; then
+  fail "publish without an explicit evidence id unexpectedly succeeded"
+fi
+grep -Fq 'publish requires --evidence-id' "$TMP/publish-missing-id.out" \
+  || fail "publish identity rejection is unclear"
+assert_absent "$INVALID_ROOT"
+
+if DEMO_DATA_ROOT="$INVALID_ROOT/data" DEMO_SECRET_ROOT="$INVALID_ROOT/secrets" \
+    DEMO_RUNTIME_ROOT="$INVALID_ROOT/runtime" \
+    "$DEMO_DIR/demo.sh" republish --evidence-id inspection-a \
+    --sample-file "$DEMO_DIR/samples/inspection-certificate.json" \
+    >"$TMP/republish-missing-version.out" 2>&1; then
+  fail "republish without a business version unexpectedly succeeded"
+fi
+grep -Fq 'republish requires --business-version' "$TMP/republish-missing-version.out" \
+  || fail "republish version rejection is unclear"
+assert_absent "$INVALID_ROOT"
+
+if DEMO_DATA_ROOT="$INVALID_ROOT/data" DEMO_SECRET_ROOT="$INVALID_ROOT/secrets" \
+    DEMO_RUNTIME_ROOT="$INVALID_ROOT/runtime" \
+    "$DEMO_DIR/demo.sh" verify --evidence-id inspection-a \
+    --sample-file "$DEMO_DIR/samples/inspection-certificate.json" \
+    >"$TMP/verify-sample.out" 2>&1; then
+  fail "verify with a sample file unexpectedly succeeded"
+fi
+grep -Fq 'verify does not accept --sample-file' "$TMP/verify-sample.out" \
+  || fail "read-only verify input rejection is unclear"
+assert_absent "$INVALID_ROOT"
+
+if DEMO_DATA_ROOT="$INVALID_ROOT/data" DEMO_SECRET_ROOT="$INVALID_ROOT/secrets" \
+    DEMO_RUNTIME_ROOT="$INVALID_ROOT/runtime" \
+    "$DEMO_DIR/demo.sh" load --id-prefix load-case \
+    --sample-file "$DEMO_DIR/samples/inspection-certificate.json" \
+    >"$TMP/load-missing-count.out" 2>&1; then
+  fail "load without a count unexpectedly succeeded"
+fi
+grep -Fq 'load requires --count' "$TMP/load-missing-count.out" \
+  || fail "load count rejection is unclear"
+assert_absent "$INVALID_ROOT"
+
+if DEMO_DATA_ROOT="$INVALID_ROOT/data" DEMO_SECRET_ROOT="$INVALID_ROOT/secrets" \
+    DEMO_RUNTIME_ROOT="$INVALID_ROOT/runtime" \
+    "$DEMO_DIR/demo.sh" load --count 50001 --concurrency 8 --id-prefix load-case \
+    --sample-file "$DEMO_DIR/samples/inspection-certificate.json" \
+    >"$TMP/load-count-bound.out" 2>&1; then
+  fail "load accepted a count above 50000"
+fi
+grep -Fq -- '--count must be between 1 and 50000' "$TMP/load-count-bound.out" \
+  || fail "load count upper-bound rejection is unclear"
+assert_absent "$INVALID_ROOT"
+
+if DEMO_DATA_ROOT="$INVALID_ROOT/data" DEMO_SECRET_ROOT="$INVALID_ROOT/secrets" \
+    DEMO_RUNTIME_ROOT="$INVALID_ROOT/runtime" \
+    "$DEMO_DIR/demo.sh" load --count 2 --concurrency 3 --id-prefix load-case \
+    --sample-file "$DEMO_DIR/samples/inspection-certificate.json" \
+    >"$TMP/load-concurrency.out" 2>&1; then
+  fail "load concurrency greater than count unexpectedly succeeded"
+fi
+grep -Fq -- '--concurrency must not exceed --count' "$TMP/load-concurrency.out" \
+  || fail "load concurrency rejection is unclear"
+assert_absent "$INVALID_ROOT"
+
+if DEMO_DATA_ROOT="$INVALID_ROOT/data" DEMO_SECRET_ROOT="$INVALID_ROOT/secrets" \
+    DEMO_RUNTIME_ROOT="$INVALID_ROOT/runtime" \
+    "$DEMO_DIR/demo.sh" load --count 4 --concurrency 2 --id-prefix load-case \
+    --load-mode pipeline --max-in-flight 1 \
+    --sample-file "$DEMO_DIR/samples/inspection-certificate.json" \
+    >"$TMP/load-in-flight.out" 2>&1; then
+  fail "pipeline accepted an in-flight bound below concurrency"
+fi
+grep -Fq -- '--max-in-flight must not be less than --concurrency' \
+  "$TMP/load-in-flight.out" || fail "pipeline in-flight rejection is unclear"
+assert_absent "$INVALID_ROOT"
+
+if DEMO_DATA_ROOT="$INVALID_ROOT/data" DEMO_SECRET_ROOT="$INVALID_ROOT/secrets" \
+    DEMO_RUNTIME_ROOT="$INVALID_ROOT/runtime" \
+    "$DEMO_DIR/demo.sh" load --count 5001 --concurrency 16 --id-prefix load-case \
+    --load-mode pipeline --max-in-flight 5001 \
+    --sample-file "$DEMO_DIR/samples/inspection-certificate.json" \
+    >"$TMP/load-in-flight-bound.out" 2>&1; then
+  fail "pipeline accepted an in-flight bound above 5000"
+fi
+grep -Fq -- '--max-in-flight must be between 1 and 5000' \
+  "$TMP/load-in-flight-bound.out" || fail "pipeline in-flight upper-bound rejection is unclear"
+assert_absent "$INVALID_ROOT"
+
+if DEMO_DATA_ROOT="$INVALID_ROOT/data" DEMO_SECRET_ROOT="$INVALID_ROOT/secrets" \
+    DEMO_RUNTIME_ROOT="$INVALID_ROOT/runtime" \
+    "$DEMO_DIR/demo.sh" load --count 4 --id-prefix load-case \
+    --load-mode unbounded \
+    --sample-file "$DEMO_DIR/samples/inspection-certificate.json" \
+    >"$TMP/load-mode.out" 2>&1; then
+  fail "load accepted an unknown pipeline mode"
+fi
+grep -Fq -- '--load-mode must be lifecycle or pipeline' "$TMP/load-mode.out" \
+  || fail "pipeline mode rejection is unclear"
+assert_absent "$INVALID_ROOT"
+
+if DEMO_DATA_ROOT="$INVALID_ROOT/data" DEMO_SECRET_ROOT="$INVALID_ROOT/secrets" \
+    DEMO_RUNTIME_ROOT="$INVALID_ROOT/runtime" \
+    "$DEMO_DIR/demo.sh" status --count 2 >"$TMP/load-option-scope.out" 2>&1; then
+  fail "load-only option on status unexpectedly succeeded"
+fi
+grep -Fq -- '--count, --concurrency, --id-prefix, --load-mode and --max-in-flight are valid only for load' \
+  "$TMP/load-option-scope.out" || fail "load option scoping rejection is unclear"
+assert_absent "$INVALID_ROOT"
+
+if DEMO_DATA_ROOT="$INVALID_ROOT/data" DEMO_SECRET_ROOT="$INVALID_ROOT/secrets" \
     DEMO_RUNTIME_ROOT="$INVALID_ROOT/runtime" DEMO_HTTP_BASE=not-a-number \
     "$DEMO_DIR/demo.sh" config --instance invalid-port \
     >"$TMP/invalid-number.out" 2>&1; then
@@ -247,7 +357,7 @@ jq -e '
 jq -e '
   .schemaVersion == 1
   and .kind == "yano.demo.appchain-identity"
-  and .layoutVersion == 3
+  and .layoutVersion == 4
   and .networkName == "devnet"
   and .instanceId == "launcher"
   and .deployment == "compose"
@@ -259,6 +369,7 @@ jq -e '
   and .stateMachine.provider == "composite"
   and .stateMachine.preset == "evidence-v1-gated"
   and .stateMachine.profileVersion == 1
+  and .stateMachine.evidenceCapacityPerBlock == 8
   and .effects.continuationMode == "explicit"
   and .effects.directResultEmissionActivationHeight == null
   and .effects.storageGate == "l1-anchored"
@@ -286,6 +397,7 @@ DIRECT_NODE_DIR="$DIRECT_SECRET_DIR/nodes-compose"
 jq -e '
   .stateMachine.profileVersion == 2
   and .stateMachine.effectEmissionVersion == 1
+  and .stateMachine.evidenceCapacityPerBlock == 8
   and .effects.continuationMode == "direct"
   and .effects.directResultEmissionActivationHeight == 1
 ' "$DIRECT_MARKER" >/dev/null || fail "direct-continuation identity is incomplete"
@@ -314,6 +426,7 @@ jq -e '
   .stateMachine.provider == "composite"
   and .stateMachine.preset == "evidence-v1-gated"
   and .stateMachine.profileVersion == 1
+  and .stateMachine.evidenceCapacityPerBlock == 8
 ' "$COMPOSITE_MARKER" >/dev/null || fail "composite identity is incomplete"
 [ "$(grep -hFx 'yano.app-chain.chains[0].state-machine=composite' \
   "$COMPOSITE_NODE_DIR"/*.properties | wc -l | tr -d ' ')" -eq 3 ] \
@@ -321,9 +434,15 @@ jq -e '
 [ "$(grep -hFx 'yano.app-chain.chains[0].machines.composite.preset=evidence-v1-gated' \
   "$COMPOSITE_NODE_DIR"/*.properties | wc -l | tr -d ' ')" -eq 3 ] \
   || fail "composite preset is not identical on all members"
+[ "$(grep -hFx 'yano.app-chain.chains[0].machines.composite.evidence-capacity-per-block=8' \
+  "$COMPOSITE_NODE_DIR"/*.properties | wc -l | tr -d ' ')" -eq 3 ] \
+  || fail "composite evidence capacity is not identical on all members"
 grep -Fxq 'demo.state-machine=composite' \
   "$COMPOSITE_RUNTIME_DIR/runner-compose.properties" \
   || fail "runner did not select the composite workflow path"
+grep -Fxq 'demo.evidence-capacity-per-block=8' \
+  "$COMPOSITE_RUNTIME_DIR/runner-compose.properties" \
+  || fail "runner did not select the committed evidence capacity"
 if "$DEMO_DIR/demo.sh" config --instance launcher-composite --machine standalone \
     >"$TMP/composite-mutation.out" 2>&1; then
   fail "an existing composite instance accepted an in-place machine mutation"
@@ -707,6 +826,16 @@ preview_marker_before="$(shasum -a 256 \
 [ "$preview_marker_before" = "$(shasum -a 256 \
     "$PREVIEW_ROOT/instances/preview-anchor/compose/appchain-identity.json")" ] \
   || fail "uppercase anchor key input produced an unstable normalized identity"
+if "$DEMO_DIR/demo.sh" load --network preview --instance preview-anchor \
+    --anchor-key-file "$PUBLIC_KEY" --confirm-public-anchor preview \
+    --count 1 --concurrency 1 --id-prefix public-load \
+    --sample-file "$DEMO_DIR/samples/inspection-certificate.json" \
+    >"$TMP/preview-anchor-load.out" 2>&1; then
+  fail "public anchor-enabled load unexpectedly succeeded"
+fi
+grep -Fq 'load is disabled for public anchor-enabled profiles' \
+  "$TMP/preview-anchor-load.out" \
+  || fail "public anchor-enabled load rejection is unclear"
 
 # Preprod has the same opt-in spending guard and reviewed safety cadence.
 "$DEMO_DIR/demo.sh" config --network preprod --instance preprod-safe \
@@ -1124,9 +1253,10 @@ HOST_MARKER="$TMP/data/networks/devnet/instances/hosttest/host/appchain-identity
 [ -f "$HOST_CONFIG" ] && [ -f "$HOST_NODES/node0.properties" ] \
   || fail "host mode did not render runner and node overlays"
 jq -e '
-  .layoutVersion == 3
+  .layoutVersion == 4
   and .deployment == "host"
   and .stateMachine.profileVersion == 1
+  and .stateMachine.evidenceCapacityPerBlock == 8
   and .effects.continuationMode == "explicit"
   and .effects.directResultEmissionActivationHeight == null
   and .connectors.s3.provider == "external-s3-compatible"
@@ -1140,6 +1270,11 @@ host_members="$(sed -n 's/^demo.yano.member-keys=//p' "$HOST_CONFIG")"
 [ -n "$host_members" ] || fail "host runner has no explicit membership"
 grep -Fxq 'demo.yano.threshold=2' "$HOST_CONFIG" \
   || fail "host runner does not pin the 2-of-3 threshold"
+grep -Fxq 'demo.evidence-capacity-per-block=8' "$HOST_CONFIG" \
+  || fail "host runner does not pin the committed evidence capacity"
+[ "$(grep -hFx 'yano.app-chain.chains[0].machines.composite.evidence-capacity-per-block=8' \
+  "$HOST_NODES"/*.properties | wc -l | tr -d ' ')" -eq 3 ] \
+  || fail "host members do not share the committed evidence capacity"
 grep -Fq 'effects.executor.enabled=true' "$HOST_NODES/node0.properties" \
   || fail "host node 0 is not the executor"
 grep -Fq 'effects.executor.enabled=false' "$HOST_NODES/node1.properties" \

@@ -3,6 +3,8 @@ package com.bloxbean.cardano.yano.appchain.composite.contracts.stock;
 import com.bloxbean.cardano.client.crypto.Blake2bUtil;
 import com.bloxbean.cardano.yano.appchain.examples.evidence.EvidenceContract;
 import com.bloxbean.cardano.yano.appchain.examples.evidence.command.EvidenceCommandCodec;
+import com.bloxbean.cardano.yano.appchain.examples.evidence.command.EvidenceCommandV1;
+import com.bloxbean.cardano.yano.appchain.examples.evidence.command.RepublishEvidenceCommandV1;
 import com.bloxbean.cardano.yano.appchain.examples.evidence.command.SubmitEvidenceCommandV1;
 
 import java.io.ByteArrayInputStream;
@@ -39,8 +41,11 @@ public record EvidenceReleaseCommandV1(
         documentRef = boundedText(documentRef, 0, 512, "documentRef");
         evidenceCommand = boundedBytes(evidenceCommand, 1,
                 EvidenceContract.MAX_COMMAND_BYTES, "evidenceCommand");
-        if (!(EvidenceCommandCodec.decode(evidenceCommand) instanceof SubmitEvidenceCommandV1)) {
-            throw new IllegalArgumentException("evidenceCommand must be a v1 submit command");
+        EvidenceCommandV1 decoded = EvidenceCommandCodec.decode(evidenceCommand);
+        if (!(decoded instanceof SubmitEvidenceCommandV1)
+                && !(decoded instanceof RepublishEvidenceCommandV1)) {
+            throw new IllegalArgumentException(
+                    "evidenceCommand must be a v1 submit or republish command");
         }
     }
 
@@ -59,8 +64,8 @@ public record EvidenceReleaseCommandV1(
         return evidenceCommand.clone();
     }
 
-    public SubmitEvidenceCommandV1 evidenceSubmit() {
-        return (SubmitEvidenceCommandV1) EvidenceCommandCodec.decode(evidenceCommand);
+    public EvidenceCommandV1 evidenceStorageCommand() {
+        return EvidenceCommandCodec.decode(evidenceCommand);
     }
 
     public byte[] evidenceCommandHash() {

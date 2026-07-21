@@ -42,6 +42,10 @@ BloxBean Team
 - [DPP possible-design note](dpp-possible-design.md) — an
   informative downstream consumer of object storage, IPFS, Kafka, and later
   Cardano publication; it is not part of this decision
+- [ADR-018](018-evidence-demo-iteration-2-publish-republish-verify.md) — accepted
+  no-code demo lifecycle for multiple publications without node restart,
+  immutable republish, mutation-free verification, explicit replay, and
+  bounded full-workflow load
 
 ---
 

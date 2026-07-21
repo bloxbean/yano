@@ -213,6 +213,12 @@ NODE_DIR="$TMP/secrets/networks/devnet/contract/compose/nodes-compose"
 grep -Fxq 'yano.app-chain.chains[0].anchor.max-interval-minutes=60' \
   "$NODE_DIR/node0.properties" \
   || fail "Compose anchor does not use the network profile safety interval"
+grep -Fxq 'yano.app-chain.chains[0].block.max-messages=64' \
+  "$NODE_DIR/node0.properties" \
+  || fail "Compose demo does not retain the normal 64-message block cap"
+[ "$(grep -hFx 'yano.app-chain.chains[0].machines.composite.evidence-capacity-per-block=8' \
+    "$NODE_DIR"/*.properties | wc -l | tr -d ' ')" -eq 3 ] \
+  || fail "Compose members do not share the committed evidence capacity"
 jq -e '
   .anchor.enabled == true
   and .anchor.everyBlocks == 1
@@ -231,6 +237,8 @@ if grep -Eq 'effects\.executors\.(kafka|objectstore-s3|ipfs)' \
 fi
 
 RUNNER="$TMP/runtime/networks/devnet/contract/compose/runner-compose.properties"
+grep -Fxq 'demo.evidence-capacity-per-block=8' "$RUNNER" \
+  || fail "runner admission pacing does not match the committed evidence capacity"
 grep -Fq '/run/secrets/s3-runner-access-key' "$RUNNER" \
   || fail "runner does not use its dedicated S3 identity"
 if grep -Eq '^ui\.' "$RUNNER"; then
@@ -310,8 +318,9 @@ jq -e '
 
 IAM_SHA="$(shasum -a 256 "$RUSTFS_IAM" | awk '{print $1}')"
 jq -e --arg digest "$IAM_SHA" '
-  .layoutVersion == 3
+  .layoutVersion == 4
   and .stateMachine.profileVersion == 1
+  and .stateMachine.evidenceCapacityPerBlock == 8
   and .effects.continuationMode == "explicit"
   and .effects.directResultEmissionActivationHeight == null
   and .connectors.s3.provider == "rustfs"

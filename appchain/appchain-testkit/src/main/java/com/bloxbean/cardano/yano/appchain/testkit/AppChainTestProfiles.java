@@ -15,7 +15,16 @@ public final class AppChainTestProfiles {
     }
 
     public static AppChainConsensusProfile enabledEffects(int effectsMaxPerBlock) {
-        return enabledEffects(effectsMaxPerBlock, 16_384, 100_000, 100_000);
+        return enabledEffects(effectsMaxPerBlock, 1,
+                16_384, 100_000, 100_000);
+    }
+
+    public static AppChainConsensusProfile enabledEffects(
+            int effectsMaxPerBlock,
+            int maxBlockMessages
+    ) {
+        return enabledEffects(effectsMaxPerBlock, maxBlockMessages,
+                16_384, 100_000, 100_000);
     }
 
     public static AppChainConsensusProfile fromSettings(Map<String, String> settings) {
@@ -60,6 +69,7 @@ public final class AppChainTestProfiles {
 
     private static AppChainConsensusProfile enabledEffects(
             int effectsMaxPerBlock,
+            int maxBlockMessages,
             int effectsMaxPayloadBytes,
             long effectsMaxExpiryBlocks,
             long effectsResultWindowBlocks
@@ -67,7 +77,7 @@ public final class AppChainTestProfiles {
         return new AppChainConsensusProfile(
                 AppChainConsensusProfile.SCHEMA_VERSION,
                 AppChainConfig.DEFAULT_MAX_MESSAGE_BYTES,
-                1,
+                maxBlockMessages,
                 AppChainConfig.DEFAULT_BLOCK_MAX_BYTES,
                 0,
                 false,

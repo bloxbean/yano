@@ -37,6 +37,10 @@ x-runner: &runner
       target: /opt/yano-demo/samples
       read_only: true
     - type: bind
+      source: ${DEMO_SCENARIO_INPUT_FILE:?}
+      target: /run/demo/scenario-input
+      read_only: true
+    - type: bind
       source: ${DEMO_REPORT_DIR:?}
       target: /var/lib/yano-demo/reports
 

@@ -117,6 +117,20 @@ final class KafkaDemoClient implements AutoCloseable {
         }
     }
 
+    long endOffset() {
+        validateTopic();
+        TopicPartition partition = new TopicPartition(settings.physicalTopic(), 0);
+        try (KafkaConsumer<byte[], byte[]> consumer = consumer()) {
+            consumer.assign(List.of(partition));
+            return onlyOffset(consumer.endOffsets(
+                    List.of(partition), API_TIMEOUT), partition);
+        } catch (DemoException failure) {
+            throw failure;
+        } catch (RuntimeException failure) {
+            throw new DemoException(DemoError.SERVICE_TIMEOUT);
+        }
+    }
+
     /**
      * Reads a tiny exact snapshot used only by the destructive failover E2E.
      * The fresh demo topic must remain partition 0 with offsets [0,n); any
@@ -343,6 +357,20 @@ final class KafkaDemoClient implements AutoCloseable {
         return new VerifiedKafkaEvent(record.partition(), record.offset());
     }
 
+    /** Re-reads one retained acknowledged record without requiring a pre-opened append window. */
+    VerifiedKafkaEvent verifyExisting(KafkaPublishReceiptV1 receipt,
+                                      EvidenceRecordV1 state,
+                                      EffectRecord effect,
+                                      Duration timeout) {
+        if (receipt == null || receipt.partition() < 0 || receipt.offset() < 0) {
+            throw new DemoException(DemoError.EXTERNAL_STATE_MISMATCH);
+        }
+        try (EventWindow window = EventWindow.forExisting(
+                consumer(), settings.physicalTopic(), receipt.partition(), receipt.offset())) {
+            return verify(window, receipt, state, effect, timeout);
+        }
+    }
+
     private KafkaConsumer<byte[], byte[]> consumer() {
         Properties properties = new Properties();
         properties.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, settings.bootstrapServers());
@@ -461,6 +489,39 @@ final class KafkaDemoClient implements AutoCloseable {
                 consumer.close(Duration.ZERO);
                 throw new DemoException(DemoError.SERVICE_TIMEOUT);
             }
+        }
+
+        private EventWindow(KafkaConsumer<byte[], byte[]> consumer,
+                            String topic,
+                            int partition,
+                            long offset) {
+            this.consumer = consumer;
+            this.topic = topic;
+            try {
+                TopicPartition target = new TopicPartition(topic, partition);
+                consumer.assign(List.of(target));
+                long beginning = onlyOffset(consumer.beginningOffsets(
+                        List.of(target), API_TIMEOUT), target);
+                long end = onlyOffset(consumer.endOffsets(
+                        List.of(target), API_TIMEOUT), target);
+                if (offset < beginning || offset >= end) {
+                    throw new DemoException(DemoError.EXTERNAL_STATE_MISMATCH);
+                }
+                consumer.seek(target, offset);
+            } catch (DemoException failure) {
+                consumer.close(Duration.ZERO);
+                throw failure;
+            } catch (RuntimeException failure) {
+                consumer.close(Duration.ZERO);
+                throw new DemoException(DemoError.SERVICE_TIMEOUT);
+            }
+        }
+
+        static EventWindow forExisting(KafkaConsumer<byte[], byte[]> consumer,
+                                       String topic,
+                                       int partition,
+                                       long offset) {
+            return new EventWindow(consumer, topic, partition, offset);
         }
 
         ConsumerRecord<byte[], byte[]> readExact(int partition, long offset, Duration timeout) {

@@ -71,6 +71,17 @@ PUBLIC_ANCHOR_CONFIRMATION=""
 PUBLIC_L1_DELETE_CONFIRMATION=""
 NEW_INSTANCE=""
 NEW_CHAIN_ID=""
+EVIDENCE_ID_EXPLICIT=false
+SCENARIO_SAMPLE_FILE=""
+BUSINESS_VERSION=""
+LOAD_COUNT=""
+LOAD_CONCURRENCY="1"
+LOAD_CONCURRENCY_EXPLICIT=false
+LOAD_ID_PREFIX=""
+LOAD_MODE="lifecycle"
+LOAD_MODE_EXPLICIT=false
+LOAD_MAX_IN_FLIGHT=""
+EVIDENCE_CAPACITY_PER_BLOCK=8
 TEMP_FILES=()
 MEMBER_SEED_0=""
 MEMBER_SEED_1=""
@@ -104,7 +115,15 @@ while [ "$#" -gt 0 ]; do
     --mode|--deployment) MODE="${2:-}"; shift 2;;
     --network) DEMO_NETWORK="${2:-}"; shift 2;;
     --chain-id) DEMO_CHAIN_ID="${2:-}"; CHAIN_ID_EXPLICIT=true; shift 2;;
-    --evidence-id) DEMO_EVIDENCE_ID="${2:-}"; shift 2;;
+    --evidence-id) DEMO_EVIDENCE_ID="${2:-}"; EVIDENCE_ID_EXPLICIT=true; shift 2;;
+    --sample-file) SCENARIO_SAMPLE_FILE="${2:-}"; shift 2;;
+    --business-version) BUSINESS_VERSION="${2:-}"; shift 2;;
+    --count) LOAD_COUNT="${2:-}"; shift 2;;
+    --concurrency)
+      LOAD_CONCURRENCY="${2:-}"; LOAD_CONCURRENCY_EXPLICIT=true; shift 2;;
+    --id-prefix) LOAD_ID_PREFIX="${2:-}"; shift 2;;
+    --load-mode) LOAD_MODE="${2:-}"; LOAD_MODE_EXPLICIT=true; shift 2;;
+    --max-in-flight) LOAD_MAX_IN_FLIGHT="${2:-}"; shift 2;;
     --continuation) DEMO_CONTINUATION_MODE="${2:-}"; shift 2;;
     --machine) DEMO_MACHINE_MODE="${2:-}"; shift 2;;
     --data-dir) DEMO_DATA_ROOT="${2:-}"; shift 2;;
@@ -148,6 +167,49 @@ fi
   || die "DEMO_CHAIN_ID must match [a-z][a-z0-9-]{0,62}"
 [[ "$DEMO_EVIDENCE_ID" =~ ^[a-z][a-z0-9-]{0,62}$ ]] \
   || die "DEMO_EVIDENCE_ID must match [a-z][a-z0-9-]{0,62}"
+if [ -n "$BUSINESS_VERSION" ]; then
+  [[ "$BUSINESS_VERSION" =~ ^[1-9][0-9]{0,18}$ ]] \
+    || die "--business-version must be a positive 64-bit integer"
+fi
+case "$COMMAND" in
+  publish)
+    [ "$EVIDENCE_ID_EXPLICIT" = true ] \
+      || die "publish requires --evidence-id"
+    [ -n "$SCENARIO_SAMPLE_FILE" ] || die "publish requires --sample-file"
+    [ -z "$BUSINESS_VERSION" ] \
+      || die "publish always creates version 1; omit --business-version"
+    ;;
+  republish|replay)
+    [ "$EVIDENCE_ID_EXPLICIT" = true ] \
+      || die "$COMMAND requires --evidence-id"
+    [ -n "$SCENARIO_SAMPLE_FILE" ] || die "$COMMAND requires --sample-file"
+    [ -n "$BUSINESS_VERSION" ] || die "$COMMAND requires --business-version"
+    ;;
+  verify)
+    [ "$EVIDENCE_ID_EXPLICIT" = true ] || die "verify requires --evidence-id"
+    [ -z "$SCENARIO_SAMPLE_FILE" ] || die "verify does not accept --sample-file"
+    ;;
+  load)
+    [ "$EVIDENCE_ID_EXPLICIT" = false ] || die "load does not accept --evidence-id"
+    [ -z "$BUSINESS_VERSION" ] || die "load does not accept --business-version"
+    [ -n "$SCENARIO_SAMPLE_FILE" ] || die "load requires --sample-file"
+    [ -n "$LOAD_COUNT" ] || die "load requires --count"
+    [ -n "$LOAD_ID_PREFIX" ] || die "load requires --id-prefix"
+    ;;
+  run) [ -z "$BUSINESS_VERSION" ] || die "run does not accept --business-version";;
+  *)
+    [ -z "$SCENARIO_SAMPLE_FILE" ] \
+      || die "--sample-file is valid only for scenario commands"
+    [ -z "$BUSINESS_VERSION" ] \
+      || die "--business-version is valid only for scenario commands"
+    ;;
+esac
+if [ "$COMMAND" != load ]; then
+  [ -z "$LOAD_COUNT" ] && [ "$LOAD_CONCURRENCY_EXPLICIT" = false ] \
+    && [ -z "$LOAD_ID_PREFIX" ] && [ "$LOAD_MODE_EXPLICIT" = false ] \
+    && [ -z "$LOAD_MAX_IN_FLIGHT" ] \
+    || die "--count, --concurrency, --id-prefix, --load-mode and --max-in-flight are valid only for load"
+fi
 case "$OBSERVABILITY" in true|false) ;; *) die "DEMO_OBSERVABILITY must be true or false";; esac
 case "$DEMO_CONTINUATION_MODE" in
   explicit|direct) ;;
@@ -179,6 +241,26 @@ validate_decimal DEMO_S3_PORT "$DEMO_S3_PORT" 1 65535
 validate_decimal DEMO_IPFS_PORT "$DEMO_IPFS_PORT" 1 65535
 validate_decimal DEMO_PROMETHEUS_PORT "$DEMO_PROMETHEUS_PORT" 1 65535
 validate_decimal DEMO_GRAFANA_PORT "$DEMO_GRAFANA_PORT" 1 65535
+if [ "$COMMAND" = load ]; then
+  validate_decimal --count "$LOAD_COUNT" 1 50000
+  validate_decimal --concurrency "$LOAD_CONCURRENCY" 1 16
+  [ "$((10#$LOAD_CONCURRENCY))" -le "$((10#$LOAD_COUNT))" ] \
+    || die "--concurrency must not exceed --count"
+  [[ "$LOAD_ID_PREFIX" =~ ^[a-z][a-z0-9-]{0,55}$ ]] \
+    || die "--id-prefix must match [a-z][a-z0-9-]{0,55}"
+  case "$LOAD_MODE" in lifecycle|pipeline) ;;
+    *) die "--load-mode must be lifecycle or pipeline";;
+  esac
+  if [ -n "$LOAD_MAX_IN_FLIGHT" ]; then
+    [ "$LOAD_MODE" = pipeline ] \
+      || die "--max-in-flight is valid only with --load-mode pipeline"
+    validate_decimal --max-in-flight "$LOAD_MAX_IN_FLIGHT" 1 5000
+    [ "$((10#$LOAD_MAX_IN_FLIGHT))" -ge "$((10#$LOAD_CONCURRENCY))" ] \
+      || die "--max-in-flight must not be less than --concurrency"
+    [ "$((10#$LOAD_MAX_IN_FLIGHT))" -le "$((10#$LOAD_COUNT))" ] \
+      || die "--max-in-flight must not exceed --count"
+  fi
+fi
 validate_decimal DEMO_SCENARIO_TIMEOUT_SECONDS "$DEMO_SCENARIO_TIMEOUT_SECONDS" 1 86400
 validate_decimal DEMO_SCENARIO_POLL_INTERVAL_MILLIS "$DEMO_SCENARIO_POLL_INTERVAL_MILLIS" 1 60000
 validate_decimal DEMO_ANCHOR_FUND_TIMEOUT_SECONDS "$DEMO_ANCHOR_FUND_TIMEOUT_SECONDS" 60 86400
@@ -556,7 +638,7 @@ fi
 OPERATION_LOCK_REQUIRED=false
 case "$COMMAND" in
   prepare|config|up) OPERATION_LOCK_REQUIRED=true;;
-  run|probe|stop|clean)
+  run|publish|republish|verify|replay|load|probe|stop|clean)
     if [ -e "$NETWORK_ROOT" ] || [ -L "$NETWORK_ROOT" ]; then
       OPERATION_LOCK_REQUIRED=true
     fi
@@ -1129,7 +1211,7 @@ PY
   python3 - "$output" "$DEMO_NETWORK" "$network_digest" "$INSTANCE" "$MODE" \
     "$DEMO_CHAIN_ID" "$MEMBER_KEYS" "$PROPOSER_KEY" "$RESULT_SIGNERS" \
     "$STORAGE_GATE" "$REQUIRE_ANCHOR" "$DEMO_CONTINUATION_MODE" \
-    "$STATE_MACHINE_ID" \
+    "$STATE_MACHINE_ID" "$EVIDENCE_CAPACITY_PER_BLOCK" \
     "$ANCHOR_ENABLED" "$PROFILE_ANCHOR_EVERY_BLOCKS" \
     "$PROFILE_ANCHOR_MAX_INTERVAL_MINUTES" "$anchor_fingerprint" "$PROJECT_NAME" \
     "$s3_id" "$s3_locator" "$ipfs_id" "$ipfs_locator" "$kafka_id" "$kafka_locator" \
@@ -1142,7 +1224,7 @@ import sys
 (
     output, network, network_digest, instance, deployment, chain_id, members_csv,
     proposer, result_signers_csv, storage_gate, require_anchor, continuation_mode,
-    state_machine,
+    state_machine, evidence_capacity,
     anchor_enabled, anchor_every,
     anchor_max_interval, anchor_fingerprint, project, s3_id, s3_locator, ipfs_id, ipfs_locator,
     kafka_id, kafka_locator, s3_provider, s3_provider_version, s3_layout_version,
@@ -1155,7 +1237,7 @@ if len(members) != 3 or len(set(members)) != 3 or result_signers != members[:2]:
 document = {
     "schemaVersion": 1,
     "kind": "yano.demo.appchain-identity",
-    "layoutVersion": 3,
+    "layoutVersion": 4,
     "networkName": network,
     "networkIdentitySha256": network_digest,
     "instanceId": instance,
@@ -1166,6 +1248,7 @@ document = {
         "provider": state_machine,
         "profileVersion": 2 if continuation_mode == "direct" else 1,
         "effectEmissionVersion": 1,
+        "evidenceCapacityPerBlock": int(evidence_capacity),
     },
     "membership": {
         "members": members,
@@ -1304,6 +1387,7 @@ compose_node_config() {
     SIGNING_KEY "$seed" APP_PEERS "$peers" MEMBER_KEYS "$MEMBER_KEYS" \
     PROPOSER_KEY "$PROPOSER_KEY" RESULT_SIGNERS "$RESULT_SIGNERS" \
     STORAGE_GATE "$STORAGE_GATE" \
+    EVIDENCE_CAPACITY_PER_BLOCK "$EVIDENCE_CAPACITY_PER_BLOCK" \
     DIRECT_RESULT_ACTIVATION_SETTING "$DIRECT_RESULT_ACTIVATION_SETTING" \
     GENESIS_TIMESTAMP_SETTING "$genesis_setting"
   insert_node_settings "$base" "$extras" "$NODE_CONFIG_DIR/node$index.properties"
@@ -1357,6 +1441,7 @@ prepare_compose_configs() {
     STATE_MACHINE "$STATE_MACHINE_ID" \
     COMPOSITE_PROFILE_DIGEST_SETTING "$COMPOSITE_PROFILE_DIGEST_SETTING" \
     EVIDENCE_ID "$DEMO_EVIDENCE_ID" \
+    EVIDENCE_CAPACITY_PER_BLOCK "$EVIDENCE_CAPACITY_PER_BLOCK" \
     S3_TARGET_ID "$COMPOSE_S3_TARGET_ID" IPFS_TARGET_ID "$COMPOSE_IPFS_TARGET_ID" \
     KAFKA_TARGET_ID "$COMPOSE_KAFKA_TARGET_ID" \
     MEMBER_KEYS "$MEMBER_KEYS" REQUIRE_ANCHOR "$REQUIRE_ANCHOR" \
@@ -1429,6 +1514,7 @@ prepare_host_configs() {
       PLUGIN_DIR "$PLUGIN_DIR" PROPOSER_KEY "$PROPOSER_KEY" \
       STATE_MACHINE "$STATE_MACHINE_ID" \
       RESULT_SIGNERS "$RESULT_SIGNERS" STORAGE_GATE "$STORAGE_GATE" \
+      EVIDENCE_CAPACITY_PER_BLOCK "$EVIDENCE_CAPACITY_PER_BLOCK" \
       DIRECT_RESULT_ACTIVATION_SETTING "$DIRECT_RESULT_ACTIVATION_SETTING" \
       GENESIS_TIMESTAMP_SETTING "$genesis_setting" \
       ANCHOR_MAX_INTERVAL_MINUTES "$PROFILE_ANCHOR_MAX_INTERVAL_MINUTES"
@@ -1441,6 +1527,7 @@ prepare_host_configs() {
     STATE_MACHINE "$STATE_MACHINE_ID" \
     COMPOSITE_PROFILE_DIGEST_SETTING "$COMPOSITE_PROFILE_DIGEST_SETTING" \
     EVIDENCE_ID "$DEMO_EVIDENCE_ID" \
+    EVIDENCE_CAPACITY_PER_BLOCK "$EVIDENCE_CAPACITY_PER_BLOCK" \
     SAMPLE_FILE "$SCRIPT_DIR/samples/inspection-certificate.json" \
     REPORT_DIRECTORY "$REPORT_DIR" \
     S3_ENDPOINT "${DEMO_HOST_S3_ENDPOINT:-http://127.0.0.1:$DEMO_S3_PORT}" \
@@ -1469,7 +1556,8 @@ prepare_host_configs() {
 }
 
 write_compose_env() {
-  local i variable
+  local i variable default_scenario_input
+  default_scenario_input="$SCRIPT_DIR/samples/inspection-certificate.json"
   for variable in DEMO_KAFKA_IMAGE DEMO_RUSTFS_IMAGE \
     DEMO_KUBO_IMAGE DEMO_PROMETHEUS_IMAGE DEMO_GRAFANA_IMAGE \
     DEMO_YANO_IMAGE DEMO_RUNNER_IMAGE DEMO_CONNECTOR_SUBNET DEMO_S3_IP \
@@ -1486,7 +1574,7 @@ write_compose_env() {
     "$S3_RUNNER_ACCESS_FILE" "$S3_RUNNER_SECRET_FILE" \
     "$S3_EXECUTOR_ACCESS_FILE" "$S3_EXECUTOR_SECRET_FILE" "$RUSTFS_IAM_SPEC_FILE" \
     "$GRAFANA_PASSWORD_FILE" "$SHELLEY_GENESIS_FILE" "$NODE_CONFIG_DIR" \
-    "$DATA_ROOT"; do
+    "$DATA_ROOT" "$default_scenario_input"; do
     compose_env_value "generated path" "$variable"
   done
   (umask 077
@@ -1512,6 +1600,7 @@ write_compose_env() {
         "$DEMO_CONNECTOR_SUBNET" "$DEMO_S3_IP" "$DEMO_KUBO_IP" "$DEMO_KAFKA_IP"
       printf 'DEMO_RUNNER_CONFIG=%s\nDEMO_PLUGIN_DIR=%s\nDEMO_REPORT_DIR=%s\n' \
         "$RUNNER_CONFIG" "$PLUGIN_DIR" "$REPORT_DIR"
+      printf 'DEMO_SCENARIO_INPUT_FILE=%s\n' "$default_scenario_input"
       printf 'DEMO_KAFKA_PASSWD_FILE=%s\nDEMO_KAFKA_GROUP_FILE=%s\n' \
         "$KAFKA_PASSWD_FILE" "$KAFKA_GROUP_FILE"
       printf 'DEMO_S3_BOOTSTRAP_CONFIG=%s\n' "$S3_BOOTSTRAP_CONFIG"
@@ -1734,6 +1823,59 @@ compose_down_confirmed() {
 runner_java() {
   java --add-modules=jdk.httpserver -jar "$RUNTIME_ROOT/runner.jar" "$@" \
     --config "$RUNNER_CONFIG"
+}
+
+prepare_scenario_input() {
+  local source="${SCENARIO_SAMPLE_FILE:-$SCRIPT_DIR/samples/inspection-certificate.json}"
+  local target="$RUNTIME_ROOT/scenario-input.bin"
+  mkdir -p "$RUNTIME_ROOT"
+  chmod 700 "$RUNTIME_ROOT"
+  python3 - "$source" "$target" <<'PY' \
+    || die "scenario input must be a stable, non-symlink regular file of 1..16777216 bytes"
+import os
+from pathlib import Path
+import stat
+import sys
+import tempfile
+
+source = os.path.abspath(os.path.expanduser(sys.argv[1]))
+target = Path(sys.argv[2])
+flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+descriptor = os.open(source, flags)
+temporary = None
+try:
+    before = os.fstat(descriptor)
+    if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.geteuid()
+            or before.st_size < 1 or before.st_size > 16_777_216):
+        raise ValueError("invalid input")
+    data = b""
+    while len(data) <= 16_777_216:
+        chunk = os.read(descriptor, min(1_048_576, 16_777_217 - len(data)))
+        if not chunk:
+            break
+        data += chunk
+    after = os.fstat(descriptor)
+    if ((before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+            != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+            or len(data) != before.st_size):
+        raise ValueError("input changed")
+    file_descriptor, temporary = tempfile.mkstemp(prefix=".scenario-input-", dir=target.parent)
+    try:
+        os.fchmod(file_descriptor, 0o600)
+        with os.fdopen(file_descriptor, "wb", closefd=True) as output:
+            output.write(data)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, target)
+        temporary = None
+    finally:
+        if temporary is not None:
+            os.unlink(temporary)
+finally:
+    os.close(descriptor)
+PY
+  SCENARIO_INPUT_COPY="$target"
+  TEMP_FILES+=("$target")
 }
 
 api_curl() {
@@ -2241,15 +2383,62 @@ validate_running_configuration() {
   [ "$ANCHOR_ENABLED" = false ] || validate_anchor_binding_preflight
 }
 
-cmd_run() {
+cmd_scenario() {
+  local -a runner_args
+  local runner_sample=""
   validate_running_configuration
   verify_artifacts
+  runner_args=("$COMMAND" --evidence-id "$DEMO_EVIDENCE_ID")
+  if [ "$COMMAND" != verify ]; then
+    prepare_scenario_input
+    runner_sample="$SCENARIO_INPUT_COPY"
+    [ "$MODE" != compose ] || runner_sample=/run/demo/scenario-input
+    runner_args+=(--sample-file "$runner_sample")
+  fi
+  if [ -n "$BUSINESS_VERSION" ]; then
+    runner_args+=(--business-version "$BUSINESS_VERSION")
+  elif [ "$COMMAND" = verify ]; then
+    runner_args+=(--business-version latest)
+  fi
   if [ "$MODE" = compose ]; then
-    dc --profile tools run --rm scenario run --config /run/demo/runner.properties
+    if [ "$COMMAND" = verify ]; then
+      dc --profile tools run --rm scenario "${runner_args[@]}" \
+        --config /run/demo/runner.properties
+    else
+      export DEMO_SCENARIO_INPUT_FILE="$SCENARIO_INPUT_COPY"
+      dc --profile tools run --rm scenario "${runner_args[@]}" \
+        --config /run/demo/runner.properties
+      unset DEMO_SCENARIO_INPUT_FILE
+    fi
   else
-    runner_java run
+    runner_java "${runner_args[@]}"
   fi
   [ "$ANCHOR_ENABLED" = false ] || reconcile_anchor_binding true
+}
+
+cmd_load() {
+  local -a runner_args
+  local runner_sample
+  [ "$ANCHOR_ENABLED" = false ] || [ "$PROFILE_PUBLIC" = false ] \
+    || die "load is disabled for public anchor-enabled profiles; use APP_FINAL load testing"
+  validate_running_configuration
+  verify_artifacts
+  prepare_scenario_input
+  runner_sample="$SCENARIO_INPUT_COPY"
+  [ "$MODE" != compose ] || runner_sample=/run/demo/scenario-input
+  runner_args=(load --count "$LOAD_COUNT" --concurrency "$LOAD_CONCURRENCY"
+    --load-mode "$LOAD_MODE" --id-prefix "$LOAD_ID_PREFIX" --sample-file "$runner_sample")
+  if [ -n "$LOAD_MAX_IN_FLIGHT" ]; then
+    runner_args+=(--max-in-flight "$LOAD_MAX_IN_FLIGHT")
+  fi
+  if [ "$MODE" = compose ]; then
+    export DEMO_SCENARIO_INPUT_FILE="$SCENARIO_INPUT_COPY"
+    dc --profile tools run --rm scenario "${runner_args[@]}" \
+      --config /run/demo/runner.properties
+    unset DEMO_SCENARIO_INPUT_FILE
+  else
+    runner_java "${runner_args[@]}"
+  fi
 }
 
 cmd_probe() {
@@ -2626,7 +2815,12 @@ Usage: ./demo.sh <command> [options]
 Commands:
   prepare   build/stage plugins, runner and images; generate private config
   up        start the selected three-node profile and probe it
-  run       execute the evidence scenario with the same deployment-neutral runner
+  run       safely publish an absent default id, or verify matching retained bytes
+  publish   create version 1 for one new evidence id
+  republish create the exact next immutable version of an existing evidence id
+  verify    read-only verification of latest or one historical evidence version
+  replay    explicitly finalize the accepted command as a deterministic no-op
+  load      publish many unique evidence records with bounded concurrency
   probe     verify Yano, Kafka, S3 and IPFS readiness
   status    show cluster status
   stop      stop processes and preserve all data
@@ -2639,6 +2833,14 @@ Options:
   --instance <name>         isolated name: [a-z0-9][a-z0-9-]{0,31}
   --chain-id <id>           explicit app-chain id (non-default instances derive one)
   --evidence-id <id>        scenario business id (use a fresh id for fault tests)
+  --sample-file <path>      bounded input for run/publish/republish/replay
+  --business-version <n>    required by republish/replay; optional for verify
+  --count <n>               load publications, 1..50000
+  --concurrency <n>         load workers, 1..16 and no greater than count
+  --id-prefix <prefix>      required load identity prefix; IDs append -000001
+  --load-mode lifecycle|pipeline
+                            full per-item workers (default) or bounded staged pipeline
+  --max-in-flight <n>       pipeline workflow bound, concurrency..min(count,5000)
   --continuation explicit|direct
                             explicit notify (legacy/default) or activated direct result emission
   --machine standalone|composite
@@ -2668,7 +2870,8 @@ EOF
 case "$COMMAND" in
   prepare) cmd_prepare;;
   up) cmd_up;;
-  run) cmd_run;;
+  run|publish|republish|verify|replay) cmd_scenario;;
+  load) cmd_load;;
   probe) cmd_probe;;
   status) cmd_status;;
   stop) cmd_stop;;
