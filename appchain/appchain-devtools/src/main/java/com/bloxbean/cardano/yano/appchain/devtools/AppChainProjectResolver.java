@@ -2,6 +2,7 @@ package com.bloxbean.cardano.yano.appchain.devtools;
 
 import com.bloxbean.cardano.yano.appchain.config.AppChainConfigParser;
 import com.bloxbean.cardano.yano.appchain.config.AppChainConfigSemantics;
+import com.bloxbean.cardano.yano.appchain.config.AppChainApprovalsConfig;
 import com.bloxbean.cardano.yano.appchain.config.AppChainEffectsConfig;
 import com.bloxbean.cardano.yano.appchain.config.AppChainPropertyDefinition;
 import com.bloxbean.cardano.yano.appchain.config.AppChainPropertyRegistry;
@@ -290,6 +291,7 @@ final class AppChainProjectResolver {
         var config = AppChainConfigParser.parse(suffix);
         AppChainConfigSemantics.validate(config);
         AppChainEffectsConfig.fromSettings(suffix);
+        AppChainApprovalsConfig.fromSettings(suffix);
     }
 
     private static List<String> normalizedMemberKeys(AppChainProjectModel.Topology topology) {

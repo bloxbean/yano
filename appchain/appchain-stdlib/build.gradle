@@ -1,5 +1,6 @@
 dependencies {
     api project(':core-api')
+    implementation project(':appchain-config')
 
     implementation libs.cbor
     implementation libs.cardano.client.crypto

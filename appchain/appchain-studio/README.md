@@ -7,3 +7,7 @@ Studio has no backend, telemetry, persistence, or secret inputs. The downloaded
 
 Build with `./gradlew :appchain-studio:assemble`. Serve the generated
 `build/studio` directory with any static HTTP server.
+
+Run the browser-independent Studio checks with
+`./gradlew :appchain-studio:testStudio`. Gradle downloads the pinned Node.js
+runtime used by this task; a system-wide Node.js installation is not required.

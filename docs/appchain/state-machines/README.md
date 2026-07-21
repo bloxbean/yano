@@ -7,11 +7,10 @@ for a quick comparison.
 | State machine | Reference |
 |---|---|
 | `ordered-log` | [Opaque ordered events, topics, proofs, and customization](ordered-log.md) |
-| `kv-registry` | [Registry and state proofs tutorial](../tutorials/02-registry-and-proofs.md) |
-| `approvals` | [Stock-machine summary](../tutorials/03-stock-state-machines.md#member-approvals) |
+| `kv-registry` | [Owned mutable records, REST/Java usage, and proofs](kv-registry.md) |
+| `approvals` | [Member decisions, REST/Java usage, proofs, and effects](approvals.md) |
 | `balances` | [Stock-machine summary](../tutorials/03-stock-state-machines.md#balances) |
-| `doc-trail` | [Stock-machine summary](../tutorials/03-stock-state-machines.md#document-trail) |
+| `doc-trail` | [Per-entity document hashes, REST/Java usage, and proofs](doc-trail.md) |
 
-Additional dedicated pages can be added here as their usage and customization
-guidance grows. Exact wire formats and deterministic state layouts remain in
-the [consensus guide](../../APP_CHAIN_CONSENSUS_GUIDE.md).
+Exact wire formats and deterministic state layouts are also described in the
+[consensus guide](../../APP_CHAIN_CONSENSUS_GUIDE.md).

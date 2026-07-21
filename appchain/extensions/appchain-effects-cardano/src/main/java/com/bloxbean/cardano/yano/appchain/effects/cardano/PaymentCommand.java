@@ -12,7 +12,8 @@ import java.util.List;
 
 /**
  * {@code cardano.payment} effect payload: a CBOR map (canonical, what the
- * approvals payments flow emits) or a minimal JSON object for hand-authored
+ * generic approvals on-approved flow can emit) or a minimal JSON object for
+ * hand-authored
  * effects — {@code {"to": bech32, "lovelace": uint, "memo"?: tstr}}.
  * Returns null on any malformation (the executor fails the effect
  * definitively — a broken payload can never succeed).

@@ -228,7 +228,9 @@ content are escaped by the launcher and preserved in the finalized effect.
 The command submits a one-approval workflow, waits for the finalized
 `demo.webhook` effect, acts as a bounded external worker through the privileged
 claim/report API, confirms the runtime result, and checks that the finalized
-effect proof is available. Expected output includes:
+effect proof is available. The approval decision remains `APPROVED`; its
+separate generic effect state moves from `PENDING` to `CONFIRMED`. Expected
+output includes:
 
 ```text
 Effect emitted       effects-chain height=... ordinal=...

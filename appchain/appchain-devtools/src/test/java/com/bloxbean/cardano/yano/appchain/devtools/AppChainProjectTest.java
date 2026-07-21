@@ -93,6 +93,36 @@ class AppChainProjectTest {
     }
 
     @Test
+    void genericOnApprovedEffectCapabilityUsesCustomRoutingTypeAndSharedValidation()
+            throws Exception {
+        AppChainPropertyRegistry properties = AppChainPropertyRegistry.framework();
+        AppChainProjectCatalog catalog = new AppChainProjectCatalog(properties);
+        AppChainProjectResolver resolver = new AppChainProjectResolver(properties, catalog);
+        AppChainProjectModel.Blueprint selected = withAnswers(withCapabilities(
+                        blueprint("approval-workflow", "fixed", List.of()),
+                        List.of("effects:on-approved")),
+                Map.of("effectType", "com.acme.erp.create-order"));
+
+        AppChainProjectModel.Resolution resolution = resolver.resolve(selected);
+
+        assertThat(resolution.selectedCapabilities()).contains(
+                "state:approval-workflow", "effects:on-approved");
+        assertThat(resolution.consensusProperties())
+                .containsEntry("yano.app-chain.chains[0].effects.enabled", "true")
+                .containsEntry("yano.app-chain.chains[0].machines.approvals."
+                        + "on-approved-effect.enabled", "true")
+                .containsEntry("yano.app-chain.chains[0].machines.approvals."
+                        + "on-approved-effect.type", "com.acme.erp.create-order")
+                .containsEntry("yano.app-chain.chains[0].machines.approvals."
+                        + "activations.on-approved-effect", "1");
+
+        assertThatThrownBy(() -> resolver.resolve(withCapabilities(
+                blueprint("approval-workflow", "fixed", List.of()),
+                List.of("effects:on-approved"))))
+                .hasMessageContaining("unknown variable");
+    }
+
+    @Test
     void renderingIsByteDeterministicSecretSafeAndRefusesManualGeneratedEdits()
             throws Exception {
         AppChainPropertyRegistry properties = AppChainPropertyRegistry.framework();

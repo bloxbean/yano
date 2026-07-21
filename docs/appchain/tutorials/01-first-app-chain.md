@@ -222,7 +222,8 @@ Briefly, the command:
 1. creates a unique one-approval item on the separate `effects-chain`;
 2. wraps your text in a JSON payload, then submits `PROPOSE` and `APPROVE`
    commands to its `approvals` state machine;
-3. emits an app-final `demo.webhook` effect when the approval finalizes;
+3. keeps the item decision `APPROVED` and emits one generic app-final
+   `demo.webhook` effect when the approval threshold is reached;
 4. acts as a simulated external worker that claims the effect and reports a
    synthetic successful delivery—no real webhook is called; and
 5. feeds the result back through the effect lifecycle and checks that the

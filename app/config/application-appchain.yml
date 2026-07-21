@@ -78,12 +78,13 @@ yano:
           types: demo.webhook
       machines:
         approvals:
-          payments: true
-          payment-type: demo.webhook
-          payment-gate: app-final
-          payment-expiry-blocks: 100
+          on-approved-effect:
+            enabled: true
+            type: demo.webhook
+            gate: app-final
+            expiry-blocks: 100
           activations:
-            payments: 1
+            on-approved-effect: 1
 
     # --- Add more chains here, e.g. a fourth with L1 anchoring ---------------
     # chains[3]:

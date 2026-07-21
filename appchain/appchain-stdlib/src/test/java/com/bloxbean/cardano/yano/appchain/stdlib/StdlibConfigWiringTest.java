@@ -3,6 +3,7 @@ package com.bloxbean.cardano.yano.appchain.stdlib;
 import com.bloxbean.cardano.client.crypto.KeyGenUtil;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
+import com.bloxbean.cardano.yano.api.appchain.AppStateMachineContext;
 import com.bloxbean.cardano.yano.runtime.appchain.AppChainSubsystem;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -76,6 +77,26 @@ class StdlibConfigWiringTest {
         assertThatThrownBy(() -> new BalancesStateMachine("not-a-key"))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("machines.balances.minter");
+    }
+
+    @Test
+    void approvalsProviderRejectsRemovedPaymentConfiguration() {
+        AppStateMachineContext context = new AppStateMachineContext() {
+            @Override
+            public String chainId() {
+                return "removed-payment-config";
+            }
+
+            @Override
+            public Map<String, String> settings() {
+                return Map.of("machines.approvals.payments", "true");
+            }
+        };
+
+        assertThatThrownBy(() -> new StdlibStateMachineProviders.ApprovalsProvider()
+                .create(context))
+                .hasMessageContaining("Unsupported pre-release approvals setting")
+                .hasMessageContaining("machines.approvals.on-approved-effect");
     }
 
     @Test

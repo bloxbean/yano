@@ -22,48 +22,48 @@
         "description": "Optional 32-byte hexadecimal member identity allowed to mint balances"
       },
       {
-        "key": "yano.app-chain.machines.approvals.payments",
+        "key": "yano.app-chain.machines.approvals.on-approved-effect.enabled",
         "owner": "yano-first-party/appchain-stdlib", "type": "BOOLEAN", "defaultValue": "false",
         "minimum": null, "maximum": null, "minimumUtf8Bytes": null, "maximumUtf8Bytes": null,
         "maximumItems": null, "allowedValues": [],
         "scope": "CONSENSUS_SHARED", "changePolicy": "GOVERNED_ACTIVATION", "secret": false,
         "indexed": true, "constraintProvenance": "RUNTIME_PARSER_TEST", "coverage": "PARTIAL",
-        "description": "Enable deterministic payment effect intents for approved proposals"
+        "description": "Emit one generic deterministic effect when a proposal is approved"
       },
       {
-        "key": "yano.app-chain.machines.approvals.payment-gate",
+        "key": "yano.app-chain.machines.approvals.on-approved-effect.gate",
         "owner": "yano-first-party/appchain-stdlib", "type": "STRING",
-        "defaultValue": "chain-default", "minimum": null, "maximum": null,
+        "defaultValue": null, "minimum": null, "maximum": null,
         "minimumUtf8Bytes": null, "maximumUtf8Bytes": null, "maximumItems": null,
-        "allowedValues": ["chain-default", "app-final", "l1-anchored"],
+        "allowedValues": ["chain-default", "app-final", "l1-anchored", "zk-settled"],
         "scope": "CONSENSUS_SHARED", "changePolicy": "GOVERNED_ACTIVATION", "secret": false,
         "indexed": true, "constraintProvenance": "RUNTIME_PARSER_TEST", "coverage": "PARTIAL",
-        "description": "Finality gate for approval payment execution"
+        "description": "Finality gate for the generic on-approved effect"
       },
       {
-        "key": "yano.app-chain.machines.approvals.payment-type",
+        "key": "yano.app-chain.machines.approvals.on-approved-effect.type",
         "owner": "yano-first-party/appchain-stdlib", "type": "STRING",
-        "defaultValue": "cardano.payment", "minimum": null, "maximum": null,
-        "minimumUtf8Bytes": null, "maximumUtf8Bytes": null, "maximumItems": null,
+        "defaultValue": null, "minimum": null, "maximum": null,
+        "minimumUtf8Bytes": 1, "maximumUtf8Bytes": null, "maximumItems": null,
         "allowedValues": [], "scope": "CONSENSUS_SHARED",
         "changePolicy": "GOVERNED_ACTIVATION", "secret": false, "indexed": true,
-        "constraintProvenance": "NOT_APPLICABLE", "coverage": "PARTIAL",
-        "description": "Executor routing type emitted for approved payments"
+        "constraintProvenance": "RUNTIME_PARSER_TEST", "coverage": "PARTIAL",
+        "description": "Exact executor routing type emitted after approval"
       },
       {
-        "key": "yano.app-chain.machines.approvals.payment-expiry-blocks",
-        "owner": "yano-first-party/appchain-stdlib", "type": "LONG", "defaultValue": "1000",
-        "minimum": null, "maximum": null, "minimumUtf8Bytes": null, "maximumUtf8Bytes": null,
+        "key": "yano.app-chain.machines.approvals.on-approved-effect.expiry-blocks",
+        "owner": "yano-first-party/appchain-stdlib", "type": "LONG", "defaultValue": null,
+        "minimum": 0, "maximum": null, "minimumUtf8Bytes": null, "maximumUtf8Bytes": null,
         "maximumItems": null, "allowedValues": [], "scope": "CONSENSUS_SHARED",
         "changePolicy": "GOVERNED_ACTIVATION", "secret": false, "indexed": true,
         "constraintProvenance": "RUNTIME_PARSER_TEST", "coverage": "PARTIAL",
-        "description": "Payment intent expiry in app-chain blocks"
+        "description": "Generic on-approved effect expiry in app-chain blocks"
       }
     ],
     "dynamicNamespaces": [
       {
         "prefix": "machines.approvals.activations.", "owner": "yano-first-party/appchain-stdlib",
-        "coverage": "PARTIAL", "description": "Versioned approvals feature activation heights"
+        "coverage": "PARTIAL", "description": "Versioned approvals transition activation heights"
       }
     ]
   },

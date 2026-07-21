@@ -81,6 +81,26 @@ class AppChainResolvedValidatorTest {
     }
 
     @Test
+    void removedApprovalsPaymentConfigurationFailsThroughTheSharedRuntimeParser() {
+        Map<String, EffectiveConfigValue> values = values(Map.of(
+                "yano.app-chain.enabled", "true",
+                "yano.app-chain.chain-id", "orders",
+                "yano.app-chain.signing-key", SIGNING_KEY,
+                "yano.app-chain.members", MEMBER,
+                "yano.app-chain.machines.approvals.payments", "true"));
+
+        ResolvedValidationResult result = new AppChainResolvedValidator().validate(values);
+
+        assertThat(result.valid()).isFalse();
+        assertThat(result.diagnostics())
+                .filteredOn(diagnostic -> "DX_CONFIG_RUNTIME_SEMANTICS".equals(diagnostic.code()))
+                .singleElement()
+                .satisfies(diagnostic -> assertThat(diagnostic.message())
+                        .contains("Unsupported pre-release approvals setting")
+                        .contains("machines.approvals.on-approved-effect"));
+    }
+
+    @Test
     void fullOwnedNamespaceRejectsTyposWhileOpenPluginNamespacesRemainCompatible() {
         Map<String, EffectiveConfigValue> values = values(Map.of(
                 "yano.app-chain.enabled", "true",

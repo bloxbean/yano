@@ -3039,7 +3039,7 @@ cmd_effect_demo() {
     effects="$(curl -fsS --connect-timeout 3 --max-time 10 \
       "http://localhost:$(http_port "$node")/api/v1/app-chain/chains/$cid/effects?fromHeight=$from_height&limit=100")" \
       || effects='{"effects":[]}'
-    effect="$(printf '%s' "$effects" | jq -c --arg scope "approvals/$item" \
+    effect="$(printf '%s' "$effects" | jq -c --arg scope "approvals/on-approved/$item" \
       '.effects[] | select(.scope == $scope and .type == "demo.webhook")' | tail -1)"
     [ -n "$effect" ] && break
     [ "$(date +%s)" -le "$deadline" ] || die "timed out waiting for the demo effect"
@@ -3073,7 +3073,7 @@ cmd_effect_demo() {
         "http://localhost:$(http_port "$node")/api/v1/app-chain/chains/$cid/effects/$claimed_height/$claimed_ordinal/report" \
         -H 'Content-Type: application/json' -d "$claimed_report" >/dev/null \
         || die "external demo worker could not report effect $claimed_id"
-      if [ "$claimed_scope" = "approvals/$item" ]; then
+      if [ "$claimed_scope" = "approvals/on-approved/$item" ]; then
         external_ref="$claimed_ref"
         payload_text="$(printf '%s' "$claimed_effect" | jq -r '.payloadHex' \
           | python3 -c 'import sys; print(bytes.fromhex(sys.stdin.read().strip()).decode("utf-8"))')" \

@@ -101,11 +101,18 @@ Common settings for `node0.properties`, `node1.properties`, and
 config_ordinal=275
 yano.app-chain.chains[0].state-machine=approvals
 yano.app-chain.chains[0].effects.enabled=true
-yano.app-chain.chains[0].machines.approvals.payments=true
-yano.app-chain.chains[0].machines.approvals.activations.payments=1
-yano.app-chain.chains[0].machines.approvals.payment-type=webhook.post
-yano.app-chain.chains[0].machines.approvals.payment-gate=app-final
+yano.app-chain.chains[0].machines.approvals.on-approved-effect.enabled=true
+yano.app-chain.chains[0].machines.approvals.activations.on-approved-effect=1
+yano.app-chain.chains[0].machines.approvals.on-approved-effect.type=webhook.post
+yano.app-chain.chains[0].machines.approvals.on-approved-effect.gate=app-final
 ```
+
+These settings attach one generic action to the stock approval transition.
+`webhook.post` is only the executor routing type; the approvals machine does
+not interpret the payload as a payment or webhook. The approval decision stays
+`APPROVED`, while the separate `ae/s/<itemId>` record tracks the effect as
+`PENDING`, `CONFIRMED`, or `FAILED`. Change `type` to another packaged or custom
+executor contract without changing approval semantics.
 
 Append these node-local settings only to `node0.properties`:
 
@@ -185,7 +192,9 @@ curl -s \
 ```
 
 The tested success shape has one confirmed execution and zero open on-chain
-effects after the `~fx/result` message is incorporated.
+effects after the `~fx/result` message is incorporated. The approval item is
+still `APPROVED`; confirmation updates only its independently provable generic
+effect-state record.
 
 ### 4. Clean up
 

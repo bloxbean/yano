@@ -2,7 +2,16 @@
 
 ## Status
 
-Proposed — version 1, first review draft
+Accepted and implemented — version 3
+
+Version 3 records the completed cross-component implementation and validation
+review. It adds shared runtime/tooling parsing, generic devtool capability
+expansion, effect-framework payload-bound admission, exact result correlation,
+and packaged demo/tutorial updates. Version 2 incorporated the decision that
+appchain and the approvals effect extension have not been released or
+deployed. The pre-release payment configuration and state branch are therefore removed
+rather than retained as compatibility behavior. Runtime and tooling reject the
+obsolete keys with a migration hint.
 
 The number is local to the `adr/app-layer` series. Root-level ADR-021, if one
 exists, is unrelated.
@@ -152,7 +161,6 @@ existing certified history.
 - Emit at most one idempotently scoped effect per approval item.
 - Keep effect payloads opaque to the approvals machine.
 - Require an explicit activation height and deterministic replay behavior.
-- Retain safe interpretation of legacy payment state and configuration.
 - Make the maintained `demo.webhook`, production `webhook.post`, and
   `cardano.payment` examples use the same neutral configuration model.
 - Keep the implementation small enough to remain an understandable stock
@@ -169,8 +177,8 @@ existing certified history.
   at-least-once and receivers must honor the effect idempotency key.
 - Redefining approval identities or adding domain roles; ADR-019 owns that
   separate concern.
-- Automatically migrating a live payment-enabled chain to the generic state
-  model.
+- Supporting or migrating the unreleased payment-specific configuration and
+  state model.
 
 ## 3. Decision summary
 
@@ -199,12 +207,9 @@ existing certified history.
 8. The outer chain must also have `effects.enabled=true`. Execution remains a
    separate node-local choice; an emitted effect may remain pending without an
    executor.
-9. Legacy `payments` configuration is a compatibility mode, not an alias for
-   the new keys. The two modes may not be configured together.
-10. Existing payment-enabled chains stay on legacy semantics or migrate to a
-    new chain/profile through an explicit future decision. Version 1 does not
-    perform an in-place state migration.
-11. Multiple configurable post-approval effects remain out of scope; use a
+9. The unreleased `payments` keys and payment-specific state/status branch are
+   removed. Runtime and tooling reject those keys; they are never aliases.
+10. Multiple configurable post-approval effects remain out of scope; use a
     committed composite or custom state machine.
 
 ## 4. Configuration contract
@@ -261,6 +266,14 @@ When the generic feature is enabled:
 - the configured type and payload must fit framework effect bounds; and
 - invalid, contradictory, or partially specified configuration fails startup
   before networking begins.
+
+At and after the activation height, height-aware approval `PROPOSE` admission
+rejects an opaque payload larger than the resolved
+`effects.max-payload-bytes`. This prevents an effect-eligible item from
+reaching approval with a payload the deterministic kernel cannot emit.
+Pre-activation proposals retain plain-approvals admission because they never
+emit retroactively. The parser derives the bound from the shared effects
+configuration definitions used by runtime and tooling.
 
 `effects.executor.*`, `effects.executors.*`, endpoints, secrets, retry timing,
 and external-worker configuration remain node-local execution-plane settings.
@@ -325,8 +338,8 @@ A UI may project these two fields as `EFFECT_PENDING`, `EFFECT_CONFIRMED`, or
 
 ### 5.2 Generic state keys
 
-The generic extension owns a new namespace and does not reinterpret legacy
-payment keys:
+The generic extension owns a new namespace and does not reinterpret the
+removed pre-release payment keys:
 
 ```text
 ae/p/<itemId>  staged proposal payload, CBOR-wrapped so empty bytes are representable
@@ -350,21 +363,21 @@ The effect-state key is independently provable against the chain state root.
 The framework effect record remains the canonical detailed execution evidence;
 the machine record provides the application-facing projection and link.
 
-### 5.3 Legacy state codes and keys
+### 5.3 Removed pre-release payment state
 
-Existing persisted item status codes and helpers are never reassigned:
+The unreleased payment-specific status codes and keys are removed:
 
 ```text
-4 STATUS_PAID
-5 STATUS_PAY_FAILED
-p/<itemId> legacy staged payment payload
-f/<itemId> legacy payment effect link
-t/<itemId> legacy payment external reference
+STATUS_PAID
+STATUS_PAY_FAILED
+p/<itemId>
+f/<itemId>
+t/<itemId>
 ```
 
-They remain decodable for replay and evidence. Generic behavior does not write
-them. New generic status codes are unnecessary in the item record because
-effect status is stored separately.
+No deployed approval history depends on them. They are not reassigned or
+silently interpreted as generic state. New generic status codes are
+unnecessary in the item record because effect status is stored separately.
 
 ## 6. Deterministic transition rules
 
@@ -467,11 +480,11 @@ external action additionally depends on the executor identity, idempotency,
 external reference, and independently verifiable receipt where the integration
 supports one.
 
-## 8. Compatibility and migration
+## 8. Pre-release compatibility decision
 
-### 8.1 Legacy configuration is not an alias
+### 8.1 Removed configuration is rejected
 
-The following keys select legacy payment semantics:
+The following unreleased keys are not supported:
 
 ```text
 machines.approvals.payments
@@ -481,38 +494,20 @@ machines.approvals.payment-expiry-blocks
 machines.approvals.activations.payments
 ```
 
-They must not be translated silently to generic keys. Silent translation would
-change persisted status values, state keys, scopes, and replay roots.
+Runtime startup, resolved-mode validation, project generation, and first-party
+metadata use the shared `AppChainApprovalsConfig` parser. Any obsolete key
+fails with a migration hint. Silent aliases are prohibited because generic
+semantics use different state keys, scope, and decision behavior.
 
-Provider construction selects exactly one mode:
+### 8.2 Existing development data
 
-```text
-no extension keys       -> plain approvals
-legacy payment keys     -> legacy payment behavior
-generic keys            -> generic on-approved behavior
-legacy + generic keys   -> startup failure
-```
+No released or deployed approvals-payment chain exists. Development/demo data
+created with the pre-release payment branch must be deleted and bootstrapped
+again with the generic configuration. No in-place conversion is provided.
 
-Legacy keys are deprecated for new chains but remain supported while a
-released or retained history may require them.
-
-### 8.2 Existing chains
-
-An existing payment-enabled chain must continue using its original settings
-and legacy implementation branch. Version 1 does not migrate it in place.
-
-Operators wanting generic semantics use one of:
-
-1. a new chain id and fresh ledger using the generic configuration; or
-2. a separately reviewed future migration/profile-activation ADR with an
-   explicit drain boundary and state conversion.
-
-Changing only YAML on an existing history is prohibited.
-
-An existing approvals chain that never enabled effects may activate the generic
-feature at a future height only when the effect framework and its immutable v1
-consensus settings were already part of that chain's compatible profile.
-Otherwise it also requires a new chain/profile.
+If a deployed chain exists in the future, configuration or schema evolution
+requires a separately reviewed activation/migration decision; this pre-release
+exception must not be used as precedent for rewriting certified history.
 
 ### 8.3 New chains
 
@@ -527,17 +522,14 @@ Height 1 means the behavior is enabled from the first non-genesis app block.
 The explicit marker remains valuable: missing activation fails safe as
 inactive, and replay always selects the same branch by block height.
 
-### 8.4 Removal of legacy behavior
-
-Removing the legacy branch requires a separate decision based on release and
-retained-history evidence. Pre-release convenience is not sufficient reason to
-make an old certified chain unreplayable.
-
 ## 9. Validation and tooling
 
-The implementation updates the shared configuration registry, devtool
-metadata, explain output, effective configuration, Studio capability model,
-doctor checks, and generated examples.
+The implementation updates the shared `appchain-config` parser, configuration
+registry, devtool metadata, effective configuration, Studio capability model,
+doctor checks, and generated examples. The additive
+`effects:on-approved` capability accepts an `effectType` answer, so generated
+projects can route to packaged or custom plugin executors without CLI code
+changes.
 
 Validation rules include:
 
@@ -547,7 +539,7 @@ Validation rules include:
 - non-negative, framework-bounded expiry;
 - positive activation height;
 - `effects.enabled=true` when the emitter is configured;
-- no simultaneous legacy and generic modes; and
+- obsolete payment-specific keys fail with a migration hint; and
 - no unknown keys under the built-in generic namespace in strict mode.
 
 Consensus-shared generic settings must be explicit in generated resolved
@@ -581,7 +573,8 @@ Implementation is not complete until all of these pass:
 - Kill/reopen before and after emission and result incorporation.
 - Multi-member test deriving identical state/effect roots.
 - Catch-up from before activation through confirmed and failed outcomes.
-- Legacy payment corpus replays byte-for-byte with the compatibility branch.
+- Removed payment-specific configuration fails identically in runtime and
+  resolved-mode tooling.
 
 ### 10.3 Configuration and packaged-demo tests
 
@@ -666,7 +659,6 @@ makes deterministic upgrade/replay behavior substantially harder to audit.
 ### Costs
 
 - A new committed state record and query/proof documentation are required.
-- Legacy payment parsing and replay tests remain until explicitly retired.
 - Examples, metadata, Studio recipes, configuration generators, tests, and
   tutorials must migrate together.
 - Consumers that previously expected one overloaded item status must read both
@@ -674,7 +666,7 @@ makes deterministic upgrade/replay behavior substantially harder to audit.
 
 ### Risks
 
-- Treating new keys as aliases for old keys would fork replay.
+- Reintroducing removed keys as aliases would change generic state and replay.
 - An executor may accept the configured type but interpret an incompatible
   payload schema; type/schema compatibility remains an integration contract.
 - Operators may mistake effect confirmation for proof of real-world truth;
@@ -685,19 +677,41 @@ makes deterministic upgrade/replay behavior substantially harder to audit.
 ## 14. Implementation sequence after acceptance
 
 1. Freeze state keys, CBOR schema, status codes, scope, and configuration names
-   in core/stdlib tests.
-2. Add generic config parsing and mutual-exclusion validation while preserving
-   the legacy branch unchanged.
+   in config/stdlib tests.
+2. Add one shared generic config parser and reject obsolete payment keys.
 3. Implement proposal staging, one-time emission, neutral state, and strict
    result correlation.
-4. Add deterministic, upgrade-replay, restart, multi-member, and legacy replay
-   suites.
+4. Add deterministic, restart, multi-member, and removed-key rejection suites.
 5. Update configuration metadata, devtools, Studio, distribution recipes, and
    doctor/parity gates.
 6. Migrate the default `effects-chain`, CLI demo, webhook tutorial, Java client
    examples, user guide, and connector documentation.
-7. Run packaged JVM distribution acceptance and native build-time compatibility
-   checks; dynamic directory plugins remain JVM-only as already documented.
+7. Run packaged JVM distribution acceptance and keep the shared parser/state
+   implementation on the native-compatible, reflection-free compile surface;
+   dynamic directory plugins remain JVM-only as already documented.
 
-No implementation change should precede acceptance of the configuration,
-state-schema, replay, and compatibility decisions in this ADR.
+This sequence is implemented in version 3. The configuration/state schema and
+pre-release removal decision are accepted by this revision.
+
+## 15. Implementation verification
+
+The version 3 implementation was reviewed and verified on 2026-07-20 with:
+
+- full `appchain-config`, `appchain-stdlib`, `appchain-composite`,
+  `appchain-devtools`, `appchain-effects-cardano`, and `app` test suites;
+- targeted runtime activation, generic result-incorporation, and repeated-run
+  conformance tests;
+- final distribution generation and packaged CLI acceptance;
+- the maintained cluster-launcher regression, including default/custom effect
+  payloads, retained restart, governed join, and root agreement; and
+- a live two-member devnet smoke test proving equal state roots, a 2-of-2
+  finality certificate, cross-peer message propagation, MPF proof retrieval,
+  confirmed L1 anchoring, and advancing lock-step L1 state.
+
+## 16. Review history
+
+| Version | Date | Summary |
+|---|---|---|
+| v1 | 2026-07-20 | Proposed the neutral on-approved effect model and compatibility options. |
+| v2 | 2026-07-20 | Chose pre-release removal: no aliases or state migration; obsolete keys fail. |
+| v3 | 2026-07-20 | Recorded implementation across config, stdlib, runtime, devtools, Studio metadata, launcher, demos, and documentation; added framework payload-bound admission and final verification gates. |

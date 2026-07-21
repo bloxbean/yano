@@ -140,6 +140,7 @@ public final class AppChainResolvedValidator {
             AppChainConfig config = AppChainConfigParser.parse(settings);
             AppChainConfigSemantics.validate(config);
             AppChainEffectsConfig.from(config).consensusProfile(config);
+            AppChainApprovalsConfig.fromSettings(settings);
             AppChainValidationContext context = new AppChainValidationContext(path, config, settings);
             for (AppChainSemanticValidator extension : extensions) {
                 List<ValidationDiagnostic> extensionDiagnostics = extension.validate(context);

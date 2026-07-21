@@ -77,11 +77,7 @@
       "deploymentTargets": ["host", "docker-compose"],
       "artifacts": ["yano-runtime", "appchain-stdlib"],
       "properties": {
-        "state-machine": "approvals",
-        "machines.approvals.payments": "false",
-        "machines.approvals.payment-gate": "chain-default",
-        "machines.approvals.payment-type": "cardano.payment",
-        "machines.approvals.payment-expiry-blocks": "1000"
+        "state-machine": "approvals"
       }
     },
     {
@@ -109,10 +105,6 @@
         "effects.outcome-commitment": "per-effect",
         "effects.strict-reserved-prefix": "true",
         "machines.kv-registry.value-format": "raw",
-        "machines.approvals.payments": "false",
-        "machines.approvals.payment-gate": "chain-default",
-        "machines.approvals.payment-type": "cardano.payment",
-        "machines.approvals.payment-expiry-blocks": "1000",
         "machines.composite.preset": "role-evidence-v1",
         "machines.composite.evidence-capacity-per-block": "8",
         "machines.composite.profile-mode": "fixed",
@@ -192,6 +184,28 @@
       "deploymentTargets": ["host", "docker-compose"],
       "artifacts": ["yano-runtime"],
       "properties": {}
+    },
+    {
+      "id": "effects:on-approved",
+      "name": "Generic on-approved effect",
+      "category": "effects",
+      "maturity": "preview",
+      "description": "Emits one typed CHAIN-result effect after threshold approval.",
+      "provides": ["effects"],
+      "requires": ["state:approval-workflow"],
+      "implies": [],
+      "conflicts": [],
+      "runtimeTypes": ["jvm", "native"],
+      "deploymentTargets": ["host", "docker-compose"],
+      "artifacts": ["yano-runtime", "appchain-stdlib"],
+      "properties": {
+        "effects.enabled": "true",
+        "machines.approvals.on-approved-effect.enabled": "true",
+        "machines.approvals.on-approved-effect.type": "${effectType}",
+        "machines.approvals.on-approved-effect.gate": "chain-default",
+        "machines.approvals.on-approved-effect.expiry-blocks": "0",
+        "machines.approvals.activations.on-approved-effect": "1"
+      }
     },
     {
       "id": "effects:publication",

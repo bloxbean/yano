@@ -1,5 +1,11 @@
 plugins {
     id 'base'
+    id 'com.github.node-gradle.node' version '7.1.0'
+}
+
+node {
+    version = '22.12.0'
+    download = true
 }
 
 def studioOutput = layout.buildDirectory.dir('studio')
@@ -25,8 +31,9 @@ tasks.register('studioZip', Zip) {
     from(studioOutput)
 }
 
-tasks.register('testStudio', Exec) {
-    commandLine 'node', '--test', file('src/test/studio.test.mjs')
+tasks.register('testStudio', NodeTask) {
+    options = ['--test']
+    script = file('src/test/studio.test.mjs')
 }
 
 tasks.named('assemble') {

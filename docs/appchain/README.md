@@ -19,7 +19,9 @@ credentials unless a guide explicitly says otherwise.
 |---|---|---:|
 | See three members finalize the same events | [Your first app chain](tutorials/01-first-app-chain.md) | No |
 | Use or customize the built-in append-only event log | [`ordered-log` reference](state-machines/ordered-log.md) | No, unless adding business rules |
-| Maintain a provable owner-controlled registry | [Registry and state proofs](tutorials/02-registry-and-proofs.md) | No |
+| Maintain a provable owner-controlled registry | [`kv-registry` reference](state-machines/kv-registry.md) | No |
+| Collect member approvals and optionally trigger an action | [`approvals` reference](state-machines/approvals.md) | Configuration + typed commands |
+| Maintain a document-hash trail per product or case | [`doc-trail` reference](state-machines/doc-trail.md) | Configuration + typed commands |
 | Select a stock ledger/workflow capability | [Stock state-machine cookbook](tutorials/03-stock-state-machines.md) | Configuration + typed commands |
 | Publish immutable evidence to object storage/IPFS and notify Kafka | [Evidence publication](tutorials/04-evidence-publication.md) | No |
 | Require manufacturers, auditors, and regulators to sign by domain role | [Domain-role approvals](tutorials/05-domain-role-approvals.md) | No for the stock scenario |
@@ -41,7 +43,7 @@ ordered-log                            webhook.post
 kv-registry                            kafka.publish
 approvals                              object.put
 balances                               ipfs.pin
-doc-trail                              cardano.payment (preview profile)
+doc-trail                              cardano.payment (preview executor)
 evidence-v1-gated composite
 role-evidence composite
 ```
@@ -130,6 +132,9 @@ need full detail:
 - [10–15 minute overview](../APP_CHAIN_OVERVIEW.md)
 - [State-machine references](state-machines/README.md)
 - [`ordered-log` state-machine reference](state-machines/ordered-log.md)
+- [`kv-registry` state-machine reference](state-machines/kv-registry.md)
+- [`approvals` state-machine reference](state-machines/approvals.md)
+- [`doc-trail` state-machine reference](state-machines/doc-trail.md)
 - [Complete user and configuration guide](../APP_CHAIN_USER_GUIDE.md)
 - [Use-case catalogue](../APP_CHAIN_USE_CASES.md)
 - [Consensus and state-machine internals](../APP_CHAIN_CONSENSUS_GUIDE.md)

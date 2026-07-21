@@ -37,7 +37,7 @@ dependencies {
     implementation libs.cardano.client.quicktx
 
     testImplementation libs.project.reactor.test
-    // Effect-system tests exercise the stdlib approvals payments flow (ADR-010 §8.1)
+    // Effect-system tests exercise the stdlib generic on-approved flow (ADR-021)
     testImplementation project(':appchain-stdlib')
 
     // Generate @DomainEventListener bindings at build time

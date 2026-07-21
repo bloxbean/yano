@@ -76,6 +76,18 @@ def payload(args: argparse.Namespace) -> bytes:
 
 
 def encode(args: argparse.Namespace) -> bytes:
+    if args.machine == "kv-registry":
+        key = bounded_text(args.key, "key").encode("utf-8")
+        if args.operation == "put":
+            if args.value_hex is not None:
+                value = bytes.fromhex(args.value_hex)
+            else:
+                value = args.value_text.encode("utf-8")
+            if not value:
+                raise ValueError("registry value must not be empty")
+            return array(uint(0), bstr(key), bstr(value))
+        return array(uint(1), bstr(key), bstr(b""))
+
     if args.machine == "approvals":
         item = tstr(bounded_text(args.item_id, "item id"))
         if args.operation == "propose":
@@ -117,6 +129,16 @@ def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(
         description="Encode canonical CBOR commands used by Yano tutorials")
     machines = root.add_subparsers(dest="machine", required=True)
+
+    registry = machines.add_parser("kv-registry")
+    registry_ops = registry.add_subparsers(dest="operation", required=True)
+    registry_put = registry_ops.add_parser("put")
+    registry_put.add_argument("key")
+    registry_value = registry_put.add_mutually_exclusive_group(required=True)
+    registry_value.add_argument("--value-text")
+    registry_value.add_argument("--value-hex")
+    registry_delete = registry_ops.add_parser("delete")
+    registry_delete.add_argument("key")
 
     approvals = machines.add_parser("approvals")
     approval_ops = approvals.add_subparsers(dest="operation", required=True)

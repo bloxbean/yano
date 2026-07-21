@@ -794,7 +794,7 @@ Flat (single-chain) keys. The same suffixes apply per chain under
 | `effects.external.enabled` | `false` | Expose the external-executor claim/report REST surface (§18.6) |
 | `effects.executors.<scheme>.*` | — | Executor plugin config (built-in `webhook`; `cardano` via the plugin jar) — passed to the executor with the prefix stripped (§18.3) |
 | `effects.retention.keep-blocks` | `100000` | Prune resolved effect records older than this behind the tip |
-| `machines.approvals.payments` (+ `payment-type` / `payment-gate` / `payment-expiry-blocks`) | `false` | Stdlib approvals→payment effect (§18.3); also requires `machines.approvals.activations.payments=<height>` |
+| `machines.approvals.on-approved-effect.enabled` (+ `type` / `gate` / `expiry-blocks`) | `false` | Emit one generic CHAIN-result effect after final approval (§18.3); also requires `machines.approvals.activations.on-approved-effect=<height>` |
 
 **Enabling.** Three states, checked in this order:
 
@@ -1765,27 +1765,25 @@ yano.app-chain.effects.executors.cardano.max-lovelace-per-tx: 500000000         
 > buggy or compromised machine that emits an oversized payment cannot then
 > drain the hot wallet in one tx.
 
-**Stdlib approvals → payment** — no code: the `approvals` machine emits a
-`cardano.payment` on final approval, and records `STATUS_PAID` with the tx hash
-when it confirms.
+**Stdlib approvals → generic effect** — no state-machine code is needed. The
+`approvals` machine can emit one exact effect type on final approval. The item
+decision remains `APPROVED`; a separate provable effect record moves from
+`PENDING` to `CONFIRMED` or `FAILED`. Using `cardano.payment` routes the opaque
+proposal payload to the Cardano payment executor.
 
 ```yaml
 yano.app-chain.state-machine: approvals
-yano.app-chain.machines.approvals.payments: true
-yano.app-chain.machines.approvals.activations.payments: 1       # new chain: active from genesis
-yano.app-chain.machines.approvals.payment-type: cardano.payment
-yano.app-chain.machines.approvals.payment-gate: l1-anchored     # provable before funds move
-yano.app-chain.machines.approvals.payment-expiry-blocks: 1000
-# Live chain: replace 1 with a future height deployed identically to every member (ADR-010.1).
+yano.app-chain.effects.enabled: true
+yano.app-chain.machines.approvals.on-approved-effect.enabled: true
+yano.app-chain.machines.approvals.on-approved-effect.type: cardano.payment
+yano.app-chain.machines.approvals.on-approved-effect.gate: l1-anchored
+yano.app-chain.machines.approvals.on-approved-effect.expiry-blocks: 1000
+yano.app-chain.machines.approvals.activations.on-approved-effect: 1
 ```
 
-> **Legacy migration:** if this chain already ran a binary where
-> `payments=true` worked without an activation key, first deploy
-> `activations.payments=1` identically to every member, then deploy this binary
-> and validate full replay or snapshot restoration. Do **not** choose a future
-> height for that migration: doing so would change historical payload parking
-> and emissions. A future height is only for enabling payments for the first
-> time on a live chain.
+The generic type can instead be `webhook.post`, `kafka.publish`, `object.put`,
+`ipfs.pin`, or a custom plugin routing type. Configuration selects one action;
+multiple or conditional actions belong in a composite/custom state machine.
 
 ### 18.4 Finality gates and expiry
 

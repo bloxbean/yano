@@ -48,6 +48,13 @@ lock retains the exact flattened values. Omit `--node-host` for a same-machine
 host project; provide exactly one host per member to render portable
 per-machine overlays.
 
+Approval projects can attach one generic effect without teaching the CLI
+about a particular integration. Select `effects:on-approved` with
+`state:approval-workflow` and supply the exact executor or plugin routing type
+as the `effectType` blueprint answer. Generated consensus configuration
+enables effects and activates the transition at height 1. Executor endpoints
+and credentials remain node-local and never enter consensus configuration.
+
 ```bash
 # Intentionally incomplete shared template
 ./yano.sh appchain config validate --mode template \

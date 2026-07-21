@@ -25,23 +25,23 @@ class AppChainActivationDiagnosticsTest {
     void statusExposesActivationsWhenEffectsAreDisabled() {
         AppChainSubsystem node = node(Map.of(
                 "effects.enabled", "false",
-                "machines.approvals.activations.payments", "42",
+                "machines.approvals.activations.on-approved-effect", "42",
                 "effects.activations.record-v2", "100",
-                "machines.approvals.payment-type", "ignored"));
+                "machines.approvals.on-approved-effect.type", "ignored"));
 
         assertThat(node.status().get("effects")).isNull();
         @SuppressWarnings("unchecked")
         Map<String, String> activations = (Map<String, String>) node.status().get("activations");
         assertThat(activations).containsExactly(
                 entry("effects.activations.record-v2", "100"),
-                entry("machines.approvals.activations.payments", "42"));
+                entry("machines.approvals.activations.on-approved-effect", "42"));
     }
 
     @Test
     void startupLogsEveryActivationInStableOrder() {
         Logger logger = mock(Logger.class);
         AppChainSubsystem node = node(Map.of(
-                "machines.approvals.activations.payments", "42",
+                "machines.approvals.activations.on-approved-effect", "42",
                 "effects.activations.record-v2", "100"), logger);
         try {
             node.start();
@@ -53,13 +53,14 @@ class AppChainActivationDiagnosticsTest {
         ordered.verify(logger).info("App-chain '{}' transition activation {}={}",
                 "activation-diagnostics", "effects.activations.record-v2", 100L);
         ordered.verify(logger).info("App-chain '{}' transition activation {}={}",
-                "activation-diagnostics", "machines.approvals.activations.payments", 42L);
+                "activation-diagnostics",
+                "machines.approvals.activations.on-approved-effect", 42L);
     }
 
     @Test
     void startupRejectsMalformedActivationHeight() {
         AppChainSubsystem node = node(Map.of(
-                "machines.approvals.activations.payments", "TBD"));
+                "machines.approvals.activations.on-approved-effect", "TBD"));
 
         assertThatThrownBy(node::start)
                 .isInstanceOf(IllegalArgumentException.class)
