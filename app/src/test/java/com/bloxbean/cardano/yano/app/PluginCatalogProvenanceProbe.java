@@ -1,6 +1,10 @@
 package com.bloxbean.cardano.yano.app;
 
 import com.bloxbean.cardano.yano.api.config.PluginsOptions;
+import com.bloxbean.cardano.yano.api.appchain.AppChainConsensusProfile;
+import com.bloxbean.cardano.yano.api.appchain.AppStateMachineContext;
+import com.bloxbean.cardano.yano.appchain.composite.CompositeStateMachine;
+import com.bloxbean.cardano.yano.appchain.composite.stock.CompositeStockPresets;
 import com.bloxbean.cardano.yano.catalog.PluginIndex;
 import com.bloxbean.cardano.yano.catalog.PluginIndexCodec;
 import com.bloxbean.cardano.yano.runtime.plugins.PluginRuntimeEnvironment;
@@ -16,6 +20,8 @@ import java.util.ArrayList;
 import java.util.Enumeration;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 
 /** Produces current JVM catalog provenance for the native-binary smoke test. */
 public final class PluginCatalogProvenanceProbe {
@@ -52,8 +58,23 @@ public final class PluginCatalogProvenanceProbe {
             fingerprint = environment.catalog().fingerprint();
         }
 
+        CompositeStateMachine stockComposite = CompositeStockPresets.create(
+                new AppStateMachineContext() {
+                    @Override public String chainId() { return "conformance-chain"; }
+                    @Override public Map<String, String> settings() {
+                        return Map.of("machines.composite.preset",
+                                CompositeStockPresets.EVIDENCE_V1_GATED);
+                    }
+                    @Override public Optional<AppChainConsensusProfile> consensusProfile() {
+                        return Optional.of(AppTestConsensusProfiles.enabledEffects(128, 16_384));
+                    }
+                });
+        String stockCompositeDigest = "sha256:" + HexFormat.of().formatHex(
+                stockComposite.profile().digest());
+
         String content = "catalogFingerprint=" + fingerprint + "\n"
-                + "indexSha256=" + sha256(encodedIndex) + "\n";
+                + "indexSha256=" + sha256(encodedIndex) + "\n"
+                + "compositeProfileDigest=" + stockCompositeDigest + "\n";
         Path output = Path.of(arguments[0]).toAbsolutePath().normalize();
         Files.createDirectories(output.getParent());
         Files.writeString(output, content, StandardCharsets.UTF_8);

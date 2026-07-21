@@ -42,11 +42,14 @@ class KafkaStreamSinkTest {
         KafkaSinkFactory factory = new KafkaSinkFactory();
         assertThat(factory.scheme()).isEqualTo("kafka");
         assertThat(factory.create("chain-1", Map.of())).isEmpty();
-        assertThat(factory.create("chain-1", Map.of("topic", "t"))).isEmpty();
+        assertThatThrownBy(() -> factory.create("chain-1", Map.of("topic", "t")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("requires bootstrap-servers, topic and security-profile");
         // With both present it builds a real producer (connects lazily); just
         // assert one sink is created, then close it.
         var sinks = factory.create("chain-1",
-                Map.of("bootstrap-servers", "localhost:9092", "topic", "t"));
+                Map.of("bootstrap-servers", "localhost:9092", "topic", "t",
+                        "security-profile", "local-demo"));
         assertThat(sinks).hasSize(1);
         sinks.forEach(s -> {
             try {
@@ -84,37 +87,43 @@ class KafkaStreamSinkTest {
         KafkaSinkFactory factory = new KafkaSinkFactory();
 
         assertThatThrownBy(() -> factory.create(null, Map.of(
-                "bootstrap-servers", "localhost:9092", "topic", "blocks")))
+                "bootstrap-servers", "localhost:9092", "topic", "blocks",
+                "security-profile", "local-demo")))
                 .isInstanceOf(NullPointerException.class)
                 .hasMessage("chainId");
         assertThatThrownBy(() -> factory.create("chain-1", Map.of(
                 "bootstrap-servers", "localhost:9092",
                 "topic", "blocks",
+                "security-profile", "local-demo",
                 "acks", "1")))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessage("Kafka sink acks must be 'all'");
+                .hasMessage("Kafka producer acks must be all");
         assertThatThrownBy(() -> factory.create("chain-1", Map.of(
                 "bootstrap-servers", "localhost:9092",
-                "topic", "../blocks")))
+                "topic", "../blocks",
+                "security-profile", "local-demo")))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessage("Invalid Kafka sink topic");
+                .hasMessage("invalid Kafka physical topic");
         assertThatThrownBy(() -> factory.create("chain-1", Map.of(
                 "bootstrap-servers", "localhost:9092",
                 "topic", "blocks",
+                "security-profile", "local-demo",
                 "producer.interceptor.classes", "example.Untrusted")))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessage("Unknown Kafka sink setting");
         assertThatThrownBy(() -> factory.create("chain-1", Map.of(
                 "bootstrap-servers", "localhost:9092\nsecret",
-                "topic", "blocks")))
+                "topic", "blocks",
+                "security-profile", "local-demo")))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("bounded printable ASCII");
+                .hasMessageContaining("invalid or oversized Kafka executor value");
         assertThatThrownBy(() -> factory.create("chain-1", Map.of(
                 "bootstrap-servers", "localhost:9092",
                 "topic", "blocks",
-                "delivery-timeout-ms", "29999")))
+                "security-profile", "local-demo",
+                "delivery-timeout-ms", "9999")))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessage("Kafka sink setting is outside its safe range");
+                .hasMessageContaining("integer setting out of range");
     }
 
     private static AppBlock sampleBlock(long height) {

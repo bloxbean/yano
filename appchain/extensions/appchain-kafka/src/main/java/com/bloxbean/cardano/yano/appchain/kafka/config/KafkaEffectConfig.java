@@ -427,12 +427,12 @@ public final class KafkaEffectConfig {
             int firstGroup = Integer.parseInt(host.substring(0, separator), 16);
             return (firstGroup & 0xfe00) == 0xfc00 || (firstGroup & 0xffc0) == 0xfe80;
         }
-        if (host.equals("localhost") || host.endsWith(".localhost") || !host.contains(".")) {
+        if (host.equals("localhost")) {
             return true;
         }
         String[] octets = host.split("\\.");
         if (octets.length != 4) {
-            return host.endsWith(".local") || host.endsWith(".internal");
+            return false;
         }
         try {
             int first = Integer.parseInt(octets[0]);

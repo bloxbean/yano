@@ -46,6 +46,38 @@ public interface AppStateMachine {
     }
 
     /**
+     * Height- and state-aware mempool admission for the next candidate block.
+     * <p>
+     * The runtime invokes this overload while selecting a proposal, with the
+     * committed state at {@code candidateHeight - 1}. The default preserves
+     * source and binary compatibility for existing machines. Versioned state
+     * machines should override it when the valid topic or payload set changes
+     * at an activation height.
+     */
+    default AdmissionResult validateForBlock(
+            AppMessage message,
+            long candidateHeight,
+            AppStateReader committedState
+    ) {
+        return validate(message);
+    }
+
+    /**
+     * Local operator admission for one member-signed reserved-topic command.
+     * Ordinary {@link AppChainGateway#submit(String, byte[])} never reaches
+     * this hook. Implementations must fail closed; the runtime calls it before
+     * signing or diffusing a privileged system message.
+     */
+    default AdmissionResult validatePrivilegedSystemSubmission(String topic, byte[] body) {
+        return AdmissionResult.reject("Privileged state-machine system messages are unsupported");
+    }
+
+    /** Cached, off-consensus operational diagnostics; never used for validity. */
+    default java.util.Map<String, Object> operationalStatus() {
+        return java.util.Map.of();
+    }
+
+    /**
      * Deterministic transition: apply every message of the finalized block,
      * writing state through {@code writer}. Keys/values written here form the
      * MPF state commitment whose root is bound into the block.

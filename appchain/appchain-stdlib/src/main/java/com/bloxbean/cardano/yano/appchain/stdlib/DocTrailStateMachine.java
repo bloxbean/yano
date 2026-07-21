@@ -124,6 +124,7 @@ public final class DocTrailStateMachine implements AppStateMachine {
 
     record Command(String entityId, byte[] entryHash, String ref) {
         static Command decode(byte[] body) {
+            StdlibCbor.requireCommand(body);
             List<DataItem> items = ((Array) CborSerializationUtil.deserializeOne(body)).getDataItems();
             String entityId = ((UnicodeString) items.get(0)).getString();
             if (entityId.isBlank()) {
@@ -148,6 +149,7 @@ public final class DocTrailStateMachine implements AppStateMachine {
         }
 
         static Entry decode(byte[] bytes) {
+            StdlibCbor.requirePersistedEntry(bytes);
             List<DataItem> items = ((Array) CborSerializationUtil.deserializeOne(bytes)).getDataItems();
             return new Entry(
                     ((UnsignedInteger) items.get(0)).getValue().longValue(),

@@ -101,6 +101,9 @@ public final class KvRegistryStateMachine implements AppStateMachine {
             case RAW -> true;
             case CBOR -> {
                 try {
+                    if (!StdlibCbor.acceptsNestedValue(value)) {
+                        yield false;
+                    }
                     CborSerializationUtil.deserializeOne(value);
                     yield true;
                 } catch (Exception e) {
@@ -164,11 +167,13 @@ public final class KvRegistryStateMachine implements AppStateMachine {
 
     /** Decode a state entry into [owner, value]. */
     public static byte[] decodeOwner(byte[] entry) {
+        StdlibCbor.requirePersistedEntry(entry);
         Array arr = (Array) CborSerializationUtil.deserializeOne(entry);
         return ((ByteString) arr.getDataItems().get(0)).getBytes();
     }
 
     public static byte[] decodeValue(byte[] entry) {
+        StdlibCbor.requirePersistedEntry(entry);
         Array arr = (Array) CborSerializationUtil.deserializeOne(entry);
         return ((ByteString) arr.getDataItems().get(1)).getBytes();
     }
@@ -182,6 +187,7 @@ public final class KvRegistryStateMachine implements AppStateMachine {
 
     record Command(int op, byte[] key, byte[] value) {
         static Command decode(byte[] body) {
+            StdlibCbor.requireCommand(body);
             List<DataItem> items = ((Array) CborSerializationUtil.deserializeOne(body)).getDataItems();
             int op = ((UnsignedInteger) items.get(0)).getValue().intValue();
             if (op != OP_PUT && op != OP_DELETE) {

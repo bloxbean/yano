@@ -27,6 +27,12 @@ public final class CompositeStateKeys {
             .getBytes(StandardCharsets.US_ASCII);
     private static final byte[] WORKFLOW_CLAIM_DOMAIN = "~composite/workflow-claim/v1/"
             .getBytes(StandardCharsets.US_ASCII);
+    private static final byte[] GOVERNANCE_CONFIG = "~composite/profile-governance/v1/config"
+            .getBytes(StandardCharsets.US_ASCII);
+    private static final byte[] GOVERNANCE_ACTIVE = "~composite/profile-governance/v1/active"
+            .getBytes(StandardCharsets.US_ASCII);
+    private static final byte[] GOVERNANCE_DRAINS = "~composite/profile-governance/v1/drains"
+            .getBytes(StandardCharsets.US_ASCII);
 
     private CompositeStateKeys() {
     }
@@ -38,6 +44,26 @@ public final class CompositeStateKeys {
 
     public static byte[] componentKey(String componentId, byte[] localKey) {
         return CompositeCommitmentV1.componentKey(componentId, localKey);
+    }
+
+    public static byte[] governanceConfigKey() {
+        return GOVERNANCE_CONFIG.clone();
+    }
+
+    public static byte[] activeProposalKey() {
+        return GOVERNANCE_ACTIVE.clone();
+    }
+
+    public static byte[] retiredGenerationDrainsKey() {
+        return GOVERNANCE_DRAINS.clone();
+    }
+
+    public static byte[] profileEpochKey(long epochNumber) {
+        return CompositeCommitmentV1.profileEpochKey(epochNumber);
+    }
+
+    public static byte[] currentProfileEpochKey() {
+        return CompositeCommitmentV1.currentProfileEpochKey();
     }
 
     static boolean isComponentKey(byte[] key) {

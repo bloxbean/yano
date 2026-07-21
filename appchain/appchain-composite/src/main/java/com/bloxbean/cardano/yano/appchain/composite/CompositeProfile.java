@@ -65,8 +65,8 @@ public record CompositeProfile(
     }
 
     public void validateEffectBudget(int frameworkMaxEffectsPerBlock) {
-        if (frameworkMaxEffectsPerBlock < 1 || frameworkMaxEffectsPerBlock > 1_048_576) {
-            throw new IllegalArgumentException("frameworkMaxEffectsPerBlock must be between 1 and 1048576");
+        if (frameworkMaxEffectsPerBlock < 0 || frameworkMaxEffectsPerBlock > 1_048_576) {
+            throw new IllegalArgumentException("frameworkMaxEffectsPerBlock must be between 0 and 1048576");
         }
         Set<Long> boundaries = new TreeSet<>();
         components.forEach(component -> {
@@ -89,16 +89,69 @@ public record CompositeProfile(
             // currently active generation, so delayed callbacks cannot consume
             // capacity promised to the active profile. V1 keeps this reservation
             // conservatively for the remaining life of the fixed profile.
-            long required = components.stream()
-                    .filter(component -> component.fromHeight() <= height)
-                    .mapToLong(ComponentDescriptor::maxEffectsPerBlock).sum();
-            required += workflows.stream().filter(workflow -> workflow.activeAt(height))
-                    .mapToLong(WorkflowDescriptor::maxEffectsPerBlock).sum();
+            long required = requiredEffectQuotaAt(height);
             if (required > frameworkMaxEffectsPerBlock) {
                 throw new IllegalArgumentException("composite effect quota " + required
                         + " exceeds effects.max-per-block " + frameworkMaxEffectsPerBlock
                         + " at height " + height);
             }
+        }
+    }
+
+    long requiredEffectQuotaAt(long height) {
+        long required = components.stream()
+                .filter(component -> component.fromHeight() <= height)
+                .mapToLong(ComponentDescriptor::maxEffectsPerBlock).sum();
+        required += workflows.stream().filter(workflow -> workflow.activeAt(height))
+                .mapToLong(WorkflowDescriptor::maxEffectsPerBlock).sum();
+        return required;
+    }
+
+    void validateGovernedEffectBudget(int frameworkMaxEffectsPerBlock, int resultDrainBlocks) {
+        if (frameworkMaxEffectsPerBlock < 0 || frameworkMaxEffectsPerBlock > 1_048_576
+                || resultDrainBlocks < 0
+                || (frameworkMaxEffectsPerBlock == 0 && resultDrainBlocks != 0)
+                || (frameworkMaxEffectsPerBlock > 0 && resultDrainBlocks == 0)) {
+            throw new IllegalArgumentException("invalid governed composite effect limits");
+        }
+        Set<Long> boundaries = new TreeSet<>();
+        components.forEach(component -> {
+            boundaries.add(component.fromHeight());
+            if (component.untilHeight() != 0) {
+                boundaries.add(component.untilHeight());
+                boundaries.add(safeHeightAdd(component.untilHeight(), resultDrainBlocks, 1));
+            }
+        });
+        workflows.forEach(workflow -> {
+            boundaries.add(workflow.fromHeight());
+            if (workflow.untilHeight() != 0) boundaries.add(workflow.untilHeight());
+        });
+        for (long height : boundaries) {
+            long required = requiredGovernedEffectQuotaAt(height, resultDrainBlocks);
+            if (required > frameworkMaxEffectsPerBlock) {
+                throw new IllegalArgumentException("governed composite effect quota " + required
+                        + " exceeds effects.max-per-block " + frameworkMaxEffectsPerBlock
+                        + " at height " + height);
+            }
+        }
+    }
+
+    long requiredGovernedEffectQuotaAt(long height, int resultDrainBlocks) {
+        long required = components.stream()
+                .filter(component -> component.fromHeight() <= height)
+                .filter(component -> component.untilHeight() == 0
+                        || height <= safeHeightAdd(component.untilHeight(), resultDrainBlocks, 0))
+                .mapToLong(ComponentDescriptor::maxEffectsPerBlock).sum();
+        required += workflows.stream().filter(workflow -> workflow.activeAt(height))
+                .mapToLong(WorkflowDescriptor::maxEffectsPerBlock).sum();
+        return required;
+    }
+
+    private static long safeHeightAdd(long height, int amount, int extra) {
+        try {
+            return Math.addExact(Math.addExact(height, amount), extra);
+        } catch (ArithmeticException overflow) {
+            return Long.MAX_VALUE;
         }
     }
 

@@ -148,6 +148,7 @@ public final class BalancesStateMachine implements AppStateMachine {
 
     record Command(int op, String to, BigInteger amount) {
         static Command decode(byte[] body) {
+            StdlibCbor.requireCommand(body);
             List<DataItem> items = ((Array) CborSerializationUtil.deserializeOne(body)).getDataItems();
             int op = ((UnsignedInteger) items.get(0)).getValue().intValue();
             if (op != OP_MINT && op != OP_TRANSFER) {

@@ -54,5 +54,11 @@ class PaymentCommandTest {
         assertThat(PaymentCommand.decode(
                 "{\"lovelace\":5}".getBytes(StandardCharsets.UTF_8))).isNull();
         assertThat(PaymentCommand.decode(new byte[5000])).isNull(); // size cap
+        byte[] deeplyNestedIndefinite = new byte[130];
+        java.util.Arrays.fill(deeplyNestedIndefinite, 0, 64, (byte) 0x9f);
+        deeplyNestedIndefinite[64] = 0;
+        java.util.Arrays.fill(deeplyNestedIndefinite, 65, 129, (byte) 0xff);
+        deeplyNestedIndefinite[129] = 0;
+        assertThat(PaymentCommand.decode(deeplyNestedIndefinite)).isNull();
     }
 }

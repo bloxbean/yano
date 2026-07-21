@@ -58,15 +58,17 @@ The continuation mode is part of the retained app-chain identity. It cannot be
 changed in place after an instance is prepared; use a new instance and chain
 identity to change profiles.
 
-The same scenario can exercise the stock deterministic composite workflow
-without application code. Use a fresh instance and pass `--machine composite`
-to every lifecycle command:
+The default for each newly prepared demo instance is the stock
+`evidence-v1-gated` deterministic composite workflow. It admits evidence
+creation and republish only through the registry + approval + release workflow.
+The `evidence.command.v1` topic accepts only the canonical post-publication
+notification command. Run it without application code:
 
 ```bash
-./demo.sh prepare --instance composite-demo --machine composite
-./demo.sh up --instance composite-demo --machine composite
-./demo.sh run --instance composite-demo --machine composite
-./demo.sh stop --instance composite-demo --machine composite
+./demo.sh prepare --instance composite-demo
+./demo.sh up --instance composite-demo
+./demo.sh run --instance composite-demo
+./demo.sh stop --instance composite-demo
 ```
 
 This profile first commits a registry identity, proposes and records an
@@ -74,9 +76,20 @@ approval for the exact evidence command, and then submits
 `evidence.release.v1`. The composite applies the document-trail append and
 evidence submission atomically before the existing S3, IPFS, Kafka, proof, and
 anchor checks continue. The marker pins `provider=composite` and
-`preset=evidence-v1`; switching between standalone and composite on retained
-state is rejected. `--continuation explicit|direct` remains independently
-selectable for a fresh composite instance.
+`preset=evidence-v1-gated`; this is a distinct committed profile/digest for new
+chains. Switching retained state between standalone, direct, and gated
+profiles is rejected. The standalone machine remains explicitly selectable
+with `--machine standalone` as a regression/migration fixture.
+`--continuation explicit|direct` remains independently selectable for a fresh
+composite instance.
+
+The demo starts new composite chains in ADR-015 `governed` profile mode. Its
+stock bundle contains only the selected profile, so the demo exercises
+authenticated epoch 0, status, proofs, restart, JVM/Compose parity, and
+operator observability—not a synthetic hot upgrade. Real evolution is supplied
+by a domain composite bundle containing both active and dormant target catalog
+entries; see the
+[profile-governance runbook](../../docs/APP_CHAIN_PROFILE_GOVERNANCE.md).
 
 `up` builds the exact working-tree Yano and runner images, starts all services,
 waits through the producer warm-up, funds and bootstraps the devnet script
@@ -400,10 +413,12 @@ policies. The Compose
 profile generates an instance-bound private RustFS IAM specification and its
 one-shot bootstrap applies and verifies it; host deployments must provide the
 same capability split through their provider's IAM mechanism.
-Milestone 1 currently has no Kafka authentication/TLS settings, so its broker
-must be a local or otherwise private, trusted endpoint shared by the runner
-and executor; authenticated Kafka profiles are a later extension. Restrict
-Kubo RPC to the executor/runner network. Host mode's
+The Compose demo deliberately uses the bounded plaintext `local-demo` Kafka
+profile on its isolated private network. Host and production deployments can
+select the validated `tls`, `mtls`, or `sasl-tls` profiles and provide their
+truststore, keystore, and SASL secrets through protected runtime configuration;
+effect payloads never carry broker endpoints or credentials. Restrict Kubo RPC
+to the executor/runner network. Host mode's
 `init-connectors` validates these external dependencies and creates or
 validates the Kafka topic before it starts Yano. It never calls Yano and cannot
 form a startup cycle.

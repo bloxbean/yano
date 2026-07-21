@@ -327,6 +327,7 @@ public final class ApprovalsStateMachine implements AppStateMachine {
 
     record Command(int op, String itemId, byte[] payload, int required, long deadlineMillis) {
         static Command decode(byte[] body) {
+            StdlibCbor.requireCommand(body);
             List<DataItem> items = ((Array) CborSerializationUtil.deserializeOne(body)).getDataItems();
             int op = ((UnsignedInteger) items.get(0)).getValue().intValue();
             String itemId = ((UnicodeString) items.get(1)).getString();
@@ -374,6 +375,7 @@ public final class ApprovalsStateMachine implements AppStateMachine {
         }
 
         static Item decode(byte[] entry) {
+            StdlibCbor.requirePersistedEntry(entry);
             List<DataItem> items = ((Array) CborSerializationUtil.deserializeOne(entry)).getDataItems();
             List<byte[]> approvers = new ArrayList<>();
             for (DataItem approverDI : ((Array) items.get(5)).getDataItems()) {

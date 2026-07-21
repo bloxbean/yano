@@ -1,0 +1,9 @@
+composite-profile-governance-v1 = begin / chunk / seal / approve / ready / cancel
+
+begin = [1, 1, bstr .size 32, bstr .size 32, bstr .size 32, bstr .size 32,
+         1..65536, 1..8, uint, uint]
+chunk = [1, 2, bstr .size 32, 0..7, bstr .size (1..16384)]
+seal = [1, 3, bstr .size 32]
+approve = [1, 4, bstr .size 32]
+ready = [1, 5, bstr .size 32, bstr .size 32]
+cancel = [1, 6, bstr .size 32]

@@ -27,7 +27,8 @@ class AppChainStatusPageTest {
 
         assertTrue(page.contains("Yano · App Chain"));
         for (String panel : new String[]{"chainSelect", "heroTip", "anchorList",
-                "effectExecutorsList", "blocksBody"}) {
+                "effectExecutorsList", "profileModeBadge", "profileGovernanceList",
+                "blocksBody"}) {
             assertTrue(page.contains("id=\"" + panel + "\""), panel);
         }
         assertTrue(page.contains("href=\"../status/\""));
@@ -72,6 +73,7 @@ class AppChainStatusPageTest {
         assertTrue(page.contains("effectRuntime.executorOperations"));
         assertTrue(page.contains("executor.sampleState"));
         assertTrue(page.contains("executor.failureCode"));
+        assertTrue(page.contains("stateMachineStatus"));
     }
 
     @Test

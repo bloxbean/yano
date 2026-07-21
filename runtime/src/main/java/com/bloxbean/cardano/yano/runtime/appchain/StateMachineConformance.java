@@ -4,6 +4,8 @@ import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AuthScheme;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
+import com.bloxbean.cardano.yano.api.appchain.AppChainConsensusProfile;
 import com.bloxbean.cardano.yano.api.appchain.AppChainInfo;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineContext;
@@ -258,11 +260,13 @@ public final class StateMachineConformance {
                         ? (restartAtHeight > 0 ? restartAtHeight : Math.max(1, blocks / 2))
                         : -1;
                 outcomesPerRun.add(applyCorpus(provider, settings, chainId, corpus,
-                        workDir.resolve("run-" + run), restartAt, -1, stateProbes));
+                        workDir.resolve("run-" + run), restartAt, -1, stateProbes,
+                        messagesPerBlock));
             }
             if (snapshotAtHeight > 0) {
                 outcomesPerRun.add(applyCorpus(provider, settings, chainId, corpus,
-                        workDir.resolve("snapshot-run"), -1, snapshotAtHeight, stateProbes));
+                        workDir.resolve("snapshot-run"), -1, snapshotAtHeight, stateProbes,
+                        messagesPerBlock));
             }
         } catch (Exception e) {
             throw new RuntimeException("Conformance harness failed", e);
@@ -354,18 +358,23 @@ public final class StateMachineConformance {
                                                         List<AppBlock> corpus,
                                                         Path dir, long restartAt,
                                                         long snapshotAt,
-                                                        List<StateProbe> stateProbes) throws Exception {
+                                                        List<StateProbe> stateProbes,
+                                                        int maxBlockMessages) throws Exception {
         Map<Long, HeightOutcome> outcomes = new LinkedHashMap<>();
-        AppStateMachine machine = provider.create(contextFor(chainId, settings));
+        AppChainConsensusProfile profile = profileFor(
+                chainId, settings, Math.max(1, maxBlockMessages));
         AppLedgerStore store = new AppLedgerStore(dir.toString(), log);
         try {
+            new ConsensusProfileGuard(profile).verifyRetained(store, chainId);
+            AppStateMachine machine = provider.create(contextFor(chainId, settings, profile));
             machine.init(readerFor(store), new AppChainInfo(chainId, "00".repeat(32), 1));
             for (AppBlock block : corpus) {
                 if (restartAt > 0 && block.height() == restartAt + 1) {
                     // Kill-and-reopen replay: crash recovery must not change roots
                     store.close();
                     store = new AppLedgerStore(dir.toString(), log);
-                    machine = provider.create(contextFor(chainId, settings));
+                    new ConsensusProfileGuard(profile).verifyRetained(store, chainId);
+                    machine = provider.create(contextFor(chainId, settings, profile));
                     machine.init(readerFor(store), new AppChainInfo(chainId, "00".repeat(32), 1));
                 }
                 if (snapshotAt > 0 && block.height() == snapshotAt + 1) {
@@ -373,11 +382,12 @@ public final class StateMachineConformance {
                     store.createSnapshot(checkpoint.toString());
                     store.close();
                     store = new AppLedgerStore(checkpoint.toString(), log);
-                    machine = provider.create(contextFor(chainId, settings));
+                    new ConsensusProfileGuard(profile).verifyRetained(store, chainId);
+                    machine = provider.create(contextFor(chainId, settings, profile));
                     machine.init(readerFor(store), new AppChainInfo(chainId, "00".repeat(32), 1));
                 }
                 outcomes.put(block.height(), applyAndCommit(
-                        store, machine, settings, block, stateProbes));
+                        store, machine, settings, profile, block, stateProbes));
             }
         } finally {
             store.close();
@@ -387,9 +397,12 @@ public final class StateMachineConformance {
 
     /** Same pipeline as production, via the shared applier (FxKernel + MPF batch staging). */
     private static HeightOutcome applyAndCommit(AppLedgerStore store, AppStateMachine machine,
-                                                Map<String, String> settings, AppBlock block,
+                                                Map<String, String> settings,
+                                                AppChainConsensusProfile profile,
+                                                AppBlock block,
                                                 List<StateProbe> stateProbes) {
-        FxKernel kernel = new FxKernel(EffectsSettings.fromSettings(settings));
+        FxKernel kernel = new FxKernel(EffectsSettings.fromSettings(settings),
+                new ConsensusProfileGuard(profile));
         FxBlockApplier.Applied applied = FxBlockApplier.applyAndCommit(store, kernel, machine, block);
         List<String> effectHashes = new ArrayList<>(applied.fx().emitted().size());
         for (FxKernel.StagedEffect staged : applied.fx().emitted()) {
@@ -407,11 +420,34 @@ public final class StateMachineConformance {
                 effectHashes, Map.copyOf(stateValues));
     }
 
-    private static AppStateMachineContext contextFor(String chainId, Map<String, String> settings) {
+    private static AppStateMachineContext contextFor(
+            String chainId,
+            Map<String, String> settings,
+            AppChainConsensusProfile profile
+    ) {
         return new AppStateMachineContext() {
             @Override public String chainId() { return chainId; }
             @Override public Map<String, String> settings() { return settings; }
+            @Override public Optional<AppChainConsensusProfile> consensusProfile() {
+                return Optional.of(profile);
+            }
         };
+    }
+
+    private static AppChainConsensusProfile profileFor(
+            String chainId,
+            Map<String, String> settings,
+            int maxBlockMessages
+    ) {
+        String member = "11".repeat(32);
+        AppChainConfig config = AppChainConfig.builder(chainId)
+                .signingKeyHex("22".repeat(32))
+                .memberKeysHex(Set.of(member))
+                .proposerKeyHex(member)
+                .maxBlockMessages(maxBlockMessages)
+                .pluginSettings(settings)
+                .build();
+        return EffectsSettings.from(config).consensusProfile(config);
     }
 
     private static AppStateReader readerFor(AppLedgerStore store) {
@@ -516,11 +552,13 @@ public final class StateMachineConformance {
             try {
                 Path workDir = Files.createTempDirectory("appchain-upgrade-conformance");
                 Map<Long, HeightOutcome> baseline = applyCorpus(oldProvider, settings, chainId,
-                        corpus, workDir.resolve("baseline"), -1, -1, List.of());
+                        corpus, workDir.resolve("baseline"), -1, -1, List.of(),
+                        messagesPerBlock);
                 List<Map<Long, HeightOutcome>> newRuns = new ArrayList<>();
                 for (int run = 0; run < runs; run++) {
                     newRuns.add(applyCorpus(newProvider, upgraded, chainId, corpus,
-                            workDir.resolve("upgraded-" + run), -1, -1, List.of()));
+                            workDir.resolve("upgraded-" + run), -1, -1, List.of(),
+                            messagesPerBlock));
                 }
                 // Exercise crash recovery on both sides of the boundary. A restart
                 // point is the last committed height before reopen, so A-1 reopens
@@ -536,7 +574,7 @@ public final class StateMachineConformance {
                 for (long restartAt : restartPoints) {
                     newRuns.add(applyCorpus(newProvider, upgraded, chainId, corpus,
                             workDir.resolve("upgraded-restart-" + restartRun++), restartAt, -1,
-                            List.of()));
+                            List.of(), messagesPerBlock));
                 }
                 // Replay stability below the activation: new version vs OLD baseline
                 List<Map<Long, HeightOutcome>> vsBaseline = new ArrayList<>();

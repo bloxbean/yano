@@ -89,6 +89,10 @@ for required in (
         'and .chain.membersVerified == 3',
         'and .chain.effectProofsVerified == 3',
         'wait_cluster_agreement pre-restart "$PRE_RESTART_STATE"',
+        '.stateMachineStatus.mode == "governed"',
+        '.stateMachineStatus.currentEpoch == 0',
+        '.stateMachineStatus.catalogReady == true',
+        '.stateMachineStatus.currentMembershipDigest',
         'cmp -s "$PRE_RESTART_STATE" "$POST_RESTART_STATE"',
         'audit_kafka_exact 2 "$EFFECT_ID" "$ROOT/kafka-after-restart.json"',
         'export DEMO_OBSERVABILITY=false',
@@ -161,7 +165,7 @@ if not (initial_topology < fault_recreate < pre_transferred_topology < pre_resta
         < final_stop < owned_cleanup):
     raise SystemExit("fenced retained restart and lease-aware isolated cleanup are misordered")
 if source.find('"$DEMO_DIR/demo.sh" up --deployment compose', pre_restart) != -1:
-    raise SystemExit("retained restart must never implicitly fail ownership back through base up")
+    raise SystemExit("retained restart must never implicitly fall ownership back through base up")
 if source.index('export DEMO_FENCED_NODE0_CONFIG="$FENCED_CONFIG"') >= overlay_up \
         or source.index('export DEMO_REPLACEMENT_NODE1_CONFIG="$REPLACEMENT_CONFIG"') >= overlay_up:
     raise SystemExit("fenced private configs must be exported before overlay restart")
@@ -378,6 +382,7 @@ export DEMO_GRAFANA_PORT=33000
 export DEMO_CONNECTOR_SUBNET=172.30.214.0/24
 export DEMO_S3_IP=172.30.214.10
 export DEMO_KUBO_IP=172.30.214.11
+export DEMO_KAFKA_IP=172.30.214.12
 INSTANCE=failover-contract
 "$DEMO_DIR/demo.sh" config --instance "$INSTANCE" \
   --evidence-id fresh-failover-contract > /dev/null

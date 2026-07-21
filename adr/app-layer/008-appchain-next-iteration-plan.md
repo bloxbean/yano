@@ -1,7 +1,7 @@
 # ADR-008: App-Chain Next-Iteration Plan — Review Consolidation, Fixes, Gaps, and Roadmap
 
 ## Status
-Accepted (plan of record for the next iterations)
+Accepted — Iterations 1-3 implemented; residual roadmap tracked separately
 
 ## Date
 2026-07-10

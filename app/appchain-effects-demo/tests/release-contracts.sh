@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 DEMO_DIR="$(cd "$SCRIPT_DIR/.." && pwd -P)"
 
 bash -n "$DEMO_DIR/demo.sh" "$DEMO_DIR"/tools/*.sh "$SCRIPT_DIR"/*.sh
+bash "$DEMO_DIR/../appchain-cluster/test-profile-governance-cli.sh"
 
 for test in \
   anchor-binding-test.sh \

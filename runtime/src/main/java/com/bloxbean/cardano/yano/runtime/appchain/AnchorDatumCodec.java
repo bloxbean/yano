@@ -57,7 +57,12 @@ final class AnchorDatumCodec {
         if (data == null) {
             throw new IllegalArgumentException("Anchor datum is required");
         }
-        AnchorDatumV1 decoded = AnchorDatumV1.decode(data.serializeToBytes());
+        return decode(data.serializeToBytes());
+    }
+
+    /** Decode untrusted L1 inline-datum bytes through the bounded public codec. */
+    static AnchorDatum decode(byte[] cbor) {
+        AnchorDatumV1 decoded = AnchorDatumV1.decode(cbor);
         return new AnchorDatum(ABI_VERSION, decoded.chainId(), decoded.height(),
                 decoded.blockHash(), decoded.stateRoot(), decoded.memberKeys(),
                 decoded.threshold());

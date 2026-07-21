@@ -2,6 +2,9 @@
 
 - **Status:** Exploratory design note; not an accepted ADR
 - **Date:** 2026-07-15
+- **Verification update:** 2026-07-17 — scenario-by-scenario check against the
+  blueprint v0.1 flows on the ADR-013 release-closure working tree (see §3,
+  "Scenario-by-scenario verification")
 - **Purpose:** Preserve a possible Digital Product Passport (DPP) design for later ADR and implementation work
 - **Primary source:** [Cardano Foundation DPP Blueprint for Cardano v0.1](https://github.com/cardano-foundation/cardano-dpp-standards/blob/main/DPP-Blueprint-Cardano-v0.1.md)
 - **Related Yano ADRs:**
@@ -63,7 +66,7 @@ There is also tension between the general reference to CIP-25/CIP-68 and the sta
 - **Architecturally possible:** all four blueprint patterns.
 - **Strongest immediate fit:** event log and batch-root verification.
 - **Partially available today:** generic registry, approvals, document trail, proofs, finalized streams, and Cardano root anchoring.
-- **Reusable out of the box after ADR-013:** immutable S3-compatible object publication, existing-CID IPFS pinning, acknowledged Kafka publication, authenticated evidence state/proofs, and the `evidence-v1` composite registry/approval/document-trail/release workflow.
+- **Reusable out of the box after ADR-013/015:** immutable S3-compatible object publication, existing-CID IPFS pinning, acknowledged Kafka publication, authenticated evidence state/proofs, the approval-coordinated `evidence-v1-gated` composite workflow, and governed activation of packaged future profile generations.
 - **Not yet out of the box:** a coherent DPP data model and bundle, GS1/EPCIS support, public verification portal, DPP actor/device identity and lifecycle semantics, selective-disclosure claim proofs, and DPP-specific Cardano asset publication.
 
 ### ADR-013 reuse boundary
@@ -85,6 +88,90 @@ passport version/status/revocation semantics, claim or event Merkle formats,
 recovery and anti-double-counting policy, regulator access, and optional
 Cardano DPP asset/CIP-68 publication. Configuration alone must not pretend
 that the generic evidence preset supplies those domain guarantees.
+
+### Scenario-by-scenario verification against blueprint v0.1 (2026-07-17)
+
+Verified against the blueprint's eight named flows on the working tree of
+`feat/adr013-m1-p1-7-release-closure` (all three ADR-013 milestones
+implemented), cross-checked with the external review in
+[ADR-014](014-appchain-adr013-external-review-readiness-and-feasibility-fable.md).
+
+**Headline: Yano can deliver the verification substance of all eight flows
+with current capabilities plus configuration and off-chain glue — in several
+cases with stronger guarantees than the blueprint asks for — but the
+blueprint's literal on-chain artifacts (CIP-25/CIP-68 tokens, burn-and-mint
+versioning, DPP metadata labels, GS1 Digital Link resolution) are not
+producible today.** They all sit behind the unbuilt `cardano.dpp.*` executor
+and ADR-010.2 hardening.
+
+The structural point to state honestly: the blueprint is written as a
+**direct-L1 pattern library** (each product/batch gets its own Cardano
+transaction, token, or datum). Yano answers the same requirements with one
+authenticated MPF state root, one cadence-based anchor transaction covering
+unbounded products, and per-product/per-event/per-claim proofs against that
+root. That makes Yano structurally cheaper than the blueprint's own batching
+math (anchor cost is independent of product count) — but a regulator or
+ecosystem tool expecting to find a CIP-68 reference token or DPP metadata
+label on L1 will not find one on a Yano deployment today. Convergence worth
+noting: blueprint §7 recommends the Aiken Merkle Patricia Forestry library for
+advanced deployments — exactly the MPF construction Yano's state root already
+uses, with client-side verification shipped in `appchain-client`.
+
+| # | Blueprint flow | Verdict today | Verified working | Missing |
+|---|---|---|---|---|
+| 4.1.A | Static Anchor — Registering Product Data | **~80% — literally the evidence demo** | Stage doc in S3 (`object.put`, WORM-capable), pin CID (`ipfs.pin`), register hash + fingerprints in authenticated state, Kafka ack, root anchored to Cardano — proven E2E | GTIN/GS1 identity mapping; optional per-product NFT mint (**blocked**, ADR-010.2) |
+| 4.1.B | Static Anchor — Checking Product Info | **Partial** | `appchain-evidence-client` verifies MPF proof + threshold finality + anchor datum client-side — stronger than the blueprint's "portal checks hash" | GS1 Digital Link QR resolver; consumer-facing product portal (the demo UI is a scenario report viewer, not a passport portal) |
+| 4.1.1 | Versioning (3 approaches) | **App-chain versioning yes; token versioning no** | Evidence machine implements versioned records (`REPUBLISH latestVersion+1`, terminal-status gating, derived current status) — functionally equivalent to CIP-68 datum-update semantics | All three blueprint approaches (datum update / burn-and-mint / mint-only) are L1 token mechanics → **blocked** on `cardano.dpp.*` |
+| 4.2.A | Anchored Proof — Creating | **Partial** | Committing a 32-byte claim root + version + issuer into authenticated state works today; MPF gives per-key proofs for free | DPP claim Merkle format, salted low-entropy claims, canonical claim serialization (designed in §12, not built) |
+| 4.2.B | Anchored Proof — Verifying Specific Facts | **Missing** | Proof plumbing exists (root-pinned snapshots, exclusion proofs) | The selective-disclosure serving layer: claim categorization, RBAC/token/NFT authorization, per-claim proof API; node has API-key auth only — no OIDC/mTLS gateway |
+| 4.3.A | Event Log — Recording Lifecycle Events | **Strongest fit — one identity gap** | Ordered finalized messages are an append-only, consensus-agreed, proof-carrying event log — categorically stronger than the blueprint's trusted-collector model (no single trusted batcher, no retroactive-modification window) | Blueprint partners sign as **domain actors** (manufacturer/shipper/recycler/IoT). Yano's sender identity = chain member key; durable non-member actor/device registry, domain signatures, rotation/revocation not built (§8) |
+| 4.3.B | Event Log — Viewing History | **Buildable with glue** | Finalized Kafka sink (ordered, cursor-tracked) + committed queries + proofs | Timeline/projector API and EPCIS 2.0 event semantics — external projector, no Java plugin needed |
+| 4.4.A | High Throughput — Bulk Processing | **Architecturally superior, empirically unproven** | One root covers millions of keys with one anchor tx; no per-partition transactions needed | Partitioning profile, projector DB, and **zero load/benchmark evidence** — "millions of SKUs" is a claim, not a result |
+| 4.4.B | High Throughput — Fast Scanning | **Missing tier, solved hard part** | Blueprint Open Point #1 (cached response verifiably tied to an anchor) is already solved: phase-1.4 `AppStateProofSnapshot` gives atomic `(committedHeight, root)`-pinned proofs — shipped after this note listed it as "worth considering" (§11/§15 are now partly satisfied) | The serving tier itself (cache/CDN, precomputed proof pages, <300 ms SLA) — off-chain infrastructure |
+
+**Blueprint open points (§8 of the blueprint) Yano already answers:**
+
+1. Cached-yet-verified responses → root-pinned proof snapshots (implemented,
+   audited).
+2. Partner key publication/trust → chain-governed membership (ADR-008.3) for
+   members; the DPP actor registry extends it to non-members.
+3. Shared hashing/serialization rules → Yano's canonical-CBOR + golden-vector
+   + CDDL discipline is exactly the machinery the blueprint says the ecosystem
+   lacks — contributable upstream to the CF standard.
+
+The fourth (passport status/inactive/replaced semantics) is domain work the
+DPP bundle must define either way.
+
+**Gap list, ranked by blocking severity:**
+
+1. `cardano.dpp.*` publication executor (CIP-25/CIP-68 mint, datum update,
+   burn-and-mint, batch-root txs) — **hard-blocked** on ADR-010.2, unwritten.
+   Every flow's *literal* on-chain representation depends on it.
+2. DPP bundle (schemas, GTIN/GS1 mapping, EPCIS contracts, passport status
+   semantics, actor/device identity registry, claim-tree format) — §6/§15
+   module list stands; none of it exists yet.
+3. Public serving tier (GS1 Digital Link resolver, portal, projector, cache) —
+   no Java needed, but real engineering the demo does not contain.
+4. Selective-disclosure authorization layer — designed (§12), absent.
+5. Performance validation — High Throughput is the only pattern where the
+   *architecture* is untested rather than the features.
+
+Two ADR-014 blockers have since been removed: ADR-015 provides authenticated,
+future-height activation of reviewed profile generations packaged in the
+composite catalog, and `evidence-v1-gated` closes the direct create/republish
+path so the release workflow is an actual authorization gate. A DPP bundle
+still has to ship its own bounded catalog, domain actor policy, migration rules,
+and future compatible generations; profile governance does not invent or trust
+unreviewed code.
+
+**Claim guidance:** the defensible statement is — *"Yano implements the
+blueprint's trust goals today via its appchain + MPF root + script anchor (the
+blueprint's own recommended advanced structure), and will add the blueprint's
+L1 token representations as an optional publication profile once Cardano
+transaction hardening (ADR-010.2) lands."* Do **not** claim blueprint
+conformance, GS1/EPCIS support, or CIP-25/68 compatibility — none are true
+yet, and the blueprint marks GS1 Digital Link and CIP-25/68 as *mandatory*
+for compliance.
 
 ## 4. Recommended proof model
 
@@ -218,7 +305,12 @@ External first-party services and demo
     +-- Kafka, projector, and verification portal
 ```
 
-One app-chain currently selects one state-machine provider. The DPP feature should therefore be a composite state machine rather than expecting operators to compose `doc-trail`, `kv-registry`, and `approvals` only through configuration.
+One app-chain selects one state-machine provider. The DPP feature should
+therefore be a composite state machine rather than expecting operators to
+compose `doc-trail`, `kv-registry`, and `approvals` dynamically through YAML.
+ADR-015 can govern future profiles already packaged by that DPP provider; the
+provider still defines the consensus-critical component order, routes,
+workflows, compatibility identities, and quotas.
 
 No new plugin framework is needed. ADR-011's manifested bundle and existing extension points should host the state machine, effects, domain/query APIs, finalized sinks, health, and metrics.
 

@@ -23,6 +23,26 @@ public interface AppChainGateway {
      */
     String submit(String topic, byte[] body);
 
+    /**
+     * Validate and member-sign a state-machine-owned reserved-topic command.
+     * Exposed only through privileged operator surfaces; implementations fail
+     * closed unless the selected machine explicitly accepts the exact topic
+     * and body.
+     */
+    default String submitPrivilegedSystemMessage(String topic, byte[] body) {
+        throw new IllegalStateException("Privileged state-machine commands are unavailable");
+    }
+
+    /** Dry-run the same local validation performed before privileged submission. */
+    default void validatePrivilegedSystemMessage(String topic, byte[] body) {
+        throw new IllegalStateException("Privileged state-machine commands are unavailable");
+    }
+
+    /** Cached state-machine operational diagnostics, excluding secret detail. */
+    default Map<String, Object> stateMachineStatus() {
+        return Map.of();
+    }
+
     /** Most recently accepted messages (local + peer), newest last. */
     List<ReceivedAppMessage> recentMessages(int limit);
 

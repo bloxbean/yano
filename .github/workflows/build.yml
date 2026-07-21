@@ -51,6 +51,26 @@ jobs:
         run: chmod +x gradlew
       - name: Build with Gradle
         run: ./gradlew build -PskipSigning=true --stacktrace
+      - name: Verify app-chain cluster operator safety contracts
+        run: |
+          chmod +x app/appchain-cluster/test-private-key-inputs.sh \
+            app/appchain-cluster/test-node-config-overlay.sh \
+            app/appchain-cluster/test-cluster-state-safety.sh \
+            app/appchain-cluster/test-cluster-identity-lifecycle.sh
+          app/appchain-cluster/test-private-key-inputs.sh
+          app/appchain-cluster/test-node-config-overlay.sh
+          app/appchain-cluster/test-cluster-state-safety.sh
+          app/appchain-cluster/test-cluster-identity-lifecycle.sh
+      - name: Cross-validate published app-chain CDDL contracts
+        env:
+          CDDL_BIN: ${{ github.workspace }}/appchain/scripts/cddl-container.sh
+          TMPDIR: ${{ github.workspace }}/build/cddl-tmp
+        run: |
+          mkdir -p "$TMPDIR"
+          chmod +x "$CDDL_BIN"
+          appchain/appchain-integration-contracts/scripts/verify-cddl.sh
+          appchain/examples/appchain-evidence-contracts/scripts/verify-cddl.sh
+          appchain/appchain-composite-contracts/scripts/verify-cddl.sh
       - name: Verify ADR-013 demo release contracts
         run: bash app/appchain-effects-demo/tests/release-contracts.sh
       - name: Smoke final JVM plugin catalog and directory loading
@@ -108,9 +128,14 @@ jobs:
           java-version: '25'
           distribution: 'temurin'
       - name: Grant execute permission
-        run: chmod +x gradlew app/appchain-effects-demo/tests/connector-fault-matrix.sh
+        run: >-
+          chmod +x gradlew
+          app/appchain-effects-demo/tests/connector-fault-matrix.sh
+          appchain/extensions/appchain-kafka/src/test/scripts/kafka-secure-integration.sh
       - name: Run real connector restart and fault matrix
         run: app/appchain-effects-demo/tests/connector-fault-matrix.sh
+      - name: Run Kafka sink and effect executor over real TLS and SASL/TLS
+        run: appchain/extensions/appchain-kafka/src/test/scripts/kafka-secure-integration.sh
 
   effect-failover-e2e:
     if: >-

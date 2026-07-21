@@ -69,6 +69,8 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     private static final String SYSTEM_TOPIC_PREFIX = "~";
 
     private final AppChainConfig config;
+    private final EffectsSettings effectsSettings;
+    private final AppChainConsensusProfile consensusProfile;
     private final long protocolMagic;
     private final EventBus eventBus;
     private final Logger log;
@@ -446,6 +448,8 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                 : null;
         try {
             this.config = Objects.requireNonNull(config, "config");
+            this.effectsSettings = EffectsSettings.from(config);
+            this.consensusProfile = effectsSettings.consensusProfile(config);
             this.protocolMagic = protocolMagic;
             this.eventBus = eventBus;
             this.log = Objects.requireNonNull(log, "log");
@@ -462,6 +466,20 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                                 @Override public String chainId() { return config.chainId(); }
                                 @Override public java.util.Map<String, String> settings() {
                                     return config.pluginSettings();
+                                }
+                                @Override
+                                public Optional<AppChainConsensusProfile> consensusProfile() {
+                                    return Optional.of(AppChainSubsystem.this.consensusProfile);
+                                }
+                                @Override
+                                public Optional<com.bloxbean.cardano.yano.api.appchain.AppChainMembershipView>
+                                membershipView() {
+                                    return Optional.of(height -> {
+                                        MemberGroup.Epoch epoch = group.epochAt(height);
+                                        return new com.bloxbean.cardano.yano.api.appchain.AppChainMembershipEpoch(
+                                                epoch.fromHeight(), new ArrayList<>(epoch.members()),
+                                                epoch.threshold());
+                                    });
                                 }
                             }, log);
             this.ledgerPath = (ledgerPath != null ? ledgerPath : "./app-chain")
@@ -715,6 +733,25 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             @Override
             public AdmissionResult validate(AppMessage message) {
                 return delegate.validate(message);
+            }
+
+            @Override
+            public AdmissionResult validateForBlock(
+                    AppMessage message,
+                    long candidateHeight,
+                    AppStateReader committedState
+            ) {
+                return delegate.validateForBlock(message, candidateHeight, committedState);
+            }
+
+            @Override
+            public AdmissionResult validatePrivilegedSystemSubmission(String topic, byte[] body) {
+                return delegate.validatePrivilegedSystemSubmission(topic, body);
+            }
+
+            @Override
+            public Map<String, Object> operationalStatus() {
+                return delegate.operationalStatus();
             }
 
             @Override
@@ -1296,6 +1333,60 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     @Override
     public String submit(String topic, byte[] body) {
         return requireGenerationUse(() -> submitWithinGeneration(topic, body));
+    }
+
+    @Override
+    public String submitPrivilegedSystemMessage(String topic, byte[] body) {
+        return requireGenerationUse(() -> submitPrivilegedSystemMessageWithinGeneration(topic, body));
+    }
+
+    @Override
+    public void validatePrivilegedSystemMessage(String topic, byte[] body) {
+        requireGenerationUse(() -> {
+            validatePrivilegedSystemMessageWithinGeneration(topic, body);
+            return null;
+        });
+    }
+
+    @Override
+    public Map<String, Object> stateMachineStatus() {
+        return generationUseOr(Map.of(), () -> Map.copyOf(stateMachine.operationalStatus()));
+    }
+
+    private String submitPrivilegedSystemMessageWithinGeneration(String topic, byte[] body) {
+        if (!running.get()) throw new IllegalStateException("App chain is not running");
+        if (submissionsPaused.get()) throw new IllegalStateException("Submissions are paused (admin)");
+        validatePrivilegedSystemMessageWithinGeneration(topic, body);
+        AppMessage message = buildSigned(topic, body, config.defaultTtlSeconds());
+        AppMsgPool.AddResult added = pool.add(message);
+        if (added == AppMsgPool.AddResult.FULL) {
+            countDrop("pool_full");
+            throw new PoolFullException("App-chain '" + config.chainId()
+                    + "' pending pool is full — privileged command not submitted");
+        }
+        relay(message);
+        submittedCount.incrementAndGet();
+        record(message, ReceivedAppMessage.Source.LOCAL);
+        log.info("Privileged state-machine command submitted: id={}, chain={}, topic={}",
+                message.getMessageIdHex(), config.chainId(), topic);
+        return message.getMessageIdHex();
+    }
+
+    private void validatePrivilegedSystemMessageWithinGeneration(String topic, byte[] body) {
+        Objects.requireNonNull(body, "body");
+        if (topic == null || !topic.startsWith("~governance/") || !validTopic(topic)) {
+            throw new IllegalArgumentException("Only state-machine governance topics are allowed");
+        }
+        if (body.length == 0 || body.length > config.maxMessageBytes()) {
+            throw new IllegalArgumentException("Privileged command body is outside the message limit");
+        }
+        AppStateMachine.AdmissionResult result =
+                stateMachine.validatePrivilegedSystemSubmission(topic, body.clone());
+        if (result == null || !result.isAccepted()) {
+            String reason = result != null && result.reason() != null
+                    ? result.reason() : "State machine rejected privileged command";
+            throw new IllegalArgumentException(reason);
+        }
     }
 
     private String submitWithinGeneration(String topic, byte[] body) {
@@ -2161,6 +2252,11 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     }
 
     private void resetMembersWithinGeneration() {
+        if ("governed".equalsIgnoreCase(config.pluginSettings().getOrDefault(
+                "machines.composite.profile-mode", "fixed"))) {
+            throw new IllegalStateException(
+                    "membership reset is disabled while composite profile governance is active");
+        }
         if (governedMode()) {
             log.warn("App-chain '{}': BREAK-GLASS membership reset on a GOVERNED chain — this "
                     + "node-local override deviates from chain-derived membership until the next "
@@ -2416,6 +2512,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             }
         Map<String, Object> status = new LinkedHashMap<>();
         status.put("chainId", config.chainId());
+        status.put("consensusProfile", consensusProfileStatus());
         status.put("memberKey", signer.publicKeyHex());
         status.put("members", group.size());
         status.put("threshold", group.threshold());
@@ -2436,6 +2533,10 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             status.put("tipHeight", tipHeight());
             status.put("stateRoot", HexUtil.encodeHexString(stateRoot()));
             status.put("stateMachine", stateMachine.id());
+            Map<String, Object> machineStatus = stateMachine.operationalStatus();
+            if (machineStatus != null && !machineStatus.isEmpty()) {
+                status.put("stateMachineStatus", Map.copyOf(machineStatus));
+            }
         }
         AnchorService currentAnchor = anchorService;
         ScriptAnchorService currentScriptAnchor = scriptAnchorService;
@@ -2469,7 +2570,6 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         // settings (single source of truth: EffectsSettings) and activation
         // entries, so operators can eyeball-compare members before an
         // activation height arrives.
-        EffectsSettings effectsSettings = EffectsSettings.fromSettings(config.pluginSettings());
         if (effectsSettings.enabled()) {
             Map<String, Object> effectsStatus = new LinkedHashMap<>();
             effectsStatus.put("enabled", true);
@@ -2571,6 +2671,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     private Map<String, Object> stoppedStatus() {
         Map<String, Object> status = new LinkedHashMap<>();
         status.put("chainId", config.chainId());
+        status.put("consensusProfile", consensusProfileStatus());
         status.put("memberKey", signer.publicKeyHex());
         status.put("members", group.size());
         status.put("threshold", group.threshold());
@@ -2578,6 +2679,11 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         status.put("sequencing", config.sequencingEnabled());
         status.put("tipHeight", 0L);
         status.put("stateRoot", HexUtil.encodeHexString(new byte[32]));
+        status.put("stateMachine", stateMachine.id());
+        Map<String, Object> machineStatus = stateMachine.operationalStatus();
+        if (machineStatus != null && !machineStatus.isEmpty()) {
+            status.put("stateMachineStatus", Map.copyOf(machineStatus));
+        }
         status.put("poolSize", pool.size());
         status.put("poolCapacity", pool.capacity());
         status.put("submissionsPaused", submissionsPaused.get());
@@ -2593,8 +2699,6 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         if (!activations.isEmpty()) {
             status.put("activations", activations);
         }
-        EffectsSettings effectsSettings = EffectsSettings.fromSettings(
-                config.pluginSettings());
         if (effectsSettings.enabled()) {
             Map<String, Object> effectsStatus = new LinkedHashMap<>();
             effectsStatus.put("enabled", true);
@@ -2609,6 +2713,20 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             }
             status.put("effects", effectsStatus);
         }
+        return status;
+    }
+
+    private Map<String, Object> consensusProfileStatus() {
+        Map<String, Object> status = new LinkedHashMap<>();
+        status.put("schemaVersion", consensusProfile.schemaVersion());
+        status.put("digest", HexUtil.encodeHexString(
+                AppChainConsensusProfileCommitment.digest(consensusProfile)));
+        status.put("maxMessageBytes", consensusProfile.maxMessageBytes());
+        status.put("maxBlockMessages", consensusProfile.maxBlockMessages());
+        status.put("maxBlockBytes", consensusProfile.maxBlockBytes());
+        status.put("l1StabilityDepth", consensusProfile.l1StabilityDepth());
+        status.put("enforceSenderSeq", consensusProfile.enforceSenderSeq());
+        status.put("effectsEnabled", consensusProfile.effectsEnabled());
         return status;
     }
 
@@ -2875,7 +2993,9 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                     config.maxBlockMessages(),
                     config.blockMaxBytes(),
                     (topic, body) -> buildAndDiffuse(topic, body, Math.max(60, config.maxTtlSeconds() / 6)),
-                    log);
+                    log,
+                    effectsSettings,
+                    consensusProfile);
             // Publish ownership immediately: AppChainEngine creates its own
             // executor in the constructor, and later configuration may fail.
             // Startup rollback must therefore be able to close it.

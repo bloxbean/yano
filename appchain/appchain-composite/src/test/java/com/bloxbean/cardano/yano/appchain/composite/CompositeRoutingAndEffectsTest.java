@@ -75,15 +75,22 @@ class CompositeRoutingAndEffectsTest {
     }
 
     @Test
-    void admissionRejectsUnknownAndRunsEveryScheduledGenerationValidator() {
+    void admissionUsesOnlyTheGenerationActiveAtCandidateHeight() {
         RecordingComponent oldGeneration = component("item", "item.v1", 1, 10, 0);
         RecordingComponent newGeneration = component("item", "item.v1", 10, 0, 0);
         CompositeStateMachine machine = machine(oldGeneration, newGeneration);
 
-        assertThat(machine.validate(message("item.v1", "ok")).isAccepted()).isTrue();
+        assertThat(machine.validateForBlock(message("item.v1", "old"), 9,
+                new MemoryState(8)).isAccepted()).isTrue();
+        assertThat(oldGeneration.validateCalls).isEqualTo(1);
+        assertThat(newGeneration.validateCalls).isZero();
+
+        assertThat(machine.validateForBlock(message("item.v1", "new"), 10,
+                new MemoryState(9)).isAccepted()).isTrue();
         assertThat(oldGeneration.validateCalls).isEqualTo(1);
         assertThat(newGeneration.validateCalls).isEqualTo(1);
-        assertThat(machine.validate(message("unknown.v1", "x")).isAccepted()).isFalse();
+        assertThat(machine.validateForBlock(message("unknown.v1", "x"), 10,
+                new MemoryState(9)).isAccepted()).isFalse();
     }
 
     @Test

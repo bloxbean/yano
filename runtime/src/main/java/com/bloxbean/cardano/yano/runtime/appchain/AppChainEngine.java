@@ -67,6 +67,7 @@ final class AppChainEngine implements AutoCloseable {
     private final long maxBlockBytes;
     private final long proposalMaxBytes;
     private final EffectsSettings effectsSettings;
+    private final ConsensusProfileGuard consensusProfileGuard;
     private final FxKernel fxKernel;
     private final FxKernel.FxReader fxReader;
     private final Supplier<WriteBatch> writeBatchFactory;
@@ -152,7 +153,50 @@ final class AppChainEngine implements AutoCloseable {
                    Logger log) {
         this(config, ledger, pool, stateMachine, signer, group, sequencerMode,
                 roundTimeoutMs, maxBlockMessages, maxBlockBytes, broadcast, log,
-                WriteBatch::new);
+                WriteBatch::new, resolveConsensus(config));
+    }
+
+    /** Normal runtime path verifies the provider context and kernel use one effective profile. */
+    AppChainEngine(AppChainConfig config,
+                   AppLedgerStore ledger,
+                   AppMsgPool pool,
+                   AppStateMachine stateMachine,
+                   com.bloxbean.cardano.yano.api.appchain.signer.SignerProvider signer,
+                   MemberGroup group,
+                   SequencerMode sequencerMode,
+                   long roundTimeoutMs,
+                   int maxBlockMessages,
+                   long maxBlockBytes,
+                   BiFunction<String, byte[], AppMessage> broadcast,
+                   Logger log,
+                   EffectsSettings providerEffectsSettings,
+                   AppChainConsensusProfile providerProfile) {
+        this(config, ledger, pool, stateMachine, signer, group, sequencerMode,
+                roundTimeoutMs, maxBlockMessages, maxBlockBytes, broadcast, log,
+                WriteBatch::new, resolveConsensus(
+                        config, providerEffectsSettings, providerProfile));
+    }
+
+    private static ResolvedConsensus resolveConsensus(AppChainConfig config) {
+        EffectsSettings settings = EffectsSettings.from(config);
+        return new ResolvedConsensus(settings, settings.consensusProfile(config));
+    }
+
+    private static ResolvedConsensus resolveConsensus(
+            AppChainConfig config,
+            EffectsSettings providerEffectsSettings,
+            AppChainConsensusProfile providerProfile) {
+        Objects.requireNonNull(providerEffectsSettings, "providerEffectsSettings");
+        AppChainConsensusProfile normalized = providerEffectsSettings.consensusProfile(config);
+        if (!normalized.equals(providerProfile)) {
+            throw new IllegalArgumentException(
+                    "state-machine context and kernel consensus profiles differ");
+        }
+        return new ResolvedConsensus(providerEffectsSettings, providerProfile);
+    }
+
+    private record ResolvedConsensus(
+            EffectsSettings settings, AppChainConsensusProfile profile) {
     }
 
     /** Package-private batch factory seam for native-resource ownership regressions. */
@@ -169,6 +213,25 @@ final class AppChainEngine implements AutoCloseable {
                    BiFunction<String, byte[], AppMessage> broadcast,
                    Logger log,
                    Supplier<WriteBatch> writeBatchFactory) {
+        this(config, ledger, pool, stateMachine, signer, group, sequencerMode,
+                roundTimeoutMs, maxBlockMessages, maxBlockBytes, broadcast, log,
+                writeBatchFactory, resolveConsensus(config));
+    }
+
+    private AppChainEngine(AppChainConfig config,
+                   AppLedgerStore ledger,
+                   AppMsgPool pool,
+                   AppStateMachine stateMachine,
+                   com.bloxbean.cardano.yano.api.appchain.signer.SignerProvider signer,
+                   MemberGroup group,
+                   SequencerMode sequencerMode,
+                   long roundTimeoutMs,
+                   int maxBlockMessages,
+                   long maxBlockBytes,
+                   BiFunction<String, byte[], AppMessage> broadcast,
+                   Logger log,
+                   Supplier<WriteBatch> writeBatchFactory,
+                   ResolvedConsensus resolvedConsensus) {
         this.config = config;
         this.ledger = ledger;
         this.pool = pool;
@@ -186,8 +249,11 @@ final class AppChainEngine implements AutoCloseable {
         this.broadcast = broadcast;
         this.log = log;
         this.writeBatchFactory = Objects.requireNonNull(writeBatchFactory, "writeBatchFactory");
-        this.effectsSettings = EffectsSettings.from(config);
-        this.fxKernel = new FxKernel(effectsSettings);
+        this.effectsSettings = resolvedConsensus.settings();
+        this.consensusProfileGuard = new ConsensusProfileGuard(
+                resolvedConsensus.profile());
+        this.consensusProfileGuard.verifyRetained(ledger, config.chainId());
+        this.fxKernel = new FxKernel(effectsSettings, consensusProfileGuard);
         this.fxReader = ledger.fxReader();
         if (!effectsSettings.enabled() && ledger.fxOpenCount() > 0) {
             // One-way switch (ADR-010 F12): the expiry sweep only runs while
@@ -440,7 +506,7 @@ final class AppChainEngine implements AutoCloseable {
                 return;
             }
 
-            List<AppMessage> candidates = selectMessages();
+            List<AppMessage> candidates = selectMessages(height);
             if (candidates.isEmpty()) {
                 return;
             }
@@ -514,7 +580,7 @@ final class AppChainEngine implements AutoCloseable {
         }
     }
 
-    private List<AppMessage> selectMessages() {
+    private List<AppMessage> selectMessages(long candidateHeight) {
         List<AppMessage> candidates = pool.drainCandidates(maxBlockMessages, proposalMaxBytes);
         // Exclude anything already finalized (re-gossip after restart)
         candidates.removeIf(m -> ledger.messageHeight(m.getMessageId()).isPresent());
@@ -560,7 +626,8 @@ final class AppChainEngine implements AutoCloseable {
             if (topic.startsWith("~")) {
                 return false;
             }
-            AppStateMachine.AdmissionResult result = stateMachine.validate(m);
+            AppStateMachine.AdmissionResult result = stateMachine.validateForBlock(
+                    m, candidateHeight, new CommittedStateReader());
             if (!result.isAccepted()) {
                 // Admission reasons are plugin-controlled free text. Do not
                 // copy a possibly secret-bearing reason into the default node
@@ -1660,6 +1727,11 @@ final class AppChainEngine implements AutoCloseable {
         public byte[] stateRoot() {
             byte[] root = ledger.stateRoot();
             return root != null ? root : new byte[32];
+        }
+
+        @Override
+        public long committedHeight() {
+            return ledger.tipHeight();
         }
     }
 }

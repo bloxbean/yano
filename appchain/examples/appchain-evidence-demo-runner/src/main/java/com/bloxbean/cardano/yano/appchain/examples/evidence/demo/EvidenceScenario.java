@@ -323,7 +323,17 @@ final class EvidenceScenario {
     ) {
         try {
             if (!"composite".equals(config.stateMachine())) {
-                return primary.evidence().submit(submit).messageId();
+                // A repeated direct submission is a deterministic no-op: the
+                // authenticated record keeps the message id that originally
+                // created it. Still wait for the new envelope to finalize,
+                // then read that proof-bound id from state. Reading after the
+                // envelope also avoids asking an empty chain to prove absence
+                // for a version that has not existed yet.
+                String replayMessageId = primary.evidence().submit(submit).messageId();
+                waitFinality(primary, replayMessageId, false);
+                return primary.evidence().queryVerified(config.evidenceId(), 1)
+                        .map(existing -> Digests.hex(existing.record().submitMessageId()))
+                        .orElseThrow(() -> new DemoException(DemoError.STATE_PROOF_FAILED));
             }
 
             String token = Digests.hex(Digests.sha256(

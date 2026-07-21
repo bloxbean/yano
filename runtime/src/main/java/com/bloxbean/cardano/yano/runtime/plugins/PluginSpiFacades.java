@@ -1178,6 +1178,34 @@ final class PluginSpiFacades {
         }
 
         @Override
+        public AdmissionResult validateForBlock(
+                AppMessage message,
+                long candidateHeight,
+                AppStateReader committedState
+        ) {
+            return pluginCall(callbacks, loader,
+                    () -> delegate.validateForBlock(
+                            message, candidateHeight, committedState));
+        }
+
+        @Override
+        public AdmissionResult validatePrivilegedSystemSubmission(
+                String topic,
+                byte[] body
+        ) {
+            byte[] input = body != null ? body.clone() : null;
+            return pluginCall(callbacks, loader,
+                    () -> delegate.validatePrivilegedSystemSubmission(topic, input));
+        }
+
+        @Override
+        public Map<String, Object> operationalStatus() {
+            Map<String, Object> values = pluginCall(callbacks, loader,
+                    delegate::operationalStatus);
+            return snapshotMap(values, loader, callbacks);
+        }
+
+        @Override
         public void apply(AppBlock block, AppStateWriter writer) {
             pluginRun(callbacks, loader,
                     () -> delegate.apply(block, writer));

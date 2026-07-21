@@ -20,6 +20,10 @@ public final class CompositeCommitmentV1 {
             .getBytes(StandardCharsets.US_ASCII);
     private static final byte[] COMPONENT_DOMAIN = "yano-composite-state-v1\0"
             .getBytes(StandardCharsets.US_ASCII);
+    private static final byte[] PROFILE_EPOCH_DOMAIN = "~composite/profile-epoch/v1/"
+            .getBytes(StandardCharsets.US_ASCII);
+    private static final byte[] CURRENT_PROFILE_EPOCH = "~composite/profile-epoch/v1/current"
+            .getBytes(StandardCharsets.US_ASCII);
     private static final byte[] DIGEST_DOMAIN = "yano-composite-profile-v1"
             .getBytes(StandardCharsets.US_ASCII);
 
@@ -29,6 +33,18 @@ public final class CompositeCommitmentV1 {
     /** Authenticated state key whose value is the canonical effective profile. */
     public static byte[] profileMarkerKey() {
         return PROFILE_MARKER.clone();
+    }
+
+    /** Authenticated pointer to the current governed profile epoch number. */
+    public static byte[] currentProfileEpochKey() {
+        return CURRENT_PROFILE_EPOCH.clone();
+    }
+
+    /** Authenticated append-only governed profile-epoch record key. */
+    public static byte[] profileEpochKey(long epochNumber) {
+        if (epochNumber < 0) throw new IllegalArgumentException("epochNumber must be non-negative");
+        return ByteBuffer.allocate(PROFILE_EPOCH_DOMAIN.length + Long.BYTES)
+                .put(PROFILE_EPOCH_DOMAIN).putLong(epochNumber).array();
     }
 
     /** Maps one component-local key to its authenticated composite state key. */

@@ -37,6 +37,9 @@ import java.util.concurrent.TimeUnit;
  *   yano_appchain_stalled{chain}             gauge (0/1 — peer ahead, no progress)
  *   yano_appchain_anchor_lag_blocks{chain}   gauge (tip − last anchored height)
  *   yano_appchain_sink_lag_blocks{chain,sink} gauge (tip − sink cursor)
+ *   yano_appchain_composite_profile_epoch{chain} gauge
+ *   yano_appchain_composite_governance_proposal_state{chain} gauge
+ *   yano_appchain_composite_governance_local_ready{chain} gauge
  *   yano_appchain_messages_dropped_total{chain,reason} counter (pool_full, stale_seq, ...)
  *   yano_appchain_blocks_finalized_total     counter
  *   yano_appchain_messages_finalized_total   counter
@@ -187,6 +190,36 @@ public class AppChainMetrics {
                         s -> s.nested("anchor", "lagBlocks"))
                 .tag("chain", chain)
                 .description("Finalized blocks not yet covered by a confirmed L1 anchor")
+                .register(registry);
+        Gauge.builder("yano.appchain.composite.profile.epoch", snapshot,
+                        s -> s.nested("stateMachineStatus", "currentEpoch"))
+                .tag("chain", chain)
+                .description("Current authenticated composite profile epoch")
+                .register(registry);
+        Gauge.builder("yano.appchain.composite.governance.proposal.state", snapshot,
+                        StatusSnapshot::compositeProposalState)
+                .tag("chain", chain)
+                .description("Composite proposal state: 0 none, 1 staging, 2 sealed, 3 scheduled")
+                .register(registry);
+        Gauge.builder("yano.appchain.composite.governance.approvals", snapshot,
+                        s -> s.nested("stateMachineStatus", "approvals"))
+                .tag("chain", chain)
+                .description("Distinct approvals for the active composite profile proposal")
+                .register(registry);
+        Gauge.builder("yano.appchain.composite.governance.readiness", snapshot,
+                        s -> s.nested("stateMachineStatus", "readiness"))
+                .tag("chain", chain)
+                .description("Distinct readiness attestations for the active composite proposal")
+                .register(registry);
+        Gauge.builder("yano.appchain.composite.governance.local.ready", snapshot,
+                        s -> s.nestedBoolean("stateMachineStatus", "locallyReady"))
+                .tag("chain", chain)
+                .description("1 when this node has the proposal's exact executable catalog entry")
+                .register(registry);
+        Gauge.builder("yano.appchain.composite.governance.retired.drains", snapshot,
+                        s -> s.nested("stateMachineStatus", "retiredDrains"))
+                .tag("chain", chain)
+                .description("Retired component generations still reserving effect-result quota")
                 .register(registry);
         for (String reason : new String[]{"pool_full", "stale_seq", "bad_auth", "not_member"}) {
             FunctionCounter
@@ -410,6 +443,24 @@ public class AppChainMetrics {
                 return n.doubleValue();
             }
             return 0d;
+        }
+
+        double nestedBoolean(String outer, String key) {
+            Object map = get().get(outer);
+            return map instanceof Map<?, ?> m && Boolean.TRUE.equals(m.get(key)) ? 1d : 0d;
+        }
+
+        double compositeProposalState() {
+            Object map = get().get("stateMachineStatus");
+            if (!(map instanceof Map<?, ?> status)) return 0d;
+            Object raw = status.get("proposalStatus");
+            if (raw == null) return 0d;
+            return switch (String.valueOf(raw)) {
+                case "STAGING" -> 1d;
+                case "SEALED" -> 2d;
+                case "SCHEDULED" -> 3d;
+                default -> 0d;
+            };
         }
 
         double drop(String reason) {

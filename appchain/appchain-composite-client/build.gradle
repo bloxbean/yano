@@ -1,0 +1,34 @@
+dependencies {
+    api project(':appchain-client')
+    api project(':appchain-composite-contracts')
+    api project(':core-api')
+
+    testImplementation libs.junit.jupiter.api
+    testRuntimeOnly libs.junit.jupiter.engine
+    testRuntimeOnly libs.junit.platform.launcher
+    testImplementation libs.assertj.core
+}
+
+java {
+    sourceCompatibility = 25
+    targetCompatibility = 25
+}
+
+tasks.withType(Javadoc).configureEach {
+    options.addBooleanOption('Xdoclint:all,-missing', true)
+}
+
+tasks.named('compileJava') {
+    options.compilerArgs.removeAll { it.startsWith('-Aproject=') }
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            pom {
+                name = 'Yano App-Chain Composite Client'
+                description = 'Finality, MPF, epoch-chain, and authorization verification for governed composite profiles'
+            }
+        }
+    }
+}

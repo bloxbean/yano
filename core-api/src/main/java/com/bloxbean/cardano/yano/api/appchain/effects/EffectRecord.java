@@ -7,7 +7,10 @@ import co.nstant.in.cbor.model.UnicodeString;
 import co.nstant.in.cbor.model.UnsignedInteger;
 import com.bloxbean.cardano.client.crypto.Blake2bUtil;
 import com.bloxbean.cardano.yaci.core.util.CborSerializationUtil;
+import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
+import com.bloxbean.cardano.yano.api.appchain.codec.internal.CborStructurePreflight;
 
+import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
 
@@ -36,6 +39,10 @@ public record EffectRecord(int version,
                            byte[] sourceMessageId) {
 
     public static final int RECORD_VERSION = 1;
+    private static final CborStructurePreflight.Limits RECORD_CBOR_LIMITS =
+            new CborStructurePreflight.Limits(
+                    Math.toIntExact(AppChainConfig.MAX_BLOCK_BYTES),
+                    4, 32, 16, AppChainConfig.MAX_MESSAGE_BYTES);
 
     public EffectRecord {
         Objects.requireNonNull(chainId, "chainId");
@@ -77,24 +84,42 @@ public record EffectRecord(int version,
     }
 
     public static EffectRecord decode(byte[] bytes) {
-        Array arr = (Array) CborSerializationUtil.deserializeOne(bytes);
-        List<DataItem> items = arr.getDataItems();
-        int version = ((UnsignedInteger) items.get(0)).getValue().intValue();
-        if (version != RECORD_VERSION) {
-            throw new IllegalArgumentException("Unsupported effect record version: " + version);
+        if (!CborStructurePreflight.accepts(bytes, RECORD_CBOR_LIMITS)) {
+            throw invalid();
         }
-        byte[] source = ((ByteString) items.get(10)).getBytes();
-        return new EffectRecord(
-                version,
-                ((UnicodeString) items.get(1)).getString(),
-                ((UnsignedInteger) items.get(2)).getValue().longValue(),
-                ((UnsignedInteger) items.get(3)).getValue().intValue(),
-                ((UnicodeString) items.get(4)).getString(),
-                ((ByteString) items.get(5)).getBytes(),
-                ((UnicodeString) items.get(6)).getString(),
-                FinalityGate.fromCode(((UnsignedInteger) items.get(7)).getValue().intValue()),
-                ResultPolicy.fromCode(((UnsignedInteger) items.get(8)).getValue().intValue()),
-                ((UnsignedInteger) items.get(9)).getValue().longValue(),
-                source.length > 0 ? source : null);
+        try {
+            Array arr = (Array) CborSerializationUtil.deserializeOne(bytes);
+            List<DataItem> items = arr.getDataItems();
+            if (items.size() != 11) {
+                throw invalid();
+            }
+            int version = ((UnsignedInteger) items.get(0)).getValue().intValueExact();
+            if (version != RECORD_VERSION) {
+                throw invalid();
+            }
+            byte[] source = ((ByteString) items.get(10)).getBytes();
+            EffectRecord decoded = new EffectRecord(
+                    version,
+                    ((UnicodeString) items.get(1)).getString(),
+                    ((UnsignedInteger) items.get(2)).getValue().longValueExact(),
+                    ((UnsignedInteger) items.get(3)).getValue().intValueExact(),
+                    ((UnicodeString) items.get(4)).getString(),
+                    ((ByteString) items.get(5)).getBytes(),
+                    ((UnicodeString) items.get(6)).getString(),
+                    FinalityGate.fromCode(((UnsignedInteger) items.get(7)).getValue().intValueExact()),
+                    ResultPolicy.fromCode(((UnsignedInteger) items.get(8)).getValue().intValueExact()),
+                    ((UnsignedInteger) items.get(9)).getValue().longValueExact(),
+                    source.length > 0 ? source : null);
+            if (!Arrays.equals(bytes, decoded.encode())) {
+                throw invalid();
+            }
+            return decoded;
+        } catch (RuntimeException malformed) {
+            throw invalid();
+        }
+    }
+
+    private static IllegalArgumentException invalid() {
+        return new IllegalArgumentException("Invalid bounded canonical effect record");
     }
 }

@@ -54,6 +54,23 @@ class AppChainHealthGroupCheckTest {
         assertTrue(data.values().stream().noneMatch(value -> String.valueOf(value).contains(sentinel)));
     }
 
+    @Test
+    void scheduledProfileWithoutLocalCatalogEntryIsOperationallyDown() {
+        AppChainGateway gateway = gateway(() -> Map.of(
+                "stateMachineStatus", Map.of(
+                        "mode", "governed",
+                        "proposalStatus", "SCHEDULED",
+                        "locallyReady", false)));
+        AppChainHealthGroupCheck check = new AppChainHealthGroupCheck();
+        check.appChainGateways = gateways(gateway);
+
+        HealthCheckResponse response = check.call();
+
+        assertEquals(HealthCheckResponse.Status.DOWN, response.getStatus());
+        assertEquals(true, response.getData().orElseThrow()
+                .get("chain-a.scheduledProfileMissing"));
+    }
+
     private static AppChainGateways gateways(AppChainGateway gateway) {
         return new AppChainGateways() {
             @Override

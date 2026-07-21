@@ -144,6 +144,13 @@ class AwsS3RealIntegrationTest {
                     .versioningConfiguration(VersioningConfiguration.builder()
                             .status(BucketVersioningStatus.ENABLED).build())
                     .build());
+            for (int index = 0; index < 64; index++) {
+                admin.putObject(PutObjectRequest.builder()
+                                .bucket(destinationBucket)
+                                .key(destinationKey + "/sibling-" + String.format("%03d", index))
+                                .build(),
+                        RequestBody.empty());
+            }
             admin.putObject(PutObjectRequest.builder()
                             .bucket(sourceBucket)
                             .key(sourceKey)
@@ -156,8 +163,10 @@ class AwsS3RealIntegrationTest {
             try (ObjectStoreClient client = AwsS3ObjectStoreClientFactory.INSTANCE.open(target)) {
                 assertThat(client.bucketVersioning(destinationBucket))
                         .isEqualTo(BucketVersioning.ENABLED);
-                assertThat(client.listVersions(destinationBucket, destinationKey, 64)
-                        .anyVersionOrDeleteMarker()).isFalse();
+                var siblingOnlyHistory = client.listVersions(
+                        destinationBucket, destinationKey, 1);
+                assertThat(siblingOnlyHistory.entriesExamined()).isZero();
+                assertThat(siblingOnlyHistory.anyVersionOrDeleteMarker()).isFalse();
                 byte[] source = client.get(sourceBucket, sourceKey, null,
                         content.length).takeBytes();
                 try {
@@ -189,6 +198,11 @@ class AwsS3RealIntegrationTest {
                         .isInstanceOfSatisfying(ObjectStoreException.class,
                                 failure -> assertThat(failure.code())
                                         .isEqualTo(ConnectorErrorCode.ACK_UNKNOWN));
+                admin.deleteObject(DeleteObjectRequest.builder()
+                        .bucket(destinationBucket).key(destinationKey).build());
+                assertThat(client.head(destinationBucket, destinationKey, null)).isEmpty();
+                assertThat(client.listVersions(destinationBucket, destinationKey, 1)
+                        .anyVersionOrDeleteMarker()).isTrue();
             } finally {
                 cleanup(admin, sourceBucket, sourceKey, destinationBucket);
             }

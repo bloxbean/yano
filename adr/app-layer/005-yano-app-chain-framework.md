@@ -1,12 +1,19 @@
 # ADR-005: Yano App-Chain Framework — A Parallel Application Ledger over the appmsg Protocol
 
 ## Status
-Accepted — implementation in progress
+Accepted and implemented — core framework; evolved by ADR-006/008+
 
 ## Date
 2026-07-07 (updated 2026-07-08)
 
 ## Implementation Status
+
+> **Current-status note (2026-07-17):** M1-M6 below are complete. Later ADRs
+> delivered rotating sequencing, governed membership, script anchors, effects,
+> plugins, first-party connectors, and governed composite profiles. This
+> section remains the delivery record for the v1 core; use
+> [open_item.md](open_item.md) for the current residual backlog.
+
 - **M1 (transport hardening + Yano wiring)**: done. Yaci `feat/app_layer_changes` (published locally as `0.5.0-app-layer-local`): envelope v2, Blake2b content-derived ids, `MsgInit`/`MsgInitAck` chain-scoped negotiation, TTL/size/id enforcement, pluggable `AppMsgValidator`, CDDL specs under `core/src/main/cddl/appmsg/`. Yano `feat/app_layer`: `api.appchain` (config/gateway/events), `runtime.appchain` (`AppChainSubsystem`, `AppPeerClient`, Ed25519+membership validation), `ServeSubsystem.enableAppLayer`, REST `/app-chain/*`, two-node socket-level integration test (bidirectional exchange + non-member rejection) green.
 - **M2 (sequenced durable ledger)**: done. S1 fixed sequencer (`AppChainEngine`) with persisted vote locks, re-propose on timeout, fully verified threshold finality certs; `AppLedgerStore` (own RocksDB) committing block + tip + message index + MPF trie nodes + state root in ONE atomic WriteBatch (MPF `withBatch` staging); `AppStateMachine` SPI + built-in `ordered-log`; consensus rides system topics `~consensus/propose|vote|cert` over protocol 100; REST tip/blocks/proof; CDDL `core-api/src/main/cddl/appchain/app-block.cddl`. Verified: 2-node integration (identical roots, restart/replay, dedup vs ledger), adversarial (rogue proposer fail-closed), process-level devnet demo (identical roots + certs + MPF proofs over REST, L1 lock-step).
 - **M3 (L1 anchoring, metadata mode)**: done. `AnchorService` builds/signs/submits anchor txs (metadata label 7014: chain-id, height range, block-hash, state-root) through the node's **own** tx gateway, selects inputs from the node's own UTXO state, confirms via its own `BlockAppliedEvent` stream, resubmits on timeout, and un-confirms on L1 rollback. Blocks carry a stable-depth `l1-ref` (proposer-side, from the subsystem's observed L1 block window). Verified on live devnet: anchor wallet faucet-funded → anchor tx confirmed on L1 → REST anchor status. *Deferred to M4:* strict follower verification of `l1-ref` (needs wait/retry semantics that pair naturally with catch-up), script-anchor mode (A2) and the full `L1View` read API.

@@ -28,6 +28,7 @@ public record ZkProofBody(String circuitId,
                           List<BigInteger> publicInputs) {
 
     public static ZkProofBody decode(byte[] body) {
+        ZkCbor.requireBody(body);
         List<DataItem> items = ((Array) CborSerializationUtil.deserializeOne(body)).getDataItems();
         if (items.size() != 5) {
             throw new IllegalArgumentException("zk proof body must have 5 elements, got " + items.size());

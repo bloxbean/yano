@@ -43,6 +43,7 @@ export DEMO_OBSERVABILITY=false
 export DEMO_CONNECTOR_SUBNET="${YANO_EFFECT_FAILOVER_SUBNET:-172.30.114.0/24}"
 export DEMO_S3_IP="${YANO_EFFECT_FAILOVER_S3_IP:-172.30.114.10}"
 export DEMO_KUBO_IP="${YANO_EFFECT_FAILOVER_KUBO_IP:-172.30.114.11}"
+export DEMO_KAFKA_IP="${YANO_EFFECT_FAILOVER_KAFKA_IP:-172.30.114.12}"
 export DEMO_SCENARIO_TIMEOUT_SECONDS="${YANO_EFFECT_FAILOVER_TIMEOUT_SECONDS:-600}"
 export DEMO_SCENARIO_POLL_INTERVAL_MILLIS=500
 
@@ -229,6 +230,21 @@ wait_json() {
       return 0
     fi
     sleep 1
+  done
+  printf 'Cluster agreement timeout (%s):\n' "$phase" >&2
+  for node in 0 1 2; do
+    if [ -f "$ROOT/$phase-node$node-status.json" ]; then
+      jq -c --argjson node "$node" '{node: $node, chainId, running, tipHeight,
+          stateRoot, memberKey, members, threshold, stateMachine,
+          profileMode: .stateMachineStatus.mode,
+          profileEpoch: .stateMachineStatus.currentEpoch,
+          activeProfileDigest: .stateMachineStatus.activeProfileDigest,
+          catalogReady: .stateMachineStatus.catalogReady,
+          currentMembershipDigest: .stateMachineStatus.currentMembershipDigest}' \
+        "$ROOT/$phase-node$node-status.json" >&2 || true
+    else
+      printf '{"node":%s,"status":"unavailable"}\n' "$node" >&2
+    fi
   done
   return 1
 }
@@ -487,13 +503,30 @@ wait_cluster_agreement() {
           and (.stateRoot | test("^[0-9a-f]{64}$"))
           and (.memberKey | test("^[0-9a-f]{64}$"))
           and .members == 3 and .threshold == 2
-          and .stateMachine == "evidence-registry")
+          and .stateMachine == "composite"
+          and .stateMachineStatus.mode == "governed"
+          and .stateMachineStatus.currentEpoch == 0
+          and (.stateMachineStatus.activeProfileDigest
+            | test("^[0-9a-f]{64}$"))
+          and (.stateMachineStatus as $machineStatus
+            | ($machineStatus.catalogDigests
+              | index($machineStatus.activeProfileDigest)) != null)
+          and .stateMachineStatus.catalogReady == true
+          and (.stateMachineStatus.currentMembershipDigest
+            | test("^[0-9a-f]{64}$")))
         and ([.[].tipHeight] | unique | length) == 1
         and ([.[].stateRoot] | unique | length) == 1
         and ([.[].memberKey] | unique | length) == 3
       ' "$status0" "$status1" "$status2" >/dev/null 2>&1; then
       jq -S -c -s '[.[] | {chainId, running, tipHeight, stateRoot, memberKey,
-          members, threshold, stateMachine}]' "$status0" "$status1" "$status2" \
+          members, threshold, stateMachine, stateMachineStatus: {
+            mode: .stateMachineStatus.mode,
+            currentEpoch: .stateMachineStatus.currentEpoch,
+            activeProfileDigest: .stateMachineStatus.activeProfileDigest,
+            catalogDigests: .stateMachineStatus.catalogDigests,
+            catalogReady: .stateMachineStatus.catalogReady,
+            currentMembershipDigest: .stateMachineStatus.currentMembershipDigest}}]' \
+        "$status0" "$status1" "$status2" \
         > "$output.tmp"
       mv "$output.tmp" "$output"
       return 0
@@ -572,7 +605,7 @@ audit_kafka_exact() {
 note "Starting isolated failover E2E in $ROOT"
 "$DEMO_DIR/demo.sh" config --deployment compose --network devnet \
   --instance "$INSTANCE" --chain-id "$CHAIN_ID" --evidence-id "$EVIDENCE_ID" \
-  --continuation explicit \
+  --continuation explicit --machine composite \
   > "$ROOT/preflight-compose.yml"
 python3 - "$ENV_FILE" <<'PY' \
   || fail 'preflight Compose environment is not a private regular owner file'
@@ -596,7 +629,7 @@ PROJECT_NAME="$(sed -n 's/^DEMO_PROJECT_NAME=//p' "$ENV_FILE")"
 
 "$DEMO_DIR/demo.sh" up --deployment compose --network devnet \
   --instance "$INSTANCE" --chain-id "$CHAIN_ID" --evidence-id "$EVIDENCE_ID" \
-  --continuation explicit
+  --continuation explicit --machine composite
 
 [ -f "$ENV_FILE" ] && [ "$(mode "$ENV_FILE")" = 600 ] \
   || fail 'generated Compose environment is not private mode 0600'
@@ -624,7 +657,7 @@ docker inspect "$FAULT_NODE0_ID" | jq -e '
 note "Running fresh scenario $EVIDENCE_ID and waiting at the post-ack boundary"
 "$DEMO_DIR/demo.sh" run --deployment compose --network devnet \
   --instance "$INSTANCE" --chain-id "$CHAIN_ID" --evidence-id "$EVIDENCE_ID" \
-  --continuation explicit \
+  --continuation explicit --machine composite \
   >"$RUN_OUTPUT" 2>&1 &
 RUN_PID="$!"
 
@@ -798,7 +831,7 @@ audit_kafka_exact 2 "$EFFECT_ID" "$ROOT/kafka-before-restart.json" \
 note 'Stopping and restarting the complete isolated stack with retained data'
 "$DEMO_DIR/demo.sh" probe --deployment compose --network devnet \
   --instance "$INSTANCE" --chain-id "$CHAIN_ID" --evidence-id "$EVIDENCE_ID" \
-  --continuation explicit
+  --continuation explicit --machine composite
 # Keep the authoritative demo lease/identity markers live while every owned
 # container is stopped. This fences concurrent use of the shared L1 state; the
 # final demo.sh stop remains the sole operation that releases that lease.
@@ -814,7 +847,7 @@ assert_owned_containers_stopped "$RESTART_OWNERSHIP_BEFORE"
 dc_failover up --detach --wait --wait-timeout 360
 "$DEMO_DIR/demo.sh" probe --deployment compose --network devnet \
   --instance "$INSTANCE" --chain-id "$CHAIN_ID" --evidence-id "$EVIDENCE_ID" \
-  --continuation explicit
+  --continuation explicit --machine composite
 capture_failover_container_ownership "$RESTART_OWNERSHIP_AFTER"
 cmp -s "$RESTART_OWNERSHIP_BEFORE" "$RESTART_OWNERSHIP_AFTER" \
   || fail 'retained restart recreated or reassigned an owned Compose container'
@@ -859,7 +892,7 @@ jq -e --arg id "$EFFECT_ID" '
 note 'PASS: fenced failover, plugin/metrics/UI evidence, and retained-stack restart are stable.'
 "$DEMO_DIR/demo.sh" stop --deployment compose --network devnet \
   --instance "$INSTANCE" --chain-id "$CHAIN_ID" --evidence-id "$EVIDENCE_ID" \
-  --continuation explicit
+  --continuation explicit --machine composite
 PROJECT_NAME=""
 remove_owned_root
 CLEANED=true

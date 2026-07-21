@@ -27,6 +27,7 @@ import java.util.Objects;
 /** Configuration-only factory for stock, versioned composite profiles. */
 public final class CompositeStockPresets {
     public static final String EVIDENCE_V1 = "evidence-v1";
+    public static final String EVIDENCE_V1_GATED = "evidence-v1-gated";
     public static final String REGISTRY_ID = "registry";
     public static final String APPROVALS_ID = "approvals";
     public static final String DOC_TRAIL_ID = "doc-trail";
@@ -41,10 +42,12 @@ public final class CompositeStockPresets {
     public static CompositeStateMachine create(AppStateMachineContext context) {
         Objects.requireNonNull(context, "context");
         Map<String, String> settings = Map.copyOf(context.settings());
-        String preset = settings.getOrDefault("machines.composite.preset", EVIDENCE_V1).trim();
-        if (!EVIDENCE_V1.equals(preset)) {
+        String preset = settings.getOrDefault(
+                "machines.composite.preset", EVIDENCE_V1_GATED).trim();
+        if (!EVIDENCE_V1.equals(preset) && !EVIDENCE_V1_GATED.equals(preset)) {
             throw new IllegalArgumentException("Unsupported composite preset: " + preset);
         }
+        boolean gated = EVIDENCE_V1_GATED.equals(preset);
         String approvalsPayments = settings.getOrDefault(
                 "machines.approvals.payments", "false").trim().toLowerCase(Locale.ROOT);
         if (!approvalsPayments.equals("true") && !approvalsPayments.equals("false")) {
@@ -53,13 +56,16 @@ public final class CompositeStockPresets {
         }
         if (approvalsPayments.equals("true")) {
             throw new IllegalArgumentException(
-                    "evidence-v1 keeps approvals payments disabled; use a custom composite profile");
+                    preset + " keeps approvals payments disabled; use a custom composite profile");
         }
 
-        int frameworkMaxEffects = positiveInt(settings, "effects.max-per-block", 256);
+        int frameworkMaxEffects = context.consensusProfile().orElseThrow(() ->
+                new IllegalArgumentException(
+                        "composite preset requires AppStateMachineContext.consensusProfile() (ADR-016)"))
+                .effectsMaxPerBlock();
         if (frameworkMaxEffects < 4) {
             throw new IllegalArgumentException(
-                    "evidence-v1 requires effects.max-per-block >= 4 for reserved component/workflow quotas");
+                    preset + " requires effects.max-per-block >= 4 for reserved component/workflow quotas");
         }
         String formatSetting = settings.getOrDefault(
                 "machines.kv-registry.value-format", "raw").trim();
@@ -74,9 +80,11 @@ public final class CompositeStockPresets {
                 "payments-disabled-v1", APPROVALS_TOPIC, List.of(), 0);
         ComponentDescriptor docTrailDescriptor = descriptor(DOC_TRAIL_ID,
                 "append-v1", DOC_TRAIL_TOPIC, List.of(), 0);
+        int evidenceQuota = gated ? frameworkMaxEffects - 3 : frameworkMaxEffects - 2;
         ComponentDescriptor evidenceDescriptor = descriptor(EVIDENCE_ID,
-                evidenceConfig.configurationId(), EvidenceContract.COMMAND_TOPIC,
-                List.of("get"), frameworkMaxEffects - 2);
+                evidenceConfig.configurationId(),
+                gated ? List.of() : List.of(EvidenceContract.COMMAND_TOPIC),
+                List.of("get"), evidenceQuota);
 
         KvRegistryStateMachine registryMachine = new KvRegistryStateMachine(registryFormat);
         ApprovalsStateMachine approvalsMachine = new ApprovalsStateMachine(
@@ -93,19 +101,35 @@ public final class CompositeStockPresets {
 
         List<ComponentGeneration> participants = components.stream()
                 .map(component -> component.descriptor().generation()).toList();
-        WorkflowDescriptor workflowDescriptor = new WorkflowDescriptor(
+        WorkflowDescriptor releaseDescriptor = new WorkflowDescriptor(
                 EvidenceReleaseWorkflow.ID, "1.0.0", EvidenceReleaseWorkflow.TOPIC,
                 1, 0, participants, 2);
-        CompositeWorkflow release = new EvidenceReleaseWorkflow(workflowDescriptor,
+        CompositeWorkflow release = new EvidenceReleaseWorkflow(releaseDescriptor,
                 participants.get(0), participants.get(1), participants.get(2), participants.get(3),
                 docTrailMachine, evidenceMachine);
-        CompositeProfile profile = new CompositeProfile(1, EVIDENCE_V1, "1.0.0",
+        List<WorkflowDescriptor> workflowDescriptors;
+        List<CompositeWorkflow> workflows;
+        if (gated) {
+            WorkflowDescriptor notifyDescriptor = new WorkflowDescriptor(
+                    EvidenceNotifyWorkflow.ID, "1.0.0", EvidenceNotifyWorkflow.TOPIC,
+                    1, 0, List.of(participants.get(3)), 1);
+            CompositeWorkflow notify = new EvidenceNotifyWorkflow(
+                    notifyDescriptor, participants.get(3), evidenceMachine);
+            // CompositeProfile canonicalizes workflow order by workflow id;
+            // products must be supplied in that same deterministic order.
+            workflowDescriptors = List.of(notifyDescriptor, releaseDescriptor);
+            workflows = List.of(notify, release);
+        } else {
+            workflowDescriptors = List.of(releaseDescriptor);
+            workflows = List.of(release);
+        }
+        CompositeProfile profile = new CompositeProfile(1, preset, "1.0.0",
                 components.stream().map(CompositeComponent::descriptor).toList(),
-                List.of(workflowDescriptor),
+                workflowDescriptors,
                 List.of(new LegacyQueryAlias(
                         EvidenceContract.GET_QUERY_PATH, EVIDENCE_ID, "get")),
                 AggregateQueryLimitsV1.DEFAULT);
-        return CompositeStateMachine.create(context, profile, components, List.of(release));
+        return CompositeStateMachine.create(context, profile, components, workflows);
     }
 
     private static ComponentDescriptor descriptor(
@@ -120,17 +144,16 @@ public final class CompositeStockPresets {
                 1, 0, List.of(topic), queryPaths, quota);
     }
 
-    private static int positiveInt(Map<String, String> settings, String key, int fallback) {
-        String configured = settings.get(key);
-        try {
-            int value = configured == null || configured.isBlank()
-                    ? fallback : Integer.parseInt(configured.trim());
-            if (value < 1 || value > 1_048_576) {
-                throw new IllegalArgumentException();
-            }
-            return value;
-        } catch (RuntimeException invalid) {
-            throw new IllegalArgumentException(key + " must be an integer between 1 and 1048576");
-        }
+    private static ComponentDescriptor descriptor(
+            String componentId,
+            String configurationId,
+            List<String> topics,
+            List<String> queryPaths,
+            int quota
+    ) {
+        return new ComponentDescriptor(componentId, "1.0.0", configurationId,
+                componentId + "-state-v1",
+                1, 0, topics, queryPaths, quota);
     }
+
 }

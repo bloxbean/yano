@@ -14,6 +14,8 @@ import com.bloxbean.cardano.yano.api.appchain.effects.EffectIntent;
 import com.bloxbean.cardano.yano.appchain.composite.CompositeStateKeys;
 import com.bloxbean.cardano.yano.appchain.composite.CompositeStateMachine;
 import com.bloxbean.cardano.yano.appchain.examples.evidence.EvidenceContract;
+import com.bloxbean.cardano.yano.appchain.examples.evidence.command.NotifyEvidenceCommandV1;
+import com.bloxbean.cardano.yano.appchain.examples.evidence.command.RepublishEvidenceCommandV1;
 import com.bloxbean.cardano.yano.appchain.examples.evidence.command.SubmitEvidenceCommandV1;
 import com.bloxbean.cardano.yano.appchain.examples.evidence.query.EvidenceGetRequestV1;
 import com.bloxbean.cardano.yano.appchain.examples.evidence.query.EvidenceGetResponseV1;
@@ -25,6 +27,7 @@ import com.bloxbean.cardano.yano.appchain.integration.objectstore.ObjectPutComma
 import com.bloxbean.cardano.yano.appchain.stdlib.ApprovalsStateMachine;
 import com.bloxbean.cardano.yano.appchain.stdlib.DocTrailStateMachine;
 import com.bloxbean.cardano.yano.appchain.stdlib.KvRegistryStateMachine;
+import com.bloxbean.cardano.yano.appchain.testkit.AppChainTestProfiles;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
@@ -86,13 +89,62 @@ class CompositeStockPresetTest {
         CompositeStateMachine machine = CompositeStockPresets.create(context(Map.of()));
 
         assertThat(machine.id()).isEqualTo("composite");
-        assertThat(machine.profile().profileId()).isEqualTo("evidence-v1");
+        assertThat(machine.profile().profileId()).isEqualTo("evidence-v1-gated");
         assertThat(machine.profile().components()).extracting(component -> component.componentId())
                 .containsExactly("registry", "approvals", "doc-trail", "evidence");
         assertThat(machine.profile().workflows()).extracting(workflow -> workflow.workflowId())
-                .containsExactly("evidence-release");
+                .containsExactly("evidence-notify", "evidence-release");
         assertThat(machine.profile().queryAliases()).extracting(alias -> alias.aliasPath())
                 .containsExactly(EvidenceContract.GET_QUERY_PATH);
+    }
+
+    @Test
+    void stockPresetCanStartAsGovernedEpochZeroWithoutChangingProfileDigest() {
+        CompositeStateMachine fixed = CompositeStockPresets.create(context(Map.of()));
+        CompositeStateMachine governed = CompositeStockPresets.create(context(Map.of(
+                "membership.mode", "governed",
+                "machines.composite.profile-mode", "governed")));
+        MemoryState state = new MemoryState();
+
+        governed.apply(block(1), state, new CapturingEmitter(1));
+
+        assertThat(governed.profile().digest()).containsExactly(fixed.profile().digest());
+        assertThat(governed.operationalStatus()).containsEntry("mode", "governed")
+                .containsEntry("currentEpoch", 0L);
+        assertThat(governed.query("composite/profile-epoch-v1", new byte[0], state.atHeight(1)))
+                .isNotEmpty();
+    }
+
+    @Test
+    void gatedPresetAllowsOnlyNotifyOnDirectEvidenceTopic() {
+        SubmitEvidenceCommandV1 command = evidence("direct-bypass");
+        AppMessage direct = message(1, EvidenceContract.COMMAND_TOPIC, command.encode());
+        AppMessage republish = message(2, EvidenceContract.COMMAND_TOPIC,
+                new RepublishEvidenceCommandV1(
+                        command.evidenceId(), 2, command.objectPutCommand(),
+                        command.expectedObjectDestinationFingerprint(), command.ipfsPinCommand(),
+                        command.expectedIpfsTargetFingerprint(), command.kafkaTarget(),
+                        command.kafkaTopic(),
+                        command.expectedKafkaDestinationFingerprint()).encode());
+        AppMessage notify = message(3, EvidenceContract.COMMAND_TOPIC,
+                new NotifyEvidenceCommandV1(command.evidenceId(), 1).encode());
+        CompositeStateMachine gated = CompositeStockPresets.create(context(Map.of()));
+        CompositeStateMachine explicit = CompositeStockPresets.create(context(Map.of(
+                "machines.composite.preset", CompositeStockPresets.EVIDENCE_V1)));
+
+        assertThat(gated.validate(direct).isAccepted()).isFalse();
+        assertThat(gated.validate(republish).isAccepted()).isFalse();
+        assertThat(gated.validate(notify).isAccepted()).isTrue();
+        assertThat(explicit.validate(direct).isAccepted()).isTrue();
+        assertThat(gated.profile().digest())
+                .isNotEqualTo(explicit.profile().digest());
+
+        MemoryState state = new MemoryState();
+        CapturingEmitter emitter = new CapturingEmitter(1);
+        gated.apply(block(1, direct), state, emitter);
+        assertThat(emitter.intents).isEmpty();
+        assertThat(state.get(CompositeStateKeys.componentKey("evidence",
+                EvidenceKeys.recordKey("direct-bypass", 1)))).isEmpty();
     }
 
     @Test
@@ -234,9 +286,22 @@ class CompositeStockPresetTest {
         settings.put("effects.enabled", "true");
         settings.put("effects.max-per-block", "8");
         settings.putAll(overrides);
+        int effectCap = Integer.parseInt(settings.get("effects.max-per-block"));
         return new AppStateMachineContext() {
             @Override public String chainId() { return CHAIN; }
             @Override public Map<String, String> settings() { return Map.copyOf(settings); }
+            @Override
+            public Optional<com.bloxbean.cardano.yano.api.appchain.AppChainConsensusProfile>
+            consensusProfile() {
+                return Optional.of(AppChainTestProfiles.enabledEffects(effectCap));
+            }
+            @Override
+            public Optional<com.bloxbean.cardano.yano.api.appchain.AppChainMembershipView>
+            membershipView() {
+                var epoch = new com.bloxbean.cardano.yano.api.appchain.AppChainMembershipEpoch(
+                        0, List.of(HexFormat.of().formatHex(SENDER)), 1);
+                return Optional.of(ignored -> epoch);
+            }
         };
     }
 

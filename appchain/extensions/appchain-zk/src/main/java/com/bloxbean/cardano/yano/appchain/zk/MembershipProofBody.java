@@ -35,6 +35,7 @@ public record MembershipProofBody(String circuitId,
     }
 
     public static MembershipProofBody decode(byte[] body) {
+        ZkCbor.requireBody(body);
         List<DataItem> items = ((Array) CborSerializationUtil.deserializeOne(body)).getDataItems();
         if (items.size() != 8) {
             throw new IllegalArgumentException("membership body must have 8 elements, got " + items.size());

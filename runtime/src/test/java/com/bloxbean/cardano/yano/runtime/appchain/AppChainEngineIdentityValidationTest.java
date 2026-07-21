@@ -239,8 +239,9 @@ class AppChainEngineIdentityValidationTest {
                     "Catch-up block cert verification FAILED at height {} — rejecting", 1L);
             assertThat(ledger.tipHeight()).isZero();
 
-            AppBlock first = certify(block(AppBlock.BLOCK_VERSION, CHAIN,
-                    List.of(validMessage), signer.publicKey()), signer);
+            AppBlock first = certify(withConsensusProfileRoot(block(
+                    AppBlock.BLOCK_VERSION, CHAIN, List.of(validMessage), signer.publicKey()),
+                    config, ledger), signer);
             engine.onCertifiedBlocks(List.of(AppBlockCodec.serialize(first)));
             awaitTip(ledger, 1);
             AppBlock replayProposal = new AppBlock(AppBlock.BLOCK_VERSION, CHAIN, 2,
@@ -293,8 +294,9 @@ class AppChainEngineIdentityValidationTest {
                     return null;
                 }, logger);
         try {
-            AppBlock proposed = block(AppBlock.BLOCK_VERSION, CHAIN,
-                    List.of(), proposer.publicKey());
+            AppBlock proposed = withConsensusProfileRoot(block(
+                    AppBlock.BLOCK_VERSION, CHAIN, List.of(), proposer.publicKey()),
+                    config, ledger);
             engine.onConsensusMessage(proposal(proposer, proposed, 1));
             assertThat(voted.await(5, TimeUnit.SECONDS)).isTrue();
 
@@ -327,6 +329,19 @@ class AppChainEngineIdentityValidationTest {
         return new AppBlock(version, chainId, 1, AppBlock.GENESIS_PREV_HASH,
                 0, new byte[0], 1_000, AppBlockCodec.messagesRoot(messages),
                 new byte[32], messages, proposer, FinalityCert.empty());
+    }
+
+    private static AppBlock withConsensusProfileRoot(
+            AppBlock block,
+            AppChainConfig config,
+            AppLedgerStore ledger
+    ) {
+        var trie = new com.bloxbean.cardano.vds.mpf.MpfTrie(ledger.mpfNodeStore());
+        new ConsensusProfileGuard(EffectsSettings.from(config).consensusProfile(config))
+                .apply(1, trie);
+        return new AppBlock(block.version(), block.chainId(), block.height(), block.prevHash(),
+                block.l1Slot(), block.l1BlockHash(), block.timestamp(), block.messagesRoot(),
+                trie.getRootHash(), block.messages(), block.proposer(), block.cert());
     }
 
     private static AppBlock withRepeatedCertificate(AppBlock block,

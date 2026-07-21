@@ -35,6 +35,7 @@ import com.bloxbean.cardano.julc.clientlib.eval.JulcTransactionEvaluator;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
+import com.bloxbean.cardano.yano.api.appchain.codec.internal.CborStructurePreflight;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yano.api.appchain.codec.AppBlockCodec;
 import com.bloxbean.cardano.yano.api.appchain.signer.SignerProvider;
@@ -88,6 +89,14 @@ final class ScriptAnchorService {
 
     static final String TOPIC_SIGN = "~anchor/sign";
     static final String TOPIC_SIG = "~anchor/sig";
+    private static final CborStructurePreflight.Limits ANCHOR_MESSAGE_CBOR_LIMITS =
+            new CborStructurePreflight.Limits(
+                    AppChainConfig.MAX_MESSAGE_BYTES, 4, 32, 8,
+                    AppChainConfig.MAX_MESSAGE_BYTES);
+    private static final CborStructurePreflight.Limits ANCHOR_TX_BODY_CBOR_LIMITS =
+            new CborStructurePreflight.Limits(
+                    AppChainConfig.MAX_MESSAGE_BYTES, 64, 500_000, 250_000,
+                    AppChainConfig.MAX_MESSAGE_BYTES);
 
     private static final long MIN_INPUT_LOVELACE = 1_000_000;
     private static final long RESUBMIT_AFTER_MS = 120_000;
@@ -586,8 +595,7 @@ final class ScriptAnchorService {
             log.debug("Script-anchor: anchor UTxO not visible on the local L1 view yet");
             return null;
         }
-        AnchorDatumCodec.AnchorDatum prev = AnchorDatumCodec.decode(
-                com.bloxbean.cardano.client.plutus.spec.PlutusData.deserialize(anchorUtxo.inlineDatum()));
+        AnchorDatumCodec.AnchorDatum prev = AnchorDatumCodec.decode(anchorUtxo.inlineDatum());
         long tip = tipHeightSupplier.get();
         if (tip <= prev.height())
             return null;
@@ -851,9 +859,7 @@ final class ScriptAnchorService {
 
     private boolean validAdoptionBaseline(Utxo anchorUtxo) {
         try {
-            AnchorDatumCodec.AnchorDatum datum = AnchorDatumCodec.decode(
-                    com.bloxbean.cardano.client.plutus.spec.PlutusData.deserialize(
-                            anchorUtxo.inlineDatum()));
+            AnchorDatumCodec.AnchorDatum datum = AnchorDatumCodec.decode(anchorUtxo.inlineDatum());
             if (datum.version() != AnchorDatumCodec.ABI_VERSION
                     || !chainId.equals(datum.chainId())
                     || datum.height() < 0L || datum.height() > tipHeightSupplier.get()) {
@@ -1236,8 +1242,7 @@ final class ScriptAnchorService {
                 }
 
                 AnchorDatumCodec.AnchorDatum datum = AnchorDatumCodec.decode(
-                        com.bloxbean.cardano.client.plutus.spec.PlutusData.deserialize(
-                                anchorUtxo.inlineDatum()));
+                        anchorUtxo.inlineDatum());
                 if (datum.version() != AnchorDatumCodec.ABI_VERSION
                         || !chainId.equals(datum.chainId())) {
                     log.warn("Script-anchor: observed thread datum version/chain-id mismatch — ignored");
@@ -1753,6 +1758,9 @@ final class ScriptAnchorService {
 
     private TransactionBody deserializeBody(byte[] bodyBytes) {
         try {
+            if (!CborStructurePreflight.accepts(bodyBytes, ANCHOR_TX_BODY_CBOR_LIMITS)) {
+                return null;
+            }
             DataItem item = CborSerializationUtil.deserialize(bodyBytes);
             return TransactionBody.deserialize((co.nstant.in.cbor.model.Map) item);
         } catch (Throwable failure) {
@@ -1786,14 +1794,24 @@ final class ScriptAnchorService {
 
     private SignRequest decodeSignRequest(byte[] body) {
         try {
+            if (!CborStructurePreflight.accepts(body, ANCHOR_MESSAGE_CBOR_LIMITS)) {
+                return null;
+            }
             Array array = (Array) CborSerializationUtil.deserialize(body);
             List<DataItem> items = array.getDataItems();
+            if (items.size() != 4) {
+                return null;
+            }
             long version = ((UnsignedInteger) items.get(0)).getValue().longValueExact();
             if (version != 1)
                 return null;
-            return new SignRequest(((ByteString) items.get(1)).getBytes(),
-                    ((ByteString) items.get(2)).getBytes(),
-                    ((ByteString) items.get(3)).getBytes());
+            byte[] bodyBytes = ((ByteString) items.get(1)).getBytes();
+            byte[] policyId = ((ByteString) items.get(2)).getBytes();
+            byte[] scriptHash = ((ByteString) items.get(3)).getBytes();
+            if (bodyBytes.length == 0 || policyId.length != 28 || scriptHash.length != 28) {
+                return null;
+            }
+            return new SignRequest(bodyBytes, policyId, scriptHash);
         } catch (Throwable failure) {
             logFailure("sign request decode", failure);
             return null;
@@ -1814,13 +1832,24 @@ final class ScriptAnchorService {
 
     private SignatureReply decodeSignature(byte[] body) {
         try {
+            if (!CborStructurePreflight.accepts(body, ANCHOR_MESSAGE_CBOR_LIMITS)) {
+                return null;
+            }
             Array array = (Array) CborSerializationUtil.deserialize(body);
             List<DataItem> items = array.getDataItems();
+            if (items.size() != 3) {
+                return null;
+            }
             long version = ((UnsignedInteger) items.get(0)).getValue().longValueExact();
             if (version != 1)
                 return null;
-            return new SignatureReply(((ByteString) items.get(1)).getBytes(),
-                    ((ByteString) items.get(2)).getBytes());
+            byte[] bodyHash = ((ByteString) items.get(1)).getBytes();
+            byte[] signature = ((ByteString) items.get(2)).getBytes();
+            if (bodyHash.length != 32
+                    || signature.length != AppChainConfig.ED25519_SIGNATURE_BYTES) {
+                return null;
+            }
+            return new SignatureReply(bodyHash, signature);
         } catch (Throwable failure) {
             logFailure("signature reply decode", failure);
             return null;

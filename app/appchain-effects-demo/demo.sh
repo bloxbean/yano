@@ -398,7 +398,7 @@ HTTP0=$((10#$DEMO_HTTP_BASE))
 HTTP1=$((HTTP0 + 1))
 HTTP2=$((HTTP0 + 2))
 SERVER_BASE="${DEMO_SERVER_BASE:-13337}"
-python3 - "$DEMO_CONNECTOR_SUBNET" "$DEMO_S3_IP" "$DEMO_KUBO_IP" <<'PY' \
+python3 - "$DEMO_CONNECTOR_SUBNET" "$DEMO_S3_IP" "$DEMO_KUBO_IP" "$DEMO_KAFKA_IP" <<'PY' \
   || die "connector subnet/IP values must be distinct canonical private IPv4 addresses"
 import ipaddress, sys
 network = ipaddress.ip_network(sys.argv[1], strict=True)
@@ -1117,7 +1117,7 @@ PY
     s3_provider="$S3_PROVIDER"; s3_provider_version="$S3_PROVIDER_VERSION"
     s3_layout_version="$S3_LAYOUT_VERSION"; s3_config_hash="$S3_CONFIG_HASH"
     ipfs_locator="http://$DEMO_KUBO_IP:5001"
-    kafka_locator="kafka:9092"
+    kafka_locator="$DEMO_KAFKA_IP:19092"
   else
     s3_id="$HOST_S3_TARGET_ID"; ipfs_id="$HOST_IPFS_TARGET_ID"; kafka_id="$HOST_KAFKA_TARGET_ID"
     s3_locator="${DEMO_HOST_S3_ENDPOINT:-http://127.0.0.1:$DEMO_S3_PORT}"
@@ -1201,7 +1201,7 @@ document = {
     },
 }
 if state_machine == "composite":
-    document["stateMachine"]["preset"] = "evidence-v1"
+    document["stateMachine"]["preset"] = "evidence-v1-gated"
 Path(output).write_text(
     json.dumps(document, sort_keys=True, separators=(",", ":")) + "\n",
     encoding="utf-8",
@@ -1321,7 +1321,7 @@ prepare_compose_configs() {
   follower="$RUNTIME_ROOT/follower-compose.properties"
   node0extra="$RUNTIME_ROOT/node0-compose.properties"
   render_template "$SCRIPT_DIR/config/templates/executor-compose.properties.in" "$executor" \
-    S3_IP "$DEMO_S3_IP" KUBO_IP "$DEMO_KUBO_IP" \
+    S3_IP "$DEMO_S3_IP" KUBO_IP "$DEMO_KUBO_IP" KAFKA_IP "$DEMO_KAFKA_IP" \
     S3_TARGET_ID "$COMPOSE_S3_TARGET_ID" IPFS_TARGET_ID "$COMPOSE_IPFS_TARGET_ID" \
     KAFKA_TARGET_ID "$COMPOSE_KAFKA_TARGET_ID" \
     S3_EXECUTOR_ACCESS "$(read_secret "$S3_EXECUTOR_ACCESS_FILE")" \
@@ -1353,6 +1353,7 @@ prepare_compose_configs() {
     'yano-0:13337,yano-1:13337' "$follower"
   render_template "$SCRIPT_DIR/config/templates/runner-compose.properties.in" "$RUNNER_CONFIG" \
     CHAIN_ID "$DEMO_CHAIN_ID" S3_IP "$DEMO_S3_IP" KUBO_IP "$DEMO_KUBO_IP" \
+    KAFKA_IP "$DEMO_KAFKA_IP" \
     STATE_MACHINE "$STATE_MACHINE_ID" \
     COMPOSITE_PROFILE_DIGEST_SETTING "$COMPOSITE_PROFILE_DIGEST_SETTING" \
     EVIDENCE_ID "$DEMO_EVIDENCE_ID" \
@@ -1472,7 +1473,7 @@ write_compose_env() {
   for variable in DEMO_KAFKA_IMAGE DEMO_RUSTFS_IMAGE \
     DEMO_KUBO_IMAGE DEMO_PROMETHEUS_IMAGE DEMO_GRAFANA_IMAGE \
     DEMO_YANO_IMAGE DEMO_RUNNER_IMAGE DEMO_CONNECTOR_SUBNET DEMO_S3_IP \
-    DEMO_KUBO_IP DEMO_UI_PORT DEMO_KAFKA_PORT DEMO_S3_PORT DEMO_IPFS_PORT \
+    DEMO_KUBO_IP DEMO_KAFKA_IP DEMO_UI_PORT DEMO_KAFKA_PORT DEMO_S3_PORT DEMO_IPFS_PORT \
     DEMO_PROMETHEUS_PORT DEMO_GRAFANA_PORT; do
     compose_env_value "$variable" "${!variable}"
   done
@@ -1507,8 +1508,8 @@ write_compose_env() {
         "$DEMO_UI_PORT" "$DEMO_KAFKA_PORT" "$DEMO_S3_PORT" "$DEMO_IPFS_PORT"
       printf 'DEMO_PROMETHEUS_PORT=%s\nDEMO_GRAFANA_PORT=%s\n' \
         "$DEMO_PROMETHEUS_PORT" "$DEMO_GRAFANA_PORT"
-      printf 'DEMO_CONNECTOR_SUBNET=%s\nDEMO_S3_IP=%s\nDEMO_KUBO_IP=%s\n' \
-        "$DEMO_CONNECTOR_SUBNET" "$DEMO_S3_IP" "$DEMO_KUBO_IP"
+      printf 'DEMO_CONNECTOR_SUBNET=%s\nDEMO_S3_IP=%s\nDEMO_KUBO_IP=%s\nDEMO_KAFKA_IP=%s\n' \
+        "$DEMO_CONNECTOR_SUBNET" "$DEMO_S3_IP" "$DEMO_KUBO_IP" "$DEMO_KAFKA_IP"
       printf 'DEMO_RUNNER_CONFIG=%s\nDEMO_PLUGIN_DIR=%s\nDEMO_REPORT_DIR=%s\n' \
         "$RUNNER_CONFIG" "$PLUGIN_DIR" "$REPORT_DIR"
       printf 'DEMO_KAFKA_PASSWD_FILE=%s\nDEMO_KAFKA_GROUP_FILE=%s\n' \
@@ -2641,7 +2642,7 @@ Options:
   --continuation explicit|direct
                             explicit notify (legacy/default) or activated direct result emission
   --machine standalone|composite
-                            standalone evidence registry (default) or evidence-v1 composite preset
+                            evidence-v1-gated composite (default) or standalone regression profile
   --data-dir <base>         bind-data base; network isolation is added below it
   --observability           start pinned Prometheus and Grafana services
   --anchor-key-file <path>  owner-only funded anchor seed (preview/preprod)

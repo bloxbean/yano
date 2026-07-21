@@ -1,7 +1,7 @@
 # ADR-003: Transport Layer — CIP-0137-Inspired App Message Protocols
 
 ## Status
-Accepted
+Accepted and implemented — subsequently refined by ADR-005
 
 ## Date
 2026-03-12

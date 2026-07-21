@@ -865,9 +865,10 @@ def pluginConformanceRuntimeArguments = { int httpPort, int nodePort,
         arguments.addAll([
                 "-Dyano.app-chain.sinks.kafka.bootstrap-servers=127.0.0.1:${kafkaBootstrapPort}",
                 '-Dyano.app-chain.sinks.kafka.topic=yano-native-smoke-blocks',
+                '-Dyano.app-chain.sinks.kafka.security-profile=local-demo',
                 '-Dyano.app-chain.sinks.kafka.max-block-ms=1000',
                 '-Dyano.app-chain.sinks.kafka.delivery-timeout-ms=30000',
-                '-Dyano.app-chain.sinks.kafka.close-timeout-ms=1',
+                '-Dyano.app-chain.sinks.kafka.close-timeout-ms=100',
                 '-Dyano.app-chain.effects.executors.kafka.enabled=true',
                 '-Dyano.app-chain.effects.executors.kafka.targets.native.target-id=native',
                 "-Dyano.app-chain.effects.executors.kafka.targets.native.bootstrap-servers=127.0.0.1:${kafkaBootstrapPort}",
@@ -935,7 +936,8 @@ def awaitPluginConformanceStatus = { int httpPort, int timeoutSeconds,
                                      Process process, Closure<String> logTail,
                                      boolean expectFirstPartyClients,
                                      String expectedStateMachine = 'conformance-machine',
-                                     String expectedSequencerMode = 'conformance-mode' ->
+                                     String expectedSequencerMode = 'conformance-mode',
+                                     String expectedProfileMode = null ->
     def statusUrl = new URL(
             "http://127.0.0.1:${httpPort}${bakedApiPathPrefix()}"
                     + '/app-chain/chains/conformance-chain/status')
@@ -985,6 +987,22 @@ def awaitPluginConformanceStatus = { int httpPort, int timeoutSeconds,
     if (status.stateMachine != expectedStateMachine) failures.add('stateMachine')
     if (!(status.sequencer instanceof Map)
             || status.sequencer.mode != expectedSequencerMode) failures.add('sequencer')
+    if (expectedProfileMode != null) {
+        def machineStatus = status.stateMachineStatus
+        if (!(machineStatus instanceof Map)
+                || machineStatus.mode != expectedProfileMode
+                || machineStatus.currentEpoch != 0
+                || !(machineStatus.activeProfileDigest instanceof String)
+                || !(machineStatus.activeProfileDigest ==~ /[0-9a-f]{64}/)
+                || !(machineStatus.catalogDigests instanceof Collection)
+                || !machineStatus.catalogDigests.contains(
+                        machineStatus.activeProfileDigest)
+                || machineStatus.catalogReady != true
+                || !(machineStatus.currentMembershipDigest instanceof String)
+                || !(machineStatus.currentMembershipDigest ==~ /[0-9a-f]{64}/)) {
+            failures.add('stateMachineGovernance')
+        }
+    }
     if (!(status.observers instanceof Map)
             || !status.observers.containsKey('audit')) failures.add('observer')
     if (!(status.sinks instanceof Map)
@@ -1340,10 +1358,12 @@ tasks.register('nativePluginCatalogSmoke') {
             }
         }
         if (!expectedProvenance.keySet().containsAll(
-                ['catalogFingerprint', 'indexSha256'])) {
+                ['catalogFingerprint', 'indexSha256', 'compositeProfileDigest'])) {
             throw new GradleException(
                     "Incomplete native catalog expectation: ${expectedProvenance.keySet()}")
         }
+        def expectedCompositeProfileDigest = expectedProvenance.remove(
+                'compositeProfileDigest')
 
         def binaryOverride = providers.gradleProperty('yanoNativeBinary')
                 .orElse(providers.environmentVariable('YANO_NATIVE_BINARY'))
@@ -1655,8 +1675,11 @@ tasks.register('nativePluginCatalogSmoke') {
                         '-Dyano.app-chain.state-machine=composite',
                         '-Dyano.app-chain.sequencer.mode=fixed',
                         '-Dyano.app-chain.sequencer.proposer=' + pluginConformanceMemberKey,
+                        '-Dyano.app-chain.membership.mode=governed',
+                        '-Dyano.app-chain.block.max-messages=64',
                         '-Dyano.app-chain.effects.max-per-block=128',
-                        '-Dyano.app-chain.machines.composite.preset=evidence-v1'
+                        '-Dyano.app-chain.machines.composite.preset=evidence-v1-gated',
+                        '-Dyano.app-chain.machines.composite.profile-mode=governed'
                 ])
                 def compositeBuilder = new ProcessBuilder(compositeCommand)
                         .directory(smokeRoot.toFile())
@@ -1675,12 +1698,22 @@ tasks.register('nativePluginCatalogSmoke') {
                         'YACI_PLUGINS_ENABLED'   : 'true'
                 ])
                 process = compositeBuilder.start()
-                awaitPluginConformanceStatus(
+                def nativeCompositeStatus = awaitPluginConformanceStatus(
                         compositeHttpPort, timeoutSeconds, process,
-                        compositeLogTail, false, 'composite', 'fixed')
+                        compositeLogTail, false, 'composite', 'fixed', 'governed')
+                def nativeCompositeDigest = 'sha256:' +
+                        nativeCompositeStatus.stateMachineStatus.activeProfileDigest
+                if (nativeCompositeDigest != expectedCompositeProfileDigest) {
+                    throw new GradleException(
+                            'Native governed stock composite profile differs from the '
+                                    + 'packaged JVM profile. expected='
+                                    + "${expectedCompositeProfileDigest}, actual="
+                                    + nativeCompositeDigest)
+                }
                 logger.lifecycle(
-                        "Native stock composite activation passed for ${binary.absolutePath} "
-                                + "on http://127.0.0.1:${compositeHttpPort}")
+                        "Native governed stock composite activation passed for ${binary.absolutePath} "
+                                + "on http://127.0.0.1:${compositeHttpPort}; profile="
+                                + nativeCompositeDigest)
             }
 
             logger.lifecycle(
@@ -1723,7 +1756,11 @@ tasks.register('nativePluginCatalogSmoke') {
                 }
             } finally {
                 try {
-                    project.delete(smokeRoot.toFile())
+                    if (primaryFailure == null) {
+                        project.delete(smokeRoot.toFile())
+                    } else {
+                        logger.lifecycle("Preserved failed native plugin catalog smoke at ${smokeRoot}")
+                    }
                 } catch (Throwable cleanupFailure) {
                     if (primaryFailure != null) {
                         primaryFailure.addSuppressed(cleanupFailure)
@@ -1834,6 +1871,11 @@ tasks.register('yanoDistZip', Zip) {
         }
         from('appchain-cluster') {
             into 'appchain-cluster'
+            include 'profile-governance.py'
+            filePermissions { unix('755') }
+        }
+        from('appchain-cluster') {
+            into 'appchain-cluster'
             include '*.md'
         }
         into('plugins') {
@@ -1928,6 +1970,13 @@ tasks.register('packagedJvmPluginCatalogSmoke') {
                 throw new GradleException(
                         'Final JVM distribution must contain one yano-plugin-catalog CLI library')
             }
+            def profileGovernanceCli = archive.entries().findAll {
+                it.name.endsWith('/appchain-cluster/profile-governance.py')
+            }
+            if (profileGovernanceCli.size() != 1) {
+                throw new GradleException(
+                        'Final JVM distribution must contain one profile governance CLI')
+            }
         }
         org.apache.commons.compress.archivers.zip.ZipFile.builder()
                 .setFile(distribution).get().withCloseable { archive ->
@@ -1936,6 +1985,13 @@ tasks.register('packagedJvmPluginCatalogSmoke') {
             if (cliLauncher == null || (cliLauncher.unixMode & 0111) == 0) {
                 throw new GradleException(
                         'Final JVM distribution yano-plugins launcher must be executable')
+            }
+            def profileGovernanceCli = archive.getEntry(
+                    "yano-${distVersion}/appchain-cluster/profile-governance.py")
+            if (profileGovernanceCli == null
+                    || (profileGovernanceCli.unixMode & 0111) == 0) {
+                throw new GradleException(
+                        'Final JVM distribution profile governance CLI must be executable')
             }
         }
 
@@ -2372,6 +2428,11 @@ tasks.register('yanoNativeDistZip', Zip) {
             from('appchain-cluster') {
                 into 'appchain-cluster'
                 include '*.sh'
+                filePermissions { unix('755') }
+            }
+            from('appchain-cluster') {
+                into 'appchain-cluster'
+                include 'profile-governance.py'
                 filePermissions { unix('755') }
             }
         }

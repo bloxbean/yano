@@ -23,6 +23,17 @@ final class ConsensusCodec {
     static final int MAX_VOTE_BYTES = 256;
     static final int MAX_CERT_NOTICE_BYTES =
             AppChainConfig.MAX_FINALITY_CERT_HEADROOM_BYTES + 128;
+    private static final CborStructurePreflight.Limits VOTE_CBOR_LIMITS =
+            new CborStructurePreflight.Limits(
+                    MAX_VOTE_BYTES, 4, 16, 8, AppChainConfig.ED25519_SIGNATURE_BYTES);
+    private static final CborStructurePreflight.Limits CERT_NOTICE_CBOR_LIMITS =
+            new CborStructurePreflight.Limits(
+                    MAX_CERT_NOTICE_BYTES, 4, 128, AppChainConfig.MAX_MEMBERS,
+                    AppChainConfig.MAX_FINALITY_CERT_HEADROOM_BYTES);
+    private static final CborStructurePreflight.Limits ENVELOPE_CBOR_LIMITS =
+            new CborStructurePreflight.Limits(
+                    Math.toIntExact(AppChainConfig.MAX_BLOCK_BYTES),
+                    4, 64, 16, AppChainConfig.MAX_MESSAGE_BYTES);
 
     static final String TOPIC_PROPOSE = "~consensus/propose";
     static final String TOPIC_VOTE = "~consensus/vote";
@@ -41,7 +52,7 @@ final class ConsensusCodec {
     }
 
     static Vote decodeVote(byte[] bytes) {
-        if (!CborStructurePreflight.accepts(bytes, MAX_VOTE_BYTES, 4, 16)) {
+        if (!CborStructurePreflight.accepts(bytes, VOTE_CBOR_LIMITS)) {
             throw invalid("Invalid bounded vote");
         }
         try {
@@ -76,7 +87,7 @@ final class ConsensusCodec {
     }
 
     static CertNotice decodeCertNotice(byte[] bytes) {
-        if (!CborStructurePreflight.accepts(bytes, MAX_CERT_NOTICE_BYTES, 4, 128)) {
+        if (!CborStructurePreflight.accepts(bytes, CERT_NOTICE_CBOR_LIMITS)) {
             throw invalid("Invalid bounded certificate notice");
         }
         try {
@@ -135,17 +146,32 @@ final class ConsensusCodec {
     }
 
     static AppMessage decodeEnvelope(byte[] bytes) {
-        List<DataItem> items = ((Array) CborSerializationUtil.deserializeOne(bytes)).getDataItems();
-        return new AppMessage(
-                ((UnsignedInteger) items.get(0)).getValue().intValue(),
-                ((ByteString) items.get(1)).getBytes(),
-                ((UnicodeString) items.get(2)).getString(),
-                ((UnicodeString) items.get(3)).getString(),
-                ((ByteString) items.get(4)).getBytes(),
-                ((UnsignedInteger) items.get(5)).getValue().longValue(),
-                ((UnsignedInteger) items.get(6)).getValue().longValue(),
-                ((ByteString) items.get(7)).getBytes(),
-                ((UnsignedInteger) items.get(8)).getValue().intValue(),
-                ((ByteString) items.get(9)).getBytes());
+        if (!CborStructurePreflight.accepts(bytes, ENVELOPE_CBOR_LIMITS)) {
+            throw invalid("Invalid bounded persisted consensus envelope");
+        }
+        try {
+            List<DataItem> items = ((Array) CborSerializationUtil.deserializeOne(bytes))
+                    .getDataItems();
+            if (items.size() != 10) {
+                throw invalid("Invalid consensus envelope shape");
+            }
+            AppMessage decoded = new AppMessage(
+                    ((UnsignedInteger) items.get(0)).getValue().intValueExact(),
+                    ((ByteString) items.get(1)).getBytes(),
+                    ((UnicodeString) items.get(2)).getString(),
+                    ((UnicodeString) items.get(3)).getString(),
+                    ((ByteString) items.get(4)).getBytes(),
+                    ((UnsignedInteger) items.get(5)).getValue().longValueExact(),
+                    ((UnsignedInteger) items.get(6)).getValue().longValueExact(),
+                    ((ByteString) items.get(7)).getBytes(),
+                    ((UnsignedInteger) items.get(8)).getValue().intValueExact(),
+                    ((ByteString) items.get(9)).getBytes());
+            if (!Arrays.equals(bytes, encodeEnvelope(decoded))) {
+                throw invalid("Invalid canonical consensus envelope");
+            }
+            return decoded;
+        } catch (RuntimeException malformed) {
+            throw invalid("Invalid bounded canonical consensus envelope");
+        }
     }
 }
