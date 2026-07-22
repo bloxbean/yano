@@ -16,6 +16,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 /** Loads and validates the embedded, release-pinned project descriptor catalogs. */
 final class AppChainProjectCatalog {
@@ -28,6 +29,8 @@ final class AppChainProjectCatalog {
     static final String LOCK_SCHEMA_RESOURCE = RESOURCE_DIRECTORY + "/appchain-lock.schema.json";
     static final String RELEASE_INDEX_RESOURCE = RESOURCE_DIRECTORY
             + "/appchain-release-capability-index.json";
+    static final String RELEASE_ACCEPTANCE_INDEX_RESOURCE = RESOURCE_DIRECTORY
+            + "/appchain-release-acceptance-index.json";
     static final String FIRST_PARTY_METADATA_RESOURCE = RESOURCE_DIRECTORY
             + "/appchain-first-party-metadata.json";
     static final String METADATA_TRUST_SCHEMA_RESOURCE = RESOURCE_DIRECTORY
@@ -60,6 +63,7 @@ final class AppChainProjectCatalog {
     private final byte[] blueprintSchemaBytes;
     private final byte[] lockSchemaBytes;
     private final byte[] releaseIndexBytes;
+    private final byte[] releaseAcceptanceIndexBytes;
     private final byte[] firstPartyMetadataBytes;
     private final byte[] metadataTrustSchemaBytes;
     private final byte[] gitOpsLockSchemaBytes;
@@ -70,6 +74,7 @@ final class AppChainProjectCatalog {
     private final AppChainProjectModel.CapabilityCatalog capabilityCatalog;
     private final AppChainProjectModel.RecipeCatalog recipeCatalog;
     private final AppChainProjectModel.ReleaseIndex releaseIndex;
+    private final AppChainProjectModel.ReleaseAcceptanceIndex releaseAcceptanceIndex;
     private final Map<String, AppChainProjectModel.Artifact> artifacts;
     private final Map<String, AppChainProjectModel.Capability> capabilities;
     private final Map<String, AppChainProjectModel.Recipe> recipes;
@@ -91,6 +96,7 @@ final class AppChainProjectCatalog {
         blueprintSchemaBytes = resource(BLUEPRINT_SCHEMA_RESOURCE);
         lockSchemaBytes = resource(LOCK_SCHEMA_RESOURCE);
         releaseIndexBytes = resource(RELEASE_INDEX_RESOURCE);
+        releaseAcceptanceIndexBytes = resource(RELEASE_ACCEPTANCE_INDEX_RESOURCE);
         firstPartyMetadataBytes = resource(FIRST_PARTY_METADATA_RESOURCE);
         metadataTrustSchemaBytes = resource(METADATA_TRUST_SCHEMA_RESOURCE);
         gitOpsLockSchemaBytes = resource(GITOPS_LOCK_SCHEMA_RESOURCE);
@@ -123,10 +129,16 @@ final class AppChainProjectCatalog {
                 List.copyOf(mergedCapabilities));
         recipeCatalog = json.readValue(recipeBytes, AppChainProjectModel.RecipeCatalog.class);
         releaseIndex = json.readValue(releaseIndexBytes, AppChainProjectModel.ReleaseIndex.class);
+        releaseAcceptanceIndex = json.readValue(releaseAcceptanceIndexBytes,
+                AppChainProjectModel.ReleaseAcceptanceIndex.class);
         artifacts = indexArtifacts(capabilityCatalog);
         capabilities = indexCapabilities(capabilityCatalog, properties, artifacts);
         recipes = indexRecipes(recipeCatalog, capabilities);
         validateReleaseIndex(releaseIndex, artifacts, recipes.keySet());
+        validateReleaseAcceptanceIndex(releaseAcceptanceIndex, recipes,
+                builtInCatalog.capabilities().stream()
+                        .map(AppChainProjectModel.Capability::id)
+                        .collect(Collectors.toUnmodifiableSet()));
     }
 
     AppChainProjectModel.Capability capability(String id) {
@@ -187,6 +199,10 @@ final class AppChainProjectCatalog {
         return releaseIndex;
     }
 
+    AppChainProjectModel.ReleaseAcceptanceIndex releaseAcceptanceIndex() {
+        return releaseAcceptanceIndex;
+    }
+
     Map<String, String> digests() {
         Map<String, String> digests = new LinkedHashMap<>();
         digests.put("capabilities", sha256(capabilityBytes));
@@ -194,6 +210,7 @@ final class AppChainProjectCatalog {
         digests.put("blueprintSchema", sha256(blueprintSchemaBytes));
         digests.put("lockSchema", sha256(lockSchemaBytes));
         digests.put("releaseIndex", sha256(releaseIndexBytes));
+        digests.put("releaseAcceptanceIndex", sha256(releaseAcceptanceIndexBytes));
         digests.put("firstPartyMetadata", sha256(firstPartyMetadataBytes));
         digests.put("metadataTrustSchema", sha256(metadataTrustSchemaBytes));
         digests.put("gitOpsLockSchema", sha256(gitOpsLockSchemaBytes));
@@ -279,6 +296,10 @@ final class AppChainProjectCatalog {
         return releaseIndexBytes.clone();
     }
 
+    byte[] releaseAcceptanceIndexBytes() {
+        return releaseAcceptanceIndexBytes.clone();
+    }
+
     byte[] firstPartyMetadataBytes() {
         return firstPartyMetadataBytes.clone();
     }
@@ -335,6 +356,60 @@ final class AppChainProjectCatalog {
                     || !knownArtifacts.containsAll(flavor.artifacts())
                     || !Set.copyOf(flavor.artifacts()).equals(Set.copyOf(index.artifacts()))) {
                 throw new IllegalStateException("Release distribution flavor is invalid");
+            }
+        }
+    }
+
+    private static void validateReleaseAcceptanceIndex(
+            AppChainProjectModel.ReleaseAcceptanceIndex index,
+            Map<String, AppChainProjectModel.Recipe> recipes,
+            Set<String> builtInCapabilityIds) {
+        if (index == null || !"v1alpha1".equals(index.schemaVersion())
+                || !"alpha".equals(index.schemaStatus())
+                || !"RETAIN_V1ALPHA1".equals(index.stabilizationDecision())
+                || index.reviewedOn() == null
+                || !index.reviewedOn().matches("20[0-9]{2}-[0-9]{2}-[0-9]{2}")
+                || index.externalThirdPartyUsage()
+                || safeList(index.cleanRoomExercises()).isEmpty()
+                || safeList(index.knownLimitations()).isEmpty()
+                || index.capabilityEvidence() == null
+                || !index.capabilityEvidence().keySet().equals(builtInCapabilityIds)
+                || index.capabilityEvidence().values().stream().anyMatch(
+                evidence -> evidence == null || evidence.isEmpty())
+                || index.recipes() == null || index.recipes().size() != recipes.size()) {
+            throw new IllegalStateException(
+                    "Release acceptance index must retain the alpha field-review decision");
+        }
+        Map<String, AppChainProjectModel.RecipeAcceptance> accepted = new LinkedHashMap<>();
+        for (AppChainProjectModel.RecipeAcceptance evidence : index.recipes()) {
+            if (evidence == null || accepted.putIfAbsent(evidence.id(), evidence) != null) {
+                throw new IllegalStateException("Release acceptance recipe id collides");
+            }
+        }
+        if (!accepted.keySet().equals(recipes.keySet())) {
+            throw new IllegalStateException("Release acceptance recipes must match the catalog");
+        }
+        for (AppChainProjectModel.Recipe recipe : recipes.values()) {
+            AppChainProjectModel.RecipeAcceptance evidence = accepted.get(recipe.id());
+            String requiredLevel = switch (recipe.maturity()) {
+                case "stable" -> "PACKAGED_RUNTIME";
+                case "preview" -> "MODULE_OUTCOME_AND_PACKAGED_PROVIDER";
+                case "experimental" -> "OPERATOR_OWNED_REFERENCE";
+                default -> throw new IllegalStateException("unsupported recipe maturity");
+            };
+            if (!recipe.maturity().equals(evidence.maturity())
+                    || !recipe.availability().equals(evidence.availability())
+                    || !Set.copyOf(recipe.runtimeTypes()).equals(
+                    Set.copyOf(safeList(evidence.runtimeTypes())))
+                    || !Set.copyOf(recipe.deploymentTargets()).equals(
+                    Set.copyOf(safeList(evidence.deploymentTargets())))
+                    || !Set.copyOf(safeList(evidence.gitOpsTargets()))
+                    .equals(Set.of("helm", "kustomize"))
+                    || !requiredLevel.equals(evidence.outcomeLevel())
+                    || !recipe.acceptanceScenario().equals(evidence.acceptanceScenario())
+                    || safeList(evidence.evidence()).isEmpty()) {
+                throw new IllegalStateException(
+                        "Release acceptance evidence is incomplete for " + recipe.id());
             }
         }
     }

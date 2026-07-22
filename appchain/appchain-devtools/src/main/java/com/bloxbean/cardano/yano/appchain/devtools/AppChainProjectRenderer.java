@@ -203,6 +203,8 @@ final class AppChainProjectRenderer {
         outputs.put("schema/appchain-recipe-catalog.json", catalog.recipeBytes());
         outputs.put("schema/appchain-release-capability-index.json",
                 catalog.releaseIndexBytes());
+        outputs.put("schema/appchain-release-acceptance-index.json",
+                catalog.releaseAcceptanceIndexBytes());
         outputs.put("schema/appchain-first-party-metadata.json",
                 catalog.firstPartyMetadataBytes());
         outputs.put("schema/appchain-metadata-trust.schema.json",

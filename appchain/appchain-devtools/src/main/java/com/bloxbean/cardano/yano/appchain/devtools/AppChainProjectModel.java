@@ -164,6 +164,30 @@ final class AppChainProjectModel {
             List<DistributionFlavor> distributions) {
     }
 
+    record ReleaseAcceptanceIndex(
+            String schemaVersion,
+            String schemaStatus,
+            String stabilizationDecision,
+            String reviewedOn,
+            boolean externalThirdPartyUsage,
+            List<String> cleanRoomExercises,
+            List<String> knownLimitations,
+            Map<String, List<String>> capabilityEvidence,
+            List<RecipeAcceptance> recipes) {
+    }
+
+    record RecipeAcceptance(
+            String id,
+            String maturity,
+            String availability,
+            List<String> runtimeTypes,
+            List<String> deploymentTargets,
+            List<String> gitOpsTargets,
+            String outcomeLevel,
+            String acceptanceScenario,
+            List<String> evidence) {
+    }
+
     record DistributionFlavor(
             String id,
             String runtimeType,

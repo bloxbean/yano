@@ -197,3 +197,48 @@ tasks.named('check') {
             tasks.named('verifyReleaseCapabilityVersion'),
             tasks.named('verifyAppChainCatalogDocumentation')
 }
+
+def appChainReleaseCheckProjects = [
+        ':appchain-config',
+        ':appchain-stdlib-contracts',
+        ':appchain-stdlib',
+        ':appchain-composite-contracts',
+        ':appchain-composite',
+        ':appchain-role-workflow-contracts',
+        ':appchain-role-workflow',
+        ':appchain-evidence-contracts',
+        ':appchain-evidence-registry',
+        ':appchain-evidence-profile',
+        ':appchain-integration-contracts',
+        ':appchain-client',
+        ':appchain-spring-boot-starter',
+        ':appchain-testkit',
+        ':appchain-studio',
+        ':runtime',
+        ':app'
+]
+
+tasks.register('appChainReleaseCandidateStaticCheck') {
+    group = 'verification'
+    description = 'Runs the complete ADR-022 app-chain release-candidate static gate.'
+    dependsOn tasks.named('check')
+    appChainReleaseCheckProjects.each { projectPath ->
+        dependsOn project(projectPath).tasks.named('check')
+    }
+}
+
+tasks.register('appChainReleaseCandidateJvmAcceptance') {
+    group = 'verification'
+    description = 'Runs static, generated-project, packaged JVM, and stock outcome gates.'
+    dependsOn tasks.named('appChainReleaseCandidateStaticCheck'),
+            tasks.named('finalDistributionRuntimeAcceptance'),
+            tasks.named('finalDistributionStockOutcomeAcceptance'),
+            project(':app').tasks.named('packagedJvmPluginCatalogSmoke')
+}
+
+tasks.register('appChainReleaseCandidateNativeAcceptance') {
+    group = 'verification'
+    description = 'Runs static gates and the platform-specific native capability smoke test.'
+    dependsOn tasks.named('appChainReleaseCandidateStaticCheck'),
+            project(':app').tasks.named('nativePluginCatalogSmoke')
+}
