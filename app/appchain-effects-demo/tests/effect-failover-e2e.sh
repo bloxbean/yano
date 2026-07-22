@@ -406,6 +406,7 @@ assert_plugin_operations_all_nodes() {
           "com.bloxbean.cardano.yano.appchain.ipfs",
           "com.bloxbean.cardano.yano.appchain.kafka",
           "com.bloxbean.cardano.yano.appchain.objectstore.s3",
+          "com.bloxbean.cardano.yano.appchain.role-workflow",
           "com.bloxbean.cardano.yano.appchain.stdlib"]
         and (.items | map(select(.selected)) | all(
           .selectionStatus == "SELECTED"
@@ -413,7 +414,7 @@ assert_plugin_operations_all_nodes() {
           and (.health == "UNKNOWN" or .health == "UP")
           and .failure.code == "NONE"
           and .metricsStale == false))
-        and ([.items[] | select(.selected) | .contributionCount] | add) == 13
+        and ([.items[] | select(.selected) | .contributionCount] | add) == 15
         and .nextAfter == null' "$bundles" \
       || fail "node $node plugin inventory is not the exact selected demo catalog"
     fingerprint="$(jq -r '.catalogFingerprint' "$summary")"
@@ -423,7 +424,7 @@ assert_plugin_operations_all_nodes() {
       and (.capturedAtEpochMillis | type == "number" and . > 0)
       and .pluginApiMajor == 1
       and .pluginApiLevel >= 1
-      and .totals.selectedBundles == 7
+      and .totals.selectedBundles == 8
       and .totals.failedBundles == 0
       and .totals.degradedBundles == 0
       and .totals.staleSources == 0

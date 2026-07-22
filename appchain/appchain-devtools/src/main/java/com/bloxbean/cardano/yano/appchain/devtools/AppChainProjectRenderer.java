@@ -220,6 +220,12 @@ final class AppChainProjectRenderer {
         outputs.put("docs/TRUST.md", utf8(trustDocumentation(resolution)));
         outputs.put("docs/BOOTSTRAP.md", utf8(bootstrapDocumentation(resolution)));
         outputs.put("docs/VERIFY.md", utf8(verificationDocumentation(resolution)));
+        if (usesRoles(resolution)) {
+            outputs.put("bootstrap/role-approvals-plan.yaml",
+                    utf8(roleBootstrapPlan(resolution)));
+            outputs.put("bootstrap/README.md",
+                    utf8(roleBootstrapDocumentation(resolution)));
+        }
         outputs.put("plugins/README.md", utf8(pluginDocumentation(resolution)));
         outputs.put("scripts/validate", utf8(validateScript()));
         outputs.put("ci/verify", utf8(ciVerifyScript()));
@@ -249,6 +255,11 @@ final class AppChainProjectRenderer {
         List<String> hosts = resolution.blueprint().spec().chains().getFirst()
                 .topology().nodeHosts();
         return hosts != null && !hosts.isEmpty();
+    }
+
+    private static boolean usesRoles(AppChainProjectModel.Resolution resolution) {
+        return resolution.selectedCapabilities().contains("state:role-approvals")
+                || resolution.selectedCapabilities().contains("state:role-evidence");
     }
 
     static String yamlConfig(Map<String, String> values) {
@@ -465,6 +476,124 @@ final class AppChainProjectRenderer {
                 """.formatted(resolution.bootstrapRequired()
                 ? "public member identities are still required before start."
                 : "member identities are pinned and ready for operator verification.");
+    }
+
+    private static String roleBootstrapPlan(AppChainProjectModel.Resolution resolution) {
+        String chainId = resolution.blueprint().spec().chains().getFirst().chainId();
+        String profile = resolution.selectedCapabilities().contains("state:role-evidence")
+                ? "role-evidence" : "role-approvals";
+        return """
+                # Generated non-secret planning template. Replace every REPLACE_* value.
+                apiVersion: yano.bloxbean.com/v1alpha1
+                kind: RoleBootstrapPlan
+                chainId: %s
+                profile: %s
+                applyPolicy: query-before-propose
+                organizations:
+                  - organizationId: organization-a
+                    revision: 1
+                    status: ACTIVE
+                    metadataCommitment: REPLACE_64_HEX_OR_EMPTY
+                  - organizationId: organization-b
+                    revision: 1
+                    status: ACTIVE
+                    metadataCommitment: REPLACE_64_HEX_OR_EMPTY
+                actors:
+                  - actorId: proposer-a
+                    organizationId: organization-a
+                    revision: 1
+                    roles: [proposer]
+                    publicKeys:
+                      - keyId: proposer-key-v1
+                        publicKey: REPLACE_64_HEX
+                        validFromHeight: 1
+                        validUntilHeight: 0
+                        proofOfPossession: REQUIRED
+                  - actorId: reviewer-a
+                    organizationId: organization-b
+                    revision: 1
+                    roles: [reviewer]
+                    publicKeys:
+                      - keyId: reviewer-key-v1
+                        publicKey: REPLACE_64_HEX
+                        validFromHeight: 1
+                        validUntilHeight: 0
+                        proofOfPossession: REQUIRED
+                policies:
+                  - policyId: application-approval
+                    revision: 1
+                    proposerRoles: [proposer]
+                    clauses:
+                      - clauseId: reviewers
+                        role: reviewer
+                        minimumCount: 1
+                        distinctBy: ORGANIZATION
+                    rejectionMode: ANY_ELIGIBLE
+                    maximumLifetimeBlocks: 1000
+                governance:
+                  administrators: genesis-app-chain-members
+                  threshold: %d
+                  sequence: [PROPOSE, APPROVE_TO_THRESHOLD, ACTIVATE]
+                  replacement: forbidden
+                verification:
+                  organization: organizations/{id}?revision={revision}
+                  actor: actors/{id}?revision={revision}
+                  policy: policies/{id}?revision={revision}
+                  proposal: proposals/{id}
+                  stats: stats
+                  proofs: responses include proofKey, recordValue, stateRoot, and committedHeight
+                """.formatted(chainId, profile, resolution.threshold());
+    }
+
+    private static String roleBootstrapDocumentation(
+            AppChainProjectModel.Resolution resolution) {
+        String chainId = resolution.blueprint().spec().chains().getFirst().chainId();
+        String bundle = resolution.selectedCapabilities().contains("state:role-evidence")
+                ? "com.bloxbean.cardano.yano.appchain.evidence-profile"
+                : "com.bloxbean.cardano.yano.appchain.role-workflow";
+        return """
+                # Role bootstrap and offline signing
+
+                Review 'role-approvals-plan.yaml'. It is a non-secret plan, not an automatically
+                trusted identity claim. Before every governed mutation, query the exact record
+                and revision; if it already matches, record the proof and skip it. If an existing
+                record differs, stop. Never replace it silently.
+
+                Keep each 32-byte Ed25519 seed in an owner-only file outside this project. These
+                commands read that file locally and print only a public key or canonical CBOR hex:
+
+                ```bash
+                ./yano.sh appchain role public-key --seed-file /owner-only/actor.seed
+                ./yano.sh appchain role key-proof --chain %s --actor proposer-a \\
+                  --actor-revision 1 --key proposer-key-v1 --public-key <64-hex> \\
+                  --valid-from-height 1 --valid-until-height 0 \\
+                  --seed-file /owner-only/actor.seed
+                ./yano.sh appchain role sign --action approve --chain %s \\
+                  --proposal proposal-001 --policy application-approval \\
+                  --policy-revision 1 --payload-domain com.example.order.v1 \\
+                  --payload-hash <64-hex> --deadline-height 1000 --actor reviewer-a \\
+                  --actor-revision 1 --key reviewer-key-v1 --clause reviewers \\
+                  --seed-file /owner-only/reviewer.seed
+                ```
+
+                Submit governance records on 'actors.command.v1' and actor proposal/decision
+                commands on 'role-approvals.command.v1'. The generic product stores and proves
+                the approved payload hash; it does not execute the payload or emit an effect.
+
+                Verify through the read-only domain API:
+
+                ```text
+                /api/v1/plugins/%s/organizations/{id}?chain=%s
+                /api/v1/plugins/%s/actors/{id}?chain=%s
+                /api/v1/plugins/%s/policies/{id}?chain=%s
+                /api/v1/plugins/%s/proposals/{id}?chain=%s
+                /api/v1/plugins/%s/stats?chain=%s
+                ```
+
+                Private keys never belong in the plan, node configuration, Studio, or Yano.
+                """.formatted(chainId, chainId,
+                bundle, chainId, bundle, chainId, bundle, chainId,
+                bundle, chainId, bundle, chainId);
     }
 
     private static String verificationDocumentation(AppChainProjectModel.Resolution resolution) {

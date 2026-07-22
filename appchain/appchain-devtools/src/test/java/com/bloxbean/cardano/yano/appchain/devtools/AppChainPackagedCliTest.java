@@ -62,6 +62,10 @@ class AppChainPackagedCliTest {
         Result migrate = run(launcher, "migrate", project.toString(), "--dry-run",
                 "--format", "json");
         Result capabilities = run(launcher, "capabilities", "--format", "json");
+        Path actorSeed = temporary.resolve("packaged-actor.seed");
+        Files.writeString(actorSeed, "11".repeat(32), StandardCharsets.US_ASCII);
+        Result actorPublicKey = run(launcher, "appchain", "role", "public-key",
+                "--seed-file", actorSeed.toString());
 
         assertThat(validate.exitCode()).isZero();
         assertThat(validate.output()).contains("VALID_TEMPLATE");
@@ -88,7 +92,12 @@ class AppChainPackagedCliTest {
         assertThat(migrate.exitCode()).isZero();
         assertThat(migrate.output()).contains("NO_MIGRATION_REQUIRED_DRY_RUN");
         assertThat(capabilities.exitCode()).isZero();
-        assertThat(capabilities.output()).contains("state:role-evidence", "state:custom-plugin");
+        assertThat(capabilities.output()).contains(
+                "state:role-approvals", "state:role-evidence", "state:custom-plugin");
+        assertThat(actorPublicKey.exitCode()).isZero();
+        assertThat(actorPublicKey.output().trim()).matches("[0-9a-f]{64}")
+                .doesNotContain("11".repeat(32));
+        assertThat(actorPublicKey.error()).isEmpty();
         assertThat(project.resolve("appchain.yaml")).isRegularFile();
         assertThat(project.resolve("appchain.lock")).isRegularFile();
         assertThat(project.resolve("ci/verify")).isExecutable();

@@ -6,6 +6,7 @@ dependencies {
     implementation(project(':appchain-config')) {
         transitive = false
     }
+    implementation project(':appchain-role-workflow-contracts')
     compileOnly(project(':core-api')) {
         transitive = false
     }

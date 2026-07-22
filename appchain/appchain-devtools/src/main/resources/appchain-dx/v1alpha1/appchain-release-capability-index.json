@@ -11,6 +11,7 @@
     "owned-registry",
     "evidence-publication",
     "approval-workflow",
+    "role-approval",
     "role-evidence",
     "custom-plugin"
   ],

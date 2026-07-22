@@ -178,6 +178,24 @@ class AppChainDevtoolsCliTest {
     }
 
     @Test
+    void roleSigningCommandsAreOfflineAndAcceptSecretsOnlyByFile() throws Exception {
+        Path seed = temporary.resolve("actor.seed");
+        String secret = "11".repeat(32);
+        Files.writeString(seed, secret);
+
+        Result publicKey = run("appchain", "role", "public-key",
+                "--seed-file", seed.toString());
+        Result inline = run("appchain", "role", "public-key", "--seed", secret);
+
+        assertThat(publicKey.exit()).isZero();
+        assertThat(publicKey.err()).isEmpty();
+        assertThat(publicKey.out().trim()).matches("[0-9a-f]{64}")
+                .doesNotContain(secret);
+        assertThat(inline.exit()).isEqualTo(AppChainDevtoolsCli.EXIT_USAGE);
+        assertThat(inline.err()).doesNotContain(secret);
+    }
+
+    @Test
     void resolvedValidationUsesRuntimeSemanticsWithoutPrintingSecrets() throws Exception {
         String member = "a".repeat(64);
         String secret = "b".repeat(64);

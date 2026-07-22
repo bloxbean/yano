@@ -13,6 +13,11 @@
       "id": "com.bloxbean.cardano.yano.appchain.evidence-registry",
       "minVersion": "0.1.0-pre9",
       "maxVersionExclusive": "0.2.0"
+    },
+    {
+      "id": "com.bloxbean.cardano.yano.appchain.role-workflow",
+      "minVersion": "0.1.0-pre9",
+      "maxVersionExclusive": "0.2.0"
     }
   ],
   "contributions": [

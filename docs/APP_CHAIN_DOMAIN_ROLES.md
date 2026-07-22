@@ -49,8 +49,10 @@ Two reusable modules are packaged with Yano:
   CDDL, result codes, Java signing/verification records, CLI, and golden vectors
   verified by an independent Python implementation.
 - `appchain-role-workflow`: deterministic organization/actor registry,
-  role-aware approval workflow, proof-oriented domain API, and the complete
-  manifested `role-evidence` stock state machine.
+  role-aware approval workflow, proof-oriented domain API, and the manifested
+  generic `role-approvals` state machine.
+- `appchain-evidence-profile`: the evidence-owned `role-evidence` composite,
+  evidence convenience indexes, and evidence-specific API routes.
 
 The registry retains immutable revisions of organizations and actors. An actor
 record contains organization, sorted roles, status, public-key epochs, and an
@@ -85,6 +87,19 @@ state, and emits the already supported connector effects.
 The profile intentionally exposes no public `doc-trail.command.v1` route;
 document-trail entries are produced only by that atomic approved-release
 workflow.
+
+For application-neutral authorization, initialize the generic recipe:
+
+```bash
+./yano.sh appchain init --recipe role-approval --network devnet --members 3 \
+  --output role-approval
+```
+
+The generated `bootstrap/role-approvals-plan.yaml` describes organizations,
+actors, key proof-of-possession, policy clauses, governed activation, and exact
+verification routes without containing private keys. The generic machine
+stores the payload domain and approved 32-byte payload hash. It does not
+interpret or execute the payload and emits no effect.
 
 ## 4. End-to-end authorization
 
@@ -175,8 +190,7 @@ frozen preimage in a KMS/HSM/Vault signer. The supplied CLI reads a 32-byte
 seed from an owner-only file and prints canonical command hex:
 
 ```bash
-java -cp yano.jar \
-  com.bloxbean.cardano.yano.appchain.roles.contracts.RoleWorkflowCli sign \
+./yano.sh appchain role sign \
   --action approve \
   --chain evidence-chain \
   --proposal evidence-001 \

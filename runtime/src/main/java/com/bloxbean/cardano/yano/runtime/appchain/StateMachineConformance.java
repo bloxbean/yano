@@ -7,6 +7,7 @@ import com.bloxbean.cardano.yano.api.appchain.AppBlock;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConsensusProfile;
 import com.bloxbean.cardano.yano.api.appchain.AppChainInfo;
+import com.bloxbean.cardano.yano.api.appchain.AppChainMembershipEpoch;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineContext;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineProvider;
@@ -430,6 +431,13 @@ public final class StateMachineConformance {
             @Override public Map<String, String> settings() { return settings; }
             @Override public Optional<AppChainConsensusProfile> consensusProfile() {
                 return Optional.of(profile);
+            }
+            @Override
+            public Optional<com.bloxbean.cardano.yano.api.appchain.AppChainMembershipView>
+            membershipView() {
+                AppChainMembershipEpoch epoch = new AppChainMembershipEpoch(
+                        0, List.of("11".repeat(32)), 1);
+                return Optional.of(height -> epoch);
             }
         };
     }
