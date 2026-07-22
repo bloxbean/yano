@@ -9,7 +9,7 @@ for a quick comparison.
 | `ordered-log` | [Opaque ordered events, topics, proofs, and customization](ordered-log.md) |
 | `kv-registry` | [Owned mutable records, REST/Java usage, and proofs](kv-registry.md) |
 | `approvals` | [Member decisions, REST/Java usage, proofs, and effects](approvals.md) |
-| `balances` | [Stock-machine summary](../tutorials/03-stock-state-machines.md#balances) |
+| `balances` | [Member-authorized minting, transfers, Java/Spring usage, and proofs](balances.md) |
 | `doc-trail` | [Per-entity document hashes, REST/Java usage, and proofs](doc-trail.md) |
 
 Exact wire formats and deterministic state layouts are also described in the

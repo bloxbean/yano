@@ -34,6 +34,7 @@ Don't look for feature docs here — they're centralized:
 
 | Module (`:project`) | Path | Purpose |
 |---|---|---|
+| `appchain-stdlib-contracts` | `appchain-stdlib-contracts/` | No-SPI bounded command, state-key, state-value, and verification contracts for the four stock machines. |
 | `appchain-stdlib` | `appchain-stdlib/` | Ready `AppStateMachine`s selected by id: `kv-registry`, `approvals`, `balances`, `doc-trail` (`ordered-log` is built into `runtime`). Ships in the distribution. |
 | `appchain-composite-contracts` | `appchain-composite-contracts/` | No-SPI generic profile commitment, physical-key mapping, aggregate-query wire, and governance contracts. |
 | `appchain-composite-client` | `appchain-composite-client/` | Offline finality, one-root MPF, epoch-chain, and caller authorization-policy verification for governed composite profiles. |

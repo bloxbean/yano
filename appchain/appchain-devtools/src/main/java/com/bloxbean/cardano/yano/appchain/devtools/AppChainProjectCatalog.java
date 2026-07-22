@@ -346,6 +346,9 @@ final class AppChainProjectCatalog {
             requireEnum(recipe.nativePosture(), NATIVE_POSTURES, recipe.id(), "nativePosture");
             requireText(recipe.trustStatement(), recipe.id(), "trustStatement");
             requireText(recipe.description(), recipe.id(), "description");
+            requireText(recipe.primaryOutcome(), recipe.id(), "primaryOutcome");
+            requireText(recipe.firstCommand(), recipe.id(), "firstCommand");
+            requireText(recipe.verificationQuery(), recipe.id(), "verificationQuery");
             requireText(recipe.documentation(), recipe.id(), "documentation");
             requireText(recipe.acceptanceScenario(), recipe.id(), "acceptanceScenario");
             validateAnswerNames(recipe.nonSecretAnswers(), recipe.id());

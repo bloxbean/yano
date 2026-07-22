@@ -353,6 +353,9 @@ final class AppChainProjectRenderer {
         plan.put("apiVersion", AppChainProjectModel.API_VERSION);
         plan.put("kind", "AppChainPrerequisitePlan");
         plan.put("recipe", resolution.recipe().id());
+        plan.put("primaryOutcome", resolution.recipe().primaryOutcome());
+        plan.put("firstCommand", resolution.recipe().firstCommand());
+        plan.put("verificationQuery", resolution.recipe().verificationQuery());
         plan.put("acceptanceScenario", resolution.recipe().acceptanceScenario());
         List<Map<String, Object>> artifacts = new ArrayList<>();
         for (String artifactId : resolution.artifacts()) {
@@ -397,12 +400,15 @@ final class AppChainProjectRenderer {
                 artifacts are present in the named Yano distribution. `FIRST_PARTY_OPTIONAL`
                 and `EXPERIMENTAL` artifacts require explicit installation (or native-image
                 inclusion) and remain pending until `doctor` verifies the final distribution.
-
-                ## Artifacts
-
-                | Artifact | Availability | Native posture |
-                |---|---|---|
                 """);
+        document.append("Primary outcome: ")
+                .append(resolution.recipe().primaryOutcome()).append("\n\n")
+                .append("First command: `").append(resolution.recipe().firstCommand())
+                .append("`\n\nVerification: `")
+                .append(resolution.recipe().verificationQuery())
+                .append("`\n\n## Artifacts\n\n")
+                .append("| Artifact | Availability | Native posture |\n")
+                .append("|---|---|---|\n");
         for (String artifactId : resolution.artifacts()) {
             AppChainProjectModel.Artifact artifact = catalog.artifact(artifactId);
             document.append("| `").append(artifact.id()).append("` | ")
@@ -586,7 +592,12 @@ final class AppChainProjectRenderer {
                 kind: RoleBootstrapPlan
                 chainId: %s
                 profile: %s
-                applyPolicy: query-before-propose
+                idempotency:
+                  beforeEveryOperation: QUERY_COMMITTED_RECORD_AND_VERIFY_PROOF
+                  whenAbsent: PROPOSE_APPROVE_TO_THRESHOLD_AND_ACTIVATE
+                  whenExactRevisionAndValueMatch: SKIP_AND_RECORD_PROOF
+                  whenRevisionOrValueDiffers: FAIL_CLOSED
+                  replacement: FORBIDDEN
                 organizations:
                   - organizationId: organization-a
                     revision: 1
@@ -632,7 +643,7 @@ final class AppChainProjectRenderer {
                   administrators: genesis-app-chain-members
                   threshold: %d
                   sequence: [PROPOSE, APPROVE_TO_THRESHOLD, ACTIVATE]
-                  replacement: forbidden
+                  proposalIdsMustBeUnique: true
                 verification:
                   organization: organizations/{id}?revision={revision}
                   actor: actors/{id}?revision={revision}

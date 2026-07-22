@@ -40,7 +40,7 @@
       "trustStatement":"First-party standard-library state machine bundled in every named distribution.","description":"Member-authorized mint and transfer accounts for bounded application balances.",
       "provides":["state-machine"],"requires":[],"implies":[],"conflicts":[],"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime","appchain-stdlib"],"nativePosture":"bundled",
       "externalPrerequisites":[],"bootstrapRequirements":[],"nonSecretAnswers":[],"secretReferences":{},"properties":{"state-machine":"balances"},
-      "documentation":"docs/appchain/state-machines/README.md","acceptanceScenario":"stock-balances"
+      "documentation":"docs/appchain/state-machines/balances.md","acceptanceScenario":"stock-balances"
     },
     {
       "id":"state:doc-trail","name":"Document trail","category":"state","availability":"BUNDLED","maturity":"stable","scope":"chain","selectable":true,

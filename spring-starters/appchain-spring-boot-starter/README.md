@@ -6,6 +6,8 @@ This module provides:
 
 - auto-configured `AppChainClient`
 - `AppChainTemplate`
+- `StdlibAppChainClient` and `StdlibAppChainTemplate` for the four stock
+  standard-library state machines
 - `@AppChainListener(topic = "...")` for SSE consumption
 
 It is client-side sugar over `appchain-client`; it does not run a Yano node.
@@ -67,6 +69,26 @@ class OrderListener {
 Listeners take exactly one parameter: `AppChainClient.StreamedMessage` (the full
 envelope), `byte[]` (the raw body), or `String` (the body as UTF-8). An
 unsupported signature fails fast at application startup.
+
+## Typed stock-machine usage
+
+```java
+@Service
+class Credits {
+    private final StdlibAppChainTemplate appChain;
+
+    Credits(StdlibAppChainTemplate appChain) {
+        this.appChain = appChain;
+    }
+
+    String mint(String account, long amount) {
+        return appChain.mint(account, BigInteger.valueOf(amount));
+    }
+}
+```
+
+The template also exposes typed key/value, approval, balance, and document
+trail reads. Reads decode only locally verified MPF inclusion proofs.
 
 ## Proof Verification
 

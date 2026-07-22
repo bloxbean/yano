@@ -168,18 +168,17 @@ also be isolated.
 
 ## Submit from Java
 
-Use the client and standard-library artifacts with the node version:
+Use the client artifact with the node version:
 
 ```groovy
 implementation "com.bloxbean.cardano:yano-appchain-client:${yanoVersion}"
-implementation "com.bloxbean.cardano:yano-appchain-stdlib:${yanoVersion}"
 ```
 
-The standard library provides the canonical command encoder:
+The client includes the portable no-SPI stock contracts and a typed facade:
 
 ```java
 import com.bloxbean.cardano.yano.appchain.client.AppChainClient;
-import com.bloxbean.cardano.yano.appchain.stdlib.KvRegistryStateMachine;
+import com.bloxbean.cardano.yano.appchain.client.StdlibAppChainClient;
 
 import java.nio.charset.StandardCharsets;
 
@@ -187,16 +186,16 @@ var ownerClient = AppChainClient.builder("http://127.0.0.1:7071/api/v1")
         .chainId("registry-chain")
         // .apiKey("secret")
         .build();
+var registry = new StdlibAppChainClient(ownerClient);
 
 byte[] key = "supplier-42".getBytes(StandardCharsets.UTF_8);
 byte[] value = "active".getBytes(StandardCharsets.UTF_8);
 
-var submitted = ownerClient.submit("registry",
-        KvRegistryStateMachine.put(key, value));
+var submitted = registry.kvPut(key, value);
 System.out.println(submitted.messageId());
 
 // Submit later through the same member identity.
-ownerClient.submit("registry", KvRegistryStateMachine.delete(key));
+registry.kvDelete(key);
 ```
 
 The server, not the HTTP caller object, signs the normal REST submission.
@@ -228,22 +227,14 @@ through the standard proof endpoint.
 Verify and decode the proof in Java:
 
 ```java
-import com.bloxbean.cardano.yano.appchain.client.ProofVerifier;
-
 import java.util.HexFormat;
 
 var reader = AppChainClient.builder("http://127.0.0.1:7070/api/v1")
         .chainId("registry-chain")
         .build();
-
-var proof = reader.proof(key).orElseThrow();
-if (!ProofVerifier.verify(proof) || proof.valueHex() == null) {
-    throw new IllegalStateException("registry entry is absent or unverified");
-}
-
-byte[] entry = HexFormat.of().parseHex(proof.valueHex());
-byte[] owner = KvRegistryStateMachine.decodeOwner(entry);
-byte[] currentValue = KvRegistryStateMachine.decodeValue(entry);
+var entry = new StdlibAppChainClient(reader).kvEntry(key).orElseThrow().value();
+byte[] owner = entry.owner();
+byte[] currentValue = entry.value();
 
 System.out.println("owner=" + HexFormat.of().formatHex(owner));
 System.out.println("value=" + new String(currentValue, StandardCharsets.UTF_8));
