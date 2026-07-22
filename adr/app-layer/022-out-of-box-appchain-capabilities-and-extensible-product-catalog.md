@@ -2,19 +2,29 @@
 
 ## Status
 
-Proposed — version 1
+Proposed — version 2
 
-This first review version records a repository-wide assessment of the app-chain
+Version 1 recorded a repository-wide assessment of the app-chain
 runtime, standard library, composite and role frameworks, evidence product,
 effect connectors, clients, developer tooling, Studio, distribution packaging,
 demos, scaffolds, and documentation.
+
+Version 2 (2026-07-22) is a scope amendment: all post-deployment
+runtime-console UI concerns are carved out to root
+[ADR-028](../028-unified-console-ui-module.md) (the `console-ui` module).
+This ADR keeps the capability, reusability, catalog, and product-model
+decisions — including Studio's pre-deployment wizard behavior (§11) — while
+the runtime console's design, delivery, and capability-aware panels are
+ADR-028's. The catalog remains the single source of truth for what a
+distribution contains, including recording the console's availability. The
+review questions in §20 remain open.
 
 The number is local to the `adr/app-layer` series. Root-level ADR-022, if one
 exists, is unrelated.
 
 ## Date
 
-2026-07-21
+2026-07-21 (version 1), 2026-07-22 (version 2 scope amendment)
 
 ## Parent and related decisions
 
@@ -49,6 +59,13 @@ exists, is unrelated.
 - [ADR-DX-0001](dx/0001-unified-appchain-onboarding-configuration-and-lifecycle.md)
   owns configuration metadata, validation, blueprints, locks, rendering,
   Studio, lifecycle commands, drift, GitOps output, and release-pinned DX.
+- Root [ADR-028](../028-unified-console-ui-module.md) owns the runtime
+  console UI: the `console-ui` module, embedded and standalone serving, node
+  identity display, and the generic capability-aware panels (effects,
+  approvals via committed queries, evidence bundles, proofs). All
+  runtime-console UI decisions live there; Studio's pre-deployment wizard
+  behavior stays with this ADR and ADR-DX-0001, and this ADR records console
+  availability in the catalog.
 
 ---
 
@@ -348,6 +365,10 @@ Documentation is comprehensive but distributed. Notable gaps are:
 - Declaring every repository experiment supported merely because it compiles.
 - Making the evidence demo runner a generic application SDK or production
   controller.
+- Designing, building, or packaging any runtime console UI. Root ADR-028
+  owns the `console-ui` module, its embedded/standalone delivery, and its
+  capability-aware panels; this ADR only classifies console availability in
+  the catalog.
 - Supporting arbitrary multi-chain projects in the first delivery slice.
 - Stabilizing v1alpha1 DX schemas before field usage and compatibility review.
 - Changing retained consensus semantics without a new profile/state identity
@@ -370,7 +391,10 @@ Documentation is comprehensive but distributed. Notable gaps are:
    decisions, queries, and governance.
 6. Promote the evidence workflow from an ambiguous `examples` dependency to
    an explicitly supported first-party preview domain profile. Keep the
-   evidence demo runner and report UI as reference/demo artifacts.
+   evidence demo runner and report UI as reference/demo artifacts. Generic
+   console panels that supersede the report UI's reusable ideas (effect
+   lifecycle, approvals, evidence bundles, proofs, verified payloads) are
+   owned by root ADR-028, not by this ADR.
 7. Expand the built-in catalog to cover every supported stock machine and the
    implemented sequencing, membership, anchor, observer, sink, and effect
    choices appropriate for project generation.
@@ -426,6 +450,8 @@ display name and description
 category
 availability tier
 maturity
+scope (chain | node | distribution)
+selectable
 trust statement
 provided contracts
 requirements, implications, and conflicts
@@ -443,6 +469,27 @@ acceptance scenario id
 The release index records which tier is true for each distribution flavor.
 “Present in this repository” is not an availability tier.
 
+`scope` and `selectable` close a gap in the current model, where every
+catalog capability is implicitly project-selectable and the resolver adds
+every selected capability to a chain. The two fields are independent axes:
+
+- `scope` states where a capability applies and where its configuration is
+  rendered: `chain` (consensus-shared), `node` (node-local enablement,
+  executors, sinks), or `distribution` (present by virtue of the packaged
+  artifact).
+- `selectable` states whether a blueprint may explicitly request the
+  capability.
+
+Defaults preserve current behavior: `scope: chain`, `selectable: true`.
+`scope: node, selectable: true` is valid and expected for node-local
+executors, sinks, and integrations (§6.3): selecting one pins it in the
+project lock and renders node-local configuration, but it contributes
+nothing to consensus-shared chain configuration. `scope: node,
+selectable: false` fits the embedded console: it is derived from the
+selected distribution, never named in a blueprint, and never added to the
+selected app-chain capabilities. The resolver rejects a blueprint that
+names any non-selectable capability — fail closed, not silently ignored.
+
 ### 4.3 Initial classification
 
 The first catalog expansion should classify:
@@ -455,6 +502,10 @@ The first catalog expansion should classify:
   `FIRST_PARTY_OPTIONAL` unless a named distribution includes them;
 - the evidence product profile as a first-party `preview` product with its
   actual distribution availability recorded explicitly;
+- the embedded node console UI as `BUNDLED` with `scope: node`,
+  `selectable: false` — derived from the selected distribution, never named
+  in a blueprint, and never added to the selected app-chain capabilities;
+  implementation and delivery owned by root ADR-028;
 - the evidence runner, Compose environment, report UI, and plugin conformance
   fixture as `REFERENCE`; and
 - ZeroJ state machines as `EXPERIMENTAL`.
@@ -628,6 +679,14 @@ it.
 The existing runtime manifest remains the executable contribution contract.
 The existing configuration metadata remains the property-validation contract.
 The component catalog is the product/DX contract.
+
+A future descriptor revision may additionally carry bounded, data-only UI
+hints (display name, key committed-query paths, field labels) so the ADR-028
+console can render a custom component's queries by name. The same data-only
+rules apply; executable or templated UI contributions remain out of scope in
+both ADRs. Ownership is split explicitly: this ADR owns the UI-hint
+descriptor contract, bounds, and validation; ADR-028 owns whether and how
+the console renders the hints.
 
 ### 7.2 Trust envelope
 
@@ -827,6 +886,11 @@ Studio never renders final runtime configuration. The CLI resolves catalogs,
 validates answers, materializes defaults, writes locks, and enforces
 no-silent-overwrite.
 
+Studio remains a pre-deployment configuration wizard and is distinct from
+the ADR-028 runtime console. Migrating Studio onto the `console-ui`
+toolchain and component library is an accepted later follow-up recorded in
+ADR-028; it does not change the behavior required here.
+
 ## 12. Documentation product
 
 Generate one version-matched component catalog from the same release metadata.
@@ -976,6 +1040,17 @@ stock machines honestly.
   without an explicit supported-product decision.
 - Native availability is verified at build time; directory JAR support is
   never advertised for native binaries.
+- Catalog entries without `scope`/`selectable` resolve as `scope: chain`,
+  `selectable: true`; existing catalogs and blueprints resolve unchanged.
+- A blueprint that explicitly names a `selectable: false` capability fails
+  resolution with a diagnostic naming the capability; it is never silently
+  ignored.
+- The embedded console's availability is derived from the distribution
+  flavor and recorded in the release index without any blueprint selection.
+- A selected `scope: node` capability is pinned in the project lock and
+  renders only node-local configuration; it contributes no consensus-shared
+  chain configuration, and multi-node root parity is unaffected by
+  node-capability differences.
 
 ### 16.2 Generic dependency boundaries
 
@@ -1160,7 +1235,7 @@ The application uses REST, the generic Java client, typed stock contracts, or
 the Spring starter. New deterministic business transitions still require a
 small, explicit, tested plugin rather than hidden configuration behavior.
 
-## 20. Review questions for version 2
+## 20. Open review questions
 
 1. Should the supported evidence profile remain bundled in the default JVM
    application, or ship as a first-party optional domain bundle while the
