@@ -2,12 +2,6 @@ dependencies {
     api project(':core-api')
     api project(':appchain-composite-contracts')
 
-    implementation project(':appchain-stdlib')
-    implementation project(':appchain-config')
-    implementation project(':appchain-evidence-registry')
-    implementation project(':appchain-evidence-contracts')
-    implementation project(':appchain-integration-contracts')
-
     testImplementation project(':appchain-testkit')
 }
 
@@ -20,12 +14,49 @@ tasks.withType(Test).configureEach {
     systemProperty 'yano.repo.root', rootProject.projectDir.absolutePath
 }
 
+tasks.register('verifyGenericCompositeBoundary') {
+    group = 'verification'
+    description = 'Verifies the generic composite artifact has no evidence product or plugin contribution'
+    dependsOn tasks.named('jar')
+    inputs.file(tasks.named('jar').flatMap { it.archiveFile })
+
+    doLast {
+        def archive = tasks.named('jar').get().archiveFile.get().asFile
+        new java.util.zip.ZipFile(archive).withCloseable { jar ->
+            def entries = jar.entries().collect { entry -> entry.name }
+            if (entries.any { entry ->
+                !entry.endsWith('/')
+                        && (entry.startsWith('com/bloxbean/cardano/yano/appchain/evidence/')
+                        || entry.startsWith('META-INF/services/')
+                        || entry.startsWith('META-INF/yano/plugins/'))
+            }) {
+                throw new GradleException(
+                        'Generic composite artifact contains evidence or plugin-owned entries')
+            }
+        }
+        def forbidden = configurations.compileClasspath.incoming.resolutionResult
+                .allComponents.findAll { component ->
+            component.id instanceof org.gradle.api.artifacts.component.ProjectComponentIdentifier
+                    && component.id.projectPath.startsWith(':appchain-evidence-')
+        }
+        if (!forbidden.isEmpty()) {
+            throw new GradleException(
+                    'Generic composite compile classpath depends on evidence projects: '
+                            + forbidden.collect { it.id.projectPath }.sort())
+        }
+    }
+}
+
+tasks.named('check') {
+    dependsOn tasks.named('verifyGenericCompositeBoundary')
+}
+
 publishing {
     publications {
         mavenJava(MavenPublication) {
             pom {
-                name = 'Yano App-Chain Composite State Machine'
-                description = 'Deterministic state-machine composition, isolation, routing, and workflows for Yano'
+                name = 'Yano App-Chain Composite Framework'
+                description = 'Generic deterministic state-machine composition, isolation, routing, and workflows for Yano'
             }
         }
     }

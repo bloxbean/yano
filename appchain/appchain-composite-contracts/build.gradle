@@ -1,5 +1,4 @@
 dependencies {
-    api project(':appchain-evidence-contracts')
     implementation libs.cardano.client.crypto
     implementation libs.cbor
 
@@ -22,6 +21,7 @@ def forbiddenPluginPrefixes = [
         'META-INF/yano/plugins/',
         'META-INF/services/'
 ]
+def forbiddenEvidencePrefix = 'com/bloxbean/cardano/yano/appchain/evidence/'
 
 tasks.register('verifyCompositeContractArtifact') {
     group = 'verification'
@@ -38,6 +38,10 @@ tasks.register('verifyCompositeContractArtifact') {
             }) {
                 throw new GradleException(
                         'Composite contracts must not contribute app-chain plugin services')
+            }
+            if (entries.any { entry -> entry.startsWith(forbiddenEvidencePrefix) }) {
+                throw new GradleException(
+                        'Composite contracts must not contain evidence-product contracts')
             }
             if (entries.any { entry ->
                 entry.startsWith('com/bloxbean/cardano/yano/api/')
@@ -60,7 +64,7 @@ publishing {
         mavenJava(MavenPublication) {
             pom {
                 name = 'Yano App-Chain Composite Contracts'
-                description = 'No-SPI wire contracts for stock Yano composite workflows'
+                description = 'No-SPI wire contracts for generic Yano composite profiles and governance'
             }
         }
     }

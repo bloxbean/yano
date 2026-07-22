@@ -39,6 +39,7 @@ include 'appchain-integration-contracts'
 include 'appchain-evidence-contracts'
 include 'appchain-evidence-registry'
 include 'appchain-evidence-client'
+include 'appchain-evidence-profile'
 include 'appchain-evidence-demo-runner'
 include 'appchain-kafka'
 include 'appchain-objectstore-s3'
@@ -66,11 +67,13 @@ project(':appchain-client').projectDir = file('appchain/appchain-client')
 project(':appchain-integration-contracts').projectDir =
         file('appchain/appchain-integration-contracts')
 project(':appchain-evidence-contracts').projectDir =
-        file('appchain/examples/appchain-evidence-contracts')
+        file('appchain/products/appchain-evidence-contracts')
 project(':appchain-evidence-registry').projectDir =
-        file('appchain/examples/appchain-evidence-registry')
+        file('appchain/products/appchain-evidence-registry')
 project(':appchain-evidence-client').projectDir =
-        file('appchain/examples/appchain-evidence-client')
+        file('appchain/products/appchain-evidence-client')
+project(':appchain-evidence-profile').projectDir =
+        file('appchain/products/appchain-evidence-profile')
 project(':appchain-evidence-demo-runner').projectDir =
         file('appchain/examples/appchain-evidence-demo-runner')
 project(':appchain-kafka').projectDir = file('appchain/extensions/appchain-kafka')

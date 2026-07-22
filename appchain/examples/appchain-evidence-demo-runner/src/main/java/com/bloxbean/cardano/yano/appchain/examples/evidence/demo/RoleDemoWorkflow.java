@@ -4,8 +4,9 @@ import com.bloxbean.cardano.client.crypto.KeyGenUtil;
 import com.bloxbean.cardano.yano.appchain.client.AppChainClient;
 import com.bloxbean.cardano.yano.appchain.client.ProofVerifier;
 import com.bloxbean.cardano.yano.appchain.composite.contracts.CompositeCommitmentV1;
-import com.bloxbean.cardano.yano.appchain.composite.contracts.stock.EvidenceReleaseCommandV1;
-import com.bloxbean.cardano.yano.appchain.composite.contracts.stock.EvidenceReleasePrerequisiteCommandsV1;
+import com.bloxbean.cardano.yano.appchain.evidence.profile.contracts.EvidenceReleaseCommandV1;
+import com.bloxbean.cardano.yano.appchain.evidence.profile.contracts.EvidenceReleasePrerequisiteCommandsV1;
+import com.bloxbean.cardano.yano.appchain.evidence.profile.contracts.RoleEvidenceKeys;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.ActorKeyEpochV1;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.ActorKeyProofV1;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.ActorRecordV1;
@@ -231,7 +232,7 @@ final class RoleDemoWorkflow {
     ApprovalProposalV1 audit(String evidenceId, long businessVersion) {
         byte[] link = verifiedQuery("components/role-approvals/evidence-approval",
                 evidenceId + "@" + businessVersion,
-                "role-approvals", RoleWorkflowKeys.evidenceApproval(
+                "role-approvals", RoleEvidenceKeys.evidenceApproval(
                         evidenceId, businessVersion));
         if (link.length == 0) throw new DemoException(DemoError.STATE_PROOF_FAILED);
         String proposalId = new String(link, StandardCharsets.US_ASCII);

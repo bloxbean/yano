@@ -65,8 +65,7 @@ class PluginCatalogPackagingTest {
     private static final Set<String> STOCK_BUNDLES = Set.of(
             "com.bloxbean.cardano.yaci.plugins.logging",
             "com.bloxbean.cardano.yano.appchain.stdlib",
-            "com.bloxbean.cardano.yano.appchain.composite",
-            "com.bloxbean.cardano.yano.appchain.role-workflow",
+            "com.bloxbean.cardano.yano.appchain.evidence-profile",
             "com.bloxbean.cardano.yano.appchain.evidence-registry");
     private static final Set<String> OPTIONAL_BUNDLES = Set.of(
             "com.bloxbean.cardano.yano.appchain.kafka",

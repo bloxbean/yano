@@ -69,7 +69,7 @@ jobs:
           mkdir -p "$TMPDIR"
           chmod +x "$CDDL_BIN"
           appchain/appchain-integration-contracts/scripts/verify-cddl.sh
-          appchain/examples/appchain-evidence-contracts/scripts/verify-cddl.sh
+          appchain/products/appchain-evidence-contracts/scripts/verify-cddl.sh
           appchain/appchain-composite-contracts/scripts/verify-cddl.sh
       - name: Verify ADR-013 demo release contracts
         run: bash app/appchain-effects-demo/tests/release-contracts.sh

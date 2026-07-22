@@ -13,9 +13,8 @@ Public v1 surfaces are:
 - `AggregateQueryCodecV1` and `AggregateQueryLimitsV1` — the one canonical,
   bounded `composite/aggregate-v1` request/response wire used by both clients
   and runtime; and
-- `EvidenceReleaseCommandV1` and prerequisite encoders — frozen stock workflow
-  submission contracts for approved `SUBMIT` and `REPUBLISH` commands;
-  `NOTIFY` remains on its dedicated gated route.
+- profile epoch/governance records and verification helpers used by any
+  governed composite product.
 
 Example aggregate request:
 

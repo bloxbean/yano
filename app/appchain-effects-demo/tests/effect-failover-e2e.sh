@@ -401,12 +401,11 @@ assert_plugin_operations_all_nodes() {
     wait_authenticated_json \
       "http://127.0.0.1:$port/api/v1/plugin-operations/bundles?limit=100" \
       '(.items | map(select(.selected)) | map(.id)) == [
-          "com.bloxbean.cardano.yano.appchain.composite",
+          "com.bloxbean.cardano.yano.appchain.evidence-profile",
           "com.bloxbean.cardano.yano.appchain.evidence-registry",
           "com.bloxbean.cardano.yano.appchain.ipfs",
           "com.bloxbean.cardano.yano.appchain.kafka",
           "com.bloxbean.cardano.yano.appchain.objectstore.s3",
-          "com.bloxbean.cardano.yano.appchain.role-workflow",
           "com.bloxbean.cardano.yano.appchain.stdlib"]
         and (.items | map(select(.selected)) | all(
           .selectionStatus == "SELECTED"

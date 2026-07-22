@@ -19,7 +19,8 @@
     "appchain-stdlib",
     "appchain-evidence-registry",
     "appchain-composite",
-    "appchain-role-workflow"
+    "appchain-role-workflow",
+    "appchain-evidence-profile"
   ],
   "distributions": [
     {

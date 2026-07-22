@@ -5,8 +5,8 @@ import com.bloxbean.cardano.yano.api.appchain.AppChainInfo;
 import com.bloxbean.cardano.yano.api.appchain.AppStateReader;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
 import com.bloxbean.cardano.yano.api.appchain.FinalityCert;
+import com.bloxbean.cardano.yano.appchain.composite.contracts.CompositeCommitmentV1;
 import org.junit.jupiter.api.Test;
-import com.bloxbean.cardano.yano.appchain.examples.evidence.state.EvidenceCompositeKeys;
 
 import java.util.HashMap;
 import java.util.HexFormat;
@@ -99,7 +99,8 @@ class CompositeStateMachineProfileMarkerTest {
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("exceeds");
         assertThat(CompositeStateKeys.componentKey("evidence", new byte[]{1, 2, 3}))
-                .containsExactly(EvidenceCompositeKeys.physicalKey(new byte[]{1, 2, 3}));
+                .containsExactly(CompositeCommitmentV1.componentKey(
+                        "evidence", new byte[]{1, 2, 3}));
         byte[] marker = CompositeStateKeys.profileMarkerKey();
         marker[0] ^= 1;
         assertThat(CompositeStateKeys.profileMarkerKey())

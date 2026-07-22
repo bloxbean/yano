@@ -4,7 +4,7 @@ import com.bloxbean.cardano.yano.api.config.PluginsOptions;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConsensusProfile;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineContext;
 import com.bloxbean.cardano.yano.appchain.composite.CompositeStateMachine;
-import com.bloxbean.cardano.yano.appchain.composite.stock.CompositeStockPresets;
+import com.bloxbean.cardano.yano.appchain.evidence.profile.EvidenceCompositePresets;
 import com.bloxbean.cardano.yano.catalog.PluginIndex;
 import com.bloxbean.cardano.yano.catalog.PluginIndexCodec;
 import com.bloxbean.cardano.yano.runtime.plugins.PluginRuntimeEnvironment;
@@ -58,12 +58,12 @@ public final class PluginCatalogProvenanceProbe {
             fingerprint = environment.catalog().fingerprint();
         }
 
-        CompositeStateMachine stockComposite = CompositeStockPresets.create(
+        CompositeStateMachine stockComposite = EvidenceCompositePresets.create(
                 new AppStateMachineContext() {
                     @Override public String chainId() { return "conformance-chain"; }
                     @Override public Map<String, String> settings() {
                         return Map.of("machines.composite.preset",
-                                CompositeStockPresets.EVIDENCE_V1_GATED);
+                                EvidenceCompositePresets.EVIDENCE_V1_GATED);
                     }
                     @Override public Optional<AppChainConsensusProfile> consensusProfile() {
                         return Optional.of(AppTestConsensusProfiles.enabledEffects(128, 16_384));

@@ -261,7 +261,7 @@ Exact committed queries are:
 The read-only JSON API is below:
 
 ```text
-/api/v1/plugins/com.bloxbean.cardano.yano.appchain.role-workflow/
+/api/v1/plugins/com.bloxbean.cardano.yano.appchain.evidence-profile/
 ```
 
 It exposes organizations, actors, policies, proposals, evidence links, and
