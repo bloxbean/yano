@@ -1912,6 +1912,14 @@ tasks.register('yanoDistZip', Zip) {
         from('bin') {
             include '*.md'
         }
+        from('observability') {
+            into 'observability'
+            include '*.yml', '*.md'
+        }
+        from('observability/observability.sh') {
+            into 'observability'
+            filePermissions { unix('755') }
+        }
         from('config') {
             into 'config'
             include 'application.yml', 'application.yaml', 'application-*.yml', 'application-*.yaml', 'network/**'
@@ -1980,6 +1988,16 @@ tasks.register('yanoDistZip', Zip) {
             into 'studio'
         }
     }
+}
+
+tasks.register('testObservabilityLauncher', Exec) {
+    group = 'verification'
+    description = 'Checks the bounded observability Compose lifecycle contract'
+    commandLine 'bash', file('observability/tests/contract.sh')
+}
+
+tasks.named('check') {
+    dependsOn tasks.named('testObservabilityLauncher')
 }
 
 tasks.register('packagedJvmPluginCatalogSmoke') {
@@ -2510,6 +2528,14 @@ tasks.register('yanoNativeDistZip', Zip) {
         }
         from('bin') {
             include '*.md'
+        }
+        from('observability') {
+            into 'observability'
+            include '*.yml', '*.md'
+        }
+        from('observability/observability.sh') {
+            into 'observability'
+            filePermissions { unix('755') }
         }
         from('config') {
             into 'config'

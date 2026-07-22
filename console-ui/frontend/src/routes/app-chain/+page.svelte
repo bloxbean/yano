@@ -6,6 +6,8 @@
   import { apiFailureMessage, resolveApiBase, YanoApi } from '$lib/api/client';
   import type { AppChainBlocks, AppChainMessage, AppChainStatus, ChainSummary, NodeConfig } from '$lib/api/types';
   import { SessionHistory, type CompactSample } from '$lib/telemetry/history';
+  import { columnSamples, mergeSamples } from '$lib/telemetry/durable-history';
+  import { PrometheusHistoryProvider, resolveMetricsBase } from '$lib/telemetry/prometheus';
   import { createPoller, type Poller } from '$lib/telemetry/poller';
   import { appChainSample, type AppChainHistoryState } from '$lib/appchain/history';
   import { completePayloadDigest, messagePreview, type MessagePreview } from '$lib/appchain/message-preview';
@@ -24,6 +26,8 @@
   let samples: CompactSample[] = [];
   let history: SessionHistory | null = null;
   let historyState: AppChainHistoryState | null = null;
+  let durableSamples: CompactSample[] = [];
+  let historySource = 'browser session';
   let poller: Poller | null = null;
   let streamAbort: AbortController | null = null;
   let streamGeneration = 0;
@@ -99,6 +103,9 @@
     localStorage.setItem(CHAIN_KEY, chainId);
     history = new SessionHistory(`${apiBase}|${config?.protocolMagic ?? 'unknown'}|app-chain|${chainId}`);
     samples = history.values();
+    durableSamples = [];
+    historySource = 'browser session';
+    void loadDurableHistory(chainId);
     historyState = null;
     status = null;
     blocks = null;
@@ -120,7 +127,7 @@
       if (result.discontinuity) history?.append([result.sample[0], null, null, null, null]);
       history?.append(result.sample);
       historyState = result.state;
-      samples = history?.values() ?? [];
+      samples = mergeSamples(durableSamples, history?.values() ?? []);
       status = nextStatus;
       blocks = nextBlocks;
       requestMs = Math.round(performance.now() - started);
@@ -131,6 +138,24 @@
         pageError = apiFailureMessage(cause, 'App-chain status request failed');
       }
     }
+  }
+
+  async function loadDurableHistory(chainId: string): Promise<void> {
+    const base = resolveMetricsBase();
+    if (!base) return;
+    try {
+      const provider = new PrometheusHistoryProvider(base);
+      const end = Date.now() / 1_000;
+      const range = { start: end - 3_600, end, step: 5 };
+      const [tip, poolSeries, blockInterval, anchorLag] = await Promise.all([
+        provider.range('appchain.tip-rate', range, chainId), provider.range('appchain.pool', range, chainId),
+        provider.range('appchain.block-interval-ms', range, chainId), provider.range('appchain.anchor-lag', range, chainId)
+      ]);
+      if (chainId !== selectedChain) return;
+      durableSamples = columnSamples([tip[0], poolSeries[0], blockInterval[0], anchorLag[0]]);
+      samples = mergeSamples(durableSamples, history?.values() ?? []);
+      historySource = 'Prometheus + browser session';
+    } catch { historySource = 'browser session · durable provider unavailable'; }
   }
 
   function stopStream(): void {
@@ -314,7 +339,7 @@
   </MetricCard>
 </div>
 
-<div class="section-title">Browser session trends <span class="font-normal normal-case tracking-normal text-slate-600">· up to 1 hour</span></div>
+<div class="section-title">Trends <span class="font-normal normal-case tracking-normal text-slate-600">· {historySource} · up to 1 hour</span></div>
 <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
   <MetricCard title="Tip rate" subtitle="blocks / second"><LineChart series={chartTip} colors={['#a78bfa']} label="App-chain tip rate" /></MetricCard>
   <MetricCard title="Pending pool" subtitle="messages"><LineChart series={chartPool} colors={['#f59e0b']} label="Pending message pool" /></MetricCard>

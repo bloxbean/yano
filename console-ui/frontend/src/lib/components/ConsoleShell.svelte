@@ -3,6 +3,7 @@
   import { onMount } from 'svelte';
   import { apiFailureMessage, currentApiKey, resolveApiBase, resolvePluginApiBase, saveConnection, YanoApi } from '$lib/api/client';
   import type { NodeConfig, NodeStatus } from '$lib/api/types';
+  import { metricsCredential, resolveMetricsBase, saveMetricsConnection } from '$lib/telemetry/prometheus';
 
   let { children } = $props<{ children: import('svelte').Snippet }>();
   let config: NodeConfig | null = $state(null);
@@ -13,12 +14,16 @@
   let showConnection = $state(false);
   let identityError = $state('');
   let hostBound = $state(false);
+  let metricsBase = $state('');
+  let metricsBearer = $state('');
 
   onMount(async () => {
     hostBound = location.pathname.startsWith('/ui/plugins/');
     try {
       apiBase = hostBound ? await resolvePluginApiBase() : await resolveApiBase();
       key = hostBound ? '' : currentApiKey();
+      metricsBase = hostBound ? '' : resolveMetricsBase();
+      metricsBearer = metricsBase ? metricsCredential(metricsBase) : '';
       persistKey = !!localStorage.getItem('yano.console.api-key.v1');
       const api = new YanoApi(apiBase, key);
       [config, status] = await Promise.all([api.config(), api.status()]);
@@ -30,6 +35,7 @@
   function connect() {
     try {
       saveConnection(apiBase, key, persistKey);
+      saveMetricsConnection(metricsBase, metricsBearer);
       location.reload();
     } catch (error) {
       identityError = error instanceof Error ? error.message : 'Invalid connection';
@@ -52,6 +58,8 @@
            href={`${base}/app-chain/`}>App chains</a>
         <a class="rounded-lg px-3 py-2 text-xs text-slate-400 hover:bg-slate-800 hover:text-white"
            href={`${base}/plugins/`}>Plugins</a>
+        <a class="rounded-lg px-3 py-2 text-xs text-slate-400 hover:bg-slate-800 hover:text-white"
+           href={`${base}/observability/`}>Observability</a>
       </nav>
     </div>
     <div class="flex items-center gap-2">
@@ -69,7 +77,7 @@
     </div>
   </div>
   {#if showConnection}
-    <div class="mx-auto grid max-w-[1320px] gap-3 border-t border-slate-800 px-5 py-4 md:grid-cols-[1fr_1fr_auto]">
+    <div class="mx-auto grid max-w-[1320px] gap-3 border-t border-slate-800 px-5 py-4 md:grid-cols-2 xl:grid-cols-[1fr_1fr_1fr_1fr_auto]">
       <label class="text-xs text-slate-400">API base
         <input class="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
                bind:value={apiBase} placeholder="/api/v1 or https://node.example/api/v1" />
@@ -78,6 +86,15 @@
         <input type="password" autocomplete="off"
                class="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
                bind:value={key} placeholder="Optional" />
+      </label>
+      <label class="text-xs text-slate-400">Metrics origin
+        <input class="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
+               bind:value={metricsBase} placeholder="Optional · http://127.0.0.1:9090" />
+      </label>
+      <label class="text-xs text-slate-400">Metrics bearer
+        <input type="password" autocomplete="off"
+               class="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
+               bind:value={metricsBearer} placeholder="Optional · current tab only" />
       </label>
       <div class="flex items-end gap-3">
         <label class="mb-2 flex items-center gap-2 text-xs text-amber-300">

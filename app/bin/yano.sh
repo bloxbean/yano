@@ -10,6 +10,7 @@
 #   ./yano.sh start:<profiles>     # Custom comma-separated Quarkus profiles
 #   ./yano.sh appchain config ...  # App-chain configuration tooling
 #   ./yano.sh appchain cluster ... # Local cluster launcher
+#   ./yano.sh observability start  # Optional persistent metrics history
 #
 
 set -e
@@ -33,7 +34,7 @@ cd "$YANO_ROOT"
 
 usage() {
     cat <<EOF
-Usage: ./yano.sh [start|start:<profiles>|appchain|help] [args...]
+Usage: ./yano.sh [start|start:<profiles>|appchain|observability|help] [args...]
 
 Examples:
   ./yano.sh start
@@ -54,6 +55,8 @@ Examples:
   ./yano.sh appchain cluster start 3
   ./yano.sh appchain cluster effect demo "order 42 approved"
   ./yano.sh appchain cluster node join 3
+  ./yano.sh observability start
+  ./yano.sh observability status
 
 Environment:
   JAVA_OPTS        JVM options for jar distribution only
@@ -231,6 +234,16 @@ fi
 
 if [ "$1" = "appchain" ]; then
     dispatch_appchain "$@"
+fi
+
+if [ "$1" = "observability" ]; then
+    shift
+    if [ ! -x "$YANO_ROOT/observability/observability.sh" ]; then
+        echo "Error: observability/observability.sh is missing or not executable." >&2
+        exit 1
+    fi
+    [ "$#" -gt 0 ] || set -- help
+    exec "$YANO_ROOT/observability/observability.sh" "$@"
 fi
 
 # Parse profile from arguments

@@ -1,0 +1,25 @@
+services:
+  prometheus:
+    image: ${YANO_PROMETHEUS_IMAGE}
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=${YANO_PROMETHEUS_RETENTION}
+      - --storage.tsdb.retention.size=${YANO_PROMETHEUS_RETENTION_SIZE}
+      - --web.listen-address=0.0.0.0:9090
+      - --web.cors.origin=${YANO_PROMETHEUS_CORS_ORIGIN}
+    ports:
+      - 127.0.0.1:${YANO_PROMETHEUS_PORT}:9090
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    volumes:
+      - ${YANO_PROMETHEUS_CONFIG}:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    restart: unless-stopped
+
+volumes:
+  prometheus-data:
+    name: ${YANO_PROMETHEUS_VOLUME}
+    labels:
+      com.bloxbean.yano.owner: observability
+      com.bloxbean.yano.instance: ${YANO_OBSERVABILITY_INSTANCE}

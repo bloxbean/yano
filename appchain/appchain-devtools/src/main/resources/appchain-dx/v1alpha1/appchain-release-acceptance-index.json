@@ -47,7 +47,8 @@
     "executor:ipfs": ["appchain/extensions/appchain-ipfs/src/test/java/com/bloxbean/cardano/yano/appchain/ipfs/effects/IpfsEffectExecutorConformanceTest.java#IpfsConformanceSpec"],
     "executor:cardano-payment": ["appchain/extensions/appchain-effects-cardano/src/test/java/com/bloxbean/cardano/yano/appchain/effects/cardano/PaymentCommandTest.java#payment"],
     "runtime:composite": ["appchain/appchain-composite/src/test/java/com/bloxbean/cardano/yano/appchain/composite/CompositeRoutingAndEffectsTest.java#routesOnlyExactActiveTopicsInProfileOrderAndEnforcesPhysicalNamespaces"],
-    "ui:console": ["app/src/test/java/com/bloxbean/cardano/yano/app/AppChainStatusPageTest.java#appChainStatusPage_isServed"]
+    "ui:console": ["app/src/test/java/com/bloxbean/cardano/yano/app/AppChainStatusPageTest.java#appChainStatusPage_isServed"],
+    "observability:prometheus": ["app/observability/tests/contract.sh#observability-launcher-contract"]
   },
   "recipes": [
     {
