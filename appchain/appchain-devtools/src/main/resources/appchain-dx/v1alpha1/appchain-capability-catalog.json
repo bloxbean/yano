@@ -1,256 +1,250 @@
 {
   "schemaVersion": "v1alpha1",
   "artifacts": [
-    {
-      "id": "yano-runtime",
-      "runtimeTypes": ["jvm", "native"],
-      "deploymentTargets": ["host", "docker-compose"]
-    },
-    {
-      "id": "appchain-stdlib",
-      "runtimeTypes": ["jvm", "native"],
-      "deploymentTargets": ["host", "docker-compose"]
-    },
-    {
-      "id": "appchain-evidence-registry",
-      "runtimeTypes": ["jvm", "native"],
-      "deploymentTargets": ["host", "docker-compose"]
-    },
-    {
-      "id": "appchain-composite",
-      "runtimeTypes": ["jvm", "native"],
-      "deploymentTargets": ["host", "docker-compose"]
-    },
-    {
-      "id": "appchain-role-workflow",
-      "runtimeTypes": ["jvm", "native"],
-      "deploymentTargets": ["host", "docker-compose"]
-    },
-    {
-      "id": "appchain-evidence-profile",
-      "runtimeTypes": ["jvm", "native"],
-      "deploymentTargets": ["host", "docker-compose"]
-    }
+    {"id":"yano-runtime","availability":"BUNDLED","bundleId":"builtin:yano-runtime","nativePosture":"bundled","runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"]},
+    {"id":"appchain-stdlib","availability":"BUNDLED","bundleId":"com.bloxbean.cardano.yano.appchain.stdlib","nativePosture":"bundled","runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"]},
+    {"id":"appchain-evidence-registry","availability":"BUNDLED","bundleId":"com.bloxbean.cardano.yano.appchain.evidence-registry","nativePosture":"bundled","runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"]},
+    {"id":"appchain-composite","availability":"BUNDLED","bundleId":"library:appchain-composite","nativePosture":"bundled","runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"]},
+    {"id":"appchain-role-workflow","availability":"BUNDLED","bundleId":"com.bloxbean.cardano.yano.appchain.role-workflow","nativePosture":"bundled","runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"]},
+    {"id":"appchain-evidence-profile","availability":"BUNDLED","bundleId":"com.bloxbean.cardano.yano.appchain.evidence-profile","nativePosture":"bundled","runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"]},
+    {"id":"appchain-kafka","availability":"FIRST_PARTY_OPTIONAL","bundleId":"com.bloxbean.cardano.yano.appchain.kafka","nativePosture":"build-time-only","runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"]},
+    {"id":"appchain-objectstore-s3","availability":"FIRST_PARTY_OPTIONAL","bundleId":"com.bloxbean.cardano.yano.appchain.objectstore.s3","nativePosture":"build-time-only","runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"]},
+    {"id":"appchain-ipfs","availability":"FIRST_PARTY_OPTIONAL","bundleId":"com.bloxbean.cardano.yano.appchain.ipfs","nativePosture":"build-time-only","runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"]},
+    {"id":"appchain-effects-cardano","availability":"FIRST_PARTY_OPTIONAL","bundleId":"com.bloxbean.cardano.yano.appchain.effects.cardano","nativePosture":"build-time-only","runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"]},
+    {"id":"appchain-zk","availability":"EXPERIMENTAL","bundleId":"com.bloxbean.cardano.yano.appchain.zk","nativePosture":"build-time-only","runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"]}
   ],
   "capabilities": [
     {
-      "id": "state:ordered-log",
-      "name": "Ordered audit log",
-      "category": "state",
-      "maturity": "stable",
-      "description": "Append-only ordered application messages.",
-      "provides": ["state-machine"],
-      "requires": [],
-      "implies": [],
-      "conflicts": ["state:kv-registry", "state:approval-workflow", "state:role-approvals", "state:role-evidence", "state:custom-plugin"],
-      "runtimeTypes": ["jvm", "native"],
-      "deploymentTargets": ["host", "docker-compose"],
-      "artifacts": ["yano-runtime", "appchain-stdlib"],
-      "properties": {
-        "state-machine": "ordered-log"
-      }
+      "id":"state:ordered-log","name":"Ordered audit log","category":"state","availability":"BUNDLED","maturity":"stable","scope":"chain","selectable":true,
+      "trustStatement":"Built into the Yano runtime and covered by packaged-runtime acceptance.","description":"Append-only ordered application messages.",
+      "provides":["state-machine"],"requires":[],"implies":[],"conflicts":[],"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime"],"nativePosture":"bundled",
+      "externalPrerequisites":[],"bootstrapRequirements":[],"nonSecretAnswers":[],"secretReferences":{},"properties":{"state-machine":"ordered-log"},
+      "documentation":"docs/appchain/state-machines/ordered-log.md","acceptanceScenario":"stock-ordered-log"
     },
     {
-      "id": "state:kv-registry",
-      "name": "Owned key/value registry",
-      "category": "state",
-      "maturity": "stable",
-      "description": "Owner-guarded key/value state machine.",
-      "provides": ["state-machine"],
-      "requires": [],
-      "implies": [],
-      "conflicts": ["state:ordered-log", "state:approval-workflow", "state:role-approvals", "state:role-evidence", "state:custom-plugin"],
-      "runtimeTypes": ["jvm", "native"],
-      "deploymentTargets": ["host", "docker-compose"],
-      "artifacts": ["yano-runtime", "appchain-stdlib"],
-      "properties": {
-        "state-machine": "kv-registry",
-        "machines.kv-registry.value-format": "utf8"
-      }
+      "id":"state:kv-registry","name":"Owned key/value registry","category":"state","availability":"BUNDLED","maturity":"stable","scope":"chain","selectable":true,
+      "trustStatement":"First-party standard-library state machine bundled in every named distribution.","description":"First-writer-owned mutable key/value records with committed proofs.",
+      "provides":["state-machine"],"requires":[],"implies":[],"conflicts":[],"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime","appchain-stdlib"],"nativePosture":"bundled",
+      "externalPrerequisites":[],"bootstrapRequirements":[],"nonSecretAnswers":[],"secretReferences":{},"properties":{"state-machine":"kv-registry","machines.kv-registry.value-format":"utf8"},
+      "documentation":"docs/appchain/state-machines/kv-registry.md","acceptanceScenario":"stock-kv-registry"
     },
     {
-      "id": "state:approval-workflow",
-      "name": "Approval workflow",
-      "category": "state",
-      "maturity": "stable",
-      "description": "Deterministic proposals, votes, and threshold approval state.",
-      "provides": ["state-machine"],
-      "requires": [],
-      "implies": [],
-      "conflicts": ["state:ordered-log", "state:kv-registry", "state:role-approvals", "state:role-evidence", "state:custom-plugin"],
-      "runtimeTypes": ["jvm", "native"],
-      "deploymentTargets": ["host", "docker-compose"],
-      "artifacts": ["yano-runtime", "appchain-stdlib"],
-      "properties": {
-        "state-machine": "approvals"
-      }
+      "id":"state:approval-workflow","name":"Threshold approval workflow","category":"state","availability":"BUNDLED","maturity":"stable","scope":"chain","selectable":true,
+      "trustStatement":"First-party standard-library state machine bundled in every named distribution.","description":"Validator-member proposals, votes, and terminal threshold decisions.",
+      "provides":["state-machine"],"requires":[],"implies":[],"conflicts":[],"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime","appchain-stdlib"],"nativePosture":"bundled",
+      "externalPrerequisites":[],"bootstrapRequirements":[],"nonSecretAnswers":[],"secretReferences":{},"properties":{"state-machine":"approvals"},
+      "documentation":"docs/appchain/state-machines/approvals.md","acceptanceScenario":"stock-approvals"
     },
     {
-      "id": "state:role-approvals",
-      "name": "Role-gated payload approvals",
-      "category": "state",
-      "maturity": "preview",
-      "description": "Governed organizations, actors, policies, and signed approvals for arbitrary payload hashes.",
-      "provides": ["state-machine"],
-      "requires": [],
-      "implies": [],
-      "conflicts": ["state:ordered-log", "state:kv-registry", "state:approval-workflow", "state:role-evidence", "state:custom-plugin"],
-      "runtimeTypes": ["jvm", "native"],
-      "deploymentTargets": ["host", "docker-compose"],
-      "artifacts": ["yano-runtime", "appchain-composite", "appchain-role-workflow"],
-      "properties": {
-        "state-machine": "role-approvals",
-        "machines.composite.preset": "role-approvals-v1",
-        "machines.composite.profile-mode": "fixed",
-        "machines.composite.profile-governance.min-activation-lag": "20",
-        "machines.composite.profile-governance.proposal-ttl-blocks": "600",
-        "machines.composite.profile-governance.max-epochs": "1024",
-        "machines.composite.roles.maximum-mutation-lifetime-blocks": "1000"
-      }
+      "id":"state:balances","name":"Member balances","category":"state","availability":"BUNDLED","maturity":"stable","scope":"chain","selectable":true,
+      "trustStatement":"First-party standard-library state machine bundled in every named distribution.","description":"Member-authorized mint and transfer accounts for bounded application balances.",
+      "provides":["state-machine"],"requires":[],"implies":[],"conflicts":[],"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime","appchain-stdlib"],"nativePosture":"bundled",
+      "externalPrerequisites":[],"bootstrapRequirements":[],"nonSecretAnswers":[],"secretReferences":{},"properties":{"state-machine":"balances"},
+      "documentation":"docs/appchain/state-machines/README.md","acceptanceScenario":"stock-balances"
     },
     {
-      "id": "state:role-evidence",
-      "name": "Role-aware evidence workflow",
-      "category": "state",
-      "maturity": "preview",
-      "description": "Composite evidence registry with role-aware approvals and domain APIs.",
-      "provides": ["state-machine"],
-      "requires": [],
-      "implies": [],
-      "conflicts": ["state:ordered-log", "state:kv-registry", "state:approval-workflow", "state:role-approvals", "state:custom-plugin"],
-      "runtimeTypes": ["jvm", "native"],
-      "deploymentTargets": ["host", "docker-compose"],
-      "artifacts": ["yano-runtime", "appchain-stdlib", "appchain-evidence-registry", "appchain-composite", "appchain-role-workflow", "appchain-evidence-profile"],
-      "properties": {
-        "state-machine": "role-evidence",
-        "block.max-messages": "100",
-        "effects.enabled": "true",
-        "effects.max-per-block": "200",
-        "effects.max-payload-bytes": "16384",
-        "effects.max-expiry-blocks": "100000",
-        "effects.result-window-blocks": "100000",
-        "effects.default-gate": "app-final",
-        "effects.outcome-commitment": "per-effect",
-        "effects.strict-reserved-prefix": "true",
-        "machines.kv-registry.value-format": "raw",
-        "machines.composite.preset": "role-evidence-v1",
-        "machines.composite.evidence-capacity-per-block": "8",
-        "machines.composite.profile-mode": "fixed",
-        "machines.composite.profile-governance.min-activation-lag": "20",
-        "machines.composite.profile-governance.proposal-ttl-blocks": "600",
-        "machines.composite.profile-governance.max-epochs": "1024",
-        "machines.composite.roles.maximum-mutation-lifetime-blocks": "1000",
-        "machines.evidence-registry.storage-gate": "app-final",
-        "machines.evidence-registry.storage-expiry-blocks": "0",
-        "machines.evidence-registry.notification-expiry-blocks": "0"
-      }
+      "id":"state:doc-trail","name":"Document trail","category":"state","availability":"BUNDLED","maturity":"stable","scope":"chain","selectable":true,
+      "trustStatement":"First-party standard-library state machine bundled in every named distribution.","description":"Append-only per-entity document and event hash trails.",
+      "provides":["state-machine"],"requires":[],"implies":[],"conflicts":[],"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime","appchain-stdlib"],"nativePosture":"bundled",
+      "externalPrerequisites":[],"bootstrapRequirements":[],"nonSecretAnswers":[],"secretReferences":{},"properties":{"state-machine":"doc-trail"},
+      "documentation":"docs/appchain/state-machines/doc-trail.md","acceptanceScenario":"stock-doc-trail"
     },
     {
-      "id": "state:custom-plugin",
-      "name": "Custom JVM plugin state machine",
-      "category": "state",
-      "maturity": "experimental",
-      "description": "Advanced path for a separately reviewed custom plugin bundle.",
-      "provides": ["state-machine"],
-      "requires": [],
-      "implies": [],
-      "conflicts": ["state:ordered-log", "state:kv-registry", "state:approval-workflow", "state:role-approvals", "state:role-evidence"],
-      "runtimeTypes": ["jvm"],
-      "deploymentTargets": ["host", "docker-compose"],
-      "artifacts": ["yano-runtime"],
-      "properties": {
-        "state-machine": "${stateMachine}"
-      }
+      "id":"state:evidence-registry","name":"Evidence registry","category":"state","availability":"BUNDLED","maturity":"preview","scope":"chain","selectable":true,
+      "trustStatement":"First-party preview domain product; it proves recorded evidence claims, not real-world truth.","description":"Inspection and compliance evidence records with exact committed query proofs.",
+      "provides":["state-machine"],"requires":[],"implies":[],"conflicts":[],"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime","appchain-evidence-registry"],"nativePosture":"bundled",
+      "externalPrerequisites":[],"bootstrapRequirements":[],"nonSecretAnswers":[],"secretReferences":{},"properties":{"state-machine":"evidence-registry"},
+      "documentation":"docs/appchain/tutorials/04-evidence-publication.md","acceptanceScenario":"evidence-registry-proof"
     },
     {
-      "id": "sequencer:fixed",
-      "name": "Fixed sequencer",
-      "category": "sequencer",
-      "maturity": "stable",
-      "description": "One declared member proposes blocks.",
-      "provides": ["sequencer"],
-      "requires": [],
-      "implies": [],
-      "conflicts": ["sequencer:rotating"],
-      "runtimeTypes": ["jvm", "native"],
-      "deploymentTargets": ["host", "docker-compose"],
-      "artifacts": ["yano-runtime"],
-      "properties": {
-        "sequencer.mode": "fixed",
-        "sequencer.proposer": "${proposer}"
-      }
+      "id":"state:role-approvals","name":"Role-gated payload approvals","category":"state","availability":"BUNDLED","maturity":"preview","scope":"chain","selectable":true,
+      "trustStatement":"First-party generic role product; applications retain responsibility for interpreting approved payload hashes.","description":"Governed organizations, actors, policies, and signed approvals for arbitrary payload hashes.",
+      "provides":["state-machine"],"requires":[],"implies":[],"conflicts":[],"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime","appchain-composite","appchain-role-workflow"],"nativePosture":"bundled",
+      "externalPrerequisites":[],"bootstrapRequirements":["governed-organizations","governed-actors","governed-policies"],"nonSecretAnswers":[],"secretReferences":{},
+      "properties":{"state-machine":"role-approvals","machines.composite.preset":"role-approvals-v1","machines.composite.profile-mode":"fixed","machines.composite.profile-governance.min-activation-lag":"20","machines.composite.profile-governance.proposal-ttl-blocks":"600","machines.composite.profile-governance.max-epochs":"1024","machines.composite.roles.maximum-mutation-lifetime-blocks":"1000"},
+      "documentation":"docs/appchain/tutorials/05-domain-role-approvals.md","acceptanceScenario":"generic-role-approval"
     },
     {
-      "id": "sequencer:rotating",
-      "name": "Rotating sequencer",
-      "category": "sequencer",
-      "maturity": "experimental",
-      "description": "Proposer rotates using the L1 slot clock.",
-      "provides": ["sequencer"],
-      "requires": [],
-      "implies": ["l1:slot-feed"],
-      "conflicts": ["sequencer:fixed"],
-      "runtimeTypes": ["jvm", "native"],
-      "deploymentTargets": ["host", "docker-compose"],
-      "artifacts": ["yano-runtime"],
-      "properties": {
-        "sequencer.mode": "rotating",
-        "sequencer.window-slots": "10"
-      }
+      "id":"state:role-evidence","name":"Role-aware evidence workflow","category":"state","availability":"BUNDLED","maturity":"preview","scope":"chain","selectable":true,
+      "trustStatement":"First-party preview evidence profile; external publication requires separately selected ready executors.","description":"Evidence registration combined with governed domain actors and role-aware release approval.",
+      "provides":["state-machine"],"requires":[],"implies":[],"conflicts":[],"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime","appchain-stdlib","appchain-evidence-registry","appchain-composite","appchain-role-workflow","appchain-evidence-profile"],"nativePosture":"bundled",
+      "externalPrerequisites":[],"bootstrapRequirements":["governed-organizations","governed-actors","governed-policies"],"nonSecretAnswers":[],"secretReferences":{},
+      "properties":{"state-machine":"role-evidence","block.max-messages":"100","effects.enabled":"true","effects.max-per-block":"200","effects.max-payload-bytes":"16384","effects.max-expiry-blocks":"100000","effects.result-window-blocks":"100000","effects.default-gate":"app-final","effects.outcome-commitment":"per-effect","effects.strict-reserved-prefix":"true","machines.kv-registry.value-format":"raw","machines.composite.preset":"role-evidence-v1","machines.composite.evidence-capacity-per-block":"8","machines.composite.profile-mode":"fixed","machines.composite.profile-governance.min-activation-lag":"20","machines.composite.profile-governance.proposal-ttl-blocks":"600","machines.composite.profile-governance.max-epochs":"1024","machines.composite.roles.maximum-mutation-lifetime-blocks":"1000","machines.evidence-registry.storage-gate":"app-final","machines.evidence-registry.storage-expiry-blocks":"0","machines.evidence-registry.notification-expiry-blocks":"0"},
+      "documentation":"docs/appchain/tutorials/04-evidence-publication.md","acceptanceScenario":"role-evidence-ledger"
     },
     {
-      "id": "l1:slot-feed",
-      "name": "L1 slot feed",
-      "category": "l1",
-      "maturity": "stable",
-      "description": "Uses the local Yano L1 view for slot-aware behavior.",
-      "provides": ["l1-slot-feed"],
-      "requires": [],
-      "implies": [],
-      "conflicts": [],
-      "runtimeTypes": ["jvm", "native"],
-      "deploymentTargets": ["host", "docker-compose"],
-      "artifacts": ["yano-runtime"],
-      "properties": {}
+      "id":"state:custom-plugin","name":"Custom JVM plugin state machine","category":"custom-plugin","availability":"REFERENCE","maturity":"experimental","scope":"chain","selectable":true,
+      "trustStatement":"Operator-owned advanced path; Yano does not trust or install the plugin automatically.","description":"Project boundary for a separately reviewed custom state-machine bundle.",
+      "provides":["state-machine"],"requires":[],"implies":[],"conflicts":[],"runtimeTypes":["jvm"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime"],"nativePosture":"unsupported",
+      "externalPrerequisites":["reviewed-custom-plugin-bundle"],"bootstrapRequirements":["plugin-metadata-trust-review"],"nonSecretAnswers":["stateMachine"],"secretReferences":{},"properties":{"state-machine":"${stateMachine}"},
+      "documentation":"docs/appchain/tutorials/08-plugins-and-composites.md","acceptanceScenario":"custom-plugin-boundary"
     },
     {
-      "id": "effects:on-approved",
-      "name": "Generic on-approved effect",
-      "category": "effects",
-      "maturity": "preview",
-      "description": "Emits one typed CHAIN-result effect after threshold approval.",
-      "provides": ["effects"],
-      "requires": ["state:approval-workflow"],
-      "implies": [],
-      "conflicts": [],
-      "runtimeTypes": ["jvm", "native"],
-      "deploymentTargets": ["host", "docker-compose"],
-      "artifacts": ["yano-runtime", "appchain-stdlib"],
-      "properties": {
-        "effects.enabled": "true",
-        "machines.approvals.on-approved-effect.enabled": "true",
-        "machines.approvals.on-approved-effect.type": "${effectType}",
-        "machines.approvals.on-approved-effect.gate": "chain-default",
-        "machines.approvals.on-approved-effect.expiry-blocks": "0",
-        "machines.approvals.activations.on-approved-effect": "1"
-      }
+      "id":"state:zk-gate","name":"Zero-knowledge proof gate","category":"state","availability":"EXPERIMENTAL","maturity":"experimental","scope":"chain","selectable":true,
+      "trustStatement":"Experimental ZeroJ integration; circuit and verification-key governance remain operator responsibilities.","description":"Verifies configured Groth16 or Plonk proofs during deterministic state transition.",
+      "provides":["state-machine"],"requires":[],"implies":[],"conflicts":[],"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime","appchain-zk"],"nativePosture":"build-time-only",
+      "externalPrerequisites":["reviewed-verification-key-file"],"bootstrapRequirements":["identical-verification-key-on-every-member"],"nonSecretAnswers":["circuitId","verificationKeyFile","verificationKeyHash","proofSystem","curve"],"secretReferences":{},
+      "properties":{"state-machine":"zk-gate","zk.circuits[0].id":"${circuitId}","zk.circuits[0].vk-file":"${verificationKeyFile}","zk.circuits[0].vk-hash":"${verificationKeyHash}","zk.circuits[0].proof-system":"${proofSystem}","zk.circuits[0].curve":"${curve}"},
+      "documentation":"appchain/extensions/appchain-zk/README.md","acceptanceScenario":"experimental-zk-gate"
     },
     {
-      "id": "effects:publication",
-      "name": "Evidence publication effects",
-      "category": "effects",
-      "maturity": "experimental",
-      "description": "Enables deterministic effect intents for publication workflows.",
-      "provides": ["effects"],
-      "requires": ["state:ordered-log"],
-      "implies": [],
-      "conflicts": [],
-      "runtimeTypes": ["jvm", "native"],
-      "deploymentTargets": ["host", "docker-compose"],
-      "artifacts": ["yano-runtime"],
-      "properties": {
-        "effects.enabled": "true"
-      }
+      "id":"state:zk-membership","name":"Anonymous ZK membership","category":"state","availability":"EXPERIMENTAL","maturity":"experimental","scope":"chain","selectable":true,
+      "trustStatement":"Experimental ZeroJ integration; circuit and verification-key governance remain operator responsibilities.","description":"Membership authorization using a configured zero-knowledge circuit and nullifier deduplication.",
+      "provides":["state-machine"],"requires":[],"implies":[],"conflicts":[],"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime","appchain-zk"],"nativePosture":"build-time-only",
+      "externalPrerequisites":["reviewed-membership-verification-key-file"],"bootstrapRequirements":["identical-verification-key-on-every-member"],"nonSecretAnswers":["circuitId","verificationKeyFile","verificationKeyHash","proofSystem","curve"],"secretReferences":{},
+      "properties":{"state-machine":"zk-membership","zk.circuits[0].id":"${circuitId}","zk.circuits[0].vk-file":"${verificationKeyFile}","zk.circuits[0].vk-hash":"${verificationKeyHash}","zk.circuits[0].proof-system":"${proofSystem}","zk.circuits[0].curve":"${curve}"},
+      "documentation":"appchain/extensions/appchain-zk/README.md","acceptanceScenario":"experimental-zk-membership"
+    },
+    {
+      "id":"state:credential-registry","name":"BBS credential registry","category":"state","availability":"EXPERIMENTAL","maturity":"experimental","scope":"chain","selectable":true,
+      "trustStatement":"Experimental ZeroJ integration; issuer key governance remains an application responsibility.","description":"Registry for selectively disclosed BBS credential statements from configured issuers.",
+      "provides":["state-machine"],"requires":[],"implies":[],"conflicts":[],"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime","appchain-zk"],"nativePosture":"build-time-only",
+      "externalPrerequisites":[],"bootstrapRequirements":["reviewed-bbs-issuer-public-key"],"nonSecretAnswers":["issuerId","issuerPublicKey"],"secretReferences":{},
+      "properties":{"state-machine":"credential-registry","zk.bbs.issuers[0].id":"${issuerId}","zk.bbs.issuers[0].public-key":"${issuerPublicKey}"},
+      "documentation":"appchain/extensions/appchain-zk/README.md","acceptanceScenario":"experimental-credential-registry"
+    },
+    {
+      "id":"sequencer:fixed","name":"Fixed sequencer","category":"sequencer","availability":"BUNDLED","maturity":"stable","scope":"chain","selectable":true,
+      "trustStatement":"Built into the Yano runtime and covered by multi-node acceptance.","description":"One declared member proposes application blocks.",
+      "provides":["sequencer"],"requires":[],"implies":[],"conflicts":["sequencer:rotating"],"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime"],"nativePosture":"bundled",
+      "externalPrerequisites":[],"bootstrapRequirements":[],"nonSecretAnswers":[],"secretReferences":{},"properties":{"sequencer.mode":"fixed","sequencer.proposer":"${proposer}"},
+      "documentation":"docs/appchain/README.md","acceptanceScenario":"fixed-sequencer"
+    },
+    {
+      "id":"sequencer:rotating","name":"L1-window rotating sequencer","category":"sequencer","availability":"BUNDLED","maturity":"experimental","scope":"chain","selectable":true,
+      "trustStatement":"Built-in experimental policy whose proposer schedule depends on the local stable L1 slot view.","description":"Rotates proposership across members using bounded L1 slot windows.",
+      "provides":["sequencer"],"requires":[],"implies":["l1:slot-feed"],"conflicts":["sequencer:fixed"],"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime"],"nativePosture":"bundled",
+      "externalPrerequisites":["synchronized-l1-slot-view"],"bootstrapRequirements":[],"nonSecretAnswers":[],"secretReferences":{},"properties":{"sequencer.mode":"rotating","sequencer.window-slots":"10"},
+      "documentation":"docs/appchain/README.md","acceptanceScenario":"rotating-sequencer"
+    },
+    {
+      "id":"membership:static","name":"Static membership","category":"membership","availability":"BUNDLED","maturity":"stable","scope":"chain","selectable":true,
+      "trustStatement":"Built into the Yano runtime; changing members requires a new reviewed configuration.","description":"Pins the initial member set as the active set.",
+      "provides":["membership"],"requires":[],"implies":[],"conflicts":["membership:governed"],"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime"],"nativePosture":"bundled",
+      "externalPrerequisites":[],"bootstrapRequirements":[],"nonSecretAnswers":[],"secretReferences":{},"properties":{"membership.mode":"static"},
+      "documentation":"docs/appchain/README.md","acceptanceScenario":"static-membership"
+    },
+    {
+      "id":"membership:governed","name":"Governed membership","category":"membership","availability":"BUNDLED","maturity":"preview","scope":"chain","selectable":true,
+      "trustStatement":"Built into the Yano runtime; member changes require threshold-governed activation.","description":"Allows authenticated member epochs to evolve through replicated governance.",
+      "provides":["membership"],"requires":[],"implies":[],"conflicts":["membership:static"],"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime"],"nativePosture":"bundled",
+      "externalPrerequisites":[],"bootstrapRequirements":["governance-operator-runbook"],"nonSecretAnswers":[],"secretReferences":{},"properties":{"membership.mode":"governed"},
+      "documentation":"docs/appchain/README.md","acceptanceScenario":"governed-membership"
+    },
+    {
+      "id":"l1:slot-feed","name":"L1 slot feed","category":"l1","availability":"BUNDLED","maturity":"stable","scope":"chain","selectable":true,
+      "trustStatement":"Uses the local Yano L1 view; it does not introduce a remote oracle.","description":"Supplies stable local Cardano slot observations to slot-aware app-chain behavior.",
+      "provides":["l1-slot-feed"],"requires":[],"implies":[],"conflicts":[],"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime"],"nativePosture":"bundled",
+      "externalPrerequisites":["synchronized-l1-view"],"bootstrapRequirements":[],"nonSecretAnswers":[],"secretReferences":{},"properties":{},
+      "documentation":"docs/appchain/README.md","acceptanceScenario":"l1-slot-feed"
+    },
+    {
+      "id":"anchor:metadata","name":"Cardano metadata anchors","category":"anchor","availability":"BUNDLED","maturity":"stable","scope":"chain","selectable":true,
+      "trustStatement":"Built-in Cardano transaction anchoring; wallet custody and funding remain operator-owned.","description":"Commits finalized app-chain roots in Cardano transaction metadata.",
+      "provides":["anchor"],"requires":["l1:slot-feed"],"implies":[],"conflicts":["anchor:script"],"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime"],"nativePosture":"bundled",
+      "externalPrerequisites":["funded-anchor-wallet"],"bootstrapRequirements":["anchor-wallet-custody-review"],"nonSecretAnswers":[],"secretReferences":{"anchor.signing-key":"YANO_APPCHAIN_ANCHOR_SIGNING_KEY"},"properties":{"anchor.enabled":"true","anchor.mode":"metadata"},
+      "documentation":"docs/appchain/tutorials/07-anchors-and-verification.md","acceptanceScenario":"metadata-anchor"
+    },
+    {
+      "id":"anchor:script","name":"Cardano threshold-script anchors","category":"anchor","availability":"BUNDLED","maturity":"preview","scope":"chain","selectable":true,
+      "trustStatement":"Built-in script anchoring; script artifacts, thread policy, wallet custody, and funding remain operator-owned.","description":"Advances an app-chain anchor thread through a reviewed Cardano script.",
+      "provides":["anchor"],"requires":["l1:slot-feed"],"implies":[],"conflicts":["anchor:metadata"],"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime"],"nativePosture":"bundled",
+      "externalPrerequisites":["funded-anchor-wallet","reviewed-anchor-script"],"bootstrapRequirements":["script-anchor-thread-bootstrap"],"nonSecretAnswers":["anchorValidator","anchorThreadPolicy"],"secretReferences":{"anchor.signing-key":"YANO_APPCHAIN_ANCHOR_SIGNING_KEY"},
+      "properties":{"anchor.enabled":"true","anchor.mode":"script","anchor.script.validator":"${anchorValidator}","anchor.script.thread-policy":"${anchorThreadPolicy}"},
+      "documentation":"docs/appchain/tutorials/07-anchors-and-verification.md","acceptanceScenario":"script-anchor"
+    },
+    {
+      "id":"observer:address-deposit","name":"Address deposit observer","category":"l1-observer","availability":"BUNDLED","maturity":"preview","scope":"chain","selectable":true,
+      "trustStatement":"Built-in deterministic L1 observation; applications must define how deposit claims affect domain state.","description":"Creates stable observations for lovelace paid to one configured Cardano address.",
+      "provides":["l1-observer:address-deposit"],"requires":["l1:slot-feed"],"implies":[],"conflicts":[],"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime"],"nativePosture":"bundled",
+      "externalPrerequisites":[],"bootstrapRequirements":[],"nonSecretAnswers":["depositAddress"],"secretReferences":{},"properties":{"observers.deposits.type":"address-deposit","observers.deposits.address":"${depositAddress}"},
+      "documentation":"docs/appchain/README.md","acceptanceScenario":"address-deposit-observer"
+    },
+    {
+      "id":"observer:metadata-label","name":"Metadata label observer","category":"l1-observer","availability":"BUNDLED","maturity":"preview","scope":"chain","selectable":true,
+      "trustStatement":"Built-in deterministic L1 observation; observed metadata remains an external claim, not proof of real-world truth.","description":"Creates stable observations for one configured Cardano transaction metadata label.",
+      "provides":["l1-observer:metadata-label"],"requires":["l1:slot-feed"],"implies":[],"conflicts":[],"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime"],"nativePosture":"bundled",
+      "externalPrerequisites":[],"bootstrapRequirements":[],"nonSecretAnswers":["metadataLabel"],"secretReferences":{},"properties":{"observers.metadata.type":"metadata-label","observers.metadata.label":"${metadataLabel}"},
+      "documentation":"docs/appchain/README.md","acceptanceScenario":"metadata-label-observer"
+    },
+    {
+      "id":"effects:runtime","name":"Deterministic effects runtime","category":"effects-runtime","availability":"BUNDLED","maturity":"preview","scope":"chain","selectable":true,
+      "trustStatement":"Effect intents and outcome reports are committed; external mutation remains executor-owned and at-least-once.","description":"Enables deterministic effect intents, gates, result incorporation, and proofs.",
+      "provides":["effects-runtime"],"requires":[],"implies":[],"conflicts":[],"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime"],"nativePosture":"bundled",
+      "externalPrerequisites":[],"bootstrapRequirements":[],"nonSecretAnswers":[],"secretReferences":{},"properties":{"effects.enabled":"true"},
+      "documentation":"docs/appchain/tutorials/06-webhook-effects.md","acceptanceScenario":"effects-runtime"
+    },
+    {
+      "id":"effects:on-approved","name":"Generic on-approved effect","category":"effect-emission","availability":"BUNDLED","maturity":"preview","scope":"chain","selectable":true,
+      "trustStatement":"The approval machine emits the configured typed payload after threshold approval; the external target remains executor-owned.","description":"Emits one typed chain-result effect when a stock approval reaches its threshold.",
+      "provides":["effect-emission:on-approved"],"requires":["state:approval-workflow","effects:runtime"],"implies":[],"conflicts":[],"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime","appchain-stdlib"],"nativePosture":"bundled",
+      "externalPrerequisites":[],"bootstrapRequirements":[],"nonSecretAnswers":["effectType"],"secretReferences":{},
+      "properties":{"machines.approvals.on-approved-effect.enabled":"true","machines.approvals.on-approved-effect.type":"${effectType}","machines.approvals.on-approved-effect.gate":"chain-default","machines.approvals.on-approved-effect.expiry-blocks":"0","machines.approvals.activations.on-approved-effect":"1"},
+      "documentation":"docs/appchain/state-machines/approvals.md","acceptanceScenario":"approval-effect-emission"
+    },
+    {
+      "id":"executor:webhook","name":"Webhook effect executor","category":"effect-executor","availability":"BUNDLED","maturity":"preview","scope":"node","selectable":true,
+      "trustStatement":"Built-in at-least-once HTTP executor; receivers must deduplicate with the supplied idempotency key.","description":"Executes webhook.post effects against one node-local configured URL.",
+      "provides":["effect-executor:webhook"],"requires":["effects:runtime"],"implies":[],"conflicts":[],"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime"],"nativePosture":"bundled",
+      "externalPrerequisites":["idempotent-webhook-target"],"bootstrapRequirements":[],"nonSecretAnswers":["webhookUrl"],"secretReferences":{},
+      "properties":{"effects.executor.enabled":"true","effects.executors.webhook.url":"${webhookUrl}"},
+      "documentation":"docs/appchain/tutorials/06-webhook-effects.md","acceptanceScenario":"webhook-effect-executor"
+    },
+    {
+      "id":"sink:webhook","name":"Finalized webhook sink","category":"finalized-sink","availability":"BUNDLED","maturity":"stable","scope":"node","selectable":true,
+      "trustStatement":"Built-in at-least-once finalized-block delivery; receivers own authentication and deduplication.","description":"Posts finalized application blocks to one configured node-local webhook endpoint.",
+      "provides":["finalized-sink:webhook"],"requires":[],"implies":[],"conflicts":[],"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime"],"nativePosture":"bundled",
+      "externalPrerequisites":["idempotent-finalized-webhook-target"],"bootstrapRequirements":[],"nonSecretAnswers":["webhookSinkUrl"],"secretReferences":{},"properties":{"webhooks":"${webhookSinkUrl}"},
+      "documentation":"docs/appchain/README.md","acceptanceScenario":"finalized-webhook-sink"
+    },
+    {
+      "id":"executor:kafka","name":"Kafka effect executor","category":"effect-executor","availability":"FIRST_PARTY_OPTIONAL","maturity":"preview","scope":"node","selectable":true,
+      "trustStatement":"First-party optional bundle; broker identity, transport security, credentials, topic policy, and delivery operations remain operator-owned.","description":"Executes kafka.publish intents through allowlisted node-local Kafka targets.",
+      "provides":["effect-executor:kafka"],"requires":["effects:runtime"],"implies":[],"conflicts":[],"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime","appchain-kafka"],"nativePosture":"build-time-only",
+      "externalPrerequisites":["kafka-cluster","allowlisted-topic","node-local-kafka-security-profile"],"bootstrapRequirements":["install-appchain-kafka-bundle","provide-node-local-kafka-configuration"],"nonSecretAnswers":[],"secretReferences":{},"properties":{},
+      "documentation":"appchain/extensions/appchain-kafka/README.md","acceptanceScenario":"optional-kafka-effect"
+    },
+    {
+      "id":"sink:kafka","name":"Kafka finalized sink","category":"finalized-sink","availability":"FIRST_PARTY_OPTIONAL","maturity":"preview","scope":"node","selectable":true,
+      "trustStatement":"First-party optional bundle; broker identity, credentials, topic retention, and downstream processing remain operator-owned.","description":"Publishes finalized application blocks to a configured Kafka topic.",
+      "provides":["finalized-sink:kafka"],"requires":[],"implies":[],"conflicts":[],"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime","appchain-kafka"],"nativePosture":"build-time-only",
+      "externalPrerequisites":["kafka-cluster","finalized-block-topic","node-local-kafka-security-profile"],"bootstrapRequirements":["install-appchain-kafka-bundle","provide-node-local-kafka-sink-configuration"],"nonSecretAnswers":[],"secretReferences":{},"properties":{},
+      "documentation":"appchain/extensions/appchain-kafka/README.md","acceptanceScenario":"optional-kafka-sink"
+    },
+    {
+      "id":"executor:objectstore-s3","name":"S3-compatible object executor","category":"effect-executor","availability":"FIRST_PARTY_OPTIONAL","maturity":"preview","scope":"node","selectable":true,
+      "trustStatement":"First-party optional bundle; storage credentials, bucket policy, versioning, encryption, and retention remain operator-owned.","description":"Executes immutable object.put promotion against allowlisted S3-compatible targets.",
+      "provides":["effect-executor:objectstore-s3"],"requires":["effects:runtime"],"implies":[],"conflicts":[],"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime","appchain-objectstore-s3"],"nativePosture":"build-time-only",
+      "externalPrerequisites":["versioned-s3-compatible-buckets","node-local-storage-credentials"],"bootstrapRequirements":["install-appchain-objectstore-s3-bundle","provide-node-local-objectstore-configuration"],"nonSecretAnswers":[],"secretReferences":{},"properties":{},
+      "documentation":"appchain/extensions/appchain-objectstore-s3/README.md","acceptanceScenario":"optional-objectstore-effect"
+    },
+    {
+      "id":"executor:ipfs","name":"IPFS pin executor","category":"effect-executor","availability":"FIRST_PARTY_OPTIONAL","maturity":"preview","scope":"node","selectable":true,
+      "trustStatement":"First-party optional bundle; Kubo identity, authentication, pin durability, and replication policy remain operator-owned.","description":"Executes reconciled ipfs.pin intents against allowlisted Kubo targets.",
+      "provides":["effect-executor:ipfs"],"requires":["effects:runtime"],"implies":[],"conflicts":[],"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime","appchain-ipfs"],"nativePosture":"build-time-only",
+      "externalPrerequisites":["kubo-api","node-local-ipfs-security-profile"],"bootstrapRequirements":["install-appchain-ipfs-bundle","provide-node-local-ipfs-configuration"],"nonSecretAnswers":[],"secretReferences":{},"properties":{},
+      "documentation":"appchain/extensions/appchain-ipfs/README.md","acceptanceScenario":"optional-ipfs-effect"
+    },
+    {
+      "id":"executor:cardano-payment","name":"Cardano payment executor","category":"effect-executor","availability":"FIRST_PARTY_OPTIONAL","maturity":"preview","scope":"node","selectable":true,
+      "trustStatement":"Privileged first-party optional bundle; payer-key custody, funding, transaction caps, backend trust, and reconciliation remain operator-owned.","description":"Executes bounded cardano.payment intents from an operator-controlled payer wallet.",
+      "provides":["effect-executor:cardano-payment"],"requires":["effects:runtime"],"implies":[],"conflicts":[],"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime","appchain-effects-cardano"],"nativePosture":"build-time-only",
+      "externalPrerequisites":["funded-cardano-payer-wallet","trusted-cardano-backend"],"bootstrapRequirements":["install-appchain-effects-cardano-bundle","complete-material-funds-readiness-review","provide-node-local-cardano-executor-configuration"],"nonSecretAnswers":[],"secretReferences":{},"properties":{},
+      "documentation":"appchain/extensions/appchain-effects-cardano/README.md","acceptanceScenario":"optional-cardano-payment"
+    },
+    {
+      "id":"runtime:composite","name":"Composite state-machine framework","category":"distribution","availability":"BUNDLED","maturity":"preview","scope":"distribution","selectable":false,
+      "trustStatement":"Generic framework library bundled for first-party profiles; arbitrary YAML composition is not supported.","description":"Deterministic component, workflow, profile, query, quota, and profile-governance framework.",
+      "provides":["composite-framework"],"requires":[],"implies":[],"conflicts":[],"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["appchain-composite"],"nativePosture":"bundled",
+      "externalPrerequisites":[],"bootstrapRequirements":[],"nonSecretAnswers":[],"secretReferences":{},"properties":{},
+      "documentation":"docs/appchain/tutorials/08-plugins-and-composites.md","acceptanceScenario":"composite-framework-packaging"
+    },
+    {
+      "id":"ui:console","name":"Embedded node console","category":"distribution","availability":"BUNDLED","maturity":"preview","scope":"node","selectable":false,
+      "trustStatement":"Read-only and privileged runtime-console behavior is governed separately by ADR-028.","description":"Embedded operational app-chain status console derived from the selected Yano distribution.",
+      "provides":["runtime-console"],"requires":[],"implies":[],"conflicts":[],"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime"],"nativePosture":"bundled",
+      "externalPrerequisites":[],"bootstrapRequirements":[],"nonSecretAnswers":[],"secretReferences":{},"properties":{},
+      "documentation":"adr/028-unified-console-ui-module.md","acceptanceScenario":"embedded-console-packaging"
     }
   ]
 }

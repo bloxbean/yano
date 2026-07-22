@@ -1,6 +1,6 @@
 # Tutorial 4 — Publish and Verify Immutable Evidence
 
-[Open this outcome in App-Chain Studio](../../../appchain/appchain-studio/src/main/web/index.html#recipe=evidence-publication&network=devnet&members=3&finality=two-thirds&sequencing=fixed&runtime=jvm&deployment=docker-compose&name=evidence-publication&chainId=evidence-publication)
+[Open this outcome in App-Chain Studio](../../../appchain/appchain-studio/src/main/web/index.html#recipe=evidence-ledger&network=devnet&members=3&finality=two-thirds&sequencing=fixed&runtime=jvm&deployment=docker-compose&name=evidence-publication&chainId=evidence-publication)
 
 - **Level:** beginner to advanced
 - **Time:** about 30 minutes for the first build

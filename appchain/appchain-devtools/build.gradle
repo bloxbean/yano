@@ -156,7 +156,32 @@ tasks.register('verifyReleaseCapabilityVersion') {
     }
 }
 
+tasks.register('verifyAppChainCatalogDocumentation') {
+    group = 'verification'
+    description = 'Verifies every first-party recipe and capability documentation path exists'
+    def capabilityCatalog = file('src/main/resources/appchain-dx/v1alpha1/'
+            + 'appchain-capability-catalog.json')
+    def recipeCatalog = file('src/main/resources/appchain-dx/v1alpha1/'
+            + 'appchain-recipe-catalog.json')
+    inputs.files(capabilityCatalog, recipeCatalog)
+    doLast {
+        def parser = new groovy.json.JsonSlurper()
+        def entries = []
+        entries.addAll(parser.parse(capabilityCatalog).capabilities)
+        entries.addAll(parser.parse(recipeCatalog).recipes)
+        def missing = entries.findAll { entry ->
+            entry.documentation == null
+                    || !rootProject.file(entry.documentation.toString()).isFile()
+        }.collect { entry -> "${entry.id}:${entry.documentation}" }
+        if (!missing.isEmpty()) {
+            throw new GradleException(
+                    "App-chain catalog documentation paths are missing: ${missing}")
+        }
+    }
+}
+
 tasks.named('check') {
     dependsOn tasks.named('verifySmallRyeConfigRuntimeParity'),
-            tasks.named('verifyReleaseCapabilityVersion')
+            tasks.named('verifyReleaseCapabilityVersion'),
+            tasks.named('verifyAppChainCatalogDocumentation')
 }

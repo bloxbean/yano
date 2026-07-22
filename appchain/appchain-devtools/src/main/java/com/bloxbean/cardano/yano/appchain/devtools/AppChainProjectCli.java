@@ -31,13 +31,14 @@ final class AppChainProjectCli {
                or: ./yano.sh appchain metadata verify <plugin.jar> --trust-key <key-id=64-hex-public-key>
                or: ./yano.sh appchain migrate [project-directory] [--dry-run]
             Init options:
-              --recipe <id>                 audit-log, owned-registry, evidence-publication
+              --recipe <id>                 use `appchain recipes` to list release recipes
               --network <network>           devnet, preview, preprod, mainnet
               --members <1..32>             member count
               --member-key <64-hex>         repeat once per known public member
               --node-host <hostname>        repeat for a multi-machine host deployment
               --finality <policy>           majority, two-thirds, all
               --sequencing <mode>           fixed or rotating
+              --membership <mode>           static or governed
               --runtime <type>              jvm or native
               --deployment <target>         host or docker-compose
               --http-port-base <port>        same-machine HTTP base (default 8080)
@@ -232,7 +233,8 @@ final class AppChainProjectCli {
                                 options.answers(),
                                 new AppChainProjectModel.Topology(
                                         options.members(), options.memberKeys(), options.nodeHosts(),
-                                        options.finality(), options.sequencing(), "static",
+                                        options.finality(), options.sequencing(),
+                                        options.membership(),
                                         options.httpPortBase(), options.serverPortBase())))));
         AppChainProjectModel.Lock lock = renderer.initialize(output, blueprint);
         writeResult(options.format(), "PROJECT_INITIALIZED", output, lock);
@@ -254,8 +256,9 @@ final class AppChainProjectCli {
             out.println(json.writeValueAsString(result));
         } else {
             for (AppChainProjectModel.Recipe recipe : catalog.recipes()) {
-                out.printf(Locale.ROOT, "%s\t%s\t%s%n",
-                        recipe.id(), recipe.maturity(), recipe.description());
+                out.printf(Locale.ROOT, "%s\t%s\t%s\t%s\t%s%n",
+                        recipe.id(), recipe.category(), recipe.availability(),
+                        recipe.maturity(), recipe.description());
             }
         }
         return AppChainDevtoolsCli.EXIT_OK;
@@ -270,8 +273,11 @@ final class AppChainProjectCli {
             out.println(json.writeValueAsString(result));
         } else {
             for (AppChainProjectModel.Capability capability : catalog.capabilities()) {
-                out.printf(Locale.ROOT, "%s\t%s\t%s\t%s%n", capability.id(),
-                        capability.category(), capability.maturity(), capability.description());
+                out.printf(Locale.ROOT, "%s\t%s\t%s\t%s\t%s\t%s\t%s%n",
+                        capability.id(), capability.category(), capability.availability(),
+                        capability.maturity(), capability.effectiveScope(),
+                        capability.effectiveSelectable() ? "selectable" : "derived",
+                        capability.description());
             }
         }
         return AppChainDevtoolsCli.EXIT_OK;
@@ -329,6 +335,7 @@ final class AppChainProjectCli {
                 options.nodeHosts(),
                 valueOr(options.finality(), "two-thirds"),
                 valueOr(options.sequencing(), "fixed"),
+                valueOr(options.membership(), "static"),
                 valueOr(options.runtime(), "jvm"),
                 valueOr(options.deployment(), "host"),
                 options.capabilities(),
@@ -358,6 +365,7 @@ final class AppChainProjectCli {
         Integer members = null;
         String finality = null;
         String sequencing = null;
+        String membership = null;
         String runtime = null;
         String deployment = null;
         String name = null;
@@ -385,6 +393,8 @@ final class AppChainProjectCli {
                 case "--node-host" -> nodeHosts.add(value(arguments, ++cursor, argument));
                 case "--finality" -> finality = once(finality, value(arguments, ++cursor, argument), argument);
                 case "--sequencing" -> sequencing = once(sequencing, value(arguments, ++cursor, argument), argument);
+                case "--membership" -> membership = once(membership,
+                        value(arguments, ++cursor, argument), argument);
                 case "--runtime" -> runtime = once(runtime, value(arguments, ++cursor, argument), argument);
                 case "--deployment" -> deployment = once(deployment, value(arguments, ++cursor, argument), argument);
                 case "--capability" -> capabilities.add(value(arguments, ++cursor, argument));
@@ -412,7 +422,8 @@ final class AppChainProjectCli {
         }
         return new InitOptions(recipe, network, members, List.copyOf(memberKeys),
                 List.copyOf(nodeHosts),
-                finality, sequencing, runtime, deployment, List.copyOf(capabilities),
+                finality, sequencing, membership, runtime, deployment,
+                List.copyOf(capabilities),
                 Map.copyOf(answers),
                 httpPortBase, serverPortBase,
                 name, chainId, yanoVersion, output, nonInteractive, format);
@@ -734,6 +745,7 @@ final class AppChainProjectCli {
             List<String> nodeHosts,
             String finality,
             String sequencing,
+            String membership,
             String runtime,
             String deployment,
             List<String> capabilities,

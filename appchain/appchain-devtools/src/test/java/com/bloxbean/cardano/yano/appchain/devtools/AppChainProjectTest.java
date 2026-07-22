@@ -36,16 +36,17 @@ class AppChainProjectTest {
         AppChainProjectResolver resolver = new AppChainProjectResolver(properties, catalog);
 
         AppChainProjectModel.Resolution resolution = resolver.resolve(
-                blueprint("evidence-publication", "rotating", List.of()));
+                blueprint("evidence-ledger", "rotating", List.of()));
 
         assertThat(catalog.recipes()).extracting(AppChainProjectModel.Recipe::id)
-                .containsExactly("audit-log", "owned-registry", "evidence-publication",
-                        "approval-workflow", "role-approval", "role-evidence",
-                        "custom-plugin");
+                .containsExactly("audit-log", "owned-registry", "approval-workflow",
+                        "role-approval", "evidence-ledger", "custom-plugin");
         assertThat(resolution.selectedCapabilities()).contains(
-                "state:ordered-log", "effects:publication", "sequencer:rotating", "l1:slot-feed");
+                "state:role-evidence", "sequencer:rotating", "membership:static",
+                "l1:slot-feed");
         assertThat(resolution.impliedCapabilities()).containsExactly("l1:slot-feed");
-        assertThat(resolution.artifacts()).contains("yano-runtime", "appchain-stdlib");
+        assertThat(resolution.artifacts()).contains("yano-runtime", "appchain-stdlib",
+                "appchain-evidence-profile", "appchain-role-workflow");
         assertThat(resolution.consensusProperties())
                 .containsEntry("yano.app-chain.chains[0].effects.enabled", "true")
                 .containsEntry("yano.app-chain.chains[0].sequencer.mode", "rotating")
@@ -90,7 +91,7 @@ class AppChainProjectTest {
                 blueprint("audit-log", "fixed", keys), List.of("state:kv-registry"));
         assertThatThrownBy(() -> resolver.resolve(conflicting))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("Conflicting capabilities");
+                .hasMessageContaining("both provide exclusive contract state-machine");
     }
 
     @Test
@@ -120,7 +121,8 @@ class AppChainProjectTest {
         assertThatThrownBy(() -> resolver.resolve(withCapabilities(
                 blueprint("approval-workflow", "fixed", List.of()),
                 List.of("effects:on-approved"))))
-                .hasMessageContaining("unknown variable");
+                .hasMessageContaining("require non-secret answers")
+                .hasMessageContaining("effectType");
     }
 
     @Test
@@ -144,7 +146,8 @@ class AppChainProjectTest {
         assertThat(firstLock.generatedFiles()).containsKeys(
                 "config/shared-consensus.yaml", "scripts/start", "secrets/.gitignore",
                 "ci/verify", ".github/workflows/appchain-verify.yml",
-                "ai/configure-yano-appchain/SKILL.md");
+                "ai/configure-yano-appchain/SKILL.md", "plans/prerequisites.yaml",
+                "docs/PREREQUISITES.md");
         assertShellSyntax(first.resolve("ci/verify"));
         assertThat(Files.readString(first.resolve(".github/workflows/appchain-verify.yml")))
                 .contains("YANO_DISTRIBUTION_SHA256", "sha256sum --check", "download=(curl")
@@ -274,8 +277,8 @@ class AppChainProjectTest {
         AppChainProjectRenderer renderer = new AppChainProjectRenderer(
                 catalog, new AppChainProjectResolver(properties, catalog));
         int sequence = 0;
-        for (String recipe : List.of("audit-log", "owned-registry", "evidence-publication",
-                "approval-workflow", "role-approval", "role-evidence", "custom-plugin")) {
+        for (String recipe : List.of("audit-log", "owned-registry", "approval-workflow",
+                "role-approval", "evidence-ledger", "custom-plugin")) {
             List<String> runtimes = "custom-plugin".equals(recipe)
                     ? List.of("jvm") : List.of("jvm", "native");
             for (String runtime : runtimes) {
@@ -294,7 +297,7 @@ class AppChainProjectTest {
                     assertThat(lock.deployment()).isEqualTo(deployment);
                     assertThat(lock.artifacts()).isNotEmpty();
                     assertThat(project.resolve("scripts/start")).isExecutable();
-                    if ("role-approval".equals(recipe) || "role-evidence".equals(recipe)) {
+                    if ("role-approval".equals(recipe) || "evidence-ledger".equals(recipe)) {
                         assertThat(project.resolve("bootstrap/role-approvals-plan.yaml"))
                                 .isRegularFile();
                         assertThat(Files.readString(project.resolve("bootstrap/README.md")))
@@ -411,7 +414,12 @@ class AppChainProjectTest {
         Files.write(index, catalog.releaseIndexBytes());
         AppChainProjectModel.DoctorReport doctor = lifecycle.doctor(project, distribution);
         assertThat(doctor.status()).isEqualTo("DOCTOR_OK");
-        assertThat(doctor.checks()).allMatch(check -> "PASS".equals(check.status()));
+        assertThat(doctor.checks()).allMatch(check ->
+                "PASS".equals(check.status()) || "NOT_REQUIRED".equals(check.status()));
+        assertThat(doctor.checks()).extracting(AppChainProjectModel.DoctorCheck::id)
+                .contains("CONFIG_VALID", "ARTIFACTS_READY", "IDENTITIES_READY",
+                        "RUNTIME_STARTABLE", "APPLICATION_BOOTSTRAPPED", "EXECUTORS_READY",
+                        "EXTERNAL_TARGETS_READY", "OUTCOME_READY");
     }
 
     @Test
@@ -423,7 +431,8 @@ class AppChainProjectTest {
                 "custom-plugin", "fixed", List.of("a".repeat(64), "b".repeat(64), "c".repeat(64)));
 
         assertThatThrownBy(() -> resolver.resolve(custom))
-                .hasMessageContaining("unknown variable");
+                .hasMessageContaining("require non-secret answers")
+                .hasMessageContaining("stateMachine");
         AppChainProjectModel.Resolution resolved = resolver.resolve(withAnswers(
                 custom, Map.of("stateMachine", "com.example.reviewed")));
         assertThat(resolved.consensusProperties())
@@ -483,6 +492,115 @@ class AppChainProjectTest {
 
         assertThat(doctor.status()).isEqualTo("DOCTOR_OK");
         assertThat(doctor.checks()).allMatch(check -> "PASS".equals(check.status()));
+    }
+
+    @Test
+    void completeCatalogIsTruthfulAndDistributionCapabilitiesCannotBeSelected()
+            throws Exception {
+        AppChainPropertyRegistry properties = AppChainPropertyRegistry.framework();
+        AppChainProjectCatalog catalog = new AppChainProjectCatalog(properties);
+        AppChainProjectResolver resolver = new AppChainProjectResolver(properties, catalog);
+
+        assertThat(catalog.capabilities()).hasSize(32)
+                .allSatisfy(capability -> {
+                    assertThat(capability.availability()).isIn(
+                            "BUNDLED", "FIRST_PARTY_OPTIONAL", "REFERENCE", "EXPERIMENTAL");
+                    assertThat(capability.effectiveScope()).isIn(
+                            "chain", "node", "distribution");
+                    assertThat(capability.trustStatement()).isNotBlank();
+                    assertThat(capability.documentation()).isNotBlank();
+                    assertThat(capability.acceptanceScenario()).isNotBlank();
+                });
+        assertThat(catalog.capabilities())
+                .filteredOn(capability -> "ui:console".equals(capability.id()))
+                .singleElement()
+                .satisfies(capability -> {
+                    assertThat(capability.effectiveScope()).isEqualTo("node");
+                    assertThat(capability.effectiveSelectable()).isFalse();
+                });
+        assertThatThrownBy(() -> resolver.resolve(withCapabilities(
+                blueprint("audit-log", "fixed", List.of()), List.of("ui:console"))))
+                .hasMessageContaining("not selectable")
+                .hasMessageContaining("ui:console");
+
+        AppChainProjectModel.Resolution governed = resolver.resolve(withMembership(
+                blueprint("audit-log", "fixed", List.of()), "governed"));
+        assertThat(governed.selectedCapabilities()).contains("membership:governed");
+        assertThat(governed.consensusProperties()).containsEntry(
+                "yano.app-chain.chains[0].membership.mode", "governed");
+    }
+
+    @Test
+    void nodeScopedCapabilitiesStayOutOfConsensusAndRenderOnlyNodeConfiguration()
+            throws Exception {
+        AppChainPropertyRegistry properties = AppChainPropertyRegistry.framework();
+        AppChainProjectCatalog catalog = new AppChainProjectCatalog(properties);
+        AppChainProjectResolver resolver = new AppChainProjectResolver(properties, catalog);
+        AppChainProjectModel.Blueprint blueprint = withAnswers(withCapabilities(
+                        blueprint("approval-workflow", "fixed",
+                                List.of("a".repeat(64), "b".repeat(64), "c".repeat(64))),
+                        List.of("effects:on-approved", "executor:webhook")),
+                Map.of("effectType", "webhook.post",
+                        "webhookUrl", "https://hooks.example.test/yano"));
+
+        AppChainProjectModel.Resolution resolution = resolver.resolve(blueprint);
+
+        assertThat(resolution.consensusProperties().keySet())
+                .noneMatch(key -> key.contains("effects.executors.webhook"));
+        assertThat(resolution.nodePropertyTemplate())
+                .containsEntry("yano.app-chain.chains[0].effects.executor.enabled", "true")
+                .containsEntry("yano.app-chain.chains[0].effects.executors.webhook.url",
+                        "https://hooks.example.test/yano");
+        Path project = temporary.resolve("webhook-node-scope");
+        new AppChainProjectRenderer(catalog, resolver).initialize(project, blueprint);
+        assertThat(yamlValues(project.resolve("config/shared-consensus.yaml")).keySet())
+                .noneMatch(key -> key.contains("effects.executors.webhook"));
+        assertThat(yamlValues(project.resolve("config/nodes/node1.yaml")))
+                .containsEntry("yano.app-chain.chains[0].effects.executors.webhook.url",
+                        "https://hooks.example.test/yano");
+    }
+
+    @Test
+    void optionalConnectorSelectionGeneratesPlansAndStagedReadinessWithoutFalseFailure()
+            throws Exception {
+        AppChainPropertyRegistry properties = AppChainPropertyRegistry.framework();
+        AppChainProjectCatalog catalog = new AppChainProjectCatalog(properties);
+        AppChainProjectResolver resolver = new AppChainProjectResolver(properties, catalog);
+        AppChainProjectRenderer renderer = new AppChainProjectRenderer(catalog, resolver);
+        Path project = temporary.resolve("optional-kafka");
+        renderer.initialize(project, withCapabilities(
+                blueprint("audit-log", "fixed",
+                        List.of("a".repeat(64), "b".repeat(64), "c".repeat(64))),
+                List.of("executor:kafka")));
+
+        assertThat(Files.readString(project.resolve("plans/prerequisites.yaml")))
+                .contains("appchain-kafka", "FIRST_PARTY_OPTIONAL",
+                        "provide-node-local-kafka-configuration")
+                .doesNotContain("password", "private-key", "mnemonic");
+        assertThat(Files.readString(project.resolve("docs/PREREQUISITES.md")))
+                .contains("FIRST_PARTY_OPTIONAL", "executor:kafka");
+
+        Path distribution = Files.createDirectory(temporary.resolve("stock-release"));
+        Files.write(distribution.resolve("yano.jar"), new byte[]{0});
+        Path index = distribution.resolve(
+                "tools/yano-appchain/metadata/appchain-dx/v1alpha1/"
+                        + "appchain-release-capability-index.json");
+        Files.createDirectories(index.getParent());
+        Files.write(index, catalog.releaseIndexBytes());
+        AppChainProjectModel.DoctorReport doctor =
+                new AppChainProjectLifecycle(properties).doctor(project, distribution);
+
+        assertThat(doctor.status()).isEqualTo("DOCTOR_WARNINGS");
+        assertThat(doctor.checks()).anySatisfy(check -> {
+            assertThat(check.id()).isEqualTo("artifact:appchain-kafka");
+            assertThat(check.status()).isEqualTo("PENDING");
+        }).anySatisfy(check -> {
+            assertThat(check.id()).isEqualTo("EXECUTORS_READY");
+            assertThat(check.status()).isEqualTo("PENDING");
+        }).anySatisfy(check -> {
+            assertThat(check.id()).isEqualTo("OUTCOME_READY");
+            assertThat(check.status()).isEqualTo("PENDING");
+        });
     }
 
     @Test
@@ -556,12 +674,31 @@ class AppChainProjectTest {
                                         "two-thirds", sequencing, "static", null, null)))));
     }
 
+    private static AppChainProjectModel.Blueprint withMembership(
+            AppChainProjectModel.Blueprint blueprint,
+            String membership) {
+        AppChainProjectModel.ChainIntent chain = blueprint.spec().chains().getFirst();
+        AppChainProjectModel.Topology topology = chain.topology();
+        return replaceChain(blueprint, new AppChainProjectModel.ChainIntent(
+                chain.chainId(), chain.recipe(), chain.capabilities(), chain.answers(),
+                new AppChainProjectModel.Topology(
+                        topology.members(), topology.memberKeys(), topology.nodeHosts(),
+                        topology.finality(), topology.sequencing(), membership,
+                        topology.httpPortBase(), topology.serverPortBase())));
+    }
+
     private static AppChainProjectModel.Blueprint withCapabilities(
             AppChainProjectModel.Blueprint blueprint,
             List<String> capabilities) {
         AppChainProjectModel.ChainIntent chain = blueprint.spec().chains().getFirst();
         AppChainProjectModel.ChainIntent changed = new AppChainProjectModel.ChainIntent(
                 chain.chainId(), chain.recipe(), capabilities, chain.answers(), chain.topology());
+        return replaceChain(blueprint, changed);
+    }
+
+    private static AppChainProjectModel.Blueprint replaceChain(
+            AppChainProjectModel.Blueprint blueprint,
+            AppChainProjectModel.ChainIntent changed) {
         AppChainProjectModel.Spec spec = blueprint.spec();
         return new AppChainProjectModel.Blueprint(
                 blueprint.apiVersion(), blueprint.kind(), blueprint.metadata(),

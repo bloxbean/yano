@@ -59,6 +59,9 @@ final class AppChainProjectModel {
 
     record Artifact(
             String id,
+            String availability,
+            String bundleId,
+            String nativePosture,
             List<String> runtimeTypes,
             List<String> deploymentTargets) {
     }
@@ -67,7 +70,11 @@ final class AppChainProjectModel {
             String id,
             String name,
             String category,
+            String availability,
             String maturity,
+            String scope,
+            Boolean selectable,
+            String trustStatement,
             String description,
             List<String> provides,
             List<String> requires,
@@ -76,7 +83,22 @@ final class AppChainProjectModel {
             List<String> runtimeTypes,
             List<String> deploymentTargets,
             List<String> artifacts,
-            Map<String, String> properties) {
+            String nativePosture,
+            List<String> externalPrerequisites,
+            List<String> bootstrapRequirements,
+            List<String> nonSecretAnswers,
+            Map<String, String> secretReferences,
+            Map<String, String> properties,
+            String documentation,
+            String acceptanceScenario) {
+
+        String effectiveScope() {
+            return scope == null || scope.isBlank() ? "chain" : scope;
+        }
+
+        boolean effectiveSelectable() {
+            return selectable == null || selectable;
+        }
     }
 
     record RecipeCatalog(String schemaVersion, List<Recipe> recipes) {
@@ -85,13 +107,33 @@ final class AppChainProjectModel {
     record Recipe(
             String id,
             String version,
+            String name,
+            String category,
+            String availability,
             String maturity,
+            String scope,
+            Boolean selectable,
             String trustStatement,
             String description,
             List<String> capabilities,
             Map<String, String> recommended,
             List<String> runtimeTypes,
-            List<String> deploymentTargets) {
+            List<String> deploymentTargets,
+            List<String> artifacts,
+            String nativePosture,
+            List<String> externalPrerequisites,
+            List<String> bootstrapRequirements,
+            List<String> nonSecretAnswers,
+            String documentation,
+            String acceptanceScenario) {
+
+        String effectiveScope() {
+            return scope == null || scope.isBlank() ? "chain" : scope;
+        }
+
+        boolean effectiveSelectable() {
+            return selectable == null || selectable;
+        }
     }
 
     record ReleaseIndex(
@@ -112,7 +154,8 @@ final class AppChainProjectModel {
             String runtimeType,
             String archivePattern,
             String tooling,
-            List<String> platforms) {
+            List<String> platforms,
+            List<String> artifacts) {
     }
 
     record Resolution(

@@ -20,6 +20,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.TreeSet;
 
 /** Deterministic, no-silent-overwrite project renderer. */
 final class AppChainProjectRenderer {
@@ -212,7 +213,7 @@ final class AppChainProjectRenderer {
                     utf8(nodeYaml(resolution, index, members, layout,
                             resolvedConfigDigest, catalog.digests().get("releaseIndex"))));
             outputs.put("secrets/node" + index + ".env.example",
-                    utf8(secretExample(index)));
+                    utf8(secretExample(resolution, index)));
         }
         outputs.put("secrets/README.md", utf8(secretsReadme(resolution)));
         outputs.put("secrets/.gitignore", utf8("*.env\n!.gitignore\n!*.env.example\n"));
@@ -220,6 +221,8 @@ final class AppChainProjectRenderer {
         outputs.put("docs/TRUST.md", utf8(trustDocumentation(resolution)));
         outputs.put("docs/BOOTSTRAP.md", utf8(bootstrapDocumentation(resolution)));
         outputs.put("docs/VERIFY.md", utf8(verificationDocumentation(resolution)));
+        outputs.put("docs/PREREQUISITES.md", utf8(prerequisiteDocumentation(resolution)));
+        outputs.put("plans/prerequisites.yaml", prerequisitePlan(resolution));
         if (usesRoles(resolution)) {
             outputs.put("bootstrap/role-approvals-plan.yaml",
                     utf8(roleBootstrapPlan(resolution)));
@@ -330,10 +333,105 @@ final class AppChainProjectRenderer {
         return yamlConfig(values);
     }
 
-    private static String secretExample(int node) {
-        return "# Copy to node" + node + ".env, chmod 600, and provide a private seed/reference.\n"
-                + "YANO_APPCHAIN_SIGNING_KEY=\n"
-                + "YANO_APPCHAIN_API_KEYS=\n";
+    private String secretExample(AppChainProjectModel.Resolution resolution, int node) {
+        TreeSet<String> references = new TreeSet<>();
+        references.add("YANO_APPCHAIN_SIGNING_KEY");
+        references.add("YANO_APPCHAIN_API_KEYS");
+        for (String capabilityId : resolution.selectedCapabilities()) {
+            references.addAll(safeMap(catalog.capability(capabilityId).secretReferences()).values());
+        }
+        StringBuilder example = new StringBuilder("# Copy to node")
+                .append(node)
+                .append(".env, chmod 600, and provide private values or references.\n");
+        references.forEach(reference -> example.append(reference).append("=\n"));
+        return example.toString();
+    }
+
+    private byte[] prerequisitePlan(AppChainProjectModel.Resolution resolution)
+            throws IOException {
+        Map<String, Object> plan = new LinkedHashMap<>();
+        plan.put("apiVersion", AppChainProjectModel.API_VERSION);
+        plan.put("kind", "AppChainPrerequisitePlan");
+        plan.put("recipe", resolution.recipe().id());
+        plan.put("acceptanceScenario", resolution.recipe().acceptanceScenario());
+        List<Map<String, Object>> artifacts = new ArrayList<>();
+        for (String artifactId : resolution.artifacts()) {
+            AppChainProjectModel.Artifact artifact = catalog.artifact(artifactId);
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("id", artifact.id());
+            item.put("availability", artifact.availability());
+            item.put("bundleId", artifact.bundleId());
+            item.put("nativePosture", artifact.nativePosture());
+            artifacts.add(Map.copyOf(item));
+        }
+        plan.put("artifacts", List.copyOf(artifacts));
+        List<Map<String, Object>> capabilities = new ArrayList<>();
+        for (String capabilityId : resolution.selectedCapabilities()) {
+            AppChainProjectModel.Capability capability = catalog.capability(capabilityId);
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("id", capability.id());
+            item.put("scope", capability.effectiveScope());
+            item.put("availability", capability.availability());
+            item.put("externalPrerequisites", safeList(capability.externalPrerequisites()));
+            item.put("bootstrapRequirements", safeList(capability.bootstrapRequirements()));
+            item.put("nonSecretAnswers", safeList(capability.nonSecretAnswers()));
+            item.put("secretReferences", new TreeSet<>(
+                    safeMap(capability.secretReferences()).values()));
+            item.put("documentation", capability.documentation());
+            item.put("acceptanceScenario", capability.acceptanceScenario());
+            capabilities.add(Map.copyOf(item));
+        }
+        plan.put("capabilities", List.copyOf(capabilities));
+        plan.put("readinessStages", List.of(
+                "CONFIG_VALID", "ARTIFACTS_READY", "IDENTITIES_READY",
+                "RUNTIME_STARTABLE", "APPLICATION_BOOTSTRAPPED", "EXECUTORS_READY",
+                "EXTERNAL_TARGETS_READY", "OUTCOME_READY"));
+        return yaml.writerWithDefaultPrettyPrinter().writeValueAsBytes(plan);
+    }
+
+    private String prerequisiteDocumentation(AppChainProjectModel.Resolution resolution) {
+        StringBuilder document = new StringBuilder("""
+                # Artifacts and prerequisites
+
+                This file is generated from the release-pinned capability catalog. `BUNDLED`
+                artifacts are present in the named Yano distribution. `FIRST_PARTY_OPTIONAL`
+                and `EXPERIMENTAL` artifacts require explicit installation (or native-image
+                inclusion) and remain pending until `doctor` verifies the final distribution.
+
+                ## Artifacts
+
+                | Artifact | Availability | Native posture |
+                |---|---|---|
+                """);
+        for (String artifactId : resolution.artifacts()) {
+            AppChainProjectModel.Artifact artifact = catalog.artifact(artifactId);
+            document.append("| `").append(artifact.id()).append("` | ")
+                    .append(artifact.availability()).append(" | ")
+                    .append(artifact.nativePosture()).append(" |\n");
+        }
+        document.append("\n## Capability readiness\n\n");
+        for (String capabilityId : resolution.selectedCapabilities()) {
+            AppChainProjectModel.Capability capability = catalog.capability(capabilityId);
+            document.append("### `").append(capability.id()).append("`\n\n")
+                    .append(capability.description()).append("\n\n")
+                    .append("- Availability: `").append(capability.availability())
+                    .append("`; maturity: `").append(capability.maturity())
+                    .append("`; scope: `").append(capability.effectiveScope()).append("`.\n")
+                    .append("- External prerequisites: ")
+                    .append(orNone(capability.externalPrerequisites())).append(".\n")
+                    .append("- Bootstrap requirements: ")
+                    .append(orNone(capability.bootstrapRequirements())).append(".\n")
+                    .append("- Documentation: `").append(capability.documentation())
+                    .append("`.\n\n");
+        }
+        document.append("Run `./yano.sh appchain doctor . --distribution <release>` and resolve "
+                + "each readiness stage in order. Never put secret values in the blueprint, "
+                + "lock, or shared consensus configuration.\n");
+        return document.toString();
+    }
+
+    private static String orNone(List<String> values) {
+        return values == null || values.isEmpty() ? "none" : String.join(", ", values);
     }
 
     private static String ciVerifyScript() {
@@ -620,8 +718,10 @@ final class AppChainProjectRenderer {
                 """.formatted(resolution.validationCoverage());
     }
 
-    private static String pluginDocumentation(AppChainProjectModel.Resolution resolution) {
+    private String pluginDocumentation(AppChainProjectModel.Resolution resolution) {
         boolean custom = resolution.selectedCapabilities().contains("state:custom-plugin");
+        boolean optional = resolution.artifacts().stream().anyMatch(artifact ->
+                !"BUNDLED".equals(catalog.artifact(artifact).availability()));
         return """
                 # Plugins
 
@@ -635,8 +735,14 @@ final class AppChainProjectRenderer {
                         + "envelope, run `./yano.sh appchain metadata verify` with a pinned vendor "
                         + "public key, and run doctor against the final distribution. A valid "
                         + "signature authenticates the binding but remains PARTIAL coverage."
-                : "All selected components are first-party artifacts declared by the release index.");
+                : optional
+                        ? "This project selects one or more non-bundled artifacts. Review "
+                                + "docs/PREREQUISITES.md, install the exact version-matched "
+                                + "bundle explicitly, and use doctor against the final distribution."
+                        : "All selected components are first-party artifacts bundled in the "
+                                + "named release distribution.");
     }
+
 
     private static String prepareDevnetScript() {
         return """
@@ -1075,6 +1181,14 @@ final class AppChainProjectRenderer {
 
     private static byte[] utf8(String value) {
         return value.getBytes(StandardCharsets.UTF_8);
+    }
+
+    private static <T> List<T> safeList(List<T> values) {
+        return values == null ? List.of() : values;
+    }
+
+    private static <K, V> Map<K, V> safeMap(Map<K, V> values) {
+        return values == null ? Map.of() : values;
     }
 
     private static ObjectMapper configured(ObjectMapper mapper) {

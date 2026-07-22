@@ -97,26 +97,34 @@ final class AppChainProjectLifecycle {
                 "Java " + Runtime.version().feature() + " (25 or newer required)"));
         checks.add(check("release-index", "PASS",
                 catalog.releaseIndex().recipes().size() + " recipes, "
-                        + catalog.releaseIndex().artifacts().size() + " artifacts"));
+                        + catalog.releaseIndex().artifacts().size() + " bundled artifacts, "
+                        + catalog.capabilities().size() + " capabilities"));
 
         AppChainProjectModel.Lock projectLock = null;
+        String configStage = project == null ? "NOT_REQUIRED" : "FAIL";
+        String artifactStage = distribution == null ? "PENDING" : "FAIL";
+        String identityStage = "NOT_REQUIRED";
         if (project != null) {
             try {
                 AppChainProjectModel.ProjectValidation validation = validate(project);
                 projectLock = validation.lock();
+                configStage = "PASS";
                 checks.add(check("project", "PASS", validation.generatedFileCount()
                         + " generated files verified"));
                 String toolVersion = AppChainProjectLifecycle.class.getPackage()
                         .getImplementationVersion();
                 if (toolVersion != null && !toolVersion.isBlank()) {
-                    checks.add(check("tool-version",
-                            toolVersion.equals(projectLock.yanoVersion()) ? "PASS" : "FAIL",
+                    boolean versionMatch = toolVersion.equals(projectLock.yanoVersion());
+                    checks.add(check("tool-version", versionMatch ? "PASS" : "FAIL",
                             "project=" + projectLock.yanoVersion() + ", tooling=" + toolVersion));
+                    if (!versionMatch) configStage = "FAIL";
                 }
                 for (String acknowledgement : safeList(projectLock.acknowledgements())) {
-                    String status = acknowledgement.startsWith("PUBLIC_MEMBER_") ? "FAIL" : "WARN";
-                    checks.add(check("acknowledgement", status, acknowledgement));
+                    checks.add(check("acknowledgement", "WARN", acknowledgement));
                 }
+                identityStage = safeList(projectLock.acknowledgements()).stream()
+                        .anyMatch(value -> value.startsWith("PUBLIC_MEMBER_"))
+                        ? "PENDING" : "PASS";
             } catch (IOException | IllegalArgumentException | IllegalStateException failure) {
                 checks.add(check("project", "FAIL", safeMessage(failure)));
             }
@@ -126,29 +134,94 @@ final class AppChainProjectLifecycle {
             try {
                 DistributionInspection inspected = inspectDistribution(distribution);
                 String expectedDigest = catalog.digests().get("releaseIndex");
-                checks.add(check("distribution-index",
-                        expectedDigest.equals(inspected.releaseIndexDigest()) ? "PASS" : "FAIL",
+                boolean indexMatch = expectedDigest.equals(inspected.releaseIndexDigest());
+                checks.add(check("distribution-index", indexMatch ? "PASS" : "FAIL",
                         inspected.runtime() + " release capability index"));
                 if (projectLock != null) {
-                    checks.add(check("distribution-runtime",
-                            projectLock.runtime().equals(inspected.runtime()) ? "PASS" : "FAIL",
+                    boolean runtimeMatch = projectLock.runtime().equals(inspected.runtime());
+                    checks.add(check("distribution-runtime", runtimeMatch ? "PASS" : "FAIL",
                             "project=" + projectLock.runtime() + ", distribution="
                                     + inspected.runtime()));
+                    boolean artifactFailure = false;
+                    boolean artifactPending = false;
                     for (String artifact : safeList(projectLock.artifacts())) {
-                        checks.add(check("artifact:" + artifact,
-                                catalog.releaseIndex().artifacts().contains(artifact)
-                                        ? "PASS" : "FAIL",
-                                "declared by release capability index"));
+                        boolean present = inspected.releaseIndex().artifacts().contains(artifact);
+                        String availability = catalog.artifact(artifact).availability();
+                        String artifactStatus = present ? "PASS"
+                                : "BUNDLED".equals(availability) ? "FAIL" : "PENDING";
+                        artifactFailure |= "FAIL".equals(artifactStatus);
+                        artifactPending |= "PENDING".equals(artifactStatus);
+                        checks.add(check("artifact:" + artifact, artifactStatus, present
+                                ? "bundled by inspected release"
+                                : availability + " artifact is not bundled by inspected release"));
                     }
+                    artifactStage = !runtimeMatch || !indexMatch || artifactFailure
+                            ? "FAIL" : artifactPending ? "PENDING" : "PASS";
                 }
             } catch (IOException | IllegalArgumentException failure) {
                 checks.add(check("distribution", "FAIL", safeMessage(failure)));
             }
         }
 
+        if (project != null) {
+            checks.add(check("CONFIG_VALID", configStage,
+                    "blueprint, lock, catalogs, configuration, and generated-file digests"));
+            checks.add(check("ARTIFACTS_READY", artifactStage,
+                    distribution == null
+                            ? "provide --distribution to verify required artifacts"
+                            : "required artifacts checked against the inspected distribution"));
+            checks.add(check("IDENTITIES_READY", identityStage,
+                    "public member identities must be pinned before runtime start"));
+
+            List<AppChainProjectModel.Capability> selected = projectLock == null ? List.of()
+                    : safeList(projectLock.selectedCapabilities()).stream()
+                    .map(catalog::capability).toList();
+            boolean hardFailure = "FAIL".equals(configStage) || "FAIL".equals(artifactStage);
+            boolean runtimeReady = "PASS".equals(configStage)
+                    && "PASS".equals(artifactStage) && "PASS".equals(identityStage);
+            checks.add(check("RUNTIME_STARTABLE", hardFailure ? "FAIL"
+                            : runtimeReady ? "PASS" : "PENDING",
+                    runtimeReady ? "configuration, artifacts, and identities are ready"
+                            : "resolve earlier readiness stages before starting nodes"));
+
+            List<String> bootstrap = selected.stream()
+                    .flatMap(capability -> safeList(capability.bootstrapRequirements()).stream())
+                    .distinct().sorted().toList();
+            String applicationStage = bootstrap.isEmpty() ? "NOT_REQUIRED" : "PENDING";
+            checks.add(check("APPLICATION_BOOTSTRAPPED", applicationStage,
+                    bootstrap.isEmpty() ? "selected recipe requires no application bootstrap"
+                            : "verify generated bootstrap plan: " + String.join(", ", bootstrap)));
+
+            List<String> executors = selected.stream()
+                    .filter(capability -> "effect-executor".equals(capability.category()))
+                    .map(AppChainProjectModel.Capability::id).sorted().toList();
+            String executorStage = executors.isEmpty() ? "NOT_REQUIRED" : "PENDING";
+            checks.add(check("EXECUTORS_READY", executorStage,
+                    executors.isEmpty() ? "selected outcome requires no effect executor"
+                            : "verify executor health after startup: " + String.join(", ", executors)));
+
+            List<String> external = selected.stream()
+                    .flatMap(capability -> safeList(capability.externalPrerequisites()).stream())
+                    .distinct().sorted().toList();
+            String targetStage = external.isEmpty() ? "NOT_REQUIRED" : "PENDING";
+            checks.add(check("EXTERNAL_TARGETS_READY", targetStage,
+                    external.isEmpty() ? "selected outcome requires no external target"
+                            : "verify external prerequisites: " + String.join(", ", external)));
+
+            boolean outcomeReady = runtimeReady
+                    && "NOT_REQUIRED".equals(applicationStage)
+                    && "NOT_REQUIRED".equals(executorStage)
+                    && "NOT_REQUIRED".equals(targetStage);
+            checks.add(check("OUTCOME_READY", hardFailure ? "FAIL"
+                            : outcomeReady ? "PASS" : "PENDING",
+                    outcomeReady ? "selected recipe can perform its first useful outcome"
+                            : "one or more runtime, bootstrap, executor, or target stages remain"));
+        }
+
         String status = checks.stream().anyMatch(item -> "FAIL".equals(item.status()))
                 ? "DOCTOR_FAILED"
-                : checks.stream().anyMatch(item -> "WARN".equals(item.status()))
+                : checks.stream().anyMatch(item -> "WARN".equals(item.status())
+                        || "PENDING".equals(item.status()))
                 ? "DOCTOR_WARNINGS" : "DOCTOR_OK";
         return new AppChainProjectModel.DoctorReport(status, List.copyOf(checks));
     }
@@ -194,8 +267,10 @@ final class AppChainProjectLifecycle {
                     : Files.isRegularFile(distribution.resolve("yano"))
                     || Files.isRegularFile(distribution.resolve("yano.exe")) ? "native" : null;
             if (runtime == null) throw new IOException("distribution runtime executable is missing");
+            byte[] bytes = Files.readAllBytes(index);
             return new DistributionInspection(runtime,
-                    AppChainProjectCatalog.sha256(Files.readAllBytes(index)));
+                    AppChainProjectCatalog.sha256(bytes),
+                    json.readValue(bytes, AppChainProjectModel.ReleaseIndex.class));
         }
         if (!Files.isRegularFile(distribution, LinkOption.NOFOLLOW_LINKS)
                 || !distribution.getFileName().toString().endsWith(".zip")) {
@@ -233,9 +308,10 @@ final class AppChainProjectLifecycle {
                 if (bytes.length > AppChainProjectCatalog.MAX_RESOURCE_BYTES) {
                     throw new IOException("distribution release capability index is oversized");
                 }
-                json.readValue(bytes, AppChainProjectModel.ReleaseIndex.class);
+                AppChainProjectModel.ReleaseIndex releaseIndex = json.readValue(
+                        bytes, AppChainProjectModel.ReleaseIndex.class);
                 return new DistributionInspection(jvm ? "jvm" : "native",
-                        AppChainProjectCatalog.sha256(bytes));
+                        AppChainProjectCatalog.sha256(bytes), releaseIndex);
             }
         }
     }
@@ -313,6 +389,9 @@ final class AppChainProjectLifecycle {
         return values == null ? List.of() : values;
     }
 
-    private record DistributionInspection(String runtime, String releaseIndexDigest) {
+    private record DistributionInspection(
+            String runtime,
+            String releaseIndexDigest,
+            AppChainProjectModel.ReleaseIndex releaseIndex) {
     }
 }

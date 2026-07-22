@@ -1,6 +1,6 @@
 # Tutorial 5 — Domain Actors and Role-Aware Approval
 
-[Open this outcome in App-Chain Studio](../../../appchain/appchain-studio/src/main/web/index.html#recipe=role-evidence&network=devnet&members=3&finality=two-thirds&sequencing=fixed&runtime=jvm&deployment=docker-compose&name=role-evidence&chainId=role-evidence)
+[Open this outcome in App-Chain Studio](../../../appchain/appchain-studio/src/main/web/index.html#recipe=evidence-ledger&network=devnet&members=3&finality=two-thirds&sequencing=fixed&runtime=jvm&deployment=docker-compose&name=role-evidence&chainId=role-evidence)
 
 - **Level:** beginner for the stock demo, advanced for identity governance
 - **Time:** about 30 minutes
