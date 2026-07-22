@@ -3,7 +3,7 @@
   import LineChart from '$lib/components/LineChart.svelte';
   import MetricCard from '$lib/components/MetricCard.svelte';
   import MetricRow from '$lib/components/MetricRow.svelte';
-  import { resolveApiBase, YanoApi } from '$lib/api/client';
+  import { apiFailureMessage, resolveApiBase, YanoApi } from '$lib/api/client';
   import type { AppChainBlocks, AppChainMessage, AppChainStatus, ChainSummary, NodeConfig } from '$lib/api/types';
   import { SessionHistory, type CompactSample } from '$lib/telemetry/history';
   import { createPoller, type Poller } from '$lib/telemetry/poller';
@@ -79,7 +79,7 @@
         if (selectedChain) activateChain(selectedChain);
         else pageError = 'No app chains are enabled on this node.';
       } catch (cause) {
-        pageError = cause instanceof Error ? cause.message : 'Unable to load app chains';
+        pageError = apiFailureMessage(cause, 'Unable to load app chains');
       }
     })();
     return () => {
@@ -128,7 +128,7 @@
       pageError = '';
     } catch (cause) {
       if (!(cause instanceof DOMException && cause.name === 'AbortError')) {
-        pageError = cause instanceof Error ? cause.message : 'App-chain status request failed';
+        pageError = apiFailureMessage(cause, 'App-chain status request failed');
       }
     }
   }

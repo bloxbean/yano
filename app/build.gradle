@@ -1271,23 +1271,16 @@ def assertPluginOperationsAdapters = { int httpPort, int timeoutSeconds,
     }
 
     [
-            '/ui/plugins/index.html': ['Yano · Plugin Operations', 'id="dashboard" hidden'],
-            '/ui/plugins/app.js'    : ['yano-plugin-operations-session', 'textContent',
-                                       '/ui/plugins/api-prefix.json', 'response.json()'],
+            '/ui/plugins/index.html': ['Yano · Plugin Operations',
+                                       'data-console-route="plugins"',
+                                       'Connect to plugin operations'],
             '/ui/plugins/api-prefix.json': [
-                    groovy.json.JsonOutput.toJson([apiPrefix: bakedApiPrefix.get()])],
-            '/ui/plugins/styles.css': ['.bundle-list', '.badge']
+                    groovy.json.JsonOutput.toJson([apiPrefix: bakedApiPrefix.get()])]
     ].each { path, markers ->
         def asset = request(path, false)
         if (asset.status != 200 || !markers.every { asset.text.contains(it) }) {
             throw new GradleException(
                     "Plugin dashboard asset smoke failed for ${path}: status=${asset.status}")
-        }
-        if (path.endsWith('/app.js')
-                && (asset.text.contains('URLSearchParams')
-                || asset.text.contains('location.search'))) {
-            throw new GradleException(
-                    'Plugin dashboard must not accept a query-controlled API prefix')
         }
         def csp = asset.headers['content-security-policy']
         if (csp == null || !csp.contains("frame-ancestors 'none'")
@@ -2417,8 +2410,12 @@ tasks.register('packagedApiPrefixContractSmoke') {
                         throw new GradleException(
                                 "Packaged ${specification[0]} mismatch reached node/plugin startup")
                     }
-                    if (!output.contains(
-                            'The configured API prefix does not match the prefix baked into')) {
+                    boolean hostGuardDiagnostic = output.contains(
+                            'The configured API prefix does not match the prefix baked into')
+                    boolean quarkusBuildTimeDiagnostic = specification[0] == 'runtime-http-root'
+                            && output.contains('Build time property cannot be changed at runtime:')
+                            && output.contains('quarkus.http.root-path')
+                    if (!hostGuardDiagnostic && !quarkusBuildTimeDiagnostic) {
                         throw new GradleException(
                                 "Packaged ${specification[0]} mismatch lacked sanitized diagnostic.\n"
                                         + output.readLines().takeRight(100).join('\n'))

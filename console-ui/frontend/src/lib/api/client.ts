@@ -1,8 +1,9 @@
 import type { AppChainBlocks, AppChainStatus, ChainSummary, NodeConfig, NodePeers,
-  NodeStatus, StorageStatus } from './types';
+  NodeStatus, PluginBundleDetail, PluginBundlePage, PluginOperationsSummary, StorageStatus } from './types';
 
 const API_STORAGE_KEY = 'yano.console.api-base.v1';
 const KEY_STORAGE_KEY = 'yano.console.api-key.v1';
+export const PLUGIN_DISCOVERY_PATH = '/ui/plugins/api-prefix.json';
 let memoryKey = '';
 
 export function normalizeApiBase(value: string, origin = globalThis.location?.origin ?? 'http://localhost'): string {
@@ -37,6 +38,11 @@ export async function resolveApiBase(): Promise<string> {
       cache: 'no-store', redirect: 'error', credentials: 'same-origin'
     });
     if (response.ok) {
+      const responseUrl = new URL(response.url);
+      if (response.redirected || responseUrl.origin !== location.origin
+        || responseUrl.pathname !== '/ui/api-prefix.json' || responseUrl.search || responseUrl.hash) {
+        throw new Error('API discovery response is not the immutable same-origin asset');
+      }
       const value = (await response.json()) as { apiPrefix?: unknown };
       if (typeof value.apiPrefix === 'string') return normalizeApiBase(value.apiPrefix);
     }
@@ -44,6 +50,24 @@ export async function resolveApiBase(): Promise<string> {
     // Standalone builds do not have the artifact-specific discovery document.
   }
   return '/api/v1';
+}
+
+export async function resolvePluginApiBase(): Promise<string> {
+  const response = await fetch(PLUGIN_DISCOVERY_PATH, {
+    cache: 'no-store', redirect: 'error', credentials: 'same-origin',
+    headers: { Accept: 'application/json' }
+  });
+  const responseUrl = new URL(response.url);
+  if (!response.ok || response.redirected || responseUrl.origin !== location.origin
+    || responseUrl.pathname !== PLUGIN_DISCOVERY_PATH || responseUrl.search || responseUrl.hash) {
+    throw new Error('The host plugin API prefix could not be verified');
+  }
+  const value = (await response.json()) as { apiPrefix?: unknown };
+  if (typeof value.apiPrefix !== 'string' || !value.apiPrefix.startsWith('/')
+    || value.apiPrefix.includes('%') || value.apiPrefix.includes('+')) {
+    throw new Error('The host plugin API prefix could not be verified');
+  }
+  return normalizeApiBase(value.apiPrefix);
 }
 
 export function saveConnection(apiBase: string, apiKey: string, persistKey: boolean): void {
@@ -59,6 +83,13 @@ export function currentApiKey(): string {
 
 export class ApiError extends Error {
   constructor(public readonly status: number, message: string) { super(message); }
+}
+
+export function apiFailureMessage(cause: unknown, fallback: string): string {
+  if (cause instanceof TypeError) {
+    return 'Node request failed. If this console is hosted separately, verify the node URL and its exact CORS origin.';
+  }
+  return cause instanceof Error ? cause.message : fallback;
 }
 
 export class YanoApi {
@@ -93,6 +124,16 @@ export class YanoApi {
   chainStream(chainId: string, fromHeight: number, signal?: AbortSignal) {
     return this.response(`${chainPath(chainId)}/stream?fromHeight=${Math.max(1, fromHeight)}`,
       'text/event-stream', signal);
+  }
+  pluginSummary(signal?: AbortSignal) {
+    return this.json<PluginOperationsSummary>('/plugin-operations', signal);
+  }
+  pluginBundles(after: string | null, limit = 100, signal?: AbortSignal) {
+    const cursor = after ? `&after=${encodeURIComponent(after)}` : '';
+    return this.json<PluginBundlePage>(`/plugin-operations/bundles?limit=${limit}${cursor}`, signal);
+  }
+  pluginBundle(id: string, signal?: AbortSignal) {
+    return this.json<PluginBundleDetail>(`/plugin-operations/bundles/${encodeURIComponent(id)}`, signal);
   }
 }
 
