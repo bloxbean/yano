@@ -393,4 +393,3 @@ public final class RoleApprovalsDomainApi implements DomainApi {
         @Override public byte[] value() { return value.clone(); }
     }
 }
-
