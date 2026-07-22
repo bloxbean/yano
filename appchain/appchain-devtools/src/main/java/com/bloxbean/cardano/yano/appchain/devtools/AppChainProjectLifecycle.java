@@ -12,10 +12,15 @@ import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.net.URI;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.HexFormat;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.zip.ZipEntry;
@@ -25,6 +30,8 @@ import java.util.zip.ZipFile;
 final class AppChainProjectLifecycle {
     private static final int MAX_LOCK_BYTES = 4 * 1_048_576;
     private static final int MAX_ARCHIVE_ENTRIES = 50_000;
+    private static final int MAX_PLUGIN_ARTIFACTS = 128;
+    private static final long MAX_PLUGIN_ARTIFACT_BYTES = 128L * 1_048_576;
     private static final String RELEASE_INDEX_NAME =
             "appchain-release-capability-index.json";
 
@@ -35,14 +42,34 @@ final class AppChainProjectLifecycle {
     private final ObjectMapper json;
 
     AppChainProjectLifecycle(AppChainPropertyRegistry properties) throws IOException {
+        this(properties, new AppChainProjectCatalog(properties));
+    }
+
+    AppChainProjectLifecycle(
+            AppChainPropertyRegistry properties,
+            AppChainProjectCatalog catalog) {
         this.properties = Objects.requireNonNull(properties, "properties");
-        this.catalog = new AppChainProjectCatalog(properties);
+        this.catalog = Objects.requireNonNull(catalog, "catalog");
         this.projectResolver = new AppChainProjectResolver(properties, catalog);
         this.renderer = new AppChainProjectRenderer(catalog, projectResolver);
         this.json = new ObjectMapper()
                 .enable(JsonParser.Feature.STRICT_DUPLICATE_DETECTION)
                 .enable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
                 .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
+    }
+
+    static AppChainProjectLifecycle forProject(
+            AppChainPropertyRegistry properties, Path project) throws IOException {
+        List<AppChainComponentCatalogLoader.Loaded> external =
+                new AppChainComponentCatalogLoader().loadProject(projectRoot(project));
+        AppChainPropertyRegistry extended = new AppChainComponentCatalogLoader()
+                .extendRegistry(properties, external);
+        return new AppChainProjectLifecycle(extended,
+                new AppChainProjectCatalog(extended, external));
+    }
+
+    AppChainProjectModel.Lock render(Path project) throws IOException {
+        return renderer.render(projectRoot(project));
     }
 
     AppChainProjectModel.ProjectValidation validate(Path project) throws IOException {
@@ -145,15 +172,33 @@ final class AppChainProjectLifecycle {
                     boolean artifactFailure = false;
                     boolean artifactPending = false;
                     for (String artifact : safeList(projectLock.artifacts())) {
-                        boolean present = inspected.releaseIndex().artifacts().contains(artifact);
                         String availability = catalog.artifact(artifact).availability();
-                        String artifactStatus = present ? "PASS"
-                                : "BUNDLED".equals(availability) ? "FAIL" : "PENDING";
+                        boolean external = catalog.isExternalArtifact(artifact);
+                        boolean present = external
+                                ? inspected.pluginArtifactDigests().contains(
+                                catalog.externalArtifactDigest(artifact))
+                                : inspected.releaseIndex().artifacts().contains(artifact);
+                        String artifactStatus;
+                        String detail;
+                        if (external && "native".equals(inspected.runtime())) {
+                            artifactStatus = "FAIL";
+                            detail = "custom JVM plugin cannot be loaded by a native executable; "
+                                    + "publish a build-time native flavor and release index";
+                        } else if (present) {
+                            artifactStatus = "PASS";
+                            detail = external ? "pinned plugin digest found in distribution plugins/"
+                                    : "bundled by inspected release";
+                        } else if (external || "BUNDLED".equals(availability)) {
+                            artifactStatus = "FAIL";
+                            detail = external ? "pinned plugin digest is absent from distribution plugins/"
+                                    : "BUNDLED artifact is not present in inspected release";
+                        } else {
+                            artifactStatus = "PENDING";
+                            detail = availability + " artifact is not bundled by inspected release";
+                        }
                         artifactFailure |= "FAIL".equals(artifactStatus);
                         artifactPending |= "PENDING".equals(artifactStatus);
-                        checks.add(check("artifact:" + artifact, artifactStatus, present
-                                ? "bundled by inspected release"
-                                : availability + " artifact is not bundled by inspected release"));
+                        checks.add(check("artifact:" + artifact, artifactStatus, detail));
                     }
                     artifactStage = !runtimeMatch || !indexMatch || artifactFailure
                             ? "FAIL" : artifactPending ? "PENDING" : "PASS";
@@ -270,7 +315,8 @@ final class AppChainProjectLifecycle {
             byte[] bytes = Files.readAllBytes(index);
             return new DistributionInspection(runtime,
                     AppChainProjectCatalog.sha256(bytes),
-                    json.readValue(bytes, AppChainProjectModel.ReleaseIndex.class));
+                    json.readValue(bytes, AppChainProjectModel.ReleaseIndex.class),
+                    inspectPluginDirectory(distribution.resolve("plugins")));
         }
         if (!Files.isRegularFile(distribution, LinkOption.NOFOLLOW_LINKS)
                 || !distribution.getFileName().toString().endsWith(".zip")) {
@@ -283,6 +329,7 @@ final class AppChainProjectLifecycle {
             boolean jvm = false;
             boolean nativeRuntime = false;
             ZipEntry indexEntry = null;
+            List<ZipEntry> pluginEntries = new ArrayList<>();
             var entries = archive.entries();
             while (entries.hasMoreElements()) {
                 ZipEntry entry = entries.nextElement();
@@ -295,6 +342,12 @@ final class AppChainProjectLifecycle {
                         throw new IOException("distribution contains multiple release indexes");
                     }
                     indexEntry = entry;
+                }
+                if (!entry.isDirectory() && isPluginArchiveEntry(name)) {
+                    pluginEntries.add(entry);
+                    if (pluginEntries.size() > MAX_PLUGIN_ARTIFACTS) {
+                        throw new IOException("distribution contains too many plugin artifacts");
+                    }
                 }
             }
             if (jvm == nativeRuntime) {
@@ -311,9 +364,85 @@ final class AppChainProjectLifecycle {
                 AppChainProjectModel.ReleaseIndex releaseIndex = json.readValue(
                         bytes, AppChainProjectModel.ReleaseIndex.class);
                 return new DistributionInspection(jvm ? "jvm" : "native",
-                        AppChainProjectCatalog.sha256(bytes), releaseIndex);
+                        AppChainProjectCatalog.sha256(bytes), releaseIndex,
+                        inspectPluginEntries(archive, pluginEntries));
             }
         }
+    }
+
+    private static Set<String> inspectPluginDirectory(Path plugins) throws IOException {
+        if (!Files.exists(plugins, LinkOption.NOFOLLOW_LINKS)) return Set.of();
+        if (Files.isSymbolicLink(plugins)
+                || !Files.isDirectory(plugins, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IOException("distribution plugins path must be a non-symlink directory");
+        }
+        Set<String> digests = new LinkedHashSet<>();
+        try (var contents = Files.list(plugins)) {
+            List<Path> files = contents.sorted().toList();
+            if (files.size() > MAX_PLUGIN_ARTIFACTS) {
+                throw new IOException("distribution contains too many plugin artifacts");
+            }
+            for (Path file : files) {
+                String name = file.getFileName().toString().toLowerCase(java.util.Locale.ROOT);
+                if (!name.endsWith(".jar") && !name.endsWith(".zip")) continue;
+                if (Files.isSymbolicLink(file)
+                        || !Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS)
+                        || Files.size(file) > MAX_PLUGIN_ARTIFACT_BYTES) {
+                    throw new IOException("distribution plugin artifact is unsafe or oversized");
+                }
+                try (InputStream input = Files.newInputStream(file)) {
+                    digests.add(sha256(input, MAX_PLUGIN_ARTIFACT_BYTES));
+                }
+            }
+        }
+        return Set.copyOf(digests);
+    }
+
+    private static Set<String> inspectPluginEntries(ZipFile archive, List<ZipEntry> entries)
+            throws IOException {
+        Set<String> digests = new LinkedHashSet<>();
+        for (ZipEntry entry : entries) {
+            if (entry.getSize() < 0 || entry.getSize() > MAX_PLUGIN_ARTIFACT_BYTES) {
+                throw new IOException("distribution plugin artifact is oversized");
+            }
+            try (InputStream input = archive.getInputStream(entry)) {
+                digests.add(sha256(input, MAX_PLUGIN_ARTIFACT_BYTES));
+            }
+        }
+        return Set.copyOf(digests);
+    }
+
+    private static String sha256(InputStream input, long limit) throws IOException {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] buffer = new byte[8192];
+            long total = 0;
+            int read;
+            while ((read = input.read(buffer)) >= 0) {
+                if (read == 0) continue;
+                total += read;
+                if (total > limit) throw new IOException("plugin artifact exceeds size limit");
+                digest.update(buffer, 0, read);
+            }
+            return HexFormat.of().formatHex(digest.digest());
+        } catch (NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException("SHA-256 is unavailable", impossible);
+        }
+    }
+
+    private static boolean isPluginArchiveEntry(String path) {
+        String normalized = path.replace('\\', '/');
+        int marker = normalized.lastIndexOf("/plugins/");
+        if (marker < 0) return normalized.startsWith("plugins/")
+                && normalized.substring("plugins/".length()).indexOf('/') < 0
+                && isJarOrZip(normalized);
+        String leaf = normalized.substring(marker + "/plugins/".length());
+        return !leaf.isEmpty() && leaf.indexOf('/') < 0 && isJarOrZip(leaf);
+    }
+
+    private static boolean isJarOrZip(String name) {
+        String lower = name.toLowerCase(java.util.Locale.ROOT);
+        return lower.endsWith(".jar") || lower.endsWith(".zip");
     }
 
     private static boolean archivePathEndsWith(String path, String fileName) {
@@ -392,6 +521,7 @@ final class AppChainProjectLifecycle {
     private record DistributionInspection(
             String runtime,
             String releaseIndexDigest,
-            AppChainProjectModel.ReleaseIndex releaseIndex) {
+            AppChainProjectModel.ReleaseIndex releaseIndex,
+            Set<String> pluginArtifactDigests) {
     }
 }

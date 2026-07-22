@@ -34,6 +34,10 @@ final class AppChainProjectCatalog {
             + "/appchain-metadata-trust.schema.json";
     static final String GITOPS_LOCK_SCHEMA_RESOURCE = RESOURCE_DIRECTORY
             + "/appchain-gitops-lock.schema.json";
+    static final String COMPONENT_CATALOG_SCHEMA_RESOURCE = RESOURCE_DIRECTORY
+            + "/appchain-component-catalog.schema.json";
+    static final String COMPONENT_CATALOG_SNAPSHOT_SCHEMA_RESOURCE = RESOURCE_DIRECTORY
+            + "/appchain-component-catalog-snapshot.schema.json";
     static final String AI_SKILL_DIRECTORY = RESOURCE_DIRECTORY
             + "/skills/configure-yano-appchain";
     static final String AI_SKILL_RESOURCE = AI_SKILL_DIRECTORY + "/SKILL.md";
@@ -59,6 +63,8 @@ final class AppChainProjectCatalog {
     private final byte[] firstPartyMetadataBytes;
     private final byte[] metadataTrustSchemaBytes;
     private final byte[] gitOpsLockSchemaBytes;
+    private final byte[] componentCatalogSchemaBytes;
+    private final byte[] componentCatalogSnapshotSchemaBytes;
     private final byte[] aiSkillBytes;
     private final byte[] aiSkillOpenAiBytes;
     private final AppChainProjectModel.CapabilityCatalog capabilityCatalog;
@@ -67,10 +73,18 @@ final class AppChainProjectCatalog {
     private final Map<String, AppChainProjectModel.Artifact> artifacts;
     private final Map<String, AppChainProjectModel.Capability> capabilities;
     private final Map<String, AppChainProjectModel.Recipe> recipes;
+    private final List<AppChainComponentCatalogLoader.Loaded> externalCatalogs;
 
     AppChainProjectCatalog(AppChainPropertyRegistry properties) throws IOException {
+        this(properties, List.of());
+    }
+
+    AppChainProjectCatalog(
+            AppChainPropertyRegistry properties,
+            List<AppChainComponentCatalogLoader.Loaded> externalCatalogs) throws IOException {
         json = new ObjectMapper()
                 .enable(JsonParser.Feature.STRICT_DUPLICATE_DETECTION)
+                .enable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
                 .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
         capabilityBytes = resource(CAPABILITY_RESOURCE);
         recipeBytes = resource(RECIPE_RESOURCE);
@@ -80,10 +94,33 @@ final class AppChainProjectCatalog {
         firstPartyMetadataBytes = resource(FIRST_PARTY_METADATA_RESOURCE);
         metadataTrustSchemaBytes = resource(METADATA_TRUST_SCHEMA_RESOURCE);
         gitOpsLockSchemaBytes = resource(GITOPS_LOCK_SCHEMA_RESOURCE);
+        componentCatalogSchemaBytes = resource(COMPONENT_CATALOG_SCHEMA_RESOURCE);
+        componentCatalogSnapshotSchemaBytes = resource(
+                COMPONENT_CATALOG_SNAPSHOT_SCHEMA_RESOURCE);
         aiSkillBytes = resource(AI_SKILL_RESOURCE);
         aiSkillOpenAiBytes = resource(AI_SKILL_OPENAI_RESOURCE);
-        capabilityCatalog = json.readValue(
+        AppChainProjectModel.CapabilityCatalog builtInCatalog = json.readValue(
                 capabilityBytes, AppChainProjectModel.CapabilityCatalog.class);
+        this.externalCatalogs = validateExternalCatalogs(externalCatalogs);
+        Set<String> builtInBundleIds = builtInCatalog.artifacts().stream()
+                .map(AppChainProjectModel.Artifact::bundleId).collect(
+                        java.util.stream.Collectors.toUnmodifiableSet());
+        if (this.externalCatalogs.stream().map(item -> item.catalog().bundleId())
+                .anyMatch(builtInBundleIds::contains)) {
+            throw new IllegalStateException(
+                    "external bundle id collides with a release-owned bundle");
+        }
+        List<AppChainProjectModel.Artifact> mergedArtifacts = new java.util.ArrayList<>(
+                builtInCatalog.artifacts());
+        List<AppChainProjectModel.Capability> mergedCapabilities = new java.util.ArrayList<>(
+                builtInCatalog.capabilities());
+        for (AppChainComponentCatalogLoader.Loaded external : this.externalCatalogs) {
+            mergedArtifacts.add(external.catalog().artifact());
+            mergedCapabilities.addAll(external.catalog().capabilities());
+        }
+        capabilityCatalog = new AppChainProjectModel.CapabilityCatalog(
+                builtInCatalog.schemaVersion(), List.copyOf(mergedArtifacts),
+                List.copyOf(mergedCapabilities));
         recipeCatalog = json.readValue(recipeBytes, AppChainProjectModel.RecipeCatalog.class);
         releaseIndex = json.readValue(releaseIndexBytes, AppChainProjectModel.ReleaseIndex.class);
         artifacts = indexArtifacts(capabilityCatalog);
@@ -124,6 +161,28 @@ final class AppChainProjectCatalog {
         return capabilities.values().stream().toList();
     }
 
+    List<AppChainComponentCatalogLoader.Loaded> externalCatalogs() {
+        return externalCatalogs;
+    }
+
+    boolean isExternalCapability(String id) {
+        return externalCatalogs.stream().flatMap(item -> item.catalog().capabilities().stream())
+                .anyMatch(capability -> capability.id().equals(id));
+    }
+
+    boolean isExternalArtifact(String id) {
+        return externalCatalogs.stream()
+                .anyMatch(item -> item.catalog().artifact().id().equals(id));
+    }
+
+    String externalArtifactDigest(String id) {
+        return externalCatalogs.stream()
+                .filter(item -> item.catalog().artifact().id().equals(id))
+                .map(item -> item.snapshot().artifactSha256())
+                .findFirst().orElseThrow(() -> new IllegalArgumentException(
+                        "Unknown external artifact: " + safeId(id)));
+    }
+
     AppChainProjectModel.ReleaseIndex releaseIndex() {
         return releaseIndex;
     }
@@ -138,9 +197,66 @@ final class AppChainProjectCatalog {
         digests.put("firstPartyMetadata", sha256(firstPartyMetadataBytes));
         digests.put("metadataTrustSchema", sha256(metadataTrustSchemaBytes));
         digests.put("gitOpsLockSchema", sha256(gitOpsLockSchemaBytes));
+        digests.put("componentCatalogSchema", sha256(componentCatalogSchemaBytes));
+        digests.put("componentCatalogSnapshotSchema",
+                sha256(componentCatalogSnapshotSchemaBytes));
         digests.put("aiSkill", sha256(aiSkillBytes));
         digests.put("aiSkillOpenAi", sha256(aiSkillOpenAiBytes));
+        for (AppChainComponentCatalogLoader.Loaded external : externalCatalogs) {
+            String prefix = "external." + external.catalog().catalogId() + ".";
+            digests.put(prefix + "snapshot", external.snapshotSha256());
+            digests.put(prefix + "catalog", external.catalogSha256());
+            digests.put(prefix + "runtimeManifest", external.runtimeManifestSha256());
+            digests.put(prefix + "configurationMetadata",
+                    external.configurationMetadataSha256());
+            digests.put(prefix + "artifact", external.snapshot().artifactSha256());
+        }
         return Map.copyOf(digests);
+    }
+
+    private static List<AppChainComponentCatalogLoader.Loaded> validateExternalCatalogs(
+            List<AppChainComponentCatalogLoader.Loaded> requested) {
+        List<AppChainComponentCatalogLoader.Loaded> catalogs = requested == null
+                ? List.of() : List.copyOf(requested);
+        if (catalogs.size() > AppChainComponentCatalogLoader.MAX_CATALOGS) {
+            throw new IllegalStateException("at most 16 component catalogs are supported");
+        }
+        Set<String> catalogIds = new LinkedHashSet<>();
+        Set<String> bundleIds = new LinkedHashSet<>();
+        for (AppChainComponentCatalogLoader.Loaded loaded : catalogs) {
+            var external = loaded.catalog();
+            var artifact = external.artifact();
+            if (!catalogIds.add(external.catalogId()) || !bundleIds.add(external.bundleId())) {
+                throw new IllegalStateException("external catalog or bundle id collides");
+            }
+            if (!Set.of("REFERENCE", "EXPERIMENTAL").contains(artifact.availability())
+                    || !"unsupported".equals(artifact.nativePosture())
+                    || !Set.copyOf(safeList(artifact.runtimeTypes())).equals(Set.of("jvm"))
+                    || safeList(artifact.deploymentTargets()).isEmpty()
+                    || !Set.of("host", "docker-compose").containsAll(
+                    artifact.deploymentTargets())) {
+                throw new IllegalStateException(
+                        "external artifacts are JVM-only REFERENCE or EXPERIMENTAL inputs");
+            }
+            for (AppChainProjectModel.Capability capability : external.capabilities()) {
+                if (!Set.of("REFERENCE", "EXPERIMENTAL").contains(capability.availability())
+                        || !Set.of("preview", "experimental").contains(capability.maturity())
+                        || "distribution".equals(capability.effectiveScope())
+                        || !capability.effectiveSelectable()
+                        || !Set.copyOf(safeList(capability.runtimeTypes())).equals(Set.of("jvm"))
+                        || safeList(capability.deploymentTargets()).isEmpty()
+                        || !Set.of("host", "docker-compose").containsAll(
+                        capability.deploymentTargets())
+                        || !"unsupported".equals(capability.nativePosture())
+                        || !Set.copyOf(safeList(capability.artifacts()))
+                        .equals(Set.of(artifact.id()))) {
+                    throw new IllegalStateException(
+                            "external capabilities cannot claim bundled, stable, native, "
+                                    + "distribution, or first-party status");
+                }
+            }
+        }
+        return List.copyOf(catalogs);
     }
 
     byte[] capabilityBytes() {
@@ -173,6 +289,14 @@ final class AppChainProjectCatalog {
 
     byte[] gitOpsLockSchemaBytes() {
         return gitOpsLockSchemaBytes.clone();
+    }
+
+    byte[] componentCatalogSchemaBytes() {
+        return componentCatalogSchemaBytes.clone();
+    }
+
+    byte[] componentCatalogSnapshotSchemaBytes() {
+        return componentCatalogSnapshotSchemaBytes.clone();
     }
 
     byte[] aiSkillBytes() {

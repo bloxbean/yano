@@ -55,6 +55,16 @@
         <div class="step"><span>03</span><div><h2>Add capabilities</h2><p>Only compatible, implemented release capabilities are selectable.</p></div></div>
         <div id="capability-chooser" class="capability-chooser"></div>
         <div id="answer-fields" class="answer-fields" hidden></div>
+        <details class="custom-catalog">
+          <summary>Import a signed custom component catalog</summary>
+          <p class="note">Studio reads the selected snapshot locally. It does not upload,
+            persist, install, or execute the plugin.</p>
+          <label>Catalog snapshot<input id="catalog-file" type="file" accept="application/json,.json"></label>
+          <label>Publisher public key<input id="publisher-key" name="publisherPublicKey"
+            inputmode="text" autocomplete="off" placeholder="64 hexadecimal characters"></label>
+          <button id="catalog-import" class="secondary" type="button">Verify and import</button>
+          <p id="catalog-status" class="note" role="status" aria-live="polite"></p>
+        </details>
 
         <div class="step"><span>04</span><div><h2>Runtime and delivery</h2><p>Choose how operators receive it.</p></div></div>
         <div class="field-grid">
@@ -76,8 +86,9 @@
           <button id="download" type="button">Download appchain.yaml</button>
           <button id="share" class="secondary" type="button">Copy safe link</button>
         </div>
-        <p class="next-step">Next: place the file in an empty directory, then run
-          <code>yano.sh appchain render .</code></p>
+        <p class="next-step">Next: place the blueprint in an empty directory. For every
+          custom entry, copy the original snapshot to the exact <code>component-catalogs/</code>
+          path shown in the blueprint. Then run <code>./yano.sh appchain render .</code>.</p>
       </aside>
     </section>
   </main>

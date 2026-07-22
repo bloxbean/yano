@@ -23,7 +23,19 @@ final class AppChainProjectModel {
             String network,
             RuntimeSelection runtime,
             DeploymentSelection deployment,
-            List<ChainIntent> chains) {
+            List<ChainIntent> chains,
+            List<ComponentCatalogRef> componentCatalogs) {
+
+        Spec(String yanoVersion, String network, RuntimeSelection runtime,
+             DeploymentSelection deployment, List<ChainIntent> chains) {
+            this(yanoVersion, network, runtime, deployment, chains, List.of());
+        }
+    }
+
+    record ComponentCatalogRef(
+            String path,
+            String trustedKeyId,
+            String trustedPublicKey) {
     }
 
     record RuntimeSelection(String type) {

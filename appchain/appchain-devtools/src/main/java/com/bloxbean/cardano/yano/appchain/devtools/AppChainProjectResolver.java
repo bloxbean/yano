@@ -57,6 +57,10 @@ final class AppChainProjectResolver {
                 throw new IllegalArgumentException("Capability " + capabilityId
                         + " is not selectable in an app-chain blueprint");
             }
+            if (catalog.isExternalCapability(capabilityId)
+                    && safeList(explicit.provides()).contains("state-machine")) {
+                requested.remove("state:custom-plugin");
+            }
             requested.add(capabilityId);
         }
 

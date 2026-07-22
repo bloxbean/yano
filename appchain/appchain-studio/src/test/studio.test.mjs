@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
+import {createHash,generateKeyPairSync,sign,webcrypto} from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 import {fileURLToPath} from 'node:url';
 import {blueprintYaml,compatibleCapabilityOptions,decodeDeepLink,encodeDeepLink,
-  normalizeIntent,resolvePresentation}
+  importComponentCatalogSnapshot,normalizeIntent,resolvePresentation}
   from '../main/web/studio-core.mjs';
 
 const repo=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../../../..');
@@ -88,4 +89,74 @@ test('static shell has a strict policy and no secret inputs or telemetry',()=>{
     .map(match=>match[1]).join(',');
   assert.doesNotMatch(inputNames,/private|secret|signing|password|token/i);
   assert.doesNotMatch(app,/analytics|telemetry|localStorage|sessionStorage/i);
+});
+
+function signedSnapshot(overrides={}) {
+  const catalog={schemaVersion:'v1alpha1',catalogId:'sample-plugin',
+    bundleId:'plugin-bundle.sample',bundleVersion:'1.0.0',
+    artifact:{id:'plugin.sample',availability:'REFERENCE',bundleId:'plugin-bundle.sample',
+      nativePosture:'unsupported',runtimeTypes:['jvm'],deploymentTargets:['host']},
+    capabilities:[{id:'state:sample',name:'Sample',category:'state',availability:'REFERENCE',
+      maturity:'experimental',scope:'chain',selectable:true,trustStatement:'Operator owned.',
+      description:'Sample custom state.',provides:['state-machine'],requires:[],implies:[],
+      conflicts:[],runtimeTypes:['jvm'],deploymentTargets:['host'],artifacts:['plugin.sample'],
+      nativePosture:'unsupported',externalPrerequisites:['reviewed-plugin'],
+      bootstrapRequirements:[],nonSecretAnswers:[],secretReferences:{},
+      properties:{'state-machine':'sample'},documentation:'README.md',
+      acceptanceScenario:'operator-owned'}],...overrides};
+  const manifest={schemaVersion:1,id:catalog.bundleId,version:catalog.bundleVersion,
+    yanoApi:{min:1,max:1,minLevel:1},dependencies:[],contributions:[{
+      kind:'app-state-machine',name:'sample',provider:'example.Sample'}]};
+  const catalogBytes=Buffer.from(JSON.stringify(catalog));
+  const manifestBytes=Buffer.from(JSON.stringify(manifest)); const metadataBytes=Buffer.alloc(0);
+  const digest=value=>createHash('sha256').update(value).digest('hex');
+  const trust={schemaVersion:1,algorithm:'Ed25519',keyId:'test-publisher',
+    bundleId:catalog.bundleId,bundleVersion:catalog.bundleVersion,
+    catalogSha256:digest(catalogBytes),runtimeManifestSha256:digest(manifestBytes),
+    configurationMetadataSha256:digest(metadataBytes),signature:''};
+  const payload=`yano-appchain-component-catalog-trust-v1\n${catalog.catalogId}\n${trust.bundleId}\n${trust.bundleVersion}\n${trust.keyId}\n${trust.catalogSha256}\n${trust.runtimeManifestSha256}\n${trust.configurationMetadataSha256}\n`;
+  const keys=generateKeyPairSync('ed25519'); trust.signature=sign(null,Buffer.from(payload),keys.privateKey).toString('base64');
+  const publicKey=keys.publicKey.export({type:'spki',format:'der'}).subarray(-32).toString('hex');
+  return {text:JSON.stringify({schemaVersion:1,kind:'AppChainComponentCatalogSnapshot',
+    artifactFileName:'sample.jar',artifactSha256:'ab'.repeat(32),
+    catalogBase64:catalogBytes.toString('base64'),runtimeManifestBase64:manifestBytes.toString('base64'),
+    configurationMetadataBase64:metadataBytes.toString('base64'),trust}),publicKey};
+}
+
+test('local custom catalog import verifies trust and stays out of safe links',async()=>{
+  const fixture=signedSnapshot();
+  const imported=await importComponentCatalogSnapshot(
+    fixture.text,fixture.publicKey,capabilities,[],webcrypto);
+  assert.equal(imported.capabilities[0].catalogSource,'external');
+  const intent={recipe:'custom-plugin',network:'devnet',members:1,finality:'all',
+    sequencing:'fixed',membership:'static',runtime:'jvm',deployment:'host',name:'custom-test',
+    chainId:'custom-test',capabilities:['state:sample'],answers:{},
+    componentCatalogs:[imported.reference]};
+  const yaml=blueprintYaml(intent,release.yanoVersion);
+  assert.match(yaml,/componentCatalogs:/);
+  assert.match(yaml,/component-catalogs\/sample-plugin\.json/);
+  assert.match(yaml,new RegExp(fixture.publicKey));
+  assert.doesNotMatch(encodeDeepLink(intent),/publisher|public|component-catalogs|test-publisher/i);
+  const plan=resolvePresentation(recipes.find(value=>value.id==='custom-plugin'),
+    [...capabilities,...imported.capabilities],intent.capabilities,intent);
+  assert.deepEqual(plan.errors,[]);
+  assert.ok(!plan.capabilities.includes('state:custom-plugin'));
+});
+
+test('local custom catalog import rejects tampering collisions and tier escalation',async()=>{
+  const fixture=signedSnapshot(); const tampered=JSON.parse(fixture.text);
+  tampered.catalogBase64=Buffer.from('tampered').toString('base64');
+  await assert.rejects(importComponentCatalogSnapshot(
+    JSON.stringify(tampered),fixture.publicKey,capabilities,[],webcrypto),/digest does not match/);
+  const collision=signedSnapshot({capabilities:[{
+    ...JSON.parse(Buffer.from(JSON.parse(fixture.text).catalogBase64,'base64')).capabilities[0],
+    id:'state:ordered-log'}]});
+  await assert.rejects(importComponentCatalogSnapshot(
+    collision.text,collision.publicKey,capabilities,[],webcrypto),/collides or is invalid/);
+  const elevatedCatalog=JSON.parse(Buffer.from(JSON.parse(fixture.text).catalogBase64,'base64'));
+  const elevated=signedSnapshot({capabilities:[{
+    ...elevatedCatalog.capabilities[0],availability:'BUNDLED',maturity:'stable',
+    runtimeTypes:['jvm','native'],nativePosture:'bundled'}]});
+  await assert.rejects(importComponentCatalogSnapshot(
+    elevated.text,elevated.publicKey,capabilities,[],webcrypto),/unsupported trust or runtime claim/);
 });

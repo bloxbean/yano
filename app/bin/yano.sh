@@ -84,6 +84,8 @@ Validate and operate:
   diff <old.lock> <new.lock>      Classify a proposed configuration change
   drift [project] --peer <url>    Compare redacted live node identities
   gitops [project] [options]      Export Helm or Kustomize deployment files
+  plugin inspect|validate|sign|scaffold ...
+                                  Work with signed custom component catalogs
   metadata verify ...             Verify custom-plugin metadata signatures
   role ...                        Encode/sign role commands offline (seed files only)
 

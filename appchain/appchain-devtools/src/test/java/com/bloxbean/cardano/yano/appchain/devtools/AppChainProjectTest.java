@@ -72,7 +72,11 @@ class AppChainProjectTest {
                 .containsEntry("metadataTrustSchema",
                         golden("appchain-metadata-trust.schema.json"))
                 .containsEntry("gitOpsLockSchema",
-                        golden("appchain-gitops-lock.schema.json"));
+                        golden("appchain-gitops-lock.schema.json"))
+                .containsEntry("componentCatalogSchema",
+                        golden("appchain-component-catalog-schema.json"))
+                .containsEntry("componentCatalogSnapshotSchema",
+                        golden("appchain-component-catalog-snapshot-schema.json"));
         assertThat(catalog.releaseIndex().schemaStatus()).isEqualTo("alpha");
         assertThat(catalog.releaseIndex().stabilizationDecision())
                 .isEqualTo("RETAIN_V1ALPHA1");
