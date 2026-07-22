@@ -1922,8 +1922,10 @@ tasks.register('yanoDistZip', Zip) {
         from(project(':appchain-devtools').layout.buildDirectory.dir(
                 'generated/appchain-metadata/appchain-dx/v1alpha1')) {
             into 'config/schema'
-            include 'appchain-metadata-trust.schema.json',
-                    'appchain-gitops-lock.schema.json'
+            include '*.json'
+            // Doctor treats this release identity as a singleton. Studio is
+            // the distribution's canonical loose-file copy.
+            exclude 'appchain-release-capability-index.json'
         }
         // App-chain cluster demo/eval scripts: cluster.sh auto-detects this
         // release layout (yano.jar + config/ beside appchain-cluster/), so an

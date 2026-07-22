@@ -178,6 +178,7 @@ The build deterministically exports:
 - `appchain-capability-catalog.json`
 - `appchain-recipe-catalog.json`
 - `appchain-release-capability-index.json`
+- `appchain-release-acceptance-index.json`
 - `appchain-first-party-metadata.json`
 - `appchain-metadata-trust.schema.json`
 - `appchain-gitops-lock.schema.json`
@@ -187,6 +188,11 @@ The build deterministically exports:
 The files are generated from the same registry used by validation, packaged in
 the CLI, and copied beside release configuration under `config/schema`.
 Golden SHA-256 snapshots make metadata changes explicit during review.
+
+The release acceptance index records the support level and concrete evidence
+for every recipe and capability. See
+[`docs/appchain/RELEASE_ACCEPTANCE.md`](../../docs/appchain/RELEASE_ACCEPTANCE.md)
+for the release-candidate matrix and the reason the schemas remain `v1alpha1`.
 
 The distribution and every generated project also include the release-pinned
 `configure-yano-appchain` AI skill. Generated projects include a checksum-pinned

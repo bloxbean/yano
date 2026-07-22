@@ -69,6 +69,8 @@ class AppChainProjectTest {
                         golden("appchain-first-party-metadata.json"))
                 .containsEntry("releaseIndex",
                         golden("appchain-release-capability-index.json"))
+                .containsEntry("releaseAcceptanceIndex",
+                        golden("appchain-release-acceptance-index.json"))
                 .containsEntry("metadataTrustSchema",
                         golden("appchain-metadata-trust.schema.json"))
                 .containsEntry("gitOpsLockSchema",
