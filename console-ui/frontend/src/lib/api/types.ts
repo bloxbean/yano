@@ -104,3 +104,66 @@ export interface NodePeers {
   establishedConnectionCount?: number;
   knownPeerCount?: number;
 }
+
+export interface ChainSummary {
+  chainId: string;
+  tipHeight: number;
+  stateRoot: string;
+}
+
+export interface AppChainBlock {
+  height: number;
+  timestamp: number;
+  stateRoot: string;
+  messageCount: number;
+  certSignatures: number;
+}
+
+export interface AppChainBlocks {
+  chainId: string;
+  tipHeight: number;
+  from: number;
+  blocks: AppChainBlock[];
+}
+
+export interface AppChainMessage {
+  chainId?: string;
+  height: number;
+  index: number;
+  messageId?: string;
+  topic?: string;
+  sender?: string;
+  senderSeq?: number;
+  bodyHex?: string;
+}
+
+export interface AppChainStatus {
+  chainId?: string;
+  running?: boolean;
+  role?: string;
+  sequencing?: boolean;
+  stalled?: boolean;
+  submissionsPaused?: boolean;
+  tipHeight?: number;
+  stateRoot?: string;
+  stateMachine?: string;
+  members?: number;
+  threshold?: number;
+  blockIntervalMs?: number;
+  lastBlockAtMillis?: number;
+  l1RefDeferrals?: number;
+  poolSize?: number;
+  poolCapacity?: number;
+  submitted?: number;
+  received?: number;
+  relayed?: number;
+  duplicates?: number;
+  storedMessages?: number;
+  drops?: Record<string, number>;
+  peers?: Record<string, boolean>;
+  peerTransports?: Record<string, string>;
+  anchor?: Record<string, unknown>;
+  sinks?: Record<string, Record<string, unknown>>;
+  effects?: Record<string, unknown>;
+  stateMachineStatus?: Record<string, unknown>;
+}

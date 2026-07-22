@@ -39,4 +39,15 @@ describe('Yano API client', () => {
     const headers = fetchMock.mock.calls[0][1].headers as Headers;
     expect(headers.get('X-API-Key')).toBe('secret');
   });
+
+  it('uses the authenticated fetch client for encoded app-chain SSE', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, body: {} });
+    vi.stubGlobal('fetch', fetchMock);
+    await new YanoApi('/api/v1', 'secret').chainStream('orders / east', 0);
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      '/api/v1/app-chain/chains/orders%20%2F%20east/stream?fromHeight=1');
+    const headers = fetchMock.mock.calls[0][1].headers as Headers;
+    expect(headers.get('Accept')).toBe('text/event-stream');
+    expect(headers.get('X-API-Key')).toBe('secret');
+  });
 });

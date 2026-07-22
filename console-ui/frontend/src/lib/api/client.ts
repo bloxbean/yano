@@ -1,4 +1,5 @@
-import type { NodeConfig, NodePeers, NodeStatus, StorageStatus } from './types';
+import type { AppChainBlocks, AppChainStatus, ChainSummary, NodeConfig, NodePeers,
+  NodeStatus, StorageStatus } from './types';
 
 const API_STORAGE_KEY = 'yano.console.api-base.v1';
 const KEY_STORAGE_KEY = 'yano.console.api-key.v1';
@@ -63,13 +64,18 @@ export class ApiError extends Error {
 export class YanoApi {
   constructor(public readonly base: string, private readonly apiKey = currentApiKey()) {}
 
-  async json<T>(path: string, signal?: AbortSignal): Promise<T> {
-    const headers = new Headers({ Accept: 'application/json' });
+  async response(path: string, accept: string, signal?: AbortSignal): Promise<Response> {
+    const headers = new Headers({ Accept: accept });
     if (this.apiKey) headers.set('X-API-Key', this.apiKey);
     const response = await fetch(`${this.base}${path}`, {
       headers, signal, cache: 'no-store', redirect: 'error'
     });
     if (!response.ok) throw new ApiError(response.status, `Request failed (${response.status})`);
+    return response;
+  }
+
+  async json<T>(path: string, signal?: AbortSignal): Promise<T> {
+    const response = await this.response(path, 'application/json', signal);
     return response.json() as Promise<T>;
   }
 
@@ -77,4 +83,19 @@ export class YanoApi {
   status(signal?: AbortSignal) { return this.json<NodeStatus>('/node/status', signal); }
   peers(signal?: AbortSignal) { return this.json<NodePeers>('/node/peers', signal); }
   storage(signal?: AbortSignal) { return this.json<StorageStatus>('/status', signal); }
+  chains(signal?: AbortSignal) { return this.json<ChainSummary[]>('/app-chain/chains', signal); }
+  chainStatus(chainId: string, signal?: AbortSignal) {
+    return this.json<AppChainStatus>(`${chainPath(chainId)}/status`, signal);
+  }
+  chainBlocks(chainId: string, signal?: AbortSignal) {
+    return this.json<AppChainBlocks>(`${chainPath(chainId)}/blocks?limit=12`, signal);
+  }
+  chainStream(chainId: string, fromHeight: number, signal?: AbortSignal) {
+    return this.response(`${chainPath(chainId)}/stream?fromHeight=${Math.max(1, fromHeight)}`,
+      'text/event-stream', signal);
+  }
+}
+
+function chainPath(chainId: string): string {
+  return `/app-chain/chains/${encodeURIComponent(chainId)}`;
 }
