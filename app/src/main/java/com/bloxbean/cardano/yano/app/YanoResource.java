@@ -13,12 +13,16 @@ import jakarta.ws.rs.Path;
 import jakarta.ws.rs.Produces;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 import java.util.Map;
 
 @Path("node")
 @Produces(MediaType.APPLICATION_JSON)
 public class YanoResource {
+
+    @ConfigProperty(name = "quarkus.application.version", defaultValue = "unknown")
+    String applicationVersion;
 
     @Inject
     NodeLifecycle nodeLifecycle;
@@ -101,10 +105,12 @@ public class YanoResource {
         // Build a safe response map — epoch fields may throw if not yet initialized from genesis
         var result = new java.util.LinkedHashMap<String, Object>();
         result.put("protocolMagic", config.getProtocolMagic());
+        result.put("version", applicationVersion);
         result.put("clientEnabled", config.isClientEnabled());
         result.put("serverEnabled", config.isServerEnabled());
         result.put("devMode", config.isDevMode());
         if (config instanceof YanoConfig yc) {
+            result.put("network", yc.getNetwork());
             result.put("remoteHost", yc.getRemoteHost());
             result.put("remotePort", yc.getRemotePort());
             result.put("serverPort", yc.getServerPort());
