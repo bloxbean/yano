@@ -1,5 +1,6 @@
-import type { AppChainBlocks, AppChainStatus, ChainSummary, NodeConfig, NodePeers,
-  NodeStatus, PluginBundleDetail, PluginBundlePage, PluginOperationsSummary, StorageStatus } from './types';
+import type { AppChainBlocks, AppChainMessage, AppChainStatus, ChainSummary, CommittedQueryResult,
+  EffectPage, EffectStats, NodeConfig, NodePeers, NodeStatus, PluginBundleDetail, PluginBundlePage,
+  PluginOperationsSummary, StorageStatus } from './types';
 
 const API_STORAGE_KEY = 'yano.console.api-base.v1';
 const KEY_STORAGE_KEY = 'yano.console.api-key.v1';
@@ -110,6 +111,18 @@ export class YanoApi {
     return response.json() as Promise<T>;
   }
 
+  async post<T>(path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+    const headers = new Headers({ Accept: 'application/json' });
+    if (body !== undefined) headers.set('Content-Type', 'application/json');
+    if (this.apiKey) headers.set('X-API-Key', this.apiKey);
+    const response = await fetch(`${this.base}${path}`, {
+      method: 'POST', headers, body: body === undefined ? undefined : JSON.stringify(body),
+      signal, cache: 'no-store', redirect: 'error'
+    });
+    if (!response.ok) throw new ApiError(response.status, `Request failed (${response.status})`);
+    return response.json() as Promise<T>;
+  }
+
   config(signal?: AbortSignal) { return this.json<NodeConfig>('/node/config', signal); }
   status(signal?: AbortSignal) { return this.json<NodeStatus>('/node/status', signal); }
   peers(signal?: AbortSignal) { return this.json<NodePeers>('/node/peers', signal); }
@@ -120,6 +133,43 @@ export class YanoApi {
   }
   chainBlocks(chainId: string, signal?: AbortSignal) {
     return this.json<AppChainBlocks>(`${chainPath(chainId)}/blocks?limit=12`, signal);
+  }
+  chainMessage(chainId: string, messageId: string, signal?: AbortSignal) {
+    return this.json<AppChainMessage>(`${chainPath(chainId)}/messages/${encodeURIComponent(messageId)}`, signal);
+  }
+  chainEffects(chainId: string, signal?: AbortSignal) {
+    return this.json<EffectPage>(`${chainPath(chainId)}/effects?fromHeight=0&limit=100`, signal);
+  }
+  chainEffectStats(chainId: string, signal?: AbortSignal) {
+    return this.json<EffectStats>(`${chainPath(chainId)}/effects/stats`, signal);
+  }
+  chainEffectProof(chainId: string, height: number, ordinal: number, signal?: AbortSignal) {
+    return this.json<Record<string, unknown>>(
+      `${chainPath(chainId)}/effects/${height}/${ordinal}/proof`, signal);
+  }
+  requeueEffect(chainId: string, height: number, ordinal: number, signal?: AbortSignal) {
+    return this.post<Record<string, unknown>>(
+      `${chainPath(chainId)}/effects/${height}/${ordinal}/requeue`, undefined, signal);
+  }
+  cancelEffect(chainId: string, height: number, ordinal: number, reason = 'operator-cancel', signal?: AbortSignal) {
+    return this.post<Record<string, unknown>>(
+      `${chainPath(chainId)}/effects/${height}/${ordinal}/cancel?reason=${encodeURIComponent(reason)}`, undefined, signal);
+  }
+  chainQuery(chainId: string, path: string, paramsHex = '', signal?: AbortSignal) {
+    return this.post<CommittedQueryResult>(
+      `${chainPath(chainId)}/query/${path.split('/').map(encodeURIComponent).join('/')}`, { paramsHex }, signal);
+  }
+  chainEvidence(chainId: string, messageId: string, signal?: AbortSignal) {
+    return this.json<Record<string, unknown>>(`${chainPath(chainId)}/evidence/${encodeURIComponent(messageId)}`, signal);
+  }
+  chainProof(chainId: string, keyHex: string, signal?: AbortSignal) {
+    return this.json<Record<string, unknown>>(`${chainPath(chainId)}/proof/${encodeURIComponent(keyHex)}`, signal);
+  }
+  domain(bundleId: string, path: string, parameters: Record<string, string>, signal?: AbortSignal) {
+    const query = new URLSearchParams(parameters).toString();
+    const safePath = path.split('/').map(encodeURIComponent).join('/');
+    return this.json<Record<string, unknown>>(
+      `/plugins/${encodeURIComponent(bundleId)}/${safePath}${query ? `?${query}` : ''}`, signal);
   }
   chainStream(chainId: string, fromHeight: number, signal?: AbortSignal) {
     return this.response(`${chainPath(chainId)}/stream?fromHeight=${Math.max(1, fromHeight)}`,

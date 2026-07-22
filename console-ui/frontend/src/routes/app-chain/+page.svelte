@@ -3,6 +3,7 @@
   import LineChart from '$lib/components/LineChart.svelte';
   import MetricCard from '$lib/components/MetricCard.svelte';
   import MetricRow from '$lib/components/MetricRow.svelte';
+  import AppChainCapabilityPanels from '$lib/components/AppChainCapabilityPanels.svelte';
   import { apiFailureMessage, resolveApiBase, YanoApi } from '$lib/api/client';
   import type { AppChainBlocks, AppChainMessage, AppChainStatus, ChainSummary, NodeConfig } from '$lib/api/types';
   import { SessionHistory, type CompactSample } from '$lib/telemetry/history';
@@ -40,6 +41,7 @@
   let inspected: AppChainMessage | null = null;
   let inspectedPreview: MessagePreview | null = null;
   let inspectedDigest: string | null = null;
+  let pluginBundleIds: string[] = [];
   const cursor = new StreamCursor();
 
   const fmt = (value: unknown) => Number.isFinite(Number(value)) ? Number(value).toLocaleString() : '-';
@@ -75,6 +77,10 @@
         apiBase = await resolveApiBase();
         api = new YanoApi(apiBase);
         [config, chains] = await Promise.all([api.config(), api.chains()]);
+        void api.pluginBundles(null, 100).then((page) => {
+          pluginBundleIds = objectList(page.items).map((bundle) => stringValue(bundle.id, ''))
+            .filter((id) => id !== '');
+        }).catch(() => { pluginBundleIds = []; });
         if (disposed) return;
         const queryChain = new URLSearchParams(location.search).get('chain');
         const remembered = localStorage.getItem(CHAIN_KEY);
@@ -346,6 +352,12 @@
   <MetricCard title="Block interval" subtitle="milliseconds"><LineChart series={chartInterval} colors={['#38bdf8']} label="Block interval" /></MetricCard>
   <MetricCard title="Anchor lag" subtitle="app blocks"><LineChart series={chartAnchor} colors={['#10b981']} label="Anchor lag" /></MetricCard>
 </div>
+
+{#if api && status}
+  {#key selectedChain}
+    <AppChainCapabilityPanels {api} chainId={selectedChain} {status} {pluginBundleIds} />
+  {/key}
+{/if}
 
 <div class="section-title">Finalized data</div>
 <div class="grid gap-4 xl:grid-cols-2">
