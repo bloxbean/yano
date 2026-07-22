@@ -1,12 +1,13 @@
 import {blueprintYaml,compatibleCapabilityOptions,decodeDeepLink,encodeDeepLink,
-  normalizeIntent} from './studio-core.mjs';
+  importComponentCatalogSnapshot,normalizeIntent} from './studio-core.mjs';
 
 const form = document.querySelector('#intent-form');
 const recipeSelect = document.querySelector('#recipe');
 const releaseLabel = document.querySelector('#release');
 const capabilityChooser = document.querySelector('#capability-chooser');
 const answerFields = document.querySelector('#answer-fields');
-let recipes=[]; let capabilities=[]; let release={recipes:[],yanoVersion:'unknown'}; let yaml='';
+let recipes=[]; let builtCapabilities=[]; let capabilities=[]; let builtArtifacts=[];
+let customCatalogs=[]; let release={recipes:[],yanoVersion:'unknown'}; let yaml='';
 
 const load = path => fetch(path,{cache:'no-store'}).then(response => {
   if (!response.ok) throw new Error(`Could not load ${path}`); return response.json();
@@ -15,6 +16,7 @@ const load = path => fetch(path,{cache:'no-store'}).then(response => {
 function readForm(forcedCapabilities) {
   const data=new FormData(form); const raw=Object.fromEntries(data.entries());
   raw.capabilities=forcedCapabilities || data.getAll('capability'); raw.answers={};
+  raw.componentCatalogs=customCatalogs.map(value=>value.reference);
   answerFields.querySelectorAll('[data-answer]').forEach(input=>raw.answers[input.dataset.answer]=input.value);
   return raw;
 }
@@ -95,20 +97,44 @@ function update(forcedCapabilities, forcedStateMachine) {
   yaml=resolved.errors.length?'':blueprintYaml(intent,release.yanoVersion);
   document.querySelector('#preview').textContent=yaml || '# Resolve the items above to preview the blueprint.';
   document.querySelector('#download').disabled=Boolean(resolved.errors.length);
-  document.querySelector('#share').disabled=Boolean(resolved.errors.length);
-  if (!resolved.errors.length) history.replaceState(null,'',encodeDeepLink(intent));
+  const share=document.querySelector('#share');
+  share.disabled=Boolean(resolved.errors.length || customCatalogs.length);
+  share.title=customCatalogs.length?'Custom catalogs are local and deliberately excluded from links.':'';
+  if (!resolved.errors.length && !customCatalogs.length)
+    history.replaceState(null,'',encodeDeepLink(intent));
 }
 
 Promise.all([
   load('assets/appchain-recipe-catalog.json'),load('assets/appchain-capability-catalog.json'),
   load('assets/appchain-release-capability-index.json')
 ]).then(([recipeCatalog,capabilityCatalog,releaseIndex])=>{
-  recipes=recipeCatalog.recipes; capabilities=capabilityCatalog.capabilities; release=releaseIndex;
+  recipes=recipeCatalog.recipes; builtCapabilities=capabilityCatalog.capabilities;
+  capabilities=[...builtCapabilities]; builtArtifacts=capabilityCatalog.artifacts; release=releaseIndex;
   recipeSelect.replaceChildren(...recipes.map(recipe=>Object.assign(document.createElement('option'),{value:recipe.id,textContent:recipe.name})));
   releaseLabel.textContent=`Yano ${release.yanoVersion} · ${release.schemaStatus}`;
   const deepLink=decodeDeepLink(location.hash); writeForm(deepLink);
   update(deepLink.capabilities || [],deepLink.stateMachine);
 }).catch(error=>{ document.querySelector('#diagnostics').textContent=error.message; });
+
+document.querySelector('#catalog-import').addEventListener('click',async()=>{
+  const file=document.querySelector('#catalog-file').files[0];
+  const publicKey=document.querySelector('#publisher-key').value.trim();
+  const status=document.querySelector('#catalog-status');
+  if(!file) { status.textContent='Choose a catalog snapshot first.'; return; }
+  try {
+    const imported=await importComponentCatalogSnapshot(
+      await file.text(),publicKey,builtCapabilities,builtArtifacts);
+    if(customCatalogs.some(value=>value.catalog.catalogId===imported.catalog.catalogId))
+      throw new Error('That component catalog is already imported.');
+    if(customCatalogs.length>=16) throw new Error('Studio accepts at most 16 custom catalogs.');
+    customCatalogs.push({...imported,fileName:file.name});
+    capabilities=[...builtCapabilities,...customCatalogs.flatMap(value=>value.capabilities)];
+    status.textContent=`Verified ${imported.catalog.catalogId}. Keep ${file.name} for the project.`;
+    document.querySelector('#catalog-file').value='';
+    document.querySelector('#publisher-key').value='';
+    update();
+  } catch(error) { status.textContent=error.message; }
+});
 
 form.addEventListener('input',()=>update());
 window.addEventListener('hashchange',()=>{const values=decodeDeepLink(location.hash);writeForm(values);update(values.capabilities || [],values.stateMachine);});

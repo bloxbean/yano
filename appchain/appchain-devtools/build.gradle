@@ -7,6 +7,7 @@ dependencies {
         transitive = false
     }
     implementation project(':appchain-role-workflow-contracts')
+    implementation libs.cardano.client.crypto
     compileOnly(project(':core-api')) {
         transitive = false
     }
@@ -17,6 +18,9 @@ dependencies {
     implementation libs.jackson.dataformat.yaml
     implementation libs.smallrye.config.core
     implementation libs.smallrye.config.yaml
+    testImplementation(project(':core-api')) {
+        transitive = false
+    }
 }
 
 application {

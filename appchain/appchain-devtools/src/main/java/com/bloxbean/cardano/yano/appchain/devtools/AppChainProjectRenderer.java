@@ -58,6 +58,13 @@ final class AppChainProjectRenderer {
     AppChainProjectModel.Lock initialize(
             Path project,
             AppChainProjectModel.Blueprint blueprint) throws IOException {
+        return initialize(project, blueprint, Map.of());
+    }
+
+    AppChainProjectModel.Lock initialize(
+            Path project,
+            AppChainProjectModel.Blueprint blueprint,
+            Map<String, byte[]> componentCatalogInputs) throws IOException {
         Path root = safeRoot(project);
         requireEmptyOrMissing(root);
         Files.createDirectories(root);
@@ -65,6 +72,10 @@ final class AppChainProjectRenderer {
                 .writeValueAsBytes(blueprint);
         Files.write(root.resolve(BLUEPRINT_FILE), blueprintBytes,
                 StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
+        for (Map.Entry<String, byte[]> input
+                : new TreeMap<>(safeMap(componentCatalogInputs)).entrySet()) {
+            writeComponentCatalogInput(root, input.getKey(), input.getValue());
+        }
         return render(root, blueprint, null, blueprintBytes);
     }
 
@@ -78,7 +89,7 @@ final class AppChainProjectRenderer {
         AppChainProjectModel.Lock prior = Files.isRegularFile(lockPath)
                 ? readPriorLock(root) : null;
         if (prior == null) {
-            requireBlueprintOnly(root);
+            requireBlueprintAndCatalogInputsOnly(root, blueprint);
         } else {
             verifyGeneratedFiles(root, prior.generatedFiles());
         }
@@ -198,6 +209,10 @@ final class AppChainProjectRenderer {
                 catalog.metadataTrustSchemaBytes());
         outputs.put("schema/appchain-gitops-lock.schema.json",
                 catalog.gitOpsLockSchemaBytes());
+        outputs.put("schema/appchain-component-catalog.schema.json",
+                catalog.componentCatalogSchemaBytes());
+        outputs.put("schema/appchain-component-catalog-snapshot.schema.json",
+                catalog.componentCatalogSnapshotSchemaBytes());
         outputs.put("ai/configure-yano-appchain/SKILL.md", catalog.aiSkillBytes());
         outputs.put("ai/configure-yano-appchain/agents/openai.yaml",
                 catalog.aiSkillOpenAiBytes());
@@ -1110,6 +1125,21 @@ final class AppChainProjectRenderer {
                 StandardOpenOption.WRITE);
     }
 
+    private static void writeComponentCatalogInput(
+            Path root, String name, byte[] bytes) throws IOException {
+        if (name == null || !name.matches("component-catalogs/[a-z][a-z0-9.-]{0,127}\\.json")
+                || bytes == null || bytes.length == 0
+                || bytes.length > MAX_GENERATED_FILE_BYTES) {
+            throw new IOException("Component catalog input name or size is invalid");
+        }
+        Path path = root.resolve(name).normalize();
+        if (!path.startsWith(root) || Files.exists(path, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IOException("Refusing unsafe or duplicate component catalog input");
+        }
+        Files.createDirectories(path.getParent());
+        Files.write(path, bytes, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
+    }
+
     private static Path resolveGenerated(Path root, String name) throws IOException {
         Path path = root.resolve(name).normalize();
         if (!path.startsWith(root) || name.startsWith("/") || name.contains("..")) {
@@ -1167,15 +1197,25 @@ final class AppChainProjectRenderer {
         }
     }
 
-    private static void requireBlueprintOnly(Path root) throws IOException {
-        try (var entries = Files.list(root)) {
-            List<Path> unexpected = entries
-                    .filter(path -> !BLUEPRINT_FILE.equals(path.getFileName().toString()))
-                    .limit(2)
-                    .toList();
+    private static void requireBlueprintAndCatalogInputsOnly(
+            Path root, AppChainProjectModel.Blueprint blueprint) throws IOException {
+        Set<String> allowed = new java.util.TreeSet<>();
+        allowed.add(BLUEPRINT_FILE);
+        if (blueprint.spec() != null) {
+            for (AppChainProjectModel.ComponentCatalogRef reference
+                    : safeList(blueprint.spec().componentCatalogs())) {
+                allowed.add(reference.path());
+            }
+        }
+        try (var entries = Files.walk(root)) {
+            List<String> unexpected = entries.filter(path -> !path.equals(root))
+                    .filter(path -> !Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS))
+                    .map(path -> root.relativize(path).toString().replace('\\', '/'))
+                    .filter(path -> !allowed.contains(path))
+                    .limit(2).toList();
             if (!unexpected.isEmpty()) {
-                throw new IOException("A blueprint without a lock can only be rendered in a "
-                        + "directory containing appchain.yaml");
+                throw new IOException("A blueprint without a lock may contain only appchain.yaml "
+                        + "and its declared component-catalogs inputs");
             }
         }
     }
@@ -1204,6 +1244,7 @@ final class AppChainProjectRenderer {
 
     private static ObjectMapper configured(ObjectMapper mapper) {
         return mapper.enable(JsonParser.Feature.STRICT_DUPLICATE_DETECTION)
+                .enable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
                 .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
                 .enable(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS);
     }

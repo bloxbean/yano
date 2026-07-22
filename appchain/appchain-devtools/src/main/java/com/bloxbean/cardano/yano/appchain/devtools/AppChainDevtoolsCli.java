@@ -48,6 +48,7 @@ public final class AppChainDevtoolsCli {
                or: ./yano.sh appchain diff <old.lock> <new.lock>
                or: ./yano.sh appchain drift [project-directory] --peer <url> [--peer <url> ...]
                or: ./yano.sh appchain gitops [project-directory] --target helm|kustomize --output <empty-dir>
+               or: ./yano.sh appchain plugin inspect|validate|sign|scaffold [options]
                or: ./yano.sh appchain metadata verify <plugin.jar> --trust-key <key-id=64-hex-public-key>
                or: ./yano.sh appchain migrate [project-directory] [--dry-run]
                or: ./yano.sh appchain role public-key|key-proof|sign|govern-* [options]
@@ -189,7 +190,8 @@ public final class AppChainDevtoolsCli {
         }
         if (parsed.mode() == Mode.PROJECT) {
             AppChainProjectModel.ProjectValidation result =
-                    new AppChainProjectLifecycle(registry).validate(parsed.targetPath());
+                    AppChainProjectLifecycle.forProject(
+                            registry, parsed.targetPath()).validate(parsed.targetPath());
             if (parsed.format() == Format.JSON) {
                 Map<String, Object> output = validationEnvelope(
                         "VALID_PROJECT", "project", registry);
@@ -599,7 +601,7 @@ public final class AppChainDevtoolsCli {
         if (cursor >= args.length) return false;
         return switch (args[cursor]) {
             case "init", "render", "recipes", "capabilities", "doctor", "diff", "drift",
-                    "gitops", "metadata", "migrate" -> true;
+                    "gitops", "plugin", "metadata", "migrate" -> true;
             default -> false;
         };
     }

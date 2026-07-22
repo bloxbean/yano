@@ -32,6 +32,32 @@ effective configuration, property explanation, and project lifecycle checks.
 ./yano.sh appchain gitops product-registry --target kustomize --output deploy/kustomize
 ```
 
+## Signed custom component catalogs
+
+Custom JVM plugins can extend project generation without extending CLI code.
+The CLI reads bounded declarative resources only; it does not load provider
+classes or install artifacts.
+
+```bash
+./yano.sh appchain plugin scaffold --mode state-machine --id shipment \
+  --package com.example.shipment --yano-version 0.1.0-pre9 --output shipment-plugin
+
+./yano.sh appchain plugin inspect shipment-plugin.jar \
+  --trust-key vendor-2026=<64-hex-ed25519-public-key>
+
+./yano.sh appchain plugin validate shipment-plugin.jar \
+  --trust-key vendor-2026=<64-hex-ed25519-public-key> \
+  --output shipment-catalog.json
+```
+
+`plugin sign` accepts the publisher seed only through `--seed-file` and writes
+the data-only trust envelope. `init`, `render`, and `doctor` accept explicit
+`--plugin-jar`/`--component-catalog` plus `--trust-key` inputs. Initialized
+projects retain the signed snapshot and public trust key, while
+`appchain.lock` pins every descriptor and full artifact digest. JVM operators
+still copy the exact JAR into each distribution's `plugins/` directory;
+native executables require a separately reviewed build-time flavor.
+
 `init` without `--non-interactive` prompts for missing core intent. The
 `v1alpha1` blueprint is the user-owned source; `appchain.lock` pins catalog
 digests, capability expansion, consensus values, artifacts, and generated
@@ -155,6 +181,8 @@ The build deterministically exports:
 - `appchain-first-party-metadata.json`
 - `appchain-metadata-trust.schema.json`
 - `appchain-gitops-lock.schema.json`
+- `appchain-component-catalog.schema.json`
+- `appchain-component-catalog-snapshot.schema.json`
 
 The files are generated from the same registry used by validation, packaged in
 the CLI, and copied beside release configuration under `config/schema`.

@@ -31,6 +31,20 @@
           "properties": {"target": {"enum": ["host", "docker-compose"]}},
           "additionalProperties": false
         },
+        "componentCatalogs": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {
+            "type": "object",
+            "required": ["path", "trustedKeyId", "trustedPublicKey"],
+            "properties": {
+              "path": {"type": "string", "pattern": "^component-catalogs/[a-z][a-z0-9.-]{0,127}\\.json$"},
+              "trustedKeyId": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"},
+              "trustedPublicKey": {"type": "string", "pattern": "^[0-9a-fA-F]{64}$"}
+            },
+            "additionalProperties": false
+          }
+        },
         "chains": {
           "type": "array",
           "minItems": 1,
