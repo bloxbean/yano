@@ -157,9 +157,7 @@ approval-stats = [
 ; a/{id}/current, a/{id}/r/{revision}
 ; p/{id}/current, p/{id}/r/{revision}
 ; q/{proposal-id}
-; e/{evidence-id}/v/{business-version}/approval
 ; s/proposals/v1
 ; g/{governed-mutation-id}
 ; A */current value is exactly one positive uint64 revision in big-endian
 ; binary form. It is not CBOR.
-; The evidence-approval value is the canonical raw-US-ASCII proposal identifier.

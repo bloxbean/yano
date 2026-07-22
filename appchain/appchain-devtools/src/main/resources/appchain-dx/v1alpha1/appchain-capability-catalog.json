@@ -25,6 +25,11 @@
       "id": "appchain-role-workflow",
       "runtimeTypes": ["jvm", "native"],
       "deploymentTargets": ["host", "docker-compose"]
+    },
+    {
+      "id": "appchain-evidence-profile",
+      "runtimeTypes": ["jvm", "native"],
+      "deploymentTargets": ["host", "docker-compose"]
     }
   ],
   "capabilities": [
@@ -92,7 +97,7 @@
       "conflicts": ["state:ordered-log", "state:kv-registry", "state:approval-workflow", "state:custom-plugin"],
       "runtimeTypes": ["jvm", "native"],
       "deploymentTargets": ["host", "docker-compose"],
-      "artifacts": ["yano-runtime", "appchain-stdlib", "appchain-evidence-registry", "appchain-composite", "appchain-role-workflow"],
+      "artifacts": ["yano-runtime", "appchain-stdlib", "appchain-evidence-registry", "appchain-composite", "appchain-role-workflow", "appchain-evidence-profile"],
       "properties": {
         "state-machine": "role-evidence",
         "block.max-messages": "100",

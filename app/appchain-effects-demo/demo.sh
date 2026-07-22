@@ -1714,7 +1714,7 @@ prepare_configuration() {
   prepare_secrets
   if [ "$DEMO_MACHINE_MODE" = role ]; then
     COMPOSITE_PROFILE_DIGEST="$("$REPO_DIR/gradlew" -q -p "$REPO_DIR" --no-daemon \
-      :appchain-role-workflow:roleEvidenceProfileDigest \
+      :appchain-evidence-profile:roleEvidenceProfileDigest \
       --args="--chain $DEMO_CHAIN_ID --members $MEMBER_KEYS --threshold 2 --storage-gate $STORAGE_GATE --continuation $DEMO_CONTINUATION_MODE --evidence-capacity $EVIDENCE_CAPACITY_PER_BLOCK" \
       | tail -n 1)"
     [[ "$COMPOSITE_PROFILE_DIGEST" =~ ^[0-9a-f]{64}$ ]] \

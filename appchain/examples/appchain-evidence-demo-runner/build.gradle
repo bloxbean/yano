@@ -139,8 +139,8 @@ tasks.register('verifyDemoRunnerArtifactBoundary') {
         }
 
         def forbiddenProjects = [
-        ':runtime', ':appchain-evidence-registry', ':appchain-composite', ':appchain-stdlib',
-                ':appchain-role-workflow', ':appchain-kafka',
+        ':runtime', ':appchain-evidence-registry', ':appchain-evidence-profile',
+                ':appchain-composite', ':appchain-stdlib', ':appchain-role-workflow', ':appchain-kafka',
                 ':appchain-objectstore-s3', ':appchain-ipfs'
         ] as Set
         def forbidden = configurations.runtimeClasspath.incoming.resolutionResult.allComponents
