@@ -62,11 +62,13 @@ public final class PluginCatalogProvenanceProbe {
                 new AppStateMachineContext() {
                     @Override public String chainId() { return "conformance-chain"; }
                     @Override public Map<String, String> settings() {
-                        return Map.of("machines.composite.preset",
+                        return Map.of(
+                                "machines.composite.preset",
                                 EvidenceCompositePresets.EVIDENCE_V1_GATED);
                     }
                     @Override public Optional<AppChainConsensusProfile> consensusProfile() {
-                        return Optional.of(AppTestConsensusProfiles.enabledEffects(128, 16_384));
+                        return Optional.of(
+                                AppTestConsensusProfiles.enabledEffects(128, 16_384, 64));
                     }
                 });
         String stockCompositeDigest = "sha256:" + HexFormat.of().formatHex(
