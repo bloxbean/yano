@@ -115,6 +115,14 @@ tasks.register('finalDistributionRuntimeAcceptance', Exec) {
             finalYanoZip.flatMap { it.archiveFile }.get().asFile
 }
 
+tasks.register('finalDistributionStockOutcomeAcceptance', Exec) {
+    group = 'verification'
+    description = 'Exercises stable stock recipe outcomes from the final Yano archive.'
+    dependsOn finalYanoZip
+    commandLine 'bash', file('src/test/scripts/final-distribution-stock-outcomes.sh'),
+            finalYanoZip.flatMap { it.archiveFile }.get().asFile
+}
+
 tasks.register('verifySmallRyeConfigRuntimeParity') {
     group = 'verification'
     description = 'Verifies the devtools and Quarkus runtime select the same SmallRye Config engine'

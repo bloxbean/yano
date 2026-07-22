@@ -143,18 +143,17 @@ also differ and are incorporated into the trail head.
 
 ## Submit from Java
 
-Use the client and standard-library artifacts with the node version:
+Use the client artifact with the node version:
 
 ```groovy
 implementation "com.bloxbean.cardano:yano-appchain-client:${yanoVersion}"
-implementation "com.bloxbean.cardano:yano-appchain-stdlib:${yanoVersion}"
 ```
 
 Hash the exact application bytes, encode the stock command, and submit it:
 
 ```java
 import com.bloxbean.cardano.yano.appchain.client.AppChainClient;
-import com.bloxbean.cardano.yano.appchain.stdlib.DocTrailStateMachine;
+import com.bloxbean.cardano.yano.appchain.client.StdlibAppChainClient;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -163,16 +162,13 @@ var client = AppChainClient.builder("http://127.0.0.1:7071/api/v1")
         .chainId("document-trail-chain")
         // .apiKey("secret")
         .build();
+var documents = new StdlibAppChainClient(client);
 
 byte[] document = "quality certificate v1".getBytes(StandardCharsets.UTF_8);
 byte[] entryHash = MessageDigest.getInstance("SHA-256").digest(document);
 
-byte[] command = DocTrailStateMachine.append(
-        "product-42",
-        entryHash,
+var submitted = documents.appendDocument("product-42", entryHash,
         "s3://evidence/product-42/certificate-v1.pdf");
-
-var submitted = client.submit("documents", command);
 System.out.println(submitted.messageId());
 ```
 
@@ -198,18 +194,9 @@ current trail summary, not the availability of the referenced documents.
 Verify and decode it in Java:
 
 ```java
-import com.bloxbean.cardano.yano.appchain.client.ProofVerifier;
-
 import java.util.HexFormat;
 
-var proof = client.proof(DocTrailStateMachine.entityKey("product-42"))
-        .orElseThrow();
-if (!ProofVerifier.verify(proof) || proof.valueHex() == null) {
-    throw new IllegalStateException("trail state is absent or unverified");
-}
-
-var trail = DocTrailStateMachine.decodeEntry(
-        HexFormat.of().parseHex(proof.valueHex()));
+var trail = documents.documentTrail("product-42").orElseThrow().value();
 
 System.out.println("entries=" + trail.count());
 System.out.println("head=" + HexFormat.of().formatHex(trail.headHash()));
@@ -217,7 +204,7 @@ System.out.println("head=" + HexFormat.of().formatHex(trail.headHash()));
 
 For independent verification, reconstruct the ordered `(entryHash, author)`
 sequence from finalized block history, recompute it with
-`DocTrailStateMachine.computeHead(...)`, and compare it with the proven head.
+`DocTrailContract.computeHead(...)`, and compare it with the proven head.
 Also verify the MPF proof against a state root obtained from independently
 trusted finality or Cardano anchor evidence.
 

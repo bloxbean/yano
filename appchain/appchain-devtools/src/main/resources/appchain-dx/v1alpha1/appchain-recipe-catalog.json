@@ -3,37 +3,37 @@
   "recipes": [
     {
       "id":"audit-log","version":"1","name":"Replicated audit log","category":"application","availability":"BUNDLED","maturity":"stable","scope":"chain","selectable":true,
-      "trustStatement":"First-party Yano recipe using only built-in packaged runtime capabilities.","description":"A replicated append-only log for opaque application records.",
+      "trustStatement":"First-party Yano recipe using only built-in packaged runtime capabilities.","description":"A replicated append-only log for opaque application records.","primaryOutcome":"One opaque record is threshold-finalized in the shared application order.","firstCommand":"submit <topic> <payload>","verificationQuery":"messages/{messageId} and proof/{messageId}",
       "capabilities":["state:ordered-log","sequencer:fixed"],"recommended":{"blockIntervalMs":"1000"},"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime"],"nativePosture":"bundled",
       "externalPrerequisites":[],"bootstrapRequirements":[],"nonSecretAnswers":[],"documentation":"docs/appchain/state-machines/ordered-log.md","acceptanceScenario":"recipe-audit-log"
     },
     {
       "id":"owned-registry","version":"1","name":"Owned registry","category":"application","availability":"BUNDLED","maturity":"stable","scope":"chain","selectable":true,
-      "trustStatement":"First-party Yano recipe using the bundled standard-library registry.","description":"A first-writer-owned key/value registry with committed query proofs.",
+      "trustStatement":"First-party Yano recipe using the bundled standard-library registry.","description":"A first-writer-owned key/value registry with committed query proofs.","primaryOutcome":"The first writer owns a named value that is readable with a committed state proof.","firstCommand":"kv put <key> <value>","verificationQuery":"proof/{hex(key)} decodes to owner and value",
       "capabilities":["state:kv-registry","sequencer:fixed"],"recommended":{"blockIntervalMs":"2000"},"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime","appchain-stdlib"],"nativePosture":"bundled",
       "externalPrerequisites":[],"bootstrapRequirements":[],"nonSecretAnswers":[],"documentation":"docs/appchain/state-machines/kv-registry.md","acceptanceScenario":"recipe-owned-registry"
     },
     {
       "id":"approval-workflow","version":"1","name":"Threshold approval workflow","category":"application","availability":"BUNDLED","maturity":"stable","scope":"chain","selectable":true,
-      "trustStatement":"First-party Yano recipe using the bundled generic approval state machine.","description":"Validator members propose, approve, reject, and prove terminal decisions.",
+      "trustStatement":"First-party Yano recipe using the bundled generic approval state machine.","description":"Validator members propose, approve, reject, and prove terminal decisions.","primaryOutcome":"Distinct validator-member decisions produce a provable terminal approval or rejection.","firstCommand":"propose <itemId> <payload> <required>","verificationQuery":"proof/{hex(i/itemId)} decodes to the decision trail",
       "capabilities":["state:approval-workflow","sequencer:fixed"],"recommended":{"blockIntervalMs":"1000"},"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime","appchain-stdlib"],"nativePosture":"bundled",
       "externalPrerequisites":[],"bootstrapRequirements":[],"nonSecretAnswers":[],"documentation":"docs/appchain/state-machines/approvals.md","acceptanceScenario":"recipe-approval-workflow"
     },
     {
       "id":"role-approval","version":"1","name":"Governed role approvals","category":"application","availability":"BUNDLED","maturity":"preview","scope":"chain","selectable":true,
-      "trustStatement":"First-party generic role product; applications retain responsibility for acting on an approved payload hash.","description":"Governed organizations, actors, and policies approve arbitrary application payload hashes.",
+      "trustStatement":"First-party generic role product; applications retain responsibility for acting on an approved payload hash.","description":"Governed organizations, actors, and policies approve arbitrary application payload hashes.","primaryOutcome":"A governed role policy accepts valid actor decisions and rejects an ineligible actor decision.","firstCommand":"apply the generated role bootstrap plan, then submit a signed proposal","verificationQuery":"plugin role-workflow proposals/{id} plus returned proof key",
       "capabilities":["state:role-approvals","sequencer:fixed"],"recommended":{"blockIntervalMs":"1000"},"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime","appchain-composite","appchain-role-workflow"],"nativePosture":"bundled",
       "externalPrerequisites":[],"bootstrapRequirements":["governed-organizations","governed-actors","governed-policies"],"nonSecretAnswers":[],"documentation":"docs/appchain/tutorials/05-domain-role-approvals.md","acceptanceScenario":"recipe-role-approval"
     },
     {
       "id":"evidence-ledger","version":"1","name":"Role-aware evidence ledger","category":"application","availability":"BUNDLED","maturity":"preview","scope":"chain","selectable":true,
-      "trustStatement":"First-party preview evidence profile; it records and authorizes evidence claims but does not prove real-world truth or external publication by itself.","description":"A role-aware evidence ledger that emits publication intents; add and provision explicit connector capabilities for external mutation.",
+      "trustStatement":"First-party preview evidence profile; it records and authorizes evidence claims but does not prove real-world truth or external publication by itself.","description":"A role-aware evidence ledger that emits publication intents; add and provision explicit connector capabilities for external mutation.","primaryOutcome":"A role-authorized evidence record and its release decision are committed and queryable.","firstCommand":"apply the generated role bootstrap plan, then submit evidence and a signed release proposal","verificationQuery":"plugin evidence-profile evidence/{id} and proposals/{id}",
       "capabilities":["state:role-evidence","sequencer:fixed"],"recommended":{"blockIntervalMs":"1000"},"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime","appchain-stdlib","appchain-evidence-registry","appchain-composite","appchain-role-workflow","appchain-evidence-profile"],"nativePosture":"bundled",
       "externalPrerequisites":[],"bootstrapRequirements":["governed-organizations","governed-actors","governed-policies"],"nonSecretAnswers":[],"documentation":"docs/appchain/tutorials/04-evidence-publication.md","acceptanceScenario":"recipe-evidence-ledger"
     },
     {
       "id":"custom-plugin","version":"1","name":"Custom state-machine project","category":"custom-plugin","availability":"REFERENCE","maturity":"experimental","scope":"chain","selectable":true,
-      "trustStatement":"Advanced JVM-only path; the operator owns plugin implementation, code review, metadata trust, compatibility, and distribution.","description":"A generated project boundary for a separately reviewed custom state-machine plugin.",
+      "trustStatement":"Advanced JVM-only path; the operator owns plugin implementation, code review, metadata trust, compatibility, and distribution.","description":"A generated project boundary for a separately reviewed custom state-machine plugin.","primaryOutcome":"The operator-defined state-machine contract is loaded from a reviewed pinned plugin bundle.","firstCommand":"install the reviewed bundle and submit its documented command","verificationQuery":"plugin-defined committed query or state proof",
       "capabilities":["state:custom-plugin","sequencer:fixed"],"recommended":{"blockIntervalMs":"1000"},"runtimeTypes":["jvm"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime"],"nativePosture":"unsupported",
       "externalPrerequisites":["reviewed-custom-plugin-bundle"],"bootstrapRequirements":["plugin-metadata-trust-review"],"nonSecretAnswers":[],"documentation":"docs/appchain/tutorials/08-plugins-and-composites.md","acceptanceScenario":"recipe-custom-plugin"
     }

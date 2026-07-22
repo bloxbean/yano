@@ -2,18 +2,16 @@ package com.bloxbean.cardano.yano.appchain.stdlib;
 
 import co.nstant.in.cbor.model.Array;
 import co.nstant.in.cbor.model.ByteString;
-import co.nstant.in.cbor.model.DataItem;
-import co.nstant.in.cbor.model.UnsignedInteger;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yaci.core.util.CborSerializationUtil;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
+import com.bloxbean.cardano.yano.appchain.stdlib.contracts.KvRegistryContract;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.Arrays;
-import java.util.List;
 import java.util.Optional;
 
 /**
@@ -23,7 +21,7 @@ import java.util.Optional;
  * is individually provable (key → MPF inclusion proof of [owner, value]).
  * <p>
  * Command body (CBOR): {@code [op(uint), key(bstr), value(bstr)]}
- * — op 0 = PUT (value required), op 1 = DELETE (value ignored/empty).
+ * — op 0 = PUT, op 1 = DELETE (value empty).
  * <p>
  * State entry (CBOR): {@code key → [owner(bstr .size 32), value(bstr)]}.
  * <p>
@@ -157,12 +155,12 @@ public final class KvRegistryStateMachine implements AppStateMachine {
 
     /** Client/helper: encode a PUT command body. */
     public static byte[] put(byte[] key, byte[] value) {
-        return Command.encode(OP_PUT, key, value);
+        return KvRegistryContract.put(key, value);
     }
 
     /** Client/helper: encode a DELETE command body. */
     public static byte[] delete(byte[] key) {
-        return Command.encode(OP_DELETE, key, new byte[0]);
+        return KvRegistryContract.delete(key);
     }
 
     /** Decode a state entry into [owner, value]. */
@@ -187,26 +185,8 @@ public final class KvRegistryStateMachine implements AppStateMachine {
 
     record Command(int op, byte[] key, byte[] value) {
         static Command decode(byte[] body) {
-            StdlibCbor.requireCommand(body);
-            List<DataItem> items = ((Array) CborSerializationUtil.deserializeOne(body)).getDataItems();
-            int op = ((UnsignedInteger) items.get(0)).getValue().intValue();
-            if (op != OP_PUT && op != OP_DELETE) {
-                throw new IllegalArgumentException("Unknown op: " + op);
-            }
-            byte[] key = ((ByteString) items.get(1)).getBytes();
-            if (key.length == 0) {
-                throw new IllegalArgumentException("Empty key");
-            }
-            byte[] value = ((ByteString) items.get(2)).getBytes();
-            return new Command(op, key, value);
-        }
-
-        static byte[] encode(int op, byte[] key, byte[] value) {
-            Array arr = new Array();
-            arr.add(new UnsignedInteger(op));
-            arr.add(new ByteString(key));
-            arr.add(new ByteString(value != null ? value : new byte[0]));
-            return CborSerializationUtil.serialize(arr);
+            KvRegistryContract.Command decoded = KvRegistryContract.decodeCommand(body);
+            return new Command(decoded.operation(), decoded.key(), decoded.value());
         }
     }
 }

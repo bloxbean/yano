@@ -1,0 +1,50 @@
+dependencies {
+    implementation libs.cbor
+    implementation libs.cardano.client.crypto
+
+    testImplementation libs.junit.jupiter.api
+    testRuntimeOnly libs.junit.jupiter.engine
+    testRuntimeOnly libs.junit.platform.launcher
+    testImplementation libs.assertj.core
+}
+
+java {
+    sourceCompatibility = 25
+    targetCompatibility = 25
+}
+
+tasks.named('compileJava') {
+    options.compilerArgs.removeAll { it.startsWith('-Aproject=') }
+}
+
+tasks.register('verifyStdlibContractArtifact') {
+    dependsOn tasks.named('jar')
+    doLast {
+        def archive = tasks.named('jar').get().archiveFile.get().asFile
+        new java.util.zip.ZipFile(archive).withCloseable { jar ->
+            if (jar.entries().any { entry ->
+                entry.name.startsWith('META-INF/services/')
+                        || entry.name.startsWith('META-INF/yano/plugins/')
+                        || entry.name.contains('/AppStateMachine')
+            }) {
+                throw new GradleException(
+                        'Stdlib contracts must not contain plugin manifests, services, or SPI types')
+            }
+        }
+    }
+}
+
+tasks.named('check') {
+    dependsOn tasks.named('verifyStdlibContractArtifact')
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            pom {
+                name = 'Yano App-Chain Standard Library Contracts'
+                description = 'Bounded versioned wire and state contracts for stock app-chain state machines'
+            }
+        }
+    }
+}

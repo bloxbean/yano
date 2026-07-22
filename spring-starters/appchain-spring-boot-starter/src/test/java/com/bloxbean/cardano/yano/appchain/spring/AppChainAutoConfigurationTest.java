@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.appchain.spring;
 
 import com.bloxbean.cardano.yano.appchain.client.AppChainClient;
+import com.bloxbean.cardano.yano.appchain.client.StdlibAppChainClient;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -46,6 +47,8 @@ class AppChainAutoConfigurationTest {
         runner.run(context -> {
             assertThat(context).doesNotHaveBean(AppChainClient.class);
             assertThat(context).doesNotHaveBean(AppChainTemplate.class);
+            assertThat(context).doesNotHaveBean(StdlibAppChainClient.class);
+            assertThat(context).doesNotHaveBean(StdlibAppChainTemplate.class);
         });
     }
 
@@ -100,6 +103,8 @@ class AppChainAutoConfigurationTest {
                 .run(context -> {
                     assertThat(context).hasSingleBean(AppChainClient.class);
                     assertThat(context).hasSingleBean(AppChainTemplate.class);
+                    assertThat(context).hasSingleBean(StdlibAppChainClient.class);
+                    assertThat(context).hasSingleBean(StdlibAppChainTemplate.class);
 
                     // Template submit against the stub
                     AppChainTemplate template = context.getBean(AppChainTemplate.class);

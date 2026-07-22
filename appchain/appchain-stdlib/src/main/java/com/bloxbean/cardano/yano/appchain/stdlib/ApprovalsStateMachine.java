@@ -20,8 +20,8 @@ import com.bloxbean.cardano.yano.api.appchain.effects.EffectOutcome;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectResult;
 import com.bloxbean.cardano.yano.api.appchain.effects.ResultPolicy;
 import com.bloxbean.cardano.yano.appchain.config.AppChainApprovalsConfig;
+import com.bloxbean.cardano.yano.appchain.stdlib.contracts.ApprovalsContract;
 
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -257,35 +257,29 @@ public final class ApprovalsStateMachine implements AppStateMachine {
     // ------------------------------------------------------------------
 
     public static byte[] propose(String itemId, byte[] payload, int required, long deadlineMillis) {
-        Array arr = new Array();
-        arr.add(new UnsignedInteger(OP_PROPOSE));
-        arr.add(new UnicodeString(itemId));
-        arr.add(new ByteString(payload != null ? payload : new byte[0]));
-        arr.add(new UnsignedInteger(required));
-        arr.add(new UnsignedInteger(deadlineMillis));
-        return CborSerializationUtil.serialize(arr);
+        return ApprovalsContract.propose(itemId, payload, required, deadlineMillis);
     }
 
     public static byte[] approve(String itemId) {
-        return simpleCommand(OP_APPROVE, itemId);
+        return ApprovalsContract.approve(itemId);
     }
 
     public static byte[] reject(String itemId) {
-        return simpleCommand(OP_REJECT, itemId);
+        return ApprovalsContract.reject(itemId);
     }
 
     public static byte[] itemKey(String itemId) {
-        return ("i/" + itemId).getBytes(StandardCharsets.UTF_8);
+        return ApprovalsContract.itemKey(itemId);
     }
 
     /** CBOR-wrapped PROPOSE payload awaiting the approval decision. */
     public static byte[] stagedEffectPayloadKey(String itemId) {
-        return ("ae/p/" + itemId).getBytes(StandardCharsets.UTF_8);
+        return ApprovalsContract.stagedEffectPayloadKey(itemId);
     }
 
     /** Independently provable generic effect lifecycle record. */
     public static byte[] effectStateKey(String itemId) {
-        return ("ae/s/" + itemId).getBytes(StandardCharsets.UTF_8);
+        return ApprovalsContract.effectStateKey(itemId);
     }
 
     /** Decode a generic effect state entry for assertions and queries. */
@@ -310,13 +304,6 @@ public final class ApprovalsStateMachine implements AppStateMachine {
             throw new IllegalArgumentException("invalid staged approval effect payload");
         }
         return bytes.getBytes();
-    }
-
-    private static byte[] simpleCommand(int op, String itemId) {
-        Array arr = new Array();
-        arr.add(new UnsignedInteger(op));
-        arr.add(new UnicodeString(itemId));
-        return CborSerializationUtil.serialize(arr);
     }
 
     private static boolean containsKey(List<byte[]> keys, byte[] key) {
@@ -426,26 +413,9 @@ public final class ApprovalsStateMachine implements AppStateMachine {
 
     record Command(int op, String itemId, byte[] payload, int required, long deadlineMillis) {
         static Command decode(byte[] body) {
-            StdlibCbor.requireCommand(body);
-            List<DataItem> items = ((Array) CborSerializationUtil.deserializeOne(body)).getDataItems();
-            int op = ((UnsignedInteger) items.get(0)).getValue().intValue();
-            String itemId = ((UnicodeString) items.get(1)).getString();
-            if (itemId.isBlank()) {
-                throw new IllegalArgumentException("Empty itemId");
-            }
-            if (op == OP_PROPOSE) {
-                byte[] payload = ((ByteString) items.get(2)).getBytes();
-                int required = ((UnsignedInteger) items.get(3)).getValue().intValue();
-                long deadline = ((UnsignedInteger) items.get(4)).getValue().longValue();
-                if (required <= 0) {
-                    throw new IllegalArgumentException("required must be positive");
-                }
-                return new Command(op, itemId, payload, required, deadline);
-            }
-            if (op == OP_APPROVE || op == OP_REJECT) {
-                return new Command(op, itemId, new byte[0], 0, 0);
-            }
-            throw new IllegalArgumentException("Unknown op: " + op);
+            ApprovalsContract.Command decoded = ApprovalsContract.decodeCommand(body);
+            return new Command(decoded.operation(), decoded.itemId(), decoded.payload(),
+                    decoded.required(), decoded.deadlineMillis());
         }
     }
 

@@ -2,6 +2,10 @@
 
 Ready-to-use `AppStateMachine` implementations for Yano app chains.
 
+Applications that only encode commands or decode proven state should depend
+on `appchain-stdlib-contracts` (or the typed `StdlibAppChainClient`) instead of
+this runtime implementation artifact.
+
 This module is packaged into the default distribution and discovered through the
 `AppStateMachineProvider` ServiceLoader. Select a machine with:
 
@@ -39,8 +43,8 @@ Operations:
 Helper methods:
 
 ```java
-byte[] body = KvRegistryStateMachine.put(keyBytes, valueBytes);
-byte[] delete = KvRegistryStateMachine.delete(keyBytes);
+byte[] body = KvRegistryContract.put(keyBytes, valueBytes);
+byte[] delete = KvRegistryContract.delete(keyBytes);
 ```
 
 State entry:

@@ -41,6 +41,12 @@ class AppChainProjectTest {
         assertThat(catalog.recipes()).extracting(AppChainProjectModel.Recipe::id)
                 .containsExactly("audit-log", "owned-registry", "approval-workflow",
                         "role-approval", "evidence-ledger", "custom-plugin");
+        assertThat(catalog.recipes()).allSatisfy(recipe -> {
+            assertThat(recipe.primaryOutcome()).isNotBlank();
+            assertThat(recipe.firstCommand()).isNotBlank();
+            assertThat(recipe.verificationQuery()).isNotBlank();
+            assertThat(recipe.acceptanceScenario()).isNotBlank();
+        });
         assertThat(resolution.selectedCapabilities()).contains(
                 "state:role-evidence", "sequencer:rotating", "membership:static",
                 "l1:slot-feed");
@@ -297,12 +303,21 @@ class AppChainProjectTest {
                     assertThat(lock.deployment()).isEqualTo(deployment);
                     assertThat(lock.artifacts()).isNotEmpty();
                     assertThat(project.resolve("scripts/start")).isExecutable();
+                    assertThat(Files.readString(project.resolve("plans/prerequisites.yaml")))
+                            .contains("primaryOutcome:", "firstCommand:",
+                                    "verificationQuery:", "acceptanceScenario:");
                     if ("role-approval".equals(recipe) || "evidence-ledger".equals(recipe)) {
                         assertThat(project.resolve("bootstrap/role-approvals-plan.yaml"))
                                 .isRegularFile();
                         assertThat(Files.readString(project.resolve("bootstrap/README.md")))
                                 .contains("./yano.sh appchain role public-key",
                                         "query the exact record", "does not execute the payload")
+                                .doesNotContain("privateKey", "seed:");
+                        assertThat(Files.readString(
+                                project.resolve("bootstrap/role-approvals-plan.yaml")))
+                                .contains("QUERY_COMMITTED_RECORD_AND_VERIFY_PROOF",
+                                        "SKIP_AND_RECORD_PROOF", "FAIL_CLOSED",
+                                        "replacement: FORBIDDEN")
                                 .doesNotContain("privateKey", "seed:");
                     }
                     assertShellSyntax(project.resolve("scripts/start"));

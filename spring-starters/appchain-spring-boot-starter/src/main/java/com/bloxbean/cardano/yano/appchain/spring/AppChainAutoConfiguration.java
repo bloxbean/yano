@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.appchain.spring;
 
 import com.bloxbean.cardano.yano.appchain.client.AppChainClient;
+import com.bloxbean.cardano.yano.appchain.client.StdlibAppChainClient;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -38,6 +39,18 @@ public class AppChainAutoConfiguration {
     @ConditionalOnMissingBean
     public AppChainTemplate appChainTemplate(AppChainClient client) {
         return new AppChainTemplate(client);
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    public StdlibAppChainClient stdlibAppChainClient(AppChainClient client) {
+        return new StdlibAppChainClient(client);
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    public StdlibAppChainTemplate stdlibAppChainTemplate(StdlibAppChainClient client) {
+        return new StdlibAppChainTemplate(client);
     }
 
     // static + ObjectProvider: a BeanPostProcessor must not drag the client
