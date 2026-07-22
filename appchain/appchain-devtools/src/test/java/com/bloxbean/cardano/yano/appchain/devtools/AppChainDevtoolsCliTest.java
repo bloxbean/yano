@@ -70,6 +70,32 @@ class AppChainDevtoolsCliTest {
     }
 
     @Test
+    void capabilitiesUseAWrappedAsciiTableWhileJsonRemainsStructured() throws Exception {
+        Result text = run("appchain", "capabilities");
+        Result structured = run("appchain", "capabilities", "--format", "json");
+
+        assertThat(text.exit()).isZero();
+        assertThat(text.err()).isEmpty();
+        assertThat(text.out())
+                .contains("| CAPABILITY")
+                .contains("| CATEGORY")
+                .contains("| AVAILABILITY")
+                .contains("| Description: Append-only ordered application messages.")
+                .contains("FIRST_PARTY_OPTIONAL")
+                .contains("state:credential-registry");
+        assertThat(text.out().lines().toList())
+                .allMatch(line -> line.length() == 114);
+        assertThat(text.out().lines()
+                .filter(line -> line.startsWith("| Description: ")).count()).isEqualTo(32);
+
+        assertThat(structured.exit()).isZero();
+        assertThat(structured.err()).isEmpty();
+        JsonNode output = json.readTree(structured.out());
+        assertThat(output.path("status").asText()).isEqualTo("CAPABILITY_CATALOG");
+        assertThat(output.path("capabilities")).hasSize(32);
+    }
+
+    @Test
     void explainSupportsExactPropertiesAndPartialNamespaces() throws Exception {
         Result property = run("config", "explain", "--format", "json", "block.max-bytes");
         Result firstEnum = run("config", "explain", "--format", "json", "anchor.mode");

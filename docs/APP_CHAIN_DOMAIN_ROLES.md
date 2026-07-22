@@ -43,7 +43,7 @@ five employees at one company from pretending to be five independent firms.
 
 ## 3. What ships out of the box
 
-Two reusable modules are packaged with Yano:
+Three reusable modules are packaged with Yano:
 
 - `appchain-role-workflow-contracts`: bounded v1 CBOR contracts, state keys,
   CDDL, result codes, Java signing/verification records, CLI, and golden vectors
@@ -269,17 +269,19 @@ Exact committed queries are:
 | Policy current pointer | `components/role-approvals/policy-current` | `id` |
 | Policy | `components/role-approvals/policy` | `id` or `id@revision` |
 | Proposal | `components/role-approvals/proposal` | `id` |
-| Evidence link | `components/role-approvals/evidence-approval` | `evidenceId@version` |
+| Evidence link (`role-evidence` only) | `components/role-approvals/evidence-approval` | `evidenceId@version` |
 | Statistics | `components/role-approvals/stats` | empty |
 
-The read-only JSON API is below:
+The generic and evidence profiles expose separate read-only JSON APIs:
 
 ```text
+/api/v1/plugins/com.bloxbean.cardano.yano.appchain.role-workflow/
 /api/v1/plugins/com.bloxbean.cardano.yano.appchain.evidence-profile/
 ```
 
-It exposes organizations, actors, policies, proposals, evidence links, and
-stats. Each record response includes exact `proofKey` and `recordValue` bytes.
+Both expose organizations, actors, policies, proposals and stats. Only the
+evidence profile exposes evidence links and evidence-specific convenience
+routes. Each record response includes exact `proofKey` and `recordValue` bytes.
 Verify those physical composite bytes with the app-chain proof endpoint and
 bind query/proof to the same chain, machine, committed height, and root. Do not
 treat a convenient JSON projection alone as a cryptographic proof.
@@ -330,6 +332,10 @@ Component order, workflows, topics, versions, configuration identities, and
 quotas affect consensus. They are committed in the stock/custom preset and
 cannot be rearranged by node-local YAML. Existing chains evolve through
 ADR-015; new chains select the intended profile at genesis.
+
+For an application-neutral configuration, REST/Java submission examples and
+the exact boundary between an approved hash and executable work, see the
+dedicated [`role-approvals` reference](appchain/state-machines/role-approvals.md).
 
 ## 11. Guarantees and limits
 

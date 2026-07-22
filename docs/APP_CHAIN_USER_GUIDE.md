@@ -36,13 +36,18 @@ yaci `core/src/main/cddl/appmsg/` and yano `core-api/src/main/cddl/appchain/`.
 
 ## Published modules
 
-The app-chain core is part of the default distribution (`yano.jar`). Everything
-else is opt-in — a plugin jar on the node or a library in your application
-(group id `com.bloxbean.cardano`):
+The default distribution bundles the app-chain core, standard state machines,
+generic composite and role products, and the preview evidence product. Client
+libraries are application dependencies; Kafka, S3, IPFS, Cardano and ZK are
+separately installed or build-time-included plugins (group id
+`com.bloxbean.cardano`):
 
 | Artifact | Repo path | Purpose |
 |---|---|---|
 | `yano-appchain-stdlib` | `appchain/appchain-stdlib` | Ready state machines, selected by id (§9); ships in the distribution |
+| `yano-appchain-composite` | `appchain/appchain-composite` | Bundled generic deterministic composition/profile framework; not arbitrary YAML composition |
+| `yano-appchain-role-workflow` | `appchain/appchain-role-workflow` | Bundled preview `role-approvals` provider and generic role domain API |
+| `yano-appchain-evidence-profile` | `appchain/products/appchain-evidence-profile` | Bundled preview evidence and role-evidence profiles |
 | `yano-appchain-client` | `appchain/appchain-client` | Java client SDK: REST + SSE + client-side proof verification (§16) |
 | `yano-appchain-composite-client` | `appchain/appchain-composite-client` | Governed-profile finality, one-root MPF, epoch-chain, and authorization-policy verification |
 | `yano-appchain-testkit` | `appchain/appchain-testkit` | JUnit 5 `@AppChainCluster` embedded clusters for tests (§16) |
@@ -58,8 +63,9 @@ else is opt-in — a plugin jar on the node or a library in your application
 
 ## 1. What you get out of the box
 
-**Yes — the default Yano distribution (`yano.jar`) is all you need.** Enable
-the app chain with configuration flags only; no code required:
+**Yes for bundled capabilities.** Enable an app chain with configuration flags
+and typed commands; no custom state-machine code is required. Optional
+connectors still require their release-matched plugin and external service:
 
 - **Built-in state machine: `ordered-log`** (the default). Every submitted
   message is an opaque blob; the chain gives you a tamper-evident, totally
@@ -68,8 +74,9 @@ the app chain with configuration flags only; no code required:
   can obtain an **inclusion proof** that a message was finalized at a given
   position — verifiable against the (anchorable) state root without trusting
   any node.
-- **A standard library of further state machines** — registry, approvals,
-  balances, document trails — selected purely by config (section 9).
+- **Bundled reusable products** — registry, member approvals, balances,
+  document trails, generic role approvals, and preview evidence profiles —
+  selected through a release-pinned recipe/capability catalog (section 9).
 - **REST endpoints** to submit and read messages, browse blocks, and fetch
   proofs (section 4).
 - **Sequencing with real finality**: fixed mode uses one configured proposer;
@@ -84,10 +91,14 @@ the app chain with configuration flags only; no code required:
 - **Catch-up**: a member that joins late or restarts behind fetches finalized
   blocks from peers (protocol 103) and verifies everything (hash chain,
   certificates, re-executed state roots) before committing.
-- **Effects** (optional): a finalized state transition can trigger an action
-  *outside* the chain — a Cardano payment, webhook, ERP call — safely, by
-  emitting a provable record that a separate runtime executes and reports back
-  on-chain (section 18).
+- **Effects**: a finalized state transition can trigger an action *outside*
+  the chain by emitting a provable record that an executor reports back
+  on-chain (section 18). The webhook executor is bundled. Kafka, S3, IPFS and
+  Cardano executors are first-party optional plugins.
+
+Use the [release capability catalog](appchain/CAPABILITIES.md) for exact
+availability, maturity, JVM/native posture and artifacts, and the
+[optional-connector guide](appchain/OPTIONAL_CONNECTORS.md) before deployment.
 
 Typical uses with zero code: multi-party audit/compliance logs, consortium
 message queues with neutral custody, attestation feeds, document/DPP trails —

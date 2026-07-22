@@ -7,7 +7,7 @@ What you can build **today** with the app-chain framework, organized by how
 much you need to bring:
 
 - **Part A** — default distribution, out of the box (stock machines and
-  composites, config only)
+  bundled preview profiles, config and typed commands)
 - **Part B** — default distribution + a custom state machine plugin jar
 - **Part C** — Yano as a library (embed the runtime in your own application)
 
@@ -33,10 +33,12 @@ The common backbone every use case inherits:
 
 ## Part A — Out of the box (default distribution)
 
-Everything in this part is configuration only: `yano.jar`, member keys, REST,
-and any selected first-party connector bundles. `ordered-log` keeps opaque
-bodies; the standard library and `evidence-v1-gated` composite add typed state
-and coordinated publication without a custom state-machine implementation.
+Everything in this part needs no custom state-machine implementation:
+`yano.jar`, member keys, configuration and typed REST/client commands are
+enough for bundled capabilities. `ordered-log` keeps opaque bodies; the
+standard library and bundled preview profiles add typed state. External Kafka,
+S3, IPFS or Cardano actions additionally require their explicitly selected
+first-party optional connector bundle and external service.
 
 ### A1. Multi-party audit / compliance log
 

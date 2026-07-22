@@ -192,10 +192,90 @@ tasks.register('verifyAppChainCatalogDocumentation') {
     }
 }
 
+tasks.register('verifyAppChainCapabilityGuide') {
+    group = 'verification'
+    description = 'Verifies the human capability guide matches the release-pinned catalogs'
+    def capabilityCatalog = file('src/main/resources/appchain-dx/v1alpha1/'
+            + 'appchain-capability-catalog.json')
+    def recipeCatalog = file('src/main/resources/appchain-dx/v1alpha1/'
+            + 'appchain-recipe-catalog.json')
+    def capabilityGuide = rootProject.file('docs/appchain/CAPABILITIES.md')
+    inputs.files(capabilityCatalog, recipeCatalog, capabilityGuide)
+    doLast {
+        def parser = new groovy.json.JsonSlurper()
+        def capabilities = parser.parse(capabilityCatalog).capabilities
+        def recipes = parser.parse(recipeCatalog).recipes
+        def lines = capabilityGuide.readLines('UTF-8')
+
+        def sectionRows = { String start, String end ->
+            int first = lines.indexOf(start)
+            int last = lines.indexOf(end)
+            if (first < 0 || last <= first) {
+                throw new GradleException(
+                        "Capability guide is missing ordered markers ${start} and ${end}")
+            }
+            lines.subList(first + 1, last).findAll { it ==~ /\| `[a-z0-9:-]+` \|.*/ }
+        }
+        def runtimes = { entry ->
+            entry.runtimeTypes.collect { it == 'jvm' ? 'JVM' : it }.join(', ')
+        }
+        def artifacts = { entry ->
+            entry.artifacts.collect { "`${it}`" }.join(', ')
+        }
+
+        def capabilityRows = sectionRows(
+                '<!-- capability-catalog:start -->', '<!-- capability-catalog:end -->')
+        def actualCapabilityIds = capabilityRows.collect {
+            (it =~ /^\| `([^`]+)` \|/)[0][1]
+        }
+        def expectedCapabilityIds = capabilities.collect { it.id }
+        if (actualCapabilityIds != expectedCapabilityIds) {
+            throw new GradleException(
+                    "Capability guide IDs/order differ from the catalog: "
+                            + "expected=${expectedCapabilityIds}, actual=${actualCapabilityIds}")
+        }
+        capabilities.eachWithIndex { entry, index ->
+            def selectable = entry.selectable ? 'yes' : 'derived'
+            def prefix = String.format(
+                    '| `%s` | `%s` | `%s` | `%s` | `%s` | %s | %s | `%s` | %s |',
+                    entry.id, entry.category, entry.availability, entry.maturity,
+                    entry.scope, selectable, runtimes(entry), entry.nativePosture,
+                    artifacts(entry))
+            if (!capabilityRows[index].startsWith(prefix)) {
+                throw new GradleException(
+                        "Capability guide row differs from ${entry.id}: ${capabilityRows[index]}")
+            }
+        }
+
+        def recipeRows = sectionRows(
+                '<!-- recipe-catalog:start -->', '<!-- recipe-catalog:end -->')
+        def actualRecipeIds = recipeRows.collect {
+            (it =~ /^\| `([^`]+)` \|/)[0][1]
+        }
+        def expectedRecipeIds = recipes.collect { it.id }
+        if (actualRecipeIds != expectedRecipeIds) {
+            throw new GradleException(
+                    "Capability guide recipe IDs/order differ from the catalog: "
+                            + "expected=${expectedRecipeIds}, actual=${actualRecipeIds}")
+        }
+        recipes.eachWithIndex { entry, index ->
+            def prefix = String.format(
+                    '| `%s` | `%s` | `%s` | %s | `%s` | %s |',
+                    entry.id, entry.availability, entry.maturity, runtimes(entry),
+                    entry.nativePosture, artifacts(entry))
+            if (!recipeRows[index].startsWith(prefix)) {
+                throw new GradleException(
+                        "Capability guide recipe row differs from ${entry.id}: ${recipeRows[index]}")
+            }
+        }
+    }
+}
+
 tasks.named('check') {
     dependsOn tasks.named('verifySmallRyeConfigRuntimeParity'),
             tasks.named('verifyReleaseCapabilityVersion'),
-            tasks.named('verifyAppChainCatalogDocumentation')
+            tasks.named('verifyAppChainCatalogDocumentation'),
+            tasks.named('verifyAppChainCapabilityGuide')
 }
 
 def appChainReleaseCheckProjects = [
