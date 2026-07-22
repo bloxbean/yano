@@ -245,6 +245,13 @@
       "provides":["runtime-console"],"requires":[],"implies":[],"conflicts":[],"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime"],"nativePosture":"bundled",
       "externalPrerequisites":[],"bootstrapRequirements":[],"nonSecretAnswers":[],"secretReferences":{},"properties":{},
       "documentation":"adr/028-unified-console-ui-module.md","acceptanceScenario":"embedded-console-packaging"
+    },
+    {
+      "id":"observability:prometheus","name":"Prometheus observability companion","category":"distribution","availability":"FIRST_PARTY_OPTIONAL","maturity":"preview","scope":"distribution","selectable":false,
+      "trustStatement":"First-party local companion with pinned Prometheus image, bounded retention, loopback query access, and explicit lifecycle; production access control remains operator-owned.","description":"Optional one-command durable metrics history for the unified console.",
+      "provides":["durable-metrics-history"],"requires":["ui:console"],"implies":[],"conflicts":[],"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime"],"nativePosture":"bundled",
+      "externalPrerequisites":["docker-compose-v2"],"bootstrapRequirements":["run-yano-observability-start"],"nonSecretAnswers":[],"secretReferences":{},"properties":{},
+      "documentation":"docs/console-ui.md","acceptanceScenario":"observability-launcher-contract"
     }
   ]
 }

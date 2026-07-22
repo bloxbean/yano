@@ -6,6 +6,8 @@
   import { apiFailureMessage, resolveApiBase, YanoApi } from '$lib/api/client';
   import type { NodeConfig, NodePeers, NodeStatus, StorageStatus } from '$lib/api/types';
   import { SessionHistory, type CompactSample } from '$lib/telemetry/history';
+  import { columnSamples, mergeSamples } from '$lib/telemetry/durable-history';
+  import { PrometheusHistoryProvider, resolveMetricsBase, type PrometheusSeries } from '$lib/telemetry/prometheus';
   import { createPoller, type Poller } from '$lib/telemetry/poller';
   import { isLocalProducer, syncProgress } from '$lib/status/view-model';
 
@@ -21,6 +23,8 @@
   let previousStatus: NodeStatus | null = null;
   let history: SessionHistory | null = null;
   let poller: Poller | null = null;
+  let durableSamples: CompactSample[] = [];
+  let historySource = 'browser session';
 
   const n = (value: unknown) => Number.isFinite(Number(value)) ? Number(value) : 0;
   const fmt = (value: unknown) => value === null || value === undefined ? '-' : n(value).toLocaleString();
@@ -63,6 +67,7 @@
         const identity = `${apiBase}|${config.protocolMagic}|node`;
         history = new SessionHistory(identity);
         samples = history.values();
+        await loadDurableHistory();
       } catch (cause) {
         error = apiFailureMessage(cause, 'Unable to load node identity');
       }
@@ -124,8 +129,32 @@
       delta[0], delta[1], delta[2],
       n(nextStorage.utxo?.lagBlocks)
     ]);
-    samples = history.values();
+    samples = mergeSamples(durableSamples, history.values());
     previousStatus = next;
+  }
+
+  async function loadDurableHistory(): Promise<void> {
+    const base = resolveMetricsBase();
+    if (!base) return;
+    try {
+      const provider = new PrometheusHistoryProvider(base);
+      const end = Date.now() / 1_000;
+      const range = { start: end - 3_600, end, step: 5 };
+      const [sync, peer, mempoolTx, mempoolKib, txRate, utxoLag] = await Promise.all([
+        provider.range('node.sync-gap', range), provider.range('node.peers', range),
+        provider.range('node.mempool-transactions', range), provider.range('node.mempool-kib', range),
+        provider.range('node.tx-rate', range), provider.range('node.utxo-lag', range)
+      ]);
+      const named = (series: PrometheusSeries[], key: string, value: string) =>
+        series.find((entry) => entry.labels[key] === value);
+      durableSamples = columnSamples([
+        sync[0], named(peer, 'type', 'inbound'), named(peer, 'type', 'outbound'), undefined,
+        mempoolTx[0], mempoolKib[0], named(txRate, 'outcome', 'outbound_forwarded'),
+        named(txRate, 'outcome', 'inbound_accepted'), named(txRate, 'outcome', 'served'), utxoLag[0]
+      ]);
+      samples = mergeSamples(durableSamples, history?.values() ?? []);
+      historySource = 'Prometheus + browser session';
+    } catch { historySource = 'browser session · durable provider unavailable'; }
   }
 
   function capabilities(peer: NonNullable<NodePeers['peers']>[number]): string {
@@ -251,7 +280,7 @@
   </MetricCard></div>
 </div>
 
-<div class="section-title">Trends · browser session · up to 1 hour</div>
+<div class="section-title">Trends · {historySource} · up to 1 hour</div>
 <div class="grid gap-4 md:grid-cols-2">
   <MetricCard title="Sync gap"><LineChart series={chartGap} label="Sync gap history" /></MetricCard>
   <MetricCard title="Peers" subtitle="inbound / outbound / hot"><LineChart series={chartPeers} colors={['#10b981', '#60a5fa', '#f59e0b']} label="Peer history" /></MetricCard>

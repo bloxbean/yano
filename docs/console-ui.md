@@ -1,9 +1,9 @@
 # Yano console
 
 The Yano distribution embeds the unified console. Start Yano and open
-`http://127.0.0.1:7070/ui/`. The node, app-chain, and plugin routes are real
-static paths, so `/ui/status/`, `/ui/app-chain/`, and `/ui/plugins/` can be
-bookmarked directly.
+`http://127.0.0.1:7070/ui/`. The node, app-chain, plugin, and observability
+routes are real static paths, so `/ui/status/`, `/ui/app-chain/`,
+`/ui/plugins/`, and `/ui/observability/` can be bookmarked directly.
 
 The connection panel accepts a Yano API base and an optional API key. Keys
 remain in memory unless the operator explicitly opts into browser-local
@@ -49,6 +49,36 @@ Never configure `origins: "*"` when API keys are used. CORS controls which
 browsers may call the node; it does not replace or weaken Yano's API-key
 checks. The fetch-based app-chain stream uses the same CORS and `X-API-Key`
 rules as normal JSON requests.
+
+## Historical metrics
+
+Without extra services, the node and app-chain charts retain up to one hour
+of bounded history in the current browser tab. This short history survives a
+refresh but is not a monitoring database.
+
+For persistent local history, the JVM and native distributions include a
+pinned Prometheus companion:
+
+```bash
+./yano.sh observability start
+./yano.sh observability status
+./yano.sh observability stop
+./yano.sh observability clean --yes
+```
+
+`start` discovers a running maintained local app-chain cluster, or defaults
+to `http://127.0.0.1:7070`. Repeat `--target <node-origin>` to replace
+discovery. It prints a preconfigured `/ui/observability/?metrics=...` link.
+The default retention is 15 days / 2 GB; `stop` preserves history and only
+the explicit `clean --yes` command removes the marked state and labeled
+volume. Docker Compose v2 is required only for this optional mode.
+
+Production operators can set an existing Prometheus-compatible origin in the
+Connection panel. The console issues only its built-in read-only queries.
+Configure exact-origin CORS and access control on that endpoint. Its optional
+bearer credential is retained only in the current tab, is bound to the exact
+metrics origin, is never stored with or substituted for the Yano API key, and
+is never sent to the node.
 
 For local frontend development, run `npm run dev` in
 `console-ui/frontend`; Vite proxies `/api` and `/q` to

@@ -12,7 +12,7 @@
     from the console embedded in this node.</p>
 </section>
 
-<div class="grid gap-4 md:grid-cols-3">
+<div class="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
   <a href={`${base}/status/`} class="card p-6 text-slate-100 no-underline transition hover:-translate-y-1 hover:border-blue-400/40">
     <div class="mb-4 text-2xl">◉</div><h2 class="text-lg font-semibold">Node status</h2>
     <p class="mt-2 text-sm text-slate-400">Sync, peers, mempool, diffusion, storage, and short-lived trends.</p>
@@ -24,5 +24,9 @@
   <a href={`${base}/plugins/`} class="card p-6 text-slate-100 no-underline transition hover:-translate-y-1 hover:border-cyan-400/40">
     <div class="mb-4 text-2xl">⬡</div><h2 class="text-lg font-semibold">Plugins</h2>
     <p class="mt-2 text-sm text-slate-400">Catalog provenance, activation state, health, and operations.</p>
+  </a>
+  <a href={`${base}/observability/`} class="card p-6 text-slate-100 no-underline transition hover:-translate-y-1 hover:border-emerald-400/40">
+    <div class="mb-4 text-2xl">⌁</div><h2 class="text-lg font-semibold">Observability</h2>
+    <p class="mt-2 text-sm text-slate-400">Durable L1, app-chain, and effects history from an explicit Prometheus endpoint.</p>
   </a>
 </div>
