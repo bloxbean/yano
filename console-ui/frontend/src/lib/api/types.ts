@@ -167,3 +167,20 @@ export interface AppChainStatus {
   effects?: Record<string, unknown>;
   stateMachineStatus?: Record<string, unknown>;
 }
+
+export interface PluginOperationsSummary {
+  catalogFingerprint?: string;
+  generation?: number;
+  capturedAtEpochMillis?: number;
+  totals?: Record<string, number>;
+  healthCounts?: Record<string, number>;
+}
+
+export interface PluginBundlePage {
+  items?: Array<Record<string, unknown>>;
+  nextAfter?: string | null;
+}
+
+export interface PluginBundleDetail {
+  bundle?: Record<string, unknown>;
+}

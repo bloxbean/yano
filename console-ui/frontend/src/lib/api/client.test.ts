@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { normalizeApiBase, resolveApiBase, saveConnection, YanoApi } from './client';
+import { apiFailureMessage, normalizeApiBase, resolveApiBase, resolvePluginApiBase, saveConnection, YanoApi } from './client';
 
 describe('Yano API client', () => {
   beforeEach(() => {
@@ -26,9 +26,25 @@ describe('Yano API client', () => {
     localStorage.clear();
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: true,
+      redirected: false,
+      url: `${location.origin}/ui/api-prefix.json`,
       json: async () => ({ apiPrefix: '/baked' })
     }));
     expect(await resolveApiBase()).toBe('/baked');
+  });
+
+  it('binds plugin discovery to its exact same-origin immutable asset', async () => {
+    history.replaceState({}, '', '/ui/plugins/?api=https://attacker.example/api');
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, redirected: false,
+      url: `${location.origin}/ui/plugins/api-prefix.json`, json: async () => ({ apiPrefix: '/custom' }) });
+    vi.stubGlobal('fetch', fetchMock);
+    expect(await resolvePluginApiBase()).toBe('/custom');
+    expect(fetchMock).toHaveBeenCalledWith('/ui/plugins/api-prefix.json', expect.objectContaining({
+      redirect: 'error', credentials: 'same-origin'
+    }));
+    fetchMock.mockResolvedValueOnce({ ok: true, redirected: false,
+      url: 'https://attacker.example/ui/plugins/api-prefix.json', json: async () => ({ apiPrefix: '/api/v1' }) });
+    await expect(resolvePluginApiBase()).rejects.toThrow('could not be verified');
   });
 
   it('sends keys only as headers and rejects redirects', async () => {
@@ -49,5 +65,9 @@ describe('Yano API client', () => {
     const headers = fetchMock.mock.calls[0][1].headers as Headers;
     expect(headers.get('Accept')).toBe('text/event-stream');
     expect(headers.get('X-API-Key')).toBe('secret');
+  });
+
+  it('turns browser network failures into an actionable standalone diagnostic', () => {
+    expect(apiFailureMessage(new TypeError('Failed to fetch'), 'fallback')).toContain('CORS origin');
   });
 });

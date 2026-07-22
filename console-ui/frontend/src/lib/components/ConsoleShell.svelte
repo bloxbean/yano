@@ -1,7 +1,7 @@
 <script lang="ts">
   import { base } from '$app/paths';
   import { onMount } from 'svelte';
-  import { currentApiKey, resolveApiBase, saveConnection, YanoApi } from '$lib/api/client';
+  import { apiFailureMessage, currentApiKey, resolveApiBase, resolvePluginApiBase, saveConnection, YanoApi } from '$lib/api/client';
   import type { NodeConfig, NodeStatus } from '$lib/api/types';
 
   let { children } = $props<{ children: import('svelte').Snippet }>();
@@ -12,16 +12,18 @@
   let persistKey = $state(false);
   let showConnection = $state(false);
   let identityError = $state('');
+  let hostBound = $state(false);
 
   onMount(async () => {
-    apiBase = await resolveApiBase();
-    key = currentApiKey();
-    persistKey = !!localStorage.getItem('yano.console.api-key.v1');
+    hostBound = location.pathname.startsWith('/ui/plugins/');
     try {
+      apiBase = hostBound ? await resolvePluginApiBase() : await resolveApiBase();
+      key = hostBound ? '' : currentApiKey();
+      persistKey = !!localStorage.getItem('yano.console.api-key.v1');
       const api = new YanoApi(apiBase, key);
       [config, status] = await Promise.all([api.config(), api.status()]);
     } catch (error) {
-      identityError = error instanceof Error ? error.message : 'Node unavailable';
+      identityError = apiFailureMessage(error, 'Node unavailable');
     }
   });
 
@@ -58,8 +60,12 @@
           {config.network ?? config.protocolMagic} · {config.version ?? 'unknown'} · #{status?.localTipBlockNumber ?? 0}
         {:else if identityError}{identityError}{:else}connecting…{/if}
       </span>
-      <button type="button" class="rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-300 hover:border-slate-500"
-              onclick={() => showConnection = !showConnection}>Connection</button>
+      {#if hostBound}
+        <span class="rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-500">host-bound API</span>
+      {:else}
+        <button type="button" class="rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-300 hover:border-slate-500"
+                onclick={() => showConnection = !showConnection}>Connection</button>
+      {/if}
     </div>
   </div>
   {#if showConnection}

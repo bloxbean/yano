@@ -3,7 +3,7 @@
   import LineChart from '$lib/components/LineChart.svelte';
   import MetricCard from '$lib/components/MetricCard.svelte';
   import MetricRow from '$lib/components/MetricRow.svelte';
-  import { resolveApiBase, YanoApi } from '$lib/api/client';
+  import { apiFailureMessage, resolveApiBase, YanoApi } from '$lib/api/client';
   import type { NodeConfig, NodePeers, NodeStatus, StorageStatus } from '$lib/api/types';
   import { SessionHistory, type CompactSample } from '$lib/telemetry/history';
   import { createPoller, type Poller } from '$lib/telemetry/poller';
@@ -64,7 +64,7 @@
         history = new SessionHistory(identity);
         samples = history.values();
       } catch (cause) {
-        error = cause instanceof Error ? cause.message : 'Unable to load node identity';
+        error = apiFailureMessage(cause, 'Unable to load node identity');
       }
       if (disposed) return;
       poller = createPoller(async (signal) => {
@@ -82,7 +82,7 @@
           error = '';
         } catch (cause) {
           if (!(cause instanceof DOMException && cause.name === 'AbortError')) {
-            error = cause instanceof Error ? cause.message : 'Status request failed';
+            error = apiFailureMessage(cause, 'Status request failed');
           }
         }
       });
@@ -169,10 +169,8 @@
       <div><small class="text-slate-500">Gap</small><div class="font-mono">{localProducer ? 'n/a' : fmt(gap)}</div></div>
     </div>
   </div>
-  <div class="mt-4 h-2 overflow-hidden rounded-full bg-slate-800">
-    <div class="h-full rounded-full bg-gradient-to-r from-cyan-400 to-blue-500 transition-all"
-         style={`width:${syncPercent}%`}></div>
-  </div>
+  <progress class="mt-4 h-2 w-full overflow-hidden rounded-full accent-blue-500" max="100" value={syncPercent}
+            aria-label="Sync progress"></progress>
   <div class="mt-3"><span class="badge {localProducer || status?.initialSyncComplete ? 'badge-ok' : 'badge-warn'}">
     {localProducer ? 'PRODUCING' : status?.initialSyncComplete ? 'IN SYNC' : 'SYNCING'}
   </span></div>
