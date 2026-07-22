@@ -16,9 +16,9 @@ class RoleWorkflowCliTest {
         Path seed = directory.resolve("actor.seed");
         String encodedSeed = "01".repeat(32);
         Files.writeString(seed, encodedSeed + "\n");
-        String publicKey = RoleWorkflowCli.run(new String[]{
+        String publicKey = RoleWorkflowCli.execute(new String[]{
                 "public-key", "--seed-file", seed.toString()});
-        String command = RoleWorkflowCli.run(new String[]{
+        String command = RoleWorkflowCli.execute(new String[]{
                 "sign", "--action", "propose", "--chain", "demo-chain",
                 "--proposal", "evidence-1", "--policy", "evidence-release",
                 "--policy-revision", "1", "--payload-domain", "evidence.release.v1",
@@ -36,10 +36,10 @@ class RoleWorkflowCliTest {
     void rejectsInlineSecretsAndUnknownOptions(@TempDir Path directory) throws Exception {
         Path seed = directory.resolve("actor.seed");
         Files.writeString(seed, "01".repeat(32));
-        assertThatThrownBy(() -> RoleWorkflowCli.run(new String[]{
+        assertThatThrownBy(() -> RoleWorkflowCli.execute(new String[]{
                 "public-key", "--seed", "01".repeat(32)}))
                 .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> RoleWorkflowCli.run(new String[]{
+        assertThatThrownBy(() -> RoleWorkflowCli.execute(new String[]{
                 "public-key", "--seed-file", seed.toString(), "--seed-file", seed.toString()}))
                 .isInstanceOf(IllegalArgumentException.class);
     }

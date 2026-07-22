@@ -40,7 +40,8 @@ class AppChainProjectTest {
 
         assertThat(catalog.recipes()).extracting(AppChainProjectModel.Recipe::id)
                 .containsExactly("audit-log", "owned-registry", "evidence-publication",
-                        "approval-workflow", "role-evidence", "custom-plugin");
+                        "approval-workflow", "role-approval", "role-evidence",
+                        "custom-plugin");
         assertThat(resolution.selectedCapabilities()).contains(
                 "state:ordered-log", "effects:publication", "sequencer:rotating", "l1:slot-feed");
         assertThat(resolution.impliedCapabilities()).containsExactly("l1:slot-feed");
@@ -274,7 +275,7 @@ class AppChainProjectTest {
                 catalog, new AppChainProjectResolver(properties, catalog));
         int sequence = 0;
         for (String recipe : List.of("audit-log", "owned-registry", "evidence-publication",
-                "approval-workflow", "role-evidence", "custom-plugin")) {
+                "approval-workflow", "role-approval", "role-evidence", "custom-plugin")) {
             List<String> runtimes = "custom-plugin".equals(recipe)
                     ? List.of("jvm") : List.of("jvm", "native");
             for (String runtime : runtimes) {
@@ -293,6 +294,14 @@ class AppChainProjectTest {
                     assertThat(lock.deployment()).isEqualTo(deployment);
                     assertThat(lock.artifacts()).isNotEmpty();
                     assertThat(project.resolve("scripts/start")).isExecutable();
+                    if ("role-approval".equals(recipe) || "role-evidence".equals(recipe)) {
+                        assertThat(project.resolve("bootstrap/role-approvals-plan.yaml"))
+                                .isRegularFile();
+                        assertThat(Files.readString(project.resolve("bootstrap/README.md")))
+                                .contains("./yano.sh appchain role public-key",
+                                        "query the exact record", "does not execute the payload")
+                                .doesNotContain("privateKey", "seed:");
+                    }
                     assertShellSyntax(project.resolve("scripts/start"));
                     assertShellSyntax(project.resolve("scripts/stop"));
                     assertShellSyntax(project.resolve("scripts/status"));

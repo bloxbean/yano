@@ -87,6 +87,8 @@ def buildTimePluginBundles = [
                 [projectPath: ':appchain-stdlib', includeProvided: false],
         'com.bloxbean.cardano.yano.appchain.evidence-registry':
                 [projectPath: ':appchain-evidence-registry', includeProvided: true],
+        'com.bloxbean.cardano.yano.appchain.role-workflow':
+                [projectPath: ':appchain-role-workflow', includeProvided: false],
         'com.bloxbean.cardano.yano.appchain.evidence-profile':
                 [projectPath: ':appchain-evidence-profile', includeProvided: false]
 ]
@@ -466,6 +468,8 @@ tasks.register('verifyAppChainReleaseCapabilityIndex') {
                 'appchain-stdlib': 'com.bloxbean.cardano.yano.appchain.stdlib',
                 'appchain-evidence-registry':
                         'com.bloxbean.cardano.yano.appchain.evidence-registry',
+                'appchain-role-workflow':
+                        'com.bloxbean.cardano.yano.appchain.role-workflow',
                 'appchain-evidence-profile':
                         'com.bloxbean.cardano.yano.appchain.evidence-profile'
         ]
@@ -473,7 +477,7 @@ tasks.register('verifyAppChainReleaseCapabilityIndex') {
             releaseIndex.artifacts.contains(artifact) && !packagedBundleIds.contains(bundle)
         }
         def expectedArtifacts = artifactBundles.keySet() + [
-                'appchain-composite', 'appchain-role-workflow', 'yano-runtime'
+                'appchain-composite', 'yano-runtime'
         ]
         if (releaseIndex.artifacts.toSet() != expectedArtifacts.toSet() || !missing.isEmpty()) {
             throw new GradleException(

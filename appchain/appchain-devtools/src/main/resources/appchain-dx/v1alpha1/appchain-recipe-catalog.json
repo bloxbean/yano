@@ -52,6 +52,17 @@
       "deploymentTargets": ["host", "docker-compose"]
     },
     {
+      "id": "role-approval",
+      "version": "1",
+      "maturity": "preview",
+      "trustStatement": "First-party Yano recipe using the packaged generic role-approval product.",
+      "description": "Governed actors and policies approve arbitrary application payload hashes.",
+      "capabilities": ["state:role-approvals", "sequencer:fixed"],
+      "recommended": {"blockIntervalMs": "1000"},
+      "runtimeTypes": ["jvm", "native"],
+      "deploymentTargets": ["host", "docker-compose"]
+    },
+    {
       "id": "role-evidence",
       "version": "1",
       "maturity": "preview",

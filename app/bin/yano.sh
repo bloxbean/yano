@@ -85,6 +85,7 @@ Validate and operate:
   drift [project] --peer <url>    Compare redacted live node identities
   gitops [project] [options]      Export Helm or Kustomize deployment files
   metadata verify ...             Verify custom-plugin metadata signatures
+  role ...                        Encode/sign role commands offline (seed files only)
 
 Run a local cluster:
   cluster start [members]         Start or resume a same-machine cluster

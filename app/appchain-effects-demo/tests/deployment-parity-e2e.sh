@@ -658,19 +658,20 @@ assert_plugin_inventory() {
           "com.bloxbean.cardano.yano.appchain.ipfs",
           "com.bloxbean.cardano.yano.appchain.kafka",
           "com.bloxbean.cardano.yano.appchain.objectstore.s3",
+          "com.bloxbean.cardano.yano.appchain.role-workflow",
           "com.bloxbean.cardano.yano.appchain.stdlib"]
         and (.items | map(select(.selected)) | all(
           .selectionStatus == "SELECTED"
           and (.lifecycle == "VALIDATED" or .lifecycle == "ACTIVE")
           and (.health == "UNKNOWN" or .health == "UP")
           and .failure.code == "NONE" and .metricsStale == false))
-        and ([.items[] | select(.selected) | .contributionCount] | add) == 13
+        and ([.items[] | select(.selected) | .contributionCount] | add) == 15
         and .nextAfter == null' "$bundles" "$key_file" \
       || fail "$phase node $node plugin inventory differs from the demo catalog"
     fingerprint="$(jq -r '.catalogFingerprint' "$summary")"
     jq -e --arg fingerprint "$fingerprint" '
       .catalogFingerprint == $fingerprint and .pluginApiMajor == 1
-      and .pluginApiLevel >= 1 and .totals.selectedBundles == 7
+      and .pluginApiLevel >= 1 and .totals.selectedBundles == 8
       and .totals.failedBundles == 0 and .totals.degradedBundles == 0
       and .totals.staleSources == 0' "$summary" >/dev/null \
       || fail "$phase node $node plugin summary is unhealthy"

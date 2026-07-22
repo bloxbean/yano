@@ -11,6 +11,7 @@ import com.bloxbean.cardano.yano.appchain.config.ResolvedValidationResult;
 import com.bloxbean.cardano.yano.appchain.config.TemplateContract;
 import com.bloxbean.cardano.yano.appchain.config.TemplateValidationResult;
 import com.bloxbean.cardano.yano.appchain.config.ValidationDiagnostic;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.RoleWorkflowCli;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
 
@@ -49,6 +50,7 @@ public final class AppChainDevtoolsCli {
                or: ./yano.sh appchain gitops [project-directory] --target helm|kustomize --output <empty-dir>
                or: ./yano.sh appchain metadata verify <plugin.jar> --trust-key <key-id=64-hex-public-key>
                or: ./yano.sh appchain migrate [project-directory] [--dry-run]
+               or: ./yano.sh appchain role public-key|key-proof|sign|govern-* [options]
             Options:
               --config <yml|yaml>                        repeatable, later source wins
               --format text|json                         validate/explain
@@ -87,6 +89,18 @@ public final class AppChainDevtoolsCli {
         Objects.requireNonNull(args, "args");
         Objects.requireNonNull(out, "out");
         Objects.requireNonNull(err, "err");
+        if (roleCommand(args)) {
+            try {
+                out.println(RoleWorkflowCli.execute(roleArguments(args)));
+                out.flush();
+                return EXIT_OK;
+            } catch (RuntimeException failure) {
+                err.println("Invalid offline role command. Use './yano.sh appchain help' "
+                        + "and the generated bootstrap plan for required options.");
+                err.flush();
+                return EXIT_USAGE;
+            }
+        }
         if (projectCommand(args)) {
             try {
                 int exit = new AppChainProjectCli(out).run(args);
@@ -588,6 +602,16 @@ public final class AppChainDevtoolsCli {
                     "gitops", "metadata", "migrate" -> true;
             default -> false;
         };
+    }
+
+    private static boolean roleCommand(String[] args) {
+        int cursor = args.length > 0 && "appchain".equals(args[0]) ? 1 : 0;
+        return cursor < args.length && "role".equals(args[cursor]);
+    }
+
+    private static String[] roleArguments(String[] args) {
+        int cursor = args.length > 0 && "appchain".equals(args[0]) ? 2 : 1;
+        return java.util.Arrays.copyOfRange(args, cursor, args.length);
     }
 
     private static String value(String[] args, int index, String option) {

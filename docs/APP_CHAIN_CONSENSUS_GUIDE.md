@@ -395,7 +395,8 @@ the edge (undecodable → reject at admission / skip at apply);
 | `approvals` | stdlib | k-of-n approval workflow with deadlines |
 | `balances` | stdlib | minimal token/points ledger (mint + transfer) |
 | `doc-trail` | stdlib | per-entity chained document/audit trail |
-| `role-evidence` | role-workflow plugin | committed actor registry + role policy + evidence composite |
+| `role-approvals` | role-workflow plugin | governed actors + generic role-gated payload hashes |
+| `role-evidence` | evidence-profile plugin | actor registry + role policy + evidence composite |
 
 Stdlib machines register via `ServiceLoader`
 (`StdlibStateMachineProviders`); select with `state-machine: <id>` —
@@ -403,7 +404,9 @@ per-machine settings live under `machines.<id>.*`. (The ZK extension module
 ships additional machines — `zk-gate`, credential registry, ZK membership —
 behind the same SPI; see user guide §17.)
 
-`role-evidence` is a complete manifested composite provider rather than an
+`role-approvals` is the application-neutral provider: it commits the actor
+registry and role-approval workflow, exposes proof-oriented queries, and emits
+no effects. `role-evidence` is a complete manifested composite provider rather than an
 independently reorderable stdlib component. Its `evidence-role-v1` profile
 commits the actor registry, role-approval workflow, evidence/doc-trail
 components, routes, quotas, and governance identity. Wire, signing, proof, and

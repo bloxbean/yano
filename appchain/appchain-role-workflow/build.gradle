@@ -20,7 +20,7 @@ tasks.named('compileJava') {
 
 tasks.register('verifyGenericRoleWorkflowBoundary') {
     group = 'verification'
-    description = 'Verifies the generic role artifact has no evidence product or plugin contribution'
+    description = 'Verifies the generic role product has no evidence-owned contribution'
     dependsOn tasks.named('jar')
     inputs.file(tasks.named('jar').flatMap { it.archiveFile })
 
@@ -30,12 +30,27 @@ tasks.register('verifyGenericRoleWorkflowBoundary') {
             def entries = jar.entries().collect { entry -> entry.name }
             if (entries.any { entry ->
                 !entry.endsWith('/')
-                        && (entry.startsWith('com/bloxbean/cardano/yano/appchain/evidence/')
-                        || entry.startsWith('META-INF/services/')
-                        || entry.startsWith('META-INF/yano/plugins/'))
+                        && entry.startsWith('com/bloxbean/cardano/yano/appchain/evidence/')
             }) {
                 throw new GradleException(
-                        'Generic role-workflow artifact contains evidence or plugin-owned entries')
+                        'Generic role-workflow artifact contains evidence-owned entries')
+            }
+            def servicePrefix = 'META-INF/services/'
+            def allowedServices = [
+                    servicePrefix + 'com.bloxbean.cardano.yano.api.appchain.AppStateMachineProvider',
+                    servicePrefix + 'com.bloxbean.cardano.yano.api.plugin.domain.DomainApiProvider'
+            ].toSet()
+            def services = entries.findAll { entry ->
+                !entry.endsWith('/') && entry.startsWith(servicePrefix)
+            }.toSet()
+            def manifests = entries.findAll { entry ->
+                !entry.endsWith('/') && entry.startsWith('META-INF/yano/plugins/')
+            }
+            if (services != allowedServices || manifests != [
+                    'META-INF/yano/plugins/'
+                            + 'com.bloxbean.cardano.yano.appchain.role-workflow.json']) {
+                throw new GradleException(
+                        'Generic role-workflow plugin metadata is incomplete or unexpected')
             }
         }
         def forbidden = configurations.compileClasspath.incoming.resolutionResult

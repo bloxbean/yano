@@ -98,7 +98,11 @@ class AppChainFinalDistributionAcceptanceTest {
                 }
             }
         }
-        assertThat(accepted).isEqualTo(22);
+        int advertised = catalog.recipes().stream()
+                .mapToInt(recipe -> recipe.runtimeTypes().size()
+                        * recipe.deploymentTargets().size())
+                .sum();
+        assertThat(accepted).isEqualTo(advertised);
     }
 
     private void assertStudioBlueprintRoundTrips(Path release, Path launcher) throws Exception {
