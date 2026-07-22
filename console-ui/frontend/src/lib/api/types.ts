@@ -184,3 +184,21 @@ export interface PluginBundlePage {
 export interface PluginBundleDetail {
   bundle?: Record<string, unknown>;
 }
+
+export interface EffectPage {
+  chainId?: string;
+  effects?: Array<Record<string, unknown>>;
+}
+
+export interface EffectStats {
+  chainId?: string;
+  stats?: Record<string, unknown>;
+}
+
+export interface CommittedQueryResult {
+  chainId?: string;
+  stateMachineId?: string;
+  committedHeight?: number;
+  stateRoot?: string;
+  payloadHex?: string;
+}

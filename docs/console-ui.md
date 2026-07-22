@@ -80,6 +80,30 @@ bearer credential is retained only in the current tab, is bound to the exact
 metrics origin, is never stored with or substituted for the Yano API key, and
 is never sent to the node.
 
+## Capability panels
+
+The App chains page discovers optional capabilities from the selected chain's
+status and, when authorized, confirms first-party bundles against the plugin
+catalog. It does not assume that every deployment has effects or role-aware
+approvals.
+
+- An effects-enabled chain shows emitted effects, statistics, composed proofs,
+  and confirmed requeue/cancel actions. Mutations require the appropriate
+  operator API key.
+- A `role-approvals` or `role-evidence` chain queries the proposal through the
+  root-fixed committed-query surface and adds the decoded domain projection
+  when available. The committed result remains visible if that convenience
+  projection is unavailable.
+- Every running app chain exposes the portable evidence-bundle and MPF-proof
+  viewers. The browser can SHA-256 the exact finalized message payload or
+  included proof value and compare it with an optional expected digest.
+
+The browser digest is an additional byte-integrity check, not a replacement
+for full finality, anchor, or MPF verification. Use the version-matched
+`appchain-client` and an independently pinned trust context for an audit
+decision. Custom component-specific panels remain data-only future catalog
+work; plugins cannot inject executable console code.
+
 For local frontend development, run `npm run dev` in
 `console-ui/frontend`; Vite proxies `/api` and `/q` to
 `http://127.0.0.1:7070`.

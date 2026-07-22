@@ -2,7 +2,16 @@
 
 ## Status
 
-Proposed — version 4 (implementation-ready for UI-M1)
+Accepted and implemented — version 5 (UI-M1 through UI-M5 complete)
+
+Version 5 records the milestone implementation and final capability-panel
+boundary. The unified Svelte console now replaces all three legacy pages,
+ships embedded and standalone, retains bounded browser history, supports an
+explicit fixed-query Prometheus provider and optional Compose companion, and
+renders effects, stock role-approval, evidence, and proof panels only when
+the selected chain reports the corresponding capability. Browser SHA-256
+checks cover exact payload/proof-value bytes; full MPF, finality, and anchor
+verification remains in the version-matched client libraries.
 
 Version 4 incorporates the 2026-07-22 historical-data decision. Plain Yano
 uses bounded browser history with no server dependency; Yano also ships an
@@ -542,7 +551,7 @@ executable UI code in this ADR's scope.
 
 ## 6. Delivery plan
 
-### UI-M1 — Scaffold and status parity
+### UI-M1 — Scaffold and status parity — Complete
 Module, toolchain, `@theme` tokens, typed API client (base-url + key
 handling), connection panel, `/ui/` landing page with the node
 identity/network badge in the shared shell; additive `network`/`version`
@@ -551,24 +560,24 @@ bounded session chart history, and bounded `NodeMetrics`; port `/ui/status/`
 to parity; delete legacy file; metric descriptor/parity tests; CI wiring
 (`npm ci`, svelte-check, vitest, caching).
 
-### UI-M2 — App-chain console parity
+### UI-M2 — App-chain console parity — Complete
 Port `/ui/app-chain/` (cards, charts, SSE stream via fetch-streaming,
 recent blocks, message dialog, multi-chain selector via `?chain=`); extend the
 bounded browser-history provider to chain/effect series; delete legacy file.
 
-### UI-M3 — Plugins parity and standalone mode
+### UI-M3 — Plugins parity and standalone mode — Complete
 Port `/ui/plugins/` preserving CSP + fail-closed prefix; standalone zip
 artifact; opt-in CORS config + documented external-hosting guide; verify
 JVM, native, Docker, and external hosting.
 
-### UI-M4 — Durable observability (optional)
+### UI-M4 — Durable observability (optional) — Complete
 Add the fixed-query `PrometheusHistoryProvider`, `/ui/observability/` route,
 provider health/fallback indicators, `?metrics=` handoff, connection-panel
 configuration, and the `./yano.sh observability` Compose lifecycle. Verify the
 same provider against the maintained bundle and a separately managed
 Prometheus-compatible query endpoint.
 
-### UI-M5 — Generic capability panels (post-parity, tracks ADR-022)
+### UI-M5 — Generic capability panels (post-parity, tracks ADR-022) — Complete
 Effects panel; committed-query/proposal panel (after ADR-022 M2);
 evidence-bundle + MPF proof viewer with client-side hash re-verification;
 capability-conditional rendering.
@@ -635,7 +644,16 @@ capability-conditional rendering.
 
 ## 8. Open questions
 
-No blocking design questions remain for UI-M1 through UI-M4.
+No blocking design questions remain for UI-M1 through UI-M5.
+
+Resolved in version 5: the first generic runtime panels discover effects and
+stock role workflows from the selected chain's status, and use the plugin
+operations catalog as an additional confirmation when the caller can read it.
+Core evidence-bundle and state-proof viewers are available for every running
+app chain. The browser computes SHA-256 over exact returned payload/value
+bytes and labels this as a byte-integrity check, not full proof verification.
+Future custom component panels wait for ADR-022's bounded data-only UI-hint
+descriptor revision; no executable plugin UI is loaded.
 
 Resolved in the version 3 readiness review: build the zip task from UI-M1 so
 the artifact is continuously testable, but publish the standalone zip as a

@@ -67,6 +67,22 @@ describe('Yano API client', () => {
     expect(headers.get('X-API-Key')).toBe('secret');
   });
 
+  it('keeps capability queries bounded to encoded routes and privileged actions authenticated', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) });
+    vi.stubGlobal('fetch', fetchMock);
+    const api = new YanoApi('/api/v1', 'operator-key');
+    await api.chainQuery('orders/east', 'components/role-approvals/proposal', '6162');
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      '/api/v1/app-chain/chains/orders%2Feast/query/components/role-approvals/proposal');
+    expect(fetchMock.mock.calls[0][1]).toEqual(expect.objectContaining({
+      method: 'POST', body: '{"paramsHex":"6162"}'
+    }));
+    await api.cancelEffect('orders/east', 7, 2, 'operator review');
+    expect(fetchMock.mock.calls[1][0]).toBe(
+      '/api/v1/app-chain/chains/orders%2Feast/effects/7/2/cancel?reason=operator%20review');
+    expect((fetchMock.mock.calls[1][1].headers as Headers).get('X-API-Key')).toBe('operator-key');
+  });
+
   it('turns browser network failures into an actionable standalone diagnostic', () => {
     expect(apiFailureMessage(new TypeError('Failed to fetch'), 'fallback')).toContain('CORS origin');
   });
