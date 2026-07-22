@@ -1,0 +1,62 @@
+plugins {
+    id 'java-library'
+    id 'com.github.node-gradle.node' version '7.1.0'
+}
+
+node {
+    version = '22.12.0'
+    download = true
+    workDir = file("${project.projectDir}/.gradle/nodejs")
+    npmWorkDir = file("${project.projectDir}/.gradle/npm")
+    nodeProjectDir = file("${project.projectDir}/frontend")
+}
+
+def generatedUi = layout.buildDirectory.dir(
+        'generated/console-ui/META-INF/resources/ui')
+sourceSets.main.resources.srcDir(
+        layout.buildDirectory.dir('generated/console-ui'))
+
+tasks.register('npmCi', NpmTask) {
+    args = ['ci']
+    inputs.files('frontend/package.json', 'frontend/package-lock.json')
+    outputs.dir('frontend/node_modules')
+}
+
+tasks.register('buildFrontend', NpmTask) {
+    dependsOn tasks.named('npmCi')
+    args = ['run', 'build']
+    inputs.dir('frontend/src')
+    inputs.files('frontend/package.json', 'frontend/package-lock.json',
+            'frontend/svelte.config.js', 'frontend/vite.config.ts',
+            'frontend/tsconfig.json')
+    outputs.dir(generatedUi)
+}
+
+tasks.register('checkFrontend', NpmTask) {
+    dependsOn tasks.named('npmCi')
+    args = ['run', 'check']
+}
+
+tasks.register('testFrontend', NpmTask) {
+    dependsOn tasks.named('npmCi')
+    args = ['run', 'test']
+}
+
+tasks.register('consoleZip', Zip) {
+    dependsOn tasks.named('buildFrontend')
+    archiveFileName = "yano-console-ui-${project.version}.zip"
+    destinationDirectory = layout.buildDirectory.dir('distributions')
+    from(generatedUi)
+}
+
+tasks.named('processResources') {
+    dependsOn tasks.named('buildFrontend')
+}
+
+tasks.named('check') {
+    dependsOn tasks.named('checkFrontend'), tasks.named('testFrontend')
+}
+
+tasks.named('assemble') {
+    dependsOn tasks.named('consoleZip')
+}

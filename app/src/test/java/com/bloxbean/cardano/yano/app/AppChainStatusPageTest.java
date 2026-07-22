@@ -94,10 +94,10 @@ class AppChainStatusPageTest {
                 .when().get("/ui/status/index.html")
                 .then()
                 .statusCode(200)
+                .body(Matchers.containsString("Yano · Node Status"))
                 .body(Matchers.containsString("href=\"../app-chain/\""))
-                // local-producer hero branch (devnet BP shows production, not sync %)
-                .body(Matchers.containsString("Local Producer"))
-                .body(Matchers.containsString("PRODUCING"));
+                .body(Matchers.containsString("Transaction diffusion"))
+                .body(Matchers.containsString("browser session · up to 1 hour"));
     }
 
     private static String between(String source, String start, String end) {

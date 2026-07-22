@@ -138,6 +138,7 @@ dependencies {
     implementation 'io.quarkus:quarkus-config-yaml'
     implementation 'io.quarkus:quarkus-smallrye-health'
     implementation 'io.quarkus:quarkus-smallrye-openapi'
+    implementation project(':console-ui')
 
     // Yano module dependencies
     implementation(project(':core-api')) {
@@ -207,6 +208,8 @@ dependencies {
 
     testImplementation 'io.quarkus:quarkus-junit'
     testImplementation 'io.rest-assured:rest-assured'
+    testImplementation libs.assertj.core
+    testImplementation libs.mockito.inline
 
     testImplementation project(':testkit')
     testImplementation libs.cardano.client.lib
@@ -254,6 +257,7 @@ def generatedApiPrefixDir = layout.buildDirectory.dir('generated/api-prefix-reso
 def bakedApiPrefixMarkerPath = 'META-INF/yano-api-prefix-v1'
 def bakedApiPrefixConfigPath = 'application.properties'
 def bakedApiPrefixDashboardPath = 'META-INF/resources/ui/plugins/api-prefix.json'
+def bakedApiPrefixConsolePath = 'META-INF/resources/ui/api-prefix.json'
 def maxBakedApiPrefixLength = 256
 def forbiddenApiPrefixBuildInputs = [
         providers.systemProperty('yano.api-prefix').isPresent(),
@@ -297,6 +301,7 @@ tasks.register('generateBakedApiPrefixContract') {
     outputs.file(generatedApiPrefixDir.map { it.file(bakedApiPrefixMarkerPath) })
     outputs.file(generatedApiPrefixDir.map { it.file(bakedApiPrefixConfigPath) })
     outputs.file(generatedApiPrefixDir.map { it.file(bakedApiPrefixDashboardPath) })
+    outputs.file(generatedApiPrefixDir.map { it.file(bakedApiPrefixConsolePath) })
 
     doLast {
         String prefix = bakedApiPrefix.get()
@@ -317,6 +322,11 @@ tasks.register('generateBakedApiPrefixContract') {
         def dashboard = outputRoot.file(bakedApiPrefixDashboardPath).asFile
         dashboard.parentFile.mkdirs()
         dashboard.setText(groovy.json.JsonOutput.toJson([apiPrefix: prefix])
+                + System.lineSeparator(), 'UTF-8')
+
+        def console = outputRoot.file(bakedApiPrefixConsolePath).asFile
+        console.parentFile.mkdirs()
+        console.setText(groovy.json.JsonOutput.toJson([apiPrefix: prefix])
                 + System.lineSeparator(), 'UTF-8')
     }
 }
