@@ -3,7 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 import {fileURLToPath} from 'node:url';
-import {blueprintYaml,decodeDeepLink,encodeDeepLink,normalizeIntent,resolvePresentation}
+import {blueprintYaml,compatibleCapabilityOptions,decodeDeepLink,encodeDeepLink,
+  normalizeIntent,resolvePresentation}
   from '../main/web/studio-core.mjs';
 
 const repo=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../../../..');
@@ -17,15 +18,16 @@ test('every release recipe produces safe release-pinned intent',()=>{
     const raw={recipe:recipe.id,network:'devnet',members:3,finality:'two-thirds',
       sequencing:'fixed',runtime:recipe.runtimeTypes[0],deployment:recipe.deploymentTargets[0],
       name:`test-${recipe.id}`,chainId:`test-${recipe.id}`,
-      stateMachine:recipe.id==='custom-plugin'?'com.example.test-machine':''};
-    const result=normalizeIntent(raw,recipes,release);
+      membership:'static',answers:recipe.id==='custom-plugin'
+        ? {stateMachine:'com.example.test-machine'}:{}};
+    const result=normalizeIntent(raw,recipes,release,capabilities);
     assert.deepEqual(result.errors,[],recipe.id);
     const yaml=blueprintYaml(result.intent,release.yanoVersion);
     assert.match(yaml,/apiVersion: yano\.bloxbean\.com\/v1alpha1/);
     assert.match(yaml,/kind: AppChainProject/);
     assert.match(yaml,new RegExp(`recipe: "${recipe.id}"`));
     assert.doesNotMatch(yaml,/private|secret|signing-key|01010101/i);
-    const presentation=resolvePresentation(recipe,capabilities);
+    const presentation=resolvePresentation(recipe,capabilities,[],result.intent);
     assert.ok(presentation.capabilities.length>0);
     assert.ok(presentation.artifacts.length>0);
   }
@@ -33,15 +35,18 @@ test('every release recipe produces safe release-pinned intent',()=>{
 
 test('deep links round trip only explicitly safe non-secret fields',()=>{
   const intent={recipe:'audit-log',network:'devnet',members:3,finality:'all',
-    sequencing:'fixed',runtime:'jvm',deployment:'host',name:'safe-chain',
+    sequencing:'fixed',membership:'governed',runtime:'jvm',deployment:'host',name:'safe-chain',
+    capabilities:['anchor:metadata'],
     chainId:'safe-chain',signingKey:'must-not-appear',password:'must-not-appear'};
   const encoded=encodeDeepLink(intent);
   assert.doesNotMatch(encoded,/signing|password|must-not-appear/i);
   assert.equal(decodeDeepLink(encoded).chainId,'safe-chain');
+  assert.equal(decodeDeepLink(encoded).membership,'governed');
+  assert.deepEqual(decodeDeepLink(encoded).capabilities,['anchor:metadata']);
 });
 
 test('zero members remains invalid instead of being coerced to the default',()=>{
-  const result=normalizeIntent({members:0},recipes,release);
+  const result=normalizeIntent({members:0},recipes,release,capabilities);
   assert.equal(result.intent.members,0);
   assert.ok(result.errors.includes('Members must be from 1 to 32.'));
 });
@@ -53,9 +58,24 @@ test('every tutorial deep link is accepted by the pinned release',()=>{
     const match=text.match(/appchain-studio\/src\/main\/web\/index\.html(#.*?)\)/);
     assert.ok(match,`${name} has an initializer link`);
     const decoded=decodeDeepLink(match[1]);
-    assert.deepEqual(normalizeIntent(decoded,recipes,release).errors,[],name);
+    assert.deepEqual(normalizeIntent(decoded,recipes,release,capabilities).errors,[],name);
     assert.doesNotMatch(match[1],/secret|private|signing|password|token/i);
   }
+});
+
+test('compatible selection exposes optional bundles and rejects derived distribution entries',()=>{
+  const intent=normalizeIntent({recipe:'approval-workflow',network:'devnet',members:3,
+    finality:'two-thirds',sequencing:'fixed',membership:'static',runtime:'jvm',
+    deployment:'host',name:'approval-test',chainId:'approval-test'},
+  recipes,release,capabilities).intent;
+  const options=compatibleCapabilityOptions(
+    recipes.find(recipe=>recipe.id==='approval-workflow'),capabilities,intent);
+  assert.equal(options.find(option=>option.capability.id==='executor:kafka').compatible,true);
+  assert.equal(options.some(option=>option.capability.id==='ui:console'),false);
+  const selected=normalizeIntent({...intent,capabilities:['executor:kafka']},
+    recipes,release,capabilities);
+  assert.deepEqual(selected.errors,[]);
+  assert.ok(selected.plan.artifacts.includes('appchain-kafka'));
 });
 
 test('static shell has a strict policy and no secret inputs or telemetry',()=>{

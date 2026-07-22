@@ -456,32 +456,32 @@ tasks.register('verifyAppChainReleaseCapabilityIndex') {
     def releaseIndexFile = project(':appchain-devtools').layout.buildDirectory.file(
             'generated/appchain-metadata/appchain-dx/v1alpha1/'
                     + 'appchain-release-capability-index.json')
+    def capabilityCatalogFile = project(':appchain-devtools').layout.buildDirectory.file(
+            'generated/appchain-metadata/appchain-dx/v1alpha1/'
+                    + 'appchain-capability-catalog.json')
     def pluginIndexFile = generatedPluginCatalogDir.map {
         it.file('META-INF/yano-plugin-index-v1.json')
     }
-    inputs.files(releaseIndexFile, pluginIndexFile)
+    inputs.files(releaseIndexFile, capabilityCatalogFile, pluginIndexFile)
     doLast {
         def releaseIndex = new groovy.json.JsonSlurper().parse(releaseIndexFile.get().asFile)
+        def capabilityCatalog = new groovy.json.JsonSlurper().parse(
+                capabilityCatalogFile.get().asFile)
         def pluginIndex = new groovy.json.JsonSlurper().parse(pluginIndexFile.get().asFile)
         def packagedBundleIds = pluginIndex.bundles.collect { it.manifest?.id }.toSet()
-        def artifactBundles = [
-                'appchain-stdlib': 'com.bloxbean.cardano.yano.appchain.stdlib',
-                'appchain-evidence-registry':
-                        'com.bloxbean.cardano.yano.appchain.evidence-registry',
-                'appchain-role-workflow':
-                        'com.bloxbean.cardano.yano.appchain.role-workflow',
-                'appchain-evidence-profile':
-                        'com.bloxbean.cardano.yano.appchain.evidence-profile'
-        ]
-        def missing = artifactBundles.findAll { artifact, bundle ->
-            releaseIndex.artifacts.contains(artifact) && !packagedBundleIds.contains(bundle)
+        def bundledArtifacts = capabilityCatalog.artifacts.findAll {
+            it.availability == 'BUNDLED'
         }
-        def expectedArtifacts = artifactBundles.keySet() + [
-                'appchain-composite', 'yano-runtime'
-        ]
-        if (releaseIndex.artifacts.toSet() != expectedArtifacts.toSet() || !missing.isEmpty()) {
+        def expectedArtifacts = bundledArtifacts.collect { it.id }.toSet()
+        def packagedCatalogBundles = bundledArtifacts.findAll {
+            !it.bundleId.startsWith('builtin:') && !it.bundleId.startsWith('library:')
+        }.collect { it.bundleId }.toSet()
+        def missingBundles = packagedCatalogBundles - packagedBundleIds
+        if (releaseIndex.artifacts.toSet() != expectedArtifacts
+                || !missingBundles.isEmpty()) {
             throw new GradleException(
-                    "Release capability index does not match packaged artifacts: ${missing}")
+                    'Release capability index does not match the catalog or packaged bundles: '
+                            + "missing=${missingBundles}")
         }
     }
 }

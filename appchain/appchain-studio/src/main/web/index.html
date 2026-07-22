@@ -7,6 +7,7 @@
   <meta name="description" content="Choose Yano app-chain capabilities and export a release-pinned blueprint.">
   <title>Yano App-Chain Studio</title>
   <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="capabilities.css">
 </head>
 <body>
   <header class="masthead">
@@ -46,18 +47,22 @@
           <label>Sequencing<select name="sequencing">
             <option value="fixed">Fixed proposer</option><option value="rotating">Rotating proposer</option>
           </select></label>
+          <label>Membership<select name="membership">
+            <option value="static">Static</option><option value="governed">Governed</option>
+          </select></label>
         </div>
 
-        <div class="step"><span>03</span><div><h2>Runtime and delivery</h2><p>Choose how operators receive it.</p></div></div>
+        <div class="step"><span>03</span><div><h2>Add capabilities</h2><p>Only compatible, implemented release capabilities are selectable.</p></div></div>
+        <div id="capability-chooser" class="capability-chooser"></div>
+        <div id="answer-fields" class="answer-fields" hidden></div>
+
+        <div class="step"><span>04</span><div><h2>Runtime and delivery</h2><p>Choose how operators receive it.</p></div></div>
         <div class="field-grid">
           <label>Runtime<select name="runtime"><option value="jvm">JVM</option><option value="native">Native</option></select></label>
           <label>Deployment<select name="deployment"><option value="host">Host processes</option><option value="docker-compose">Docker Compose</option></select></label>
           <label>Project name<input name="name" value="my-appchain" pattern="[a-z][a-z0-9-]{1,62}"></label>
           <label>Chain ID<input name="chainId" value="my-appchain" pattern="[a-z][a-z0-9-]{1,62}"></label>
         </div>
-        <label id="custom-machine-field" hidden>Custom state-machine ID
-          <input name="stateMachine" placeholder="com.example.my-machine">
-        </label>
       </form>
 
       <aside class="review-panel">

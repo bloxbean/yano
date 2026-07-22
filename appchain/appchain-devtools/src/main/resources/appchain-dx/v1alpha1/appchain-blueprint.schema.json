@@ -52,7 +52,7 @@
                   "nodeHosts": {"type": "array", "items": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9.-]{0,252}$"}, "uniqueItems": true},
                   "finality": {"enum": ["majority", "two-thirds", "all"]},
                   "sequencing": {"enum": ["fixed", "rotating"]},
-                  "membership": {"enum": ["static"]},
+                  "membership": {"enum": ["static", "governed"]},
                   "httpPortBase": {"type": "integer", "minimum": 1024, "maximum": 65535},
                   "serverPortBase": {"type": "integer", "minimum": 1024, "maximum": 65535}
                 },
