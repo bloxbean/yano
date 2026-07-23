@@ -95,7 +95,9 @@ PY
 }
 
 discover_targets() {
-  local cluster="${YANO_CLUSTER_DIR:-/tmp/yano-appchain-cluster}" env="$cluster/cluster.env"
+  local cluster env
+  cluster="${YANO_CLUSTER_DIR:-/tmp/yano-appchain-cluster}"
+  env="$cluster/cluster.env"
   local base=7070 found=0 file index pid
   if [ -f "$env" ] && [ ! -L "$env" ]; then
     base="$(sed -n 's/^HTTP_BASE=\([0-9][0-9]*\)$/\1/p' "$env" | head -1)"
@@ -132,6 +134,7 @@ validate_retention() {
 
 start_bundle() {
   local retention=15d size=2GB line scheme target display cors="" explicit=0 console_origin="" metrics_url encoded_metrics
+  local discovered normalized_output
   local -a raw_targets=() normalized=()
   shift
   while [ "$#" -gt 0 ]; do
@@ -148,8 +151,11 @@ start_bundle() {
   [[ "$PORT" =~ ^[0-9]+$ ]] && [ "$PORT" -ge 1 ] && [ "$PORT" -le 65535 ] || die "invalid YANO_OBSERVABILITY_PORT"
   require_docker
   validate_state_path
-  if [ "$explicit" -eq 0 ]; then while IFS= read -r line; do raw_targets+=("$line"); done < <(discover_targets); fi
-  local normalized_output
+  if [ "$explicit" -eq 0 ]; then
+    discovered="$(discover_targets)" || die "unable to discover observability targets"
+    while IFS= read -r line; do [ -n "$line" ] && raw_targets+=("$line"); done <<< "$discovered"
+  fi
+  [ "${#raw_targets[@]}" -gt 0 ] || die "at least one scrape target is required"
   normalized_output="$(normalize_targets "${raw_targets[@]}")" \
     || die "targets must be normalized HTTP(S) origins without credentials, paths, queries, or fragments"
   while IFS= read -r line; do [ -n "$line" ] && normalized+=("$line"); done <<< "$normalized_output"

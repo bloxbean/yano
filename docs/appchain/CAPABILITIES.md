@@ -72,6 +72,7 @@ select it explicitly.
 | `executor:cardano-payment` | `effect-executor` | `FIRST_PARTY_OPTIONAL` | `preview` | `node` | yes | JVM, native | `build-time-only` | `yano-runtime`, `appchain-effects-cardano` | [Optional connectors](OPTIONAL_CONNECTORS.md#cardano-payments) |
 | `runtime:composite` | `distribution` | `BUNDLED` | `preview` | `distribution` | derived | JVM, native | `bundled` | `appchain-composite` | [Composites](tutorials/08-plugins-and-composites.md) |
 | `ui:console` | `distribution` | `BUNDLED` | `preview` | `node` | derived | JVM, native | `bundled` | `yano-runtime` | [ADR-028](../../adr/028-unified-console-ui-module.md) |
+| `observability:prometheus` | `distribution` | `FIRST_PARTY_OPTIONAL` | `preview` | `distribution` | derived | JVM, native | `bundled` | `yano-runtime` | [Console observability](../console-ui.md#historical-metrics) |
 <!-- capability-catalog:end -->
 
 ## Recipes
