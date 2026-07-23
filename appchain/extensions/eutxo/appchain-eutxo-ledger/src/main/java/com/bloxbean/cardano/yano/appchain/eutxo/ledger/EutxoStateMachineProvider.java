@@ -19,7 +19,8 @@ public final class EutxoStateMachineProvider implements AppStateMachineProvider 
         return new EutxoStateMachine(
                 profile,
                 EutxoGenesis.from(java.util.Map.of()),
-                new KeyPaymentTransitionEngine(profile));
+                new KeyPaymentTransitionEngine(profile),
+                EutxoBridgeConfig.disabled());
     }
 
     @Override
@@ -42,6 +43,7 @@ public final class EutxoStateMachineProvider implements AppStateMachineProvider 
         return new EutxoStateMachine(
                 profile,
                 EutxoGenesis.from(context.settings()),
-                new KeyPaymentTransitionEngine(profile));
+                new KeyPaymentTransitionEngine(profile),
+                EutxoBridgeConfig.from(context.chainId(), context.settings()));
     }
 }

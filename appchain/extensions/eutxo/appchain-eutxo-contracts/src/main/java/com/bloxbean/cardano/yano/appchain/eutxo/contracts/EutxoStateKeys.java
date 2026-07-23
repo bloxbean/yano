@@ -29,6 +29,23 @@ public final class EutxoStateKeys {
         return bytes(PREFIX + "t/" + transactionId(transactionId));
     }
 
+    public static byte[] deposit(EutxoOutpoint acceptedOutpoint) {
+        return bytes(PREFIX + "d/" + Objects.requireNonNull(
+                acceptedOutpoint, "acceptedOutpoint"));
+    }
+
+    public static byte[] reserve(String assetId) {
+        Objects.requireNonNull(assetId, "assetId");
+        if (assetId.isBlank() || assetId.length() > 120) {
+            throw new IllegalArgumentException("asset id must contain 1-120 characters");
+        }
+        return bytes(PREFIX + "r/" + assetId);
+    }
+
+    public static byte[] bridgeHalt() {
+        return bytes(PREFIX + "bridge/halt");
+    }
+
     public static byte[] attempt(byte[] appMessageId) {
         Objects.requireNonNull(appMessageId, "appMessageId");
         if (appMessageId.length != 32) {

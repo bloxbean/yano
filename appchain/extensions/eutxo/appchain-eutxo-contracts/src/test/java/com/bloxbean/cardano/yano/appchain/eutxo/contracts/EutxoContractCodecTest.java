@@ -58,4 +58,43 @@ class EutxoContractCodecTest {
         assertThat(EutxoProfile.V2.digestHex()).isEqualTo(
                 "8cd4adb72def2c31dc8551a02f67429ea468bb2024dbe85a1dc7300590c9d1bf");
     }
+
+    @Test
+    void bridgeContractsRoundTripAndReserveRejectsInflation() {
+        EutxoDepositClaim claim = new EutxoDepositClaim(
+                1,
+                "payments",
+                new EutxoOutpoint("11".repeat(32), 2),
+                50,
+                fill(32, 1),
+                "addr_test1vault",
+                "22".repeat(28),
+                new byte[]{1},
+                "addr_test1owner",
+                new byte[]{2},
+                fill(32, 3),
+                new EutxoOutpoint("44".repeat(32), 0),
+                100);
+        assertThat(EutxoDepositClaim.decode(claim.encode())).isEqualTo(claim);
+        EutxoDepositRecord record =
+                new EutxoDepositRecord(claim, claim.mirroredOutpoint(), 7);
+        assertThat(EutxoDepositRecord.decode(record.encode())).isEqualTo(record);
+
+        EutxoReserve reserve = EutxoReserve.empty(EutxoReserve.LOVELACE)
+                .credit(java.math.BigInteger.TEN);
+        assertThat(EutxoReserve.decode(reserve.encode())).isEqualTo(reserve);
+        assertThatThrownBy(() -> new EutxoReserve(
+                EutxoReserve.LOVELACE,
+                java.math.BigInteger.ONE,
+                java.math.BigInteger.TEN,
+                java.math.BigInteger.ZERO,
+                java.math.BigInteger.ZERO))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    private static byte[] fill(int size, int value) {
+        byte[] bytes = new byte[size];
+        java.util.Arrays.fill(bytes, (byte) value);
+        return bytes;
+    }
 }

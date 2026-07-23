@@ -10,6 +10,8 @@ public final class EutxoQueryCodec {
     public static final String ADDRESS_PATH = "utxos/address";
     public static final String TRANSACTION_PATH = "transactions/receipt";
     public static final String ATTEMPT_PATH = "attempts/receipt";
+    public static final String DEPOSIT_PATH = "bridge/deposits/record";
+    public static final String RESERVE_PATH = "bridge/reserve";
     public static final String PROFILE_PATH = "profile";
 
     private EutxoQueryCodec() {
@@ -80,6 +82,42 @@ public final class EutxoQueryCodec {
 
     public static EutxoReceipt decodeOptionalReceipt(byte[] bytes) {
         return EutxoCbor.decodeOptionalReceipt(bytes);
+    }
+
+    public static byte[] depositRequest(EutxoOutpoint acceptedOutpoint) {
+        return outpointRequest(acceptedOutpoint);
+    }
+
+    public static EutxoOutpoint decodeDepositRequest(byte[] bytes) {
+        return decodeOutpointRequest(bytes);
+    }
+
+    public static byte[] reserveRequest(String assetId) {
+        String normalized = Objects.requireNonNull(assetId, "assetId").trim();
+        if (normalized.isEmpty() || normalized.length() > 120) {
+            throw new IllegalArgumentException("asset id must contain 1-120 characters");
+        }
+        return normalized.getBytes(StandardCharsets.UTF_8);
+    }
+
+    public static String decodeReserveRequest(byte[] bytes) {
+        return boundedUtf8(bytes, 120, "asset id");
+    }
+
+    public static byte[] optionalDepositRecord(EutxoDepositRecord record) {
+        return EutxoCbor.encodeOptionalDepositRecord(record);
+    }
+
+    public static EutxoDepositRecord decodeOptionalDepositRecord(byte[] bytes) {
+        return EutxoCbor.decodeOptionalDepositRecord(bytes);
+    }
+
+    public static byte[] optionalReserve(EutxoReserve reserve) {
+        return EutxoCbor.encodeOptionalReserve(reserve);
+    }
+
+    public static EutxoReserve decodeOptionalReserve(byte[] bytes) {
+        return EutxoCbor.decodeOptionalReserve(bytes);
     }
 
     private static String boundedUtf8(byte[] bytes, int maximum, String field) {

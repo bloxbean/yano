@@ -104,6 +104,7 @@ final class AppChainProjectResolver {
 
         Map<String, String> variables = new LinkedHashMap<>();
         variables.put("proposer", proposer);
+        variables.put("chainId", chain.chainId());
         Map<String, String> answers = validatedAnswers(chain.answers());
         validateAnswers(selected, recipe, answers);
         variables.putAll(answers);

@@ -40,7 +40,8 @@ class AppChainProjectTest {
 
         assertThat(catalog.recipes()).extracting(AppChainProjectModel.Recipe::id)
                 .containsExactly("audit-log", "owned-registry", "approval-workflow",
-                        "role-approval", "evidence-ledger", "eutxo-ledger", "custom-plugin");
+                        "role-approval", "evidence-ledger", "eutxo-ledger",
+                        "eutxo-cardano-bridge", "custom-plugin");
         assertThat(catalog.recipes()).allSatisfy(recipe -> {
             assertThat(recipe.primaryOutcome()).isNotBlank();
             assertThat(recipe.firstCommand()).isNotBlank();
@@ -152,7 +153,8 @@ class AppChainProjectTest {
 
         AppChainProjectModel.Resolution resolution = resolver.resolve(blueprint);
 
-        assertThat(resolution.selectedCapabilities()).contains("state:eutxo-ledger");
+        assertThat(resolution.selectedCapabilities())
+                .contains("state:eutxo-ledger", "funding:eutxo-genesis");
         assertThat(resolution.artifacts()).contains("appchain-eutxo-ledger");
         assertThat(resolution.consensusProperties())
                 .containsEntry("yano.app-chain.chains[0].state-machine", "eutxo-ledger")
@@ -173,6 +175,46 @@ class AppChainProjectTest {
         new AppChainProjectRenderer(catalog, resolver).initialize(project, blueprint);
         assertThat(yamlValues(project.resolve("config/shared-consensus.yaml")))
                 .containsAllEntriesOf(resolution.consensusProperties());
+    }
+
+    @Test
+    void eutxoBridgeRecipeUsesProjectChainIdAndExcludesVirtualGenesis() throws Exception {
+        AppChainPropertyRegistry properties = AppChainPropertyRegistry.framework();
+        AppChainProjectCatalog catalog = new AppChainProjectCatalog(properties);
+        AppChainProjectResolver resolver = new AppChainProjectResolver(properties, catalog);
+        AppChainProjectModel.Blueprint blueprint = withAnswers(
+                blueprint("eutxo-cardano-bridge", "fixed",
+                        List.of("a".repeat(64), "b".repeat(64), "c".repeat(64))),
+                Map.of(
+                        "bridgeVaultAddress", "addr_test1wzvault",
+                        "bridgeVaultScriptHash", "1".repeat(56),
+                        "bridgeMaxDepositLovelace", "100000000"));
+
+        AppChainProjectModel.Resolution resolution = resolver.resolve(blueprint);
+
+        assertThat(resolution.selectedCapabilities())
+                .contains("state:eutxo-ledger", "bridge:cardano-federated", "l1:slot-feed")
+                .doesNotContain("funding:eutxo-genesis");
+        assertThat(resolution.consensusProperties())
+                .containsEntry(
+                        "yano.app-chain.chains[0].observers.bridge-deposits.chain-id",
+                        "product-evidence")
+                .doesNotContainKeys(
+                        "yano.app-chain.chains[0].machines.eutxo.genesis.address",
+                        "yano.app-chain.chains[0].machines.eutxo.genesis.lovelace");
+
+        AppChainProjectModel.Blueprint unsafe = withAnswers(withCapabilities(
+                        blueprint("eutxo-ledger", "fixed", List.of()),
+                        List.of("bridge:cardano-federated")),
+                Map.of(
+                        "eutxoGenesisAddress", "addr_test1vr8nlm7example",
+                        "eutxoGenesisLovelace", "100000000",
+                        "bridgeVaultAddress", "addr_test1wzvault",
+                        "bridgeVaultScriptHash", "1".repeat(56),
+                        "bridgeMaxDepositLovelace", "100000000"));
+        assertThatThrownBy(() -> resolver.resolve(unsafe))
+                .hasMessageContaining("Conflicting capabilities")
+                .hasMessageContaining("funding:eutxo-genesis");
     }
 
     @Test
@@ -565,7 +607,7 @@ class AppChainProjectTest {
         AppChainProjectCatalog catalog = new AppChainProjectCatalog(properties);
         AppChainProjectResolver resolver = new AppChainProjectResolver(properties, catalog);
 
-        assertThat(catalog.capabilities()).hasSize(33)
+        assertThat(catalog.capabilities()).hasSize(35)
                 .allSatisfy(capability -> {
                     assertThat(capability.availability()).isIn(
                             "BUNDLED", "FIRST_PARTY_OPTIONAL", "REFERENCE", "EXPERIMENTAL");

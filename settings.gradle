@@ -51,6 +51,8 @@ include 'appchain-eutxo-contracts'
 include 'appchain-eutxo-ledger'
 include 'appchain-eutxo-client'
 include 'appchain-eutxo-testkit'
+include 'appchain-eutxo-bridge-cardano'
+include 'appchain-eutxo-bridge-onchain'
 include 'appchain-spring-boot-starter'
 include 'appchain-anchor-onchain'
 include 'appchain-plugin-conformance'
@@ -96,6 +98,10 @@ project(':appchain-eutxo-client').projectDir =
         file('appchain/extensions/eutxo/appchain-eutxo-client')
 project(':appchain-eutxo-testkit').projectDir =
         file('appchain/extensions/eutxo/appchain-eutxo-testkit')
+project(':appchain-eutxo-bridge-cardano').projectDir =
+        file('appchain/extensions/eutxo/appchain-eutxo-bridge-cardano')
+project(':appchain-eutxo-bridge-onchain').projectDir =
+        file('appchain/extensions/eutxo/appchain-eutxo-bridge-onchain')
 project(':appchain-plugin-conformance').projectDir =
         file('appchain/fixtures/appchain-plugin-conformance')
 project(':appchain-spring-boot-starter').projectDir = file('spring-starters/appchain-spring-boot-starter')

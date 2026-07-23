@@ -3,10 +3,12 @@ package com.bloxbean.cardano.yano.appchain.eutxo.client;
 import com.bloxbean.cardano.client.transaction.spec.Transaction;
 import com.bloxbean.cardano.yano.appchain.client.AppChainClient;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoContract;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoDepositRecord;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoOutpoint;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoQueryCodec;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoReceipt;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoRecord;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoReserve;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoStateKeys;
 
 import java.util.List;
@@ -83,6 +85,24 @@ public final class EutxoClient {
 
     public Optional<AppChainClient.Proof> proof(EutxoOutpoint outpoint) {
         return client.proof(EutxoStateKeys.utxo(outpoint));
+    }
+
+    public EutxoSnapshot<Optional<EutxoDepositRecord>> depositSnapshot(
+            EutxoOutpoint acceptedL1Outpoint
+    ) {
+        AppChainClient.QueryResult result = client.query(
+                EutxoQueryCodec.DEPOSIT_PATH,
+                EutxoQueryCodec.depositRequest(acceptedL1Outpoint));
+        return snapshot(result, Optional.ofNullable(
+                EutxoQueryCodec.decodeOptionalDepositRecord(result.payload())));
+    }
+
+    public EutxoSnapshot<Optional<EutxoReserve>> reserveSnapshot(String assetId) {
+        AppChainClient.QueryResult result = client.query(
+                EutxoQueryCodec.RESERVE_PATH,
+                EutxoQueryCodec.reserveRequest(assetId));
+        return snapshot(result, Optional.ofNullable(
+                EutxoQueryCodec.decodeOptionalReserve(result.payload())));
     }
 
     public String profileDigest() {
