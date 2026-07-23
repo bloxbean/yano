@@ -44,6 +44,8 @@ public final class EutxoStateMachineProvider implements AppStateMachineProvider 
                 profile,
                 EutxoGenesis.from(context.settings()),
                 new KeyPaymentTransitionEngine(profile),
-                EutxoBridgeConfig.from(context.chainId(), context.settings()));
+                EutxoBridgeConfig.from(context.chainId(), context.settings()),
+                EutxoValidityEngines.discover(
+                        context.chainId(), profile, context.settings()));
     }
 }

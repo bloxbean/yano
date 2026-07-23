@@ -1,0 +1,17 @@
+plugins {
+    id 'java-library'
+}
+
+dependencies {
+    api project(':appchain-eutxo-zk-contracts')
+
+    testImplementation libs.junit.jupiter.api
+    testRuntimeOnly libs.junit.jupiter.engine
+    testRuntimeOnly libs.junit.platform.launcher
+    testImplementation libs.assertj.core
+}
+
+java {
+    sourceCompatibility = 25
+    targetCompatibility = 25
+}

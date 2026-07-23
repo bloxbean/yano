@@ -23,6 +23,9 @@ import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoWithdrawalCommitm
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoWithdrawalConfirmation;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoWithdrawalDatum;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoWithdrawalRecord;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoValidityCommitment;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoValidityCommitmentEngine;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoValidityTransition;
 import com.bloxbean.cardano.client.transaction.spec.TransactionOutput;
 
 import java.math.BigInteger;
@@ -41,13 +44,14 @@ public final class EutxoStateMachine implements AppStateMachine {
     private final EutxoGenesis genesis;
     private final UtxoTransitionEngine transitionEngine;
     private final EutxoBridgeConfig bridge;
+    private final EutxoValidityCommitmentEngine validityEngine;
 
     EutxoStateMachine(
             EutxoProfile profile,
             EutxoGenesis genesis,
             UtxoTransitionEngine transitionEngine
     ) {
-        this(profile, genesis, transitionEngine, EutxoBridgeConfig.disabled());
+        this(profile, genesis, transitionEngine, EutxoBridgeConfig.disabled(), null);
     }
 
     EutxoStateMachine(
@@ -56,10 +60,21 @@ public final class EutxoStateMachine implements AppStateMachine {
             UtxoTransitionEngine transitionEngine,
             EutxoBridgeConfig bridge
     ) {
+        this(profile, genesis, transitionEngine, bridge, null);
+    }
+
+    EutxoStateMachine(
+            EutxoProfile profile,
+            EutxoGenesis genesis,
+            UtxoTransitionEngine transitionEngine,
+            EutxoBridgeConfig bridge,
+            EutxoValidityCommitmentEngine validityEngine
+    ) {
         this.profile = Objects.requireNonNull(profile, "profile");
         this.genesis = Objects.requireNonNull(genesis, "genesis");
         this.transitionEngine = Objects.requireNonNull(transitionEngine, "transitionEngine");
         this.bridge = Objects.requireNonNull(bridge, "bridge");
+        this.validityEngine = validityEngine;
     }
 
     @Override
@@ -143,6 +158,7 @@ public final class EutxoStateMachine implements AppStateMachine {
                     result.code(),
                     result.detail());
             if (result.accepted()) {
+                applyValidity(result, block.height(), ordinal, writer);
                 applyAccepted(result, withdrawalPlan, writer);
                 writer.put(EutxoStateKeys.transaction(result.transactionId()), receipt.encode());
             }
@@ -216,6 +232,7 @@ public final class EutxoStateMachine implements AppStateMachine {
             throw new IllegalStateException("retained EUTxO profile digest differs from configured profile");
         }
         if (writer.get(EutxoStateKeys.genesis()).isPresent()) {
+            ensureValidityState(writer, false);
             return;
         }
         writer.put(EutxoStateKeys.profile(), expectedProfile);
@@ -224,6 +241,75 @@ public final class EutxoStateMachine implements AppStateMachine {
         }
         writer.put(EutxoStateKeys.genesis(),
                 genesis.transactionId().getBytes(StandardCharsets.UTF_8));
+        ensureValidityState(writer, true);
+    }
+
+    private void ensureValidityState(
+            AppStateWriter writer,
+            boolean creatingGenesis
+    ) {
+        if (validityEngine == null) {
+            if (writer.get(EutxoStateKeys.validityEngine()).isPresent()
+                    || writer.get(EutxoStateKeys.validityRoot()).isPresent()
+                    || writer.get(EutxoStateKeys.validityWitness()).isPresent()) {
+                throw new IllegalStateException(
+                        "retained EUTxO state requires its configured validity engine");
+            }
+            return;
+        }
+        byte[] engineId = validityEngine.id().getBytes(StandardCharsets.UTF_8);
+        byte[] retainedEngine = writer.get(EutxoStateKeys.validityEngine()).orElse(null);
+        if (retainedEngine != null && !java.util.Arrays.equals(retainedEngine, engineId)) {
+            throw new IllegalStateException(
+                    "retained EUTxO validity engine differs from configured engine");
+        }
+        if (retainedEngine != null) {
+            if (writer.get(EutxoStateKeys.validityRoot()).isEmpty()
+                    || writer.get(EutxoStateKeys.validityWitness()).isEmpty()) {
+                throw new IllegalStateException(
+                        "retained EUTxO validity state is incomplete");
+            }
+            return;
+        }
+        if (writer.get(EutxoStateKeys.validityRoot()).isPresent()
+                || writer.get(EutxoStateKeys.validityWitness()).isPresent()) {
+            throw new IllegalStateException(
+                    "retained EUTxO validity state has no engine identity");
+        }
+        if (!creatingGenesis) {
+            throw new IllegalStateException(
+                    "validity commitments cannot be enabled on retained EUTxO state "
+                            + "without an explicit checkpoint migration");
+        }
+        EutxoValidityCommitment genesisCommitment = validityEngine.genesis();
+        writer.put(EutxoStateKeys.validityEngine(), engineId);
+        writer.put(EutxoStateKeys.validityRoot(), genesisCommitment.root());
+        writer.put(EutxoStateKeys.validityWitness(),
+                genesisCommitment.witnessDescriptor());
+    }
+
+    private void applyValidity(
+            UtxoTransitionEngine.TransitionResult result,
+            long appHeight,
+            int ordinal,
+            AppStateWriter writer
+    ) {
+        if (validityEngine == null) {
+            return;
+        }
+        byte[] previousRoot = writer.get(EutxoStateKeys.validityRoot())
+                .orElseThrow(() -> new IllegalStateException(
+                        "selected EUTxO validity engine has no committed root"));
+        EutxoValidityCommitment next = validityEngine.commit(
+                new EutxoValidityTransition(
+                        previousRoot,
+                        result.transactionId(),
+                        result.consumed(),
+                        result.created(),
+                        appHeight,
+                        ordinal));
+        writer.put(EutxoStateKeys.validityRoot(), next.root());
+        writer.put(EutxoStateKeys.validityWitness(), next.witnessDescriptor());
     }
 
     private void applyAccepted(

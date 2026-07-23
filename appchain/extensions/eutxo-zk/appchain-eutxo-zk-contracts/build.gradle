@@ -1,0 +1,28 @@
+plugins {
+    id 'java-library'
+}
+
+dependencies {
+    api project(':appchain-eutxo-contracts')
+
+    testImplementation libs.junit.jupiter.api
+    testRuntimeOnly libs.junit.jupiter.engine
+    testRuntimeOnly libs.junit.platform.launcher
+    testImplementation libs.assertj.core
+}
+
+java {
+    sourceCompatibility = 25
+    targetCompatibility = 25
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            pom {
+                name = 'Yano EUTxO ZK Contracts'
+                description = 'ZeroJ-neutral public inputs, proof envelopes, and validity settlement contracts'
+            }
+        }
+    }
+}
