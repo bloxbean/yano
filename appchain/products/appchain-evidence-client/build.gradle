@@ -1,0 +1,144 @@
+dependencies {
+    api project(':appchain-client')
+    api project(':appchain-evidence-contracts')
+    api project(':appchain-composite-contracts')
+
+    testImplementation libs.junit.jupiter.api
+    testRuntimeOnly libs.junit.jupiter.engine
+    testRuntimeOnly libs.junit.platform.launcher
+    testImplementation libs.assertj.core
+}
+
+java {
+    sourceCompatibility = 25
+    targetCompatibility = 25
+}
+
+tasks.withType(Javadoc).configureEach {
+    options.addBooleanOption('Xdoclint:all,-missing', true)
+}
+
+tasks.named('compileJava') {
+    options.compilerArgs.removeAll { it.startsWith('-Aproject=') }
+}
+
+tasks.register('verifyEvidenceClientArtifactBoundary') {
+    group = 'verification'
+    description = 'Verifies that the companion and its runtime closure cannot activate the registry plugin'
+    dependsOn tasks.named('jar'), tasks.named('generatePomFileForMavenJavaPublication')
+    inputs.file(tasks.named('jar').flatMap { it.archiveFile })
+    inputs.files(configurations.runtimeClasspath)
+    inputs.file(layout.buildDirectory.file('publications/mavenJava/pom-default.xml'))
+
+    doLast {
+        def forbiddenPrefixes = [
+                'META-INF/yano/plugins/',
+                'META-INF/services/com.bloxbean.cardano.yano.api.'
+        ]
+        def containsEntries = { File artifact, Collection<String> prefixes ->
+            if (artifact.isDirectory()) {
+                def found = false
+                artifact.eachFileRecurse { candidate ->
+                    if (!found && candidate.isFile()) {
+                        def relative = artifact.toPath().relativize(candidate.toPath())
+                                .toString().replace(File.separatorChar, '/' as char)
+                        found = prefixes.any { prefix -> relative.startsWith(prefix) }
+                    }
+                }
+                return found
+            }
+            if (!artifact.name.endsWith('.jar')) {
+                return false
+            }
+            return new java.util.zip.ZipFile(artifact).withCloseable { jar ->
+                jar.entries().any { entry ->
+                    prefixes.any { prefix -> entry.name.startsWith(prefix) }
+                }
+            }
+        }
+        def containsPluginMetadata = { File artifact ->
+            containsEntries(artifact, forbiddenPrefixes)
+        }
+
+        def archive = tasks.named('jar').get().archiveFile.get().asFile
+        if (containsPluginMetadata(archive)) {
+            throw new GradleException(
+                    'Evidence client must not contribute app-chain plugin services')
+        }
+
+        def forbiddenProjectPaths = [
+                ':appchain-evidence-registry',
+                ':core-api'
+        ] as Set
+        def forbiddenComponents = configurations.runtimeClasspath.incoming
+                .resolutionResult.allComponents.findAll { component ->
+            component.id instanceof
+                    org.gradle.api.artifacts.component.ProjectComponentIdentifier
+                    && forbiddenProjectPaths.contains(component.id.projectPath)
+        }
+        if (!forbiddenComponents.isEmpty()) {
+            throw new GradleException(
+                    'Evidence client runtime dependency closure contains registry/core-api: '
+                            + forbiddenComponents.collect {
+                        it.id.projectPath
+                    }.sort().join(', '))
+        }
+
+        def pluginArtifacts = configurations.runtimeClasspath.files.findAll {
+            containsPluginMetadata(it)
+        }
+        if (!pluginArtifacts.isEmpty()) {
+            throw new GradleException(
+                    "Evidence client runtime dependency closure contains plugin metadata: "
+                            + pluginArtifacts.collect { it.name }.sort().join(', '))
+        }
+
+        def forbiddenRuntimeClassPrefixes = [
+                'com/bloxbean/cardano/yaci/',
+                'com/bloxbean/cardano/yano/api/',
+                'io/netty/',
+                'org/reactivestreams/',
+                'reactor/'
+        ]
+        def frameworkArtifacts = configurations.runtimeClasspath.files.findAll {
+            containsEntries(it, forbiddenRuntimeClassPrefixes)
+        }
+        if (!frameworkArtifacts.isEmpty()) {
+            throw new GradleException(
+                    'Evidence client runtime dependency closure contains framework/network stack: '
+                            + frameworkArtifacts.collect { it.name }.sort().join(', '))
+        }
+
+        def pom = layout.buildDirectory.file(
+                'publications/mavenJava/pom-default.xml').get().asFile.getText('UTF-8')
+        if (pom.contains('<artifactId>yano-appchain-evidence-registry</artifactId>')) {
+            throw new GradleException(
+                    'Evidence client published POM must not depend on the registry plugin')
+        }
+        if (pom.contains('<artifactId>yano-core-api</artifactId>')) {
+            throw new GradleException(
+                    'Evidence client published POM must not depend on core-api')
+        }
+        ['yano-appchain-client', 'yano-appchain-evidence-contracts'].each { artifactId ->
+            if (!pom.contains("<artifactId>${artifactId}</artifactId>")) {
+                throw new GradleException(
+                        "Evidence client published POM is missing ${artifactId}")
+            }
+        }
+    }
+}
+
+tasks.named('check') {
+    dependsOn tasks.named('verifyEvidenceClientArtifactBoundary')
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            pom {
+                name = 'Yano App-Chain Evidence Client Example'
+                description = 'Bounded orchestration and proof verification for the reference evidence registry'
+            }
+        }
+    }
+}

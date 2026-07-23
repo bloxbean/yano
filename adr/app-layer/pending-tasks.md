@@ -1,9 +1,16 @@
 # App-Chain Pending Tasks (deferred with intent — do not lose)
 
+> **Tracking note (2026-07-17):**
+> [open_item.md](open_item.md) is now the canonical live app-layer work index.
+> This file retains the detailed ADR-008-era rationale and revival triggers.
+> Keep every still-open row indexed in `open_item.md`, and remove/annotate rows
+> here when they ship so the two documents do not contradict one another.
+
 Single collection point for items deliberately deferred across the ADR-008
 program, each with its ADR reference and the trigger that should revive it.
-Update this file whenever an iteration defers something; strike items when
-they ship (move to the owning ADR's delivery notes).
+Index new app-layer work in `open_item.md`; add ADR-008-specific rationale here
+when useful. Strike items when they ship and move evidence to the owning ADR's
+delivery notes.
 
 ## Protocol / consensus
 

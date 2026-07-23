@@ -1,10 +1,15 @@
 # ADR-004: M2 — Consensus + Validation Framework
 
 ## Status
-Draft
+Historical draft — superseded by ADR-005
 
 ## Date
 2026-03-12
+
+> **Current-status note (2026-07-17):** M2 was redesigned and implemented in
+> Yano through [ADR-005](005-yano-app-chain-framework.md). The interfaces and
+> storage shape proposed below are retained as historical context and must not
+> be read as the current implementation contract.
 
 ## Context
 

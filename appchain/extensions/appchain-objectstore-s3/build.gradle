@@ -1,0 +1,227 @@
+plugins {
+    id 'com.gradleup.shadow'
+}
+
+// S3-compatible immutable object promotion for ADR-013 object.put effects.
+def expectedAwsSdkVersion = libs.versions.aws.sdk.get()
+dependencies {
+    compileOnly project(':core-api')          // provided by the node at runtime
+    implementation project(':appchain-integration-contracts')
+    implementation(libs.aws.sdk.s3) {
+        // The connector explicitly constructs the synchronous URLConnection
+        // transport. Do not ship unused Netty or Apache transport stacks in a
+        // drop-in JAR.
+        exclude group: 'software.amazon.awssdk', module: 'netty-nio-client'
+        exclude group: 'software.amazon.awssdk', module: 'apache5-client'
+    }
+    implementation libs.aws.sdk.url.connection.client
+    implementation libs.slf4j.api
+
+    testImplementation project(':core-api')
+    testImplementation project(':appchain-testkit')
+    testImplementation libs.junit.jupiter.api
+    testRuntimeOnly libs.junit.jupiter.engine
+    testRuntimeOnly libs.junit.platform.launcher
+    testImplementation libs.assertj.core
+}
+
+java {
+    sourceCompatibility = 25
+    targetCompatibility = 25
+}
+
+tasks.named('compileJava') {
+    // No annotation processor in this module consumes the repository-wide
+    // project identity option.
+    options.compilerArgs.removeAll { it.startsWith('-Aproject=') }
+}
+
+// Forward only explicit integration controls. Credentials are supplied by
+// owner-only files so they never appear in Gradle/JVM command lines.
+tasks.withType(Test).configureEach {
+    [
+            'yano.s3.integration.enabled',
+            'yano.s3.integration.endpoint',
+            'yano.s3.integration.access-key-file',
+            'yano.s3.integration.secret-key-file',
+            'yano.s3.integration.run-id',
+            'yano.s3.integration.phase',
+            'yano.s3.integration.disposable-service'
+    ].each { key ->
+        def value = System.getProperty(key)
+        if (value != null) {
+            systemProperty key, value
+        }
+    }
+}
+
+// Keep the normal artifact thin for build-time/native inclusion. The bundle
+// classifier is the self-contained drop-in artifact for yaci.plugins.directory.
+tasks.named('shadowJar') {
+    archiveBaseName.set("yano-${project.name}")
+    archiveClassifier.set('bundle')
+    reproducibleFileOrder = true
+    preserveFileTimestamps = false
+    mergeServiceFiles()
+    // Directory-loaded connector bundles own private copies of the frozen
+    // byte-contract implementation. Only CBOR bytes cross the host SPI.
+    relocate 'com.bloxbean.cardano.yano.appchain.integration',
+            'com.bloxbean.cardano.yano.appchain.objectstore.s3.internal.contracts.v1'
+    relocate 'co.nstant.in.cbor',
+            'com.bloxbean.cardano.yano.appchain.objectstore.s3.internal.contracts.v1deps.cbor'
+    relocate 'org.bouncycastle',
+            'com.bloxbean.cardano.yano.appchain.objectstore.s3.internal.contracts.v1deps.bouncycastle'
+    exclude 'com/bloxbean/cardano/yano/api/**'
+    exclude 'META-INF/*.SF', 'META-INF/*.RSA', 'META-INF/*.DSA', 'module-info.class'
+}
+
+def unrelocatedContractPrefix =
+        'com/bloxbean/cardano/yano/appchain/integration/'
+def relocatedContractPrefix =
+        'com/bloxbean/cardano/yano/appchain/objectstore/s3/internal/contracts/v1/'
+def relocatedCborPrefix =
+        'com/bloxbean/cardano/yano/appchain/objectstore/s3/internal/contracts/v1deps/cbor/'
+def relocatedBouncyCastlePrefix =
+        'com/bloxbean/cardano/yano/appchain/objectstore/s3/internal/contracts/v1deps/bouncycastle/'
+def effectService =
+        'META-INF/services/com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutorFactory'
+def pluginManifest =
+        'META-INF/yano/plugins/com.bloxbean.cardano.yano.appchain.objectstore.s3.json'
+def factoryClass = ('com.bloxbean.cardano.yano.appchain.objectstore.s3.effects.'
+        + 'ObjectStoreS3EffectExecutorFactory')
+
+tasks.register('verifyObjectStoreS3ArtifactBoundaries') {
+    group = 'verification'
+    description = 'Verifies thin/native and self-contained object-store bundle boundaries'
+    dependsOn tasks.named('jar'), tasks.named('shadowJar')
+    inputs.files(tasks.named('jar').flatMap { it.archiveFile },
+            tasks.named('shadowJar').flatMap { it.archiveFile })
+
+    doLast {
+        def unexpectedSdkVersions = configurations.runtimeClasspath.resolvedConfiguration
+                .resolvedArtifacts
+                .findAll { it.moduleVersion.id.group == 'software.amazon.awssdk' }
+                .findAll { it.moduleVersion.id.version != expectedAwsSdkVersion }
+                .collect { "${it.moduleVersion.id.name}:${it.moduleVersion.id.version}" }
+                .toSet()
+        if (!unexpectedSdkVersions.isEmpty()) {
+            throw new GradleException(
+                    "Object-store runtime resolved unexpected AWS SDK versions: "
+                            + unexpectedSdkVersions)
+        }
+        def thin = tasks.named('jar').get().archiveFile.get().asFile
+        def bundle = tasks.named('shadowJar').get().archiveFile.get().asFile
+        if (!thin.name.startsWith('yano-appchain-objectstore-s3-')) {
+            throw new GradleException("Unexpected object-store thin artifact: ${thin.name}")
+        }
+        if (!bundle.name.startsWith('yano-appchain-objectstore-s3-')
+                || !bundle.name.endsWith('-bundle.jar')) {
+            throw new GradleException("Unexpected object-store bundle artifact: ${bundle.name}")
+        }
+
+        def entryNames = { File archive ->
+            new java.util.zip.ZipFile(archive).withCloseable { zip ->
+                zip.entries().collect { entry -> entry.name }.toSet()
+            }
+        }
+        def thinEntries = entryNames(thin)
+        def bundleEntries = entryNames(bundle)
+
+        if (thinEntries.any { it.startsWith(unrelocatedContractPrefix)
+                || it.startsWith(relocatedContractPrefix)
+                || it.startsWith('software/amazon/awssdk/') }) {
+            throw new GradleException(
+                    'Object-store thin/native artifact embeds a contract or AWS SDK dependency')
+        }
+        if (!bundleEntries.contains('software/amazon/awssdk/services/s3/S3Client.class')
+                || !bundleEntries.contains(
+                'software/amazon/awssdk/http/urlconnection/UrlConnectionHttpClient.class')) {
+            throw new GradleException(
+                    'Object-store drop-in bundle does not contain the selected AWS SDK clients')
+        }
+        if (bundleEntries.any { it.startsWith('software/amazon/awssdk/http/nio/netty/')
+                || it.startsWith('io/netty/')
+                || it.startsWith('reactor/blockhound/')
+                || it.startsWith('software/amazon/awssdk/http/apache5/')
+                || it.startsWith('org/apache/hc/') }) {
+            throw new GradleException(
+                    'Object-store bundle embeds an unused HTTP transport stack')
+        }
+        if (!bundleEntries.contains(relocatedContractPrefix
+                + 'objectstore/ObjectPutCommandV1.class')) {
+            throw new GradleException(
+                    'Object-store drop-in bundle does not contain relocated connector contracts')
+        }
+        if (bundleEntries.any { it.startsWith(unrelocatedContractPrefix) }) {
+            throw new GradleException(
+                    'Object-store drop-in bundle exposes unrelocated connector contracts')
+        }
+        if (!bundleEntries.contains(relocatedCborPrefix + 'CborDecoder.class')
+                || bundleEntries.any { it.startsWith('co/nstant/in/cbor/') }) {
+            throw new GradleException(
+                    'Object-store drop-in bundle does not privately relocate the CBOR codec')
+        }
+        if (!bundleEntries.contains(relocatedBouncyCastlePrefix
+                + 'crypto/digests/Blake2bDigest.class')
+                || bundleEntries.any { it.startsWith('org/bouncycastle/') }) {
+            throw new GradleException(
+                    'Object-store drop-in bundle does not privately relocate BLAKE2b')
+        }
+        if (bundleEntries.any { it.startsWith('com/bloxbean/cardano/yano/api/') }) {
+            throw new GradleException('Object-store bundle embeds host Yano API classes')
+        }
+        [thin, bundle].each { artifact ->
+            def entries = entryNames(artifact)
+            [effectService, pluginManifest].each { entry ->
+                if (!entries.contains(entry)) {
+                    throw new GradleException(
+                            "Object-store artifact is missing plugin metadata entry ${entry}")
+                }
+            }
+        }
+
+        def readEntry = { File archive, String entryName ->
+            new java.util.zip.ZipFile(archive).withCloseable { zip ->
+                def entry = zip.getEntry(entryName)
+                zip.getInputStream(entry).getText('UTF-8')
+            }
+        }
+        [thin, bundle].each { artifact ->
+            def providers = readEntry(artifact, effectService).readLines()
+                    .collect { it.trim() }
+                    .findAll { !it.isBlank() && !it.startsWith('#') }
+            if (providers != [factoryClass]) {
+                throw new GradleException(
+                        "Unexpected effect providers in ${artifact.name}: ${providers}")
+            }
+            def manifest = new groovy.json.JsonSlurper().parseText(
+                    readEntry(artifact, pluginManifest))
+            def contributions = manifest.contributions.collect {
+                "${it.kind}:${it.name}:${it.provider}"
+            }
+            if (manifest.id != 'com.bloxbean.cardano.yano.appchain.objectstore.s3'
+                    || contributions != ["effect-executor:objectstore-s3:${factoryClass}"]) {
+                throw new GradleException(
+                        "Unexpected object-store manifest in ${artifact.name}")
+            }
+        }
+    }
+}
+
+tasks.named('check') {
+    dependsOn tasks.named('verifyObjectStoreS3ArtifactBoundaries')
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            artifact(tasks.named('shadowJar')) {
+                classifier = 'bundle'
+            }
+            pom {
+                name = 'Yano App-Chain S3-Compatible Object Store Integration'
+                description = 'Immutable S3-compatible object.put effect executor plugin'
+            }
+        }
+    }
+}

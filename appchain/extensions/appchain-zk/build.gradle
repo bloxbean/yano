@@ -1,3 +1,7 @@
+plugins {
+    id 'com.gradleup.shadow'
+}
+
 // ZK verification plugin (ADR 006 E7.1/E7.2/E7.3), packaged as a T3 plugin jar.
 // EXPERIMENTAL — depends on ZeroJ (experimental, unaudited, trusted-setup ops).
 // Drop on yaci.plugins.directory and select via yano.app-chain.state-machine=zk-gate.
@@ -5,6 +9,9 @@
 dependencies {
     compileOnly project(':core-api')          // provided by the node at runtime
 
+    // ZeroJ currently requests an older Jackson family. The drop-in bundle is
+    // self-contained, so carry the reviewed Jackson BOM into its own closure.
+    implementation platform(libs.jackson.bom)
     api libs.zeroj.api
     api libs.zeroj.verifier.core
     api libs.zeroj.bbs                         // E7.2 BBS selective disclosure
@@ -26,9 +33,24 @@ java {
     targetCompatibility = 25
 }
 
+// Keep the normal artifact thin for build-time/native inclusion. The bundle
+// classifier is the self-contained drop-in artifact for yaci.plugins.directory.
+tasks.named('shadowJar') {
+    archiveBaseName.set("yano-${project.name}")
+    archiveClassifier.set('bundle')
+    reproducibleFileOrder = true
+    preserveFileTimestamps = false
+    mergeServiceFiles()
+    exclude 'com/bloxbean/cardano/yano/api/**'
+    exclude 'META-INF/*.SF', 'META-INF/*.RSA', 'META-INF/*.DSA', 'module-info.class'
+}
+
 publishing {
     publications {
         mavenJava(MavenPublication) {
+            artifact(tasks.named('shadowJar')) {
+                classifier = 'bundle'
+            }
             pom {
                 name = 'Yano App-Chain ZK Verifier'
                 description = 'EXPERIMENTAL: ZK proof verification for app-chain messages (ZeroJ) — E7.1 admission/consensus proofs'

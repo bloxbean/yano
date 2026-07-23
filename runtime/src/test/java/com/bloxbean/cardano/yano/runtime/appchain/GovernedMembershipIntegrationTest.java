@@ -88,6 +88,14 @@ class GovernedMembershipIntegrationTest {
                 () -> nodeA.members().contains(pubC) && nodeB.members().contains(pubC));
         assertThat(nodeA.members()).hasSize(3);
         assertThat(nodeB.effectiveThreshold()).isEqualTo(2);
+        assertThat(nodeA.status())
+                .containsEntry("membershipMode", "governed")
+                .containsEntry("membershipActiveMembers", 2)
+                .containsEntry("membershipActiveThreshold", 2)
+                .containsEntry("memberActiveForNextBlock", true)
+                .containsKeys("membershipEpochFromHeight", "membershipEpochActive");
+        assertThat((long) nodeA.status().get("membershipEpochFromHeight"))
+                .isGreaterThan(nodeA.tipHeight());
 
         // Ordinary traffic still flows after the governance change
         String id = nodeA.submit("t", "post-governance".getBytes(StandardCharsets.UTF_8));

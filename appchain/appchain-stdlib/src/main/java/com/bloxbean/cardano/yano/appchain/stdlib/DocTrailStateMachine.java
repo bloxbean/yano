@@ -3,7 +3,6 @@ package com.bloxbean.cardano.yano.appchain.stdlib;
 import co.nstant.in.cbor.model.Array;
 import co.nstant.in.cbor.model.ByteString;
 import co.nstant.in.cbor.model.DataItem;
-import co.nstant.in.cbor.model.UnicodeString;
 import co.nstant.in.cbor.model.UnsignedInteger;
 import com.bloxbean.cardano.client.crypto.Blake2bUtil;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
@@ -11,11 +10,9 @@ import com.bloxbean.cardano.yaci.core.util.CborSerializationUtil;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
+import com.bloxbean.cardano.yano.appchain.stdlib.contracts.DocTrailContract;
 
-import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
 import java.util.List;
-import java.util.Optional;
 
 /**
  * Standard-library state machine {@code doc-trail} (ADR app-layer/006 E2.4):
@@ -81,15 +78,11 @@ public final class DocTrailStateMachine implements AppStateMachine {
     // ------------------------------------------------------------------
 
     public static byte[] append(String entityId, byte[] entryHash, String ref) {
-        Array arr = new Array();
-        arr.add(new UnicodeString(entityId));
-        arr.add(new ByteString(entryHash));
-        arr.add(new UnicodeString(ref != null ? ref : ""));
-        return CborSerializationUtil.serialize(arr);
+        return DocTrailContract.append(entityId, entryHash, ref);
     }
 
     public static byte[] entityKey(String entityId) {
-        return ("e/" + entityId).getBytes(StandardCharsets.UTF_8);
+        return DocTrailContract.entityKey(entityId);
     }
 
     public static Entry decodeEntry(byte[] stateValue) {
@@ -101,11 +94,7 @@ public final class DocTrailStateMachine implements AppStateMachine {
      * sequence — lets a verifier confirm a claimed trail against the proven head.
      */
     public static byte[] computeHead(List<byte[]> entryHashes, List<byte[]> authors) {
-        byte[] head = GENESIS_HEAD;
-        for (int i = 0; i < entryHashes.size(); i++) {
-            head = Blake2bUtil.blake2bHash256(concat(head, entryHashes.get(i), authors.get(i)));
-        }
-        return head;
+        return DocTrailContract.computeHead(entryHashes, authors);
     }
 
     private static byte[] concat(byte[]... parts) {
@@ -124,17 +113,8 @@ public final class DocTrailStateMachine implements AppStateMachine {
 
     record Command(String entityId, byte[] entryHash, String ref) {
         static Command decode(byte[] body) {
-            List<DataItem> items = ((Array) CborSerializationUtil.deserializeOne(body)).getDataItems();
-            String entityId = ((UnicodeString) items.get(0)).getString();
-            if (entityId.isBlank()) {
-                throw new IllegalArgumentException("Empty entityId");
-            }
-            byte[] entryHash = ((ByteString) items.get(1)).getBytes();
-            if (entryHash.length == 0) {
-                throw new IllegalArgumentException("Empty entryHash");
-            }
-            String ref = ((UnicodeString) items.get(2)).getString();
-            return new Command(entityId, entryHash, ref);
+            DocTrailContract.Append decoded = DocTrailContract.decodeCommand(body);
+            return new Command(decoded.entityId(), decoded.entryHash(), decoded.reference());
         }
     }
 
@@ -148,6 +128,7 @@ public final class DocTrailStateMachine implements AppStateMachine {
         }
 
         static Entry decode(byte[] bytes) {
+            StdlibCbor.requirePersistedEntry(bytes);
             List<DataItem> items = ((Array) CborSerializationUtil.deserializeOne(bytes)).getDataItems();
             return new Entry(
                     ((UnsignedInteger) items.get(0)).getValue().longValue(),

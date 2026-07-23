@@ -9,8 +9,21 @@ quarkus:
   http:
     port: 7070
     test-port: 0
-  resteasy:
-    path: ${yano.api-prefix:/api/v1}
+    filter:
+      plugin-dashboard-security:
+        matches: /ui/plugins/.*
+        header:
+          "Content-Security-Policy": >-
+            default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self';
+            img-src 'self' data:; object-src 'none'; base-uri 'none';
+            frame-ancestors 'none'; form-action 'self'
+          "X-Frame-Options": DENY
+          "X-Content-Type-Options": nosniff
+          "Referrer-Policy": no-referrer
+          "Cache-Control": no-store
+  native:
+    resources:
+      includes: META-INF/yano-api-prefix-v1
   log:
     level: INFO
     category:
@@ -37,11 +50,13 @@ yaci:
   plugins:
     enabled: true
     directory: plugins
+    allow-list: []
+    deny-list: []
+    auto-register-annotated: false
     logging:
       enabled: false
 
 yano:
-  api-prefix: /api/v1
   network: preprod
   auto-sync-start: true
   client:

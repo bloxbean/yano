@@ -7,6 +7,8 @@ import co.nstant.in.cbor.model.ByteString;
 import co.nstant.in.cbor.model.DataItem;
 import co.nstant.in.cbor.model.UnicodeString;
 import co.nstant.in.cbor.model.UnsignedInteger;
+import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
+import com.bloxbean.cardano.yano.api.appchain.codec.internal.CborStructurePreflight;
 
 import java.io.ByteArrayOutputStream;
 import java.math.BigInteger;
@@ -38,6 +40,10 @@ public record L1Observation(String observerId,
                             byte[] claim) {
 
     public static final int WIRE_VERSION = 1;
+    private static final CborStructurePreflight.Limits CBOR_LIMITS =
+            new CborStructurePreflight.Limits(
+                    AppChainConfig.MAX_MESSAGE_BYTES, 3, 16, 8,
+                    AppChainConfig.MAX_MESSAGE_BYTES);
     /** Reserved topic prefix for observation messages. */
     public static final String TOPIC_PREFIX = "~l1/";
 
@@ -46,6 +52,27 @@ public record L1Observation(String observerId,
         Objects.requireNonNull(txHash, "txHash");
         Objects.requireNonNull(blockHash, "blockHash");
         Objects.requireNonNull(claim, "claim");
+        if (txHash.length != 32 || blockHash.length != 32) {
+            throw new IllegalArgumentException("L1 transaction and block hashes must be 32 bytes");
+        }
+        txHash = txHash.clone();
+        blockHash = blockHash.clone();
+        claim = claim.clone();
+    }
+
+    @Override
+    public byte[] txHash() {
+        return txHash.clone();
+    }
+
+    @Override
+    public byte[] blockHash() {
+        return blockHash.clone();
+    }
+
+    @Override
+    public byte[] claim() {
+        return claim.clone();
     }
 
     public String topic() {
@@ -76,9 +103,18 @@ public record L1Observation(String observerId,
      */
     public static L1Observation decode(byte[] body) {
         try {
+            if (!CborStructurePreflight.accepts(body, CBOR_LIMITS)) {
+                return null;
+            }
             List<DataItem> items = CborDecoder.decode(body);
+            if (items.size() != 1) {
+                return null;
+            }
             Array array = (Array) items.get(0);
             List<DataItem> fields = array.getDataItems();
+            if (fields.size() != 6) {
+                return null;
+            }
             long version = ((UnsignedInteger) fields.get(0)).getValue().longValueExact();
             if (version != WIRE_VERSION)
                 return null;

@@ -2,8 +2,10 @@
 // Deliberately light: no yaci/runtime dependencies — just JSON and the MPF
 // verifier for client-side ("don't trust, verify") proof checks.
 dependencies {
+    api project(':appchain-stdlib-contracts')
     implementation libs.jackson.databind
     implementation libs.jackson.dataformat.cbor
+    implementation libs.cardano.client.crypto
     api libs.cardano.client.mpf
 
     testImplementation libs.junit.jupiter.api
@@ -13,8 +15,8 @@ dependencies {
 }
 
 java {
-    sourceCompatibility = 21
-    targetCompatibility = 21
+    sourceCompatibility = 25
+    targetCompatibility = 25
 }
 
 publishing {

@@ -154,6 +154,10 @@ public final class YanoPropertyKeys {
     public static final class Plugins {
         public static final String ENABLED = "yaci.plugins.enabled";
         public static final String DIRECTORY = "yaci.plugins.directory";
+        public static final String ALLOW_LIST = "yaci.plugins.allow-list";
+        public static final String DENY_LIST = "yaci.plugins.deny-list";
+        public static final String AUTO_REGISTER_ANNOTATED =
+                "yaci.plugins.auto-register-annotated";
         public static final String LOGGING_ENABLED = "yaci.plugins.logging.enabled";
 
         private Plugins() {
@@ -559,13 +563,22 @@ public final class YanoPropertyKeys {
         public static final String POOL_MAX_MESSAGES = "yano.app-chain.pool.max-messages";
         /** Consensus-visible sender-seq enforcement (008.1 I1.2); default false. */
         public static final String MESSAGE_ENFORCE_SENDER_SEQ = "yano.app-chain.message.enforce-sender-seq";
-        /** Opt-in API-key authentication for the /app-chain REST surface. */
+        /** Opt-in API-key authentication for READ/SUBMIT; PRIVILEGED always requires a full key. */
         public static final String API_AUTH_ENABLED = "yano.app-chain.api.auth.enabled";
         /**
-         * Comma-separated API keys; an entry is either {@code key} (full access)
-         * or {@code key=topicA|topicB} (submissions restricted to those topics).
+         * Comma-separated API keys. An unscoped {@code key} enables privileged
+         * operations; {@code key=topicA|topicB} is submission-topic scoped when
+         * broad API authentication is enabled.
          */
         public static final String API_KEYS = "yano.app-chain.api.keys";
+        /** Reject unknown keys only inside runtime-owned namespaces with FULL metadata coverage. */
+        public static final String VALIDATION_STRICT = "yano.app-chain.validation.strict";
+        /** Project lock identity exposed only through the privileged diagnostics endpoint. */
+        public static final String DX_RESOLVED_CONFIG_DIGEST =
+                "yano.app-chain.dx.resolved-config-digest";
+        /** Release catalog identity exposed only through the privileged diagnostics endpoint. */
+        public static final String DX_RELEASE_CATALOG_DIGEST =
+                "yano.app-chain.dx.release-catalog-digest";
 
         private AppChain() {
         }

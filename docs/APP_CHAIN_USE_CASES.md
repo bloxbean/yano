@@ -1,17 +1,22 @@
 # Yano App Chain — Use Cases & Practical Examples
 
+For runnable paths from these use cases to a local cluster, proofs, effects,
+and role-aware workflows, use the [app-chain tutorial hub](appchain/README.md).
+
 What you can build **today** with the app-chain framework, organized by how
 much you need to bring:
 
-- **Part A** — default distribution, out of the box (`ordered-log`, config only)
+- **Part A** — default distribution, out of the box (stock machines and
+  composites, config only)
 - **Part B** — default distribution + a custom state machine plugin jar
 - **Part C** — Yano as a library (embed the runtime in your own application)
 
 Each example lists the problem, why an app chain fits better than the usual
 alternatives, a concrete setup sketch, and the verification story (what a
-third party can prove without trusting your nodes). The trust model everywhere
-is **trusted or semi-trusted groups** (known members with registered keys) —
-see "What this is *not* for" at the end.
+third party can prove without trusting one node). The current supported pilot
+posture is a **trusted-member permissioned group** with registered keys. A
+semi-trusted-member deployment additionally needs outcome co-attestation and
+continuous independent auditing; see "What this is *not* for" at the end.
 
 The common backbone every use case inherits:
 
@@ -26,11 +31,12 @@ The common backbone every use case inherits:
 
 ---
 
-## Part A — Out of the box (default distribution, `ordered-log`)
+## Part A — Out of the box (default distribution)
 
-Everything in this part is configuration only: `yano.jar`, member keys, REST.
-The record body is opaque — you choose the format (JSON is fine); the chain
-gives ordering, replication, agreement, and proofs.
+Everything in this part is configuration only: `yano.jar`, member keys, REST,
+and any selected first-party connector bundles. `ordered-log` keeps opaque
+bodies; the standard library and `evidence-v1-gated` composite add typed state
+and coordinated publication without a custom state-machine implementation.
 
 ### A1. Multi-party audit / compliance log
 
@@ -81,8 +87,9 @@ downstream buyers must be able to verify single entries cheaply.
 
 **Why app chain.** Each step is a signed message from a known member.
 Documents stay off-chain (S3/IPFS/internal); the chain records
-`{productId, step, documentHash, actor}` — sender identity is cryptographic
-(the envelope is signed by the member's key). Buyers verify one entry with
+`{productId, step, documentHash, actor}`. The envelope proves which chain member
+submitted it, but durable manufacturer/shipper/device identity still requires
+a domain-signed actor envelope and registry. Buyers verify one entry with
 one MPF proof against a public anchor, without seeing the rest of the trail.
 
 **Setup sketch.** Topic per product line or a `productId` field in the body;
@@ -169,8 +176,10 @@ need credible accounting and periodic on-chain settlement.
 **How.** State machine tracks per-party balances from signed receipt
 messages; every balance is a provable state key. A settlement job nets
 balances every anchor interval and pays on L1, citing the anchored root the
-balances came from. (Ties into `adr/x402/001`; on-chain *enforcement* of
-balances needs script anchors — see roadmap note at the end.)
+balances came from. Script anchoring can enforce the monotonic threshold-signed
+root chain, but production payment/reconciliation and any domain-specific
+withdrawal validator still require dedicated hardening (ties into
+`adr/x402/001` and app-layer `FX-002`).
 
 ### B4. Approval workflows / multi-party sign-off
 
@@ -182,6 +191,13 @@ record of who approved what, in which order.
 tracks workflow state per item and flips it to `APPROVED` when the required
 approver set is reached (approver identity = envelope sender, already
 authenticated). The full decision trail is provable per item.
+
+That lightweight `approvals` machine is appropriate when validator members
+are the approvers. ADR-019's stock `role-evidence` profile covers the broader
+case: governed non-member business actors sign exact statements, policies
+enforce roles and organization-distinct quorums, and any member may relay the
+command without becoming the recorded approver. See
+`docs/APP_CHAIN_DOMAIN_ROLES.md`.
 
 ### B5. Member-attested oracle feeds
 
@@ -229,22 +245,22 @@ deployment unit.
 track deposits to an address, mirror an on-chain registry, maintain an index
 that partners agree on.
 
-**How.** In library mode you sit next to the full node: subscribe to
-`BlockAppliedEvent`/`RollbackEvent`, query `UtxoState` and `LedgerQuery`,
-and have a designated member (typically the sequencer's operator process)
-convert *stable* L1 observations into app messages (e.g.
-`l1-deposit:<txHash>:<amount>`), which the group's state machine applies.
-Every member can re-check the claimed L1 facts against its own node before
-co-signing — that's the semi-trusted bridge pattern.
+**How.** In library or plugin mode, use an `L1ObserverProvider` to turn stable
+address-deposit, metadata-label, or domain observations into reserved app-chain
+messages. With `l1.stability-depth > 0`, every member verifies each block's
+`l1-ref` against its own canonical L1 view before co-signing, and replay derives
+the same deterministic observation state.
 
 **Caveat (important).** With `l1.stability-depth > 0`, followers now verify
 each block's `l1-ref` against their own L1 view (ADR 008.1 I1.3) — a
 fabricated or rolled-back reference is rejected fail-closed. The framework
-`L1View` read API (deterministic reads evaluated at `l1-ref`, ADR 005 D5) is
-still on the roadmap, so the *content* of L1-derived claims must still be
-cross-checked in your members' processes. Suitable for semi-trusted groups;
-not yet for adversarial bridge settings — and on-chain enforcement of
-withdrawals needs script anchors (also roadmap).
+The observer contract is intentionally narrower than arbitrary state-machine
+reads over the live L1 database: deterministic `apply()` remains I/O-free.
+Domain observers must validate the exact observed fact, and a script anchor
+enforces only the anchor-chain contract—not arbitrary bridge withdrawals.
+Treat this as trusted-member integration infrastructure, not an adversarial
+bridge, unless a separately audited domain protocol supplies the missing
+proofs, attestation policy, and on-chain enforcement.
 
 ### C3. Custom distributions / appliances
 
@@ -275,11 +291,12 @@ L1 + app-chain e2e in CI (`test-app-chain-cluster` skill is the template).
 **Problem.** You like the app chain as the agreed source of truth but need
 the data in Kafka/Postgres/Elastic for the rest of your stack.
 
-**How.** A small library-mode process (or a `NodePlugin` jar on the default
-distribution) subscribes to `AppBlockFinalizedEvent` and forwards finalized
-messages to your infrastructure — with exactly-once semantics per block
-height and the option to attach the proof to each forwarded record. The
-chain stays the neutral system of record; your analytics stack stays as-is.
+**How.** A small library-mode process can subscribe to
+`AppBlockFinalizedEvent`, or an operator can configure a first-party finalized
+sink, and forward finalized messages to the surrounding infrastructure.
+Delivery is ordered and cursor-tracked but remains at-least-once across
+acknowledgement crashes; consumers deduplicate by chain/block/message identity.
+The chain stays the neutral system of record; the analytics stack stays as-is.
 
 ---
 
@@ -297,12 +314,15 @@ Be honest with stakeholders about v1 boundaries (roadmap in ADR 005):
 
 - **Trustless/public validator sets** — membership is a configured key list;
   there is no stake, slashing, or open participation.
-- **Sequencer-independent liveness** — one fixed sequencer (S1). Its outage
-  pauses new blocks (submissions still replicate; history is safe). Rotating
-  sequencing (S2) is designed, not shipped.
-- **On-chain-enforced bridges/withdrawals** — anchors are metadata today;
-  script anchors (validators checking MPF proofs on-chain) are designed, not
-  shipped. Off-chain verification of proofs works now.
+- **General BFT view change** — fixed and deterministic L1-window rotating
+  proposer modes are implemented, but there is no arbitrary view-change
+  protocol when the scheduled proposer is unavailable.
+- **Domain-enforced bridges/withdrawals** — metadata and threshold-co-signed
+  script anchors are implemented, but the stock anchor validator does not
+  validate a domain withdrawal or payment policy.
+- **Semi-trusted effect outcomes** — receipts are member attestations. A
+  k-of-n outcome policy and continuous independent auditor are required before
+  treating executors or members as semi-trusted.
 - **Large payloads** — 64 KB default body cap; store blobs elsewhere, chain
   the hashes.
 - **Public data distribution** — the chain replicates to members only;
@@ -324,6 +344,9 @@ this document's parts don't cover:
 |---|---|
 | `balances` stdlib machine (guide §9) | B3 micropayment/receipt netting, loyalty points and internal-credit ledgers with zero custom code |
 | `doc-trail` stdlib machine (guide §9) | A3 DPP/supply-chain trails: one provable chained head per product/case verifies the whole trail |
+| `composite/evidence-v1-gated` (guide §18) | Approval-coordinated S3/IPFS publication followed by acknowledged Kafka notification, all under one root |
+| `role-evidence` (domain-role guide) | Business-actor-signed evidence release with governed organizations, key rotation/revocation, two auditor organizations, and a regulator |
+| Governed composite profiles (profile-governance runbook) | Deploy reviewed dormant component/profile generations first, then threshold-authorize deterministic activation at a future height |
 | `credential-registry` (BBS, guide §17, experimental) | Verifiable credentials on an anchored registry: issuer-signed attribute sets, selective field disclosure |
 | `zk-gate` (guide §17, experimental) | Private policy compliance: prove "amount ≤ limit" / "KYC holds" across orgs without revealing the data |
 | `zk-membership` (guide §17, experimental) | Anonymous-but-authorized submissions: voting, sealed bids, whistleblowing among known members |

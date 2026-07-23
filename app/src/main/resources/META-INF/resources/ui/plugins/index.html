@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta http-equiv="Content-Security-Policy"
+          content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'self'" />
+    <title>Yano · Plugin Operations</title>
+    <link rel="stylesheet" href="styles.css" />
+    <script src="app.js" defer></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="topbar-inner">
+        <a class="brand" href="./" aria-label="Plugin operations dashboard">
+          <span class="brand-mark" aria-hidden="true">Y</span>
+          <span>
+            <strong>Yano <span>Plugin Operations</span></strong>
+            <small>Node-local health and catalog inventory</small>
+          </span>
+        </a>
+        <nav aria-label="Status dashboards">
+          <a href="../status/">Node</a>
+          <a href="../app-chain/">App chain</a>
+          <button id="forgetKey" type="button" hidden>Forget key</button>
+        </nav>
+      </div>
+    </header>
+
+    <main>
+      <section id="authPanel" class="auth-card" aria-labelledby="authTitle">
+        <p class="eyebrow">Privileged operator surface</p>
+        <h1 id="authTitle">Connect to plugin operations</h1>
+        <p class="muted">
+          Enter an unscoped app-chain API key. It is retained only for this browser tab's
+          session and sent in the <code>X-API-Key</code> header after this page verifies the
+          host-provided API prefix.
+        </p>
+        <form id="keyForm">
+          <label for="apiKey">API key</label>
+          <div class="key-row">
+            <input id="apiKey" name="apiKey" type="password" autocomplete="off"
+                   spellcheck="false" required maxlength="4096" disabled />
+            <button id="connectKey" type="submit" disabled>Connect</button>
+          </div>
+        </form>
+        <p id="authMessage" class="message" role="status" aria-live="polite"></p>
+      </section>
+
+      <div id="dashboard" hidden>
+        <section class="hero" aria-labelledby="dashboardTitle">
+          <div>
+            <p class="eyebrow">Cached operations snapshot</p>
+            <h1 id="dashboardTitle">Plugin runtime</h1>
+            <p class="muted">
+              Catalog identity is deterministic. Lifecycle, health, and counters are local to
+              this node and never change the catalog fingerprint.
+            </p>
+          </div>
+          <div class="snapshot-state">
+            <span id="overallBadge" class="badge neutral">UNKNOWN</span>
+            <span id="updatedAt" class="muted">Waiting for snapshot</span>
+          </div>
+        </section>
+
+        <section class="identity-grid" aria-label="Catalog identity">
+          <article class="card wide">
+            <span class="label">Catalog fingerprint</span>
+            <strong id="fingerprint" class="mono break">-</strong>
+          </article>
+          <article class="card">
+            <span class="label">Generation</span>
+            <strong id="generation" class="metric-value">-</strong>
+          </article>
+          <article class="card">
+            <span class="label">Captured</span>
+            <strong id="capturedAt">-</strong>
+          </article>
+        </section>
+
+        <section aria-labelledby="healthTitle">
+          <div class="section-head">
+            <div>
+              <p class="eyebrow">Runtime health</p>
+              <h2 id="healthTitle">Snapshot totals</h2>
+            </div>
+            <span id="refreshState" class="muted" aria-live="polite"></span>
+          </div>
+          <div id="totals" class="totals-grid"></div>
+        </section>
+
+        <section aria-labelledby="bundlesTitle">
+          <div class="section-head wrap">
+            <div>
+              <p class="eyebrow">Catalog inventory</p>
+              <h2 id="bundlesTitle">Catalog bundles</h2>
+            </div>
+            <label class="search">
+              <span class="sr-only">Search bundles</span>
+              <input id="search" type="search" placeholder="Search bundle or loaded contribution"
+                     autocomplete="off" maxlength="256" />
+            </label>
+          </div>
+          <div id="bundleList" class="bundle-list" aria-live="polite"></div>
+          <div class="pager">
+            <button id="loadMore" type="button" hidden>Load more</button>
+            <span id="pageStatus" class="muted"></span>
+          </div>
+        </section>
+      </div>
+    </main>
+
+    <footer>
+      <span>Refreshes every 5 seconds from the host cache</span>
+      <span aria-hidden="true">·</span>
+      <span id="apiBase" class="mono">API prefix not verified</span>
+      <span aria-hidden="true">·</span>
+      <a href="/q/health/group/plugins">Plugin health group</a>
+    </footer>
+  </body>
+</html>

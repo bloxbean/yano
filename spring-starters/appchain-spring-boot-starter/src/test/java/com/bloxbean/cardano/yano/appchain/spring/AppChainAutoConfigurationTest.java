@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.appchain.spring;
 
 import com.bloxbean.cardano.yano.appchain.client.AppChainClient;
+import com.bloxbean.cardano.yano.appchain.client.StdlibAppChainClient;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -27,6 +28,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 @Timeout(60)
 class AppChainAutoConfigurationTest {
 
+    private static final String MESSAGE_ID = "aabb".repeat(16);
+
     private final ApplicationContextRunner runner = new ApplicationContextRunner()
             .withConfiguration(AutoConfigurations.of(AppChainAutoConfiguration.class));
 
@@ -44,6 +47,8 @@ class AppChainAutoConfigurationTest {
         runner.run(context -> {
             assertThat(context).doesNotHaveBean(AppChainClient.class);
             assertThat(context).doesNotHaveBean(AppChainTemplate.class);
+            assertThat(context).doesNotHaveBean(StdlibAppChainClient.class);
+            assertThat(context).doesNotHaveBean(StdlibAppChainTemplate.class);
         });
     }
 
@@ -52,7 +57,8 @@ class AppChainAutoConfigurationTest {
         server = HttpServer.create(new InetSocketAddress("localhost", 0), 0);
         // REST stub: submit + tip
         server.createContext("/api/v1/app-chain/messages", exchange -> {
-            byte[] response = "{\"messageId\":\"aabb\",\"chainId\":\"c1\",\"topic\":\"orders\"}"
+            byte[] response = ("{\"messageId\":\"" + MESSAGE_ID
+                    + "\",\"chainId\":\"c1\",\"topic\":\"orders\"}")
                     .getBytes(StandardCharsets.UTF_8);
             exchange.getResponseHeaders().set("Content-Type", "application/json");
             exchange.sendResponseHeaders(202, response.length);
@@ -97,10 +103,12 @@ class AppChainAutoConfigurationTest {
                 .run(context -> {
                     assertThat(context).hasSingleBean(AppChainClient.class);
                     assertThat(context).hasSingleBean(AppChainTemplate.class);
+                    assertThat(context).hasSingleBean(StdlibAppChainClient.class);
+                    assertThat(context).hasSingleBean(StdlibAppChainTemplate.class);
 
                     // Template submit against the stub
                     AppChainTemplate template = context.getBean(AppChainTemplate.class);
-                    assertThat(template.send("orders", "hello")).isEqualTo("aabb");
+                    assertThat(template.send("orders", "hello")).isEqualTo(MESSAGE_ID);
 
                     // @AppChainListener methods received the SSE messages,
                     // with String/byte[]/StreamedMessage parameter conversion

@@ -1,0 +1,11 @@
+{
+  "schema": "org.example.product-inspection/v1",
+  "batchId": "BATCH-PRODUCT-B-001",
+  "product": "Temperature-sensitive diagnostic shipment",
+  "inspection": {
+    "result": "PASS",
+    "temperatureCelsius": 3.8,
+    "inspectedAt": "2026-07-18T09:15:00Z",
+    "inspector": "Demo Quality Lab"
+  }
+}

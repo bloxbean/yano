@@ -1,0 +1,72 @@
+dependencies {
+    implementation libs.cardano.client.crypto
+    implementation libs.cbor
+
+    testImplementation libs.junit.jupiter.api
+    testRuntimeOnly libs.junit.jupiter.engine
+    testRuntimeOnly libs.junit.platform.launcher
+    testImplementation libs.assertj.core
+}
+
+java {
+    sourceCompatibility = 25
+    targetCompatibility = 25
+}
+
+tasks.named('compileJava') {
+    options.compilerArgs.removeAll { it.startsWith('-Aproject=') }
+}
+
+def requiredContractEntries = [
+        'META-INF/yano/contracts/role-workflow/v1/role-workflow-v1.cddl',
+        'META-INF/yano/contracts/role-workflow/v1/golden-vectors.properties'
+]
+
+tasks.register('verifyRoleWorkflowContractArtifact') {
+    dependsOn tasks.named('jar')
+    doLast {
+        def archive = tasks.named('jar').get().archiveFile.get().asFile
+        new java.util.zip.ZipFile(archive).withCloseable { jar ->
+            requiredContractEntries.each { entryName ->
+                def entry = jar.getEntry(entryName)
+                if (entry == null || entry.size == 0) {
+                    throw new GradleException(
+                            "Missing or empty role-workflow contract entry: ${entryName}")
+                }
+            }
+            if (jar.entries().any { entry ->
+                entry.name.startsWith('META-INF/services/')
+                        || entry.name.startsWith('META-INF/yano/plugins/')
+                        || entry.name.startsWith(
+                        'com/bloxbean/cardano/yano/appchain/evidence/')
+            }) {
+                throw new GradleException(
+                        'Role-workflow contracts must contain only generic no-SPI role contracts')
+            }
+        }
+    }
+}
+
+tasks.register('verifyRoleWorkflowIndependentVectors', Exec) {
+    group = 'verification'
+    description = 'Verifies role-workflow golden vectors with dependency-free Python/Ed25519 code'
+    commandLine 'python3',
+            'scripts/verify-role-workflow-vectors.py',
+            'src/main/resources/META-INF/yano/contracts/role-workflow/v1/golden-vectors.properties'
+}
+
+tasks.named('check') {
+    dependsOn tasks.named('verifyRoleWorkflowContractArtifact')
+    dependsOn tasks.named('verifyRoleWorkflowIndependentVectors')
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            pom {
+                name = 'Yano App-Chain Role Workflow Contracts'
+                description = 'Wire, state, signing, and client contracts for domain actors and role-aware approvals'
+            }
+        }
+    }
+}

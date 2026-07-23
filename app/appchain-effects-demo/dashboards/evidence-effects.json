@@ -1,0 +1,71 @@
+{
+  "annotations": {"list": []},
+  "editable": false,
+  "graphTooltip": 1,
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Yano nodes up",
+      "id": 1,
+      "datasource": {"type": "prometheus", "uid": "yano-prometheus"},
+      "targets": [{"expr": "sum(up{job=\"yano-appchain\"})", "refId": "A"}],
+      "gridPos": {"h": 5, "w": 6, "x": 0, "y": 0}
+    },
+    {
+      "type": "stat",
+      "title": "Open effects",
+      "id": 2,
+      "datasource": {"type": "prometheus", "uid": "yano-prometheus"},
+      "targets": [{"expr": "max(yano_appchain_effects_open)", "refId": "A"}],
+      "gridPos": {"h": 5, "w": 6, "x": 6, "y": 0}
+    },
+    {
+      "type": "stat",
+      "title": "Executor queue",
+      "id": 3,
+      "datasource": {"type": "prometheus", "uid": "yano-prometheus"},
+      "targets": [{"expr": "sum(yano_appchain_effects_queue_depth)", "refId": "A"}],
+      "gridPos": {"h": 5, "w": 6, "x": 12, "y": 0}
+    },
+    {
+      "type": "stat",
+      "title": "Result backlog",
+      "id": 4,
+      "datasource": {"type": "prometheus", "uid": "yano-prometheus"},
+      "targets": [{"expr": "sum(yano_appchain_effects_result_backlog)", "refId": "A"}],
+      "gridPos": {"h": 5, "w": 6, "x": 18, "y": 0}
+    },
+    {
+      "type": "timeseries",
+      "title": "Effect execution outcomes",
+      "id": 5,
+      "datasource": {"type": "prometheus", "uid": "yano-prometheus"},
+      "targets": [{
+        "expr": "sum by (outcome) (rate(yano_appchain_effects_execution_total[5m]))",
+        "legendFormat": "{{outcome}}",
+        "refId": "A"
+      }],
+      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 5}
+    },
+    {
+      "type": "timeseries",
+      "title": "Effect latency",
+      "id": 6,
+      "datasource": {"type": "prometheus", "uid": "yano-prometheus"},
+      "targets": [{
+        "expr": "sum by (type) (rate(yano_appchain_effects_execution_latency_seconds_sum[5m])) / sum by (type) (rate(yano_appchain_effects_execution_latency_seconds_count[5m]))",
+        "legendFormat": "{{type}}",
+        "refId": "A"
+      }],
+      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 5}
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["yano", "app-chain", "effects"],
+  "templating": {"list": []},
+  "time": {"from": "now-30m", "to": "now"},
+  "timezone": "browser",
+  "title": "Yano evidence effects",
+  "uid": "yano-evidence-effects",
+  "version": 1
+}

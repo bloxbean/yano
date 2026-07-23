@@ -3,6 +3,9 @@ package com.bloxbean.cardano.yano.runtime.appchain;
 import com.bloxbean.cardano.client.crypto.KeyGenUtil;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
+import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
+import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -13,6 +16,7 @@ import org.slf4j.LoggerFactory;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.Arrays;
+import java.util.Map;
 import java.util.Set;
 import java.util.function.BooleanSupplier;
 
@@ -60,6 +64,13 @@ class AppChainAdminTest {
         // Not paused by default
         assertThat(node.submissionsPaused()).isFalse();
         assertThat(node.status().get("submissionsPaused")).isEqualTo(false);
+        assertThat(node.status())
+                .containsEntry("membershipMode", "static")
+                .containsEntry("membershipEpochFromHeight", 0L)
+                .containsEntry("membershipEpochActive", true)
+                .containsEntry("membershipActiveMembers", 2)
+                .containsEntry("membershipActiveThreshold", 2)
+                .containsEntry("memberActiveForNextBlock", true);
 
         // Submissions land in the pool (no proposer running → not finalized)
         node.submit("t", "m1".getBytes(StandardCharsets.UTF_8));
@@ -92,6 +103,62 @@ class AppChainAdminTest {
         node.resumeSubmissions();
         node.resumeSubmissions();
         assertThat(node.submissionsPaused()).isFalse();
+    }
+
+    @Test
+    void privilegedSystemSubmissionFailsClosedAndUsesMachineAdmission() throws Exception {
+        String pubA = HexUtil.encodeHexString(KeyGenUtil.getPublicKeyFromPrivateKey(KEY_A));
+        String pubB = HexUtil.encodeHexString(KeyGenUtil.getPublicKeyFromPrivateKey(KEY_B));
+        AppChainConfig config = AppChainConfig.builder("privileged-chain")
+                .signingKeyHex(HexUtil.encodeHexString(KEY_A))
+                .memberKeysHex(Set.of(pubA, pubB)).proposerKeyHex(pubB).threshold(2)
+                .blockIntervalMs(300).build();
+        AppStateMachine machine = new AppStateMachine() {
+            @Override public String id() { return "privileged-test"; }
+            @Override public void apply(AppBlock block, AppStateWriter writer) { }
+            @Override
+            public AdmissionResult validatePrivilegedSystemSubmission(String topic, byte[] body) {
+                return "~governance/test".equals(topic) && Arrays.equals(body, new byte[]{1})
+                        ? AdmissionResult.accept() : AdmissionResult.reject("not locally ready");
+            }
+        };
+        node = new AppChainSubsystem(config, 42, null, machine,
+                tempDir.resolve("privileged-ledger").toString(), null, log);
+        node.start();
+
+        assertThatThrownBy(() -> node.submit("~governance/test", new byte[]{1}))
+                .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("reserved");
+        assertThatThrownBy(() -> node.submitPrivilegedSystemMessage(
+                "~governance/other", new byte[]{1}))
+                .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("not locally ready");
+        assertThatThrownBy(() -> node.submitPrivilegedSystemMessage(
+                "~governance/test", new byte[]{2}))
+                .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("not locally ready");
+
+        assertThat(node.submitPrivilegedSystemMessage("~governance/test", new byte[]{1}))
+                .hasSize(64);
+        awaitTrue("privileged command is pooled", () -> (int) node.status().get("poolSize") == 1);
+    }
+
+    @Test
+    void governedCompositeProfileDisablesNodeLocalMembershipReset() {
+        String pubA = HexUtil.encodeHexString(KeyGenUtil.getPublicKeyFromPrivateKey(KEY_A));
+        AppChainConfig config = AppChainConfig.builder("governed-profile-chain")
+                .signingKeyHex(HexUtil.encodeHexString(KEY_A))
+                .memberKeysHex(Set.of(pubA)).proposerKeyHex(pubA).threshold(1)
+                .pluginSettings(Map.of(
+                        "membership.mode", "governed",
+                        "machines.composite.profile-mode", "governed"))
+                .blockIntervalMs(300).build();
+        node = new AppChainSubsystem(config, 42, null, new AppStateMachine() {
+            @Override public String id() { return "composite-test"; }
+            @Override public void apply(AppBlock block, AppStateWriter writer) { }
+        }, tempDir.resolve("governed-profile-ledger").toString(), null, log);
+        node.start();
+
+        assertThatThrownBy(node::resetMembers)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("disabled while composite profile governance is active");
     }
 
     private static void awaitTrue(String what, BooleanSupplier condition) throws InterruptedException {

@@ -1,21 +1,13 @@
 package com.bloxbean.cardano.yano.appchain.stdlib;
 
-import co.nstant.in.cbor.model.Array;
-import co.nstant.in.cbor.model.ByteString;
-import co.nstant.in.cbor.model.DataItem;
-import co.nstant.in.cbor.model.UnicodeString;
-import co.nstant.in.cbor.model.UnsignedInteger;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
-import com.bloxbean.cardano.yaci.core.util.CborSerializationUtil;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
+import com.bloxbean.cardano.yano.appchain.stdlib.contracts.BalancesContract;
 
 import java.math.BigInteger;
-import java.nio.charset.StandardCharsets;
-import java.util.List;
-import java.util.Optional;
 
 /**
  * Standard-library state machine {@code balances} (ADR app-layer/006 E2.3):
@@ -112,19 +104,19 @@ public final class BalancesStateMachine implements AppStateMachine {
     // ------------------------------------------------------------------
 
     public static byte[] mint(String toAccount, BigInteger amount) {
-        return Command.encode(OP_MINT, toAccount, amount);
+        return BalancesContract.mint(toAccount, amount);
     }
 
     public static byte[] transfer(String toAccount, BigInteger amount) {
-        return Command.encode(OP_TRANSFER, toAccount, amount);
+        return BalancesContract.transfer(toAccount, amount);
     }
 
     public static byte[] accountKey(String account) {
-        return ("b/" + account).getBytes(StandardCharsets.UTF_8);
+        return BalancesContract.accountKey(account);
     }
 
     public static BigInteger decodeBalance(byte[] entry) {
-        return entry == null ? BigInteger.ZERO : new BigInteger(1, entry);
+        return BalancesContract.decodeBalance(entry);
     }
 
     // ------------------------------------------------------------------
@@ -148,31 +140,8 @@ public final class BalancesStateMachine implements AppStateMachine {
 
     record Command(int op, String to, BigInteger amount) {
         static Command decode(byte[] body) {
-            List<DataItem> items = ((Array) CborSerializationUtil.deserializeOne(body)).getDataItems();
-            int op = ((UnsignedInteger) items.get(0)).getValue().intValue();
-            if (op != OP_MINT && op != OP_TRANSFER) {
-                throw new IllegalArgumentException("Unknown op: " + op);
-            }
-            String to = ((UnicodeString) items.get(1)).getString();
-            if (to.isBlank()) {
-                throw new IllegalArgumentException("Empty destination account");
-            }
-            BigInteger amount = ((UnsignedInteger) items.get(2)).getValue();
-            if (amount.signum() <= 0) {
-                throw new IllegalArgumentException("amount must be positive");
-            }
-            return new Command(op, to, amount);
-        }
-
-        static byte[] encode(int op, String to, BigInteger amount) {
-            if (amount == null || amount.signum() <= 0) {
-                throw new IllegalArgumentException("amount must be positive");
-            }
-            Array arr = new Array();
-            arr.add(new UnsignedInteger(op));
-            arr.add(new UnicodeString(to));
-            arr.add(new UnsignedInteger(amount));
-            return CborSerializationUtil.serialize(arr);
+            BalancesContract.Command decoded = BalancesContract.decodeCommand(body);
+            return new Command(decoded.operation(), decoded.account(), decoded.amount());
         }
     }
 }

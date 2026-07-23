@@ -5,6 +5,7 @@ import com.bloxbean.cardano.client.crypto.api.SigningProvider;
 import com.bloxbean.cardano.client.crypto.config.CryptoConfiguration;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
+import com.bloxbean.cardano.yano.api.plugin.PluginActivationException;
 import com.bloxbean.cardano.yano.api.appchain.signer.SignerProvider;
 import com.bloxbean.cardano.yano.api.appchain.signer.SignerProviderFactory;
 import org.junit.jupiter.api.AfterEach;
@@ -105,7 +106,7 @@ class CustomSignerProviderTest {
                 .build();
         assertThatThrownBy(() -> new AppChainSubsystem(config, 42, null, null,
                 tempDir.resolve("ledger2").toString(), null, log))
-                .isInstanceOf(IllegalArgumentException.class)
+                .isInstanceOf(PluginActivationException.class)
                 .hasMessageContaining("no-such-scheme")
                 .hasMessageContaining("test-seed");
     }

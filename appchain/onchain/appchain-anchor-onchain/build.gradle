@@ -3,12 +3,13 @@
 // src/main/resources/META-INF/plutus/ are CHECKED IN (not regenerated at
 // build time): the script hash derived from them is the chain's on-chain
 // IDENTITY, so it must be byte-stable across machines and julc versions.
-// (Found 2026-07-12: the released julc 0.1.0-pre14 miscompiles
-// AnchorValidator — fixed post-release in julc main — so a CI-compiled
-// artifact would differ from the one validated on preprod.)
-// To regenerate after deliberate validator/julc changes: run the
-// JulcSourceCompile* conformance tests with -Djulc.source-check=true and,
-// once green, refresh the checked-in JSONs from a local julc compile.
+// The released julc 0.1.0-pre14 miscompiles the validator's loop-carried
+// state. The checked validator was generated with post-release julc commit
+// 94eaecee3220. To regenerate after a deliberate source/compiler change,
+// first run JulcSourceCompile* with -Djulc.source-check=true and
+// --include-build pointing at that julc checkout, then rebuild julc-cli's
+// shadowJar and refresh the JSON from a clean CLI compile. Finally run this
+// module's complete checked-artifact suite and the runtime identity golden.
 plugins {
     id 'java-library'
 }
@@ -16,10 +17,11 @@ plugins {
 description = 'Yano app-chain anchor validators (julc/Java default implementation, ADR 008.4)'
 
 dependencies {
-    // compileOnly: julc's authoring stack is needed to COMPILE the validators
-    // (and the processor turns them into UPLC artifacts), but consumers of this
-    // jar only read META-INF/plutus/*.json — the validator classes are never
-    // loaded at runtime, so julc never reaches the node runtime classpath.
+    // compileOnly: julc's authoring stack COMPILES the validator sources (never
+    // loaded at runtime — consumers read only META-INF/plutus/*.json). The
+    // compiled UPLC artifacts are CHECKED IN, not generated at build time, so
+    // there is no annotation processor here; the opt-in JulcSourceCompile* tests
+    // recompile from source only as a drift check.
     compileOnly "com.bloxbean.cardano:julc-stdlib:${libs.versions.julc.get()}"
     compileOnly "com.bloxbean.cardano:julc-ledger-api:${libs.versions.julc.get()}"
 
@@ -35,6 +37,11 @@ dependencies {
 
 test {
     useJUnitPlatform()
+    // Forward the drift-check opt-in into the forked test JVM: Gradle does NOT
+    // propagate command-line -D properties to test workers, so without this the
+    // documented `-Djulc.source-check=true` regeneration flow would silently
+    // skip the JulcSourceCompile* suites and report green.
+    systemProperty 'julc.source-check', System.getProperty('julc.source-check', 'false')
 }
 
 publishing {

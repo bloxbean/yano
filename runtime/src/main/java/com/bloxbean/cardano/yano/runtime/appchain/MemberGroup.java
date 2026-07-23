@@ -1,9 +1,12 @@
 package com.bloxbean.cardano.yano.runtime.appchain;
 
+import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
+
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Objects;
 import java.util.Set;
 
 /**
@@ -20,8 +23,15 @@ final class MemberGroup {
 
     record Epoch(long fromHeight, Set<String> members, int threshold) {
         Epoch {
+            Objects.requireNonNull(members, "members");
+            if (fromHeight < 0 || members.isEmpty()
+                    || members.size() > AppChainConfig.MAX_MEMBERS
+                    || threshold < 1 || threshold > members.size()
+                    || members.stream().anyMatch(key -> key == null
+                    || !key.matches("[0-9a-f]{64}"))) {
+                throw new IllegalArgumentException("Invalid membership epoch v1 profile");
+            }
             members = Set.copyOf(members);
-            threshold = Math.max(1, threshold);
         }
     }
 
@@ -44,6 +54,10 @@ final class MemberGroup {
 
     int size() {
         return current().members().size();
+    }
+
+    long currentFromHeight() {
+        return current().fromHeight();
     }
 
     boolean contains(String publicKeyHex) {
@@ -99,6 +113,16 @@ final class MemberGroup {
     synchronized void load(List<Epoch> history) {
         if (history.isEmpty()) {
             throw new IllegalArgumentException("Epoch history must not be empty");
+        }
+        long previousHeight = -1;
+        for (int index = 0; index < history.size(); index++) {
+            Epoch epoch = history.get(index);
+            if (epoch == null || index == 0 && epoch.fromHeight() != 0
+                    || epoch.fromHeight() <= previousHeight) {
+                throw new IllegalArgumentException(
+                        "Membership epoch history must start at 0 and be strictly ordered");
+            }
+            previousHeight = epoch.fromHeight();
         }
         this.epochs = List.copyOf(history);
     }

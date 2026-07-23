@@ -6,16 +6,24 @@ import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.appchain.*;
 import com.bloxbean.cardano.yano.api.appchain.codec.AppBlockCodec;
 import com.bloxbean.cardano.yano.api.appchain.sequencer.SequencerMode;
+import com.bloxbean.cardano.yano.runtime.util.LifecycleFailures;
 import org.rocksdb.WriteBatch;
 import org.slf4j.Logger;
 
+import java.nio.charset.StandardCharsets;
 import java.util.*;
-import java.util.concurrent.Executors;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Future;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BiConsumer;
 import java.util.function.BiFunction;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 
 /**
  * S1 fixed-sequencer engine (ADR app-layer/005 D2): a single configured
@@ -38,6 +46,9 @@ import java.util.function.Consumer;
  */
 final class AppChainEngine implements AutoCloseable {
 
+    /** Bound plugin-controlled exception metadata before it reaches operator logs. */
+    private static final int MAX_CALLBACK_FAILURE_TYPE_CHARS = 256;
+
     private final AppChainConfig config;
     private final AppLedgerStore ledger;
     private final AppMsgPool pool;
@@ -54,11 +65,26 @@ final class AppChainEngine implements AutoCloseable {
             new java.util.concurrent.atomic.AtomicLong();
     private final int maxBlockMessages;
     private final long maxBlockBytes;
+    private final long proposalMaxBytes;
+    private final EffectsSettings effectsSettings;
+    private final ConsensusProfileGuard consensusProfileGuard;
+    private final FxKernel fxKernel;
+    private final FxKernel.FxReader fxReader;
+    private final Supplier<WriteBatch> writeBatchFactory;
     /** Sends a body on a system topic to the group (via the subsystem's diffusion). */
     private final BiFunction<String, byte[], AppMessage> broadcast;
     private final Logger log;
 
     private final ScheduledExecutorService executor;
+    /**
+     * Terminal engine-lifetime signal. Unlike {@link #close()}, this does not
+     * complete until the serial event loop has stopped and its staged round
+     * has been discarded. Callers that own the ledger/plugin classloader use
+     * this as the safe teardown fence.
+     */
+    private final CompletableFuture<Void> closeCompletion = new CompletableFuture<>();
+    private final Object closeLock = new Object();
+    private boolean closeStarted;
 
     /** In-flight round at height tip+1 (proposer and follower views). */
     private PendingRound pendingRound;
@@ -125,6 +151,87 @@ final class AppChainEngine implements AutoCloseable {
                    long maxBlockBytes,
                    BiFunction<String, byte[], AppMessage> broadcast,
                    Logger log) {
+        this(config, ledger, pool, stateMachine, signer, group, sequencerMode,
+                roundTimeoutMs, maxBlockMessages, maxBlockBytes, broadcast, log,
+                WriteBatch::new, resolveConsensus(config));
+    }
+
+    /** Normal runtime path verifies the provider context and kernel use one effective profile. */
+    AppChainEngine(AppChainConfig config,
+                   AppLedgerStore ledger,
+                   AppMsgPool pool,
+                   AppStateMachine stateMachine,
+                   com.bloxbean.cardano.yano.api.appchain.signer.SignerProvider signer,
+                   MemberGroup group,
+                   SequencerMode sequencerMode,
+                   long roundTimeoutMs,
+                   int maxBlockMessages,
+                   long maxBlockBytes,
+                   BiFunction<String, byte[], AppMessage> broadcast,
+                   Logger log,
+                   EffectsSettings providerEffectsSettings,
+                   AppChainConsensusProfile providerProfile) {
+        this(config, ledger, pool, stateMachine, signer, group, sequencerMode,
+                roundTimeoutMs, maxBlockMessages, maxBlockBytes, broadcast, log,
+                WriteBatch::new, resolveConsensus(
+                        config, providerEffectsSettings, providerProfile));
+    }
+
+    private static ResolvedConsensus resolveConsensus(AppChainConfig config) {
+        EffectsSettings settings = EffectsSettings.from(config);
+        return new ResolvedConsensus(settings, settings.consensusProfile(config));
+    }
+
+    private static ResolvedConsensus resolveConsensus(
+            AppChainConfig config,
+            EffectsSettings providerEffectsSettings,
+            AppChainConsensusProfile providerProfile) {
+        Objects.requireNonNull(providerEffectsSettings, "providerEffectsSettings");
+        AppChainConsensusProfile normalized = providerEffectsSettings.consensusProfile(config);
+        if (!normalized.equals(providerProfile)) {
+            throw new IllegalArgumentException(
+                    "state-machine context and kernel consensus profiles differ");
+        }
+        return new ResolvedConsensus(providerEffectsSettings, providerProfile);
+    }
+
+    private record ResolvedConsensus(
+            EffectsSettings settings, AppChainConsensusProfile profile) {
+    }
+
+    /** Package-private batch factory seam for native-resource ownership regressions. */
+    AppChainEngine(AppChainConfig config,
+                   AppLedgerStore ledger,
+                   AppMsgPool pool,
+                   AppStateMachine stateMachine,
+                   com.bloxbean.cardano.yano.api.appchain.signer.SignerProvider signer,
+                   MemberGroup group,
+                   SequencerMode sequencerMode,
+                   long roundTimeoutMs,
+                   int maxBlockMessages,
+                   long maxBlockBytes,
+                   BiFunction<String, byte[], AppMessage> broadcast,
+                   Logger log,
+                   Supplier<WriteBatch> writeBatchFactory) {
+        this(config, ledger, pool, stateMachine, signer, group, sequencerMode,
+                roundTimeoutMs, maxBlockMessages, maxBlockBytes, broadcast, log,
+                writeBatchFactory, resolveConsensus(config));
+    }
+
+    private AppChainEngine(AppChainConfig config,
+                   AppLedgerStore ledger,
+                   AppMsgPool pool,
+                   AppStateMachine stateMachine,
+                   com.bloxbean.cardano.yano.api.appchain.signer.SignerProvider signer,
+                   MemberGroup group,
+                   SequencerMode sequencerMode,
+                   long roundTimeoutMs,
+                   int maxBlockMessages,
+                   long maxBlockBytes,
+                   BiFunction<String, byte[], AppMessage> broadcast,
+                   Logger log,
+                   Supplier<WriteBatch> writeBatchFactory,
+                   ResolvedConsensus resolvedConsensus) {
         this.config = config;
         this.ledger = ledger;
         this.pool = pool;
@@ -135,15 +242,62 @@ final class AppChainEngine implements AutoCloseable {
         this.roundTimeoutMs = roundTimeoutMs;
         this.maxBlockMessages = maxBlockMessages;
         this.maxBlockBytes = maxBlockBytes;
+        this.proposalMaxBytes = maxBlockBytes - config.finalityCertHeadroomBytes();
+        if (proposalMaxBytes <= 0) {
+            throw new IllegalArgumentException("block.max-bytes leaves no room for a v1 finality cert");
+        }
         this.broadcast = broadcast;
         this.log = log;
-        this.executor = Executors.newSingleThreadScheduledExecutor(r -> {
+        this.writeBatchFactory = Objects.requireNonNull(writeBatchFactory, "writeBatchFactory");
+        this.effectsSettings = resolvedConsensus.settings();
+        this.consensusProfileGuard = new ConsensusProfileGuard(
+                resolvedConsensus.profile());
+        this.consensusProfileGuard.verifyRetained(ledger, config.chainId());
+        this.fxKernel = new FxKernel(effectsSettings, consensusProfileGuard);
+        this.fxReader = ledger.fxReader();
+        if (!effectsSettings.enabled() && ledger.fxOpenCount() > 0) {
+            // One-way switch (ADR-010 F12): the expiry sweep only runs while
+            // effects are enabled, so disabling with open effects would strand
+            // their buckets forever (sweep reads only bucket(height)).
+            throw new IllegalStateException("App-chain '" + config.chainId() + "' has "
+                    + ledger.fxOpenCount() + " open effect(s) but effects.enabled=false — "
+                    + "effects cannot be disabled once in use");
+        }
+        stateMachine.init(new CommittedStateReader(), new AppChainInfo(
+                config.chainId(), signer.publicKeyHex(), group.size()));
+        // Initialize the configured state-machine before acquiring the engine
+        // executor. A failed plugin init must not leak an unpublished engine
+        // thread from this constructor.
+        this.executor = new ScheduledThreadPoolExecutor(1, r -> {
             Thread t = new Thread(r, "app-chain-engine-" + config.chainId());
             t.setDaemon(true);
             return t;
-        });
-        stateMachine.init(new CommittedStateReader(), new AppChainInfo(
-                config.chainId(), signer.publicKeyHex(), group.size()));
+        }) {
+            @Override
+            protected void afterExecute(Runnable task, Throwable failure) {
+                super.afterExecute(task, failure);
+                // ScheduledThreadPoolExecutor wraps even execute(Runnable) in a
+                // FutureTask. Without inspecting it, a VM-fatal plugin failure
+                // is retained by a discarded Future and never reaches the
+                // worker's uncaught-exception path.
+                rethrowIfJvmFatal(completedTaskFailure(task, failure));
+            }
+
+            @Override
+            protected void terminated() {
+                try {
+                    AppChainEngine.this.finishCloseAfterExecutorTermination();
+                } finally {
+                    super.terminated();
+                }
+            }
+        };
+        if (effectsSettings.enabled()) {
+            log.info("App-chain '{}': effects enabled (max-per-block={}, max-payload-bytes={}, "
+                    + "default-gate={}, outcome-commitment={})", config.chainId(),
+                    effectsSettings.maxPerBlock(), effectsSettings.maxPayloadBytes(),
+                    effectsSettings.defaultGate(), effectsSettings.outcomeCommitment());
+        }
     }
 
     void setOnBlockFinalized(BiConsumer<AppBlock, byte[]> callback) {
@@ -153,6 +307,9 @@ final class AppChainEngine implements AutoCloseable {
     /** Mode-specific observability (window/proposer/etc.). */
     Map<String, Object> sequencerStatus() {
         Map<String, Object> status = new java.util.LinkedHashMap<>(sequencerMode.status());
+        // Platform-owned canonical identity. A plugin cannot omit or spoof the
+        // selected mode in operational status with its auxiliary status map.
+        status.put("mode", sequencerMode.id());
         long stale = staleLockedHeight;
         if (stale > ledger.tipHeight()) {
             // Wedge visibility (I4.2): this member's vote at tip+1 is spent on
@@ -198,15 +355,24 @@ final class AppChainEngine implements AutoCloseable {
         executor.execute(() -> {
             for (byte[] blockCbor : blockCbors) {
                 try {
-                    AppBlock block = AppBlockCodec.deserialize(blockCbor);
+                    if (blockCbor == null || blockCbor.length == 0
+                            || blockCbor.length > config.blockMaxBytes()) {
+                        log.warn("Catch-up block exceeds the configured v1 byte profile — "
+                                + "stopping batch");
+                        return;
+                    }
+                    AppBlock block = AppBlockCodec.deserializeCanonical(
+                            blockCbor, config.blockMaxBytes());
                     if (block.height() <= ledger.tipHeight()) {
                         continue; // already have it
                     }
                     if (!applyCertifiedBlock(block)) {
                         return;
                     }
-                } catch (Exception e) {
-                    log.warn("Catch-up block rejected: {}", e.toString());
+                } catch (Throwable e) {
+                    log.warn("Catch-up block rejected (errorType={})",
+                            callbackFailureType(e));
+                    rethrowIfJvmFatal(e);
                     return;
                 }
             }
@@ -214,6 +380,9 @@ final class AppChainEngine implements AutoCloseable {
     }
 
     private boolean applyCertifiedBlock(AppBlock block) {
+        if (!validBlockProfile(block, "Catch-up block", false)) {
+            return false;
+        }
         long expectedHeight = ledger.tipHeight() + 1;
         if (block.height() != expectedHeight) {
             log.warn("Catch-up block height {} but expected {} — stopping batch",
@@ -244,9 +413,12 @@ final class AppChainEngine implements AutoCloseable {
         }
         for (AppMessage message : block.messages()) {
             // No TTL check here: these messages were finalized before expiry
-            if (!message.hasValidMessageId() || !verifyMemberSignature(message, block.height())) {
-                log.warn("Catch-up block contains invalid message {} — rejecting",
-                        message.getMessageIdHex());
+            if (!validFinalizedMessageProfile(message)
+                    || !message.hasValidMessageId()
+                    || !verifyMemberSignature(message, block.height())
+                    || !authorizedResultMessage(message)) {
+                log.warn("Catch-up block contains an invalid message at height {} — rejecting",
+                        block.height());
                 return false;
             }
         }
@@ -264,22 +436,24 @@ final class AppChainEngine implements AutoCloseable {
             discardRound();
         }
 
-        AppliedBlock applied = applyBlock(block);
-        if (!Arrays.equals(applied.block.stateRoot(), block.stateRoot())) {
-            log.warn("Catch-up block state-root mismatch at height {} — rejecting", block.height());
-            applied.close();
-            return false;
+        try (AppliedBlock applied = applyBlock(block)) {
+            if (!Arrays.equals(applied.block.stateRoot(), block.stateRoot())) {
+                log.warn("Catch-up block state-root mismatch at height {} — rejecting", block.height());
+                return false;
+            }
+            ledger.stageFx(applied.batch, block.height(), applied.fx);
+            ledger.commitBlock(block, blockHash, block.stateRoot(), applied.batch,
+                    governanceWrites(block));
         }
-        ledger.commitBlock(block, blockHash, block.stateRoot(), applied.batch,
-                governanceWrites(block));
-        applied.closeBatchOnly();
         pool.remove(block.messages());
         BiConsumer<AppBlock, byte[]> callback = onBlockFinalized;
         if (callback != null) {
             try {
                 callback.accept(block, blockHash);
-            } catch (Exception e) {
-                log.warn("onBlockFinalized callback failed", e);
+            } catch (Throwable e) {
+                log.warn("onBlockFinalized callback failed (errorType={})",
+                        callbackFailureType(e));
+                rethrowIfJvmFatal(e);
             }
         }
         log.info("Catch-up: applied certified block at height {}", block.height());
@@ -332,7 +506,7 @@ final class AppChainEngine implements AutoCloseable {
                 return;
             }
 
-            List<AppMessage> candidates = selectMessages();
+            List<AppMessage> candidates = selectMessages(height);
             if (candidates.isEmpty()) {
                 return;
             }
@@ -347,27 +521,37 @@ final class AppChainEngine implements AutoCloseable {
             // proposal exceeds the transport limit and followers silently drop
             // it, stalling the height. Deferred messages stay pooled for the
             // next block (block-bytes fix).
-            if (AppBlockCodec.serialize(candidate).length > maxBlockBytes) {
+            if (AppBlockCodec.serialize(candidate).length > proposalMaxBytes) {
                 candidates = fitToBlockBytes(height, prevHash, l1Ref, timestamp, candidates);
                 if (candidates.isEmpty()) {
                     log.warn("App-chain '{}': cannot fit even one message under block.max-bytes ({}) "
-                            + "at height {} — skipping this round", config.chainId(), maxBlockBytes, height);
+                            + "at height {} — skipping this round", config.chainId(),
+                            proposalMaxBytes, height);
                     return;
                 }
                 candidate = buildCandidateBlock(height, prevHash, l1Ref, timestamp, candidates);
             }
+            if (AppBlockCodec.serialize(candidate).length > proposalMaxBytes) {
+                log.error("App-chain '{}' produced a proposal above its v1 byte budget at height {}",
+                        config.chainId(), height);
+                return;
+            }
 
             AppliedBlock applied = applyBlock(candidate);
             AppBlock block = applied.block;
-            byte[] blockHash = AppBlockCodec.blockHash(block);
+            byte[] blockHash;
+            try {
+                blockHash = AppBlockCodec.blockHash(block);
+            } catch (Throwable failure) {
+                throw closeAppliedAfterFailure(applied, failure);
+            }
 
-            PendingRound round = new PendingRound(block, blockHash, applied);
+            PendingRound round = publishPendingRound(block, blockHash, applied);
             if (!staleLock) {
                 // Vote lock for our own proposal, then self-vote
                 ledger.putVoteLock(height, blockHash);
                 round.votes.put(signer.publicKeyHex(), signer.sign(blockHash));
             }
-            pendingRound = round;
 
             AppMessage proposalEnvelope =
                     broadcast.apply(ConsensusCodec.TOPIC_PROPOSE, AppBlockCodec.serialize(block));
@@ -387,16 +571,17 @@ final class AppChainEngine implements AutoCloseable {
                 log.info("Proposed app block: height={}, msgs={}, hash={}",
                         height, block.messages().size(), HexUtil.encodeHexString(blockHash));
             }
-
             maybeFinalize();
-        } catch (Exception e) {
-            log.error("App-chain propose tick failed", e);
-            discardRound();
+        } catch (Throwable e) {
+            Throwable outcome = discardRoundAfterFailure(e);
+            log.error("App-chain propose tick failed (errorType={})",
+                    callbackFailureType(outcome));
+            rethrowIfJvmFatal(outcome);
         }
     }
 
-    private List<AppMessage> selectMessages() {
-        List<AppMessage> candidates = pool.drainCandidates(maxBlockMessages, maxBlockBytes);
+    private List<AppMessage> selectMessages(long candidateHeight) {
+        List<AppMessage> candidates = pool.drainCandidates(maxBlockMessages, proposalMaxBytes);
         // Exclude anything already finalized (re-gossip after restart)
         candidates.removeIf(m -> ledger.messageHeight(m.getMessageId()).isPresent());
         // Sender-seq replay floor (I1.2): drop stale seqs; with enforcement on,
@@ -421,6 +606,18 @@ final class AppChainEngine implements AutoCloseable {
             }
             return false;
         });
+        // Designated result signers are a consensus-affecting chain policy.
+        // Drop unauthorized results before an honest proposer spends block
+        // capacity on a message the kernel will deterministically ignore.
+        candidates.removeIf(m -> {
+            if (authorizedResultMessage(m)) {
+                return false;
+            }
+            log.info("Effect result {} dropped: sender is not designated by effects.result.signers",
+                    m.getMessageIdHex());
+            pool.remove(List.of(m));
+            return true;
+        });
         // Application-level admission — framework system topics (~governance/*)
         // bypass it: state machines must not veto governance commands (008.3);
         // they skip these opaque bodies deterministically in apply()
@@ -429,9 +626,13 @@ final class AppChainEngine implements AutoCloseable {
             if (topic.startsWith("~")) {
                 return false;
             }
-            AppStateMachine.AdmissionResult result = stateMachine.validate(m);
+            AppStateMachine.AdmissionResult result = stateMachine.validateForBlock(
+                    m, candidateHeight, new CommittedStateReader());
             if (!result.isAccepted()) {
-                log.info("Message {} rejected by state machine: {}", m.getMessageIdHex(), result.reason());
+                // Admission reasons are plugin-controlled free text. Do not
+                // copy a possibly secret-bearing reason into the default node
+                // log; the message id is sufficient to correlate rejection.
+                log.info("Message {} rejected by state machine", m.getMessageIdHex());
                 pool.remove(List.of(m));
                 return true;
             }
@@ -469,11 +670,22 @@ final class AppChainEngine implements AutoCloseable {
         while (list.size() > 1) {
             int size = AppBlockCodec.serialize(
                     buildCandidateBlock(height, prevHash, l1Ref, timestamp, list)).length;
-            if (size <= maxBlockBytes) {
+            if (size <= proposalMaxBytes) {
                 break;
             }
-            int drop = Math.max(1, (int) ((long) list.size() * (size - maxBlockBytes) / size));
+            int drop = Math.max(1, (int) ((long) list.size()
+                    * (size - proposalMaxBytes) / size));
             list = new ArrayList<>(list.subList(0, list.size() - drop));
+        }
+        if (!list.isEmpty() && AppBlockCodec.serialize(
+                buildCandidateBlock(height, prevHash, l1Ref, timestamp, list)).length
+                > proposalMaxBytes) {
+            AppMessage impossible = list.getFirst();
+            pool.remove(List.of(impossible));
+            log.warn("App-chain '{}': message {} cannot fit in an otherwise empty v1 block "
+                            + "under the proposal byte budget ({}) — dropping it",
+                    config.chainId(), impossible.getMessageIdHex(), proposalMaxBytes);
+            return List.of();
         }
         if (list.size() < candidates.size()) {
             log.info("App-chain '{}': proposal trimmed to fit block.max-bytes — {} of {} messages "
@@ -495,13 +707,27 @@ final class AppChainEngine implements AutoCloseable {
                 case ConsensusCodec.TOPIC_CERT -> handleCertNotice(message);
                 default -> log.debug("Ignoring unknown consensus topic: {}", message.getTopic());
             }
-        } catch (Exception e) {
-            log.error("Error handling consensus message on {}", message.getTopic(), e);
+        } catch (Throwable e) {
+            log.error("Error handling consensus message on {} (errorType={})",
+                    message.getTopic(), callbackFailureType(e));
+            rethrowIfJvmFatal(e);
         }
     }
 
     private void handleProposal(AppMessage envelope) {
-        AppBlock block = AppBlockCodec.deserialize(envelope.getBody());
+        if (envelope.getBody() == null || envelope.getBody().length == 0
+                || envelope.getBody().length > proposalMaxBytes) {
+            oversizedProposalsRejected.incrementAndGet();
+            log.warn("Proposal exceeds the v1 proposal byte budget ({} > {}) — rejecting",
+                    envelope.getBody() == null ? 0 : envelope.getBody().length,
+                    proposalMaxBytes);
+            return;
+        }
+        AppBlock block = AppBlockCodec.deserializeCanonical(
+                envelope.getBody(), proposalMaxBytes);
+        if (!validBlockProfile(block, "Proposal", true)) {
+            return;
+        }
         long expectedHeight = ledger.tipHeight() + 1;
 
         if (block.height() <= ledger.tipHeight()) {
@@ -547,17 +773,6 @@ final class AppChainEngine implements AutoCloseable {
             log.warn("Proposal messages-root mismatch — rejecting");
             return;
         }
-        // Size guard (block-bytes fix): a well-behaved leader trims proposals to
-        // fit block.max-bytes. Reject an oversized proposal loudly (a bug or a
-        // misbehaving proposer) — do not silently drop it as the transport did.
-        // The proposal envelope body IS the serialized block.
-        if (envelope.getBody().length > maxBlockBytes) {
-            oversizedProposalsRejected.incrementAndGet();
-            log.warn("Proposal at height {} exceeds block.max-bytes ({} > {}) — rejecting "
-                    + "(the proposer must cap the block; the round will re-propose or rotate)",
-                    block.height(), envelope.getBody().length, maxBlockBytes);
-            return;
-        }
         if (!verifyProposalL1Ref(envelope, block)) {
             return;
         }
@@ -570,15 +785,16 @@ final class AppChainEngine implements AutoCloseable {
         // proposals — block-bytes fix).
         long now = System.currentTimeMillis() / 1000;
         for (AppMessage message : block.messages()) {
-            if (!message.hasValidMessageId() || message.isExpired(now)
+            if (!validFinalizedMessageProfile(message)
+                    || !message.hasValidMessageId() || message.isExpired(now)
                     || !verifyMemberSignature(message, block.height())) {
-                log.warn("Proposal contains invalid message {} — rejecting block",
-                        message.getMessageIdHex());
+                log.warn("Proposal contains an invalid message at height {} — rejecting block",
+                        block.height());
                 return;
             }
-            if (message.getBody() != null && message.getBody().length > config.maxMessageBytes()) {
-                log.warn("Proposal contains an over-limit message {} ({} > {}) — rejecting block",
-                        message.getMessageIdHex(), message.getBody().length, config.maxMessageBytes());
+            if (!authorizedResultMessage(message)) {
+                log.warn("Proposal contains effect result {} from a non-designated signer — "
+                        + "rejecting block", message.getMessageIdHex());
                 return;
             }
         }
@@ -604,29 +820,43 @@ final class AppChainEngine implements AutoCloseable {
         }
         AppliedBlock applied = applyBlock(block.withCert(FinalityCert.empty()));
         if (!Arrays.equals(applied.block.stateRoot(), block.stateRoot())) {
-            log.warn("Proposal state-root mismatch at height {} (local {} vs proposed {}) — rejecting",
-                    block.height(),
-                    HexUtil.encodeHexString(applied.block.stateRoot()),
-                    HexUtil.encodeHexString(block.stateRoot()));
-            applied.close();
+            try (applied) {
+                log.warn("Proposal state-root mismatch at height {} (local {} vs proposed {}) — rejecting",
+                        block.height(),
+                        HexUtil.encodeHexString(applied.block.stateRoot()),
+                        HexUtil.encodeHexString(block.stateRoot()));
+            }
             return;
         }
 
-        ledger.putVoteLock(block.height(), blockHash);
-        // Persist the original proposer-signed envelope for partial-round
-        // re-gossip (ADR 008.2 §2.3)
-        ledger.putVoteLockEnvelope(block.height(), ConsensusCodec.encodeEnvelope(envelope));
-        pendingRound = new PendingRound(block, blockHash, applied);
+        PendingRound round = publishPendingRound(block, blockHash, applied);
+        try {
+            ledger.putVoteLock(block.height(), blockHash);
+            // Persist the original proposer-signed envelope for partial-round
+            // re-gossip (ADR 008.2 §2.3)
+            ledger.putVoteLockEnvelope(block.height(), ConsensusCodec.encodeEnvelope(envelope));
 
-        byte[] signature = signer.sign(blockHash);
-        // Record our own vote locally too — any member holding the round may
-        // aggregate to a cert (dead proposers can't sink collected votes)
-        pendingRound.votes.put(signer.publicKeyHex(), signature);
-        broadcast.apply(ConsensusCodec.TOPIC_VOTE,
-                ConsensusCodec.encodeVote(block.height(), blockHash, signature));
-        log.info("Voted for app block: height={}, hash={}", block.height(),
-                HexUtil.encodeHexString(blockHash));
-        maybeFinalize();
+            byte[] signature = signer.sign(blockHash);
+            // Record our own vote locally too — any member holding the round may
+            // aggregate to a cert (dead proposers can't sink collected votes)
+            round.votes.put(signer.publicKeyHex(), signature);
+            broadcast.apply(ConsensusCodec.TOPIC_VOTE,
+                    ConsensusCodec.encodeVote(block.height(), blockHash, signature));
+            log.info("Voted for app block: height={}, hash={}", block.height(),
+                    HexUtil.encodeHexString(blockHash));
+            maybeFinalize();
+        } catch (Throwable failure) {
+            if (pendingRound == round) {
+                failure = discardRoundAfterFailure(failure);
+            }
+            if (failure instanceof Error error) {
+                throw error;
+            }
+            if (failure instanceof RuntimeException runtime) {
+                throw runtime;
+            }
+            throw new IllegalStateException("Failed to handle app-chain proposal", failure);
+        }
     }
 
     /**
@@ -819,7 +1049,7 @@ final class AppChainEngine implements AutoCloseable {
                     notice.height());
             return;
         }
-        FinalityCert cert = AppBlockCodec.deserializeCert(notice.certBytes());
+        FinalityCert cert = AppBlockCodec.deserializeCertCanonical(notice.certBytes());
         if (!verifyCert(cert, pendingRound.blockHash, pendingRound.block.height())) {
             log.warn("Cert verification FAILED for height {} — rejecting", notice.height());
             return;
@@ -829,46 +1059,107 @@ final class AppChainEngine implements AutoCloseable {
 
     /** Verifies threshold, member uniqueness and every signature. Never trust-by-mode. */
     private boolean verifyCert(FinalityCert cert, byte[] blockHash, long height) {
-        if (cert.scheme() != FinalityCert.SCHEME_ED25519) {
+        if (cert == null || cert.scheme() != FinalityCert.SCHEME_ED25519
+                || cert.signatures().isEmpty()
+                || cert.signatures().size() > AppChainConfig.MAX_MEMBERS) {
             return false;
         }
         Set<String> seen = new HashSet<>();
         int valid = 0;
         for (FinalityCert.Signature signature : cert.signatures()) {
+            if (signature == null || signature.signer() == null
+                    || signature.signer().length != 32
+                    || signature.signature() == null
+                    || signature.signature().length
+                    != AppChainConfig.ED25519_SIGNATURE_BYTES) {
+                return false;
+            }
             String signerHex = HexUtil.encodeHexString(signature.signer()).toLowerCase(Locale.ROOT);
             if (!group.containsAt(signerHex, height) || !seen.add(signerHex)) {
-                continue;
+                return false;
             }
-            if (AppMessageSigner.verify(signature.signature(), blockHash, signature.signer())) {
-                valid++;
+            if (!AppMessageSigner.verify(signature.signature(), blockHash, signature.signer())) {
+                return false;
             }
+            valid++;
         }
         return valid >= group.thresholdAt(height);
     }
 
     private void commitRound(FinalityCert cert) {
         PendingRound round = pendingRound;
+        AppBlock finalBlock = round.block.withCert(cert);
+        if (AppBlockCodec.serialize(finalBlock).length > maxBlockBytes) {
+            throw new IllegalStateException("Finalized app block exceeds block.max-bytes after cert");
+        }
         pendingRound = null;
         deferredProposals.clear(); // height advances — held l1-ref deferrals are moot
-        AppBlock finalBlock = round.block.withCert(cert);
-        ledger.commitBlock(finalBlock, round.blockHash, finalBlock.stateRoot(), round.applied.batch,
-                governanceWrites(finalBlock));
-        round.applied.closeBatchOnly();
+        try (AppliedBlock applied = round.applied) {
+            ledger.stageFx(applied.batch, finalBlock.height(), applied.fx);
+            ledger.commitBlock(finalBlock, round.blockHash, finalBlock.stateRoot(), applied.batch,
+                    governanceWrites(finalBlock));
+        }
         pool.remove(finalBlock.messages());
         BiConsumer<AppBlock, byte[]> callback = onBlockFinalized;
         if (callback != null) {
             try {
                 callback.accept(finalBlock, round.blockHash);
-            } catch (Exception e) {
-                log.warn("onBlockFinalized callback failed", e);
+            } catch (Throwable e) {
+                log.warn("onBlockFinalized callback failed (errorType={})",
+                        callbackFailureType(e));
+                rethrowIfJvmFatal(e);
             }
         }
     }
 
     private void discardRound() {
-        if (pendingRound != null) {
-            pendingRound.applied.close();
-            pendingRound = null;
+        PendingRound round = pendingRound;
+        // Relinquish ownership before cleanup so a failing native close cannot
+        // make a later error path close the same WriteBatch twice.
+        pendingRound = null;
+        if (round != null) {
+            round.applied.close();
+        }
+    }
+
+    /** Transfer the staged batch to {@link #pendingRound} or close it on publication failure. */
+    private PendingRound publishPendingRound(AppBlock block, byte[] blockHash, AppliedBlock applied) {
+        try {
+            PendingRound round = new PendingRound(block, blockHash, applied);
+            pendingRound = round;
+            return round;
+        } catch (Throwable failure) {
+            throw closeAppliedAfterFailure(applied, failure);
+        }
+    }
+
+    /** Preserve the primary failure while guaranteeing native batch release. */
+    private static RuntimeException closeAppliedAfterFailure(
+            AppliedBlock applied,
+            Throwable primary
+    ) {
+        Throwable outcome = primary;
+        try {
+            applied.close();
+        } catch (Throwable cleanupFailure) {
+            outcome = mergeCleanupFailure(outcome, cleanupFailure);
+        }
+        if (outcome instanceof Error error) {
+            throw error;
+        }
+        if (outcome instanceof RuntimeException runtime) {
+            return runtime;
+        }
+        return new IllegalStateException("Failed to release staged app-chain block", outcome);
+    }
+
+    /** Close an already-published round after a failed event-loop operation. */
+    private Throwable discardRoundAfterFailure(Throwable primary) {
+        try {
+            discardRound();
+            return primary;
+        } catch (Throwable cleanupFailure) {
+            return mergeCleanupFailure(primary, cleanupFailure);
         }
     }
 
@@ -883,15 +1174,16 @@ final class AppChainEngine implements AutoCloseable {
      * batch — discarding the batch discards the round.
      */
     private AppliedBlock applyBlock(AppBlock block) {
-        WriteBatch batch = new WriteBatch();
-        byte[] committedRoot = ledger.stateRoot();
+        WriteBatch batch = Objects.requireNonNull(
+                writeBatchFactory.get(), "writeBatchFactory returned null");
         try {
+            byte[] committedRoot = ledger.stateRoot();
+            FxKernel.Result[] fxResult = new FxKernel.Result[1];
             byte[] newRoot = ledger.mpfNodeStore().withBatch(batch, () -> {
                 MpfTrie trie = committedRoot != null
                         ? new MpfTrie(ledger.mpfNodeStore(), committedRoot)
                         : new MpfTrie(ledger.mpfNodeStore());
-                BatchStateWriter writer = new BatchStateWriter(trie);
-                stateMachine.apply(block, writer);
+                fxResult[0] = fxKernel.apply(stateMachine, block, trie, fxReader);
                 return trie.getRootHash();
             });
             byte[] effectiveRoot = newRoot != null ? newRoot : new byte[32];
@@ -899,18 +1191,103 @@ final class AppChainEngine implements AutoCloseable {
                     block.prevHash(), block.l1Slot(), block.l1BlockHash(), block.timestamp(),
                     block.messagesRoot(), effectiveRoot, block.messages(), block.proposer(),
                     block.cert());
-            return new AppliedBlock(applied, batch);
-        } catch (Exception e) {
-            batch.close();
-            throw new RuntimeException("Failed to apply app block " + block.height(), e);
+            return new AppliedBlock(applied, batch, fxResult[0]);
+        } catch (Throwable failure) {
+            Throwable outcome = failure;
+            try {
+                batch.close();
+            } catch (Throwable cleanupFailure) {
+                outcome = mergeCleanupFailure(outcome, cleanupFailure);
+            }
+            if (outcome instanceof Error error) {
+                throw error;
+            }
+            throw new RuntimeException("Failed to apply app block " + block.height(), outcome);
         }
     }
 
+
     private boolean verifyMemberSignature(AppMessage message, long height) {
+        if (message == null || !config.chainId().equals(message.getChainId())
+                || message.getSender() == null || message.getSender().length != 32) {
+            return false;
+        }
         String senderHex = HexUtil.encodeHexString(message.getSender()).toLowerCase(Locale.ROOT);
         return group.containsAt(senderHex, height)
                 && message.getAuthProof() != null
                 && AppMessageSigner.verify(message.getAuthProof(), message.signedBodyBytes(), message.getSender());
+    }
+
+    private boolean validBlockProfile(AppBlock block, String source, boolean proposal) {
+        if (block == null || block.version() != AppBlock.BLOCK_VERSION) {
+            log.warn("{} has unsupported app-block version — rejecting", source);
+            return false;
+        }
+        if (!config.chainId().equals(block.chainId())) {
+            log.warn("{} chain identity does not match local app chain '{}' — rejecting",
+                    source, config.chainId());
+            return false;
+        }
+        if (block.height() < 1 || block.l1Slot() < 0 || block.timestamp() < 0
+                || block.prevHash() == null || block.prevHash().length != 32
+                || block.l1BlockHash() == null
+                || block.l1Slot() == 0 && block.l1BlockHash().length != 0
+                || block.l1Slot() > 0 && block.l1BlockHash().length != 32
+                || block.messagesRoot() == null || block.messagesRoot().length != 32
+                || block.stateRoot() == null || block.stateRoot().length != 32
+                || block.proposer() == null || block.proposer().length != 32
+                || block.messages() == null
+                || block.messages().size() > config.maxBlockMessages()
+                || block.messages().size() > AppChainConfig.MAX_BLOCK_MESSAGES
+                || block.cert() == null
+                || proposal && (block.cert().scheme() != FinalityCert.SCHEME_ED25519
+                || !block.cert().signatures().isEmpty())) {
+            log.warn("{} is outside the app-block v1 structural profile — rejecting", source);
+            return false;
+        }
+        Set<String> messageIds = new HashSet<>();
+        for (AppMessage message : block.messages()) {
+            if (message == null || message.getMessageId() == null
+                    || message.getMessageId().length != 32
+                    || !messageIds.add(HexUtil.encodeHexString(message.getMessageId()))) {
+                log.warn("{} has duplicate or malformed message identities — rejecting", source);
+                return false;
+            }
+            if (ledger.messageHeight(message.getMessageId()).isPresent()) {
+                log.warn("{} replays an already-finalized message identity — rejecting", source);
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private boolean validFinalizedMessageProfile(AppMessage message) {
+        if (message == null || message.getVersion() != AppMessage.ENVELOPE_VERSION
+                || message.getMessageId() == null || message.getMessageId().length != 32
+                || !config.chainId().equals(message.getChainId())
+                || message.getTopic() == null || message.getTopic().indexOf('\0') >= 0
+                || !StandardCharsets.UTF_8.newEncoder().canEncode(message.getTopic())
+                || message.getTopic().getBytes(StandardCharsets.UTF_8).length
+                > AppChainConfig.MAX_TOPIC_BYTES
+                || AppChainSystemTopics.isDiffusionOnly(message.getTopic())
+                || message.getSender() == null || message.getSender().length != 32
+                || message.getSenderSeq() < 0 || message.getExpiresAt() < 0
+                || message.getBody() == null
+                || message.getBody().length > config.maxMessageBytes()
+                || message.getBody().length > AppChainConfig.MAX_MESSAGE_BYTES
+                || message.getAuthScheme() != FinalityCert.SCHEME_ED25519
+                || message.getAuthProof() == null
+                || message.getAuthProof().length
+                != AppChainConfig.ED25519_SIGNATURE_BYTES) {
+            return false;
+        }
+        return true;
+    }
+
+    private boolean authorizedResultMessage(AppMessage message) {
+        return !com.bloxbean.cardano.yano.api.appchain.effects.FxResultBody.TOPIC
+                .equals(message.getTopic())
+                || effectsSettings.resultSignerAllowed(message.getSender());
     }
 
     /**
@@ -1153,8 +1530,151 @@ final class AppChainEngine implements AutoCloseable {
 
     @Override
     public void close() {
-        executor.shutdownNow();
-        discardRound();
+        // shutdownNow only closes admission/interrupts the loop; it never
+        // waits for interrupt-resistant plugin code. Concurrent callers are
+        // serialized so every returning caller has observed the one shutdown
+        // request, while the call itself remains bounded.
+        ShutdownRequest shutdownRequest;
+        synchronized (closeLock) {
+            if (closeStarted) {
+                return;
+            }
+            closeStarted = true;
+            shutdownRequest = requestExecutorShutdown(executor);
+            if (!shutdownRequest.accepted()) {
+                // No shutdown request reached the executor. Permit a later
+                // owner to retry instead of publishing a false closed state.
+                closeStarted = false;
+            }
+        }
+        if (shutdownRequest.failure() != null) {
+            log.warn("App-chain engine '{}' shutdown request failed (errorType={})",
+                    config.chainId(), callbackFailureType(shutdownRequest.failure()));
+            throw propagateLifecycleFailure(
+                    shutdownRequest.failure(), "App-chain engine shutdown failed");
+        }
+    }
+
+    /**
+     * Request event-loop shutdown without losing ownership when the preferred
+     * interrupting path fails. A successful graceful fallback still fences
+     * admission and lets {@link #closeCompletion()} reflect real termination.
+     */
+    static ShutdownRequest requestExecutorShutdown(ScheduledExecutorService executor) {
+        Objects.requireNonNull(executor, "executor");
+        try {
+            executor.shutdownNow();
+            return new ShutdownRequest(true, null);
+        } catch (Throwable forceFailure) {
+            try {
+                executor.shutdown();
+                return new ShutdownRequest(true, forceFailure);
+            } catch (Throwable gracefulFailure) {
+                return new ShutdownRequest(false,
+                        LifecycleFailures.merge(forceFailure, gracefulFailure));
+            }
+        }
+    }
+
+    record ShutdownRequest(boolean accepted, Throwable failure) {
+    }
+
+    private static RuntimeException propagateLifecycleFailure(
+            Throwable failure,
+            String message
+    ) {
+        if (failure instanceof Error error) {
+            throw error;
+        }
+        if (failure instanceof RuntimeException runtime) {
+            return runtime;
+        }
+        return new IllegalStateException(message, failure);
+    }
+
+    /**
+     * Completes after every admitted engine task has ended and the final
+     * in-flight round has been discarded. It may remain pending after bounded
+     * {@link #close()} returns when a plugin callback ignores interruption.
+     */
+    CompletionStage<Void> closeCompletion() {
+        return closeCompletion.minimalCompletionStage();
+    }
+
+    private void finishCloseAfterExecutorTermination() {
+        Throwable failure = null;
+        try {
+            // ScheduledThreadPoolExecutor invokes terminated() only after no
+            // worker can still touch pendingRound, so cleanup cannot overlap
+            // state-machine/sequencer/broadcast callbacks on the event loop.
+            discardRound();
+        } catch (Throwable cleanupFailure) {
+            failure = cleanupFailure;
+            log.error("App-chain engine '{}' cleanup failed (errorType={})",
+                    config.chainId(), callbackFailureType(cleanupFailure));
+        }
+
+        if (failure == null) {
+            closeCompletion.complete(null);
+            return;
+        }
+
+        closeCompletion.completeExceptionally(failure);
+        // Preserve process-fatal semantics after publishing the terminal
+        // signal. Ordinary cleanup failures are reported through the stage.
+        if (failure instanceof VirtualMachineError virtualMachineError) {
+            throw virtualMachineError;
+        }
+        if (failure instanceof ThreadDeath threadDeath) {
+            throw threadDeath;
+        }
+    }
+
+    private static String callbackFailureType(Throwable failure) {
+        String type = failure.getClass().getName();
+        return type.length() <= MAX_CALLBACK_FAILURE_TYPE_CHARS
+                ? type : type.substring(0, MAX_CALLBACK_FAILURE_TYPE_CHARS);
+    }
+
+    /**
+     * Merge a cleanup failure without allowing a containable {@link Error}
+     * (for example an assertion or linkage failure from plugin code) to mask
+     * an actual JVM termination signal raised while releasing native state.
+     */
+    private static Throwable mergeCleanupFailure(Throwable current, Throwable next) {
+        return LifecycleFailures.merge(current, next);
+    }
+
+    /** Extract the failure retained by ScheduledThreadPoolExecutor's Future wrapper. */
+    static Throwable completedTaskFailure(Runnable task, Throwable directFailure) {
+        if (directFailure != null) {
+            return directFailure;
+        }
+        if (!(task instanceof Future<?> future) || !future.isDone()) {
+            return null;
+        }
+        try {
+            future.get();
+            return null;
+        } catch (CancellationException ignored) {
+            return null;
+        } catch (ExecutionException failure) {
+            return failure.getCause();
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            return null;
+        }
+    }
+
+    /** Preserve actual JVM termination signals after publishing a class-only diagnostic. */
+    @SuppressWarnings("removal")
+    private static void rethrowIfJvmFatal(Throwable failure) {
+        if (failure instanceof VirtualMachineError fatal) {
+            throw fatal;
+        }
+        if (failure instanceof ThreadDeath fatal) {
+            throw fatal;
+        }
     }
 
     // ------------------------------------------------------------------
@@ -1178,48 +1698,21 @@ final class AppChainEngine implements AutoCloseable {
     private static final class AppliedBlock implements AutoCloseable {
         final AppBlock block;
         final WriteBatch batch;
+        final FxKernel.Result fx;
+        private boolean closed;
 
-        AppliedBlock(AppBlock block, WriteBatch batch) {
+        AppliedBlock(AppBlock block, WriteBatch batch, FxKernel.Result fx) {
             this.block = block;
             this.batch = batch;
-        }
-
-        void closeBatchOnly() {
-            batch.close();
+            this.fx = fx;
         }
 
         @Override
         public void close() {
-            batch.close();
-        }
-    }
-
-    /** Writer used during apply — reads see committed state, writes go to the trie. */
-    private final class BatchStateWriter implements AppStateWriter {
-        private final MpfTrie trie;
-
-        BatchStateWriter(MpfTrie trie) {
-            this.trie = trie;
-        }
-
-        @Override
-        public void put(byte[] key, byte[] value) {
-            trie.put(key, value);
-        }
-
-        @Override
-        public void delete(byte[] key) {
-            trie.delete(key);
-        }
-
-        @Override
-        public Optional<byte[]> get(byte[] key) {
-            return Optional.ofNullable(trie.get(key));
-        }
-
-        @Override
-        public byte[] stateRoot() {
-            return trie.getRootHash();
+            if (!closed) {
+                closed = true;
+                batch.close();
+            }
         }
     }
 
@@ -1234,6 +1727,11 @@ final class AppChainEngine implements AutoCloseable {
         public byte[] stateRoot() {
             byte[] root = ledger.stateRoot();
             return root != null ? root : new byte[32];
+        }
+
+        @Override
+        public long committedHeight() {
+            return ledger.tipHeight();
         }
     }
 }

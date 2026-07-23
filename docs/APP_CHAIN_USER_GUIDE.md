@@ -1,8 +1,15 @@
 # Yano App Chain — Developer & User Guide
 
+> New to Yano app chains? Begin with the
+> [task-oriented tutorial hub](appchain/README.md), then return here for the
+> complete API, configuration, security, and operations reference.
+
 Yano can run an **app chain** next to Cardano L1: a sequenced, replicated,
-application-specific ledger maintained by a trusted or semi-trusted group of
-Yano nodes. The same node keeps syncing/serving Cardano L1; the app chain runs
+application-specific ledger maintained by a known-member, permissioned group
+of Yano nodes. The current pilot posture assumes trusted member operators;
+semi-trusted deployments require the additional co-attestation and independent
+outcome-auditing controls tracked in the app-layer open-items document. The same
+node keeps syncing/serving Cardano L1; the app chain runs
 in parallel over the same node-to-node protocol stack (a CIP-137-derived
 "appmsg" mini-protocol family), commits its state into a Merkle Patricia
 Forestry (MPF) trie, and periodically **anchors the state root to Cardano L1**.
@@ -15,12 +22,15 @@ Forestry (MPF) trie, and periodically **anchors the state root to Cardano L1**.
 │  tx-submission              protocol 103     │    same handshake
 │  RocksDB chain state        RocksDB + MPF    │
 │           └────── anchor tx ──────┘          │
-│        (state root → L1 metadata)            │
+│      (state root → metadata/script anchor)   │
 └──────────────────────────────────────────────┘
 ```
 
-Design references: `adr/app-layer/005-yano-app-chain-framework.md` (core framework)
-and `adr/app-layer/006-appchain-enterprise-extensions-and-zk.md` (extensions & ZK).
+Design references: `adr/app-layer/005-yano-app-chain-framework.md` (core
+framework), `adr/app-layer/006-appchain-enterprise-extensions-and-zk.md`
+(extensions & ZK), and
+`adr/app-layer/015-governed-composite-profile-evolution.md` (governed
+composite profiles).
 Wire format specs (for building compatible implementations in other languages):
 yaci `core/src/main/cddl/appmsg/` and yano `core-api/src/main/cddl/appchain/`.
 
@@ -34,8 +44,13 @@ else is opt-in — a plugin jar on the node or a library in your application
 |---|---|---|
 | `yano-appchain-stdlib` | `appchain/appchain-stdlib` | Ready state machines, selected by id (§9); ships in the distribution |
 | `yano-appchain-client` | `appchain/appchain-client` | Java client SDK: REST + SSE + client-side proof verification (§16) |
+| `yano-appchain-composite-client` | `appchain/appchain-composite-client` | Governed-profile finality, one-root MPF, epoch-chain, and authorization-policy verification |
 | `yano-appchain-testkit` | `appchain/appchain-testkit` | JUnit 5 `@AppChainCluster` embedded clusters for tests (§16) |
-| `yano-appchain-kafka-sink` | `appchain/extensions/appchain-kafka-sink` | Node plugin: finalized blocks → Kafka topics (§10) |
+| `yano-appchain-integration-contracts` | `appchain/appchain-integration-contracts` | Provider-neutral connector payload, receipt, CDDL, and golden-vector contracts |
+| `yano-appchain-kafka` | `appchain/extensions/appchain-kafka` | Node plugin: finalized blocks and acknowledged `kafka.publish` effects → Kafka topics (§10, §18) |
+| `yano-appchain-objectstore-s3` | `appchain/extensions/appchain-objectstore-s3` | Node plugin: immutable/versioned `object.put` effects for tested S3-compatible stores (§18) |
+| `yano-appchain-ipfs` | `appchain/extensions/appchain-ipfs` | Node plugin: reconciled pin-only `ipfs.pin` effects through a configured Kubo RPC (§18) |
+| `yano-appchain-effects-cardano` | `appchain/extensions/appchain-effects-cardano` | Node plugin: Cardano payment executor for the effect system (§18) |
 | `yano-appchain-zk` | `appchain/extensions/appchain-zk` | Node plugin, EXPERIMENTAL: ZK state machines & verification (§17) |
 | `yano-appchain-spring-boot-starter` | `spring-starters/appchain-spring-boot-starter` | Spring Boot auto-config for the client SDK (§16) |
 
@@ -57,17 +72,22 @@ the app chain with configuration flags only; no code required:
   balances, document trails — selected purely by config (section 9).
 - **REST endpoints** to submit and read messages, browse blocks, and fetch
   proofs (section 4).
-- **Sequencing with real finality**: one configured node (the *sequencer*)
-  batches messages into app blocks; every member re-executes the block,
+- **Sequencing with real finality**: fixed mode uses one configured proposer;
+  rotating mode deterministically changes proposer over L1-slot windows. The
+  active proposer batches messages into app blocks; every member re-executes the block,
   verifies the state root byte-for-byte and co-signs. A block is final only
   with a threshold **finality certificate** (n-of-members Ed25519 signatures,
   all verified).
-- **L1 anchoring** (optional): the node itself builds, signs and submits a
-  Cardano transaction embedding the app-chain state root as metadata, and
-  confirms it through its own L1 sync. No external API/provider involved.
+- **L1 anchoring** (optional): the node itself builds, signs and submits either
+  a metadata commitment or a threshold-co-signed script-anchor transaction,
+  then confirms it through its own L1 sync. No external API/provider involved.
 - **Catch-up**: a member that joins late or restarts behind fetches finalized
   blocks from peers (protocol 103) and verifies everything (hash chain,
   certificates, re-executed state roots) before committing.
+- **Effects** (optional): a finalized state transition can trigger an action
+  *outside* the chain — a Cardano payment, webhook, ERP call — safely, by
+  emitting a provable record that a separate runtime executes and reports back
+  on-chain (section 18).
 
 Typical uses with zero code: multi-party audit/compliance logs, consortium
 message queues with neutral custody, attestation feeds, document/DPP trails —
@@ -80,9 +100,9 @@ can prove any record against a public Cardano anchor."
 
 | Term | Meaning |
 |---|---|
-| **Chain id** | Name of your app chain (`yano.app-chain.chain-id`). One group = one chain id. A node can host several chains (section 8). |
-| **Member** | A participant identified by an Ed25519 public key. Only members' messages are accepted; members co-sign blocks. |
-| **Sequencer / proposer** | The one member (by public key) that orders messages into blocks. Fixed, configured. |
+| **Chain id** | Name of your app chain (`yano.app-chain.chain-id`), encoded as 1–128 valid UTF-8 bytes. One group = one chain id. A node can host several chains (section 8). |
+| **Member** | A participant identified by an Ed25519 public key. Only members' messages are accepted; members co-sign blocks. The v1 profile supports at most 32 members. |
+| **Sequencer / proposer** | The member that orders messages into blocks. It is either a configured fixed proposer or the deterministic member selected for the current L1-slot window in rotating mode. |
 | **Threshold** | How many member signatures a finality certificate needs (e.g. 2 of 2). |
 | **App message** | Envelope with an **opaque body** (your bytes — CBOR/JSON/protobuf/anything), signed by the sender. The framework never parses the body. |
 | **Topic** | Optional sub-stream label inside a chain (routing/filtering). Names starting with `~` are reserved. |
@@ -90,6 +110,15 @@ can prove any record against a public Cardano anchor."
 | **State root** | MPF (Aiken-compatible Merkle Patricia Forestry) root after applying a block. Identical on every member, anchorable to L1, provable. |
 | **State machine** | The only component that interprets message bodies. Built-in: `ordered-log` + the standard library (section 9). Custom ones plug in (section 6). |
 | **Anchor leader** | The one node with `anchor.enabled` — it drives L1 anchoring (builds/pays/submits anchor txs). A coordination + fee-paying role, orthogonal to the proposer and NOT a trust point (§5.1); it does not rotate. |
+
+The app-chain status page (`/ui/app-chain/`) includes a bounded inspector for
+messages in its live finalized stream. Selecting a row freezes that message in
+the inspector while new events continue arriving. The inspector shows envelope
+metadata and, when safe, a strict UTF-8 or formatted JSON view; otherwise it
+shows bounded hexadecimal bytes. This is a technical view of the opaque
+app-chain body, not a domain-document viewer. Documents referenced by a message
+remain in their external system (for example object storage or IPFS); a domain
+UI must retrieve and verify those bytes under its own authorization policy.
 
 Trust model: **fail closed**. Envelope signatures, membership, vote
 signatures, and certificate thresholds are cryptographically verified on every
@@ -103,16 +132,74 @@ state machine's exact wire format — see the
 
 ---
 
-## 3. Quick start: two-node cluster with the default distribution
+## 3. Quick start: generated project or two-node manual setup
 
 This walkthrough uses `java -jar` with `-D` flags (built from source). The
-**official distributions** work the same way — only where config lives differs:
+**official distributions** work the same way — only where ordinary runtime
+config lives differs:
 the release zip (`yano-<ver>.zip`) has a `./yano.sh start:<profile>` launcher
 plus `config/application.yml`; the Docker bundle (`yano-docker-<ver>.zip`)
 mounts `config/application.yml` and a `plugins/` directory into the
 `bloxbean/yano` image; native binaries mirror the zip layout (but cannot load
-plugin jars). See the tutorial's Part 0 for per-distribution instructions;
-releases: https://github.com/bloxbean/yano/releases
+directory plugin JARs after build; manifested bundles may be included when the
+native application is built). See the tutorial's Part 0 for per-distribution
+instructions; releases: https://github.com/bloxbean/yano/releases
+
+The public REST prefix is the exception: it is an immutable artifact input,
+not a `-D` or YAML launch setting. Build it with `-PyanoApiPrefix` as described
+in section 4 and the distribution guide.
+
+### 3.0 Recommended: generate a release-pinned project
+
+The distribution includes the separate app-chain developer tool behind
+`yano.sh`; it does not start the node while generating or validating:
+
+```bash
+unzip yano-<version>.zip && cd yano-<version>
+./yano.sh appchain recipes
+./yano.sh appchain init --non-interactive \
+  --recipe owned-registry --network preprod --members 3 \
+  --deployment host --output product-registry
+```
+
+The user-owned source is `product-registry/appchain.yaml`. The initializer
+materializes all consensus defaults, node overlays, schema/catalog snapshots,
+secret-reference examples, an AI skill, CI checks, and `appchain.lock`. If
+member public keys are not known yet, the lock records
+`PUBLIC_MEMBER_IDENTITIES_REQUIRED_BEFORE_START`; add the three public keys to
+the blueprint and regenerate:
+
+```bash
+./yano.sh appchain render product-registry
+./yano.sh appchain config validate --mode project product-registry
+./yano.sh appchain doctor product-registry --distribution .
+```
+
+Provision each node's private signer only in its untracked
+`secrets/nodeN.env`, then copy the same validated project to the three
+machines. Each operator starts only its node index with
+`scripts/start-node N`; the shared consensus file and lock remain identical.
+
+For Kubernetes delivery, derive reviewed output from the validated project:
+
+```bash
+./yano.sh appchain gitops product-registry \
+  --target helm --output product-registry-helm
+./yano.sh appchain gitops product-registry \
+  --target kustomize --output product-registry-kustomize
+```
+
+The exporter creates Secret references, never Secret values, and writes a
+`gitops.lock` binding the manifests to the blueprint, resolved configuration,
+release catalog, and generated-file hashes. It does not apply manifests or
+operate a cluster. Devnet is intentionally excluded because its current
+launcher generates ephemeral genesis inputs.
+
+The generated `.github/workflows/appchain-verify.yml` requires repository
+variables `YANO_DISTRIBUTION_URL` and `YANO_DISTRIBUTION_SHA256`; it accepts
+only the exact checksum-pinned HTTPS distribution. The same guarded
+`configure-yano-appchain` skill is available under `skills/` in the release
+and `ai/` in the project.
 
 ### 3.1 Generate member keys
 
@@ -202,14 +289,14 @@ without writing any config:
 
 ```bash
 unzip yano-<version>.zip && cd yano-<version>
-./appchain-cluster/cluster.sh start 3        # 3-node devnet: L1 producer + 2 followers,
+./yano.sh appchain cluster start 3          # 3-node devnet: L1 producer + 2 followers,
                                              # 2 demo chains (ordered-log + kv-registry)
-./appchain-cluster/cluster.sh status         # tips + state-root agreement across nodes
-./appchain-cluster/cluster.sh submit orders-chain demo "hello"
-./appchain-cluster/cluster.sh kv registry-chain set color blue
+./yano.sh appchain cluster status           # tips + state-root agreement across nodes
+./yano.sh appchain cluster submit orders-chain demo "hello"
+./yano.sh appchain cluster kv registry-chain set color blue
 ./appchain-cluster/loadtest.sh orders-chain -n 2000 -c 20     # throughput test
 ./appchain-cluster/loadtest.sh registry-chain --kv -n 2000    # kv chains need --kv
-./appchain-cluster/cluster.sh clean          # stop + wipe
+./yano.sh appchain cluster clean            # stop + wipe
 ```
 
 Highlights (full reference: `appchain-cluster/README.md`):
@@ -231,7 +318,12 @@ Highlights (full reference: `appchain-cluster/README.md`):
 
 ## 4. REST API
 
-Base path: `${yano.api-prefix}/app-chain` (default `/api/v1/app-chain`).
+Base path: `<artifact-api-prefix>/app-chain` (default
+`/api/v1/app-chain`). The prefix is fixed into each JVM/native/container
+artifact with strict `-PyanoApiPrefix=<path>`; it is not editable launch
+configuration. `/` and canonical paths up to 256 characters are supported.
+Changing it requires a rebuild; see
+[`BUILD_DISTRIBUTIONS.md`](BUILD_DISTRIBUTIONS.md#artifact-api-prefix).
 
 Every chain endpoint below is also available **chain-scoped** as
 `/app-chain/chains/{chainId}/...` on a multi-chain node (section 8). The
@@ -403,14 +495,19 @@ curl -X POST localhost:7070/api/v1/app-chain/chains/<chain-id>/admin/anchor/boot
 
 The bootstrap consumes a seed UTxO from the wallet and mints a **one-shot
 thread NFT** into the anchor validator's script address with the genesis
-datum. That mint defines the chain's permanent on-chain identity:
+datum at app height `0`. This transaction establishes identity only; it does
+not unilaterally certify the current app tip. On a non-empty chain the leader
+immediately starts the normal threshold-co-sign round for the first real
+advance, without waiting for another user transaction or the configured
+anchor cadence. That mint defines the chain's permanent on-chain identity:
 
 - **thread policy id** — unique per chain (derived from the consumed seed
   UTxO; can never be minted again). Burning is forbidden by the policy.
 - **script address** — the validator is parameterized by the policy id, so
   every chain gets its own address.
-- The NFT's **asset name is the chain-id** (UTF-8, ≤ 32 bytes), so explorers
-  like Cardanoscan show a readable label. Identity and uniqueness come from
+- The NFT's **asset name is the first 32 bytes of the chain-id's UTF-8
+  encoding** (the whole id when it fits), giving explorers a useful label.
+  The full chain id remains in the datum. Identity and uniqueness come from
   the policy id, never the name.
 
 From then on the leader runs threshold **co-sign rounds**: it builds the
@@ -418,16 +515,39 @@ advance tx (spending the thread UTxO, writing the next datum), members verify
 the proposed range against their OWN ledger + L1 view and return Ed25519
 witnesses, and at `threshold` signatures the tx is submitted. The on-chain
 validator independently enforces: exactly one continuing thread output,
-monotonic height, unchanged chain-id, ≥ threshold signatures of the datum's
-member set, and no value drain. Membership changes (§14.2) flow into the
-datum, so the on-chain member set tracks the chain's governance.
+the exact v1 datum profile on both input and successor (seven fields,
+version 1, bounded chain id, non-negative height, 32-byte commitments,
+1--32 sorted unique member keys, and a valid threshold), monotonic height,
+unchanged chain-id, ≥ threshold signatures of the datum's member set, and no
+value drain. Membership changes (§14.2) flow into the datum, so the on-chain
+member set tracks the chain's governance.
+
+> **Preview upgrade note:** the July 2026 pre-release v1-profile hardening
+> changed both bundled spending-validator hashes. An anchor bootstrapped with
+> an earlier preview artifact has a different immutable identity and must be
+> re-bootstrapped after cleaning or migrating that disposable preview state.
+> The thread policy did not change. Released validator identities will use an
+> explicit versioned migration rather than an in-place artifact replacement.
 
 Watch progress in `/status` under `anchor` (`bootstrapped`, `threadPolicyId`,
 `scriptAddress`, `walletAddress`, `cosignPending`, `lastAnchorTx`,
 `lagBlocks`), or on the `/ui/app-chain/` page's L1 Anchor card. Anchors fire
 when at least one NEW block exists and `every-blocks` accumulated since the
-last anchor (or `max-interval-minutes` elapsed) — an idle chain anchors
-nothing and costs nothing.
+last anchor (or `max-interval-minutes` elapsed). The first real advance after
+bootstrap is immediate when the app tip is non-zero; an app chain that has
+never produced a block remains at height `0` and has nothing to anchor.
+
+Every script-anchor member independently reconciles `lastAnchoredHeight`,
+`lastAnchorTx`, `lastAnchorL1Slot` and `lagBlocks` from the authenticated
+thread UTxO in its own L1 view.  These durable fields should converge across
+members.  The page's “Anchors Confirmed/Observed (since restart)” value is a
+node-local operational counter and may differ after restarts.
+
+The reconciliation read is accepted only when the UTxO store's committed
+slot and block hash exactly match the node's canonical L1 point.  A follower
+also keeps a first-seen script identity non-authoritative until an exact
+advance transaction that it verified is accepted by the on-chain threshold;
+a single member's sign request cannot by itself open evidence or effect gates.
 
 ### 5.4 Independent verification (auditors, third parties)
 
@@ -440,17 +560,31 @@ one-shot mint.
 
 **Any message (e.g. an order on an ordered-log chain):**
 
-1. `GET /api/v1/app-chain/chains/{chainId}/evidence/{messageIdHex}` — a
-   self-contained **evidence bundle**: the message's block, every block up to
-   the next anchored one, finality-cert signatures, member set, anchor tx ref.
-2. Verify **offline** with `EvidenceVerifier.verify(bundle)` from
-   `yano-core-api` (no node needed). It checks: message ∈ block via the
-   recomputed messages-root; prev-hash chain intact; every block carries
-   ≥ threshold valid member signatures (m-of-n — unforgeable by one member);
-   the last block hash equals the anchored block hash.
-3. Close the loop on L1: confirm the bundle's anchor tx exists on Cardano and
-   that the bundle's **member set + threshold match the on-chain datum**
-   (take those from L1, not from the bundle).
+1. `GET /api/v1/app-chain/chains/{chainId}/evidence/{messageIdHex}` — portable
+   **evidence material**: the message's block, every block up to the next
+   anchored one, finality-cert signatures, claimed member set, and anchor ref.
+   A portable segment carries at most 4,096 blocks and at most one configured
+   block-byte budget (with a 16 MiB absolute ceiling). If reaching the current
+   anchor would exceed either bound, the response intentionally contains only
+   the finalized message block and no anchor reference; obtain an archived
+   bundle or a future range proof rather than treating the missing reference
+   as failed finality.
+2. Obtain the expected chain id, member keys, and threshold independently from
+   the trusted chain profile or the exact Cardano anchor datum. Verify with
+   `EvidenceVerifier.verify(bundle, trustContext)` from `yano-core-api`. It
+   checks message-id inclusion via the recomputed messages-root, the prev-hash
+   chain, the independently pinned m-of-n signatures, and the claimed anchor
+   block hash. Never derive the trust context only from the bundle.
+3. Close the loop on L1: fetch the transaction and outputs, require the expected
+   script address and state-thread token, decode the canonical inline datum,
+   and match its chain id, height, block hash, state root, member set, and
+   threshold. Transaction-hash visibility alone is not anchor verification.
+
+Finality signs the block header, whose messages-root commits ordered message
+ids. It does not independently authenticate every serialized message-envelope
+field or the stored proposer field. After body pruning, evidence still proves
+the retained message id was included but reports that original content was not
+verified.
 
 **Any state entry (e.g. a kv-registry key) against the anchored root:**
 
@@ -494,7 +628,11 @@ like any messages: `GET .../messages/by-topic/~l1%2Fdeposits`.
 
 The framework never interprets message bodies — a **state machine** does.
 Before writing one, check the standard library (section 9): registry,
-approvals, balances and document-trail machines ship in the distribution.
+approvals, balances and document-trail machines ship in the distribution. The
+separate packaged role-workflow bundle supplies generic `role-approvals` for
+non-member business actors. The evidence-profile bundle supplies the complete
+`role-evidence` preset; see
+[Domain Actors and Role-Aware Approvals](APP_CHAIN_DOMAIN_ROLES.md).
 For everything else, implement
 `com.bloxbean.cardano.yano.api.appchain.AppStateMachine`:
 
@@ -554,10 +692,29 @@ The plugin template ships this test pre-wired (`CounterConformanceTest`).
        public AppStateMachine create() { return new OrderBookStateMachine(); }
    }
    ```
-2. Add the ServiceLoader manifest to your jar:
+2. Add the ServiceLoader entry to your jar:
    `META-INF/services/com.bloxbean.cardano.yano.api.appchain.AppStateMachineProvider`
    containing the provider class name.
-3. Drop the jar into the node's plugins directory (`yaci.plugins.directory`,
+3. Add the bundle manifest
+   `META-INF/yano/plugins/<bundle-id>.json`; its contribution kind, name and
+   provider class must exactly match the ServiceLoader entry. Package any
+   non-host runtime dependencies into the same reproducible bundle JAR; do not
+   deploy adjacent thin dependency JARs as one catalog-v1 bundle.
+4. For schema-aware tooling, add the data-only descriptor
+   `META-INF/yano/appchain-config-metadata-v1.json`. For distribution or CI
+   trust, sign the descriptor and exact runtime manifest in
+   `META-INF/yano/appchain-config-metadata-v1.sig.json`, then verify with an
+   operator-pinned raw Ed25519 public key:
+   ```bash
+   ./yano.sh appchain metadata verify plugins/order-book.jar \
+     --trust-key vendor-release-2026=<64-hex-public-key>
+   ```
+   Verification authenticates publisher identity and the byte binding only.
+   It does not load the plugin or raise third-party metadata above `PARTIAL`
+   validation coverage. The envelope schema and canonical payload contract are
+   packaged as `appchain-metadata-trust.schema.json` and documented by the
+   app-chain developer tool.
+5. Drop the jar into the JVM node's plugins directory (`yaci.plugins.directory`,
    default `plugins/`), and select it:
    ```yaml
    yano:
@@ -568,6 +725,13 @@ The plugin template ships this test pre-wired (`CounterConformanceTest`).
    Compile against the `yano-core-api` artifact (`AppStateMachine`,
    `AppMessage`, `AppStateWriter` live there / in `yaci-core`).
    A ready Gradle project for this is `scaffolds/plugin-template`.
+
+ServiceLoader-only legacy providers remain a temporary compatibility path for
+self-contained JARs loaded from the JVM plugin directory (and for explicit
+library compatibility mode). Packaged JVM/native build-time inclusion requires
+the bundle manifest: strict index generation cannot safely assign an
+unmanifested provider's external dependencies to a bundle closure and tells
+the developer to add a manifest or use the JVM directory bundle.
 
 ### 6.2 Embed programmatically (library mode)
 
@@ -587,9 +751,9 @@ Flat (single-chain) keys. The same suffixes apply per chain under
 | Property (`yano.app-chain.`) | Default | Description |
 |---|---|---|
 | `enabled` | — | See "Enabling" below |
-| `chain-id` | — | App-chain identity (required) |
+| `chain-id` | — | App-chain identity (required; 1–128 valid UTF-8 bytes, no NUL) |
 | `signing-key` | — | This member's Ed25519 private seed, hex, or a `scheme:reference` external-signer spec (§12) |
-| `members` | — | Comma-separated member public keys, hex (required; must include own key) |
+| `members` | — | Comma-separated member public keys, hex (required; must include own key; at most 32 in v1) |
 | `peers` | — | Comma-separated app-group peers `host:port` (their N2N server ports) |
 | `sequencer.proposer` | empty | Fixed sequencer's public key (implies `sequencer.mode: fixed`). No proposer AND no mode = diffusion-only (messages replicate, but no blocks/ledger) |
 | `sequencer.mode` | `fixed` | Consensus mode: `fixed` (ADR-005 S1), `rotating` (S2 — proposership rotates over L1-slot windows; needs no fixed proposer), or a plugin `SequencerModeProvider` id. **Must match on all members.** Finality (threshold certs, one-vote-per-height) is identical in every mode |
@@ -599,10 +763,10 @@ Flat (single-chain) keys. The same suffixes apply per chain under
 | `membership.approval-window-blocks` | `600` | `governed` only: blocks a half-approved command stays pending before expiring |
 | `transport.mode` | `shared` | Outbound app transport (node-global). `shared`: when the L1 upstream is also an app-group peer, protocols 100/103 ride its session — one TCP connection per peer pair, with an automatic dedicated-dial fallback if the session stays down (~15s grace). `dedicated`: always dial a separate app connection (bandwidth isolation from L1 sync). Peers that are not the upstream always use dedicated dials; inbound is unaffected (the server port multiplexes both since v1). Per-peer transport is visible in `status` under `peerTransports` |
 | `block.interval-ms` | `2000` | Proposer tick (blocks are only made when messages are pending) |
-| `block.max-bytes` | `4194304` (4 MiB) | Primary block-size cap: the proposer trims each block to fit the serialized size; members reject oversized proposals. Tune for throughput |
-| `block.max-messages` | `5000` | Safety backstop against tiny-message floods (the byte cap above is the primary limit) |
+| `block.max-bytes` | `4194304` (4 MiB) | Primary finalized-block-size cap (v1 maximum 16 MiB). The proposer reserves the framework's worst-case 32-member finality-certificate headroom before selecting messages; members reject oversized proposals and finalized blocks. Must exceed `max-message-bytes` by the pinned envelope/certificate headroom. Tune for throughput |
+| `block.max-messages` | `5000` | Safety backstop against tiny-message floods (v1 maximum 10,000; the byte cap above is primary) |
 | `state-machine` | `ordered-log` | Built-in id, a stdlib id (§9) or a plugin provider id |
-| `max-message-bytes` | `65536` | Max opaque body size |
+| `max-message-bytes` | `65536` | Max opaque body size (v1 maximum = 16 MiB minus the pinned block-envelope and worst-case certificate headroom) |
 | `max-ttl-seconds` | `3600` | Max accepted message TTL |
 | `default-ttl-seconds` | `600` | TTL applied to REST submissions |
 | `anchor.enabled` | `false` | L1 anchoring on this node (the anchor leader; script-mode members need NO anchor config) |
@@ -619,6 +783,19 @@ Flat (single-chain) keys. The same suffixes apply per chain under
 | `l1.stability-depth` | `0` | Depth of the stable L1 reference in app blocks (0 = off). When > 0, followers verify each proposal's L1 ref against their **own** L1 view (monotonic, hash-matched at depth; brief proposer lead is retried, a fabricated ref is rejected fail-closed) and the node refuses to start without an L1 event feed |
 | `pool.max-messages` | `10000` | Pending-pool capacity; a full pool returns 429 on submit and drops (counted) inbound gossip (§4) |
 | `message.enforce-sender-seq` | `false` | Consensus-visible sender-seq rule: followers reject blocks with stale/duplicate per-sender seqs (§4). Must match on all members |
+| `effects.enabled` | `false` | Enable the effect system (§18). **Consensus-affecting — must match on all members**; also all `effects.*` caps and gate/commitment keys below |
+| `effects.max-per-block` / `max-payload-bytes` / `max-expiry-blocks` / `result-window-blocks` | `256` / `16384` / `100000` / `100000` | Deterministic emission caps and result-incorporation window (§18.1); payload bytes are capped at 16 MiB—use payload-by-hash for larger bodies |
+| `effects.default-gate` | `app-final` | `app-final` \| `l1-anchored` \| `zk-settled` — when emitted effects become executable (§18.4) |
+| `effects.outcome-commitment` | `per-effect` | `per-effect` (O(1) proofs) \| `per-block` (trie growth O(effectful blocks); ZK-friendly) |
+| `effects.strict-reserved-prefix` | `true` | Reject app writes to the `~fx/` trie prefix (consensus-affecting; active even when effects are off) |
+| `effects.result.signers` | empty | Restrict who may attest `~fx/result` to these member keys (default: any member; §18.5) |
+| `effects.executor.enabled` | `false` | This node RUNS effects (execution plane, §18.3). Node-local — not consensus. When explicitly enabled, invalid settings, missing executors or runtime initialization failure make startup fail; the node never silently drops this role |
+| `effects.executor.types` / `tick-ms` / `max-parallel` / `max-attempts` / `backoff-initial-ms` / `backoff-max-ms` | ` ` / `2000` / `4` / `8` / `2000` / `300000` | Executor tuning (§18.3) |
+| `effects.executor.identity` | generated node-local sidecar | Stable identity for this node's disposable execution progress. The generated file lives beside the checkpointed chain directory, so member-key rotation preserves work but restoring onto another executor resets/quarantines it. Set an explicit unique value when storage is relocated; never clone it across physical executors (§18.3) |
+| `effects.external.enabled` | `false` | Expose the external-executor claim/report REST surface (§18.6) |
+| `effects.executors.<scheme>.*` | — | Executor plugin config (built-in `webhook`; `cardano` via the plugin jar) — passed to the executor with the prefix stripped (§18.3) |
+| `effects.retention.keep-blocks` | `100000` | Prune resolved effect records older than this behind the tip |
+| `machines.approvals.on-approved-effect.enabled` (+ `type` / `gate` / `expiry-blocks`) | `false` | Emit one generic CHAIN-result effect after final approval (§18.3); also requires `machines.approvals.activations.on-approved-effect=<height>` |
 
 **Enabling.** Three states, checked in this order:
 
@@ -632,7 +809,13 @@ Flat (single-chain) keys. The same suffixes apply per chain under
 
 Extension settings are documented next to the capability they configure:
 `chains[i].*` (§8), `webhooks` and `sinks.*` (§10), `api.auth.enabled` and
-`api.keys` (§12), `retention.*` (§13), `zk.*` (§17).
+`api.keys` (§12), `retention.*` (§13), `zk.*` (§17), `effects.*` (§18).
+
+Current v1 `effects.*` consensus settings—including `result.signers`, caps,
+commitment mode and root/record algorithms—are immutable after chain launch.
+Machine activation is implemented, but framework-level effect-setting epochs
+from ADR-010.1 D5 are still pending; changing these values on an existing
+history can make replay diverge.
 
 Storage: each app ledger is a separate RocksDB at
 `<yano.storage.path>/app-chain/<chain-id>/` — blocks, state trie, indexes and
@@ -726,6 +909,14 @@ sign-off.
 yano.app-chain.state-machine: approvals
 ```
 
+Use `approvals` when app-chain member keys are intentionally the business
+approvers. Do not treat a REST API key or relay member as an employee/auditor
+identity. For governed organizations, actor-key revisions, roles,
+organization-distinct clauses, portable signatures, and the stock evidence
+flow, select the separate `role-evidence` preset for a new chain and follow
+[the domain-role guide](APP_CHAIN_DOMAIN_ROLES.md). Existing chains require an
+ADR-015 governed profile activation rather than a local YAML switch.
+
 **`balances`** — account balances with `mint` / `transfer` commands: a member
 spends only its own account, non-negativity is enforced deterministically in
 apply (an overdraft is a no-op on every node), and every balance is a provable
@@ -779,24 +970,48 @@ and a failing sink halts and retries rather than skipping blocks. Requests
 carry `X-App-Chain-Id` / `X-App-Chain-Height` headers; delivery progress and
 the last error appear in `/status` under `sinks`.
 
-**Kafka** — drop the `yano-appchain-kafka-sink` plugin jar into the node's
-plugins directory (`yaci.plugins.directory`, default `plugins/`) and
-configure:
+**Kafka** — the stock application omits this T3 integration. For a JVM node,
+run `./gradlew :appchain-kafka:shadowJar` and copy the resulting
+`yano-appchain-kafka-<version>-bundle.jar` into
+`yaci.plugins.directory`. For a native application, build it in with
+`-PincludeFirstPartyPluginBundles=true`; native binaries cannot load the
+directory bundle.
+
+This is the direct pre-release rename of `yano-appchain-kafka-sink`. Its
+plugin id, Java package, sink scheme, and sink keys remain unchanged. Remove
+the old bundle before installing the renamed one; both declare the same
+plugin identity and cannot coexist.
 
 ```yaml
 yano.app-chain.sinks.kafka.bootstrap-servers: broker:9092
 yano.app-chain.sinks.kafka.topic: my-appchain-blocks
+yano.app-chain.sinks.kafka.security-profile: tls
+yano.app-chain.sinks.kafka.tls.truststore-path: /run/secrets/kafka-trust.p12
+yano.app-chain.sinks.kafka.tls.truststore-password: ${KAFKA_TRUSTSTORE_PASSWORD}
+yano.app-chain.sinks.kafka.tls.truststore-type: PKCS12
 ```
 
-Blocks are produced as JSON keyed by height (partition-stable) with
+Blocks are produced as JSON keyed by stable chain id (partition-stable even
+for a multi-partition topic) with
 synchronous acks, under the same ordered, at-least-once cursor semantics as
-webhooks.
+webhooks. The same bundle also contributes the independently configured
+`kafka.publish` effect executor described in §18. Configuring the sink does
+not activate that executor, and the two contributions own separate producers
+and shutdown lifecycles. The sink requires an explicit `local-demo`, `tls`,
+`mtls`, or `sasl-tls` profile and shares the executor's strict security fields.
+`local-demo` is accepted only for exact localhost or canonical private numeric
+bootstrap addresses; remote plaintext and partial sink configuration fail
+startup.
 
 **Custom sinks** — implement the `FinalizedStreamSink` SPI; ordering, cursor
 persistence and at-least-once redelivery come from the framework
 (`yano.app-chain.sinks.<scheme>.*` config is passed through to your sink).
 In-process consumers can instead subscribe to `AppBlockFinalizedEvent`
 (section 7) or `AppChainGateway.subscribeFinalized`.
+
+Sinks *observe* finalized state. To *act on the outside world* from a finalized
+transition (submit a payment, call an API) with a result recorded back
+on-chain, use **effects** (section 18) — the outbound counterpart to sinks.
 
 ---
 
@@ -823,22 +1038,25 @@ and the node `JacksonCborCodec` are wire-compatible.
 
 ## 12. Security (API-key auth, encrypted bodies, external signers/KMS)
 
-**API-key auth** (off by default) protects the whole `/app-chain/*` REST
-surface, admin endpoints included:
+**API-key auth** has two modes. Configuring an unscoped full key protects and
+enables privileged admin/effect/plugin operations while reads and submissions
+remain public. Enabling broad auth additionally protects the whole
+`/app-chain/*` REST surface:
 
 ```yaml
 yano:
   app-chain:
     api:
+      # Full-access key plus a topic-scoped submit key:
+      keys: "opsKey123,partnerKey456=orders|invoices"
+      # Optional: omit this block to leave READ/SUBMIT public.
       auth:
         enabled: true
-    # full-access key + a key limited to submitting on two topics:
-    # yano.app-chain.api.keys: "opsKey123,partnerKey456=orders|invoices"
 ```
 
-Requests then require the `X-API-Key` header. A key entry of the form
-`key=topicA|topicB` restricts *submissions* to the listed topics; reads stay
-unrestricted per key. This is the only built-in REST auth today — for
+With broad auth enabled, all requests require the `X-API-Key` header. A key
+entry of the form `key=topicA|topicB` restricts *submissions* to the listed
+topics; reads stay unrestricted per key. This is the only built-in REST auth today — for
 mTLS/OIDC put the API behind your standard gateway/reverse-proxy.
 
 **Encrypted bodies** — client-side envelope encryption with a group key; the
@@ -864,20 +1082,22 @@ is the supported integration point.
 
 ## 13. Compliance (audit/evidence export, retention & pruning)
 
-**Evidence export** — one call produces a portable, **offline-verifiable**
-evidence bundle for any finalized message:
+**Evidence export** — one call produces portable verification material for any
+finalized message:
 
 ```bash
-curl localhost:8080/api/v1/app-chain/evidence/<messageIdHex> > evidence.json
+curl localhost:8080/api/v1/app-chain/chains/<chainId>/evidence/<messageIdHex> \
+  > evidence.json
 ```
 
-The bundle carries the containing block(s), the member set and threshold in
-effect at that height, and the L1 anchor reference. An auditor verifies it
-with core-api's `EvidenceVerifier` — no node access: block hashes and
-messages-root are recomputed, certificates are checked against the members at
-the chain's full m-of-n threshold, inclusion is confirmed, and the hash chain
-is linked to the anchored block. A message newer than the last confirmed
-anchor yields a finality-only bundle (`anchor: null`) until the next anchor.
+The bundle carries the containing block(s), its claimed member set/threshold,
+and the L1 anchor reference. An auditor supplies an independently trusted
+`EvidenceVerifier.TrustContext`; block hashes and messages-roots are
+recomputed, certificates are checked at that pinned m-of-n threshold,
+message-id inclusion is confirmed, and the hash chain is linked to the claimed
+anchor block. The auditor separately verifies the exact Cardano transaction
+output and inline datum. A message newer than the last confirmed anchor yields
+a finality-only bundle (`anchor: null`) until the next anchor.
 
 **Retention & pruning** — data minimization with proofs preserved:
 
@@ -888,7 +1108,8 @@ yano.app-chain.retention.keep-blocks: 1000
 
 Message **bodies** older than `keep-blocks` and below the last confirmed L1
 anchor are stripped; headers, message ids, roots and certificates remain, so
-existing proofs and evidence bundles stay valid. Pruning never runs ahead of
+message-id inclusion evidence stays valid while original content verification
+is explicitly unavailable. Pruning never runs ahead of
 the slowest configured sink (§10), so at-least-once delivery is unaffected.
 Combined with encrypted bodies (§12), destroying a topic key is
 **crypto-shredding**: content becomes unreadable everywhere while the anchored
@@ -900,8 +1121,8 @@ evidence trail survives.
 
 ### 14.1 Admin API
 
-`POST /app-chain[/chains/{id}]/admin/...` — covered by API-key auth when
-enabled (§12):
+`POST /app-chain[/chains/{id}]/admin/...` — always privileged and requires a
+configured unscoped full API key (§12):
 
 - `pause` / `resume` — stop/allow **local** REST submissions (peers and
   finalized replication are unaffected).
@@ -923,8 +1144,9 @@ from replay. A half-approved command quietly expires after
 removals, invalid thresholds, removing a fixed proposer) void deterministically.
 The config member list is the **genesis epoch only**; a member added later
 starts with the original genesis list and derives its own membership from the
-chain. `POST /admin/members/reset` remains the break-glass local override
-(loudly logged as a trust-model deviation).
+chain. `POST /admin/members/reset` is a loudly logged local trust-model
+deviation for ordinary governed-membership chains and is disabled when a
+governed composite profile requires authenticated membership continuity.
 
 **Static mode runbook (default)** — staged and operator-coordinated: run the
 SAME steps on EVERY node, in this order. The rotated state persists and
@@ -943,12 +1165,12 @@ override and returns to the configured list).
 4. **Retire the old key everywhere** —
    `POST /app-chain/admin/members/remove {"publicKey":"<oldPub>"}` on each
    node. Guard rails: the configured proposer can't be removed (rotate the
-   proposer via config + restart until rotating sequencing ships) and the set
-   can't drop below the threshold.
+   fixed proposer through an identical config/restart rollout, or select
+   rotating sequencing) and the set can't drop below the threshold.
 
-`GET /app-chain/admin/members` shows the effective set + threshold. This is
-an interim, operator-coordinated mechanism until chain-governed membership
-(ADR 005 D6) makes rotation itself an on-chain action.
+`GET /app-chain/admin/members` shows the effective set + threshold. Use static
+mode only when the deployment accepts this operator-coordinated procedure;
+new long-lived chains should prefer governed mode.
 
 ### 14.3 Snapshots & member onboarding
 
@@ -989,6 +1211,27 @@ Standard Quarkus Prometheus endpoint `/q/metrics`, per-chain `chain` tag:
 `yano_appchain_messages_finalized_total` (counters),
 `yano_appchain_block_interval` (timer).
 
+Effects add `yano_appchain_effects_open`, `queue_depth`, `in_flight`,
+`runtime_status{status}`, `result_backlog`,
+`result_backlog_by_type{type}`, `oldest_pending_age_blocks`, and
+`oldest_pending_age` gauges; `execution_total{outcome}` and `expired_total`
+counters; and `execution_latency_seconds{type}`. Status/outcome tags are fixed.
+Type tags come only from the bounded `effects.metrics.types` allowlist (plus
+`other`), never from arbitrary workload values. Gauges come from a memoized,
+non-truncated operational scan and may span a concurrent transition; counters
+and timers are normalized to remain monotonic for the life of the node process.
+
+Each lifecycle-owned executor product also contributes cached, node-local
+metrics: `executor_readiness{executor,slot,state}` (one-hot),
+`executor_in_flight{executor,slot}`,
+`executor_age_bucket_seconds{executor,slot,event}`, and monotonic
+`executor_attempts_total`, `executor_successes_total`,
+`executor_retryable_failures_total`, and `executor_terminal_failures_total`.
+The executor inventory is fixed at startup and bounded to 256 products. These
+metrics read a host-owned cache; scrapes never invoke plugin code or contact a
+connector. Endpoints, credentials, payloads, and plugin-provided labels or
+messages are not part of the snapshot contract.
+
 A ready-made Grafana dashboard ships at `docs/grafana/appchain-dashboard.json`.
 
 **Status page**: a built-in dashboard is served at **`/ui/app-chain/`**
@@ -998,7 +1241,12 @@ traffic/anchor/sinks/peers panels, four trend charts, a live SSE message feed
 and a recent-blocks table. Query params: `?api=` (API prefix), `?poll=` (ms),
 `?noanim=1`. When API-key auth is enabled, set the key via the key button
 (stored in the browser; the live feed uses fetch-streaming so the key applies
-there too).
+there too). The `?api=` value only tells this app-chain page where to call; it
+does not reconfigure server routing and must match the prefix baked into the
+artifact. The privileged plugin dashboard at `/ui/plugins/` does not accept
+such an override: it uses immutable `/ui/plugins/api-prefix.json` and fails
+closed if discovery is missing or invalid. See
+[`PLUGIN_OPERATIONS.md`](PLUGIN_OPERATIONS.md).
 
 `GET /status` also reports `lastBlockAtMillis`, `blockIntervalMs` (rolling
 average), `stalled`, `drops` (by reason), `anchor.lagBlocks` and per-sink
@@ -1100,8 +1348,13 @@ class OrderFlowTest {
 ## 17. Zero-knowledge extensions (EXPERIMENTAL)
 
 All ZK ships as one **experimental** plugin, `yano-appchain-zk` (depends on
-ZeroJ). Drop it on `yaci.plugins.directory`. The node only **verifies**
-proofs — proving happens client-side, where the secrets live. Circuits are
+ZeroJ). The stock application omits it. A JVM node can deploy the self-contained
+`yano-appchain-zk-<version>-bundle.jar` produced by
+`:appchain-zk:shadowJar`; no adjacent ZeroJ JARs are needed or accepted as the
+same catalog-v1 bundle. Native builds opt in before catalog/reflection
+generation with `-PincludeFirstPartyPluginBundles=true`. The node only
+**verifies** proofs — proving happens
+client-side, where the secrets live. Circuits are
 chain configuration: each `circuitId → VK hash` is pinned and loaded
 fail-closed at startup, and every member enforces verification in `apply()`
 (consensus-critical, not just admission).
@@ -1149,7 +1402,610 @@ set; a fully anonymous transport scheme is a planned follow-up.
 
 ---
 
-## 18. Troubleshooting
+## 18. Effects — acting on the outside world
+
+Everything so far keeps state *inside* the chain. **Effects** (ADR-010) let a
+finalized state transition trigger an action *outside* it — submit a Cardano
+payment, call an ERP/webhook, pin to IPFS, issue a credential — without
+breaking determinism.
+
+The rule that makes it safe: **a state machine never performs the action, it
+emits a record describing it.** Emission is part of deterministic `apply()`,
+identical on every member and transitively committed through the count-bound
+`effectsRoot` leaf into the state root. A separate
+**Effect Runtime** (outside consensus, on one designated node or an external
+worker) executes finalized effects, and the outcome comes back as an ordinary
+sequenced message that the machine records. The guarantee is **exactly-once
+incorporation, at-least-once execution** — the external action may run more
+than once (so executors must be idempotent), but its outcome lands in chain
+state exactly once.
+
+```
+apply()  ── emit ──▶  effect record (outbox + effectsRoot, provable, anchored)
+                          │  finalized
+                          ▼
+                 Effect Runtime ── execute ──▶  external system
+                          │
+        ~fx/result (member-signed, sequenced) ──▶ apply() records the outcome
+```
+
+### 18.1 Enable effects
+
+Consensus-affecting — **every member must set the same values** (a mismatch
+diverges the state root, exactly like a mismatched state machine). Effects are
+off by default.
+
+```yaml
+yano.app-chain.effects.enabled: true
+# Deterministic caps (consensus parameters):
+yano.app-chain.effects.max-per-block: 256          # effects one block may emit
+yano.app-chain.effects.max-payload-bytes: 16384    # per-effect payload cap
+yano.app-chain.effects.max-expiry-blocks: 100000
+yano.app-chain.effects.result-window-blocks: 100000 # results incorporable within this window
+# Where an effect's outcome is committed in the trie:
+yano.app-chain.effects.outcome-commitment: per-effect  # per-effect | per-block
+# Default finality gate for emitted effects (see §18.4):
+yano.app-chain.effects.default-gate: app-final     # app-final | l1-anchored | zk-settled
+```
+
+Enabling effects reserves the `~fx/` key prefix in the state trie (a state
+machine may not write keys starting with `~fx/`). This reservation holds from
+genesis regardless of the flag, so effects can be turned on later without
+colliding with historical state.
+
+### 18.2 Emit effects from a state machine
+
+Override the three-argument `apply` and call `effects.emit(...)`. The emitter
+records intent — it performs no I/O, and everything forbidden in `apply()`
+(wall clock, randomness, network) stays forbidden.
+
+```java
+public class OrderStateMachine implements AppStateMachine {
+    @Override public String id() { return "orders"; }
+
+    @Override
+    public void apply(AppBlock block, AppStateWriter writer, AppEffectEmitter effects) {
+        for (AppMessage m : block.messages()) {
+            Order o = decode(m.getBody());
+            writer.put(key(o.id()), o.toBytes());          // ordinary state
+            if (o.isApproved()) {
+                effects.emit(EffectIntent.of("webhook.post", o.fulfilmentJson())
+                        .scope("orders/" + o.id())         // app-level idempotency scope
+                        .result(ResultPolicy.CHAIN)        // outcome comes back on-chain
+                        .gate(FinalityGate.CHAIN_DEFAULT)  // use the chain's default gate
+                        .expiryBlocks(1000)                // deterministic timeout (see §18.4)
+                        .sourceMessageId(m.getMessageId())
+                        .build());
+            }
+        }
+    }
+
+    // Called deterministically when a CHAIN effect's outcome is incorporated.
+    @Override
+    public void onEffectResult(AppBlock block, EffectResult result, AppStateWriter writer) {
+        if (!result.scope().startsWith("orders/")) return;
+        String id = result.scope().substring("orders/".length());
+        // result.confirmed(), result.outcome() (CONFIRMED/FAILED/CANCELLED/EXPIRED),
+        // result.externalRef() (e.g. a tx hash) — committed transitively by the
+        // configured outcome root; values written here also enter application state.
+        writer.put(fulfilledKey(id), result.externalRef());
+    }
+}
+```
+
+`EffectIntent` fields: **type** (routes to an executor), **payload** (opaque
+bytes — never put secrets or PII here; records are replicated and committed),
+**scope** (your idempotency handle), **gate** (§18.4), **result**
+(`CHAIN` = outcome fed back and delivered to `onEffectResult`; `NONE` =
+fire-and-forget, operator-visible only), **expiryBlocks**. Effect ids are
+deterministic — `chainId/height/ordinal`, hashed into the idempotency key
+handed to every external system.
+
+> **Changing emission logic on a live chain is a hard fork** unless gated. Ship
+> emission changes behind a height-activated flag
+> (`ActivationSchedule`, ADR-010.1): `yano.app-chain.machines.<id>.activations.<name>=<height>`.
+> Verify with the conformance harness's upgrade replay-matrix
+> (`StateMachineConformance.upgrade(old, new)`).
+
+### 18.3 Run an executor
+
+The Effect Runtime is **off by default** — turn it on where you want effects
+to actually run (typically one node, or a dedicated executor node). Everywhere
+else, effects are still emitted and provable; they just wait.
+
+```yaml
+yano.app-chain.effects.executor.enabled: true      # this node executes effects
+yano.app-chain.effects.executor.types: ""          # empty = all; or "cardano.payment,webhook.post"
+# Optional stable override; must be unique per physical executor and survive key rotation:
+# yano.app-chain.effects.executor.identity: payments-executor-sg-1
+yano.app-chain.effects.executor.tick-ms: 2000
+yano.app-chain.effects.executor.max-parallel: 4
+yano.app-chain.effects.executor.max-attempts: 8    # then PARKED for operator review
+yano.app-chain.effects.executor.backoff-initial-ms: 2000
+yano.app-chain.effects.executor.backoff-max-ms: 300000
+yano.app-chain.effects.metrics.types: "cardano.payment,webhook.post" # max 32; empty = aggregate only
+yano.app-chain.effects.retention.keep-blocks: 100000   # prune resolved effect records
+```
+
+Run it on **exactly one node** (or partition types across nodes with
+`executor.types`) — the runtime provides no cross-node mutual exclusion by
+design; overlap degrades to duplicate *attempts*, which idempotency absorbs.
+A late-enabled executor **quarantines** historical open effects rather than
+blind-firing them; requeue via REST. Failed effects retry with backoff, then
+**park** (never block other effects) for an operator to requeue or cancel.
+
+Runtime attempts, leases, submitted references and the intake cursor are bound
+to a fixed-size canonical fingerprint of the executor identity and sorted type
+partition. Moving a checkpoint to a different executor, changing
+`executor.identity`, changing `executor.types`, or upgrading a legacy
+checkpoint with no owner binding discards only that node-local runtime state
+and quarantines every historical open effect. Consensus effect records,
+closures and state roots are preserved. Review and explicitly requeue each
+obligation; an already-submitted external action may otherwise be attempted
+again, so executor-side idempotency remains mandatory.
+
+**Built-in `webhook.post` executor** — POSTs the payload with an
+`Idempotency-Key` header (the effect's id hash); the target URL lives in
+config, not the payload:
+
+```yaml
+yano.app-chain.effects.executors.webhook.url: https://erp.example/hooks/yano
+yano.app-chain.effects.executors.webhook.timeout-ms: 10000
+```
+
+**Kafka publish executor** — the optional `yano-appchain-kafka` bundle also
+handles canonical-CBOR `kafka.publish` effects. Payloads select stable target
+and topic aliases; broker endpoints, TLS/SASL credentials, and physical topic
+names remain executor-local configuration:
+
+```yaml
+yano.app-chain.effects.executors.kafka.targets.primary.target-id: primary-v1
+yano.app-chain.effects.executors.kafka.targets.primary.bootstrap-servers: broker:9092
+yano.app-chain.effects.executors.kafka.targets.primary.acks: all
+yano.app-chain.effects.executors.kafka.targets.primary.security-profile: local-demo
+yano.app-chain.effects.executors.kafka.topics.evidence-ready.target: primary
+yano.app-chain.effects.executors.kafka.topics.evidence-ready.name: evidence.available.v1
+```
+
+The shown `local-demo` profile is plaintext and accepts only local/private
+bootstrap hosts. Non-local brokers require the validated `tls`, `mtls`, or
+`sasl-tls` profile and its trust/key configuration.
+
+With no Kafka executor settings, or with `enabled: false`, the effect
+contribution remains inactive even when the finalized sink is configured.
+
+A confirmation records the destination fingerprint, partition, and offset.
+The effect id is injected as lowercase hex in the reserved
+`yano-effect-id` header for consumer deduplication. The other frozen v1
+headers are `yano-chain-id` (UTF-8), `yano-effect-type`,
+`yano-payload-version`, `yano-origin-height`, `yano-origin-ordinal`, and
+`yano-content-type` (US-ASCII). Payloads cannot supply a `yano-*` header.
+Kafka producer idempotence does not guarantee cross-process exactly-once
+delivery after an acknowledgement is lost, so consumers must still
+deduplicate where duplicates matter. The frozen payload/receipt schemas,
+CDDL, and golden vectors ship in `yano-appchain-integration-contracts`.
+
+**S3-compatible object executor** — the optional
+`yano-appchain-objectstore-s3` bundle handles canonical `object.put` effects.
+The document is pre-staged under an allowlisted source prefix; the command
+commits its exact SHA-256 digest and size, while credentials, endpoints,
+buckets, encryption, and retention policy stay in the selected target. The
+executor verifies the source and uses conditional creation of an immutable,
+versioned destination—it does not overwrite or resurrect a conflicting key.
+See the module README for the full required target profile and S3-compatible/AWS
+examples.
+
+**IPFS pin executor** — the optional `yano-appchain-ipfs` bundle handles
+canonical `ipfs.pin` effects against a configured Kubo node. It pins a known
+CID only: it never accepts document bytes or a caller-selected endpoint, and
+it never hides CID/chunking choices inside the executor.
+
+```yaml
+yano.app-chain.effects.executors.ipfs.enabled: true
+yano.app-chain.effects.executors.ipfs.targets.local.target-id: local-kubo-v1
+yano.app-chain.effects.executors.ipfs.targets.local.api-url: http://127.0.0.1:5001
+yano.app-chain.effects.executors.ipfs.targets.local.security-profile: local-demo
+yano.app-chain.effects.executors.ipfs.targets.local.allowed-codecs: raw,dag-pb
+yano.app-chain.effects.executors.ipfs.targets.local.recursive: true
+yano.app-chain.effects.executors.ipfs.targets.local.replication-policy: demo-single
+yano.app-chain.effects.executors.ipfs.targets.local.connect-timeout-ms: 1000
+yano.app-chain.effects.executors.ipfs.targets.local.request-timeout-ms: 5000
+yano.app-chain.effects.executors.ipfs.targets.local.close-timeout-ms: 1000
+```
+
+The Kubo RPC is an administrative interface and must remain private. A
+confirmed pin is a point-in-time report from the configured target, not proof
+of indefinite global availability or content confidentiality. See
+`appchain/extensions/appchain-ipfs/README.md` for TLS/bearer configuration,
+packaging, policy, and real-Kubo test instructions.
+
+### Deterministic composite state machines
+
+Select the first-party stock composition when one chain needs registry,
+approval, document-trail, and evidence publication semantics in one atomic
+state root:
+
+```yaml
+yano:
+  app-chain:
+    effects:
+      enabled: true
+      max-per-block: 128
+    chains:
+      - id: evidence-chain
+        state-machine: composite
+        machines:
+          composite:
+            preset: evidence-v1-gated
+            profile-mode: governed
+        membership:
+          mode: governed
+```
+
+The profile, ordered components, routes, activations, workflows, query limits,
+and quotas are canonically committed under `~composite/profile/v1`. The
+generic `composite` selector is therefore not a sufficient proof identity.
+Clients must pin the intended domain-separated profile digest, prove that
+marker, map logical keys through `CompositeCommitmentV1.componentKey(...)`, and
+verify the marker and component leaves at the same height/root. The typed
+evidence client performs this sequence and exposes both logical and physical
+proof keys.
+
+Custom compositions are ordinary ADR-011 manifested state-machine bundles.
+Assemble `CompositeComponent` products and optional declared workflows, call
+`CompositeStateMachine.create("my-distinct-machine-id", context, ...)`, and
+export the same distinct id from the provider and manifest. Construction
+always checks component/workflow reservations against the real
+`effects.max-per-block`. Do not publish arbitrary profiles under the stock
+`composite` identity.
+
+Replacement generations may change a committed `configurationId` only while
+retaining the same `stateAndResultCompatibilityId`. Generations with one
+component id share a physical namespace and may receive late results, so a
+state schema or callback-contract change requires a new component id plus a
+deterministic migration/workflow, or a fresh chain. Admission changes likewise
+use new versioned topics/query paths.
+
+For long-lived new chains, `profile-mode: governed` commits an authenticated
+profile epoch chain. A reviewed bundle may package current and dormant target
+catalog entries; members deploy that bundle first, then separately approve and
+attest readiness for exact target bytes and a future activation height. Local
+YAML/JAR changes never activate semantics. Existing retained fixed chains
+cannot switch modes by configuration. See the
+[profile-governance operator runbook](APP_CHAIN_PROFILE_GOVERNANCE.md).
+
+The composite provides deterministic isolation and atomic coordination; it
+does not add DPP actor policy, regulatory validation, or real-world truth. The
+default `evidence-v1-gated` preset exposes only the coordinated
+`evidence.release.v1` creation/republish path. Its command-granular
+`evidence.command.v1` route accepts only canonical post-publication
+notifications. The compatibility `evidence-v1` preset exposes every direct
+evidence command; there the release workflow is optional orchestration rather
+than a mandatory authorization gate.
+See the [composite module guide](../appchain/appchain-composite/README.md),
+[lightweight contracts guide](../appchain/appchain-composite-contracts/README.md),
+and [ADR-013.2](../adr/app-layer/013.2-deterministic-composite-state-machine.md).
+
+**No-code evidence demo** — the
+[ADR-013 evidence-effects demo](../app/appchain-effects-demo/README.md) wires
+the Kafka, S3-compatible object-store, and IPFS connectors into one
+three-member devnet workflow. It stages an inspection certificate, commits its
+digest, archives and pins the exact bytes, publishes the result-gated event,
+and verifies deterministic state, proofs, receipts, and a Cardano script
+anchor. The same scenario runs through Docker Compose or ordinary host-started
+Yano processes; no state-machine or plugin code is required. Its launcher also
+demonstrates both legacy explicit and activated direct continuation, retained
+restart, explicit executor ownership, guarded cleanup,
+private credential files, and the preview/preprod/mainnet safety profiles.
+While one cluster remains running, `demo.sh publish` creates version 1 for a
+new evidence ID, `demo.sh republish --business-version N` creates only the
+exact next immutable version, `demo.sh verify` checks latest or historical
+state and connector observations without submitting a message, and
+`demo.sh replay` explicitly demonstrates the deterministic no-op boundary.
+The compatibility command `demo.sh run` publishes an absent ID, verifies
+matching retained bytes, and returns `REPUBLISH_REQUIRED` for changed content.
+`demo.sh load --count N --concurrency C --id-prefix P` publishes bounded,
+independent version-1 IDs through the same full workflow. Lifecycle mode is
+the default: each worker completes an entire item. Optional
+`--load-mode pipeline --max-in-flight M` keeps bounded prepare, prerequisite,
+approval, release, effects, and verify stages busy across different IDs. It
+does not bypass application rules, finality, connector reconciliation, proofs,
+or anchoring. The stock profile commits eight releases per block and derives
+its release, notification, component, and total effect quotas from that value;
+the capacity is authenticated profile identity rather than local tuning.
+The runner accepts up to 50,000 items per invocation and 5,000 in-flight
+workflow items. In-flight workflows are not a 1:1 mempool-message measure:
+each workflow submits several messages across finality-separated stages.
+
+The schema-v2 aggregate records app-message, release, effect, and fully
+verified workflow rates, per-stage metrics, in-flight observations, latency
+percentiles, and stable failure counts. It is a functional capacity/soak tool
+rather than a raw consensus benchmark. L1-gated devnet loads use the existing
+force-anchor action through a shared throttle; ordinary commands are
+unchanged. Load is disabled for public anchor-enabled profiles to avoid
+implicit spending. The disposable devnet scripted anchor remains supported.
+See the demo README for complete commands and safe sample-file handling.
+The self-contained Compose profile pulls the official digest-pinned,
+multi-architecture RustFS beta image selected by ADR-013; Yano does not build
+RustFS, Kafka, or Kubo from source. The image is used only as the local
+S3-compatible demonstration service. Compose configuration disables RustFS's
+upstream startup version check, so the demo does not make that outbound
+request. The launcher uses RustFS's built-in
+full-admin root only inside the provider and one-shot private bootstrap, then
+applies and verifies separate least-privilege runner and executor identities,
+an empty service/STS-key inventory, encrypted IAM state, bucket versioning,
+and Object Lock. There is deliberately no canned policy for the built-in root,
+because RustFS does not enforce one on its owner identity; the fixed one-shot
+code, private secret mounts, and isolated connector network are that
+administrative path's actual boundaries. Only the runner and executor policies
+are described as IAM-enforced. This remains neither a production nor a
+high-availability object-storage recommendation.
+Host deployment stays provider-neutral and can target
+an independently qualified AWS S3 or compatible service without changing the
+effect contract or scenario.
+
+**Cardano payment executor** — the stock application omits this privileged T3
+integration. A JVM node can run `:appchain-effects-cardano:shadowJar` and copy
+`yano-appchain-effects-cardano-<version>-bundle.jar` into the plugins
+directory. Native builds opt in with
+`-PincludeFirstPartyPluginBundles=true`. It handles `cardano.payment` effects
+with a
+`{"to": <bech32>, "lovelace": <n>, "memo"?: <str>}` payload, stamps the effect
+id into tx metadata, and confirms by tx hash. Secrets live here, never in
+payloads:
+
+```yaml
+yano.app-chain.effects.executors.cardano.backend-url: http://localhost:8080/api/v1/    # Blockfrost-compatible
+yano.app-chain.effects.executors.cardano.signing-mnemonic: "<payer wallet mnemonic>"   # or signing-account-key
+yano.app-chain.effects.executors.cardano.network: preprod                              # mainnet|preprod|preview
+yano.app-chain.effects.executors.cardano.metadata-label: 21042
+yano.app-chain.effects.executors.cardano.max-lovelace-per-tx: 500000000               # blast-radius cap (0 = uncapped)
+```
+
+> **Fund the payer wallet conservatively** and set `max-lovelace-per-tx`: a
+> buggy or compromised machine that emits an oversized payment cannot then
+> drain the hot wallet in one tx.
+
+**Stdlib approvals → generic effect** — no state-machine code is needed. The
+`approvals` machine can emit one exact effect type on final approval. The item
+decision remains `APPROVED`; a separate provable effect record moves from
+`PENDING` to `CONFIRMED` or `FAILED`. Using `cardano.payment` routes the opaque
+proposal payload to the Cardano payment executor.
+
+```yaml
+yano.app-chain.state-machine: approvals
+yano.app-chain.effects.enabled: true
+yano.app-chain.machines.approvals.on-approved-effect.enabled: true
+yano.app-chain.machines.approvals.on-approved-effect.type: cardano.payment
+yano.app-chain.machines.approvals.on-approved-effect.gate: l1-anchored
+yano.app-chain.machines.approvals.on-approved-effect.expiry-blocks: 1000
+yano.app-chain.machines.approvals.activations.on-approved-effect: 1
+```
+
+The generic type can instead be `webhook.post`, `kafka.publish`, `object.put`,
+`ipfs.pin`, or a custom plugin routing type. Configuration selects one action;
+multiple or conditional actions belong in a composite/custom state machine.
+
+### 18.4 Finality gates and expiry
+
+A **gate** decides when an emitted effect becomes eligible to execute:
+
+- **`app-final`** — as soon as the block is committed (the chain is
+  append-only after finality, so the emission is already irrevocable).
+- **`l1-anchored`** — once the effect's height is covered by an L1-confirmed,
+  stability-deep anchor (the emission is provable against Cardano before you
+  act). A verifiability delay, not a rollback safeguard.
+- **`zk-settled`** — once covered by an accepted validity proof (reserved for
+  the ZK settlement roadmap, §17; waits until expiry on non-ZK chains).
+
+`l1-anchored` needs anchoring enabled (§5) and `l1.stability-depth` set.
+`effects.gate.anchor-margin-blocks` adds a safety margin above the anchor
+high-water-mark.
+
+**Expiry is mandatory for CHAIN effects** — a result arriving after the result
+window is a deterministic no-op, so every CHAIN effect must provably close. If
+you pass `expiryBlocks(0)` the framework defaults it to the result window. When
+the expiry height passes with no incorporated result, the effect deterministically
+becomes **EXPIRED** (delivered to `onEffectResult`) — the "nobody answered in
+time" escape hatch, distinct from **FAILED** ("the target answered no").
+
+### 18.5 The result path and trust
+
+Executed `CHAIN` outcomes re-enter as member-signed `~fx/result` messages,
+sequenced like any other. The framework interpreter is fail-closed and
+first-result-wins: duplicate, late, malformed, unknown, or out-of-window
+results are deterministic no-ops — **a result can never stall the chain.** A
+result is a *member attestation*, not an independently verified fact (followers
+check the signature and membership, not the external world). Narrow who may
+attest with a designated-signer list:
+
+```yaml
+# Only these member keys' ~fx/result messages are accepted (default: any member):
+yano.app-chain.effects.result.signers: "<hex pubkey of the executor node>"
+```
+
+For L1-visible facts (a payment landing), prefer verifying via an L1 observer
+(§ config `observers`) over trusting an attestation. `k`-of-`n` result
+attestation for high-value effects is designed, not yet shipped.
+
+### 18.6 External executors (claim / report)
+
+To run execution *outside* Yano — a different team, language, or a worker that
+holds secrets Yano shouldn't — enable external mode and drive it over REST or
+the Java SDK. The node leases effects to a named worker; the worker executes
+and reports the outcome, which the node re-signs into a `~fx/result`.
+
+```yaml
+yano.app-chain.effects.executor.enabled: true
+yano.app-chain.effects.external.enabled: true
+```
+
+```java
+AppChainClient client = ...;
+JsonNode claimed = client.claimEffects("worker-1", List.of("cardano.payment"), 16, 60);
+for (JsonNode e : claimed.get("effects")) {
+    long height = e.get("height").asLong();
+    int ordinal = e.get("ordinal").asInt();
+    byte[] idKey = HexUtil.decodeHexString(e.get("idempotencyKey").asText());
+    byte[] txHash = executeExternally(e.get("payloadHex").asText(), idKey);  // pass idKey to the target
+    client.reportEffect("worker-1", height, ordinal, /*success*/ true, txHash, null);
+}
+```
+
+Leases are wall-clock and node-local; an expired lease re-opens the effect for
+failover. Reports are fenced to the lease holder.
+
+> **Security**: `requeue`/`cancel`/`claim`/`report` move funds or change
+> consensus-visible state — they are **privileged**: a submit-only
+> (topic-restricted) API key may not call them; only a full key can (§12).
+> Configure an unscoped `yano.app-chain.api.keys` full key and keep the
+> executor/operator REST surface on a trusted network. Broad READ/SUBMIT auth
+> is optional; privileged operations always fail closed without the full key.
+
+### 18.7 Write a custom executor
+
+Any effect type your machines emit can be handled by a plugin implementing two
+interfaces — the same ServiceLoader pattern as custom sinks (§10):
+
+```java
+public class CredentialIssueExecutor implements AppEffectExecutor {
+    private final String issuerUrl;
+    private final EffectExecutorOperationsTracker operations =
+            new EffectExecutorOperationsTracker();
+    CredentialIssueExecutor(Map<String, String> config) {
+        this.issuerUrl = config.get("issuer-url");
+    }
+
+    @Override public String id() { return "credential-issuer"; }
+    @Override public Set<String> effectTypes() { return Set.of("credential.issue"); }
+    @Override public boolean supports(String type) { return "credential.issue".equals(type); }
+
+    @Override
+    public EffectExecution execute(EffectExecutionContext ctx, PendingEffect effect) throws Exception {
+        return operations.observeChecked(() -> executeAttempt(ctx, effect));
+    }
+
+    private EffectExecution executeAttempt(EffectExecutionContext ctx, PendingEffect effect)
+            throws Exception {
+        CredentialRequest request = decodeCredentialRequest(effect.payload());
+        // MUST be idempotent on effect.idHash() — the same effect may re-run.
+        // ctx.submittedRef() is non-empty on a re-poll of a prior Submitted;
+        // probe by it instead of acting again.
+        byte[] credentialId = issue(issuerUrl, request, effect.idHash());
+        return EffectExecution.confirmed(credentialId);          // or .failed(reason, retryable),
+                                                                 // .submitted(ref), .retry(duration)
+    }
+
+    @Override public EffectExecutorOperationalSnapshot operationalSnapshot() {
+        return operations.snapshot();
+    }
+}
+
+public class CredentialExecutorFactory implements AppEffectExecutorFactory {
+    @Override public String scheme() { return "credential"; }   // config ns: effects.executors.credential.*
+    @Override public List<AppEffectExecutor> create(String chainId, Map<String, String> config) {
+        return config.containsKey("issuer-url")
+                ? List.of(new CredentialIssueExecutor(config)) : List.of();
+    }
+}
+```
+
+Register it via
+`META-INF/services/com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutorFactory`
+(one line: the factory's fully-qualified name), and add
+`META-INF/yano/plugins/com.example.credential.json`:
+
+```json
+{
+  "schemaVersion": 1,
+  "id": "com.example.credential",
+  "version": "1.0.0",
+  "yanoApi": { "min": 1, "max": 1, "minLevel": 1 },
+  "dependencies": [],
+  "contributions": [
+    {
+      "kind": "effect-executor",
+      "name": "credential",
+      "provider": "com.example.credential.CredentialExecutorFactory"
+    }
+  ]
+}
+```
+
+The manifest name must equal its bundle id, and its contribution must match
+the ServiceLoader entry and the factory's `scheme()` exactly. For JVM
+directory deployment, package the provider and all non-host runtime
+dependencies in one self-contained bundle JAR, drop that JAR in the plugin
+directory, and configure
+`yano.app-chain.effects.executors.credential.issuer-url=...`. Adjacent thin dependency
+JARs are separate catalog artifacts, not one bundle. A native deployment must
+include and map the manifested bundle at application build time; an existing
+native executable cannot load it from the plugin directory.
+
+`effectTypes()` is the authoritative ownership declaration for new executors.
+Startup fails before publication if two products declare the same type. The
+default empty declaration preserves legacy predicate-based executors, but new
+plugins should not rely on discovery order. `operationalSnapshot()` is
+optional and defaults to a bounded `UNKNOWN` view; the helper shown above
+maintains secret-free fixed counters and age/failure classes without exposing
+the connector client.
+
+The framework supplies discovery, finality gating, retries, backoff, the
+poison lane, and the result loop — you implement only the one attempt.
+Contract: **idempotent on `idHash`**, secrets from config not payloads,
+`Confirmed`/`Failed` are definitive, `Submitted` re-polls, throwing means
+retry.
+
+Factory schemes are exact and case-sensitive. Sink/effect schemes cannot
+contain `.` because the first dot separates the scheme from its configuration
+key; signer schemes cannot contain `:` because it separates the key reference.
+
+### 18.8 REST surface
+
+Chain-scoped under `/app-chain/chains/{chainId}/...` (single-chain alias
+`/app-chain/...`):
+
+| Endpoint | Purpose |
+|---|---|
+| `GET effects?fromHeight=&limit=` | emitted effect records (consensus view) |
+| `GET effects/{height}/{ordinal}` | one effect + this node's execution status |
+| `GET effects/{height}/{ordinal}/proof` | composed record → effects root → historical state-root proof |
+| `GET effects/stats` | non-truncated memoized backlog/status/oldest-age plus execution, expiry and latency totals |
+| `POST effects/{height}/{ordinal}/requeue` | operator: PARKED/QUARANTINED → PENDING |
+| `POST effects/{height}/{ordinal}/cancel?reason=` | operator: cancel an open CHAIN effect |
+| `POST effects/claim` | external executor: lease effects |
+| `POST effects/{height}/{ordinal}/report` | external executor: report an outcome |
+
+The proof endpoint returns the canonical record CBOR, its ordered Merkle path,
+and an MPF proof of `~fx/root/<height>` against that block's historical state
+root. Verify it locally with `EffectProofVerifier`, preferably supplying a
+state root independently obtained from the certified block at exactly that
+emission height:
+
+```java
+var lookup = client.effectProof(height, ordinal);
+if (lookup.available()) {
+    boolean valid = EffectProofVerifier.verifyFor(
+            lookup.proof(), stateRootAtEmissionHeight, chainId, height, ordinal);
+}
+```
+
+An L1 anchor root can be supplied directly only when it anchors that exact
+height. For a later anchor, authenticate block H through its threshold
+certificate and the certified hash chain to the anchored descendant first;
+the MPF proof itself is deliberately against `stateRoot(H)`.
+
+`404` means no such effect/ordinal according to the retained index. `410
+EFFECT_PROOF_PRUNED` is an availability signal from this node: its compact
+metadata says one or more records needed to reconstruct the path passed
+`effects.retention.keep-blocks`. A 410 is not itself a portable proof that the
+ordinal existed; only a successfully verified composed proof establishes that.
+Archive proofs before that horizon when long-lived portable evidence is
+required; a proof already obtained remains verifiable forever.
+
+---
+
+## 19. Troubleshooting
 
 - **`/status` is your dashboard**: `role`, `tipHeight`, `stateRoot`,
   `poolSize` (pending messages), per-peer connectivity, `anchor` progress,
@@ -1169,25 +2025,36 @@ set; a fully anonymous transport scheme is a planned follow-up.
 - **Member behind / fresh member joining**: automatic — it catches up over
   protocol 103 from any connected peer, verifying certificates and state
   roots block by block. For long histories, restore a snapshot first (§14.3).
-- **Sequencer down**: submissions still replicate, but no new blocks finalize
-  until it returns (fixed-sequencer v1; rotating sequencer is on the roadmap
-  — ADR 005 D2/S2). Restarting the sequencer is safe: vote locks are
-  persisted and finalized history is immutable.
+- **Proposer down**: submissions still replicate. In fixed mode, no new block
+  finalizes until that proposer returns. In rotating mode, progress resumes in
+  a window whose scheduled proposer is available; there is no general BFT
+  view-change protocol. Restart is safe: vote locks are persisted and finalized
+  history is immutable.
 - **L1 impact**: none — the app protocols are invisible to non-Yano peers
   (capability negotiated in the handshake; a Haskell node simply never
   selects it). Run the `test-haskell-sync` skill for the standard L1
   compatibility regression.
 
-## 19. Current limitations
+## 20. Current limitations
 
-- Fixed sequencer (S1); rotating L1-clocked sequencing is designed (ADR 005)
-  but not yet implemented — sequencer availability is an ops concern.
-- Membership changes are operator-coordinated: the admin rotation API
-  (section 14) stages key changes at runtime, but every node must be driven
-  through the same steps. Chain-governed membership (ADR 005 D6) is designed,
-  not shipped.
-- Anchoring is metadata-mode; script-anchor (on-chain proof verification
-  against an anchor UTxO) is designed but not yet shipped.
+- Permissioned membership is implemented; public/stake-based validator sets,
+  slashing, and open participation are not.
+- Fixed and L1-clocked rotating proposer modes are implemented. Rotating mode
+  is schedule-based, not a general BFT view-change protocol, and anchor-leader
+  failover remains an operator action.
+- Both static/operator-coordinated and chain-governed membership are
+  implemented. Profile governance cannot recover a lost membership-governance
+  threshold or bypass membership authority.
+- Metadata and threshold-co-signed script anchors are implemented. They commit
+  and enforce the anchor chain; they do not by themselves implement a
+  domain-specific bridge or withdrawal validator.
+- Effect results are member attestations, not independent proof that an
+  external system told the truth. Co-attestation policy epochs and a continuous
+  independent outcome auditor remain future controls required before claiming
+  semi-trusted-member support.
+- The Cardano payment executor is a preview/tightly capped-wallet profile; use
+  no material funds until the production transaction/reconciliation hardening
+  tracked as `FX-002` is complete.
 - REST protection is API-key only (section 12); use standard gateway
   infrastructure for mTLS/OIDC.
 - All ZK extensions are experimental (section 17) and never on a default code

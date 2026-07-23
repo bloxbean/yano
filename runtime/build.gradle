@@ -1,5 +1,7 @@
 dependencies {
     api project(':core-api')
+    implementation project(':appchain-config')
+    api project(':plugin-catalog')
     api project(':consensus')
     api project(':p2p')
     api libs.yaci.core
@@ -35,6 +37,8 @@ dependencies {
     implementation libs.cardano.client.quicktx
 
     testImplementation libs.project.reactor.test
+    // Effect-system tests exercise the stdlib generic on-approved flow (ADR-021)
+    testImplementation project(':appchain-stdlib')
 
     // Generate @DomainEventListener bindings at build time
     annotationProcessor libs.yaci.events.processor

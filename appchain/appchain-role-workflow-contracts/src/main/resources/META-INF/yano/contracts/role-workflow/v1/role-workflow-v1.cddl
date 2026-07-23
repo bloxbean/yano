@@ -1,0 +1,163 @@
+; ADR-019 role workflow v1. Arrays use preferred definite CBOR only.
+; Set-like arrays MUST arrive in the canonical orders stated below. A decoder
+; MUST reject unsorted input rather than silently normalizing it.
+
+identifier = tstr .size (1..63)
+role = identifier
+digest32 = bytes .size 32
+signature64 = bytes .size 64
+status = 0 / 1 / 2 ; ACTIVE / SUSPENDED / REVOKED
+
+organization-record = [
+  version: 1,
+  organization-id: identifier,
+  revision: uint .gt 0,
+  status: status,
+  metadata-commitment: bytes .size (0 / 32)
+]
+
+actor-key-epoch = [
+  key-id: identifier,
+  public-key: bytes .size 32,
+  valid-from-height: uint .gt 0,
+  valid-until-height: uint,
+  status: status
+]
+
+actor-record = [
+  version: 1,
+  actor-id: identifier,
+  organization-id: identifier,
+  revision: uint .gt 0,
+  status: status,
+  roles: [1*16 role], ; ascending UTF-8 role text
+  keys: [1*16 actor-key-epoch], ; ascending key-id text
+  metadata-commitment: bytes .size (0 / 32)
+]
+
+key-proof = [
+  version: 1,
+  chain-id: identifier,
+  actor-id: identifier,
+  actor-revision: uint .gt 0,
+  key: actor-key-epoch,
+  signature: signature64
+]
+
+registry-mutation = [
+  version: 1,
+  operation: 0 / 1, ; organization / actor
+  record: bytes,
+  proofs: [*16 bytes] ; ascending decoded key.key-id text
+]
+
+required-clause = [
+  clause-id: identifier,
+  role: role,
+  minimum-count: 1..64,
+  distinct-by: 0 / 1 ; actor / organization
+]
+
+approval-policy = [
+  version: 1,
+  policy-id: identifier,
+  revision: uint .gt 0,
+  proposer-roles: [*16 role], ; ascending UTF-8 role text
+  clauses: [1*16 required-clause], ; ascending clause-id text
+  rejection-mode: 0 / 1, ; disabled / any eligible
+  maximum-lifetime-blocks: 1..1000000
+]
+
+policy-mutation = [
+  version: 1,
+  operation: 0 / 1, ; put policy / cancel proposal
+  payload: bytes
+]
+
+governed-command = [
+  version: 1,
+  operation: 0 / 1 / 2 / 3, ; propose / approve / activate / cancel
+  mutation-id: identifier,
+  mutation-or-hash: bytes,
+  expiry-height-or-zero: uint
+]
+
+actor-statement = [
+  version: 1,
+  action: 0 / 1 / 2 / 3, ; propose / approve / reject / cancel
+  chain-id: identifier,
+  proposal-id: identifier,
+  policy-id: identifier,
+  policy-revision: uint .gt 0,
+  payload-domain: tstr .size (1..64),
+  payload-hash: digest32,
+  deadline-height: uint .gt 0,
+  actor-id: identifier,
+  actor-revision: uint .gt 0,
+  key-id: identifier,
+  clause-id-or-empty: tstr .size (0..63)
+]
+
+signed-actor-command = [
+  version: 1,
+  statement: bytes,
+  signature: signature64
+]
+
+proposal-status = 0 / 1 / 2 / 3 / 4
+; PENDING / APPROVED / REJECTED / CANCELLED / EXPIRED
+
+accepted-decision = [
+  action: 1 / 2, ; approve / reject
+  actor-id: identifier,
+  organization-id: identifier,
+  organization-revision: uint .gt 0,
+  role: role,
+  actor-revision: uint .gt 0,
+  key-id: identifier,
+  clause-id: identifier,
+  statement-digest: digest32,
+  signature: signature64,
+  accepted-height: uint .gt 0
+]
+
+approval-proposal = [
+  version: 1,
+  proposal-id: identifier,
+  policy-id: identifier,
+  policy-revision: uint .gt 0,
+  policy-digest: digest32,
+  payload-domain: tstr .size (1..64),
+  payload-hash: digest32,
+  deadline-height: uint .gt 0,
+  status: proposal-status,
+  proposer-actor-id: identifier,
+  proposer-organization-id: identifier,
+  proposer-organization-revision: uint .gt 0,
+  proposer-role: role,
+  proposer-actor-revision: uint .gt 0,
+  proposer-key-id: identifier,
+  created-height: uint .gt 0,
+  decisions: [*64 accepted-decision] ; ascending (accepted-height, actor-id)
+]
+
+approval-stats = [
+  version: 1,
+  created: uint,
+  pending: uint,
+  approved: uint,
+  rejected: uint,
+  cancelled: uint,
+  expired: uint
+]
+; created MUST equal pending + approved + rejected + cancelled + expired.
+
+; Authenticated keys are raw US-ASCII bytes, not CBOR. Exact layouts:
+; o/{id}/current, o/{id}/r/{revision}
+; a/{id}/current, a/{id}/r/{revision}
+; p/{id}/current, p/{id}/r/{revision}
+; q/{proposal-id}
+; s/proposals/v1
+; g/{governed-mutation-id}
+; A */current value is exactly one positive uint64 revision in big-endian
+; binary form. It is not CBOR.

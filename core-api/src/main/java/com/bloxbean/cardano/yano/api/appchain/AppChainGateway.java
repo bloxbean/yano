@@ -23,6 +23,26 @@ public interface AppChainGateway {
      */
     String submit(String topic, byte[] body);
 
+    /**
+     * Validate and member-sign a state-machine-owned reserved-topic command.
+     * Exposed only through privileged operator surfaces; implementations fail
+     * closed unless the selected machine explicitly accepts the exact topic
+     * and body.
+     */
+    default String submitPrivilegedSystemMessage(String topic, byte[] body) {
+        throw new IllegalStateException("Privileged state-machine commands are unavailable");
+    }
+
+    /** Dry-run the same local validation performed before privileged submission. */
+    default void validatePrivilegedSystemMessage(String topic, byte[] body) {
+        throw new IllegalStateException("Privileged state-machine commands are unavailable");
+    }
+
+    /** Cached state-machine operational diagnostics, excluding secret detail. */
+    default Map<String, Object> stateMachineStatus() {
+        return Map.of();
+    }
+
     /** Most recently accepted messages (local + peer), newest last. */
     List<ReceivedAppMessage> recentMessages(int limit);
 
@@ -46,10 +66,37 @@ public interface AppChainGateway {
     java.util.Optional<byte[]> stateValue(byte[] key);
 
     /**
-     * MPF inclusion proof (wire format) for a key against the committed root;
-     * verifiable off-chain and on-chain (Aiken MPF validator).
+     * MPF inclusion or exclusion proof (wire format) for a key against the
+     * committed root; verifiable off-chain and on-chain (Aiken MPF validator).
      */
     java.util.Optional<byte[]> stateProof(byte[] key);
+
+    /**
+     * Atomic inclusion or exclusion proof for one key, bound to the exact
+     * committed height and state root used to read its value. Implementations
+     * predating this capability must override this method before exposing the
+     * proof endpoint. The default fails explicitly: composing {@link #stateRoot()},
+     * {@link #stateValue(byte[])}, and {@link #stateProof(byte[])} can race a
+     * concurrently finalized block and must never be presented as one proof
+     * snapshot.
+     *
+     * @throws UnsupportedOperationException when the gateway has not implemented
+     *                                       atomic proof snapshots
+     */
+    default java.util.Optional<AppStateProofSnapshot> stateProofSnapshot(byte[] key) {
+        throw new UnsupportedOperationException(
+                "Atomic app-chain state proof snapshots are unavailable");
+    }
+
+    /**
+     * Run the configured state machine's bounded read hook against one
+     * root-fixed committed-state snapshot (ADR app-layer/011.3 gate A).
+     * Implementations execute plugin code away from the consensus executor.
+     */
+    default AppQueryResult query(String path, byte[] request) {
+        throw new AppQueryException(AppQueryException.Code.UNAVAILABLE,
+                "App-chain query service is unavailable");
+    }
 
     /** Height at which a message id was finalized, if it was. */
     java.util.Optional<Long> messageHeight(byte[] messageId);
@@ -64,10 +111,12 @@ public interface AppChainGateway {
     AutoCloseable subscribeFinalized(FinalizedBlockListener listener);
 
     /**
-     * Build a portable, offline-verifiable evidence bundle for a finalized
-     * message (ADR app-layer/006 E3.4): its block(s), the member key set, and —
-     * when anchored — the L1 anchor reference and prev-hash chain to it. Empty
-     * if the message id is unknown/not finalized.
+     * Build portable verification material for a finalized message (ADR
+     * app-layer/006 E3.4): its block(s), the bundle-claimed member key set, and
+     * — when anchored — the L1 anchor reference and prev-hash chain to it.
+     * Authenticity requires an independently trusted chain/member/threshold
+     * context and independent verification of the exact Cardano anchor output.
+     * Empty if the message id is unknown/not finalized.
      */
     java.util.Optional<com.bloxbean.cardano.yano.api.appchain.evidence.EvidenceBundle> evidence(byte[] messageId);
 
@@ -94,6 +143,82 @@ public interface AppChainGateway {
 
     /** Finalized messages from a sender public key, ascending by (height, index). */
     List<MessageRef> messagesBySender(byte[] sender, long fromHeight, int limit);
+
+    // ------------------------------------------------------------------
+    // Effects (ADR app-layer/010 F12) — consensus-tier read surface
+    // ------------------------------------------------------------------
+
+    /**
+     * Emitted effect records, ascending by (height, ordinal), starting at
+     * {@code fromHeight} (ADR-010 F12). Consensus view — identical on every
+     * node; runtime execution status joins in the Effect Runtime surface.
+     */
+    default List<com.bloxbean.cardano.yano.api.appchain.effects.EffectView> effects(
+            long fromHeight, int limit) {
+        return List.of();
+    }
+
+    /** One emitted effect record, if it exists. */
+    default java.util.Optional<com.bloxbean.cardano.yano.api.appchain.effects.EffectView> effect(
+            long height, int ordinal) {
+        return java.util.Optional.empty();
+    }
+
+    /**
+     * Composed proof of one emission against the historical state root at its
+     * block height. Distinguishes an unknown effect from retained commitment
+     * metadata whose record/path material has been pruned.
+     */
+    default com.bloxbean.cardano.yano.api.appchain.effects.EffectProofLookup effectProof(
+            long height, int ordinal) {
+        return com.bloxbean.cardano.yano.api.appchain.effects.EffectProofLookup.notFound(0);
+    }
+
+    /**
+     * Effect consensus/runtime observability. Consensus open/expiry values are
+     * present even without a local executor; runtime gauges then read zero.
+     */
+    default Map<String, Object> effectStats() {
+        return Map.of();
+    }
+
+    /** This node's execution-plane status of one effect; empty when no runtime / not tracked. */
+    default java.util.Optional<Map<String, Object>> effectRuntimeStatus(long height, int ordinal) {
+        return java.util.Optional.empty();
+    }
+
+    /** Operator requeue: PARKED/QUARANTINED → PENDING (ADR-010 F9). False when not applicable. */
+    default boolean requeueEffect(long height, int ordinal) {
+        return false;
+    }
+
+    /**
+     * External-executor claim (ADR-010 F5): lease eligible effects to a named
+     * external worker over REST. Node-local work-dispatch, never consensus;
+     * an expired lease re-opens the effect. Empty unless this node runs the
+     * Effect Runtime with {@code effects.external.enabled=true}.
+     */
+    default List<com.bloxbean.cardano.yano.api.appchain.effects.PendingEffect> claimEffects(
+            String executorId, java.util.Set<String> types, int max, long leaseSeconds) {
+        return List.of();
+    }
+
+    /** External-executor report: definitive outcome for a claimed effect. */
+    default boolean reportEffect(String executorId, long height, int ordinal, boolean success,
+                                 byte[] externalRef, String reason) {
+        return false;
+    }
+
+    /**
+     * Operator cancel (ADR-010 F9): injects a member-signed CANCELLED
+     * {@code ~fx/result} for an OPEN CHAIN effect. Effective only while no
+     * terminal exists; cancel cannot unsend an in-flight execution — a late
+     * result then no-ops against the CANCELLED terminal. False when the
+     * effect is unknown, already closed, or not CHAIN-policy.
+     */
+    default boolean cancelEffect(long height, int ordinal, String reason) {
+        return false;
+    }
 
     // ------------------------------------------------------------------
     // Admin operations (ADR app-layer/006 E5.4) — node-local operability

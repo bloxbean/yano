@@ -1,0 +1,2 @@
+root:!:0:0:root:/root:/sbin/nologin
+yano-kafka:!:@HOST_UID@:@HOST_GID@:Yano Kafka:/nonexistent:/sbin/nologin

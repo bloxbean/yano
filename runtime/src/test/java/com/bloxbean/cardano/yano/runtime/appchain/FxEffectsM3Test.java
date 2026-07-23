@@ -1,0 +1,747 @@
+package com.bloxbean.cardano.yano.runtime.appchain;
+
+import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
+import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
+import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
+import com.bloxbean.cardano.yano.api.appchain.FinalityCert;
+import com.bloxbean.cardano.yano.api.appchain.codec.AppBlockCodec;
+import com.bloxbean.cardano.yano.api.appchain.effects.ActivationSchedule;
+import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
+import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutor;
+import com.bloxbean.cardano.yano.api.appchain.effects.EffectExecution;
+import com.bloxbean.cardano.yano.api.appchain.effects.EffectIntent;
+import com.bloxbean.cardano.yano.api.appchain.effects.EffectLimitExceededException;
+import com.bloxbean.cardano.yano.api.appchain.effects.EffectOutcome;
+import com.bloxbean.cardano.yano.api.appchain.effects.EffectResult;
+import com.bloxbean.cardano.yano.api.appchain.effects.FxKeys;
+import com.bloxbean.cardano.yano.api.appchain.effects.FxResultBody;
+import com.bloxbean.cardano.yano.api.appchain.effects.ResultPolicy;
+import com.bloxbean.cardano.yano.appchain.config.AppChainApprovalsConfig;
+import com.bloxbean.cardano.yano.appchain.stdlib.ApprovalsStateMachine;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.io.TempDir;
+import org.slf4j.LoggerFactory;
+
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.stream.IntStream;
+import java.util.concurrent.atomic.AtomicReference;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+/**
+ * FX-M3 result loop (ADR app-layer/010 F8/F9): fail-closed ~fx/result
+ * incorporation (first result wins), the consensus result window, the
+ * result-beats-expiry ordering, onEffectResult delivery, injection
+ * surfacing, and the stdlib generic on-approved effect flow (ADR-021).
+ */
+@Timeout(120)
+class FxEffectsM3Test {
+
+    private static final Map<String, String> FX_SETTINGS = Map.of(
+            "effects.enabled", "true",
+            "effects.max-per-block", "8",
+            "effects.max-payload-bytes", "4096");
+
+    // ------------------------------------------------------------------
+
+    @Test
+    void resultIncorporation_closesEffect_andNotifiesMachine(@TempDir Path dir) {
+        RecordingMachine machine = new RecordingMachine(0);
+        try (MsgPipeline pipeline = new MsgPipeline(dir, machine, FX_SETTINGS)) {
+            pipeline.apply(msg("t", "emit-1"));                    // h1: emits CHAIN effect 1/0
+            assertThat(pipeline.store.fxOpenCount()).isEqualTo(1);
+
+            byte[] result = new FxResultBody(1, 1, 0, EffectOutcome.CONFIRMED,
+                    "tx-abc".getBytes(StandardCharsets.UTF_8), null).encode();
+            FxKernel.Result fx = pipeline.apply(msg(FxResultBody.TOPIC, result)); // h2
+
+            assertThat(fx.incorporated()).hasSize(1);
+            assertThat(fx.incorporated().get(0).outcome()).isEqualTo(EffectOutcome.CONFIRMED);
+            assertThat(pipeline.store.fxClosed(1, 0)).isTrue();
+            assertThat(pipeline.store.fxOpenCount()).isZero();
+            // per-effect done leaf commits the envelope hash
+            byte[] done = pipeline.store.stateGet(
+                    FxKeys.doneKey(fx.incorporated().get(0).effectId())).orElseThrow();
+            assertThat(done).isEqualTo(fx.incorporated().get(0).envelopeHash());
+            // the machine SAW it
+            assertThat(machine.results).hasSize(1);
+            assertThat(machine.results.get(0).confirmed()).isTrue();
+            assertThat(new String(machine.results.get(0).externalRef(), StandardCharsets.UTF_8))
+                    .isEqualTo("tx-abc");
+        }
+    }
+
+    @Test
+    void emitterResultCallback_hasOnePathGlobalOrdinalsAndTerminalOrdering(@TempDir Path dir) {
+        ResultEmittingMachine machine = new ResultEmittingMachine();
+        try (MsgPipeline pipeline = new MsgPipeline(dir, machine, FX_SETTINGS)) {
+            FxKernel.Result seeded = pipeline.apply(
+                    msg("t", "seed-confirmed"),
+                    msg("t", "seed-failed"),
+                    msg("t", "seed-cancelled"),
+                    msg("t", "seed-expired"));
+            assertThat(seeded.emitted()).hasSize(4);
+
+            byte[] confirmed = new FxResultBody(1, 1, 0, EffectOutcome.CONFIRMED,
+                    null, null).encode();
+            byte[] failed = new FxResultBody(1, 1, 1, EffectOutcome.FAILED,
+                    null, null).encode();
+            byte[] cancelled = new FxResultBody(1, 1, 2, EffectOutcome.CANCELLED,
+                    null, null).encode();
+            FxKernel.Result continued = pipeline.apply(
+                    msg(FxResultBody.TOPIC, confirmed),
+                    msg(FxResultBody.TOPIC, failed),
+                    msg(FxResultBody.TOPIC, cancelled),
+                    msg("t", "ordinary"));
+
+            assertThat(continued.incorporated()).extracting(EffectResult::outcome)
+                    .containsExactly(EffectOutcome.CONFIRMED, EffectOutcome.FAILED,
+                            EffectOutcome.CANCELLED, EffectOutcome.EXPIRED);
+            assertThat(continued.records()).extracting(record -> record.type())
+                    .containsExactly("follow.confirmed", "follow.failed",
+                            "follow.cancelled", "follow.expired", "ordinary.action");
+            assertThat(continued.records()).extracting(record -> record.ordinal())
+                    .containsExactly(0, 1, 2, 3, 4);
+            assertThat(machine.emitterCallbacks).isEqualTo(4);
+            assertThat(machine.legacyCallbacks).isZero();
+            assertThat(machine.pendingCounts).containsExactly(3L, 2L, 1L, 0L, 0L);
+        }
+    }
+
+    @Test
+    void resultAndOrdinaryEmissions_shareOneAtomicBlockLimit(@TempDir Path dir) {
+        Map<String, String> bounded = new java.util.LinkedHashMap<>(FX_SETTINGS);
+        bounded.put("effects.max-per-block", "4");
+        ResultEmittingMachine machine = new ResultEmittingMachine();
+        try (MsgPipeline pipeline = new MsgPipeline(dir, machine, bounded)) {
+            pipeline.apply(
+                    msg("t", "seed-confirmed"),
+                    msg("t", "seed-failed"),
+                    msg("t", "seed-cancelled"),
+                    msg("t", "seed-expired"));
+            byte[] confirmed = new FxResultBody(1, 1, 0, EffectOutcome.CONFIRMED,
+                    null, null).encode();
+            byte[] failed = new FxResultBody(1, 1, 1, EffectOutcome.FAILED,
+                    null, null).encode();
+            byte[] cancelled = new FxResultBody(1, 1, 2, EffectOutcome.CANCELLED,
+                    null, null).encode();
+
+            org.assertj.core.api.Assertions.assertThatThrownBy(() -> pipeline.apply(
+                            msg(FxResultBody.TOPIC, confirmed),
+                            msg(FxResultBody.TOPIC, failed),
+                            msg(FxResultBody.TOPIC, cancelled),
+                            msg("t", "ordinary")))
+                    .hasRootCauseInstanceOf(EffectLimitExceededException.class)
+                    .hasRootCauseMessage("effects.max-per-block (4) exceeded at height 2");
+            assertThat(pipeline.store.tipHeight()).isEqualTo(1);
+            assertThat(pipeline.store.fxOpenCount()).isEqualTo(4);
+        }
+    }
+
+    @Test
+    void firstResultWins_duplicatesAndLateResultsNoOp(@TempDir Path dir) {
+        RecordingMachine machine = new RecordingMachine(0);
+        try (MsgPipeline pipeline = new MsgPipeline(dir, machine, FX_SETTINGS)) {
+            pipeline.apply(msg("t", "emit-1"));                    // h1
+            byte[] confirmed = new FxResultBody(1, 1, 0, EffectOutcome.CONFIRMED,
+                    "first".getBytes(StandardCharsets.UTF_8), null).encode();
+            byte[] failed = new FxResultBody(1, 1, 0, EffectOutcome.FAILED,
+                    "second".getBytes(StandardCharsets.UTF_8), null).encode();
+
+            // Same block: both present, first (in block order) wins
+            FxKernel.Result fx = pipeline.apply(
+                    msg(FxResultBody.TOPIC, confirmed), msg(FxResultBody.TOPIC, failed));
+            assertThat(fx.incorporated()).hasSize(1);
+            assertThat(fx.incorporated().get(0).outcome()).isEqualTo(EffectOutcome.CONFIRMED);
+
+            // Later block: closed → deterministic no-op
+            FxKernel.Result later = pipeline.apply(msg(FxResultBody.TOPIC, failed));
+            assertThat(later.incorporated()).isEmpty();
+            assertThat(machine.results).hasSize(1);
+        }
+    }
+
+    @Test
+    void resultBeatsExpiry_inTheSameBlock(@TempDir Path dir) {
+        RecordingMachine machine = new RecordingMachine(2);      // expiry at emit height + 2
+        try (MsgPipeline pipeline = new MsgPipeline(dir, machine, FX_SETTINGS)) {
+            pipeline.apply(msg("t", "emit-1"));                    // h1: expires at h3
+            pipeline.apply();                                      // h2
+            byte[] result = new FxResultBody(1, 1, 0, EffectOutcome.CONFIRMED,
+                    "just-in-time".getBytes(StandardCharsets.UTF_8), null).encode();
+            FxKernel.Result fx = pipeline.apply(msg(FxResultBody.TOPIC, result)); // h3: sweep block
+
+            // The result (processed FIRST) wins; the sweep skips the closed effect
+            assertThat(fx.incorporated()).hasSize(1);
+            assertThat(fx.incorporated().get(0).outcome()).isEqualTo(EffectOutcome.CONFIRMED);
+        }
+    }
+
+    @Test
+    void lateResult_afterExpiry_noOps(@TempDir Path dir) {
+        RecordingMachine machine = new RecordingMachine(1);      // expires at h2
+        try (MsgPipeline pipeline = new MsgPipeline(dir, machine, FX_SETTINGS)) {
+            pipeline.apply(msg("t", "emit-1"));                    // h1
+            FxKernel.Result sweep = pipeline.apply();              // h2: EXPIRED incorporated
+            assertThat(sweep.incorporated()).hasSize(1);
+            assertThat(sweep.incorporated().get(0).outcome()).isEqualTo(EffectOutcome.EXPIRED);
+
+            byte[] result = new FxResultBody(1, 1, 0, EffectOutcome.CONFIRMED,
+                    "too-late".getBytes(StandardCharsets.UTF_8), null).encode();
+            FxKernel.Result late = pipeline.apply(msg(FxResultBody.TOPIC, result)); // h3
+            assertThat(late.incorporated()).isEmpty();
+            assertThat(machine.results).hasSize(1); // only the EXPIRED delivery
+        }
+    }
+
+    @Test
+    void malformedUnknownNonChainAndOutOfWindow_allNoOp(@TempDir Path dir) {
+        Map<String, String> settings = new java.util.LinkedHashMap<>(FX_SETTINGS);
+        settings.put("effects.result-window-blocks", "2");
+        RecordingMachine machine = new RecordingMachine(0, ResultPolicy.NONE);
+        try (MsgPipeline pipeline = new MsgPipeline(dir, machine, settings)) {
+            pipeline.apply(msg("t", "emit-1"));                    // h1: NONE-policy effect
+
+            // Malformed body, unknown effect, NONE-policy target — all no-op,
+            // and the block still applies (a result can never stall the chain)
+            byte[] unknown = new FxResultBody(1, 1, 7, EffectOutcome.CONFIRMED, null, null).encode();
+            byte[] nonChain = new FxResultBody(1, 1, 0, EffectOutcome.CONFIRMED, null, null).encode();
+            FxKernel.Result fx = pipeline.apply(
+                    msg(FxResultBody.TOPIC, "garbage".getBytes(StandardCharsets.UTF_8)),
+                    msg(FxResultBody.TOPIC, unknown),
+                    msg(FxResultBody.TOPIC, nonChain));
+            assertThat(fx.incorporated()).isEmpty();
+
+            pipeline.apply();                                      // h3
+            // h4: effect from h1 is now outside window (4-1=3 > 2) → no-op
+            // BEFORE any CF lookup (node-local pruning can never matter)
+            FxKernel.Result windowed = pipeline.apply(msg(FxResultBody.TOPIC, nonChain));
+            assertThat(windowed.incorporated()).isEmpty();
+        }
+    }
+
+    @Test
+    void perBlockMode_resultsRootCoversResultsAndExpiry(@TempDir Path dir) {
+        Map<String, String> settings = new java.util.LinkedHashMap<>(FX_SETTINGS);
+        settings.put("effects.outcome-commitment", "per-block");
+        RecordingMachine machine = new RecordingMachine(2);
+        try (MsgPipeline pipeline = new MsgPipeline(dir, machine, settings)) {
+            pipeline.apply(msg("t", "emit-1"), msg("t", "emit-2")); // h1: two effects, expire h3
+            pipeline.apply();                                       // h2
+            byte[] result = new FxResultBody(1, 1, 0, EffectOutcome.CONFIRMED,
+                    "ref".getBytes(StandardCharsets.UTF_8), null).encode();
+            FxKernel.Result fx = pipeline.apply(msg(FxResultBody.TOPIC, result)); // h3
+
+            // 1/0 closed by result, 1/1 by sweep — one resultsRoot over both,
+            // results first, then expirations (processing order)
+            assertThat(fx.incorporated()).hasSize(2);
+            assertThat(fx.incorporated().get(0).outcome()).isEqualTo(EffectOutcome.CONFIRMED);
+            assertThat(fx.incorporated().get(1).outcome()).isEqualTo(EffectOutcome.EXPIRED);
+            List<byte[]> hashes = fx.incorporated().stream().map(EffectResult::envelopeHash).toList();
+            byte[] leaf = pipeline.store.stateGet(FxKeys.resultsRootKey(3)).orElseThrow();
+            assertThat(leaf).isEqualTo(FxKeys.effectsRoot(hashes));
+            // no per-effect done leaves in per-block mode
+            assertThat(pipeline.store.stateGet(
+                    FxKeys.doneKey(fx.incorporated().get(0).effectId()))).isEmpty();
+        }
+    }
+
+    @Test
+    void injectionSurfacing_confirmedAndFailed_untilClosed(@TempDir Path dir) throws Exception {
+        AtomicReference<EffectExecution> outcome = new AtomicReference<>(
+                EffectExecution.confirmed("tx-1".getBytes(StandardCharsets.UTF_8)));
+        AppEffectExecutor executor = new AppEffectExecutor() {
+            @Override public String id() { return "flip"; }
+            @Override public boolean supports(String type) { return "test.action".equals(type); }
+            @Override public EffectExecution execute(
+                    com.bloxbean.cardano.yano.api.appchain.effects.EffectExecutionContext ctx,
+                    com.bloxbean.cardano.yano.api.appchain.effects.PendingEffect effect) {
+                return outcome.get();
+            }
+        };
+        RecordingMachine machine = new RecordingMachine(0);
+        try (MsgPipeline pipeline = new MsgPipeline(dir, machine, FX_SETTINGS);
+             EffectRuntime runtime = new EffectRuntime(pipeline.store, "fx-chain",
+                     new EffectRuntime.Settings(true, Set.of(), 50, 2, 3, 1, 5, 0, 100),
+                     List.of(executor), Map.of(), LoggerFactory.getLogger("fx"))) {
+            pipeline.apply(msg("t", "emit-1"));                    // h1: CHAIN effect 1/0
+            pipeline.apply(msg("t", "emit-2"));                    // h2: CHAIN effect 2/0
+            outcome.set(EffectExecution.failed("definitive-no", false));
+            runtime.tick(); // executes 1/0 (confirmed set later? both pending)
+            // Let both execute: 1/0 and 2/0 — flip outcome between ticks
+            long deadline = System.currentTimeMillis() + 10_000;
+            while (System.currentTimeMillis() < deadline) {
+                runtime.tick();
+                var injections = runtime.pendingInjections(10, 0);
+                if (!injections.isEmpty()) {
+                    // FAILED local terminal for a CHAIN effect surfaces as injectable
+                    assertThat(injections).anySatisfy(injection ->
+                            assertThat(injection.confirmed()).isFalse());
+                    break;
+                }
+                Thread.sleep(20);
+            }
+
+            // Incorporate a result → closure → no longer injectable
+            byte[] result = new FxResultBody(1, 1, 0, EffectOutcome.FAILED,
+                    "definitive-no".getBytes(StandardCharsets.UTF_8), null).encode();
+            pipeline.apply(msg(FxResultBody.TOPIC, result));
+            assertThat(runtime.pendingInjections(10, 0))
+                    .noneMatch(injection -> injection.height() == 1 && injection.ordinal() == 0);
+        }
+    }
+
+    @Test
+    void executorDetailCommitmentIsDefensivelyPersistedAndInjected(@TempDir Path dir)
+            throws Exception {
+        byte[] externalRef = "tx-detail".getBytes(StandardCharsets.UTF_8);
+        byte[] detailHash = new byte[32];
+        java.util.Arrays.fill(detailHash, (byte) 7);
+        EffectExecution confirmed = EffectExecution.confirmed(externalRef, detailHash);
+        externalRef[0] = 0;
+        detailHash[0] = 0;
+        AppEffectExecutor executor = new AppEffectExecutor() {
+            @Override public String id() { return "detail"; }
+            @Override public boolean supports(String type) { return "test.action".equals(type); }
+            @Override public EffectExecution execute(
+                    com.bloxbean.cardano.yano.api.appchain.effects.EffectExecutionContext ctx,
+                    com.bloxbean.cardano.yano.api.appchain.effects.PendingEffect effect) {
+                return confirmed;
+            }
+        };
+
+        RecordingMachine machine = new RecordingMachine(0);
+        try (MsgPipeline pipeline = new MsgPipeline(dir, machine, FX_SETTINGS);
+             EffectRuntime runtime = new EffectRuntime(pipeline.store, "fx-chain",
+                     new EffectRuntime.Settings(true, Set.of(), 25, 1, 3, 1, 5, 0, 100),
+                     List.of(executor), Map.of(), LoggerFactory.getLogger("fx-detail"))) {
+            pipeline.apply(msg("t", "emit-detail"));
+            EffectRuntime.Injection injection = null;
+            long deadline = System.currentTimeMillis() + 10_000;
+            while (System.currentTimeMillis() < deadline && injection == null) {
+                runtime.tick();
+                List<EffectRuntime.Injection> ready = runtime.pendingInjections(1, 0);
+                if (!ready.isEmpty()) {
+                    injection = ready.getFirst();
+                } else {
+                    Thread.sleep(20);
+                }
+            }
+
+            assertThat(injection).isNotNull();
+            assertThat(injection.externalRef())
+                    .isEqualTo("tx-detail".getBytes(StandardCharsets.UTF_8));
+            assertThat(injection.detailHash()).containsOnly((byte) 7);
+            byte[] leaked = injection.detailHash();
+            leaked[0] = 99;
+            assertThat(pipeline.store.fxRuntimeStatus(1, 0).orElseThrow().detailHash())
+                    .containsOnly((byte) 7);
+        }
+    }
+
+    @Test
+    void resultReadyIndex_preventsOldStatusRowsFromStarvingInjection(@TempDir Path dir)
+            throws Exception {
+        AppEffectExecutor executor = new AppEffectExecutor() {
+            @Override public String id() { return "confirm"; }
+            @Override public boolean supports(String type) { return "test.action".equals(type); }
+            @Override public EffectExecution execute(
+                    com.bloxbean.cardano.yano.api.appchain.effects.EffectExecutionContext ctx,
+                    com.bloxbean.cardano.yano.api.appchain.effects.PendingEffect effect) {
+                return EffectExecution.confirmed("tx-indexed".getBytes(StandardCharsets.UTF_8));
+            }
+        };
+        RecordingMachine machine = new RecordingMachine(0);
+        try (MsgPipeline pipeline = new MsgPipeline(dir, machine, FX_SETTINGS);
+             EffectRuntime runtime = new EffectRuntime(pipeline.store, "fx-chain",
+                     new EffectRuntime.Settings(true, Set.of(), 50, 2, 3, 1, 5, 0, 100),
+                     List.of(executor), Map.of(), LoggerFactory.getLogger("fx"))) {
+            // More than Settings.scanLimit() irrelevant rows sort before h1.
+            // The pre-index implementation scanned this prefix and never saw
+            // the newer DONE result.
+            for (int ordinal = 0; ordinal < 4_200; ordinal++) {
+                pipeline.store.fxRuntimePutStatus(0, ordinal, FxStatusRecord.pending());
+            }
+            pipeline.apply(msg("t", "emit-indexed"));
+
+            long deadline = System.currentTimeMillis() + 10_000;
+            while (!pipeline.store.fxResultReadyExists(1, 0)
+                    && System.currentTimeMillis() < deadline) {
+                runtime.tick();
+                Thread.sleep(10);
+            }
+            assertThat(pipeline.store.fxResultReadyExists(1, 0)).isTrue();
+            assertThat(runtime.pendingInjections(1, 0)).singleElement().satisfies(injection -> {
+                assertThat(injection.height()).isEqualTo(1);
+                assertThat(injection.ordinal()).isZero();
+                assertThat(injection.confirmed()).isTrue();
+            });
+
+            byte[] result = new FxResultBody(1, 1, 0, EffectOutcome.CONFIRMED,
+                    "tx-indexed".getBytes(StandardCharsets.UTF_8), null).encode();
+            pipeline.apply(msg(FxResultBody.TOPIC, result));
+            assertThat(pipeline.store.fxResultReadyExists(1, 0)).isFalse();
+            assertThat(runtime.pendingInjections(1, 0)).isEmpty();
+        }
+    }
+
+    @Test
+    void resultReadyIndex_backfillsPreIndexDoneChainOutcomes(@TempDir Path dir) {
+        RecordingMachine machine = new RecordingMachine(0);
+        try (MsgPipeline pipeline = new MsgPipeline(dir, machine, FX_SETTINGS)) {
+            pipeline.apply(msg("t", "emit-legacy"));
+            pipeline.store.bindFxRuntimeOwner("legacy-owner");
+            pipeline.store.fxPutIntakeCursor(1);
+            pipeline.store.fxRuntimePutStatus(1, 0, FxStatusRecord.pending()
+                    .done("tx-legacy".getBytes(StandardCharsets.UTF_8)));
+            assertThat(pipeline.store.fxResultReadyExists(1, 0)).isFalse();
+
+            try (EffectRuntime runtime = new EffectRuntime(pipeline.store, "fx-chain",
+                    new EffectRuntime.Settings(true, Set.of(), 50, 2, 3, 1, 5, 0, 100),
+                    List.of(), Map.of(), "legacy-owner", LoggerFactory.getLogger("fx"))) {
+                assertThat(pipeline.store.fxResultReadyExists(1, 0)).isTrue();
+                assertThat(runtime.pendingInjections(1, 0)).singleElement()
+                        .satisfies(injection -> assertThat(injection.height()).isEqualTo(1));
+            }
+        }
+    }
+
+    @Test
+    void resultReadyInjection_roundRobinsBeyondOneReinjectionWindow(@TempDir Path dir) {
+        Map<String, String> settings = Map.of(
+                "effects.enabled", "true",
+                "effects.max-per-block", "512",
+                "effects.max-payload-bytes", "4096");
+        RecordingMachine machine = new RecordingMachine(0);
+        try (MsgPipeline pipeline = new MsgPipeline(dir, machine, settings)) {
+            Msg[] messages = IntStream.range(0, 401)
+                    .mapToObj(i -> msg("t", "emit-fair-" + i))
+                    .toArray(Msg[]::new);
+            pipeline.apply(messages);
+            pipeline.store.bindFxRuntimeOwner("fair-owner");
+            pipeline.store.fxPutIntakeCursor(1);
+            for (int ordinal = 0; ordinal < messages.length; ordinal++) {
+                pipeline.store.fxRuntimeComplete(1, ordinal,
+                        FxStatusRecord.pending().done(
+                                ("tx-" + ordinal).getBytes(StandardCharsets.UTF_8)), true);
+            }
+
+            try (EffectRuntime runtime = new EffectRuntime(pipeline.store, "fx-chain",
+                    new EffectRuntime.Settings(true, Set.of(), 50, 2, 3, 1, 5, 0, 100),
+                    List.of(), Map.of(), "fair-owner", LoggerFactory.getLogger("fx"))) {
+                Set<Integer> seen = new java.util.HashSet<>();
+                for (int batch = 0; batch < 13; batch++) {
+                    runtime.pendingInjections(32, 60_000)
+                            .forEach(injection -> seen.add(injection.ordinal()));
+                }
+                assertThat(seen).hasSize(messages.length)
+                        .contains(IntStream.range(0, messages.length).boxed().toArray(Integer[]::new));
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Approvals generic on-approved effect flow (ADR-021)
+    // ------------------------------------------------------------------
+
+    @Test
+    void approvalsEffect_emitsOnApproval_andKeepsDecisionApprovedOnResult(@TempDir Path dir) {
+        Map<String, String> approvalsSettings = Map.of(
+                "effects.enabled", "true",
+                "machines.approvals.on-approved-effect.enabled", "true",
+                "machines.approvals.on-approved-effect.type", "demo.webhook",
+                "machines.approvals.on-approved-effect.gate", "app-final",
+                "machines.approvals.on-approved-effect.expiry-blocks", "100",
+                "machines.approvals.activations.on-approved-effect", "1");
+        ApprovalsStateMachine machine = new ApprovalsStateMachine(
+                AppChainApprovalsConfig.fromSettings(approvalsSettings),
+                ActivationSchedule.from(approvalsSettings, ApprovalsStateMachine.ID));
+        try (MsgPipeline pipeline = new MsgPipeline(dir, machine, FX_SETTINGS)) {
+            byte[] payload = "{\"event\":\"order.approved\",\"id\":\"A-42\"}"
+                    .getBytes(StandardCharsets.UTF_8);
+            // h1: propose (2-of-n) + first approval; h2: second approval → APPROVED + emit
+            pipeline.apply(
+                    msg("t", ApprovalsStateMachine.propose("rel-42", payload, 2, 0), "alice"),
+                    msg("t", ApprovalsStateMachine.approve("rel-42"), "alice"));
+            FxKernel.Result fx = pipeline.apply(
+                    msg("t", ApprovalsStateMachine.approve("rel-42"), "bob"));
+
+            assertThat(fx.emitted()).hasSize(1);
+            var record = fx.emitted().get(0).record();
+            assertThat(record.type()).isEqualTo("demo.webhook");
+            assertThat(record.scope()).isEqualTo("approvals/on-approved/rel-42");
+            assertThat(record.payload()).isEqualTo(payload);
+            assertThat(record.gate()).isEqualTo(
+                    com.bloxbean.cardano.yano.api.appchain.effects.FinalityGate.APP_FINAL);
+            assertThat(record.expiryHeight()).isEqualTo(record.height() + 100);
+            assertThat(pipeline.store.stateGet(
+                    ApprovalsStateMachine.stagedEffectPayloadKey("rel-42"))).isEmpty();
+            var pending = ApprovalsStateMachine.decodeEffectState(pipeline.store.stateGet(
+                    ApprovalsStateMachine.effectStateKey("rel-42")).orElseThrow());
+            assertThat(pending.status()).isEqualTo(ApprovalsStateMachine.EFFECT_STATUS_PENDING);
+            assertThat(pending.effectId()).isEqualTo("fx-chain/2/0");
+
+            byte[] result = new FxResultBody(1, record.height(), record.ordinal(),
+                    EffectOutcome.CONFIRMED, "3f9c".getBytes(StandardCharsets.UTF_8), null).encode();
+            pipeline.apply(msg(FxResultBody.TOPIC, result));
+            var item = ApprovalsStateMachine.decodeItem(
+                    pipeline.store.stateGet(ApprovalsStateMachine.itemKey("rel-42")).orElseThrow());
+            assertThat(item.status()).isEqualTo(ApprovalsStateMachine.STATUS_APPROVED);
+            var confirmed = ApprovalsStateMachine.decodeEffectState(pipeline.store.stateGet(
+                    ApprovalsStateMachine.effectStateKey("rel-42")).orElseThrow());
+            assertThat(confirmed.status()).isEqualTo(
+                    ApprovalsStateMachine.EFFECT_STATUS_CONFIRMED);
+            assertThat(confirmed.outcome()).isEqualTo(EffectOutcome.CONFIRMED);
+            assertThat(confirmed.externalRef()).isEqualTo(
+                    "3f9c".getBytes(StandardCharsets.UTF_8));
+        }
+    }
+
+    @Test
+    void approvalsEffect_missingActivation_doesNotEmitOrStagePayload(@TempDir Path dir) {
+        Map<String, String> settings = new java.util.HashMap<>();
+        settings.put("effects.enabled", "true");
+        settings.put("machines.approvals.on-approved-effect.enabled", "true");
+        settings.put("machines.approvals.on-approved-effect.type", "demo.webhook");
+        // Config construction requires the activation declaration. The empty
+        // schedule models a replay/context in which the activation is absent.
+        settings.put("machines.approvals.activations.on-approved-effect", "1");
+        ApprovalsStateMachine machine = new ApprovalsStateMachine(
+                AppChainApprovalsConfig.fromSettings(settings),
+                ActivationSchedule.empty());
+        try (MsgPipeline pipeline = new MsgPipeline(dir, machine, FX_SETTINGS)) {
+            byte[] payload = "notification"
+                    .getBytes(StandardCharsets.UTF_8);
+            pipeline.apply(msg("t",
+                    ApprovalsStateMachine.propose("rel-old", payload, 1, 0), "alice"));
+            FxKernel.Result fx = pipeline.apply(
+                    msg("t", ApprovalsStateMachine.approve("rel-old"), "alice"));
+
+            assertThat(fx.emitted()).isEmpty();
+            assertThat(pipeline.store.stateGet(
+                    ApprovalsStateMachine.stagedEffectPayloadKey("rel-old"))).isEmpty();
+            assertThat(pipeline.store.stateGet(
+                    ApprovalsStateMachine.effectStateKey("rel-old"))).isEmpty();
+            var item = ApprovalsStateMachine.decodeItem(
+                    pipeline.store.stateGet(ApprovalsStateMachine.itemKey("rel-old")).orElseThrow());
+            assertThat(item.status()).isEqualTo(ApprovalsStateMachine.STATUS_APPROVED);
+        }
+    }
+
+    @Test
+    void approvalsEffect_activatesExactlyAtHeight_withoutRetroactivePayload(
+            @TempDir Path dir) {
+        Map<String, String> approvalsSettings = Map.of(
+                "effects.enabled", "true",
+                "machines.approvals.on-approved-effect.enabled", "true",
+                "machines.approvals.on-approved-effect.type", "demo.webhook",
+                "machines.approvals.activations.on-approved-effect", "2");
+        ApprovalsStateMachine machine = new ApprovalsStateMachine(
+                AppChainApprovalsConfig.fromSettings(approvalsSettings),
+                ActivationSchedule.from(approvalsSettings, ApprovalsStateMachine.ID));
+        try (MsgPipeline pipeline = new MsgPipeline(dir, machine, FX_SETTINGS)) {
+            byte[] oldPayment = "old-payment".getBytes(StandardCharsets.UTF_8);
+            FxKernel.Result before = pipeline.apply(
+                    msg("t", ApprovalsStateMachine.propose("before", oldPayment, 1, 0), "alice"));
+            assertThat(before.emitted()).isEmpty();
+
+            byte[] activePayment = "active-payment".getBytes(StandardCharsets.UTF_8);
+            FxKernel.Result atActivation = pipeline.apply(
+                    msg("t", ApprovalsStateMachine.approve("before"), "alice"),
+                    msg("t", ApprovalsStateMachine.propose("active", activePayment, 1, 0), "alice"),
+                    msg("t", ApprovalsStateMachine.approve("active"), "alice"));
+
+            assertThat(atActivation.emitted()).singleElement().satisfies(staged -> {
+                assertThat(staged.record().scope()).isEqualTo("approvals/on-approved/active");
+                assertThat(staged.record().payload()).isEqualTo(activePayment);
+            });
+            var beforeItem = ApprovalsStateMachine.decodeItem(
+                    pipeline.store.stateGet(ApprovalsStateMachine.itemKey("before")).orElseThrow());
+            assertThat(beforeItem.status()).isEqualTo(ApprovalsStateMachine.STATUS_APPROVED);
+            assertThat(pipeline.store.stateGet(
+                    ApprovalsStateMachine.effectStateKey("before"))).isEmpty();
+        }
+    }
+
+    @Test
+    void approvalsEffect_isDeterministic_viaConformance() {
+        StateMachineConformance.builder(
+                        new com.bloxbean.cardano.yano.appchain.stdlib.StdlibStateMachineProviders
+                                .ApprovalsProvider())
+                .settings(Map.of(
+                        "effects.enabled", "true",
+                        "machines.approvals.on-approved-effect.enabled", "true",
+                        "machines.approvals.on-approved-effect.type", "test.action",
+                        "machines.approvals.activations.on-approved-effect", "1"))
+                .blocks(12)
+                .messagesPerBlock(2)
+                .bodyGenerator((height, index, random) -> {
+                    String itemId = "item-" + (height / 3);
+                    return index == 0
+                            ? ApprovalsStateMachine.propose(itemId,
+                                    ("pay-" + itemId).getBytes(StandardCharsets.UTF_8), 1, 0)
+                            : ApprovalsStateMachine.approve(itemId);
+                })
+                .runs(3)
+                .assertDeterministic();
+    }
+
+    // ------------------------------------------------------------------
+    // Fixtures
+    // ------------------------------------------------------------------
+
+    /** Emits one CHAIN effect per "emit-*" message and records onEffectResult calls. */
+    private static final class RecordingMachine implements AppStateMachine {
+        final long expiryBlocks;
+        final ResultPolicy policy;
+        final List<EffectResult> results = new ArrayList<>();
+
+        RecordingMachine(long expiryBlocks) {
+            this(expiryBlocks, ResultPolicy.CHAIN);
+        }
+
+        RecordingMachine(long expiryBlocks, ResultPolicy policy) {
+            this.expiryBlocks = expiryBlocks;
+            this.policy = policy;
+        }
+
+        @Override public String id() { return "recording"; }
+        @Override public void apply(AppBlock block, AppStateWriter writer) { }
+
+        @Override
+        public void apply(AppBlock block, AppStateWriter writer, AppEffectEmitter effects) {
+            for (AppMessage message : block.messages()) {
+                String body = new String(message.getBody(), StandardCharsets.UTF_8);
+                if (message.getTopic().startsWith("~") || !body.startsWith("emit-")) {
+                    continue;
+                }
+                effects.emit(EffectIntent.of("test.action", message.getBody())
+                        .scope(body)
+                        .result(policy)
+                        .expiryBlocks(policy == ResultPolicy.CHAIN ? expiryBlocks : 0)
+                        .build());
+            }
+        }
+
+        @Override
+        public void onEffectResult(AppBlock block, EffectResult result, AppStateWriter writer) {
+            results.add(result);
+            writer.put(("seen/" + result.effectId().canonical()).getBytes(StandardCharsets.UTF_8),
+                    new byte[]{(byte) result.outcome().code()});
+        }
+    }
+
+    private static final class ResultEmittingMachine implements AppStateMachine {
+        int legacyCallbacks;
+        int emitterCallbacks;
+        final List<Long> pendingCounts = new ArrayList<>();
+
+        @Override public String id() { return "result-emitter"; }
+        @Override public void apply(AppBlock block, AppStateWriter writer) { }
+
+        @Override
+        public void apply(AppBlock block, AppStateWriter writer, AppEffectEmitter effects) {
+            for (AppMessage message : block.messages()) {
+                if (message.getTopic().startsWith("~")) {
+                    continue;
+                }
+                String command = new String(message.getBody(), StandardCharsets.UTF_8);
+                if (command.startsWith("seed-")) {
+                    effects.emit(EffectIntent.of("seed.action", message.getBody())
+                            .scope(command)
+                            .result(ResultPolicy.CHAIN)
+                            .expiryBlocks(1)
+                            .build());
+                } else if (command.equals("ordinary")) {
+                    pendingCounts.add(effects.pendingCount());
+                    effects.emit(EffectIntent.of("ordinary.action", message.getBody()).build());
+                }
+            }
+        }
+
+        @Override
+        public void onEffectResult(AppBlock block, EffectResult result, AppStateWriter writer) {
+            legacyCallbacks++;
+        }
+
+        @Override
+        public void onEffectResult(
+                AppBlock block,
+                EffectResult result,
+                AppStateWriter writer,
+                AppEffectEmitter effects
+        ) {
+            emitterCallbacks++;
+            pendingCounts.add(effects.pendingCount());
+            effects.emit(EffectIntent.of(
+                    "follow." + result.outcome().name().toLowerCase(java.util.Locale.ROOT),
+                    new byte[0]).build());
+        }
+    }
+
+    private record Msg(String topic, byte[] body, String sender) {
+    }
+
+    private static Msg msg(String topic, String body) {
+        return new Msg(topic, body.getBytes(StandardCharsets.UTF_8), "sender-a");
+    }
+
+    private static Msg msg(String topic, byte[] body) {
+        return new Msg(topic, body, "sender-a");
+    }
+
+    private static Msg msg(String topic, byte[] body, String sender) {
+        return new Msg(topic, body, sender);
+    }
+
+    /** Pipeline variant taking explicit messages (topics/bodies/senders). */
+    private static final class MsgPipeline implements AutoCloseable {
+        final AppLedgerStore store;
+        final AppStateMachine machine;
+        final FxKernel kernel;
+        byte[] prevHash = AppBlock.GENESIS_PREV_HASH;
+        long height;
+        long senderSeq;
+
+        MsgPipeline(Path dir, AppStateMachine machine, Map<String, String> settings) {
+            this.store = new AppLedgerStore(dir.toString(), LoggerFactory.getLogger("fx-test"));
+            this.machine = machine;
+            this.kernel = new FxKernel(EffectsSettings.fromSettings(settings));
+        }
+
+        FxKernel.Result apply(Msg... msgs) {
+            height++;
+            List<AppMessage> list = new ArrayList<>();
+            for (Msg msg : msgs) {
+                byte[] sender = java.util.Arrays.copyOf(
+                        msg.sender().getBytes(StandardCharsets.UTF_8), 32);
+                long seq = ++senderSeq;
+                byte[] id = AppMessage.computeMessageId("fx-chain", msg.topic(), sender, seq,
+                        4_000_000_000L, msg.body());
+                list.add(AppMessage.builder()
+                        .messageId(id).chainId("fx-chain").topic(msg.topic()).sender(sender)
+                        .senderSeq(seq).expiresAt(4_000_000_000L).body(msg.body())
+                        .authScheme(0).authProof(new byte[64]).build());
+            }
+            AppBlock block = new AppBlock(AppBlock.BLOCK_VERSION, "fx-chain", height, prevHash,
+                    0, new byte[0], 1_700_000_000_000L + height * 1_000,
+                    AppBlockCodec.messagesRoot(list), new byte[32], list,
+                    new byte[32], FinalityCert.empty());
+            FxBlockApplier.Applied applied = FxBlockApplier.applyAndCommit(store, kernel, machine, block);
+            prevHash = applied.blockHash();
+            return applied.fx();
+        }
+
+        @Override
+        public void close() {
+            store.close();
+        }
+    }
+}

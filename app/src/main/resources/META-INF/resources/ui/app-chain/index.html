@@ -304,10 +304,64 @@
       html.anim .live-dot { animation: livePulse 2s ease-in-out infinite; }
       @keyframes livePulse { 0%, 100% { box-shadow: 0 0 0 0 var(--ok-bd); } 50% { box-shadow: 0 0 0 4px transparent; } }
       .feed { max-height: 260px; overflow-y: auto; font-size: 12px; }
-      .feed-row { display: flex; gap: 10px; padding: 5px 2px; border-bottom: 1px solid var(--hairline); align-items: baseline; }
+      .feed-row {
+        width: 100%; display: flex; gap: 10px; padding: 7px 5px;
+        border: 0; border-bottom: 1px solid var(--hairline); align-items: baseline;
+        background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer;
+      }
+      .feed-row:hover { background: var(--chip-bg); }
+      .feed-row:focus-visible { outline: 2px solid #60a5fa; outline-offset: -2px; border-radius: 6px; }
       .feed-row:last-child { border-bottom: none; }
       .feed-pos { color: var(--text-dim); flex-shrink: 0; min-width: 64px; }
       .feed-topic { flex-shrink: 0; }
+      .feed-bytes { margin-left: auto; white-space: nowrap; }
+
+      .message-dialog {
+        width: min(900px, calc(100vw - 32px)); max-height: min(86vh, 900px); padding: 0; overflow: auto;
+        border: 1px solid var(--hairline-strong); border-radius: 18px;
+        background: var(--bg); color: var(--text); box-shadow: 0 28px 90px rgba(0, 0, 0, 0.45);
+      }
+      .message-dialog::backdrop { background: rgba(2, 6, 23, 0.72); backdrop-filter: blur(5px); }
+      .message-dialog-shell { padding: 20px; }
+      .message-dialog-head {
+        display: flex; align-items: flex-start; justify-content: space-between;
+        gap: 16px; padding-bottom: 14px; border-bottom: 1px solid var(--hairline);
+      }
+      .message-dialog-head h2 { margin: 0 0 3px; font-size: 18px; }
+      .message-dialog-head p { margin: 0; color: var(--text-dim); font-size: 12px; }
+      .dialog-close { flex-shrink: 0; }
+      .message-meta {
+        display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px 18px; margin: 16px 0;
+      }
+      .message-meta-item { min-width: 0; }
+      .message-meta-label {
+        display: block; margin-bottom: 2px; color: var(--text-dim);
+        font-size: 10px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase;
+      }
+      .message-meta-value { display: block; overflow-wrap: anywhere; }
+      .message-body-head {
+        display: flex; align-items: center; justify-content: space-between;
+        gap: 10px; margin-top: 14px;
+      }
+      .message-body-head h3 { margin: 0; font-size: 13px; }
+      .message-preview {
+        max-height: 300px; overflow: auto; margin: 8px 0 0; padding: 14px;
+        border: 1px solid var(--hairline); border-radius: 10px; background: var(--chip-bg);
+        color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px;
+      }
+      .message-raw { margin-top: 12px; }
+      .message-raw summary { cursor: pointer; color: var(--text-dim); font-size: 12px; }
+      .message-boundary-note {
+        margin: 16px 0 0; padding: 10px 12px; border-left: 3px solid #3b82f6;
+        border-radius: 5px; background: rgba(59, 130, 246, 0.08); color: var(--text-dim);
+        font-size: 12px;
+      }
+      @media (max-width: 620px) {
+        .message-meta { grid-template-columns: 1fr; }
+        .feed-row { flex-wrap: wrap; }
+        .feed-bytes { margin-left: 0; }
+      }
 
       .foot {
         margin-top: 30px; text-align: center; font-size: 11.5px; color: var(--text-dim);
@@ -464,7 +518,18 @@
           <div id="sinksList"><div class="empty">No sinks configured</div></div>
         </section>
 
-        <section class="card ac-rose" style="--i: 6">
+        <section class="card ac-violet" style="--i: 6">
+          <div class="card-head">
+            <div class="card-title">
+              <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 9l3 3-3 3"/><path d="M13 15h3"/><rect x="3" y="4" width="18" height="16" rx="2"/></svg></span>
+              <h2>Effect Executors</h2>
+            </div>
+            <span id="effectExecutorsBadge" class="badge">-</span>
+          </div>
+          <div id="effectExecutorsList"><div class="empty">No in-process executors configured</div></div>
+        </section>
+
+        <section class="card ac-rose" style="--i: 7">
           <div class="card-head">
             <div class="card-title">
               <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="12" r="2.5"/><circle cx="19" cy="5" r="2.5"/><circle cx="19" cy="19" r="2.5"/><path d="M7.3 10.9l9.4-4.7M7.3 13.1l9.4 4.7"/></svg></span>
@@ -472,6 +537,17 @@
             </div>
           </div>
           <div id="peersList"><div class="empty">No peers configured</div></div>
+        </section>
+
+        <section class="card ac-cyan" style="--i: 8">
+          <div class="card-head">
+            <div class="card-title">
+              <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18M3 12h18"/><circle cx="12" cy="12" r="8"/></svg></span>
+              <h2>Profile Governance</h2>
+            </div>
+            <span id="profileModeBadge" class="badge">-</span>
+          </div>
+          <div id="profileGovernanceList"><div class="empty">Not available</div></div>
         </section>
       </div>
 
@@ -504,6 +580,43 @@
         <div id="feed" class="feed"><div class="empty">Waiting for finalized messages…</div></div>
       </section>
 
+      <dialog id="messageDialog" class="message-dialog" aria-labelledby="messageDialogTitle">
+        <div class="message-dialog-shell">
+          <div class="message-dialog-head">
+            <div>
+              <h2 id="messageDialogTitle">Finalized app-chain message</h2>
+              <p id="messageDialogSubtitle">Selected message details remain stable while the live feed updates.</p>
+            </div>
+            <button id="messageDialogClose" type="button" class="icon-btn dialog-close"
+                    aria-label="Close message details" title="Close">&times;</button>
+          </div>
+          <div class="message-meta">
+            <div class="message-meta-item"><span class="message-meta-label">Chain</span><span id="messageChain" class="message-meta-value mono">-</span></div>
+            <div class="message-meta-item"><span class="message-meta-label">Block position</span><span id="messagePosition" class="message-meta-value mono">-</span></div>
+            <div class="message-meta-item"><span class="message-meta-label">Topic</span><span id="messageTopic" class="message-meta-value">-</span></div>
+            <div class="message-meta-item"><span class="message-meta-label">Size</span><span id="messageSize" class="message-meta-value mono">-</span></div>
+            <div class="message-meta-item"><span class="message-meta-label">Message ID</span><span id="messageId" class="message-meta-value mono">-</span></div>
+            <div class="message-meta-item"><span class="message-meta-label">Sender / sequence</span><span id="messageSender" class="message-meta-value mono">-</span></div>
+            <div class="message-meta-item"><span class="message-meta-label">Body SHA-256</span><span id="messageBodySha" class="message-meta-value mono">-</span></div>
+            <div class="message-meta-item"><span class="message-meta-label">Display</span><span id="messageDisplay" class="message-meta-value">-</span></div>
+          </div>
+          <div class="message-body-head">
+            <h3>Bounded body preview</h3>
+            <span id="messagePreviewBadge" class="badge">OPAQUE BYTES</span>
+          </div>
+          <pre id="messageBodyPreview" class="message-preview mono">No message selected.</pre>
+          <details class="message-raw">
+            <summary>Raw hexadecimal bytes</summary>
+            <pre id="messageRawHex" class="message-preview mono">-</pre>
+          </details>
+          <p class="message-boundary-note">
+            This inspector shows the finalized app-chain message envelope. The body is application-defined;
+            external evidence documents remain in object storage/IPFS and are shown by the evidence demo UI
+            only after connector verification.
+          </p>
+        </div>
+      </dialog>
+
       <div class="sec-label">Recent Blocks</div>
       <section class="card ac-blue" style="--i: 12">
         <div class="table-wrap">
@@ -522,6 +635,8 @@
         <span class="mono" id="apiBase">/api/v1</span>
         <span class="sep">·</span>
         <a href="../status/" style="color: inherit">L1 node status</a>
+        <span class="sep">·</span>
+        <a href="../plugins/" style="color: inherit">Plugin operations</a>
       </div>
     </main>
 
@@ -537,6 +652,7 @@
       const fmt = n => n == null ? '-' : Number(n).toLocaleString('en-US');
       const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
       const shortHex = (h, n = 12) => h && h.length > n ? h.slice(0, n) + '…' : (h || '-');
+      const messagePreviewBytes = 64 * 1024;
       const age = ms => {
         if (!ms) return '-';
         const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
@@ -600,7 +716,8 @@
         if (value !== null) {
           value ? localStorage.setItem('yano-appchain-key', value)
                 : localStorage.removeItem('yano-appchain-key');
-          refresh(); restartStream();
+          stopStream();
+          refresh().then(restartStream);
         }
       });
 
@@ -626,12 +743,16 @@
       let selectedChain = localStorage.getItem('yano-appchain-selected') || '';
       const chainSelect = $('chainSelect');
       chainSelect.addEventListener('change', () => {
+        stopStream();
         selectedChain = chainSelect.value;
         localStorage.setItem('yano-appchain-selected', selectedChain);
         firstRender = true;
         resetHistory();
-        refresh();
-        restartStream();
+        lastStreamHeight = null;
+        feedSeenHeight = null;
+        feedSeen.clear();
+        clearFeed();
+        refresh().then(restartStream);
       });
       function chainBase() {
         return selectedChain ? '/app-chain/chains/' + encodeURIComponent(selectedChain) : '/app-chain';
@@ -796,19 +917,127 @@
 
       // ------------------------------ live message feed (SSE over fetch) ------------------------------
       let streamAbort = null;
+      let streamGeneration = 0;
+      let lastStreamHeight = null;
+      let feedSeenHeight = null;
       const feedSeen = new Set();
+      function stopStream() {
+        streamGeneration++;
+        if (streamAbort) streamAbort.abort();
+        streamAbort = null;
+      }
+      function clearFeed() {
+        const feed = $('feed');
+        delete feed.dataset.last;
+        feed.innerHTML = '<div class="empty">Waiting for finalized messages…</div>';
+      }
+      let messageInspectorGeneration = 0;
+      function setMessageValue(id, value) {
+        $(id).textContent = value == null || value === '' ? '-' : String(value);
+      }
+      function hexPreview(hex) {
+        if (typeof hex !== 'string' || (hex.length & 1) !== 0 || !/^[0-9a-f]*$/i.test(hex)) return null;
+        const totalBytes = hex.length / 2;
+        const shownBytes = Math.min(totalBytes, messagePreviewBytes);
+        const bytes = new Uint8Array(shownBytes);
+        for (let i = 0; i < shownBytes; i++) bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+        return { bytes, totalBytes, truncated: shownBytes < totalBytes,
+          rawHex: hex.slice(0, shownBytes * 2) };
+      }
+      function readableText(bytes) {
+        try {
+          const value = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+          for (let i = 0; i < value.length; i++) {
+            const code = value.charCodeAt(i);
+            if (code < 32 && code !== 9 && code !== 10 && code !== 13) return null;
+          }
+          return value;
+        } catch (e) { return null; }
+      }
+      async function sha256(bytes) {
+        if (!globalThis.crypto?.subtle) return null;
+        const digest = await globalThis.crypto.subtle.digest('SHA-256', bytes);
+        return Array.from(new Uint8Array(digest), value => value.toString(16).padStart(2, '0')).join('');
+      }
+      async function openMessageInspector(message, position) {
+        const generation = ++messageInspectorGeneration;
+        const snapshot = { ...message };
+        const preview = hexPreview(snapshot.bodyHex || '');
+        const dialog = $('messageDialog');
+        setMessageValue('messageChain', snapshot.chainId || selectedChain);
+        setMessageValue('messagePosition', position);
+        setMessageValue('messageTopic', snapshot.topic || 'default');
+        setMessageValue('messageId', snapshot.messageId);
+        setMessageValue('messageSender', (snapshot.sender || '-') + ' / ' + (snapshot.senderSeq ?? '-'));
+        setMessageValue('messageSize', preview ? fmt(preview.totalBytes) + ' bytes' : 'invalid body encoding');
+        setMessageValue('messageBodySha', 'Calculating…');
+        setMessageValue('messageDisplay', preview && preview.truncated
+            ? 'First ' + fmt(preview.bytes.length) + ' bytes of ' + fmt(preview.totalBytes)
+            : 'Complete bounded body');
+
+        let bodyText = 'Body is not valid hexadecimal data.';
+        let badge = 'INVALID';
+        if (preview) {
+          const decoded = readableText(preview.bytes);
+          bodyText = preview.rawHex || '(empty body)';
+          badge = 'HEX';
+          if (decoded != null) {
+            bodyText = decoded || '(empty text body)';
+            badge = 'UTF-8 TEXT';
+            if (!preview.truncated) {
+              try {
+                bodyText = JSON.stringify(JSON.parse(decoded), null, 2);
+                badge = 'JSON';
+              } catch (e) { /* readable application text, not JSON */ }
+            }
+          }
+          if (preview.truncated) bodyText += '\n\n… preview truncated by the 64 KiB UI limit';
+        }
+        $('messageBodyPreview').textContent = bodyText;
+        $('messageRawHex').textContent = preview
+            ? (preview.rawHex || '(empty)') + (preview.truncated ? '\n… truncated' : '') : '-';
+        $('messagePreviewBadge').textContent = badge;
+        if (!dialog.open) dialog.showModal();
+
+        if (!preview || preview.truncated) {
+          setMessageValue('messageBodySha', preview ? 'Not calculated: body exceeds preview limit' : '-');
+          return;
+        }
+        try {
+          const digest = await sha256(preview.bytes);
+          if (generation === messageInspectorGeneration) {
+            setMessageValue('messageBodySha', digest || 'Unavailable in this browser context');
+          }
+        } catch (e) {
+          if (generation === messageInspectorGeneration) setMessageValue('messageBodySha', 'Unavailable');
+        }
+      }
+      $('messageDialogClose').addEventListener('click', () => $('messageDialog').close());
+      $('messageDialog').addEventListener('close', () => { messageInspectorGeneration++; });
       function restartStream() {
-        if (streamAbort) { streamAbort.abort(); streamAbort = null; }
+        stopStream();
         if (!selectedChain && chains.length !== 1) { pill('streamPill', 'IDLE', '', false); return; }
         streamAbort = new AbortController();
-        streamLoop(streamAbort.signal);
+        const generation = streamGeneration;
+        // The independently-polled tip is only the first connection's bounded
+        // replay seed. Retries must use the consumed SSE cursor below.
+        const initialHeight = lastStreamHeight == null
+            ? (hist.lastTip == null ? -1 : Math.max(1, hist.lastTip))
+            : lastStreamHeight;
+        streamLoop(streamAbort.signal, generation, initialHeight);
       }
-      async function streamLoop(signal) {
-        while (!signal.aborted) {
+      async function streamLoop(signal, generation, initialHeight) {
+        while (!signal.aborted && generation === streamGeneration) {
           try {
             pill('streamPill', 'CONNECTING', 'warn', false);
-            const res = await fetch(apiPrefix + chainBase() + '/stream?fromHeight=-1',
+            // Replay one bounded recent block on first load. Reconnect from
+            // the last parsed height (inclusive), with per-message deduping,
+            // so a disconnect in the middle of a block cannot lose messages.
+            const fromHeight = lastStreamHeight == null
+                ? initialHeight : Math.max(1, lastStreamHeight);
+            const res = await fetch(apiPrefix + chainBase() + '/stream?fromHeight=' + fromHeight,
                 { headers: { ...headers(), 'Accept': 'text/event-stream' }, signal, cache: 'no-store' });
+            if (signal.aborted || generation !== streamGeneration) return;
             if (!res.ok || !res.body) throw new Error('stream http ' + res.status);
             pill('streamPill', 'LIVE', 'ok', true);
             const reader = res.body.getReader();
@@ -816,6 +1045,7 @@
             let buffer = '';
             for (;;) {
               const { done, value } = await reader.read();
+              if (signal.aborted || generation !== streamGeneration) return;
               if (done) break;
               buffer += decoder.decode(value, { stream: true });
               let idx;
@@ -826,7 +1056,7 @@
             }
             throw new Error('stream ended');
           } catch (e) {
-            if (signal.aborted) return;
+            if (signal.aborted || generation !== streamGeneration) return;
             pill('streamPill', 'RETRYING', 'bad', false);
             await new Promise(resolve => setTimeout(resolve, 3000));
           }
@@ -838,28 +1068,56 @@
           if (line.startsWith('event:')) event = line.slice(6).trim();
           else if (line.startsWith('data:')) data += line.slice(5).trim();
         }
+        // A heartbeat carries the server's current tip, not necessarily the
+        // last block delivered to this subscriber. It keeps the connection
+        // alive but must never advance the replay cursor.
+        if (event === 'heartbeat') return;
         if (event !== 'app-message' || !data) return;
         try {
           const msg = JSON.parse(data);
-          const key = msg.height + ':' + msg.index;
+          if (!Number.isSafeInteger(msg.height) || msg.height < 1
+              || !Number.isSafeInteger(msg.index) || msg.index < 0) return;
+          const position = msg.height + ':' + msg.index;
+          const key = (msg.chainId || selectedChain) + ':' + position;
+          // The server emits in height order and reconnects only from the
+          // latest parsed height, so retaining one block is sufficient and
+          // remains bounded even when that block contains a large load test.
+          if (feedSeenHeight == null || msg.height > feedSeenHeight) {
+            feedSeen.clear();
+            feedSeenHeight = msg.height;
+          }
+          if (lastStreamHeight == null || msg.height > lastStreamHeight) {
+            lastStreamHeight = msg.height;
+          }
           if (feedSeen.has(key)) return;
           feedSeen.add(key);
-          if (feedSeen.size > 500) feedSeen.clear();
           const feed = $('feed');
           if (feed.firstElementChild && feed.firstElementChild.classList.contains('empty')) feed.innerHTML = '';
-          const row = document.createElement('div');
+          const row = document.createElement('button');
+          row.type = 'button';
           row.className = 'feed-row';
           const bytes = msg.bodyHex ? Math.round(msg.bodyHex.length / 2) : 0;
-          row.innerHTML = '<span class="feed-pos mono">' + esc(key) + '</span>'
-              + '<span class="feed-topic badge">' + esc(msg.topic || 'default') + '</span>'
-              + '<span class="muted">' + (msg.sender ? copyable(msg.sender, 10) : '-') + '</span>'
-              + '<span class="mono" style="margin-left:auto">' + bytes + ' B</span>';
+          const positionEl = document.createElement('span');
+          positionEl.className = 'feed-pos mono';
+          positionEl.textContent = position;
+          const topicEl = document.createElement('span');
+          topicEl.className = 'feed-topic badge';
+          topicEl.textContent = msg.topic || 'default';
+          const senderEl = document.createElement('span');
+          senderEl.className = 'muted mono';
+          senderEl.textContent = shortHex(msg.sender, 10);
+          const bytesEl = document.createElement('span');
+          bytesEl.className = 'feed-bytes mono';
+          bytesEl.textContent = bytes + ' B · View';
+          row.append(positionEl, topicEl, senderEl, bytesEl);
+          row.setAttribute('aria-label', 'Inspect finalized message at ' + position);
+          row.addEventListener('click', () => openMessageInspector(msg, position));
           feed.prepend(row);
           while (feed.children.length > 50) feed.removeChild(feed.lastChild);
         } catch (e) { /* skip malformed */ }
       }
       document.addEventListener('visibilitychange', () => {
-        if (document.hidden) { if (streamAbort) { streamAbort.abort(); streamAbort = null; } }
+        if (document.hidden) stopStream();
         else restartStream();
       });
 
@@ -907,10 +1165,35 @@
         text('duplicates', fmt(s.duplicates));
         text('storedMessages', fmt(s.storedMessages));
 
-        const anchor = s.anchor;
         const row = (label, valueHtml) =>
             '<div class="metric"><span>' + label + '</span><span>' + valueHtml + '</span></div>';
         const mono = v => '<span class="mono">' + esc(v == null ? '-' : String(v)) + '</span>';
+
+        const profile = s.stateMachineStatus || {};
+        const profileMode = String(profile.mode || 'n/a').toUpperCase();
+        $('profileModeBadge').textContent = profileMode;
+        $('profileModeBadge').className = 'badge' + (profile.mode === 'governed' ? ' b-ok' : '');
+        const profileRows = [];
+        profileRows.push(row('Mode', mono(profile.mode || 'n/a')));
+        if (profile.activeProfileDigest)
+          profileRows.push(row('Active Profile', copyable(profile.activeProfileDigest, 16)));
+        if (profile.currentEpoch != null)
+          profileRows.push(row('Epoch', mono(fmt(profile.currentEpoch))));
+        if (profile.activeFromHeight != null)
+          profileRows.push(row('Active From', mono(fmt(profile.activeFromHeight))));
+        if (profile.proposalStatus) {
+          profileRows.push(row('Proposal', mono(profile.proposalStatus)));
+          profileRows.push(row('Target', copyable(profile.targetProfileDigest, 16)));
+          profileRows.push(row('Activation', mono(fmt(profile.activationHeight))));
+          profileRows.push(row('Approvals / Ready', mono(
+              fmt(profile.approvals) + ' / ' + fmt(profile.readiness))));
+          profileRows.push(row('Local Catalog', mono(profile.locallyReady ? 'ready' : 'missing')));
+        }
+        if (profile.retiredDrains != null)
+          profileRows.push(row('Retired Drains', mono(fmt(profile.retiredDrains))));
+        setHtml('profileGovernanceList', profileRows.join(''));
+
+        const anchor = s.anchor;
         if (anchor && anchor.enabled) {
           const mode = (anchor.mode || 'metadata').toUpperCase();
           $('anchorBadge').textContent = mode;
@@ -929,7 +1212,11 @@
           if (wallet) rows.push(row('Wallet (fees)', copyable(wallet, 18)));
           rows.push(row('Last Anchored Height', mono(fmt(anchor.lastAnchoredHeight))));
           rows.push(row('Lag (blocks)', mono(fmt(anchor.lagBlocks))));
-          rows.push(row('Anchors Confirmed <span class="muted" title="In-memory counter since the last restart — durable progress is Last Anchored Height">(since restart)</span>', mono(fmt(anchor.anchoredCount))));
+          if (anchor.mode === 'script' && anchor.leader === false) {
+            rows.push(row('Anchors Observed <span class="muted" title="Locally verified L1 observations since the last restart — durable progress is Last Anchored Height">(since restart)</span>', mono(fmt(anchor.observedAnchorCount))));
+          } else {
+            rows.push(row('Anchors Confirmed <span class="muted" title="In-memory counter since the last restart — durable progress is Last Anchored Height">(since restart)</span>', mono(fmt(anchor.anchoredCount))));
+          }
           if (anchor.cosignPending)
             rows.push(row('Co-sign', mono(anchor.cosignPending
                 + (anchor.cosignRange ? ' · blocks ' + anchor.cosignRange : ''))));
@@ -963,6 +1250,31 @@
                     + ' · sent ' + fmt(sink.delivered) + '</span></div>' + err;
               }).join('')
             : '<div class="empty">No sinks configured</div>';
+
+        const effectRuntime = s.effects && s.effects.executor;
+        const executorOperations = effectRuntime && Array.isArray(effectRuntime.executorOperations)
+            ? effectRuntime.executorOperations : [];
+        $('effectExecutorsBadge').textContent = executorOperations.length
+            ? executorOperations.length + ' ACTIVE' : 'NONE';
+        $('effectExecutorsBadge').className = 'badge' + (executorOperations.length ? ' b-ok' : '');
+        $('effectExecutorsList').innerHTML = executorOperations.length
+            ? executorOperations.map(executor => {
+                const readiness = String(executor.readiness || 'UNKNOWN').toUpperCase();
+                const kind = readiness === 'READY' ? 'b-ok'
+                    : readiness === 'UNAVAILABLE' ? 'b-bad' : 'b-warn';
+                const sample = String(executor.sampleState || 'UNKNOWN').toUpperCase();
+                const failure = executor.failureCode && executor.failureCode !== 'NONE'
+                    ? ' · ' + esc(executor.failureCode) : '';
+                const types = Array.isArray(executor.types) && executor.types.length
+                    ? executor.types.join(', ') : 'legacy predicate';
+                return '<div class="metric"><span>' + esc(executor.id || '-')
+                    + '<br><span class="muted mono" style="font-size:10px">' + esc(types) + '</span></span>'
+                    + '<span><span class="badge ' + kind + '">' + esc(readiness) + '</span>'
+                    + '<br><span class="muted mono" style="font-size:10px">' + esc(sample)
+                    + ' · ' + fmt(executor.successes) + '/' + fmt(executor.attempts)
+                    + failure + '</span></span></div>';
+              }).join('')
+            : '<div class="empty">No in-process executors configured</div>';
 
         const peers = s.peers || {};
         const peerIds = Object.keys(peers);

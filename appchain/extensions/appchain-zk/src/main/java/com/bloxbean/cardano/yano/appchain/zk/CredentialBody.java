@@ -26,6 +26,7 @@ public record CredentialBody(String issuerId,
                              List<byte[]> attributes) {
 
     public static CredentialBody decode(byte[] body) {
+        ZkCbor.requireBody(body);
         List<DataItem> items = ((Array) CborSerializationUtil.deserializeOne(body)).getDataItems();
         if (items.size() != 5) {
             throw new IllegalArgumentException("credential body must have 5 elements, got " + items.size());

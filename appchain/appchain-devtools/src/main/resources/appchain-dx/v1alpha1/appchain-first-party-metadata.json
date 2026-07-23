@@ -1,0 +1,205 @@
+[
+  {
+    "schemaVersion": 1,
+    "id": "yano-first-party/appchain-stdlib",
+    "properties": [
+      {
+        "key": "yano.app-chain.machines.kv-registry.value-format",
+        "owner": "yano-first-party/appchain-stdlib", "type": "STRING", "defaultValue": "raw",
+        "minimum": null, "maximum": null, "minimumUtf8Bytes": null, "maximumUtf8Bytes": null,
+        "maximumItems": null, "allowedValues": ["raw", "cbor", "utf8"],
+        "scope": "CONSENSUS_SHARED", "changePolicy": "NEW_CHAIN_REQUIRED", "secret": false,
+        "indexed": true, "constraintProvenance": "RUNTIME_PARSER_TEST", "coverage": "PARTIAL",
+        "description": "Encoding accepted by the packaged key-value registry state machine"
+      },
+      {
+        "key": "yano.app-chain.machines.balances.minter",
+        "owner": "yano-first-party/appchain-stdlib", "type": "STRING", "defaultValue": null,
+        "minimum": null, "maximum": null, "minimumUtf8Bytes": null, "maximumUtf8Bytes": 64,
+        "maximumItems": null, "allowedValues": [],
+        "scope": "CONSENSUS_SHARED", "changePolicy": "NEW_CHAIN_REQUIRED", "secret": false,
+        "indexed": true, "constraintProvenance": "RUNTIME_PARSER_TEST", "coverage": "PARTIAL",
+        "description": "Optional 32-byte hexadecimal member identity allowed to mint balances"
+      },
+      {
+        "key": "yano.app-chain.machines.approvals.on-approved-effect.enabled",
+        "owner": "yano-first-party/appchain-stdlib", "type": "BOOLEAN", "defaultValue": "false",
+        "minimum": null, "maximum": null, "minimumUtf8Bytes": null, "maximumUtf8Bytes": null,
+        "maximumItems": null, "allowedValues": [],
+        "scope": "CONSENSUS_SHARED", "changePolicy": "GOVERNED_ACTIVATION", "secret": false,
+        "indexed": true, "constraintProvenance": "RUNTIME_PARSER_TEST", "coverage": "PARTIAL",
+        "description": "Emit one generic deterministic effect when a proposal is approved"
+      },
+      {
+        "key": "yano.app-chain.machines.approvals.on-approved-effect.gate",
+        "owner": "yano-first-party/appchain-stdlib", "type": "STRING",
+        "defaultValue": null, "minimum": null, "maximum": null,
+        "minimumUtf8Bytes": null, "maximumUtf8Bytes": null, "maximumItems": null,
+        "allowedValues": ["chain-default", "app-final", "l1-anchored", "zk-settled"],
+        "scope": "CONSENSUS_SHARED", "changePolicy": "GOVERNED_ACTIVATION", "secret": false,
+        "indexed": true, "constraintProvenance": "RUNTIME_PARSER_TEST", "coverage": "PARTIAL",
+        "description": "Finality gate for the generic on-approved effect"
+      },
+      {
+        "key": "yano.app-chain.machines.approvals.on-approved-effect.type",
+        "owner": "yano-first-party/appchain-stdlib", "type": "STRING",
+        "defaultValue": null, "minimum": null, "maximum": null,
+        "minimumUtf8Bytes": 1, "maximumUtf8Bytes": null, "maximumItems": null,
+        "allowedValues": [], "scope": "CONSENSUS_SHARED",
+        "changePolicy": "GOVERNED_ACTIVATION", "secret": false, "indexed": true,
+        "constraintProvenance": "RUNTIME_PARSER_TEST", "coverage": "PARTIAL",
+        "description": "Exact executor routing type emitted after approval"
+      },
+      {
+        "key": "yano.app-chain.machines.approvals.on-approved-effect.expiry-blocks",
+        "owner": "yano-first-party/appchain-stdlib", "type": "LONG", "defaultValue": null,
+        "minimum": 0, "maximum": null, "minimumUtf8Bytes": null, "maximumUtf8Bytes": null,
+        "maximumItems": null, "allowedValues": [], "scope": "CONSENSUS_SHARED",
+        "changePolicy": "GOVERNED_ACTIVATION", "secret": false, "indexed": true,
+        "constraintProvenance": "RUNTIME_PARSER_TEST", "coverage": "PARTIAL",
+        "description": "Generic on-approved effect expiry in app-chain blocks"
+      }
+    ],
+    "dynamicNamespaces": [
+      {
+        "prefix": "machines.approvals.activations.", "owner": "yano-first-party/appchain-stdlib",
+        "coverage": "PARTIAL", "description": "Versioned approvals transition activation heights"
+      }
+    ]
+  },
+  {
+    "schemaVersion": 1,
+    "id": "yano-first-party/appchain-composite",
+    "properties": [
+      {
+        "key": "yano.app-chain.machines.composite.preset",
+        "owner": "yano-first-party/appchain-composite", "type": "STRING",
+        "defaultValue": "evidence-v1-gated", "minimum": null, "maximum": null,
+        "minimumUtf8Bytes": null, "maximumUtf8Bytes": null, "maximumItems": null,
+        "allowedValues": ["evidence-v1", "evidence-v1-gated", "role-evidence-v1"],
+        "scope": "CONSENSUS_SHARED", "changePolicy": "NEW_CHAIN_REQUIRED", "secret": false,
+        "indexed": true, "constraintProvenance": "RUNTIME_PARSER_TEST", "coverage": "PARTIAL",
+        "description": "Packaged deterministic composite profile preset"
+      },
+      {
+        "key": "yano.app-chain.machines.composite.evidence-capacity-per-block",
+        "owner": "yano-first-party/appchain-composite", "type": "INTEGER", "defaultValue": "8",
+        "minimum": 1, "maximum": null, "minimumUtf8Bytes": null, "maximumUtf8Bytes": null,
+        "maximumItems": null, "allowedValues": [], "scope": "CONSENSUS_SHARED",
+        "changePolicy": "NEW_CHAIN_REQUIRED", "secret": false, "indexed": true,
+        "constraintProvenance": "RUNTIME_PARSER_TEST", "coverage": "PARTIAL",
+        "description": "Maximum evidence workflows evaluated in one block"
+      },
+      {
+        "key": "yano.app-chain.machines.composite.profile-mode",
+        "owner": "yano-first-party/appchain-composite", "type": "STRING",
+        "defaultValue": "fixed", "minimum": null, "maximum": null,
+        "minimumUtf8Bytes": null, "maximumUtf8Bytes": null, "maximumItems": null,
+        "allowedValues": ["fixed", "governed"], "scope": "CONSENSUS_SHARED",
+        "changePolicy": "GOVERNED_ACTIVATION", "secret": false, "indexed": true,
+        "constraintProvenance": "RUNTIME_PARSER_TEST", "coverage": "PARTIAL",
+        "description": "Fixed or governed composite profile evolution"
+      },
+      {
+        "key": "yano.app-chain.machines.composite.profile-governance.min-activation-lag",
+        "owner": "yano-first-party/appchain-composite", "type": "INTEGER", "defaultValue": "20",
+        "minimum": 1, "maximum": 100000, "minimumUtf8Bytes": null, "maximumUtf8Bytes": null,
+        "maximumItems": null, "allowedValues": [], "scope": "CONSENSUS_SHARED",
+        "changePolicy": "GOVERNED_ACTIVATION", "secret": false, "indexed": true,
+        "constraintProvenance": "RUNTIME_PARSER_TEST", "coverage": "PARTIAL",
+        "description": "Minimum blocks between profile approval and activation"
+      },
+      {
+        "key": "yano.app-chain.machines.composite.profile-governance.proposal-ttl-blocks",
+        "owner": "yano-first-party/appchain-composite", "type": "INTEGER", "defaultValue": "600",
+        "minimum": 1, "maximum": 1000000, "minimumUtf8Bytes": null, "maximumUtf8Bytes": null,
+        "maximumItems": null, "allowedValues": [], "scope": "CONSENSUS_SHARED",
+        "changePolicy": "GOVERNED_ACTIVATION", "secret": false, "indexed": true,
+        "constraintProvenance": "RUNTIME_PARSER_TEST", "coverage": "PARTIAL",
+        "description": "Lifetime of a composite profile proposal"
+      },
+      {
+        "key": "yano.app-chain.machines.composite.profile-governance.max-epochs",
+        "owner": "yano-first-party/appchain-composite", "type": "INTEGER",
+        "defaultValue": "1024", "minimum": 1, "maximum": 65536,
+        "minimumUtf8Bytes": null, "maximumUtf8Bytes": null, "maximumItems": null,
+        "allowedValues": [], "scope": "CONSENSUS_SHARED",
+        "changePolicy": "GOVERNED_ACTIVATION", "secret": false, "indexed": true,
+        "constraintProvenance": "RUNTIME_PARSER_TEST", "coverage": "PARTIAL",
+        "description": "Maximum retained composite profile epochs"
+      },
+      {
+        "key": "yano.app-chain.machines.composite.roles.maximum-mutation-lifetime-blocks",
+        "owner": "yano-first-party/appchain-composite", "type": "INTEGER",
+        "defaultValue": "1000", "minimum": 1, "maximum": 1000000,
+        "minimumUtf8Bytes": null, "maximumUtf8Bytes": null, "maximumItems": null,
+        "allowedValues": [], "scope": "CONSENSUS_SHARED",
+        "changePolicy": "GOVERNED_ACTIVATION", "secret": false, "indexed": true,
+        "constraintProvenance": "RUNTIME_PARSER_TEST", "coverage": "PARTIAL",
+        "description": "Maximum lifetime of role-governance mutations"
+      }
+    ],
+    "dynamicNamespaces": []
+  },
+  {
+    "schemaVersion": 1,
+    "id": "yano-first-party/appchain-evidence-registry",
+    "properties": [
+      {
+        "key": "yano.app-chain.machines.evidence-registry.issuers",
+        "owner": "yano-first-party/appchain-evidence-registry", "type": "STRING_LIST",
+        "defaultValue": null, "minimum": null, "maximum": null,
+        "minimumUtf8Bytes": null, "maximumUtf8Bytes": null, "maximumItems": 256,
+        "allowedValues": [], "scope": "CONSENSUS_SHARED", "changePolicy": "NEW_CHAIN_REQUIRED",
+        "secret": false, "indexed": true, "constraintProvenance": "RUNTIME_PARSER_TEST",
+        "coverage": "PARTIAL", "description": "Member public keys allowed to issue evidence"
+      },
+      {
+        "key": "yano.app-chain.machines.evidence-registry.notify-senders",
+        "owner": "yano-first-party/appchain-evidence-registry", "type": "STRING_LIST",
+        "defaultValue": null, "minimum": null, "maximum": null,
+        "minimumUtf8Bytes": null, "maximumUtf8Bytes": null, "maximumItems": 256,
+        "allowedValues": [], "scope": "CONSENSUS_SHARED", "changePolicy": "NEW_CHAIN_REQUIRED",
+        "secret": false, "indexed": true, "constraintProvenance": "RUNTIME_PARSER_TEST",
+        "coverage": "PARTIAL", "description": "Member public keys allowed to emit notifications"
+      },
+      {
+        "key": "yano.app-chain.machines.evidence-registry.storage-gate",
+        "owner": "yano-first-party/appchain-evidence-registry", "type": "STRING",
+        "defaultValue": "app-final", "minimum": null, "maximum": null,
+        "minimumUtf8Bytes": null, "maximumUtf8Bytes": null, "maximumItems": null,
+        "allowedValues": ["app-final", "l1-anchored", "app_final", "l1_anchored"],
+        "scope": "CONSENSUS_SHARED", "changePolicy": "GOVERNED_ACTIVATION", "secret": false,
+        "indexed": true, "constraintProvenance": "RUNTIME_PARSER_TEST", "coverage": "PARTIAL",
+        "description": "Finality gate required before evidence storage execution"
+      },
+      {
+        "key": "yano.app-chain.machines.evidence-registry.storage-expiry-blocks",
+        "owner": "yano-first-party/appchain-evidence-registry", "type": "LONG",
+        "defaultValue": "0", "minimum": 0, "maximum": null,
+        "minimumUtf8Bytes": null, "maximumUtf8Bytes": null, "maximumItems": null,
+        "allowedValues": [], "scope": "CONSENSUS_SHARED",
+        "changePolicy": "GOVERNED_ACTIVATION", "secret": false, "indexed": true,
+        "constraintProvenance": "RUNTIME_PARSER_TEST", "coverage": "PARTIAL",
+        "description": "Evidence storage effect expiry in app-chain blocks"
+      },
+      {
+        "key": "yano.app-chain.machines.evidence-registry.notification-expiry-blocks",
+        "owner": "yano-first-party/appchain-evidence-registry", "type": "LONG",
+        "defaultValue": "0", "minimum": 0, "maximum": null,
+        "minimumUtf8Bytes": null, "maximumUtf8Bytes": null, "maximumItems": null,
+        "allowedValues": [], "scope": "CONSENSUS_SHARED",
+        "changePolicy": "GOVERNED_ACTIVATION", "secret": false, "indexed": true,
+        "constraintProvenance": "RUNTIME_PARSER_TEST", "coverage": "PARTIAL",
+        "description": "Evidence notification effect expiry in app-chain blocks"
+      }
+    ],
+    "dynamicNamespaces": [
+      {
+        "prefix": "machines.evidence-registry.activations.",
+        "owner": "yano-first-party/appchain-evidence-registry", "coverage": "PARTIAL",
+        "description": "Versioned evidence-registry feature activation heights"
+      }
+    ]
+  }
+]

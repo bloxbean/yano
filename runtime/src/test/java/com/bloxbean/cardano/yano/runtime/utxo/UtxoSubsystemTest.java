@@ -4,8 +4,10 @@ import com.bloxbean.cardano.yaci.core.storage.ChainState;
 import com.bloxbean.cardano.yaci.events.impl.NoopEventBus;
 import com.bloxbean.cardano.yano.api.config.RuntimeOptions;
 import com.bloxbean.cardano.yano.api.config.YanoConfig;
+import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
 import com.bloxbean.cardano.yano.api.events.BlockAppliedEvent;
 import com.bloxbean.cardano.yano.api.events.RollbackEvent;
+import com.bloxbean.cardano.yano.api.plugin.StorageFilter;
 import com.bloxbean.cardano.yano.runtime.chain.DirectRocksDBChainState;
 import com.bloxbean.cardano.yano.runtime.chain.InMemoryChainState;
 import org.junit.jupiter.api.Test;
@@ -14,6 +16,7 @@ import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -72,6 +75,42 @@ class UtxoSubsystemTest {
                 subsystem.start();
 
                 assertThat(subsystem.isPruneServiceRunning()).isTrue();
+            } finally {
+                subsystem.close();
+            }
+        } finally {
+            scheduler.shutdownNow();
+        }
+    }
+
+    @Test
+    void emptyFilterSnapshotClearsStartCycleFilterFromPreviousRun() {
+        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+        RuntimeOptions options = new RuntimeOptions(null, null, Map.of(
+                "yano.utxo.enabled", true,
+                YanoPropertyKeys.UtxoFilter.ENABLED, true,
+                "yano.utxo.prune.schedule.seconds", 60,
+                "yano.utxo.metrics.lag.logSeconds", 60));
+
+        try (DirectRocksDBChainState chain = new DirectRocksDBChainState(
+                tempDir.resolve("filter-chainstate").toString())) {
+            UtxoSubsystem subsystem = new UtxoSubsystem(
+                    YanoConfig.serverOnly(0),
+                    options,
+                    chain,
+                    chain,
+                    new NoopEventBus(),
+                    scheduler,
+                    LoggerFactory.getLogger(UtxoSubsystemTest.class));
+
+            try {
+                DefaultUtxoStore store = (DefaultUtxoStore) subsystem.store();
+
+                subsystem.initializeFilterChain(List.of(new StorageFilter() { }));
+                assertThat(store.activeStorageFilterCount()).isOne();
+
+                subsystem.initializeFilterChain(List.of());
+                assertThat(store.activeStorageFilterCount()).isZero();
             } finally {
                 subsystem.close();
             }

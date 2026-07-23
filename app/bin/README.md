@@ -128,11 +128,13 @@ yano.jar               Uber-jar (JVM distribution)
 yano                   Native binary (native distribution)
 config/                Genesis and protocol parameter files
 plugins/               Drop plugin JARs here
+tools/yano-plugins/    JVM-only offline plugin catalog validator/inspector
 ```
 
 ## More Information
 
 - Custom profiles: `CUSTOM_PROFILE.md`
 - Build distributions: `docs/BUILD_DISTRIBUTIONS.md` in the source repository
+- Plugin operations: `docs/PLUGIN_OPERATIONS.md` in the source repository
 - GitHub: https://github.com/bloxbean/yaci
 - License: MIT

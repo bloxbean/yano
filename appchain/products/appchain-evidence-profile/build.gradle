@@ -1,0 +1,78 @@
+dependencies {
+    api project(':core-api')
+    api project(':appchain-composite')
+    api project(':appchain-role-workflow')
+
+    implementation project(':appchain-composite-contracts')
+    implementation project(':appchain-role-workflow-contracts')
+    implementation project(':appchain-stdlib')
+    implementation project(':appchain-config')
+    implementation project(':appchain-evidence-contracts')
+    implementation project(':appchain-evidence-registry')
+    implementation project(':appchain-integration-contracts')
+
+    testImplementation project(':appchain-testkit')
+    testImplementation project(':plugin-catalog')
+    testImplementation libs.assertj.core
+}
+
+java {
+    sourceCompatibility = 25
+    targetCompatibility = 25
+}
+
+tasks.named('compileJava') {
+    options.compilerArgs.removeAll { it.startsWith('-Aproject=') }
+}
+
+tasks.withType(Test).configureEach {
+    systemProperty 'yano.repo.root', rootProject.projectDir.absolutePath
+}
+
+tasks.register('roleEvidenceProfileDigest', JavaExec) {
+    group = 'application'
+    description = 'Prints the exact role-evidence composite profile digest'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.bloxbean.cardano.yano.appchain.evidence.profile.RoleEvidenceProfileCli'
+}
+
+tasks.register('verifyEvidenceProfileArtifact') {
+    group = 'verification'
+    description = 'Verifies the evidence product owns both evidence profile providers and domain API'
+    dependsOn tasks.named('jar')
+    inputs.file(tasks.named('jar').flatMap { it.archiveFile })
+
+    doLast {
+        def archive = tasks.named('jar').get().archiveFile.get().asFile
+        new java.util.zip.ZipFile(archive).withCloseable { jar ->
+            def entries = jar.entries().collect { entry -> entry.name }.toSet()
+            def required = [
+                    'META-INF/services/com.bloxbean.cardano.yano.api.appchain.AppStateMachineProvider',
+                    'META-INF/services/com.bloxbean.cardano.yano.api.plugin.domain.DomainApiProvider',
+                    'META-INF/yano/plugins/com.bloxbean.cardano.yano.appchain.evidence-profile.json',
+                    'com/bloxbean/cardano/yano/appchain/evidence/profile/EvidenceCompositeStateMachineProvider.class',
+                    'com/bloxbean/cardano/yano/appchain/evidence/profile/RoleEvidenceStateMachineProvider.class'
+            ]
+            if (!entries.containsAll(required)) {
+                throw new GradleException(
+                        'Evidence profile artifact is missing owned provider entries: '
+                                + (required - entries).sort())
+            }
+        }
+    }
+}
+
+tasks.named('check') {
+    dependsOn tasks.named('verifyEvidenceProfileArtifact')
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            pom {
+                name = 'Yano App-Chain Evidence Profile'
+                description = 'First-party evidence composite profiles built on generic composition and role components'
+            }
+        }
+    }
+}

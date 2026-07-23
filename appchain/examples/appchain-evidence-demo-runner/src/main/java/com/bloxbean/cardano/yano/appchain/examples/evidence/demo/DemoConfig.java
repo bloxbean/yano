@@ -1,0 +1,531 @@
+package com.bloxbean.cardano.yano.appchain.examples.evidence.demo;
+
+import com.bloxbean.cardano.yano.appchain.evidence.profile.contracts.EvidenceWorkflowCapacityV1;
+
+import java.io.IOException;
+import java.net.URI;
+import java.net.URISyntaxException;
+import java.nio.file.Path;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+import java.util.regex.Pattern;
+
+/** Strict, secret-file-only configuration shared by host and Compose deployments. */
+public record DemoConfig(String chainId,
+                         String stateMachine,
+                         byte[] expectedCompositeProfileDigest,
+                         List<URI> yanoUrls,
+                         Set<String> yanoMemberKeys,
+                         int yanoThreshold,
+                         SecretValue yanoApiKey,
+                         Path sampleFile,
+                         Path reportDirectory,
+                         String evidenceId,
+                         int evidenceCapacityPerBlock,
+                         RoleSettings roles,
+                         S3Settings s3,
+                         IpfsSettings ipfs,
+                         KafkaSettings kafka,
+                         Duration timeout,
+                         Duration pollInterval,
+                         boolean requireAnchor) {
+    private static final int MAX_CONFIG_BYTES = 65_536;
+    private static final Pattern IDENTIFIER = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._-]{0,127}");
+    private static final Pattern CONNECTOR_ALIAS = Pattern.compile("[a-z][a-z0-9-]{0,62}");
+    private static final Pattern OBJECT_SEGMENT = Pattern.compile(
+            "[A-Za-z0-9][A-Za-z0-9._~!$'()+,;=@-]{0,127}");
+    private static final Set<String> KEYS = Set.of(
+            "demo.chain-id", "demo.state-machine", "demo.composite-profile-digest",
+            "demo.yano.urls", "demo.yano.api-key-file",
+            "demo.yano.member-keys", "demo.yano.threshold",
+            "demo.sample-file", "demo.report-directory", "demo.evidence-id",
+            "demo.evidence-capacity-per-block",
+            "roles.manufacturer-seed-file", "roles.auditor-a1-seed-file",
+            "roles.auditor-a2-seed-file", "roles.auditor-b-seed-file",
+            "roles.regulator-seed-file",
+            "s3.endpoint", "s3.region", "s3.access-key-file", "s3.secret-key-file",
+            "s3.source-bucket", "s3.source-prefix", "s3.destination-bucket",
+            "s3.destination-prefix", "s3.target", "s3.target-id",
+            "s3.encryption-policy-id", "s3.retention-policy-id", "s3.path-style",
+            "ipfs.api-url", "ipfs.target", "ipfs.target-id", "ipfs.replication-policy",
+            "kafka.bootstrap-servers", "kafka.target", "kafka.target-id",
+            "kafka.topic-alias", "kafka.physical-topic",
+            "scenario.timeout-seconds", "scenario.poll-interval-millis",
+            "scenario.require-anchor");
+
+    public DemoConfig {
+        if (!"evidence-registry".equals(stateMachine) && !"composite".equals(stateMachine)
+                && !"role-evidence".equals(stateMachine)) {
+            throw new DemoException(DemoError.INVALID_CONFIG);
+        }
+        if (!"evidence-registry".equals(stateMachine)) {
+            if (expectedCompositeProfileDigest == null
+                    || expectedCompositeProfileDigest.length != 32) {
+                throw new DemoException(DemoError.INVALID_CONFIG);
+            }
+            expectedCompositeProfileDigest = expectedCompositeProfileDigest.clone();
+        } else if (expectedCompositeProfileDigest != null) {
+            throw new DemoException(DemoError.INVALID_CONFIG);
+        }
+        if ("role-evidence".equals(stateMachine) != (roles != null)) {
+            throw new DemoException(DemoError.INVALID_CONFIG);
+        }
+        yanoUrls = List.copyOf(yanoUrls);
+        yanoMemberKeys = Set.copyOf(yanoMemberKeys);
+        if (evidenceCapacityPerBlock < 1
+                || evidenceCapacityPerBlock > EvidenceWorkflowCapacityV1.MAX_CAPACITY) {
+            throw new DemoException(DemoError.INVALID_CONFIG);
+        }
+    }
+
+    /** Source-compatible constructor for standalone and legacy composite callers. */
+    public DemoConfig(String chainId,
+                      String stateMachine,
+                      byte[] expectedCompositeProfileDigest,
+                      List<URI> yanoUrls,
+                      Set<String> yanoMemberKeys,
+                      int yanoThreshold,
+                      SecretValue yanoApiKey,
+                      Path sampleFile,
+                      Path reportDirectory,
+                      String evidenceId,
+                      int evidenceCapacityPerBlock,
+                      S3Settings s3,
+                      IpfsSettings ipfs,
+                      KafkaSettings kafka,
+                      Duration timeout,
+                      Duration pollInterval,
+                      boolean requireAnchor) {
+        this(chainId, stateMachine, expectedCompositeProfileDigest, yanoUrls,
+                yanoMemberKeys, yanoThreshold, yanoApiKey, sampleFile, reportDirectory,
+                evidenceId, evidenceCapacityPerBlock, null, s3, ipfs, kafka,
+                timeout, pollInterval, requireAnchor);
+    }
+
+    /** Source-compatible constructor for standalone evidence-registry callers. */
+    public DemoConfig(String chainId,
+                      List<URI> yanoUrls,
+                      Set<String> yanoMemberKeys,
+                      int yanoThreshold,
+                      SecretValue yanoApiKey,
+                      Path sampleFile,
+                      Path reportDirectory,
+                      String evidenceId,
+                      S3Settings s3,
+                      IpfsSettings ipfs,
+                      KafkaSettings kafka,
+                      Duration timeout,
+                      Duration pollInterval,
+                      boolean requireAnchor) {
+        this(chainId, "evidence-registry", null, yanoUrls, yanoMemberKeys, yanoThreshold,
+                yanoApiKey, sampleFile, reportDirectory, evidenceId, 1, null, s3, ipfs,
+                kafka, timeout, pollInterval, requireAnchor);
+    }
+
+    /** Loads a bounded properties file and rejects duplicates, unknown keys, and inline secrets. */
+    public static DemoConfig load(Path configFile) {
+        Map<String, String> values = readStrict(configFile);
+        Path base = configFile.toAbsolutePath().normalize().getParent();
+        try {
+            String chainId = identifier(required(values, "demo.chain-id"));
+            String stateMachine = values.getOrDefault("demo.state-machine", "evidence-registry");
+            if (!"evidence-registry".equals(stateMachine) && !"composite".equals(stateMachine)
+                    && !"role-evidence".equals(stateMachine)) {
+                throw new DemoException(DemoError.INVALID_CONFIG);
+            }
+            byte[] compositeProfileDigest = !"evidence-registry".equals(stateMachine)
+                    ? exactLowerHex(required(values, "demo.composite-profile-digest"), 32)
+                    : null;
+            if ("evidence-registry".equals(stateMachine)
+                    && values.containsKey("demo.composite-profile-digest")) {
+                throw new DemoException(DemoError.INVALID_CONFIG);
+            }
+            List<URI> yanoUrls = commaSeparatedUris(required(values, "demo.yano.urls"));
+            Set<String> yanoMemberKeys = memberKeys(
+                    required(values, "demo.yano.member-keys"));
+            int yanoThreshold = (int) unsigned(
+                    required(values, "demo.yano.threshold"), 1, 3);
+            if (yanoMemberKeys.size() != 3 || yanoThreshold != 2) {
+                throw new DemoException(DemoError.INVALID_CONFIG);
+            }
+            String apiKeyFile = values.get("demo.yano.api-key-file");
+            SecretValue apiKey = apiKeyFile == null ? null
+                    : SecretFiles.read(resolve(base,
+                    required(values, "demo.yano.api-key-file")));
+            Path sample = resolve(base, required(values, "demo.sample-file"));
+            Path reports = resolve(base, required(values, "demo.report-directory"));
+            String evidenceId = evidenceId(required(values, "demo.evidence-id"));
+            int evidenceCapacity = (int) unsigned(values.getOrDefault(
+                    "demo.evidence-capacity-per-block", "1"), 1,
+                    EvidenceWorkflowCapacityV1.MAX_CAPACITY);
+            if (!"evidence-registry".equals(stateMachine)
+                    && !values.containsKey("demo.evidence-capacity-per-block")) {
+                throw new DemoException(DemoError.MISSING_CONFIG_KEY);
+            }
+            RoleSettings roles = "role-evidence".equals(stateMachine)
+                    ? new RoleSettings(
+                    SecretFiles.read(resolve(base, required(values,
+                            "roles.manufacturer-seed-file"))),
+                    SecretFiles.read(resolve(base, required(values,
+                            "roles.auditor-a1-seed-file"))),
+                    SecretFiles.read(resolve(base, required(values,
+                            "roles.auditor-a2-seed-file"))),
+                    SecretFiles.read(resolve(base, required(values,
+                            "roles.auditor-b-seed-file"))),
+                    SecretFiles.read(resolve(base, required(values,
+                            "roles.regulator-seed-file"))))
+                    : null;
+
+            S3Settings s3 = new S3Settings(
+                    origin(required(values, "s3.endpoint")),
+                    identifier(required(values, "s3.region")),
+                    SecretFiles.read(resolve(base, required(values, "s3.access-key-file"))),
+                    SecretFiles.read(resolve(base, required(values, "s3.secret-key-file"))),
+                    resource(required(values, "s3.source-bucket")),
+                    prefix(required(values, "s3.source-prefix")),
+                    resource(required(values, "s3.destination-bucket")),
+                    prefix(required(values, "s3.destination-prefix")),
+                    connectorAlias(required(values, "s3.target")),
+                    connectorAlias(required(values, "s3.target-id")),
+                    connectorAlias(required(values, "s3.encryption-policy-id")),
+                    connectorAlias(required(values, "s3.retention-policy-id")),
+                    bool(values.getOrDefault("s3.path-style", "true")));
+            IpfsSettings ipfs = new IpfsSettings(
+                    origin(required(values, "ipfs.api-url")),
+                    connectorAlias(required(values, "ipfs.target")),
+                    connectorAlias(required(values, "ipfs.target-id")),
+                    optionalConnectorAlias(values.get("ipfs.replication-policy")));
+            KafkaSettings kafka = kafkaSettings(values);
+
+            Duration timeout = Duration.ofSeconds(unsigned(values.getOrDefault(
+                    "scenario.timeout-seconds", "300"), 10, 3_600));
+            Duration poll = Duration.ofMillis(unsigned(values.getOrDefault(
+                    "scenario.poll-interval-millis", "500"), 50, 10_000));
+            boolean requireAnchor = bool(values.getOrDefault(
+                    "scenario.require-anchor", "true"));
+            return new DemoConfig(chainId, stateMachine, compositeProfileDigest,
+                    yanoUrls, yanoMemberKeys, yanoThreshold,
+                    apiKey, sample, reports, evidenceId, evidenceCapacity, roles,
+                    s3, ipfs, kafka,
+                    timeout, poll, requireAnchor);
+        } catch (DemoException failure) {
+            throw failure;
+        } catch (RuntimeException failure) {
+            throw new DemoException(DemoError.INVALID_CONFIG);
+        }
+    }
+
+    @Override
+    public byte[] expectedCompositeProfileDigest() {
+        return expectedCompositeProfileDigest == null
+                ? null : expectedCompositeProfileDigest.clone();
+    }
+
+    /** Loads only non-secret Kafka audit settings from the shared runner config. */
+    static KafkaSettings loadKafkaSettings(Path configFile) {
+        try {
+            return kafkaSettings(readStrict(configFile));
+        } catch (DemoException failure) {
+            throw failure;
+        } catch (RuntimeException failure) {
+            throw new DemoException(DemoError.INVALID_CONFIG);
+        }
+    }
+
+    private static KafkaSettings kafkaSettings(Map<String, String> values) {
+        return new KafkaSettings(
+                bounded(required(values, "kafka.bootstrap-servers"), 1, 1_024),
+                connectorAlias(required(values, "kafka.target")),
+                connectorAlias(required(values, "kafka.target-id")),
+                connectorAlias(required(values, "kafka.topic-alias")),
+                topic(required(values, "kafka.physical-topic")));
+    }
+
+    private static Map<String, String> readStrict(Path path) {
+        try {
+            List<String> lines = BoundedFiles.readUtf8(
+                    path, MAX_CONFIG_BYTES, false, true).lines().toList();
+            Map<String, String> values = new LinkedHashMap<>();
+            for (String line : lines) {
+                String trimmed = line.trim();
+                if (trimmed.isEmpty() || trimmed.startsWith("#") || trimmed.startsWith("!")) {
+                    continue;
+                }
+                if (line.endsWith("\\")) {
+                    throw new DemoException(DemoError.INVALID_CONFIG);
+                }
+                int separator = line.indexOf('=');
+                if (separator <= 0) {
+                    throw new DemoException(DemoError.INVALID_CONFIG);
+                }
+                String key = line.substring(0, separator).trim();
+                String value = line.substring(separator + 1).trim();
+                if (!KEYS.contains(key)) {
+                    throw new DemoException(DemoError.UNKNOWN_CONFIG_KEY);
+                }
+                if (values.putIfAbsent(key, value) != null) {
+                    throw new DemoException(DemoError.INVALID_CONFIG);
+                }
+            }
+            return values;
+        } catch (DemoException failure) {
+            throw failure;
+        } catch (IOException failure) {
+            throw new DemoException(DemoError.INVALID_CONFIG);
+        }
+    }
+
+    private static String required(Map<String, String> values, String key) {
+        String value = values.get(key);
+        if (value == null || value.isBlank()) {
+            throw new DemoException(DemoError.MISSING_CONFIG_KEY);
+        }
+        return value;
+    }
+
+    private static List<URI> commaSeparatedUris(String value) {
+        String[] pieces = value.split(",", -1);
+        if (pieces.length != 3) {
+            throw new DemoException(DemoError.INVALID_CONFIG);
+        }
+        List<URI> uris = new ArrayList<>();
+        Set<URI> distinct = new LinkedHashSet<>();
+        for (String piece : pieces) {
+            URI uri = yanoEndpoint(piece.trim());
+            if (!distinct.add(uri)) {
+                throw new DemoException(DemoError.INVALID_CONFIG);
+            }
+            uris.add(uri);
+        }
+        return uris;
+    }
+
+    private static URI yanoEndpoint(String value) {
+        URI uri = httpUri(value);
+        String path = uri.getRawPath();
+        if (path == null || path.isBlank() || path.equals("/")
+                || path.contains("%") || path.contains("//")
+                || path.contains("\\") || path.endsWith("/")
+                || List.of(path.split("/")).contains("..")
+                || List.of(path.split("/")).contains(".")) {
+            throw new DemoException(DemoError.INVALID_CONFIG);
+        }
+        try {
+            int port = uri.getPort();
+            if (("http".equals(uri.getScheme()) && port == 80)
+                    || ("https".equals(uri.getScheme()) && port == 443)) {
+                port = -1;
+            }
+            return new URI(uri.getScheme(), null,
+                    uri.getHost().toLowerCase(Locale.ROOT), port,
+                    uri.getPath(), null, null);
+        } catch (URISyntaxException failure) {
+            throw new DemoException(DemoError.INVALID_CONFIG);
+        }
+    }
+
+    private static Set<String> memberKeys(String value) {
+        String[] pieces = value.split(",", -1);
+        Set<String> keys = new LinkedHashSet<>();
+        for (String piece : pieces) {
+            if (!piece.matches("[0-9a-f]{64}") || !keys.add(piece)) {
+                throw new DemoException(DemoError.INVALID_CONFIG);
+            }
+        }
+        return Set.copyOf(keys);
+    }
+
+    private static URI origin(String value) {
+        URI uri = httpUri(value);
+        String path = uri.getRawPath();
+        if (path != null && !path.isEmpty() && !path.equals("/")) {
+            throw new DemoException(DemoError.INVALID_CONFIG);
+        }
+        try {
+            return new URI(uri.getScheme(), null, uri.getHost(), uri.getPort(), null, null, null);
+        } catch (URISyntaxException failure) {
+            throw new DemoException(DemoError.INVALID_CONFIG);
+        }
+    }
+
+    private static URI httpUri(String value) {
+        try {
+            URI uri = new URI(value);
+            String scheme = uri.getScheme();
+            if (!("http".equals(scheme) || "https".equals(scheme))
+                    || uri.getHost() == null || uri.getHost().isBlank()
+                    || uri.getUserInfo() != null || uri.getQuery() != null
+                    || uri.getFragment() != null) {
+                throw new DemoException(DemoError.INVALID_CONFIG);
+            }
+            return uri;
+        } catch (URISyntaxException failure) {
+            throw new DemoException(DemoError.INVALID_CONFIG);
+        }
+    }
+
+    private static Path resolve(Path base, String value) {
+        Path path = Path.of(value);
+        return (path.isAbsolute() ? path : base.resolve(path)).normalize().toAbsolutePath();
+    }
+
+    private static String identifier(String value) {
+        if (!IDENTIFIER.matcher(value).matches()) {
+            throw new DemoException(DemoError.INVALID_CONFIG);
+        }
+        return value;
+    }
+
+    private static String connectorAlias(String value) {
+        if (!CONNECTOR_ALIAS.matcher(value).matches()) {
+            throw new DemoException(DemoError.INVALID_CONFIG);
+        }
+        return value;
+    }
+
+    private static String optionalConnectorAlias(String value) {
+        return value == null || value.isBlank() ? null : connectorAlias(value);
+    }
+
+    private static String evidenceId(String value) {
+        if (!value.matches("[a-z][a-z0-9-]{0,62}")) {
+            throw new DemoException(DemoError.INVALID_CONFIG);
+        }
+        return value;
+    }
+
+    private static String resource(String value) {
+        if (!value.matches("[A-Za-z0-9][A-Za-z0-9._-]{0,254}")) {
+            throw new DemoException(DemoError.INVALID_CONFIG);
+        }
+        return value;
+    }
+
+    private static String prefix(String value) {
+        if (value.isBlank()) {
+            return "";
+        }
+        if (value.startsWith("/") || value.endsWith("/")
+                || value.indexOf('\\') >= 0 || value.indexOf('%') >= 0
+                || value.length() > 512) {
+            throw new DemoException(DemoError.INVALID_CONFIG);
+        }
+        String[] segments = value.split("/", -1);
+        if (segments.length > 32) {
+            throw new DemoException(DemoError.INVALID_CONFIG);
+        }
+        for (String segment : segments) {
+            if (segment.equals(".") || segment.equals("..")
+                    || !OBJECT_SEGMENT.matcher(segment).matches()) {
+                throw new DemoException(DemoError.INVALID_CONFIG);
+            }
+        }
+        return value;
+    }
+
+    private static String topic(String value) {
+        if (value.equals(".") || value.equals("..")
+                || !value.matches("[A-Za-z0-9._-]{1,249}")) {
+            throw new DemoException(DemoError.INVALID_CONFIG);
+        }
+        return value;
+    }
+
+    private static String bounded(String value, int minimum, int maximum) {
+        if (value.length() < minimum || value.length() > maximum
+                || value.chars().anyMatch(character -> character < 0x21 || character == 0x7f)) {
+            throw new DemoException(DemoError.INVALID_CONFIG);
+        }
+        return value;
+    }
+
+    private static byte[] exactLowerHex(String value, int bytes) {
+        if (value == null || !value.matches("[0-9a-f]{" + (bytes * 2) + "}")) {
+            throw new DemoException(DemoError.INVALID_CONFIG);
+        }
+        byte[] decoded = new byte[bytes];
+        for (int index = 0; index < bytes; index++) {
+            decoded[index] = (byte) ((Character.digit(value.charAt(index * 2), 16) << 4)
+                    | Character.digit(value.charAt(index * 2 + 1), 16));
+        }
+        return decoded;
+    }
+
+    private static long unsigned(String value, long minimum, long maximum) {
+        if (!value.matches("0|[1-9][0-9]*")) {
+            throw new DemoException(DemoError.INVALID_CONFIG);
+        }
+        long number = Long.parseLong(value);
+        if (number < minimum || number > maximum) {
+            throw new DemoException(DemoError.INVALID_CONFIG);
+        }
+        return number;
+    }
+
+    private static boolean bool(String value) {
+        if ("true".equals(value)) {
+            return true;
+        }
+        if ("false".equals(value)) {
+            return false;
+        }
+        throw new DemoException(DemoError.INVALID_CONFIG);
+    }
+
+    public record S3Settings(URI endpoint,
+                             String region,
+                             SecretValue accessKey,
+                             SecretValue secretKey,
+                             String sourceBucket,
+                             String sourcePrefix,
+                             String destinationBucket,
+                             String destinationPrefix,
+                             String target,
+                             String targetId,
+                             String encryptionPolicyId,
+                             String retentionPolicyId,
+                             boolean pathStyle) {
+    }
+
+    public record IpfsSettings(URI apiUrl,
+                               String target,
+                               String targetId,
+                               String replicationPolicy) {
+    }
+
+    public record KafkaSettings(String bootstrapServers,
+                                String target,
+                                String targetId,
+                                String topicAlias,
+                                String physicalTopic) {
+    }
+
+    /** Demo-only actor seed handles; values remain redacted and never enter reports. */
+    public record RoleSettings(SecretValue manufacturer,
+                               SecretValue auditorA1,
+                               SecretValue auditorA2,
+                               SecretValue auditorB,
+                               SecretValue regulator) {
+        public RoleSettings {
+            java.util.Objects.requireNonNull(manufacturer, "manufacturer");
+            java.util.Objects.requireNonNull(auditorA1, "auditorA1");
+            java.util.Objects.requireNonNull(auditorA2, "auditorA2");
+            java.util.Objects.requireNonNull(auditorB, "auditorB");
+            java.util.Objects.requireNonNull(regulator, "regulator");
+        }
+    }
+
+    boolean compositeProfile() {
+        return !"evidence-registry".equals(stateMachine);
+    }
+
+    boolean roleAware() {
+        return "role-evidence".equals(stateMachine);
+    }
+}

@@ -1,0 +1,244 @@
+plugins {
+    id 'application'
+}
+
+dependencies {
+    implementation(project(':appchain-config')) {
+        transitive = false
+    }
+    implementation project(':appchain-role-workflow-contracts')
+    implementation libs.cardano.client.crypto
+    compileOnly(project(':core-api')) {
+        transitive = false
+    }
+    runtimeOnly(project(':core-api')) {
+        transitive = false
+    }
+    implementation libs.jackson.databind
+    implementation libs.jackson.dataformat.yaml
+    implementation libs.smallrye.config.core
+    implementation libs.smallrye.config.yaml
+    testImplementation(project(':core-api')) {
+        transitive = false
+    }
+}
+
+application {
+    applicationName = 'yano-appchain'
+    mainClass = 'com.bloxbean.cardano.yano.appchain.devtools.AppChainDevtoolsCli'
+}
+
+def generatedMetadataDirectory = layout.buildDirectory.dir('generated/appchain-metadata')
+
+distributions {
+    main {
+        distributionBaseName = 'yano-devtools'
+        contents {
+            from('README.md')
+            from(generatedMetadataDirectory) {
+                into 'metadata'
+            }
+            from('src/main/resources/appchain-dx/v1alpha1/skills/configure-yano-appchain') {
+                into 'skills/configure-yano-appchain'
+            }
+        }
+    }
+}
+
+tasks.register('generateAppChainMetadata', JavaExec) {
+    dependsOn tasks.named('compileJava')
+    classpath = files(sourceSets.main.output.classesDirs) + configurations.runtimeClasspath
+    mainClass = 'com.bloxbean.cardano.yano.appchain.devtools.AppChainMetadataExportMain'
+    args generatedMetadataDirectory.get().asFile.absolutePath
+    inputs.files(sourceSets.main.allJava)
+    inputs.dir('src/main/resources/appchain-dx/v1alpha1')
+    outputs.dir(generatedMetadataDirectory)
+    doFirst {
+        delete generatedMetadataDirectory
+    }
+    doLast {
+        copy {
+            from('src/main/resources/appchain-dx/v1alpha1')
+            exclude 'skills/**'
+            into(generatedMetadataDirectory.get().dir('appchain-dx/v1alpha1').asFile)
+        }
+    }
+}
+
+tasks.named('jar') {
+    manifest {
+        attributes('Implementation-Version': project.version)
+    }
+}
+
+tasks.named('processResources') {
+    dependsOn tasks.named('generateAppChainMetadata')
+    from(generatedMetadataDirectory) {
+        exclude 'appchain-dx/v1alpha1/**'
+    }
+}
+
+java {
+    sourceCompatibility = 25
+    targetCompatibility = 25
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            pom {
+                name = 'Yano App-Chain Developer Tools'
+                description = 'Offline app-chain configuration validation, explanation, and project generation CLI'
+            }
+        }
+    }
+}
+
+def packagedCliInstall = tasks.named('installDist')
+def packagedCliZip = tasks.named('distZip')
+def finalYanoZip = project(':app').tasks.named('yanoDistZip', Zip)
+
+tasks.named('test') {
+    dependsOn packagedCliInstall, packagedCliZip, finalYanoZip
+    doFirst {
+        systemProperty 'yano.test.repo-root', rootProject.projectDir.absolutePath
+        systemProperty 'yano.test.appchain-cli-install-dir',
+                layout.buildDirectory.dir('install/yano-devtools').get().asFile.absolutePath
+        systemProperty 'yano.test.appchain-cli-dist-zip',
+                packagedCliZip.get().archiveFile.get().asFile.absolutePath
+        systemProperty 'yano.test.final-yano-dist-zip',
+                finalYanoZip.get().archiveFile.get().asFile.absolutePath
+    }
+}
+
+tasks.register('finalDistributionRuntimeAcceptance', Exec) {
+    group = 'verification'
+    description = 'Runs a generated two-node app-chain project from the final Yano archive.'
+    dependsOn finalYanoZip
+    commandLine 'bash', file('src/test/scripts/final-distribution-runtime-acceptance.sh'),
+            finalYanoZip.flatMap { it.archiveFile }.get().asFile
+}
+
+tasks.register('finalDistributionStockOutcomeAcceptance', Exec) {
+    group = 'verification'
+    description = 'Exercises stable stock recipe outcomes from the final Yano archive.'
+    dependsOn finalYanoZip
+    commandLine 'bash', file('src/test/scripts/final-distribution-stock-outcomes.sh'),
+            finalYanoZip.flatMap { it.archiveFile }.get().asFile
+}
+
+tasks.register('verifySmallRyeConfigRuntimeParity') {
+    group = 'verification'
+    description = 'Verifies the devtools and Quarkus runtime select the same SmallRye Config engine'
+    doLast {
+        def selectedVersion = { configuration, moduleName ->
+            def versions = configuration.resolvedConfiguration.resolvedArtifacts
+                    .findAll { artifact ->
+                        artifact.moduleVersion.id.group == 'io.smallrye.config'
+                                && artifact.moduleVersion.id.name == moduleName
+                    }
+                    .collect { it.moduleVersion.id.version }
+                    .toSet()
+            if (versions.size() != 1) {
+                throw new GradleException("Expected one ${moduleName} version, found ${versions}")
+            }
+            versions.first()
+        }
+        def cliVersion = selectedVersion(configurations.runtimeClasspath, 'smallrye-config-core')
+        def runtimeVersion = selectedVersion(
+                project(':app').configurations.runtimeClasspath, 'smallrye-config-core')
+        if (cliVersion != runtimeVersion) {
+            throw new GradleException(
+                    "SmallRye Config mismatch: devtools=${cliVersion}, runtime=${runtimeVersion}")
+        }
+    }
+}
+
+tasks.register('verifyReleaseCapabilityVersion') {
+    group = 'verification'
+    description = 'Verifies release-pinned DX metadata matches this Yano build version'
+    doLast {
+        def index = new groovy.json.JsonSlurper().parse(
+                file('src/main/resources/appchain-dx/v1alpha1/'
+                        + 'appchain-release-capability-index.json'))
+        if (index.yanoVersion != project.version.toString()) {
+            throw new GradleException(
+                    "Release DX index version ${index.yanoVersion} does not match ${project.version}")
+        }
+    }
+}
+
+tasks.register('verifyAppChainCatalogDocumentation') {
+    group = 'verification'
+    description = 'Verifies every first-party recipe and capability documentation path exists'
+    def capabilityCatalog = file('src/main/resources/appchain-dx/v1alpha1/'
+            + 'appchain-capability-catalog.json')
+    def recipeCatalog = file('src/main/resources/appchain-dx/v1alpha1/'
+            + 'appchain-recipe-catalog.json')
+    inputs.files(capabilityCatalog, recipeCatalog)
+    doLast {
+        def parser = new groovy.json.JsonSlurper()
+        def entries = []
+        entries.addAll(parser.parse(capabilityCatalog).capabilities)
+        entries.addAll(parser.parse(recipeCatalog).recipes)
+        def missing = entries.findAll { entry ->
+            entry.documentation == null
+                    || !rootProject.file(entry.documentation.toString()).isFile()
+        }.collect { entry -> "${entry.id}:${entry.documentation}" }
+        if (!missing.isEmpty()) {
+            throw new GradleException(
+                    "App-chain catalog documentation paths are missing: ${missing}")
+        }
+    }
+}
+
+tasks.named('check') {
+    dependsOn tasks.named('verifySmallRyeConfigRuntimeParity'),
+            tasks.named('verifyReleaseCapabilityVersion'),
+            tasks.named('verifyAppChainCatalogDocumentation')
+}
+
+def appChainReleaseCheckProjects = [
+        ':appchain-config',
+        ':appchain-stdlib-contracts',
+        ':appchain-stdlib',
+        ':appchain-composite-contracts',
+        ':appchain-composite',
+        ':appchain-role-workflow-contracts',
+        ':appchain-role-workflow',
+        ':appchain-evidence-contracts',
+        ':appchain-evidence-registry',
+        ':appchain-evidence-profile',
+        ':appchain-integration-contracts',
+        ':appchain-client',
+        ':appchain-spring-boot-starter',
+        ':appchain-testkit',
+        ':appchain-studio',
+        ':runtime',
+        ':app'
+]
+
+tasks.register('appChainReleaseCandidateStaticCheck') {
+    group = 'verification'
+    description = 'Runs the complete ADR-022 app-chain release-candidate static gate.'
+    dependsOn tasks.named('check')
+    appChainReleaseCheckProjects.each { projectPath ->
+        dependsOn project(projectPath).tasks.named('check')
+    }
+}
+
+tasks.register('appChainReleaseCandidateJvmAcceptance') {
+    group = 'verification'
+    description = 'Runs static, generated-project, packaged JVM, and stock outcome gates.'
+    dependsOn tasks.named('appChainReleaseCandidateStaticCheck'),
+            tasks.named('finalDistributionRuntimeAcceptance'),
+            tasks.named('finalDistributionStockOutcomeAcceptance'),
+            project(':app').tasks.named('packagedJvmPluginCatalogSmoke')
+}
+
+tasks.register('appChainReleaseCandidateNativeAcceptance') {
+    group = 'verification'
+    description = 'Runs static gates and the platform-specific native capability smoke test.'
+    dependsOn tasks.named('appChainReleaseCandidateStaticCheck'),
+            project(':app').tasks.named('nativePluginCatalogSmoke')
+}

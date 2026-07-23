@@ -8,6 +8,8 @@ import com.bloxbean.cardano.yaci.core.model.AuxData;
 import com.bloxbean.cardano.yaci.core.model.Block;
 import com.bloxbean.cardano.yaci.core.model.TransactionBody;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
+import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
+import com.bloxbean.cardano.yano.api.appchain.codec.internal.CborStructurePreflight;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1Observation;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1Observer;
 
@@ -28,6 +30,10 @@ import java.util.Map;
 final class MetadataLabelObserver implements L1Observer {
 
     static final String TYPE = "metadata-label";
+    private static final CborStructurePreflight.Limits METADATA_CBOR_LIMITS =
+            new CborStructurePreflight.Limits(
+                    Math.toIntExact(AppChainConfig.MAX_BLOCK_BYTES),
+                    64, 500_000, 250_000, AppChainConfig.MAX_MESSAGE_BYTES);
 
     private final String observerId;
     private final long label;
@@ -72,7 +78,11 @@ final class MetadataLabelObserver implements L1Observer {
     /** The re-encoded CBOR of the watched label's value, or null if absent. */
     private byte[] extractLabel(String metadataCborHex) {
         try {
-            List<DataItem> items = CborDecoder.decode(HexUtil.decodeHexString(metadataCborHex));
+            byte[] metadataCbor = HexUtil.decodeHexString(metadataCborHex);
+            if (!CborStructurePreflight.accepts(metadataCbor, METADATA_CBOR_LIMITS)) {
+                return null;
+            }
+            List<DataItem> items = CborDecoder.decode(metadataCbor);
             if (items.isEmpty() || !(items.get(0) instanceof co.nstant.in.cbor.model.Map metadataMap))
                 return null;
             DataItem value = metadataMap.get(new UnsignedInteger(BigInteger.valueOf(label)));

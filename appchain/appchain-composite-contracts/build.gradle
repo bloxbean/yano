@@ -1,0 +1,71 @@
+dependencies {
+    implementation libs.cardano.client.crypto
+    implementation libs.cbor
+
+    testImplementation libs.junit.jupiter.api
+    testRuntimeOnly libs.junit.jupiter.engine
+    testRuntimeOnly libs.junit.platform.launcher
+    testImplementation libs.assertj.core
+}
+
+java {
+    sourceCompatibility = 25
+    targetCompatibility = 25
+}
+
+tasks.named('compileJava') {
+    options.compilerArgs.removeAll { it.startsWith('-Aproject=') }
+}
+
+def forbiddenPluginPrefixes = [
+        'META-INF/yano/plugins/',
+        'META-INF/services/'
+]
+def forbiddenEvidencePrefix = 'com/bloxbean/cardano/yano/appchain/evidence/'
+
+tasks.register('verifyCompositeContractArtifact') {
+    group = 'verification'
+    description = 'Verifies composite wire contracts contribute no plugin SPI or implementation classes'
+    dependsOn tasks.named('jar')
+    inputs.file(tasks.named('jar').flatMap { it.archiveFile })
+
+    doLast {
+        def archive = tasks.named('jar').get().archiveFile.get().asFile
+        new java.util.zip.ZipFile(archive).withCloseable { jar ->
+            def entries = jar.entries().collect { entry -> entry.name }
+            if (entries.any { entry ->
+                forbiddenPluginPrefixes.any { prefix -> entry.startsWith(prefix) }
+            }) {
+                throw new GradleException(
+                        'Composite contracts must not contribute app-chain plugin services')
+            }
+            if (entries.any { entry -> entry.startsWith(forbiddenEvidencePrefix) }) {
+                throw new GradleException(
+                        'Composite contracts must not contain evidence-product contracts')
+            }
+            if (entries.any { entry ->
+                entry.startsWith('com/bloxbean/cardano/yano/api/')
+                        || entry.startsWith('com/bloxbean/cardano/yano/appchain/composite/Composite')
+                        || entry.startsWith('com/bloxbean/cardano/yano/appchain/composite/stock/')
+            }) {
+                throw new GradleException(
+                        'Composite contracts must not embed framework or plugin implementation classes')
+            }
+        }
+    }
+}
+
+tasks.named('check') {
+    dependsOn tasks.named('verifyCompositeContractArtifact')
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            pom {
+                name = 'Yano App-Chain Composite Contracts'
+                description = 'No-SPI wire contracts for generic Yano composite profiles and governance'
+            }
+        }
+    }
+}

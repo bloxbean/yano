@@ -12,6 +12,7 @@ import org.slf4j.LoggerFactory;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -49,8 +50,9 @@ class SinkCursorMigrationTest {
             @Override public String legacyCursorKey() { return legacyKey; }
             @Override public boolean deliver(AppBlock block) { return true; }
         };
-        SinkRunner runner = new SinkRunner(sink, ledger,
+        SinkRunner runner = new SinkRunner(sink, sink.id(), ledger,
                 LoggerFactory.getLogger(SinkCursorMigrationTest.class));
+        SinkRunner.initializeCursors(ledger, List.of(runner));
 
         // Resumed from the legacy cursor (5), NOT reset to tip (0)
         assertThat(runner.cursor()).isEqualTo(5L);
@@ -65,8 +67,9 @@ class SinkCursorMigrationTest {
             @Override public String id() { return "kafka:topic:chain"; }
             @Override public boolean deliver(AppBlock block) { return true; }
         };
-        SinkRunner runner = new SinkRunner(sink, ledger,
+        SinkRunner runner = new SinkRunner(sink, sink.id(), ledger,
                 LoggerFactory.getLogger(SinkCursorMigrationTest.class));
+        SinkRunner.initializeCursors(ledger, List.of(runner));
 
         assertThat(runner.cursor()).isEqualTo(ledger.tipHeight()); // 0 on empty ledger
     }

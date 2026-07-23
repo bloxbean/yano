@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -43,6 +44,25 @@ class StateMachineConformanceTest {
                 .isInstanceOf(AssertionError.class)
                 .hasMessageContaining("NOT deterministic")
                 .hasMessageContaining("height 1");
+    }
+
+    @Test
+    void upgradeHarness_restartsBeforeAndAfterActivation() {
+        AtomicInteger newMachineCreations = new AtomicInteger();
+        AppStateMachineProvider oldProvider = provider("restart-probe", OrderedLogStateMachine::new);
+        AppStateMachineProvider newProvider = provider("restart-probe", () -> {
+            newMachineCreations.incrementAndGet();
+            return new OrderedLogStateMachine();
+        });
+
+        StateMachineConformance.upgrade(oldProvider, newProvider)
+                .activationAt("change-v2", 5)
+                .blocks(12)
+                .runs(2)
+                .assertReplayStable();
+
+        // Two uninterrupted runs plus two boundary runs, each reopened once.
+        assertThat(newMachineCreations).hasValue(6);
     }
 
     private static AppStateMachineProvider provider(String id,

@@ -1,0 +1,72 @@
+.capability-chooser {
+  display: grid;
+  gap: 14px;
+}
+
+.capability-group {
+  margin: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  display: grid;
+  gap: 8px;
+}
+
+.capability-group legend {
+  padding: 0 7px;
+  color: var(--muted);
+  font: 700 10px ui-monospace, monospace;
+  text-transform: uppercase;
+  letter-spacing: .1em;
+}
+
+.capability-option {
+  grid-template-columns: auto 1fr;
+  align-items: start;
+  gap: 10px;
+  padding: 7px;
+}
+
+.capability-option input {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  margin-top: 2px;
+  accent-color: var(--lime);
+}
+
+.capability-option strong,
+.capability-option small {
+  display: block;
+}
+
+.capability-option strong {
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.capability-option small {
+  margin-top: 3px;
+  color: var(--muted);
+  font: 10px ui-monospace, monospace;
+}
+
+.capability-option:has(input:disabled) {
+  opacity: .42;
+}
+
+.answer-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-top: 16px;
+  padding: 14px;
+  border-left: 2px solid var(--mint);
+  background: #0a1210;
+}
+
+@media (max-width: 520px) {
+  .answer-fields {
+    grid-template-columns: 1fr;
+  }
+}

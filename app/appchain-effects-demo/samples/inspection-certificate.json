@@ -1,0 +1,11 @@
+{
+  "schema": "org.example.product-inspection/v1",
+  "batchId": "BATCH-2026-0718",
+  "product": "Cold-chain vaccine shipment",
+  "inspection": {
+    "result": "PASS",
+    "temperatureCelsius": 4.2,
+    "inspectedAt": "2026-07-18T08:30:00Z",
+    "inspector": "Demo Quality Lab"
+  }
+}

@@ -22,6 +22,7 @@ import com.bloxbean.cardano.yano.runtime.kernel.ServiceRegistry;
 import com.bloxbean.cardano.yano.runtime.kernel.Subsystem;
 import com.bloxbean.cardano.yano.runtime.kernel.SubsystemContext;
 import com.bloxbean.cardano.yano.runtime.kernel.SubsystemHealth;
+import com.bloxbean.cardano.yano.runtime.internal.RuntimeNode;
 import com.bloxbean.cardano.yano.runtime.maintenance.RuntimeMaintenanceGate;
 
 import java.util.List;
@@ -168,6 +169,19 @@ final class RuntimeYano implements Yano, DevnetRuntimeProvider {
     }
 
     @Override
+    public Optional<com.bloxbean.cardano.yano.api.plugin.PluginCatalogView> pluginCatalog() {
+        return nodeLifecycle instanceof RuntimeNode runtimeNode
+                ? Optional.of(runtimeNode.pluginCatalog()) : Optional.empty();
+    }
+
+    @Override
+    public Optional<com.bloxbean.cardano.yano.api.plugin.operations.PluginOperationsView>
+            pluginOperations() {
+        return nodeLifecycle instanceof RuntimeNode runtimeNode
+                ? Optional.of(runtimeNode.pluginOperations()) : Optional.empty();
+    }
+
+    @Override
     public Optional<com.bloxbean.cardano.yano.api.appchain.AppChainGateway> appChain() {
         if (nodeLifecycle instanceof com.bloxbean.cardano.yano.runtime.internal.RuntimeNode runtimeNode) {
             return Optional.ofNullable(runtimeNode.appChainGateway());
@@ -181,6 +195,14 @@ final class RuntimeYano implements Yano, DevnetRuntimeProvider {
             return runtimeNode.appChainGateways();
         }
         return com.bloxbean.cardano.yano.api.appchain.AppChainGateways.empty();
+    }
+
+    @Override
+    public com.bloxbean.cardano.yano.api.plugin.domain.DomainApiGateway domainApis() {
+        if (nodeLifecycle instanceof com.bloxbean.cardano.yano.runtime.internal.RuntimeNode runtimeNode) {
+            return runtimeNode.domainApis();
+        }
+        return com.bloxbean.cardano.yano.api.plugin.domain.DomainApiGateway.empty();
     }
 
     @Override

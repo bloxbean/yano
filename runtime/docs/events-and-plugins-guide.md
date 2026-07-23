@@ -2,13 +2,19 @@
 
 This guide explains how to use the Yano event system and plugin SPI, both for developers embedding Yano in their apps and for contributors writing default plugins or internal listeners.
 
+For committed state-machine queries and manifested domain HTTP APIs, continue
+with the [query and domain API plugin guide](../../docs/APP_CHAIN_PLUGIN_QUERY_AND_DOMAIN_API.md).
+
 ## Overview
 
 - Module overview
   - `events-core`: event SPI (`Event`, `EventBus`, `EventListener`, `EventContext`, `EventMetadata`, `SubscriptionOptions`, `PublishOptions`, `@DomainEventListener`), `SimpleEventBus`, `NoopEventBus`, registrar, `support.DomainEventBindings` SPI.
   - `events-processor`: JSR 269 annotation processor generating build-time bindings for `@DomainEventListener` (GraalVM friendly).
   - `core-api`: plugin SPI (`NodePlugin`, `PluginContext`, `PluginCapability`, `Notifier`, `Notification`, `StorageAdapter`, `NodePolicy`), config (`RuntimeOptions`, `PluginsOptions`).
-  - `runtime`: wiring, publication points, example `LoggingPlugin` (ServiceLoader-based).
+  - `plugin-catalog`: strict bundle manifest parsing, artifact correlation and
+    canonical aggregate-index generation.
+  - `runtime`: catalog/runtime ownership, lifecycle wiring, publication points,
+    and the example `LoggingPlugin`.
 
 - Event taxonomy (initial)
   - Data plane: `BlockReceivedEvent`, `BlockAppliedEvent`, `MemPoolTransactionReceivedEvent`, `RollbackEvent`.
@@ -21,47 +27,39 @@ This guide explains how to use the Yano event system and plugin SPI, both for de
 ## Architecture Diagram
 
 ```text
-                    +-------------------+                 +-------------------------+
-                    |   RuntimeOptions  |                 |     PluginsOptions      |
-                    |  (events, plugins)|                 | (enabled, config map)   |
-                    +---------+---------+                 +------------+------------+
-                              |                                         |
-                              v                                         v
-                      +-------+-------------------------------+   +-----+--------------------+
-                      |             Yano                  |   |       PluginManager     |
-                      |  - selects EventBus (Simple/Noop)     |   |  - ServiceLoader        |
-                      |  - constructs PluginManager           |   |  - init/start/stop/close|
-                      +-------+---------------+---------------+   +-----+-----------+-------+
-                              |               |                               |
-                              |               |                               |
-   Publications (runtime)|               | PluginContext                 |  NodePlugin.init(ctx)
-   ---------------------------+               |  - eventBus                   +---------------------+
-         BlockReceivedEvent   |               |  - logger                     |   NodePlugin.start()|
-         BlockAppliedEvent    |               |  - config (namespaced map)    |   (optional)
-         RollbackEvent        |               |  - scheduler                  |
-         SyncStatusChanged    |               |  - plugin classloader         |
-         TipChangedEvent      v               v                               v
-                      +-------+---------------+---------------+       +-------+---------------+
-                      |               EventBus               |       |   AnnotationListener |
-                      |     (SimpleEventBus / NoopEventBus)  |       |       Registrar       |
-                      +-------+---------------+---------------+       +-----+-----------------+
-                              |               ^                         ^
-                              |               |                         |
-                              v               |                         |
-                    +---------+---------------+---------+               |
-                    |   Generated Bindings (SPI)         |<-------------+
-                    |  DomainEventBindings via            |   Fallback: reflectively scans
-                    |  ServiceLoader (events-processor)   |   @DomainEventListener methods
-                    +-------------------------------------+
+RuntimeOptions + PluginsOptions
+            |
+            v
+owned plugin loader / packaged-native classpath
+            |
+            v
+strict bundle manifests + ServiceLoader declarations
+            |
+            v
+validate API, policy, dependencies, conflicts and artifact evidence
+            |
+            v
+immutable catalog + typed provider registry
+            |
+            +----> PluginManager ----> NodePlugin init/start lifecycle
+            |
+            +----> app-chain state machines, modes, observers, signers,
+                   effect executors, finalized sinks and domain APIs
 
-Flow summary:
-- Yano takes RuntimeOptions to build/select EventBus and initialize PluginManager.
-- PluginManager discovers NodePlugin via ServiceLoader and calls init(ctx)/start().
-- Plugins register listeners using AnnotationListenerRegistrar:
-  - If build-time bindings exist (events-processor), registrar uses ServiceLoader to find DomainEventBindings and registers without reflection.
-  - Otherwise registrar reflects over @DomainEventListener methods and subscribes them.
-- runtime publishes events (BlockReceived/Applied, Rollback, SyncStatusChanged, TipChanged) to EventBus; subscribers receive them.
+Runtime event publications ----> EventBus ----> plugin listeners
+                                      |
+                                      +----> generated annotation bindings
+                                             (reflection fallback on JVM)
 ```
+
+Catalog validation completes before manifested provider construction or any
+plugin lifecycle callback. `PluginManager` receives catalog-selected
+`NodePlugin` instances; normal packaged runtime assembly does not perform
+another supported SPI scan. Explicit library-compatibility mode retains a
+legacy adapter that must construct unmanifested providers before policy to
+snapshot selector and dependency metadata. Those callbacks are bounded and
+diagnostic-safe; packaged JVM/native mode rejects the exception and requires
+manifests.
 
 ## Configuring Events and Plugins
 
@@ -74,9 +72,17 @@ Use explicit options (records) — do not rely on `System.setProperty`.
 
 - `PluginsOptions` (core-api)
   - `enabled` (boolean): enable/disable plugin system.
-  - `autoRegisterAnnotated` (boolean): reserved; manual registration recommended.
-  - `allowList`/`denyList` (Set<String>): optional controls.
-  - `config` (Map<String,Object>): namespaced plugin settings (e.g., `plugins.logging.enabled`).
+  - `autoRegisterAnnotated` (boolean): reserved and currently inactive; plugins
+    should own their listener handles explicitly.
+  - `allowList`/`denyList` (Set<String>): exact, case-sensitive controls. Empty
+    allow means all discovered plugins; deny wins. A missing allow-listed id,
+    duplicate id, missing selected dependency, or cycle fails startup before
+    any plugin initializes.
+  - `config` (Map<String,Object>): immutable global compatibility settings.
+    Manifested plugins should use `PluginContext.bundleConfig()` instead.
+    Packaged-node bundle settings use
+    `yano.plugins.bundle."<bundle-id>".*`; the context removes that exact owner
+    segment and exposes only the selected bundle's values.
 
 - `RuntimeOptions` (core-api)
   - Wraps `EventsOptions`, `PluginsOptions`, and a `globals` map.
@@ -103,7 +109,18 @@ node.lifecycle().start();
 ### Quarkus app
 
 - `app` maps `application.yml` → options in `YanoProducer`, then builds a `Yano`:
-  - `yaci.events.enabled`, `yaci.plugins.enabled`, `yaci.plugins.logging.enabled`, etc.
+  - `yaci.events.enabled`, `yaci.plugins.enabled`,
+    `yaci.plugins.allow-list`, `yaci.plugins.deny-list`,
+    `yaci.plugins.auto-register-annotated`, and
+    `yaci.plugins.logging.enabled`.
+  - Manifested bundle configuration is read from
+    `yano.plugins.bundle."<bundle-id>".*` and passed as the bundle-private view.
+    For example,
+    `YANO_PLUGINS_BUNDLE_HEX__636F6D2E6578616D706C652E70726F647563742D70617373706F7274__ENDPOINT_URL`
+    maps to `endpoint.url` for the exact UTF-8-hex encoded bundle id
+    `com.example.product-passport`. The former punctuation-to-underscore owner
+    spelling is rejected because it can reassign a removed bundle's stale
+    setting; use the reversible spelling or quoted system property.
 
 ## Writing a Plugin (ServiceLoader)
 
@@ -113,29 +130,105 @@ node.lifecycle().start();
 public final class MyPlugin implements NodePlugin {
   private List<SubscriptionHandle> handles = java.util.List.of();
   private Logger log;
+  private EventBus eventBus;
 
   @Override public String id() { return "com.example.myplugin"; }
   @Override public String version() { return "1.0.0"; }
+  @Override public Set<String> dependsOn() { return Set.of(); }
 
   @Override public void init(PluginContext ctx) {
     this.log = ctx.logger();
+    this.eventBus = ctx.eventBus();
+    Map<String, Object> ownSettings = ctx.bundleConfig();
+  }
+
+  @Override public synchronized void start() {
+    if (!handles.isEmpty()) return;
     // Register annotated methods (build-time bindings if processor is on the classpath)
     SubscriptionOptions defaults = SubscriptionOptions.builder().build();
     this.handles = com.bloxbean.cardano.yaci.events.api.support.AnnotationListenerRegistrar
-        .register(ctx.eventBus(), this, defaults);
+        .register(eventBus, this, defaults);
   }
 
-  @Override public void start() {}
-  @Override public void stop() { handles.forEach(h -> { try { h.close(); } catch (Exception ignored) {} }); }
+  @Override public synchronized void stop() {
+    handles.forEach(h -> { try { h.close(); } catch (Exception ignored) {} });
+    handles = java.util.List.of();
+  }
   @Override public void close() { stop(); }
 }
 ```
 
-2) Add ServiceLoader descriptor in your resources:
+Every selected `NodePlugin` is required. Initialization or startup failure
+rolls back the selected set in reverse dependency order and fails node startup.
+`stop()` and `close()` also run in reverse order. Manifested typed contributions
+derive their trust tier from their SPI kind: consensus and privileged-local
+activation failures are fatal, while auxiliary sink failures are isolated and
+reported by the app-chain operations surface.
+
+Every context sees the same service registry. A dependency may register a
+service during `init()` and its dependent may retrieve it during its own
+`init()`; duplicate service keys are rejected rather than overwritten. The
+global `config()` map remains available for legacy compatibility. A manifested
+plugin should use the immutable prefix-stripped `bundleConfig()` view so it
+cannot accidentally consume another bundle's settings. Both views are deep,
+bounded snapshots: nested maps and lists are immutable and cannot change when
+an embedder later mutates its source objects. Preview v1 configuration values
+are limited to strings, booleans, finite immutable numbers, string-keyed maps
+and lists; unsupported mutable values are rejected before plugin callbacks.
+
+Services and storage filters registered during `init()` are stable until
+close. Contributions registered synchronously during `start()` belong to that
+start cycle: the manager removes them after the owner's `stop()` callback so
+the same keys and filters can be registered once on restart. Storage filters
+must be registered before `start()` returns because the runtime freezes the
+filter snapshot immediately after all plugins start. New contributions are
+rejected between cycles and after close.
+
+2) Add the ServiceLoader descriptor in your resources:
+
 - `META-INF/services/com.bloxbean.cardano.yano.api.plugin.NodePlugin`:
+
 ```
 com.example.MyPlugin
 ```
+
+3) Add the bundle-id-qualified manifest
+`META-INF/yano/plugins/com.example.myplugin.json`:
+
+```json
+{
+  "schemaVersion": 1,
+  "id": "com.example.myplugin",
+  "version": "1.0.0",
+  "yanoApi": { "min": 1, "max": 1, "minLevel": 1 },
+  "dependencies": [],
+  "contributions": [
+    {
+      "kind": "node-plugin",
+      "name": "com.example.myplugin",
+      "provider": "com.example.MyPlugin"
+    }
+  ]
+}
+```
+
+Both files are mandatory for packaged JVM/native inclusion and must agree on
+provider kind/class. A self-contained JVM directory JAR may still use the
+visible legacy path during migration, but new plugins should always ship a
+manifest. Policy applies to the manifest bundle id and therefore governs all
+contributions in that product together.
+
+The bundle `version` is the plugin product's SemVer, owned and released by that
+bundle independently of the Yano product version and plugin API contract. Keep
+the artifact/build version and manifest version aligned unless the plugin has
+an explicitly documented independent artifact-version policy.
+
+Schema v1 requires all three `yanoApi` fields. `min` and `max` are the inclusive
+plugin API majors the bundle supports; `minLevel` is the oldest global additive
+API level that contains every public symbol or contribution kind the bundle
+uses. The level increases for every additive public plugin API change and never
+resets on a major bump. Startup requires both a major in range and a host level
+at least `minLevel`, and rejects a mismatch before provider construction.
 
 ### Using `@DomainEventListener`
 
@@ -244,7 +337,11 @@ SubscriptionHandle h = bus.subscribe(
 - Prefer idempotent listeners; at-least-once delivery may re-deliver on retries.
 - Keep handlers fast; use async offload (executor) for long-running work.
 - Use `NoopEventBus` (via `EventsOptions.enabled=false`) when events are not needed.
-- Use namespaced keys in `PluginContext.config()` (e.g., `plugins.logging.enabled`).
+- For manifested plugins, use `PluginContext.bundleConfig()` with external
+  keys under `yano.plugins.bundle."<bundle-id>".*`. The quoted id is one exact
+  SmallRye map-key owner and avoids ambiguous reverse-DNS prefixes. The older
+  bracketed spelling is accepted only as a compatibility alias. Use the global
+  `config()` map only while maintaining a legacy plugin.
 - Start with `SimpleEventBus`; add alternative buses only when you need specialized behavior.
 
 ## FAQ

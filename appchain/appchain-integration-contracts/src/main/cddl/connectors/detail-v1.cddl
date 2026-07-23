@@ -1,0 +1,50 @@
+; Off-chain canonical details. Their encoded envelope is <=8192 bytes and is
+; committed as blake2b-256("yano-fx-detail-v1" || canonicalDetailBytes).
+; Fields are stable across re-probe; no wall clock, attempt, secret, endpoint,
+; source document, or unrestricted vendor response is permitted.
+
+connector-detail-v1 =
+  [version : 1, effect-id-hash : hash32, action-code : 1, detail : kafka-detail-v1] /
+  [version : 1, effect-id-hash : hash32, action-code : 2, detail : object-detail-v1] /
+  [version : 1, effect-id-hash : hash32, action-code : 3, detail : ipfs-detail-v1]
+
+kafka-detail-v1 = [
+  version                  : 1,
+  destination-fingerprint  : hash32,
+  partition                : uint .le 2147483647,
+  offset                   : nonnegative-int64,
+  serialized-key-size      : uint .le 16384,
+  serialized-value-size    : uint .le 16384
+]
+
+object-detail-v1 = object-detail-unlocked-v1 / object-detail-locked-v1
+
+object-detail-unlocked-v1 = [
+  version                 : 1,
+  destination-fingerprint : hash32,
+  provider-version-id     : printable-ascii-1024,
+  etag                    : printable-ascii-256 / null,
+  verified-sha256         : hash32,
+  size                    : uint .le 16777216,
+  retention-mode          : 0,             ; NONE
+  retain-until-ms         : null
+]
+
+object-detail-locked-v1 = [
+  version                 : 1,
+  destination-fingerprint : hash32,
+  provider-version-id     : printable-ascii-1024,
+  etag                    : printable-ascii-256 / null,
+  verified-sha256         : hash32,
+  size                    : uint .le 16777216,
+  retention-mode          : 1 / 2,         ; GOVERNANCE / COMPLIANCE
+  retain-until-ms         : nonnegative-int64
+]
+
+ipfs-detail-v1 = [
+  version            : 1,
+  target-fingerprint : hash32,
+  cid                : canonical-cid-v1,
+  recursive          : bool,
+  provider-reference : printable-ascii-256 / null
+]

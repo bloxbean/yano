@@ -10,6 +10,8 @@ import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yaci.core.util.CborSerializationUtil;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
+import com.bloxbean.cardano.yano.api.appchain.codec.internal.CborStructurePreflight;
 import org.slf4j.Logger;
 
 import java.nio.charset.StandardCharsets;
@@ -53,6 +55,8 @@ final class GovernedMembership {
     static final long DEFAULT_ACTIVATION_LAG = 10;
 
     private static final String META_PENDING = "gov_pending";
+    private static final CborStructurePreflight.Limits COMMAND_CBOR_LIMITS =
+            new CborStructurePreflight.Limits(256, 3, 16, 8, 64);
 
     private final MemberGroup group;
     private final String fixedProposerHex;
@@ -189,10 +193,17 @@ final class GovernedMembership {
         switch (command.op()) {
             case OP_ADD -> {
                 String key = HexUtil.encodeHexString(command.memberKey()).toLowerCase(Locale.ROOT);
-                if (!members.add(key)) {
+                if (members.contains(key)) {
                     log.info("Governance: add of existing member {} at height {} — no-op", key, height);
                     return null;
                 }
+                if (members.size() >= AppChainConfig.MAX_MEMBERS) {
+                    log.warn("Governance: adding a member would exceed the v1 limit of {} "
+                                    + "at height {} — void",
+                            AppChainConfig.MAX_MEMBERS, height);
+                    return null;
+                }
+                members.add(key);
                 log.info("Governance ACTIVATED: add member {} from height {}", key, fromHeight);
             }
             case OP_REMOVE -> {
@@ -246,7 +257,13 @@ final class GovernedMembership {
     }
 
     static Command decodeCommand(byte[] body) {
+        if (!CborStructurePreflight.accepts(body, COMMAND_CBOR_LIMITS)) {
+            throw new IllegalArgumentException("Invalid bounded governance command CBOR");
+        }
         List<DataItem> items = ((Array) CborSerializationUtil.deserializeOne(body)).getDataItems();
+        if (items.size() != 4) {
+            throw new IllegalArgumentException("Governance command must have 4 fields");
+        }
         long version = ((UnsignedInteger) items.get(0)).getValue().longValue();
         if (version != 1) {
             throw new IllegalArgumentException("Unsupported governance command version: " + version);

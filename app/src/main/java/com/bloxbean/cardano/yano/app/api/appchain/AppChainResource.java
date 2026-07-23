@@ -3,20 +3,37 @@ package com.bloxbean.cardano.yano.app.api.appchain;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.appchain.AppChainGateway;
 import com.bloxbean.cardano.yano.api.appchain.AppChainGateways;
+import com.bloxbean.cardano.yano.api.appchain.AppQueryPath;
+import com.bloxbean.cardano.yano.api.appchain.AppStateProofSnapshot;
 import com.bloxbean.cardano.yano.api.appchain.ReceivedAppMessage;
+import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
+import com.bloxbean.cardano.yano.api.plugin.PluginCatalogView;
+import com.bloxbean.cardano.yano.appchain.composite.contracts.CompositeProfileGovernanceV1;
+import com.fasterxml.jackson.annotation.JsonAnySetter;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.core.JsonParser;
+import com.fasterxml.jackson.core.JsonToken;
+import com.fasterxml.jackson.databind.DeserializationContext;
+import com.fasterxml.jackson.databind.JsonDeserializer;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import io.quarkus.runtime.annotations.RegisterForReflection;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.*;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.eclipse.microprofile.openapi.annotations.Operation;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
+import java.util.regex.Pattern;
 
 /**
  * REST surface for the app chain(s). Chain-scoped paths
@@ -37,6 +54,15 @@ public class AppChainResource {
 
     @Inject
     AppChainGateways appChainGateways;
+
+    @Inject
+    PluginCatalogView pluginCatalog;
+
+    @ConfigProperty(name = YanoPropertyKeys.AppChain.DX_RESOLVED_CONFIG_DIGEST)
+    Optional<String> resolvedConfigDigest = Optional.empty();
+
+    @ConfigProperty(name = YanoPropertyKeys.AppChain.DX_RELEASE_CATALOG_DIGEST)
+    Optional<String> releaseCatalogDigest = Optional.empty();
 
     // ------------------------------------------------------------------
     // Multi-chain surface
@@ -61,7 +87,10 @@ public class AppChainResource {
     public ChainScopedResource chain(@PathParam("chainId") String chainId) {
         AppChainGateway gateway = appChainGateways.byId(chainId)
                 .orElseThrow(() -> jsonError(Response.Status.NOT_FOUND, "Unknown app chain: " + chainId));
-        return new ChainScopedResource(gateway);
+        return new ChainScopedResource(gateway, new RuntimeIdentityContext(
+                pluginCatalog.fingerprint(),
+                resolvedConfigDigest.orElse(null),
+                releaseCatalogDigest.orElse(null)));
     }
 
     // ------------------------------------------------------------------
@@ -71,6 +100,7 @@ public class AppChainResource {
     @POST
     @Operation(hidden = true)
     @Path("messages")
+    @AppChainAccess(AppChainAccess.Level.SUBMIT)
     public Response submit(ChainScopedResource.SubmitRequest request) {
         return singleChain().submit(request);
     }
@@ -107,7 +137,7 @@ public class AppChainResource {
     @GET
     @Operation(hidden = true)
     @Path("proof/{keyHex}")
-    public Response proof(@PathParam("keyHex") String keyHex) {
+    public Response proof(@Encoded @PathParam("keyHex") String keyHex) {
         return singleChain().proof(keyHex);
     }
 
@@ -149,6 +179,69 @@ public class AppChainResource {
                                      @QueryParam("fromHeight") @DefaultValue("0") long fromHeight,
                                      @QueryParam("limit") @DefaultValue("100") int limit) {
         return singleChain().messagesBySender(senderHex, fromHeight, limit);
+    }
+
+    @GET
+    @Operation(hidden = true)
+    @Path("effects")
+    public Response effects(@QueryParam("fromHeight") @DefaultValue("0") long fromHeight,
+                            @QueryParam("limit") @DefaultValue("100") int limit) {
+        return singleChain().effects(fromHeight, limit);
+    }
+
+    @GET
+    @Operation(hidden = true)
+    @Path("effects/{height}/{ordinal}")
+    public Response effect(@PathParam("height") long height, @PathParam("ordinal") int ordinal) {
+        return singleChain().effect(height, ordinal);
+    }
+
+    @GET
+    @Operation(hidden = true)
+    @Path("effects/{height}/{ordinal}/proof")
+    public Response effectProof(@PathParam("height") long height,
+                                @PathParam("ordinal") int ordinal) {
+        return singleChain().effectProof(height, ordinal);
+    }
+
+    @GET
+    @Operation(hidden = true)
+    @Path("effects/stats")
+    public Response effectStats() {
+        return singleChain().effectStats();
+    }
+
+    @POST
+    @Operation(hidden = true)
+    @Path("effects/{height}/{ordinal}/requeue")
+    public Response requeueEffect(@PathParam("height") long height,
+                                  @PathParam("ordinal") int ordinal) {
+        return singleChain().requeueEffect(height, ordinal);
+    }
+
+    @POST
+    @Operation(hidden = true)
+    @Path("effects/{height}/{ordinal}/cancel")
+    public Response cancelEffect(@PathParam("height") long height,
+                                 @PathParam("ordinal") int ordinal,
+                                 @QueryParam("reason") @DefaultValue("operator-cancel") String reason) {
+        return singleChain().cancelEffect(height, ordinal, reason);
+    }
+
+    @POST
+    @Operation(hidden = true)
+    @Path("effects/claim")
+    public Response claimEffects(ChainScopedResource.ClaimRequest request) {
+        return singleChain().claimEffects(request);
+    }
+
+    @POST
+    @Operation(hidden = true)
+    @Path("effects/{height}/{ordinal}/report")
+    public Response reportEffect(@PathParam("height") long height,
+                                 @PathParam("ordinal") int ordinal,
+                                 ChainScopedResource.ReportRequest request) {
+        return singleChain().reportEffect(height, ordinal, request);
     }
 
     @POST
@@ -230,19 +323,57 @@ public class AppChainResource {
      */
     @Produces(MediaType.APPLICATION_JSON)
     @Consumes(MediaType.APPLICATION_JSON)
+    @RegisterForReflection
     public static class ChainScopedResource {
 
+        private static final int MAX_PROOF_KEY_BYTES = 256;
+        private static final int MAX_PROOF_VALUE_BYTES = 1024 * 1024;
+        private static final int MAX_PROOF_WIRE_BYTES = 1024 * 1024;
+        private static final Pattern SHA256 = Pattern.compile(
+                "(?:sha256:)?[0-9a-f]{64}", Pattern.CASE_INSENSITIVE);
+
         private final AppChainGateway gateway;
+        private final RuntimeIdentityContext identityContext;
 
         ChainScopedResource(AppChainGateway gateway) {
+            this(gateway, RuntimeIdentityContext.empty());
+        }
+
+        ChainScopedResource(AppChainGateway gateway, RuntimeIdentityContext identityContext) {
             this.gateway = gateway;
+            this.identityContext = identityContext;
         }
 
         public record SubmitRequest(String topic, String body, String bodyHex) {
         }
 
+        /** ADR-011.3 query parameters; omitted or empty hex means empty bytes. */
+        @JsonIgnoreProperties(ignoreUnknown = false)
+        public record QueryRequest(
+                @JsonDeserialize(using = StrictStringDeserializer.class) String paramsHex) {
+
+            /** Keep the envelope strict even if the host mapper ignores unknown properties. */
+            @JsonAnySetter
+            public void rejectUnknownField(String name, Object ignored) {
+                throw new IllegalArgumentException("Unknown app-chain query field: " + name);
+            }
+        }
+
+        /** Prevent Jackson's scalar-to-string coercion in the strict query envelope. */
+        public static final class StrictStringDeserializer extends JsonDeserializer<String> {
+            @Override
+            public String deserialize(JsonParser parser, DeserializationContext context)
+                    throws java.io.IOException {
+                if (!parser.hasToken(JsonToken.VALUE_STRING)) {
+                    return (String) context.handleUnexpectedToken(String.class, parser);
+                }
+                return parser.getText();
+            }
+        }
+
         @POST
         @Path("messages")
+        @AppChainAccess(AppChainAccess.Level.SUBMIT)
         public Response submit(SubmitRequest request) {
             if (request == null || (isBlank(request.body()) && isBlank(request.bodyHex()))) {
                 return badRequest("Either 'body' (text) or 'bodyHex' (hex bytes) is required");
@@ -272,6 +403,84 @@ public class AppChainResource {
                         .entity(Map.of("error", e.getMessage())).build();
             } catch (IllegalArgumentException e) {
                 return badRequest(e.getMessage());
+            }
+        }
+
+        /**
+         * Execute the machine's read hook against one root-fixed committed
+         * snapshot. This POST is semantically READ: the body carries bounded
+         * opaque parameters and no state transition is performed.
+         */
+        @POST
+        @Path("query/{path: .+}")
+        @AppChainAccess(AppChainAccess.Level.READ)
+        public Response query(@Encoded @PathParam("path") String path, QueryRequest request) {
+            if (path != null && path.length() > AppQueryPath.MAX_LENGTH) {
+                return Response.status(413)
+                        .entity(Map.of("code", "REQUEST_TOO_LARGE",
+                                "error", "App-chain query path exceeds the size limit"))
+                        .build();
+            }
+            try {
+                path = AppQueryPath.validate(path);
+            } catch (IllegalArgumentException invalidPath) {
+                return Response.status(Response.Status.BAD_REQUEST)
+                        .entity(Map.of("code", "INVALID_REQUEST",
+                                "error", "App-chain query path is invalid"))
+                        .build();
+            }
+            byte[] params;
+            try {
+                String encoded = request != null ? request.paramsHex() : null;
+                if (encoded == null || encoded.isEmpty()) {
+                    params = new byte[0];
+                } else {
+                    if (encoded.length() > 2 * 64 * 1024) {
+                        throw new com.bloxbean.cardano.yano.api.appchain.AppQueryException(
+                                com.bloxbean.cardano.yano.api.appchain.AppQueryException.Code.REQUEST_TOO_LARGE,
+                                "App-chain query request exceeds the size limit");
+                    }
+                    if ((encoded.length() & 1) != 0
+                            || !encoded.matches("[0-9a-f]+")) {
+                        return badRequest("paramsHex must be canonical lowercase hex");
+                    }
+                    params = HexUtil.decodeHexString(encoded);
+                }
+            } catch (com.bloxbean.cardano.yano.api.appchain.AppQueryException tooLarge) {
+                return Response.status(413)
+                        .entity(Map.of("code", tooLarge.code().name(),
+                                "error", tooLarge.getMessage()))
+                        .build();
+            } catch (Exception invalidHex) {
+                return badRequest("Invalid paramsHex");
+            }
+
+            try {
+                var result = gateway.query(path, params);
+                Map<String, Object> response = new LinkedHashMap<>();
+                response.put("chainId", result.chainId());
+                response.put("stateMachineId", result.stateMachineId());
+                response.put("committedHeight", result.committedHeight());
+                response.put("stateRoot", HexUtil.encodeHexString(result.stateRoot()));
+                response.put("payloadHex", HexUtil.encodeHexString(result.payload()));
+                return Response.ok(response).build();
+            } catch (com.bloxbean.cardano.yano.api.appchain.AppQueryException failure) {
+                int status = switch (failure.code()) {
+                    case INVALID_REQUEST -> 400;
+                    case REQUEST_TOO_LARGE -> 413;
+                    case UNSUPPORTED -> 404;
+                    case BUSY -> 429;
+                    case RESULT_TOO_LARGE -> 502;
+                    case UNAVAILABLE -> 503;
+                    case TIMEOUT -> 504;
+                    case FAILED -> 500;
+                };
+                String message = failure.code()
+                        == com.bloxbean.cardano.yano.api.appchain.AppQueryException.Code.FAILED
+                        ? "Query execution failed" : failure.getMessage();
+                return Response.status(status)
+                        .entity(Map.of("code", failure.code().name(), "error", message))
+                        .build();
             }
         }
 
@@ -312,6 +521,51 @@ public class AppChainResource {
             } catch (IllegalStateException e) {
                 return Response.status(Response.Status.SERVICE_UNAVAILABLE)
                         .entity(Map.of("error", e.getMessage())).build();
+            }
+        }
+
+        /** Redacted identities for operator drift checks; no raw configuration is returned. */
+        @GET
+        @Path("identity")
+        @AppChainAccess(AppChainAccess.Level.PRIVILEGED)
+        public Response identity() {
+            try {
+                Map<String, Object> status = gateway.status();
+                Map<String, Object> result = new LinkedHashMap<>();
+                result.put("schemaVersion", "v1");
+                result.put("chainId", gateway.chainId());
+                putDigest(result, "consensusProfileDigest",
+                        nestedValue(status, "consensusProfile", "digest"));
+                putDigest(result, "compositeProfileDigest",
+                        nestedValue(status, "stateMachineStatus", "activeProfileDigest"));
+                putDigest(result, "pluginCatalogFingerprint",
+                        identityContext.pluginCatalogFingerprint());
+                putDigest(result, "resolvedConfigDigest",
+                        identityContext.resolvedConfigDigest());
+                putDigest(result, "releaseCatalogDigest",
+                        identityContext.releaseCatalogDigest());
+                result.put("identityCoverage",
+                        result.containsKey("resolvedConfigDigest")
+                                && result.containsKey("releaseCatalogDigest")
+                                ? "PROJECT_BOUND" : "RUNTIME_ONLY");
+                return Response.ok(result).build();
+            } catch (IllegalStateException e) {
+                return Response.status(Response.Status.SERVICE_UNAVAILABLE)
+                        .entity(Map.of("error", "App-chain identity is unavailable")).build();
+            }
+        }
+
+        private static Object nestedValue(
+                Map<String, Object> source, String objectKey, String valueKey) {
+            Object nested = source.get(objectKey);
+            return nested instanceof Map<?, ?> map ? map.get(valueKey) : null;
+        }
+
+        private static void putDigest(Map<String, Object> output, String key, Object value) {
+            if (value == null) return;
+            String digest = String.valueOf(value).trim();
+            if (SHA256.matcher(digest).matches()) {
+                output.put(key, digest.toLowerCase(Locale.ROOT));
             }
         }
 
@@ -357,16 +611,7 @@ public class AppChainResource {
                             .entity(Map.of("error", "No app block at height " + height)).build());
         }
 
-        /**
-         * MPF inclusion proof for a state key (hex). For the built-in ordered-log
-         * app the key is the message id; the proof verifies the message's finalized
-         * position against the (anchorable) state root.
-         */
-        /**
-         * Portable, offline-verifiable evidence bundle for a finalized message
-         * (ADR 006 E3.4): block(s) + members + L1 anchor reference. Verify with
-         * core-api's {@code EvidenceVerifier} — no node access needed.
-         */
+        /** Request body for creating an app-chain ledger snapshot. */
         public record SnapshotRequest(String path) {
         }
 
@@ -443,6 +688,185 @@ public class AppChainResource {
                     "messages", gateway.messagesByTopic(topic, fromHeight, limit))).build();
         }
 
+        /** Emitted effect records, ascending (height, ordinal) — consensus view (ADR-010 F12). */
+        @GET
+        @Path("effects")
+        public Response effects(@QueryParam("fromHeight") @DefaultValue("0") long fromHeight,
+                                @QueryParam("limit") @DefaultValue("100") int limit) {
+            return Response.ok(Map.of("chainId", gateway.chainId(),
+                    "effects", gateway.effects(fromHeight, limit))).build();
+        }
+
+        /** One emitted effect record by chain position, joined with this node's runtime status. */
+        @GET
+        @Path("effects/{height}/{ordinal}")
+        public Response effect(@PathParam("height") long height,
+                               @PathParam("ordinal") int ordinal) {
+            return gateway.effect(height, ordinal)
+                    .map(view -> {
+                        Map<String, Object> result = new LinkedHashMap<>();
+                        result.put("record", view);
+                        gateway.effectRuntimeStatus(height, ordinal)
+                                .ifPresent(status -> result.put("execution", status));
+                        return Response.ok(result).build();
+                    })
+                    .orElse(Response.status(Response.Status.NOT_FOUND)
+                            .entity(Map.of("error", "No effect at " + height + "/" + ordinal)).build());
+        }
+
+        /**
+         * Record-to-effectsRoot-to-historical-stateRoot composed proof
+         * (ADR-010 F4). A 410 means the commitment remains but one or more
+         * effect records needed for the list path crossed the retention
+         * horizon.
+         */
+        @GET
+        @Path("effects/{height}/{ordinal}/proof")
+        public Response effectProof(@PathParam("height") long height,
+                                    @PathParam("ordinal") int ordinal) {
+            com.bloxbean.cardano.yano.api.appchain.effects.EffectProofLookup lookup;
+            try {
+                lookup = gateway.effectProof(height, ordinal);
+            } catch (IllegalStateException e) {
+                return Response.status(Response.Status.INTERNAL_SERVER_ERROR)
+                        .entity(Map.of("code", "EFFECT_PROOF_INCONSISTENT",
+                                "error", e.getMessage())).build();
+            }
+            if (lookup.status()
+                    == com.bloxbean.cardano.yano.api.appchain.effects.EffectProofLookup.Status.NOT_FOUND) {
+                return Response.status(Response.Status.NOT_FOUND)
+                        .entity(Map.of("code", "EFFECT_NOT_FOUND",
+                                "error", "No effect at " + height + "/" + ordinal)).build();
+            }
+            if (lookup.status()
+                    == com.bloxbean.cardano.yano.api.appchain.effects.EffectProofLookup.Status.PRUNED) {
+                return Response.status(Response.Status.GONE)
+                        .entity(Map.of("code", "EFFECT_PROOF_PRUNED",
+                                "height", height, "ordinal", ordinal,
+                                "effectCount", lookup.effectCount(),
+                                "error", "Effect proof material passed the retention horizon"))
+                        .build();
+            }
+
+            var proof = lookup.proof();
+            var record = proof.record();
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("version", proof.version());
+            result.put("chainId", record.chainId());
+            result.put("height", record.height());
+            result.put("ordinal", record.ordinal());
+            result.put("recordCborHex", HexUtil.encodeHexString(record.encode()));
+            result.put("effectHashHex", HexUtil.encodeHexString(record.effectHash()));
+            result.put("effectCount", proof.effectCount());
+            List<Map<String, String>> path = new ArrayList<>(proof.merklePath().size());
+            for (var step : proof.merklePath()) {
+                path.add(Map.of("side", step.side().name(),
+                        "siblingHashHex", HexUtil.encodeHexString(step.siblingHash())));
+            }
+            result.put("merklePath", path);
+            result.put("effectsRootHex", HexUtil.encodeHexString(proof.effectsRoot()));
+            result.put("stateKeyHex", HexUtil.encodeHexString(
+                    com.bloxbean.cardano.yano.api.appchain.effects.FxKeys.effectsRootKey(record.height())));
+            result.put("stateRootHex", HexUtil.encodeHexString(proof.stateRoot()));
+            result.put("stateProofWireHex", HexUtil.encodeHexString(proof.stateProofWire()));
+            return Response.ok(result).build();
+        }
+
+        /** Effect consensus/runtime gauges and cumulative totals. */
+        @GET
+        @Path("effects/stats")
+        public Response effectStats() {
+            return Response.ok(Map.of("chainId", gateway.chainId(),
+                    "stats", gateway.effectStats())).build();
+        }
+
+        /** Operator requeue of a PARKED/QUARANTINED effect (ADR-010 F9). */
+        @POST
+        @Path("effects/{height}/{ordinal}/requeue")
+        public Response requeueEffect(@PathParam("height") long height,
+                                      @PathParam("ordinal") int ordinal) {
+            boolean requeued = gateway.requeueEffect(height, ordinal);
+            return requeued
+                    ? Response.ok(Map.of("requeued", true)).build()
+                    : Response.status(Response.Status.CONFLICT)
+                            .entity(Map.of("error", "Effect not requeueable (unknown, live, "
+                                    + "already terminal, or no executor on this node)")).build();
+        }
+
+        /** Operator cancel of an open CHAIN effect — injects a CANCELLED result (ADR-010 F9). */
+        @POST
+        @Path("effects/{height}/{ordinal}/cancel")
+        public Response cancelEffect(@PathParam("height") long height,
+                                     @PathParam("ordinal") int ordinal,
+                                     @QueryParam("reason") @DefaultValue("operator-cancel") String reason) {
+            boolean cancelled = gateway.cancelEffect(height, ordinal, reason);
+            return cancelled
+                    ? Response.accepted(Map.of("cancelled", true)).build()
+                    : Response.status(Response.Status.CONFLICT)
+                            .entity(Map.of("error", "Effect not cancellable (unknown, closed, "
+                                    + "not CHAIN-policy, or sequencing disabled)")).build();
+        }
+
+        public record ClaimRequest(String executorId, List<String> types, Integer max,
+                                   Long leaseSeconds) {
+        }
+
+        /** External-executor claim: lease eligible effects (effects.external.enabled). */
+        @POST
+        @Path("effects/claim")
+        public Response claimEffects(ClaimRequest request) {
+            if (request == null || request.executorId() == null || request.executorId().isBlank()) {
+                return badRequest("executorId is required");
+            }
+            var claimed = gateway.claimEffects(request.executorId(),
+                    request.types() != null ? java.util.Set.copyOf(request.types()) : java.util.Set.of(),
+                    request.max() != null ? request.max() : 16,
+                    request.leaseSeconds() != null ? request.leaseSeconds() : 60);
+            List<Map<String, Object>> effects = new ArrayList<>(claimed.size());
+            for (var effect : claimed) {
+                Map<String, Object> view = new LinkedHashMap<>();
+                view.put("height", effect.record().height());
+                view.put("ordinal", effect.record().ordinal());
+                view.put("type", effect.type());
+                view.put("scope", effect.scope());
+                view.put("payloadHex", HexUtil.encodeHexString(effect.payload()));
+                view.put("expiryHeight", effect.expiryHeight());
+                view.put("idempotencyKey", HexUtil.encodeHexString(effect.idHash()));
+                view.put("effectId", effect.effectId().canonical());
+                effects.add(view);
+            }
+            return Response.ok(Map.of("chainId", gateway.chainId(), "effects", effects)).build();
+        }
+
+        public record ReportRequest(String executorId, Boolean success, String externalRefHex,
+                                    String reason) {
+        }
+
+        /** External-executor report: definitive outcome for a claimed effect. */
+        @POST
+        @Path("effects/{height}/{ordinal}/report")
+        public Response reportEffect(@PathParam("height") long height,
+                                     @PathParam("ordinal") int ordinal,
+                                     ReportRequest request) {
+            if (request == null || request.executorId() == null || request.success() == null) {
+                return badRequest("executorId and success are required");
+            }
+            byte[] externalRef;
+            try {
+                externalRef = request.externalRefHex() != null
+                        ? HexUtil.decodeHexString(request.externalRefHex()) : new byte[0];
+            } catch (Exception e) {
+                return badRequest("Invalid externalRefHex");
+            }
+            boolean accepted = gateway.reportEffect(request.executorId(), height, ordinal,
+                    request.success(), externalRef, request.reason());
+            return accepted
+                    ? Response.ok(Map.of("reported", true)).build()
+                    : Response.status(Response.Status.CONFLICT)
+                            .entity(Map.of("error", "Report rejected (not claimed by this "
+                                    + "executor, unknown, closed, or external mode disabled)")).build();
+        }
+
         /** Finalized message refs from a sender key, ascending (height, index). */
         @GET
         @Path("messages/by-sender/{senderHex}")
@@ -470,8 +894,59 @@ public class AppChainResource {
         public record ThresholdRequest(int threshold) {
         }
 
+        public record CompositeProfileCommandRequest(String bodyHex, Boolean dryRun) {
+        }
+
+        /** Cached node-local catalog/readiness diagnostics; no plugin callback is executed. */
+        @GET
+        @Path("profile-governance")
+        public Response profileGovernanceStatus() {
+            return Response.ok(Map.of("chainId", gateway.chainId(),
+                    "profileGovernance", gateway.stateMachineStatus())).build();
+        }
+
+        /**
+         * Dry-run or submit one canonical ADR-015 command on the reserved
+         * member-signed topic. Ordinary /messages submission remains unable
+         * to access reserved topics.
+         */
+        @POST
+        @Path("admin/profile-governance/commands")
+        @AppChainAccess(AppChainAccess.Level.PRIVILEGED)
+        public Response submitProfileGovernanceCommand(CompositeProfileCommandRequest request) {
+            if (request == null || isBlank(request.bodyHex())) {
+                return badRequest("'bodyHex' is required");
+            }
+            if (request.bodyHex().length() > CompositeProfileGovernanceV1.MAX_COMMAND_BYTES * 2
+                    || (request.bodyHex().length() & 1) != 0) {
+                return badRequest("bodyHex exceeds the bounded governance command envelope");
+            }
+            byte[] body;
+            try {
+                body = HexUtil.decodeHexString(request.bodyHex());
+            } catch (RuntimeException invalidHex) {
+                return badRequest("Invalid bodyHex");
+            }
+            try {
+                String topic = "~governance/composite-profile";
+                if (Boolean.TRUE.equals(request.dryRun())) {
+                    gateway.validatePrivilegedSystemMessage(topic, body);
+                    return Response.ok(Map.of("chainId", gateway.chainId(),
+                            "valid", true, "submitted", false)).build();
+                }
+                String messageId = gateway.submitPrivilegedSystemMessage(topic, body);
+                return Response.accepted(Map.of("chainId", gateway.chainId(),
+                        "valid", true, "submitted", true, "messageId", messageId)).build();
+            } catch (IllegalArgumentException invalid) {
+                return badRequest(invalid.getMessage());
+            } catch (IllegalStateException unavailable) {
+                throw jsonError(Response.Status.CONFLICT, unavailable.getMessage());
+            }
+        }
+
         @GET
         @Path("admin/members")
+        @AppChainAccess(AppChainAccess.Level.PRIVILEGED)
         public Response listMembers() {
             return Response.ok(Map.of("chainId", gateway.chainId(),
                     "members", new ArrayList<>(gateway.members()),
@@ -619,6 +1094,12 @@ public class AppChainResource {
             }
         }
 
+        /**
+         * Portable evidence material for a finalized message (ADR 006 E3.4):
+         * block(s), claimed members, and L1 anchor reference. Authenticity
+         * requires an independently pinned trust context plus verification of
+         * the exact Cardano anchor output/datum.
+         */
         @GET
         @Path("evidence/{messageIdHex}")
         public Response evidence(@PathParam("messageIdHex") String messageIdHex) {
@@ -636,30 +1117,79 @@ public class AppChainResource {
                             .entity(Map.of("error", "No finalized message with id " + messageIdHex)).build());
         }
 
+        /**
+         * MPF inclusion proof for a state key (hex). For the built-in ordered-log
+         * app the key is the message id; the proof verifies the message's finalized
+         * position against the (anchorable) state root.
+         */
         @GET
         @Path("proof/{keyHex}")
-        public Response proof(@PathParam("keyHex") String keyHex) {
-            byte[] key;
-            try {
-                key = HexUtil.decodeHexString(keyHex);
-            } catch (Exception e) {
-                return badRequest("Invalid key hex");
+        public Response proof(@Encoded @PathParam("keyHex") String keyHex) {
+            if (keyHex != null && keyHex.length() > MAX_PROOF_KEY_BYTES * 2) {
+                return Response.status(413)
+                        .entity(Map.of("error", "State proof key exceeds the size limit"))
+                        .build();
             }
-            var proof = gateway.stateProof(key);
-            if (proof.isEmpty()) {
+            if (!isCanonicalProofKey(keyHex)) {
+                return badRequest("State proof key must be canonical lowercase hex");
+            }
+            byte[] key = HexUtil.decodeHexString(keyHex);
+            final Optional<AppStateProofSnapshot> snapshot;
+            try {
+                snapshot = gateway.stateProofSnapshot(key);
+            } catch (UnsupportedOperationException unavailable) {
+                return Response.status(Response.Status.SERVICE_UNAVAILABLE)
+                        .entity(Map.of(
+                                "code", "STATE_PROOF_UNAVAILABLE",
+                                "error", "Atomic state proof snapshots are unavailable"))
+                        .build();
+            }
+            if (snapshot.isEmpty()) {
                 return Response.status(Response.Status.NOT_FOUND)
-                        .entity(Map.of("error", "No state entry for key")).build();
+                        .entity(Map.of("error", "No committed state proof available for key"))
+                        .build();
+            }
+            var proof = snapshot.orElseThrow();
+            byte[] proofKey = proof.key();
+            if (!java.util.Arrays.equals(key, proofKey)) {
+                return Response.status(Response.Status.INTERNAL_SERVER_ERROR)
+                        .entity(Map.of("error", "State proof snapshot identity mismatch"))
+                        .build();
+            }
+            byte[] proofWire = proof.proofWire();
+            byte[] proofValue = proof.value();
+            if (proofWire.length > MAX_PROOF_WIRE_BYTES
+                    || (proofValue != null && proofValue.length > MAX_PROOF_VALUE_BYTES)) {
+                return Response.status(413)
+                        .entity(Map.of("error", "State proof response exceeds the size limit"))
+                        .build();
             }
             Map<String, Object> result = new LinkedHashMap<>();
-            result.put("key", keyHex);
+            result.put("key", HexUtil.encodeHexString(proofKey));
             result.put("chainId", gateway.chainId());
-            result.put("stateRoot", HexUtil.encodeHexString(gateway.stateRoot()));
-            result.put("proofWireHex", HexUtil.encodeHexString(proof.get()));
-            gateway.stateValue(key)
-                    .ifPresent(v -> result.put("valueHex", HexUtil.encodeHexString(v)));
-            gateway.messageHeight(key)
+            result.put("committedHeight", proof.committedHeight());
+            result.put("stateRoot", HexUtil.encodeHexString(proof.stateRoot()));
+            result.put("proofWireHex", HexUtil.encodeHexString(proofWire));
+            if (proofValue != null) {
+                result.put("valueHex", HexUtil.encodeHexString(proofValue));
+            }
+            gateway.messageHeight(proofKey)
+                    .filter(height -> height <= proof.committedHeight())
                     .ifPresent(h -> result.put("finalizedAtHeight", h));
             return Response.ok(result).build();
+        }
+
+        private static boolean isCanonicalProofKey(String value) {
+            if (value == null || value.isEmpty() || (value.length() & 1) != 0) {
+                return false;
+            }
+            for (int i = 0; i < value.length(); i++) {
+                char c = value.charAt(i);
+                if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) {
+                    return false;
+                }
+            }
+            return true;
         }
 
         /**
@@ -773,6 +1303,16 @@ public class AppChainResource {
         private static Response badRequest(String message) {
             return Response.status(Response.Status.BAD_REQUEST)
                     .entity(Map.of("error", message)).build();
+        }
+    }
+
+    record RuntimeIdentityContext(
+            String pluginCatalogFingerprint,
+            String resolvedConfigDigest,
+            String releaseCatalogDigest) {
+
+        static RuntimeIdentityContext empty() {
+            return new RuntimeIdentityContext(null, null, null);
         }
     }
 }

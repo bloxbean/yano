@@ -1,10 +1,17 @@
-# ADR-014: Yaci Application-Specific L2 Framework
+# ADR-001: Yaci Application-Specific L2 Framework
 
 ## Status
-Draft
+Historical vision — superseded by ADR-005 and the ADR-006/008 extensions
 
 ## Date
 2026-03-11
+
+> **Current-status note (2026-07-17):** This document preserves the original
+> pre-Yano-split product vision. It is not the current implementation contract.
+> The concrete app-chain architecture is [ADR-005](005-yano-app-chain-framework.md),
+> with shipped extensions in ADR-006/008 and the live residual backlog in
+> [open_item.md](open_item.md). In particular, the trustless/BFT items below
+> remain aspirations unless a later accepted ADR explicitly delivers them.
 
 ## Context
 

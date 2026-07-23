@@ -175,12 +175,18 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
     /**
      * Set the storage filter chain for filtering UTXO outputs before persistence.
      * Must be called before block application starts.
+     * A null value explicitly clears the previously installed chain.
      */
     public void setFilterChain(StorageFilterChain filterChain) {
         this.filterChain = filterChain;
         if (filterChain != null && !filterChain.isEmpty()) {
             clearStakeBalanceIndexReadyNow("UTXO storage filter chain is active");
         }
+    }
+
+    int activeStorageFilterCount() {
+        StorageFilterChain current = filterChain;
+        return current != null ? current.size() : 0;
     }
 
     @Override
@@ -1538,6 +1544,32 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
             throw new RuntimeException("Failed to read UTXO latest applied slot", e);
         }
         return -1;
+    }
+
+    @Override
+    public synchronized com.bloxbean.cardano.yano.api.rollback.RollbackCapableStore.AppliedPoint
+            getLatestAppliedPoint() {
+        long latestSlot = getLatestAppliedSlot();
+        if (latestSlot < 0) {
+            return new com.bloxbean.cardano.yano.api.rollback.RollbackCapableStore.AppliedPoint(
+                    latestSlot, null);
+        }
+        try (RocksIterator it = db.newIterator(cfDelta)) {
+            it.seekToLast();
+            if (!it.isValid()) {
+                return new com.bloxbean.cardano.yano.api.rollback.RollbackCapableStore.AppliedPoint(
+                        latestSlot, null);
+            }
+            UtxoDeltaCodec.Decoded latest = UtxoDeltaCodec.decode(it.value());
+            if (latest.slot() != latestSlot) {
+                throw new IllegalStateException("UTXO applied-point metadata disagrees with delta log: "
+                        + latestSlot + " != " + latest.slot());
+            }
+            return new com.bloxbean.cardano.yano.api.rollback.RollbackCapableStore.AppliedPoint(
+                    latestSlot, latest.blockHash());
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to read UTXO latest applied point", e);
+        }
     }
 
     @Override

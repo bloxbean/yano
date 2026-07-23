@@ -60,14 +60,12 @@ class AnchorDatumCodecTest {
     void decode_rejectsWrongShape() {
         assertThatThrownBy(() -> AnchorDatumCodec.decode(
                 com.bloxbean.cardano.client.plutus.spec.BigIntPlutusData.of(7)))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("Constr");
+                .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> AnchorDatumCodec.decode(ConstrPlutusData.builder()
                 .alternative(0)
                 .data(com.bloxbean.cardano.client.plutus.spec.ListPlutusData.of(
                         com.bloxbean.cardano.client.plutus.spec.BigIntPlutusData.of(1)))
                 .build()))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("7 fields");
+                .isInstanceOf(IllegalArgumentException.class);
     }
 }

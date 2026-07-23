@@ -10,16 +10,21 @@
 //// Advance rules (spend):
 ////   1. exactly one continuing output to this script, carrying the
 ////      state-thread NFT, with an inline datum
-////   2. out.height > in.height; chain-id and version unchanged
+////   2. both datums satisfy the complete v1 base profile: version 1,
+////      1..128 chain-id bytes, non-negative height, and 32-byte block hash
+////      and state root; additionally out.height > in.height and chain-id is
+////      unchanged
 ////   3. >= in.threshold of in.member-keys signed the tx (blake2b-224 key
 ////      hashes vs required signers — member Ed25519 keys double as L1 keys)
 ////   4. membership may evolve (rule 3 authorizes against the INPUT datum);
-////      1 <= out.threshold <= len(out.member-keys)
+////      both input and output member profiles contain 1..32 strictly sorted,
+////      unique 32-byte keys and a threshold in range
 ////   5. locked lovelace is preserved or increased
 ////
 //// The redeemer is a RESERVED action discriminant: v1 has a single action
 //// (Advance) and does not inspect the value.
 
+use aiken/builtin
 use aiken/collection/dict
 use aiken/collection/list
 use aiken/crypto.{blake2b_224}
@@ -40,12 +45,16 @@ pub type AnchorDatum {
 
 validator anchor(thread_policy_id: ByteArray) {
   spend(
-    datum: Option<AnchorDatum>,
+    datum: Option<Data>,
     _redeemer: Data,
     own_ref: OutputReference,
     self: Transaction,
   ) {
-    expect Some(current) = datum
+    // Keep the raw input datum until this explicit checked cast. Accepting an
+    // Option<AnchorDatum> directly would let the ledger wrapper assume the
+    // record's outer constructor/arity and accept a non-canonical Constr.
+    expect Some(current_data) = datum
+    expect current: AnchorDatum = current_data
     expect Some(own_input) =
       list.find(self.inputs, fn(input) { input.output_reference == own_ref })
     let own_address = own_input.output.address
@@ -58,14 +67,18 @@ validator anchor(thread_policy_id: ByteArray) {
     expect InlineDatum(next_data) = next.datum
     expect next_datum: AnchorDatum = next_data
 
-    // Rules 2 + 4 over the continuing (output) datum
+    // Rules 2 + 4 over the continuing (output) datum. Validate the same
+    // bounded/canonical profile on input as well: bootstrap creates the first
+    // datum without spending an earlier validator-controlled output.
+    let current_base_profile_valid = base_profile_valid(current)
+    let next_base_profile_valid = base_profile_valid(next_datum)
     let monotonic = next_datum.height > current.height
     let same_chain = next_datum.chain_id == current.chain_id
     let same_version = next_datum.version == current.version
-    let threshold_sane =
-      next_datum.threshold >= 1 && next_datum.threshold <= list.length(
-        next_datum.member_keys,
-      )
+    let current_profile_valid =
+      member_profile_valid(current.member_keys, current.threshold)
+    let next_profile_valid =
+      member_profile_valid(next_datum.member_keys, next_datum.threshold)
 
     // Rule 3: threshold of the INPUT datum's members signed this tx
     let signers =
@@ -81,11 +94,62 @@ validator anchor(thread_policy_id: ByteArray) {
     let value_preserved =
       lovelace_of(next.value) >= lovelace_of(own_input.output.value)
 
-    thread_continues && monotonic && same_chain && same_version && threshold_sane && threshold_signed && value_preserved
+    thread_continues && current_base_profile_valid && next_base_profile_valid && monotonic && same_chain && same_version && current_profile_valid && next_profile_valid && threshold_signed && value_preserved
   }
 
   else(_) {
     fail
+  }
+}
+
+/// Complete v1 scalar/byte-string profile. On chain, `chain_id` is bytes, so
+/// this proves only the 1..128 byte bound. Off-chain encoding is responsible
+/// for canonical UTF-8 and rejecting NUL.
+fn base_profile_valid(datum: AnchorDatum) -> Bool {
+  let chain_id_length = builtin.length_of_bytearray(datum.chain_id)
+  datum.version == 1 && chain_id_length >= 1 && chain_id_length <= 128 && datum.height >= 0 && builtin.length_of_bytearray(
+    datum.block_hash,
+  ) == 32 && builtin.length_of_bytearray(datum.state_root) == 32
+}
+
+/// The v1 member profile is non-empty, bounded to 32, contains exactly
+/// 32-byte Ed25519 public keys in strictly ascending bytewise order (therefore
+/// unique), and carries a threshold within the member count.
+fn member_profile_valid(member_keys: List<ByteArray>, threshold: Int) -> Bool {
+  when valid_member_count(member_keys, None, 0) is {
+    Some(member_count) -> threshold >= 1 && threshold <= member_count
+    None -> False
+  }
+}
+
+/// Return the member count only when the bounded canonical profile is valid.
+/// The count guard stops before inspecting a 33rd key.
+fn valid_member_count(
+  member_keys: List<ByteArray>,
+  previous: Option<ByteArray>,
+  count: Int,
+) -> Option<Int> {
+  when member_keys is {
+    [] ->
+      if count >= 1 {
+        Some(count)
+      } else {
+        None
+      }
+    [member_key, ..rest] ->
+      if count >= 32 || builtin.length_of_bytearray(member_key) != 32 {
+        None
+      } else {
+        when previous is {
+          None -> valid_member_count(rest, Some(member_key), count + 1)
+          Some(previous_key) ->
+            if builtin.less_than_bytearray(previous_key, member_key) {
+              valid_member_count(rest, Some(member_key), count + 1)
+            } else {
+              None
+            }
+        }
+      }
   }
 }
 

@@ -1,10 +1,13 @@
 package com.bloxbean.cardano.yano.runtime.internal;
 
 import com.bloxbean.cardano.yano.runtime.kernel.Subsystem;
+import com.bloxbean.cardano.yano.runtime.kernel.SubsystemContext;
 import com.bloxbean.cardano.yano.runtime.kernel.SubsystemHealth;
 import com.bloxbean.cardano.yano.runtime.maintenance.RuntimeMaintenanceGate;
 import com.bloxbean.cardano.yano.runtime.maintenance.RuntimeMaintenanceGate.MaintenanceLease;
+import com.bloxbean.cardano.yano.runtime.util.LifecycleFailures;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 
@@ -18,36 +21,60 @@ import java.util.Objects;
  */
 final class RuntimeKernelStages {
     private final Actions actions;
+    private final List<Subsystem> prePublicationSubsystems;
     private boolean startupSkippedAlreadyRunning;
     private boolean startupMutationStarted;
     private Throwable startupFailure;
     private MaintenanceLease startupMaintenanceLease;
     private MaintenanceLease shutdownMaintenanceLease;
 
-    private RuntimeKernelStages(Actions actions) {
+    private RuntimeKernelStages(
+            Actions actions,
+            List<? extends Subsystem> prePublicationSubsystems
+    ) {
         this.actions = Objects.requireNonNull(actions, "actions");
+        this.prePublicationSubsystems = List.copyOf(
+                Objects.requireNonNull(prePublicationSubsystems, "prePublicationSubsystems"));
     }
 
     static List<Subsystem> create(Actions actions) {
-        return new RuntimeKernelStages(actions).subsystems();
+        return create(actions, List.of());
+    }
+
+    /**
+     * Adds runtime-owned extensions after sync is available but before startup
+     * is published as successful. Reverse kernel teardown therefore enters the
+     * shutdown boundary before stopping extensions, and stops extensions before
+     * sync/storage/plugin teardown.
+     */
+    static List<Subsystem> create(
+            Actions actions,
+            List<? extends Subsystem> prePublicationSubsystems
+    ) {
+        return new RuntimeKernelStages(actions, prePublicationSubsystems).subsystems();
     }
 
     private List<Subsystem> subsystems() {
-        return List.of(
-                new RuntimeResourceCloseSubsystem(),
-                new RuntimeStartupBoundarySubsystem(),
-                new RuntimeTxSubsystem(),
-                new RuntimeEarlyServeSubsystem(),
-                new RuntimeBootstrapRecoverySubsystem(),
-                new RuntimeUtxoSubsystem(),
-                new RuntimeLedgerStateSubsystem(),
-                new RuntimeChainPruneSubsystem(),
-                new RuntimeProducerSubsystem(),
-                new RuntimeChronologySubsystem(),
-                new RuntimeDeferredServeSubsystem(),
-                new RuntimeSyncSubsystem(),
-                new RuntimeStartupPublicationSubsystem(),
-                new RuntimeShutdownBoundarySubsystem());
+        List<Subsystem> stages = new ArrayList<>();
+        stages.add(new RuntimeResourceCloseSubsystem());
+        stages.add(new RuntimeStartupBoundarySubsystem());
+        stages.add(new RuntimePluginSubsystem());
+        stages.add(new RuntimeTxSubsystem());
+        stages.add(new RuntimeEarlyServeSubsystem());
+        stages.add(new RuntimeBootstrapRecoverySubsystem());
+        stages.add(new RuntimeUtxoSubsystem());
+        stages.add(new RuntimeLedgerStateSubsystem());
+        stages.add(new RuntimeChainPruneSubsystem());
+        stages.add(new RuntimeProducerSubsystem());
+        stages.add(new RuntimeChronologySubsystem());
+        stages.add(new RuntimeDeferredServeSubsystem());
+        stages.add(new RuntimeSyncSubsystem());
+        prePublicationSubsystems.stream()
+                .map(RuntimePrePublicationSubsystem::new)
+                .forEach(stages::add);
+        stages.add(new RuntimeStartupPublicationSubsystem());
+        stages.add(new RuntimeShutdownBoundarySubsystem());
+        return List.copyOf(stages);
     }
 
     private boolean startupActive() {
@@ -60,9 +87,9 @@ final class RuntimeKernelStages {
         }
         try {
             action.run();
-        } catch (RuntimeException | Error e) {
+        } catch (Throwable e) {
             startupFailure = e;
-            throw e;
+            rethrow(e);
         }
     }
 
@@ -76,28 +103,67 @@ final class RuntimeKernelStages {
 
     private void handleFailedStartupCleanup() {
         Throwable failure = startupFailure;
+        Throwable cleanupOutcome = null;
         try {
-            try {
-                actions.stopRuntimeServices();
-            } catch (RuntimeException stopFailure) {
-                if (failure != null) {
-                    failure.addSuppressed(stopFailure);
-                }
-                actions.logStartupCleanupFailure(stopFailure);
-            } finally {
-                actions.markStoppedAfterStartupFailure();
-            }
+            actions.stopRuntimeServices();
+        } catch (Throwable stopFailure) {
+            cleanupOutcome = recordStartupCleanupFailure(cleanupOutcome, stopFailure);
+        }
+        try {
+            actions.markStoppedAfterStartupFailure();
+        } catch (Throwable markFailure) {
+            cleanupOutcome = recordStartupCleanupFailure(cleanupOutcome, markFailure);
+        }
+        try {
             if (startupMutationStarted && startupMaintenanceLease != null) {
                 startupMaintenanceLease.markDegraded(
                         "Node startup failed during storage/bootstrap/recovery; restart required",
                         failure);
             }
-        } finally {
-            closeStartupMaintenanceLease();
-            startupMutationStarted = false;
-            startupFailure = null;
-            startupSkippedAlreadyRunning = false;
+        } catch (Throwable degradedFailure) {
+            cleanupOutcome = recordStartupCleanupFailure(cleanupOutcome, degradedFailure);
         }
+        MaintenanceLease failedLease = startupMaintenanceLease;
+        startupMaintenanceLease = null;
+        if (failedLease != null) {
+            try {
+                failedLease.close();
+            } catch (Throwable leaseFailure) {
+                cleanupOutcome = recordStartupCleanupFailure(cleanupOutcome, leaseFailure);
+            }
+        }
+        // Reset every transition field before a stronger cleanup failure
+        // escapes. A failed diagnostic or lease close must not strand the
+        // stage object in a synthetic in-progress startup.
+        startupMutationStarted = false;
+        startupFailure = null;
+        startupSkippedAlreadyRunning = false;
+        // The original startup failure is already owned by NodeKernel. Only
+        // rethrow when cleanup produced a stronger winner (for example OOME
+        // after an AssertionError) or when no startup failure existed.
+        if (cleanupOutcome == null) {
+            return;
+        }
+        if (LifecycleFailures.outranks(cleanupOutcome, failure)) {
+            // NodeKernel still owns the original startup failure and will add
+            // its lifecycle wrapper when it merges this stronger cleanup
+            // signal. Do not pre-suppress the raw primary here as well.
+            rethrow(cleanupOutcome);
+        }
+        LifecycleFailures.merge(failure, cleanupOutcome);
+    }
+
+    private Throwable recordStartupCleanupFailure(
+            Throwable current,
+            Throwable cleanupFailure
+    ) {
+        Throwable outcome = LifecycleFailures.merge(current, cleanupFailure);
+        try {
+            actions.logStartupCleanupFailure(cleanupFailure);
+        } catch (Throwable diagnosticFailure) {
+            outcome = LifecycleFailures.merge(outcome, diagnosticFailure);
+        }
+        return outcome;
     }
 
     private void closeStartupMaintenanceLease() {
@@ -135,9 +201,13 @@ final class RuntimeKernelStages {
 
         void logStopped();
 
-        void logStartupCleanupFailure(RuntimeException failure);
+        void logStartupCleanupFailure(Throwable failure);
 
         void stopRuntimeServices();
+
+        void startPluginsAndInitializeFilters();
+
+        void stopPluginsAfterRuntimeDrain();
 
         void closeRuntimeResourcesUnderMaintenance();
 
@@ -216,6 +286,31 @@ final class RuntimeKernelStages {
         void finishSuccessfulStartup();
     }
 
+    private static void rethrow(Throwable failure) {
+        if (failure instanceof Error error) {
+            throw error;
+        }
+        if (failure instanceof RuntimeException runtime) {
+            throw runtime;
+        }
+        throw new IllegalStateException("Runtime startup cleanup failed", failure);
+    }
+
+    /** Run every paired teardown action, then surface the strongest failure. */
+    private static void runBestEffortCleanup(Runnable... cleanupActions) {
+        Throwable failure = null;
+        for (Runnable cleanup : cleanupActions) {
+            try {
+                cleanup.run();
+            } catch (Throwable cleanupFailure) {
+                failure = LifecycleFailures.merge(failure, cleanupFailure);
+            }
+        }
+        if (failure != null) {
+            rethrow(failure);
+        }
+    }
+
     private final class RuntimeResourceCloseSubsystem implements Subsystem {
         @Override
         public String name() {
@@ -233,6 +328,34 @@ final class RuntimeKernelStages {
         @Override
         public void close() {
             actions.closeRuntimeResourcesUnderMaintenance();
+        }
+
+        @Override
+        public SubsystemHealth health() {
+            return actions.runtimeHealth(name());
+        }
+    }
+
+    /**
+     * Activates plugins and freezes the UTXO filter chain before any bootstrap,
+     * producer, or sync stage can publish/apply chain data. Reverse kernel stop
+     * then drains all producers before stopping plugins while maintenance is
+     * still held by the startup/shutdown boundaries.
+     */
+    private final class RuntimePluginSubsystem implements Subsystem {
+        @Override
+        public String name() {
+            return "plugins";
+        }
+
+        @Override
+        public void start() {
+            runStartupStage(actions::startPluginsAndInitializeFilters);
+        }
+
+        @Override
+        public void stop() {
+            actions.stopPluginsAfterRuntimeDrain();
         }
 
         @Override
@@ -349,8 +472,7 @@ final class RuntimeKernelStages {
 
         @Override
         public void stop() {
-            actions.stopTx();
-            actions.stopServer();
+            runBestEffortCleanup(actions::stopTx, actions::stopServer);
         }
 
         @Override
@@ -462,8 +584,7 @@ final class RuntimeKernelStages {
 
         @Override
         public void stop() {
-            actions.stopProducer();
-            actions.closeNonceListeners();
+            runBestEffortCleanup(actions::stopProducer, actions::closeNonceListeners);
         }
 
         @Override
@@ -510,8 +631,7 @@ final class RuntimeKernelStages {
 
         @Override
         public void stop() {
-            actions.stopTx();
-            actions.stopServer();
+            runBestEffortCleanup(actions::stopTx, actions::stopServer);
         }
 
         @Override
@@ -539,6 +659,50 @@ final class RuntimeKernelStages {
         @Override
         public SubsystemHealth health() {
             return actions.syncHealth();
+        }
+    }
+
+    /**
+     * Lifecycle adapter for app-layer/runtime extensions whose successful
+     * activation is a prerequisite for publishing node startup. The adapter
+     * keeps the delegate's name/health and full init/close ownership while
+     * routing start through the startup-failure boundary.
+     */
+    private final class RuntimePrePublicationSubsystem implements Subsystem {
+        private final Subsystem delegate;
+
+        private RuntimePrePublicationSubsystem(Subsystem delegate) {
+            this.delegate = Objects.requireNonNull(delegate, "pre-publication subsystem");
+        }
+
+        @Override
+        public String name() {
+            return delegate.name();
+        }
+
+        @Override
+        public void init(SubsystemContext context) {
+            delegate.init(context);
+        }
+
+        @Override
+        public void start() {
+            runStartupStage(delegate::start);
+        }
+
+        @Override
+        public void stop() {
+            delegate.stop();
+        }
+
+        @Override
+        public void close() {
+            delegate.close();
+        }
+
+        @Override
+        public SubsystemHealth health() {
+            return delegate.health();
         }
     }
 

@@ -12,6 +12,7 @@ import com.bloxbean.cardano.yano.api.appchain.AppChainGateway;
 import com.bloxbean.cardano.yano.api.appchain.AppChainGateways;
 import com.bloxbean.cardano.yano.runtime.kernel.Subsystem;
 import com.bloxbean.cardano.yano.runtime.kernel.SubsystemHealth;
+import com.bloxbean.cardano.yano.runtime.util.LifecycleFailures;
 import org.slf4j.Logger;
 
 import java.util.*;
@@ -30,6 +31,7 @@ import java.util.*;
 public final class AppChainManager implements Subsystem, AppChainGateways {
 
     private final Map<String, AppChainSubsystem> chains;
+    private final List<ManagedChain> lifecycleChains;
     private final Logger log;
 
     public AppChainManager(List<AppChainSubsystem> subsystems, Logger log) {
@@ -44,6 +46,9 @@ public final class AppChainManager implements Subsystem, AppChainGateways {
             throw new IllegalArgumentException("At least one app chain is required");
         }
         this.chains = Collections.unmodifiableMap(byId);
+        this.lifecycleChains = byId.values().stream()
+                .<ManagedChain>map(SubsystemManagedChain::new)
+                .toList();
         this.log = Objects.requireNonNull(log, "log");
     }
 
@@ -87,12 +92,10 @@ public final class AppChainManager implements Subsystem, AppChainGateways {
         AgentFactory catchUpFactory = () -> new AppChainSyncServerAgent(
                 (chainId, fromHeight, toHeight) -> {
                     AppChainSubsystem subsystem = chains.get(chainId);
-                    AppLedgerStore ledger = subsystem != null ? subsystem.ledgerOrNull() : null;
-                    if (ledger == null) {
+                    if (subsystem == null) {
                         return new AppChainSyncServerAgent.BlockRangeProvider.Range(List.of(), 0);
                     }
-                    return new AppChainSyncServerAgent.BlockRangeProvider.Range(
-                            ledger.blockBytesRange(fromHeight, toHeight), ledger.tipHeight());
+                    return subsystem.catchUpRange(chainId, fromHeight, toHeight);
                 });
         return List.of(gossipFactory, catchUpFactory);
     }
@@ -168,12 +171,12 @@ public final class AppChainManager implements Subsystem, AppChainGateways {
         // here — otherwise a stricter chain would accept messages a single-chain
         // deployment of it would reject.
         //
-        // Size is capped by topic (block-bytes fix): a framework message on a
-        // reserved '~' topic — notably a ~consensus/propose proposal, whose body
-        // IS the whole serialized block — may legitimately be up to block.max-bytes
-        // (the engine re-checks the block against that authoritative cap, and each
-        // message inside it against max-message-bytes). Ordinary user messages stay
-        // bound by the per-chain max-message-bytes payload limit.
+        // This first pass is deliberately coarse: a framework message on a
+        // reserved '~' topic — notably ~consensus/propose, whose body is the
+        // serialized block — may legitimately exceed max-message-bytes. The
+        // subsystem verification immediately below applies the exact per-topic
+        // proposal/vote/certificate limit and keeps every other topic at the
+        // ordinary max-message-bytes limit.
         var config = subsystem.chainConfig();
         String topic = message.getTopic();
         boolean systemTopic = topic != null && topic.startsWith("~");
@@ -219,9 +222,14 @@ public final class AppChainManager implements Subsystem, AppChainGateways {
 
     @Override
     public void start() {
-        List<AppChainSubsystem> started = new ArrayList<>();
+        startManagedChains(lifecycleChains, log);
+    }
+
+    /** Package-private deterministic lifecycle seam for adversarial tests. */
+    static void startManagedChains(List<? extends ManagedChain> chains, Logger log) {
+        List<ManagedChain> started = new ArrayList<>();
         try {
-            for (AppChainSubsystem subsystem : chains.values()) {
+            for (ManagedChain subsystem : chains) {
                 subsystem.start();
                 started.add(subsystem);
             }
@@ -229,29 +237,105 @@ public final class AppChainManager implements Subsystem, AppChainGateways {
             // Roll back the chains we already started so a partial failure never
             // leaves orphan chains running (the kernel won't call our stop() —
             // the manager wasn't in its started list yet).
+            Throwable failure = e;
             for (int i = started.size() - 1; i >= 0; i--) {
                 try {
                     started.get(i).stop();
-                } catch (Exception stopError) {
-                    log.warn("Error rolling back app chain {}: {}",
-                            started.get(i).chainId(), stopError.toString());
+                } catch (Throwable stopError) {
+                    failure = LifecycleFailures.merge(failure, stopError);
+                    log.warn("Error rolling back app chain {} (errorType={})",
+                            started.get(i).chainId(), stopError.getClass().getName());
                 }
             }
-            throw e;
+            throw propagateLifecycleFailure(failure, "App-chain manager startup failed");
         }
     }
 
     @Override
     public void stop() {
+        stopManagedChains(lifecycleChains, log);
+    }
+
+    /**
+     * Terminally close every hosted chain in reverse order. This is distinct
+     * from restartable {@link #stop()}: direct compatibility chains own their
+     * legacy provider registries and release them from
+     * {@link AppChainSubsystem#close()}.
+     */
+    @Override
+    public void close() {
         List<AppChainSubsystem> reversed = new ArrayList<>(chains.values());
         Collections.reverse(reversed);
+        Throwable failure = null;
         for (AppChainSubsystem subsystem : reversed) {
             try {
-                subsystem.stop();
-            } catch (Exception e) {
-                log.warn("Error stopping app chain {}: {}", subsystem.chainId(), e.toString());
+                subsystem.close();
+            } catch (Throwable closeError) {
+                failure = LifecycleFailures.merge(failure, closeError);
+                log.warn("Error closing app chain {} (errorType={})",
+                        subsystem.chainId(), closeError.getClass().getName());
             }
         }
+        if (failure != null) {
+            throw propagateLifecycleFailure(failure, "App-chain manager close failed");
+        }
+    }
+
+    /** Package-private deterministic lifecycle seam for adversarial tests. */
+    static void stopManagedChains(List<? extends ManagedChain> chains, Logger log) {
+        List<ManagedChain> reversed = new ArrayList<>(chains);
+        Collections.reverse(reversed);
+        Throwable failure = null;
+        for (ManagedChain subsystem : reversed) {
+            try {
+                subsystem.stop();
+            } catch (Throwable stopError) {
+                failure = LifecycleFailures.merge(failure, stopError);
+                log.warn("Error stopping app chain {} (errorType={})",
+                        subsystem.chainId(), stopError.getClass().getName());
+            }
+        }
+        if (failure != null) {
+            throw propagateLifecycleFailure(failure, "App-chain manager stop failed");
+        }
+    }
+
+    interface ManagedChain {
+        String chainId();
+
+        void start();
+
+        void stop();
+    }
+
+    private record SubsystemManagedChain(AppChainSubsystem subsystem) implements ManagedChain {
+        @Override
+        public String chainId() {
+            return subsystem.chainId();
+        }
+
+        @Override
+        public void start() {
+            subsystem.start();
+        }
+
+        @Override
+        public void stop() {
+            subsystem.stop();
+        }
+    }
+
+    private static RuntimeException propagateLifecycleFailure(
+            Throwable failure,
+            String message
+    ) {
+        if (failure instanceof Error error) {
+            throw error;
+        }
+        if (failure instanceof RuntimeException runtime) {
+            return runtime;
+        }
+        return new IllegalStateException(message, failure);
     }
 
     @Override

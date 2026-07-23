@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.api.appchain;
 
 import java.util.Map;
+import java.util.Optional;
 
 /**
  * Context handed to an {@link AppStateMachineProvider} when a chain creates its
@@ -17,4 +18,24 @@ public interface AppStateMachineContext {
 
     /** Dynamic plugin settings (suffix-keyed, e.g. {@code zk.max-proofs-per-block}). */
     Map<String, String> settings();
+
+    /**
+     * Normalized and authenticated framework consensus profile (ADR-016).
+     *
+     * <p>The default preserves source/binary compatibility for contexts built
+     * outside the Yano runtime. The normal runtime always supplies a value;
+     * first-party machines that depend on framework limits fail construction
+     * when it is absent.</p>
+     */
+    default Optional<AppChainConsensusProfile> consensusProfile() {
+        return Optional.empty();
+    }
+
+    /**
+     * Immutable height-versioned membership view for machines whose own
+     * governance must bind one finalized membership epoch.
+     */
+    default Optional<AppChainMembershipView> membershipView() {
+        return Optional.empty();
+    }
 }

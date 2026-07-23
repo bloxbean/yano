@@ -1,12 +1,9 @@
 package com.bloxbean.cardano.yano.runtime.appchain;
 
-import com.bloxbean.cardano.client.plutus.spec.BigIntPlutusData;
-import com.bloxbean.cardano.client.plutus.spec.BytesPlutusData;
 import com.bloxbean.cardano.client.plutus.spec.ConstrPlutusData;
-import com.bloxbean.cardano.client.plutus.spec.ListPlutusData;
 import com.bloxbean.cardano.client.plutus.spec.PlutusData;
+import com.bloxbean.cardano.yano.api.appchain.anchor.AnchorDatumV1;
 
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -19,7 +16,7 @@ import java.util.List;
  */
 final class AnchorDatumCodec {
 
-    static final long ABI_VERSION = 1;
+    static final long ABI_VERSION = AnchorDatumV1.ABI_VERSION;
 
     /**
      * @param version    ABI version (1)
@@ -43,41 +40,32 @@ final class AnchorDatumCodec {
     }
 
     static ConstrPlutusData encode(AnchorDatum datum) {
-        ListPlutusData members = ListPlutusData.builder().build();
-        for (byte[] key : sortedKeys(datum.memberKeys())) {
-            members.add(BytesPlutusData.of(key));
+        if (datum.version() != ABI_VERSION) {
+            throw new IllegalArgumentException("Unsupported anchor datum version");
         }
-        return ConstrPlutusData.builder()
-                .alternative(0)
-                .data(ListPlutusData.of(
-                        BigIntPlutusData.of(datum.version()),
-                        BytesPlutusData.of(datum.chainId().getBytes(StandardCharsets.UTF_8)),
-                        BigIntPlutusData.of(datum.height()),
-                        BytesPlutusData.of(datum.blockHash()),
-                        BytesPlutusData.of(datum.stateRoot()),
-                        members,
-                        BigIntPlutusData.of(datum.threshold())))
-                .build();
+        AnchorDatumV1 publicDatum = new AnchorDatumV1(datum.chainId(), datum.height(),
+                datum.blockHash(), datum.stateRoot(), datum.memberKeys(),
+                Math.toIntExact(datum.threshold()));
+        try {
+            return (ConstrPlutusData) PlutusData.deserialize(publicDatum.encode());
+        } catch (Exception malformed) {
+            throw new IllegalArgumentException("Anchor datum encode failed", malformed);
+        }
     }
 
     static AnchorDatum decode(PlutusData data) {
-        if (!(data instanceof ConstrPlutusData constr) || constr.getAlternative() != 0)
-            throw new IllegalArgumentException("Anchor datum must be Constr(0, [...])");
-        List<PlutusData> fields = constr.getData().getPlutusDataList();
-        if (fields.size() != 7)
-            throw new IllegalArgumentException("Anchor datum must have 7 fields, got " + fields.size());
-        List<byte[]> memberKeys = new ArrayList<>();
-        for (PlutusData member : asList(fields.get(5)).getPlutusDataList()) {
-            memberKeys.add(asBytes(member, "member-key"));
+        if (data == null) {
+            throw new IllegalArgumentException("Anchor datum is required");
         }
-        return new AnchorDatum(
-                asLong(fields.get(0), "version"),
-                new String(asBytes(fields.get(1), "chain-id"), StandardCharsets.UTF_8),
-                asLong(fields.get(2), "height"),
-                asBytes(fields.get(3), "block-hash"),
-                asBytes(fields.get(4), "state-root"),
-                memberKeys,
-                asLong(fields.get(6), "threshold"));
+        return decode(data.serializeToBytes());
+    }
+
+    /** Decode untrusted L1 inline-datum bytes through the bounded public codec. */
+    static AnchorDatum decode(byte[] cbor) {
+        AnchorDatumV1 decoded = AnchorDatumV1.decode(cbor);
+        return new AnchorDatum(ABI_VERSION, decoded.chainId(), decoded.height(),
+                decoded.blockHash(), decoded.stateRoot(), decoded.memberKeys(),
+                decoded.threshold());
     }
 
     /** Canonical member-key order (bytewise ascending, unsigned) — ABI requirement. */
@@ -87,21 +75,4 @@ final class AnchorDatumCodec {
         return sorted;
     }
 
-    private static long asLong(PlutusData data, String field) {
-        if (data instanceof BigIntPlutusData intData)
-            return intData.getValue().longValueExact();
-        throw new IllegalArgumentException("Anchor datum field " + field + " must be an integer");
-    }
-
-    private static byte[] asBytes(PlutusData data, String field) {
-        if (data instanceof BytesPlutusData bytesData)
-            return bytesData.getValue();
-        throw new IllegalArgumentException("Anchor datum field " + field + " must be bytes");
-    }
-
-    private static ListPlutusData asList(PlutusData data) {
-        if (data instanceof ListPlutusData listData)
-            return listData;
-        throw new IllegalArgumentException("Anchor datum member-keys must be a list");
-    }
 }

@@ -10,10 +10,20 @@ import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yaci.core.util.CborSerializationUtil;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
+import com.bloxbean.cardano.yano.api.appchain.AppStateReader;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
+import com.bloxbean.cardano.yano.api.appchain.effects.ActivationSchedule;
+import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
+import com.bloxbean.cardano.yano.api.appchain.effects.EffectId;
+import com.bloxbean.cardano.yano.api.appchain.effects.EffectIntent;
+import com.bloxbean.cardano.yano.api.appchain.effects.EffectOutcome;
+import com.bloxbean.cardano.yano.api.appchain.effects.EffectResult;
+import com.bloxbean.cardano.yano.api.appchain.effects.ResultPolicy;
+import com.bloxbean.cardano.yano.appchain.config.AppChainApprovalsConfig;
+import com.bloxbean.cardano.yano.appchain.stdlib.contracts.ApprovalsContract;
 
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
 
@@ -58,6 +68,31 @@ public final class ApprovalsStateMachine implements AppStateMachine {
     public static final int STATUS_REJECTED = 2;
     public static final int STATUS_EXPIRED = 3;
 
+    public static final int EFFECT_STATUS_PENDING = 0;
+    public static final int EFFECT_STATUS_CONFIRMED = 1;
+    public static final int EFFECT_STATUS_FAILED = 2;
+
+    private static final String ON_APPROVED_SCOPE_PREFIX = "approvals/on-approved/";
+
+    private final AppChainApprovalsConfig onApprovedEffect;
+    private final ActivationSchedule activations;
+
+    public ApprovalsStateMachine() {
+        this(AppChainApprovalsConfig.DISABLED, ActivationSchedule.empty());
+    }
+
+    public ApprovalsStateMachine(AppChainApprovalsConfig onApprovedEffect,
+                                 ActivationSchedule activations) {
+        this.onApprovedEffect = onApprovedEffect;
+        this.activations = activations;
+    }
+
+    /** Generic effect active at this height; missing activation means inactive. */
+    private boolean onApprovedEffectActiveAt(long height) {
+        return onApprovedEffect.enabled()
+                && activations.isActive(AppChainApprovalsConfig.FEATURE, height);
+    }
+
     @Override
     public String id() {
         return ID;
@@ -74,11 +109,30 @@ public final class ApprovalsStateMachine implements AppStateMachine {
     }
 
     @Override
+    public AdmissionResult validateForBlock(AppMessage message, long candidateHeight,
+                                            AppStateReader committedState) {
+        try {
+            decodeCommandForHeight(message.getBody(), candidateHeight);
+            return AdmissionResult.accept();
+        } catch (Exception e) {
+            return AdmissionResult.reject("Malformed approvals command: " + e.getMessage());
+        }
+    }
+
+    @Override
     public void apply(AppBlock block, AppStateWriter writer) {
+        apply(block, writer, AppEffectEmitter
+                .rejecting("Effects unavailable on the legacy 2-arg apply path"));
+    }
+
+    @Override
+    public void apply(AppBlock block, AppStateWriter writer,
+                      AppEffectEmitter effects) {
+        boolean effectActive = onApprovedEffectActiveAt(block.height());
         for (AppMessage message : block.messages()) {
             Command command;
             try {
-                command = Command.decode(message.getBody());
+                command = decodeCommandForHeight(message.getBody(), block.height());
             } catch (Exception e) {
                 continue; // filtered at admission; deterministic skip
             }
@@ -92,6 +146,12 @@ public final class ApprovalsStateMachine implements AppStateMachine {
                             command.required(), command.deadlineMillis(),
                             List.of(), new byte[0]);
                     writer.put(itemKey, item.encode());
+                    if (effectActive) {
+                        // The item retains only the payload hash. Keep a CBOR-wrapped
+                        // copy until decision so an empty payload is representable.
+                        writer.put(stagedEffectPayloadKey(command.itemId()),
+                                encodeStagedPayload(command.payload()));
+                    }
                 }
                 continue;
             }
@@ -105,6 +165,7 @@ public final class ApprovalsStateMachine implements AppStateMachine {
             }
             if (item.deadline() > 0 && block.timestamp() > item.deadline()) {
                 writer.put(itemKey, item.withStatus(STATUS_EXPIRED).encode());
+                writer.delete(stagedEffectPayloadKey(command.itemId()));
                 continue;
             }
 
@@ -117,11 +178,78 @@ public final class ApprovalsStateMachine implements AppStateMachine {
                 int status = approvers.size() >= item.required() ? STATUS_APPROVED : STATUS_PENDING;
                 writer.put(itemKey, new Item(status, item.proposer(), item.payloadHash(),
                         item.required(), item.deadline(), approvers, item.rejecter()).encode());
+                if (status == STATUS_APPROVED && effectActive) {
+                    emitOnApprovedEffect(command.itemId(), writer, effects, message);
+                }
             } else if (command.op() == OP_REJECT) {
                 writer.put(itemKey, new Item(STATUS_REJECTED, item.proposer(), item.payloadHash(),
                         item.required(), item.deadline(), item.approvers(), message.getSender()).encode());
+                writer.delete(stagedEffectPayloadKey(command.itemId()));
             }
         }
+    }
+
+    private Command decodeCommandForHeight(byte[] body, long height) {
+        Command command = Command.decode(body);
+        if (onApprovedEffectActiveAt(height)
+                && command.op() == OP_PROPOSE
+                && command.payload().length > onApprovedEffect.maxPayloadBytes()) {
+            throw new IllegalArgumentException("proposal payload exceeds effects.max-payload-bytes ("
+                    + onApprovedEffect.maxPayloadBytes() + ")");
+        }
+        return command;
+    }
+
+    /** Final approval reached: turn the staged opaque payload into one CHAIN effect. */
+    private void emitOnApprovedEffect(String itemId, AppStateWriter writer,
+                                      AppEffectEmitter effects, AppMessage trigger) {
+        Optional<byte[]> staged = writer.get(stagedEffectPayloadKey(itemId));
+        if (staged.isEmpty()) {
+            return; // proposal was finalized before activation
+        }
+        byte[] payload = decodeStagedPayload(staged.orElseThrow());
+        EffectId effectId = effects.emit(
+                EffectIntent.of(onApprovedEffect.type(), payload)
+                        .scope(ON_APPROVED_SCOPE_PREFIX + itemId)
+                        .gate(onApprovedEffect.gate())
+                        .result(ResultPolicy.CHAIN)
+                        .expiryBlocks(onApprovedEffect.expiryBlocks())
+                        .sourceMessageId(trigger.getMessageId())
+                        .build());
+        writer.put(effectStateKey(itemId), ApprovalEffectState.pending(effectId).encode());
+        writer.delete(stagedEffectPayloadKey(itemId));
+    }
+
+    @Override
+    public void onEffectResult(AppBlock block, EffectResult result,
+                               AppStateWriter writer) {
+        if (!onApprovedEffect.enabled()
+                || !result.scope().startsWith(ON_APPROVED_SCOPE_PREFIX)
+                || !onApprovedEffect.type().equals(result.type())) {
+            return;
+        }
+        String itemId = result.scope().substring(ON_APPROVED_SCOPE_PREFIX.length());
+        if (itemId.isEmpty()) {
+            return;
+        }
+        Optional<byte[]> entry = writer.get(itemKey(itemId));
+        if (entry.isEmpty()) {
+            return;
+        }
+        Item item = Item.decode(entry.get());
+        if (item.status() != STATUS_APPROVED) {
+            return;
+        }
+        Optional<byte[]> effectEntry = writer.get(effectStateKey(itemId));
+        if (effectEntry.isEmpty()) {
+            return;
+        }
+        ApprovalEffectState current = ApprovalEffectState.decode(effectEntry.orElseThrow());
+        if (current.status() != EFFECT_STATUS_PENDING
+                || !current.effectId().equals(result.effectId().canonical())) {
+            return;
+        }
+        writer.put(effectStateKey(itemId), current.terminal(result).encode());
     }
 
     // ------------------------------------------------------------------
@@ -129,25 +257,34 @@ public final class ApprovalsStateMachine implements AppStateMachine {
     // ------------------------------------------------------------------
 
     public static byte[] propose(String itemId, byte[] payload, int required, long deadlineMillis) {
-        Array arr = new Array();
-        arr.add(new UnsignedInteger(OP_PROPOSE));
-        arr.add(new UnicodeString(itemId));
-        arr.add(new ByteString(payload != null ? payload : new byte[0]));
-        arr.add(new UnsignedInteger(required));
-        arr.add(new UnsignedInteger(deadlineMillis));
-        return CborSerializationUtil.serialize(arr);
+        return ApprovalsContract.propose(itemId, payload, required, deadlineMillis);
     }
 
     public static byte[] approve(String itemId) {
-        return simpleCommand(OP_APPROVE, itemId);
+        return ApprovalsContract.approve(itemId);
     }
 
     public static byte[] reject(String itemId) {
-        return simpleCommand(OP_REJECT, itemId);
+        return ApprovalsContract.reject(itemId);
     }
 
     public static byte[] itemKey(String itemId) {
-        return ("i/" + itemId).getBytes(StandardCharsets.UTF_8);
+        return ApprovalsContract.itemKey(itemId);
+    }
+
+    /** CBOR-wrapped PROPOSE payload awaiting the approval decision. */
+    public static byte[] stagedEffectPayloadKey(String itemId) {
+        return ApprovalsContract.stagedEffectPayloadKey(itemId);
+    }
+
+    /** Independently provable generic effect lifecycle record. */
+    public static byte[] effectStateKey(String itemId) {
+        return ApprovalsContract.effectStateKey(itemId);
+    }
+
+    /** Decode a generic effect state entry for assertions and queries. */
+    public static ApprovalEffectState decodeEffectState(byte[] entry) {
+        return ApprovalEffectState.decode(entry);
     }
 
     /** Decode a state entry for assertions/queries. */
@@ -155,16 +292,23 @@ public final class ApprovalsStateMachine implements AppStateMachine {
         return Item.decode(entry);
     }
 
-    private static byte[] simpleCommand(int op, String itemId) {
-        Array arr = new Array();
-        arr.add(new UnsignedInteger(op));
-        arr.add(new UnicodeString(itemId));
-        return CborSerializationUtil.serialize(arr);
+    private static byte[] encodeStagedPayload(byte[] payload) {
+        return CborSerializationUtil.serialize(new ByteString(
+                payload != null ? payload : new byte[0]));
+    }
+
+    private static byte[] decodeStagedPayload(byte[] entry) {
+        StdlibCbor.requirePersistedEntry(entry);
+        DataItem decoded = CborSerializationUtil.deserializeOne(entry);
+        if (!(decoded instanceof ByteString bytes)) {
+            throw new IllegalArgumentException("invalid staged approval effect payload");
+        }
+        return bytes.getBytes();
     }
 
     private static boolean containsKey(List<byte[]> keys, byte[] key) {
         for (byte[] candidate : keys) {
-            if (java.util.Arrays.equals(candidate, key)) {
+            if (Arrays.equals(candidate, key)) {
                 return true;
             }
         }
@@ -175,27 +319,103 @@ public final class ApprovalsStateMachine implements AppStateMachine {
     // Model
     // ------------------------------------------------------------------
 
+    /**
+     * Authenticated projection of the generic on-approved effect lifecycle.
+     * The approval decision remains in {@link Item}; this record never changes
+     * it to an execution-shaped status.
+     */
+    public record ApprovalEffectState(int version,
+                                      int status,
+                                      String effectId,
+                                      EffectOutcome outcome,
+                                      byte[] externalRef,
+                                      byte[] detailHash) {
+        public static final int SCHEMA_VERSION = 1;
+
+        public ApprovalEffectState {
+            if (version != SCHEMA_VERSION) {
+                throw new IllegalArgumentException("approval effect state version must be 1");
+            }
+            if (status < EFFECT_STATUS_PENDING || status > EFFECT_STATUS_FAILED) {
+                throw new IllegalArgumentException("unknown approval effect status: " + status);
+            }
+            if (effectId == null || effectId.isBlank()) {
+                throw new IllegalArgumentException("approval effect id is required");
+            }
+            EffectId parsed = EffectId.parse(effectId);
+            if (!parsed.canonical().equals(effectId)) {
+                throw new IllegalArgumentException("approval effect id must be canonical");
+            }
+            externalRef = externalRef != null ? externalRef.clone() : new byte[0];
+            detailHash = detailHash != null && detailHash.length > 0 ? detailHash.clone() : null;
+            if (detailHash != null && detailHash.length != 32) {
+                throw new IllegalArgumentException("approval effect detailHash must be 32 bytes");
+            }
+            if (status == EFFECT_STATUS_PENDING && outcome != null) {
+                throw new IllegalArgumentException("pending approval effect cannot have an outcome");
+            }
+            if (status != EFFECT_STATUS_PENDING && outcome == null) {
+                throw new IllegalArgumentException("terminal approval effect requires an outcome");
+            }
+        }
+
+        @Override
+        public byte[] externalRef() {
+            return externalRef.clone();
+        }
+
+        @Override
+        public byte[] detailHash() {
+            return detailHash != null ? detailHash.clone() : null;
+        }
+
+        static ApprovalEffectState pending(EffectId effectId) {
+            return new ApprovalEffectState(SCHEMA_VERSION, EFFECT_STATUS_PENDING,
+                    effectId.canonical(), null, new byte[0], null);
+        }
+
+        ApprovalEffectState terminal(EffectResult result) {
+            int terminalStatus = result.outcome() == EffectOutcome.CONFIRMED
+                    ? EFFECT_STATUS_CONFIRMED : EFFECT_STATUS_FAILED;
+            return new ApprovalEffectState(SCHEMA_VERSION, terminalStatus, effectId,
+                    result.outcome(), result.externalRef(), result.detailHash());
+        }
+
+        byte[] encode() {
+            Array arr = new Array();
+            arr.add(new UnsignedInteger(version));
+            arr.add(new UnsignedInteger(status));
+            arr.add(new UnicodeString(effectId));
+            arr.add(new UnsignedInteger(outcome != null ? outcome.code() : 0));
+            arr.add(new ByteString(externalRef));
+            arr.add(new ByteString(detailHash != null ? detailHash : new byte[0]));
+            return CborSerializationUtil.serialize(arr);
+        }
+
+        static ApprovalEffectState decode(byte[] entry) {
+            StdlibCbor.requirePersistedEntry(entry);
+            DataItem decoded = CborSerializationUtil.deserializeOne(entry);
+            if (!(decoded instanceof Array array) || array.getDataItems().size() != 6) {
+                throw new IllegalArgumentException("invalid approval effect state");
+            }
+            List<DataItem> items = array.getDataItems();
+            int outcomeCode = ((UnsignedInteger) items.get(3)).getValue().intValue();
+            byte[] detail = ((ByteString) items.get(5)).getBytes();
+            return new ApprovalEffectState(
+                    ((UnsignedInteger) items.get(0)).getValue().intValue(),
+                    ((UnsignedInteger) items.get(1)).getValue().intValue(),
+                    ((UnicodeString) items.get(2)).getString(),
+                    outcomeCode == 0 ? null : EffectOutcome.fromCode(outcomeCode),
+                    ((ByteString) items.get(4)).getBytes(),
+                    detail.length == 0 ? null : detail);
+        }
+    }
+
     record Command(int op, String itemId, byte[] payload, int required, long deadlineMillis) {
         static Command decode(byte[] body) {
-            List<DataItem> items = ((Array) CborSerializationUtil.deserializeOne(body)).getDataItems();
-            int op = ((UnsignedInteger) items.get(0)).getValue().intValue();
-            String itemId = ((UnicodeString) items.get(1)).getString();
-            if (itemId.isBlank()) {
-                throw new IllegalArgumentException("Empty itemId");
-            }
-            if (op == OP_PROPOSE) {
-                byte[] payload = ((ByteString) items.get(2)).getBytes();
-                int required = ((UnsignedInteger) items.get(3)).getValue().intValue();
-                long deadline = ((UnsignedInteger) items.get(4)).getValue().longValue();
-                if (required <= 0) {
-                    throw new IllegalArgumentException("required must be positive");
-                }
-                return new Command(op, itemId, payload, required, deadline);
-            }
-            if (op == OP_APPROVE || op == OP_REJECT) {
-                return new Command(op, itemId, new byte[0], 0, 0);
-            }
-            throw new IllegalArgumentException("Unknown op: " + op);
+            ApprovalsContract.Command decoded = ApprovalsContract.decodeCommand(body);
+            return new Command(decoded.operation(), decoded.itemId(), decoded.payload(),
+                    decoded.required(), decoded.deadlineMillis());
         }
     }
 
@@ -224,6 +444,7 @@ public final class ApprovalsStateMachine implements AppStateMachine {
         }
 
         static Item decode(byte[] entry) {
+            StdlibCbor.requirePersistedEntry(entry);
             List<DataItem> items = ((Array) CborSerializationUtil.deserializeOne(entry)).getDataItems();
             List<byte[]> approvers = new ArrayList<>();
             for (DataItem approverDI : ((Array) items.get(5)).getDataItems()) {
