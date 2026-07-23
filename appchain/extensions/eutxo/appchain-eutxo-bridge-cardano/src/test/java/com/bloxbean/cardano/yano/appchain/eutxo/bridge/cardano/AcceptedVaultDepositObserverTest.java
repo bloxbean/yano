@@ -111,7 +111,8 @@ class AcceptedVaultDepositObserverTest {
 
     @Test
     void settlementMarkerProducesAnExactWithdrawalConfirmation() {
-        EutxoSettlementDatum settlement = new EutxoSettlementDatum(
+        EutxoSettlementDatum settlement =
+                EutxoSettlementDatum.forAddress(
                 1,
                 "payments-eutxo",
                 3,
@@ -142,7 +143,8 @@ class AcceptedVaultDepositObserverTest {
 
     @Test
     void settlementWithoutExactPayoutFailsClosedAndDepositObserverIgnoresIt() {
-        EutxoSettlementDatum settlement = new EutxoSettlementDatum(
+        EutxoSettlementDatum settlement =
+                EutxoSettlementDatum.forAddress(
                 1,
                 "payments-eutxo",
                 3,

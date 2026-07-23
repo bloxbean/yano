@@ -182,6 +182,46 @@ inventory, fees, limits, and replay state. After Cardano stability, the
 `eutxo-withdrawal-confirmation-v1` observer requires an exact payout and
 continuing vault marker before the ledger moves the claim to `CONFIRMED`.
 
+### Proof-gated withdrawals
+
+M5 adds an alternative alpha settlement path which removes the custody signer
+from each withdrawal transaction. It does **not** remove federation trust:
+the configured threshold still controls which app-chain MPF root Cardano
+accepts.
+
+The flow is:
+
+1. Each finalized withdrawal receives a monotonically increasing settlement
+   sequence and a compact commitment under
+   `eutxo/v1/wc/<claim-id>` in the app-chain MPF.
+2. The federation advances the root-thread output with the exact chain ID,
+   bridge epoch, finalized height, MPF root, member profile, threshold, and
+   generation. An advance requires the current threshold; an epoch migration
+   is a distinct action.
+3. `EutxoClient.withdrawalProof` fetches the root-fixed MPF proof and
+   `EutxoMpfProofConverter` converts Yano's proof to the bounded on-chain
+   representation while independently reconstructing the root.
+4. Any relayer uses `ProofWithdrawalTransactionBuilder` and
+   `ProofWithdrawalRelayClient` to prepare, sign, persist, and submit the exact
+   transaction. The relayer supplies separate fee inputs, collateral, and its
+   own signature; the proof-gated vault can decrease only by the committed
+   payout and cannot be charged the relayer's fee.
+5. `ProofVaultValidator` accepts only a claim present in the current accepted
+   root, pays that exact claim, preserves the vault, and atomically advances
+   the singleton `NullifierStateValidator` cursor.
+
+The nullifier cursor makes every settlement sequence single-use. It also makes
+settlement deliberately ordered: if sequence `n` is not ready, `n + 1` cannot
+overtake it. A root advance invalidates proofs against the prior root, so a
+relayer must fetch a fresh proof for the current accepted height. The
+`FederatedRootSelector` rejects ambiguous or superseded root-thread state.
+
+This path is independent of ZeroJ and remains a federated bridge. A dishonest
+root threshold can attest a fabricated root and therefore release vault
+funds. Use the proof path only with reviewed root, nullifier, and vault script
+identities and the same custody, pause, rollback, and disaster-recovery
+discipline as the signer-authorized path.
+
 Node-local signer credentials and endpoints are intentionally not generated
 as consensus properties. Construct `HttpExternalSettlementSigner` from the
 operator's secret/config system, use a dedicated durable journal directory,
@@ -210,6 +250,11 @@ This path remains experimental. The source validators use Julc
 artifacts and script hashes before using funds. The runtime SPI has no
 plugin-owned deep-rollback callback, so the halt is an explicit governed
 operator action after `BridgeRollbackGuard` detects the condition.
+
+The M5 implementation and outstanding release evidence are recorded in
+[M5_RELEASE_GATES.md](M5_RELEASE_GATES.md). JVM source and packaged-plugin
+tests do not imply native compatibility; native remains explicitly
+unsupported until the packaged native conformance gate passes.
 
 The optional bridge runtime bundle embeds neither Julc nor ZeroJ. Julc is an
 on-chain contract build tool only; direct validity settlement remains a

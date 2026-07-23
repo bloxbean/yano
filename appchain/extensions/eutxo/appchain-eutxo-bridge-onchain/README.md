@@ -19,6 +19,24 @@ bridge epoch.
   operator input; and
 - `1` refunds at or after the deadline only when the depositor key signed.
 
+M5 adds three independent contracts for proof-gated settlement:
+
+- `FederatedRootValidator` advances a singleton root thread only after the
+  current member threshold signs. Normal advances preserve chain, epoch,
+  member profile, threshold, and generation; migration is explicit.
+- `NullifierStateValidator` advances the singleton settlement cursor by
+  exactly one. Epoch migration must atomically consume and recreate the exact
+  root thread at the same chain, epoch, and generation as the new cursor.
+- `ProofVaultValidator` verifies the normalized Yano MPF claim proof against
+  the current root reference, pays the committed address and lovelace,
+  preserves the vault, and requires the exact nullifier successor. It has no
+  custody-signer requirement, so any fee-paying relayer may submit it.
+
+The root threshold remains a trust boundary: it can attest a fabricated root.
+The proof path is federated settlement, not ZeroJ validity settlement or a
+rollup. Old-root proofs are intentionally rejected after a root advance and
+must be refreshed.
+
 The source is part of the alpha bridge ABI. A production deployment must use
 release-pinned compiled artifacts and hashes; source compilation alone is not
 a production contract identity. The current artifacts have not passed the

@@ -10,6 +10,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class EutxoContractCodecTest {
+    private static final String DESTINATION =
+            "addr_test1wzn5ee2qaqvly3hx7e0nk3vhm240n5muq3plhjcnvx9ppjgf62u6a";
 
     @Test
     void recordReceiptAndQueryListsRoundTripCanonically() {
@@ -48,6 +50,8 @@ class EutxoContractCodecTest {
                 .asString()
                 .isEqualTo("eutxo/v1/u/" + outpoint);
         assertThat(EutxoStateKeys.addressIndex("addr_test1x")).hasSizeLessThan(100);
+        assertThat(EutxoStateKeys.totalWithdrawalCount(7))
+                .isNotEqualTo(EutxoStateKeys.totalWithdrawalCount(8));
         assertThatThrownBy(() -> EutxoOutpoint.parse("not-an-outpoint"))
                 .isInstanceOf(IllegalArgumentException.class);
     }
@@ -97,7 +101,7 @@ class EutxoContractCodecTest {
     void withdrawalContractsRoundTripAndReserveReconcilesAtomically() {
         byte[] nonce = fill(32, 8);
         EutxoWithdrawalDatum datum = new EutxoWithdrawalDatum(
-                1, "payments", 4, "addr_test1destination", nonce);
+                1, "payments", 4, DESTINATION, nonce);
         assertThat(EutxoWithdrawalDatum.decode(datum.encode())).isEqualTo(datum);
 
         EutxoWithdrawalClaim claim = new EutxoWithdrawalClaim(
@@ -105,9 +109,10 @@ class EutxoContractCodecTest {
                 "payments",
                 4,
                 new EutxoOutpoint("55".repeat(32), 1),
-                "addr_test1destination",
+                DESTINATION,
                 BigInteger.valueOf(30),
                 nonce,
+                2,
                 9);
         assertThat(EutxoWithdrawalClaim.decode(claim.encode())).isEqualTo(claim);
         EutxoWithdrawalRecord pending = EutxoWithdrawalRecord.pending(claim, 9);
@@ -137,7 +142,8 @@ class EutxoContractCodecTest {
         assertThat(EutxoWithdrawalRecord.decode(confirmed.encode()))
                 .isEqualTo(confirmed);
 
-        EutxoSettlementDatum settlement = new EutxoSettlementDatum(
+        EutxoSettlementDatum settlement =
+                EutxoSettlementDatum.forAddress(
                 1,
                 claim.chainId(),
                 claim.bridgeEpoch(),
@@ -146,6 +152,17 @@ class EutxoContractCodecTest {
                 claim.lovelace());
         assertThat(EutxoSettlementDatum.decode(settlement.encode()))
                 .isEqualTo(settlement);
+        assertThatThrownBy(() -> new EutxoSettlementDatum(
+                1,
+                claim.chainId(),
+                claim.bridgeEpoch(),
+                claim.claimId(),
+                com.bloxbean.cardano.client.plutus.spec.ConstrPlutusData
+                        .of(99)
+                        .serializeToBytes(),
+                claim.lovelace()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("destination");
 
         EutxoReserve requested = EutxoReserve.empty(EutxoReserve.LOVELACE)
                 .credit(BigInteger.valueOf(100))
@@ -156,6 +173,61 @@ class EutxoContractCodecTest {
         assertThat(reconciled.stableVault()).isEqualTo(BigInteger.valueOf(70));
         assertThat(reconciled.confirmedWithdrawals()).isEqualTo(BigInteger.valueOf(30));
         reconciled.requireInvariant();
+    }
+
+    @Test
+    void proofWithdrawalBindsCanonicalPlutusClaimRootAndSequence() {
+        String destination =
+                "addr_test1wzn5ee2qaqvly3hx7e0nk3vhm240n5muq3plhjcnvx9ppjgf62u6a";
+        EutxoWithdrawalClaim claim = new EutxoWithdrawalClaim(
+                1,
+                "payments",
+                4,
+                new EutxoOutpoint("77".repeat(32), 0),
+                destination,
+                BigInteger.valueOf(30),
+                fill(32, 8),
+                6,
+                9);
+        EutxoWithdrawalCommitment commitment =
+                EutxoWithdrawalCommitment.fromClaim(claim);
+        byte[] key = EutxoStateKeys.withdrawalCommitment(claim.claimId());
+        byte[] value = commitment.encode();
+        byte[] path = EutxoMpfProof.nibbles(
+                com.bloxbean.cardano.client.crypto.Blake2bUtil
+                        .blake2bHash256(key));
+        byte[] encodedSuffix = EutxoMpfProof.encodeLeafSuffix(path);
+        byte[] root = EutxoMpfProof.commitLeaf(
+                encodedSuffix,
+                com.bloxbean.cardano.client.crypto.Blake2bUtil
+                        .blake2bHash256(value));
+        EutxoMpfProof proof = new EutxoMpfProof(
+                root, key, value, encodedSuffix, List.of(), 9);
+        EutxoProofWithdrawal withdrawal = new EutxoProofWithdrawal(
+                1, commitment, proof);
+        EutxoFederatedRoot accepted = new EutxoFederatedRoot(
+                1,
+                "payments",
+                4,
+                9,
+                root,
+                List.of(fill(32, 1), fill(32, 2), fill(32, 3)),
+                2,
+                0);
+        EutxoNullifierState cursor =
+                new EutxoNullifierState(1, "payments", 4, 6, 0);
+
+        assertThat(proof.verify()).isTrue();
+        assertThat(withdrawal.encode()).isNotEmpty();
+        assertThat(EutxoFederatedRoot.decode(accepted.encode()))
+                .isEqualTo(accepted);
+        assertThat(EutxoNullifierState.decode(cursor.encode()))
+                .isEqualTo(cursor);
+        assertThat(accepted.accepts(withdrawal)).isTrue();
+        assertThat(cursor.advance(6).nextSettlementSequence()).isEqualTo(7);
+        assertThatThrownBy(() -> cursor.advance(7))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("sequence");
     }
 
     private static byte[] fill(int size, int value) {

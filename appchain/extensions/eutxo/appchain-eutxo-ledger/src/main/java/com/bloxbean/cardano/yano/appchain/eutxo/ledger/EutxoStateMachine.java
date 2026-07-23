@@ -19,6 +19,7 @@ import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoReserve;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoStateKeys;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoContract;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoWithdrawalClaim;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoWithdrawalCommitment;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoWithdrawalConfirmation;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoWithdrawalDatum;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoWithdrawalRecord;
@@ -253,11 +254,17 @@ public final class EutxoStateMachine implements AppStateMachine {
                     EutxoStateKeys.withdrawal(claim.claimId()),
                     EutxoWithdrawalRecord.pending(
                             claim, claim.requestedHeight()).encode()));
+            withdrawalPlan.claims().forEach(claim -> writer.put(
+                    EutxoStateKeys.withdrawalCommitment(claim.claimId()),
+                    EutxoWithdrawalCommitment.fromClaim(claim).encode()));
             writer.put(
                     EutxoStateKeys.reserve(EutxoReserve.LOVELACE),
                     withdrawalPlan.reserve().encode());
             writer.put(EutxoStateKeys.pendingWithdrawalCount(),
                     longBytes(withdrawalPlan.pendingCount()));
+            writer.put(EutxoStateKeys.totalWithdrawalCount(
+                            bridge.bridgeEpoch()),
+                    longBytes(withdrawalPlan.totalCount()));
         }
     }
 
@@ -274,6 +281,10 @@ public final class EutxoStateMachine implements AppStateMachine {
                 .map(EutxoReserve::decode)
                 .orElse(null);
         long pendingCount = state.get(EutxoStateKeys.pendingWithdrawalCount())
+                .map(EutxoStateMachine::longValue)
+                .orElse(0L);
+        long totalCount = state.get(EutxoStateKeys.totalWithdrawalCount(
+                        bridge.bridgeEpoch()))
                 .map(EutxoStateMachine::longValue)
                 .orElse(0L);
         for (EutxoRecord record : result.created()) {
@@ -312,7 +323,16 @@ public final class EutxoStateMachine implements AppStateMachine {
                     datum.destinationAddress(),
                     output.lovelace(),
                     datum.nonce(),
+                    totalCount,
                     height);
+            try {
+                EutxoWithdrawalCommitment.fromClaim(claim);
+            } catch (IllegalArgumentException failure) {
+                throw new WithdrawalFailure(
+                        "BRIDGE_WITHDRAWAL_DESTINATION",
+                        "withdrawal destination is outside the proof bridge "
+                                + "address profile: " + failure.getMessage());
+            }
             if (state.get(EutxoStateKeys.withdrawal(claim.claimId())).isPresent()) {
                 throw new WithdrawalFailure(
                         "BRIDGE_WITHDRAWAL_DUPLICATE",
@@ -320,7 +340,8 @@ public final class EutxoStateMachine implements AppStateMachine {
             }
             claims.add(claim);
             reserve = reserve.requestWithdrawal(output.lovelace());
-            pendingCount++;
+            pendingCount = Math.addExact(pendingCount, 1);
+            totalCount = Math.addExact(totalCount, 1);
             if (pendingCount > bridge.maximumPendingWithdrawals()) {
                 throw new WithdrawalFailure(
                         "BRIDGE_PENDING_LIMIT",
@@ -329,7 +350,8 @@ public final class EutxoStateMachine implements AppStateMachine {
         }
         return claims.isEmpty()
                 ? WithdrawalPlan.empty()
-                : new WithdrawalPlan(List.copyOf(claims), reserve, pendingCount);
+                : new WithdrawalPlan(
+                        List.copyOf(claims), reserve, pendingCount, totalCount);
     }
 
     private WithdrawalOutput withdrawalOutput(EutxoRecord record) {
@@ -601,10 +623,11 @@ public final class EutxoStateMachine implements AppStateMachine {
     private record WithdrawalPlan(
             List<EutxoWithdrawalClaim> claims,
             EutxoReserve reserve,
-            long pendingCount
+            long pendingCount,
+            long totalCount
     ) {
         private static WithdrawalPlan empty() {
-            return new WithdrawalPlan(List.of(), null, 0);
+            return new WithdrawalPlan(List.of(), null, 0, 0);
         }
 
         private java.util.Set<EutxoOutpoint> outpoints() {

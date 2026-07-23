@@ -43,7 +43,11 @@ class BridgeValidatorTest {
                 PlutusData.bytes(new byte[]{1}),
                 PlutusData.integer(BigInteger.ZERO),
                 PlutusData.bytes(claimId),
-                PlutusData.bytes(new byte[]{2}),
+                PlutusData.constr(
+                        0,
+                        PlutusData.constr(
+                                0, PlutusData.bytes(new byte[28])),
+                        PlutusData.constr(1)),
                 PlutusData.integer(BigInteger.TEN)));
 
         assertThat(VaultValidator.settlement(datum)).hasValueSatisfying(settlement -> {

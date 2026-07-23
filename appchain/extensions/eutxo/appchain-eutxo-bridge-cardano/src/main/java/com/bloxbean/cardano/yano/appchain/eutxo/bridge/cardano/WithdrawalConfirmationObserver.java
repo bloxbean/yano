@@ -106,7 +106,7 @@ final class WithdrawalConfirmationObserver implements L1Observer {
         int payoutIndex = -1;
         for (int index = 0; index < transaction.getOutputs().size(); index++) {
             TransactionOutput output = transaction.getOutputs().get(index);
-            if (settlement.destinationAddress().equals(output.getAddress())
+            if (settlement.matchesDestination(output.getAddress())
                     && settlement.lovelace().equals(exactLovelace(output))) {
                 if (payoutIndex >= 0) {
                     throw new IllegalArgumentException(
@@ -126,7 +126,7 @@ final class WithdrawalConfirmationObserver implements L1Observer {
                 settlement.claimId(),
                 transaction.getTxHash(),
                 payoutIndex,
-                settlement.destinationAddress(),
+                transaction.getOutputs().get(payoutIndex).getAddress(),
                 settlement.lovelace(),
                 new EutxoOutpoint(transaction.getTxHash(), continuingVaultIndex),
                 continuingVaultLovelace,
