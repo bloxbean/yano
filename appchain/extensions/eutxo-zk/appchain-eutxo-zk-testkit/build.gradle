@@ -1,0 +1,74 @@
+plugins {
+    id 'java-library'
+}
+
+dependencies {
+    api project(':appchain-eutxo-zk-contracts')
+    api project(':appchain-eutxo-zk-client')
+    implementation project(':appchain-eutxo-zk-zeroj')
+
+    testImplementation project(':appchain-eutxo-ledger')
+    testImplementation project(':appchain-eutxo-testkit')
+    testImplementation project(':core-api')
+    testImplementation libs.junit.jupiter.api
+    testRuntimeOnly libs.junit.jupiter.engine
+    testRuntimeOnly libs.junit.platform.launcher
+    testImplementation libs.assertj.core
+}
+
+java {
+    sourceCompatibility = 25
+    targetCompatibility = 25
+}
+
+tasks.named('test') {
+    systemProperty 'zeroj.allowInsecureTrustedSetup', 'true'
+}
+
+tasks.register('verifyEutxoZkDependencyPins') {
+    group = 'verification'
+    description = 'Verifies Phase C resolves one reviewed ZeroJ and Julc line'
+
+    doLast {
+        def expectedZeroj = libs.versions.zeroj.get()
+        def expectedJulc = libs.versions.julc.get()
+        if (expectedZeroj != '0.1.0-pre10') {
+            throw new GradleException(
+                    "ADR-UTXO-001 Phase C requires ZeroJ 0.1.0-pre10; found ${expectedZeroj}")
+        }
+        def modules = [
+                project(':appchain-eutxo-zk-zeroj'),
+                project(':appchain-eutxo-zk-onchain'),
+                project(':appchain-eutxo-zk-prover')
+        ]
+        def violations = []
+        modules.each { moduleProject ->
+            moduleProject.configurations.runtimeClasspath.incoming
+                    .resolutionResult.allComponents.each { component ->
+                if (component.id instanceof
+                        org.gradle.api.artifacts.component.ModuleComponentIdentifier) {
+                    def id = component.id as
+                            org.gradle.api.artifacts.component.ModuleComponentIdentifier
+                    if (id.group == 'com.bloxbean.cardano'
+                            && id.module.startsWith('zeroj-')
+                            && id.version != expectedZeroj) {
+                        violations.add("${moduleProject.path} -> ${id}")
+                    }
+                    if (id.group == 'com.bloxbean.cardano'
+                            && id.module.startsWith('julc-')
+                            && id.version != expectedJulc) {
+                        violations.add("${moduleProject.path} -> ${id}")
+                    }
+                }
+            }
+        }
+        if (!violations.isEmpty()) {
+            throw new GradleException(
+                    "EUTxO ZK dependency pins are mixed: ${violations.sort()}")
+        }
+    }
+}
+
+tasks.named('check') {
+    dependsOn tasks.named('verifyEutxoZkDependencyPins')
+}

@@ -23,6 +23,21 @@ public final class EutxoStateKeys {
         return bytes(PREFIX + "genesis");
     }
 
+    /** Selected optional validity-commitment engine identity. */
+    public static byte[] validityEngine() {
+        return bytes(PREFIX + "validity/engine");
+    }
+
+    /** Latest ZK-friendly validity commitment, distinct from the runtime MPF root. */
+    public static byte[] validityRoot() {
+        return bytes(PREFIX + "validity/root");
+    }
+
+    /** Descriptor of the transition witness that produced the latest validity root. */
+    public static byte[] validityWitness() {
+        return bytes(PREFIX + "validity/witness");
+    }
+
     public static byte[] utxo(EutxoOutpoint outpoint) {
         return bytes(PREFIX + "u/" + Objects.requireNonNull(outpoint, "outpoint"));
     }

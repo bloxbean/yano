@@ -2,7 +2,7 @@
 yaci = "0.5.0-pre12"
 cardano-client-lib = "0.8.0-pre4"
 julc="0.1.0-pre14"
-zeroj = "0.1.0-pre9"
+zeroj = "0.1.0-pre10"
 bouncycastle = "1.84"
 aws-sdk = "2.48.0"
 # AWS SDK 2.48.0 declares this optional CRT version; review and update them together.
@@ -83,6 +83,14 @@ zeroj-verifier-plonk = { module = "com.bloxbean.cardano:zeroj-verifier-plonk", v
 zeroj-patterns = { module = "com.bloxbean.cardano:zeroj-patterns", version.ref = "zeroj" }
 zeroj-api = { module = "com.bloxbean.cardano:zeroj-api", version.ref = "zeroj" }
 zeroj-bbs = { module = "com.bloxbean.cardano:zeroj-bbs", version.ref = "zeroj" }
+zeroj-backend-spi = { module = "com.bloxbean.cardano:zeroj-backend-spi", version.ref = "zeroj" }
+zeroj-bls12381 = { module = "com.bloxbean.cardano:zeroj-bls12381", version.ref = "zeroj" }
+zeroj-circuit-dsl = { module = "com.bloxbean.cardano:zeroj-circuit-dsl", version.ref = "zeroj" }
+zeroj-circuit-lib = { module = "com.bloxbean.cardano:zeroj-circuit-lib", version.ref = "zeroj" }
+zeroj-codec = { module = "com.bloxbean.cardano:zeroj-codec", version.ref = "zeroj" }
+zeroj-crypto = { module = "com.bloxbean.cardano:zeroj-crypto", version.ref = "zeroj" }
+zeroj-mpf-poseidon = { module = "com.bloxbean.cardano:zeroj-mpf-poseidon", version.ref = "zeroj" }
+zeroj-onchain-julc = { module = "com.bloxbean.cardano:zeroj-onchain-julc", version.ref = "zeroj" }
 archunit = "com.tngtech.archunit:archunit:1.4.1"
 
 rocksdb="org.rocksdb:rocksdbjni:9.11.2"
