@@ -141,6 +141,7 @@ need full detail:
 - [Profile governance runbook](../APP_CHAIN_PROFILE_GOVERNANCE.md)
 - [Domain actors and role-aware approvals](../APP_CHAIN_DOMAIN_ROLES.md)
 - [Plugin query and domain API contract](../APP_CHAIN_PLUGIN_QUERY_AND_DOMAIN_API.md)
+- [Release acceptance and schema status](RELEASE_ACCEPTANCE.md)
 - [Canonical open-work tracker](../../adr/app-layer/open_item.md)
 
 ## A note on “no code”

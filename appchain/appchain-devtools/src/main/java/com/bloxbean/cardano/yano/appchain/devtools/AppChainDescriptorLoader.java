@@ -76,6 +76,17 @@ final class AppChainDescriptorLoader {
         return descriptor;
     }
 
+    AppChainMetadataDescriptor loadMetadata(byte[] descriptorBytes) throws IOException {
+        if (descriptorBytes == null || descriptorBytes.length == 0
+                || descriptorBytes.length > MAX_DESCRIPTOR_BYTES) {
+            throw new IOException("configuration metadata is empty or exceeds size limit");
+        }
+        AppChainMetadataDescriptor descriptor = json.readValue(
+                descriptorBytes, AppChainMetadataDescriptor.class);
+        validateUntrustedMetadata(descriptor);
+        return descriptor;
+    }
+
     List<AppChainMetadataDescriptor> loadBuiltInMetadata() throws IOException {
         try (InputStream input = AppChainDescriptorLoader.class
                 .getResourceAsStream(BUILT_IN_FIRST_PARTY_METADATA)) {

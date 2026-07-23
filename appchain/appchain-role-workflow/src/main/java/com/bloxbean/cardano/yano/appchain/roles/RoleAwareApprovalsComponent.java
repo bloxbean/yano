@@ -19,7 +19,6 @@ public final class RoleAwareApprovalsComponent implements CompositeComponent {
     public static final String QUERY_POLICY = "policy";
     public static final String QUERY_POLICY_CURRENT = "policy-current";
     public static final String QUERY_PROPOSAL = "proposal";
-    public static final String QUERY_EVIDENCE_APPROVAL = "evidence-approval";
     public static final String QUERY_STATS = "stats";
 
     private final ComponentDescriptor descriptor;
@@ -64,13 +63,6 @@ public final class RoleAwareApprovalsComponent implements CompositeComponent {
                     AppQueryException.Code.INVALID_REQUEST,
                     "proposal queries do not accept a revision");
             return ownState.get(RoleWorkflowKeys.proposal(ref.id)).orElse(new byte[0]);
-        }
-        if (QUERY_EVIDENCE_APPROVAL.equals(localPath)) {
-            if (ref.revision < 1) throw new AppQueryException(
-                    AppQueryException.Code.INVALID_REQUEST,
-                    "evidence approval queries require evidenceId@businessVersion");
-            return ownState.get(RoleWorkflowKeys.evidenceApproval(
-                    ref.id, ref.revision)).orElse(new byte[0]);
         }
         throw new AppQueryException(AppQueryException.Code.UNSUPPORTED,
                 "unsupported role approval query");

@@ -11,6 +11,7 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
@@ -38,10 +39,13 @@ class AppChainFinalDistributionAcceptanceTest {
         Path release = extractRelease(archive, temporary.resolve("release"));
         Path launcher = release.resolve("yano.sh");
         assertThat(launcher).isRegularFile();
+        assertThat(launcher.toFile().setExecutable(true)).isTrue();
         assertThat(release.resolve("tools/yano-appchain/bin/yano-appchain")
                 .toFile().setExecutable(true)).isTrue();
         assertThat(release.resolve("studio/index.html")).isRegularFile();
         assertThat(release.resolve("studio/assets/appchain-release-capability-index.json"))
+                .isRegularFile();
+        assertThat(release.resolve("studio/assets/appchain-release-acceptance-index.json"))
                 .isRegularFile();
         assertThat(release.resolve("skills/configure-yano-appchain/SKILL.md"))
                 .isRegularFile();
@@ -50,6 +54,13 @@ class AppChainFinalDistributionAcceptanceTest {
         assertThat(release.resolve("config/schema/appchain-metadata-trust.schema.json"))
                 .isRegularFile();
         assertThat(release.resolve("config/schema/appchain-gitops-lock.schema.json"))
+                .isRegularFile();
+        assertThat(release.resolve("config/schema/appchain-component-catalog.schema.json"))
+                .isRegularFile();
+        assertThat(release.resolve(
+                "config/schema/appchain-component-catalog-snapshot.schema.json"))
+                .isRegularFile();
+        assertThat(release.resolve("config/schema/appchain-release-acceptance-index.json"))
                 .isRegularFile();
         assertStudioBlueprintRoundTrips(release, launcher);
 
@@ -64,7 +75,7 @@ class AppChainFinalDistributionAcceptanceTest {
                             recipe.id() + "-" + runtime + "-" + deployment);
                     List<String> init = new ArrayList<>(List.of(
                             "appchain", "init", "--non-interactive",
-                            "--recipe", recipe.id(), "--network", "devnet",
+                            "--recipe", recipe.id(), "--network", "preprod",
                             "--members", "3", "--runtime", runtime,
                             "--deployment", deployment,
                             "--output", project.toString(), "--format", "json"));
@@ -87,6 +98,39 @@ class AppChainFinalDistributionAcceptanceTest {
                     assertThat(validated.exit()).as(validated.error()).isZero();
                     assertThat(validated.output()).contains("VALID_PROJECT");
 
+                    byte[] firstLock = Files.readAllBytes(project.resolve("appchain.lock"));
+                    Result rendered = run(launcher, List.of(
+                            "appchain", "render", project.toString(), "--format", "json"));
+                    assertThat(rendered.exit()).as(rendered.error()).isZero();
+                    assertThat(Files.readAllBytes(project.resolve("appchain.lock")))
+                            .isEqualTo(firstLock);
+
+                    for (String target : List.of("helm", "kustomize")) {
+                        Path output = temporary.resolve("gitops").resolve(
+                                recipe.id() + "-" + runtime + "-" + deployment + "-" + target);
+                        Result exported = run(launcher, List.of(
+                                "appchain", "gitops", project.toString(), "--target", target,
+                                "--output", output.toString(), "--format", "json"));
+                        assertThat(exported.exit()).as(exported.error()).isZero();
+                        assertThat(exported.output()).contains("GITOPS_EXPORTED");
+                        assertThat(output.resolve("gitops.lock")).isRegularFile();
+                    }
+
+                    if ("host".equals(deployment)) {
+                        assertThat(project.resolve("scripts/start-node")).isRegularFile();
+                        assertThat(project.resolve("compose.yaml")).doesNotExist();
+                    } else {
+                        assertThat(project.resolve("compose.yaml")).isRegularFile();
+                        assertThat(project.resolve("scripts/start-node")).doesNotExist();
+                    }
+                    if ("jvm".equals(runtime)) {
+                        Result ci = run(project.resolve("ci/verify"), List.of(),
+                                Map.of("YANO_HOME", release.toString()));
+                        assertThat(ci.exit()).as("stdout=%s%n stderr=%s",
+                                ci.output(), ci.error()).isZero();
+                        assertThat(ci.output()).contains("VALID_PROJECT");
+                    }
+
                     AppChainProjectModel.ProjectValidation projectValidation =
                             lifecycle.validate(project);
                     assertThat(projectValidation.lock().runtime()).isEqualTo(runtime);
@@ -98,7 +142,12 @@ class AppChainFinalDistributionAcceptanceTest {
                 }
             }
         }
-        assertThat(accepted).isEqualTo(22);
+        int advertised = catalog.recipes().stream()
+                .mapToInt(recipe -> recipe.runtimeTypes().size()
+                        * recipe.deploymentTargets().size())
+                .sum();
+        assertThat(accepted).isEqualTo(advertised);
+        assertThat(catalog.releaseAcceptanceIndex().recipes()).hasSameSizeAs(catalog.recipes());
     }
 
     private void assertStudioBlueprintRoundTrips(Path release, Path launcher) throws Exception {
@@ -179,11 +228,20 @@ class AppChainFinalDistributionAcceptanceTest {
     }
 
     private Result run(Path launcher, List<String> arguments) throws Exception {
+        return run(launcher, arguments, Map.of());
+    }
+
+    private Result run(
+            Path launcher,
+            List<String> arguments,
+            Map<String, String> environment) throws Exception {
         List<String> command = new ArrayList<>();
         command.add("bash");
         command.add(launcher.toString());
         command.addAll(arguments);
-        Process process = new ProcessBuilder(command).directory(temporary.toFile()).start();
+        ProcessBuilder builder = new ProcessBuilder(command).directory(temporary.toFile());
+        builder.environment().putAll(environment);
+        Process process = builder.start();
         if (!process.waitFor(PROCESS_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS)) {
             process.destroyForcibly();
             fail("final-distribution CLI exceeded " + PROCESS_TIMEOUT);

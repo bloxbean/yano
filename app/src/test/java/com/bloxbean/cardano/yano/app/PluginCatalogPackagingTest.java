@@ -65,8 +65,8 @@ class PluginCatalogPackagingTest {
     private static final Set<String> STOCK_BUNDLES = Set.of(
             "com.bloxbean.cardano.yaci.plugins.logging",
             "com.bloxbean.cardano.yano.appchain.stdlib",
-            "com.bloxbean.cardano.yano.appchain.composite",
             "com.bloxbean.cardano.yano.appchain.role-workflow",
+            "com.bloxbean.cardano.yano.appchain.evidence-profile",
             "com.bloxbean.cardano.yano.appchain.evidence-registry");
     private static final Set<String> OPTIONAL_BUNDLES = Set.of(
             "com.bloxbean.cardano.yano.appchain.kafka",
@@ -127,7 +127,7 @@ class PluginCatalogPackagingTest {
             assertTrue(environment.providers().names(AppStateMachineProvider.class)
                     .containsAll(Set.of(
                             "approvals", "balances", "doc-trail", "kv-registry",
-                            "composite", "role-evidence")));
+                            "composite", "role-approvals", "role-evidence")));
             AppStateMachine composite = environment.providers().require(
                     AppStateMachineProvider.class, "composite").create(
                     new AppStateMachineContext() {
@@ -203,6 +203,9 @@ class PluginCatalogPackagingTest {
             assertTrue(environment.providers().find(
                     DomainApiProvider.class,
                     "com.bloxbean.cardano.yano.appchain.evidence-registry").isPresent());
+            assertTrue(environment.providers().find(
+                    DomainApiProvider.class,
+                    "com.bloxbean.cardano.yano.appchain.role-workflow").isPresent());
             if (conformanceIncluded) {
                 exerciseConformanceProviderFacades(environment);
             }

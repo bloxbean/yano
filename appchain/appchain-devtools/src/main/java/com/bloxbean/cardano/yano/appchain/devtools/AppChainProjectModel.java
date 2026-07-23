@@ -23,7 +23,19 @@ final class AppChainProjectModel {
             String network,
             RuntimeSelection runtime,
             DeploymentSelection deployment,
-            List<ChainIntent> chains) {
+            List<ChainIntent> chains,
+            List<ComponentCatalogRef> componentCatalogs) {
+
+        Spec(String yanoVersion, String network, RuntimeSelection runtime,
+             DeploymentSelection deployment, List<ChainIntent> chains) {
+            this(yanoVersion, network, runtime, deployment, chains, List.of());
+        }
+    }
+
+    record ComponentCatalogRef(
+            String path,
+            String trustedKeyId,
+            String trustedPublicKey) {
     }
 
     record RuntimeSelection(String type) {
@@ -59,6 +71,9 @@ final class AppChainProjectModel {
 
     record Artifact(
             String id,
+            String availability,
+            String bundleId,
+            String nativePosture,
             List<String> runtimeTypes,
             List<String> deploymentTargets) {
     }
@@ -67,7 +82,11 @@ final class AppChainProjectModel {
             String id,
             String name,
             String category,
+            String availability,
             String maturity,
+            String scope,
+            Boolean selectable,
+            String trustStatement,
             String description,
             List<String> provides,
             List<String> requires,
@@ -76,7 +95,22 @@ final class AppChainProjectModel {
             List<String> runtimeTypes,
             List<String> deploymentTargets,
             List<String> artifacts,
-            Map<String, String> properties) {
+            String nativePosture,
+            List<String> externalPrerequisites,
+            List<String> bootstrapRequirements,
+            List<String> nonSecretAnswers,
+            Map<String, String> secretReferences,
+            Map<String, String> properties,
+            String documentation,
+            String acceptanceScenario) {
+
+        String effectiveScope() {
+            return scope == null || scope.isBlank() ? "chain" : scope;
+        }
+
+        boolean effectiveSelectable() {
+            return selectable == null || selectable;
+        }
     }
 
     record RecipeCatalog(String schemaVersion, List<Recipe> recipes) {
@@ -85,13 +119,36 @@ final class AppChainProjectModel {
     record Recipe(
             String id,
             String version,
+            String name,
+            String category,
+            String availability,
             String maturity,
+            String scope,
+            Boolean selectable,
             String trustStatement,
             String description,
+            String primaryOutcome,
+            String firstCommand,
+            String verificationQuery,
             List<String> capabilities,
             Map<String, String> recommended,
             List<String> runtimeTypes,
-            List<String> deploymentTargets) {
+            List<String> deploymentTargets,
+            List<String> artifacts,
+            String nativePosture,
+            List<String> externalPrerequisites,
+            List<String> bootstrapRequirements,
+            List<String> nonSecretAnswers,
+            String documentation,
+            String acceptanceScenario) {
+
+        String effectiveScope() {
+            return scope == null || scope.isBlank() ? "chain" : scope;
+        }
+
+        boolean effectiveSelectable() {
+            return selectable == null || selectable;
+        }
     }
 
     record ReleaseIndex(
@@ -107,12 +164,37 @@ final class AppChainProjectModel {
             List<DistributionFlavor> distributions) {
     }
 
+    record ReleaseAcceptanceIndex(
+            String schemaVersion,
+            String schemaStatus,
+            String stabilizationDecision,
+            String reviewedOn,
+            boolean externalThirdPartyUsage,
+            List<String> cleanRoomExercises,
+            List<String> knownLimitations,
+            Map<String, List<String>> capabilityEvidence,
+            List<RecipeAcceptance> recipes) {
+    }
+
+    record RecipeAcceptance(
+            String id,
+            String maturity,
+            String availability,
+            List<String> runtimeTypes,
+            List<String> deploymentTargets,
+            List<String> gitOpsTargets,
+            String outcomeLevel,
+            String acceptanceScenario,
+            List<String> evidence) {
+    }
+
     record DistributionFlavor(
             String id,
             String runtimeType,
             String archivePattern,
             String tooling,
-            List<String> platforms) {
+            List<String> platforms,
+            List<String> artifacts) {
     }
 
     record Resolution(

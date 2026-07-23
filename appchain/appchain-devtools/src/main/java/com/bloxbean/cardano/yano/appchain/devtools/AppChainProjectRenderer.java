@@ -20,6 +20,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.TreeSet;
 
 /** Deterministic, no-silent-overwrite project renderer. */
 final class AppChainProjectRenderer {
@@ -57,6 +58,13 @@ final class AppChainProjectRenderer {
     AppChainProjectModel.Lock initialize(
             Path project,
             AppChainProjectModel.Blueprint blueprint) throws IOException {
+        return initialize(project, blueprint, Map.of());
+    }
+
+    AppChainProjectModel.Lock initialize(
+            Path project,
+            AppChainProjectModel.Blueprint blueprint,
+            Map<String, byte[]> componentCatalogInputs) throws IOException {
         Path root = safeRoot(project);
         requireEmptyOrMissing(root);
         Files.createDirectories(root);
@@ -64,6 +72,10 @@ final class AppChainProjectRenderer {
                 .writeValueAsBytes(blueprint);
         Files.write(root.resolve(BLUEPRINT_FILE), blueprintBytes,
                 StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
+        for (Map.Entry<String, byte[]> input
+                : new TreeMap<>(safeMap(componentCatalogInputs)).entrySet()) {
+            writeComponentCatalogInput(root, input.getKey(), input.getValue());
+        }
         return render(root, blueprint, null, blueprintBytes);
     }
 
@@ -77,7 +89,7 @@ final class AppChainProjectRenderer {
         AppChainProjectModel.Lock prior = Files.isRegularFile(lockPath)
                 ? readPriorLock(root) : null;
         if (prior == null) {
-            requireBlueprintOnly(root);
+            requireBlueprintAndCatalogInputsOnly(root, blueprint);
         } else {
             verifyGeneratedFiles(root, prior.generatedFiles());
         }
@@ -191,12 +203,18 @@ final class AppChainProjectRenderer {
         outputs.put("schema/appchain-recipe-catalog.json", catalog.recipeBytes());
         outputs.put("schema/appchain-release-capability-index.json",
                 catalog.releaseIndexBytes());
+        outputs.put("schema/appchain-release-acceptance-index.json",
+                catalog.releaseAcceptanceIndexBytes());
         outputs.put("schema/appchain-first-party-metadata.json",
                 catalog.firstPartyMetadataBytes());
         outputs.put("schema/appchain-metadata-trust.schema.json",
                 catalog.metadataTrustSchemaBytes());
         outputs.put("schema/appchain-gitops-lock.schema.json",
                 catalog.gitOpsLockSchemaBytes());
+        outputs.put("schema/appchain-component-catalog.schema.json",
+                catalog.componentCatalogSchemaBytes());
+        outputs.put("schema/appchain-component-catalog-snapshot.schema.json",
+                catalog.componentCatalogSnapshotSchemaBytes());
         outputs.put("ai/configure-yano-appchain/SKILL.md", catalog.aiSkillBytes());
         outputs.put("ai/configure-yano-appchain/agents/openai.yaml",
                 catalog.aiSkillOpenAiBytes());
@@ -212,7 +230,7 @@ final class AppChainProjectRenderer {
                     utf8(nodeYaml(resolution, index, members, layout,
                             resolvedConfigDigest, catalog.digests().get("releaseIndex"))));
             outputs.put("secrets/node" + index + ".env.example",
-                    utf8(secretExample(index)));
+                    utf8(secretExample(resolution, index)));
         }
         outputs.put("secrets/README.md", utf8(secretsReadme(resolution)));
         outputs.put("secrets/.gitignore", utf8("*.env\n!.gitignore\n!*.env.example\n"));
@@ -220,6 +238,14 @@ final class AppChainProjectRenderer {
         outputs.put("docs/TRUST.md", utf8(trustDocumentation(resolution)));
         outputs.put("docs/BOOTSTRAP.md", utf8(bootstrapDocumentation(resolution)));
         outputs.put("docs/VERIFY.md", utf8(verificationDocumentation(resolution)));
+        outputs.put("docs/PREREQUISITES.md", utf8(prerequisiteDocumentation(resolution)));
+        outputs.put("plans/prerequisites.yaml", prerequisitePlan(resolution));
+        if (usesRoles(resolution)) {
+            outputs.put("bootstrap/role-approvals-plan.yaml",
+                    utf8(roleBootstrapPlan(resolution)));
+            outputs.put("bootstrap/README.md",
+                    utf8(roleBootstrapDocumentation(resolution)));
+        }
         outputs.put("plugins/README.md", utf8(pluginDocumentation(resolution)));
         outputs.put("scripts/validate", utf8(validateScript()));
         outputs.put("ci/verify", utf8(ciVerifyScript()));
@@ -249,6 +275,11 @@ final class AppChainProjectRenderer {
         List<String> hosts = resolution.blueprint().spec().chains().getFirst()
                 .topology().nodeHosts();
         return hosts != null && !hosts.isEmpty();
+    }
+
+    private static boolean usesRoles(AppChainProjectModel.Resolution resolution) {
+        return resolution.selectedCapabilities().contains("state:role-approvals")
+                || resolution.selectedCapabilities().contains("state:role-evidence");
     }
 
     static String yamlConfig(Map<String, String> values) {
@@ -319,10 +350,111 @@ final class AppChainProjectRenderer {
         return yamlConfig(values);
     }
 
-    private static String secretExample(int node) {
-        return "# Copy to node" + node + ".env, chmod 600, and provide a private seed/reference.\n"
-                + "YANO_APPCHAIN_SIGNING_KEY=\n"
-                + "YANO_APPCHAIN_API_KEYS=\n";
+    private String secretExample(AppChainProjectModel.Resolution resolution, int node) {
+        TreeSet<String> references = new TreeSet<>();
+        references.add("YANO_APPCHAIN_SIGNING_KEY");
+        references.add("YANO_APPCHAIN_API_KEYS");
+        for (String capabilityId : resolution.selectedCapabilities()) {
+            references.addAll(safeMap(catalog.capability(capabilityId).secretReferences()).values());
+        }
+        StringBuilder example = new StringBuilder("# Copy to node")
+                .append(node)
+                .append(".env, chmod 600, and provide private values or references.\n");
+        references.forEach(reference -> example.append(reference).append("=\n"));
+        return example.toString();
+    }
+
+    private byte[] prerequisitePlan(AppChainProjectModel.Resolution resolution)
+            throws IOException {
+        Map<String, Object> plan = new LinkedHashMap<>();
+        plan.put("apiVersion", AppChainProjectModel.API_VERSION);
+        plan.put("kind", "AppChainPrerequisitePlan");
+        plan.put("recipe", resolution.recipe().id());
+        plan.put("primaryOutcome", resolution.recipe().primaryOutcome());
+        plan.put("firstCommand", resolution.recipe().firstCommand());
+        plan.put("verificationQuery", resolution.recipe().verificationQuery());
+        plan.put("acceptanceScenario", resolution.recipe().acceptanceScenario());
+        List<Map<String, Object>> artifacts = new ArrayList<>();
+        for (String artifactId : resolution.artifacts()) {
+            AppChainProjectModel.Artifact artifact = catalog.artifact(artifactId);
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("id", artifact.id());
+            item.put("availability", artifact.availability());
+            item.put("bundleId", artifact.bundleId());
+            item.put("nativePosture", artifact.nativePosture());
+            artifacts.add(Map.copyOf(item));
+        }
+        plan.put("artifacts", List.copyOf(artifacts));
+        List<Map<String, Object>> capabilities = new ArrayList<>();
+        for (String capabilityId : resolution.selectedCapabilities()) {
+            AppChainProjectModel.Capability capability = catalog.capability(capabilityId);
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("id", capability.id());
+            item.put("scope", capability.effectiveScope());
+            item.put("availability", capability.availability());
+            item.put("externalPrerequisites", safeList(capability.externalPrerequisites()));
+            item.put("bootstrapRequirements", safeList(capability.bootstrapRequirements()));
+            item.put("nonSecretAnswers", safeList(capability.nonSecretAnswers()));
+            item.put("secretReferences", new TreeSet<>(
+                    safeMap(capability.secretReferences()).values()));
+            item.put("documentation", capability.documentation());
+            item.put("acceptanceScenario", capability.acceptanceScenario());
+            capabilities.add(Map.copyOf(item));
+        }
+        plan.put("capabilities", List.copyOf(capabilities));
+        plan.put("readinessStages", List.of(
+                "CONFIG_VALID", "ARTIFACTS_READY", "IDENTITIES_READY",
+                "RUNTIME_STARTABLE", "APPLICATION_BOOTSTRAPPED", "EXECUTORS_READY",
+                "EXTERNAL_TARGETS_READY", "OUTCOME_READY"));
+        return yaml.writerWithDefaultPrettyPrinter().writeValueAsBytes(plan);
+    }
+
+    private String prerequisiteDocumentation(AppChainProjectModel.Resolution resolution) {
+        StringBuilder document = new StringBuilder("""
+                # Artifacts and prerequisites
+
+                This file is generated from the release-pinned capability catalog. `BUNDLED`
+                artifacts are present in the named Yano distribution. `FIRST_PARTY_OPTIONAL`
+                and `EXPERIMENTAL` artifacts require explicit installation (or native-image
+                inclusion) and remain pending until `doctor` verifies the final distribution.
+                """);
+        document.append("Primary outcome: ")
+                .append(resolution.recipe().primaryOutcome()).append("\n\n")
+                .append("First command: `").append(resolution.recipe().firstCommand())
+                .append("`\n\nVerification: `")
+                .append(resolution.recipe().verificationQuery())
+                .append("`\n\n## Artifacts\n\n")
+                .append("| Artifact | Availability | Native posture |\n")
+                .append("|---|---|---|\n");
+        for (String artifactId : resolution.artifacts()) {
+            AppChainProjectModel.Artifact artifact = catalog.artifact(artifactId);
+            document.append("| `").append(artifact.id()).append("` | ")
+                    .append(artifact.availability()).append(" | ")
+                    .append(artifact.nativePosture()).append(" |\n");
+        }
+        document.append("\n## Capability readiness\n\n");
+        for (String capabilityId : resolution.selectedCapabilities()) {
+            AppChainProjectModel.Capability capability = catalog.capability(capabilityId);
+            document.append("### `").append(capability.id()).append("`\n\n")
+                    .append(capability.description()).append("\n\n")
+                    .append("- Availability: `").append(capability.availability())
+                    .append("`; maturity: `").append(capability.maturity())
+                    .append("`; scope: `").append(capability.effectiveScope()).append("`.\n")
+                    .append("- External prerequisites: ")
+                    .append(orNone(capability.externalPrerequisites())).append(".\n")
+                    .append("- Bootstrap requirements: ")
+                    .append(orNone(capability.bootstrapRequirements())).append(".\n")
+                    .append("- Documentation: `").append(capability.documentation())
+                    .append("`.\n\n");
+        }
+        document.append("Run `./yano.sh appchain doctor . --distribution <release>` and resolve "
+                + "each readiness stage in order. Never put secret values in the blueprint, "
+                + "lock, or shared consensus configuration.\n");
+        return document.toString();
+    }
+
+    private static String orNone(List<String> values) {
+        return values == null || values.isEmpty() ? "none" : String.join(", ", values);
     }
 
     private static String ciVerifyScript() {
@@ -467,6 +599,129 @@ final class AppChainProjectRenderer {
                 : "member identities are pinned and ready for operator verification.");
     }
 
+    private static String roleBootstrapPlan(AppChainProjectModel.Resolution resolution) {
+        String chainId = resolution.blueprint().spec().chains().getFirst().chainId();
+        String profile = resolution.selectedCapabilities().contains("state:role-evidence")
+                ? "role-evidence" : "role-approvals";
+        return """
+                # Generated non-secret planning template. Replace every REPLACE_* value.
+                apiVersion: yano.bloxbean.com/v1alpha1
+                kind: RoleBootstrapPlan
+                chainId: %s
+                profile: %s
+                idempotency:
+                  beforeEveryOperation: QUERY_COMMITTED_RECORD_AND_VERIFY_PROOF
+                  whenAbsent: PROPOSE_APPROVE_TO_THRESHOLD_AND_ACTIVATE
+                  whenExactRevisionAndValueMatch: SKIP_AND_RECORD_PROOF
+                  whenRevisionOrValueDiffers: FAIL_CLOSED
+                  replacement: FORBIDDEN
+                organizations:
+                  - organizationId: organization-a
+                    revision: 1
+                    status: ACTIVE
+                    metadataCommitment: REPLACE_64_HEX_OR_EMPTY
+                  - organizationId: organization-b
+                    revision: 1
+                    status: ACTIVE
+                    metadataCommitment: REPLACE_64_HEX_OR_EMPTY
+                actors:
+                  - actorId: proposer-a
+                    organizationId: organization-a
+                    revision: 1
+                    roles: [proposer]
+                    publicKeys:
+                      - keyId: proposer-key-v1
+                        publicKey: REPLACE_64_HEX
+                        validFromHeight: 1
+                        validUntilHeight: 0
+                        proofOfPossession: REQUIRED
+                  - actorId: reviewer-a
+                    organizationId: organization-b
+                    revision: 1
+                    roles: [reviewer]
+                    publicKeys:
+                      - keyId: reviewer-key-v1
+                        publicKey: REPLACE_64_HEX
+                        validFromHeight: 1
+                        validUntilHeight: 0
+                        proofOfPossession: REQUIRED
+                policies:
+                  - policyId: application-approval
+                    revision: 1
+                    proposerRoles: [proposer]
+                    clauses:
+                      - clauseId: reviewers
+                        role: reviewer
+                        minimumCount: 1
+                        distinctBy: ORGANIZATION
+                    rejectionMode: ANY_ELIGIBLE
+                    maximumLifetimeBlocks: 1000
+                governance:
+                  administrators: genesis-app-chain-members
+                  threshold: %d
+                  sequence: [PROPOSE, APPROVE_TO_THRESHOLD, ACTIVATE]
+                  proposalIdsMustBeUnique: true
+                verification:
+                  organization: organizations/{id}?revision={revision}
+                  actor: actors/{id}?revision={revision}
+                  policy: policies/{id}?revision={revision}
+                  proposal: proposals/{id}
+                  stats: stats
+                  proofs: responses include proofKey, recordValue, stateRoot, and committedHeight
+                """.formatted(chainId, profile, resolution.threshold());
+    }
+
+    private static String roleBootstrapDocumentation(
+            AppChainProjectModel.Resolution resolution) {
+        String chainId = resolution.blueprint().spec().chains().getFirst().chainId();
+        String bundle = resolution.selectedCapabilities().contains("state:role-evidence")
+                ? "com.bloxbean.cardano.yano.appchain.evidence-profile"
+                : "com.bloxbean.cardano.yano.appchain.role-workflow";
+        return """
+                # Role bootstrap and offline signing
+
+                Review 'role-approvals-plan.yaml'. It is a non-secret plan, not an automatically
+                trusted identity claim. Before every governed mutation, query the exact record
+                and revision; if it already matches, record the proof and skip it. If an existing
+                record differs, stop. Never replace it silently.
+
+                Keep each 32-byte Ed25519 seed in an owner-only file outside this project. These
+                commands read that file locally and print only a public key or canonical CBOR hex:
+
+                ```bash
+                ./yano.sh appchain role public-key --seed-file /owner-only/actor.seed
+                ./yano.sh appchain role key-proof --chain %s --actor proposer-a \\
+                  --actor-revision 1 --key proposer-key-v1 --public-key <64-hex> \\
+                  --valid-from-height 1 --valid-until-height 0 \\
+                  --seed-file /owner-only/actor.seed
+                ./yano.sh appchain role sign --action approve --chain %s \\
+                  --proposal proposal-001 --policy application-approval \\
+                  --policy-revision 1 --payload-domain com.example.order.v1 \\
+                  --payload-hash <64-hex> --deadline-height 1000 --actor reviewer-a \\
+                  --actor-revision 1 --key reviewer-key-v1 --clause reviewers \\
+                  --seed-file /owner-only/reviewer.seed
+                ```
+
+                Submit governance records on 'actors.command.v1' and actor proposal/decision
+                commands on 'role-approvals.command.v1'. The generic product stores and proves
+                the approved payload hash; it does not execute the payload or emit an effect.
+
+                Verify through the read-only domain API:
+
+                ```text
+                /api/v1/plugins/%s/organizations/{id}?chain=%s
+                /api/v1/plugins/%s/actors/{id}?chain=%s
+                /api/v1/plugins/%s/policies/{id}?chain=%s
+                /api/v1/plugins/%s/proposals/{id}?chain=%s
+                /api/v1/plugins/%s/stats?chain=%s
+                ```
+
+                Private keys never belong in the plan, node configuration, Studio, or Yano.
+                """.formatted(chainId, chainId,
+                bundle, chainId, bundle, chainId, bundle, chainId,
+                bundle, chainId, bundle, chainId);
+    }
+
     private static String verificationDocumentation(AppChainProjectModel.Resolution resolution) {
         return """
                 # Verification
@@ -491,8 +746,10 @@ final class AppChainProjectRenderer {
                 """.formatted(resolution.validationCoverage());
     }
 
-    private static String pluginDocumentation(AppChainProjectModel.Resolution resolution) {
+    private String pluginDocumentation(AppChainProjectModel.Resolution resolution) {
         boolean custom = resolution.selectedCapabilities().contains("state:custom-plugin");
+        boolean optional = resolution.artifacts().stream().anyMatch(artifact ->
+                !"BUNDLED".equals(catalog.artifact(artifact).availability()));
         return """
                 # Plugins
 
@@ -506,8 +763,14 @@ final class AppChainProjectRenderer {
                         + "envelope, run `./yano.sh appchain metadata verify` with a pinned vendor "
                         + "public key, and run doctor against the final distribution. A valid "
                         + "signature authenticates the binding but remains PARTIAL coverage."
-                : "All selected components are first-party artifacts declared by the release index.");
+                : optional
+                        ? "This project selects one or more non-bundled artifacts. Review "
+                                + "docs/PREREQUISITES.md, install the exact version-matched "
+                                + "bundle explicitly, and use doctor against the final distribution."
+                        : "All selected components are first-party artifacts bundled in the "
+                                + "named release distribution.");
     }
+
 
     private static String prepareDevnetScript() {
         return """
@@ -864,6 +1127,21 @@ final class AppChainProjectRenderer {
                 StandardOpenOption.WRITE);
     }
 
+    private static void writeComponentCatalogInput(
+            Path root, String name, byte[] bytes) throws IOException {
+        if (name == null || !name.matches("component-catalogs/[a-z][a-z0-9.-]{0,127}\\.json")
+                || bytes == null || bytes.length == 0
+                || bytes.length > MAX_GENERATED_FILE_BYTES) {
+            throw new IOException("Component catalog input name or size is invalid");
+        }
+        Path path = root.resolve(name).normalize();
+        if (!path.startsWith(root) || Files.exists(path, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IOException("Refusing unsafe or duplicate component catalog input");
+        }
+        Files.createDirectories(path.getParent());
+        Files.write(path, bytes, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
+    }
+
     private static Path resolveGenerated(Path root, String name) throws IOException {
         Path path = root.resolve(name).normalize();
         if (!path.startsWith(root) || name.startsWith("/") || name.contains("..")) {
@@ -921,15 +1199,25 @@ final class AppChainProjectRenderer {
         }
     }
 
-    private static void requireBlueprintOnly(Path root) throws IOException {
-        try (var entries = Files.list(root)) {
-            List<Path> unexpected = entries
-                    .filter(path -> !BLUEPRINT_FILE.equals(path.getFileName().toString()))
-                    .limit(2)
-                    .toList();
+    private static void requireBlueprintAndCatalogInputsOnly(
+            Path root, AppChainProjectModel.Blueprint blueprint) throws IOException {
+        Set<String> allowed = new java.util.TreeSet<>();
+        allowed.add(BLUEPRINT_FILE);
+        if (blueprint.spec() != null) {
+            for (AppChainProjectModel.ComponentCatalogRef reference
+                    : safeList(blueprint.spec().componentCatalogs())) {
+                allowed.add(reference.path());
+            }
+        }
+        try (var entries = Files.walk(root)) {
+            List<String> unexpected = entries.filter(path -> !path.equals(root))
+                    .filter(path -> !Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS))
+                    .map(path -> root.relativize(path).toString().replace('\\', '/'))
+                    .filter(path -> !allowed.contains(path))
+                    .limit(2).toList();
             if (!unexpected.isEmpty()) {
-                throw new IOException("A blueprint without a lock can only be rendered in a "
-                        + "directory containing appchain.yaml");
+                throw new IOException("A blueprint without a lock may contain only appchain.yaml "
+                        + "and its declared component-catalogs inputs");
             }
         }
     }
@@ -948,8 +1236,17 @@ final class AppChainProjectRenderer {
         return value.getBytes(StandardCharsets.UTF_8);
     }
 
+    private static <T> List<T> safeList(List<T> values) {
+        return values == null ? List.of() : values;
+    }
+
+    private static <K, V> Map<K, V> safeMap(Map<K, V> values) {
+        return values == null ? Map.of() : values;
+    }
+
     private static ObjectMapper configured(ObjectMapper mapper) {
         return mapper.enable(JsonParser.Feature.STRICT_DUPLICATE_DETECTION)
+                .enable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
                 .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
                 .enable(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS);
     }

@@ -9,9 +9,9 @@
   "recipes": [
     "audit-log",
     "owned-registry",
-    "evidence-publication",
     "approval-workflow",
-    "role-evidence",
+    "role-approval",
+    "evidence-ledger",
     "custom-plugin"
   ],
   "artifacts": [
@@ -19,7 +19,8 @@
     "appchain-stdlib",
     "appchain-evidence-registry",
     "appchain-composite",
-    "appchain-role-workflow"
+    "appchain-role-workflow",
+    "appchain-evidence-profile"
   ],
   "distributions": [
     {
@@ -27,21 +28,24 @@
       "runtimeType": "jvm",
       "archivePattern": "yano-{version}.zip",
       "tooling": "bundled",
-      "platforms": ["java-25"]
+      "platforms": ["java-25"],
+      "artifacts": ["yano-runtime", "appchain-stdlib", "appchain-evidence-registry", "appchain-composite", "appchain-role-workflow", "appchain-evidence-profile"]
     },
     {
       "id": "native-unix",
       "runtimeType": "native",
       "archivePattern": "yano-native-{version}-{platform}.zip",
       "tooling": "external-version-matched",
-      "platforms": ["linux-amd64", "linux-aarch64", "macos-aarch64"]
+      "platforms": ["linux-amd64", "linux-aarch64", "macos-aarch64"],
+      "artifacts": ["yano-runtime", "appchain-stdlib", "appchain-evidence-registry", "appchain-composite", "appchain-role-workflow", "appchain-evidence-profile"]
     },
     {
       "id": "native-windows",
       "runtimeType": "native",
       "archivePattern": "yano-native-{version}-windows-{arch}.zip",
       "tooling": "external-version-matched",
-      "platforms": ["windows-amd64"]
+      "platforms": ["windows-amd64"],
+      "artifacts": ["yano-runtime", "appchain-stdlib", "appchain-evidence-registry", "appchain-composite", "appchain-role-workflow", "appchain-evidence-profile"]
     }
   ]
 }

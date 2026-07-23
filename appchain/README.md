@@ -34,21 +34,23 @@ Don't look for feature docs here — they're centralized:
 
 | Module (`:project`) | Path | Purpose |
 |---|---|---|
+| `appchain-stdlib-contracts` | `appchain-stdlib-contracts/` | No-SPI bounded command, state-key, state-value, and verification contracts for the four stock machines. |
 | `appchain-stdlib` | `appchain-stdlib/` | Ready `AppStateMachine`s selected by id: `kv-registry`, `approvals`, `balances`, `doc-trail` (`ordered-log` is built into `runtime`). Ships in the distribution. |
-| `appchain-composite-contracts` | `appchain-composite-contracts/` | No-SPI profile commitment, physical-key mapping, aggregate-query wire, and stock workflow submission contracts. |
+| `appchain-composite-contracts` | `appchain-composite-contracts/` | No-SPI generic profile commitment, physical-key mapping, aggregate-query wire, and governance contracts. |
 | `appchain-composite-client` | `appchain-composite-client/` | Offline finality, one-root MPF, epoch-chain, and caller authorization-policy verification for governed composite profiles. |
-| `appchain-composite` | `appchain-composite/` | Deterministic component composition plus stock `evidence-v1-gated` and compatibility `evidence-v1` profiles, with fixed or governed profile mode. See its README for custom bundle rules. |
+| `appchain-composite` | `appchain-composite/` | Generic deterministic component composition with fixed or governed profile mode. It contains no product presets or plugin provider. |
 | `appchain-client` | `appchain-client/` | Java client SDK — REST + SSE + client-side proof verification. |
 | `appchain-testkit` | `appchain-testkit/` | JUnit 5 `@AppChainCluster` embedded multi-node clusters for tests. |
 | `appchain-anchor-onchain` | `onchain/appchain-anchor-onchain/` | **On-chain anchor validators** (Plutus V3), authored in Java via julc — the default. See "On-chain artifacts" below. |
 | _(Aiken twin)_ | `onchain/aiken/appchain-anchor/` | The same validators in Aiken — the opt-in, auditor-familiar alternative (same ABI). Its own README covers the Aiken build. |
 | `appchain-integration-contracts` | `appchain-integration-contracts/` | Provider-neutral connector wire contracts, CDDL, and golden vectors. |
-| `appchain-evidence-contracts` | `examples/appchain-evidence-contracts/` | Frozen, no-plugin evidence command/query/state codecs. |
-| `appchain-evidence-registry` | `examples/appchain-evidence-registry/` | Reference evidence state machine, domain API, and composite component implementation. |
-| `appchain-evidence-client` | `examples/appchain-evidence-client/` | Proof-aware typed evidence client for standalone or profile-bound composite chains. |
+| `appchain-evidence-contracts` | `products/appchain-evidence-contracts/` | Frozen, no-plugin evidence command/query/state codecs. |
+| `appchain-evidence-registry` | `products/appchain-evidence-registry/` | First-party evidence state machine and domain API. |
+| `appchain-evidence-client` | `products/appchain-evidence-client/` | Proof-aware typed evidence client for standalone or profile-bound composite chains. |
+| `appchain-evidence-profile` | `products/appchain-evidence-profile/` | First-party `composite` evidence presets, `role-evidence` provider, evidence workflows, and evidence role API. |
 | `appchain-evidence-demo-runner` | `examples/appchain-evidence-demo-runner/` | Credential-separated no-code scenario runner and read-only report UI. |
 | `appchain-role-workflow-contracts` | `appchain-role-workflow-contracts/` | Frozen ADR-019 organization/actor/policy/approval codecs, CDDL, signing CLI, and independently verified golden vectors. |
-| `appchain-role-workflow` | `appchain-role-workflow/` | Reusable actor registry and role-aware approvals plus the manifested `role-evidence` stock preset and proof-oriented domain API. |
+| `appchain-role-workflow` | `appchain-role-workflow/` | Reusable actor registry, role-aware approvals, and generic role approval workflow. It contains no evidence routes or provider. |
 | `appchain-kafka` | `extensions/appchain-kafka/` | Plugin: finalized blocks and acknowledged `kafka.publish` effects → Kafka topics. |
 | `appchain-objectstore-s3` | `extensions/appchain-objectstore-s3/` | Plugin: immutable, versioned `object.put` promotion for tested S3-compatible stores. |
 | `appchain-ipfs` | `extensions/appchain-ipfs/` | Plugin: reconciled, acknowledged `ipfs.pin` effects against a configured Kubo node. |

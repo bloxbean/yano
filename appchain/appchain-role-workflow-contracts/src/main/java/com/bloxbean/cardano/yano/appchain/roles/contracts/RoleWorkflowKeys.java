@@ -32,11 +32,6 @@ public final class RoleWorkflowKeys {
         return key("q/" + RoleWorkflowIdentifiers.id(id, "proposalId"));
     }
     public static byte[] approvalStats() { return key("s/proposals/v1"); }
-    public static byte[] evidenceApproval(String evidenceId, long businessVersion) {
-        if (businessVersion < 1) throw new IllegalArgumentException("businessVersion must be positive");
-        return key("e/" + RoleWorkflowIdentifiers.id(evidenceId, "evidenceId")
-                + "/v/" + businessVersion + "/approval");
-    }
     public static byte[] governedMutation(String id) {
         return key("g/" + RoleWorkflowIdentifiers.id(id, "mutationId"));
     }

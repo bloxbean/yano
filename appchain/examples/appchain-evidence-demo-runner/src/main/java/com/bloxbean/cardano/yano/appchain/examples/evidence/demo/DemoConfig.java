@@ -1,6 +1,6 @@
 package com.bloxbean.cardano.yano.appchain.examples.evidence.demo;
 
-import com.bloxbean.cardano.yano.appchain.composite.contracts.stock.EvidenceWorkflowCapacityV1;
+import com.bloxbean.cardano.yano.appchain.evidence.profile.contracts.EvidenceWorkflowCapacityV1;
 
 import java.io.IOException;
 import java.net.URI;

@@ -85,12 +85,12 @@ def buildTimePluginBundles = [
                  expectedManifestVersion: '1.0.0'],
         'com.bloxbean.cardano.yano.appchain.stdlib':
                 [projectPath: ':appchain-stdlib', includeProvided: false],
-        'com.bloxbean.cardano.yano.appchain.composite':
-                [projectPath: ':appchain-composite', includeProvided: false],
+        'com.bloxbean.cardano.yano.appchain.evidence-registry':
+                [projectPath: ':appchain-evidence-registry', includeProvided: true],
         'com.bloxbean.cardano.yano.appchain.role-workflow':
                 [projectPath: ':appchain-role-workflow', includeProvided: false],
-        'com.bloxbean.cardano.yano.appchain.evidence-registry':
-                [projectPath: ':appchain-evidence-registry', includeProvided: true]
+        'com.bloxbean.cardano.yano.appchain.evidence-profile':
+                [projectPath: ':appchain-evidence-profile', includeProvided: false]
 ]
 if (includeFirstPartyPluginBundles) {
     buildTimePluginBundles.putAll([
@@ -163,12 +163,16 @@ dependencies {
     implementation(project(':appchain-stdlib')) {
         exclude group: 'io.netty', module: 'netty-all'
     }
-    // Stock deterministic composition and evidence-v1 preset (ADR-013.2).
+    // Generic deterministic composition framework (ADR-013.2/ADR-022).
     implementation(project(':appchain-composite')) {
         exclude group: 'io.netty', module: 'netty-all'
     }
-    // ADR-019 domain actors, role-aware approvals, and role-evidence preset.
+    // Generic ADR-019 domain actors and role-aware approvals.
     implementation(project(':appchain-role-workflow')) {
+        exclude group: 'io.netty', module: 'netty-all'
+    }
+    // First-party evidence presets and evidence-specific role workflow assembly.
+    implementation(project(':appchain-evidence-profile')) {
         exclude group: 'io.netty', module: 'netty-all'
     }
     // Optional T3 integrations stay out of the stock artifact. Native/custom
@@ -452,29 +456,32 @@ tasks.register('verifyAppChainReleaseCapabilityIndex') {
     def releaseIndexFile = project(':appchain-devtools').layout.buildDirectory.file(
             'generated/appchain-metadata/appchain-dx/v1alpha1/'
                     + 'appchain-release-capability-index.json')
+    def capabilityCatalogFile = project(':appchain-devtools').layout.buildDirectory.file(
+            'generated/appchain-metadata/appchain-dx/v1alpha1/'
+                    + 'appchain-capability-catalog.json')
     def pluginIndexFile = generatedPluginCatalogDir.map {
         it.file('META-INF/yano-plugin-index-v1.json')
     }
-    inputs.files(releaseIndexFile, pluginIndexFile)
+    inputs.files(releaseIndexFile, capabilityCatalogFile, pluginIndexFile)
     doLast {
         def releaseIndex = new groovy.json.JsonSlurper().parse(releaseIndexFile.get().asFile)
+        def capabilityCatalog = new groovy.json.JsonSlurper().parse(
+                capabilityCatalogFile.get().asFile)
         def pluginIndex = new groovy.json.JsonSlurper().parse(pluginIndexFile.get().asFile)
         def packagedBundleIds = pluginIndex.bundles.collect { it.manifest?.id }.toSet()
-        def artifactBundles = [
-                'appchain-stdlib': 'com.bloxbean.cardano.yano.appchain.stdlib',
-                'appchain-evidence-registry':
-                        'com.bloxbean.cardano.yano.appchain.evidence-registry',
-                'appchain-composite': 'com.bloxbean.cardano.yano.appchain.composite',
-                'appchain-role-workflow':
-                        'com.bloxbean.cardano.yano.appchain.role-workflow'
-        ]
-        def missing = artifactBundles.findAll { artifact, bundle ->
-            releaseIndex.artifacts.contains(artifact) && !packagedBundleIds.contains(bundle)
+        def bundledArtifacts = capabilityCatalog.artifacts.findAll {
+            it.availability == 'BUNDLED'
         }
-        def expectedArtifacts = artifactBundles.keySet() + ['yano-runtime']
-        if (releaseIndex.artifacts.toSet() != expectedArtifacts.toSet() || !missing.isEmpty()) {
+        def expectedArtifacts = bundledArtifacts.collect { it.id }.toSet()
+        def packagedCatalogBundles = bundledArtifacts.findAll {
+            !it.bundleId.startsWith('builtin:') && !it.bundleId.startsWith('library:')
+        }.collect { it.bundleId }.toSet()
+        def missingBundles = packagedCatalogBundles - packagedBundleIds
+        if (releaseIndex.artifacts.toSet() != expectedArtifacts
+                || !missingBundles.isEmpty()) {
             throw new GradleException(
-                    "Release capability index does not match packaged artifacts: ${missing}")
+                    'Release capability index does not match the catalog or packaged bundles: '
+                            + "missing=${missingBundles}")
         }
     }
 }
@@ -1915,8 +1922,10 @@ tasks.register('yanoDistZip', Zip) {
         from(project(':appchain-devtools').layout.buildDirectory.dir(
                 'generated/appchain-metadata/appchain-dx/v1alpha1')) {
             into 'config/schema'
-            include 'appchain-metadata-trust.schema.json',
-                    'appchain-gitops-lock.schema.json'
+            include '*.json'
+            // Doctor treats this release identity as a singleton. Studio is
+            // the distribution's canonical loose-file copy.
+            exclude 'appchain-release-capability-index.json'
         }
         // App-chain cluster demo/eval scripts: cluster.sh auto-detects this
         // release layout (yano.jar + config/ beside appchain-cluster/), so an

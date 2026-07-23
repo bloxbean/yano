@@ -37,9 +37,11 @@ tasks.register('verifyRoleWorkflowContractArtifact') {
             if (jar.entries().any { entry ->
                 entry.name.startsWith('META-INF/services/')
                         || entry.name.startsWith('META-INF/yano/plugins/')
+                        || entry.name.startsWith(
+                        'com/bloxbean/cardano/yano/appchain/evidence/')
             }) {
                 throw new GradleException(
-                        'Role-workflow contracts must not contribute plugin services')
+                        'Role-workflow contracts must contain only generic no-SPI role contracts')
             }
         }
     }

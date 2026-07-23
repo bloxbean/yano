@@ -1,0 +1,98 @@
+{
+  "schemaVersion": "v1alpha1",
+  "schemaStatus": "alpha",
+  "stabilizationDecision": "RETAIN_V1ALPHA1",
+  "reviewedOn": "2026-07-22",
+  "externalThirdPartyUsage": false,
+  "cleanRoomExercises": [
+    "final-distribution-generated-project-matrix",
+    "temporary-host-project-runtime-restart-and-drift",
+    "temporary-compose-and-gitops-render-matrix",
+    "signed-custom-plugin-fixture"
+  ],
+  "knownLimitations": [
+    "No independently maintained third-party catalog has supplied compatibility evidence yet.",
+    "Preview role recipes have module-level outcome and packaged-provider evidence, not an external operator field trial.",
+    "Native runtime execution remains a platform-specific release gate; the portable matrix verifies generation, packaging, and declared compatibility."
+  ],
+  "capabilityEvidence": {
+    "state:ordered-log": ["appchain/appchain-devtools/src/test/scripts/final-distribution-stock-outcomes.sh#recipe-audit-log"],
+    "state:kv-registry": ["appchain/appchain-devtools/src/test/scripts/final-distribution-stock-outcomes.sh#recipe-owned-registry"],
+    "state:approval-workflow": ["appchain/appchain-devtools/src/test/scripts/final-distribution-stock-outcomes.sh#recipe-approval-workflow"],
+    "state:balances": ["appchain/appchain-stdlib/src/test/java/com/bloxbean/cardano/yano/appchain/stdlib/BalancesAndDocTrailTest.java#balances_mintTransfer_nonNegative_provable"],
+    "state:doc-trail": ["appchain/appchain-stdlib/src/test/java/com/bloxbean/cardano/yano/appchain/stdlib/BalancesAndDocTrailTest.java#docTrail_appendOnlyHistory_provableHead"],
+    "state:evidence-registry": ["appchain/products/appchain-evidence-registry/src/test/java/com/bloxbean/cardano/yano/appchain/examples/evidence/EvidenceRegistryStateMachineTest.java#submitResultsSameBlockNotifyAndRepublishFormOneDeterministicWorkflow"],
+    "state:role-approvals": ["appchain/appchain-role-workflow/src/test/java/com/bloxbean/cardano/yano/appchain/roles/RoleWorkflowTest.java#decision"],
+    "state:role-evidence": ["appchain/products/appchain-evidence-profile/src/test/java/com/bloxbean/cardano/yano/appchain/evidence/profile/RoleEvidencePresetTest.java#release"],
+    "state:custom-plugin": ["appchain/appchain-devtools/src/test/java/com/bloxbean/cardano/yano/appchain/devtools/AppChainCustomComponentCatalogTest.java#reviewedJvmArtifactIsVisibleThroughItsServiceLoaderBoundary"],
+    "state:zk-gate": ["appchain/extensions/appchain-zk/src/test/java/com/bloxbean/cardano/yano/appchain/zk/ZkGateStateMachineTest.java#gate_admitsValidProof_rejectsInvalidAndNonProof"],
+    "state:zk-membership": ["appchain/extensions/appchain-zk/src/test/java/com/bloxbean/cardano/yano/appchain/zk/ZkMembershipStateMachineTest.java#anonymousSubmission_admittedOnce_perNullifier"],
+    "state:credential-registry": ["appchain/extensions/appchain-zk/src/test/java/com/bloxbean/cardano/yano/appchain/zk/BbsCredentialRegistryTest.java#issue_record_disclose_verify"],
+    "sequencer:fixed": ["runtime/src/test/java/com/bloxbean/cardano/yano/runtime/appchain/AppChainSequencingIntegrationTest.java#sequencer_finalizesBlocks_identicalRoots_andSurvivesRestart"],
+    "sequencer:rotating": ["runtime/src/test/java/com/bloxbean/cardano/yano/runtime/appchain/AppChainRotationIntegrationTest.java#rotation_survivesProposerCrash"],
+    "membership:static": ["runtime/src/test/java/com/bloxbean/cardano/yano/runtime/appchain/AppChainTwoNodeIntegrationTest.java#twoNodes_exchangeAuthenticatedMessages_bothDirections"],
+    "membership:governed": ["runtime/src/test/java/com/bloxbean/cardano/yano/runtime/appchain/GovernedMembershipIntegrationTest.java#thresholdApproval_activates_andLateJoinerDerivesHistory"],
+    "l1:slot-feed": ["runtime/src/test/java/com/bloxbean/cardano/yano/runtime/appchain/AppChainRotationIntegrationTest.java#feedSlot"],
+    "anchor:metadata": ["runtime/src/test/java/com/bloxbean/cardano/yano/runtime/appchain/AnchorServiceTest.java#observedConfirmationRetriesOnTickWithoutReplayOrResubmit"],
+    "anchor:script": ["runtime/src/test/java/com/bloxbean/cardano/yano/runtime/appchain/ScriptAnchorServiceTest.java#First real anchor"],
+    "observer:address-deposit": ["runtime/src/test/java/com/bloxbean/cardano/yano/runtime/appchain/L1ObservationServiceTest.java#observers_computeDepositAndMetadataClaims"],
+    "observer:metadata-label": ["runtime/src/test/java/com/bloxbean/cardano/yano/runtime/appchain/L1ObservationServiceTest.java#observers_computeDepositAndMetadataClaims"],
+    "effects:runtime": ["runtime/src/test/java/com/bloxbean/cardano/yano/runtime/appchain/FxEffectsM2Test.java#retry", "runtime/src/test/java/com/bloxbean/cardano/yano/runtime/appchain/FxEffectsM3Test.java#expiry"],
+    "effects:on-approved": ["appchain/appchain-stdlib/src/test/java/com/bloxbean/cardano/yano/appchain/stdlib/ApprovalsGenericEffectTest.java#allTerminalOutcomesPreserveApprovedDecisionAndExactEvidence"],
+    "executor:webhook": ["runtime/src/test/java/com/bloxbean/cardano/yano/runtime/appchain/AppChainWebhookTest.java#webhookSink_deliversInOrder_withRetry_andListenerFires"],
+    "sink:webhook": ["runtime/src/test/java/com/bloxbean/cardano/yano/runtime/appchain/AppChainWebhookTest.java#webhookSink_deliversInOrder_withRetry_andListenerFires"],
+    "executor:kafka": ["appchain/extensions/appchain-kafka/src/test/java/com/bloxbean/cardano/yano/appchain/kafka/effects/KafkaEffectExecutorConformanceTest.java#conformance"],
+    "sink:kafka": ["appchain/extensions/appchain-kafka/src/test/java/com/bloxbean/cardano/yano/appchain/kafka/KafkaStreamSinkTest.java#delivery"],
+    "executor:objectstore-s3": ["appchain/extensions/appchain-objectstore-s3/src/test/java/com/bloxbean/cardano/yano/appchain/objectstore/s3/effects/ObjectStoreS3EffectExecutorConformanceTest.java#conformance"],
+    "executor:ipfs": ["appchain/extensions/appchain-ipfs/src/test/java/com/bloxbean/cardano/yano/appchain/ipfs/effects/IpfsEffectExecutorConformanceTest.java#IpfsConformanceSpec"],
+    "executor:cardano-payment": ["appchain/extensions/appchain-effects-cardano/src/test/java/com/bloxbean/cardano/yano/appchain/effects/cardano/PaymentCommandTest.java#payment"],
+    "runtime:composite": ["appchain/appchain-composite/src/test/java/com/bloxbean/cardano/yano/appchain/composite/CompositeRoutingAndEffectsTest.java#routesOnlyExactActiveTopicsInProfileOrderAndEnforcesPhysicalNamespaces"],
+    "ui:console": ["app/src/test/java/com/bloxbean/cardano/yano/app/AppChainStatusPageTest.java#appChainStatusPage_isServed"]
+  },
+  "recipes": [
+    {
+      "id": "audit-log", "maturity": "stable", "availability": "BUNDLED",
+      "runtimeTypes": ["jvm", "native"], "deploymentTargets": ["host", "docker-compose"],
+      "gitOpsTargets": ["helm", "kustomize"], "outcomeLevel": "PACKAGED_RUNTIME",
+      "acceptanceScenario": "recipe-audit-log",
+      "evidence": ["appchain/appchain-devtools/src/test/scripts/final-distribution-stock-outcomes.sh#recipe-audit-log", "appchain/appchain-devtools/src/test/scripts/final-distribution-runtime-acceptance.sh#restart"]
+    },
+    {
+      "id": "owned-registry", "maturity": "stable", "availability": "BUNDLED",
+      "runtimeTypes": ["jvm", "native"], "deploymentTargets": ["host", "docker-compose"],
+      "gitOpsTargets": ["helm", "kustomize"], "outcomeLevel": "PACKAGED_RUNTIME",
+      "acceptanceScenario": "recipe-owned-registry",
+      "evidence": ["appchain/appchain-devtools/src/test/scripts/final-distribution-stock-outcomes.sh#recipe-owned-registry"]
+    },
+    {
+      "id": "approval-workflow", "maturity": "stable", "availability": "BUNDLED",
+      "runtimeTypes": ["jvm", "native"], "deploymentTargets": ["host", "docker-compose"],
+      "gitOpsTargets": ["helm", "kustomize"], "outcomeLevel": "PACKAGED_RUNTIME",
+      "acceptanceScenario": "recipe-approval-workflow",
+      "evidence": ["appchain/appchain-devtools/src/test/scripts/final-distribution-stock-outcomes.sh#recipe-approval-workflow"]
+    },
+    {
+      "id": "role-approval", "maturity": "preview", "availability": "BUNDLED",
+      "runtimeTypes": ["jvm", "native"], "deploymentTargets": ["host", "docker-compose"],
+      "gitOpsTargets": ["helm", "kustomize"],
+      "outcomeLevel": "MODULE_OUTCOME_AND_PACKAGED_PROVIDER",
+      "acceptanceScenario": "recipe-role-approval",
+      "evidence": ["appchain/appchain-role-workflow/src/test/java/com/bloxbean/cardano/yano/appchain/roles/RoleWorkflowTest.java#decision", "app/build.gradle#packagedJvmPluginCatalogSmoke"]
+    },
+    {
+      "id": "evidence-ledger", "maturity": "preview", "availability": "BUNDLED",
+      "runtimeTypes": ["jvm", "native"], "deploymentTargets": ["host", "docker-compose"],
+      "gitOpsTargets": ["helm", "kustomize"],
+      "outcomeLevel": "MODULE_OUTCOME_AND_PACKAGED_PROVIDER",
+      "acceptanceScenario": "recipe-evidence-ledger",
+      "evidence": ["appchain/products/appchain-evidence-profile/src/test/java/com/bloxbean/cardano/yano/appchain/evidence/profile/RoleEvidencePresetTest.java#release", "app/build.gradle#packagedJvmPluginCatalogSmoke"]
+    },
+    {
+      "id": "custom-plugin", "maturity": "experimental", "availability": "REFERENCE",
+      "runtimeTypes": ["jvm"], "deploymentTargets": ["host", "docker-compose"],
+      "gitOpsTargets": ["helm", "kustomize"], "outcomeLevel": "OPERATOR_OWNED_REFERENCE",
+      "acceptanceScenario": "recipe-custom-plugin",
+      "evidence": ["appchain/appchain-devtools/src/test/java/com/bloxbean/cardano/yano/appchain/devtools/AppChainCustomComponentCatalogTest.java#reviewedJvmArtifactIsVisibleThroughItsServiceLoaderBoundary"]
+    }
+  ]
+}

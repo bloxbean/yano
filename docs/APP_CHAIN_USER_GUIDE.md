@@ -629,8 +629,9 @@ like any messages: `GET .../messages/by-topic/~l1%2Fdeposits`.
 The framework never interprets message bodies — a **state machine** does.
 Before writing one, check the standard library (section 9): registry,
 approvals, balances and document-trail machines ship in the distribution. The
-separate packaged role-workflow bundle also supplies the complete
-`role-evidence` preset for non-member business actors; see
+separate packaged role-workflow bundle supplies generic `role-approvals` for
+non-member business actors. The evidence-profile bundle supplies the complete
+`role-evidence` preset; see
 [Domain Actors and Role-Aware Approvals](APP_CHAIN_DOMAIN_ROLES.md).
 For everything else, implement
 `com.bloxbean.cardano.yano.api.appchain.AppStateMachine`:

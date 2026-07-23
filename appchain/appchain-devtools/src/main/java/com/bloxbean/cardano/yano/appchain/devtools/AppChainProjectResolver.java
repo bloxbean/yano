@@ -48,8 +48,21 @@ final class AppChainProjectResolver {
 
         LinkedHashSet<String> requested = new LinkedHashSet<>(safeList(recipe.capabilities()));
         requested.removeIf(id -> id.startsWith("sequencer:"));
+        requested.removeIf(id -> id.startsWith("membership:"));
         requested.add("sequencer:" + chain.topology().sequencing());
-        requested.addAll(safeList(chain.capabilities()));
+        requested.add("membership:" + chain.topology().membership());
+        for (String capabilityId : safeList(chain.capabilities())) {
+            AppChainProjectModel.Capability explicit = catalog.capability(capabilityId);
+            if (!explicit.effectiveSelectable()) {
+                throw new IllegalArgumentException("Capability " + capabilityId
+                        + " is not selectable in an app-chain blueprint");
+            }
+            if (catalog.isExternalCapability(capabilityId)
+                    && safeList(explicit.provides()).contains("state-machine")) {
+                requested.remove("state:custom-plugin");
+            }
+            requested.add(capabilityId);
+        }
 
         LinkedHashSet<String> selected = new LinkedHashSet<>();
         LinkedHashSet<String> implied = new LinkedHashSet<>();
@@ -58,6 +71,10 @@ final class AppChainProjectResolver {
             String id = queue.removeFirst();
             if (!selected.add(id)) continue;
             AppChainProjectModel.Capability capability = catalog.capability(id);
+            if ("distribution".equals(capability.effectiveScope())) {
+                throw new IllegalArgumentException("Distribution capability " + id
+                        + " is derived from the selected release and cannot be chain-selected");
+            }
             requireSupported(capability.runtimeTypes(), spec.runtime().type(),
                     "runtime", capability.id());
             requireSupported(capability.deploymentTargets(), spec.deployment().target(),
@@ -87,10 +104,15 @@ final class AppChainProjectResolver {
 
         Map<String, String> variables = new LinkedHashMap<>();
         variables.put("proposer", proposer);
-        variables.putAll(validatedAnswers(chain.answers()));
+        Map<String, String> answers = validatedAnswers(chain.answers());
+        validateAnswers(selected, recipe, answers);
+        variables.putAll(answers);
         TreeSet<String> sortedCapabilities = new TreeSet<>(selected);
         TreeSet<String> artifacts = new TreeSet<>();
         String maturity = recipe.maturity();
+        Map<String, String> nodeTemplate = new TreeMap<>();
+        nodeTemplate.put(prefix + "signing-key", "${YANO_APPCHAIN_SIGNING_KEY}");
+        nodeTemplate.put(prefix + "peers", "${YANO_APPCHAIN_PEERS}");
         for (String id : sortedCapabilities) {
             AppChainProjectModel.Capability capability = catalog.capability(id);
             artifacts.addAll(safeList(capability.artifacts()));
@@ -98,10 +120,22 @@ final class AppChainProjectResolver {
             for (Map.Entry<String, String> assignment : safeMap(capability.properties()).entrySet()) {
                 String key = prefix + assignment.getKey();
                 String value = expand(assignment.getValue(), variables);
-                String previous = consensus.putIfAbsent(key, value);
+                Map<String, String> target = "node".equals(capability.effectiveScope())
+                        ? nodeTemplate : consensus;
+                String previous = target.putIfAbsent(key, value);
                 if (previous != null && !previous.equals(value)) {
                     throw new IllegalArgumentException("Capabilities assign conflicting values to "
                             + assignment.getKey());
+                }
+            }
+            for (Map.Entry<String, String> reference
+                    : safeMap(capability.secretReferences()).entrySet()) {
+                String key = prefix + reference.getKey();
+                String value = "${" + reference.getValue() + "}";
+                String previous = nodeTemplate.putIfAbsent(key, value);
+                if (previous != null && !previous.equals(value)) {
+                    throw new IllegalArgumentException("Capabilities assign conflicting secret "
+                            + "references to " + reference.getKey());
                 }
             }
         }
@@ -118,9 +152,6 @@ final class AppChainProjectResolver {
         }
         materializeConsensusDefaults(consensus, prefix);
 
-        Map<String, String> nodeTemplate = new TreeMap<>();
-        nodeTemplate.put(prefix + "signing-key", "${YANO_APPCHAIN_SIGNING_KEY}");
-        nodeTemplate.put(prefix + "peers", "${YANO_APPCHAIN_PEERS}");
         validateWithRuntimeParser(consensus, nodeTemplate, chain.topology().members());
 
         return new AppChainProjectModel.Resolution(
@@ -180,8 +211,8 @@ final class AppChainProjectResolver {
         if (!Set.of("fixed", "rotating").contains(topology.sequencing())) {
             throw new IllegalArgumentException("Unsupported sequencing policy");
         }
-        if (!"static".equals(topology.membership())) {
-            throw new IllegalArgumentException("M1 supports static membership");
+        if (!Set.of("static", "governed").contains(topology.membership())) {
+            throw new IllegalArgumentException("Unsupported membership policy");
         }
         validatePortRange(topology.httpPortBase(), topology.members(), "HTTP");
         validatePortRange(topology.serverPortBase(), topology.members(), "server");
@@ -228,6 +259,28 @@ final class AppChainProjectResolver {
             validated.put(key, value);
         }
         return Map.copyOf(validated);
+    }
+
+    private void validateAnswers(
+            Set<String> selected,
+            AppChainProjectModel.Recipe recipe,
+            Map<String, String> answers) {
+        Set<String> required = new TreeSet<>(safeList(recipe.nonSecretAnswers()));
+        for (String id : selected) {
+            required.addAll(safeList(catalog.capability(id).nonSecretAnswers()));
+        }
+        Set<String> unexpected = new TreeSet<>(answers.keySet());
+        unexpected.removeAll(required);
+        if (!unexpected.isEmpty()) {
+            throw new IllegalArgumentException("Blueprint declares answers that are not owned by "
+                    + "the selected recipe/capabilities: " + unexpected);
+        }
+        Set<String> missing = new TreeSet<>(required);
+        missing.removeAll(answers.keySet());
+        if (!missing.isEmpty()) {
+            throw new IllegalArgumentException("Selected capabilities require non-secret answers: "
+                    + missing);
+        }
     }
 
     private void validateConflicts(Set<String> selected) {
@@ -284,6 +337,9 @@ final class AppChainProjectResolver {
         }
         suffix.put("members", String.join(",", syntheticMembers));
         suffix.put("signing-key", "b".repeat(64));
+        if ("true".equals(suffix.get("anchor.enabled"))) {
+            suffix.put("anchor.signing-key", "c".repeat(64));
+        }
         suffix.put("peers", "");
         if ("fixed".equals(suffix.get("sequencer.mode"))) {
             suffix.put("sequencer.proposer", syntheticMembers.getFirst());

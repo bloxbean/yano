@@ -7,6 +7,81 @@
 - **Outcome:** choose the correct extension level and deploy versioned business
   logic as a plugin JAR on the standard JVM distribution.
 
+## Start from a bounded scaffold
+
+Use the public launcher to create one small, buildable starting point. The
+four modes share the same runtime manifest, signed product-catalog, and
+ServiceLoader conventions:
+
+```bash
+./yano.sh appchain plugin scaffold \
+  --mode state-machine \
+  --id shipment \
+  --package com.example.shipment \
+  --yano-version 0.1.0-pre9 \
+  --output shipment-plugin
+```
+
+Other modes are `composite-role`, `effect-executor`, and `sink`. The generated
+provider deliberately performs no business work: state-machine admission is
+closed and executor/sink factories return no instances until implemented.
+The tool refuses a non-empty output directory.
+
+After implementation and tests, sign the exact catalog, runtime manifest, and
+optional configuration metadata. Keep the 32-byte seed outside the repository
+and pass it by file only:
+
+```bash
+./yano.sh appchain plugin sign \
+  --catalog shipment-plugin/src/main/resources/META-INF/yano/appchain-component-catalog-v1.json \
+  --runtime-manifest shipment-plugin/src/main/resources/META-INF/yano/plugins/plugin-bundle.shipment.json \
+  --seed-file /secure/publisher.seed \
+  --key-id example-release-2026 \
+  --output shipment-plugin/src/main/resources/META-INF/yano/appchain-component-catalog-v1.sig.json
+
+cd shipment-plugin
+gradle jar
+cd ..
+
+./yano.sh appchain plugin validate shipment-plugin/build/libs/shipment-yano-plugin.jar \
+  --trust-key example-release-2026=<64-hex-public-key> \
+  --output shipment-catalog.json
+```
+
+`inspect` prints the same verified catalog and its capabilities. Neither
+command loads provider classes, runs plugin code, fetches a registry, or
+installs the JAR. The exported snapshot is the safe local-import format used
+by Studio and generated projects.
+
+Create a project by selecting the custom capability declared by the catalog:
+
+```bash
+./yano.sh appchain init --non-interactive \
+  --recipe custom-plugin --network devnet --members 3 --runtime jvm \
+  --capability state:shipment \
+  --plugin-jar shipment-plugin/build/libs/shipment-yano-plugin.jar \
+  --trust-key example-release-2026=<64-hex-public-key> \
+  --output shipment-chain
+
+./yano.sh appchain config validate --mode project shipment-chain
+```
+
+The project stores the signed data-only snapshot under
+`component-catalogs/`; its lock pins the snapshot, catalog, runtime manifest,
+configuration metadata, and complete plugin-JAR digests. Rendering and doctor
+reverify the project snapshot automatically. The public key is not secret.
+Copy the exact pinned JAR into `plugins/` in every JVM distribution before
+starting nodes, then verify it:
+
+```bash
+./yano.sh appchain doctor shipment-chain --distribution /opt/yano
+```
+
+A missing or different JAR fails artifact readiness. A native distribution
+reports a direct incompatibility: a JVM plugin directory cannot modify an
+already-built native executable. Native support needs a separately produced,
+version-matched build-time release flavor.
+
 Yano's core provides ordering, threshold finality, deterministic state,
 proofs, anchoring, effects, plugin lifecycle, health, and metrics. Application
 teams normally extend the application layer, not the consensus runtime.
@@ -91,6 +166,24 @@ Yano itself does not need recompilation for a JVM deployment.
 Native images cannot discover a new directory JAR after build. Include the
 plugin when producing the native image or use the JVM distribution for dynamic
 plugin installation.
+
+## Custom component catalog contract
+
+The JAR carries three independent, bounded contracts:
+
+- `META-INF/yano/plugins/<bundle-id>.json` describes executable runtime
+  contributions;
+- `META-INF/yano/appchain-config-metadata-v1.json`, when present, owns typed
+  configuration definitions; and
+- `META-INF/yano/appchain-component-catalog-v1.json` describes selectable
+  product capabilities and required artifacts.
+
+The Ed25519 trust envelope binds the catalog, runtime manifest, optional
+configuration metadata, bundle identity/version, and publisher key ID. It
+authenticates those exact bytes; it does not approve code or elevate a custom
+component to bundled/stable/native status. Custom entries remain JVM-only
+`REFERENCE` or `EXPERIMENTAL`, and all release ID, namespace, and artifact
+collisions fail closed.
 
 ## Consensus rules for application plugins
 

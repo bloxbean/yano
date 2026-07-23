@@ -19,7 +19,8 @@ tasks.register('prepareStudio', Sync) {
         include 'appchain-blueprint.schema.json',
                 'appchain-capability-catalog.json',
                 'appchain-recipe-catalog.json',
-                'appchain-release-capability-index.json'
+                'appchain-release-capability-index.json',
+                'appchain-release-acceptance-index.json'
     }
     into studioOutput
 }

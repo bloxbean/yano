@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://yano.dev/schema/appchain-component-catalog-snapshot/v1alpha1",
+  "title": "Yano signed component catalog snapshot",
+  "type": "object",
+  "required": ["schemaVersion", "kind", "artifactFileName", "artifactSha256", "catalogBase64", "runtimeManifestBase64", "configurationMetadataBase64", "trust"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "kind": {"const": "AppChainComponentCatalogSnapshot"},
+    "artifactFileName": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$"},
+    "artifactSha256": {"$ref": "#/$defs/sha256"},
+    "catalogBase64": {"type": "string", "maxLength": 2097152, "contentEncoding": "base64"},
+    "runtimeManifestBase64": {"type": "string", "maxLength": 2097152, "contentEncoding": "base64"},
+    "configurationMetadataBase64": {"type": "string", "maxLength": 2097152, "contentEncoding": "base64"},
+    "trust": {
+      "type": "object",
+      "required": ["schemaVersion", "algorithm", "keyId", "bundleId", "bundleVersion", "catalogSha256", "runtimeManifestSha256", "configurationMetadataSha256", "signature"],
+      "properties": {
+        "schemaVersion": {"const": 1},
+        "algorithm": {"const": "Ed25519"},
+        "keyId": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"},
+        "bundleId": {"type": "string", "pattern": "^[a-z][a-z0-9.-]{0,127}$"},
+        "bundleVersion": {"type": "string", "minLength": 1, "maxLength": 128},
+        "catalogSha256": {"$ref": "#/$defs/sha256"},
+        "runtimeManifestSha256": {"$ref": "#/$defs/sha256"},
+        "configurationMetadataSha256": {"$ref": "#/$defs/sha256"},
+        "signature": {"type": "string", "minLength": 1, "maxLength": 256, "contentEncoding": "base64"}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

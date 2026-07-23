@@ -79,7 +79,7 @@ for required in (
         "--max-filesize \"$max_bytes\"",
         "printf 'header = \"X-API-Key: %s\"\\n' \"$api_key\"",
         "/api/v1/plugin-operations/bundles?limit=100",
-        'and .totals.selectedBundles == 7',
+        'and .totals.selectedBundles == 8',
         'and .totals.failedBundles == 0',
         'sample("yano_appchain_tip_height", f\'chain="{chain}"\')',
         'sample("yano_appchain_effects_open", f\'chain="{chain}"\')',

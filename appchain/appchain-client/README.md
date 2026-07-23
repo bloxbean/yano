@@ -11,6 +11,8 @@ Yaci networking stack. It provides:
 - typed submit/subscribe helpers using caller-provided encoders/decoders
 - AES-GCM group-body encryption helper
 - client-side MPF and composed effect-proof verification
+- typed stock-machine commands and verified state decoding through
+  `StdlibAppChainClient`
 
 See also:
 
@@ -129,6 +131,27 @@ client.subscribeTyped(1, "orders", codec::decode, (order, envelope) -> {
     System.out.println(order.id());
 });
 ```
+
+## Stock state-machine contracts
+
+`StdlibAppChainClient` uses the no-SPI `appchain-stdlib-contracts` artifact. It
+submits canonical bounded commands and decodes only state values whose MPF
+proof verifies locally:
+
+```java
+StdlibAppChainClient stock = new StdlibAppChainClient(client);
+
+stock.kvPut("supplier-42".getBytes(UTF_8), "active".getBytes(UTF_8));
+stock.propose("release-17", payload, 2, 0);
+stock.mint("customer-42", BigInteger.valueOf(100));
+stock.appendDocument("case-9", documentHash, "ipfs://bafy...");
+
+var balance = stock.balance("customer-42");
+```
+
+The convenience topics are versioned (`*.command.v1`), but topics are routing
+labels rather than state-machine identities. A successful submit proves
+acceptance only; read the verified state after finalization for the outcome.
 
 ## Test
 

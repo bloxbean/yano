@@ -17,14 +17,15 @@ public final class RoleWorkflowCli {
 
     public static void main(String[] args) {
         try {
-            System.out.println(run(args));
+            System.out.println(execute(args));
         } catch (RuntimeException failure) {
             System.err.println("error: invalid role-workflow command");
             System.exit(2);
         }
     }
 
-    static String run(String[] args) {
+    /** Executes one dependency-light offline encoding/signing command. */
+    public static String execute(String[] args) {
         if (args == null || args.length == 0) throw invalid();
         String command = args[0];
         Map<String, String> options = options(args);

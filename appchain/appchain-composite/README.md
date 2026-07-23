@@ -1,73 +1,18 @@
-# App-chain composite state machine
+# App-chain composite framework
 
-This module runs several deterministic application components behind Yano's
+This module is the generic deterministic composition engine behind Yano's
 single `AppStateMachine` boundary. It owns exact message routing, binary state
-namespaces, query dispatch, effect quotas and result ownership, and declared
-atomic cross-component workflows. Consensus, MPF roots, finality, snapshots,
-effects, and Cardano anchoring remain framework-owned.
+namespaces, query dispatch, effect quotas and result ownership, atomic
+cross-component workflows, and fixed or governed profile evolution.
 
-## Stock evidence presets
-
-The application distribution includes a manifested provider named
-`composite`. Select its no-code preset per chain:
-
-```yaml
-yano:
-  app-chain:
-    effects:
-      enabled: true
-      max-per-block: 128
-    chains:
-      - id: evidence-chain
-        state-machine: composite
-        machines:
-          composite:
-            preset: evidence-v1-gated
-            profile-mode: governed
-            evidence-capacity-per-block: 8
-        membership:
-          mode: governed
-```
-
-Both presets commit, in order, `registry`, `approvals`, `doc-trail`, and
-`evidence` components plus the `evidence-release` workflow. Its manifested
-bundle depends on the first-party stdlib and evidence-registry bundles. Kafka,
-S3-compatible object storage, and IPFS are separate effect-executor bundles;
-enable only the connectors the selected workflow needs.
-
-`evidence-v1-gated` is the default and exposes only the coordinated
-`evidence.release.v1` creation/republish path. Its command-granular
-`evidence.command.v1` route accepts canonical post-publication notifications
-but rejects direct submit and republish commands. `evidence-v1` is a
-compatibility preset that exposes every direct evidence command; in that preset
-the release workflow is optional coordination, not an authorization gate.
-
-The stock v1 capacity defaults to eight workflows per block and is committed
-through descriptor quotas in the canonical profile. For gated capacity `C`,
-the release workflow reserves `2C`, notification reserves `C`, and the evidence
-component reserves `C` effect slots. The direct compatibility preset reserves
-`2C` for release plus `2C` for the evidence component. Startup rejects
-`C > block.max-messages` or `4C > effects.max-per-block`. Changing capacity
-therefore changes the profile digest; it is not node-local tuning.
-
-The effective canonical profile is written under
-`~composite/profile/v1` at app height 1. Retained startup and every transition
-require exact equality. Treat its domain-separated SHA-256 digest as a
-deployment trust root: proof clients for the generic `composite` provider must
-pin the intended digest and verify the authenticated marker.
-
-`profile-mode: governed` also commits an epoch-0 record and enables ADR-015's
-deploy-first/activate-second protocol. The stock preset is a one-entry catalog,
-so it demonstrates governed genesis and operations but cannot select an
-unpackaged profile. A custom composite bundle supplies a catalog containing the
-active and dormant target entries. V1 permits 1-64 distinct profile entries and
-requires every historical profile to remain packaged; `max-epochs` separately
-bounds authenticated transitions, including reuse of a packaged profile. See the
-[operator runbook](../../docs/APP_CHAIN_PROFILE_GOVERNANCE.md).
+It intentionally contains no evidence classes, stock product preset,
+ServiceLoader provider, or plugin manifest. First-party evidence assemblies
+live in [`appchain-evidence-profile`](../products/appchain-evidence-profile/README.md).
+Custom products may use this framework without inheriting evidence behavior.
 
 ## Routing, state, and queries
 
-Each component descriptor declares exact versioned topics and local query
+Each `ComponentDescriptor` declares exact versioned topics and local query
 paths. The composite maps local keys through
 `CompositeCommitmentV1.componentKey(componentId, localKey)` and never exposes
 the root writer. Routed blocks contain only the component's messages, have a
@@ -80,12 +25,11 @@ Direct queries use:
 components/<componentId>/<localPath>
 ```
 
-The stock preset also retains the `evidence/get` compatibility alias.
 `composite/aggregate-v1` uses `AggregateQueryCodecV1` from
 `appchain-composite-contracts`, so clients and runtime share one canonical,
 bounded wire implementation and one committed root-fixed context.
 
-## Building a custom composition
+## Building a product composition
 
 Create `ComponentDescriptor` values, matching `CompositeComponent` products,
 and optional `WorkflowDescriptor`/`CompositeWorkflow` products. For a fixed
@@ -109,17 +53,10 @@ CompositeStateMachine machine = CompositeStateMachine.create(
         "my-domain-composite", context, catalog, currentProfile.digest());
 ```
 
-The custom `AppStateMachineProvider.id()` and its manifest contribution name
-must both be `my-domain-composite`; do not publish an arbitrary profile under
-the stock `composite` identity. The factory reads the real
-`effects.max-per-block` and rejects profiles whose reserved component and
-workflow quotas exceed it.
-
-Package the provider as one ADR-011 manifested bundle. Declare an explicit
-dependency on `com.bloxbean.cardano.yano.appchain.composite` and on every
-first-party bundle whose component implementation is used. Native deployments
-must include the bundle at application build time; JVM deployments may use the
-cataloged directory bundle flow described in the app-chain user guide.
+The product owns its `AppStateMachineProvider`, plugin manifest, presets, and
+product-specific contracts. Add this module as a normal build dependency;
+declare manifest dependencies only for executable plugin bundles used by the
+product. Native deployments include the product at application build time.
 
 Important compatibility rules:
 

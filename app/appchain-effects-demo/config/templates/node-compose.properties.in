@@ -12,7 +12,7 @@ yano.app-chain.api.auth.enabled=false
 yano.app-chain.api.keys=@API_KEY@
 yaci.plugins.enabled=true
 yaci.plugins.directory=/app/plugins
-yaci.plugins.allow-list=com.bloxbean.cardano.yano.appchain.kafka,com.bloxbean.cardano.yano.appchain.ipfs,com.bloxbean.cardano.yano.appchain.objectstore.s3,com.bloxbean.cardano.yano.appchain.evidence-registry,com.bloxbean.cardano.yano.appchain.stdlib,com.bloxbean.cardano.yano.appchain.composite,com.bloxbean.cardano.yano.appchain.role-workflow
+yaci.plugins.allow-list=com.bloxbean.cardano.yano.appchain.kafka,com.bloxbean.cardano.yano.appchain.ipfs,com.bloxbean.cardano.yano.appchain.objectstore.s3,com.bloxbean.cardano.yano.appchain.evidence-registry,com.bloxbean.cardano.yano.appchain.role-workflow,com.bloxbean.cardano.yano.appchain.stdlib,com.bloxbean.cardano.yano.appchain.evidence-profile
 
 yano.app-chain.chains[0].chain-id=@CHAIN_ID@
 yano.app-chain.chains[0].state-machine=@STATE_MACHINE@

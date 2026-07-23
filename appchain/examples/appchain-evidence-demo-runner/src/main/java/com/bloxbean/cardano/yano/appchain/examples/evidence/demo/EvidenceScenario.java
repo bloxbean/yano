@@ -2,8 +2,8 @@ package com.bloxbean.cardano.yano.appchain.examples.evidence.demo;
 
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectRecord;
 import com.bloxbean.cardano.yano.appchain.client.AppChainClient;
-import com.bloxbean.cardano.yano.appchain.composite.contracts.stock.EvidenceReleaseCommandV1;
-import com.bloxbean.cardano.yano.appchain.composite.contracts.stock.EvidenceReleasePrerequisiteCommandsV1;
+import com.bloxbean.cardano.yano.appchain.evidence.profile.contracts.EvidenceReleaseCommandV1;
+import com.bloxbean.cardano.yano.appchain.evidence.profile.contracts.EvidenceReleasePrerequisiteCommandsV1;
 import com.bloxbean.cardano.yano.appchain.examples.evidence.client.VerifiedEvidence;
 import com.bloxbean.cardano.yano.appchain.examples.evidence.command.EvidenceCommandV1;
 import com.bloxbean.cardano.yano.appchain.examples.evidence.command.RepublishEvidenceCommandV1;

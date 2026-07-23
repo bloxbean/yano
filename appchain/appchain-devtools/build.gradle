@@ -6,6 +6,8 @@ dependencies {
     implementation(project(':appchain-config')) {
         transitive = false
     }
+    implementation project(':appchain-role-workflow-contracts')
+    implementation libs.cardano.client.crypto
     compileOnly(project(':core-api')) {
         transitive = false
     }
@@ -16,6 +18,9 @@ dependencies {
     implementation libs.jackson.dataformat.yaml
     implementation libs.smallrye.config.core
     implementation libs.smallrye.config.yaml
+    testImplementation(project(':core-api')) {
+        transitive = false
+    }
 }
 
 application {
@@ -114,6 +119,14 @@ tasks.register('finalDistributionRuntimeAcceptance', Exec) {
             finalYanoZip.flatMap { it.archiveFile }.get().asFile
 }
 
+tasks.register('finalDistributionStockOutcomeAcceptance', Exec) {
+    group = 'verification'
+    description = 'Exercises stable stock recipe outcomes from the final Yano archive.'
+    dependsOn finalYanoZip
+    commandLine 'bash', file('src/test/scripts/final-distribution-stock-outcomes.sh'),
+            finalYanoZip.flatMap { it.archiveFile }.get().asFile
+}
+
 tasks.register('verifySmallRyeConfigRuntimeParity') {
     group = 'verification'
     description = 'Verifies the devtools and Quarkus runtime select the same SmallRye Config engine'
@@ -155,7 +168,77 @@ tasks.register('verifyReleaseCapabilityVersion') {
     }
 }
 
+tasks.register('verifyAppChainCatalogDocumentation') {
+    group = 'verification'
+    description = 'Verifies every first-party recipe and capability documentation path exists'
+    def capabilityCatalog = file('src/main/resources/appchain-dx/v1alpha1/'
+            + 'appchain-capability-catalog.json')
+    def recipeCatalog = file('src/main/resources/appchain-dx/v1alpha1/'
+            + 'appchain-recipe-catalog.json')
+    inputs.files(capabilityCatalog, recipeCatalog)
+    doLast {
+        def parser = new groovy.json.JsonSlurper()
+        def entries = []
+        entries.addAll(parser.parse(capabilityCatalog).capabilities)
+        entries.addAll(parser.parse(recipeCatalog).recipes)
+        def missing = entries.findAll { entry ->
+            entry.documentation == null
+                    || !rootProject.file(entry.documentation.toString()).isFile()
+        }.collect { entry -> "${entry.id}:${entry.documentation}" }
+        if (!missing.isEmpty()) {
+            throw new GradleException(
+                    "App-chain catalog documentation paths are missing: ${missing}")
+        }
+    }
+}
+
 tasks.named('check') {
     dependsOn tasks.named('verifySmallRyeConfigRuntimeParity'),
-            tasks.named('verifyReleaseCapabilityVersion')
+            tasks.named('verifyReleaseCapabilityVersion'),
+            tasks.named('verifyAppChainCatalogDocumentation')
+}
+
+def appChainReleaseCheckProjects = [
+        ':appchain-config',
+        ':appchain-stdlib-contracts',
+        ':appchain-stdlib',
+        ':appchain-composite-contracts',
+        ':appchain-composite',
+        ':appchain-role-workflow-contracts',
+        ':appchain-role-workflow',
+        ':appchain-evidence-contracts',
+        ':appchain-evidence-registry',
+        ':appchain-evidence-profile',
+        ':appchain-integration-contracts',
+        ':appchain-client',
+        ':appchain-spring-boot-starter',
+        ':appchain-testkit',
+        ':appchain-studio',
+        ':runtime',
+        ':app'
+]
+
+tasks.register('appChainReleaseCandidateStaticCheck') {
+    group = 'verification'
+    description = 'Runs the complete ADR-022 app-chain release-candidate static gate.'
+    dependsOn tasks.named('check')
+    appChainReleaseCheckProjects.each { projectPath ->
+        dependsOn project(projectPath).tasks.named('check')
+    }
+}
+
+tasks.register('appChainReleaseCandidateJvmAcceptance') {
+    group = 'verification'
+    description = 'Runs static, generated-project, packaged JVM, and stock outcome gates.'
+    dependsOn tasks.named('appChainReleaseCandidateStaticCheck'),
+            tasks.named('finalDistributionRuntimeAcceptance'),
+            tasks.named('finalDistributionStockOutcomeAcceptance'),
+            project(':app').tasks.named('packagedJvmPluginCatalogSmoke')
+}
+
+tasks.register('appChainReleaseCandidateNativeAcceptance') {
+    group = 'verification'
+    description = 'Runs static gates and the platform-specific native capability smoke test.'
+    dependsOn tasks.named('appChainReleaseCandidateStaticCheck'),
+            project(':app').tasks.named('nativePluginCatalogSmoke')
 }

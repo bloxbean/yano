@@ -168,20 +168,18 @@ marks the pending item `EXPIRED`.
 
 ## Submit from Java
 
-Use the client and standard-library artifacts with the same Yano version as
+Use the client artifact with the same Yano version as
 the nodes:
 
 ```groovy
 implementation "com.bloxbean.cardano:yano-appchain-client:${yanoVersion}"
-implementation "com.bloxbean.cardano:yano-appchain-stdlib:${yanoVersion}"
 ```
 
-The standard library provides canonical encoders, so applications do not need
-to assemble CBOR themselves:
+The client provides portable contracts and a typed proof-verifying facade:
 
 ```java
 import com.bloxbean.cardano.yano.appchain.client.AppChainClient;
-import com.bloxbean.cardano.yano.appchain.stdlib.ApprovalsStateMachine;
+import com.bloxbean.cardano.yano.appchain.client.StdlibAppChainClient;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
@@ -195,16 +193,18 @@ var approver1 = AppChainClient.builder("http://127.0.0.1:7071/api/v1")
 var approver2 = AppChainClient.builder("http://127.0.0.1:7072/api/v1")
         .chainId("effects-chain")
         .build();
+var proposals = new StdlibAppChainClient(proposer);
+var decisions1 = new StdlibAppChainClient(approver1);
+var decisions2 = new StdlibAppChainClient(approver2);
 
 String itemId = "release-2026-07";
 byte[] payload = "{\"artifact\":\"inventory-service:2.4.0\"}"
         .getBytes(StandardCharsets.UTF_8);
 long deadline = Instant.now().plusSeconds(300).toEpochMilli();
 
-proposer.submit("approvals",
-        ApprovalsStateMachine.propose(itemId, payload, 2, deadline));
-approver1.submit("approvals", ApprovalsStateMachine.approve(itemId));
-approver2.submit("approvals", ApprovalsStateMachine.approve(itemId));
+proposals.propose(itemId, payload, 2, deadline);
+decisions1.approve(itemId);
+decisions2.approve(itemId);
 ```
 
 When API authentication is enabled, add `.apiKey("...")` to each builder.
@@ -240,17 +240,7 @@ against an independently trusted state root before trusting that value. Java
 can verify and decode it:
 
 ```java
-import com.bloxbean.cardano.yano.appchain.client.ProofVerifier;
-
-import java.util.HexFormat;
-
-var proof = proposer.proof(ApprovalsStateMachine.itemKey(itemId)).orElseThrow();
-if (!ProofVerifier.verify(proof) || proof.valueHex() == null) {
-    throw new IllegalStateException("approval state is absent or unverified");
-}
-
-var item = ApprovalsStateMachine.decodeItem(
-        HexFormat.of().parseHex(proof.valueHex()));
+var item = proposals.approval(itemId).orElseThrow().value();
 System.out.println("status=" + item.status());
 System.out.println("approvals=" + item.approvers().size());
 ```
