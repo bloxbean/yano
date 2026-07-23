@@ -3,6 +3,7 @@
   import LineChart from '$lib/components/LineChart.svelte';
   import MetricCard from '$lib/components/MetricCard.svelte';
   import MetricRow from '$lib/components/MetricRow.svelte';
+  import CopyValue from '$lib/components/CopyValue.svelte';
   import { apiFailureMessage, resolveApiBase, YanoApi } from '$lib/api/client';
   import type { NodeConfig, NodePeers, NodeStatus, StorageStatus } from '$lib/api/types';
   import { SessionHistory, type CompactSample } from '$lib/telemetry/history';
@@ -255,7 +256,9 @@
 <div class="section-title">Storage & UTXO</div>
 <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
   <MetricCard title="Chain tip"><MetricRow label="Block" value={fmt(storage?.chain?.blockNumber)} />
-    <MetricRow label="Slot" value={fmt(storage?.chain?.slot)} /><MetricRow label="Hash" value={short(storage?.chain?.blockHash)} />
+    <MetricRow label="Slot" value={fmt(storage?.chain?.slot)} />
+    <MetricRow label="Hash" value={short(storage?.chain?.blockHash)}
+               copyValue={storage?.chain?.blockHash} copyLabel="block hash" />
   </MetricCard>
   <MetricCard title="UTXO state"><MetricRow label="Status" value={utxo.enabled ? 'ENABLED' : 'DISABLED'} />
     <MetricRow label="Store" value={utxo.store} /><MetricRow label="Last Applied" value={`${fmt(utxo.lastAppliedBlock)} / slot ${fmt(utxo.lastAppliedSlot)}`} />
@@ -270,8 +273,11 @@
   </MetricCard>
   <div class="md:col-span-2"><MetricCard title="Pruning">
     <MetricRow label="Depth" value={fmt(prune['pruneDepth'])} /><MetricRow label="Rollback Window" value={fmt(prune['rollbackWindow'])} />
-    <MetricRow label="Batch Size" value={fmt(prune['pruneBatchSize'])} /><MetricRow label="Delta Cursor" value={short(prune['deltaCursorKey'])} />
-    <MetricRow label="Spent Cursor" value={short(prune['spentCursorKey'])} />
+    <MetricRow label="Batch Size" value={fmt(prune['pruneBatchSize'])} />
+    <MetricRow label="Delta Cursor" value={short(prune['deltaCursorKey'])}
+               copyValue={prune['deltaCursorKey']} copyLabel="delta cursor" />
+    <MetricRow label="Spent Cursor" value={short(prune['spentCursorKey'])}
+               copyValue={prune['spentCursorKey']} copyLabel="spent cursor" />
   </MetricCard></div>
   <div class="md:col-span-2"><MetricCard title="Column-family estimates">
     {#each Object.entries(cfEstimates) as [name, value]}
@@ -305,7 +311,9 @@
       <tbody class="divide-y divide-slate-800">
         {#each peerRows as peer}
           <tr class={peer.active ? 'bg-emerald-500/5' : ''}>
-            <td class="p-3 font-mono text-slate-200">{peer.endpoint ?? peer.id ?? '-'}</td>
+            <td class="p-3 font-mono text-slate-200">
+              <CopyValue value={peer.endpoint ?? peer.id} width={34} label="peer endpoint" />
+            </td>
             <td class="p-3">{peer.governorState ?? '-'}</td><td class="p-3">{peer.connectionState ?? '-'}</td>
             <td class="p-3">{peer.direction ?? '-'}</td><td class="p-3">{peer.source ?? '-'}</td>
             <td class="p-3">{peer.trusted == null ? '-' : peer.trusted ? 'trusted' : 'untrusted'}</td>

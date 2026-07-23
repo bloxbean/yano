@@ -26,6 +26,7 @@ tasks.register('buildFrontend', NpmTask) {
     dependsOn tasks.named('npmCi')
     args = ['run', 'build']
     inputs.dir('frontend/src')
+    inputs.file(rootProject.file('static/logo-dark.svg'))
     inputs.files('frontend/package.json', 'frontend/package-lock.json',
             'frontend/svelte.config.js', 'frontend/vite.config.ts',
             'frontend/tsconfig.json')
@@ -42,6 +43,104 @@ tasks.register('testFrontend', NpmTask) {
     args = ['run', 'test']
 }
 
+tasks.register('verifyEmbeddedAssetBudget') {
+    dependsOn tasks.named('buildFrontend')
+    group = 'verification'
+    description = 'Enforces the one-megabyte gzip budget for the embedded console'
+    inputs.dir(generatedUi)
+
+    doLast {
+        long gzipBytes = 0
+        fileTree(generatedUi).matching {
+            include '**/*'
+        }.files.findAll { it.isFile() }.each { asset ->
+            def compressed = new ByteArrayOutputStream()
+            new java.util.zip.GZIPOutputStream(compressed).withCloseable { gzip ->
+                asset.withInputStream { input -> input.transferTo(gzip) }
+            }
+            gzipBytes += compressed.size()
+        }
+        if (gzipBytes > 1024 * 1024) {
+            throw new GradleException(
+                    "Embedded console exceeds the 1 MiB gzip budget: ${gzipBytes} bytes")
+        }
+        logger.lifecycle("Embedded console gzip budget passed: ${gzipBytes} / 1048576 bytes")
+    }
+}
+
+tasks.register('verifyStaticConsoleContract') {
+    dependsOn tasks.named('buildFrontend')
+    group = 'verification'
+    description = 'Checks packaged routes, responsive CSS, landmarks, and critical console controls'
+    inputs.dir(generatedUi)
+
+    doLast {
+        def root = generatedUi.get().asFile
+        def requiredPages = [
+                'index.html',
+                'status/index.html',
+                'app-chain/index.html',
+                'plugins/index.html',
+                'observability/index.html'
+        ]
+        requiredPages.each { relative ->
+            def page = new File(root, relative)
+            if (!page.isFile()) {
+                throw new GradleException("Embedded console page is missing: ${relative}")
+            }
+            if (!page.getText('UTF-8').contains('name="viewport"')) {
+                throw new GradleException("Embedded console page lacks a viewport: ${relative}")
+            }
+        }
+
+        def landing = new File(root, 'index.html').getText('UTF-8')
+        [
+                'aria-label="Console"',
+                'alt="Yano"',
+                'data:image/svg+xml',
+                'Yano Console'
+        ].each { marker ->
+            if (!landing.contains(marker)) {
+                throw new GradleException("Embedded console shell lacks marker: ${marker}")
+            }
+        }
+
+        def textAssets = fileTree(root).matching {
+            include '**/*.html', '**/*.js', '**/*.css'
+        }.files.collect { it.getText('UTF-8') }
+        [
+                'Raw effect statistics',
+                'Load latest anchored proof',
+                'Expected proof-value SHA-256',
+                'Verify proof'
+        ].each { marker ->
+            if (!textAssets.any { it.contains(marker) }) {
+                throw new GradleException("Embedded console controls lack marker: ${marker}")
+            }
+        }
+        if (!textAssets.any { it.contains('@media (width>=48rem)') }) {
+            throw new GradleException('Embedded console lacks the maintained responsive breakpoint')
+        }
+
+        def appChainSource = file('frontend/src/routes/app-chain/+page.svelte').getText('UTF-8')
+        def sectionMarkers = [
+                'data-app-chain-section="finalized"',
+                'data-app-chain-section="verification"',
+                'data-app-chain-section="effects"'
+        ]
+        def previousSection = -1
+        sectionMarkers.each { marker ->
+            def sectionIndex = appChainSource.indexOf(marker)
+            if (sectionIndex <= previousSection) {
+                throw new GradleException(
+                        "App-chain console section order is invalid at marker: ${marker}")
+            }
+            previousSection = sectionIndex
+        }
+        logger.lifecycle('Embedded console static/responsive contract passed')
+    }
+}
+
 tasks.register('consoleZip', Zip) {
     dependsOn tasks.named('buildFrontend')
     archiveFileName = "yano-console-ui-${project.version}.zip"
@@ -54,7 +153,8 @@ tasks.named('processResources') {
 }
 
 tasks.named('check') {
-    dependsOn tasks.named('checkFrontend'), tasks.named('testFrontend')
+    dependsOn tasks.named('checkFrontend'), tasks.named('testFrontend'),
+            tasks.named('verifyEmbeddedAssetBudget'), tasks.named('verifyStaticConsoleContract')
 }
 
 tasks.named('assemble') {

@@ -233,6 +233,15 @@ class AppChainCommittedQueryTest {
         assertThat(verifies(second, true)).isTrue();
         assertThat(verifies(first, true)).isTrue();
 
+        AppStateProofSnapshot historical =
+                node.stateProofSnapshotAtHeight(first.committedHeight(), key).orElseThrow();
+        assertThat(historical.committedHeight()).isEqualTo(first.committedHeight());
+        assertThat(historical.stateRoot()).containsExactly(first.stateRoot());
+        assertThat(historical.value()).containsExactly(first.value());
+        assertThat(verifies(historical, true)).isTrue();
+        assertThat(node.stateProofSnapshotAtHeight(0, key)).isEmpty();
+        assertThat(node.stateProofSnapshotAtHeight(10_000, key)).isEmpty();
+
         byte[] exposedValue = first.value();
         byte[] exposedWire = first.proofWire();
         byte[] exposedRoot = first.stateRoot();

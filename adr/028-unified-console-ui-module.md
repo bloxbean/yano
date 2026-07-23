@@ -2,7 +2,17 @@
 
 ## Status
 
-Accepted and implemented — version 5 (UI-M1 through UI-M5 complete)
+Accepted and implemented — version 6 (UI-M1 through UI-M5 and UI-R1 through
+UI-R5 complete)
+
+Version 6 records the 2026-07-23 post-implementation usability and
+verification review. It adopts the shared Yano logo and denser typography,
+full-value copy controls, operational peer-inventory semantics, explicit
+configured-versus-observed app-block intervals, structured effect-runtime
+views, and bounded verification of existing MPF proofs against an explicitly
+identified root. The console distinguishes a proof's mathematical validity
+from the provenance of the selected root and never describes a root returned
+by the connected node as independently verified.
 
 Version 5 records the milestone implementation and final capability-panel
 boundary. The unified Svelte console now replaces all three legacy pages,
@@ -23,7 +33,7 @@ an observability route/provider, safe lifecycle commands, and moves direct raw
 
 ## Date
 
-2026-07-22
+2026-07-23
 
 ## Related decisions
 
@@ -490,6 +500,78 @@ executable UI code in this ADR's scope.
   build; CI must cache `console-ui/.gradle/nodejs` and the npm cache the
   same way it should for `appchain-studio` today.
 
+### 3.9 Post-implementation usability and verification revision
+
+The shared shell uses the repository-owned `static/logo-dark.svg` asset,
+labels the landing page `Yano Console`, and uses a 15-pixel root font while
+retaining accessible control sizes and the browser's zoom behavior. The build
+has one logo source of truth; it stages the asset into generated frontend
+output rather than maintaining a second hand-copied logo.
+
+Long identifiers are rendered through one accessible shared component.
+Transaction hashes, app-message ids, state roots, block hashes, public keys,
+profile/catalog digests, policies, addresses, proof keys, and proof digests
+may be visually shortened, but the copy action always copies the complete
+canonical value. Copy buttons have keyboard focus, a descriptive accessible
+name, and visible success/failure feedback. Fields are opted in explicitly;
+the UI does not guess that arbitrary strings are safe identifiers based on
+length.
+
+Peer inventory is an operational view, not a dump of every default config
+value. When L1 client sync is disabled, the unused legacy remote host is not
+seeded into or reported as an active static upstream. Inbound and explicitly
+configured operational peers remain visible. This rule is based on node mode,
+not network names or hardcoded relay hostnames, so an intentionally configured
+devnet upstream is preserved.
+
+The app-chain status contract separates:
+
+- `configuredBlockIntervalMs`, the consensus configuration and always
+  available while the chain is configured; and
+- `blockIntervalMs`, the observed rolling average, absent until at least two
+  finalized blocks provide an interval sample.
+
+The UI labels these as target and observed values. An absent observed sample
+is rendered as `waiting for more blocks`, not as an unexplained empty field.
+Historical charts continue to use observed values only.
+
+Effect statistics are mapped through an explicit, version-tolerant view model:
+queue/backlog, execution totals, on-chain status counts, per-type latency, and
+executor readiness/outcomes. Unknown fields remain available in a bounded raw
+JSON dialog but never displace known summary fields or depend on map insertion
+order. The statistics and emitted-effects cards share equal-height bodies and
+independent bounded scrolling on wide layouts; they stack naturally on narrow
+screens.
+
+The existing optional SHA-256 input is split into independent expected-payload
+and expected-proof-value comparisons. These are byte-integrity checks only.
+They are not presented as MPF, finality, or L1 verification.
+
+Existing proof verification is a separate bounded operation. A caller supplies
+canonical key, optional value, proof wire, inclusion/exclusion mode, and an
+expected 32-byte root. The host delegates to the runtime's version-matched MPF
+implementation with the same key/value/proof size ceilings as the read
+endpoint. Malformed or oversized inputs fail without exceptions or unbounded
+allocation. The UI supports pasting a proof envelope or loading one from the
+selected chain and reports three independent facts:
+
+1. whether the MPF path is mathematically valid for key/value/root;
+2. whether the proof height and root match the selected root source; and
+3. the provenance of that root.
+
+The app-chain surface exposes the latest node-confirmed anchor commitment with
+chain id, anchored height, state root, app-block hash, transaction hash, L1
+slot, and anchor mode. The state root is recovered from the exact finalized
+app block referenced by the node's persisted confirmed anchor record. The UI
+labels this source `L1-confirmed by this node`; it does not claim independent
+Cardano verification. A proof requested for anchor verification is generated
+against that exact historical height/root when retained proof material is
+available. It never compares a current-tip proof with a different anchored
+height and calls the resulting mismatch invalid. Independent authenticity
+still requires fetching the Cardano transaction and checking the expected
+metadata or script output/datum under an independently pinned chain,
+membership, threshold, and script identity.
+
 ## 4. Non-goals
 
 - No server-side rendering, no Node.js runtime dependency in any
@@ -503,8 +585,9 @@ executable UI code in this ADR's scope.
   toolchain and component library is an **accepted later direction**
   (decided in review), but explicitly out of this ADR's scope and
   milestones.
-- No new Yano REST endpoint or query proxy; the UI consumes existing surfaces
-  plus the additive fields on `/node/config`.
+- No general-purpose query proxy. Version 6 adds only bounded app-chain proof
+  verification, historical-proof, and confirmed-anchor projection operations;
+  none executes plugin code or arbitrary queries.
 - No Prometheus server or time-series database embedded in the Yano process,
   jar, or native image. Prometheus exists only in the explicitly started
   optional Docker companion or in operator-managed infrastructure.
@@ -582,6 +665,39 @@ Effects panel; committed-query/proposal panel (after ADR-022 M2);
 evidence-bundle + MPF proof viewer with client-side hash re-verification;
 capability-conditional rendering.
 
+### UI-R1 — Shared presentation and copy semantics — Complete
+Stage the repository logo into the generated console, rename the landing
+heading, adopt the 15-pixel base type scale, and add the explicit reusable
+full-value copy component across the L1 and app-chain routes.
+
+### UI-R2 — Operational data correctness — Complete
+Exclude an unused legacy remote from peer inventory when client sync is
+disabled, expose the configured app-block interval alongside the observed
+average, and render the no-sample state honestly.
+
+### UI-R3 — Effect-runtime usability — Complete
+Replace generic JSON rows with grouped effect/executor summaries, provide a
+bounded raw-data dialog, and align the statistics and emitted-effects cards.
+
+### UI-R4 — Existing-proof and anchored-root verification — Complete
+Add the bounded runtime verifier, exact-height historical proof lookup, latest
+confirmed-anchor projection, paste/load verification workflow, separate
+payload/value digest comparisons, and explicit root-provenance results.
+
+### UI-R5 — Integration hardening — Complete
+Run frontend type/unit checks, runtime and REST contract tests, packaged
+console checks, distribution/demo workflows, responsive/accessibility smoke
+tests, and JVM/native resource checks. Iterate on every discovered regression
+before marking version 6 implemented.
+
+The build now enforces the real static route set, viewport and navigation
+landmarks, canonical logo, critical effect/proof controls, the maintained
+responsive breakpoint, and the one-MiB compressed asset budget. The packaged
+JVM and GraalVM-native artifacts serve every console route. The distribution
+launcher smoke covers a two-member devnet, bidirectional app-message
+diffusion, shared finality roots, L1 anchoring, exact-height proof retrieval,
+release-matched proof verification, effects execution, and L1 lock-step.
+
 ## 7. Acceptance gates
 
 - Embedded: `/ui/` works in JVM uber-jar **and** native image with no new
@@ -641,10 +757,35 @@ capability-conditional rendering.
   browser baseline implied by Tailwind 4; unsupported browsers get a plain
   diagnostic rather than a permanently blank shell where feature detection
   can do so reliably.
+- Presentation revision: the generated console contains the canonical Yano
+  logo, the base type scale remains zoomable, every shortened opted-in
+  identifier copies its complete source value, and copy feedback is announced
+  without moving focus.
+- Peer semantics: a server-only/local-producer node never reports an unused
+  legacy remote as active or as an operational peer. Client-enabled and
+  intentionally configured upstream cases retain their current behavior.
+- Interval semantics: configured cadence is always present; observed cadence
+  is absent until sampled, never fabricated from configuration, and charts
+  contain only measured values.
+- Effect presentation: all documented counters remain visible through
+  structured summaries or the raw dialog, zero/unknown states are distinct,
+  executor arrays never render as truncated JSON, and paired cards have
+  aligned wide-screen geometry.
+- Proof safety: inclusion and exclusion vectors pass through both runtime and
+  client verifiers; malformed, oversized, mixed-height, wrong-root, and pruned
+  historical-proof cases fail with bounded stable responses. UI results keep
+  MPF validity, root match, and root provenance visibly separate.
 
 ## 8. Open questions
 
-No blocking design questions remain for UI-M1 through UI-M5.
+No blocking design questions remain for UI-M1 through UI-M5 or UI-R1 through
+UI-R5.
+
+Resolved in version 6: the console may verify existing MPF proofs through the
+connected version-matched runtime, but calls this node-assisted verification.
+The latest confirmed anchor root is paired with its exact anchored height and
+is labelled as confirmed by the connected node. This closes the usability gap
+without pretending that same-node data is an independent Cardano trust source.
 
 Resolved in version 5: the first generic runtime panels discover effects and
 stock role workflows from the selected chain's status, and use the plugin

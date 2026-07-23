@@ -7,7 +7,7 @@
 <section class="py-10 text-center">
   <p class="mb-3 text-xs font-semibold uppercase tracking-[.22em] text-cyan-400">Unified node operations</p>
   <h1 class="m-0 bg-gradient-to-r from-cyan-300 via-blue-400 to-violet-400 bg-clip-text text-4xl font-bold
-             text-transparent md:text-5xl">One console for Yano</h1>
+             text-transparent md:text-5xl">Yano Console</h1>
   <p class="mx-auto mt-4 max-w-2xl text-slate-400">Inspect L1 sync, application chains, plugins, and operational health
     from the console embedded in this node.</p>
 </section>

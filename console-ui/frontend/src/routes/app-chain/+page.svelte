@@ -3,6 +3,7 @@
   import LineChart from '$lib/components/LineChart.svelte';
   import MetricCard from '$lib/components/MetricCard.svelte';
   import MetricRow from '$lib/components/MetricRow.svelte';
+  import CopyValue from '$lib/components/CopyValue.svelte';
   import AppChainCapabilityPanels from '$lib/components/AppChainCapabilityPanels.svelte';
   import { apiFailureMessage, resolveApiBase, YanoApi } from '$lib/api/client';
   import type { AppChainBlocks, AppChainMessage, AppChainStatus, ChainSummary, NodeConfig } from '$lib/api/types';
@@ -258,13 +259,21 @@
     <div>
       <div class="text-xs font-semibold uppercase tracking-[.18em] text-slate-500">Finalized tip</div>
       <div class="mt-2 text-4xl font-bold text-violet-300">{fmt(status?.tipHeight)}</div>
-      <p class="mb-0 mt-2 text-sm text-slate-400">chain {status?.chainId ?? (selectedChain || '-')} · state root {shortHash(status?.stateRoot, 30)}</p>
+      <p class="mb-0 mt-2 flex flex-wrap items-center gap-1 text-sm text-slate-400">
+        <span>chain {status?.chainId ?? (selectedChain || '-')} · state root</span>
+        <CopyValue value={status?.stateRoot} width={30} label="state root" />
+      </p>
     </div>
     <div class="grid grid-cols-2 gap-5 text-right sm:grid-cols-4">
       <div><small class="text-slate-500">Role</small><div class="font-mono">{stringValue(status?.role, status?.sequencing ? 'member' : 'gossip')}</div></div>
       <div><small class="text-slate-500">Threshold</small><div class="font-mono">{fmt(status?.threshold)} of {fmt(status?.members)}</div></div>
       <div><small class="text-slate-500">Machine</small><div class="font-mono">{stringValue(status?.stateMachine)}</div></div>
-      <div><small class="text-slate-500">Interval</small><div class="font-mono">{status?.blockIntervalMs ? `${fmt(status.blockIntervalMs)} ms` : '-'}</div></div>
+      <div><small class="text-slate-500">Block interval</small>
+        <div class="font-mono">{status?.configuredBlockIntervalMs != null
+          ? `${fmt(status.configuredBlockIntervalMs)} ms target` : '-'}</div>
+        <div class="mt-0.5 text-xs text-slate-500">{status?.blockIntervalMs != null
+          ? `${fmt(status.blockIntervalMs)} ms observed` : 'waiting for more blocks'}</div>
+      </div>
     </div>
   </div>
   <div class="mt-4 flex flex-wrap gap-2">
@@ -306,13 +315,17 @@
       <MetricRow label="Lag" value={`${fmt(anchor.lagBlocks)} blocks`} />
       {#if stringValue(anchor.mode, '') === 'script'}
         <MetricRow label="Bootstrapped" value={boolValue(anchor.bootstrapped) ? 'yes' : 'no'} />
-        <MetricRow label="Thread Policy" value={shortHash(anchor.threadPolicyId)} />
-        <MetricRow label="Script Address" value={shortHash(anchor.scriptAddress)} />
+        <MetricRow label="Thread Policy" value={shortHash(anchor.threadPolicyId)}
+                   copyValue={anchor.threadPolicyId} copyLabel="thread policy" />
+        <MetricRow label="Script Address" value={shortHash(anchor.scriptAddress)}
+                   copyValue={anchor.scriptAddress} copyLabel="script address" />
       {/if}
       <MetricRow label={stringValue(anchor.mode, '') === 'script' && anchor.leader === false ? 'Anchors Observed (since restart)' : 'Anchors Confirmed (since restart)'}
                  value={fmt(anchor.leader === false ? anchor.observedAnchorCount : anchor.anchoredCount)} />
-      <MetricRow label="Pending Tx" value={shortHash(anchor.pendingTx, 24)} />
-      <MetricRow label="Last Tx" value={shortHash(anchor.lastAnchorTx, 24)} />
+      <MetricRow label="Pending Tx" value={shortHash(anchor.pendingTx, 24)}
+                 copyValue={anchor.pendingTx} copyLabel="pending transaction hash" />
+      <MetricRow label="Last Tx" value={shortHash(anchor.lastAnchorTx, 24)}
+                 copyValue={anchor.lastAnchorTx} copyLabel="last transaction hash" />
       <MetricRow label="Error" value={stringValue(anchor.lastError, 'none')} />
     {:else}<p class="text-sm text-slate-500">Anchoring not enabled on this chain.</p>{/if}
   </MetricCard>
@@ -331,7 +344,10 @@
   </MetricCard>
   <MetricCard title="Profile governance" subtitle="Composite state-machine profile">
     <MetricRow label="Mode" value={stringValue(profile.mode, 'n/a')} />
-    {#if profile.activeProfileDigest}<MetricRow label="Active Profile" value={shortHash(profile.activeProfileDigest)} />{/if}
+    {#if profile.activeProfileDigest}
+      <MetricRow label="Active Profile" value={shortHash(profile.activeProfileDigest)}
+                 copyValue={profile.activeProfileDigest} copyLabel="active profile digest" />
+    {/if}
     {#if profile.currentEpoch != null}<MetricRow label="Epoch" value={fmt(profile.currentEpoch)} />{/if}
     {#if profile.activeFromHeight != null}<MetricRow label="Active From" value={fmt(profile.activeFromHeight)} />{/if}
     {#if profile.proposalStatus}<MetricRow label="Proposal" value={stringValue(profile.proposalStatus)} />{/if}
@@ -340,7 +356,8 @@
   </MetricCard>
   <MetricCard title="App-chain peers" subtitle="Member connections">
     {#each peers as [peer, connected]}
-      <MetricRow label={shortHash(peer, 28)} value={`${connected ? 'connected' : 'disconnected'} · ${status?.peerTransports?.[peer] ?? '-'}`} />
+      <MetricRow label={shortHash(peer, 28)} labelCopyValue={peer} copyLabel="app-chain peer"
+                 value={`${connected ? 'connected' : 'disconnected'} · ${status?.peerTransports?.[peer] ?? '-'}`} />
     {:else}<p class="text-sm text-slate-500">No peers configured.</p>{/each}
   </MetricCard>
 </div>
@@ -355,37 +372,60 @@
 
 {#if api && status}
   {#key selectedChain}
-    <AppChainCapabilityPanels {api} chainId={selectedChain} {status} {pluginBundleIds} />
+    <AppChainCapabilityPanels {api} chainId={selectedChain} {status} {pluginBundleIds}
+                              section="overview" />
   {/key}
 {/if}
 
-<div class="section-title">Finalized data</div>
-<div class="grid gap-4 xl:grid-cols-2">
-  <section class="card overflow-hidden">
+<div data-app-chain-section="finalized">
+  <div class="section-title">Finalized data</div>
+  <div class="grid items-stretch gap-4 xl:grid-cols-2">
+  <section class="card flex h-[37rem] min-h-0 flex-col overflow-hidden">
     <div class="border-b border-slate-800 px-4 py-3"><h2 class="m-0 text-sm font-semibold">Live messages</h2><p class="m-0 text-xs text-slate-500">Authenticated fetch SSE · latest 50</p></div>
-    <div class="max-h-80 overflow-auto">
+    <div class="min-h-0 flex-1 overflow-auto text-[0.75rem] leading-4">
       {#each messages as message}
-        <button type="button" class="grid w-full grid-cols-[70px_1fr_110px_80px] gap-2 border-b border-slate-800/60 px-4 py-3 text-left text-xs hover:bg-slate-800/50"
+        <button type="button" class="grid w-full grid-cols-[70px_1fr_110px_80px] gap-2 border-b border-slate-800/60 px-4 py-2 text-left text-[0.75rem] leading-4 hover:bg-slate-800/50"
                 aria-label={`Inspect finalized message at ${message.height}:${message.index}`} onclick={() => inspect(message)}>
           <span class="font-mono text-violet-300">{message.height}:{message.index}</span>
           <span class="truncate">{message.topic ?? 'default'}</span>
-          <span class="truncate font-mono text-slate-500">{shortHash(message.sender, 14)}</span>
+          <span class="truncate font-mono text-slate-500">
+            <CopyValue value={message.sender} width={14} label="message sender" />
+          </span>
           <span class="text-right font-mono text-slate-500">{Math.floor((message.bodyHex?.length ?? 0) / 2)} B</span>
         </button>
       {:else}<p class="p-5 text-sm text-slate-500">Waiting for finalized messages…</p>{/each}
     </div>
   </section>
-  <section class="card overflow-hidden">
+  <section class="card flex h-[37rem] min-h-0 flex-col overflow-hidden">
     <div class="border-b border-slate-800 px-4 py-3"><h2 class="m-0 text-sm font-semibold">Recent blocks</h2><p class="m-0 text-xs text-slate-500">Latest finalized application blocks</p></div>
-    <div class="overflow-auto">
-      <table class="w-full text-left text-xs"><thead class="text-slate-500"><tr><th class="p-3">Height</th><th>Age</th><th>Messages</th><th>Signatures</th><th>State root</th></tr></thead>
+    <div class="min-h-0 flex-1 overflow-auto">
+      <table class="w-full text-left text-[0.75rem] leading-4"><thead class="text-slate-500"><tr><th class="p-3">Height</th><th>Age</th><th>Messages</th><th>Signatures</th><th>State root</th></tr></thead>
         <tbody>{#each [...(blocks?.blocks ?? [])].reverse() as block}
-          <tr class="border-t border-slate-800/60"><td class="p-3 font-mono">{fmt(block.height)}</td><td>{age(block.timestamp)}</td><td>{fmt(block.messageCount)}</td><td>{fmt(block.certSignatures)}</td><td class="font-mono text-slate-500">{shortHash(block.stateRoot)}</td></tr>
+          <tr class="border-t border-slate-800/60"><td class="p-3 font-mono">{fmt(block.height)}</td><td>{age(block.timestamp)}</td><td>{fmt(block.messageCount)}</td><td>{fmt(block.certSignatures)}</td><td class="font-mono text-slate-500"><CopyValue value={block.stateRoot} label="block state root" /></td></tr>
         {:else}<tr><td colspan="5" class="p-5 text-slate-500">No finalized blocks yet.</td></tr>{/each}</tbody>
       </table>
     </div>
   </section>
+  </div>
 </div>
+
+{#if api && status}
+  {#key `verification:${selectedChain}`}
+    <div data-app-chain-section="verification">
+      <AppChainCapabilityPanels {api} chainId={selectedChain} {status} {pluginBundleIds}
+                                section="verification" />
+    </div>
+  {/key}
+{/if}
+
+{#if api && status}
+  {#key `effects:${selectedChain}`}
+    <div data-app-chain-section="effects">
+      <AppChainCapabilityPanels {api} chainId={selectedChain} {status} {pluginBundleIds}
+                                section="effects" />
+    </div>
+  {/key}
+{/if}
 
 <dialog bind:this={dialog} class="m-auto w-[min(900px,calc(100%-2rem))] rounded-2xl border border-slate-700 bg-slate-900 p-0 text-slate-100 backdrop:bg-slate-950/80">
   <div class="flex items-center justify-between border-b border-slate-700 p-4">
@@ -394,10 +434,13 @@
   </div>
   {#if inspected && inspectedPreview}
     <div class="grid gap-4 p-4 md:grid-cols-2">
-      <div class="space-y-2 text-xs"><div><span class="text-slate-500">Message ID</span><div class="break-all font-mono">{inspected.messageId ?? '-'}</div></div>
-        <div><span class="text-slate-500">Sender / sequence</span><div class="break-all font-mono">{inspected.sender ?? '-'} / {inspected.senderSeq ?? '-'}</div></div>
+      <div class="space-y-2 text-xs"><div><span class="text-slate-500">Message ID</span><div class="break-all font-mono"><CopyValue value={inspected.messageId} width={72} label="message id" /></div></div>
+        <div><span class="text-slate-500">Sender / sequence</span><div class="flex flex-wrap items-center gap-1 break-all font-mono"><CopyValue value={inspected.sender} width={72} label="message sender" /><span>/ {inspected.senderSeq ?? '-'}</span></div></div>
         <div><span class="text-slate-500">Bytes / format</span><div class="font-mono">{fmt(inspectedPreview.byteLength)} / {inspectedPreview.format}{inspectedPreview.truncated ? ' / preview truncated' : ''}</div></div>
-        <div><span class="text-slate-500">SHA-256</span><div class="break-all font-mono">{inspectedDigest ?? (inspectedPreview.truncated ? 'unavailable for truncated preview' : 'calculating…')}</div></div>
+        <div><span class="text-slate-500">SHA-256</span><div class="break-all font-mono">
+          {#if inspectedDigest}<CopyValue value={inspectedDigest} width={72} label="payload SHA-256" />
+          {:else}{inspectedPreview.truncated ? 'unavailable for truncated preview' : 'calculating…'}{/if}
+        </div></div>
       </div>
       <div><div class="mb-1 text-xs text-slate-500">Decoded payload</div><pre class="max-h-72 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-slate-950 p-3 text-xs">{inspectedPreview.bodyText}</pre></div>
     </div>

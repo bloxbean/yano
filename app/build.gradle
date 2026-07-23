@@ -176,6 +176,9 @@ dependencies {
     implementation(project(':appchain-evidence-profile')) {
         exclude group: 'io.netty', module: 'netty-all'
     }
+    // Uses the release-matched, bounded MPF verifier for the console's
+    // node-assisted existing-proof verification endpoint.
+    implementation project(':appchain-client')
     // Optional T3 integrations stay out of the stock artifact. Native/custom
     // builds can opt in before catalog-index and reflection generation.
     if (includeFirstPartyPluginBundles) {

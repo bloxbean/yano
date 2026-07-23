@@ -8,6 +8,7 @@ import com.bloxbean.cardano.yano.api.appchain.AppStateProofSnapshot;
 import com.bloxbean.cardano.yano.api.appchain.ReceivedAppMessage;
 import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
 import com.bloxbean.cardano.yano.api.plugin.PluginCatalogView;
+import com.bloxbean.cardano.yano.appchain.client.ProofVerifier;
 import com.bloxbean.cardano.yano.appchain.composite.contracts.CompositeProfileGovernanceV1;
 import com.fasterxml.jackson.annotation.JsonAnySetter;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
@@ -137,8 +138,24 @@ public class AppChainResource {
     @GET
     @Operation(hidden = true)
     @Path("proof/{keyHex}")
-    public Response proof(@Encoded @PathParam("keyHex") String keyHex) {
-        return singleChain().proof(keyHex);
+    public Response proof(@Encoded @PathParam("keyHex") String keyHex,
+                          @QueryParam("height") Long height) {
+        return singleChain().proof(keyHex, height);
+    }
+
+    @POST
+    @Operation(hidden = true)
+    @Path("proof/verify")
+    @AppChainAccess(AppChainAccess.Level.READ)
+    public Response verifyProof(ChainScopedResource.ProofVerificationRequest request) {
+        return singleChain().verifyProof(request);
+    }
+
+    @GET
+    @Operation(hidden = true)
+    @Path("anchor/commitment")
+    public Response latestAnchorCommitment() {
+        return singleChain().latestAnchorCommitment();
     }
 
     @GET
@@ -345,6 +362,21 @@ public class AppChainResource {
         }
 
         public record SubmitRequest(String topic, String body, String bodyHex) {
+        }
+
+        @JsonIgnoreProperties(ignoreUnknown = false)
+        public record ProofVerificationRequest(
+                @JsonDeserialize(using = StrictStringDeserializer.class) String mode,
+                @JsonDeserialize(using = StrictStringDeserializer.class) String expectedRootHex,
+                @JsonDeserialize(using = StrictStringDeserializer.class) String keyHex,
+                @JsonDeserialize(using = StrictStringDeserializer.class) String valueHex,
+                @JsonDeserialize(using = StrictStringDeserializer.class) String proofWireHex) {
+
+            @JsonAnySetter
+            public void rejectUnknownField(String name, Object ignored) {
+                throw new IllegalArgumentException(
+                        "Unknown app-chain proof verification field: " + name);
+            }
         }
 
         /** ADR-011.3 query parameters; omitted or empty hex means empty bytes. */
@@ -1124,7 +1156,8 @@ public class AppChainResource {
          */
         @GET
         @Path("proof/{keyHex}")
-        public Response proof(@Encoded @PathParam("keyHex") String keyHex) {
+        public Response proof(@Encoded @PathParam("keyHex") String keyHex,
+                              @QueryParam("height") Long height) {
             if (keyHex != null && keyHex.length() > MAX_PROOF_KEY_BYTES * 2) {
                 return Response.status(413)
                         .entity(Map.of("error", "State proof key exceeds the size limit"))
@@ -1136,7 +1169,12 @@ public class AppChainResource {
             byte[] key = HexUtil.decodeHexString(keyHex);
             final Optional<AppStateProofSnapshot> snapshot;
             try {
-                snapshot = gateway.stateProofSnapshot(key);
+                if (height != null && height <= 0) {
+                    return badRequest("State proof height must be positive");
+                }
+                snapshot = height == null
+                        ? gateway.stateProofSnapshot(key)
+                        : gateway.stateProofSnapshotAtHeight(height, key);
             } catch (UnsupportedOperationException unavailable) {
                 return Response.status(Response.Status.SERVICE_UNAVAILABLE)
                         .entity(Map.of(
@@ -1146,7 +1184,9 @@ public class AppChainResource {
             }
             if (snapshot.isEmpty()) {
                 return Response.status(Response.Status.NOT_FOUND)
-                        .entity(Map.of("error", "No committed state proof available for key"))
+                        .entity(Map.of("error", height == null
+                                ? "No committed state proof available for key"
+                                : "No retained state proof available for key at height " + height))
                         .build();
             }
             var proof = snapshot.orElseThrow();
@@ -1174,13 +1214,110 @@ public class AppChainResource {
                 result.put("valueHex", HexUtil.encodeHexString(proofValue));
             }
             gateway.messageHeight(proofKey)
-                    .filter(height -> height <= proof.committedHeight())
+                    .filter(finalizedHeight -> finalizedHeight <= proof.committedHeight())
                     .ifPresent(h -> result.put("finalizedAtHeight", h));
             return Response.ok(result).build();
         }
 
+        Response proof(String keyHex) {
+            return proof(keyHex, null);
+        }
+
+        @POST
+        @Path("proof/verify")
+        @AppChainAccess(AppChainAccess.Level.READ)
+        public Response verifyProof(ProofVerificationRequest request) {
+            if (request == null) {
+                return badRequest("Proof verification request is required");
+            }
+            boolean inclusion = "inclusion".equals(request.mode());
+            boolean exclusion = "exclusion".equals(request.mode());
+            if (!inclusion && !exclusion) {
+                return badRequest("'mode' must be 'inclusion' or 'exclusion'");
+            }
+            if (!isCanonicalHex(request.expectedRootHex(), false)
+                    || request.expectedRootHex().length() != 64) {
+                return badRequest("'expectedRootHex' must be 32-byte canonical lowercase hex");
+            }
+            if (request.keyHex() != null
+                    && request.keyHex().length() > MAX_PROOF_KEY_BYTES * 2) {
+                return Response.status(413)
+                        .entity(Map.of("error", "State proof key exceeds the size limit"))
+                        .build();
+            }
+            if (!isCanonicalProofKey(request.keyHex())) {
+                return badRequest("'keyHex' must be canonical lowercase hex");
+            }
+            if (request.proofWireHex() != null
+                    && request.proofWireHex().length() > MAX_PROOF_WIRE_BYTES * 2) {
+                return Response.status(413)
+                        .entity(Map.of("error", "State proof wire exceeds the size limit"))
+                        .build();
+            }
+            if (!isCanonicalHex(request.proofWireHex(), false)) {
+                return badRequest("'proofWireHex' must be canonical lowercase hex");
+            }
+            if (inclusion) {
+                if (request.valueHex() == null) {
+                    return badRequest("'valueHex' is required for an inclusion proof");
+                }
+                if (request.valueHex().length() > MAX_PROOF_VALUE_BYTES * 2) {
+                    return Response.status(413)
+                            .entity(Map.of("error", "State proof value exceeds the size limit"))
+                            .build();
+                }
+                if (!isCanonicalHex(request.valueHex(), true)) {
+                    return badRequest("'valueHex' must be canonical lowercase hex");
+                }
+            } else if (request.valueHex() != null) {
+                return badRequest("'valueHex' must be omitted for an exclusion proof");
+            }
+
+            byte[] root = HexUtil.decodeHexString(request.expectedRootHex());
+            byte[] key = HexUtil.decodeHexString(request.keyHex());
+            byte[] wire = HexUtil.decodeHexString(request.proofWireHex());
+            boolean valid = inclusion
+                    ? ProofVerifier.verifyInclusion(
+                            root, key, HexUtil.decodeHexString(request.valueHex()), wire)
+                    : ProofVerifier.verifyExclusion(root, key, wire);
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("valid", valid);
+            result.put("mode", request.mode());
+            result.put("expectedRoot", request.expectedRootHex());
+            result.put("key", request.keyHex());
+            result.put("verifier", "release-matched-appchain-client");
+            return Response.ok(result).build();
+        }
+
+        @GET
+        @Path("anchor/commitment")
+        public Response latestAnchorCommitment() {
+            return gateway.latestAnchorCommitment()
+                    .map(commitment -> {
+                        Map<String, Object> result = new LinkedHashMap<>();
+                        result.put("chainId", commitment.chainId());
+                        result.put("mode", commitment.mode());
+                        result.put("anchoredHeight", commitment.anchoredHeight());
+                        result.put("stateRoot", HexUtil.encodeHexString(commitment.stateRoot()));
+                        result.put("blockHash", HexUtil.encodeHexString(commitment.blockHash()));
+                        result.put("transactionHash", commitment.transactionHash());
+                        result.put("l1Slot", commitment.l1Slot());
+                        result.put("provenance", "L1-confirmed by this node");
+                        return Response.ok(result).build();
+                    })
+                    .orElse(Response.status(Response.Status.NOT_FOUND)
+                            .entity(Map.of(
+                                    "code", "CONFIRMED_ANCHOR_UNAVAILABLE",
+                                    "error", "No L1-confirmed anchor is available for this chain"))
+                            .build());
+        }
+
         private static boolean isCanonicalProofKey(String value) {
-            if (value == null || value.isEmpty() || (value.length() & 1) != 0) {
+            return isCanonicalHex(value, false);
+        }
+
+        private static boolean isCanonicalHex(String value, boolean allowEmpty) {
+            if (value == null || (!allowEmpty && value.isEmpty()) || (value.length() & 1) != 0) {
                 return false;
             }
             for (int i = 0; i < value.length(); i++) {

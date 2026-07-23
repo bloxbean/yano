@@ -146,6 +146,12 @@ class SyncSubsystemTest {
 
             assertThat(sync.health().healthy()).isTrue();
             assertThat(sync.isSyncing()).isFalse();
+            assertThat(sync.upstreamStatus().configuredPeerCount()).isZero();
+            assertThat(sync.upstreamStatus().activePeerName()).isNull();
+            assertThat(sync.peerGovernorSnapshot().peerInfos())
+                    .noneMatch(peer -> peer.descriptor() != null
+                            && peer.descriptor().source()
+                            == com.bloxbean.cardano.yano.p2p.governor.PeerSource.STATIC_UPSTREAM);
         } finally {
             runtime.close();
             scheduler.shutdownNow();
@@ -178,7 +184,7 @@ class SyncSubsystemTest {
 
     @Test
     void clientStartupCancelsPendingIntersectionTransition() {
-        YanoConfig config = serverOnlyConfig();
+        YanoConfig config = clientConfig();
         ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
         TestRuntime runtime = new TestRuntime(config, scheduler, () -> false, null);
 

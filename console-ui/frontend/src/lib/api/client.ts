@@ -1,6 +1,8 @@
-import type { AppChainBlocks, AppChainMessage, AppChainStatus, ChainSummary, CommittedQueryResult,
+import type { AnchorCommitment, AppChainBlocks, AppChainMessage, AppChainStatus, ChainSummary,
+  CommittedQueryResult,
   EffectPage, EffectStats, NodeConfig, NodePeers, NodeStatus, PluginBundleDetail, PluginBundlePage,
-  PluginOperationsSummary, StorageStatus } from './types';
+  PluginOperationsSummary, ProofVerificationRequest, ProofVerificationResult, StateProofEnvelope,
+  StorageStatus } from './types';
 
 const API_STORAGE_KEY = 'yano.console.api-base.v1';
 const KEY_STORAGE_KEY = 'yano.console.api-key.v1';
@@ -162,8 +164,17 @@ export class YanoApi {
   chainEvidence(chainId: string, messageId: string, signal?: AbortSignal) {
     return this.json<Record<string, unknown>>(`${chainPath(chainId)}/evidence/${encodeURIComponent(messageId)}`, signal);
   }
-  chainProof(chainId: string, keyHex: string, signal?: AbortSignal) {
-    return this.json<Record<string, unknown>>(`${chainPath(chainId)}/proof/${encodeURIComponent(keyHex)}`, signal);
+  chainProof(chainId: string, keyHex: string, height?: number, signal?: AbortSignal) {
+    const query = height === undefined ? '' : `?height=${encodeURIComponent(height)}`;
+    return this.json<StateProofEnvelope>(
+      `${chainPath(chainId)}/proof/${encodeURIComponent(keyHex)}${query}`, signal);
+  }
+  verifyChainProof(chainId: string, request: ProofVerificationRequest, signal?: AbortSignal) {
+    return this.post<ProofVerificationResult>(
+      `${chainPath(chainId)}/proof/verify`, request, signal);
+  }
+  chainAnchorCommitment(chainId: string, signal?: AbortSignal) {
+    return this.json<AnchorCommitment>(`${chainPath(chainId)}/anchor/commitment`, signal);
   }
   domain(bundleId: string, path: string, parameters: Record<string, string>, signal?: AbortSignal) {
     const query = new URLSearchParams(parameters).toString();

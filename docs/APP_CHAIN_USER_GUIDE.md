@@ -603,7 +603,27 @@ verified.
 inclusion proof** verifiable against the `state-root` in the L1 datum with
 any independent MPF implementation (the `vds-mpf` Java library or Aiken's
 `merkle-patricia-forestry` — same construction, so on-chain verification in
-a validator is also possible).
+a validator is also possible). Add `?height={anchoredHeight}` to request a
+proof against that exact retained historical post-state root.
+
+The console's portable-verification card can load the latest anchored proof
+and verify it with the release-matched bounded verifier. The equivalent
+read-class API calls are:
+
+```text
+GET  /api/v1/app-chain/chains/{chainId}/anchor/commitment
+GET  /api/v1/app-chain/chains/{chainId}/proof/{keyHex}?height={height}
+POST /api/v1/app-chain/chains/{chainId}/proof/verify
+```
+
+The verification request contains `mode` (`inclusion` or `exclusion`),
+`expectedRootHex`, `keyHex`, optional inclusion `valueHex`, and
+`proofWireHex`. Keys are limited to 256 bytes; values and proof wires are
+limited to 1 MiB each. All hex is canonical lowercase. The result establishes
+the MPF relationship to the supplied root only. The anchor projection is
+explicitly **L1-confirmed by this node**; independently resolve and validate
+the shown Cardano transaction before treating its root as an external trust
+anchor.
 
 ### 5.5 L1 observations (reacting to L1 events)
 
@@ -1258,6 +1278,13 @@ artifact. The privileged plugin dashboard at `/ui/plugins/` does not accept
 such an override: it uses immutable `/ui/plugins/api-prefix.json` and fails
 closed if discovery is missing or invalid. See
 [`PLUGIN_OPERATIONS.md`](PLUGIN_OPERATIONS.md).
+
+The page also discovers effects and stock state-machine capabilities. Effect
+statistics are grouped into queue, lifecycle, outcome, latency, and executor
+summaries; the complete bounded response remains available through **Raw
+data**. Portable verification keeps expected payload and proof-value digests
+separate, supports pasted proof envelopes, and never labels a node-reported
+anchor as independently Cardano-verified.
 
 `GET /status` also reports `lastBlockAtMillis`, `blockIntervalMs` (rolling
 average), `stalled`, `drops` (by reason), `anchor.lagBlocks` and per-sink

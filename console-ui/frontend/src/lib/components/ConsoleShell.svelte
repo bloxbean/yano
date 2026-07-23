@@ -4,6 +4,7 @@
   import { apiFailureMessage, currentApiKey, resolveApiBase, resolvePluginApiBase, saveConnection, YanoApi } from '$lib/api/client';
   import type { NodeConfig, NodeStatus } from '$lib/api/types';
   import { metricsCredential, resolveMetricsBase, saveMetricsConnection } from '$lib/telemetry/prometheus';
+  import { logoDarkUrl } from '$lib/brand';
 
   let { children } = $props<{ children: import('svelte').Snippet }>();
   let config: NodeConfig | null = $state(null);
@@ -47,8 +48,7 @@
   <div class="mx-auto flex max-w-[1320px] flex-wrap items-center justify-between gap-3 px-5 py-3">
     <div class="flex items-center gap-4">
       <a href={`${base}/`} class="flex items-center gap-2 text-slate-100 no-underline">
-        <span class="grid h-9 w-9 place-items-center rounded-xl bg-gradient-to-br from-cyan-400 via-blue-500 to-violet-600
-                     font-bold text-white shadow-lg shadow-blue-500/20">Y</span>
+        <img src={logoDarkUrl} alt="Yano" class="h-9 w-9 rounded-xl shadow-lg shadow-blue-500/20" />
         <span><strong>Yano</strong><small class="ml-2 text-slate-500">Console</small></span>
       </a>
       <nav class="hidden items-center gap-1 md:flex" aria-label="Console">

@@ -149,6 +149,7 @@ export interface AppChainStatus {
   stateMachine?: string;
   members?: number;
   threshold?: number;
+  configuredBlockIntervalMs?: number;
   blockIntervalMs?: number;
   lastBlockAtMillis?: number;
   l1RefDeferrals?: number;
@@ -201,4 +202,41 @@ export interface CommittedQueryResult {
   committedHeight?: number;
   stateRoot?: string;
   payloadHex?: string;
+}
+
+export interface StateProofEnvelope {
+  key: string;
+  chainId: string;
+  committedHeight: number;
+  stateRoot: string;
+  proofWireHex: string;
+  valueHex?: string;
+  finalizedAtHeight?: number;
+}
+
+export interface ProofVerificationRequest {
+  mode: 'inclusion' | 'exclusion';
+  expectedRootHex: string;
+  keyHex: string;
+  valueHex?: string;
+  proofWireHex: string;
+}
+
+export interface ProofVerificationResult {
+  valid: boolean;
+  mode: 'inclusion' | 'exclusion';
+  expectedRoot: string;
+  key: string;
+  verifier: string;
+}
+
+export interface AnchorCommitment {
+  chainId: string;
+  mode: 'metadata' | 'script' | string;
+  anchoredHeight: number;
+  stateRoot: string;
+  blockHash: string;
+  transactionHash: string;
+  l1Slot: number;
+  provenance: string;
 }

@@ -95,14 +95,25 @@ approvals.
   when available. The committed result remains visible if that convenience
   projection is unavailable.
 - Every running app chain exposes the portable evidence-bundle and MPF-proof
-  viewers. The browser can SHA-256 the exact finalized message payload or
-  included proof value and compare it with an optional expected digest.
+  tools. The browser can SHA-256 the exact finalized message payload or
+  included proof value and compare each with its own optional expected digest.
+  A proof can be loaded at the current tip, loaded at the exact height of the
+  latest anchor confirmed by this node, or pasted as JSON. **Verify proof**
+  sends only the bounded key/value/proof/root fields to the connected node's
+  release-matched MPF verifier and reports three facts independently:
 
-The browser digest is an additional byte-integrity check, not a replacement
-for full finality, anchor, or MPF verification. Use the version-matched
-`appchain-client` and an independently pinned trust context for an audit
-decision. Custom component-specific panels remain data-only future catalog
-work; plugins cannot inject executable console code.
+  - whether the MPF path is mathematically valid for the expected root;
+  - whether the proof envelope's root and optional height match that source;
+  - where the expected root came from.
+
+`L1-confirmed by this node` means Yano observed the anchor transaction and
+bound its persisted confirmation back to the exact finalized app block. It is
+not an independent Cardano lookup. For an audit decision, resolve the shown
+transaction through an independent Cardano source, validate the metadata or
+script datum/output, and pin the expected chain, membership, threshold, and
+script identity. The browser digest remains a byte-integrity check rather than
+finality, anchor, or MPF verification. Custom component-specific panels remain
+data-only future catalog work; plugins cannot inject executable console code.
 
 For local frontend development, run `npm run dev` in
 `console-ui/frontend`; Vite proxies `/api` and `/q` to
