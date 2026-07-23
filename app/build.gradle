@@ -103,7 +103,9 @@ if (includeFirstPartyPluginBundles) {
             'com.bloxbean.cardano.yano.appchain.effects.cardano':
                     [projectPath: ':appchain-effects-cardano', includeProvided: true],
             'com.bloxbean.cardano.yano.appchain.zk':
-                    [projectPath: ':appchain-zk', includeProvided: true]
+                    [projectPath: ':appchain-zk', includeProvided: true],
+            'com.bloxbean.cardano.yano.appchain.eutxo':
+                    [projectPath: ':appchain-eutxo-ledger', includeProvided: true]
     ])
 }
 if (includeNativePluginConformanceFixture) {
@@ -183,6 +185,7 @@ dependencies {
         runtimeOnly project(':appchain-ipfs')
         runtimeOnly project(':appchain-effects-cardano')
         runtimeOnly project(':appchain-zk')
+        runtimeOnly project(':appchain-eutxo-ledger')
         // AWS SDK 2.48.0 compiles its checksum fallback against these optional
         // CRT types. A JVM can defer the absent branch, but native-image links
         // every reachable checksum implementation and therefore requires the
@@ -493,7 +496,8 @@ tasks.register('verifyFirstPartyPluginBundles', JavaExec) {
             ':appchain-objectstore-s3:verifyObjectStoreS3ArtifactBoundaries',
             ':appchain-ipfs:verifyIpfsArtifactBoundaries',
             ':appchain-evidence-registry:verifyEvidenceRegistryArtifactBoundaries',
-            ':appchain-effects-cardano:shadowJar', ':appchain-zk:shadowJar'
+            ':appchain-effects-cardano:shadowJar', ':appchain-zk:shadowJar',
+            ':appchain-eutxo-ledger:verifyEutxoLedgerArtifactBoundaries'
     def verificationIndex = layout.buildDirectory.file(
             'reports/plugin-catalog/first-party-bundles.json')
     inputs.files({
@@ -501,7 +505,8 @@ tasks.register('verifyFirstPartyPluginBundles', JavaExec) {
          project(':appchain-ipfs'),
          project(':appchain-evidence-registry'),
          project(':appchain-effects-cardano'),
-         project(':appchain-zk')].collect { pluginProject ->
+         project(':appchain-zk'),
+         project(':appchain-eutxo-ledger')].collect { pluginProject ->
             pluginProject.tasks.named('shadowJar').get().archiveFile.get().asFile
         }
     })
@@ -519,7 +524,8 @@ tasks.register('verifyFirstPartyPluginBundles', JavaExec) {
                 project(':appchain-ipfs'),
                 project(':appchain-evidence-registry'),
                 project(':appchain-effects-cardano'),
-                project(':appchain-zk')
+                project(':appchain-zk'),
+                project(':appchain-eutxo-ledger')
         ].collect { pluginProject ->
             pluginProject.tasks.named('shadowJar').get().archiveFile.get().asFile
         }.sort { left, right -> left.absolutePath <=> right.absolutePath }
@@ -539,7 +545,8 @@ tasks.register('verifyFirstPartyPluginBundles', JavaExec) {
                         declaredPluginManifestVersion,
                 'com.bloxbean.cardano.yano.appchain.effects.cardano':
                         declaredPluginManifestVersion,
-                'com.bloxbean.cardano.yano.appchain.zk': declaredPluginManifestVersion
+                'com.bloxbean.cardano.yano.appchain.zk': declaredPluginManifestVersion,
+                'com.bloxbean.cardano.yano.appchain.eutxo': declaredPluginManifestVersion
         ])
         def kafkaBundle = index.bundles.find {
             it.manifest?.id == 'com.bloxbean.cardano.yano.appchain.kafka'
@@ -585,6 +592,16 @@ tasks.register('verifyFirstPartyPluginBundles', JavaExec) {
             throw new GradleException(
                     "Evidence-registry bundle contribution inventory is incomplete: "
                             + evidenceContributions)
+        }
+        def eutxoBundle = index.bundles.find {
+            it.manifest?.id == 'com.bloxbean.cardano.yano.appchain.eutxo'
+        }
+        def eutxoContributions = eutxoBundle?.manifest?.contributions?.collect {
+            "${it.kind}:${it.name}"
+        }?.toSet()
+        if (eutxoContributions != Set.of('app-state-machine:eutxo-ledger')) {
+            throw new GradleException(
+                    "EUTxO bundle contribution inventory is incomplete: ${eutxoContributions}")
         }
         if (includeFirstPartyPluginBundles) {
             def expectedRuntimeVersions = [

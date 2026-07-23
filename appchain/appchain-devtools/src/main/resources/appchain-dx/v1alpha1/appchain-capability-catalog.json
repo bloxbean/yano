@@ -11,7 +11,8 @@
     {"id":"appchain-objectstore-s3","availability":"FIRST_PARTY_OPTIONAL","bundleId":"com.bloxbean.cardano.yano.appchain.objectstore.s3","nativePosture":"build-time-only","runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"]},
     {"id":"appchain-ipfs","availability":"FIRST_PARTY_OPTIONAL","bundleId":"com.bloxbean.cardano.yano.appchain.ipfs","nativePosture":"build-time-only","runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"]},
     {"id":"appchain-effects-cardano","availability":"FIRST_PARTY_OPTIONAL","bundleId":"com.bloxbean.cardano.yano.appchain.effects.cardano","nativePosture":"build-time-only","runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"]},
-    {"id":"appchain-zk","availability":"EXPERIMENTAL","bundleId":"com.bloxbean.cardano.yano.appchain.zk","nativePosture":"build-time-only","runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"]}
+    {"id":"appchain-zk","availability":"EXPERIMENTAL","bundleId":"com.bloxbean.cardano.yano.appchain.zk","nativePosture":"build-time-only","runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"]},
+    {"id":"appchain-eutxo-ledger","availability":"FIRST_PARTY_OPTIONAL","bundleId":"com.bloxbean.cardano.yano.appchain.eutxo","nativePosture":"unsupported","runtimeTypes":["jvm"],"deploymentTargets":["host","docker-compose"]}
   ],
   "capabilities": [
     {
@@ -102,6 +103,15 @@
       "externalPrerequisites":[],"bootstrapRequirements":["reviewed-bbs-issuer-public-key"],"nonSecretAnswers":["issuerId","issuerPublicKey"],"secretReferences":{},
       "properties":{"state-machine":"credential-registry","zk.bbs.issuers[0].id":"${issuerId}","zk.bbs.issuers[0].public-key":"${issuerPublicKey}"},
       "documentation":"appchain/extensions/appchain-zk/README.md","acceptanceScenario":"experimental-credential-registry"
+    },
+    {
+      "id":"state:eutxo-ledger","name":"Genesis-funded EUTxO ledger","category":"state","availability":"FIRST_PARTY_OPTIONAL","maturity":"experimental","scope":"chain","selectable":true,
+      "trustStatement":"Experimental no-real-funds ledger. M1 supports canonical signed, key-controlled, ADA-only, zero-fee transactions on a genesis-funded testnet-shaped state; it is not a Cardano bridge or rollup.",
+      "description":"Deterministic Cardano-shaped EUTxO transactions with committed receipts, address indexes, and MPF-proven outputs.",
+      "provides":["state-machine"],"requires":[],"implies":[],"conflicts":[],"runtimeTypes":["jvm"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime","appchain-eutxo-ledger"],"nativePosture":"unsupported",
+      "externalPrerequisites":[],"bootstrapRequirements":["install-appchain-eutxo-ledger-bundle","use-test-keys-and-no-real-funds"],"nonSecretAnswers":["eutxoGenesisAddress","eutxoGenesisLovelace"],"secretReferences":{},
+      "properties":{"state-machine":"eutxo-ledger","machines.eutxo.profile":"yano-eutxo-v1","machines.eutxo.expected-profile-digest":"2499d01ee7cb0d09d0d498040c6351accd9da83df31666cd4463d0b1722d1212","machines.eutxo.genesis.address":"${eutxoGenesisAddress}","machines.eutxo.genesis.lovelace":"${eutxoGenesisLovelace}"},
+      "documentation":"appchain/extensions/eutxo/README.md","acceptanceScenario":"experimental-eutxo-ledger"
     },
     {
       "id":"sequencer:fixed","name":"Fixed sequencer","category":"sequencer","availability":"BUNDLED","maturity":"stable","scope":"chain","selectable":true,

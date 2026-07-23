@@ -1,0 +1,96 @@
+package com.bloxbean.cardano.yano.appchain.eutxo.contracts;
+
+import java.nio.charset.StandardCharsets;
+import java.util.List;
+import java.util.Objects;
+
+/** Frozen query paths and bounded request/response codecs. */
+public final class EutxoQueryCodec {
+    public static final String OUTPOINT_PATH = "utxos/outpoint";
+    public static final String ADDRESS_PATH = "utxos/address";
+    public static final String TRANSACTION_PATH = "transactions/receipt";
+    public static final String ATTEMPT_PATH = "attempts/receipt";
+    public static final String PROFILE_PATH = "profile";
+
+    private EutxoQueryCodec() {
+    }
+
+    public static byte[] outpointRequest(EutxoOutpoint outpoint) {
+        return Objects.requireNonNull(outpoint, "outpoint")
+                .toString().getBytes(StandardCharsets.UTF_8);
+    }
+
+    public static EutxoOutpoint decodeOutpointRequest(byte[] bytes) {
+        return EutxoOutpoint.parse(boundedUtf8(bytes, 80, "outpoint"));
+    }
+
+    public static byte[] addressRequest(String address) {
+        String normalized = Objects.requireNonNull(address, "address").trim();
+        if (normalized.isEmpty() || normalized.length() > 256) {
+            throw new IllegalArgumentException("address must contain 1-256 characters");
+        }
+        return normalized.getBytes(StandardCharsets.UTF_8);
+    }
+
+    public static String decodeAddressRequest(byte[] bytes) {
+        return boundedUtf8(bytes, 256, "address");
+    }
+
+    public static byte[] transactionRequest(String transactionId) {
+        return new EutxoOutpoint(transactionId, 0).transactionId()
+                .getBytes(StandardCharsets.UTF_8);
+    }
+
+    public static String decodeTransactionRequest(byte[] bytes) {
+        return new EutxoOutpoint(boundedUtf8(bytes, 64, "transaction id"), 0)
+                .transactionId();
+    }
+
+    public static byte[] attemptRequest(byte[] appMessageId) {
+        Objects.requireNonNull(appMessageId, "appMessageId");
+        if (appMessageId.length != 32) {
+            throw new IllegalArgumentException("app message id must contain 32 bytes");
+        }
+        return appMessageId.clone();
+    }
+
+    public static byte[] decodeAttemptRequest(byte[] bytes) {
+        return attemptRequest(bytes);
+    }
+
+    public static byte[] optionalRecord(EutxoRecord record) {
+        return EutxoCbor.encodeOptionalRecord(record);
+    }
+
+    public static EutxoRecord decodeOptionalRecord(byte[] bytes) {
+        return EutxoCbor.decodeOptionalRecord(bytes);
+    }
+
+    public static byte[] records(List<EutxoRecord> records) {
+        return EutxoCbor.encodeRecords(records);
+    }
+
+    public static List<EutxoRecord> decodeRecords(byte[] bytes) {
+        return EutxoCbor.decodeRecords(bytes);
+    }
+
+    public static byte[] optionalReceipt(EutxoReceipt receipt) {
+        return EutxoCbor.encodeOptionalReceipt(receipt);
+    }
+
+    public static EutxoReceipt decodeOptionalReceipt(byte[] bytes) {
+        return EutxoCbor.decodeOptionalReceipt(bytes);
+    }
+
+    private static String boundedUtf8(byte[] bytes, int maximum, String field) {
+        Objects.requireNonNull(bytes, "bytes");
+        if (bytes.length == 0 || bytes.length > maximum) {
+            throw new IllegalArgumentException(field + " request is empty or too large");
+        }
+        String value = new String(bytes, StandardCharsets.UTF_8);
+        if (!java.util.Arrays.equals(value.getBytes(StandardCharsets.UTF_8), bytes)) {
+            throw new IllegalArgumentException(field + " request is not canonical UTF-8");
+        }
+        return value;
+    }
+}
