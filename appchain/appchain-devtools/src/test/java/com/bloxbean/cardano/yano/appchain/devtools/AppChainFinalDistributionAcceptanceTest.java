@@ -98,6 +98,14 @@ class AppChainFinalDistributionAcceptanceTest {
                         init.add("bridgeVaultScriptHash=" + "1".repeat(56));
                         init.add("--answer");
                         init.add("bridgeMaxDepositLovelace=100000000");
+                        init.add("--answer");
+                        init.add("bridgeWithdrawalAddress=addr_test1vwithdrawals");
+                        init.add("--answer");
+                        init.add("bridgeEpoch=1");
+                        init.add("--answer");
+                        init.add("bridgeMaxWithdrawalLovelace=50000000");
+                        init.add("--answer");
+                        init.add("bridgeMaxPendingWithdrawals=100");
                     }
 
                     Result initialized = run(launcher, init);

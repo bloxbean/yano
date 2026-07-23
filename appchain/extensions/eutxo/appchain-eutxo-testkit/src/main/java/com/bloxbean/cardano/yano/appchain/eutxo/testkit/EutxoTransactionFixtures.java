@@ -30,18 +30,38 @@ public final class EutxoTransactionFixtures {
         if (outputs == null || outputs.isEmpty()) {
             throw new IllegalArgumentException("at least one output is required");
         }
+        return signedOutputs(
+                input,
+                signer,
+                outputs.stream()
+                        .map(payment -> TransactionOutput.builder()
+                                .address(payment.address())
+                                .value(Value.fromCoin(payment.lovelace()))
+                                .build())
+                        .toList(),
+                validityStart,
+                ttl);
+    }
+
+    public static Transaction signedOutputs(
+            EutxoOutpoint input,
+            EutxoTestWallet signer,
+            List<TransactionOutput> outputs,
+            long validityStart,
+            long ttl
+    ) {
+        Objects.requireNonNull(input, "input");
+        Objects.requireNonNull(signer, "signer");
+        if (outputs == null || outputs.isEmpty()) {
+            throw new IllegalArgumentException("at least one output is required");
+        }
         Transaction transaction = Transaction.builder()
                 .body(TransactionBody.builder()
                         .inputs(List.of(TransactionInput.builder()
                                 .transactionId(input.transactionId())
                                 .index(input.index())
                                 .build()))
-                        .outputs(outputs.stream()
-                                .map(payment -> TransactionOutput.builder()
-                                        .address(payment.address())
-                                        .value(Value.fromCoin(payment.lovelace()))
-                                        .build())
-                                .toList())
+                        .outputs(List.copyOf(outputs))
                         .fee(BigInteger.ZERO)
                         .validityStartInterval(validityStart)
                         .ttl(ttl)

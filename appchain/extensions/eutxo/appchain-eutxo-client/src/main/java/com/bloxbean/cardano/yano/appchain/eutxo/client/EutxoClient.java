@@ -10,6 +10,7 @@ import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoReceipt;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoRecord;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoReserve;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoStateKeys;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoWithdrawalRecord;
 
 import java.util.List;
 import java.util.Objects;
@@ -103,6 +104,16 @@ public final class EutxoClient {
                 EutxoQueryCodec.reserveRequest(assetId));
         return snapshot(result, Optional.ofNullable(
                 EutxoQueryCodec.decodeOptionalReserve(result.payload())));
+    }
+
+    public EutxoSnapshot<Optional<EutxoWithdrawalRecord>> withdrawalSnapshot(
+            String claimId
+    ) {
+        AppChainClient.QueryResult result = client.query(
+                EutxoQueryCodec.WITHDRAWAL_PATH,
+                EutxoQueryCodec.withdrawalRequest(claimId));
+        return snapshot(result, Optional.ofNullable(
+                EutxoQueryCodec.decodeOptionalWithdrawalRecord(result.payload())));
     }
 
     public String profileDigest() {

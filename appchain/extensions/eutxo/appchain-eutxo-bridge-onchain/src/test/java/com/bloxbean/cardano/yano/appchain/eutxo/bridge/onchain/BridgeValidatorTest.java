@@ -36,8 +36,21 @@ class BridgeValidatorTest {
     }
 
     @Test
-    void milestoneThreeVaultHasNoSpendPath() {
-        assertThat(VaultValidator.validate(null, null, null)).isFalse();
+    void vaultSettlementDatumBindsClaimAndAmount() {
+        byte[] claimId = filled(7, 32);
+        OutputDatum datum = new OutputDatum.OutputDatumInline(PlutusData.constr(2,
+                PlutusData.integer(BigInteger.ONE),
+                PlutusData.bytes(new byte[]{1}),
+                PlutusData.integer(BigInteger.ZERO),
+                PlutusData.bytes(claimId),
+                PlutusData.bytes(new byte[]{2}),
+                PlutusData.integer(BigInteger.TEN)));
+
+        assertThat(VaultValidator.settlement(datum)).hasValueSatisfying(settlement -> {
+            assertThat(settlement.claimId()).isEqualTo(claimId);
+            assertThat(settlement.lovelace()).isEqualTo(BigInteger.TEN);
+        });
+        assertThat(VaultValidator.settlement(new OutputDatum.NoOutputDatum())).isEmpty();
     }
 
     @Test

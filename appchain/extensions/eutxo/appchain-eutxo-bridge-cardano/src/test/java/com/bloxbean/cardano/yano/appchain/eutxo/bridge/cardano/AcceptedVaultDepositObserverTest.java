@@ -11,6 +11,8 @@ import com.bloxbean.cardano.yano.api.appchain.l1view.L1Observation;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoDepositClaim;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoOutpoint;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoVaultDatum;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoSettlementDatum;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoWithdrawalConfirmation;
 import com.bloxbean.cardano.yano.appchain.eutxo.testkit.EutxoTestWallet;
 import org.junit.jupiter.api.Test;
 
@@ -107,6 +109,62 @@ class AcceptedVaultDepositObserverTest {
         assertThat(BridgeRollbackGuard.assess(100, 100).halt()).isFalse();
     }
 
+    @Test
+    void settlementMarkerProducesAnExactWithdrawalConfirmation() {
+        EutxoSettlementDatum settlement = new EutxoSettlementDatum(
+                1,
+                "payments-eutxo",
+                3,
+                "55".repeat(32),
+                OWNER,
+                BigInteger.valueOf(20));
+        WithdrawalConfirmationObserver observer =
+                new WithdrawalConfirmationObserver("bridge-withdrawals", Map.of(
+                        "chain-id", "payments-eutxo",
+                        "bridge-epoch", "3",
+                        "vault-address", VAULT_ADDRESS));
+        Block settlementBlock = block(List.of(
+                output(OWNER, 20, null),
+                output(VAULT_ADDRESS, 30, settlement.encode())));
+
+        assertThat(observer.observe(101, fill(32, 8), settlementBlock))
+                .singleElement()
+                .satisfies(observation -> {
+                    EutxoWithdrawalConfirmation confirmation =
+                            EutxoWithdrawalConfirmation.decode(observation.claim());
+                    assertThat(confirmation.claimId()).isEqualTo("55".repeat(32));
+                    assertThat(confirmation.destinationAddress()).isEqualTo(OWNER);
+                    assertThat(confirmation.lovelace()).isEqualTo(BigInteger.valueOf(20));
+                    assertThat(confirmation.continuingVaultLovelace())
+                            .isEqualTo(BigInteger.valueOf(30));
+                });
+    }
+
+    @Test
+    void settlementWithoutExactPayoutFailsClosedAndDepositObserverIgnoresIt() {
+        EutxoSettlementDatum settlement = new EutxoSettlementDatum(
+                1,
+                "payments-eutxo",
+                3,
+                "55".repeat(32),
+                OWNER,
+                BigInteger.valueOf(20));
+        WithdrawalConfirmationObserver withdrawalObserver =
+                new WithdrawalConfirmationObserver("bridge-withdrawals", Map.of(
+                        "chain-id", "payments-eutxo",
+                        "bridge-epoch", "3",
+                        "vault-address", VAULT_ADDRESS));
+        Block mismatched = block(List.of(
+                output(OWNER, 19, null),
+                output(VAULT_ADDRESS, 30, settlement.encode())));
+
+        assertThatThrownBy(() ->
+                withdrawalObserver.observe(101, fill(32, 8), mismatched))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("no exact payout");
+        assertThat(observer().observe(101, fill(32, 8), mismatched)).isEmpty();
+    }
+
     private static AcceptedVaultDepositObserver observer() {
         return new AcceptedVaultDepositObserver("bridge-deposits", Map.of(
                 "chain-id", "payments-eutxo",
@@ -126,14 +184,16 @@ class AcceptedVaultDepositObserverTest {
     }
 
     private static TransactionOutput output(String address, long lovelace, byte[] datum) {
-        return TransactionOutput.builder()
+        var builder = TransactionOutput.builder()
                 .address(address)
                 .amounts(List.of(Amount.builder()
                         .unit("lovelace")
                         .quantity(BigInteger.valueOf(lovelace))
-                        .build()))
-                .inlineDatum(HexFormat.of().formatHex(datum))
-                .build();
+                        .build()));
+        if (datum != null) {
+            builder.inlineDatum(HexFormat.of().formatHex(datum));
+        }
+        return builder.build();
     }
 
     private static Block block(List<TransactionOutput> outputs) {
