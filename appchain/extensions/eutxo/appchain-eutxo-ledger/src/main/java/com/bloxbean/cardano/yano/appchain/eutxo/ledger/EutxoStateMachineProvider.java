@@ -15,7 +15,7 @@ public final class EutxoStateMachineProvider implements AppStateMachineProvider 
 
     @Override
     public AppStateMachine create() {
-        EutxoProfile profile = EutxoProfile.V1;
+        EutxoProfile profile = EutxoProfile.V2;
         return new EutxoStateMachine(
                 profile,
                 EutxoGenesis.from(java.util.Map.of()),
@@ -24,12 +24,14 @@ public final class EutxoStateMachineProvider implements AppStateMachineProvider 
 
     @Override
     public AppStateMachine create(AppStateMachineContext context) {
-        EutxoProfile profile = EutxoProfile.V1;
         String configuredProfile = context.settings()
-                .getOrDefault("machines.eutxo.profile", profile.id());
-        if (!profile.id().equals(configuredProfile)) {
-            throw new IllegalArgumentException("unsupported EUTxO profile: " + configuredProfile);
-        }
+                .getOrDefault("machines.eutxo.profile", EutxoProfile.V2.id());
+        EutxoProfile profile = switch (configuredProfile) {
+            case "yano-eutxo-v1" -> EutxoProfile.V1;
+            case "yano-eutxo-v2-plutus-v3" -> EutxoProfile.V2;
+            default -> throw new IllegalArgumentException(
+                    "unsupported EUTxO profile: " + configuredProfile);
+        };
         String expectedDigest =
                 context.settings().get("machines.eutxo.expected-profile-digest");
         if (expectedDigest != null && !expectedDigest.isBlank()

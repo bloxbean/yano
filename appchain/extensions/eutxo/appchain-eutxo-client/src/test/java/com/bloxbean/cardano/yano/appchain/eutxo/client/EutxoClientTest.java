@@ -67,7 +67,11 @@ class EutxoClientTest {
         assertThat(submitBody.get())
                 .isEqualTo("{\"topic\":\"eutxo.transactions\",\"bodyHex\":\"0102\"}");
 
-        assertThat(client.utxo(outpoint)).contains(record);
+        EutxoSnapshot<java.util.Optional<EutxoRecord>> snapshot =
+                client.utxoSnapshot(outpoint);
+        assertThat(snapshot.value()).contains(record);
+        assertThat(snapshot.committedHeight()).isEqualTo(7);
+        assertThat(snapshot.stateRootHex()).isEqualTo("33".repeat(32));
         assertThat(queryBody.get()).isEqualTo(
                 "{\"paramsHex\":\"" + HexFormat.of().formatHex(
                         EutxoQueryCodec.outpointRequest(outpoint)) + "\"}");

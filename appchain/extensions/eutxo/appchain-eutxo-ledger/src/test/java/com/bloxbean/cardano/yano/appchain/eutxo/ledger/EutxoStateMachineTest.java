@@ -1,7 +1,23 @@
 package com.bloxbean.cardano.yano.appchain.eutxo.ledger;
 
 import com.bloxbean.cardano.client.transaction.spec.Transaction;
+import com.bloxbean.cardano.client.transaction.spec.TransactionBody;
+import com.bloxbean.cardano.client.transaction.spec.TransactionInput;
+import com.bloxbean.cardano.client.transaction.spec.TransactionOutput;
+import com.bloxbean.cardano.client.transaction.spec.TransactionWitnessSet;
+import com.bloxbean.cardano.client.transaction.spec.Value;
 import com.bloxbean.cardano.client.transaction.util.TransactionUtil;
+import com.bloxbean.cardano.client.address.AddressProvider;
+import com.bloxbean.cardano.client.api.util.CostModelUtil;
+import com.bloxbean.cardano.client.common.model.Networks;
+import com.bloxbean.cardano.client.plutus.spec.CostMdls;
+import com.bloxbean.cardano.client.plutus.spec.ExUnits;
+import com.bloxbean.cardano.client.plutus.spec.PlutusData;
+import com.bloxbean.cardano.client.plutus.spec.PlutusV3Script;
+import com.bloxbean.cardano.client.plutus.spec.Redeemer;
+import com.bloxbean.cardano.client.plutus.spec.RedeemerTag;
+import com.bloxbean.cardano.client.plutus.util.ScriptDataHashGenerator;
+import com.bloxbean.cardano.client.spec.NetworkId;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineContext;
@@ -10,6 +26,7 @@ import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoOutpoint;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoQueryCodec;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoReceipt;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoRecord;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoProfile;
 import com.bloxbean.cardano.yano.appchain.eutxo.testkit.EutxoTestWallet;
 import com.bloxbean.cardano.yano.appchain.eutxo.testkit.EutxoTransactionFixtures;
 import com.bloxbean.cardano.yano.appchain.eutxo.testkit.MemoryAppState;
@@ -162,6 +179,120 @@ class EutxoStateMachineTest {
                 assertThat(outcomes).containsKeys(1L, 2L, 3L, 4L));
     }
 
+    @Test
+    void plutusV3AlwaysSucceedsExecutesThroughScalusAndMutatesExactOutputs()
+            throws Exception {
+        PlutusV3Script script = PlutusV3Script.builder()
+                .type("PlutusScriptV3")
+                .cborHex("46450101002499")
+                .build();
+        String scriptAddress =
+                AddressProvider.getEntAddress(script, Networks.testnet()).getAddress();
+        Map<String, String> settings = Map.of(
+                "machines.eutxo.profile", EutxoProfile.V2.id(),
+                "machines.eutxo.genesis.address", scriptAddress,
+                "machines.eutxo.genesis.lovelace", "100",
+                "machines.eutxo.genesis.inline-datum-hex",
+                PlutusData.unit().serializeToHex());
+        EutxoGenesis genesis = EutxoGenesis.from(settings);
+        EutxoStateMachine machine = new EutxoStateMachine(
+                EutxoProfile.V2,
+                genesis,
+                new KeyPaymentTransitionEngine(EutxoProfile.V2));
+        MemoryAppState state = new MemoryAppState();
+        machine.apply(block(1), state);
+
+        Transaction spend = plutusSpend(
+                genesis.records().getFirst().outpoint(), script, ALICE.address(), 100);
+        AppMessage submitted = message(41, spend);
+        machine.apply(block(2, submitted), state);
+
+        EutxoReceipt receipt = receipt(machine, state, submitted);
+        assertThat(receipt.status()).isEqualTo(EutxoReceipt.Status.ACCEPTED);
+        assertThat(records(machine, state, scriptAddress)).isEmpty();
+        assertThat(records(machine, state, ALICE.address())).hasSize(1);
+    }
+
+    @Test
+    void rejectedPlutusEvaluationHasStableCodeAndDoesNotSpendInput()
+            throws Exception {
+        PlutusV3Script script = PlutusV3Script.builder()
+                .type("PlutusScriptV3")
+                .cborHex("46450101002499")
+                .build();
+        String scriptAddress =
+                AddressProvider.getEntAddress(script, Networks.testnet()).getAddress();
+        Map<String, String> settings = Map.of(
+                "machines.eutxo.genesis.address", scriptAddress,
+                "machines.eutxo.genesis.lovelace", "100",
+                "machines.eutxo.genesis.inline-datum-hex",
+                PlutusData.unit().serializeToHex());
+        EutxoGenesis genesis = EutxoGenesis.from(settings);
+        EutxoStateMachine machine = new EutxoStateMachine(
+                EutxoProfile.V2,
+                genesis,
+                new KeyPaymentTransitionEngine(
+                        EutxoProfile.V2,
+                        com.bloxbean.cardano.client.crypto.config.CryptoConfiguration
+                                .INSTANCE.getSigningProvider(),
+                        (transaction, inputs) -> PlutusV3Evaluator.Evaluation.reject(
+                                "PLUTUS_VALIDATION_FAILED", "bounded rejection")));
+        MemoryAppState state = new MemoryAppState();
+        machine.apply(block(1), state);
+        AppMessage submitted = message(42, plutusSpend(
+                genesis.records().getFirst().outpoint(), script, ALICE.address(), 100));
+
+        machine.apply(block(2, submitted), state);
+
+        assertThat(receipt(machine, state, submitted).code())
+                .isEqualTo("PLUTUS_VALIDATION_FAILED");
+        assertThat(records(machine, state, scriptAddress)).hasSize(1);
+        assertThat(records(machine, state, ALICE.address())).isEmpty();
+    }
+
+    @Test
+    void scriptInputCannotBeSpentWithoutAPlutusWitness() throws Exception {
+        PlutusV3Script script = PlutusV3Script.builder()
+                .type("PlutusScriptV3")
+                .cborHex("46450101002499")
+                .build();
+        String scriptAddress =
+                AddressProvider.getEntAddress(script, Networks.testnet()).getAddress();
+        Map<String, String> settings = Map.of(
+                "machines.eutxo.profile", EutxoProfile.V2.id(),
+                "machines.eutxo.genesis.address", scriptAddress,
+                "machines.eutxo.genesis.lovelace", "100",
+                "machines.eutxo.genesis.inline-datum-hex",
+                PlutusData.unit().serializeToHex());
+        EutxoGenesis genesis = EutxoGenesis.from(settings);
+        EutxoStateMachine machine = (EutxoStateMachine)
+                new EutxoStateMachineProvider().create(context(settings));
+        MemoryAppState state = new MemoryAppState();
+        machine.apply(block(1), state);
+        Transaction unsigned = Transaction.builder()
+                .body(TransactionBody.builder()
+                        .inputs(List.of(TransactionInput.builder()
+                                .transactionId(genesis.transactionId())
+                                .index(0)
+                                .build()))
+                        .outputs(List.of(TransactionOutput.builder()
+                                .address(ALICE.address())
+                                .value(Value.fromCoin(BigInteger.valueOf(100)))
+                                .build()))
+                        .fee(BigInteger.ZERO)
+                        .networkId(NetworkId.TESTNET)
+                        .build())
+                .isValid(true)
+                .build();
+        AppMessage submitted = message(43, unsigned);
+
+        machine.apply(block(2, submitted), state);
+
+        assertThat(receipt(machine, state, submitted).code())
+                .isEqualTo("SCRIPT_WITNESS_MISSING");
+        assertThat(records(machine, state, scriptAddress)).hasSize(1);
+    }
+
     private static List<Transaction> paymentCorpus(EutxoRecord genesis) {
         List<Transaction> transactions = new ArrayList<>();
         EutxoOutpoint input = genesis.outpoint();
@@ -184,18 +315,21 @@ class EutxoStateMachineTest {
                 "machines.eutxo.profile", "yano-eutxo-v1",
                 "machines.eutxo.genesis.address", address,
                 "machines.eutxo.genesis.lovelace", Long.toString(lovelace));
-        return (EutxoStateMachine) new EutxoStateMachineProvider().create(
-                new AppStateMachineContext() {
-                    @Override
-                    public String chainId() {
-                        return "eutxo-test";
-                    }
+        return (EutxoStateMachine) new EutxoStateMachineProvider().create(context(settings));
+    }
 
-                    @Override
-                    public Map<String, String> settings() {
-                        return settings;
-                    }
-                });
+    private static AppStateMachineContext context(Map<String, String> settings) {
+        return new AppStateMachineContext() {
+            @Override
+            public String chainId() {
+                return "eutxo-test";
+            }
+
+            @Override
+            public Map<String, String> settings() {
+                return settings;
+            }
+        };
     }
 
     private static List<EutxoRecord> records(
@@ -234,6 +368,47 @@ class EutxoStateMachineTest {
 
     private static EutxoTransactionFixtures.Payment payment(String address, long lovelace) {
         return new EutxoTransactionFixtures.Payment(address, BigInteger.valueOf(lovelace));
+    }
+
+    private static Transaction plutusSpend(
+            EutxoOutpoint input,
+            PlutusV3Script script,
+            String receiver,
+            long lovelace
+    ) throws Exception {
+        Redeemer redeemer = Redeemer.builder()
+                .tag(RedeemerTag.Spend)
+                .index(0)
+                .data(PlutusData.unit())
+                .exUnits(ExUnits.builder()
+                        .mem(BigInteger.valueOf(14_000_000))
+                        .steps(BigInteger.valueOf(10_000_000_000L))
+                        .build())
+                .build();
+        CostMdls costModels = new CostMdls();
+        costModels.add(CostModelUtil.PlutusV3CostModel);
+        TransactionBody body = TransactionBody.builder()
+                .inputs(List.of(TransactionInput.builder()
+                        .transactionId(input.transactionId())
+                        .index(input.index())
+                        .build()))
+                .outputs(List.of(TransactionOutput.builder()
+                        .address(receiver)
+                        .value(Value.fromCoin(BigInteger.valueOf(lovelace)))
+                        .build()))
+                .fee(BigInteger.ZERO)
+                .networkId(NetworkId.TESTNET)
+                .scriptDataHash(ScriptDataHashGenerator.generate(
+                        List.of(redeemer), List.of(), costModels))
+                .build();
+        return Transaction.builder()
+                .body(body)
+                .witnessSet(TransactionWitnessSet.builder()
+                        .plutusV3Scripts(List.of(script))
+                        .redeemers(List.of(redeemer))
+                        .build())
+                .isValid(true)
+                .build();
     }
 
     private static EutxoTestWallet wallet(int fill) {

@@ -209,9 +209,9 @@
       {
         "key": "yano.app-chain.machines.eutxo.profile",
         "owner": "yano-first-party/appchain-eutxo-ledger", "type": "STRING",
-        "defaultValue": "yano-eutxo-v1", "minimum": null, "maximum": null,
+        "defaultValue": "yano-eutxo-v2-plutus-v3", "minimum": null, "maximum": null,
         "minimumUtf8Bytes": null, "maximumUtf8Bytes": null, "maximumItems": null,
-        "allowedValues": ["yano-eutxo-v1"], "scope": "CONSENSUS_SHARED",
+        "allowedValues": ["yano-eutxo-v1", "yano-eutxo-v2-plutus-v3"], "scope": "CONSENSUS_SHARED",
         "changePolicy": "NEW_CHAIN_REQUIRED", "secret": false, "indexed": true,
         "constraintProvenance": "RUNTIME_PARSER_TEST", "coverage": "PARTIAL",
         "description": "Pinned deterministic EUTxO ledger profile"
@@ -245,6 +245,16 @@
         "changePolicy": "NEW_CHAIN_REQUIRED", "secret": false, "indexed": true,
         "constraintProvenance": "RUNTIME_PARSER_TEST", "coverage": "PARTIAL",
         "description": "Positive no-real-funds lovelace allocated to genesis output zero"
+      },
+      {
+        "key": "yano.app-chain.machines.eutxo.genesis.inline-datum-hex",
+        "owner": "yano-first-party/appchain-eutxo-ledger", "type": "STRING",
+        "defaultValue": null, "minimum": null, "maximum": null,
+        "minimumUtf8Bytes": 2, "maximumUtf8Bytes": 32768, "maximumItems": null,
+        "allowedValues": [], "scope": "CONSENSUS_SHARED",
+        "changePolicy": "NEW_CHAIN_REQUIRED", "secret": false, "indexed": true,
+        "constraintProvenance": "RUNTIME_PARSER_TEST", "coverage": "PARTIAL",
+        "description": "Optional canonical lowercase Plutus datum CBOR for genesis output zero"
       }
     ],
     "dynamicNamespaces": []

@@ -105,7 +105,10 @@ if (includeFirstPartyPluginBundles) {
             'com.bloxbean.cardano.yano.appchain.zk':
                     [projectPath: ':appchain-zk', includeProvided: true],
             'com.bloxbean.cardano.yano.appchain.eutxo':
-                    [projectPath: ':appchain-eutxo-ledger', includeProvided: true]
+                    // Scalus is a version-pinned host runtime dependency through
+                    // scalus-bridge. Keep the optional EUTxO plugin thin and do
+                    // not reassign that host dependency graph to this bundle.
+                    [projectPath: ':appchain-eutxo-ledger', includeProvided: false]
     ])
 }
 if (includeNativePluginConformanceFixture) {

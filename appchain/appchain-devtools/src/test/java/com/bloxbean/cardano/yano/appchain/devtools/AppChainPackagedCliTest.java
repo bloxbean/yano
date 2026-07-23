@@ -62,6 +62,7 @@ class AppChainPackagedCliTest {
         Result migrate = run(launcher, "migrate", project.toString(), "--dry-run",
                 "--format", "json");
         Result capabilities = run(launcher, "capabilities", "--format", "json");
+        Result eutxoDemo = run(launcher, "eutxo", "demo");
         Path actorSeed = temporary.resolve("packaged-actor.seed");
         Files.writeString(actorSeed, "11".repeat(32), StandardCharsets.US_ASCII);
         Result actorPublicKey = run(launcher, "appchain", "role", "public-key",
@@ -95,6 +96,11 @@ class AppChainPackagedCliTest {
         assertThat(capabilities.output()).contains(
                 "state:role-approvals", "state:role-evidence", "state:eutxo-ledger",
                 "state:custom-plugin");
+        assertThat(eutxoDemo.exitCode()).isZero();
+        assertThat(eutxoDemo.output())
+                .contains("\"mode\":\"no-real-funds\"")
+                .contains("\"profile\":\"yano-eutxo-v2-plutus-v3\"");
+        assertThat(eutxoDemo.error()).isEmpty();
         assertThat(actorPublicKey.exitCode()).isZero();
         assertThat(actorPublicKey.output().trim()).matches("[0-9a-f]{64}")
                 .doesNotContain("11".repeat(32));

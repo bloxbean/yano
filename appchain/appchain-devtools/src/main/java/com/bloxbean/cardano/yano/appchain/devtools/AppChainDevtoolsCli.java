@@ -12,6 +12,7 @@ import com.bloxbean.cardano.yano.appchain.config.TemplateContract;
 import com.bloxbean.cardano.yano.appchain.config.TemplateValidationResult;
 import com.bloxbean.cardano.yano.appchain.config.ValidationDiagnostic;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.RoleWorkflowCli;
+import com.bloxbean.cardano.yano.appchain.eutxo.client.EutxoCli;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
 
@@ -52,6 +53,7 @@ public final class AppChainDevtoolsCli {
                or: ./yano.sh appchain metadata verify <plugin.jar> --trust-key <key-id=64-hex-public-key>
                or: ./yano.sh appchain migrate [project-directory] [--dry-run]
                or: ./yano.sh appchain role public-key|key-proof|sign|govern-* [options]
+               or: ./yano.sh appchain eutxo transaction|utxo|proof|doctor|demo [options]
             Options:
               --config <yml|yaml>                        repeatable, later source wins
               --format text|json                         validate/explain
@@ -90,6 +92,10 @@ public final class AppChainDevtoolsCli {
         Objects.requireNonNull(args, "args");
         Objects.requireNonNull(out, "out");
         Objects.requireNonNull(err, "err");
+        if (args.length > 0 && "eutxo".equals(args[0])) {
+            return EutxoCli.run(
+                    java.util.Arrays.copyOfRange(args, 1, args.length), out, err);
+        }
         if (roleCommand(args)) {
             try {
                 out.println(RoleWorkflowCli.execute(roleArguments(args)));

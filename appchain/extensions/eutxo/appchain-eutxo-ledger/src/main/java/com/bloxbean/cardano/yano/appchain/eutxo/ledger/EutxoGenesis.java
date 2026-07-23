@@ -2,6 +2,7 @@ package com.bloxbean.cardano.yano.appchain.eutxo.ledger;
 
 import com.bloxbean.cardano.client.common.cbor.CborSerializationUtil;
 import com.bloxbean.cardano.client.crypto.Blake2bUtil;
+import com.bloxbean.cardano.client.plutus.spec.PlutusData;
 import com.bloxbean.cardano.client.transaction.spec.TransactionOutput;
 import com.bloxbean.cardano.client.transaction.spec.Value;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoOutpoint;
@@ -19,7 +20,8 @@ import java.util.regex.Pattern;
 
 final class EutxoGenesis {
     private static final Pattern OUTPUT_PROPERTY =
-            Pattern.compile("machines\\.eutxo\\.genesis\\.outputs\\[(\\d+)]\\.(address|lovelace)");
+            Pattern.compile("machines\\.eutxo\\.genesis\\.outputs\\[(\\d+)]\\."
+                    + "(address|lovelace|inline-datum-hex)");
 
     private final String transactionId;
     private final List<EutxoRecord> records;
@@ -33,9 +35,11 @@ final class EutxoGenesis {
         Map<Integer, MutableOutput> outputs = new TreeMap<>();
         String simpleAddress = settings.get("machines.eutxo.genesis.address");
         String simpleLovelace = settings.get("machines.eutxo.genesis.lovelace");
-        if (simpleAddress != null || simpleLovelace != null) {
+        String simpleDatum = settings.get("machines.eutxo.genesis.inline-datum-hex");
+        if (simpleAddress != null || simpleLovelace != null || simpleDatum != null) {
             MutableOutput output = outputs.computeIfAbsent(0, ignored -> new MutableOutput());
             output.address = simpleAddress;
+            output.inlineDatumHex = simpleDatum;
             if (simpleLovelace != null) {
                 try {
                     output.lovelace = new BigInteger(simpleLovelace);
@@ -55,19 +59,22 @@ final class EutxoGenesis {
                 throw new IllegalArgumentException("EUTxO genesis output index is outside 0-1023");
             }
             MutableOutput output = outputs.computeIfAbsent(index, ignored -> new MutableOutput());
-            if (index == 0 && (simpleAddress != null || simpleLovelace != null)) {
+            if (index == 0 && (simpleAddress != null || simpleLovelace != null
+                    || simpleDatum != null)) {
                 throw new IllegalArgumentException(
                         "use either simple EUTxO genesis keys or indexed outputs, not both");
             }
             if ("address".equals(matcher.group(2))) {
                 output.address = value;
-            } else {
+            } else if ("lovelace".equals(matcher.group(2))) {
                 try {
                     output.lovelace = new BigInteger(value);
                 } catch (NumberFormatException failure) {
                     throw new IllegalArgumentException(
                             "EUTxO genesis lovelace must be an integer", failure);
                 }
+            } else {
+                output.inlineDatumHex = value;
             }
         });
         if (outputs.isEmpty()) {
@@ -92,6 +99,7 @@ final class EutxoGenesis {
                 TransactionOutput output = TransactionOutput.builder()
                         .address(value.address.trim())
                         .value(Value.fromCoin(value.lovelace))
+                        .inlineDatum(decodeDatum(value.inlineDatumHex))
                         .build();
                 pending.add(new PendingOutput(
                         value.address.trim(),
@@ -139,8 +147,29 @@ final class EutxoGenesis {
     private static final class MutableOutput {
         private String address;
         private BigInteger lovelace;
+        private String inlineDatumHex;
     }
 
     private record PendingOutput(String address, byte[] outputCbor) {
+    }
+
+    private static PlutusData decodeDatum(String datumHex) {
+        if (datumHex == null || datumHex.isBlank()) {
+            return null;
+        }
+        try {
+            String canonical = datumHex.trim();
+            if ((canonical.length() & 1) != 0
+                    || !canonical.equals(canonical.toLowerCase(java.util.Locale.ROOT))) {
+                throw new IllegalArgumentException(
+                        "EUTxO genesis inline datum must be canonical lowercase hex");
+            }
+            return PlutusData.deserialize(HexFormat.of().parseHex(canonical));
+        } catch (IllegalArgumentException failure) {
+            throw failure;
+        } catch (Exception failure) {
+            throw new IllegalArgumentException(
+                    "EUTxO genesis inline datum cannot be decoded", failure);
+        }
     }
 }
