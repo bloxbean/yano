@@ -282,6 +282,149 @@ class VoteTallyCalculatorTest {
         assertThat(tally.noCount()).isZero();
     }
 
+    /**
+     * Issue #33 / #34 regression — HardForkInitiation SPO tally.
+     *
+     * Haskell (Conway Ratify.hs spoAcceptedRatio): a pool that did NOT vote on a
+     * HardForkInitiation action counts as NO (stake stays in the denominator),
+     * regardless of its reward account's DRep delegation. The AlwaysAbstain default
+     * applies to every other action type only:
+     * <pre>
+     *   Nothing
+     *     | HardForkInitiation {} &lt;- pProcGovAction -&gt; (yes, abstain)
+     *     | hardforkConwayBootstrapPhase pv -&gt; (yes, abstain + stake)
+     *     | otherwise -&gt; case defaultStakePoolVote ... of
+     *         DefaultAbstain -&gt; (yes, abstain + stake)
+     *         ...
+     * </pre>
+     * Counting passive AlwaysAbstain pools as Abstain shrinks the denominator
+     * (yes / (total - abstain)) and inflates the yes ratio.
+     */
+    @Test
+    void spoTally_hardForkInitiation_passiveAlwaysAbstainPool_countsAsNo() {
+        Map<String, BigInteger> poolStakeDist = new HashMap<>();
+        poolStakeDist.put("poolYes", new BigInteger("60"));
+        poolStakeDist.put("poolPassiveAbstain", new BigInteger("40"));
+
+        Map<String, Integer> poolDRepDelegation = new HashMap<>();
+        poolDRepDelegation.put("poolPassiveAbstain", DREP_ABSTAIN);
+
+        Map<GovernanceStateStore.VoterKey, Integer> votes = new HashMap<>();
+        votes.put(new GovernanceStateStore.VoterKey(
+                VoterType.STAKING_POOL_KEY_HASH.ordinal(), "poolYes"), 1); // YES
+
+        var tally = calculator.computeSPOTally(votes, poolStakeDist, poolDRepDelegation,
+                GovActionType.HARD_FORK_INITIATION_ACTION, false);
+
+        // Passive AlwaysAbstain stake must land in NO, not Abstain
+        assertThat(tally.yesStake()).isEqualTo(new BigInteger("60"));
+        assertThat(tally.noStake()).isEqualTo(new BigInteger("40"));
+        assertThat(tally.abstainStake()).isEqualTo(BigInteger.ZERO);
+
+        // Ratio = 60/100 = 0.60: fails 0.61, passes 0.51.
+        // (Buggy behavior gave 60/60 = 1.0 and passed both.)
+        assertThat(VoteTallyCalculator.spoThresholdMet(tally, new BigDecimal("0.61"))).isFalse();
+        assertThat(VoteTallyCalculator.spoThresholdMet(tally, new BigDecimal("0.51"))).isTrue();
+    }
+
+    /**
+     * Explicit Abstain votes on HardForkInitiation still count as Abstain —
+     * only the non-voter delegation default is HFI-gated
+     * (Haskell: {@code Just Abstain -> (yes, abstain + stake)} for every action type).
+     */
+    @Test
+    void spoTally_hardForkInitiation_explicitAbstainVote_staysAbstain() {
+        Map<String, BigInteger> poolStakeDist = new HashMap<>();
+        poolStakeDist.put("poolYes", new BigInteger("60"));
+        poolStakeDist.put("poolExplicitAbstain", new BigInteger("40"));
+
+        // Delegated to AlwaysAbstain AND voted Abstain explicitly — the explicit vote wins
+        Map<String, Integer> poolDRepDelegation = new HashMap<>();
+        poolDRepDelegation.put("poolExplicitAbstain", DREP_ABSTAIN);
+
+        Map<GovernanceStateStore.VoterKey, Integer> votes = new HashMap<>();
+        votes.put(new GovernanceStateStore.VoterKey(
+                VoterType.STAKING_POOL_KEY_HASH.ordinal(), "poolYes"), 1);            // YES
+        votes.put(new GovernanceStateStore.VoterKey(
+                VoterType.STAKING_POOL_KEY_HASH.ordinal(), "poolExplicitAbstain"), 2); // ABSTAIN
+
+        var tally = calculator.computeSPOTally(votes, poolStakeDist, poolDRepDelegation,
+                GovActionType.HARD_FORK_INITIATION_ACTION, false);
+
+        assertThat(tally.abstainStake()).isEqualTo(new BigInteger("40"));
+        assertThat(tally.noStake()).isEqualTo(BigInteger.ZERO);
+        // Ratio = 60/(100-40) = 1.0
+        assertThat(VoteTallyCalculator.spoThresholdMet(tally, new BigDecimal("0.99"))).isTrue();
+    }
+
+    /**
+     * Non-HFI actions keep the AlwaysAbstain default: passive delegated stake is Abstain.
+     */
+    @Test
+    void spoTally_parameterChange_passiveAlwaysAbstainPool_staysAbstain() {
+        Map<String, BigInteger> poolStakeDist = new HashMap<>();
+        poolStakeDist.put("poolYes", new BigInteger("60"));
+        poolStakeDist.put("poolPassiveAbstain", new BigInteger("40"));
+
+        Map<String, Integer> poolDRepDelegation = new HashMap<>();
+        poolDRepDelegation.put("poolPassiveAbstain", DREP_ABSTAIN);
+
+        Map<GovernanceStateStore.VoterKey, Integer> votes = new HashMap<>();
+        votes.put(new GovernanceStateStore.VoterKey(
+                VoterType.STAKING_POOL_KEY_HASH.ordinal(), "poolYes"), 1);
+
+        var tally = calculator.computeSPOTally(votes, poolStakeDist, poolDRepDelegation,
+                GovActionType.PARAMETER_CHANGE_ACTION, false);
+
+        assertThat(tally.abstainStake()).isEqualTo(new BigInteger("40"));
+        assertThat(tally.noStake()).isEqualTo(BigInteger.ZERO);
+    }
+
+    /**
+     * Preprod epoch-291 reconstruction — gov_action108a5htqnmlp (HardForkInitiation,
+     * PV 10→11), the root cause of issues #33/#34.
+     *
+     * At the 291→292 boundary the correct SPO ratio was 0.5070 (just under the
+     * pvt_hard_fork_initiation threshold of 0.51), but ~55.96T lovelace of passive
+     * AlwaysAbstain pool stake wrongly moved to Abstain shrank the denominator and
+     * lifted the ratio to 0.5401 — ratifying the HFI one epoch early (292 instead
+     * of 293, canonical per Koios: ratified 293 / enacted 294). The one-epoch-early
+     * 100k ADA deposit refund then inflated the epoch-293 reward stake snapshot,
+     * over-distributing 27,439,938 lovelace at epoch 297 (issue #34).
+     *
+     * Magnitudes below reproduce the investigated ratios:
+     *   yes = 462.92T, passive-abstain = 55.957T, other non-voters = 394.183T
+     *   correct: 462.92 / 913.06 = 0.50699 → NOT ratified at 291
+     *   buggy:   462.92 / 857.10 = 0.54009 → ratified (the bug)
+     */
+    @Test
+    void spoTally_preprodEpoch291_hfi_mustNotPass051Threshold() {
+        Map<String, BigInteger> poolStakeDist = new HashMap<>();
+        poolStakeDist.put("poolsVotedYes", new BigInteger("462920000000000"));
+        poolStakeDist.put("poolsPassiveAlwaysAbstain", new BigInteger("55957000000000"));
+        poolStakeDist.put("poolsNonVoting", new BigInteger("394183000000000"));
+
+        Map<String, Integer> poolDRepDelegation = new HashMap<>();
+        poolDRepDelegation.put("poolsPassiveAlwaysAbstain", DREP_ABSTAIN);
+
+        Map<GovernanceStateStore.VoterKey, Integer> votes = new HashMap<>();
+        votes.put(new GovernanceStateStore.VoterKey(
+                VoterType.STAKING_POOL_KEY_HASH.ordinal(), "poolsVotedYes"), 1); // YES
+
+        var tally = calculator.computeSPOTally(votes, poolStakeDist, poolDRepDelegation,
+                GovActionType.HARD_FORK_INITIATION_ACTION, false);
+
+        // Full stake stays in the denominator: 462.92 / 913.06 ≈ 0.507 < 0.51
+        assertThat(tally.abstainStake()).isEqualTo(BigInteger.ZERO);
+        assertThat(VoteTallyCalculator.spoThresholdMet(tally, new BigDecimal("0.51"))).isFalse();
+
+        // Same distribution, non-HFI action: passive abstain excluded → ratio 0.5401 ≥ 0.51.
+        // This is exactly what the bug produced for the HFI at epoch 291.
+        var nonHfiTally = calculator.computeSPOTally(votes, poolStakeDist, poolDRepDelegation,
+                GovActionType.INFO_ACTION, false);
+        assertThat(VoteTallyCalculator.spoThresholdMet(nonHfiTally, new BigDecimal("0.51"))).isTrue();
+    }
+
     @Test
     void committeeTally_duplicateHotCredentialUsesActiveMember() {
         Map<GovernanceStateStore.VoterKey, Integer> votes = new HashMap<>();

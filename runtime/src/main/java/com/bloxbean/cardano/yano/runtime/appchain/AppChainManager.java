@@ -105,7 +105,8 @@ public final class AppChainManager implements Subsystem, AppChainGateways {
      * configured remote is also an app-group peer (ADR 005 M1 unification —
      * one TCP connection per peer pair instead of an extra dedicated dial).
      * <p>
-     * Decorates the sync subsystem's {@link PeerClientFactory}: sessions to
+     * Decorates the sync subsystem's
+     * {@link com.bloxbean.cardano.yano.p2p.peer.PeerClientFactory PeerClientFactory}: sessions to
      * the matching endpoint are armed with protocols 100/103 pre-connect, and
      * the matching chains' peer links prefer the shared session (with an
      * automatic dedicated-dial fallback while it is down). Returns the

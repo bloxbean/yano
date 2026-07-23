@@ -173,8 +173,13 @@ public class VoteTallyCalculator {
                 } else {
                     noStake = noStake.add(stake);
                 }
-            } else if (drepType != null && drepType == DREP_ABSTAIN) {
-                // Delegated to AlwaysAbstain: always abstain
+            } else if (drepType != null && drepType == DREP_ABSTAIN
+                    && actionType != GovActionType.HARD_FORK_INITIATION_ACTION) {
+                // Delegated to AlwaysAbstain: abstain — except for HardForkInitiation, where a
+                // non-voting pool always counts as NO regardless of DRep delegation. Haskell
+                // (Conway Ratify.hs spoAcceptedRatio) matches the HardForkInitiation guard before
+                // consulting defaultStakePoolVote, so for HFI the stake stays in the denominator;
+                // here it falls through to the default NO branch below.
                 abstainStake = abstainStake.add(stake);
             } else {
                 // No DRep delegation or regular DRep — default behavior for non-voters
