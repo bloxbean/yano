@@ -2,11 +2,29 @@
 
 ## Status
 
-Proposed — version 2
+Proposed — version 3
 
-This ADR records the initial architecture decision. The execution engine,
-bridge contracts, and real-funds deployment profile have not been implemented
-or independently audited.
+Phase A and the automated portions of Phase B are implemented as optional
+modules under `appchain/extensions/eutxo/`. Their schemas and bridge remain
+alpha pending the external operational and independent-review gates recorded
+by the implementation. Phase C is the active implementation plan and remains
+experimental with no production-funds claim.
+
+Version 3:
+
+- keeps the Phase A/B ledger and federated bridge under
+  `appchain/extensions/eutxo/`;
+- moves every ZeroJ, proving, validity-settlement, and rollup-graduation
+  artifact behind the sibling optional product boundary
+  `appchain/extensions/eutxo-zk/`;
+- separates consensus-time validity commitments from node-local proof
+  generation and from build-time Julc/Cardano validators;
+- requires the base EUTxO family to expose only a ZeroJ-neutral optional
+  validity-commitment boundary;
+- requires ledger-only and federated-bridge distributions to remain free of
+  ZeroJ, proving-key, circuit, and Julc dependencies; and
+- records `feat/eutxo_state_machine_zkrollup` as the Phase C integration
+  branch, with one reviewed and tested feature branch per Z milestone.
 
 Version 2:
 
@@ -23,6 +41,8 @@ Version 2:
 ## Date
 
 2026-07-23
+
+Last updated: 2026-07-24
 
 ## Decision owners
 
@@ -555,13 +575,26 @@ copy.
 
 ### 6.3 Plugin-first boundary
 
-All EUTxO modules are grouped as one bounded product family under:
+The base EUTxO ledger and federated bridge are one bounded product family
+under:
 
 ```text
 appchain/extensions/eutxo/
 ```
 
-The family is assembled from small modules:
+The optional validity-settlement and rollup-graduation implementation is a
+sibling product layer under:
+
+```text
+appchain/extensions/eutxo-zk/
+```
+
+This physical split is normative. It makes dependency-graph and distribution
+checks able to prove that selecting the ledger or federated bridge does not
+bring in ZeroJ, circuits, proving infrastructure, proving keys, or Julc
+validators.
+
+The base family is assembled from:
 
 ```text
 appchain/extensions/eutxo/appchain-eutxo-contracts
@@ -591,23 +624,53 @@ appchain/extensions/eutxo/appchain-eutxo-bridge-cardano
 appchain/extensions/eutxo/appchain-eutxo-bridge-onchain
   staging deposit, vault, root/claim, nullifier, recovery,
   and migration validators
+```
 
-appchain/extensions/eutxo/appchain-eutxo-zeroj
-  bounded transition circuits, witness generation, proving jobs,
-  optional validity-commitment integration, validity profiles,
-  proof codecs, and differential conformance
+The Phase C layer is assembled from:
 
-appchain/extensions/eutxo/appchain-eutxo-zeroj-onchain
-  Julc proof-verifier/root validator, verification-key binding,
+```text
+appchain/extensions/eutxo-zk/appchain-eutxo-zk-contracts
+  ZeroJ-neutral validity profiles, public statements, canonical batch and
+  witness descriptors, proof envelopes, circuit/VK identities, and codecs
+
+appchain/extensions/eutxo-zk/appchain-eutxo-zk-zeroj
+  circuit-friendly validity commitment, bounded ZeroJ circuits,
+  witness construction, proof generation, and off-chain verification
+
+appchain/extensions/eutxo-zk/appchain-eutxo-zk-prover
+  finalized-block ingestion, durable proving jobs, artifact storage,
+  retry/recovery, redundant prover coordination, health, and metrics
+
+appchain/extensions/eutxo-zk/appchain-eutxo-zk-client
+  typed validity status, statement, witness, proof, data-availability,
+  reconstruction, and relay APIs
+
+appchain/extensions/eutxo-zk/appchain-eutxo-zk-onchain
+  Julc proof-verifier/validity-root validator, verification-key binding,
   proof-gated withdrawal, migration, and Cardano budget tests
+
+appchain/extensions/eutxo-zk/appchain-eutxo-zk-testkit
+  independent vectors, malformed-witness and proof mutation fixtures,
+  reconstruction fixtures, and packaged optionality/conformance tests
 ```
 
 `appchain-eutxo-contracts` defines a small family-private
-`ValidityCommitmentEngine` boundary with no ZeroJ types. The ledger uses no
-validity engine when the capability is absent. The resolved ZeroJ bundle
-supplies the Poseidon implementation when selected. This boundary belongs to
-the EUTxO family, not `core-api`, and does not create a general runtime plugin
-SPI.
+`ValidityCommitmentEngine` and `ValidityCommitmentEngineProvider` boundary
+using only immutable byte-oriented EUTxO records. It contains no ZeroJ,
+circuit, proof, or Julc type. The ledger does not discover or invoke a
+validity engine when the capability is absent. When validity settlement is
+selected, startup requires exactly one engine matching the pinned profile and
+fails closed on absence, ambiguity, or an identity mismatch. The selected
+engine updates the circuit-friendly commitment atomically with the ordinary
+Yano MPF mutation.
+
+`appchain-eutxo-zk-zeroj` supplies that family-private provider. Provider
+discovery uses the manifested plugin classloader and does not add a new Yano
+core SPI. Proof generation never runs in deterministic state-machine apply:
+consensus execution produces the committed validity transition and canonical
+witness descriptor, while `appchain-eutxo-zk-prover` consumes finalized
+transitions through a durable node-local pipeline. A prover failure cannot
+change, skip, or roll back consensus state.
 
 `appchain-eutxo-ledger` names the product behavior. Scalus remains an internal
 implementation dependency so that an implementation change does not rename
@@ -618,13 +681,29 @@ The bundle IDs should use stable reverse-DNS identities such as:
 ```text
 com.bloxbean.cardano.yano.appchain.eutxo
 com.bloxbean.cardano.yano.appchain.eutxo.bridge.cardano
-com.bloxbean.cardano.yano.appchain.eutxo.zeroj
+com.bloxbean.cardano.yano.appchain.eutxo.zk.zeroj
+com.bloxbean.cardano.yano.appchain.eutxo.zk.prover
 ```
 
 The modules may evolve independently, but the release index and plugin
-manifest MUST pin their compatible versions and artifact digests. Supporting
-contracts, clients, testkit, and on-chain artifacts live with the feature
-family even though only provider/executor modules are runtime plugins.
+manifests MUST pin their compatible versions and artifact digests. The
+contracts, client, testkit, and on-chain artifacts live with their owning
+product layer even when they are not runtime plugin contributions.
+
+The dependency direction is one-way:
+
+```text
+base EUTxO contracts and ledger
+          ^
+EUTxO-ZK contracts and ZeroJ commitment/circuit
+          ^
+node-local prover and client
+```
+
+No module under `appchain/extensions/eutxo/` may depend on a module under
+`appchain/extensions/eutxo-zk/`. The only inversion point is the
+ZeroJ-neutral validity-commitment provider contract defined by the base
+family.
 
 ### 6.4 Core-change policy
 
@@ -1511,7 +1590,8 @@ The eventual CLI may expose:
 ./yano.sh appchain validity doctor
 ```
 
-These commands are product goals, not accepted syntax in version 2.
+These commands are Phase C product goals and are not accepted syntax until
+their owning milestone implements and packages them.
 
 The UI and CLI always distinguish:
 
@@ -1667,13 +1747,18 @@ Exit criteria:
 
 Deliver:
 
-- `appchain-eutxo-zeroj` and `appchain-eutxo-zeroj-onchain` skeletons;
+- `appchain-eutxo-zk-contracts`, `appchain-eutxo-zk-zeroj`,
+  `appchain-eutxo-zk-onchain`, and `appchain-eutxo-zk-testkit` skeletons
+  under `appchain/extensions/eutxo-zk/`;
 - ZeroJ `0.1.0-pre10` and Julc `0.1.0-pre14` artifact/digest locks;
 - optional validity-commitment integration and dual-root reference model;
 - one bounded key-authorized payment transition circuit;
 - public inputs for chain ID, profile digest, old/new validity roots, batch
   commitment, withdrawal commitment, and bridge epoch;
 - Groth16 BLS12-381 proof generation and off-chain verification;
+- deterministic test-only setup through ZeroJ's single-development-setup
+  ceremony API, with the resulting proving-key, verification-key, and setup
+  transcript identities pinned in test evidence;
 - Julc Plutus V3 validator verification on a Cardano devnet/testnet; and
 - constraint, setup, proving-time, proof-size, script-size, CPU, and memory
   benchmarks.
@@ -1685,6 +1770,11 @@ Exit criteria:
 - tampered roots, profile, batch commitment, proof, VK, and context fail;
 - the proof and validator fit pinned Cardano budgets with safety margin; and
 - no production or rollup claim is made.
+
+The single-development-setup ceremony is permitted only for automated
+feasibility, differential, devnet, and packaged acceptance tests. Its output
+MUST be labelled unsafe for production and MUST NOT satisfy the Z6 production
+MPC-ceremony gate.
 
 ### UTXO-Z1 — Bounded batch transition circuit
 
@@ -1710,6 +1800,7 @@ Exit criteria:
 
 Deliver:
 
+- `appchain-eutxo-zk-prover` and `appchain-eutxo-zk-client`;
 - finalized-block to canonical-witness generation;
 - durable proving jobs and artifacts;
 - retry, restart, cancellation, timeout, and reconciliation semantics;
@@ -1730,6 +1821,8 @@ Exit criteria:
 
 Deliver:
 
+- the deployable validators and budget suite in
+  `appchain-eutxo-zk-onchain`;
 - context-bound Julc validity-root validator;
 - old-root to new-root state-thread transition;
 - pinned profile, circuit, proof system, VK, batch-data commitment,
@@ -1770,6 +1863,8 @@ Exit criteria:
 
 Deliver:
 
+- reconstruction and adversarial fixtures in
+  `appchain-eutxo-zk-testkit`;
 - canonical batch publication format bound by the proof;
 - approved L1 or L1-enforced data-availability mechanism;
 - independent state reconstruction from genesis or a verified snapshot;
