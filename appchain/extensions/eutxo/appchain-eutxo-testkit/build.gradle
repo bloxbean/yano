@@ -1,0 +1,34 @@
+dependencies {
+    api project(':core-api')
+    api project(':appchain-eutxo-contracts')
+    api libs.cardano.client.core
+    implementation libs.cardano.client.crypto
+
+    testImplementation libs.junit.jupiter.api
+    testRuntimeOnly libs.junit.jupiter.engine
+    testRuntimeOnly libs.junit.platform.launcher
+    testImplementation libs.assertj.core
+}
+
+java {
+    sourceCompatibility = 25
+    targetCompatibility = 25
+}
+
+tasks.register('runNoFundsDemo', JavaExec) {
+    group = 'application'
+    description = 'Prints a deterministic public test address for the no-funds EUTxO recipe'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.bloxbean.cardano.yano.appchain.eutxo.testkit.EutxoNoFundsDemo'
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            pom {
+                name = 'Yano App-Chain EUTxO Testkit'
+                description = 'Deterministic fixtures and transaction vectors for Yano EUTxO plugins'
+            }
+        }
+    }
+}

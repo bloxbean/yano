@@ -2,7 +2,7 @@
   "schemaVersion": "v1alpha1",
   "schemaStatus": "alpha",
   "stabilizationDecision": "RETAIN_V1ALPHA1",
-  "yanoVersion": "0.1.0-pre9",
+  "yanoVersion": "0.1.0-pre11",
   "tooling": "standalone-jvm",
   "runtimeTypes": ["jvm", "native"],
   "deploymentTargets": ["host", "docker-compose"],
@@ -12,6 +12,7 @@
     "approval-workflow",
     "role-approval",
     "evidence-ledger",
+    "eutxo-ledger",
     "custom-plugin"
   ],
   "artifacts": [

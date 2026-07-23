@@ -16,7 +16,7 @@ import java.util.Set;
 public final class NativePluginConformanceVerifier implements NodePlugin {
     public static final String BUNDLE_ID =
             "com.bloxbean.cardano.yano.fixture.plugin-conformance";
-    public static final String VERSION = "0.1.0-pre9";
+    public static final String VERSION = "0.1.0-pre11";
     public static final String REPORT_SERVICE = BUNDLE_ID + ".report";
     public static final String SUCCESS_MARKER =
             "ADR-011.2 node-plugin conformance activated through catalog";

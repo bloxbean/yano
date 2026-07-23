@@ -93,7 +93,8 @@ class AppChainPackagedCliTest {
         assertThat(migrate.output()).contains("NO_MIGRATION_REQUIRED_DRY_RUN");
         assertThat(capabilities.exitCode()).isZero();
         assertThat(capabilities.output()).contains(
-                "state:role-approvals", "state:role-evidence", "state:custom-plugin");
+                "state:role-approvals", "state:role-evidence", "state:eutxo-ledger",
+                "state:custom-plugin");
         assertThat(actorPublicKey.exitCode()).isZero();
         assertThat(actorPublicKey.output().trim()).matches("[0-9a-f]{64}")
                 .doesNotContain("11".repeat(32));

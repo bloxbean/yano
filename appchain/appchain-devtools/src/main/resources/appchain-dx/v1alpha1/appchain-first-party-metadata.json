@@ -201,5 +201,52 @@
         "description": "Versioned evidence-registry feature activation heights"
       }
     ]
+  },
+  {
+    "schemaVersion": 1,
+    "id": "yano-first-party/appchain-eutxo-ledger",
+    "properties": [
+      {
+        "key": "yano.app-chain.machines.eutxo.profile",
+        "owner": "yano-first-party/appchain-eutxo-ledger", "type": "STRING",
+        "defaultValue": "yano-eutxo-v1", "minimum": null, "maximum": null,
+        "minimumUtf8Bytes": null, "maximumUtf8Bytes": null, "maximumItems": null,
+        "allowedValues": ["yano-eutxo-v1"], "scope": "CONSENSUS_SHARED",
+        "changePolicy": "NEW_CHAIN_REQUIRED", "secret": false, "indexed": true,
+        "constraintProvenance": "RUNTIME_PARSER_TEST", "coverage": "PARTIAL",
+        "description": "Pinned deterministic EUTxO ledger profile"
+      },
+      {
+        "key": "yano.app-chain.machines.eutxo.expected-profile-digest",
+        "owner": "yano-first-party/appchain-eutxo-ledger", "type": "STRING",
+        "defaultValue": null, "minimum": null, "maximum": null,
+        "minimumUtf8Bytes": 64, "maximumUtf8Bytes": 64, "maximumItems": null,
+        "allowedValues": [], "scope": "CONSENSUS_SHARED",
+        "changePolicy": "NEW_CHAIN_REQUIRED", "secret": false, "indexed": true,
+        "constraintProvenance": "RUNTIME_PARSER_TEST", "coverage": "PARTIAL",
+        "description": "Expected digest of every consensus-relevant EUTxO profile field"
+      },
+      {
+        "key": "yano.app-chain.machines.eutxo.genesis.address",
+        "owner": "yano-first-party/appchain-eutxo-ledger", "type": "STRING",
+        "defaultValue": null, "minimum": null, "maximum": null,
+        "minimumUtf8Bytes": 1, "maximumUtf8Bytes": 256, "maximumItems": null,
+        "allowedValues": [], "scope": "CONSENSUS_SHARED",
+        "changePolicy": "NEW_CHAIN_REQUIRED", "secret": false, "indexed": true,
+        "constraintProvenance": "RUNTIME_PARSER_TEST", "coverage": "PARTIAL",
+        "description": "Testnet address receiving the first no-real-funds genesis allocation"
+      },
+      {
+        "key": "yano.app-chain.machines.eutxo.genesis.lovelace",
+        "owner": "yano-first-party/appchain-eutxo-ledger", "type": "LONG",
+        "defaultValue": null, "minimum": 1, "maximum": null,
+        "minimumUtf8Bytes": null, "maximumUtf8Bytes": null, "maximumItems": null,
+        "allowedValues": [], "scope": "CONSENSUS_SHARED",
+        "changePolicy": "NEW_CHAIN_REQUIRED", "secret": false, "indexed": true,
+        "constraintProvenance": "RUNTIME_PARSER_TEST", "coverage": "PARTIAL",
+        "description": "Positive no-real-funds lovelace allocated to genesis output zero"
+      }
+    ],
+    "dynamicNamespaces": []
   }
 ]
