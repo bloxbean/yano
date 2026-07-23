@@ -55,5 +55,7 @@ class EutxoContractCodecTest {
     void profileDigestIsStableAndChangesOnlyWithProfileSemantics() {
         assertThat(EutxoProfile.V1.digestHex()).isEqualTo(
                 "2499d01ee7cb0d09d0d498040c6351accd9da83df31666cd4463d0b1722d1212");
+        assertThat(EutxoProfile.V2.digestHex()).isEqualTo(
+                "8cd4adb72def2c31dc8551a02f67429ea468bb2024dbe85a1dc7300590c9d1bf");
     }
 }

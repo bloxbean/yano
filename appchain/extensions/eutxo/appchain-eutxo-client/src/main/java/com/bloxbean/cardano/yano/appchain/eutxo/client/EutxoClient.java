@@ -35,31 +35,50 @@ public final class EutxoClient {
     }
 
     public Optional<EutxoRecord> utxo(EutxoOutpoint outpoint) {
-        byte[] payload = client.query(
+        return utxoSnapshot(outpoint).value();
+    }
+
+    public EutxoSnapshot<Optional<EutxoRecord>> utxoSnapshot(EutxoOutpoint outpoint) {
+        AppChainClient.QueryResult result = client.query(
                 EutxoQueryCodec.OUTPOINT_PATH,
-                EutxoQueryCodec.outpointRequest(outpoint)).payload();
-        return Optional.ofNullable(EutxoQueryCodec.decodeOptionalRecord(payload));
+                EutxoQueryCodec.outpointRequest(outpoint));
+        return snapshot(result, Optional.ofNullable(
+                EutxoQueryCodec.decodeOptionalRecord(result.payload())));
     }
 
     public List<EutxoRecord> utxos(String address) {
-        byte[] payload = client.query(
+        return utxosSnapshot(address).value();
+    }
+
+    public EutxoSnapshot<List<EutxoRecord>> utxosSnapshot(String address) {
+        AppChainClient.QueryResult result = client.query(
                 EutxoQueryCodec.ADDRESS_PATH,
-                EutxoQueryCodec.addressRequest(address)).payload();
-        return EutxoQueryCodec.decodeRecords(payload);
+                EutxoQueryCodec.addressRequest(address));
+        return snapshot(result, EutxoQueryCodec.decodeRecords(result.payload()));
     }
 
     public Optional<EutxoReceipt> transaction(String transactionId) {
-        byte[] payload = client.query(
+        return transactionSnapshot(transactionId).value();
+    }
+
+    public EutxoSnapshot<Optional<EutxoReceipt>> transactionSnapshot(String transactionId) {
+        AppChainClient.QueryResult result = client.query(
                 EutxoQueryCodec.TRANSACTION_PATH,
-                EutxoQueryCodec.transactionRequest(transactionId)).payload();
-        return Optional.ofNullable(EutxoQueryCodec.decodeOptionalReceipt(payload));
+                EutxoQueryCodec.transactionRequest(transactionId));
+        return snapshot(result, Optional.ofNullable(
+                EutxoQueryCodec.decodeOptionalReceipt(result.payload())));
     }
 
     public Optional<EutxoReceipt> attempt(byte[] appMessageId) {
-        byte[] payload = client.query(
+        return attemptSnapshot(appMessageId).value();
+    }
+
+    public EutxoSnapshot<Optional<EutxoReceipt>> attemptSnapshot(byte[] appMessageId) {
+        AppChainClient.QueryResult result = client.query(
                 EutxoQueryCodec.ATTEMPT_PATH,
-                EutxoQueryCodec.attemptRequest(appMessageId)).payload();
-        return Optional.ofNullable(EutxoQueryCodec.decodeOptionalReceipt(payload));
+                EutxoQueryCodec.attemptRequest(appMessageId));
+        return snapshot(result, Optional.ofNullable(
+                EutxoQueryCodec.decodeOptionalReceipt(result.payload())));
     }
 
     public Optional<AppChainClient.Proof> proof(EutxoOutpoint outpoint) {
@@ -67,7 +86,28 @@ public final class EutxoClient {
     }
 
     public String profileDigest() {
-        return new String(client.query(EutxoQueryCodec.PROFILE_PATH, new byte[0]).payload(),
-                java.nio.charset.StandardCharsets.UTF_8);
+        return profileSnapshot().value();
+    }
+
+    public EutxoSnapshot<String> profileSnapshot() {
+        AppChainClient.QueryResult result =
+                client.query(EutxoQueryCodec.PROFILE_PATH, new byte[0]);
+        return snapshot(result, new String(result.payload(),
+                java.nio.charset.StandardCharsets.UTF_8));
+    }
+
+    private static <T> EutxoSnapshot<T> snapshot(
+            AppChainClient.QueryResult result,
+            T value
+    ) {
+        if (!EutxoContract.STATE_MACHINE_ID.equals(result.stateMachineId())) {
+            throw new IllegalStateException(
+                    "query response is not from the EUTxO state machine");
+        }
+        return new EutxoSnapshot<>(
+                result.chainId(),
+                result.committedHeight(),
+                result.stateRoot(),
+                value);
     }
 }

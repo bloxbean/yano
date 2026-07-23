@@ -4,7 +4,7 @@ This optional extension provides a deterministic, Cardano-shaped EUTxO state
 machine. Its first milestone is a **no-real-funds experimental ledger**. It is
 not a Cardano bridge, a custody product, or a rollup.
 
-## M1 capability
+## Virtual-ledger capability
 
 Select `state:eutxo-ledger` for a JVM project. The generated YAML uses:
 
@@ -16,26 +16,29 @@ yano:
         state-machine: eutxo-ledger
         machines:
           eutxo:
-            profile: yano-eutxo-v1
-            expected-profile-digest: 2499d01ee7cb0d09d0d498040c6351accd9da83df31666cd4463d0b1722d1212
+            profile: yano-eutxo-v2-plutus-v3
+            expected-profile-digest: 8cd4adb72def2c31dc8551a02f67429ea468bb2024dbe85a1dc7300590c9d1bf
             genesis:
               address: addr_test1...
               lovelace: 100000000
 ```
 
 The profile commitment is SHA-256 over its canonical, versioned consensus
-fields. All members must use the same profile, digest, and genesis allocation. M1
-accepts canonical signed Conway transactions with:
+fields. All members must use the same profile, digest, and genesis allocation.
+Profile v2 accepts canonical Conway transactions with:
 
 - key-controlled testnet inputs and outputs;
+- witnessed Plutus V3 spending evaluated by Scalus 0.18.2;
+- inline datums and spending redeemers under fixed count and execution bounds;
 - ADA only;
 - zero L2 fee;
 - at most 64 inputs and 64 outputs; and
 - optional validity start/TTL interpreted at the app block's stable L1 slot.
 
-Scripts, minting, native assets, collateral, reference inputs, certificates,
-withdrawals, governance, and `isValid=false` are rejected with stable bounded
-codes in this milestone.
+Plutus V1/V2, native scripts, minting, native assets, collateral, reference
+inputs/scripts, datum hashes, certificates, withdrawals, governance, and
+`isValid=false` are rejected with stable bounded codes. Profile v1 remains
+available for chains that intentionally want key payments only.
 
 ## State and queries
 
@@ -47,8 +50,9 @@ generic message endpoint. The state machine records:
 - every accepted or rejected attempt under the outer app-message ID; and
 - a bounded address index.
 
-The typed `appchain-eutxo-client` uses Yano's generic root-fixed query and MPF
-proof endpoints for:
+The typed `appchain-eutxo-client` uses Yano's generic query and MPF proof
+endpoints. Every typed query has a `*Snapshot` form returning the decoded value
+together with the exact committed height and state root:
 
 - `utxos/outpoint`;
 - `utxos/address`;
@@ -72,8 +76,35 @@ transactions conflict, the first valid spend wins and later attempts receive
   state for extension authors.
 
 The ledger-only graph has no bridge, custody, ZeroJ, or Julc dependency.
-GraalVM native compatibility is not claimed until packaged-native conformance
-passes.
+Scalus is supplied by Yano's version-pinned host runtime rather than copied
+into the thin plugin bundle. The GraalVM 25.0.2 application image builds with
+the provider included; native runtime compatibility remains unclaimed until
+the packaged conformance suite also passes.
+
+## CLI
+
+The product commands call the same typed client and print structured JSON:
+
+```bash
+./yano.sh appchain eutxo doctor --chain payments-eutxo \
+  --expected-profile-digest 8cd4adb72def2c31dc8551a02f67429ea468bb2024dbe85a1dc7300590c9d1bf
+
+./yano.sh appchain eutxo transaction submit payment.tx \
+  --chain payments-eutxo
+
+./yano.sh appchain eutxo transaction status <tx-id> \
+  --chain payments-eutxo
+
+./yano.sh appchain eutxo utxo get <tx-id#index> \
+  --chain payments-eutxo
+
+./yano.sh appchain eutxo proof <tx-id#index> \
+  --chain payments-eutxo
+```
+
+Use `--url` for a non-default REST base. If authentication is enabled, use
+`--api-key-env <environment-variable>`; the CLI has no inline secret option and
+never prints the key.
 
 ## No-funds quick start
 
@@ -96,3 +127,12 @@ Use the printed address to generate a JVM project:
 This creates only virtual app-chain state. It does not contact Cardano, lock
 funds, install a bridge, or select a validity prover. The fixed demo wallet is
 public test material and must never receive real funds.
+
+## Trust statement
+
+The virtual ledger is experimental and its schemas remain alpha. Scalus
+validates only the profile's admitted Plutus family; this is not an assertion
+that every Cardano ledger feature is available. A state root or MPF proof shows
+what the app-chain committed, not that funds exist on Cardano. Select the
+federated bridge capability separately if and only if its custody assumptions
+are acceptable.

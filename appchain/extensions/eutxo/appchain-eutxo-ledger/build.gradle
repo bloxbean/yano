@@ -9,6 +9,9 @@ dependencies {
     }
     compileOnly libs.cardano.client.core
     compileOnly libs.cardano.client.crypto
+    compileOnly libs.scalus.bloxbean.ccl
+    compileOnly libs.scalus.cardano.ledger
+    compileOnly libs.scala3.library
     compileOnly libs.cbor
 
     testImplementation project(':core-api')
@@ -16,6 +19,9 @@ dependencies {
     testImplementation project(':appchain-eutxo-testkit')
     testImplementation libs.cardano.client.core
     testImplementation libs.cardano.client.crypto
+    testImplementation libs.scalus.bloxbean.ccl
+    testImplementation libs.scalus.cardano.ledger
+    testImplementation libs.scala3.library
     testImplementation libs.cbor
     testImplementation libs.junit.jupiter.api
     testRuntimeOnly libs.junit.jupiter.engine
@@ -84,7 +90,7 @@ tasks.register('verifyEutxoLedgerArtifactBoundaries') {
     }
 }
 
-tasks.register('verifyEutxoM1DependencyGraph') {
+tasks.register('verifyEutxoVirtualLedgerDependencyGraph') {
     group = 'verification'
     description = 'Verifies the virtual-ledger modules do not acquire bridge, custody, ZeroJ, or Julc dependencies'
 
@@ -122,7 +128,7 @@ tasks.register('verifyEutxoM1DependencyGraph') {
 
 tasks.named('check') {
     dependsOn tasks.named('verifyEutxoLedgerArtifactBoundaries'),
-            tasks.named('verifyEutxoM1DependencyGraph')
+            tasks.named('verifyEutxoVirtualLedgerDependencyGraph')
 }
 
 publishing {

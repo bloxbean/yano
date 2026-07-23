@@ -158,10 +158,10 @@ class AppChainProjectTest {
                 .containsEntry("yano.app-chain.chains[0].state-machine", "eutxo-ledger")
                 .containsEntry(
                         "yano.app-chain.chains[0].machines.eutxo.profile",
-                        "yano-eutxo-v1")
+                        "yano-eutxo-v2-plutus-v3")
                 .containsEntry(
                         "yano.app-chain.chains[0].machines.eutxo.expected-profile-digest",
-                        "2499d01ee7cb0d09d0d498040c6351accd9da83df31666cd4463d0b1722d1212")
+                        "8cd4adb72def2c31dc8551a02f67429ea468bb2024dbe85a1dc7300590c9d1bf")
                 .containsEntry(
                         "yano.app-chain.chains[0].machines.eutxo.genesis.address",
                         "addr_test1vr8nlm7example")

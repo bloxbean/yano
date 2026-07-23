@@ -105,12 +105,12 @@
       "documentation":"appchain/extensions/appchain-zk/README.md","acceptanceScenario":"experimental-credential-registry"
     },
     {
-      "id":"state:eutxo-ledger","name":"Genesis-funded EUTxO ledger","category":"state","availability":"FIRST_PARTY_OPTIONAL","maturity":"experimental","scope":"chain","selectable":true,
-      "trustStatement":"Experimental no-real-funds ledger. M1 supports canonical signed, key-controlled, ADA-only, zero-fee transactions on a genesis-funded testnet-shaped state; it is not a Cardano bridge or rollup.",
-      "description":"Deterministic Cardano-shaped EUTxO transactions with committed receipts, address indexes, and MPF-proven outputs.",
+      "id":"state:eutxo-ledger","name":"Scalus-backed EUTxO ledger","category":"state","availability":"FIRST_PARTY_OPTIONAL","maturity":"experimental","scope":"chain","selectable":true,
+      "trustStatement":"Experimental no-real-funds ledger. Profile v2 admits key-controlled ADA transfers and bounded witnessed Plutus V3 spending through Scalus 0.18.2; it is not a Cardano bridge, custody product, or rollup.",
+      "description":"Deterministic Cardano-shaped EUTxO transactions with bounded Plutus V3 execution, root-fixed receipts, address indexes, and MPF-proven outputs.",
       "provides":["state-machine"],"requires":[],"implies":[],"conflicts":[],"runtimeTypes":["jvm"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime","appchain-eutxo-ledger"],"nativePosture":"unsupported",
       "externalPrerequisites":[],"bootstrapRequirements":["install-appchain-eutxo-ledger-bundle","use-test-keys-and-no-real-funds"],"nonSecretAnswers":["eutxoGenesisAddress","eutxoGenesisLovelace"],"secretReferences":{},
-      "properties":{"state-machine":"eutxo-ledger","machines.eutxo.profile":"yano-eutxo-v1","machines.eutxo.expected-profile-digest":"2499d01ee7cb0d09d0d498040c6351accd9da83df31666cd4463d0b1722d1212","machines.eutxo.genesis.address":"${eutxoGenesisAddress}","machines.eutxo.genesis.lovelace":"${eutxoGenesisLovelace}"},
+      "properties":{"state-machine":"eutxo-ledger","machines.eutxo.profile":"yano-eutxo-v2-plutus-v3","machines.eutxo.expected-profile-digest":"8cd4adb72def2c31dc8551a02f67429ea468bb2024dbe85a1dc7300590c9d1bf","machines.eutxo.genesis.address":"${eutxoGenesisAddress}","machines.eutxo.genesis.lovelace":"${eutxoGenesisLovelace}"},
       "documentation":"appchain/extensions/eutxo/README.md","acceptanceScenario":"experimental-eutxo-ledger"
     },
     {

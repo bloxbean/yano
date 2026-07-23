@@ -33,17 +33,31 @@ import java.util.Objects;
  * M1 transition engine for signed, key-controlled, ADA-only, zero-fee
  * Conway transactions.
  */
-final class KeyPaymentTransitionEngine implements UtxoTransitionEngine {
+class KeyPaymentTransitionEngine implements UtxoTransitionEngine {
     private final EutxoProfile profile;
     private final SigningProvider signingProvider;
+    private final PlutusV3Evaluator plutusV3Evaluator;
 
     KeyPaymentTransitionEngine(EutxoProfile profile) {
-        this(profile, CryptoConfiguration.INSTANCE.getSigningProvider());
+        this(profile, CryptoConfiguration.INSTANCE.getSigningProvider(),
+                profile.scriptsEnabled() ? new ScalusPlutusV3Evaluator() : null);
     }
 
     KeyPaymentTransitionEngine(EutxoProfile profile, SigningProvider signingProvider) {
+        this(profile, signingProvider, null);
+    }
+
+    KeyPaymentTransitionEngine(
+            EutxoProfile profile,
+            SigningProvider signingProvider,
+            PlutusV3Evaluator plutusV3Evaluator
+    ) {
         this.profile = Objects.requireNonNull(profile, "profile");
         this.signingProvider = Objects.requireNonNull(signingProvider, "signingProvider");
+        this.plutusV3Evaluator = plutusV3Evaluator;
+        if (profile.scriptsEnabled() && plutusV3Evaluator == null) {
+            throw new IllegalArgumentException("script-enabled profile requires a Plutus V3 evaluator");
+        }
     }
 
     @Override
@@ -95,6 +109,10 @@ final class KeyPaymentTransitionEngine implements UtxoTransitionEngine {
             }
         }
 
+        Failure scriptValidation = validateScripts(transactionCbor, transaction, inputs);
+        if (scriptValidation != null) {
+            return reject(transactionId, scriptValidation);
+        }
         Failure authorization = authorize(transactionCbor, transaction, inputs);
         if (authorization != null) {
             return reject(transactionId, authorization);
@@ -190,8 +208,14 @@ final class KeyPaymentTransitionEngine implements UtxoTransitionEngine {
             return failure("REFERENCE_INPUT_UNSUPPORTED",
                     "reference inputs graduate with a later script profile");
         }
-        if (hasScripts(transaction)) {
+        if (!profile.scriptsEnabled() && hasScripts(transaction)) {
             return failure("SCRIPT_UNSUPPORTED", "profile v1 supports key-controlled spending only");
+        }
+        if (profile.scriptsEnabled()) {
+            Failure scriptShape = validateScriptShape(transaction);
+            if (scriptShape != null) {
+                return scriptShape;
+            }
         }
         for (TransactionOutput output : body.getOutputs()) {
             Failure outputFailure = validateOutput(output);
@@ -216,9 +240,22 @@ final class KeyPaymentTransitionEngine implements UtxoTransitionEngine {
         }
         try {
             Address address = new Address(output.getAddress());
-            if (!AddressProvider.isPubKeyHashInPaymentPart(address)) {
+            boolean keyAddress = AddressProvider.isPubKeyHashInPaymentPart(address);
+            if (!keyAddress && !profile.scriptsEnabled()) {
                 return failure("SCRIPT_OUTPUT_UNSUPPORTED",
                         "profile v1 outputs must use key payment credentials");
+            }
+            if (!keyAddress && output.getInlineDatum() == null) {
+                return failure("INLINE_DATUM_REQUIRED",
+                        "script outputs require an inline datum");
+            }
+            if (output.getDatumHash() != null) {
+                return failure("DATUM_HASH_UNSUPPORTED",
+                        "the Plutus V3 profile requires inline datums");
+            }
+            if (output.getScriptRef() != null) {
+                return failure("REFERENCE_SCRIPT_UNSUPPORTED",
+                        "reference scripts are not supported by this profile");
             }
             if (address.getNetwork().getNetworkId() != 0) {
                 return failure("NETWORK_MISMATCH", "profile v1 uses Cardano testnet addresses");
@@ -264,6 +301,9 @@ final class KeyPaymentTransitionEngine implements UtxoTransitionEngine {
                 throw new IllegalStateException("committed EUTxO address is invalid", failure);
             }
             if (!AddressProvider.isPubKeyHashInPaymentPart(address)) {
+                if (profile.scriptsEnabled()) {
+                    continue;
+                }
                 return failure("SCRIPT_INPUT_UNSUPPORTED",
                         "profile v1 inputs must use key payment credentials");
             }
@@ -280,6 +320,96 @@ final class KeyPaymentTransitionEngine implements UtxoTransitionEngine {
                 if (requiredSigner == null || requiredSigner.length != 28
                         || !validWitnesses.containsKey(HexFormat.of().formatHex(requiredSigner))) {
                     return failure("MISSING_REQUIRED_SIGNER", "a required signer witness is missing");
+                }
+            }
+        }
+        return null;
+    }
+
+    private Failure validateScripts(
+            byte[] transactionCbor,
+            Transaction transaction,
+            List<EutxoRecord> inputs
+    ) {
+        long scriptInputs = inputs.stream()
+                .filter(input -> {
+                    try {
+                        return !AddressProvider.isPubKeyHashInPaymentPart(
+                                new Address(input.address()));
+                    } catch (RuntimeException failure) {
+                        throw new IllegalStateException(
+                                "committed EUTxO address is invalid", failure);
+                    }
+                })
+                .count();
+        if (scriptInputs == 0 && !hasScripts(transaction)) {
+            return null;
+        }
+        if (!profile.scriptsEnabled()) {
+            return failure("SCRIPT_UNSUPPORTED", "the selected profile disables scripts");
+        }
+        if (scriptInputs > 0 && !hasScripts(transaction)) {
+            return failure("SCRIPT_WITNESS_MISSING",
+                    "every script input requires the admitted Plutus V3 witness");
+        }
+        int redeemers = transaction.getWitnessSet() == null
+                ? 0 : size(transaction.getWitnessSet().getRedeemers());
+        if (scriptInputs != redeemers) {
+            return failure("SCRIPT_REDEEMER_COUNT",
+                    "the spending redeemer count must equal the script input count");
+        }
+        PlutusV3Evaluator.Evaluation evaluation =
+                plutusV3Evaluator.evaluate(transactionCbor, inputs);
+        return evaluation.valid()
+                ? null : failure(evaluation.code(), evaluation.detail());
+    }
+
+    private Failure validateScriptShape(Transaction transaction) {
+        var witnesses = transaction.getWitnessSet();
+        if (witnesses == null) {
+            return null;
+        }
+        if (nonEmpty(witnesses.getNativeScripts())
+                || nonEmpty(witnesses.getPlutusV1Scripts())
+                || nonEmpty(witnesses.getPlutusV2Scripts())) {
+            return failure("SCRIPT_FAMILY_UNSUPPORTED",
+                    "only witnessed Plutus V3 spending is supported");
+        }
+        int scripts = size(witnesses.getPlutusV3Scripts());
+        int datums = size(witnesses.getPlutusDataList());
+        int redeemers = size(witnesses.getRedeemers());
+        if (scripts > profile.maxScripts()) {
+            return failure("SCRIPT_BOUND", "Plutus V3 script count exceeds the profile bound");
+        }
+        if (datums > profile.maxDatums()) {
+            return failure("DATUM_BOUND", "datum count exceeds the profile bound");
+        }
+        if (redeemers > profile.maxRedeemers()) {
+            return failure("REDEEMER_BOUND", "redeemer count exceeds the profile bound");
+        }
+        if ((scripts == 0) != (redeemers == 0)) {
+            return failure("SCRIPT_WITNESS_MISMATCH",
+                    "Plutus V3 scripts and spending redeemers must be supplied together");
+        }
+        if (witnesses.getRedeemers() != null) {
+            for (var redeemer : witnesses.getRedeemers()) {
+                if (redeemer == null
+                        || redeemer.getTag()
+                        != com.bloxbean.cardano.client.plutus.spec.RedeemerTag.Spend) {
+                    return failure("REDEEMER_PURPOSE_UNSUPPORTED",
+                            "only spending redeemers are supported");
+                }
+                if (redeemer.getExUnits() == null
+                        || redeemer.getExUnits().getMem() == null
+                        || redeemer.getExUnits().getSteps() == null
+                        || redeemer.getExUnits().getMem().signum() < 0
+                        || redeemer.getExUnits().getSteps().signum() < 0
+                        || redeemer.getExUnits().getMem().compareTo(
+                        BigInteger.valueOf(profile.maxExecutionMemory())) > 0
+                        || redeemer.getExUnits().getSteps().compareTo(
+                        BigInteger.valueOf(profile.maxExecutionSteps())) > 0) {
+                    return failure("EXECUTION_BUDGET_BOUND",
+                            "redeemer execution units are outside the profile bound");
                 }
             }
         }
@@ -326,6 +456,10 @@ final class KeyPaymentTransitionEngine implements UtxoTransitionEngine {
 
     private static boolean nonEmpty(List<?> values) {
         return values != null && !values.isEmpty();
+    }
+
+    private static int size(List<?> values) {
+        return values == null ? 0 : values.size();
     }
 
     private static TransitionResult reject(String transactionId, Failure failure) {
